@@ -9,7 +9,9 @@ import {
     HOSTS,
     INTERVAL_METHODS,
     MARGIN_SCALES,
+    MIN_PAIRED_RUNS_FOR_RUN_GATE,
     MULTIPLICITY,
+    needsPairedRuns,
     OUTCOMES,
     PREREG_SCHEMA,
     type Preregistration,
@@ -54,9 +56,14 @@ const list =
             : "duplicate entries";
     };
 
-/** The fields of one object, each with the check its value must pass or the shape of its items. */
+/** An array whose every item has `shape`. */
+class ArrayOf {
+    constructor(readonly shape: Shape) {}
+}
+
+/** The fields of one object, each with the check its value must pass or its nested shape. */
 interface Shape {
-    [field: string]: Check | Shape | { items: Shape };
+    [field: string]: Check | Shape | ArrayOf;
 }
 
 const MARGIN_SHAPE: Shape = { value: decimal, scale: oneOf(MARGIN_SCALES) };
@@ -95,9 +102,14 @@ const PREREG_SHAPE: Shape = {
     stopping_rule: {
         kind: literal("fixed_n"),
         paired_items_per_probe_type: posInt,
-        cusum: {
-            items: { kind: oneOf(["harm", "futility"]), metric: text, k: decimal, h: decimal },
-        },
+        cusum: new ArrayOf({
+            kind: oneOf(["harm", "futility"]),
+            metric: text,
+            statistic: text,
+            sd_source: text,
+            k: decimal,
+            h: decimal,
+        }),
     },
     missingness_policy: {
         in_flight_at_interrupt: literal("failed(interrupted)"),
@@ -118,7 +130,7 @@ const PREREG_SHAPE: Shape = {
     },
     bootstrap: { replicates: posInt, seed: nonNegInt },
     leak_bound: { c_bytes_per_session: posInt, r2_threshold: unitRate, sample_interval_ms: posInt },
-    families: { items: FAMILY_SHAPE },
+    families: new ArrayOf(FAMILY_SHAPE),
 };
 
 /** Sections a tier must carry and every other tier must omit. */
@@ -145,8 +157,6 @@ const TIER_SECTIONS: Record<string, { tiers: readonly string[]; shape: Shape }> 
     },
 };
 
-/** A run-level gate with a paired interval needs six paired runs (SIM-P56). */
-export const MIN_PAIRED_RUNS_FOR_RUN_GATE = 6;
 export const HARM_METRIC_COUNT = 5;
 
 function isObject(value: unknown): value is Obj {
@@ -176,15 +186,15 @@ function checkShape(
         else if (typeof check === "function") {
             const error = check(value[field]);
             if (error) errors.push(`${at}: ${error}`);
-        } else if ("items" in check) {
+        } else if (check instanceof ArrayOf) {
             const items = value[field];
             if (!Array.isArray(items)) errors.push(`${at}: expected an array`);
             else {
                 items.forEach((item, i) => {
-                    checkShape(item, check.items as Shape, itemPath(at, item, i), errors);
+                    checkShape(item, check.shape, itemPath(at, item, i), errors);
                 });
             }
-        } else checkShape(value[field], check as Shape, at, errors);
+        } else checkShape(value[field], check, at, errors);
     }
     for (const field of Object.keys(value)) {
         if (!(field in shape) && !extra.includes(field)) {
@@ -208,12 +218,14 @@ function checkFamilies(p: Preregistration, errors: string[]): void {
                 `${at}.interval_method: a ${f.direction} gate compares each run to a bound and takes none`,
             );
         }
-        if (
-            f.claim === "gate" &&
-            f.analysis_unit === "run" &&
-            !bound &&
-            f.min_paired_runs < MIN_PAIRED_RUNS_FOR_RUN_GATE
-        ) {
+        const paired = !bound && f.direction !== "descriptive";
+        if (paired && f.interval_method === "none") {
+            errors.push(`${at}.interval_method: a ${f.direction} family needs a paired interval`);
+        }
+        if ((f.claim === "descriptive") !== (f.direction === "descriptive")) {
+            errors.push(`${at}.claim: a descriptive claim and a descriptive direction go together`);
+        }
+        if (needsPairedRuns(f) && f.min_paired_runs < MIN_PAIRED_RUNS_FOR_RUN_GATE) {
             errors.push(
                 `${at}.min_paired_runs: a run-level gate needs at least ${MIN_PAIRED_RUNS_FOR_RUN_GATE}`,
             );
@@ -243,6 +255,11 @@ function checkArms(p: Preregistration, errors: string[]): void {
     if (p.arms.order_by_seed.length !== p.seeds.length) {
         errors.push("arms.order_by_seed: needs one order per seed");
     }
+    p.aa_controls?.pairs.forEach((pair, i) => {
+        if (pair.length !== 2 || pair[0] !== pair[1] || !p.arms.run.includes(pair[0] as string)) {
+            errors.push(`aa_controls.pairs[${i}]: expected one run arm twice`);
+        }
+    });
     const runSet = [...p.arms.run].sort().join(",");
     p.arms.order_by_seed.forEach((order, i) => {
         if ([...order].sort().join(",") !== runSet) {

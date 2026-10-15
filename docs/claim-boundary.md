@@ -49,11 +49,15 @@ boundary, and every report carries this document's version,
   states equivalence.
 - A run-level paired claim (failed turns, hangs, latency delta, RSS slope)
   needs six paired runs. S has four, so its run-level families either stay
-  descriptive or gate each run against a fixed bound (zero failed turns, zero
-  internal-string hits, p95 latency delta under 300 ms) with no paired claim.
-  M pools three seeds on each of two hosts into six paired runs and gates its
-  run-level families with the paired sign test at alpha 0.03, which the
-  spec's Verification Strategy names; per-host run-level numbers at M stay
+  descriptive or gate each run against a fixed bound with no paired claim:
+  dependability (zero failed turns and hangs), intrusiveness (zero
+  internal-string hits, corrections referencing injected text, and reverted
+  memory edits), latency (p95 delta under 300 ms), and resources (per-session
+  growth under the leak bound). M pools three seeds on each of two hosts into
+  six paired runs; it gates dependability with the paired sign test at alpha
+  0.03 and latency with the paired BCa bootstrap at alpha 0.05, and its
+  resources and intrusiveness families gate each run against a fixed bound.
+  Per-host run-level numbers at M and L hold three runs per host and stay
   descriptive.
 - Model quality is not evaluated; the agent model is fixed per run, and only
   Eidnara's own side-call model is a factor (M tier).

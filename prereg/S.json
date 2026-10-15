@@ -43,12 +43,16 @@
             {
                 "kind": "harm",
                 "metric": "harm",
+                "statistic": "the maximum over the five harm metrics of the paired difference eidnara minus host, one value per completed paired item in issue order",
+                "sd_source": "this tier's A/A pairs",
                 "k": "0.5",
                 "h": "4"
             },
             {
                 "kind": "futility",
                 "metric": "probe-P1",
+                "statistic": "the paired difference host minus eidnara on probe-P1, one value per completed paired item in issue order",
+                "sd_source": "this tier's A/A pairs",
                 "k": "0.5",
                 "h": "5"
             }
@@ -427,7 +431,7 @@
                 "scale": "ratio"
             },
             "mde": {
-                "value": "1.5",
+                "value": "1",
                 "scale": "ratio"
             },
             "power": "0.8",

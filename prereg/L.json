@@ -53,12 +53,16 @@
             {
                 "kind": "harm",
                 "metric": "harm",
+                "statistic": "the maximum over the five harm metrics of the paired difference eidnara minus host, one value per completed paired item in issue order",
+                "sd_source": "the M tier's A/A pairs",
                 "k": "0.5",
                 "h": "4"
             },
             {
                 "kind": "futility",
                 "metric": "probe-P1",
+                "statistic": "the paired difference host minus eidnara on probe-P1, one value per completed paired item in issue order",
+                "sd_source": "the M tier's A/A pairs",
                 "k": "0.5",
                 "h": "5"
             }
@@ -131,7 +135,7 @@
             "treatment_unit": "run",
             "analysis_unit": "item",
             "cluster_key": "ledger_fact_id",
-            "direction": "noninferiority",
+            "direction": "descriptive",
             "margin": {
                 "value": "10",
                 "scale": "pp"
@@ -156,7 +160,7 @@
             "treatment_unit": "run",
             "analysis_unit": "item",
             "cluster_key": "ledger_fact_id",
-            "direction": "noninferiority",
+            "direction": "descriptive",
             "margin": {
                 "value": "10",
                 "scale": "pp"
@@ -181,7 +185,7 @@
             "treatment_unit": "run",
             "analysis_unit": "item",
             "cluster_key": "ledger_fact_id",
-            "direction": "noninferiority",
+            "direction": "descriptive",
             "margin": {
                 "value": "10",
                 "scale": "pp"
@@ -331,7 +335,7 @@
             "treatment_unit": "run",
             "analysis_unit": "item",
             "cluster_key": "ledger_fact_id",
-            "direction": "noninferiority",
+            "direction": "descriptive",
             "margin": {
                 "value": "10",
                 "scale": "pp"
@@ -356,7 +360,7 @@
             "treatment_unit": "run",
             "analysis_unit": "item",
             "cluster_key": "ledger_fact_id",
-            "direction": "noninferiority",
+            "direction": "descriptive",
             "margin": {
                 "value": "10",
                 "scale": "pp"
@@ -437,7 +441,7 @@
                 "scale": "ratio"
             },
             "mde": {
-                "value": "1.5",
+                "value": "1",
                 "scale": "ratio"
             },
             "power": "0.8",
@@ -492,7 +496,7 @@
                 "scale": "ratio"
             },
             "mde": {
-                "value": "1.5",
+                "value": "1",
                 "scale": "ratio"
             },
             "power": "0.8",
@@ -518,7 +522,7 @@
                 "scale": "ms"
             },
             "mde": {
-                "value": "300",
+                "value": "150",
                 "scale": "ms"
             },
             "power": "0.8",
@@ -545,7 +549,7 @@
                 "scale": "bytes"
             },
             "mde": {
-                "value": "8388608",
+                "value": "0",
                 "scale": "bytes"
             },
             "power": "0.8",
@@ -612,7 +616,7 @@
     "resizing": {
         "planning_paired_items_per_probe_type": 150,
         "source_tier": "M",
-        "rule": "For each probe type t, n_t = ceil(DE_t * ((z_a * sqrt(d_t) + z_b * sqrt(d_t - e_t^2)) / e_t)^2), where d_t is the paired discordance observed at M; e_t is the family's registered L mde for superiority families and its 10 pp margin for noninferiority families; z_a is z(1 - alpha/2) for superiority and z(1 - alpha) for noninferiority; z_b is z(power); and DE_t = 1 + (m_t - 1) * ICC_t is the design effect over ledger_fact_id clusters, with m_t the mean paired items per fact and ICC_t estimated at M. L's paired_items_per_probe_type becomes max_t n_t and is recorded before the first L run."
+        "rule": "For each probe type t, n_t = ceil(DE_t * ((z_a * sqrt(d_t) + z_b * sqrt(d_t - e_t^2)) / e_t)^2), where d_t is the paired discordance observed at M; e_t is the family's registered L mde for superiority families and its 10 pp margin for noninferiority families; z_a is z(1 - alpha/2) for superiority and z(1 - alpha/5) for the five Holm-corrected harm metrics, the Holm first step; z_b is z(power); and DE_t = 1 + (m_t - 1) * ICC_t is the design effect over ledger_fact_id clusters, with m_t the mean paired items per fact and ICC_t estimated at M. L's paired_items_per_probe_type becomes max_t n_t and is recorded before the first L run."
     },
     "load_stress": {
         "arms_concurrent": true,

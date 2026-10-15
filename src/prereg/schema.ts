@@ -58,7 +58,12 @@ export interface Margin {
     scale: (typeof MARGIN_SCALES)[number];
 }
 
-/** `mde` and `power` are the design targets fixed before data; a report states its own MDE at n. */
+/**
+ * `mde` and `power` are design targets fixed before data. For a superiority or noninferiority
+ * family `mde` is the smallest effect the pooled n detects at `power`; for an `at-most` family it
+ * is the planned true value at which `power` is targeted. `min_paired_runs` floors run-level
+ * families; an item-level family's n is its paired item count.
+ */
 export interface Family {
     id: string;
     metrics: string[];
@@ -77,10 +82,15 @@ export interface Family {
     min_paired_runs: number;
 }
 
-/** `k` and `h` are the reference value and decision threshold in standard-deviation units. */
+/**
+ * `k` and `h` are the reference value and decision threshold in units of the standard deviation
+ * that `sd_source` names, applied to the sequence `statistic` names.
+ */
 export interface Cusum {
     kind: "harm" | "futility";
     metric: string;
+    statistic: string;
+    sd_source: string;
     k: string;
     h: string;
 }
@@ -127,4 +137,13 @@ export interface Preregistration {
         record_start_skew: true;
         margins_family: "dependability";
     };
+}
+
+/** A run-level gate with a paired claim needs six paired runs (SIM-P56); a bound gate needs none. */
+export const MIN_PAIRED_RUNS_FOR_RUN_GATE = 6;
+
+export function needsPairedRuns(f: Family): boolean {
+    return (
+        f.claim === "gate" && f.analysis_unit === "run" && !BOUND_DIRECTIONS.includes(f.direction)
+    );
 }

@@ -56,6 +56,8 @@ counterpart holds part of the value; the note names the rest), `extension`
 | `stopping_rule.cusum[].kind` | none | extension | As above. |
 | `stopping_rule.cusum[].metric` | none | extension | As above. |
 | `stopping_rule.cusum[].k` | none | extension | As above. |
+| `stopping_rule.cusum[].statistic` | none | extension | The monitored sequence, one value per completed paired item in issue order. |
+| `stopping_rule.cusum[].sd_source` | none | extension | The A/A pairs whose spread standardises `k` and `h`; L uses M's. |
 | `stopping_rule.cusum[].h` | none | extension | As above. |
 | `missingness_policy` | `AnalysisFamily.exclusions` | partial | eval-core records exclusions as text; the policy fields are their structured form. |
 | `missingness_policy.in_flight_at_interrupt` | `ArmResult::Censored` | partial | eval-core resolves a censored arm least favourably; v2 excludes `failed(interrupted)` items from recall and counts them in dependability (OQ-1). `eval-analysis-family/v3` would add the exclusion class. |
@@ -89,7 +91,7 @@ counterpart holds part of the value; the note names the rest), `extension`
 | `families[].margin` | `CampaignProfile` rates | partial | |
 | `families[].margin.value` | `noninferiority_margin`, `floor_threshold` | partial | The harm family's 10 pp margin projects to `noninferiority_margin = "0.1"`; the S P8/P9 floor to `floor_threshold = "0.9"`. Margins in ms, bytes, ratios, and counts need `eval-analysis-family/v3`. |
 | `families[].margin.scale` | none | extension | eval-core rates are always proportions. |
-| `families[].mde` | `IccPilot.required_n_for_margin` | partial | eval-core fixes a required n for one margin; v2 fixes the planning MDE per family before data (D5, SIM-P52), computed for binary families from the paired sample size at planning discordance 0.25, alpha 0.05, power 0.8. `eval-analysis-family/v3` would add a per-endpoint MDE. |
+| `families[].mde` | `IccPilot.required_n_for_margin` | partial | eval-core fixes a required n for one margin; v2 fixes the planning MDE per family before data (D5, SIM-P52), computed for binary families from the paired sample size at planning discordance 0.25, alpha 0.05, power 0.8, with no design effect, so the effective MDE grows by the square root of the design effect over ledger-fact clusters. For an `at-most` family it is the planned true value at which power is targeted; power at six paired runs is a target the M pilot checks. `eval-analysis-family/v3` would add a per-endpoint MDE. |
 | `families[].mde.value` | none | extension | As `families[].mde`. |
 | `families[].mde.scale` | none | extension | As `families[].margin.scale`. |
 | `families[].power` | none | extension | eval-core has no power target field; `eval-analysis-family/v3`. |
@@ -134,8 +136,9 @@ Required eval-core fields also lack a v2 source:
   bounds are wall-clock deadlines.
 - `AnalysisFamily.exclusions`: projectable as text from `missingness_policy`.
 - `AnalysisFamily.trials_k`: `1`, since grades use the first attempt only.
-- `AnalysisFamily.icc_pilot`: the M runs are the pilot for L; S and M have
-  none, so a projection at S or M fails `PilotInconsistent`.
+- `AnalysisFamily.icc_pilot`: a required field; the M runs are the pilot for
+  L. S and M have no pilot, so their projection lacks the field, and a
+  placeholder pilot fails `PilotInconsistent`.
 - `AnalysisFamily.transfer_criterion`: `None`.
 
 The live-slice report (`eval-live-slice/v1`) and the residual report

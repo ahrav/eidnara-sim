@@ -1,5 +1,5 @@
 import { isCanonicalDecimal } from "./canonical";
-import { BOUND_DIRECTIONS, type Family, type Preregistration } from "./schema";
+import { type Family, needsPairedRuns, type Preregistration } from "./schema";
 import { preregistrationHash } from "./validate";
 
 /**
@@ -37,20 +37,26 @@ function checkVerdict(f: FamilyVerdict, family: Family, errors: string[]): void 
     if (!VERDICT_KINDS.includes(f.verdict)) errors.push(`${at}.verdict: ${f.verdict}`);
     if (!Number.isSafeInteger(f.n) || f.n < 0) errors.push(`${at}.n: missing`);
     if (!isCanonicalDecimal(f.mde)) errors.push(`${at}.mde: expected a canonical decimal string`);
-    if (family.claim === "descriptive" && f.verdict !== "descriptive") {
-        errors.push(`${at}.verdict: the family is descriptive`);
+    if ((family.claim === "descriptive") !== (f.verdict === "descriptive")) {
+        errors.push(`${at}.verdict: a ${family.claim} family cannot report ${f.verdict}`);
     }
-    const statisticalRunGate =
-        family.claim === "gate" &&
-        family.analysis_unit === "run" &&
-        !BOUND_DIRECTIONS.includes(family.direction);
-    if (statisticalRunGate && f.n < family.min_paired_runs && f.verdict !== "insufficient-runs") {
-        errors.push(`${at}.verdict: ${f.n} paired runs is below ${family.min_paired_runs}`);
+    const belowFloor = needsPairedRuns(family) && f.n < family.min_paired_runs;
+    if (belowFloor !== (f.verdict === "insufficient-runs")) {
+        errors.push(
+            `${at}.verdict: insufficient-runs is the verdict exactly when n is below ${family.min_paired_runs}`,
+        );
     }
     const failed = f.verdict === "failed-gate";
-    if (failed !== (typeof f.failed_metric === "string" && Array.isArray(f.failed_items))) {
+    const payload =
+        typeof f.failed_metric === "string" &&
+        family.metrics.includes(f.failed_metric) &&
+        Array.isArray(f.failed_items) &&
+        f.failed_items.length > 0 &&
+        f.failed_items.every((item) => typeof item === "string" && item !== "");
+    const anyPayload = f.failed_metric !== undefined || f.failed_items !== undefined;
+    if (failed ? !payload : anyPayload) {
         errors.push(
-            `${at}: failed-gate carries failed_metric and failed_items, other verdicts neither`,
+            `${at}: failed-gate names one of the family's metrics and its failing items; other verdicts neither`,
         );
     }
 }
@@ -71,13 +77,17 @@ export function checkReport(report: unknown, prereg: Preregistration): string[] 
     }
     const registered = new Map(prereg.families.map((f) => [f.id, f]));
     const seen = new Set<string>();
-    for (const f of r.families as FamilyVerdict[]) {
-        const family = registered.get(f?.family);
-        if (seen.has(f?.family)) errors.push(`families[${f.family}]: duplicate`);
-        seen.add(f?.family);
-        if (!family) errors.push(`families[${f?.family}]: not pre-registered`);
+    r.families.forEach((f: FamilyVerdict, i) => {
+        if (typeof f?.family !== "string") {
+            errors.push(`families[${i}]: expected a verdict object with a family`);
+            return;
+        }
+        const family = registered.get(f.family);
+        if (seen.has(f.family)) errors.push(`families[${f.family}]: duplicate`);
+        seen.add(f.family);
+        if (!family) errors.push(`families[${f.family}]: not pre-registered`);
         else checkVerdict(f, family, errors);
-    }
+    });
     for (const id of registered.keys())
         if (!seen.has(id)) errors.push(`families[${id}]: missing from report`);
     if (/parity/i.test(JSON.stringify(report))) errors.push("report: contains the token parity");
