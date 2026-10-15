@@ -1,0 +1,34 @@
+# sim-p73-cf-sample-is-preregistered
+
+Evidence status: PROPOSED. SIM-P73, reconstructed from the condensed property
+index in spec [ahrav/eidnara#1007](https://github.com/ahrav/eidnara/issues/1007)
+at its 2026-10-12 revision.
+
+## Discovery trigger
+
+The spec's invariant-driven domain-modeling pass proposed this record for the
+v2 harness before any harness code existed.
+
+## Evidence trail
+
+The 20% sample of P1, P3, and P5 items for the counterfactual arm is derived
+from the seed at compile and journaled before `StartRun`.
+
+No harness code, test, or run exists yet. The surface lands in M2
+(#1026).
+
+## Failure scenario
+
+The counterfactual sample is chosen after seeing outcomes.
+
+## Timing windows and dependencies
+
+None.
+
+## What a test must construct
+
+An L scenario compile.
+
+## Investigation log
+
+No open questions.

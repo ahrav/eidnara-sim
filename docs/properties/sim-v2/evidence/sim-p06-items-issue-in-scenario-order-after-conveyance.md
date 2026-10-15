@@ -1,0 +1,36 @@
+# sim-p06-items-issue-in-scenario-order-after-conveyance
+
+Evidence status: PROPOSED. SIM-P06, reconstructed from the condensed property
+index in spec [ahrav/eidnara#1007](https://github.com/ahrav/eidnara/issues/1007)
+at its 2026-10-12 revision.
+
+## Discovery trigger
+
+The spec's invariant-driven domain-modeling pass proposed this record for the
+v2 harness before any harness code existed.
+
+## Evidence trail
+
+`BeginTurn` for a probe item occurs at `scenario_ms` at or after the item's
+scheduled time and after every conveyance event the item depends on has reached
+`EndTurn` in that arm.
+
+No harness code, test, or run exists yet. The surface lands in M4
+(#1028).
+
+## Failure scenario
+
+A probe tests a fact that was never conveyed and is scored as a miss.
+
+## Timing windows and dependencies
+
+A conveyance turn that fails or times out leaves the probe without its fact.
+
+## What a test must construct
+
+A probe item with at least one conveyance dependency; a conveyance turn that
+ends `failed`.
+
+## Investigation log
+
+No open questions.

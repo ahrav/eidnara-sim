@@ -1,0 +1,34 @@
+# sim-p29-finish-reason-recorded
+
+Evidence status: PROPOSED. SIM-P29, reconstructed from the condensed property
+index in spec [ahrav/eidnara#1007](https://github.com/ahrav/eidnara/issues/1007)
+at its 2026-10-12 revision.
+
+## Discovery trigger
+
+The spec's invariant-driven domain-modeling pass proposed this record for the
+v2 harness before any harness code existed.
+
+## Evidence trail
+
+Every forwarded record carries the provider `finish_reason` or an explicit
+`stream_cut` marker.
+
+No harness code, test, or run exists yet. The surface lands in M3
+(#1027).
+
+## Failure scenario
+
+The fold-lag and truncation failure classes cannot be told apart.
+
+## Timing windows and dependencies
+
+A stream cut mid-body has no provider finish reason.
+
+## What a test must construct
+
+A truncated-stream fault.
+
+## Investigation log
+
+No open questions.

@@ -1,0 +1,503 @@
+{
+    "schema": "sim-prereg/v1",
+    "tier": "L",
+    "revision": 1,
+    "frozen": true,
+    "arms": {
+        "default": "eidnara",
+        "run": [
+            "host",
+            "eidnara",
+            "eidnara-kl",
+            "eidnara-cf"
+        ],
+        "order": "alternate-per-seed"
+    },
+    "hosts": [
+        "pi",
+        "opencode"
+    ],
+    "seeds": [
+        301,
+        302,
+        303
+    ],
+    "scenario": {
+        "simulated_days": 42,
+        "sessions_per_project": 400,
+        "forced_p90_sessions": 3
+    },
+    "stopping_rule": {
+        "kind": "fixed_n",
+        "items_per_probe_type": 150,
+        "cusum": [
+            {
+                "kind": "harm",
+                "metric": "harm",
+                "k": "0.5",
+                "h": "4"
+            },
+            {
+                "kind": "futility",
+                "metric": "probe-P1",
+                "k": "0.5",
+                "h": "5"
+            }
+        ]
+    },
+    "missingness_policy": {
+        "in_flight_at_interrupt": "failed(interrupted)",
+        "failed_turn_items": "exclude-from-recall-and-count",
+        "excluded_counts_reported_per_arm": true,
+        "failed_items_counted_in": "dependability"
+    },
+    "divergence_policy": {
+        "hash_input": "normalised-last-agent-output",
+        "normalisation": [
+            "iso-8601-timestamps",
+            "durations",
+            "pids",
+            "temp-paths",
+            "run-ids"
+        ],
+        "diagnostic_hash": "agent-visible-prefix",
+        "on_divergence": "record-then-live"
+    },
+    "liveness_bounds": {
+        "turn_deadline_ms": 900000,
+        "job_deadline_ms": 1200000,
+        "tier_wall_budget_ms": 108000000
+    },
+    "bootstrap": {
+        "replicates": 2000,
+        "seed": 3001
+    },
+    "leak_bound": {
+        "c_bytes_per_session": 8388608,
+        "r2_threshold": "0.8",
+        "sample_interval_ms": 10000
+    },
+    "families": [
+        {
+            "id": "probe-P1",
+            "metrics": [
+                "P1.pass"
+            ],
+            "outcome": "binary",
+            "treatment_unit": "run",
+            "analysis_unit": "item",
+            "cluster_key": "ledger_fact_id",
+            "direction": "superiority-two-sided",
+            "margin": {
+                "value": "0",
+                "scale": "pp"
+            },
+            "alpha": "0.05",
+            "interval_method": "exact-mcnemar-newcombe-cluster-bootstrap",
+            "multiplicity": "none",
+            "claim": "gate",
+            "min_paired_runs": 6
+        },
+        {
+            "id": "probe-P2",
+            "metrics": [
+                "P2.pass"
+            ],
+            "outcome": "binary",
+            "treatment_unit": "run",
+            "analysis_unit": "item",
+            "cluster_key": "ledger_fact_id",
+            "direction": "noninferiority",
+            "margin": {
+                "value": "10",
+                "scale": "pp"
+            },
+            "alpha": "0.05",
+            "interval_method": "exact-mcnemar-newcombe-cluster-bootstrap",
+            "multiplicity": "none",
+            "claim": "descriptive",
+            "min_paired_runs": 6
+        },
+        {
+            "id": "probe-P3",
+            "metrics": [
+                "P3.pass"
+            ],
+            "outcome": "binary",
+            "treatment_unit": "run",
+            "analysis_unit": "item",
+            "cluster_key": "ledger_fact_id",
+            "direction": "noninferiority",
+            "margin": {
+                "value": "10",
+                "scale": "pp"
+            },
+            "alpha": "0.05",
+            "interval_method": "exact-mcnemar-newcombe-cluster-bootstrap",
+            "multiplicity": "none",
+            "claim": "descriptive",
+            "min_paired_runs": 6
+        },
+        {
+            "id": "probe-P4",
+            "metrics": [
+                "P4.pass"
+            ],
+            "outcome": "binary",
+            "treatment_unit": "run",
+            "analysis_unit": "item",
+            "cluster_key": "ledger_fact_id",
+            "direction": "noninferiority",
+            "margin": {
+                "value": "10",
+                "scale": "pp"
+            },
+            "alpha": "0.05",
+            "interval_method": "exact-mcnemar-newcombe-cluster-bootstrap",
+            "multiplicity": "none",
+            "claim": "descriptive",
+            "min_paired_runs": 6
+        },
+        {
+            "id": "probe-P5",
+            "metrics": [
+                "P5.pass"
+            ],
+            "outcome": "binary",
+            "treatment_unit": "run",
+            "analysis_unit": "item",
+            "cluster_key": "ledger_fact_id",
+            "direction": "superiority-two-sided",
+            "margin": {
+                "value": "0",
+                "scale": "pp"
+            },
+            "alpha": "0.05",
+            "interval_method": "exact-mcnemar-newcombe-cluster-bootstrap",
+            "multiplicity": "none",
+            "claim": "gate",
+            "min_paired_runs": 6
+        },
+        {
+            "id": "probe-P6",
+            "metrics": [
+                "P6.pass"
+            ],
+            "outcome": "binary",
+            "treatment_unit": "run",
+            "analysis_unit": "item",
+            "cluster_key": "ledger_fact_id",
+            "direction": "superiority-two-sided",
+            "margin": {
+                "value": "0",
+                "scale": "pp"
+            },
+            "alpha": "0.05",
+            "interval_method": "exact-mcnemar-newcombe-cluster-bootstrap",
+            "multiplicity": "none",
+            "claim": "gate",
+            "min_paired_runs": 6
+        },
+        {
+            "id": "probe-P7",
+            "metrics": [
+                "P7.pass"
+            ],
+            "outcome": "binary",
+            "treatment_unit": "run",
+            "analysis_unit": "item",
+            "cluster_key": "ledger_fact_id",
+            "direction": "superiority-two-sided",
+            "margin": {
+                "value": "0",
+                "scale": "pp"
+            },
+            "alpha": "0.05",
+            "interval_method": "exact-mcnemar-newcombe-cluster-bootstrap",
+            "multiplicity": "none",
+            "claim": "gate",
+            "min_paired_runs": 6
+        },
+        {
+            "id": "probe-P8",
+            "metrics": [
+                "P8.pass"
+            ],
+            "outcome": "binary",
+            "treatment_unit": "run",
+            "analysis_unit": "item",
+            "cluster_key": "ledger_fact_id",
+            "direction": "superiority-two-sided",
+            "margin": {
+                "value": "0",
+                "scale": "pp"
+            },
+            "alpha": "0.05",
+            "interval_method": "exact-mcnemar-newcombe-cluster-bootstrap",
+            "multiplicity": "none",
+            "claim": "gate",
+            "min_paired_runs": 6
+        },
+        {
+            "id": "probe-P9",
+            "metrics": [
+                "P9.pass"
+            ],
+            "outcome": "binary",
+            "treatment_unit": "run",
+            "analysis_unit": "item",
+            "cluster_key": "ledger_fact_id",
+            "direction": "superiority-two-sided",
+            "margin": {
+                "value": "0",
+                "scale": "pp"
+            },
+            "alpha": "0.05",
+            "interval_method": "exact-mcnemar-newcombe-cluster-bootstrap",
+            "multiplicity": "none",
+            "claim": "gate",
+            "min_paired_runs": 6
+        },
+        {
+            "id": "probe-P10",
+            "metrics": [
+                "P10.pass"
+            ],
+            "outcome": "binary",
+            "treatment_unit": "run",
+            "analysis_unit": "item",
+            "cluster_key": "ledger_fact_id",
+            "direction": "noninferiority",
+            "margin": {
+                "value": "10",
+                "scale": "pp"
+            },
+            "alpha": "0.05",
+            "interval_method": "exact-mcnemar-newcombe-cluster-bootstrap",
+            "multiplicity": "none",
+            "claim": "descriptive",
+            "min_paired_runs": 6
+        },
+        {
+            "id": "probe-P11",
+            "metrics": [
+                "P11.pass"
+            ],
+            "outcome": "binary",
+            "treatment_unit": "run",
+            "analysis_unit": "item",
+            "cluster_key": "ledger_fact_id",
+            "direction": "noninferiority",
+            "margin": {
+                "value": "10",
+                "scale": "pp"
+            },
+            "alpha": "0.05",
+            "interval_method": "exact-mcnemar-newcombe-cluster-bootstrap",
+            "multiplicity": "none",
+            "claim": "descriptive",
+            "min_paired_runs": 6
+        },
+        {
+            "id": "probe-P12",
+            "metrics": [
+                "P12.pass"
+            ],
+            "outcome": "binary",
+            "treatment_unit": "run",
+            "analysis_unit": "item",
+            "cluster_key": "ledger_fact_id",
+            "direction": "superiority-two-sided",
+            "margin": {
+                "value": "0",
+                "scale": "pp"
+            },
+            "alpha": "0.05",
+            "interval_method": "exact-mcnemar-newcombe-cluster-bootstrap",
+            "multiplicity": "none",
+            "claim": "gate",
+            "min_paired_runs": 6
+        },
+        {
+            "id": "probe-P13",
+            "metrics": [
+                "P13.fold_fidelity_score"
+            ],
+            "outcome": "graded",
+            "treatment_unit": "run",
+            "analysis_unit": "run",
+            "cluster_key": "run",
+            "direction": "superiority-two-sided",
+            "margin": {
+                "value": "0",
+                "scale": "pp"
+            },
+            "alpha": "0.05",
+            "interval_method": "paired-bca-bootstrap",
+            "multiplicity": "none",
+            "claim": "gate",
+            "min_paired_runs": 6
+        },
+        {
+            "id": "probe-P14",
+            "metrics": [
+                "P14.post_compaction_correction_count"
+            ],
+            "outcome": "count",
+            "treatment_unit": "run",
+            "analysis_unit": "run",
+            "cluster_key": "run",
+            "direction": "at-most",
+            "margin": {
+                "value": "1.5",
+                "scale": "ratio"
+            },
+            "alpha": "0.03",
+            "interval_method": "paired-sign-test",
+            "multiplicity": "none",
+            "claim": "gate",
+            "min_paired_runs": 6
+        },
+        {
+            "id": "harm",
+            "metrics": [
+                "P2.harm",
+                "P3.harm",
+                "P4.harm",
+                "P10.harm",
+                "P11.harm"
+            ],
+            "outcome": "binary",
+            "treatment_unit": "run",
+            "analysis_unit": "item",
+            "cluster_key": "ledger_fact_id",
+            "direction": "noninferiority",
+            "margin": {
+                "value": "10",
+                "scale": "pp"
+            },
+            "alpha": "0.05",
+            "interval_method": "exact-mcnemar-newcombe-cluster-bootstrap",
+            "multiplicity": "holm",
+            "claim": "gate",
+            "min_paired_runs": 6
+        },
+        {
+            "id": "dependability",
+            "metrics": [
+                "failed_turns",
+                "hangs"
+            ],
+            "outcome": "count",
+            "treatment_unit": "run",
+            "analysis_unit": "run",
+            "cluster_key": "run",
+            "direction": "at-most",
+            "margin": {
+                "value": "1.5",
+                "scale": "ratio"
+            },
+            "alpha": "0.03",
+            "interval_method": "paired-sign-test",
+            "multiplicity": "none",
+            "claim": "gate",
+            "min_paired_runs": 6
+        },
+        {
+            "id": "latency",
+            "metrics": [
+                "turn_latency_p50_delta_ms",
+                "turn_latency_p95_delta_ms"
+            ],
+            "outcome": "graded",
+            "treatment_unit": "run",
+            "analysis_unit": "run",
+            "cluster_key": "run",
+            "direction": "at-most",
+            "margin": {
+                "value": "300",
+                "scale": "ms"
+            },
+            "alpha": "0.05",
+            "interval_method": "paired-bca-bootstrap",
+            "multiplicity": "none",
+            "claim": "gate",
+            "min_paired_runs": 6
+        },
+        {
+            "id": "resources",
+            "metrics": [
+                "daemon_rss_slope_bytes_per_hour",
+                "daemon_heap_slope_bytes_per_hour",
+                "store_bytes_slope_per_hour"
+            ],
+            "outcome": "slope",
+            "treatment_unit": "run",
+            "analysis_unit": "run",
+            "cluster_key": "run",
+            "direction": "at-most",
+            "margin": {
+                "value": "0",
+                "scale": "bytes"
+            },
+            "alpha": "0.05",
+            "interval_method": "slope-paired-bootstrap",
+            "multiplicity": "none",
+            "claim": "gate",
+            "min_paired_runs": 6
+        },
+        {
+            "id": "intrusiveness",
+            "metrics": [
+                "internal_string_hits",
+                "user_corrections_referencing_injected_text",
+                "reverted_memory_edits"
+            ],
+            "outcome": "count",
+            "treatment_unit": "run",
+            "analysis_unit": "run",
+            "cluster_key": "run",
+            "direction": "zero-tolerance",
+            "margin": {
+                "value": "0",
+                "scale": "count"
+            },
+            "alpha": "0.05",
+            "interval_method": "none",
+            "multiplicity": "none",
+            "claim": "gate",
+            "min_paired_runs": 6
+        },
+        {
+            "id": "cost",
+            "metrics": [
+                "usd_per_component",
+                "usd_per_useful_retrieval"
+            ],
+            "outcome": "count",
+            "treatment_unit": "run",
+            "analysis_unit": "run",
+            "cluster_key": "run",
+            "direction": "descriptive",
+            "margin": {
+                "value": "0",
+                "scale": "none"
+            },
+            "alpha": "0.05",
+            "interval_method": "none",
+            "multiplicity": "none",
+            "claim": "descriptive",
+            "min_paired_runs": 6
+        }
+    ],
+    "resizing": {
+        "planning_items_per_probe_type": 150,
+        "source_tier": "M",
+        "rule": "n = ceil(((z_{1-alpha/2} * sqrt(d) + z_{0.8} * sqrt(d - delta^2)) / delta)^2) paired items per probe type, with d the discordance per probe type observed at M, delta the 10 pp margin, alpha 0.05, and power 0.8; the re-sized n replaces the planning value and is recorded before the first L run"
+    },
+    "load_stress": {
+        "arms_concurrent": true,
+        "record_start_skew": true,
+        "margins_family": "dependability"
+    }
+}
