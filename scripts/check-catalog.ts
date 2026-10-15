@@ -31,9 +31,11 @@ export function methodFields(method: string): FieldSpec[] {
         .map((line) => {
             const name = line.slice(0, line.indexOf(":"));
             const rest = line.slice(name.length + 1).trim();
-            const values = /^[a-z-]+( \| [a-z-]+)+/.test(rest)
-                ? (rest.split(" - ")[0] ?? "").split(" | ").map((v) => v.trim().split(" ")[0] ?? "")
-                : null;
+            const alternatives = rest.split(" | ");
+            const values =
+                alternatives.length > 1
+                    ? alternatives.map((a) => (a.split(" - ")[0] ?? "").trim())
+                    : null;
             return { name, values };
         });
 }
@@ -82,9 +84,10 @@ export function checkRecord(record: Record, spec: FieldSpec[], catalogDir: strin
     }
     record.fields.forEach(([name, value], i) => {
         const allowed = spec[i]?.values;
-        const head = value.split(" ")[0] ?? "";
-        if (allowed && !allowed.includes(head))
+        const head = (value.split(/ -(?:\s|$)/)[0] ?? "").trim();
+        if (allowed && !allowed.includes(head)) {
             errors.push(`${at}: ${name} value ${head} not in METHOD set`);
+        }
     });
     const field = (name: string) => record.fields.find(([n]) => n === name)?.[1] ?? "";
     const semantics = /^`([^`]+)`/.exec(field("Check"))?.[1] ?? "";
@@ -136,11 +139,13 @@ export function checkCatalog(
     for (const { prefix, count } of ids) {
         for (let n = 1; n <= count; n++) {
             const id = `${prefix}${String(n).padStart(2, "0")}`;
-            const matches = slugs.filter((s) => s.startsWith(`${id.toLowerCase()}-`));
-            if (matches.length !== 1)
+            const matches = records.filter((r) => r.slug.startsWith(`${id.toLowerCase()}-`));
+            const guarantee = matches[0]?.fields.find(([name]) => name === "Guarantee")?.[1] ?? "";
+            if (matches.length !== 1) {
                 errors.push(`catalog: id ${id} appears ${matches.length} times`);
-            else if (!catalog.includes(`Guarantee: ${id}:`))
+            } else if (!guarantee.startsWith(`${id}:`)) {
                 errors.push(`catalog: ${id} absent from its Guarantee`);
+            }
         }
     }
     const expectedIds = ids.reduce((sum, { count }) => sum + count, 0);
@@ -152,18 +157,22 @@ export function checkCatalog(
     return errors;
 }
 
+/** The sim-v2 catalog's stable ids: the spec's 77 proposed records and the 3 liveness bounds. */
+export const SIM_IDS = [
+    { prefix: "SIM-P", count: 77 },
+    { prefix: "SIM-L", count: 3 },
+];
+
 if (import.meta.main) {
     const errors = checkCatalog(
         join(ROOT, "docs/properties/sim-v2/catalog.md"),
         join(ROOT, "docs/properties/METHOD.md"),
-        [
-            { prefix: "SIM-P", count: 77 },
-            { prefix: "SIM-L", count: 3 },
-        ],
+        SIM_IDS,
     );
     if (errors.length > 0) {
         console.error(errors.join("\n"));
         process.exit(1);
     }
-    console.log("catalog: 80 records match METHOD.md");
+    const total = SIM_IDS.reduce((sum, { count }) => sum + count, 0);
+    console.log(`catalog: ${total} records match METHOD.md`);
 }

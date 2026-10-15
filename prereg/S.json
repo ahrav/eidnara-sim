@@ -10,7 +10,18 @@
             "eidnara",
             "eidnara-kl"
         ],
-        "order": "alternate-per-seed"
+        "order_by_seed": [
+            [
+                "host",
+                "eidnara",
+                "eidnara-kl"
+            ],
+            [
+                "eidnara-kl",
+                "eidnara",
+                "host"
+            ]
+        ]
     },
     "hosts": [
         "pi",
@@ -27,7 +38,7 @@
     },
     "stopping_rule": {
         "kind": "fixed_n",
-        "items_per_probe_type": 8,
+        "paired_items_per_probe_type": 24,
         "cusum": [
             {
                 "kind": "harm",
@@ -90,6 +101,11 @@
                 "value": "0",
                 "scale": "pp"
             },
+            "mde": {
+                "value": "28",
+                "scale": "pp"
+            },
+            "power": "0.8",
             "alpha": "0.05",
             "interval_method": "exact-mcnemar-newcombe-cluster-bootstrap",
             "multiplicity": "none",
@@ -110,6 +126,11 @@
                 "value": "10",
                 "scale": "pp"
             },
+            "mde": {
+                "value": "28",
+                "scale": "pp"
+            },
+            "power": "0.8",
             "alpha": "0.05",
             "interval_method": "exact-mcnemar-newcombe-cluster-bootstrap",
             "multiplicity": "none",
@@ -130,6 +151,11 @@
                 "value": "10",
                 "scale": "pp"
             },
+            "mde": {
+                "value": "28",
+                "scale": "pp"
+            },
+            "power": "0.8",
             "alpha": "0.05",
             "interval_method": "exact-mcnemar-newcombe-cluster-bootstrap",
             "multiplicity": "none",
@@ -150,6 +176,11 @@
                 "value": "10",
                 "scale": "pp"
             },
+            "mde": {
+                "value": "28",
+                "scale": "pp"
+            },
+            "power": "0.8",
             "alpha": "0.05",
             "interval_method": "exact-mcnemar-newcombe-cluster-bootstrap",
             "multiplicity": "none",
@@ -170,6 +201,11 @@
                 "value": "0",
                 "scale": "pp"
             },
+            "mde": {
+                "value": "28",
+                "scale": "pp"
+            },
+            "power": "0.8",
             "alpha": "0.05",
             "interval_method": "exact-mcnemar-newcombe-cluster-bootstrap",
             "multiplicity": "none",
@@ -190,6 +226,11 @@
                 "value": "0",
                 "scale": "pp"
             },
+            "mde": {
+                "value": "28",
+                "scale": "pp"
+            },
+            "power": "0.8",
             "alpha": "0.05",
             "interval_method": "exact-mcnemar-newcombe-cluster-bootstrap",
             "multiplicity": "none",
@@ -210,6 +251,11 @@
                 "value": "0",
                 "scale": "pp"
             },
+            "mde": {
+                "value": "28",
+                "scale": "pp"
+            },
+            "power": "0.8",
             "alpha": "0.05",
             "interval_method": "exact-mcnemar-newcombe-cluster-bootstrap",
             "multiplicity": "none",
@@ -230,8 +276,13 @@
                 "value": "0.9",
                 "scale": "ratio"
             },
+            "mde": {
+                "value": "28",
+                "scale": "pp"
+            },
+            "power": "0.8",
             "alpha": "0.05",
-            "interval_method": "exact-mcnemar-newcombe-cluster-bootstrap",
+            "interval_method": "none",
             "multiplicity": "none",
             "claim": "gate",
             "min_paired_runs": 2
@@ -250,8 +301,13 @@
                 "value": "0.9",
                 "scale": "ratio"
             },
+            "mde": {
+                "value": "28",
+                "scale": "pp"
+            },
+            "power": "0.8",
             "alpha": "0.05",
-            "interval_method": "exact-mcnemar-newcombe-cluster-bootstrap",
+            "interval_method": "none",
             "multiplicity": "none",
             "claim": "gate",
             "min_paired_runs": 2
@@ -270,6 +326,11 @@
                 "value": "10",
                 "scale": "pp"
             },
+            "mde": {
+                "value": "28",
+                "scale": "pp"
+            },
+            "power": "0.8",
             "alpha": "0.05",
             "interval_method": "exact-mcnemar-newcombe-cluster-bootstrap",
             "multiplicity": "none",
@@ -290,6 +351,11 @@
                 "value": "10",
                 "scale": "pp"
             },
+            "mde": {
+                "value": "28",
+                "scale": "pp"
+            },
+            "power": "0.8",
             "alpha": "0.05",
             "interval_method": "exact-mcnemar-newcombe-cluster-bootstrap",
             "multiplicity": "none",
@@ -310,6 +376,11 @@
                 "value": "0",
                 "scale": "pp"
             },
+            "mde": {
+                "value": "28",
+                "scale": "pp"
+            },
+            "power": "0.8",
             "alpha": "0.05",
             "interval_method": "exact-mcnemar-newcombe-cluster-bootstrap",
             "multiplicity": "none",
@@ -330,6 +401,11 @@
                 "value": "0",
                 "scale": "pp"
             },
+            "mde": {
+                "value": "1",
+                "scale": "pp"
+            },
+            "power": "0.8",
             "alpha": "0.05",
             "interval_method": "paired-bca-bootstrap",
             "multiplicity": "none",
@@ -350,6 +426,11 @@
                 "value": "1.5",
                 "scale": "ratio"
             },
+            "mde": {
+                "value": "1.5",
+                "scale": "ratio"
+            },
+            "power": "0.8",
             "alpha": "0.03",
             "interval_method": "paired-sign-test",
             "multiplicity": "none",
@@ -374,6 +455,11 @@
                 "value": "10",
                 "scale": "pp"
             },
+            "mde": {
+                "value": "28",
+                "scale": "pp"
+            },
+            "power": "0.8",
             "alpha": "0.05",
             "interval_method": "exact-mcnemar-newcombe-cluster-bootstrap",
             "multiplicity": "holm",
@@ -395,6 +481,11 @@
                 "value": "0",
                 "scale": "count"
             },
+            "mde": {
+                "value": "1",
+                "scale": "count"
+            },
+            "power": "0.8",
             "alpha": "0.05",
             "interval_method": "none",
             "multiplicity": "none",
@@ -415,8 +506,13 @@
                 "value": "300",
                 "scale": "ms"
             },
+            "mde": {
+                "value": "300",
+                "scale": "ms"
+            },
+            "power": "0.8",
             "alpha": "0.05",
-            "interval_method": "paired-bca-bootstrap",
+            "interval_method": "none",
             "multiplicity": "none",
             "claim": "gate",
             "min_paired_runs": 2
@@ -434,11 +530,16 @@
             "cluster_key": "run",
             "direction": "threshold",
             "margin": {
-                "value": "0",
+                "value": "8388608",
                 "scale": "bytes"
             },
+            "mde": {
+                "value": "8388608",
+                "scale": "bytes"
+            },
+            "power": "0.8",
             "alpha": "0.05",
-            "interval_method": "slope-paired-bootstrap",
+            "interval_method": "none",
             "multiplicity": "none",
             "claim": "gate",
             "min_paired_runs": 2
@@ -459,6 +560,11 @@
                 "value": "0",
                 "scale": "count"
             },
+            "mde": {
+                "value": "1",
+                "scale": "count"
+            },
+            "power": "0.8",
             "alpha": "0.05",
             "interval_method": "none",
             "multiplicity": "none",
@@ -480,11 +586,29 @@
                 "value": "0",
                 "scale": "none"
             },
+            "mde": {
+                "value": "0",
+                "scale": "none"
+            },
+            "power": "0.8",
             "alpha": "0.05",
             "interval_method": "none",
             "multiplicity": "none",
             "claim": "descriptive",
             "min_paired_runs": 2
         }
-    ]
+    ],
+    "aa_controls": {
+        "pairs": [
+            [
+                "host",
+                "host"
+            ],
+            [
+                "eidnara",
+                "eidnara"
+            ]
+        ],
+        "repeats": 1
+    }
 }

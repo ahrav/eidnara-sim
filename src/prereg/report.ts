@@ -1,7 +1,11 @@
-import type { Preregistration } from "./schema";
+import { isCanonicalDecimal } from "./canonical";
+import { BOUND_DIRECTIONS, type Family, type Preregistration } from "./schema";
 import { preregistrationHash } from "./validate";
 
-/** The verdict vocabulary of SIM-P53; a report has no other verdict kind. */
+/**
+ * The verdict vocabulary: SIM-P53's four kinds, `inconclusive` from #1032, SIM-P56's
+ * `insufficient-runs`, and `descriptive` for a family the pre-registration does not gate.
+ */
 export const VERDICT_KINDS = [
     "better",
     "worse",
@@ -12,12 +16,14 @@ export const VERDICT_KINDS = [
     "descriptive",
 ] as const;
 
+/** `mde` is the minimum detectable effect at `n` in the family's margin scale. */
 export interface FamilyVerdict {
     family: string;
     verdict: (typeof VERDICT_KINDS)[number];
     n: number;
-    /** The minimum detectable effect at `n` in the family's margin scale. */
     mde: string;
+    failed_metric?: string;
+    failed_items?: string[];
 }
 
 export interface TierReport {
@@ -26,31 +32,54 @@ export interface TierReport {
     families: FamilyVerdict[];
 }
 
+function checkVerdict(f: FamilyVerdict, family: Family, errors: string[]): void {
+    const at = `families[${f.family}]`;
+    if (!VERDICT_KINDS.includes(f.verdict)) errors.push(`${at}.verdict: ${f.verdict}`);
+    if (!Number.isSafeInteger(f.n) || f.n < 0) errors.push(`${at}.n: missing`);
+    if (!isCanonicalDecimal(f.mde)) errors.push(`${at}.mde: expected a canonical decimal string`);
+    if (family.claim === "descriptive" && f.verdict !== "descriptive") {
+        errors.push(`${at}.verdict: the family is descriptive`);
+    }
+    const statisticalRunGate =
+        family.claim === "gate" &&
+        family.analysis_unit === "run" &&
+        !BOUND_DIRECTIONS.includes(family.direction);
+    if (statisticalRunGate && f.n < family.min_paired_runs && f.verdict !== "insufficient-runs") {
+        errors.push(`${at}.verdict: ${f.n} paired runs is below ${family.min_paired_runs}`);
+    }
+    const failed = f.verdict === "failed-gate";
+    if (failed !== (typeof f.failed_metric === "string" && Array.isArray(f.failed_items))) {
+        errors.push(
+            `${at}: failed-gate carries failed_metric and failed_items, other verdicts neither`,
+        );
+    }
+}
+
 /**
  * Refusals for a tier report checked against the pre-registration it claims: another tier or
- * hash, a pre-registered family the report lacks or a family it adds, a verdict outside the
- * vocabulary, a verdict without `n` and MDE, and the token `parity` anywhere in the report.
+ * hash, a pre-registered family the report lacks, repeats, or adds, a verdict the family's claim
+ * does not allow, a verdict without `n` and MDE, and the token `parity` anywhere in the report.
  */
-export function checkReport(report: TierReport, prereg: Preregistration): string[] {
+export function checkReport(report: unknown, prereg: Preregistration): string[] {
+    const r = report as Partial<TierReport> | null;
+    if (!Array.isArray(r?.families)) return ["families: expected an array"];
     const errors: string[] = [];
-    if (report.tier !== prereg.tier)
-        errors.push(`tier: report ${report.tier}, pre-registration ${prereg.tier}`);
-    if (report.prereg_hash !== preregistrationHash(prereg)) {
+    if (r.tier !== prereg.tier)
+        errors.push(`tier: report ${r.tier}, pre-registration ${prereg.tier}`);
+    if (r.prereg_hash !== preregistrationHash(prereg)) {
         errors.push("prereg_hash: does not match the pre-registration");
     }
-    const reported = new Map(report.families.map((f) => [f.family, f]));
-    for (const family of prereg.families) {
-        if (!reported.has(family.id)) errors.push(`families[${family.id}]: missing from report`);
+    const registered = new Map(prereg.families.map((f) => [f.id, f]));
+    const seen = new Set<string>();
+    for (const f of r.families as FamilyVerdict[]) {
+        const family = registered.get(f?.family);
+        if (seen.has(f?.family)) errors.push(`families[${f.family}]: duplicate`);
+        seen.add(f?.family);
+        if (!family) errors.push(`families[${f?.family}]: not pre-registered`);
+        else checkVerdict(f, family, errors);
     }
-    const registered = new Set(prereg.families.map((f) => f.id));
-    for (const f of report.families) {
-        if (!registered.has(f.family)) errors.push(`families[${f.family}]: not pre-registered`);
-        if (!VERDICT_KINDS.includes(f.verdict))
-            errors.push(`families[${f.family}].verdict: ${f.verdict}`);
-        if (!Number.isSafeInteger(f.n) || f.n < 0) errors.push(`families[${f.family}].n: missing`);
-        if (typeof f.mde !== "string" || f.mde === "")
-            errors.push(`families[${f.family}].mde: missing`);
-    }
+    for (const id of registered.keys())
+        if (!seen.has(id)) errors.push(`families[${id}]: missing from report`);
     if (/parity/i.test(JSON.stringify(report))) errors.push("report: contains the token parity");
     return errors;
 }

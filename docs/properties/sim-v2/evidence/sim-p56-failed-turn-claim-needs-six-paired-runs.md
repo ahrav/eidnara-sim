@@ -31,4 +31,14 @@ A tier with fewer than six paired runs.
 
 ## Investigation log
 
-No open questions.
+### Q: See the record
+- Sources examined: spec #1007 Open Questions; the M0 pre-registration files.
+- Findings: The S tier gates failed turns, internal-string hits, and p95 latency delta as
+  `zero-tolerance` and `threshold` families, each comparing every run to a
+  fixed bound with no paired interval, because the S ticket (#1034) stops the
+  pipeline on any of them. The validator exempts such bound gates from the
+  six-run floor and refuses them a paired interval method. Whether a bound
+  gate at S fits the spec's "S and M run-level numbers are descriptive" is a
+  design decision (needs human input).
+- Missing evidence: a harness run that exercises the record.
+- Conclusion: unresolved, needs a harness run

@@ -1,6 +1,7 @@
 import { canonicalJson, isCanonicalDecimal, sha256Hex } from "./canonical";
 import {
     ARMS,
+    BOUND_DIRECTIONS,
     CLAIMS,
     CLUSTER_KEYS,
     DIRECTIONS,
@@ -43,22 +44,22 @@ const unitRate: Check = (v) =>
 const text: Check = (v) =>
     typeof v === "string" && v.trim() !== "" ? null : "expected a non-blank string";
 const list =
-    (item: Check): Check =>
+    (item: Check, distinct = true): Check =>
     (v) => {
         if (!Array.isArray(v) || v.length === 0) return "expected a non-empty array";
         const bad = v.map(item).find((e) => e !== null);
-        return (
-            bad ??
-            (new Set(v.map((x) => JSON.stringify(x))).size === v.length
-                ? null
-                : "duplicate entries")
-        );
+        if (bad) return bad;
+        return !distinct || new Set(v.map((x) => JSON.stringify(x))).size === v.length
+            ? null
+            : "duplicate entries";
     };
 
-/** The required fields of one object, each with the check its value must pass. */
+/** The fields of one object, each with the check its value must pass or the shape of its items. */
 interface Shape {
-    [field: string]: Check | Shape;
+    [field: string]: Check | Shape | { items: Shape };
 }
+
+const MARGIN_SHAPE: Shape = { value: decimal, scale: oneOf(MARGIN_SCALES) };
 
 const FAMILY_SHAPE: Shape = {
     id: text,
@@ -68,7 +69,9 @@ const FAMILY_SHAPE: Shape = {
     analysis_unit: oneOf(UNITS),
     cluster_key: oneOf(CLUSTER_KEYS),
     direction: oneOf(DIRECTIONS),
-    margin: { value: decimal, scale: oneOf(MARGIN_SCALES) },
+    margin: MARGIN_SHAPE,
+    mde: MARGIN_SHAPE,
+    power: unitRate,
     alpha: unitRate,
     interval_method: oneOf(INTERVAL_METHODS),
     multiplicity: oneOf(MULTIPLICITY),
@@ -84,15 +87,17 @@ const PREREG_SHAPE: Shape = {
     arms: {
         default: literal("eidnara"),
         run: list(oneOf(ARMS)),
-        order: literal("alternate-per-seed"),
+        order_by_seed: list(list(oneOf(ARMS)), false),
     },
     hosts: list(oneOf(HOSTS)),
     seeds: list(nonNegInt),
     scenario: { simulated_days: posInt, sessions_per_project: posInt, forced_p90_sessions: posInt },
     stopping_rule: {
         kind: literal("fixed_n"),
-        items_per_probe_type: posInt,
-        cusum: (v) => (Array.isArray(v) ? null : "expected an array"),
+        paired_items_per_probe_type: posInt,
+        cusum: {
+            items: { kind: oneOf(["harm", "futility"]), metric: text, k: decimal, h: decimal },
+        },
     },
     missingness_policy: {
         in_flight_at_interrupt: literal("failed(interrupted)"),
@@ -113,78 +118,112 @@ const PREREG_SHAPE: Shape = {
     },
     bootstrap: { replicates: posInt, seed: nonNegInt },
     leak_bound: { c_bytes_per_session: posInt, r2_threshold: unitRate, sample_interval_ms: posInt },
-    families: (v) => (Array.isArray(v) ? null : "expected an array"),
+    families: { items: FAMILY_SHAPE },
 };
 
-const CUSUM_SHAPE: Shape = {
-    kind: oneOf(["harm", "futility"]),
-    metric: text,
-    k: decimal,
-    h: decimal,
-};
-const RESIZING_SHAPE: Shape = {
-    planning_items_per_probe_type: posInt,
-    source_tier: literal("M"),
-    rule: text,
-};
-const LOAD_STRESS_SHAPE: Shape = {
-    arms_concurrent: literal(true),
-    record_start_skew: literal(true),
-    margins_family: literal("dependability"),
+/** Sections a tier must carry and every other tier must omit. */
+const TIER_SECTIONS: Record<string, { tiers: readonly string[]; shape: Shape }> = {
+    aa_controls: {
+        tiers: ["S", "M"],
+        shape: { pairs: list(list(oneOf(ARMS), false)), repeats: posInt },
+    },
+    resizing: {
+        tiers: ["L"],
+        shape: {
+            planning_paired_items_per_probe_type: posInt,
+            source_tier: literal("M"),
+            rule: text,
+        },
+    },
+    load_stress: {
+        tiers: ["L"],
+        shape: {
+            arms_concurrent: literal(true),
+            record_start_skew: literal(true),
+            margins_family: literal("dependability"),
+        },
+    },
 };
 
-/**
- * A run-level gate that makes a paired statistical claim needs six paired runs. `threshold` and
- * `zero-tolerance` gates compare each run's observed value to a fixed bound and claim no effect.
- */
+/** A run-level gate with a paired interval needs six paired runs (SIM-P56). */
 export const MIN_PAIRED_RUNS_FOR_RUN_GATE = 6;
-const STATISTICAL_DIRECTIONS: readonly string[] = [
-    "superiority-two-sided",
-    "noninferiority",
-    "at-most",
-];
 export const HARM_METRIC_COUNT = 5;
 
-function checkShape(value: unknown, shape: Shape, path: string, errors: string[]): void {
-    if (typeof value !== "object" || value === null || Array.isArray(value)) {
-        errors.push(`${path}: expected an object`);
+function isObject(value: unknown): value is Obj {
+    return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Array items are named by their `id` when they carry one, otherwise by index. */
+function itemPath(path: string, item: unknown, index: number): string {
+    const id = isObject(item) ? item.id : undefined;
+    return `${path}[${typeof id === "string" && id !== "" ? id : index}]`;
+}
+
+function checkShape(
+    value: unknown,
+    shape: Shape,
+    path: string,
+    errors: string[],
+    extra: string[] = [],
+): void {
+    if (!isObject(value)) {
+        errors.push(`${path || "pre-registration"}: expected an object`);
         return;
     }
-    const obj = value as Obj;
     for (const [field, check] of Object.entries(shape)) {
         const at = path === "" ? field : `${path}.${field}`;
-        if (!(field in obj)) errors.push(`${at}: missing`);
+        if (!(field in value)) errors.push(`${at}: missing`);
         else if (typeof check === "function") {
-            const error = check(obj[field]);
+            const error = check(value[field]);
             if (error) errors.push(`${at}: ${error}`);
-        } else checkShape(obj[field], check, at, errors);
+        } else if ("items" in check) {
+            const items = value[field];
+            if (!Array.isArray(items)) errors.push(`${at}: expected an array`);
+            else {
+                items.forEach((item, i) => {
+                    checkShape(item, check.items as Shape, itemPath(at, item, i), errors);
+                });
+            }
+        } else checkShape(value[field], check as Shape, at, errors);
+    }
+    for (const field of Object.keys(value)) {
+        if (!(field in shape) && !extra.includes(field)) {
+            errors.push(`${path === "" ? field : `${path}.${field}`}: unknown field`);
+        }
     }
 }
 
-function checkFamilies(families: unknown[], errors: string[]): void {
+function checkFamilies(p: Preregistration, errors: string[]): void {
+    const runs = p.seeds.length * p.hosts.length;
     const seen = new Set<string>();
-    families.forEach((family, index) => {
-        const id = (family as Obj | null)?.id;
-        const at = `families[${typeof id === "string" && id !== "" ? id : index}]`;
-        checkShape(family, FAMILY_SHAPE, at, errors);
-        if (typeof id !== "string") return;
-        if (seen.has(id)) errors.push(`${at}: duplicate family id`);
-        seen.add(id);
-        if (!REQUIRED_FAMILIES.includes(id)) errors.push(`${at}: unknown family id`);
-        const f = family as Family;
+    p.families.forEach((f: Family, index) => {
+        const at = itemPath("families", f, index);
+        if (typeof f.id !== "string") return;
+        if (seen.has(f.id)) errors.push(`${at}: duplicate family id`);
+        seen.add(f.id);
+        if (!REQUIRED_FAMILIES.includes(f.id)) errors.push(`${at}: unknown family id`);
+        const bound = BOUND_DIRECTIONS.includes(f.direction);
+        if (bound && f.interval_method !== "none") {
+            errors.push(
+                `${at}.interval_method: a ${f.direction} gate compares each run to a bound and takes none`,
+            );
+        }
         if (
             f.claim === "gate" &&
             f.analysis_unit === "run" &&
-            STATISTICAL_DIRECTIONS.includes(f.direction) &&
+            !bound &&
             f.min_paired_runs < MIN_PAIRED_RUNS_FOR_RUN_GATE
         ) {
             errors.push(
                 `${at}.min_paired_runs: a run-level gate needs at least ${MIN_PAIRED_RUNS_FOR_RUN_GATE}`,
             );
         }
+        if (f.min_paired_runs > runs) {
+            errors.push(`${at}.min_paired_runs: exceeds the ${runs} paired runs the tier produces`);
+        }
         if (
-            id === "harm" &&
-            (f.multiplicity !== "holm" || f.metrics?.length !== HARM_METRIC_COUNT)
+            f.id === "harm" &&
+            (f.multiplicity !== "holm" || f.metrics.length !== HARM_METRIC_COUNT)
         ) {
             errors.push(
                 `${at}: the harm family is Holm-corrected over exactly ${HARM_METRIC_COUNT} metrics`,
@@ -192,34 +231,41 @@ function checkFamilies(families: unknown[], errors: string[]): void {
         }
     });
     for (const id of REQUIRED_FAMILIES) if (!seen.has(id)) errors.push(`families[${id}]: missing`);
+    p.stopping_rule.cusum.forEach((c, i) => {
+        if (!seen.has(c.metric)) errors.push(`stopping_rule.cusum[${i}].metric: names no family`);
+    });
+}
+
+function checkArms(p: Preregistration, errors: string[]): void {
+    if (!(p.arms.run.includes("host") && p.arms.run.includes("eidnara"))) {
+        errors.push("arms.run: must include host and eidnara");
+    }
+    if (p.arms.order_by_seed.length !== p.seeds.length) {
+        errors.push("arms.order_by_seed: needs one order per seed");
+    }
+    const runSet = [...p.arms.run].sort().join(",");
+    p.arms.order_by_seed.forEach((order, i) => {
+        if ([...order].sort().join(",") !== runSet) {
+            errors.push(`arms.order_by_seed[${i}]: is not a permutation of arms.run`);
+        }
+    });
 }
 
 /** Every refusal, each naming the field path it applies to; an empty list means accepted. */
 export function validatePreregistration(value: unknown): string[] {
     const errors: string[] = [];
-    checkShape(value, PREREG_SHAPE, "", errors);
-    if (errors.some((e) => e.startsWith(": "))) return errors;
-    const p = value as Obj;
-    if (Array.isArray(p.families)) checkFamilies(p.families, errors);
-    const stopping = p.stopping_rule as Obj | undefined;
-    if (Array.isArray(stopping?.cusum)) {
-        stopping.cusum.forEach((c, i) => {
-            checkShape(c, CUSUM_SHAPE, `stopping_rule.cusum[${i}]`, errors);
-        });
+    if (!isObject(value)) return ["pre-registration: expected an object"];
+    checkShape(value, PREREG_SHAPE, "", errors, Object.keys(TIER_SECTIONS));
+    for (const [field, { tiers, shape }] of Object.entries(TIER_SECTIONS)) {
+        const required = tiers.includes(value.tier as string);
+        if (required && !(field in value)) errors.push(`${field}: missing`);
+        else if (required) checkShape(value[field], shape, field, errors);
+        else if (field in value) errors.push(`${field}: allowed only at tier ${tiers.join(", ")}`);
     }
-    const runArms = (p.arms as Obj | undefined)?.run;
-    if (Array.isArray(runArms) && !(runArms.includes("host") && runArms.includes("eidnara"))) {
-        errors.push("arms.run: must include host and eidnara");
-    }
-    const isL = p.tier === "L";
-    for (const [field, shape] of [
-        ["resizing", RESIZING_SHAPE],
-        ["load_stress", LOAD_STRESS_SHAPE],
-    ] as const) {
-        if (isL && !(field in p)) errors.push(`${field}: missing`);
-        else if (isL) checkShape(p[field], shape, field, errors);
-        else if (field in p) errors.push(`${field}: allowed only at tier L`);
-    }
+    if (errors.length > 0) return errors;
+    const p = value as unknown as Preregistration;
+    checkFamilies(p, errors);
+    checkArms(p, errors);
     return errors;
 }
 

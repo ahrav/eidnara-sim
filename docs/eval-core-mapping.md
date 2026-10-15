@@ -42,7 +42,7 @@ counterpart holds part of the value; the note names the rest), `extension`
 | `arms` | `Manifest.arm_rates` keys | partial | eval-core pairs exactly `aged` and `fresh`; three or four arms need `eval-manifest/v10` with named arms. |
 | `arms.default` | none | extension | D1's declared default arm has no counterpart; `eval-manifest/v10`. |
 | `arms.run` | `Manifest.arm_rates` keys | partial | See `arms`. |
-| `arms.order` | none | extension | Sequential arm order per seed; `eval-manifest/v10` run identity would record it. |
+| `arms.order_by_seed` | `Manifest.sample_order` | partial | eval-core records an execution order over samples; the arm order per seed (a Latin square over the run arms, so first position is balanced) needs `eval-manifest/v10` run identity. |
 | `hosts` | `LiveSettings.providers` | partial | Providers are model profiles; the host binary is a run identity component. `eval-live-settings/v2` would add host binaries. |
 | `seeds` | `run_identity` root seed; `ClusterKey.world_seed` | mapped | One root seed per paired run. |
 | `scenario` | `component_versions.generator` | partial | The generator version is in the identity; scenario sizes are generator inputs with no field. `eval-manifest/v10`. |
@@ -51,7 +51,7 @@ counterpart holds part of the value; the note names the rest), `extension`
 | `scenario.forced_p90_sessions` | none | extension | As above (SIM-P09). |
 | `stopping_rule` | `AnalysisFamily.stopping_rule` | partial | `fixed_n` maps; CUSUM does not. |
 | `stopping_rule.kind` | `StoppingRule::FixedN` | mapped | |
-| `stopping_rule.items_per_probe_type` | `FixedN { pairs }` | partial | eval-core fixes one pair count per family; the sum over probe types is the projected `pairs`. |
+| `stopping_rule.paired_items_per_probe_type` | `FixedN { pairs }` | partial | Pooled over the tier's paired runs. eval-core fixes one pair count per family; the count times the number of probe types is the projected `pairs`. |
 | `stopping_rule.cusum` | none | extension | eval-core refuses any stop before `pairs`. CUSUM harm and futility stops need `eval-analysis-family/v3` with a `cusum_harm_futility` stopping rule that yields no pass claim. |
 | `stopping_rule.cusum[].kind` | none | extension | As above. |
 | `stopping_rule.cusum[].metric` | none | extension | As above. |
@@ -78,7 +78,7 @@ counterpart holds part of the value; the note names the rest), `extension`
 | `leak_bound.c_bytes_per_session` | `envelope_bounds` | partial | `c` in `RSS(T) < 2 * RSS(0) + N_sessions * c` (SIM-P57). |
 | `leak_bound.r2_threshold` | none | extension | As `leak_bound`. |
 | `leak_bound.sample_interval_ms` | none | extension | 10 s sampler (SIM-P57). |
-| `families` | `AnalysisFamily.endpoints`, `families` | partial | eval-core endpoints are exactly `quality_loss`, `harm`, `floor`. v2's twenty families need `eval-analysis-family/v3` with a declared endpoint set. The projection: P1 superiority maps to `quality_loss` (sign reversed), the harm family to `harm`, and the S P8/P9 threshold to `floor`. |
+| `families` | `AnalysisFamily.endpoints`, `families` | partial | eval-core endpoints are exactly `quality_loss`, `harm`, `floor`. v2's twenty families need `eval-analysis-family/v3` with a declared endpoint set. The projection takes `eidnara` as eval-core's `aged` arm and `host` as `fresh`: the harm family maps to `quality_loss = (b - c) / n`, the paired difference by which `eidnara` does worse, against `noninferiority_margin`; the S P8/P9 threshold maps to `floor`. eval-core's `harm = b / n` is a one-sided rate, not a difference, so no v2 family supplies `harm_bound`; P1 superiority has no gate counterpart, since eval-core gates are noninferiority only. |
 | `families[].id` | `AnalysisFamily.families` entry | partial | eval-core families are task families; v2 ids are metric families. |
 | `families[].metrics` | `endpoints` | partial | See `families`. |
 | `families[].outcome` | `ArmResult` | partial | `binary` maps to pass and fail; `graded`, `count`, and `slope` need `eval-analysis-family/v3`. |
@@ -87,17 +87,24 @@ counterpart holds part of the value; the note names the rest), `extension`
 | `families[].cluster_key` | `ClusteringUnit` (`family`, `world_seed`) | partial | `run` maps to `world_seed`; `ledger_fact_id` needs a third unit in `eval-analysis-family/v3`. |
 | `families[].direction` | gate verdicts | partial | `noninferiority` maps to `quality_loss` against `noninferiority_margin`; `threshold` maps to `floor`; the others need `eval-analysis-family/v3`. |
 | `families[].margin` | `CampaignProfile` rates | partial | |
-| `families[].margin.value` | `noninferiority_margin`, `harm_bound`, `floor_threshold` | partial | The 10 pp harm margin projects to `noninferiority_margin = "0.1"`; the S P8/P9 floor to `floor_threshold = "0.9"`. Margins in ms, bytes, ratios, and counts need `eval-analysis-family/v3`. |
+| `families[].margin.value` | `noninferiority_margin`, `floor_threshold` | partial | The harm family's 10 pp margin projects to `noninferiority_margin = "0.1"`; the S P8/P9 floor to `floor_threshold = "0.9"`. Margins in ms, bytes, ratios, and counts need `eval-analysis-family/v3`. |
 | `families[].margin.scale` | none | extension | eval-core rates are always proportions. |
+| `families[].mde` | `IccPilot.required_n_for_margin` | partial | eval-core fixes a required n for one margin; v2 fixes the planning MDE per family before data (D5, SIM-P52), computed for binary families from the paired sample size at planning discordance 0.25, alpha 0.05, power 0.8. `eval-analysis-family/v3` would add a per-endpoint MDE. |
+| `families[].mde.value` | none | extension | As `families[].mde`. |
+| `families[].mde.scale` | none | extension | As `families[].margin.scale`. |
+| `families[].power` | none | extension | eval-core has no power target field; `eval-analysis-family/v3`. |
 | `families[].alpha` | none | extension | eval-core gates compare point rates and intervals to bounds with no alpha. `eval-analysis-family/v3` would add per-family alpha. |
 | `families[].interval_method` | `IntervalMethod::ClusterBootstrap` | partial | The cluster bootstrap part of `exact-mcnemar-newcombe-cluster-bootstrap` maps; McNemar, Newcombe, BCa, negative binomial, sign test, and slope bootstrap need `eval-analysis-family/v3`. |
 | `families[].multiplicity` | `MultiplicityCorrection` | partial | `none` maps; `holm` is declared in eval-core but refused as `UnsupportedMultiplicity`, so the harm family needs `eval-analysis-family/v3` to accept Holm. |
 | `families[].claim` | none | extension | eval-core reports every endpoint as a gate. |
 | `families[].min_paired_runs` | `item_count_threshold` | partial | eval-core's item floor is at least 300 items, which S and M probe counts do not reach; v2 floors run-level claims at six paired runs. `eval-analysis-family/v3` would add a run floor and a per-tier item floor. |
 | `resizing` | `AnalysisFamily.icc_pilot` | partial | The M discordance pilot re-sizes L as the ICC pilot sizes a plan; eval-core's pilot reports ICC, not discordance. `eval-analysis-family/v3` would add a discordance pilot. |
-| `resizing.planning_items_per_probe_type` | `IccPilot.required_n_for_margin` | partial | 150 per probe type until M measures discordance (OQ-12). |
+| `resizing.planning_paired_items_per_probe_type` | `IccPilot.required_n_for_margin` | partial | 150 per probe type until M measures discordance (OQ-12). |
 | `resizing.source_tier` | `IccPilot.pilot_run_id` | partial | The M runs are the pilot. |
-| `resizing.rule` | none | extension | The paired sample-size rule; eval-core checks a plan against a pilot but does not compute n. |
+| `resizing.rule` | `IccPilot` design effect | partial | The paired sample-size rule with the design effect over ledger-fact clusters, whose ICC deflation mirrors eval-core's `1 + (m - 1) ICC`; eval-core checks a plan against a pilot but does not compute n. |
+| `aa_controls` | none | extension | A/A controls at S and M (host/host, eidnara/eidnara; M repeats five times before a pipeline false-positive rate is claimed). eval-core pairs `aged` and `fresh` only; `eval-manifest/v10` would name same-arm pairs. |
+| `aa_controls.pairs` | none | extension | As `aa_controls`. |
+| `aa_controls.repeats` | none | extension | As `aa_controls`. |
 | `load_stress` | none | extension | The concurrent-arms profile (OQ-11) has no counterpart; `eval-manifest/v10` would record start skew. |
 | `load_stress.arms_concurrent` | none | extension | L only. |
 | `load_stress.record_start_skew` | none | extension | L only. |
@@ -106,8 +113,8 @@ counterpart holds part of the value; the note names the rest), `extension`
 ## Projection
 
 The fields marked `mapped` and `partial` project into one `CampaignProfile`
-and one `AnalysisFamily` per tier. Two refusals block that projection today,
-and each names the extension it needs:
+and one `AnalysisFamily` per tier. That projection does not validate today.
+Two refusals block it:
 
 1. `AnalysisFamily::validate` refuses any endpoint list other than the three
    gates (`UnsupportedEndpoints`) and any multiplicity other than `none`
@@ -117,6 +124,19 @@ and each names the extension it needs:
    M probe counts are below it, so their probe families are descriptive or
    use the v2 run floor until `eval-analysis-family/v3` adds a per-tier item
    floor.
+
+Required eval-core fields also lack a v2 source:
+
+- `CampaignProfile.harm_bound`: see the `families` row.
+- `CampaignProfile.miss_asymmetry_bound`: v2 has no cassette, so no miss rate;
+  the fault-asymmetric stratum is its nearest analogue.
+- `CampaignProfile.liveness_bounds`: the four counts in subsystem units; v2
+  bounds are wall-clock deadlines.
+- `AnalysisFamily.exclusions`: projectable as text from `missingness_policy`.
+- `AnalysisFamily.trials_k`: `1`, since grades use the first attempt only.
+- `AnalysisFamily.icc_pilot`: the M runs are the pilot for L; S and M have
+  none, so a projection at S or M fails `PilotInconsistent`.
+- `AnalysisFamily.transfer_criterion`: `None`.
 
 The live-slice report (`eval-live-slice/v1`) and the residual report
 (`eval-residual-report/v1`) are consumed unchanged by the P7 judge path in M5;

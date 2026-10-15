@@ -47,7 +47,13 @@ boundary, and every report carries this document's version,
 - A null result is reported as "no difference above X pp detectable at n",
   with the detectable effect size and resolution ratio; the report never
   states equivalence.
-- S and M run-level numbers (failed turns, hangs, latency delta, RSS slope)
-  are descriptive unless the family holds six paired runs.
+- A run-level paired claim (failed turns, hangs, latency delta, RSS slope)
+  needs six paired runs. S has four, so its run-level families either stay
+  descriptive or gate each run against a fixed bound (zero failed turns, zero
+  internal-string hits, p95 latency delta under 300 ms) with no paired claim.
+  M pools three seeds on each of two hosts into six paired runs and gates its
+  run-level families with the paired sign test at alpha 0.03, which the
+  spec's Verification Strategy names; per-host run-level numbers at M stay
+  descriptive.
 - Model quality is not evaluated; the agent model is fixed per run, and only
   Eidnara's own side-call model is a factor (M tier).

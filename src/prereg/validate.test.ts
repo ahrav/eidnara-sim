@@ -60,11 +60,10 @@ describe("pre-registration validator", () => {
             expect(paths.length).toBeGreaterThan(100);
             for (const path of paths) {
                 const errors = validatePreregistration(without(prereg, path));
-                // A family without its id is named by the id the validator can no longer see.
-                const expected = path.endsWith("].id")
-                    ? `${path.slice(0, -3)}: missing`
-                    : `${path}:`;
-                const named = errors.some((e) => e.startsWith(expected));
+                // The validator identifies a family by its array index when its id is missing.
+                const named = path.endsWith("].id")
+                    ? errors.some((e) => /^families\[\d+\]\.id: missing$/.test(e))
+                    : errors.some((e) => e.startsWith(`${path}:`));
                 if (!named) throw new Error(`removing ${path} gave ${JSON.stringify(errors)}`);
             }
         });
@@ -91,10 +90,39 @@ describe("pre-registration validator", () => {
         );
     });
 
-    test("requires resizing and load stress at L and refuses them elsewhere", () => {
+    test("requires each tier-scoped section at its tiers and refuses it elsewhere", () => {
         const s = load("S");
         s.resizing = load("L").resizing;
         expect(validatePreregistration(s)).toContain("resizing: allowed only at tier L");
+        const l = load("L");
+        l.aa_controls = load("M").aa_controls;
+        expect(validatePreregistration(l)).toContain("aa_controls: allowed only at tier S, M");
+    });
+
+    test("refuses an unknown field at any depth by name", () => {
+        const prereg = load("M") as any;
+        prereg.extra = 1;
+        prereg.families[3].alpah = "0.05";
+        const errors = validatePreregistration(prereg);
+        expect(errors).toContain("extra: unknown field");
+        expect(errors).toContain("families[probe-P4].alpah: unknown field");
+    });
+
+    test("refuses cross-field contradictions by name", () => {
+        const prereg = load("M") as any;
+        prereg.stopping_rule.cusum[0].metric = "harms";
+        prereg.families.find((f: any) => f.id === "cost").min_paired_runs = 7;
+        prereg.families.find((f: any) => f.id === "intrusiveness").interval_method =
+            "paired-sign-test";
+        prereg.arms.order_by_seed[1] = ["host", "eidnara"];
+        expect(validatePreregistration(prereg).sort()).toEqual(
+            [
+                "stopping_rule.cusum[0].metric: names no family",
+                "families[cost].min_paired_runs: exceeds the 6 paired runs the tier produces",
+                "families[intrusiveness].interval_method: a zero-tolerance gate compares each run to a bound and takes none",
+                "arms.order_by_seed[1]: is not a permutation of arms.run",
+            ].sort(),
+        );
     });
 
     test("refuses a non-canonical decimal and an alpha outside (0, 1)", () => {
@@ -149,13 +177,57 @@ describe("report check against the pre-registration", () => {
         ]);
     });
 
-    test("refuses a family that was not pre-registered and the token parity", () => {
+    test("refuses a family that was not pre-registered and a repeated family", () => {
         const r = report() as any;
-        r.families.push({ family: "probe-P99", verdict: "parity", n: 1, mde: "0.1" });
-        const errors = checkReport(r, prereg);
-        expect(errors).toContain("families[probe-P99]: not pre-registered");
-        expect(errors).toContain("families[probe-P99].verdict: parity");
-        expect(errors).toContain("report: contains the token parity");
+        r.families.push({ family: "probe-P99", verdict: "descriptive", n: 1, mde: "0.1" });
+        r.families.push({ ...r.families[0] });
+        expect(checkReport(r, prereg)).toEqual([
+            "families[probe-P99]: not pre-registered",
+            "families[probe-P1]: duplicate",
+        ]);
+    });
+
+    test("refuses the token parity anywhere in the report, in any case", () => {
+        const r = report() as any;
+        r.families[0].mde = "Parity";
+        expect(checkReport(r, prereg)).toContain("report: contains the token parity");
+    });
+
+    test("refuses a verdict the family's claim does not allow", () => {
+        const m = parsePreregistration(load("M"));
+        const r: TierReport = {
+            tier: "M",
+            prereg_hash: preregistrationHash(m),
+            families: m.families.map((f) => ({
+                family: f.id,
+                verdict: "descriptive",
+                n: 6,
+                mde: "1",
+            })),
+        };
+        const at = (id: string) => r.families.find((f) => f.family === id)!;
+        at("cost").verdict = "better";
+        at("dependability").verdict = "better";
+        at("dependability").n = 5;
+        at("harm").verdict = "failed-gate";
+        at("probe-P1").mde = "0.10";
+        expect(checkReport(r, m)).toEqual([
+            "families[probe-P1].mde: expected a canonical decimal string",
+            "families[harm]: failed-gate carries failed_metric and failed_items, other verdicts neither",
+            "families[dependability].verdict: 5 paired runs is below 6",
+            "families[cost].verdict: the family is descriptive",
+        ]);
+        at("dependability").verdict = "insufficient-runs";
+        Object.assign(at("harm"), { failed_metric: "P3.harm", failed_items: ["P3-07"] });
+        at("cost").verdict = "descriptive";
+        at("probe-P1").mde = "0.1";
+        expect(checkReport(r, m)).toEqual([]);
+    });
+
+    test("refuses a report whose families are not an array", () => {
+        expect(checkReport({ tier: "S", prereg_hash: "x" }, prereg)).toEqual([
+            "families: expected an array",
+        ]);
     });
 
     test("the hash is stable under key order and changes with any value", () => {

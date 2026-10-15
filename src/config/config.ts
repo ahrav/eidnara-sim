@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 
 export const CONFIG_SCHEMA = "sim-config/v1";
@@ -55,9 +55,4 @@ export function parseConfig(value: unknown): SimConfig {
 
 export function loadConfig(path = defaultConfigPath()): SimConfig {
     return parseConfig(JSON.parse(readFileSync(path, "utf8")));
-}
-
-/** Fields whose configured path does not exist on this host. */
-export function missingPaths(config: SimConfig): string[] {
-    return PATH_FIELDS.filter((field) => !existsSync(config[field]));
 }

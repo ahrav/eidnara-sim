@@ -1321,7 +1321,9 @@ Confidence: low -
 [evidence](evidence/sim-p52-gate-carries-preregistered-mde.md). PROPOSED:
 reconstructed from the condensed index in spec #1007; no implementation exists
 to verify against, and a default tier run reaches it.
-Existing check: none
+Existing check: `src/prereg/validate.test.ts`, report check: a report missing a
+family, under another pre-registration hash, or with a verdict the family's
+claim does not allow is refused by name; status unaudited
 Impact: A gate is passed under an analysis chosen after seeing the data.
 Open questions: None.
 
@@ -1333,9 +1335,9 @@ Status: active
 Exercised: not yet - the harness surface lands in M0 (#1024); nothing constructs
 it yet
 Guarantee: SIM-P53: The verdict vocabulary is better, worse,
-no-difference-above-X-pp-detectable-at-n, inconclusive, failed-gate,
-insufficient-runs, and descriptive, and the string `parity` is absent from every
-report.
+no-difference-above-X-pp-detectable-at-n, failed-gate(metric, items),
+inconclusive, insufficient-runs, and descriptive, and the string `parity` is
+absent from every report.
 Check: `always(!X)` - X is the token `parity` in any report; a forbidden state
 scanned over the whole report, so `always(!X)`.
 Fault/timing angle: none.
@@ -1343,9 +1345,15 @@ Required faults and enabling state: any tier report.
 Confidence: low - [evidence](evidence/sim-p53-parity-never-emitted.md).
 PROPOSED: reconstructed from the condensed index in spec #1007; no
 implementation exists to verify against, and a default tier run reaches it.
-Existing check: none
+Existing check: `src/prereg/validate.test.ts`, report check: the token `parity`
+anywhere in a report, in any case, is refused; status unaudited
 Impact: A null at small n is read as equivalence.
-Open questions: None.
+Open questions:
+- The verdict vocabulary adds three kinds to the spec index's four:
+  `inconclusive` from the M7 statistics ticket (#1032), `insufficient-runs` from
+  SIM-P56, and `descriptive` for a family the pre-registration does not gate.
+  Whether the spec index should list them is a design decision (needs human
+  input).
 
 ### sim-p54-pairing-by-item-identity
 
@@ -1399,18 +1407,29 @@ it yet
 Guarantee: SIM-P56: A dependability verdict on failed turns or hangs is emitted
 only with at least six paired runs; below that the verdict is
 `insufficient-runs(k)`.
-Check: `always` - assert a statistical dependability verdict cites at least six
-paired runs and otherwise reads `insufficient-runs(k)`; the pre-registration
-validator refuses a run-level gate below six.
+Check: `always` - assert a dependability verdict with a paired interval cites at
+least six paired runs and otherwise reads `insufficient-runs(k)`; the
+pre-registration validator refuses a run-level gate with a paired interval below
+six, and a bound gate that compares each run to a fixed value carries no paired
+claim.
 Fault/timing angle: none.
 Required faults and enabling state: a tier with fewer than six paired runs.
 Confidence: low -
 [evidence](evidence/sim-p56-failed-turn-claim-needs-six-paired-runs.md).
 PROPOSED: reconstructed from the condensed index in spec #1007; no
 implementation exists to verify against, and a default tier run reaches it.
-Existing check: none
+Existing check: `src/prereg/validate.test.ts`: the validator refuses a run-level
+gate with a paired interval below six paired runs, and the report check refuses
+any verdict but `insufficient-runs` below the family's floor; status unaudited
 Impact: A run-level claim is made from one or two runs.
-Open questions: None.
+Open questions:
+- The S tier gates failed turns, internal-string hits, and p95 latency delta as
+  `zero-tolerance` and `threshold` families, each comparing every run to a fixed
+  bound with no paired interval, because the S ticket (#1034) stops the pipeline
+  on any of them. The validator exempts such bound gates from the six-run floor
+  and refuses them a paired interval method. Whether a bound gate at S fits the
+  spec's "S and M run-level numbers are descriptive" is a design decision (needs
+  human input).
 
 ### sim-p57-leak-verdict-uses-fit-and-bound
 

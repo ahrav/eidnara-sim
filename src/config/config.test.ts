@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { ConfigError, loadConfig, missingPaths, parseConfig } from "./config";
+import { ConfigError, loadConfig, parseConfig } from "./config";
 
 test("the committed config parses and names every path absolutely", () => {
     const config = loadConfig();
@@ -17,9 +17,4 @@ test("a missing or relative path is refused by field name", () => {
     expect(() => parseConfig({ ...base, bedrock: { region: "us-west-2" } })).toThrow(
         "config.bedrock.aws_profile: missing",
     );
-});
-
-test("missingPaths names fields whose path does not exist", () => {
-    const config = { ...loadConfig(), opencode_binary: "/nonexistent/opencode" };
-    expect(missingPaths(config)).toContain("opencode_binary");
 });
