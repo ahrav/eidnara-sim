@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { CORPUS_DIR } from "./sources";
 
 export const REPOS_DIR = join(CORPUS_DIR, "repos");
-export const TWINS_DIR = join(CORPUS_DIR, "twins");
+const TWINS_DIR = join(CORPUS_DIR, "twins");
 
 export interface Rename {
     glob: string;
@@ -42,10 +42,11 @@ function run(cmd: string[], cwd: string, env: Record<string, string> = {}) {
     if (bin === undefined) throw new Error("run: empty command");
     const result = spawnSync(bin, args, {
         cwd,
-        env: { ...process.env, ...env },
+        env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", ...env },
         encoding: "utf8",
         maxBuffer: 256 * 1024 * 1024,
     });
+    if (result.error) throw new Error(`${bin}: ${result.error.message}`);
     return { code: result.status ?? -1, output: `${result.stdout}${result.stderr}` };
 }
 
@@ -80,7 +81,7 @@ export function buildTwin(baseDir: string, twinDir: string, twin: TwinSpec): str
     git(twinDir, "add", "-A");
     const stamp = "2026-10-12T00:00:00Z";
     const identity = { name: "eidnara-sim", email: "eidnara-sim@users.noreply.github.com" };
-    const r = run(["git", "commit", "-q", "-m", `twin: ${twin.id}`], twinDir, {
+    const r = run(["git", "commit", "-q", "--no-verify", "-m", `twin: ${twin.id}`], twinDir, {
         GIT_AUTHOR_NAME: identity.name,
         GIT_AUTHOR_EMAIL: identity.email,
         GIT_AUTHOR_DATE: stamp,
@@ -115,8 +116,4 @@ export function runOffline(dir: string, test: string[]) {
 export function prepare(dir: string, cmd: string[]): void {
     const r = run(cmd, dir);
     if (r.code !== 0) throw new Error(`prepare ${cmd.join(" ")}: ${r.output}`);
-}
-
-export function copyLicense(repo: RepoSpec): void {
-    cpSync(join(REPOS_DIR, repo.id, repo.license_file), join(REPOS_DIR, `${repo.id}.LICENSE`));
 }

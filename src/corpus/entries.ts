@@ -1,5 +1,5 @@
 /** Licenses a corpus entry may carry; each permits redistribution with attribution. */
-export const ALLOWED_LICENSES = new Set(["CC-BY-4.0", "ODC-BY-1.0", "MIT", "Apache-2.0"]);
+const ALLOWED_LICENSES = new Set(["CC-BY-4.0", "ODC-BY-1.0", "MIT", "Apache-2.0"]);
 
 export function entryProblems(entries: readonly unknown[], label: string): string[] {
     const problems: string[] = [];

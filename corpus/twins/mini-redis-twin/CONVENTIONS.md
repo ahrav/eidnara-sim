@@ -18,4 +18,5 @@ for example `"set: value too large"`.
 ## Lint rules
 
 `rustfmt.toml` sets `max_width = 80`. Run `cargo fmt` before committing.
-`cargo clippy -- -W clippy::unwrap_used` reports every `unwrap()` call.
+`Cargo.toml` sets `clippy::unwrap_used = "warn"`, so `cargo clippy` reports
+every `unwrap()` call.

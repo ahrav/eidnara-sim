@@ -1,15 +1,7 @@
-import { readFileSync, writeFileSync } from "node:fs";
+import { cpSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { renderJson } from "../src/corpus/build";
-import {
-    buildTwin,
-    cloneAt,
-    copyLicense,
-    loadRepos,
-    prepare,
-    REPOS_DIR,
-    runOffline,
-} from "../src/corpus/repos";
+import { buildTwin, cloneAt, loadRepos, prepare, REPOS_DIR, runOffline } from "../src/corpus/repos";
 import { CORPUS_DIR } from "../src/corpus/sources";
 
 // Usage: bun scripts/corpus-repos.ts [--record]
@@ -21,7 +13,7 @@ for (const repo of repos) {
     const base = join(REPOS_DIR, repo.id);
     const twinDir = join(REPOS_DIR, repo.twin.id);
     cloneAt(repo.url, repo.commit, base);
-    copyLicense(repo);
+    cpSync(join(base, repo.license_file), join(REPOS_DIR, `${repo.id}.LICENSE`));
     const twinCommit = buildTwin(base, twinDir, repo.twin);
     if (record) repo.twin.commit = twinCommit;
     else if (twinCommit !== repo.twin.commit) {

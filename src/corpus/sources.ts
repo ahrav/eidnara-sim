@@ -2,14 +2,8 @@ import { createHash } from "node:crypto";
 import { createReadStream, existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 
-export const SIM_ROOT = resolve(import.meta.dir, "../..");
-export const CORPUS_DIR = join(SIM_ROOT, "corpus");
+export const CORPUS_DIR = resolve(import.meta.dir, "../../corpus");
 export const CACHE_DIR = join(CORPUS_DIR, "cache");
-
-export interface SourceFile {
-    path: string;
-    sha256: string;
-}
 
 export interface Dataset {
     id: string;
@@ -17,7 +11,7 @@ export interface Dataset {
     revision: string;
     license: string;
     access: "public" | "gated";
-    files: SourceFile[];
+    files: { path: string; sha256: string }[];
 }
 
 export function loadSources(): Dataset[] {
@@ -30,7 +24,7 @@ export function cachePath(dataset: Dataset, path: string): string {
     return join(CACHE_DIR, dataset.id, dataset.revision, path);
 }
 
-export async function sha256File(path: string): Promise<string> {
+async function sha256File(path: string): Promise<string> {
     const hash = createHash("sha256");
     for await (const chunk of createReadStream(path)) hash.update(chunk);
     return hash.digest("hex");

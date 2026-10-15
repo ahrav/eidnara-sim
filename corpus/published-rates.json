@@ -18,12 +18,14 @@
             "quote": "Users compensate by interrupting agents in 4.5% of turns"
         },
         "redirect_per_session": {
-            "value": 0.08,
-            "low": 0.046,
-            "high": 0.08,
-            "unit": "session",
+            "value": null,
+            "by_mode": {
+                "vibe_coding": 0.046,
+                "other_modes": 0.08
+            },
+            "unit": "session (share of sessions with the mind-changer persona)",
             "n": null,
-            "status": "published",
+            "status": "published-by-mode",
             "quote": "Mind changing is less common during vibe coding (4.6% vs. 8.0% in other modes)."
         },
         "abandon_per_session": {

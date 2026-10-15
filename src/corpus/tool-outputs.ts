@@ -32,8 +32,8 @@ export interface Extraction {
     error_codes: ErrorCodeEntry[];
 }
 
-export const SAMPLES_PER_KIND = 150;
-export const MAX_ERROR_CODES = 200;
+const SAMPLES_PER_KIND = 150;
+const MAX_ERROR_CODES = 200;
 const CONTENT_CAP = 4000;
 const MIN_CHARS = 40;
 const ROWS_SCANNED = 4096;
@@ -52,23 +52,18 @@ interface Message {
     tool_calls?: { id: string; function: { name: string; arguments: string } }[] | null;
 }
 
-function classify(tool: string, command: string, content: string): SampleKind | null {
+export function classify(tool: string, command: string, content: string): SampleKind | null {
     if (content.includes("Traceback (most recent call last)")) return "stack_trace";
     if (tool === "execute_bash") {
         if (/\b(pytest|py\.test|unittest|tox|nox)\b/.test(command)) return "test_run";
         if (/\b(grep|rg|ag)\b/.test(command)) return "grep";
         if (/^\s*(cat|head|tail|sed -n)\b/.test(command)) return "file_read";
     }
-    if (
-        tool === "str_replace_editor" &&
-        content.startsWith("Here's the result of running `cat -n`")
-    ) {
-        return "file_read";
-    }
-    return null;
+    const view = content.startsWith("Here's the result of running `cat -n`");
+    return tool === "str_replace_editor" && view ? "file_read" : null;
 }
 
-function commandOf(args: string): string {
+export function commandOf(args: string): string {
     try {
         const parsed = JSON.parse(args) as { command?: string; path?: string };
         return parsed.path === undefined
@@ -79,81 +74,83 @@ function commandOf(args: string): string {
     }
 }
 
+function clip(body: string, keepTail: boolean): string {
+    if (body.length <= CONTENT_CAP) return body;
+    return keepTail ? body.slice(-CONTENT_CAP) : body.slice(0, CONTENT_CAP);
+}
+
+type Provenanced = Omit<Provenance, "id">;
+
+function harvestCodes(lines: string[], base: Provenanced, codes: Map<string, ErrorCodeEntry>) {
+    for (const [i, line] of lines.entries()) {
+        const code = EXCEPTION.exec(line.trim());
+        if (code?.[1] === undefined || codes.has(code[1]) || codes.size >= MAX_ERROR_CODES)
+            continue;
+        codes.set(code[1], {
+            id: `err-${codes.size.toString().padStart(4, "0")}`,
+            code: code[1],
+            message: (code[2] ?? "").slice(0, 300),
+            context: lines.slice(Math.max(0, i - 8), i + 1).join("\n"),
+            ...base,
+        });
+    }
+}
+
+export interface TrajectoryRow {
+    trajectory_id: string;
+    repo: string;
+    trajectory: Message[];
+}
+
 /**
- * extractToolOutputs limits each trajectory to one sample per kind to spread
+ * extractFrom limits each trajectory to one sample per kind to spread
  * samples across trajectories. Each error code keeps its first occurrence.
  */
-export async function extractToolOutputs(dataset: Dataset): Promise<Extraction> {
-    const file = await asyncBufferFromFile(cachePath(dataset, "trajectories.parquet"));
-    const rows = (await parquetReadObjects({
-        file,
-        rowStart: 0,
-        rowEnd: ROWS_SCANNED,
-        columns: ["trajectory_id", "repo", "trajectory"],
-        compressors,
-    })) as { trajectory_id: string; repo: string; trajectory: Message[] }[];
-
+export function extractFrom(rows: TrajectoryRow[], dataset: Dataset): Extraction {
     const samples: ToolOutputSample[] = [];
     const perKind = new Map<SampleKind, number>();
     const codes = new Map<string, ErrorCodeEntry>();
     for (const row of rows) {
         const calls = new Map<string, string>();
         const taken = new Set<SampleKind>();
-        row.trajectory.forEach((m, index) => {
+        for (const [index, m] of row.trajectory.entries()) {
             for (const call of m.tool_calls ?? []) {
                 calls.set(call.id, commandOf(call.function.arguments));
             }
-            if (m.role !== "tool" || !m.content) return;
-            const sourceId = `${dataset.repo}@${dataset.revision}:${row.trajectory_id}#${index}`;
-            const exit = EXIT.exec(m.content);
+            if (m.role !== "tool" || !m.content) continue;
+            const source_id = `${dataset.repo}@${dataset.revision}:${row.trajectory_id}#${index}`;
+            const base = { repo: row.repo, license: dataset.license, source_id };
             const lines = m.content.split("\n").filter((l) => !FOOTER.test(l));
+            harvestCodes(lines, base, codes);
+
             const body = lines.join("\n").trim();
             const tool = m.name ?? "";
             const command = calls.get(m.tool_call_id ?? "") ?? "";
-            const base = { repo: row.repo, license: dataset.license, source_id: sourceId };
-
-            lines.forEach((line, i) => {
-                const match = EXCEPTION.exec(line.trim());
-                if (
-                    match?.[1] === undefined ||
-                    codes.has(match[1]) ||
-                    codes.size >= MAX_ERROR_CODES
-                ) {
-                    return;
-                }
-                codes.set(match[1], {
-                    id: `err-${codes.size.toString().padStart(4, "0")}`,
-                    code: match[1],
-                    message: (match[2] ?? "").slice(0, 300),
-                    context: lines.slice(Math.max(0, i - 8), i + 1).join("\n"),
-                    ...base,
-                });
-            });
-
             const kind = classify(tool, command, body);
-            if (kind === null || body.length < MIN_CHARS || taken.has(kind)) return;
-            if ((perKind.get(kind) ?? 0) >= SAMPLES_PER_KIND) return;
-            const keepTail = kind === "test_run" || kind === "stack_trace";
-            const truncated = body.length > CONTENT_CAP;
-            const content = !truncated
-                ? body
-                : keepTail
-                  ? body.slice(-CONTENT_CAP)
-                  : body.slice(0, CONTENT_CAP);
+            if (kind === null || body.length < MIN_CHARS || taken.has(kind)) continue;
+            if ((perKind.get(kind) ?? 0) >= SAMPLES_PER_KIND) continue;
             taken.add(kind);
             perKind.set(kind, (perKind.get(kind) ?? 0) + 1);
+            const exit = EXIT.exec(m.content)?.[1];
             samples.push({
                 id: `out-${samples.length.toString().padStart(4, "0")}`,
                 kind,
                 tool,
                 command: command.slice(0, 500),
-                exit_code: exit?.[1] === undefined ? null : Number(exit[1]),
+                exit_code: exit === undefined ? null : Number(exit),
                 chars: body.length,
-                truncated,
-                content,
+                truncated: body.length > CONTENT_CAP,
+                content: clip(body, kind === "test_run" || kind === "stack_trace"),
                 ...base,
             });
-        });
+        }
     }
     return { samples, error_codes: [...codes.values()] };
+}
+
+export async function extractToolOutputs(dataset: Dataset): Promise<Extraction> {
+    const file = await asyncBufferFromFile(cachePath(dataset, "trajectories.parquet"));
+    const columns = ["trajectory_id", "repo", "trajectory"];
+    const rows = await parquetReadObjects({ file, rowEnd: ROWS_SCANNED, columns, compressors });
+    return extractFrom(rows as TrajectoryRow[], dataset);
 }

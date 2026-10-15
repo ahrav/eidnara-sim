@@ -14,7 +14,7 @@
         "catalog:check": "bun scripts/check-catalog.ts",
         "corpus:fetch": "bun scripts/corpus-fetch.ts",
         "corpus:build": "bun scripts/corpus-build.ts",
-        "corpus:verify": "bun scripts/corpus-build.ts && git diff --exit-code -- corpus/",
+        "corpus:verify": "bun scripts/corpus-build.ts && test -z \"$(git status --porcelain -- corpus/)\"",
         "corpus:check": "bun scripts/corpus-check.ts",
         "corpus:repos": "bun scripts/corpus-repos.ts",
         "check": "bun run typecheck && bun run lint && bun run test && bun run prereg:validate && bun run catalog:check && bun run corpus:check"

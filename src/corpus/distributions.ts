@@ -1,13 +1,11 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { CdfTable } from "./cdf";
-import type { Quantity, ToolCategory } from "./fit";
+import type { TraceLabFit } from "./fit";
 import { CORPUS_DIR } from "./sources";
 
-export interface Distributions {
+export interface Distributions extends TraceLabFit {
     schema: string;
-    quantities: Record<string, Quantity>;
-    tool_mix: { source: string; n: number; categories: ToolCategory[] };
     rates: Record<string, unknown>;
 }
 

@@ -15,7 +15,7 @@
                 "license": "MIT",
                 "evidence": "4,798 stars; last push 2026-04-15; Cargo.lock committed; a Tokio TCP server with client and server binaries.",
                 "decision": "picked",
-                "reason": "A small Rust service whose 11 tests pass under cargo test --offline in under a second."
+                "reason": "A small Rust service whose 25 tests pass under cargo test --offline in under a second."
             },
             {
                 "repo": "elysiajs/elysia",
@@ -74,7 +74,7 @@
             },
             "twin": {
                 "id": "mini-redis-twin",
-                "commit": "ff6ac80b2eb15df1ff6e2bade63b7187335b6eaa",
+                "commit": "22d7d0814c5e8a70ee98ba25eebcb29a537829b0",
                 "renames": [
                     {
                         "glob": "**/*.rs",
@@ -85,12 +85,17 @@
                         "glob": "**/*.rs",
                         "pattern": "\\bDb\\b",
                         "replace": "Keyspace"
+                    },
+                    {
+                        "glob": "Cargo.toml",
+                        "pattern": "\\n\\[dependencies\\]\\n",
+                        "replace": "\n[lints.clippy]\nunwrap_used = \"warn\"\n\n[dependencies]\n"
                     }
                 ],
                 "conventions": [
-                    "naming: the store type is Keyspace and its guard KeyspaceDropGuard (upstream: Db, DbDropGuard)",
-                    "error handling: library code returns crate::Result and calls neither unwrap() nor expect(); messages start with the operation name",
-                    "lint: rustfmt max_width = 80; clippy::unwrap_used reported"
+                    "naming: the store type is Keyspace and its guard KeyspaceDropGuard (upstream: Db, DbDropGuard), applied by rename",
+                    "error handling: new library code returns crate::Result and calls neither unwrap() nor expect(); messages start with the operation name (stated in CONVENTIONS.md for new and changed code)",
+                    "lint: rustfmt max_width = 80 (rustfmt.toml) and clippy::unwrap_used = warn ([lints.clippy] in Cargo.toml)"
                 ]
             }
         },
@@ -104,7 +109,8 @@
             "prepare": [
                 "bun",
                 "install",
-                "--frozen-lockfile"
+                "--frozen-lockfile",
+                "--ignore-scripts"
             ],
             "test": [
                 "bun",
@@ -127,9 +133,9 @@
                 "commit": "2eb61162a5664303072e56c73a1396ff7a4318ec",
                 "renames": [],
                 "conventions": [
-                    "naming: exported helpers use a verb prefix; boolean locals start with is or has",
-                    "error handling: throw the classes in src/error.ts with messages that start with the operation name",
-                    "lint: prettier two-space indent, semicolons, double quotes (upstream: tabs, no semicolons, single quotes); eslint prefer-const and eqeqeq as errors"
+                    "naming: new exported helpers use a verb prefix; new boolean locals start with is or has (stated in CONVENTIONS.md for new and changed code)",
+                    "error handling: new code throws the classes in src/error.ts with messages that start with the operation name (stated in CONVENTIONS.md)",
+                    "lint: prettier two-space indent, semicolons, double quotes (upstream: tabs, no semicolons, single quotes) and eslint prefer-const and eqeqeq as errors, applied by config overlay"
                 ]
             }
         }

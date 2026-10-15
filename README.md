@@ -17,7 +17,7 @@ bun install
 bun run check            # typecheck, lint, test, pre-registration, catalog, corpus
 bun run prereg:validate  # validate prereg/<tier>.json and print each digest
 bun run catalog:check    # check docs/properties/sim-v2 against METHOD.md
-bun run corpus:verify    # rebuild the corpus from pinned datasets, compare digests
+bun run corpus:verify    # rebuild the corpus in place; fail on any change
 bun run corpus:repos     # clone repositories and twins, run their suites offline
 ```
 

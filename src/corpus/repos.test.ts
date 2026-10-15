@@ -25,3 +25,9 @@ test("summarize keeps bun counts and failing names once, without timings", () =>
     ].join("\n");
     expect(summarize(out)).toEqual(["(fail) Stop > shuts down", "1610 pass", "2 skip", "4 fail"]);
 });
+
+test("summarize changes when the fail count changes with the same failing names", () => {
+    const run = (fails: number) =>
+        summarize(["(fail) a > b [1.00ms]", ` ${10 - fails} pass`, ` ${fails} fail`].join("\n"));
+    expect(run(1)).not.toEqual(run(2));
+});

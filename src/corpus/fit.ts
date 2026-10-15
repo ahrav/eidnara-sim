@@ -36,7 +36,7 @@ const TOOL_CATEGORY = new Map(
     Object.entries(CATEGORIES).flatMap(([category, tools]) => tools.map((t) => [t, category])),
 );
 
-const DEFINITIONS: Record<string, string> = {
+const DEFINITIONS = {
     requests_per_session:
         "Rounds whose first input event is a user message, per session; includes sessions with zero such rounds.",
     tool_steps_per_request:
@@ -44,7 +44,7 @@ const DEFINITIONS: Record<string, string> = {
     append_tokens_per_step:
         "newly_append_tokens per round: non-cached input tokens appended for the invocation.",
     idle_within_session_s:
-        "Seconds from the previous round's last timing event to a user-message round's first timing event, same session, non-negative gaps only.",
+        "Seconds from the latest end of all earlier rounds in the session to a user-message round's first timing event, when that start is at or after the end.",
     idle_between_sessions_s:
         "Seconds from one session's last timing event to the same user's next session's first timing event, positive gaps only.",
     tool_output_chars:
@@ -60,12 +60,42 @@ async function readTable(dataset: Dataset, table: string, columns: string[]): Pr
     return (await parquetReadObjects({ file, columns, compressors })) as Row[];
 }
 
-interface Round {
-    user: string;
+export interface Round {
     index: number;
     requestStart: boolean;
     t0: number;
     t1: number;
+}
+
+/**
+ * A request is a round whose first input event is a user message. idle
+ * includes a gap when the request starts at or after the latest end of all
+ * earlier rounds in the session.
+ */
+export function sessionMetrics(rounds: Round[]): { steps: number[]; idle: number[]; end: number } {
+    const sorted = [...rounds].sort((a, b) => a.t0 - b.t0 || a.index - b.index);
+    const steps: number[] = [];
+    const idle: number[] = [];
+    let current = 0;
+    let end = Number.NEGATIVE_INFINITY;
+    for (const round of sorted) {
+        if (round.requestStart) {
+            if (current > 0) steps.push(current);
+            current = 1;
+            if (Number.isFinite(end) && round.t0 >= end) idle.push((round.t0 - end) / 1000);
+        } else if (current > 0) current++;
+        end = Math.max(end, round.t1);
+    }
+    if (current > 0) steps.push(current);
+    return { steps, idle, end };
+}
+
+export function betweenGaps(spans: [number, number][]): number[] {
+    const sorted = [...spans].sort((a, b) => a[0] - b[0]);
+    return sorted.flatMap(([start], i) => {
+        const prev = sorted[i - 1];
+        return prev && start > prev[1] ? [(start - prev[1]) / 1000] : [];
+    });
 }
 
 function push<K, V>(map: Map<K, V[]>, key: K, value: V): void {
@@ -74,11 +104,6 @@ function push<K, V>(map: Map<K, V[]>, key: K, value: V): void {
     else list.push(value);
 }
 
-/**
- * A request is a round whose first input event is a user message. The idle
- * gap before a request runs from the previous round's last event to the
- * request's first event.
- */
 export async function fitTraceLab(dataset: Dataset): Promise<TraceLabFit> {
     const source = (table: string) => `${dataset.repo}@${dataset.revision}:${table}`;
     const columns = ["round_pk", "session_id", "user", "round_index", "first_input_event_type"];
@@ -93,6 +118,7 @@ export async function fitTraceLab(dataset: Dataset): Promise<TraceLabFit> {
     const requests = new Map<string, number>();
     const append: number[] = [];
     const bySession = new Map<string, Round[]>();
+    const userOf = new Map<string, string>();
     for (const r of roundRows) {
         const session = r.session_id as string;
         const requestStart = r.first_input_event_type === "user_message";
@@ -100,9 +126,8 @@ export async function fitTraceLab(dataset: Dataset): Promise<TraceLabFit> {
         if (r.newly_append_tokens !== null) append.push(Number(r.newly_append_tokens));
         const s = span.get(r.round_pk as bigint);
         if (s === undefined) continue;
-        const user = r.user as string;
+        userOf.set(session, r.user as string);
         push(bySession, session, {
-            user,
             index: Number(r.round_index),
             requestStart,
             t0: s[0],
@@ -112,43 +137,23 @@ export async function fitTraceLab(dataset: Dataset): Promise<TraceLabFit> {
 
     const idle: number[] = [];
     const steps: number[] = [];
-    const sessionSpans = new Map<string, [number, number][]>();
-    for (const rounds of bySession.values()) {
-        rounds.sort((a, b) => a.t0 - b.t0 || a.index - b.index);
-        let current = 0;
-        let end = Number.NEGATIVE_INFINITY;
-        rounds.forEach((round, i) => {
-            const prev = rounds[i - 1];
-            if (round.requestStart) {
-                if (current > 0) steps.push(current);
-                current = 1;
-                if (prev && round.t0 >= prev.t1) idle.push((round.t0 - prev.t1) / 1000);
-            } else if (current > 0) current++;
-            end = Math.max(end, round.t1);
-        });
-        if (current > 0) steps.push(current);
-        const first = rounds[0];
-        if (first) push(sessionSpans, first.user, [first.t0, end] as [number, number]);
+    const spansByUser = new Map<string, [number, number][]>();
+    for (const [session, rounds] of bySession) {
+        const m = sessionMetrics(rounds);
+        steps.push(...m.steps);
+        idle.push(...m.idle);
+        const start = rounds.reduce((min, r) => Math.min(min, r.t0), Number.POSITIVE_INFINITY);
+        push(spansByUser, userOf.get(session) ?? "", [start, m.end] as [number, number]);
     }
-    const between: number[] = [];
-    for (const list of sessionSpans.values()) {
-        list.sort((a, b) => a[0] - b[0]);
-        list.forEach(([start], i) => {
-            const prev = list[i - 1];
-            if (prev && start > prev[1]) between.push((start - prev[1]) / 1000);
-        });
-    }
+    const between = [...spansByUser.values()].flatMap(betweenGaps);
 
-    const toolRows = await readTable(dataset, "tool_calls", [
-        "tool_name",
-        "is_error",
-        "result_chars",
-    ]);
+    const toolColumns = ["tool_name", "is_error", "result_chars"];
+    const toolRows = await readTable(dataset, "tool_calls", toolColumns);
     const chars = toolRows.flatMap((t) =>
         t.result_chars === null ? [] : [Number(t.result_chars)],
     );
     const timed = "rounds+timing_events";
-    const specs: [string, string, string, number[], CdfTable["kind"]][] = [
+    const specs: [keyof typeof DEFINITIONS, string, string, number[], CdfTable["kind"]][] = [
         ["requests_per_session", "requests", "rounds", [...requests.values()], "discrete"],
         ["tool_steps_per_request", "steps", timed, steps, "discrete"],
         ["append_tokens_per_step", "tokens", "rounds", append, "continuous"],
@@ -157,9 +162,11 @@ export async function fitTraceLab(dataset: Dataset): Promise<TraceLabFit> {
         ["tool_output_chars", "chars", "tool_calls", chars, "continuous"],
     ];
     const quantities = specs.map(([name, unit, table, values, kind]) => {
-        const definition = DEFINITIONS[name] ?? "";
         const cdf = fitCdf(values, kind);
-        return [name, { definition, unit, source: source(table), n: values.length, cdf }];
+        return [
+            name,
+            { definition: DEFINITIONS[name], unit, source: source(table), n: values.length, cdf },
+        ];
     });
     return {
         quantities: Object.fromEntries(quantities),
@@ -167,7 +174,7 @@ export async function fitTraceLab(dataset: Dataset): Promise<TraceLabFit> {
     };
 }
 
-function toolMix(rows: Row[], source: string): TraceLabFit["tool_mix"] {
+export function toolMix(rows: Row[], source: string): TraceLabFit["tool_mix"] {
     const acc = new Map<string, { count: number; errors: number; tools: Set<string> }>();
     for (const row of rows) {
         const name = row.tool_name as string;

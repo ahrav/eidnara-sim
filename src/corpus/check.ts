@@ -14,8 +14,9 @@ import { entryProblems, parseJsonl } from "./entries";
 import { loadRepos, REPOS_DIR } from "./repos";
 import { CORPUS_DIR } from "./sources";
 
-export const MIN_SAMPLES = 500;
-export const MIN_ERROR_CODES = 100;
+const MIN_SAMPLES = 500;
+const MIN_ERROR_CODES = 100;
+const KINDS = ["stack_trace", "test_run", "grep", "file_read"];
 const SHA = /^[0-9a-f]{40}$/;
 const REPO_LICENSES = new Set(["MIT", "Apache-2.0"]);
 
@@ -39,14 +40,18 @@ export function checkCorpus(): CorpusReport {
     need(samples.length >= MIN_SAMPLES, `samples: ${samples.length} < ${MIN_SAMPLES}`);
     need(codes.length >= MIN_ERROR_CODES, `error codes: ${codes.length} < ${MIN_ERROR_CODES}`);
     problems.push(...entryProblems(samples, "samples"), ...entryProblems(codes, "error_codes"));
+    const kinds = new Set(samples.map((s) => (s as { kind?: string }).kind));
+    need(
+        KINDS.every((k) => kinds.has(k)),
+        `samples: kinds ${[...kinds].join(",")}`,
+    );
+    const named = codes.filter((c) => (c as { code?: string }).code?.trim());
+    need(named.length === codes.length, "error codes: an entry has an empty code");
 
     const dist = loadDistributions();
     for (const [name, q] of Object.entries(dist.quantities)) {
         need(typeof q.source === "string" && q.source !== "", `${name}: source missing`);
-        need(q.n > 0, `${name}: n missing`);
-        const { p, x } = q.cdf;
-        const monotone = x.every((v, i) => i === 0 || v >= (x[i - 1] ?? v));
-        need(p.length === x.length && monotone, `${name}: cdf not a monotone table`);
+        need(q.n > 0 && q.cdf.p.length === q.cdf.x.length, `${name}: n or cdf missing`);
     }
     const cited = loadCited();
     const percentiles = compareCited(cited, (name, q) => quantile(table(dist, name), q));

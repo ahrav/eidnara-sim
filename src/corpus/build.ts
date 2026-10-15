@@ -5,9 +5,6 @@ import { fitTraceLab } from "./fit";
 import { CORPUS_DIR, type Dataset } from "./sources";
 import { extractToolOutputs } from "./tool-outputs";
 
-export const DISTRIBUTIONS_SCHEMA = "sim-corpus-distributions/v1";
-export const MANIFEST_SCHEMA = "sim-corpus-manifest/v1";
-
 export function renderJson(value: unknown): string {
     return `${JSON.stringify(value, null, 4).replace(
         /\[\s+([-\d.e,\s]+?)\s+\]/g,
@@ -15,9 +12,8 @@ export function renderJson(value: unknown): string {
     )}\n`;
 }
 
-function jsonl(entries: readonly unknown[]): string {
-    return entries.map((e) => `${JSON.stringify(e)}\n`).join("");
-}
+const jsonl = (entries: readonly unknown[]) =>
+    entries.map((e) => `${JSON.stringify(e)}\n`).join("");
 
 function byId(datasets: Dataset[], id: string): Dataset {
     const dataset = datasets.find((d) => d.id === id);
@@ -26,17 +22,15 @@ function byId(datasets: Dataset[], id: string): Dataset {
 }
 
 export async function buildCorpus(datasets: Dataset[]): Promise<Map<string, string>> {
-    const tracelab = byId(datasets, "tracelab");
-    const openhands = byId(datasets, "openhands");
-    const fit = await fitTraceLab(tracelab);
+    const fit = await fitTraceLab(byId(datasets, "tracelab"));
     const rates = JSON.parse(readFileSync(join(CORPUS_DIR, "published-rates.json"), "utf8"));
-    const extraction = await extractToolOutputs(openhands);
+    const extraction = await extractToolOutputs(byId(datasets, "openhands"));
 
     const files = new Map<string, string>();
     files.set(
         "distributions.json",
         renderJson({
-            schema: DISTRIBUTIONS_SCHEMA,
+            schema: "sim-corpus-distributions/v1",
             quantities: fit.quantities,
             tool_mix: fit.tool_mix,
             rates: { source: rates.source, note: rates.note, ...rates.rates },
@@ -48,7 +42,7 @@ export async function buildCorpus(datasets: Dataset[]): Promise<Map<string, stri
     files.set(
         "manifest.json",
         renderJson({
-            schema: MANIFEST_SCHEMA,
+            schema: "sim-corpus-manifest/v1",
             datasets: datasets.map((d) => ({ id: d.id, revision: d.revision, access: d.access })),
             files: digests,
         }),
