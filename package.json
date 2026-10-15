@@ -9,15 +9,24 @@
         "typecheck": "tsc --noEmit -p tsconfig.json",
         "lint": "scripts/forbid-comment-markers.sh && biome check .",
         "lint:fix": "biome check --write .",
-        "test": "bun test",
+        "test": "bun test ./src ./scripts",
         "prereg:validate": "bun scripts/validate-prereg.ts",
         "catalog:check": "bun scripts/check-catalog.ts",
-        "check": "bun run typecheck && bun run lint && bun run test && bun run prereg:validate && bun run catalog:check"
+        "corpus:fetch": "bun scripts/corpus-fetch.ts",
+        "corpus:build": "bun scripts/corpus-build.ts",
+        "corpus:verify": "bun scripts/corpus-build.ts && git diff --exit-code -- corpus/",
+        "corpus:check": "bun scripts/corpus-check.ts",
+        "corpus:repos": "bun scripts/corpus-repos.ts",
+        "check": "bun run typecheck && bun run lint && bun run test && bun run prereg:validate && bun run catalog:check && bun run corpus:check"
     },
     "devDependencies": {
         "@biomejs/biome": "2.5.1",
         "@types/bun": "1.3.14",
         "@types/node": "^22.20.0",
         "typescript": "5.9.3"
+    },
+    "dependencies": {
+        "hyparquet": "1.31.4",
+        "hyparquet-compressors": "1.1.2"
     }
 }

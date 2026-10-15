@@ -1,0 +1,137 @@
+{
+    "schema": "sim-corpus-repos/v1",
+    "selection": {
+        "criteria": [
+            "Real developer activity: an active public repository with recent pushes and a visible contributor base.",
+            "Permissive SPDX license (MIT or Apache-2.0).",
+            "A test suite that runs offline from the pinned commit after a dependency prepare step, with a deterministic outcome.",
+            "One Rust service and one TypeScript package, each with a near-twin that changes naming, error-handling, and lint conventions."
+        ],
+        "swe_chat_note": "Decision D3 selects from SWE-chat repositories with at least 10 real sessions. The SWE-chat repositories table is gated (see sources.json), so the session-count criterion is unverified for these picks; GitHub activity at selection time (2026-10-15) stands in for it.",
+        "candidates": [
+            {
+                "repo": "tokio-rs/mini-redis",
+                "language": "Rust",
+                "license": "MIT",
+                "evidence": "4,798 stars; last push 2026-04-15; Cargo.lock committed; a Tokio TCP server with client and server binaries.",
+                "decision": "picked",
+                "reason": "A small Rust service whose 11 tests pass under cargo test --offline in under a second."
+            },
+            {
+                "repo": "elysiajs/elysia",
+                "language": "TypeScript",
+                "license": "MIT",
+                "evidence": "19,251 stars; last push 2026-10-11; bun.lock committed; AGENTS.md and CLAUDE.md in the root.",
+                "decision": "picked",
+                "reason": "A TypeScript package whose 1,616 bun tests run offline in about five seconds with a fixed set of four failures."
+            },
+            {
+                "repo": "honojs/hono",
+                "language": "TypeScript",
+                "license": "MIT",
+                "evidence": "32,548 stars; last push 2026-10-15; pnpm-lock.yaml; vitest with per-runtime test projects.",
+                "decision": "rejected",
+                "reason": "The suite needs pnpm and several JavaScript runtimes that the run host does not carry."
+            },
+            {
+                "repo": "unjs/ufo",
+                "language": "TypeScript",
+                "license": "MIT",
+                "evidence": "1,303 stars; last push 2026-10-15; pnpm-lock.yaml; vitest.",
+                "decision": "rejected",
+                "reason": "The lockfile needs pnpm, which the run host does not carry; elysia covers the TypeScript role with a committed bun.lock."
+            }
+        ]
+    },
+    "repos": [
+        {
+            "id": "mini-redis",
+            "role": "rust-service",
+            "url": "https://github.com/tokio-rs/mini-redis",
+            "commit": "3d93b42bc363220f85af4fc9e1bebd35b588a4a3",
+            "license": "MIT",
+            "license_file": "LICENSE",
+            "prepare": [
+                "cargo",
+                "fetch",
+                "--locked"
+            ],
+            "test": [
+                "cargo",
+                "test",
+                "--locked",
+                "--offline"
+            ],
+            "expected": {
+                "exit_code": 0,
+                "summary": [
+                    "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out",
+                    "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out",
+                    "test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out",
+                    "test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out",
+                    "test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out"
+                ]
+            },
+            "twin": {
+                "id": "mini-redis-twin",
+                "commit": "ff6ac80b2eb15df1ff6e2bade63b7187335b6eaa",
+                "renames": [
+                    {
+                        "glob": "**/*.rs",
+                        "pattern": "\\bDbDropGuard\\b",
+                        "replace": "KeyspaceDropGuard"
+                    },
+                    {
+                        "glob": "**/*.rs",
+                        "pattern": "\\bDb\\b",
+                        "replace": "Keyspace"
+                    }
+                ],
+                "conventions": [
+                    "naming: the store type is Keyspace and its guard KeyspaceDropGuard (upstream: Db, DbDropGuard)",
+                    "error handling: library code returns crate::Result and calls neither unwrap() nor expect(); messages start with the operation name",
+                    "lint: rustfmt max_width = 80; clippy::unwrap_used reported"
+                ]
+            }
+        },
+        {
+            "id": "elysia",
+            "role": "typescript-package",
+            "url": "https://github.com/elysiajs/elysia",
+            "commit": "e037eca710e7ad193be09cc6615ab0dbe54af914",
+            "license": "MIT",
+            "license_file": "LICENSE",
+            "prepare": [
+                "bun",
+                "install",
+                "--frozen-lockfile"
+            ],
+            "test": [
+                "bun",
+                "test"
+            ],
+            "expected": {
+                "exit_code": 1,
+                "summary": [
+                    "(fail) Stop > shuts down the server when stop(false) is called",
+                    "(fail) Web Standard - Map Early Response > map redirect",
+                    "(fail) Web Standard - Map Response > map redirect",
+                    "(fail) WebSocket connection > should close by server",
+                    "1610 pass",
+                    "2 skip",
+                    "4 fail"
+                ]
+            },
+            "twin": {
+                "id": "elysia-twin",
+                "commit": "2eb61162a5664303072e56c73a1396ff7a4318ec",
+                "renames": [],
+                "conventions": [
+                    "naming: exported helpers use a verb prefix; boolean locals start with is or has",
+                    "error handling: throw the classes in src/error.ts with messages that start with the operation name",
+                    "lint: prettier two-space indent, semicolons, double quotes (upstream: tabs, no semicolons, single quotes); eslint prefer-const and eqeqeq as errors"
+                ]
+            }
+        }
+    ]
+}

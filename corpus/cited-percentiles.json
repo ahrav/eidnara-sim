@@ -1,0 +1,29 @@
+{
+    "schema": "sim-corpus-cited/v1",
+    "source": "Spec ahrav/eidnara#1007 and ticket #1025, citing the TraceLab evidence brief",
+    "tolerance_rule": "A measured percentile passes when |measured - cited| <= rel * cited. rel is 0.4 for every check: the cited values are rounded figures from an earlier TraceLab paper revision, and the largest gap between a cited value and the TraceLab paper v2 value for the same percentile is 37% (idle p90: 15 min cited, 20.6 min in v2 Table 7).",
+    "rel": 0.4,
+    "checks": [
+        { "quantity": "requests_per_session", "q": 0.5, "cited": 1 },
+        { "quantity": "requests_per_session", "q": 0.9, "cited": 16 },
+        { "quantity": "requests_per_session", "q": 0.99, "cited": 161 },
+        { "quantity": "idle_within_session_s", "q": 0.5, "cited": 86 },
+        { "quantity": "idle_within_session_s", "q": 0.9, "cited": 900 },
+        { "quantity": "idle_within_session_s", "q": 0.99, "cited": 39600 },
+        { "quantity": "append_tokens_per_step", "q": 0.5, "cited": 1000 },
+        {
+            "quantity": "append_tokens_per_step",
+            "q": 0.9,
+            "cited": 4400,
+            "deviation": "The cited 4.4k sits outside the band. TraceLab paper v2 Table 8 reports append p90 of 5,342 for Claude and 8,310 for Codex; the pooled v0.0.2 trace measures between those two, so the cited value matches neither provider in the current release. The corpus keeps the measured distribution."
+        }
+    ],
+    "tail_checks": [
+        {
+            "quantity": "append_tokens_per_step",
+            "threshold": 10000,
+            "min_share": 0.01,
+            "reason": "The spec requires the >=10k append tail; the paper v2 states that steps appending 10k or more carry over 70% of append tokens."
+        }
+    ]
+}

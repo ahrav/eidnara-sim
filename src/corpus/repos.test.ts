@@ -1,0 +1,27 @@
+import { expect, test } from "bun:test";
+import { summarize } from "./repos";
+
+test("summarize keeps cargo result lines without timings", () => {
+    const out = [
+        "running 11 tests",
+        "test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.20s",
+    ].join("\n");
+    expect(summarize(out)).toEqual([
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out",
+        "test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out",
+    ]);
+});
+
+test("summarize keeps bun counts and failing names once, without timings", () => {
+    const out = [
+        "(pass) a > b [0.20ms]",
+        "(fail) Stop > shuts down [9.04ms]",
+        "(fail) Stop > shuts down [5.81ms]",
+        " 1610 pass",
+        " 2 skip",
+        " 4 fail",
+        "Ran 1616 tests across 134 files. [5.01s]",
+    ].join("\n");
+    expect(summarize(out)).toEqual(["(fail) Stop > shuts down", "1610 pass", "2 skip", "4 fail"]);
+});

@@ -1,0 +1,64 @@
+{
+    "schema": "sim-corpus-sources/v1",
+    "datasets": [
+        {
+            "id": "tracelab",
+            "repo": "UW-SyFI/TraceLab",
+            "revision": "7256bbf77e76d5cb83f4ddbd5ad31d8faee9dc7a",
+            "release": "v0.0.2",
+            "license": "CC-BY-4.0",
+            "citation": "arXiv:2606.30560",
+            "access": "public",
+            "files": [
+                {
+                    "path": "data/v0.0.2/rounds/train.parquet",
+                    "sha256": "cb8c2b1d23307090c8057c747f955663bacde16a49f84a3c5071a1e2e96a7ab8"
+                },
+                {
+                    "path": "data/v0.0.2/tool_calls/train.parquet",
+                    "sha256": "7186e0d86d3d870e5b374cc29678a4754fcb789ebee4f5ad86461dd02db6f68b"
+                },
+                {
+                    "path": "data/v0.0.2/timing_events/train.parquet",
+                    "sha256": "a207499989d4f004a6807698c33ad6da57cd30fd45404188bf8593fc4d3b9296"
+                },
+                {
+                    "path": "LICENSE-DATASET.md",
+                    "sha256": "1e96a0ec55f98ee0e4e2432626c0201104ebfb7f98cecf0a31d5313ddad92e9a"
+                },
+                {
+                    "path": "NOTICE",
+                    "sha256": "84f5e286d199c15c4ed2a85584ba0792cb813aa4a74ddbcf0559740244c24615"
+                }
+            ]
+        },
+        {
+            "id": "openhands",
+            "repo": "nebius/SWE-rebench-openhands-trajectories",
+            "revision": "35455389ab51bf5e2306bfd436ef72d0f98bf882",
+            "license": "CC-BY-4.0",
+            "citation": "https://nebius.com/blog/posts/openhands-trajectories-with-qwen3-coder-480b",
+            "access": "public",
+            "files": [
+                {
+                    "path": "trajectories.parquet",
+                    "sha256": "14048dd1fcd22ce094b6e85f8a38f223a9ef1327031aaaad052804870212efa1"
+                },
+                {
+                    "path": "LICENSE",
+                    "sha256": "9e5f1b3c610b9c2da5c313bf81d577a7d1acec686bdb0384edefa6df0f90cd94"
+                }
+            ]
+        },
+        {
+            "id": "swe-chat",
+            "repo": "SALT-NLP/SWE-chat",
+            "revision": "202b071f18e03c79df5a7287565ce2ebc5ee7756",
+            "license": "ODC-BY-1.0",
+            "citation": "arXiv:2604.20779",
+            "access": "gated",
+            "files": [],
+            "note": "Hugging Face gates every SWE-chat table behind an account that accepts the dataset terms, and the build host holds no Hugging Face token, so the parquet tables return HTTP 401. The corpus takes SWE-chat's user-behaviour rates from the published paper (arXiv:2604.20779v2) and records each rate with that citation."
+        }
+    ]
+}
