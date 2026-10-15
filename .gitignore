@@ -1,0 +1,6 @@
+node_modules/
+/runs/
+/tmp/
+/corpus/cache/
+/vendor/build/
+.DS_Store

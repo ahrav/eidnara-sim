@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Installed by `git config core.hooksPath .githooks`, which the root
+# `package.json` `prepare` script runs on `bun install`.
+set -euo pipefail
+exec "$(git rev-parse --show-toplevel)/scripts/forbid-comment-markers.sh" --staged
