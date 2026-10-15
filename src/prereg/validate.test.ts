@@ -113,12 +113,16 @@ describe("pre-registration validator", () => {
         const fam = (id: string) => prereg.families.find((f: any) => f.id === id);
         fam("probe-P1").interval_method = "none";
         fam("cost").claim = "gate";
+        fam("probe-P2").direction = "noninferiority";
         prereg.aa_controls.pairs[0] = ["host", "eidnara"];
+        prereg.aa_controls.pairs[1] = ["eidnara-cf", "eidnara-cf"];
         expect(validatePreregistration(prereg).sort()).toEqual(
             [
                 "families[probe-P1].interval_method: a superiority-two-sided family needs a paired interval",
                 "families[cost].claim: a descriptive claim and a descriptive direction go together",
+                "families[probe-P2].claim: a descriptive claim and a descriptive direction go together",
                 "aa_controls.pairs[0]: expected one run arm twice",
+                "aa_controls.pairs[1]: expected one run arm twice",
             ].sort(),
         );
     });
@@ -236,6 +240,16 @@ describe("report check against the pre-registration", () => {
         expect(checkReport(r, m)).toEqual([]);
     });
 
+    test("a bound gate takes its verdict at any n and never reports insufficient-runs", () => {
+        const r = acceptedReport(s);
+        at(r, "dependability").n = 1;
+        expect(checkReport(r, s)).toEqual([]);
+        at(r, "dependability").verdict = "insufficient-runs";
+        expect(checkReport(r, s)).toEqual([
+            "families[dependability].verdict: insufficient-runs is the verdict exactly when n is below 2",
+        ]);
+    });
+
     test("requires a failed gate to name one of its metrics and its failing items", () => {
         const r = acceptedReport(m);
         Object.assign(at(r, "harm"), {
@@ -252,6 +266,14 @@ describe("report check against the pre-registration", () => {
         ]);
         at(r, "harm").failed_metric = "P3.harm";
         delete at(r, "probe-P1").failed_items;
+        for (const items of [[], [""]]) {
+            at(r, "harm").failed_items = items;
+            at(r, "probe-P5").mde = "0.1";
+            expect(checkReport(r, m)).toEqual([
+                "families[harm]: failed-gate names one of the family's metrics and its failing items; other verdicts neither",
+            ]);
+        }
+        at(r, "harm").failed_items = ["P3-07"];
         at(r, "probe-P5").mde = "0.1";
         expect(checkReport(r, m)).toEqual([]);
     });

@@ -59,9 +59,9 @@ export interface Margin {
 }
 
 /**
- * `mde` and `power` are design targets fixed before data. For a superiority or noninferiority
- * family `mde` is the smallest effect the pooled n detects at `power`; for an `at-most` family it
- * is the planned true value at which `power` is targeted. `min_paired_runs` floors run-level
+ * `mde` and `power` are design targets fixed before data. For a superiority family `mde` is the
+ * smallest effect the pooled n detects at `power`; for a noninferiority or `at-most` family it is
+ * the planned true value, and `power` is the power the registered n reaches there. `min_paired_runs` floors run-level
  * families; an item-level family's n is its paired item count.
  */
 export interface Family {

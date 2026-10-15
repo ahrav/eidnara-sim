@@ -59,5 +59,9 @@ boundary, and every report carries this document's version,
   resources and intrusiveness families gate each run against a fixed bound.
   Per-host run-level numbers at M and L hold three runs per host and stay
   descriptive.
+- The harm family is Holm-corrected over five metrics. At M's registered n
+  it reaches power 0.44 against the 10 pp noninferiority margin, so a passed
+  M harm gate is weak evidence; the L re-sizing from M's discordance sets L's
+  n for power 0.8.
 - Model quality is not evaluated; the agent model is fixed per run, and only
   Eidnara's own side-call model is a factor (M tier).

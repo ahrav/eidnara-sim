@@ -500,9 +500,9 @@
         {
             "id": "resources",
             "metrics": [
-                "daemon_rss_slope_bytes_per_hour",
-                "daemon_heap_slope_bytes_per_hour",
-                "store_bytes_slope_per_hour"
+                "daemon_rss_growth_bytes_per_session",
+                "daemon_heap_growth_bytes_per_session",
+                "store_growth_bytes_per_session"
             ],
             "outcome": "slope",
             "treatment_unit": "run",

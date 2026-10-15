@@ -470,10 +470,10 @@
                 "scale": "pp"
             },
             "mde": {
-                "value": "12",
+                "value": "0",
                 "scale": "pp"
             },
-            "power": "0.8",
+            "power": "0.54",
             "alpha": "0.05",
             "interval_method": "exact-mcnemar-newcombe-cluster-bootstrap",
             "multiplicity": "holm",
@@ -535,9 +535,9 @@
         {
             "id": "resources",
             "metrics": [
-                "daemon_rss_slope_bytes_per_hour",
-                "daemon_heap_slope_bytes_per_hour",
-                "store_bytes_slope_per_hour"
+                "daemon_rss_growth_bytes_per_session",
+                "daemon_heap_growth_bytes_per_session",
+                "store_growth_bytes_per_session"
             ],
             "outcome": "slope",
             "treatment_unit": "run",
@@ -616,7 +616,7 @@
     "resizing": {
         "planning_paired_items_per_probe_type": 150,
         "source_tier": "M",
-        "rule": "For each probe type t, n_t = ceil(DE_t * ((z_a * sqrt(d_t) + z_b * sqrt(d_t - e_t^2)) / e_t)^2), where d_t is the paired discordance observed at M; e_t is the family's registered L mde for superiority families and its 10 pp margin for noninferiority families; z_a is z(1 - alpha/2) for superiority and z(1 - alpha/5) for the five Holm-corrected harm metrics, the Holm first step; z_b is z(power); and DE_t = 1 + (m_t - 1) * ICC_t is the design effect over ledger_fact_id clusters, with m_t the mean paired items per fact and ICC_t estimated at M. L's paired_items_per_probe_type becomes max_t n_t and is recorded before the first L run."
+        "rule": "For each probe type t, n_t = ceil(DE_t * ((z_a * sqrt(d_t) + z_b * sqrt(d_t - e_t^2)) / e_t)^2), where d_t is the paired discordance observed at M; e_t is the family's registered L mde for superiority families and its 10 pp margin for noninferiority families; z_a is z(1 - alpha/2) for superiority and z(1 - alpha/5) for the five Holm-corrected harm metrics, the Holm first step; z_b is z(power), with the variance term sqrt(d_t) in place of sqrt(d_t - e_t^2) for noninferiority families, whose power is planned at a true difference of 0; and DE_t = 1 + (m_t - 1) * ICC_t is the design effect over ledger_fact_id clusters, with m_t the mean paired items per fact and ICC_t estimated at M. L's paired_items_per_probe_type becomes max_t n_t and is recorded before the first L run."
     },
     "load_stress": {
         "arms_concurrent": true,
