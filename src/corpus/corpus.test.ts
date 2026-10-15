@@ -46,6 +46,13 @@ function ksDistance(t: CdfTable, draws: number[]): number {
     const sorted = [...draws].sort((a, b) => a - b);
     const n = sorted.length;
     let d = 0;
+    if (t.kind === "discrete") {
+        let below = 0;
+        for (const [i, x] of t.x.entries()) {
+            while (below < n && (sorted[below] ?? 0) <= x) below++;
+            d = Math.max(d, Math.abs(below / n - (t.p[i] ?? 1)));
+        }
+    }
     for (let i = 0; i < n; i++) {
         const v = sorted[i] ?? 0;
         if (sorted[i + 1] === v) continue;

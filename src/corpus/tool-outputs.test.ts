@@ -50,6 +50,7 @@ describe("classify and commandOf", () => {
 });
 
 describe("extractFrom", () => {
+    const longTrace = `Traceback (most recent call last):\n${"  frame\n".repeat(800)}OSError: disk full`;
     const longRead = `Here's the result of running \`cat -n\` on /a.py:\n${"x".repeat(5000)}`;
     const rows: TrajectoryRow[] = [
         {
@@ -64,11 +65,19 @@ describe("extractFrom", () => {
                 result("c3", "str_replace_editor", longRead),
             ],
         },
+        {
+            trajectory_id: "t2",
+            repo: "o/r",
+            trajectory: [
+                call("c4", "execute_bash", { command: "python run.py" }),
+                result("c4", "execute_bash", longTrace),
+            ],
+        },
     ];
     const out = extractFrom(rows, dataset);
 
     test("keeps one sample per trajectory and kind, with provenance", () => {
-        expect(out.samples.map((s) => s.kind)).toEqual(["stack_trace", "file_read"]);
+        expect(out.samples.map((s) => s.kind)).toEqual(["stack_trace", "file_read", "stack_trace"]);
         expect(out.samples[0]).toMatchObject({
             id: "out-0000",
             command: "python -m pytest tests",
@@ -87,10 +96,19 @@ describe("extractFrom", () => {
         expect(read?.content.startsWith("Here's the result")).toBe(true);
     });
 
+    test("clips long stack traces to their tail so the exception line survives", () => {
+        const trace = out.samples[2];
+        expect(trace?.truncated).toBe(true);
+        expect(trace?.content.length).toBe(4000);
+        expect(trace?.content.endsWith("OSError: disk full")).toBe(true);
+        expect(trace?.content).not.toContain("Traceback");
+    });
+
     test("keeps each error code at its first occurrence", () => {
         expect(out.error_codes.map((e) => [e.code, e.source_id])).toEqual([
             ["ValueError", "org/ds@rev:t1#1"],
             ["KeyError", "org/ds@rev:t1#3"],
+            ["OSError", "org/ds@rev:t2#1"],
         ]);
         expect(out.error_codes[0]?.message).toBe("bad input value");
         expect(out.error_codes[0]?.context).toContain("Traceback");

@@ -44,7 +44,7 @@ const DEFINITIONS = {
     append_tokens_per_step:
         "newly_append_tokens per round: non-cached input tokens appended for the invocation.",
     idle_within_session_s:
-        "Seconds from the latest end of all earlier rounds in the session to a user-message round's first timing event, when that start is at or after the end.",
+        "Seconds before each user-message round after a session's first, from the latest end of all earlier rounds in the session to that round's first timing event, when that start is at or after the end.",
     idle_between_sessions_s:
         "Seconds from one session's last timing event to the same user's next session's first timing event, positive gaps only.",
     tool_output_chars:
@@ -69,8 +69,8 @@ export interface Round {
 
 /**
  * A request is a round whose first input event is a user message. idle
- * includes a gap when the request starts at or after the latest end of all
- * earlier rounds in the session.
+ * includes a gap before each request after the first when that request
+ * starts at or after the latest end of all earlier rounds in the session.
  */
 export function sessionMetrics(rounds: Round[]): { steps: number[]; idle: number[]; end: number } {
     const sorted = [...rounds].sort((a, b) => a.t0 - b.t0 || a.index - b.index);
@@ -80,9 +80,11 @@ export function sessionMetrics(rounds: Round[]): { steps: number[]; idle: number
     let end = Number.NEGATIVE_INFINITY;
     for (const round of sorted) {
         if (round.requestStart) {
-            if (current > 0) steps.push(current);
+            if (current > 0) {
+                steps.push(current);
+                if (round.t0 >= end) idle.push((round.t0 - end) / 1000);
+            }
             current = 1;
-            if (Number.isFinite(end) && round.t0 >= end) idle.push((round.t0 - end) / 1000);
         } else if (current > 0) current++;
         end = Math.max(end, round.t1);
     }

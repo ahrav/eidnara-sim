@@ -22,10 +22,15 @@ describe("sessionMetrics", () => {
         expect(m.end).toBe(15_000);
     });
 
-    test("rounds before the first user message belong to no request", () => {
+    test("rounds before the first user message belong to no request and no gap", () => {
         const m = sessionMetrics([round(0, false, 0, 10), round(1, true, 20, 30)]);
         expect(m.steps).toEqual([1]);
-        expect(m.idle).toEqual([0.01]);
+        expect(m.idle).toEqual([]);
+    });
+
+    test("a request that starts exactly at the latest end has a zero gap", () => {
+        const m = sessionMetrics([round(0, true, 0, 1000), round(1, true, 1000, 2000)]);
+        expect(m.idle).toEqual([0]);
     });
 
     test("an overlapping earlier round yields no gap; the gap runs from the latest end", () => {

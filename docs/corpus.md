@@ -48,7 +48,7 @@ The scenario compiler conditions on at least one request.
 | `requests_per_session` | 8,058 | 1 | 16 | 152 |
 | `tool_steps_per_request` | 79,216 | 2 | 18 | 90 |
 | `append_tokens_per_step` | 665,453 | 1,045 | 6,963 | 159,485 |
-| `idle_within_session_s` | 70,235 | 106 | 961 | 41,046 |
+| `idle_within_session_s` | 70,163 | 106 | 963 | 41,118 |
 | `idle_between_sessions_s` | 4,221 | 1,605 | 111,627 | 1,043,601 |
 | `tool_output_chars` | 743,050 | 407 | 8,219 | 40,151 |
 
@@ -72,7 +72,7 @@ Paper v2 reports append percentiles per provider only.
 | Check | Cited | Fitted | Status |
 |---|---|---|---|
 | requests/session p50, p90, p99 | 1, 16, 161 | 1, 16, 152 | within |
-| idle p50, p90, p99 (s) | 86, 900, 39,600 | 106, 961, 41,046 | within |
+| idle p50, p90, p99 (s) | 86, 900, 39,600 | 106, 963, 41,118 | within |
 | append p50 | ~1k | 1,045 | within |
 | append p90 | ~4.4k | 6,963 | recorded deviation |
 
