@@ -1158,7 +1158,11 @@ PROPOSED: reconstructed from the condensed index in spec #1007; no
 implementation exists to verify against, and a default tier run reaches it.
 Existing check: none
 Impact: Judge calibration drifts with no human anchor.
-Open questions: None.
+Open questions:
+- The guarantee requires the sample to be journaled as `human_check_pending`
+  before the verdict and names no completion. Whether the tier verdict waits for
+  the human labels and their comparison result, or stays provisional while
+  checks are pending, is a design decision for M5 (needs human input).
 
 ### sim-p45-issued-items-stay-in-denominator
 
@@ -1706,7 +1710,12 @@ PROPOSED: reconstructed from the condensed index in spec #1007; no
 implementation exists to verify against, and a default tier run reaches it.
 Existing check: none
 Impact: A partial run is analysed as complete.
-Open questions: None.
+Open questions:
+- A CUSUM harm or futility stop ends a tier before every scheduled item is
+  issued, and SIM-P55 then requires only the issued items to reach a terminal
+  state. Whether `LoadRun` accepts a journaled early stop with its stop and done
+  markers as complete, so the stopped tier's result can be analysed, is a design
+  decision for M4 and M7 (needs human input).
 
 ### sim-p68-clock-restored-on-resume
 
@@ -1884,7 +1893,11 @@ PROPOSED: reconstructed from the condensed index in spec #1007; no
 implementation exists to verify against, and a default tier run reaches it.
 Existing check: none
 Impact: Arms differ in more than the treatment.
-Open questions: None.
+Open questions:
+- The scheduled model-switch fault lets an arm's agent model change mid-run,
+  while `docs/claim-boundary.md` fixes the agent model per run. Whether a run
+  with a model switch is excluded from paired gates, forms its own stratum, or
+  qualifies the boundary is a design decision (needs human input).
 
 ### sim-p76-kl-arm-has-host-compaction-on
 

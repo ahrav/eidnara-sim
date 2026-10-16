@@ -31,4 +31,12 @@ A tier with P7 items.
 
 ## Investigation log
 
-No open questions.
+### Q: Must the human check complete before the verdict?
+- Sources examined: spec #1007 (judge calibration for P7: at least 10% human
+  labelled per the eval-core sampling plan); this record; the relationship map
+  (P43 and P44 gate P7).
+- Findings: the record requires the pending entries to precede the verdict and
+  says nothing about their completion, so a verdict with no returned label
+  satisfies it.
+- Missing evidence: the M5 grader's handling of pending human checks.
+- Conclusion: needs human input

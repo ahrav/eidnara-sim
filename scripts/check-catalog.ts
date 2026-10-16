@@ -21,11 +21,13 @@ interface FieldSpec {
 }
 
 /**
- * The text outside fenced code blocks. A fence opens with three or more backticks or tildes after
- * up to three spaces and closes with a same-character run at least as long, as Markdown defines.
+ * The text outside fenced code blocks and HTML comments. A fence opens with three or more
+ * backticks or tildes after up to three spaces and closes with a same-character run at least as
+ * long, as Markdown defines.
  */
 export function withoutFences(text: string): string {
     const kept: string[] = [];
+    text = text.replace(/<!--[\s\S]*?-->/g, "");
     let open: { char: string; length: number } | null = null;
     for (const line of text.split("\n")) {
         const m = /^ {0,3}([`~])\1{2,}/.exec(line);
