@@ -59,7 +59,7 @@ export function classify(tool: string, command: string, content: string): Sample
     if (content.includes(TRACEBACK)) return "stack_trace";
     if (tool !== "execute_bash") return null;
     if (RUNNER.test(command.replace(QUOTED, '""'))) {
-        return /(^|\s)(--help|-h)(\s|$)/.test(command) ? null : "test_run";
+        return NO_RUN.test(command) ? null : "test_run";
     }
     if (/\b(grep|rg|ag)\b/.test(command)) return "grep";
     if (/^\s*(cat|head|tail|sed -n)\b/.test(command)) return "file_read";
@@ -97,6 +97,7 @@ const FRAME = /^\s*File "/;
 const RUNNER =
     /(^|&&|;|\|)\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*(?:python3?\s+-m\s+)?(?:pytest|py\.test|tox|nox|unittest)\b/;
 const QUOTED = /"(?:\\.|[^"\\])*"|'[^']*'/g;
+const NO_RUN = /(^|\s)(--help|-h|--version|--co|--collect-only|--fixtures|--markers)(\s|$)/;
 const TRACEBACK = "Traceback (most recent call last)";
 const TRACE_END = /^(?:E\s+)?\s*[\w.]*(?:Error|Exception|Failure|Exit|Interrupt|Warning)\b/;
 
