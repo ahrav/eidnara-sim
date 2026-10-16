@@ -39,13 +39,17 @@ free whichever machine released it.
 
 `Journal` opens its file without following symlinks, requires a regular
 file with one link owned by the harness user, checks through
-`/proc/self/fd` that the file the kernel opened lives in the directory the
-caller fixed with `directoryIdentity` when it took the lease (by default the
-directory the path names as the constructor starts), so a directory symlink
-swapped underneath the path cannot route the journal elsewhere, refuses a
-file over `MAX_JOURNAL_BYTES` (256 MiB) before reading it, reads and
-truncates it through that one descriptor, and refuses every operation after
-`close`. On read it
+`/proc/self/fd` that the file the kernel opened lives in the directory
+`takeLease` fixed (`lease.within`, the device and inode read before the lease
+files were touched and checked again after; by default the directory the path
+names as the constructor starts), so a directory symlink repointed between
+the lease and the open cannot route the journal elsewhere, refuses a file
+over `MAX_JOURNAL_BYTES` (256 MiB) before reading it and an append that would
+carry it over, flushes the directory when it creates the file and each
+appended line with `fdatasync` before the entry counts as appended, so an
+acknowledged entry survives a power loss, reads and truncates the file
+through that one descriptor, and refuses every operation after `close`. On
+read it
 splits lines on raw newline bytes, so the complete prefix is measured in bytes,
 and accepts a line only when it is valid UTF-8 that parses, carries the next
 `seq`, names a known `kind`, has `arm` and finite `scenario_ms` and `wall_ms`,
@@ -158,7 +162,8 @@ in flight.
 
 ## Resume
 
-A restarted harness opens the same journal. A journal whose first entry is anything but `StartRun`, or that holds a
+A restarted harness opens the same journal. An arm order that repeats an arm is refused before anything is written.
+A journal whose first entry is anything but `StartRun`, or that holds a
 second `StartRun`, is refused, as is one with entries after `EndRun`, a run
 record (`StartRun`, `ResumeRun`, `EndRun`) carrying an arm or a clock reading,
 a `ResumeRun` naming another arm order or scenario, arms started out of the
@@ -174,7 +179,10 @@ event completed, a turn entry naming anything but a configured user turn, an
 `EndTurn` before its `BeginTurn`, a `FaultObserved` before its `FaultFired`,
 `Event` records outside the configured order or timestamped before their
 schedule, a turn's `Event` with no `EndTurn` or interruption marker before
-it or with an outcome other than that record's, an `Event` that passes a
+it or with an outcome other than that record's, an `EndTurn` without an
+outcome or misreporting its event's probe, a `FaultFired` or `FaultObserved`
+naming a type or layer other than its episode's, a `FaultObserved` without an
+evidence object, an `Event` that passes a
 session-start or user-turn trigger whose fault neither fired nor was missed,
 a `BeginTurn` for a turn other than the one due or repeated for one turn, a
 second `EndTurn` for a turn, an interruption marker that closes no open turn

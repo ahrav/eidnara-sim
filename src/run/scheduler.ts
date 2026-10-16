@@ -87,6 +87,9 @@ export class Scheduler {
     }
 
     async run(): Promise<void> {
+        if (new Set(this.o.order).size !== this.o.order.length) {
+            throw new Error(`scheduler: arm order ${JSON.stringify(this.o.order)} repeats an arm`);
+        }
         const entries = this.o.journal.entries;
         const fatal = entries.find((e) => e.kind === "ItemState" && e.fatal === true);
         if (fatal) {
@@ -336,6 +339,16 @@ export class Scheduler {
                     if (!begun.has(e.event))
                         throw fail(`EndTurn for ${e.event} has no BeginTurn`, e);
                     if (ended.has(e.event)) throw fail(`EndTurn for ${e.event} repeats`, e);
+                    if (typeof e.outcome !== "string") {
+                        throw fail(`EndTurn for ${e.event} has no outcome`, e);
+                    }
+                    const probe = events.find((x) => x.id === e.event)?.probe;
+                    if (probe !== undefined) {
+                        const state = e.outcome === "ok" ? "completed" : "failed";
+                        if (e.probe !== probe || e.state !== state) {
+                            throw fail(`EndTurn for ${e.event} misreports its probe`, e);
+                        }
+                    }
                     ended.add(e.event);
                     outcomes.set(e.event, e.outcome);
                     return;
@@ -362,6 +375,9 @@ export class Scheduler {
                     if (f.type === "laptop_sleep" && !jumped.has(f.id)) {
                         throw fail(`FaultFired for sleep ${f.id} has no jump`, e);
                     }
+                    if (e.type !== f.type || e.layer !== f.seam.layer) {
+                        throw fail(`FaultFired for ${f.id} misreports its episode`, e);
+                    }
                     fired.add(f.id);
                     if (OUTAGE.has(f.type)) outage = f.id;
                     return;
@@ -370,8 +386,16 @@ export class Scheduler {
                     if (!fired.has(e.fault)) {
                         throw fail(`FaultObserved for ${e.fault} has no FaultFired`, e);
                     }
-                    if (observed.has(e.fault))
+                    if (observed.has(e.fault)) {
                         throw fail(`FaultObserved for ${e.fault} repeats`, e);
+                    }
+                    const { f } = cursorOf(e.fault);
+                    if (e.type !== f.type) {
+                        throw fail(`FaultObserved for ${f.id} misreports its type`, e);
+                    }
+                    if (typeof e.evidence !== "object" || e.evidence === null) {
+                        throw fail(`FaultObserved for ${f.id} carries no evidence`, e);
+                    }
                     observed.add(e.fault);
                     if (outage === e.fault) outage = null;
                     return;

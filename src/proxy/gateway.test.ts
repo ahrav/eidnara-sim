@@ -1339,13 +1339,19 @@ describe("every request yields one record", () => {
             sock.on("close", () => r(buf));
         });
         const head = `POST /model/m/converse HTTP/1.1\r\nHost: x\r\nContent-Length: ${body.length}\r\nConnection: close\r\n\r\n`;
+        const sentAt = Date.now();
         sock.write(`${head}${body.slice(0, 10)}`);
-        await Bun.sleep(50);
+        await Bun.sleep(150);
         shared.arm = "second";
+        const finishedAt = Date.now();
         sock.write(body.slice(10));
         expect((await reply).startsWith("HTTP/1.1 200")).toBe(true);
         while (records.records.length === 0) await Bun.sleep(5);
-        expect(records.records.map((r) => r.arm)).toEqual(["first"]);
+        const [record] = records.records as [CallRecord];
+        expect(record.arm).toBe("first");
+        expect(record.started_wall_ms).toBeGreaterThanOrEqual(sentAt);
+        expect(record.started_wall_ms).toBeLessThanOrEqual(finishedAt - 50);
+        expect(record.first_byte_ms as number).toBeGreaterThanOrEqual(50);
     });
 
     test("an unsupported Expect header yields a 417 and a rejected record", async () => {

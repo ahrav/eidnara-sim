@@ -1945,6 +1945,33 @@ describe("Scheduler", () => {
         expect(() => readJournal(path)).toThrow(/over the .* limit/);
     });
 
+    test("an append that would carry the journal over the size bound is refused and leaves the file whole", () => {
+        const j = new Journal(join(dir(), "j.jsonl"));
+        j.append({ kind: "StartRun", arm: null, scenario_ms: 0, order: ["a"], scenario: "s" });
+        const big = "x".repeat(MAX_JOURNAL_BYTES);
+        expect(() => j.append({ kind: "StartArm", arm: "a", scenario_ms: 0, note: big })).toThrow(
+            /over the .* limit/,
+        );
+        expect(j.entries).toHaveLength(1);
+        j.close();
+        expect(readJournal(j.path)).toHaveLength(1);
+    });
+
+    test("a lease fixes the directory identity its journal must open inside", () => {
+        const leased = dir();
+        const other = dir();
+        const link = join(dir(), "run");
+        symlinkSync(leased, link);
+        const lease = takeLease(link);
+        expect(lease.within).toEqual(directoryIdentity(leased));
+        rmSync(link);
+        symlinkSync(other, link);
+        expect(() => new Journal(join(link, "j.jsonl"), lease.within)).toThrow(
+            /opened outside its run directory/,
+        );
+        releaseLease(leased, lease);
+    });
+
     test("a journal opens only inside the directory its lease named", () => {
         const leased = dir();
         const other = dir();
@@ -2533,6 +2560,90 @@ describe("Scheduler", () => {
             order: ["a"],
             drivers: { a: fakeDriver([]) },
         }).run();
+    });
+
+    test("journals with an EndTurn lacking its outcome or misreporting its probe, a FaultFired or FaultObserved misreporting its episode, or a FaultObserved without evidence are refused; a repeated arm name is refused before StartRun", async () => {
+        const restart = episode("r", "daemon_restart", {
+            kind: "session_start",
+            session: "s-0000",
+        });
+        const probed: ScenarioEvent[] = fixtureEvents(1).map((e) =>
+            e.kind === "user_turn" ? { ...e, probe: "p-1" } : e,
+        );
+        const [e0, e1] = probed.map((e) => e.id) as [string, string];
+        const open = (lines: Partial<Entry>[], faults: FaultEpisode[] = [], events = probed) => {
+            const path = join(dir(), "j.jsonl");
+            const j = new Journal(path);
+            j.append({
+                kind: "StartRun",
+                arm: null,
+                scenario_ms: 0,
+                order: ["a"],
+                scenario: scenarioId(events, faults),
+            });
+            j.append({ kind: "StartArm", arm: "a", scenario_ms: 0 });
+            for (const l of lines) j.append({ arm: "a", scenario_ms: 0, ...l } as never);
+            j.close();
+            return new Scheduler({
+                events,
+                faults,
+                journal: new Journal(path),
+                settleMs: 0,
+                order: ["a"],
+                drivers: { a: fakeDriver([]) },
+            }).run();
+        };
+        const ev: Partial<Entry> = { kind: "Event", event: e0, outcome: "ok" };
+        await expect(
+            open([
+                ev,
+                { kind: "BeginTurn", event: e1, probe: "p-1" },
+                { kind: "EndTurn", event: e1 },
+            ]),
+        ).rejects.toThrow(/EndTurn for e-000001 has no outcome/);
+        await expect(
+            open([
+                ev,
+                { kind: "BeginTurn", event: e1, probe: "p-1" },
+                { kind: "EndTurn", event: e1, outcome: "ok", probe: "p-1", state: "failed" },
+            ]),
+        ).rejects.toThrow(/EndTurn for e-000001 misreports its probe/);
+        await expect(
+            open(
+                [{ kind: "FaultFired", fault: "r", type: "host_upgrade", layer: "scheduler" }],
+                [restart],
+            ),
+        ).rejects.toThrow(/FaultFired for r misreports its episode/);
+        await expect(
+            open(
+                [
+                    { kind: "FaultFired", fault: "r", type: "daemon_restart", layer: "scheduler" },
+                    { kind: "FaultObserved", fault: "r", type: "daemon_restart" },
+                ],
+                [restart],
+            ),
+        ).rejects.toThrow(/FaultObserved for r carries no evidence/);
+        await expect(
+            open(
+                [
+                    { kind: "FaultFired", fault: "r", type: "daemon_restart", layer: "scheduler" },
+                    { kind: "FaultObserved", fault: "r", type: "host_upgrade", evidence: {} },
+                ],
+                [restart],
+            ),
+        ).rejects.toThrow(/FaultObserved for r misreports its type/);
+        const j = new Journal(join(dir(), "j.jsonl"));
+        await expect(
+            new Scheduler({
+                events: fixtureEvents(1),
+                faults: [],
+                journal: j,
+                settleMs: 0,
+                order: ["a", "a"],
+                drivers: { a: fakeDriver([]) },
+            }).run(),
+        ).rejects.toThrow(/repeats an arm/);
+        expect(j.entries).toHaveLength(0);
     });
 
     test("a FaultObserved without its FaultFired is refused on resume", async () => {
@@ -3407,10 +3518,31 @@ describe("resume of fired faults", () => {
         const start = { order: ["a"], scenario: scenarioId(fixtureEvents(2), faults) };
         j.append({ kind: "StartRun", arm: null, scenario_ms: 0, ...start });
         j.append({ kind: "StartArm", arm: "a", scenario_ms: 0 });
-        j.append({ kind: "FaultFired", arm: "a", scenario_ms: 0, fault: "restart" });
+        j.append({
+            kind: "FaultFired",
+            arm: "a",
+            scenario_ms: 0,
+            fault: "restart",
+            type: "daemon_restart",
+            layer: "scheduler",
+        });
         j.append({ kind: "Event", arm: "a", scenario_ms: 0, event: "e-000000" });
-        j.append({ kind: "FaultFired", arm: "a", scenario_ms: 0, fault: "slow" });
-        j.append({ kind: "FaultFired", arm: "a", scenario_ms: 0, fault: "begun" });
+        j.append({
+            kind: "FaultFired",
+            arm: "a",
+            scenario_ms: 0,
+            fault: "slow",
+            type: "slow_stream",
+            layer: "proxy-sink",
+        });
+        j.append({
+            kind: "FaultFired",
+            arm: "a",
+            scenario_ms: 0,
+            fault: "begun",
+            type: "provider_5xx",
+            layer: "proxy-sink",
+        });
         j.append({ kind: "BeginTurn", arm: "a", scenario_ms: 0, event: "e-000001" });
         j.close();
         const calls: string[] = [];
@@ -3455,7 +3587,14 @@ describe("resume of fired faults", () => {
         const start = { order: ["a"], scenario: scenarioId(fixtureEvents(3), faults) };
         j.append({ kind: "StartRun", arm: null, scenario_ms: 0, ...start });
         j.append({ kind: "StartArm", arm: "a", scenario_ms: 0 });
-        j.append({ kind: "FaultFired", arm: "a", scenario_ms: 0, fault: "restart" });
+        j.append({
+            kind: "FaultFired",
+            arm: "a",
+            scenario_ms: 0,
+            fault: "restart",
+            type: "daemon_restart",
+            layer: "scheduler",
+        });
         j.append({ kind: "Event", arm: "a", scenario_ms: 0, event: "e-000000" });
         j.append({
             kind: "ItemState",

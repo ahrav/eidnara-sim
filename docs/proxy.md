@@ -91,7 +91,10 @@ the episode id) to its seed so every arm draws the same intermittent masks, and 
 ask for a fault and when their records are observed; a call received before
 a fault was armed takes nothing from that fault, and a call received before
 an injection is never that injection's host observation; a record carries the
-arm, session, turn, and scenario time that owned the request at receipt; `arm(id)` when an episode's trigger event occurs; and
+arm, session, turn, scenario time, and wall time of the request's receipt,
+and its first-byte latency runs from that receipt; among requests received in
+one epoch, fault selection follows classification, which needs the body, so
+it runs in body-completion order; `arm(id)` when an episode's trigger event occurs; and
 `disarm(id)` at the end of an episode's session. While armed, an episode replaces agent
 calls' answers by strategy:
 

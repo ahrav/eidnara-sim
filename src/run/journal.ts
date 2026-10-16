@@ -3,7 +3,9 @@ import {
     closeSync,
     constants,
     existsSync,
+    fdatasyncSync,
     fstatSync,
+    fsyncSync,
     ftruncateSync,
     linkSync,
     openSync,
@@ -251,6 +253,16 @@ export function directoryIdentity(dir: string): DirIdentity {
     return { dev: st.dev, ino: st.ino };
 }
 
+/** Flushes a directory's entries, so a file just created in it survives a crash. */
+function syncDirectory(dir: string): void {
+    const fd = openSync(dir, constants.O_RDONLY | constants.O_DIRECTORY);
+    try {
+        fsyncSync(fd);
+    } finally {
+        closeSync(fd);
+    }
+}
+
 /** The directory the open descriptor's file lives in, read back from the kernel. */
 function parentOf(fd: number): DirIdentity {
     const real = readlinkSync(`/proc/self/fd/${fd}`);
@@ -283,8 +295,14 @@ function leaseNumbers(dir: string): number[] {
  * live lease and are refused. Only the winner removes the lower-numbered files, which is how a
  * killed run resumes.
  */
-export function takeLease(dir: string): Lease {
+/**
+ * `within` is the identity of the directory the lease landed in, for `new Journal(path,
+ * lease.within)`, so the journal opens in the leased directory even when the path is a symlink
+ * repointed in between.
+ */
+export function takeLease(dir: string): Lease & { within: DirIdentity } {
     const mine = ownIdentity();
+    const within = directoryIdentity(dir);
     for (let attempt = 0; attempt < 3; attempt++) {
         const numbers = leaseNumbers(dir);
         const top = numbers.at(-1);
@@ -310,7 +328,11 @@ export function takeLease(dir: string): Lease {
                 rmSync(join(dir, `lease.${n}.json`), { force: true });
             } catch {}
         }
-        return mine;
+        const after = directoryIdentity(dir);
+        if (after.dev !== within.dev || after.ino !== within.ino) {
+            throw new Error(`run directory ${dir} changed while it was being leased`);
+        }
+        return { ...mine, within };
     }
     throw new Error(`could not lease ${dir}`);
 }
@@ -407,6 +429,7 @@ export class Journal {
             }
             read = readJournal(this.fd);
             ftruncateSync(this.fd, read.bytes ?? 0);
+            if (st.size === 0) syncDirectory(dirname(readlinkSync(`/proc/self/fd/${this.fd}`)));
         } catch (caught) {
             closeSync(this.fd);
             throw caught;
@@ -427,12 +450,18 @@ export class Journal {
         const full = { ...entry, seq: this.entries.length, wall_ms: Date.now() } as Entry;
         const line = Buffer.from(`${JSON.stringify(full)}\n`);
         const fd = this.open();
+        if (this.length + line.length > MAX_JOURNAL_BYTES) {
+            throw new Error(
+                `journal: seq ${full.seq} would carry the file over the ${MAX_JOURNAL_BYTES} limit`,
+            );
+        }
         try {
             for (let written = 0; written < line.length; ) {
                 const n = writeSync(fd, line, written);
                 if (n <= 0) throw new Error(`journal: short write at seq ${full.seq}`);
                 written += n;
             }
+            fdatasyncSync(fd);
         } catch (caught) {
             try {
                 ftruncateSync(fd, this.length);

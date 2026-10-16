@@ -159,6 +159,8 @@ interface Request {
     body: Body;
     /** Receipt of the request's first bytes on the monotonic clock, before its body arrived. */
     receivedMono: number;
+    /** The same receipt on the wall clock. */
+    receivedWall: number;
     /**
      * The arm, session, turn, and scenario time that owned the request at receipt, or the
      * error reading them raised; `handle()` records that error against the request.
@@ -180,6 +182,7 @@ export class Gateway {
         const onRequest = (req: IncomingMessage, res: ServerResponse) => {
             this.inFlight++;
             const receivedMono = performance.now();
+            const receivedWall = Date.now();
             const owner = this.received();
             const gone = new AbortController();
             res.on("close", () => !res.writableFinished && gone.abort());
@@ -191,6 +194,7 @@ export class Gateway {
                     expect: req.headers.expect,
                     body,
                     receivedMono,
+                    receivedWall,
                     owner,
                 };
                 this.handle(request, {
@@ -220,6 +224,7 @@ export class Gateway {
         h2.on("stream", (stream, headers) => {
             this.inFlight++;
             const receivedMono = performance.now();
+            const receivedWall = Date.now();
             const owner = this.received();
             const gone = new AbortController();
             stream.on("close", () => !stream.writableFinished && gone.abort());
@@ -232,6 +237,7 @@ export class Gateway {
                     expect: undefined,
                     body,
                     receivedMono,
+                    receivedWall,
                     owner,
                 };
                 this.handle(request, {
@@ -304,7 +310,7 @@ export class Gateway {
             sent: () => sent,
         };
         const call = this.calls++;
-        const startedWall = Date.now();
+        const startedWall = request.receivedWall;
         const startedMono = request.receivedMono;
         let done: Done = {
             component: "rejected",
@@ -356,7 +362,7 @@ export class Gateway {
     ): Promise<Done> {
         const { path, method, header, expect, body: upload } = request;
         const received = upload.received;
-        const started = performance.now();
+        const started = startedMono;
         const route = ROUTE.exec(path.split("?", 1)[0] ?? "");
         const parse = <T>(f: () => T): T | undefined => {
             try {
