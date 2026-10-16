@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { CORPUS_DIR, under } from "./sources";
+import { CORPUS_DIR, isPlainRelativePath, under } from "./sources";
 
 export const REPOS_DIR = join(CORPUS_DIR, "repos");
 const TWINS_DIR = join(CORPUS_DIR, "twins");
@@ -57,6 +57,11 @@ export function loadRepos(): RepoSpec[] {
     if (new Set(ids).size !== ids.length) throw new Error(`repos.json: duplicate id in ${ids}`);
     for (const repo of repos) {
         if (!SHA.test(repo.commit)) throw new Error(`repos.json: ${repo.id}: commit is not a SHA`);
+        if (typeof repo.license_file !== "string" || !isPlainRelativePath(repo.license_file)) {
+            throw new Error(
+                `repos.json: ${repo.id}: license_file must be a relative path in the clone`,
+            );
+        }
         for (const [field, cmd] of [
             ["prepare", repo.prepare],
             ["test", repo.test],

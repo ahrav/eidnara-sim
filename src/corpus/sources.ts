@@ -14,6 +14,13 @@ export interface Dataset {
     files: { path: string; sha256: string }[];
 }
 
+const SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+/** The segment grammar keeps each component intact when fetchDataset interpolates it into a URL. */
+export function isPlainRelativePath(path: string): boolean {
+    return path.split("/").every((s) => SEGMENT.test(s));
+}
+
 export function parseJson<T>(text: string, file: string): T {
     try {
         return JSON.parse(text) as T;
@@ -32,7 +39,7 @@ export function loadSources(): Dataset[] {
     const ids = datasets.map((d) => d.id);
     if (new Set(ids).size !== ids.length) throw new Error(`sources.json: duplicate id in ${ids}`);
     for (const d of datasets) {
-        if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(d.id)) {
+        if (!SEGMENT.test(d.id)) {
             throw new Error(
                 `sources.json: id ${JSON.stringify(d.id)} is not a plain directory name`,
             );
@@ -43,7 +50,7 @@ export function loadSources(): Dataset[] {
         if (!/^[0-9a-f]{40}$/.test(d.revision)) {
             throw new Error(`sources.json: ${d.id}: revision is not a commit SHA`);
         }
-        if (!/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(d.repo)) {
+        if (d.repo.split("/").length !== 2 || !isPlainRelativePath(d.repo)) {
             throw new Error(
                 `sources.json: ${d.id}: repo ${JSON.stringify(d.repo)} is not owner/name`,
             );
@@ -53,8 +60,7 @@ export function loadSources(): Dataset[] {
             throw new Error(`sources.json: ${d.id}: a file path repeats`);
         }
         for (const f of d.files) {
-            const segments = f.path.split("/");
-            if (!segments.every((s) => s !== "" && s !== "." && s !== "..")) {
+            if (!isPlainRelativePath(f.path)) {
                 throw new Error(
                     `sources.json: ${d.id}/${f.path}: path must be relative plain segments`,
                 );
