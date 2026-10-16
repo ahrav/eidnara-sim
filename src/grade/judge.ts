@@ -28,6 +28,8 @@ const ENTITIES: Record<string, string> = {
     nbsp: " ",
 };
 
+const codePoint = (value: number) => (value <= 0x10ffff ? String.fromCodePoint(value) : "");
+
 export function foldWords(text: string): string {
     const ascii = text.normalize("NFKD").replace(/\p{M}/gu, "").replace(INVISIBLE, "");
     return ` ${ascii
@@ -63,11 +65,10 @@ export function normalise(text: string): string {
         .replace(/^#{1,6}\s+/gm, "")
         .replace(/^\s*[-*+]\s+/gm, "")
         .replace(/^[ \t]*\[[^\]]+\]:[ \t]+\S.*$/gm, "")
+        .replace(/<!--[\s\S]*?-->/g, " ")
         .replace(/<\/?[a-zA-Z][^<>]*>/g, " ")
-        .replace(/&#x([0-9a-fA-F]+);/g, (_, hex: string) =>
-            String.fromCodePoint(Number.parseInt(hex, 16)),
-        )
-        .replace(/&#(\d+);/g, (_, dec: string) => String.fromCodePoint(Number(dec)))
+        .replace(/&#x([0-9a-fA-F]+);/g, (_, hex: string) => codePoint(Number.parseInt(hex, 16)))
+        .replace(/&#(\d+);/g, (_, dec: string) => codePoint(Number(dec)))
         .replace(/&(amp|lt|gt|quot|apos|nbsp);/g, (_, name: string) => ENTITIES[name] ?? "")
         .replace(/!?\[([^\]]*)\]\[[^\]]*\]/g, "$1")
         .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
@@ -121,6 +122,13 @@ const sha = (text: string) => createHash("sha256").update(text).digest("hex");
 
 export const pairDigests = (pair: Pair) => ({ a: sha(pair.a), b: sha(pair.b) });
 export const referenceDigest = (reference: string) => sha(reference);
+
+const isIdentity = (value: unknown): value is JudgeIdentity =>
+    typeof value === "object" &&
+    value !== null &&
+    ["model", "prompt_digest", "rubric_digest"].every(
+        (key) => typeof (value as Record<string, unknown>)[key] === "string",
+    );
 
 export interface JudgeIdentity {
     model: string;
@@ -411,6 +419,7 @@ export interface P7Context {
 }
 
 export function gradeP7(j: Judgment, c: P7Context, rules: Rules, version = 1): GradeRecord[] {
+    if (!isIdentity(j.judge)) throw new GradeRefused(`judgment for ${j.pair} names no judge`);
     if (j.pair !== c.item) {
         throw new GradeRefused(`judgment for ${j.pair} cannot grade item ${c.item}`);
     }
@@ -433,6 +442,9 @@ export function gradeP7(j: Judgment, c: P7Context, rules: Rules, version = 1): G
     }
     const expected = canonicalJson(judgeIdentity(rules.judge.model));
     const requireJudge = (source: string, identity: JudgeIdentity) => {
+        if (!isIdentity(identity)) {
+            throw new GradeRefused(`${source} judge identity is incomplete`);
+        }
         if (canonicalJson(identity) !== expected) {
             throw new GradeRefused(
                 `${source} judge ${identity.model} is not the pre-registered judge ${rules.judge.model}`,

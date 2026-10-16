@@ -98,8 +98,9 @@ cannot call, and the divergences are listed below.
    matched with every separator removed, so `eid-nara` and `CAN-ARY-7f3`
    match. The
    arm names are eval-core's six plus `eidnara`, `host arm`, and
-   `memory arm`. HTML tags are dropped and the common and numeric entities
-   decoded, Markdown links and images, inline or reference-style, keep
+   `memory arm`. HTML comments and tags are dropped and the common and
+   numeric entities decoded (an entity outside the code-point range is
+   dropped), Markdown links and images, inline or reference-style, keep
    their label and lose their destination, identifier, and definition line, doubled or tripled emphasis marks (`**`, `***`, `__`, `___`), backticks, heading
    marks, bullet marks, and code fence lines (a line that starts with three
    backticks and holds no further backtick, whatever its info string) are
@@ -163,10 +164,11 @@ it does not know; an unreachable gateway, a reply that is not JSON, one that
 carries no text block, or one whose text blocks together are not one verdict
 word is a judge refusal. The
 pre-registered judge is `global.openai.gpt-5.6-luna`.
-On 2026-10-16 the two P7 fixtures went through the gateway to that model
-(`sim-runs/judge-smoke/judge-calls.jsonl` holds the four `judge` call
-records and `judgments.json` the verdicts), and the real verdicts (`first`,
-then `second`, and the reverse) graded as the fixtures record.
+On 2026-10-16 the two P7 fixtures went through the gateway to that model,
+and the real verdicts (`first`, then `second`, and the reverse) graded as
+the fixtures record. The run's records (`judge-calls.jsonl` with the four
+`judge` call records, `judgments.json` with the verdicts) are run data and
+live under the git-ignored `runs/judge-smoke/`.
 
 The judge identity is the model id with the prompt and rubric digests; the
 prompt digest covers `PREPROCESSING_VERSION` (`sim-judge-preprocessing/v1`),

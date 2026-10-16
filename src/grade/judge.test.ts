@@ -666,6 +666,29 @@ describe("P7 judge path", () => {
         ]).toEqual(["excluded", "valid", "pass", false]);
     });
 
+    test("HTML comments and out-of-range entities are handled before blinding", () => {
+        const base = { id: "p", a: "fine", b: "fine" };
+        expect(() =>
+            blind({ ...base, b: "Eid<!-- separator -->nara found it" }, "a_then_b", "r", []),
+        ).toThrow("names an arm");
+        expect(normalise("a &#x110000; b &#99999999; c")).toBe("a b c");
+    });
+
+    test("a judgment without a complete judge identity is refused", async () => {
+        const f = load("P7-pass");
+        const judgment = await judgePair(
+            scripted(f.judge_verdicts),
+            f.pair,
+            f.probe.check.judge,
+            [],
+        );
+        const ctx = context(f.probe.id, f.pair, f.probe.check.judge);
+        for (const judge of [null, {}, { model: 1, prompt_digest: "x", rubric_digest: "y" }]) {
+            const broken = { ...judgment, judge: judge as unknown as typeof judgment.judge };
+            expect(() => gradeP7(broken, ctx, rules)).toThrow(GradeRefused);
+        }
+    });
+
     test("the human-check sample is ten percent of P7 items, rounded up, from a seeded draw", () => {
         const items = Array.from({ length: 24 }, (_, i) => `q-${i}`);
         const a = humanCheckSample(items, rules, new Rng(9));
