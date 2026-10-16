@@ -31,6 +31,23 @@ const MARGIN_VERDICTS: readonly string[] = [
     "inconclusive",
     "insufficient-runs",
 ];
+const SUPERIORITY_VERDICTS: readonly string[] = [
+    "better",
+    "worse",
+    "no-difference-above-x-pp-detectable-at-n",
+    "inconclusive",
+    "insufficient-runs",
+];
+const REPORT_FIELDS = ["tier", "claim_boundary", "prereg_hash", "families"];
+const VERDICT_FIELDS = [
+    "family",
+    "verdict",
+    "n",
+    "mde",
+    "resolution_ratio",
+    "failed_metric",
+    "failed_items",
+];
 
 const NULL_VERDICT = "no-difference-above-x-pp-detectable-at-n";
 
@@ -95,13 +112,18 @@ function checkVerdict(
             `${at}.verdict: a ${family.direction} gate reports passed-gate, failed-gate, inconclusive, or insufficient-runs`,
         );
     } else if (
-        !bound &&
-        !MARGIN_DIRECTIONS.includes(family.direction) &&
-        verdict === "passed-gate"
+        family.direction === "superiority-two-sided" &&
+        verdict !== "" &&
+        !SUPERIORITY_VERDICTS.includes(verdict)
     ) {
         errors.push(
-            `${at}.verdict: a ${family.direction} family makes a paired claim, never passed-gate`,
+            `${at}.verdict: a superiority-two-sided family reports ${SUPERIORITY_VERDICTS.slice(0, -1).join(", ")}, or ${SUPERIORITY_VERDICTS.at(-1)}`,
         );
+    } else if (family.direction === "descriptive" && verdict === "passed-gate") {
+        errors.push(`${at}.verdict: a descriptive family makes no gate claim`);
+    }
+    for (const key of Object.keys(f)) {
+        if (!VERDICT_FIELDS.includes(key)) errors.push(`${at}.${key}: unknown field`);
     }
     const ratio = isCanonicalDecimal(f.resolution_ratio) && Number(f.resolution_ratio) > 0;
     const ratioAllowed = verdict === NULL_VERDICT ? ratio : f.resolution_ratio === undefined;
@@ -141,8 +163,13 @@ export function checkReport(report: unknown, prereg: Preregistration): string[] 
     const r = report as Partial<TierReport> | null;
     if (!Array.isArray(r?.families)) return ["families: expected an array"];
     const errors: string[] = [];
-    if (r.tier !== prereg.tier)
+    if (typeof r.tier !== "string") errors.push("tier: expected a tier name");
+    else if (r.tier !== prereg.tier) {
         errors.push(`tier: report ${r.tier}, pre-registration ${prereg.tier}`);
+    }
+    for (const key of Object.keys(r)) {
+        if (!REPORT_FIELDS.includes(key)) errors.push(`${key}: unknown field`);
+    }
     if (r.claim_boundary !== CLAIM_BOUNDARY) {
         errors.push(`claim_boundary: expected ${JSON.stringify(CLAIM_BOUNDARY)}`);
     }

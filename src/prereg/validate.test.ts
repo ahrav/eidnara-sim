@@ -288,6 +288,21 @@ describe("pre-registration validator", () => {
         expect(validatePreregistration(s)).toEqual(["bootstrap.replicates: expected 40 to 10000"]);
     });
 
+    test("ties the interval method to the outcome, a superiority MDE to a positive value, and the resources margin to c", () => {
+        const m = load("M") as any;
+        const fam = (id: string) => m.families.find((f: any) => f.id === id);
+        fam("probe-P1").outcome = "slope";
+        fam("probe-P5").mde.value = "0";
+        m.leak_bound.c_bytes_per_session = 1;
+        expect(validatePreregistration(m).sort()).toEqual(
+            [
+                "families[probe-P1].interval_method: exact-mcnemar-newcombe-cluster-bootstrap does not analyse a slope outcome",
+                "families[probe-P5].mde.value: a superiority family detects a positive effect",
+                "families[resources].margin.value: the resources margin is leak_bound.c_bytes_per_session",
+            ].sort(),
+        );
+    });
+
     test("requires both A/A control pairs and five M repeats", () => {
         const prereg = load("M") as any;
         prereg.aa_controls.pairs = [["host", "host"]];
@@ -374,6 +389,28 @@ describe("report check against the pre-registration", () => {
         at(r, "probe-P1").resolution_ratio = "0.5";
         delete at(r, "probe-P2").resolution_ratio;
         expect(checkReport(r, m)).toEqual([]);
+    });
+
+    test("a superiority family never reports failed-gate", () => {
+        const r = acceptedReport(m);
+        Object.assign(at(r, "probe-P1"), {
+            verdict: "failed-gate",
+            failed_metric: m.families.find((f) => f.id === "probe-P1")!.metrics[0],
+            failed_items: ["P1-01"],
+        });
+        expect(checkReport(r, m)).toEqual([
+            "families[probe-P1].verdict: a superiority-two-sided family reports better, worse, no-difference-above-x-pp-detectable-at-n, inconclusive, or insufficient-runs",
+        ]);
+    });
+
+    test("refuses an unknown field on the report or a verdict by name", () => {
+        const r = acceptedReport(m) as any;
+        r.conclusion = "equivalent";
+        (at(r, "probe-P1") as any).note = "x";
+        expect(checkReport(r, m)).toEqual([
+            "conclusion: unknown field",
+            "families[probe-P1].note: unknown field",
+        ]);
     });
 
     test("a margin gate fails as failed-gate naming its metric, never as worse", () => {
@@ -500,7 +537,7 @@ describe("report check against the pre-registration", () => {
         at(r, "dependability").verdict = "better";
         at(r, "harm").verdict = "better";
         expect(checkReport(r, m)).toEqual([
-            "families[probe-P1].verdict: a superiority-two-sided family makes a paired claim, never passed-gate",
+            "families[probe-P1].verdict: a superiority-two-sided family reports better, worse, no-difference-above-x-pp-detectable-at-n, inconclusive, or insufficient-runs",
             "families[harm].verdict: a noninferiority gate reports passed-gate, failed-gate, inconclusive, or insufficient-runs",
             "families[dependability].verdict: a at-most gate reports passed-gate, failed-gate, inconclusive, or insufficient-runs",
             "families[resources].verdict: a threshold gate compares each run to a bound and reports passed-gate or failed-gate",
@@ -556,6 +593,8 @@ describe("report check against the pre-registration", () => {
         at(r, "probe-P1").verdict = JSON.parse('{"toString":null,"valueOf":null}');
         const errors = checkReport(r, s);
         expect(errors).toContain("families[probe-P1].verdict: expected a verdict kind");
+        const odd = JSON.parse('{"tier":{"toString":null,"valueOf":null},"families":[]}');
+        expect(checkReport(odd, s)).toContain("tier: expected a tier name");
         expect(errors).toContain(
             `families[${s.families.length}]: expected a verdict object with a family`,
         );

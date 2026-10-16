@@ -90,6 +90,13 @@ interface Shape {
 }
 
 const MARGIN_SHAPE: Shape = { value: decimal, scale: oneOf(MARGIN_SCALES) };
+/** The paired interval each outcome kind takes (spec #1007, Intervals). */
+const INTERVALS_FOR: Record<string, readonly string[]> = {
+    binary: ["exact-mcnemar-newcombe-cluster-bootstrap"],
+    graded: ["paired-percentile-bootstrap", "paired-bca-bootstrap"],
+    count: ["negative-binomial-glm", "paired-sign-test"],
+    slope: ["slope-paired-bootstrap"],
+};
 /** The divergence normalisers OQ-3 fixes (#1024). */
 const NORMALISERS = ["iso-8601-timestamps", "durations", "pids", "temp-paths", "run-ids"];
 
@@ -289,6 +296,22 @@ function checkFamilies(p: Preregistration, errors: string[]): void {
         }
         if (f.direction === "zero-tolerance" && f.margin.scale !== "count") {
             errors.push(`${at}.margin.scale: a zero-tolerance gate counts events`);
+        }
+        if (f.direction === "superiority-two-sided" && Number(f.mde.value) <= 0) {
+            errors.push(`${at}.mde.value: a superiority family detects a positive effect`);
+        }
+        if (
+            f.interval_method !== "none" &&
+            !INTERVALS_FOR[f.outcome]?.includes(f.interval_method)
+        ) {
+            errors.push(
+                `${at}.interval_method: ${f.interval_method} does not analyse a ${f.outcome} outcome`,
+            );
+        }
+        if (f.id === "resources" && Number(f.margin.value) !== p.leak_bound.c_bytes_per_session) {
+            errors.push(
+                `${at}.margin.value: the resources margin is leak_bound.c_bytes_per_session`,
+            );
         }
         if (f.id === "harm" && (f.multiplicity !== "holm" || !sameSet(f.metrics, HARM_METRICS))) {
             errors.push(

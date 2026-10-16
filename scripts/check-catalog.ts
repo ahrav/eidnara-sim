@@ -87,6 +87,13 @@ export function checkRecord(record: Record, spec: FieldSpec[], catalogDir: strin
             errors.push(`${at}: ${name} is blank`);
             return;
         }
+        for (const line of value.split("\n").slice(1)) {
+            const m = /^([A-Z][a-z][A-Za-z/ ]*):/.exec(line);
+            if (m) errors.push(`${at}: undeclared field ${m[1]}`);
+        }
+        if (name === "Check" && (value.split(/ -(?:\s|$)/)[1] ?? "").trim() === "") {
+            errors.push(`${at}: Check states no condition after its semantics`);
+        }
         const allowed = spec[i]?.values;
         const head = (value.split(/ -(?:\s|$)/)[0] ?? "").trim();
         if (allowed && !allowed.includes(head)) {
@@ -108,8 +115,17 @@ export function checkRecord(record: Record, spec: FieldSpec[], catalogDir: strin
             const evidence = readFileSync(path, "utf8");
             if (!evidence.startsWith(`# ${at}\n`))
                 errors.push(`${at}: evidence title differs from slug`);
-            for (const h of EVIDENCE_HEADINGS)
-                if (!evidence.includes(`\n${h}\n`)) errors.push(`${at}: evidence lacks ${h}`);
+            for (const h of EVIDENCE_HEADINGS) {
+                const start = evidence.indexOf(`\n${h}\n`);
+                if (start < 0) {
+                    errors.push(`${at}: evidence lacks ${h}`);
+                    continue;
+                }
+                const rest = evidence.slice(start + h.length + 2);
+                const end = rest.indexOf("\n## ");
+                const body = end < 0 ? rest : rest.slice(0, end);
+                if (body.trim() === "") errors.push(`${at}: evidence section ${h} is empty`);
+            }
         }
     }
     const oq = field("Open questions");

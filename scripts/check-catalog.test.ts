@@ -146,6 +146,35 @@ describe("catalog checker", () => {
         );
     });
 
+    test("refuses a Check with no condition after its semantics, an undeclared field line, and an empty evidence section", () => {
+        const path = copy();
+        edit(
+            path,
+            /Check: `always` - [^\n]*\n(?:[^\n]+\n)*?(?=Fault\/timing angle:)/,
+            "Check: `always`\n",
+        );
+        edit(
+            path,
+            "Impact: Arms of one seed",
+            "Impact: Arms of one seed\nUnexpected field: silently accepted",
+        );
+        const evidence = join(dir, "evidence/sim-p01-scenario-compile-is-deterministic.md");
+        writeFileSync(
+            evidence,
+            "# sim-p01-scenario-compile-is-deterministic\n\n## Discovery trigger\n\n## Evidence trail\n\nx\n\n## Failure scenario\n\nx\n\n## Timing windows and dependencies\n\nx\n\n## What a test must construct\n\nx\n\n## Investigation log\n\nx\n",
+        );
+        const errors = checkCatalog(path, METHOD, IDS);
+        expect(errors).toContain(
+            "sim-p01-scenario-compile-is-deterministic: Check states no condition after its semantics",
+        );
+        expect(errors).toContain(
+            "sim-p01-scenario-compile-is-deterministic: undeclared field Unexpected field",
+        );
+        expect(errors).toContain(
+            "sim-p01-scenario-compile-is-deterministic: evidence section ## Discovery trigger is empty",
+        );
+    });
+
     test("refuses a Guarantee that carries its id and no claim", () => {
         const path = copy();
         edit(path, /Guarantee: SIM-P01:[^\n]*\n(?:[^\n]+\n)*?(?=Check:)/, "Guarantee: SIM-P01:\n");
