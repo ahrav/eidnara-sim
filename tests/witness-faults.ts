@@ -134,10 +134,15 @@ if (only.includes("rogue")) {
     const child = launch(dirs.rogue, ["--arms", "eidnara", "--events", "6"]);
     await waitFor(child, begun(dirs.rogue, "e-000004"));
     const state = JSON.parse(readFileSync(join(dirs.rogue, "eidnara/state.json"), "utf8"));
-    try {
-        process.kill(state.daemon.pid, "SIGKILL");
-    } catch (caught) {
-        outcome.rogue_kill_error = String(caught);
+    const pid: unknown = state?.daemon?.pid;
+    if (typeof pid === "number" && Number.isInteger(pid) && pid > 1) {
+        try {
+            process.kill(pid, "SIGKILL");
+        } catch (caught) {
+            outcome.rogue_kill_error = String(caught);
+        }
+    } else {
+        outcome.rogue_kill_error = `state.json names no daemon pid: ${JSON.stringify(pid)}`;
     }
     outcome.rogue = await finished(child);
 }

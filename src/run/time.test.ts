@@ -477,6 +477,26 @@ describe("ResourceSampler", () => {
         expect(lines[0].store_bytes).toBeGreaterThan(0);
     });
 
+    test("an interval sample that fails reports through onError and stops the timer", async () => {
+        const dir = mkdtempSync(join(tmpdir(), "samp-"));
+        const errors: string[] = [];
+        const sampler = new ResourceSampler({
+            path: join(dir, "resources.jsonl"),
+            intervalMs: 20,
+            busyFraction: 0.2,
+            pid: () => process.pid,
+            storeDir: import.meta.dir,
+            scenarioMs: () => 0,
+            onBusy: () => undefined,
+            onError: (caught) => void errors.push((caught as NodeJS.ErrnoException).code ?? "?"),
+        });
+        sampler.start();
+        rmSync(dir, { recursive: true, force: true });
+        await Bun.sleep(120);
+        expect(errors).toEqual(["ENOENT"]);
+        sampler.stop();
+    });
+
     test("start takes the baseline sample at once, so the next sample yields a CPU fraction", async () => {
         const path = join(mkdtempSync(join(tmpdir(), "samp-")), "resources.jsonl");
         const sampler = new ResourceSampler({

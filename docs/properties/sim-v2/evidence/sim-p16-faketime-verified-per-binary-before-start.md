@@ -24,8 +24,9 @@ leaves `clock_gettime` unbound. On this host all three intercept.
 
 The run command (`docs/run-command.md`) calls `preflight` on every
 invocation before the scheduler journals its first entry, keeps the first
-result in the run manifest, and refuses to resume when an interception result
-changes. The daemon probe runs the `direct_host_fixture` the hermetic host
+result in the run manifest, journals a `Preflight` entry with the
+per-binary interception results before `StartRun` or `ResumeRun`, and
+refuses to resume when an interception result changes. The daemon probe runs the `direct_host_fixture` the hermetic host
 stack launches. The live witness runs on 2026-10-16 recorded Pi's Node
 runtime, OpenCode 1.18.22, and the fixture as intercepted.
 

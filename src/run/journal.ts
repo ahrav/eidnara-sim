@@ -14,6 +14,7 @@ import { hostname } from "node:os";
 import { join } from "node:path";
 
 export type EntryKind =
+    | "Preflight"
     | "StartRun"
     | "ResumeRun"
     | "StartArm"

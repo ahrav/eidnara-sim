@@ -14,7 +14,7 @@ const schedule = (events: Record<string, number>): Schedule => ({
 });
 
 describe("checkJournal", () => {
-    test("a clean journal reports its jumps and the job held after its turn", () => {
+    test("a clean journal reports its jumps and the jobs that held the clock with no turn open", () => {
         const { entries, at } = journal();
         at("BeginTurn", 0, { event: "e-1" });
         at("RegisterJob", 10, { job: "j0" });
@@ -24,16 +24,21 @@ describe("checkJournal", () => {
         at("RegisterJob", 30, { job: "j1" });
         at("EndJob", 40, { job: "j1" });
         at("AdvanceClock", 500, { from_ms: 40, fault: "sleep" });
+        at("Event", 500, { event: "e-2" });
         at("AdvanceClock", 600, { from_ms: 500, next_event: "e-3" });
         expect(checkJournal(entries, schedule({ "e-1": 0, "e-2": 500, "e-3": 600 }))).toEqual({
-            entries: 9,
+            entries: 10,
             next_event_jumps: 1,
             sleep_jumps: 1,
             decreasing_scenario_ms: [],
             advance_while_busy: [],
             off_schedule_jumps: [],
             events_inside_sleep: [],
-            jobs_held_after_turn: [{ job: "j1", seq: 5 }],
+            repeated_sleeps: [],
+            jobs_held_after_turn: [
+                { job: "j0", seq: 1 },
+                { job: "j1", seq: 5 },
+            ],
         });
     });
 
@@ -59,6 +64,39 @@ describe("checkJournal", () => {
         expect([report.sleep_jumps, report.off_schedule_jumps, report.events_inside_sleep]).toEqual(
             [1, [], []],
         );
+    });
+
+    test("a job registered inside a turn that outlives the turn counts as held after it", () => {
+        const { entries, at } = journal();
+        at("BeginTurn", 0, { event: "e-1" });
+        at("RegisterJob", 10, { job: "fold" });
+        at("EndTurn", 20, { event: "e-1" });
+        at("Event", 20, { event: "e-1" });
+        at("EndJob", 30, { job: "fold" });
+        at("BeginTurn", 30, { event: "e-2" });
+        at("RegisterJob", 31, { job: "short" });
+        at("EndJob", 32, { job: "short" });
+        at("EndTurn", 40, { event: "e-2" });
+        const report = checkJournal(entries, schedule({ "e-1": 0, "e-2": 30 }));
+        expect(report.jobs_held_after_turn).toEqual([{ job: "fold", seq: 1 }]);
+    });
+
+    test("a jump past an unrun event scheduled at from_ms is off schedule", () => {
+        const { entries, at } = journal();
+        at("AdvanceClock", 500, { from_ms: 200, next_event: "e-2" });
+        at("AdvanceClock", 900, { from_ms: 500, fault: "sleep" });
+        const report = checkJournal(entries, schedule({ "e-1": 200, "e-2": 500, "e-3": 900 }));
+        expect(report.off_schedule_jumps).toEqual([0, 1]);
+        expect(report.events_inside_sleep).toEqual([1]);
+    });
+
+    test("a second jump for the same sleep fault is reported", () => {
+        const { entries, at } = journal();
+        at("AdvanceClock", 500, { from_ms: 0, fault: "sleep" });
+        at("Event", 500, { event: "e-2" });
+        at("AdvanceClock", 900, { from_ms: 500, fault: "sleep" });
+        const report = checkJournal(entries, schedule({ "e-2": 500, "e-3": 900 }));
+        expect([report.sleep_jumps, report.repeated_sleeps]).toEqual([2, [2]]);
     });
 
     test("a jump past an earlier pending event is off schedule", () => {

@@ -12,6 +12,7 @@ import {
     loadManifest,
     loadScenario,
     type RunOptions,
+    requireMechanisms,
     requireOutsideCheckout,
     runSteps,
 } from "./run";
@@ -68,12 +69,35 @@ describe("run inputs", () => {
         mkdirSync(join(checkout, "target"), { recursive: true });
         symlinkSync(checkout, join(root, "link"));
         expect(() => requireOutsideCheckout(join(checkout, "runs/x"), checkout)).toThrow(
-            /inside the Eidnara checkout/,
+            /overlaps the Eidnara checkout/,
         );
-        expect(() => requireOutsideCheckout(checkout, checkout)).toThrow(/inside/);
-        expect(() => requireOutsideCheckout(join(root, "link/runs/x"), checkout)).toThrow(/inside/);
+        expect(() => requireOutsideCheckout(checkout, checkout)).toThrow(/overlaps/);
+        expect(() => requireOutsideCheckout(join(root, "link/runs/x"), checkout)).toThrow(
+            /overlaps/,
+        );
+        expect(() => requireOutsideCheckout(root, checkout)).toThrow(/overlaps/);
         expect(() => requireOutsideCheckout(join(root, "eidnara-runs/x"), checkout)).not.toThrow();
         expect(() => requireOutsideCheckout(join(root, "runs/x"), checkout)).not.toThrow();
+    });
+
+    test("a schedule needs a mechanism for every fault and two models for a model switch", () => {
+        const at = (type: FaultEpisode["type"]): FaultEpisode => ({
+            id: `f-${type}`,
+            type,
+            strategy: "single",
+            trigger: { kind: "session_start", session: "s-0000" },
+            params: {},
+            seam: SEAMS[type],
+        });
+        expect(() => requireMechanisms([at("provider_429")], ["m"])).not.toThrow();
+        expect(() => requireMechanisms([at("model_switch")], ["m", "n"])).not.toThrow();
+        expect(() => requireMechanisms([at("model_switch")], ["m"])).toThrow(
+            /two distinct --models/,
+        );
+        expect(() => requireMechanisms([at("model_switch")], ["m", "m"])).toThrow(/two distinct/);
+        expect(() => requireMechanisms([at("host_upgrade"), at("provider_429")], ["m"])).toThrow(
+            /without a mechanism: host_upgrade/,
+        );
     });
 
     test("scenario.json is refused when its body no longer hashes to its scenario_hash", async () => {
@@ -117,14 +141,40 @@ describe("run inputs", () => {
         };
         const o: RunOptions = { config, tier: "S", seed: 101, host: "pi", out };
         const first = await loadManifest(o, scenario, checks);
-        expect(first.preflight.hosts[0]?.version).toBe("0.80.2");
-        await expect(loadManifest(o, scenario, checks)).resolves.toMatchObject({ seed: 101 });
+        expect(first.manifest.preflight.hosts[0]?.version).toBe("0.80.2");
+        await expect(loadManifest(o, scenario, checks)).resolves.toMatchObject({
+            manifest: { seed: 101 },
+        });
         const upgraded = {
             ...checks,
             hosts: [{ host: "pi" as const, version: "0.81.0", transcript_paths: ["a"] }],
         };
         await expect(loadManifest(o, scenario, upgraded)).rejects.toThrow(
             /the pi host changed since the run started/,
+        );
+    });
+
+    test("a resume is refused when the harness revision or the manifest's arm names are off", async () => {
+        const out = dir();
+        const scenario = writeScenario(out, scenarioBody());
+        const checks: Preflight = {
+            launcher: join(out, "launcher"),
+            time_injection: [],
+            distortions: [],
+            hosts: [{ host: "pi", version: "0.80.2", transcript_paths: [] }],
+            toolchain: [],
+        };
+        const o: RunOptions = { config, tier: "S", seed: 101, host: "pi", out };
+        const { manifest } = await loadManifest(o, scenario, checks);
+        expect(manifest.sim_commit).toMatch(/^[0-9a-f]{40}$/);
+        const path = join(out, "manifest.json");
+        writeFileSync(path, JSON.stringify({ ...manifest, sim_commit: "0".repeat(40) }));
+        await expect(loadManifest(o, scenario, checks)).rejects.toThrow(
+            /inputs changed since the run started: sim_commit/,
+        );
+        writeFileSync(path, JSON.stringify({ ...manifest, order: ["../../elsewhere"] }));
+        await expect(loadManifest(o, scenario, checks)).rejects.toThrow(
+            /names arms outside the S order/,
         );
     });
 });

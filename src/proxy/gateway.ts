@@ -97,7 +97,8 @@ export interface GatewayOptions {
     rng: Rng;
     clock: { scenarioMs(): number };
     scope: () => Scope;
-    observe?: (event: CallStarted) => void;
+    /** A returned function runs once the call's record is written, or once the write failed. */
+    observe?: (event: CallStarted) => unknown;
     requestDeadlineMs?: number;
     /** How long `stop` waits for aborted in-flight handlers to finish writing their records. */
     drainMs?: number;
@@ -216,8 +217,14 @@ export class Gateway {
         await Promise.all(
             this.servers.map((s) => new Promise<void>((done) => s.close(() => done()))),
         );
-        const drained = Promise.all(this.active.keys());
-        await Promise.race([drained, Bun.sleep(this.options.drainMs ?? 10_000)]);
+        if (this.active.size === 0) return;
+        await new Promise<void>((done) => {
+            const timer = setTimeout(done, this.options.drainMs ?? 10_000);
+            Promise.all(this.active.keys()).then(() => {
+                clearTimeout(timer);
+                done();
+            });
+        });
     }
 
     private async handle(path: string, header: string | undefined, raw: Buffer, outer: Sink) {
@@ -252,10 +259,21 @@ export class Gateway {
             model: "",
             status: 500,
         };
+        const after: { ended: (() => void) | null } = { ended: null };
         try {
-            done = await this.serve(path, header, raw, sink, call, (d) => {
-                done = d;
-            });
+            done = await this.serve(
+                path,
+                header,
+                raw,
+                sink,
+                call,
+                (d) => {
+                    done = d;
+                },
+                (end) => {
+                    after.ended = end;
+                },
+            );
         } catch (caught) {
             done = { ...done, error: `${(caught as Error).name}: ${(caught as Error).message}` };
             sink.status(500, { "content-type": "application/json" });
@@ -266,6 +284,7 @@ export class Gateway {
             this.options.injector.observe(record, call);
         } finally {
             this.inFlight--;
+            after.ended?.();
         }
     }
 
@@ -276,6 +295,7 @@ export class Gateway {
         sink: Sink & { sent: () => number },
         call: number,
         progress: (d: Done) => void,
+        onEnd: (end: () => void) => void,
     ): Promise<Done> {
         const started = performance.now();
         const route = ROUTE.exec(path.split("?", 1)[0] ?? "");
@@ -320,8 +340,9 @@ export class Gateway {
         if (stripped) done.stripped = stripped;
         progress(done);
         const event = { kind: "call_started", component: tag.component, wall_ms: Date.now() };
-        this.options.observe?.(event as CallStarted);
-        const fault = this.options.injector.take(tag.component, call);
+        const ended = this.options.observe?.(event as CallStarted);
+        if (typeof ended === "function") onEnd(ended as () => void);
+        const fault = this.options.injector.take(tag.component, call, this.options.scope().arm);
         if (fault) done.fault_ref = fault.id;
         if (fault && fault.type !== "slow_stream") {
             const tool = body.toolConfig?.tools?.[0]?.toolSpec?.name;

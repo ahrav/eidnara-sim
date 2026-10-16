@@ -372,7 +372,7 @@ describe("Scheduler", () => {
             drivers: {
                 a: fakeDriver([], 0, (e) => {
                     if (e.kind === "user_turn" && e.session === "s-0001") {
-                        if (injector.take(TARGET, 1)) faulted++;
+                        if (injector.take(TARGET, 1, "a")) faulted++;
                     }
                 }),
             },
@@ -1107,6 +1107,40 @@ test("a mid-fold kill observed in the arm's last turn is observed before finish 
     expect(order).toEqual(["fault", "finish"]);
     const kinds = j.entries.map((e) => e.kind);
     expect(kinds.indexOf("FaultObserved")).toBeLessThan(kinds.indexOf("EndArm"));
+});
+
+test("a session-start proxy fault fired before the kill is armed again while its first turn is unrun", async () => {
+    const path = join(dir(), "j.jsonl");
+    const j = new Journal(path);
+    const faults = [episode("p0", "provider_429", { kind: "session_start", session: "s-0000" })];
+    const events = fixtureEvents(2);
+    j.append({
+        kind: "StartRun",
+        arm: null,
+        scenario_ms: 0,
+        order: ["a"],
+        scenario: scenarioId(events, faults),
+    });
+    j.append({ kind: "StartArm", arm: "a", scenario_ms: 0 });
+    j.append({ kind: "FaultFired", arm: "a", scenario_ms: 0, fault: "p0", layer: "proxy-sink" });
+    j.append({ kind: "Event", arm: "a", scenario_ms: 0, event: "e-000000" });
+    j.close();
+    const calls: string[] = [];
+    const proxy = {
+        arm: (id: string, arm: string) => void calls.push(`arm ${arm}/${id}`),
+        disarm: (id: string, arm: string) => void calls.push(`disarm ${arm}/${id}`),
+    };
+    await new Scheduler({
+        events,
+        faults,
+        journal: new Journal(path),
+        settleMs: 0,
+        order: ["a"],
+        drivers: { a: { ...fakeDriver([]), resume: async () => undefined } },
+        proxy,
+    }).run();
+    expect(calls[0]).toBe("arm a/p0");
+    expect(calls.filter((c) => c.startsWith("arm"))).toHaveLength(1);
 });
 
 test("a busy set that outlives the idle limit stops the run with the held ids", async () => {
