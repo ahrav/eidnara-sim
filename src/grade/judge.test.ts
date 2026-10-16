@@ -51,6 +51,25 @@ const agentCall = (response_text: string): CallView => {
     return view;
 };
 
+const snapshotOf = (
+    id: string,
+    arm: string,
+    text: string,
+    item = "q-1",
+    outcome: Snapshot["turn_outcome"] = "ok",
+): Snapshot => {
+    const view = {
+        id,
+        item,
+        arm,
+        session: "s-1",
+        turn: "e-1",
+        turn_outcome: outcome,
+        artefacts: [{ id: `${id}:calls`, class: "proxy-call" as const, calls: [agentCall(text)] }],
+    };
+    return view;
+};
+
 function scripted(verdicts: Record<string, RawVerdict>): JudgeClient & { prompts: string[] } {
     const prompts: string[] = [];
     return {
@@ -130,20 +149,7 @@ describe("P7 judge path", () => {
     }
 
     test("a pair is built from the two snapshots' answers, and a transcript artefact is refused", () => {
-        const snap = (id: string, text: string): Snapshot => ({
-            id,
-            item: "q-1",
-            arm: id,
-            turn: "e-1",
-            turn_outcome: "ok",
-            artefacts: [
-                {
-                    id: `${id}:calls`,
-                    class: "proxy-call",
-                    calls: [agentCall(text)],
-                },
-            ],
-        });
+        const snap = (id: string, text: string) => snapshotOf(id, id, text);
         const built = p7Pair("q-1", snap("eidnara", "because A"), snap("host", "no idea"));
         expect([built?.pair.a, built?.pair.b, built?.inputs]).toEqual([
             "because A",
@@ -316,24 +322,8 @@ describe("P7 judge path", () => {
     });
 
     test("the pair takes its item, arms, and outcome from the snapshots", () => {
-        const snap = (
-            arm: string,
-            item = "q-1",
-            outcome: Snapshot["turn_outcome"] = "ok",
-        ): Snapshot => ({
-            id: `snap-${arm}`,
-            item,
-            arm,
-            turn: "e-1",
-            turn_outcome: outcome,
-            artefacts: [
-                {
-                    id: `${arm}:calls`,
-                    class: "proxy-call",
-                    calls: [agentCall("because")],
-                },
-            ],
-        });
+        const snap = (arm: string, item = "q-1", outcome: Snapshot["turn_outcome"] = "ok") =>
+            snapshotOf(`snap-${arm}`, arm, "because", item, outcome);
         const built = p7Pair("q-1", snap("eidnara"), snap("host"));
         expect([built?.snapshots, built?.arms]).toEqual([
             { a: "snap-eidnara", b: "snap-host" },
@@ -453,14 +443,7 @@ describe("P7 judge path", () => {
     });
 
     test("an answer that is only formatting is refused as empty", () => {
-        const snap = (arm: string, text: string): Snapshot => ({
-            id: `snap-${arm}`,
-            item: "q-1",
-            arm,
-            turn: "e-1",
-            turn_outcome: "ok",
-            artefacts: [{ id: `${arm}:calls`, class: "proxy-call", calls: [agentCall(text)] }],
-        });
+        const snap = (arm: string, text: string) => snapshotOf(`snap-${arm}`, arm, text);
         for (const blank of ["**", "```\n```", "__ ** `"]) {
             expect(() => p7Pair("q-1", snap("eidnara", "because"), snap("host", blank))).toThrow(
                 "answer b is empty",
