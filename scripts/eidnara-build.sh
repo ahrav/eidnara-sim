@@ -16,7 +16,12 @@ esac
 dst=$dst_real
 src=$src_real
 # One build per clone at a time, held from the record's removal to its publication.
-exec 9>"$dst_real.lock"
+lock="$dst_real.lock"
+if [ -L "$lock" ]; then
+    echo "eidnara-build: $lock is a symlink" >&2
+    exit 65
+fi
+exec 9>>"$lock"
 if ! flock -n 9; then
     echo "eidnara-build: another build holds $dst_real.lock" >&2
     exit 75

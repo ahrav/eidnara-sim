@@ -11,8 +11,7 @@ The plugins, native addon, daemon, and host fixture come from one commit.
 checkout, checks out its `HEAD`, and builds every artefact inside the clone,
 so the source checkout itself stays read-only; it refuses a clone path that
 is the checkout or lies beneath it, and reuses an existing clone only when
-its `.sim-build-source` names the same checkout. It holds `<clone>.lock`
-with `flock` for the whole build, so a second build of the same clone is
+its `.sim-build-source` names the same checkout. It refuses a symlink at `<clone>.lock`, holds the lock with `flock` for the whole build, so a second build of the same clone is
 refused. A first clone is made at `<clone>.partial` and renamed into place
 once it carries its source record, so an interrupted clone leaves only the
 partial tree, which the next build removes. `.sim-build-commit` holds
@@ -157,9 +156,10 @@ in `<run>/toolbin` that drops the preload, and `RUSTC` and `RUSTDOC` point
 cargo at the wrappers, since rustup puts its own toolchain directory first on
 cargo's `PATH`. Those tools read wall-clock time, and preflight records that
 distortion. Preflight writes the wrappers, then runs `cargo --version`,
-`"${RUSTC:-rustc}" -vV`, and `bun --version` under the interposer through the
+`"${RUSTC:-rustc}" -vV`, `"${RUSTDOC:-rustdoc}" --version`, and `bun --version` under the interposer through the
 launcher, so the rustc check goes through the same wrapper cargo uses (or
 `rustc` on `PATH` when no wrapper is configured), and
-records each version line, which must name the tool's version; a tool that
+records each version line, which must name the tool's version (`rustdoc
+--version` runs too, through its wrapper); a tool that
 fails, prints no version, or runs past 60 s has its tree
 stopped and stops the run.

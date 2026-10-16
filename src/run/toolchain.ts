@@ -1,9 +1,9 @@
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { SimConfig } from "../config/config";
 import { withDeadline } from "./deadline";
 import { launch, shellQuote } from "./launcher";
-import { stopOwnedTree } from "./procs";
+import { processStart, stopOwnedTree } from "./procs";
 import { FAKETIME_LIB, faketimeEnv } from "./timeinject";
 
 export interface ToolchainProbe {
@@ -15,6 +15,7 @@ export interface ToolchainProbe {
 export const TOOLCHAIN_PROBES: [string, string][] = [
     ["cargo", "exec cargo --version"],
     ["rustc", 'exec "${RUSTC:-rustc}" -vV'],
+    ["rustdoc", 'exec "${RUSTDOC:-rustdoc}" --version'],
     ["bun", "exec bun --version"],
 ];
 
@@ -58,9 +59,10 @@ async function probe(argv: string[], path: string): Promise<{ ok: boolean; out: 
         stdout: "pipe",
         stderr: "pipe",
     });
+    const start = processStart(child.pid) ?? undefined;
     const code = await withDeadline(child.exited, 60_000);
     if (code === null) {
-        const stopped = await stopOwnedTree(child.pid, 2_000);
+        const stopped = await stopOwnedTree(child.pid, 2_000, start);
         return {
             ok: false,
             out: stopped ? "no exit after 60 s" : "no exit after 60 s; its tree survived SIGKILL",
@@ -92,6 +94,7 @@ export async function toolchainProbe(
 const VERSION: Record<string, RegExp> = {
     cargo: /^cargo \d+\.\d+/,
     rustc: /^rustc \d+\.\d+/,
+    rustdoc: /^rustdoc \d+\.\d+/,
     bun: /^\d+\.\d+\.\d+/,
 };
 
@@ -100,4 +103,15 @@ export function versionLine(tool: string, out: string): string {
     if (!VERSION[tool]?.test(line))
         throw new Error(`toolchain: ${tool} printed no version (${line})`);
     return line;
+}
+
+/** The containment check compares canonical paths, so a symlink cannot lead a bin out of its keep path. */
+export function checkToolchainBins(config: SimConfig): void {
+    const keep = config.toolchain.keep.map((k) => realpathSync(k));
+    for (const bin of config.toolchain.bin) {
+        const real = realpathSync(bin);
+        if (!keep.some((k) => real === k || real.startsWith(`${k}/`))) {
+            throw new Error(`toolchain bin ${bin} resolves outside its keep paths`);
+        }
+    }
 }

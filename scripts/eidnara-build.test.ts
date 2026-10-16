@@ -6,6 +6,7 @@ import {
     readFileSync,
     realpathSync,
     rmSync,
+    symlinkSync,
     writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -165,4 +166,15 @@ test("a build after an interrupted first clone starts over instead of refusing t
     expect(readFileSync(join(dst, ".sim-build-commit"), "utf8").trim()).toBe(
         git(src, "rev-parse", "HEAD"),
     );
+});
+
+test("the build refuses a symlink at its lock path and leaves the link target alone", () => {
+    const { stubs, src, root, dst } = fixture();
+    writeFileSync(join(src, "README"), "edited\n");
+    symlinkSync(join(src, "README"), `${dst}.lock`);
+    const r = build(src, dst, stubs);
+    expect(r.exitCode).not.toBe(0);
+    expect(r.stderr.toString()).toContain("is a symlink");
+    expect(readFileSync(join(src, "README"), "utf8")).toBe("edited\n");
+    expect(root).toBeTruthy();
 });

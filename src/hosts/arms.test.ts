@@ -16,7 +16,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "../config/config";
 import { running } from "../run/procs";
-import { DaemonStack, type HostContext, OpencodeSimHost, opencodeInstall, PiSimHost } from "./arms";
+import {
+    DaemonStack,
+    type HostContext,
+    nodeInstall,
+    OpencodeSimHost,
+    opencodeInstall,
+    PiSimHost,
+} from "./arms";
 
 type Untyped = any;
 
@@ -776,4 +783,15 @@ test("the daemon store is walked from the arm directory, so a symlinked ancestor
     });
     await expect(stack.start()).rejects.toThrow(/symlink/);
     expect(existsSync(join(elsewhere, "store"))).toBe(false);
+});
+
+test("Pi launches the canonical node that preflight probed, whatever its install layout", () => {
+    const run = runDir();
+    mkdirSync(join(run, "opt/runtime"), { recursive: true });
+    writeFileSync(join(run, "opt/runtime/node"), "", { mode: 0o755 });
+    symlinkSync(join(run, "opt/runtime/node"), join(run, "node-link"));
+    const install = nodeInstall(join(run, "node-link"));
+    expect(install.exe).toBe(join(run, "opt/runtime/node"));
+    expect(install.bin).toBe(join(run, "opt/runtime"));
+    expect(install.root).toBe(join(run, "opt"));
 });

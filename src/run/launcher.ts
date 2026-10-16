@@ -12,7 +12,7 @@ const UNSHARE_ARGS = [
     "--propagation",
     "private",
 ];
-const PLAIN_PATH = /^\/[A-Za-z0-9._@+/-]*$/;
+export const PLAIN_PATH = /^\/[A-Za-z0-9._@+/-]*$/;
 export const PLAIN_VALUE = /^[A-Za-z0-9._@+/:,=-]*$/;
 export const ENV_KEY = /^[A-Z_][A-Z0-9_]*$/;
 

@@ -170,7 +170,8 @@ export class DaemonStack {
             constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW;
         const fd = openSync(this.ctx.logFile, flags, 0o600);
         try {
-            writeSync(fd, this.stack.hostLog());
+            const log = Buffer.from(this.stack.hostLog());
+            for (let at = 0; at < log.length; ) at += writeSync(fd, log, at);
         } finally {
             closeSync(fd);
         }
@@ -208,9 +209,13 @@ function turnResult(outcome: Untyped): PromptResult {
     return last?.stopReason === "error" ? { error: String(last.errorMessage ?? "error") } : {};
 }
 
-function nodeRoot(): string {
-    return resolve(realpathSync(Bun.which("node") ?? "node"), "../..");
+/** The canonical node preflight probes; `root` is the install tree the sandbox keeps read-only. */
+export function nodeInstall(which: string): { exe: string; bin: string; root: string } {
+    const exe = realpathSync(which);
+    return { exe, bin: dirname(exe), root: resolve(exe, "../..") };
 }
+
+const hostNode = () => nodeInstall(Bun.which("node") ?? "node");
 
 export abstract class SimHost {
     readonly toolchain: { path: string; env: Record<string, string> };
@@ -313,10 +318,11 @@ export class PiSimHost extends SimHost {
         if (connection)
             args.push("--extension", join(config.eidnara_checkout, "packages/pi-plugin"));
         args.push("--model", modelRef(this.ctx.model));
+        const node = hostNode();
         const home = join(this.ctx.root, "home");
         const tools = this.toolchain;
         const env = {
-            PATH: `${join(nodeRoot(), "bin")}:${sandboxPath(tools.path)}`,
+            PATH: `${node.bin}:${sandboxPath(tools.path)}`,
             ...tools.env,
             ...DUMMY_AWS,
             HOME: home,
@@ -328,8 +334,7 @@ export class PiSimHost extends SimHost {
             PI_OFFLINE: "1",
             PI_SKIP_VERSION_CHECK: "1",
         };
-        const node = join(nodeRoot(), "bin/node");
-        const ro = [...this.readOnly, nodeRoot(), config.pi_install];
+        const ro = [...this.readOnly, node.root, config.pi_install];
         // The launcher starts its command at /, so the command enters the workspace itself.
         const command = [
             "/bin/sh",
@@ -337,7 +342,7 @@ export class PiSimHost extends SimHost {
             'cd "$1" && shift && exec "$@"',
             "sh",
             cwd,
-            node,
+            node.exe,
             ...args,
         ];
         const argv = launch(this.ctx.launcher, this.ctx.keep, this.timeEnv, command, ro);

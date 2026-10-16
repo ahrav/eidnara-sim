@@ -77,3 +77,14 @@ test("configured paths must be normalized, since the sandbox launcher refuses ot
         "config.toolchain.keep: expected normalized absolute paths",
     );
 });
+
+test("configured paths must use the sandbox launcher's plain-path grammar", () => {
+    const base = loadConfig() as any;
+    expect(() => parseConfig({ ...base, eidnara_checkout: "/srv/eidnara builds" })).toThrow(
+        "config.eidnara_checkout: not a plain path the sandbox launcher can pass",
+    );
+    const toolchain = { ...base.toolchain, keep: [...base.toolchain.keep, "/opt/a b"] };
+    expect(() => parseConfig({ ...base, toolchain })).toThrow(
+        "config.toolchain.keep: expected plain paths the sandbox launcher can pass",
+    );
+});
