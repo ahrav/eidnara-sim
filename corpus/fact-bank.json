@@ -1,6 +1,6 @@
 {
     "schema": "sim-fact-bank/v1",
-    "note": "Fact templates for the scenario compiler. {TOKEN} and {token} are a generated word pair in upper and lower case, {value} and {value2} are distinct five-digit numbers, {codename} is an adjective-noun-NN codename, and {code} and {context} come from corpus/tool-outputs/error-codes.jsonl. A check's must and must_not regexes apply to the added lines of the agent's diff, commands_must to the command log, and answer, answer_must_not, abstain, and judge checks to the final assistant text of the agent call record the proxy captures.",
+    "note": "Fact templates for the scenario compiler. {TOKEN} and {token} are a generated word pair in upper and lower case, {value} and {value2} are distinct five-digit numbers, {codename} is an adjective-noun-NN codename, and {code} and {context} come from corpus/tool-outputs/error-codes.jsonl. A check's must and must_not regexes apply to the added lines of the agent's diff, paths_must and paths_must_not to the paths of the files the diff adds or changes, commands_must to the command log, and answer, answer_must_not, abstain, and judge checks to the final assistant text of the agent call record the proxy captures.",
     "rust": {
         "constraint": [
             {
@@ -253,8 +253,8 @@
                     "content": "// test/{codename}.{token}.test.ts"
                 },
                 "check": {
-                    "must": [
-                        "\\.{token}\\.test\\.ts"
+                    "paths_must": [
+                        "\\.{token}\\.test\\.ts$"
                     ]
                 }
             },
@@ -462,7 +462,8 @@
                 "check": {
                     "must_not": [
                         "{value}"
-                    ]
+                    ],
+                    "answer_must_not": "{value}"
                 }
             },
             {

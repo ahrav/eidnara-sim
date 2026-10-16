@@ -12,6 +12,29 @@ import type { Embedder } from "./similarity";
 
 const read = (path: string) => readFileSync(join(CORPUS_DIR, path), "utf8");
 
+/** Corpus files the compiler reads; each must carry the digest `corpus/manifest.json` records. */
+export const CONSUMED_FILES = [
+    "distributions.json",
+    "fact-bank.json",
+    "repos.json",
+    "tool-outputs/error-codes.jsonl",
+    "tool-outputs/samples.jsonl",
+] as const;
+
+export function verifyCorpus(corpusDir = CORPUS_DIR): void {
+    const manifest = JSON.parse(readFileSync(join(corpusDir, "manifest.json"), "utf8")) as {
+        files: Record<string, string>;
+    };
+    for (const path of CONSUMED_FILES) {
+        const actual = sha256Hex(readFileSync(join(corpusDir, path), "utf8"));
+        if (actual !== manifest.files[path]) {
+            throw new Error(
+                `corpus/${path}: sha256 ${actual} differs from corpus/manifest.json (${manifest.files[path]})`,
+            );
+        }
+    }
+}
+
 export function loadPrereg(tier: Tier) {
     const path = join(CORPUS_DIR, "..", "prereg", `${tier}.json`);
     return parsePreregistration(JSON.parse(readFileSync(path, "utf8")));
@@ -23,6 +46,7 @@ export function loadCompileInput(
     embedder: Embedder,
     standIn = false,
 ): CompileInput {
+    verifyCorpus();
     const prereg = loadPrereg(tier);
     if (standIn) prereg.scenario.cue_probe_similarity.embedding_model = embedder.model;
     const projects: Project[] = loadRepos().flatMap((r) => {

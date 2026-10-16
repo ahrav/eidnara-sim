@@ -83,6 +83,14 @@ describe("pre-registration validator", () => {
         );
     });
 
+    test("refuses a pooled item count the seed-host runs cannot split evenly", () => {
+        const prereg = load("S") as any;
+        prereg.stopping_rule.paired_items_per_probe_type = 25;
+        expect(validatePreregistration(prereg)).toContain(
+            "stopping_rule.paired_items_per_probe_type: 25 is not a multiple of the 4 seed-host runs",
+        );
+    });
+
     test("refuses a run-level statistical gate below six paired runs", () => {
         const prereg = load("M") as any;
         prereg.families.find((f: any) => f.id === "dependability").min_paired_runs = 5;

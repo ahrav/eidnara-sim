@@ -257,6 +257,16 @@ function checkFamilies(p: Preregistration, errors: string[]): void {
     });
 }
 
+function checkItemSplit(p: Preregistration, errors: string[]): void {
+    const runs = p.seeds.length * p.hosts.length;
+    const items = p.stopping_rule.paired_items_per_probe_type;
+    if (runs > 0 && items % runs !== 0) {
+        errors.push(
+            `stopping_rule.paired_items_per_probe_type: ${items} is not a multiple of the ${runs} seed-host runs`,
+        );
+    }
+}
+
 function checkArms(p: Preregistration, errors: string[]): void {
     if (!(p.arms.run.includes("host") && p.arms.run.includes("eidnara"))) {
         errors.push("arms.run: must include host and eidnara");
@@ -292,6 +302,7 @@ export function validatePreregistration(value: unknown): string[] {
     const p = value as unknown as Preregistration;
     checkFamilies(p, errors);
     checkArms(p, errors);
+    checkItemSplit(p, errors);
     return errors;
 }
 

@@ -25,7 +25,7 @@ The scenario file is canonical JSON with these sections:
 | `projects` | Each repository in `corpus/repos.json` and its twin |
 | `sessions` | Session id, project, start time, request count, the idle gap before the session, the minimum gap the compiler enforced, and whether the request count was forced into the p90 regime |
 | `facts` | Ledger facts with template, kind, project, conveyance manner, statement, and the cue texts that carry it |
-| `probes` | Probe items P1 to P14 and the P1 controls with project, session, user text, the grading check, and the event that delivers it |
+| `probes` | Probe items P1 to P14 and the P1 controls with project, session, user text, the grading check, and the event that delivers it. Check keys: `must` and `must_not` regexes over the added lines of the agent's diff, `paths_must` and `paths_must_not` over the paths the diff adds or changes, `answer`, `answer_must_not`, `abstain`, and `judge` over the final assistant text, and `window_from_turn` and `window_to_turn` for P14 |
 | `similarity` | BM25 ratio and embedding cosine for every cue and probe pair, journaled to four decimals; the threshold gate compares the full-precision values |
 | `events` | `apply_diff`, `session_start`, `user_turn`, and `session_end` events in scenario time |
 | `faults` | Fault episodes with type, strategy, trigger, parameters, and seam-table entry |
@@ -35,7 +35,14 @@ The scenario file is canonical JSON with these sections:
 ## Sessions and time
 
 Each base repository gets `sessions_per_project` sessions and each twin a
-quarter as many, shuffled into one sequence. `forced_p90_sessions` sessions
+quarter as many, shuffled into one sequence. Every session opens on the
+repository state the scenario defines: the pinned commit plus the
+`apply_diff` events scheduled so far. An agent's edits in one session do not
+carry into the next, so every arm of a seed meets the same repository in every
+session, and a task text that recurs (the P1 control and its item, the
+single scoped-update template per language) is graded against the same
+starting tree each time. The scheduler owns that restore; the compiler relies
+on it. `forced_p90_sessions` sessions
 draw their request count from the tail above p90: each base repository takes
 an equal share, a seeded draw assigns any remainder, and each share spreads
 evenly over that repository's sessions; every other session draws from the full fitted distribution with
@@ -60,8 +67,8 @@ pre-registered seeds end between 0.2 and 1.2 days past it.
 
 ## Facts, conveyance, and probes
 
-Each probe type gets `ceil(paired_items_per_probe_type / (seeds * hosts))`
-items. Facts come from the templates in `corpus/fact-bank.json`, filled with
+Each probe type gets `paired_items_per_probe_type / (seeds * hosts)` items;
+the pre-registration validator requires that division to be exact. Facts come from the templates in `corpus/fact-bank.json`, filled with
 generated tokens: `adjective_noun` words, five-digit numbers, and
 `adjective-noun-NN` codenames, from the v1 harness word lists.
 
@@ -172,15 +179,15 @@ thresholds (`bm25_max` 0.4, `cosine_max` 0.6):
 
 | Tier | Seed | `scenario_hash` | Largest BM25 ratio | Largest cosine |
 |---|---|---|---|---|
-| S | 101 | `7dc86c7a` | 0.2137 | 0.5194 |
-| S | 102 | `6ffdd82b` | 0.2527 | 0.4867 |
-| M | 201 | `b9d51275` | 0.2526 | 0.4992 |
-| M | 202 | `b05f5661` | 0.2522 | 0.4997 |
-| M | 203 | `186052e4` | 0.2498 | 0.4843 |
-| L | 301 | `eb5b5028` | 0.2613 | 0.5092 |
-| L | 302 | `d99bdd54` | 0.258 | 0.4957 |
-| L | 303 | `94c1afcd` | 0.2512 | 0.5083 |
-| XL | 401 | `07ffbbaa` | 0.2562 | 0.4962 |
+| S | 101 | `f5941876` | 0.2137 | 0.5194 |
+| S | 102 | `77d4e87e` | 0.2527 | 0.4867 |
+| M | 201 | `7af6d67a` | 0.2526 | 0.4992 |
+| M | 202 | `aaaa311b` | 0.2522 | 0.4997 |
+| M | 203 | `7bfd35b6` | 0.2498 | 0.4843 |
+| L | 301 | `378cdaeb` | 0.2613 | 0.5092 |
+| L | 302 | `b136b819` | 0.258 | 0.4957 |
+| L | 303 | `a75835f4` | 0.2512 | 0.5083 |
+| XL | 401 | `9a82d06f` | 0.2562 | 0.4962 |
 
 ## Known limits
 

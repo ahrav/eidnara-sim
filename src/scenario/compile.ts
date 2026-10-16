@@ -462,14 +462,24 @@ export async function compileScenario(input: CompileInput) {
             });
             return t;
         };
-        type Check = { must?: string[]; must_not?: string[] };
-        const superseded = swap ? renderDeep<Check>(tpl.check, { ...vars, ...swap }) : {};
-        const forbid = (c: Check): Check => {
-            const must_not = [...(c.must_not ?? []), ...(superseded.must_not ?? [])];
-            return must_not.length > 0 ? { ...c, must_not } : c;
+        type Check = Record<string, unknown>;
+        const lists = (c: Check, suffix: string) =>
+            Object.entries(c).flatMap(([k, v]) =>
+                k.endsWith(suffix) && Array.isArray(v) ? [[k, v as string[]] as const] : [],
+            );
+        const append = (a: Check, b: Check): Check => {
+            const merged = { ...a };
+            for (const [k, v] of lists(b, "must_not")) {
+                merged[k] = [...((merged[k] as string[] | undefined) ?? []), ...v];
+            }
+            return merged;
         };
-        const check = forbid(renderDeep<Check>(tpl.check, vars));
-        const mustNot = { must_not: [...(check.must ?? []), ...(superseded.must ?? [])] };
+        const negate = (c: Check): Check =>
+            Object.fromEntries(lists(c, "must").map(([k, v]) => [`${k}_not`, v]));
+        const superseded = swap ? renderDeep<Check>(tpl.check, { ...vars, ...swap }) : {};
+        const base = renderDeep<Check>(tpl.check, vars);
+        const check = append(base, superseded);
+        const mustNot = append(negate(base), negate(superseded));
         const probeText = render(tpl.probe, vars);
         const outText = render(tpl.out_probe ?? tpl.probe, vars);
         const fromConveyed = later(project.id);
