@@ -101,7 +101,7 @@ export function markerHits(text: string, keys: readonly string[]): string[] {
     return [...hits, ...keys.filter((k) => text.includes(k))];
 }
 
-function streams(seed: number) {
+export function streams(seed: number) {
     return (domain: string) => {
         let h = 0x811c9dc5;
         for (const c of domain) h = Math.imul(h ^ c.charCodeAt(0), 0x01000193) >>> 0;
@@ -109,7 +109,7 @@ function streams(seed: number) {
     };
 }
 
-function shuffle<T>(items: T[], rng: Rng): T[] {
+export function shuffle<T>(items: T[], rng: Rng): T[] {
     for (let i = items.length - 1; i > 0; i--) {
         const j = Math.floor(rng.next() * (i + 1));
         [items[i], items[j]] = [items[j] as T, items[i] as T];

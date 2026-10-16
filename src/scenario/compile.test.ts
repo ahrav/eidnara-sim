@@ -15,6 +15,8 @@ import {
     mannerQuota,
     markerHits,
     type Scenario,
+    shuffle,
+    streams,
     type Template,
 } from "./compile";
 import {
@@ -594,7 +596,10 @@ describe("counterfactual deletions", () => {
                 compileScenario(loadCompileInput(seed, "L", hashEmbedder, true)),
             ),
         );
-        for (const l of [a, b]) {
+        for (const [seed, l] of [
+            [301, a],
+            [302, b],
+        ] as const) {
             const eligible = (l?.probes ?? []).filter((p) => ["P1", "P3", "P5"].includes(p.type));
             const cf = l?.cf_deletions ?? [];
             expect(cf).toHaveLength(Math.round(0.2 * eligible.length));
@@ -602,6 +607,11 @@ describe("counterfactual deletions", () => {
             expect(cf.map((d) => d.probe)).not.toEqual(
                 eligible.slice(0, cf.length).map((p) => p.id),
             );
+            const recomputed = shuffle([...eligible], streams(seed)("counterfactual"))
+                .slice(0, cf.length)
+                .map((p) => p.id)
+                .sort();
+            expect(cf.map((d) => d.probe)).toEqual(recomputed);
             for (const d of cf) {
                 const probe = eligible.find((p) => p.id === d.probe);
                 expect(d.before_event).toMatch(/^e-\d{6}$/);
