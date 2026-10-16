@@ -115,7 +115,8 @@ cannot call, and the divergences are listed below.
    collapsed before the judge sees either answer; backticks inside a line
    are removed and the text between them stays.
 3. `judgePair` shows the pair in both orders, under the rubric and the
-   item's reference reason, and reads one verdict per order: `first`,
+   item's reference reason (normalised like the answers), and reads one
+   verdict per order: `first`,
    `second`, `both`, or `neither`. eval-core's verdicts are `first`,
    `second`, and `tie`; recall needs `both` and `neither` to tell two
    recalls apart from none. Unswapped verdicts that disagree make the pair
