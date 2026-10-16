@@ -66,7 +66,26 @@ test.skipIf(!sandboxAvailable())("a read-only kept path refuses writes inside th
     expect(result.stderr.toString()).toContain("Read-only file system");
 });
 
+test.skipIf(!sandboxAvailable())(
+    "a child forked while the tree stops dies with the sandbox's pid namespace",
+    async () => {
+        const { pid } = await sandboxed(
+            "trap 'sleep 3137 & exit 0' TERM; while :; do sleep 1; done",
+        );
+        expect(await stopOwnedTree(pid, 5_000)).toBe(true);
+        const uid = String(process.getuid?.() ?? 0);
+        const left = Bun.spawnSync(["pgrep", "-u", uid, "-x", "-f", "sleep 3137"]);
+        expect(left.stdout.toString().trim()).toBe("");
+    },
+);
+
 test("a process start time identifies one process across pid reuse", () => {
     expect(processStart(process.pid)).toBe(processStart(process.pid));
     expect(processStart(2 ** 22 + 7)).toBeNull();
+});
+
+test("a pid whose start time changed is another process, so it is neither running nor signalled", () => {
+    const start = processStart(process.pid) as string;
+    expect(running(process.pid, start)).toBe(true);
+    expect(running(process.pid, "1")).toBe(false);
 });

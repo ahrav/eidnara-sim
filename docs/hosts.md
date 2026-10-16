@@ -7,11 +7,16 @@ lands next.
 ## Eidnara build
 
 The plugins, native addon, daemon, and host fixture come from one commit.
-`scripts/eidnara-build.sh <checkout> <clone>` clones the configured eidnara
+`scripts/eidnara-build.sh <checkout> <clone>` clones the eidnara source
 checkout, checks out its `HEAD`, and builds every artefact inside the clone,
-so the checkout itself stays read-only. `sim.config.json` points
-`eidnara_checkout` and the artefact paths at the clone, and `daemon_binary`
-names the `direct_host_fixture` the hermetic host stack launches. The plugin
+so the source checkout itself stays read-only. On a reused clone it force-checks
+out the fetched commit and removes untracked files, so edits and stray files
+from an earlier build go while ignored outputs (`node_modules`, `target`, the
+plugin `dist` directories) stay for the incremental build. The clone is the
+harness's own build tree and this script is its one writer. `sim.config.json`
+points `eidnara_checkout` and the artefact paths at the clone, and
+`daemon_binary` names the `direct_host_fixture` the hermetic host stack
+launches. The plugin
 builds in the checkout's own `dist` directories can lag its daemon source: on
 commit `bb866266c` the stale Pi plugin sent a window the daemon refused, and
 every transform pass served its input unchanged.
@@ -43,19 +48,30 @@ tail.
 launcher, and `closeSession` stops it. The sandbox runs the host under
 root-owned `sudo` and `unshare`, so closing a host walks the launcher's
 process tree and signals every process the user owns, with SIGKILL after
-10 s; a process that survives SIGKILL stops the run. `prompt` sends one user turn with the turn deadline and returns the
-host's error, if any. After a Pi turn fails, the host aborts it and waits up
-to 30 s for its `agent_end`, so a late end cannot finish the next turn.
-OpenCode turns race the deadline, abort the session (waiting at most 5 s for
-the abort call), and wait 30 s for the call to drain; a call still running
-then stops the run.
+10 s; a process that survives SIGKILL stops the run. Each pid in that walk is
+paired with its start time and checked against it before every signal, so a
+pid the kernel reuses during the grace period is left alone. The launcher's
+pid namespace ends with its init, so a child forked while the tree stops dies
+with the namespace. `prompt` sends one user turn with the turn deadline and
+returns the host's error, if any. Pi emits `agent_end` with `willRetry: true`
+before it retries a failed request itself, so a Pi turn ends only at an
+`agent_end` Pi will not retry. After a Pi turn fails, the host aborts it and
+waits up to 30 s for its `agent_end`; a turn still running then stops the run,
+so a late end cannot finish the next turn. OpenCode turns race the deadline,
+abort the session (waiting at most 5 s for the abort call), and wait 30 s for
+the call to drain; a call still running then stops the run. Every deadline
+timer is cleared once its race settles.
 
 Pi runs in RPC mode with `--session-id sim-<session>`, its agent directory,
 settings, and model list under the arm root, and the Eidnara extension from
 the build clone on Eidnara arms. OpenCode runs through the v1 `spawnOpencode`,
 with a wrapper script that launches the pinned binary through the sandbox
-launcher, and titles each session `sim-<session>`. Both reach Bedrock only
-through the proxy, with placeholder AWS credentials.
+launcher, and titles each session `sim-<session>`. The v1 runner executes the
+wrapper on the host, outside the sandbox, so it lives at
+`<run>/hostbin/<arm>/opencode` beside the launcher: the sandbox masks the run
+root, and the arm root the agent can write holds nothing a later session
+executes with the user's privileges. Both reach Bedrock only through the
+proxy, with placeholder AWS credentials.
 
 The launcher binds kept paths read-write and read-only paths read-only.
 The arm's own directories are read-write. The toolchain paths, the tool
@@ -67,10 +83,12 @@ the sandbox with `Read-only file system`.
 The agent's build tools come from `config.toolchain`: its `bin` directories
 join the host's `PATH`, its `keep` paths (the cargo binaries, registry, and
 git cache, rustup, and the bun binary and install cache) stay visible and
-read-only inside the sandbox, and its `env` sets `CARGO_HOME` and
-`RUSTUP_HOME`. The agent builds and tests against the dependencies already
-in those caches; fetching a dependency they lack fails, and preflight
-records that distortion.
+read-only inside the sandbox, and its `env` sets `CARGO_HOME`, `RUSTUP_HOME`,
+and `BUN_INSTALL_CACHE_DIR`. The hosts replace `HOME`, and Bun resolves its
+cache from `HOME` unless that variable names it, so the variable is what points
+`bun install` at the kept cache. The agent builds and tests against the
+dependencies already in those caches; fetching a dependency they lack fails,
+and preflight records that distortion.
 
 Every process the host starts inherits the interposer. rustc 1.99 hangs at
 startup under libfaketime 0.9.10: in the first two-arm witness run
@@ -82,7 +100,8 @@ in `<run>/toolbin` that drops the preload, and `RUSTC` and `RUSTDOC` point
 cargo at the wrappers, since rustup puts its own toolchain directory first on
 cargo's `PATH`. Those tools read wall-clock time, and preflight records that
 distortion. Preflight writes the wrappers, then runs `cargo --version`,
-`"$RUSTC" -vV`, and `bun --version` under the interposer through the
-launcher, so the rustc check goes through the same wrapper cargo uses, and
+`"${RUSTC:-rustc}" -vV`, and `bun --version` under the interposer through the
+launcher, so the rustc check goes through the same wrapper cargo uses (or
+`rustc` on `PATH` when no wrapper is configured), and
 records the versions; a tool that fails or runs past 60 s has its tree
 stopped and stops the run.

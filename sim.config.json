@@ -24,7 +24,8 @@
         ],
         "env": {
             "CARGO_HOME": "/local/home/ahrav/.cargo",
-            "RUSTUP_HOME": "/local/home/ahrav/.rustup"
+            "RUSTUP_HOME": "/local/home/ahrav/.rustup",
+            "BUN_INSTALL_CACHE_DIR": "/local/home/ahrav/.bun/install/cache"
         },
         "wall_clock_tools": [
             "rustc",
