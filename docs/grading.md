@@ -98,9 +98,11 @@ cannot call, and the divergences are listed below.
    matched with every separator removed, so `eid-nara` and `CAN-ARY-7f3`
    match. The
    arm names are eval-core's six plus `eidnara`, `host arm`, and
-   `memory arm`. HTML comments and tags are dropped and the common and
+   `memory arm`. HTML comments and tags are dropped, the common and
    numeric entities decoded (an entity outside the code-point range is
-   dropped), Markdown links and images, inline or reference-style, keep
+   dropped, any other named entity becomes a space), markup the decoding
+   exposed is dropped again, invisible characters are dropped, Markdown
+   links and images, inline or reference-style, keep
    their label and lose their destination, identifier, and definition line, doubled or tripled emphasis marks (`**`, `***`, `__`, `___`), backticks, heading
    marks, bullet marks, and code fence lines (a line that starts with three
    backticks and holds no further backtick, whatever its info string) are
@@ -113,7 +115,8 @@ cannot call, and the divergences are listed below.
    `second`, and `tie`; recall needs `both` and `neither` to tell two
    recalls apart from none. Unswapped verdicts that disagree make the pair
    `Inconsistent`, which grades as excluded with that reason and is never
-   averaged. A reply that is not exactly one verdict word refuses the call.
+   averaged. A reply that is not exactly one verdict word, with trailing
+   `.` or `!` at most, refuses the call.
 4. The judgment records each answer's length after normalisation, and
    `longer_recalled_alone` records whether the longer answer was the one
    recalled alone, for the verbosity audit.

@@ -785,6 +785,19 @@ describe("P7 judge path", () => {
         }
     });
 
+    test("unknown named entities and invisible-only answers are handled", () => {
+        const base = { id: "p", a: "fine", b: "fine" };
+        expect(() =>
+            blind({ ...base, b: "Eid&NoBreak;nara found it" }, "a_then_b", "r", []),
+        ).toThrow("names an arm");
+        expect(normalise("AT&T; rocks")).toBe("AT rocks");
+        expect(normalise("\u200b\u00ad")).toBe("");
+        const snap = (arm: string, text: string) => snapshotOf(`snap-${arm}`, arm, text);
+        expect(() => p7Pair("q-1", snap("eidnara", "because"), snap("host", "\u200b"))).toThrow(
+            "answer b is empty",
+        );
+    });
+
     test("the human-check sample is ten percent of P7 items, rounded up, from a seeded draw", () => {
         const items = Array.from({ length: 24 }, (_, i) => `q-${i}`);
         const a = humanCheckSample(items, rules, new Rng(9));
