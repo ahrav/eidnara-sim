@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { loadConfig, type SimConfig } from "../src/config/config";
 import type { Snapshot } from "../src/grade/artefacts";
-import { gradeP7, judgePair, p7Pair, proxyJudge } from "../src/grade/judge";
+import { gradeP7, judgePair, p7Pair, proxyJudge, referenceDigest } from "../src/grade/judge";
 import {
     deltaMem,
     GradeLog,
@@ -150,13 +150,15 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
                 skip(arm, outside);
                 return [];
             }
-            const a = attempts(arm, probe.id)?.[0];
-            const b = attempts("host", probe.id)?.[0];
+            const mine = attempts(arm, probe.id) ?? [];
+            const host = attempts("host", probe.id) ?? [];
+            const [a, b] = [mine[0], host[0]];
             if (!a || !b || a.turn_outcome !== "ok" || b.turn_outcome !== "ok") {
                 skip(arm, "P7 without two completed snapshots");
                 return [];
             }
-            return [{ probe, arm, a, b }];
+            const later_attempts = { a: mine.length - 1, b: host.length - 1 };
+            return [{ probe, arm, a, b, later_attempts }];
         }),
     );
     if (pairs.length > 0) {
@@ -178,18 +180,28 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
         await gateway.start();
         try {
             const judge = firewall(gateway.urls[0] as string);
-            for (const { probe, arm, a, b } of pairs) {
+            for (const { probe, arm, a, b, later_attempts } of pairs) {
                 const reference = String((probe.check as { judge?: string }).judge ?? "");
                 try {
-                    const { pair, inputs } = p7Pair(probe.id, a, b);
+                    const built = p7Pair(probe.id, a, b);
+                    if (!built) {
+                        skip(arm, "probe turn failed");
+                        continue;
+                    }
+                    const { pair, answers, lengths, snapshots: ids, arms: sides, inputs } = built;
                     const judgment = await judgePair(judge, pair, reference, []);
                     const context = {
                         item: probe.id,
-                        snapshots: { a: a.id, b: b.id },
-                        arms: { a: arm, b: "host" },
+                        answers,
+                        reference: referenceDigest(reference),
+                        lengths,
+                        snapshots: ids,
+                        arms: sides,
                         inputs,
+                        later_attempts,
                         calibration: null,
                         permutation: null,
+                        cross_judge: null,
                     };
                     for (const g of gradeP7(judgment, context, rules)) append(g);
                 } catch (caught) {
