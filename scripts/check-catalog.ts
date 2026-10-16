@@ -132,6 +132,9 @@ export function checkRecord(record: Record, spec: FieldSpec[], catalogDir: strin
         if (name === "Exercised" && (value.split(/ -(?:\s|$)/)[1] ?? "").trim() === "") {
             errors.push(`${at}: Exercised states nothing after its value`);
         }
+        if (name === "Confidence" && (value.split(/\)\.?/)[1] ?? "").trim() === "") {
+            errors.push(`${at}: Confidence states nothing after its evidence link`);
+        }
         const allowed = spec[i]?.values;
         const head = (value.split(/ -(?:\s|$)/)[0] ?? "").trim();
         if (allowed && !allowed.includes(head)) {
@@ -192,7 +195,7 @@ export function checkCatalog(
     ids: { prefix: string; count: number }[],
 ): string[] {
     const spec = methodFields(readFileSync(methodPath, "utf8"));
-    const catalog = readFileSync(catalogPath, "utf8");
+    const catalog = withoutFences(readFileSync(catalogPath, "utf8"));
     const dir = dirname(catalogPath);
     const records = parseRecords(
         catalog,

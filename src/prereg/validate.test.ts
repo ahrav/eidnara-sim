@@ -190,12 +190,14 @@ describe("pre-registration validator", () => {
     test("binds the harm CUSUM to the harm family, zero-tolerance gates to counts, and the normaliser set", () => {
         const m = load("M") as any;
         m.stopping_rule.cusum[0].metric = "cost";
+        m.stopping_rule.cusum[1].metric = "latency";
         const intr = m.families.find((f: any) => f.id === "intrusiveness");
         intr.margin.scale = "ms";
         intr.mde.scale = "ms";
         expect(validatePreregistration(m).sort()).toEqual(
             [
                 "stopping_rule.cusum[0].metric: a harm CUSUM monitors the harm family",
+                "stopping_rule.cusum[1].metric: a CUSUM takes one value per paired item, so it monitors an item-level family",
                 "families[intrusiveness].margin.scale: a zero-tolerance gate counts events",
             ].sort(),
         );
@@ -481,9 +483,11 @@ describe("report check against the pre-registration", () => {
             mde: "0",
             resolution_ratio: "0",
         });
+        at(r, "probe-P5").mde = "0";
         expect(checkReport(r, m)).toEqual([
-            "families[probe-P1].mde: a null verdict states a positive detectable effect",
+            "families[probe-P1].mde: a no-difference-above-x-pp-detectable-at-n verdict states a positive detectable effect",
             "families[probe-P1].resolution_ratio: a null verdict carries its resolution ratio as a positive canonical decimal; other verdicts omit it",
+            "families[probe-P5].mde: a better verdict states a positive detectable effect",
         ]);
     });
 

@@ -107,8 +107,12 @@ function checkVerdict(
         );
     }
     if (!isCanonicalDecimal(f.mde)) errors.push(`${at}.mde: expected a canonical decimal string`);
-    else if (verdict === NULL_VERDICT && Number(f.mde) <= 0) {
-        errors.push(`${at}.mde: a null verdict states a positive detectable effect`);
+    else if (
+        Number(f.mde) <= 0 &&
+        (verdict === NULL_VERDICT ||
+            (family.direction === "superiority-two-sided" && CLAIM_VERDICTS.includes(verdict)))
+    ) {
+        errors.push(`${at}.mde: a ${verdict} verdict states a positive detectable effect`);
     }
     if ((family.claim === "descriptive") !== (verdict === "descriptive")) {
         errors.push(`${at}.verdict: a ${family.claim} family cannot report ${verdict}`);

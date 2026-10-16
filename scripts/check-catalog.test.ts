@@ -231,6 +231,26 @@ describe("catalog checker", () => {
         );
     });
 
+    test("refuses a Confidence line with nothing after its link and a fenced record", () => {
+        const path = copy();
+        edit(
+            path,
+            /Confidence: low -\n\[evidence\]\(evidence\/sim-p02-paired-arms-share-event-prefix\.md\)\.[^\n]*\n(?:[^\n]+\n)*?(?=Existing check:)/,
+            "Confidence: low - [evidence](evidence/sim-p02-paired-arms-share-event-prefix.md).\n",
+        );
+        edit(
+            path,
+            "### sim-p03-divergence-is-recorded-never-hidden\n",
+            "```\n### sim-p03-divergence-is-recorded-never-hidden\n",
+        );
+        edit(path, "\n### sim-p04-", "\n```\n### sim-p04-");
+        const errors = checkCatalog(path, METHOD, IDS);
+        expect(errors).toContain(
+            "sim-p02-paired-arms-share-event-prefix: Confidence states nothing after its evidence link",
+        );
+        expect(errors).toContain("catalog: id SIM-P03 appears 0 times");
+    });
+
     test("refuses a Guarantee that carries its id and no claim", () => {
         const path = copy();
         edit(path, /Guarantee: SIM-P01:[^\n]*\n(?:[^\n]+\n)*?(?=Check:)/, "Guarantee: SIM-P01:\n");

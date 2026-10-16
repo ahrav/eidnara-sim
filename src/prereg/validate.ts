@@ -335,6 +335,10 @@ function checkFamilies(p: Preregistration, errors: string[]): void {
         if (!seen.has(c.metric)) errors.push(`stopping_rule.cusum[${i}].metric: names no family`);
         else if (c.kind === "harm" && c.metric !== "harm") {
             errors.push(`stopping_rule.cusum[${i}].metric: a harm CUSUM monitors the harm family`);
+        } else if (p.families.find((f) => f.id === c.metric)?.analysis_unit !== "item") {
+            errors.push(
+                `stopping_rule.cusum[${i}].metric: a CUSUM takes one value per paired item, so it monitors an item-level family`,
+            );
         }
     });
 }

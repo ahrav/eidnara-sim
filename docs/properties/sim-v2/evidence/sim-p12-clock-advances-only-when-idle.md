@@ -41,3 +41,12 @@ A turn followed by a fold or memory-capture job that outlives the turn.
   threshold value is unresolved, needs the M4 sampler data.
 - Missing evidence: a harness run that exercises the record.
 - Conclusion: unresolved, needs the M4 sampler data
+
+### Q: Does scenario time hold or run at wall rate while busy?
+- Sources examined: spec #1007 M4 ("wall-clock while any turn or background job
+  is busy; jump to the next event when idle"); this record's guarantee ("no
+  `scenario_ms` change") and check ("changes only by wall-clock progression").
+- Findings: the two readings differ for any non-trivial turn; a clock that runs
+  at wall rate passes the check and fails the guarantee as written.
+- Missing evidence: the M4 clock's chosen behaviour and the oracle's reading.
+- Conclusion: needs human input

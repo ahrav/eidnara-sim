@@ -265,7 +265,11 @@ PROPOSED: reconstructed from the condensed index in spec #1007; no
 implementation exists to verify against, and a default tier run reaches it.
 Existing check: none
 Impact: A probe tests a fact that was never conveyed and is scored as a miss.
-Open questions: None.
+Open questions:
+- A conveyance turn that ends `failed` or times out still reaches `EndTurn`, so
+  the ordering check passes while the fact was never delivered. Whether the
+  dependent probe is issued and scored, excluded with a reason, or refused is a
+  design decision for M4 (needs human input).
 
 ### sim-p07-probe-text-never-announces-probe
 
@@ -415,6 +419,10 @@ Open questions:
 - OQ-2: busy-set membership for daemon-internal work with no proxy call. The M4
   ticket resolves it as daemon CPU time above a pre-registered threshold; the
   threshold value is unresolved, needs the M4 sampler data.
+- The guarantee forbids any `scenario_ms` change inside a busy interval while
+  the check allows wall-clock progression, and the spec's hybrid clock runs at
+  wall rate while busy. Which reading the oracle enforces is a design decision
+  for M4 (needs human input).
 
 ### sim-p13-background-job-holds-clock
 
