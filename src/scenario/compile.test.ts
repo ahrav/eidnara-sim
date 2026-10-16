@@ -178,14 +178,14 @@ describe("compiled S scenario", async () => {
 
     test("P4 items split evenly inside and outside the update's scope in both languages", () => {
         const p4 = s.probes.filter((p) => p.type === "P4");
-        const must = (p: (typeof p4)[number]) => (p.check as { must?: string[] }).must?.[0];
-        const scopes = new Set(p4.map((p) => `${p.project}/${must(p)}`));
+        const outOf = (p: (typeof p4)[number]) => {
+            const lang = s.projects.find((x) => x.id === p.project)?.lang ?? "";
+            const [tpl] = (input.bank[lang]?.scoped_update ?? []) as Template[];
+            return JSON.stringify(p.check) === JSON.stringify(tpl?.out_check);
+        };
+        const scopes = new Set(p4.map((p) => `${p.project}/${outOf(p)}`));
         expect(scopes.size).toBeGreaterThanOrEqual(4);
-        const outs = p4.filter((p) => {
-            const tpl = input.bank[s.projects.find((x) => x.id === p.project)?.lang ?? ""];
-            const scoped = (tpl?.scoped_update ?? []) as Template[];
-            return scoped.some((t) => (t.out_check as { must?: string[] })?.must?.[0] === must(p));
-        });
+        const outs = p4.filter(outOf);
         expect(Math.abs(2 * outs.length - p4.length)).toBeLessThanOrEqual(1);
     });
 
@@ -521,13 +521,10 @@ describe("fact bank checks", () => {
         expect(re.test('git commit -m "[quiet_vole] first" -m "body"')).toBe(true);
     });
 
-    test("the quote-style rule ignores apostrophes inside double-quoted strings", () => {
+    test("the quote-style rule is a structural check over string literals", () => {
         const t = templates("scoped_update").find((x) => x.id === "ts-scope-quotes");
-        const single = new RegExp((t?.check as { must_not: string[] }).must_not[0] ?? "$^");
-        const double = new RegExp((t?.out_check as { must_not: string[] }).must_not[0] ?? "$^");
-        expect(single.test(`throw new Error("can't process the client's frame")`)).toBe(false);
-        expect(single.test(`const reason = 'client frame'`)).toBe(true);
-        expect(double.test(`const reason = "client frame"`)).toBe(true);
+        expect(t?.check).toEqual({ quote_style_must: "double" });
+        expect(t?.out_check).toEqual({ quote_style_must: "single" });
     });
 
     test("every anchor forbids its value in the diff and in the final answer", () => {

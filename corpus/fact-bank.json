@@ -1,6 +1,6 @@
 {
     "schema": "sim-fact-bank/v1",
-    "note": "Fact templates for the scenario compiler. {TOKEN} and {token} are a generated word pair in upper and lower case, {value} and {value2} are distinct five-digit numbers, {codename} is an adjective-noun-NN codename, and {code} and {context} come from corpus/tool-outputs/error-codes.jsonl. A check's must and must_not regexes apply to the added lines of the agent's diff, paths_must and paths_must_not to the paths of the files the diff adds or changes, first_line_must to the first line of every file the diff adds, commands_must to the command log, and answer, answer_must_not, abstain, and judge checks to the final assistant text of the agent call record the proxy captures.",
+    "note": "Fact templates for the scenario compiler. {TOKEN} and {token} are a generated word pair in upper and lower case, {value} and {value2} are distinct five-digit numbers, {codename} is an adjective-noun-NN codename, and {code} and {context} come from corpus/tool-outputs/error-codes.jsonl. A check's must and must_not regexes apply to the added lines of the agent's diff, paths_must and paths_must_not to the paths of the files the diff adds or changes, first_line_must to the first line of every file the diff adds, quote_style_must (double or single) to the delimiter of every string literal in the added lines, commands_must to the command log, and answer, answer_must_not, abstain, and judge checks to the final assistant text of the agent call record the proxy captures.",
     "rust": {
         "constraint": [
             {
@@ -376,20 +376,10 @@
                 "probe": "Add a close reason string when the websocket server rejects a frame.",
                 "out_probe": "Add an error message string when a route handler is missing.",
                 "check": {
-                    "must": [
-                        "(?<![\\w'])\"[^\"\\n]*\"(?!\\w)"
-                    ],
-                    "must_not": [
-                        "(?<![\\w\"])'[^'\\n]*'(?!\\w)"
-                    ]
+                    "quote_style_must": "double"
                 },
                 "out_check": {
-                    "must": [
-                        "(?<![\\w\"])'[^'\\n]*'(?!\\w)"
-                    ],
-                    "must_not": [
-                        "(?<![\\w'])\"[^\"\\n]*\"(?!\\w)"
-                    ]
+                    "quote_style_must": "single"
                 }
             }
         ],
