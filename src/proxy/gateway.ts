@@ -89,6 +89,7 @@ interface Arrival {
     call: number;
     wall: number;
     mono: number;
+    scenario: number;
 }
 
 export interface CallStarted {
@@ -130,6 +131,8 @@ class Body {
     total = 0;
     /** Set when the request's `end` fired, so an abort before it releases the arrival hold. */
     complete = false;
+    /** Set once an abandoned upload has been recorded, so the record is written once. */
+    aborted = false;
 
     push(chunk: Buffer): void {
         this.total += chunk.length;
@@ -189,7 +192,29 @@ export class Gateway {
             call: this.calls++,
             wall: Date.now(),
             mono: performance.now(),
+            scenario: this.options.clock.scenarioMs(),
         };
+    }
+
+    /** An upload the client abandoned still yields one `rejected` record (status 499), once. */
+    private abortedUpload(
+        path: string,
+        body: Body,
+        release: () => void,
+        arrived: Arrival,
+        gone: AbortController,
+    ): void {
+        if (body.complete || body.aborted) return;
+        body.aborted = true;
+        const silent: Sink = {
+            status: () => undefined,
+            write: () => undefined,
+            end: () => undefined,
+            destroy: () => undefined,
+            signal: gone.signal,
+        };
+        const reason = `upload aborted after ${body.total} bytes`;
+        this.track(this.handle(path, undefined, body, silent, release, arrived, reason), gone);
     }
 
     /** A hook that throws is recorded as a failure; the request itself still runs. */
@@ -227,7 +252,7 @@ export class Gateway {
             const release = this.arrive();
             const abandoned = () => {
                 gone.abort();
-                if (!body.complete) release();
+                if (!body.complete) this.abortedUpload(req.url ?? "", body, release, arrived, gone);
             };
             res.on("close", () => !res.writableFinished && abandoned());
             req.on("aborted", abandoned);
@@ -267,7 +292,8 @@ export class Gateway {
             const release = this.arrive();
             const abandoned = () => {
                 gone.abort();
-                if (!body.complete) release();
+                const path = String(headers[":path"] ?? "");
+                if (!body.complete) this.abortedUpload(path, body, release, arrived, gone);
             };
             stream.on("close", () => !stream.writableFinished && abandoned());
             stream.on("aborted", abandoned);
@@ -342,6 +368,7 @@ export class Gateway {
         outer: Sink,
         release: () => void,
         arrived: Arrival,
+        aborted?: string,
     ) {
         const { scope } = arrived;
         let sent = 0;
@@ -356,7 +383,7 @@ export class Gateway {
         const base = {
             ...scope,
             started_wall_ms: arrived.wall,
-            scenario_ms: this.options.clock.scenarioMs(),
+            scenario_ms: arrived.scenario,
             input_tokens: 0,
             output_tokens: 0,
             cache_read_tokens: 0,
@@ -377,6 +404,7 @@ export class Gateway {
         };
         const after: { ended: (() => void) | null } = { ended: null };
         try {
+            if (aborted) throw Object.assign(new Error(aborted), { name: "UploadAborted" });
             done = await this.serve(
                 path,
                 header,
@@ -392,10 +420,14 @@ export class Gateway {
                 release,
                 scope.arm,
                 arrived.mono,
+                arrived.wall,
             );
         } catch (caught) {
-            done = { ...done, error: `${(caught as Error).name}: ${(caught as Error).message}` };
-            sink.status(500, { "content-type": "application/json" });
+            const failure = caught as Error;
+            const status = failure.name === "UploadAborted" ? 499 : 500;
+            const error = status === 499 ? failure.message : `${failure.name}: ${failure.message}`;
+            done = { ...done, error };
+            sink.status(status, { "content-type": "application/json" });
         }
         sink.end();
         try {
@@ -431,6 +463,7 @@ export class Gateway {
         release: () => void,
         arm: string,
         started: number,
+        arrivedWall: number,
     ): Promise<Done> {
         const raw = received.bytes();
         const route = ROUTE.exec(path.split("?", 1)[0] ?? "");
@@ -482,7 +515,7 @@ export class Gateway {
             this.failures.push(caught as Error);
         }
         release();
-        const fault = this.options.injector.take(tag.component, call, arm);
+        const fault = this.options.injector.take(tag.component, call, arm, arrivedWall);
         if (fault) done.fault_ref = fault.id;
         if (fault && fault.type !== "slow_stream") {
             const tool = body.toolConfig?.tools?.[0]?.toolSpec?.name;

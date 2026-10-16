@@ -70,7 +70,8 @@ export class FaultInjector {
         this.armed.delete(`${arm}/${id}`);
     }
 
-    take(component: Component, call: number, arm: string): ProxyFault | null {
+    /** `at` is the request's arrival time, the same instant `restore` reads from the record. */
+    take(component: Component, call: number, arm: string, at = Date.now()): ProxyFault | null {
         if (component !== TARGET) return null;
         for (const [key, a] of this.armed) {
             if (a.arm !== arm) continue;
@@ -86,7 +87,7 @@ export class FaultInjector {
             a.calls++;
             if (a.calls >= limit) this.armed.delete(key);
             if (strategy !== "intermittent" || this.rng.next() < (params.probability ?? 1)) {
-                this.pending.push({ key, arm, at: Date.now(), call });
+                this.pending.push({ key, arm, at, call });
                 return a.fault;
             }
         }

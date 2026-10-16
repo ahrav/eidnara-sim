@@ -7,6 +7,7 @@ import {
     readFileSync,
     readlinkSync,
     realpathSync,
+    truncateSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import type { SimConfig } from "../config/config";
@@ -24,7 +25,7 @@ import { type FaultEpisode, type FaultType, SEAMS, validateFault } from "../scen
 import { loadCompileInput, loadPrereg } from "../scenario/inputs";
 import { bedrockEmbedder } from "../scenario/similarity";
 import { writeAtomic } from "./atomic";
-import { Journal, releaseLease, takeLease } from "./journal";
+import { type Entry, Journal, releaseLease, takeLease } from "./journal";
 import { plainPath } from "./launcher";
 import { type Preflight, piCli, preflight } from "./preflight";
 import { ResourceSampler } from "./sampler";
@@ -185,6 +186,50 @@ export function requireOutsideIdentity(out: string, root = ROOT): void {
             throw new HarnessFailure(`--out ${out} is inside this checkout and not ignored by git`);
         }
     }
+}
+
+/**
+ * A resumed journal's entries follow the run's state machine: `StartRun` precedes every arm
+ * entry, each arm's entries sit between its `StartArm` and at most one `EndArm`, and a turn or job
+ * closes at most once. A planted or reordered entry refuses the resume before it drives recovery.
+ */
+export function requireJournalShape(entries: readonly Entry[]): void {
+    const bad = (e: Entry, why: string) =>
+        new HarnessFailure(`journal entry ${e.seq} (${e.kind}) ${why}`);
+    let started = false;
+    const arms = new Map<string, "open" | "ended">();
+    const ended = new Set<string>();
+    for (const e of entries) {
+        if (e.kind === "Preflight") continue;
+        if (e.kind === "StartRun" || e.kind === "ResumeRun") {
+            if (e.kind === "StartRun" && started) throw bad(e, "repeats StartRun");
+            started = true;
+            continue;
+        }
+        if (!started) throw bad(e, "precedes StartRun");
+        if (e.arm === null) throw bad(e, "names no arm");
+        const state = arms.get(e.arm);
+        if (e.kind === "StartArm") {
+            if (state) throw bad(e, "repeats StartArm");
+            arms.set(e.arm, "open");
+            continue;
+        }
+        if (state !== "open") throw bad(e, state ? "follows EndArm" : "precedes StartArm");
+        if (e.kind === "EndArm") arms.set(e.arm, "ended");
+        if (e.kind === "EndTurn" || e.kind === "EndJob") {
+            const key = `${e.arm}/${e.kind}/${String(e.event ?? e.job)}`;
+            if (ended.has(key)) throw bad(e, "closes an item twice");
+            ended.add(key);
+        }
+    }
+}
+
+/** A JSONL artifact's unterminated final line is a cut write; it is removed before appending. */
+export function dropCutTail(path: string): void {
+    if (!existsSync(path)) return;
+    const text = readFileSync(path, "utf8");
+    const complete = text.lastIndexOf("\n") + 1;
+    if (complete < text.length) truncateSync(path, Buffer.byteLength(text.slice(0, complete)));
 }
 
 /** A run artifact that fails to parse names itself in the failure. */
@@ -415,11 +460,16 @@ function validateEpisodes(raw: unknown[], scenario: Scenario, source: string): v
     });
 }
 
-function armOrder(o: RunOptions): ArmName[] {
+/** The pre-registered arm order for this seed, which `order_by_seed` may permute. */
+function seedOrder(o: RunOptions): readonly string[] {
     const prereg = loadPrereg(o.tier);
     const index = prereg.seeds.indexOf(o.seed);
     if (index < 0) throw new HarnessFailure(`seed ${o.seed} is not pre-registered for ${o.tier}`);
-    const order = prereg.arms.order_by_seed[index] ?? prereg.arms.run;
+    return prereg.arms.order_by_seed[index] ?? prereg.arms.run;
+}
+
+function armOrder(o: RunOptions): ArmName[] {
+    const order = seedOrder(o);
     const unknown = (o.arms ?? []).filter((a) => !order.includes(a));
     if (unknown.length > 0) throw new HarnessFailure(`arms not in the ${o.tier} order: ${unknown}`);
     const kept = order.filter((a) => !o.arms || o.arms.includes(a)) as ArmName[];
@@ -428,6 +478,35 @@ function armOrder(o: RunOptions): ArmName[] {
 }
 
 const sameJson = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+
+/** `--events` may not exceed the compiled schedule, so the manifest never claims unrun events. */
+function eventCount(requested: number | undefined, compiled: number): number {
+    if (requested === undefined) return compiled;
+    if (requested > compiled) {
+        throw new HarnessFailure(`--events ${requested} exceeds the ${compiled} compiled events`);
+    }
+    return requested;
+}
+
+/** The lock file that pins the Pi install's dependency tree, whichever package manager wrote it. */
+function piLock(config: SimConfig): string {
+    const names = ["package-lock.json", "bun.lock", "bun.lockb", "pnpm-lock.yaml", "yarn.lock"];
+    return names.map((n) => join(config.pi_install, n)).find((p) => existsSync(p)) ?? "absent";
+}
+
+/** Every regular file under `dir`, hashed by length-framed relative path and content. */
+function directoryDigest(dir: string): string {
+    const hash = createHash("sha256");
+    const files = [
+        ...new Bun.Glob("**/*").scanSync({ cwd: dir, dot: true, onlyFiles: true }),
+    ].sort();
+    for (const rel of files) {
+        const name = Buffer.from(rel);
+        const content = readFileSync(join(dir, rel));
+        hash.update(`${name.length}:`).update(name).update(`${content.length}:`).update(content);
+    }
+    return hash.digest("hex");
+}
 
 /** The OpenCode SDK module the host stack imports from the Eidnara checkout (`src/hosts/arms.ts`). */
 const OPENCODE_SDK = "packages/e2e-tests/node_modules/@opencode-ai/sdk/dist/index.js";
@@ -459,14 +538,17 @@ function binaryDigests(config: SimConfig): Record<string, string> {
         daemon: config.daemon_binary,
         opencode: config.opencode_binary,
         pi: piCli(config),
+        pi_package: dirname(dirname(piCli(config))),
+        pi_lock: piLock(config),
         faketime: FAKETIME_LIB,
         node: realpathSync(Bun.which("node") ?? "node"),
         opencode_sdk: join(config.eidnara_checkout, OPENCODE_SDK),
     };
     return Object.fromEntries(
         Object.entries(files).map(([name, path]) => {
-            const optional = name === "opencode_sdk" || name === "faketime";
+            const optional = name === "opencode_sdk" || name === "faketime" || name === "pi_lock";
             if (optional && !existsSync(path)) return [name, "absent"];
+            if (lstatSync(path).isDirectory()) return [name, directoryDigest(path)];
             return [name, createHash("sha256").update(readFileSync(path)).digest("hex")];
         }),
     );
@@ -507,7 +589,7 @@ export async function loadManifest(
         seed: o.seed,
         host: o.host,
         order: armOrder(o),
-        events: o.events ?? scenario.events.length,
+        events: eventCount(o.events, scenario.events.length),
         context_limit: o.contextLimit ?? 200_000,
         models: o.models ?? [o.config.agent_model],
         fault_override: o.faults === undefined ? null : faultOverride(o.faults, scenario),
@@ -528,7 +610,7 @@ export async function loadManifest(
                 `manifest.json schema ${manifest?.schema} is not sim-run-manifest/v1`,
             );
         }
-        const known = loadPrereg(o.tier).arms.run as readonly string[];
+        const known = seedOrder(o);
         const order = Array.isArray(manifest.order) ? manifest.order : [];
         const positions = order.map((a) => known.indexOf(a));
         const subsequence =
@@ -536,7 +618,7 @@ export async function loadManifest(
             positions.every((p, i) => p >= 0 && (i === 0 || p > (positions[i - 1] as number)));
         if (!subsequence) {
             throw new HarnessFailure(
-                `manifest.json order ${JSON.stringify(order)} is not a non-empty subsequence of the ${o.tier} arms`,
+                `manifest.json order ${JSON.stringify(order)} is not a non-empty subsequence of the ${o.tier} arms for seed ${o.seed}`,
             );
         }
         const given: Record<string, boolean> = {
@@ -726,6 +808,7 @@ async function runArms(
     if (journal.entries.some((e) => e.kind === "EndRun")) {
         throw new HarnessFailure(`${o.out} holds a completed run; its journal ends with EndRun`);
     }
+    requireJournalShape(journal.entries);
     const compiled = await tracked(() => loadScenario(o));
     const { manifest, checks } = await tracked(() => loadManifest(o, compiled));
     journal.append({
@@ -752,7 +835,9 @@ async function runArms(
     const writeWitnesses = () => {
         if (witnessed.done) return;
         const report = manifest.order.flatMap((arm) => injector.report(arm));
-        appendFileSync(join(o.out, "faults.jsonl"), `${JSON.stringify(report)}\n`);
+        const path = join(o.out, "faults.jsonl");
+        dropCutTail(path);
+        appendFileSync(path, `${JSON.stringify(report)}\n`);
         witnessed.done = true;
     };
     const offsetFile = (arm: string) => join(o.out, arm, "clock", "offset");
