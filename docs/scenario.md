@@ -162,6 +162,14 @@ daemon. Each type gets one episode.
 | Clock, laptop sleep | The start of the session after the widest idle gap, among sessions that start without a hand-applied diff | single, with `duration_ms` equal to that gap, so the jump holds no events (SIM-P18) |
 | Scheduler, every other type | The start of a session after the first | single; the store-full fault is persistent for that one session (`sessions: 1`) |
 
+The scenario fixes when each episode fires and with which strategy. The
+run manifest (spec #1007, decision tape) carries the values an episode acts
+with that depend on the run rather than the seed: the second host binary a
+host upgrade installs, the second model a model switch selects, and the
+seeded fault-jitter stream whose draws decide which of an intermittent
+episode's calls fault. Both arms of a seed read the same manifest, so those
+values are shared across arms.
+
 ## Counterfactual deletions
 
 When the tier runs the `eidnara-cf` arm (L), the compiler shuffles the P1,
