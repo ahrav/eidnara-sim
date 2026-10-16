@@ -129,11 +129,11 @@ export class Scheduler {
                     }
                 }
                 try {
-                    driver.bind(this.handle(++this.generation, driver));
                     if (!mine.some((e) => e.kind === "StartArm")) {
                         await this.untilFatal(driver.reset());
                         this.log({ kind: "StartArm" });
                     }
+                    driver.bind(this.handle(++this.generation, driver));
                     this.o.proxy?.reset();
                     const answered = this.resume(mine);
                     if (answered.length > 0) {
@@ -203,13 +203,21 @@ export class Scheduler {
         let open: string | null = null;
         let begun = new Set<unknown>();
         let ended = new Set<unknown>();
+        let outcomes = new Map<unknown, unknown>();
+        let jumped = new Set<unknown>();
         let fired = new Set<unknown>();
         let observed = new Set<unknown>();
         let marked = new Set<unknown>();
         let jobs = new Map<unknown, number>();
         let done = 0;
         let outage: string | null = null;
+        const scheduled = this.o.faults.filter((f) => f.trigger.kind !== "first_summarizer_call");
         entries.forEach((e, i) => {
+            if (e.kind === "StartRun" || e.kind === "ResumeRun" || e.kind === "EndRun") {
+                if (e.arm !== null || e.scenario_ms !== 0) {
+                    throw fail(`${e.kind} carries an arm scope`, e);
+                }
+            }
             if (e.kind === "StartRun") {
                 if (i > 0) throw fail("StartRun is not the first entry", e);
                 identity(e);
@@ -236,6 +244,8 @@ export class Scheduler {
                 next++;
                 begun = new Set();
                 ended = new Set();
+                outcomes = new Map();
+                jumped = new Set();
                 fired = new Set();
                 observed = new Set();
                 marked = new Set();
@@ -265,6 +275,10 @@ export class Scheduler {
                             e,
                         );
                     }
+                    const pending = [...jumped].find((f) => !fired.has(f));
+                    if (pending !== undefined) {
+                        throw fail(`arm ${open} has EndArm with sleep ${pending} unfired`, e);
+                    }
                     open = null;
                     return;
                 }
@@ -278,7 +292,15 @@ export class Scheduler {
                     if (turns.has(due.id) && !ended.has(due.id)) {
                         throw fail(`Event for ${e.event} has no EndTurn`, e);
                     }
+                    if (turns.has(due.id) && e.outcome !== outcomes.get(due.id)) {
+                        throw fail(`Event for ${e.event} contradicts its EndTurn outcome`, e);
+                    }
                     done++;
+                    for (const f of scheduled) {
+                        if (done > this.triggerCursor(f)[1] && !fired.has(f.id)) {
+                            throw fail(`fault ${f.id} passed its trigger unhandled`, e);
+                        }
+                    }
                     outage = null;
                     return;
                 }
@@ -300,11 +322,16 @@ export class Scheduler {
                         throw fail(`EndTurn for ${e.event} has no BeginTurn`, e);
                     if (ended.has(e.event)) throw fail(`EndTurn for ${e.event} repeats`, e);
                     ended.add(e.event);
+                    outcomes.set(e.event, e.outcome);
                     return;
                 }
-                case "RegisterJob":
-                    jobs.set(e.job, (jobs.get(e.job) ?? 0) + 1);
+                case "RegisterJob": {
+                    if ((jobs.get(e.job) ?? 0) > 0) {
+                        throw fail(`RegisterJob for ${e.job} while it is open`, e);
+                    }
+                    jobs.set(e.job, 1);
                     return;
+                }
                 case "EndJob": {
                     const n = jobs.get(e.job) ?? 0;
                     if (n <= 0) throw fail(`EndJob for ${e.job} has no RegisterJob`, e);
@@ -316,6 +343,9 @@ export class Scheduler {
                     if (fired.has(f.id)) throw fail(`FaultFired for ${f.id} repeats`, e);
                     if (done < range[0] || done > range[1]) {
                         throw fail(`FaultFired for ${f.id} is away from its trigger`, e);
+                    }
+                    if (f.type === "laptop_sleep" && !jumped.has(f.id)) {
+                        throw fail(`FaultFired for sleep ${f.id} has no jump`, e);
                     }
                     fired.add(f.id);
                     if (OUTAGE.has(f.type)) outage = f.id;
@@ -332,11 +362,26 @@ export class Scheduler {
                     return;
                 }
                 case "AdvanceClock": {
+                    const inFlight = [...begun].find((t) => !ended.has(t));
+                    const working = [...jobs].find(([, n]) => n > 0);
+                    if (inFlight !== undefined || working !== undefined) {
+                        throw fail("AdvanceClock while the clock is busy", e);
+                    }
+                    if (!due || e.scenario_ms !== due.scenario_ms) {
+                        throw fail("AdvanceClock lands away from the event due", e);
+                    }
+                    if (typeof e.from_ms !== "number" || e.from_ms >= e.scenario_ms) {
+                        throw fail("AdvanceClock jumps nowhere", e);
+                    }
                     if (e.fault !== undefined) {
                         const { f, range } = cursorOf(e.fault);
                         if (f.type !== "laptop_sleep" || done !== range[0] || fired.has(f.id)) {
                             throw fail(`AdvanceClock for ${f.id} is away from its sleep`, e);
                         }
+                        if (jumped.has(f.id)) throw fail(`AdvanceClock for ${f.id} repeats`, e);
+                        jumped.add(f.id);
+                    } else if (e.next_event !== undefined && e.next_event !== due.id) {
+                        throw fail("AdvanceClock names an event other than the one due", e);
                     }
                     outage = null;
                     return;
@@ -351,7 +396,8 @@ export class Scheduler {
                     }
                     if (e.state === "missed") {
                         const { f, range } = cursorOf(e.fault);
-                        if (f.type !== "laptop_sleep" || done !== range[0] || fired.has(f.id)) {
+                        const stray = f.type !== "laptop_sleep" || done !== range[0];
+                        if (stray || fired.has(f.id) || jumped.has(f.id)) {
                             throw fail(`missed ${f.id} away from its sleep`, e);
                         }
                         fired.add(f.id);
@@ -362,6 +408,7 @@ export class Scheduler {
                             throw fail(`interruption of ${e.event} closes no open turn`, e);
                         }
                         ended.add(e.event);
+                        outcomes.set(e.event, "failed(interrupted)");
                         return;
                     }
                     if (e.state === "failed(interrupted)" && e.fault !== undefined) {
@@ -697,7 +744,14 @@ export class Scheduler {
                 if (!clock.busyIds().includes(`job:${id}`)) {
                     throw new Error(`clock: job:${id} is not busy`);
                 }
-                this.log({ kind: "EndJob", job: id });
+                try {
+                    this.log({ kind: "EndJob", job: id });
+                } catch (caught) {
+                    const error = caught instanceof Error ? caught.message : String(caught);
+                    this.fatal ??= new HarnessFailure(`job ${id} could not be ended: ${error}`);
+                    this.fail?.(this.fatal);
+                    throw caught;
+                }
                 clock.end(`job:${id}`);
             },
             observe: (component) => {
