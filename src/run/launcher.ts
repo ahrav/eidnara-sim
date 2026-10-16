@@ -6,6 +6,7 @@ import { basename, dirname, join, resolve } from "node:path";
 const UNSHARE_ARGS = [
     "--mount",
     "--pid",
+    "--ipc",
     "--fork",
     "--kill-child",
     "--mount-proc",
@@ -46,7 +47,8 @@ export function maskedPaths(runRoot: string): string[] {
 // through variables set after setpriv. The staging tree and the interposer's own
 // shared-memory objects live in a private /dev/shm that ends with the namespace.
 // A read-only remount covers one mount, so each read-only path is remounted together
-// with every mount `--rbind` carried in below it.
+// with every mount `--rbind` carried in below it; `findmnt -l` prints each target
+// unescaped on its own line.
 function script(hidden: readonly string[]): string {
     const mounts = hidden
         .map((dir) => `mount -t tmpfs -o mode=1777 tmpfs ${plainPath(dir)}`)
@@ -72,7 +74,7 @@ for p in $keep; do mkdir -p "$st$p"; mount --rbind "$p" "$st$p"; done
 ${mounts}
 for p in $keep; do mkdir -p "$p"; mount --rbind "$st$p" "$p"; done
 for p in $keep; do umount -R "$st$p" || true; done
-for p in $ro; do for m in $(findmnt -rn -o TARGET -R "$p"); do mount -o remount,bind,ro "$m"; done; done
+for p in $ro; do findmnt -ln -o TARGET -R "$p" | while IFS= read -r m; do mount -o remount,bind,ro "$m"; done; done
 find "$st" -depth -type d -empty -delete || true
 setpriv ${ids} --init-groups --no-new-privs --inh-caps=-all --bounding-set=-all -- env --default-signal=INT,TERM PATH="$SIM_PATH" $envs "$@"
 exit 0' sh "$@"

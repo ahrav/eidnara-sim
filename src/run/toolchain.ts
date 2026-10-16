@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { homedir } from "node:os";
+import { basename, dirname, join } from "node:path";
 import type { SimConfig } from "../config/config";
 import { withDeadline } from "./deadline";
 import { launch, shellQuote } from "./launcher";
@@ -126,6 +127,31 @@ export function checkToolchainBins(config: SimConfig): void {
             if (!kept(realpathSync(path))) {
                 throw new Error(`toolchain tool ${path} resolves outside its keep paths`);
             }
+        }
+    }
+}
+
+/**
+ * A tool home or cache is either under a read-only keep path or under a masked root (the
+ * home or /tmp), where each sandbox sees its own empty tmpfs; anywhere else it would be a
+ * writable tree shared between arms.
+ */
+export function checkToolchainHomes(config: SimConfig): void {
+    const canonical = (path: string): string => {
+        try {
+            return realpathSync(path);
+        } catch {
+            const parent = dirname(path);
+            return parent === path ? path : join(canonical(parent), basename(path));
+        }
+    };
+    const within = (path: string, dir: string) => path === dir || path.startsWith(`${dir}/`);
+    const safe = [...config.toolchain.keep.map(canonical), realpathSync(homedir()), "/tmp"];
+    for (const [key, value] of Object.entries(config.toolchain.env)) {
+        if (!safe.some((dir) => within(canonical(value), dir))) {
+            throw new Error(
+                `toolchain.env.${key} ${value} is neither kept read-only nor private to the sandbox`,
+            );
         }
     }
 }

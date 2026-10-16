@@ -2,6 +2,7 @@ import { type ChildProcess, spawn } from "node:child_process";
 import {
     closeSync,
     constants,
+    existsSync,
     fstatSync,
     lstatSync,
     mkdirSync,
@@ -14,7 +15,7 @@ import {
     writeFileSync,
     writeSync,
 } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative } from "node:path";
 import type { SimConfig } from "../config/config";
 import { withDeadline } from "../run/deadline";
 import { launch, plainPath, shellQuote } from "../run/launcher";
@@ -35,6 +36,15 @@ async function v1(config: SimConfig, path: string): Promise<Untyped> {
  * anywhere in `rel` stops the walk before anything is created beyond it.
  */
 function realDir(base: string, rel: string): string {
+    // The base itself must be canonical: its nearest existing ancestor resolves to itself, so
+    // creating the rest of it cannot follow a link out of the run tree.
+    let existing = base;
+    while (!existsSync(existing) && dirname(existing) !== existing) existing = dirname(existing);
+    if (realpathSync(existing) !== existing) {
+        throw new Error(
+            `${base} is reached through a symlink; control files need a real directory`,
+        );
+    }
     mkdirSync(base, { recursive: true });
     let dir = base;
     for (const part of rel.split("/").filter((p) => p !== "")) {
@@ -226,6 +236,19 @@ export class DaemonStack {
     }
 }
 
+/** Runs each step in order, whatever the earlier ones did, and returns their failures. */
+async function settleAll(steps: Array<() => Promise<unknown>>): Promise<unknown[]> {
+    const failures: unknown[] = [];
+    for (const step of steps) {
+        try {
+            await step();
+        } catch (caught) {
+            failures.push(caught);
+        }
+    }
+    return failures;
+}
+
 function turnResult(outcome: Untyped): PromptResult {
     const messages = (outcome.messages ?? []) as Array<Record<string, Untyped>>;
     const last = messages.filter((m) => m.role === "assistant").at(-1);
@@ -235,7 +258,9 @@ function turnResult(outcome: Untyped): PromptResult {
 /** The canonical node preflight probes; `root` is the install tree the sandbox keeps read-only. */
 export function nodeInstall(which: string): { exe: string; bin: string; root: string } {
     const exe = realpathSync(which);
-    return { exe, bin: dirname(exe), root: resolve(exe, "../..") };
+    // An install keeps node in <root>/bin; a standalone binary keeps its own directory.
+    const bin = dirname(exe);
+    return { exe, bin, root: basename(bin) === "bin" ? dirname(bin) : bin };
 }
 
 const hostNode = () => nodeInstall(Bun.which("node") ?? "node");
@@ -497,16 +522,17 @@ export class PiSimHost extends SimHost {
         }
     }
 
+    // The handle is cleared only after the whole teardown succeeds, so a failed close can be retried.
     async closeSession(): Promise<void> {
         const rpc = this.rpc;
-        this.rpc = null;
         if (!rpc) return;
         rpc.child.stdin?.end();
-        try {
-            await this.stopTree(rpc.child.pid, this.launchStart);
-        } finally {
-            await rpc.shutdown(10_000);
-        }
+        const failures = await settleAll([
+            () => this.stopTree(rpc.child.pid, this.launchStart),
+            () => rpc.shutdown(10_000),
+        ]);
+        if (failures.length > 0) throw failures[0];
+        this.rpc = null;
     }
 
     transcriptEnv(): Record<string, string> {
@@ -696,18 +722,19 @@ export class OpencodeSimHost extends SimHost {
         return info?.error ? { error: JSON.stringify(info.error).slice(0, 2000) } : {};
     }
 
+    // The handles are cleared only after the whole teardown succeeds, so a failed close can be retried.
     async closeSession(): Promise<void> {
         const oc = this.oc;
+        if (!oc) return;
         const launched = this.launched ?? { pid: this.hostPid(), start: null };
+        const failures = await settleAll([
+            () => this.stopTree(launched.pid, launched.start),
+            () => oc.kill(),
+        ]);
+        if (failures.length > 0) throw failures[0];
         this.oc = null;
         this.client = null;
         this.launched = null;
-        if (!oc) return;
-        try {
-            await this.stopTree(launched.pid, launched.start);
-        } finally {
-            await oc.kill();
-        }
     }
 
     transcriptEnv(): Record<string, string> {

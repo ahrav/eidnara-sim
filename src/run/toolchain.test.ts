@@ -8,11 +8,12 @@ import {
     symlinkSync,
     writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "../config/config";
 import {
     checkToolchainBins,
+    checkToolchainHomes,
     SYSTEM_PATH,
     sandboxPath,
     TOOLCHAIN_PROBES,
@@ -135,5 +136,29 @@ test("a dangling symlink in a kept bin is refused", () => {
     };
     expect(() => checkToolchainBins(config)).toThrow(
         `toolchain tool ${join(kept, "cargo-x")} is a dangling symlink`,
+    );
+});
+
+test("tool homes and caches must be read-only keeps or private to the sandbox", () => {
+    const dir = root();
+    const base = loadConfig();
+    const kept = join(dir, "kept");
+    mkdirSync(join(kept, "cargo"), { recursive: true });
+    // /var/tmp is writable and stays shared across sandboxes, unlike the masked home and /tmp.
+    const shared = realpathSync(mkdtempSync("/var/tmp/sim-shared-"));
+    dirs.push(shared);
+    const config = (env: Record<string, string>) => ({
+        ...base,
+        toolchain: { ...base.toolchain, keep: [kept], env },
+    });
+    expect(() =>
+        checkToolchainHomes(
+            config({ CARGO_HOME: join(kept, "cargo"), RUSTUP_HOME: join(homedir(), ".rustup") }),
+        ),
+    ).not.toThrow();
+    expect(() =>
+        checkToolchainHomes(config({ CARGO_HOME: join(kept, "cargo"), RUSTUP_HOME: shared })),
+    ).toThrow(
+        `toolchain.env.RUSTUP_HOME ${shared} is neither kept read-only nor private to the sandbox`,
     );
 });

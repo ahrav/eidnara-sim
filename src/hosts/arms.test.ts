@@ -796,7 +796,7 @@ test("Pi launches the canonical node that preflight probed, whatever its install
     const install = nodeInstall(join(run, "node-link"));
     expect(install.exe).toBe(join(run, "opt/runtime/node"));
     expect(install.bin).toBe(join(run, "opt/runtime"));
-    expect(install.root).toBe(join(run, "opt"));
+    expect(install.root).toBe(join(run, "opt/runtime"));
 });
 
 test("the daemon log keeps what the daemon wrote while it shut down", async () => {
@@ -1092,4 +1092,58 @@ test("a staged control file left by an earlier session does not block the next w
     expect(
         JSON.parse(readFileSync(join(host.agentDir, "settings.json"), "utf8")).defaultModel,
     ).toBe("m");
+});
+
+test("a Pi session whose shutdown is unconfirmed keeps its handle for another close", async () => {
+    const host = new PiSimHost(context(runDir()));
+    const rpc = {
+        child: { pid: 4242, stdin: { end: () => undefined } },
+        shutdown: async () => {
+            throw new Error("did not exit");
+        },
+    };
+    (host as Untyped).rpc = rpc;
+    (host as Untyped).stopTree = async () => {
+        throw new Error("host tree 4242 survived SIGKILL");
+    };
+    await expect(host.closeSession()).rejects.toThrow(/survived SIGKILL/);
+    expect(host.hostPid()).toBe(4242);
+});
+
+test("an OpenCode session whose shutdown is unconfirmed keeps its handle for another close", async () => {
+    const host = new OpencodeSimHost({ ...context(runDir()), host: "opencode" });
+    const oc = {
+        port: 1,
+        kill: async () => {
+            throw new Error("did not exit");
+        },
+    };
+    (host as Untyped).oc = oc;
+    (host as Untyped).launched = { pid: 4242, start: "1" };
+    (host as Untyped).stopTree = async () => {
+        throw new Error("host tree 4242 survived SIGKILL");
+    };
+    await expect(host.closeSession()).rejects.toThrow(/survived SIGKILL/);
+    expect((host as Untyped).oc).toBe(oc);
+});
+
+test("a standalone node keeps its own directory read-only, not the filesystem root", () => {
+    const run = runDir();
+    mkdirSync(join(run, "opt"));
+    writeFileSync(join(run, "opt/node"), "", { mode: 0o755 });
+    expect(nodeInstall(join(run, "opt/node")).root).toBe(join(run, "opt"));
+    mkdirSync(join(run, "install/bin"), { recursive: true });
+    writeFileSync(join(run, "install/bin/node"), "", { mode: 0o755 });
+    expect(nodeInstall(join(run, "install/bin/node")).root).toBe(join(run, "install"));
+});
+
+test("a control tree whose base is a symlink is refused before anything is created", () => {
+    const run = runDir();
+    const elsewhere = join(run, "elsewhere");
+    mkdirSync(elsewhere);
+    symlinkSync(elsewhere, join(run, "arm-link"));
+    const ctx = { ...context(run), root: join(run, "arm-link") };
+    const host = new PiSimHost(ctx);
+    expect(() => (host as Untyped).writeConfigs(null)).toThrow(/symlink/);
+    expect(readdirSync(elsewhere)).toEqual([]);
 });

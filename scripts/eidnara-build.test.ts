@@ -226,3 +226,16 @@ test("a FIFO at the build lock path is refused instead of blocking the build", (
     expect(r.exitCode).not.toBe(0);
     expect(r.stderr.toString()).toContain("is not a regular file");
 });
+
+test("a reused clone whose Git directory is a link is refused before any Git command", () => {
+    const { stubs, src, root } = fixture();
+    const dst = join(root, "linked-git");
+    mkdirSync(dst);
+    symlinkSync(join(src, ".git"), join(dst, ".git"));
+    writeFileSync(join(dst, ".sim-build-source"), `${src}\n`);
+    const head = git(src, "rev-parse", "--abbrev-ref", "HEAD");
+    const r = build(src, dst, stubs);
+    expect(r.exitCode).not.toBe(0);
+    expect(r.stderr.toString()).toContain("is not a real directory");
+    expect(git(src, "rev-parse", "--abbrev-ref", "HEAD")).toBe(head);
+});

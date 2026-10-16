@@ -12,7 +12,8 @@ checkout, checks out its `HEAD`, and builds every artefact inside the clone,
 so the source checkout itself stays read-only; it refuses a clone path that
 is the checkout or lies beneath it, and reuses an existing clone only when
 its `.sim-build-source` names the same checkout. It refuses a symlink at `<clone>.lock`, holds the lock with `flock` for the whole build, so a second build of the same clone is
-refused. A first clone is made in a fresh `<clone>.partial.XXXXXX` directory that
+refused, and it reuses a clone only when its `.git` is a real directory
+inside the clone. A first clone is made in a fresh `<clone>.partial.XXXXXX` directory that
 holds an owner record, and is renamed into place once it carries its source
 record; the next build removes only partial directories whose owner record
 names the same source. A source that tracks either
@@ -60,7 +61,9 @@ failed SIGKILL fallback still records the log and reports both failures; the v1
 stack keeps the last 256 KiB of that output, so a longer stretch keeps its
 tail.
 
-`openSession` launches one host process in a workspace, which must lie below
+The sandbox has its own mount, pid, and System V IPC namespaces. `closeSession`
+keeps its host handle until the whole teardown succeeds, so a failed close
+can be retried. `openSession` launches one host process in a workspace, which must lie below
 a kept path since the launcher masks the run root, through the sandbox
 launcher, and `closeSession` stops it; when the readiness check fails or Pi
 refuses it, or the OpenCode SDK setup or session listing fails after the
@@ -152,7 +155,10 @@ remounted read-only too), and its `env` sets `CARGO_HOME`, `RUSTUP_HOME`,
 and `BUN_INSTALL_CACHE_DIR`, the only variables `toolchain.env` accepts, since
 a variable that selects an executable would bypass preflight. The hosts replace `HOME`, and Bun resolves its
 cache from `HOME` unless that variable names it, so the variable is what points
-`bun install` at the kept cache. The agent builds and tests against the
+`bun install` at the kept cache. Preflight requires each of these paths to lie
+under a read-only keep path or under a masked root (the home or `/tmp`, which
+each sandbox sees as its own empty tmpfs), so no arm writes a tool home or
+cache another arm reads. The agent builds and tests against the
 dependencies already in those caches; fetching a dependency they lack fails
 against those caches. The sandbox keeps the host network namespace, since the
 hosts reach the proxy over loopback, so an agent that points a cache at its

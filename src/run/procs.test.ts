@@ -147,3 +147,34 @@ test("a root pid whose start time no longer matches its launch is left alone", a
         child.kill("SIGKILL");
     }
 });
+
+test.skipIf(!sandboxAvailable() || Bun.which("ipcmk") === null)(
+    "the sandbox has its own System V IPC namespace",
+    () => {
+        const made = Bun.spawnSync(["ipcmk", "-M", "4096"]).stdout.toString();
+        const id = made.match(/(\d+)/)?.[1] as string;
+        try {
+            const r = root();
+            const argv = launch(writeLauncher(r), [], {}, ["/bin/sh", "-c", `ipcs -m -i ${id}`]);
+            const result = Bun.spawnSync(argv, { stdout: "pipe", stderr: "pipe" });
+            expect(result.stderr.toString()).toContain(`id ${id} not found`);
+        } finally {
+            Bun.spawnSync(["ipcrm", "-m", id]);
+        }
+    },
+);
+
+test.skipIf(!canMount())("a nested mount whose path has a space is remounted read-only", () => {
+    const r = root();
+    const ro = join(r, "ro");
+    const sub = join(ro, "a b");
+    mkdirSync(sub, { recursive: true });
+    expect(Bun.spawnSync(["sudo", "-n", "mount", "-t", "tmpfs", "tmpfs", sub]).exitCode).toBe(0);
+    try {
+        const argv = launch(writeLauncher(r), [], {}, ["/bin/sh", "-c", `touch '${sub}/x'`], [ro]);
+        const result = Bun.spawnSync(argv, { stdout: "pipe", stderr: "pipe" });
+        expect(result.stderr.toString()).toContain("Read-only file system");
+    } finally {
+        Bun.spawnSync(["sudo", "-n", "umount", sub]);
+    }
+});
