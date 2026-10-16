@@ -207,6 +207,15 @@ function summarize(dir: string) {
     ] as string[];
     return {
         ended: journal.at(-1)?.kind,
+        preflight: {
+            first: journal[0]?.kind === "Preflight",
+            before_start:
+                journal.findIndex((e) => e.kind === "Preflight") <
+                journal.findIndex((e) => e.kind === "StartRun" || e.kind === "ResumeRun"),
+            intercepted: (
+                (journal[0]?.time_injection as { name: string; intercepted: boolean }[]) ?? []
+            ).map((t) => `${t.name}:${t.intercepted}`),
+        },
         arms: Object.fromEntries(
             arms.map((arm) => [
                 arm,
@@ -290,7 +299,7 @@ for (const name of ["scheduled", "rogue"]) {
 }
 type ArmSummary = {
     fired: unknown[];
-    observed: { fault: unknown }[];
+    observed: { fault: unknown; evidence: unknown }[];
     models: unknown[];
     duplicate_events: number;
 };
@@ -304,6 +313,20 @@ const armEvidence = (
     const s = summary[name];
     if (!s) return check(false, `${name}: no summary`);
     const observable = expected.filter((f) => f.type !== "laptop_sleep").map((f) => f.id);
+    const sleeps = expected.filter((f) => f.type === "laptop_sleep").length;
+    check(
+        s.invariants.sleep_jumps === sleeps * arms.length,
+        `${name}: one fault-tagged sleep jump per arm and sleep (${sleeps * arms.length})`,
+    );
+    const intercepted = s.preflight.intercepted;
+    check(
+        s.preflight.first && s.preflight.before_start,
+        `${name}: journal opens with a Preflight entry before StartRun or ResumeRun`,
+    );
+    check(
+        intercepted.length > 0 && intercepted.every((t) => t.endsWith(":true")),
+        `${name}: every probed binary intercepted (${intercepted.join(", ")})`,
+    );
     for (const arm of arms) {
         const a = s.arms[arm] as ArmSummary | undefined;
         if (!a) {
@@ -327,12 +350,40 @@ const armEvidence = (
             );
         }
         check(a.duplicate_events === 0, `${name}/${arm}: no duplicate Event entry`);
+        if (arm === "eidnara") mechanismEvidence(name, a, expected);
+    }
+};
+
+/** The Eidnara arm's restart and full-store episodes carry the evidence their mechanism produces. */
+const mechanismEvidence = (name: string, a: ArmSummary, expected: FaultEpisode[]) => {
+    const evidence = new Map(
+        a.observed.map((o) => [o.fault, o.evidence as Record<string, unknown>]),
+    );
+    for (const f of expected) {
+        const e = evidence.get(f.id);
+        if (!e) continue;
+        if (f.type === "daemon_restart") {
+            check(
+                typeof e.pid_before === "number" &&
+                    typeof e.pid_after === "number" &&
+                    e.pid_before !== e.pid_after &&
+                    e.restarted_by === "harness",
+                `${name}/eidnara: ${f.id} restarted the daemon (new pid, restarted_by harness)`,
+            );
+        }
+        if (f.type === "store_full") {
+            check(e.avail_kb === 0, `${name}/eidnara: ${f.id} filled the store (avail_kb 0)`);
+        }
     }
 };
 const deterministic = FAULTS.filter((f) => f.trigger.kind !== "first_summarizer_call");
-if (run("scheduled")) {
-    check(run("scheduled")?.code === 0, "scheduled: exit 0");
+if (run("scheduled")) check(run("scheduled")?.code === 0, "scheduled: exit 0");
+if (summary.scheduled) {
     check(invariantsClean("scheduled"), "scheduled: EndRun, unique seq, clean invariants");
+    check(
+        summary.scheduled.invariants.jobs_held_after_turn.length > 0,
+        "scheduled: at least one background or CPU job held the clock with no turn open (SIM-P13)",
+    );
     armEvidence("scheduled", ["host", "eidnara"], deterministic, true);
 }
 if (summary.rogue) {
@@ -354,6 +405,8 @@ if (outcome.resume) {
         "resume: second run within the run limit",
     );
     check(resume.rebilled.length === 0, "resume: no turn rebilled");
+}
+if (summary.resume) {
     check(invariantsClean("resume"), "resume: EndRun, unique seq, clean invariants");
     armEvidence("resume", ["eidnara"], RESUME_FAULTS, true);
     const arm = summary.resume?.arms.eidnara as

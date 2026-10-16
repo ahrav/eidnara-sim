@@ -1201,6 +1201,31 @@ test("a mid-fold kill observed in the arm's last turn is observed before finish 
     expect(kinds.indexOf("FaultObserved")).toBeLessThan(kinds.indexOf("EndArm"));
 });
 
+test("a job registered while the arm finishes is drained before EndArm", async () => {
+    const j = new Journal(join(dir(), "j.jsonl"));
+    let scheduler: Scheduler | null = null;
+    const driver: ArmDriver = {
+        ...fakeDriver([]),
+        finish: async () => {
+            scheduler?.jobStart("final-title");
+            setTimeout(() => scheduler?.jobEnd("final-title"), 80);
+        },
+    };
+    scheduler = new Scheduler({
+        events: fixtureEvents(1),
+        faults: [],
+        journal: j,
+        settleMs: 0,
+        jobPollMs: 5,
+        order: ["a"],
+        drivers: { a: driver },
+    });
+    await scheduler.run();
+    const kinds = j.entries.map((e) => e.kind);
+    expect(kinds.indexOf("EndJob")).toBeLessThan(kinds.indexOf("EndArm"));
+    expect(j.entries[kinds.indexOf("EndJob")]?.arm).toBe("a");
+});
+
 test("a stop reason raised while idling for a job ends the wait at once", async () => {
     const j = new Journal(join(dir(), "j.jsonl"));
     let scheduler: Scheduler | null = null;

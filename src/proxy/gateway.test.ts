@@ -648,6 +648,26 @@ describe("call records", () => {
         expect(records.records[0]).toMatchObject({ turn: "e-000003", session: "s-0001" });
     });
 
+    test("an arrival hook that throws becomes a gateway failure and the call still completes", async () => {
+        const records = new RecordWriter(null);
+        const gateway = new Gateway({
+            upstream: scriptedUpstream(),
+            records,
+            injector: new FaultInjector([], new Rng(1), 1_000),
+            rng: new Rng(1),
+            clock: { scenarioMs: () => 0 },
+            scope: () => ({ arm: "a", session: null, turn: null }),
+            arrival: () => {
+                throw new Error("RegisterJob append failed");
+            },
+        });
+        await gateway.start();
+        gateways.push(gateway);
+        expect((await hostCall(gateway.urls[0] as string, AGENT_BODY, 2_000)).status).toBe(200);
+        expect(records.records).toHaveLength(1);
+        expect(gateway.failures.map((f) => f.message)).toEqual(["RegisterJob append failed"]);
+    });
+
     test("an upload the client abandons releases its arrival hold", async () => {
         const log: string[] = [];
         const gateway = new Gateway({

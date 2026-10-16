@@ -44,6 +44,7 @@ const config = {
     daemon_binary: join(bins, "daemon"),
     opencode_binary: join(bins, "opencode"),
     pi_install: piInstall,
+    agent_model: "m",
     bedrock: { aws_profile: "", region: "" },
 } as SimConfig;
 
@@ -244,6 +245,7 @@ describe("run inputs", () => {
             /two distinct --models/,
         );
         expect(() => requireMechanisms([at("model_switch")], ["m", "m"])).toThrow(/repeats/);
+        expect(() => requireMechanisms([at("provider_429")], ["a", ""])).toThrow(/empty entry/);
         expect(() => requireMechanisms([at("provider_429")], ["a", "a", "b"])).toThrow(
             /--models repeats an entry: a,a,b/,
         );
@@ -266,11 +268,11 @@ describe("run inputs", () => {
         const scenario = writeScenario(dir(), scenarioBody());
         const episode: FaultEpisode = {
             id: "f",
-            type: "model_switch",
+            type: "provider_429",
             strategy: "single",
             trigger: { kind: "user_turn", session: "s-0000", n: 2 },
             params: {},
-            seam: SEAMS.model_switch,
+            seam: SEAMS.provider_429,
         };
         expect(faultOverride([episode], scenario)).toEqual([episode]);
         expect(() => faultOverride({}, scenario)).toThrow(/must hold an array/);
@@ -288,6 +290,12 @@ describe("run inputs", () => {
         expect(() => faultOverride([episode, episode], scenario)).toThrow(/duplicate id f/);
         const sleepOnTurn = { ...episode, type: "laptop_sleep", seam: SEAMS.laptop_sleep };
         expect(() => faultOverride([sleepOnTurn], scenario)).toThrow(/session_start trigger only/);
+        const switchOnTurn = { ...episode, type: "model_switch", seam: SEAMS.model_switch };
+        expect(() => faultOverride([switchOnTurn], scenario)).toThrow(
+            /model_switch fires at a session_start trigger only/,
+        );
+        const proto = { ...episode, type: "__proto__", seam: {} };
+        expect(() => faultOverride([proto], scenario)).toThrow(/type __proto__ unknown/);
         const ranges = {
             ...episode,
             params: { probability: 2, calls: -1, count: 0, delay_ms: -5 },

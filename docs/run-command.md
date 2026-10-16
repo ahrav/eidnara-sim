@@ -20,12 +20,16 @@ unless the pinned OpenCode release's `node_modules/.bin` is on `PATH`.
 scenario's fault schedule, `--context-limit` sets the model window the host
 sees (200,000 by default), and `--models` lists the models `model_switch`
 cycles through (`agent_model` by default). The manifest records every one of
-these values. An argument outside this list is refused. The run refuses a seed outside the pre-registration, an arm
+these values. An argument outside this list, an option without a value, or
+an empty model name is refused. The run refuses a seed outside the pre-registration, an arm
 outside the seed's order, a non-positive count, a `--faults` file that is not
 an array of complete episodes (known type and strategy, numeric params with
 probabilities in [0, 1], positive integer counts, and non-negative
-durations, a seam, unique ids, and a `session_start` trigger for
-`laptop_sleep`) valid against the compiled scenario (`validateFault`),
+durations, a seam, unique ids, and a `session_start` trigger for the
+between-session faults `laptop_sleep`, `daemon_restart`, `plugin_reload`,
+`model_switch`, and `store_full`) valid against the compiled scenario
+(`validateFault`); the compiled scenario's own faults pass the same checks
+when `scenario.json` is loaded,
 an `--out` directory that overlaps the Eidnara checkout in either direction
 by resolved path (an output directory above the checkout would derive an arm
 root inside it), a schedule with a fault type the host driver has no
@@ -38,8 +42,8 @@ replaces (`journal.jsonl`, `calls.jsonl`, the manifest, the scenario, the
 fault and preflight files, this process's staging names for the lease, the
 scenario, and the manifest, and each arm's `resources.jsonl`, clock offset,
 and `state.json`, plus this process's staging names for the clock offset and
-`state.json`) must be absent or a regular file with a single link (arm and
-clock directories must be directories); a symlink, a hard link, or another
+`state.json`) must be absent or a regular file with a single link (the arm,
+clock, `interception`, and `toolbin` directories must be directories); a symlink, a hard link, or another
 file type there is refused. Every staged write (scenario, manifest, clock
 offset, `state.json`, the sandbox launcher) creates its staging file
 exclusively without following a link, then renames it into place, and the
@@ -97,13 +101,17 @@ toolchain wrappers are created exclusively after removing any planted name.
    witness in the resumed run. Witnesses are kept per arm: the scheduler arms
    each proxy fault for the arm it is running, and `faults.jsonl` lists one
    witness per arm and episode.
-5. Run the scheduler over the arms. On resume, each started arm resumes
-   through its driver.
+5. Run the scheduler over the arms. On resume, each started arm first reaps
+   the processes its state file records, then resumes through its driver.
+   An arm ends only after its busy set drains twice: after its last event,
+   and again after the driver's shutdown, which can still register a job.
 6. At the end, or after a failure or signal, stop each arm's sampler and
    driver, stop the proxy, append this invocation's proxy-fault witness
    report to `faults.jsonl` (a completed run appends it before `EndRun`, so
    a sealed journal always has its witness line; teardown appends it only
-   when that did not happen), close the journal, and release the lease. Each
+   when that did not happen), close the journal, and release the lease. A
+   request's arrival hook that fails to register its job is recorded as a
+   handler failure and fails the run at the next verification. Each
    step runs even when an earlier one fails, and the first failure is
    rethrown after the last step, so the command exits nonzero. Stopping the
    proxy aborts in-flight handlers and waits up to ten seconds for them to
@@ -188,10 +196,16 @@ invariant violation (including a repeated sleep jump). The summary parses
 final journals and call records strictly; a corrupt complete line fails the
 witness, while polling during a run tolerates an unterminated final line.
 The scheduled and resume runs must also show their evidence per arm: every
-deterministic fault of the set fired, every fault with a mechanism observed,
-agent calls on both configured models, and no duplicate `Event` entry (the
-mid-fold kills fire only when a summarizer call happens, so they are not
-required).
+deterministic fault of the set fired, every fault with a mechanism observed
+(on `eidnara`, the restart with a new daemon pid and `restarted_by: harness`,
+the full store with `avail_kb: 0`), one fault-tagged sleep jump per arm and
+sleep, agent calls on both configured models, and no duplicate `Event` entry
+(the mid-fold kills fire only when a summarizer call happens, so they are not
+required); the scheduled run must hold the clock with at least one job while
+no turn is open (SIM-P13), and every finished run's journal must open with a
+`Preflight` entry, before `StartRun` or `ResumeRun`, whose probed binaries
+all intercepted. These checks run on every summarized directory, with or
+without a cached launch outcome.
 
 Runs on 2026-10-16 against eidnara `bb866266c` (`witness-8`; `resume` ran
 again after the store image grew to 2 GiB):

@@ -124,7 +124,7 @@ const ARTIFACTS = [
  * symlink planted in an accepted output directory cannot redirect a write elsewhere.
  */
 export function requirePlainArtifacts(out: string, arms: readonly string[]): void {
-    const dirs = arms.flatMap((arm) => [arm, join(arm, "clock")]);
+    const dirs = ["interception", "toolbin", ...arms.flatMap((arm) => [arm, join(arm, "clock")])];
     const files = arms.flatMap((arm) => [
         join(arm, "resources.jsonl"),
         join(arm, "clock", "offset"),
@@ -191,11 +191,14 @@ export function treeIdentity(dir: string): { commit: string; worktree: string } 
         .filter((f) => f !== "")
         .sort();
     for (const file of untracked) {
-        hash.update(`\0${file}\0`);
         const stat = lstatSync(join(dir, file), { throwIfNoEntry: false });
-        if (stat?.isFile()) hash.update(readFileSync(join(dir, file)));
-        else if (stat?.isSymbolicLink()) hash.update(`->${readlinkSync(join(dir, file))}`);
-        else if (stat) hash.update(`?${stat.mode}`);
+        const content = stat?.isFile()
+            ? readFileSync(join(dir, file))
+            : stat?.isSymbolicLink()
+              ? Buffer.from(`->${readlinkSync(join(dir, file))}`)
+              : Buffer.from(stat ? `?${stat.mode}` : "");
+        const name = Buffer.from(file);
+        hash.update(`${name.length}:`).update(name).update(`${content.length}:`).update(content);
     }
     return { commit: gitHead(dir), worktree: hash.digest("hex") };
 }
@@ -252,10 +255,19 @@ export async function loadScenario(o: Pick<RunOptions, "config" | "out" | "seed"
         );
     }
     requireDeclaredProjects(scenario);
+    validateEpisodes(scenario.faults, scenario, "scenario.json");
     return scenario;
 }
 
 const STRATEGIES = new Set(["single", "burst", "intermittent", "persistent"]);
+/** Faults that run between sessions, so their trigger is the session's start (`HostDriver.fault`). */
+const SESSION_START_ONLY = new Set([
+    "laptop_sleep",
+    "daemon_restart",
+    "plugin_reload",
+    "model_switch",
+    "store_full",
+]);
 const COUNTS = ["count", "calls", "sessions"];
 const DURATIONS = ["duration_ms", "delay_ms"];
 
@@ -281,13 +293,15 @@ function episodeProblems(value: unknown): string[] {
     const e = value as Record<string, unknown>;
     const problems: string[] = [];
     if (typeof e.id !== "string" || e.id === "") problems.push("id missing");
-    if (typeof e.type !== "string" || !(e.type in SEAMS)) problems.push(`type ${e.type} unknown`);
+    if (typeof e.type !== "string" || !Object.hasOwn(SEAMS, e.type)) {
+        problems.push(`type ${e.type} unknown`);
+    }
     if (!STRATEGIES.has(e.strategy as string)) problems.push(`strategy ${e.strategy} unknown`);
     const trigger = e.trigger as Record<string, unknown> | null;
     if (typeof trigger !== "object" || trigger === null || typeof trigger.kind !== "string") {
         problems.push("trigger missing");
-    } else if (e.type === "laptop_sleep" && trigger.kind !== "session_start") {
-        problems.push("laptop_sleep fires at a session_start trigger only");
+    } else if (SESSION_START_ONLY.has(e.type as string) && trigger.kind !== "session_start") {
+        problems.push(`${e.type} fires at a session_start trigger only`);
     }
     const params = e.params as Record<string, unknown> | null;
     if (typeof params !== "object" || params === null || Array.isArray(params)) {
@@ -303,23 +317,28 @@ function episodeProblems(value: unknown): string[] {
 /** A `--faults` override is an array of complete episodes, each valid against the compiled scenario. */
 export function faultOverride(raw: unknown, scenario: Scenario): FaultEpisode[] {
     if (!Array.isArray(raw)) throw new HarnessFailure("--faults must hold an array of episodes");
+    validateEpisodes(raw, scenario, "--faults");
+    return raw as FaultEpisode[];
+}
+
+/** Every episode is complete, unique by id, and valid against the scenario's sessions. */
+function validateEpisodes(raw: unknown[], scenario: Scenario, source: string): void {
     const turns = new Map(scenario.sessions.map((x) => [x.id, x.requests]));
     const ids = new Set<string>();
     raw.forEach((value, i) => {
         const problems = episodeProblems(value);
         if (problems.length > 0) {
-            throw new HarnessFailure(`--faults episode ${i} is malformed: ${problems.join(", ")}`);
+            throw new HarnessFailure(`${source} episode ${i} is malformed: ${problems.join(", ")}`);
         }
         const episode = value as FaultEpisode;
-        if (ids.has(episode.id)) throw new HarnessFailure(`--faults: duplicate id ${episode.id}`);
+        if (ids.has(episode.id)) throw new HarnessFailure(`${source}: duplicate id ${episode.id}`);
         ids.add(episode.id);
         try {
             validateFault(episode, turns);
         } catch (caught) {
-            throw new HarnessFailure(`--faults: ${(caught as Error).message}`);
+            throw new HarnessFailure(`${source}: ${(caught as Error).message}`);
         }
     });
-    return raw as FaultEpisode[];
 }
 
 function armOrder(o: RunOptions): ArmName[] {
@@ -378,6 +397,9 @@ export function requireMechanisms(faults: FaultEpisode[], models: string[]): voi
         throw new HarnessFailure(
             `scheduled fault types without a mechanism: ${missing.join(", ")}`,
         );
+    }
+    if (models.some((m) => typeof m !== "string" || m.trim() === "")) {
+        throw new HarnessFailure(`--models holds an empty entry: ${JSON.stringify(models)}`);
     }
     if (new Set(models).size !== models.length) {
         throw new HarnessFailure(`--models repeats an entry: ${models.join(",")}`);
@@ -764,6 +786,7 @@ async function runArms(
                     }
                 }),
             fault: (f) => tracked(() => driver.fault(f)),
+            reap: () => tracked(() => driver.reap()),
             finish: () =>
                 tracked(async () => {
                     try {

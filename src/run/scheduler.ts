@@ -147,7 +147,11 @@ export class Scheduler {
         this.log({ kind: "EndRun" });
     }
 
-    /** Resume continues a failed arm whose journal ends before `EndArm`. */
+    /**
+     * Resume continues a failed arm whose journal ends before `EndArm`. The arm finishes only
+     * after the busy set drains twice: once after its last event, and once after the driver's
+     * shutdown, which can still register a job.
+     */
     private async runArm(
         driver: ArmDriver,
         started: boolean,
@@ -163,6 +167,7 @@ export class Scheduler {
             await this.idle();
         });
         await driver.finish?.();
+        await this.idle();
     }
 
     /** A failure waits for a mid-fold restart in flight, finishes the driver, and surfaces as itself. */

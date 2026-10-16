@@ -170,8 +170,14 @@ export class Gateway {
 
     constructor(private readonly options: GatewayOptions) {}
 
+    /** A hook that throws is recorded as a failure; the request itself still runs. */
     private arrive(): () => void {
-        const release = this.options.arrival?.();
+        let release: unknown;
+        try {
+            release = this.options.arrival?.();
+        } catch (caught) {
+            this.failures.push(caught as Error);
+        }
         const once = { done: false };
         return () => {
             if (once.done || typeof release !== "function") return;
