@@ -128,7 +128,8 @@ resumed delivery produce the same commit. Every session and `apply_diff`
 requires the workspace to resolve to the real `<arm>/r/workspaces/<project>`;
 a symlink the agent put at it or above it stops the run, since the harness
 and the launcher would follow it with their own privileges; the daemon's
-`runtime` and data directories get the same check before every daemon start.
+`runtime` and data directories get the same check before every daemon start
+and restart.
 
 Each host process starts in the session's workspace, which the launcher
 enters after its privilege drop. Pi runs in RPC mode with `--session-id sim-<session>`, its agent directory,
@@ -241,7 +242,7 @@ against the same store (OQ-10).
 |---|---|---|
 | `daemon_sigkill_mid_fold` | The session's first observed history-summarizer call fires it; SIGKILL and restart | `pid_before`, `pid_after`, `restarted_by: harness` |
 | `daemon_restart` | At `session_start`, SIGKILL and restart | As above |
-| `store_full` | When the scenario schedules `store_full`, each Eidnara arm's store lives on a sparse 2 GiB ext4 loop mount (`nosuid,nodev,noexec`) at `<arm>/s`, room for the daemon to materialize its harness closures twice, with its image outside the sandbox's kept paths; the fault fills it with a `fallocate`d ballast topped up by `dd`, so the sparse image stays small, and `session_end` removes the ballast; a resume that finds the ballast removes it for the daemon's start and fills the store again, whether or not that start succeeds; the store is writable to the host, so `session_end` requires the ballast to be whole and stops the run otherwise; the fault replaces whatever the host left at the ballast's name with a fresh regular file before allocating | `avail_kb: 0`; any other value stops the run |
+| `store_full` | When the scenario schedules `store_full`, each Eidnara arm's store lives on a sparse 2 GiB ext4 loop mount (`nosuid,nodev,noexec`) at `<arm>/s`, room for the daemon to materialize its harness closures twice, with its image outside the sandbox's kept paths; the fault fills it with a `fallocate`d ballast topped up by `dd`, so the sparse image stays small, and `session_end` removes the ballast; a resume that finds the ballast removes it for the daemon's start and fills the store again, whether or not that start succeeds, and requires the store to report no free space afterwards; the store is writable to the host, so `session_end` requires the ballast to be whole and stops the run otherwise; the fault replaces whatever the host left at the ballast's name with a fresh regular file before allocating | `avail_kb: 0`; any other value stops the run |
 | `plugin_reload` | The host process and its plugin start afresh at every `session_start` | The reload note |
 | `model_switch` | Later sessions use the next configured model; the daemon keeps running with its summarizer model | The new model id |
 | `laptop_sleep` | One event-free clock jump (`docs/run.md`) | The `AdvanceClock` entry |

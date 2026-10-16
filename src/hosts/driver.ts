@@ -224,6 +224,12 @@ export class HostDriver implements ArmDriver {
         if (r.status !== 0) throw new Error(`git ${args.join(" ")}: ${r.stderr}`);
     }
 
+    /** The daemon's directories are host-writable, so every daemon start and restart rechecks them. */
+    private checkDaemonDirs(): void {
+        realChild(this.o.armRoot, "runtime", "daemon runtime");
+        realChild(this.storeRoot, "d", "daemon data");
+    }
+
     /** The real workspace directory; a symlink the host planted at it or above it stops the run. */
     private workspaceDir(project: string): string {
         const workspaces = realChild(this.o.armRoot, "workspaces", "workspaces");
@@ -268,8 +274,7 @@ export class HostDriver implements ArmDriver {
         if (this.ballast) rmSync(this.ballast, { force: true });
         try {
             if (eidnaraOn(this.o.arm)) {
-                realChild(this.o.armRoot, "runtime", "daemon runtime");
-                realChild(this.storeRoot, "d", "daemon data");
+                this.checkDaemonDirs();
                 const make = this.o.daemonFactory ?? ((ctx: DaemonContext) => new DaemonStack(ctx));
                 this.daemon = make({
                     ...this.o,
@@ -287,6 +292,7 @@ export class HostDriver implements ArmDriver {
                 this.recordState();
             }
         }
+        if (filled) this.requireFull();
         this.host = this.newHost();
         this.recordState();
     }
@@ -339,7 +345,7 @@ export class HostDriver implements ArmDriver {
 
     private async stopRecorded(proc: { pid: number; start: string | null } | null | undefined) {
         if (!proc || !running(proc.pid) || processStart(proc.pid) !== proc.start) return;
-        if (!(await stopOwnedTree(proc.pid, 5_000))) {
+        if (!(await stopOwnedTree(proc.pid, 5_000, proc.start ?? undefined))) {
             throw new HarnessFailure(`recorded process ${proc.pid} survived SIGKILL`);
         }
     }
@@ -454,6 +460,7 @@ export class HostDriver implements ArmDriver {
         if (f.type === "daemon_sigkill_mid_fold" || f.type === "daemon_restart") {
             if (!this.daemon) return { skipped: "arm runs no daemon" };
             const before = this.daemonPid();
+            this.checkDaemonDirs();
             await this.daemon.restart();
             this.recordState();
             const after = this.daemonPid();
@@ -520,10 +527,15 @@ export class HostDriver implements ArmDriver {
     private fillStore(): Record<string, unknown> {
         if (!this.storeMount) return { skipped: "arm runs no loop-mounted store" };
         this.fill();
-        const df = run(["df", "--output=avail", this.storeMount]);
+        return { mount: this.storeMount, avail_kb: this.requireFull() };
+    }
+
+    /** The fault holds only while the store reports no free space. */
+    private requireFull(): number {
+        const df = run(["df", "--output=avail", this.storeMount as string]);
         const avail = Number(df.trim().split("\n").at(-1));
         if (avail !== 0) throw new HarnessFailure(`store_full left ${avail} KiB free`);
-        return { mount: this.storeMount, avail_kb: avail };
+        return avail;
     }
 
     /**

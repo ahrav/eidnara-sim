@@ -7,13 +7,17 @@ import * as procs from "../run/procs";
 import { HostDriver } from "./driver";
 
 const stopped: number[] = [];
+const starts: Array<string | null> = [];
 const spies = [
     spyOn(procs, "running").mockReturnValue(true),
     spyOn(procs, "processStart").mockReturnValue("1"),
-    spyOn(procs, "stopOwnedTree").mockImplementation(async (pid: number) => {
-        stopped.push(pid);
-        return pid !== 4_000_000;
-    }),
+    spyOn(procs, "stopOwnedTree").mockImplementation(
+        async (pid: number, _grace: number, start?: string) => {
+            stopped.push(pid);
+            starts.push(start ?? null);
+            return pid !== 4_000_000;
+        },
+    ),
 ];
 afterAll(() => {
     for (const s of spies) s.mockRestore();
@@ -85,8 +89,10 @@ test("the reaper stops the recorded host before the recorded daemon", async () =
             onDaemonExit: () => undefined,
         });
         stopped.length = 0;
+        starts.length = 0;
         await driver.reap();
         expect(stopped).toEqual([4_000_002, 4_000_001]);
+        expect(starts).toEqual(["1", "1"]);
     } finally {
         rmSync(root, { recursive: true, force: true });
     }

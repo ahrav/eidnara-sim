@@ -382,6 +382,31 @@ test("an OpenCode session reports its spawn before the SDK setup runs", async ()
     expect(spawned[0]).not.toBeNull();
 });
 
+test("a restarted daemon's output is saved from its own first line", async () => {
+    const run = runDir();
+    const stack = new DaemonStack({
+        config: loadConfig(),
+        root: run,
+        dataDir: join(run, "data"),
+        logFile: join(run, "daemon.log"),
+        offsetFile: join(run, "offset"),
+        proxyHttp1: "",
+        proxyHttp2: "",
+        model: "m",
+    });
+    let log = "booted\n";
+    (stack as Untyped).stack = {
+        hostLog: () => log,
+        restartHost: async () => {
+            log = "booted\n";
+        },
+        terminateHost: async () => undefined,
+    };
+    await stack.restart();
+    await stack.stop();
+    expect(await Bun.file(join(run, "daemon.log")).text()).toBe("booted\nbooted\n");
+});
+
 test("the daemon's output is on disk before its termination begins", async () => {
     const run = runDir();
     const stack = new DaemonStack({

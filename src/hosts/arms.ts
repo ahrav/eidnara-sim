@@ -183,6 +183,7 @@ export class DaemonStack {
     async restart(): Promise<void> {
         this.saveLog();
         await this.stack.restartHost();
+        this.saved = "";
     }
 
     /** The log is saved before and after termination, so a kill in between loses only the shutdown lines. */

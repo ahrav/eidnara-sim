@@ -424,6 +424,17 @@ touch ${escaped}
         expect(exits).toEqual([{ after: "e-9" }]);
     });
 
+    test("a daemon restart refuses a runtime directory the host replaced with a symlink", async () => {
+        const daemonFactory = () =>
+            ({ ...fakeDaemon(null), start: async () => undefined }) as unknown as DaemonStack;
+        const { driver, root } = fixture("eidnara", {}, { daemonFactory });
+        await driver.reset();
+        const runtime = join(root, "eidnara", "r", "runtime");
+        rmSync(runtime, { recursive: true, force: true });
+        symlinkSync(tmp(), runtime);
+        await expect(driver.fault(episode("daemon_restart"))).rejects.toThrow("leaves");
+    });
+
     test("a resume refuses a daemon runtime or data directory the host replaced with a symlink", async () => {
         const daemonFactory = () =>
             ({ ...fakeDaemon(null), start: async () => undefined }) as unknown as DaemonStack;
