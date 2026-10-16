@@ -60,12 +60,14 @@ test("an OpenCode turn logs only its own messages' tools, timed in OpenCode's cl
             abort: async () => ({}),
         },
     };
+    const reported: unknown[] = [];
     const host = new OpencodeSimHost({
         ...({} as HostContext),
         config: loadConfig(),
         root: "/x",
         launcher: "/x/sandbox.sh",
         now: () => 100,
+        onTool: (run) => void reported.push(run),
     });
     Object.assign(host as unknown as Record<string, unknown>, {
         client,
@@ -73,6 +75,7 @@ test("an OpenCode turn logs only its own messages' tools, timed in OpenCode's cl
         oc: { stderr: () => "" },
     });
     expect(await host.prompt("go", 5_000)).toEqual({});
+    expect(reported).toEqual([{ command: "cargo test", exit: 1, scenario_ms: 2_100 }]);
     expect(host.drainTools()).toEqual([{ command: "cargo test", exit: 1, scenario_ms: 2_100 }]);
 });
 

@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, truncateSync } from "node:fs";
 import type { Preregistration } from "../prereg/schema";
 import type { ProbeItem } from "../scenario/compile";
 import {
@@ -302,7 +302,13 @@ export function gradeItem(
 }
 
 export class GradeLog {
-    constructor(private readonly path: string) {}
+    /** A log reopened over a line cut by a kill mid-append keeps its newline-terminated prefix. */
+    constructor(private readonly path: string) {
+        if (!existsSync(path)) return;
+        const text = readFileSync(path, "utf8");
+        const complete = text.slice(0, text.lastIndexOf("\n") + 1);
+        if (complete.length < text.length) truncateSync(path, Buffer.byteLength(complete));
+    }
 
     all(): GradeRecord[] {
         if (!existsSync(this.path)) return [];

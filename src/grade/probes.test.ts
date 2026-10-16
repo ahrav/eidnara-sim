@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readdirSync, readFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ProbeItem } from "../scenario/compile";
@@ -128,5 +128,16 @@ describe("grading harness", () => {
         log.append({ ...g, version: log.nextVersion(g) });
         expect(log.all().map((x) => x.version)).toEqual([1, 2]);
         expect(log.latest().map((x) => x.version)).toEqual([2]);
+    });
+
+    test("a grade log reopened over a cut last line drops the cut and allocates the next version", () => {
+        const path = join(mkdtempSync(join(tmpdir(), "sim-grades-")), "grades.jsonl");
+        const g = grade("P2-pass");
+        new GradeLog(path).append(g);
+        appendFileSync(path, '{"item":"P2-a","arm":"eidnara","ver');
+        const reopened = new GradeLog(path);
+        expect(reopened.nextVersion(g)).toBe(2);
+        reopened.append({ ...g, version: 2 });
+        expect(reopened.all().map((x) => x.version)).toEqual([1, 2]);
     });
 });

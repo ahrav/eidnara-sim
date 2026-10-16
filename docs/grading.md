@@ -43,12 +43,18 @@ resume after a kill between the two entries journals the snapshot from it.
 Snapshots append to `<arm>/snapshots.jsonl`, and a recorder rebuilt after a
 kill drops a cut last line; a
 snapshot id is `<arm>:<item>:<turn event>`, so each attempt has its own id.
+The snapshot tree leaves out a git repository nested in the workspace (git
+would index it as a gitlink, hiding its files), and a probe turn that leaves
+one behind ends `failed` with `embedded repository at <path>`, so the item
+is excluded (SIM-P46) instead of graded on a diff that lacks that content.
+The recorder's git refuses a workspace path that is a symlink or lies behind
+one.
 
 | Artefact | Source |
 |---|---|
 | `diff` (`turn`) | A git tree of the workspace's files that its `.gitignore` rules leave in, untracked files included, taken before the prompt and after it, and diffed |
 | `diff` (`prior-session`) | The same trees at the start and end of the project's previous session |
-| `command-log` | The host's tool runs, each a bash command or the tool name and its path, with a 0 or 1 error flag (null for a run that never finished) and its scenario time. Pi reports `tool_execution_start` and `tool_execution_end` events; OpenCode's tool parts come from the session messages the turn added, read after the turn whatever its outcome, each timed from its start relative to the turn's first new message, both in OpenCode's own clock, with a pending or running part's exit null |
+| `command-log` | The host's tool runs, each a bash command or the tool name and its path followed by the text and structured arguments it was given (a `write`'s content, an `edit`'s edits), with a 0 or 1 error flag (null for a run that never finished) and its scenario time. The recorder saves each run as the host logs it, so a harness kill mid-turn keeps the runs logged so far in the session log. Pi reports `tool_execution_start` and `tool_execution_end` events as they happen; OpenCode's tool parts come from the session messages the turn added, read after the turn whatever its outcome, each timed from its start relative to the turn's first new message, both in OpenCode's own clock, with a pending or running part's exit null, so a turn OpenCode was running when the harness was killed leaves no tool runs |
 | `proxy-call` | The session's call records from `calls.jsonl`, each with the index of the user turn it belongs to (a background call takes the preceding turn's), and the response text the proxy records for agent, user-sim, and judge calls (the first 32,768 characters) |
 
 The recorder keeps each project's session-start tree, the last session's
@@ -71,7 +77,9 @@ the graders read neither.
 
 `scripts/grade-run.ts <run dir>` takes the run's lease, so one grader at a
 time allocates versions, refuses a run whose pre-registration or scenario no
-longer hashes to the digests in its manifest, and grades every snapshot the
+longer hashes to the digests in its manifest or whose journal lacks `EndRun`
+or an arm's `EndArm` and one terminal `Event` per scheduled event (SIM-P67),
+drops a cut last line of `grades.jsonl`, and grades every snapshot the
 journal names
 into `grades.jsonl` and judges each P7 item for each memory arm against the
 host arm, through a gateway it starts for the judge after checking the judge

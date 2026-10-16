@@ -14,7 +14,14 @@ import type { CallView } from "../grade/artefacts";
 import { processStart, running, stopOwnedTree } from "../run/procs";
 import { type ArmDriver, HarnessFailure, type ScenarioEvent } from "../run/scheduler";
 import type { FaultEpisode } from "../scenario/faults";
-import { DaemonStack, eidnaraOn, type HostContext, makeHost, type SimHost } from "./arms";
+import {
+    DaemonStack,
+    eidnaraOn,
+    type HostContext,
+    makeHost,
+    type SimHost,
+    type ToolRun,
+} from "./arms";
 import { SnapshotRecorder } from "./snapshot";
 
 interface ArmState {
@@ -119,7 +126,8 @@ export class HostDriver implements ArmDriver {
     private newHost(): SimHost {
         const make = this.o.hostFactory ?? makeHost;
         const keep = eidnaraOn(this.o.arm) ? [...this.o.keep, this.storeRoot] : this.o.keep;
-        return make({ ...this.o, keep, root: this.o.armRoot, model: this.currentModel() });
+        const onTool = (run: ToolRun) => this.snapshots.addTools([run]);
+        return make({ ...this.o, keep, root: this.o.armRoot, model: this.currentModel(), onTool });
     }
 
     private recordState(): void {
@@ -212,7 +220,7 @@ export class HostDriver implements ArmDriver {
         }
         if (e.kind === "session_end") {
             const project = this.project(e);
-            this.snapshots.addTools(host.drainTools());
+            host.drainTools();
             this.snapshots.sessionEnd(e.session, project, this.workspace(project));
             await host.closeSession();
             this.clearStoreFill();
@@ -231,10 +239,14 @@ export class HostDriver implements ArmDriver {
         const result = await host.prompt(String(e.text), this.o.turnDeadlineMs);
         if (this.daemon && this.daemonPid() === null) this.o.onDaemonExit({ after: e.id });
         const tools = host.drainTools();
-        this.snapshots.addTools(tools);
         const outcome: { failed?: string; snapshot?: string } = {};
         if (result.error) outcome.failed = result.error;
         if (e.probe) {
+            const nested = this.snapshots.embedded(dir);
+            if (nested.length > 0) {
+                const reason = `embedded repository at ${nested.join(", ")}`;
+                outcome.failed = outcome.failed ? `${outcome.failed} | ${reason}` : reason;
+            }
             const probe = { probe: e.probe, session: e.session, id: e.id };
             outcome.snapshot = this.snapshots.capture(
                 probe,
@@ -242,7 +254,7 @@ export class HostDriver implements ArmDriver {
                 dir,
                 before,
                 tools,
-                !!result.error,
+                !!outcome.failed,
             );
         }
         return outcome;

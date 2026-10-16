@@ -17,6 +17,8 @@ done marker, and the error names the arm and counts.
 No harness code, test, or run exists yet. The surface lands in M4
 (#1028).
 
+M5 (#1029) puts the load in `scripts/grade-run.ts`: before it opens the grade log, `gradeRun` requires `EndRun` and, for every arm in the manifest's order, `EndArm` and one terminal `Event` per scheduled event, and the refusal names the arm and both counts (`arm eidnara is incomplete: 1 of 3 events ended, no EndArm`); a test grades a run whose journal stops inside one arm and checks the refusal and that no grade was appended.
+
 ## Failure scenario
 
 A partial run is analysed as complete.

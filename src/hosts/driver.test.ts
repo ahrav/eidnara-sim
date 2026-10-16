@@ -62,7 +62,9 @@ class FakeHost {
     }
     tools: { command: string; exit: number | null; scenario_ms: number }[] = [];
     drainTools() {
-        return this.tools.splice(0);
+        const drained = this.tools.splice(0);
+        for (const run of drained) this.ctx.onTool?.(run);
+        return drained;
     }
 }
 
@@ -330,6 +332,44 @@ describe("HostDriver faults", () => {
 });
 
 describe("probe snapshots", () => {
+    test("a tool run reported mid-turn is in the recorder's state before the turn returns", async () => {
+        const { driver, hosts, armDir } = fixture("host", { p: gitRepo() });
+        const fresh = new HostDriver((driver as unknown as { o: DriverOptions }).o);
+        await fresh.reset();
+        const host = hosts.at(-1) as FakeHost;
+        await fresh.event(ev("session_start", { session: "s-0" }));
+        const run = { command: "cargo build", exit: 0, scenario_ms: 3 };
+        host.onPrompt = () => {
+            host.ctx.onTool?.(run);
+            throw new Error("harness killed");
+        };
+        await expect(
+            fresh.event(ev("user_turn", { id: "e-1", session: "s-0", text: "go" })),
+        ).rejects.toThrow("harness killed");
+        const state = JSON.parse(readFileSync(join(armDir, "snapshot-state.json"), "utf8"));
+        expect(state.commands).toEqual([run]);
+    });
+
+    test("a probe turn that leaves an embedded repository in the workspace ends failed, naming it", async () => {
+        const { driver, hosts } = fixture("host", { p: gitRepo() });
+        const fresh = new HostDriver((driver as unknown as { o: DriverOptions }).o);
+        await fresh.reset();
+        const host = hosts.at(-1) as FakeHost;
+        const ws = fresh.workspace("p");
+        await fresh.event(ev("session_start", { session: "s-0" }));
+        host.onPrompt = () => {
+            const vendor = join(ws, "vendor");
+            mkdirSync(vendor);
+            spawnSync("git", ["init", "-q"], { cwd: vendor });
+            writeFileSync(join(vendor, "cache.rs"), "static CACHE: Mutex<u8>\n");
+        };
+        const outcome = await fresh.event(
+            ev("user_turn", { id: "e-1", session: "s-0", text: "go", probe: "q-1" }),
+        );
+        expect(outcome.failed).toBe("embedded repository at vendor");
+        expect(outcome.snapshot).toBe("host:q-1:e-1");
+    });
+
     test("a probe turn's snapshot carries its diff, commands, prior session, and calls, and grades", async () => {
         const { driver, hosts, armDir, transcripts } = fixture("host", { p: gitRepo() });
         mkdirSync(join(transcripts, "sessions"), { recursive: true });

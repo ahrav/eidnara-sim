@@ -41,6 +41,8 @@ export interface HostContext {
     model: string;
     contextLimit: number;
     now?: () => number;
+    /** The host invokes `onTool` once per tool run as it records the run; `drainTools` invokes it for the runs it adds itself. */
+    onTool?: (run: ToolRun) => void;
 }
 
 export interface ToolRun {
@@ -207,7 +209,9 @@ export abstract class SimHost {
         exit: number | null,
         scenario_ms = this.ctx.now?.() ?? 0,
     ) {
-        this.tools.push({ command: toolCommand(tool, args), exit, scenario_ms });
+        const run = { command: toolCommand(tool, args), exit, scenario_ms };
+        this.tools.push(run);
+        this.ctx.onTool?.(run);
     }
 
     protected unfinished(): ToolRun[] {
@@ -215,7 +219,9 @@ export abstract class SimHost {
     }
 
     drainTools(): ToolRun[] {
-        return [...this.tools.splice(0), ...this.unfinished()];
+        const open = this.unfinished();
+        for (const run of open) this.ctx.onTool?.(run);
+        return [...this.tools.splice(0), ...open];
     }
 }
 

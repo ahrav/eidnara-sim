@@ -16,7 +16,7 @@ import { bedrockUpstream, Gateway } from "../src/proxy/gateway";
 import { FaultInjector } from "../src/proxy/inject";
 import { RecordWriter } from "../src/proxy/records";
 import { Rng } from "../src/rng";
-import { readJournal, releaseLease, takeLease } from "../src/run/journal";
+import { type Entry, readJournal, releaseLease, takeLease } from "../src/run/journal";
 import type { Scenario } from "../src/scenario/compile";
 import { loadPrereg } from "../src/scenario/inputs";
 
@@ -45,6 +45,23 @@ export async function gradeRun(dir: string, config: SimConfig | null): Promise<S
     }
 }
 
+function requireComplete(entries: Entry[], arms: string[], scheduled: number): void {
+    for (const arm of arms) {
+        const mine = entries.filter((e) => e.arm === arm);
+        const ended = new Set(mine.filter((e) => e.kind === "Event").map((e) => e.event)).size;
+        const closed = mine.some((e) => e.kind === "EndArm");
+        if (!closed || ended < scheduled) {
+            const marker = closed ? "EndArm present" : "no EndArm";
+            throw new Error(
+                `arm ${arm} is incomplete: ${ended} of ${scheduled} events ended, ${marker}`,
+            );
+        }
+    }
+    if (!entries.some((e) => e.kind === "EndRun")) {
+        throw new Error("run is incomplete: the journal has no EndRun");
+    }
+}
+
 async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
     const manifest = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8"));
     const scenario = JSON.parse(readFileSync(join(dir, "scenario.json"), "utf8")) as Scenario;
@@ -59,14 +76,14 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
         throw new Error(`inputs differ from the run's manifest: ${names}`);
     }
     const rules = loadPrereg(manifest.tier).grading;
-    const log = new GradeLog(join(dir, "grades.jsonl"));
     const arms = manifest.order as string[];
     const models = manifest.models as string[];
+    const entries = readJournal(join(dir, "journal.jsonl"));
+    requireComplete(entries, arms, scenario.events.slice(0, manifest.events).length);
+    const log = new GradeLog(join(dir, "grades.jsonl"));
 
     const journaled = new Set(
-        readJournal(join(dir, "journal.jsonl"))
-            .filter((e) => e.kind === "SnapshotArtefacts")
-            .map((e) => String(e.snapshot)),
+        entries.filter((e) => e.kind === "SnapshotArtefacts").map((e) => String(e.snapshot)),
     );
     const snapshots = new Map<string, Snapshot[]>();
     for (const arm of arms) {

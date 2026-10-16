@@ -36,6 +36,8 @@ interface RunOptions {
     models?: string[];
     prereg_sha256?: string;
     scenario_hash?: string;
+    /** Arms whose journal stops before `EndArm`, with the number of events they ended. */
+    interrupted?: Record<string, number>;
 }
 
 function run(o: RunOptions): string {
@@ -78,7 +80,23 @@ function run(o: RunOptions): string {
         prereg_sha256: o.prereg_sha256 ?? preregistrationHash(loadPrereg("S")),
     };
     writeFileSync(join(dir, "manifest.json"), JSON.stringify(manifest));
-    writeFileSync(join(dir, "journal.jsonl"), "");
+    const ran = events.slice(0, manifest.events);
+    const journal: Record<string, unknown>[] = [{ kind: "StartRun", arm: null }];
+    for (const arm of manifest.order) {
+        const ended = o.interrupted?.[arm] ?? ran.length;
+        journal.push({ kind: "StartArm", arm });
+        for (const e of ran.slice(0, ended)) journal.push({ kind: "Event", arm, event: e.id });
+        if (ended === ran.length && !(arm in (o.interrupted ?? {}))) {
+            journal.push({ kind: "EndArm", arm });
+        }
+    }
+    if (!o.interrupted) journal.push({ kind: "EndRun", arm: null });
+    writeFileSync(
+        join(dir, "journal.jsonl"),
+        journal
+            .map((e, i) => `${JSON.stringify({ seq: i, wall_ms: i, scenario_ms: 0, ...e })}\n`)
+            .join(""),
+    );
     return dir;
 }
 
@@ -149,6 +167,13 @@ describe("grade-run", () => {
         snapshot(dir, "eidnara", snap);
         expect((await gradeRun(dir, null)).versions).toEqual({ "1": 1 });
         expect((await gradeRun(dir, null)).versions).toEqual({ "2": 1 });
+    });
+
+    test("an interrupted run is refused, naming the arm and its event counts", async () => {
+        const dir = run({ probes: [p5.probe], interrupted: { eidnara: 1 } });
+        snapshot(dir, "host", snap);
+        await expect(gradeRun(dir, null)).rejects.toThrow(/arm eidnara .*1 of 3 events/);
+        expect(() => readFileSync(join(dir, "grades.jsonl"))).toThrow();
     });
 
     test("a run directory leased by a live process is refused", async () => {

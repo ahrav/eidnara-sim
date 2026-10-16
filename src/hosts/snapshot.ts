@@ -100,8 +100,23 @@ export class SnapshotRecorder {
         rmSync(join(this.armDir, "snapshots.jsonl"), { force: true });
     }
 
+    /**
+     * Directories under `dir` that are git repositories of their own. Git lists each as one
+     * untracked directory and would index a committed one as a gitlink, so the tree leaves
+     * them out.
+     */
+    embedded(dir: string): string[] {
+        const status = this.git(["status", "--porcelain", "-z", "--untracked-files=all"], dir);
+        return status
+            .split("\0")
+            .filter((line) => line.startsWith("?? ") && line.endsWith("/"))
+            .map((line) => line.slice(3, -1))
+            .sort();
+    }
+
     tree(dir: string): string {
-        this.git(["add", "--all"], dir);
+        const excluded = this.embedded(dir).map((path) => `:(exclude)${path}`);
+        this.git(["add", "--all", "--", ".", ...excluded], dir);
         return this.git(["write-tree"], dir).trim();
     }
 
