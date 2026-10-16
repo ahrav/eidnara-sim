@@ -30,7 +30,8 @@ export interface ArmDriver {
      */
     resume?(open: ScenarioEvent | null): Promise<void>;
     event(e: ScenarioEvent): Promise<TurnOutcome>;
-    fault(f: FaultEpisode): Promise<Record<string, unknown>>;
+    /** `at` is the scenario event a fault fired at, when a compiled event triggered it. */
+    fault(f: FaultEpisode, at?: ScenarioEvent): Promise<Record<string, unknown>>;
     /**
      * Runs the counterfactual deletions due before `e`, passing each to `log` as it returns,
      * which journals it before the next one starts; `done(probe)` holds for a deletion already
@@ -207,7 +208,7 @@ export class Scheduler {
         });
     }
 
-    private async fire(driver: ArmDriver, f: FaultEpisode): Promise<void> {
+    private async fire(driver: ArmDriver, f: FaultEpisode, at?: ScenarioEvent): Promise<void> {
         this.fired.add(`${this.arm}/${f.id}`);
         this.log({ kind: "FaultFired", fault: f.id, type: f.type, layer: f.seam.layer });
         if (f.seam.layer === PROXY_LAYER) {
@@ -220,7 +221,7 @@ export class Scheduler {
             return;
         }
         if (OUTAGE.has(f.type)) this.outage = f.id;
-        const evidence = await driver.fault(f);
+        const evidence = await driver.fault(f, at);
         this.log({ kind: "FaultObserved", fault: f.id, type: f.type, evidence });
     }
 
@@ -238,7 +239,7 @@ export class Scheduler {
             });
         clock.advanceTo(e.scenario_ms, arm, { next_event: e.id });
         this.session = e.session;
-        for (const f of faults) await this.fire(driver, f);
+        for (const f of faults) await this.fire(driver, f, e);
         const done = (probe: string) =>
             this.o.journal.entries.some(
                 (x) =>

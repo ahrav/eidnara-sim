@@ -374,6 +374,47 @@ describe("HostDriver faults", () => {
         expect(plain.host?.ctx.keep).not.toContain(plain.storeRoot);
     });
 
+    test("a host upgrade moves later sessions to the configured next version, or is skipped", async () => {
+        const { driver } = fixture("eidnara");
+        const o = (driver as unknown as { o: DriverOptions }).o;
+        o.config = { ...o.config, upgrade: undefined };
+        expect(await driver.fault(episode("host_upgrade"))).toEqual({
+            skipped: "no next pi version is configured (config.upgrade.pi_install)",
+        });
+        o.config = { ...o.config, upgrade: { pi_install: "/next/pi" } };
+        expect(await driver.fault(episode("host_upgrade"))).toEqual({
+            host: "pi",
+            from: o.config.pi_install,
+            to: "/next/pi",
+            takes_effect: "next session_start",
+        });
+        expect(driver.host?.ctx.config.pi_install).toBe("/next/pi");
+        await driver.fault(episode("model_switch"));
+        expect(driver.host?.ctx.config.pi_install).toBe("/next/pi");
+    });
+
+    test("a second host client runs one turn on the arm's daemon at the session's start", async () => {
+        const { driver, hosts } = fixture("eidnara", { p: "/repo" });
+        driver.daemon = fakeDaemon(10) as unknown as DaemonStack;
+        const at = ev("session_start", { project: "p" });
+        const evidence = await driver.fault(episode("two_hosts_one_daemon"), at);
+        expect(evidence).toMatchObject({
+            second_session: "s-0000-b",
+            daemon_pid: 10,
+            outcome: "ok",
+        });
+        const second = hosts.at(-1) as FakeHost;
+        expect(second.opened).toEqual([`s-0000-b@${driver.workspace("p")}`]);
+        expect(second.closed).toBe(1);
+        await expect(driver.fault(episode("two_hosts_one_daemon"))).rejects.toThrow(
+            "session_start",
+        );
+        const plain = fixture("host").driver;
+        expect(await plain.fault(episode("two_hosts_one_daemon"), at)).toEqual({
+            skipped: "arm runs no daemon",
+        });
+    });
+
     test("a model switch moves later sessions to the next model and keeps the daemon", async () => {
         const { driver } = fixture("eidnara");
         const daemon = fakeDaemon(10) as unknown as DaemonStack;
@@ -390,7 +431,7 @@ describe("HostDriver faults", () => {
         await driver.reset();
         await driver.event(ev("session_start"));
         await expect(driver.fault(episode("model_switch"))).rejects.toThrow("between sessions");
-        await expect(driver.fault(episode("host_upgrade"))).rejects.toThrow("no mechanism");
+        await expect(driver.fault(episode("provider_429"))).rejects.toThrow("no mechanism");
     });
 });
 

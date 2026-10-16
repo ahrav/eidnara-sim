@@ -15,7 +15,7 @@ import { falsificationPairs } from "./falsify";
 import { intrusiveness } from "./intrusive";
 import { type GradedRun, tierInput, userTexts } from "./observe";
 import type { TierReport } from "./render";
-import { soak } from "./soak";
+import { soak, soakByMonth } from "./soak";
 import { propertyWitness } from "./witness";
 
 export function loadGraded(dir: string, prereg: Preregistration): GradedRun {
@@ -104,6 +104,13 @@ export function tierReport(
         witness: propertyWitness(catalog, runs),
         conditions: runs.map(runConditions),
         continuity: continuity(runs),
+        soak_by_month: perArm
+            .filter(({ arm }) => armBase(arm.arm) !== "host")
+            .filter(
+                ({ arm }) =>
+                    Math.max(0, ...arm.resources.map((s) => s.scenario_ms)) > 30 * 86_400_000,
+            )
+            .flatMap(({ g, arm }) => soakByMonth(g.run, arm, "rss")),
         counterfactual: counterfactual(runs),
     };
 }

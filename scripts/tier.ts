@@ -12,7 +12,7 @@ import type { Scenario } from "../src/scenario/compile";
 import { loadPrereg } from "../src/scenario/inputs";
 
 const USAGE =
-    "usage: bun scripts/tier.ts --tier S --out <dir> [--hosts pi,opencode] [--turn-ms N] [--resize-from <M tier dir>] [--plan-only]";
+    "usage: bun scripts/tier.ts --tier S --out <dir> [--hosts pi,opencode] [--turn-ms N] [--resize-from <M tier dir>] [--restart-at <fraction>] [--plan-only]";
 const arg = (name: string) => {
     const i = process.argv.indexOf(`--${name}`);
     return i < 0 ? undefined : process.argv[i + 1];
@@ -37,6 +37,8 @@ const fail = (why: string) => {
     process.exit(2);
 };
 if (!Number.isInteger(turnMs) || turnMs <= 0) fail("--turn-ms must be a positive integer");
+const restartAt = Number(arg("restart-at") ?? (tier === "XL" ? 0.4 : 0));
+if (!(restartAt >= 0 && restartAt < 1)) fail("--restart-at must be a fraction in [0, 1)");
 if (new Set(hosts).size !== hosts.length || !hosts.every((h) => prereg.hosts.includes(h)))
     fail(`--hosts must name distinct hosts from ${prereg.hosts.join(",")}`);
 mkdirSync(out, { recursive: true });
@@ -92,8 +94,13 @@ if (process.argv.includes("--plan-only")) process.exit(0);
 const bin = resolve(dirname(config.opencode_binary), "../../.bin");
 const env = { ...process.env, PATH: `${bin}:${process.env.PATH}` };
 const children = new Children(env);
-const run = (args: string[], log: string, limitMs?: number) =>
-    children.run([join(import.meta.dir, args[0] as string), ...args.slice(1)], log, limitMs);
+const run = (args: string[], log: string, limitMs?: number, stopWhen?: () => boolean) =>
+    children.run(
+        [join(import.meta.dir, args[0] as string), ...args.slice(1)],
+        log,
+        limitMs,
+        stopWhen,
+    );
 for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
     process.on(signal, async () => {
         await children.stopAll(signal);
@@ -103,6 +110,13 @@ for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
 
 const limit = Math.round(prereg.liveness_bounds.tier_wall_budget_ms * 1.25);
 const started = Date.now();
+const eventsRun = (dir: string) => {
+    const path = join(dir, "journal.jsonl");
+    if (!existsSync(path)) return 0;
+    return readFileSync(path, "utf8")
+        .split("\n")
+        .filter((l) => l.includes('"kind":"Event"')).length;
+};
 const firstEntryMs = (dir: string) => {
     const path = join(dir, "journal.jsonl");
     if (!existsSync(path)) return null;
@@ -117,16 +131,21 @@ const runJob = async (job: TierJob) => {
     const faults = compressFaults(scenario, job.events);
     const moved = JSON.stringify(faults) !== JSON.stringify(scenario.faults);
     if (moved) writeFileSync(join(job.dir, "faults.json"), `${JSON.stringify(faults)}\n`);
-    const code = await run(
-        [
-            "run-tier.ts",
-            ...["--tier", tier, "--seed", String(job.seed), "--out", job.dir, "--host", job.host],
-            ...["--arms", job.arms.join(","), "--events", String(job.events), ...job.extra],
-            ...(moved ? ["--faults", join(job.dir, "faults.json")] : []),
-        ],
-        log,
-        limit,
-    );
+    const args = [
+        "run-tier.ts",
+        ...["--tier", tier, "--seed", String(job.seed), "--out", job.dir, "--host", job.host],
+        ...["--arms", job.arms.join(","), "--events", String(job.events), ...job.extra],
+        ...(moved ? ["--faults", join(job.dir, "faults.json")] : []),
+    ];
+    const cut = restartAt > 0 && job.group === "main" && eventsRun(job.dir) === 0;
+    const due = restartAt * job.events * job.arms.length;
+    const t0 = Date.now();
+    let restarted = false;
+    let code = await run(args, log, limit, cut ? () => eventsRun(job.dir) >= due : undefined);
+    if (cut && code === SIGTERM_EXIT && Date.now() - t0 < limit) {
+        restarted = true;
+        code = await run(args, log, limit - (Date.now() - t0));
+    }
     const ran = existsSync(join(job.dir, "manifest.json"));
     const graded = ran ? await run(["grade-run.ts", job.dir], log) : null;
     const aa =
@@ -136,6 +155,7 @@ const runJob = async (job: TierJob) => {
     return {
         ...job,
         start_ms: firstEntryMs(job.dir),
+        restarted,
         run_exit: code,
         grade_exit: graded,
         aa_exit: aa,
@@ -174,7 +194,11 @@ console.log(
         reports,
     }),
 );
-const failed = results.some(
-    (r) => r.run_exit !== 0 || r.grade_exit !== 0 || (r.aa_exit ?? 0) !== 0,
-);
+const unrestarted = results
+    .filter((r) => restartAt > 0 && r.group === "main" && !r.restarted)
+    .map((r) => r.dir);
+if (unrestarted.length > 0) console.error(`no harness restart in ${unrestarted.join(", ")}`);
+const failed =
+    unrestarted.length > 0 ||
+    results.some((r) => r.run_exit !== 0 || r.grade_exit !== 0 || (r.aa_exit ?? 0) !== 0);
 process.exit(failed || Object.values(reports).some((r) => r !== 0) ? 1 : 0);

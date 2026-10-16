@@ -5,8 +5,8 @@ import { constants } from "node:os";
 export const SIGTERM_EXIT = 143;
 
 /**
- * When `limitMs` expires, a child gets SIGTERM, then SIGKILL after `graceMs` if it is still
- * live, which bounds a stalled teardown.
+ * When `limitMs` expires, or `stopWhen` holds at one of its checks every `pollMs`, a child gets
+ * SIGTERM, then SIGKILL after `graceMs` if it is still live, which bounds a stalled teardown.
  */
 export class Children {
     private readonly live = new Set<ChildProcess>();
@@ -15,9 +15,10 @@ export class Children {
     constructor(
         private readonly env: NodeJS.ProcessEnv,
         private readonly graceMs = 60_000,
+        private readonly pollMs = 30_000,
     ) {}
 
-    run(argv: string[], log: string, limitMs?: number): Promise<number> {
+    run(argv: string[], log: string, limitMs?: number, stopWhen?: () => boolean): Promise<number> {
         if (this.stopping) return Promise.resolve(SIGTERM_EXIT);
         return new Promise<number>((done) => {
             const child = spawn("bun", argv, { env: this.env, stdio: ["ignore", "pipe", "pipe"] });
@@ -26,12 +27,17 @@ export class Children {
             child.stdout?.on("data", sink);
             child.stderr?.on("data", sink);
             const timers: ReturnType<typeof setTimeout>[] = [];
+            let stopping = false;
             const stop = () => {
+                if (stopping) return;
+                stopping = true;
                 child.kill("SIGTERM");
                 timers.push(setTimeout(() => child.kill("SIGKILL"), this.graceMs));
             };
             if (limitMs !== undefined && limitMs > 0) timers.push(setTimeout(stop, limitMs));
+            const poll = stopWhen ? setInterval(() => stopWhen() && stop(), this.pollMs) : null;
             const finish = (code: number) => {
+                if (poll) clearInterval(poll);
                 for (const t of timers) clearTimeout(t);
                 this.live.delete(child);
                 done(code);

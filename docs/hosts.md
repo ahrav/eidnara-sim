@@ -154,10 +154,12 @@ against the same store (OQ-10).
 | `plugin_reload` | The host process and its plugin start afresh at every `session_start` | The reload note |
 | `model_switch` | Later sessions use the next configured model; the daemon keeps running with its summarizer model | The new model id |
 | `laptop_sleep` | One event-free clock jump (`docs/run.md`) | The `AdvanceClock` entry, and `clock_advanced_ms` |
+| `host_upgrade` | Later sessions run the next pinned version of the arm's host, `config.upgrade.pi_install` or `config.upgrade.opencode_binary` (Pi 0.87.1 and OpenCode 1.18.23 in `sim.config.json`); the daemon's harness closures keep the pinned versions; without a configured version the fault is skipped | `from`, `to`, and `takes_effect` |
+| `two_hosts_one_daemon` | At its `session_start`, a second host client opens session `<session>-b` in the same workspace on the arm's daemon, runs one fixed turn, and closes, before the primary session opens | The second session, its host pid, the daemon pid, and the turn's outcome |
 
-`plugin_reload` and `model_switch` fire between sessions; one fired inside a
-session stops the run, and so does a fault type with no mechanism here
-(`host_upgrade`, `two_hosts_one_daemon`). A daemon that exits outside an
+`plugin_reload`, `model_switch`, `host_upgrade`, and `two_hosts_one_daemon`
+fire between sessions; one fired inside a session stops the run, and so
+does a fault type with no mechanism here. A daemon that exits outside an
 outage window stops the run with `HarnessFailure`; the driver checks the
 daemon after every turn.
 

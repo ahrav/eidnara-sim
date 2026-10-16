@@ -558,9 +558,9 @@ async function runArms(
                     });
                 }
             },
-            fault: (f) => {
+            fault: (f, at) => {
                 guard();
-                return driver.fault(f);
+                return driver.fault(f, at);
             },
             finish: async () => {
                 sampler.stop();

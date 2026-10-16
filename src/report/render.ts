@@ -32,6 +32,7 @@ export interface TierReport {
     conditions: RunConditions[];
     continuity: Continuity[];
     counterfactual: Counterfactual | null;
+    soak_by_month: (SoakVerdict & { month: number })[];
 }
 
 const fmt = (x: number | null | undefined, digits = 2) =>
@@ -186,6 +187,24 @@ function panels(r: TierReport): string[] {
                 fmt(s.max_gap_ms === null ? null : s.max_gap_ms / 1000, 0),
             ]),
         ),
+        ...(r.soak_by_month.length === 0
+            ? []
+            : [
+                  "### RSS soak by month of scenario time",
+                  "",
+                  ...table(
+                      ["arm", "month", "verdict", "samples", "slope MB/session", "R2", "bound"],
+                      r.soak_by_month.map((s) => [
+                          s.arm,
+                          s.month,
+                          s.verdict,
+                          s.samples,
+                          mb(s.slope_per_session),
+                          fmt(s.r2),
+                          s.bound.holds ? "holds" : `broken at ${s.bound.worst?.sessions} sessions`,
+                      ]),
+                  ),
+              ]),
         "## Intrusiveness",
         "",
         ...table(

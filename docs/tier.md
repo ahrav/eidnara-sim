@@ -147,3 +147,13 @@ P1, P3, and P5 items, where nothing was deleted. Deletions accumulate
 over a run, so a later item's flip can follow an earlier deletion as
 well. Memory the store keeps outside notes, such as user memories or
 history summaries, stays in place.
+
+## XL
+
+XL runs one seed per host with `host` and `eidnara`. Its scenario's fault
+schedule adds `host_upgrade` and `two_hosts_one_daemon` (`docs/hosts.md`).
+The tier stops each run once with SIGTERM at `--restart-at` of its limit
+(0.4 by default at XL) and resumes it from its journal, so every XL run
+exercises a harness restart, which `tier-result.json` records as
+`restarted`. When an arm's samples span more than 30 days of scenario
+time, the report adds an RSS soak verdict per month of scenario time.

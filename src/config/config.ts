@@ -10,6 +10,8 @@ export interface SimConfig {
     daemon_binary: string;
     pi_install: string;
     opencode_binary: string;
+    /** The next pinned host versions a `host_upgrade` fault moves later sessions to. */
+    upgrade?: { pi_install?: string; opencode_binary?: string };
     agent_model: string;
     /** Build tools the agent runs inside the sandbox: `bin` joins PATH, `keep` stays visible. */
     toolchain: {
@@ -42,6 +44,13 @@ export function parseConfig(value: unknown): SimConfig {
             throw new ConfigError(`config.${field}: missing`);
         }
         if (!isAbsolute(path)) throw new ConfigError(`config.${field}: not an absolute path`);
+    }
+    const upgrade = (v.upgrade ?? {}) as Record<string, unknown>;
+    for (const field of ["pi_install", "opencode_binary"] as const) {
+        const path = upgrade[field];
+        if (path !== undefined && (typeof path !== "string" || !isAbsolute(path))) {
+            throw new ConfigError(`config.upgrade.${field}: not an absolute path`);
+        }
     }
     if (typeof v.agent_model !== "string" || v.agent_model === "") {
         throw new ConfigError("config.agent_model: missing");

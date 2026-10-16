@@ -8,7 +8,7 @@ import type { Entry } from "../run/journal";
 import { loadPrereg } from "../scenario/inputs";
 import { costPanel, V1_PRICE } from "./cost";
 import { intrusiveness, percentile } from "./intrusive";
-import { soak } from "./soak";
+import { soak, soakByMonth } from "./soak";
 
 const prereg = loadPrereg("S");
 const MB = 1024 * 1024;
@@ -277,6 +277,27 @@ describe("intrusiveness panel", () => {
             4,
             1,
             "v1",
+        ]);
+    });
+});
+
+describe("soak by month", () => {
+    test("a run spanning two months gets a verdict per month over that month's samples", () => {
+        const DAY = 86_400_000;
+        const resources = Array.from({ length: 60 }, (_, d) => ({
+            scenario_ms: d * DAY,
+            wall_ms: d * 10_000,
+            rss: d < 30 ? 100 * MB : 100 * MB + (d - 30) * 40 * MB,
+        }));
+        seq = 0;
+        const journal = Array.from({ length: 60 }, (_, d) =>
+            entry("Event", d * DAY + 1, { event: `end-${d}` }),
+        );
+        const kinds = new Map(Array.from({ length: 60 }, (_, d) => [`end-${d}`, "session_end"]));
+        const months = soakByMonth(run([], "", kinds), arm({ journal, resources }), "rss");
+        expect(months.map((m) => [m.month, m.verdict])).toEqual([
+            [1, "no leak"],
+            [2, "leak"],
         ]);
     });
 });

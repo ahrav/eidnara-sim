@@ -83,9 +83,9 @@ same turn can also remove segments under the contract's compaction rule;
 the reason names the segments, so a maintainer can tell the two apart from
 the turn's calls. `recovered` needs all three checks present, each with
 integrity `ok` and no overlap, and the surviving segments kept; a missing
-check is a reason of its own. `two_hosts_one_daemon` has no mechanism yet
-(`docs/hosts.md`), so no run observes it, and the oracle has no check for
-two clients reading one proposal.
+check is a reason of its own. After `two_hosts_one_daemon`, recovery reads
+the turns that follow like any other fault; the oracle has no check that
+both clients read the same proposal for one causal identity.
 
 The recorded `witness-8` eidnara arm reaches a clean turn after each of its
 four faults: the restart and plugin reload at the first later turn, and the

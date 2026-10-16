@@ -24,6 +24,7 @@ import { checkStore, type Deletion, deleteFactNotes, memoryNotes } from "./store
 
 interface ArmState {
     model: number;
+    upgraded?: boolean;
     daemon: { pid: number; start: string | null } | null;
     host: { pid: number; start: string | null } | null;
 }
@@ -77,7 +78,11 @@ const SUPPORTED = new Set([
     "store_full",
     "plugin_reload",
     "model_switch",
+    "host_upgrade",
+    "two_hosts_one_daemon",
 ]);
+
+const SECOND_CLIENT_PROMPT = "List the top-level files in this repository and stop.";
 
 export class HostDriver implements ArmDriver {
     host: SimHost | null = null;
@@ -88,6 +93,7 @@ export class HostDriver implements ArmDriver {
     private transcriptsChecked = false;
 
     private readonly snapshots: SnapshotRecorder;
+    private upgraded = false;
     /** Daemon restarts that the end of the current or next turn owes a store check. */
     private storeFaults: string[] = [];
 
@@ -137,7 +143,16 @@ export class HostDriver implements ArmDriver {
         const make = this.o.hostFactory ?? makeHost;
         const arm = armBase(this.o.arm);
         const keep = eidnaraOn(arm) ? [...this.o.keep, this.storeRoot] : this.o.keep;
-        return make({ ...this.o, arm, keep, root: this.o.armRoot, model: this.currentModel() });
+        const up = this.upgraded ? (this.o.config.upgrade ?? {}) : {};
+        const config = { ...this.o.config, ...up };
+        return make({
+            ...this.o,
+            config,
+            arm,
+            keep,
+            root: this.o.armRoot,
+            model: this.currentModel(),
+        });
     }
 
     private recordState(): void {
@@ -145,6 +160,7 @@ export class HostDriver implements ArmDriver {
             pid === null ? null : { pid, start: processStart(pid) };
         const state: ArmState = {
             model: this.model,
+            upgraded: this.upgraded,
             daemon: proc(this.daemonPid()),
             host: proc(this.sessionProject === null ? null : (this.host?.hostPid() ?? null)),
         };
@@ -193,6 +209,7 @@ export class HostDriver implements ArmDriver {
 
     async resume(open: ScenarioEvent | null): Promise<void> {
         this.model = this.readState()?.model ?? 0;
+        this.upgraded = this.readState()?.upgraded ?? false;
         const checked = join(this.armDir, "transcripts.json");
         this.transcriptsChecked =
             existsSync(checked) && JSON.parse(readFileSync(checked, "utf8")).missing.length === 0;
@@ -307,7 +324,7 @@ export class HostDriver implements ArmDriver {
         this.transcriptsChecked = true;
     }
 
-    async fault(f: FaultEpisode): Promise<Record<string, unknown>> {
+    async fault(f: FaultEpisode, at?: ScenarioEvent): Promise<Record<string, unknown>> {
         if (!SUPPORTED.has(f.type))
             throw new HarnessFailure(`fault type ${f.type} has no mechanism`);
         if (f.type === "daemon_sigkill_mid_fold" || f.type === "daemon_restart") {
@@ -332,10 +349,52 @@ export class HostDriver implements ArmDriver {
         if (f.type === "plugin_reload") {
             return { reload: "host process and plugin respawn at the next session_start" };
         }
+        if (f.type === "host_upgrade") return this.upgradeHost();
+        if (f.type === "two_hosts_one_daemon") return this.secondClient(at);
         this.model++;
         this.host = this.newHost();
         this.recordState();
         return { model: this.currentModel() };
+    }
+
+    private upgradeHost(): Record<string, unknown> {
+        const host = this.o.host;
+        const field = host === "pi" ? "pi_install" : "opencode_binary";
+        const next = this.o.config.upgrade?.[field];
+        if (!next)
+            return { skipped: `no next ${host} version is configured (config.upgrade.${field})` };
+        this.upgraded = true;
+        this.host = this.newHost();
+        this.recordState();
+        return { host, from: this.o.config[field], to: next, takes_effect: "next session_start" };
+    }
+
+    private async secondClient(at?: ScenarioEvent): Promise<Record<string, unknown>> {
+        if (!this.daemon) return { skipped: "arm runs no daemon" };
+        if (!at || at.kind !== "session_start") {
+            throw new HarnessFailure("two_hosts_one_daemon fires at a session_start");
+        }
+        const second = this.newHost();
+        const session = `${at.session}-b`;
+        await second.openSession(
+            this.workspace(this.project(at)),
+            session,
+            this.daemon.connectionFile,
+        );
+        const pid = second.hostPid();
+        let result: Awaited<ReturnType<SimHost["prompt"]>>;
+        try {
+            result = await second.prompt(SECOND_CLIENT_PROMPT, this.o.turnDeadlineMs);
+        } finally {
+            second.drainTools();
+            await second.closeSession();
+        }
+        return {
+            second_session: session,
+            second_host_pid: pid,
+            daemon_pid: this.daemonPid(),
+            outcome: result.error ?? "ok",
+        };
     }
 
     private mountStore(fresh: boolean): void {
