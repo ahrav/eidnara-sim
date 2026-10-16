@@ -15,6 +15,7 @@ import { dirname, join, resolve } from "node:path";
 import { launch } from "../run/launcher";
 import { processStart, running, stopOwnedTree } from "../run/procs";
 import { type ArmDriver, HarnessFailure, type ScenarioEvent } from "../run/scheduler";
+import { transcriptKind } from "../run/transcripts";
 import type { FaultEpisode } from "../scenario/faults";
 import {
     type DaemonContext,
@@ -462,21 +463,24 @@ export class HostDriver implements ArmDriver {
      * Daemons the fixture started against this arm's store, found by their `--state-root`
      * argument; one spawned before the harness died has no record in `state.json` yet.
      */
-    private daemonsOnStore(): number[] {
+    private daemonsOnStore(): Array<{ pid: number; start: string | null }> {
         const uid = process.getuid?.();
-        const ours = (pid: string) => {
+        const found: Array<{ pid: number; start: string | null }> = [];
+        for (const entry of readdirSync("/proc")) {
+            if (!/^\d+$/.test(entry)) continue;
+            const pid = Number(entry);
             try {
-                if (statSync(`/proc/${pid}`).uid !== uid) return false;
+                // The start time is read first, so a pid reused after the match is told apart.
+                const start = processStart(pid);
+                if (statSync(`/proc/${pid}`).uid !== uid) continue;
                 const cmd = readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0");
                 const at = cmd.indexOf("--state-root");
-                return at >= 0 && cmd[at + 1] === this.dataDir;
+                if (at >= 0 && cmd[at + 1] === this.dataDir) found.push({ pid, start });
             } catch {
-                return false;
+                // The process went away between the listing and the read.
             }
-        };
-        return readdirSync("/proc")
-            .filter((e) => /^\d+$/.test(e) && ours(e))
-            .map(Number);
+        }
+        return found;
     }
 
     /** The OpenCode wrapper's own record of its pid and start time, written before the server answers. */
@@ -534,9 +538,7 @@ export class HostDriver implements ArmDriver {
             () => this.stopRecorded(state?.host),
             () => this.stopRecorded(this.launchRecord()),
             async () => {
-                for (const pid of this.daemonsOnStore()) {
-                    await this.stopRecorded({ pid, start: processStart(pid) });
-                }
+                for (const daemon of this.daemonsOnStore()) await this.stopRecorded(daemon);
             },
             () => this.stopRecorded(state?.daemon),
             () => this.unmount(this.dataDir),
@@ -631,12 +633,14 @@ export class HostDriver implements ArmDriver {
     private checkTranscripts(host: SimHost): void {
         const env = host.transcriptEnv();
         const paths = this.o.transcriptPaths.map((t) => expandTemplate(t, env));
-        // A link left where the store was is the host's placeholder, so the store counts as missing.
-        const present = (p: string) => {
+        // A link or a node of the wrong kind where the store should be is the host's placeholder,
+        // so the store counts as missing.
+        const present = (template: string, p: string) => {
             const stat = lstatSync(p, { throwIfNoEntry: false });
-            return stat !== undefined && (stat.isFile() || stat.isDirectory());
+            if (stat === undefined) return false;
+            return transcriptKind(template) === "file" ? stat.isFile() : stat.isDirectory();
         };
-        const missing = paths.filter((p) => !present(p));
+        const missing = paths.filter((p, i) => !present(this.o.transcriptPaths[i] as string, p));
         const record = { checked_after: "first session_end", paths, missing };
         writeWhole(join(this.armDir, "transcripts.json"), JSON.stringify(record));
         if (missing.length > 0) throw new Error(`transcript store missing: ${missing.join(", ")}`);

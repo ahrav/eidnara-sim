@@ -284,8 +284,10 @@ with the `umount` error.
 After an arm's first `session_end`, the driver expands the preflight's
 transcript-store paths for the host version with the host's own variables
 (`$PI_CODING_AGENT_DIR`, `$XDG_DATA_HOME`) and writes the result to
-`<arm>/transcripts.json`. A missing path stops the run (OQ-7); a link left
-where the store should be counts as missing.
+`<arm>/transcripts.json`. A missing path stops the run (OQ-7); a link, or a
+node of the other kind (`TRANSCRIPT_STORES` names `opencode.db` as the one
+file, the rest are directories), left where the store should be counts as
+missing.
 
 ## Infrastructure faults
 

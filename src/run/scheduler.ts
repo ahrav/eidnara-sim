@@ -165,6 +165,8 @@ export class Scheduler {
             await this.idle();
         });
         await driver.finish?.();
+        // A job the shutdown itself started holds the clock too; it ends before the arm does.
+        await this.idle();
     }
 
     /** A failure waits for a mid-fold restart in flight, finishes the driver, and surfaces as itself. */

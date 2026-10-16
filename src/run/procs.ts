@@ -9,6 +9,16 @@ function statFields(pid: number): string[] | null {
     }
 }
 
+/** A kernel without `CONFIG_PROC_CHILDREN` has no `children` files; the parent field of every `stat` is the fallback. */
+export function childrenByParent(pid: number): number[] {
+    const out: number[] = [];
+    for (const entry of readdirSync("/proc")) {
+        if (!/^\d+$/.test(entry)) continue;
+        if (statFields(Number(entry))?.[1] === String(pid)) out.push(Number(entry));
+    }
+    return out;
+}
+
 function childrenOf(pid: number): number[] {
     let tasks: string[];
     try {
@@ -16,9 +26,11 @@ function childrenOf(pid: number): number[] {
     } catch {
         return [];
     }
-    return tasks.flatMap((tid) => {
+    let listedAny = false;
+    const found = tasks.flatMap((tid) => {
         try {
             const listed = readFileSync(`/proc/${pid}/task/${tid}/children`, "utf8");
+            listedAny = true;
             return listed
                 .split(" ")
                 .filter((c) => c.trim() !== "")
@@ -27,6 +39,7 @@ function childrenOf(pid: number): number[] {
             return [];
         }
     });
+    return listedAny ? found : childrenByParent(pid);
 }
 
 function ownedBy(pid: number, uid: number | undefined): boolean {
