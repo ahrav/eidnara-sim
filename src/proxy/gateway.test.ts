@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { appendFileSync, mkdtempSync, readFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { decodeMessages } from "../../tests/eventstream-decode";
@@ -357,6 +357,23 @@ describe("fault composition at the proxy sink", () => {
 });
 
 describe("witnesses", () => {
+    test("stop waits for an aborted in-flight handler to write its record", async () => {
+        const blocking: Upstream = {
+            async converse(_m, _b, _s, signal) {
+                await new Promise<void>((done) => signal.addEventListener("abort", () => done()));
+                await Bun.sleep(80);
+                throw Object.assign(new Error("aborted"), { name: "AbortError" });
+            },
+        };
+        const { gateway, records, started, url } = await start(null, blocking);
+        const call = hostCall(url, AGENT_BODY, 5_000);
+        while (started.length === 0) await Bun.sleep(5);
+        await gateway.stop();
+        expect(records.records).toHaveLength(1);
+        expect(records.records[0]?.error).toMatch(/AbortError/);
+        await call;
+    });
+
     test("an armed fault with no later host call is untriggered and excludes the run", async () => {
         const { injector, url } = await start({
             id: "f",
@@ -370,6 +387,29 @@ describe("witnesses", () => {
         expect(w?.injected_seq.length).toBe(1);
         expect(w?.status).toBe("untriggered");
         expect(excludedFromFaultMetrics(injector.report())).toBe(true);
+    });
+
+    test("a resumed injector rebuilds its witnesses from the persisted call records", async () => {
+        const fault: ProxyFault = {
+            id: "f",
+            type: "provider_5xx",
+            strategy: "single",
+            params: { count: 1 },
+        };
+        const { injector, records, url } = await start(fault);
+        injector.arm("f");
+        await hostCall(url, AGENT_BODY, 1_000);
+        await hostCall(url, AGENT_BODY, 1_000);
+        expect(injector.report()[0]?.status).toBe("fired");
+        const resumed = new FaultInjector([fault], new Rng(7), 5_000);
+        (resumed as { restore?: (prior: CallRecord[]) => void }).restore?.(records.records);
+        expect(resumed.report()[0]).toMatchObject({
+            status: "fired",
+            armed: true,
+            injected_seq: [0],
+            host_observed_seq: [1],
+        });
+        expect(excludedFromFaultMetrics(resumed.report())).toBe(false);
     });
 
     test("a fault never armed is untriggered", async () => {
@@ -448,6 +488,13 @@ describe("call records", () => {
             .split("\n")
             .map((l) => JSON.parse(l).seq);
         expect(seqs).toEqual([0, 1, 2]);
+    });
+
+    test("a corrupt complete last line refuses the writer instead of resuming before it", () => {
+        const path = join(mkdtempSync(join(tmpdir(), "sim-records-")), "calls.jsonl");
+        writeFileSync(path, '{"seq":0,"wall_ms":5}\n{"seq":1,"wall_ms":6,\n');
+        expect(() => new RecordWriter(path)).toThrow(/line 2 is corrupt/);
+        expect(readFileSync(path, "utf8")).toBe('{"seq":0,"wall_ms":5}\n{"seq":1,"wall_ms":6,\n');
     });
 
     test("a forwarded call records tags, finish_reason, tokens, both times, and proxy retries", async () => {

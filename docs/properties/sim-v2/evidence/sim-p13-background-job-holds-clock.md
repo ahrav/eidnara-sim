@@ -13,9 +13,6 @@ v2 harness before any harness code existed.
 
 A background job is in `busy_set` while no turn is in `busy_set`.
 
-No harness code, test, or run exists yet. The surface lands in M4
-(#1028).
-
 M4 (#1028) holds the clock while a background job registered after a turn's end
 runs; a test registers a job after `EndTurn` and checks that no `AdvanceClock`
 or `BeginTurn` appears before its `EndJob`.

@@ -1,8 +1,17 @@
 import { realpathSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
-const UNSHARE_ARGS = ["--mount", "--pid", "--fork", "--mount-proc", "--propagation", "private"];
+// `--kill-child` sends SIGKILL to namespace PID 1 when the unshare parent dies.
+const UNSHARE_ARGS = [
+    "--mount",
+    "--pid",
+    "--fork",
+    "--kill-child",
+    "--mount-proc",
+    "--propagation",
+    "private",
+];
 const PLAIN_PATH = /^\/[A-Za-z0-9._@+/-]*$/;
 const PLAIN_VALUE = /^[A-Za-z0-9._@+/:,=-]*$/;
 
@@ -11,6 +20,9 @@ export const shellQuote = (arg: string) => `'${arg.replaceAll("'", "'\\''")}'`;
 export function plainPath(path: string): string {
     if (!PLAIN_PATH.test(path)) {
         throw new Error(`sandbox path ${JSON.stringify(path)} must match ${PLAIN_PATH}`);
+    }
+    if (resolve(path) !== path) {
+        throw new Error(`sandbox path ${JSON.stringify(path)} must be normalized`);
     }
     return path;
 }
@@ -30,7 +42,8 @@ export function maskedPaths(runRoot: string): string[] {
 }
 
 // The setuid sudo boundary strips LD_PRELOAD, so the interposer reaches the host only
-// through variables set after setpriv.
+// through variables set after setpriv. The staging tree and the interposer's own
+// shared-memory objects live in a private /dev/shm that ends with the namespace.
 function script(hidden: readonly string[]): string {
     const mounts = hidden
         .map((dir) => `mount -t tmpfs -o mode=1777 tmpfs ${plainPath(dir)}`)
@@ -39,6 +52,9 @@ function script(hidden: readonly string[]): string {
     return `#!/bin/sh
 SIM_PATH="$PATH" exec sudo -n --preserve-env unshare ${UNSHARE_ARGS.join(" ")} /bin/sh -c '
 set -e
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+cd /
+cwd="$1"; shift
 keep=""
 while [ "$1" != "--ro" ]; do keep="$keep $1"; shift; done
 shift
@@ -48,6 +64,7 @@ shift
 envs=""
 while [ "$1" != "--" ]; do envs="$envs $1"; shift; done
 shift
+mount -t tmpfs -o mode=1777 tmpfs /dev/shm
 st=$(mktemp -d /dev/shm/simst.XXXXXX)
 for p in $keep; do mkdir -p "$st$p"; mount --rbind "$p" "$st$p"; done
 ${mounts}
@@ -55,8 +72,7 @@ for p in $keep; do mkdir -p "$p"; mount --rbind "$st$p" "$p"; done
 for p in $keep; do umount -R "$st$p" || true; done
 for p in $ro; do mount -o remount,bind,ro "$p"; done
 find "$st" -depth -type d -empty -delete || true
-export PATH="$SIM_PATH"
-setpriv ${ids} --init-groups --no-new-privs --inh-caps=-all --bounding-set=-all -- env --default-signal=INT,TERM $envs "$@"
+setpriv ${ids} --init-groups --no-new-privs --inh-caps=-all --bounding-set=-all -- env --default-signal=INT,TERM --chdir="$cwd" PATH="$SIM_PATH" $envs "$@"
 exit 0' sh "$@"
 `;
 }
@@ -70,12 +86,14 @@ export function writeLauncher(runRoot: string): string {
     return path;
 }
 
+/** `cwd` is where the command starts after the privilege drop; the default is `/`. */
 export function launch(
     launcher: string,
     keep: readonly string[],
     env: Record<string, string>,
     command: readonly string[],
     readOnly: readonly string[] = [],
+    cwd = "/",
 ): string[] {
     const pairs = Object.entries(env).map(([k, v]) => {
         if (!/^[A-Z_][A-Z0-9_]*$/.test(k) || !PLAIN_VALUE.test(v)) {
@@ -84,7 +102,18 @@ export function launch(
         return `${k}=${v}`;
     });
     const ro = readOnly.map(plainPath);
-    return [launcher, ...keep.map(plainPath), "--ro", ...ro, "--env", ...pairs, "--", ...command];
+    const start = plainPath(cwd);
+    return [
+        launcher,
+        start,
+        ...keep.map(plainPath),
+        "--ro",
+        ...ro,
+        "--env",
+        ...pairs,
+        "--",
+        ...command,
+    ];
 }
 
 export function sandboxAvailable(): boolean {

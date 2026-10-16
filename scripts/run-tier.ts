@@ -3,7 +3,6 @@ import { resolve } from "node:path";
 import { loadConfig } from "../src/config/config";
 import { TIERS, type Tier } from "../src/prereg/schema";
 import { runTier } from "../src/run/run";
-import type { FaultEpisode } from "../src/scenario/faults";
 
 const USAGE = `usage: --tier S --seed 101 --out <run dir> [--host pi|opencode] [--arms a,b]
     [--events N] [--faults <episodes.json>] [--context-limit N] [--models a,b]`;
@@ -30,6 +29,13 @@ if (!TIERS.includes(tier) || !Number.isInteger(seed) || !out)
     fail("missing --tier, --seed, or --out");
 if (host !== "pi" && host !== "opencode") fail("--host must be pi or opencode");
 const faults = arg("faults");
+const parseFaults = (path: string): unknown => {
+    try {
+        return JSON.parse(readFileSync(path, "utf8"));
+    } catch (caught) {
+        return fail(`--faults ${path}: ${(caught as Error).message}`);
+    }
+};
 await runTier({
     config: loadConfig(),
     tier,
@@ -38,7 +44,7 @@ await runTier({
     out: resolve(out),
     arms: arg("arms")?.split(","),
     events: count("events"),
-    faults: faults ? (JSON.parse(readFileSync(faults, "utf8")) as FaultEpisode[]) : undefined,
+    faults: faults ? parseFaults(faults) : undefined,
     contextLimit: count("context-limit"),
     models: arg("models")?.split(","),
 });

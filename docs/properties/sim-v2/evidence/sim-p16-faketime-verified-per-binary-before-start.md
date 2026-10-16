@@ -15,9 +15,6 @@ v2 harness before any harness code existed.
 OpenCode, daemon) that read a faked time; a failure records the binary
 wall-clock-only or refuses the run.
 
-No harness code, test, or run exists yet. The surface lands in M4
-(#1028).
-
 M4 (#1028) provides the per-binary interception test as `preflight`: Pi's Node
 runtime and the Bun-compiled OpenCode binary print a jumped clock and keep a
 100 ms timer, and the daemon binary's own `clock_gettime` import binds to the

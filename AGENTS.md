@@ -6,8 +6,11 @@ Eidnara, specified by
 
 - This tree lives outside the eidnara repository. It reads the eidnara
   checkout, its plugin builds, and its daemon binary only through paths named
-  in `sim.config.json`. Never create, modify, or commit a file under the
-  eidnara checkout from this tree; an Eidnara fix a run motivates is separate
+  in `sim.config.json`. `scripts/eidnara-build.sh` clones the eidnara source
+  checkout into a harness-owned build clone and is that clone's one writer;
+  `sim.config.json` names the clone as `eidnara_checkout`, and the runtime
+  only reads it. Never create, modify, or commit a file under the eidnara
+  source checkout from this tree; an Eidnara fix a run motivates is separate
   work under that repository's own gates.
 - The eidnara repository's `docs/host-wire-protocol.md` is the normative host
   wire contract. Wire names and literals this harness depends on follow that

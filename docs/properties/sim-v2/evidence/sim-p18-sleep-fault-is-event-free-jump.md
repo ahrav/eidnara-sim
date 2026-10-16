@@ -14,12 +14,17 @@ v2 harness before any harness code existed.
 A laptop-sleep fault produces exactly one `AdvanceClock` of the scheduled
 duration with `busy_set` empty and no events inside the gap.
 
-No harness code, test, or run exists yet. The surface lands in M4
-(#1028).
-
-M4 (#1028) makes a scheduled laptop sleep one jump of the fault's
-`duration_ms`, journaled with the fault id; a test checks one such jump of
-exactly that size with no event inside it.
+M4 (#1028) makes a scheduled laptop sleep the one jump onto its session's
+first event, journaled with the fault id, whatever kind of event opens the
+session. The compiler sizes `duration_ms` to the gap before the session, so the
+jump spans that gap. A test opens the session with an `apply_diff` at the same
+time as `session_start` and checks one such jump, landing on the session's
+first event, with the fault fired right after it and no event inside the gap.
+The catalog record's check follows this wording and the M4 ticket's acceptance
+criterion ("exactly one jump with no events inside", with every `AdvanceClock`
+landing on the earliest later event). The condensed index's "of the scheduled
+duration" cannot hold exactly, because the previous session's last turn runs
+at wall speed and consumes part of the nominal gap.
 
 The live witness (`tests/witness-faults.ts`, `docs/run-command.md`) on 2026-10-16
 fired a two-minute laptop sleep at a session start on both arms, inside the

@@ -14,13 +14,12 @@ v2 harness before any harness code existed.
 After `ResumeRun`, no `BeginTurn` appears for an item already terminal, and no
 call record repeats a pre-interrupt `call_id`.
 
-No harness code, test, or run exists yet. The surface lands in M4
-(#1028).
-
 M4 (#1028) treats an event with an `Event` entry, or a turn with an `EndTurn`,
 as complete on resume; resume tests kill mid-turn, after a turn's answer, and
-in the second arm, and check that each arm's events appear once and the billing
-log has no duplicate.
+in the second arm, and check that each arm's events appear once and the
+fixture's per-event billing log has no duplicate. That covers the `BeginTurn`
+half. The `call_id` half waits for a driver that bills through the proxy's call
+records; the fixture driver has no provider calls.
 
 The live witness (`tests/witness-faults.ts`, `docs/run-command.md`) on 2026-10-16
 sent SIGKILL to a live Pi run after the third session's turn made its first

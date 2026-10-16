@@ -11,9 +11,9 @@ export interface JournalReport {
     jobs_held_after_turn: { job: string; seq: number }[];
 }
 
+/** Scheduled `scenario_ms` by event id. */
 export interface Schedule {
     events: Map<string, number>;
-    sleeps: Map<string, number>;
 }
 
 export function checkJournal(entries: Entry[], schedule: Schedule): JournalReport {
@@ -53,16 +53,14 @@ export function checkJournal(entries: Entry[], schedule: Schedule): JournalRepor
         if (busy.size > 0) report.advance_while_busy.push(seq);
         const from = Number(e.from_ms);
         const pending = [...schedule.events].filter(([id]) => !done.has(id)).map(([, t]) => t);
-        if (e.fault !== undefined) {
-            report.sleep_jumps++;
-            const duration = schedule.sleeps.get(String(e.fault));
-            if (duration !== ms - from) report.off_schedule_jumps.push(seq);
-            if (pending.some((t) => t > from && t < ms)) report.events_inside_sleep.push(seq);
-            continue;
-        }
-        report.next_event_jumps++;
         const later = pending.filter((t) => t > from);
         if (later.length === 0 || Math.min(...later) !== ms) report.off_schedule_jumps.push(seq);
+        if (e.fault === undefined) {
+            report.next_event_jumps++;
+            continue;
+        }
+        report.sleep_jumps++;
+        if (pending.some((t) => t > from && t < ms)) report.events_inside_sleep.push(seq);
     }
     return report;
 }

@@ -14,9 +14,6 @@ v2 harness before any harness code existed.
 After `AdvanceClock`, `scenario_ms` equals the earliest scheduled event time
 greater than the previous value.
 
-No harness code, test, or run exists yet. The surface lands in M4
-(#1028).
-
 M4 (#1028) jumps the clock to the next event's scheduled time; a test checks
 that each `AdvanceClock` lands on the earliest scheduled event time after its
 `from_ms`.

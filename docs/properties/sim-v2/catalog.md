@@ -368,10 +368,11 @@ Reachability: default-production
 Status: active
 Exercised: not yet - the harness surface lands in M4 (#1028); nothing constructs
 it yet
-Guarantee: SIM-P11: Journal entries in sequence order have non-decreasing
-`scenario_ms`.
-Check: `always` - walk the journal in `seq` order and assert `scenario_ms` never
-decreases; one decrease reorders events and breaks every age-dependent metric.
+Guarantee: SIM-P11: Within each arm, journal entries in sequence order have
+non-decreasing `scenario_ms`; every arm's clock starts at 0.
+Check: `always` - walk each arm's entries in `seq` order and assert
+`scenario_ms` never decreases; one decrease reorders events and breaks every
+age-dependent metric.
 Fault/timing angle: resume after a crash restores the clock; a stale value would
 move time backwards.
 Required faults and enabling state: a run with an interrupt and resume.
@@ -538,11 +539,12 @@ Reachability: explicit-config-only
 Status: active
 Exercised: not yet - the harness surface lands in M4 (#1028); nothing constructs
 it yet
-Guarantee: SIM-P18: A laptop-sleep fault produces exactly one `AdvanceClock` of
-the scheduled duration with `busy_set` empty and no events inside the gap.
-Check: `always` - for each sleep fault, assert one `AdvanceClock` of exactly its
-duration, an empty busy set at that `seq`, and no event with `scenario_ms`
-inside the gap.
+Guarantee: SIM-P18: A laptop-sleep fault produces exactly one `AdvanceClock`,
+carrying the fault id, that spans the idle gap before its session with
+`busy_set` empty and no events inside the gap.
+Check: `always` - for each sleep fault, assert one `AdvanceClock` carrying its
+id that lands on the session's first event, an empty busy set at that `seq`,
+and no event with `scenario_ms` inside the gap.
 Fault/timing angle: a sleep scheduled while a job is busy must wait for the job.
 Required faults and enabling state: a scheduled laptop-sleep fault.
 Confidence: low -

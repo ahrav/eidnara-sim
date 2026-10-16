@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { SimConfig } from "../config/config";
+import { withDeadline } from "./deadline";
 import { launch, shellQuote } from "./launcher";
 import { stopOwnedTree } from "./procs";
 import { FAKETIME_LIB, faketimeEnv } from "./timeinject";
@@ -10,9 +11,10 @@ export interface ToolchainProbe {
     version: string;
 }
 
-const PROBES: [string, string][] = [
+/** `RUSTC` names a wall-clock wrapper only when the config asks for one; cargo falls back the same way. */
+export const TOOLCHAIN_PROBES: [string, string][] = [
     ["cargo", "exec cargo --version"],
-    ["rustc", 'exec "$RUSTC" -vV'],
+    ["rustc", 'exec "${RUSTC:-rustc}" -vV'],
     ["bun", "exec bun --version"],
 ];
 
@@ -51,8 +53,7 @@ async function probe(argv: string[], path: string): Promise<{ ok: boolean; out: 
         stdout: "pipe",
         stderr: "pipe",
     });
-    const limit = Bun.sleep(60_000).then(() => null);
-    const code = await Promise.race([child.exited, limit]);
+    const code = await withDeadline(child.exited, 60_000);
     if (code === null) {
         await stopOwnedTree(child.pid, 2_000);
         return { ok: false, out: "no exit after 60 s" };
@@ -72,7 +73,7 @@ export async function toolchainProbe(
     const ro = [...config.toolchain.keep, toolbinDir(launcher), dirname(dirname(FAKETIME_LIB))];
     const vars = { ...faketimeEnv(offset), ...env };
     const results: ToolchainProbe[] = [];
-    for (const [tool, script] of PROBES) {
+    for (const [tool, script] of TOOLCHAIN_PROBES) {
         const r = await probe(launch(launcher, keep, vars, ["/bin/sh", "-c", script], ro), path);
         if (!r.ok) throw new Error(`toolchain: ${tool} under the interposer: ${r.out}`);
         results.push({ tool, version: r.out.split("\n")[0] ?? "" });

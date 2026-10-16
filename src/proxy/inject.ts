@@ -97,6 +97,23 @@ export class FaultInjector {
             return { ...w, status: fired ? "fired" : "untriggered" };
         });
     }
+
+    /**
+     * `restore` rebuilds `injected_seq` and `host_observed_seq` from the call records an earlier
+     * invocation of the same run persisted. Observations are matched within those records only;
+     * the live pending list starts empty.
+     */
+    restore(prior: CallRecord[]): void {
+        prior.forEach((record, call) => {
+            const w = record.fault_ref === null ? undefined : this.witnesses.get(record.fault_ref);
+            if (w) {
+                w.armed = true;
+                this.pending.push({ fault: w.fault, at: record.started_wall_ms, call });
+            }
+            if (w || record.fault_ref === null) this.observe(record, call);
+        });
+        this.pending.length = 0;
+    }
 }
 
 export function excludedFromFaultMetrics(witnesses: WitnessReport[]): boolean {
