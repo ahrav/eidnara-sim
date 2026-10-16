@@ -98,9 +98,12 @@ resolves outside the workspace through `..` or a symlink stops the run before
 any directory is created. The file is written whole and renamed into place,
 so a hard link the agent left at the path keeps its other name's content, and
 the `git add` and `git commit` run inside the arm's sandbox under the turn
-deadline, so a hook, filter, or config the agent planted in the repository
-acts with the host's own view of the filesystem and a hook that hangs stops
-the run instead of the harness. The commit's author and committer dates are the
+deadline, with the build clone read-only and a fresh environment, so a hook,
+filter, or config the agent planted in the repository acts with the host's
+own view of the filesystem and sees none of the harness's variables, and a
+hook that hangs stops the run instead of the harness. The run's pid is in
+`state.json` while it lasts, so a resume stops one the killed harness left
+behind and removes its `index.lock` before replaying the event. The commit's author and committer dates are the
 event's scenario instant (`baseMs + scenario_ms`), so paired arms and a
 resumed delivery produce the same commit. Every session and `apply_diff`
 requires the workspace to resolve to the real `<arm>/r/workspaces/<project>`;
@@ -171,7 +174,8 @@ pid and start time of the daemon and of the host while a session is open,
 replacing the file whole so a kill mid-write leaves the previous state. Pi's
 pid is recorded as soon as its process exists, before the readiness wait;
 OpenCode's once `spawnOpencode` returns, before the SDK setup. The state
-also carries the size of an active `store_full` ballast and, through
+also carries the size of an active `store_full` ballast (cleared before the
+file goes, so a kill in between leaves a leftover the resume removes) and, through
 `transcripts.json`, a transcript-store gap already found; a resume stops on
 either a changed ballast or a recorded gap, since neither may heal.
 A new harness process calls `reap()` and then `resume(open)` on an arm that

@@ -525,6 +525,71 @@ touch ${escaped}
         expect(fresh.host?.ctx.model).toBe("model-b");
     });
 
+    test.skipIf(!sandbox)(
+        "a git run the killed harness left behind is recorded and reaped",
+        async () => {
+            const { driver, armDir } = fixture(
+                "host",
+                { p: gitRepo() },
+                { turnDeadlineMs: 60_000 },
+            );
+            await driver.reset();
+            const ws = driver.workspace("p");
+            writeFileSync(join(ws, ".gitattributes"), "* filter=slow\n");
+            spawnSync("git", ["config", "filter.slow.clean", "sleep 300"], { cwd: ws });
+            const applying = driver.event(ev("apply_diff", { path: "a.txt", content: "A" }));
+            applying.catch(() => undefined);
+            let recorded: { pid: number } | null = null;
+            for (let i = 0; i < 100 && !recorded; i++) {
+                await Bun.sleep(50);
+                recorded = JSON.parse(readFileSync(join(armDir, "state.json"), "utf8")).git ?? null;
+            }
+            expect(recorded).not.toBeNull();
+            const fresh = new HostDriver((driver as unknown as { o: DriverOptions }).o);
+            await fresh.reap();
+            await expect(applying).rejects.toThrow(/git add/);
+            expect(existsSync(join(ws, ".git/index.lock"))).toBe(false);
+            expect(JSON.parse(readFileSync(join(armDir, "state.json"), "utf8")).git).toBeNull();
+        },
+    );
+
+    test.skipIf(!sandbox)("a hook cannot write into the configured checkout", async () => {
+        const checkout = mkdtempSync("/var/tmp/sim-checkout-");
+        dirs.push(checkout);
+        const { driver } = fixture("host", { p: gitRepo() });
+        const o = (driver as unknown as { o: DriverOptions }).o;
+        o.config = { ...o.config, eidnara_checkout: checkout };
+        await driver.reset();
+        const ws = driver.workspace("p");
+        writeFileSync(
+            join(ws, ".git/hooks/post-commit"),
+            `#!/bin/sh\ntouch ${checkout}/planted\n`,
+            {
+                mode: 0o755,
+            },
+        );
+        await driver.event(ev("apply_diff", { path: "a.txt", content: "A" }));
+        expect(existsSync(join(checkout, "planted"))).toBe(false);
+    });
+
+    test.skipIf(!sandbox)("a hook sees none of the harness's environment", async () => {
+        process.env.SIM_TEST_SECRET = "leaked";
+        try {
+            const { driver } = fixture("host", { p: gitRepo() });
+            await driver.reset();
+            const ws = driver.workspace("p");
+            writeFileSync(
+                join(ws, ".git/hooks/post-commit"),
+                '#!/bin/sh\nprintf %s "$SIM_TEST_SECRET" > seen\n',
+                { mode: 0o755 },
+            );
+            await driver.event(ev("apply_diff", { path: "a.txt", content: "A" }));
+            expect(readFileSync(join(ws, "seen"), "utf8")).toBe("");
+        } finally {
+            delete process.env.SIM_TEST_SECRET;
+        }
+    });
+
     test("a resume with state.json gone stops instead of guessing the arm's state", async () => {
         const { driver, armDir } = fixture("host", { p: gitRepo() });
         await driver.reset();
@@ -651,6 +716,28 @@ describe("HostDriver faults", () => {
             expect(readFileSync(victim, "utf8")).toBe("small");
             expect(lstatSync(join(driver.storeRoot, "ballast")).isSymbolicLink()).toBe(false);
         } finally {
+            await driver.stop().catch(() => undefined);
+        }
+    });
+
+    test.skipIf(!sudo)("a ballast left after its fault ended is removed on resume", async () => {
+        const daemonFactory = (ctx: { dataDir: string }) =>
+            ({
+                ...fakeDaemon(10),
+                start: async () => void mkdirSync(ctx.dataDir, { recursive: true }),
+            }) as unknown as DaemonStack;
+        const { driver, armDir } = fixture("eidnara", {}, { loopStore: true, daemonFactory });
+        let fresh: HostDriver | null = null;
+        try {
+            await driver.reset();
+            await driver.fault(episode("store_full"));
+            const state = JSON.parse(readFileSync(join(armDir, "state.json"), "utf8"));
+            writeFileSync(join(armDir, "state.json"), JSON.stringify({ ...state, ballast: null }));
+            fresh = new HostDriver((driver as unknown as { o: DriverOptions }).o);
+            await fresh.resume(null);
+            expect(existsSync(join(fresh.storeRoot, "ballast"))).toBe(false);
+        } finally {
+            await fresh?.stop().catch(() => undefined);
             await driver.stop().catch(() => undefined);
         }
     });

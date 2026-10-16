@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import {
     existsSync,
     lstatSync,
@@ -30,6 +30,8 @@ interface ArmState {
     host: { pid: number; start: string | null } | null;
     /** Size of the store_full ballast while the fault is active. */
     ballast: number | null;
+    /** The sandboxed git run of an apply_diff in flight, with the workspace it holds. */
+    git: { pid: number; start: string | null; project: string } | null;
 }
 
 export interface DriverOptions extends Omit<HostContext, "root" | "model"> {
@@ -118,6 +120,7 @@ export class HostDriver implements ArmDriver {
     private model = 0;
     private storeMount: string | null = null;
     private ballastBytes: number | null = null;
+    private gitRun: ArmState["git"] = null;
     private sessionProject: string | null = null;
     private transcriptsChecked = false;
 
@@ -177,23 +180,47 @@ export class HostDriver implements ArmDriver {
      * Git over an agent-written repository runs inside the arm's sandbox, so a hook, filter, or
      * config the agent planted acts with the host's own view of the filesystem.
      */
-    private git(dir: string, args: string[], dateMs?: number): { status: number; stderr: string } {
+    private async git(
+        project: string,
+        dir: string,
+        args: string[],
+        dateMs?: number,
+    ): Promise<{ status: number; stderr: string }> {
         const env: Record<string, string> = { ...GIT_ENV, HOME: join(this.o.armRoot, "home") };
         if (dateMs !== undefined) {
             env.GIT_AUTHOR_DATE = `@${Math.floor(dateMs / 1000)}`;
             env.GIT_COMMITTER_DATE = env.GIT_AUTHOR_DATE;
         }
         const keep = [...new Set([...this.keep, this.o.armRoot])];
-        const argv = launch(this.o.launcher, keep, env, ["git", ...args], [], dir);
+        const checkout = this.o.config.eidnara_checkout;
+        const ro = existsSync(checkout) ? [checkout] : [];
+        const argv = launch(this.o.launcher, keep, env, ["git", ...args], ro, dir);
         const seconds = String(Math.ceil(this.o.turnDeadlineMs / 1000));
         const bounded = ["timeout", "-s", "KILL", seconds, ...argv];
-        const r = spawnSync(bounded[0] as string, bounded.slice(1), { encoding: "utf8" });
-        const stderr = r.status === 137 ? `cut off after ${seconds} s` : r.stderr;
-        return { status: r.status ?? -1, stderr };
+        const child = spawn(bounded[0] as string, bounded.slice(1), {
+            env: { PATH: process.env.PATH ?? "" },
+            stdio: ["ignore", "ignore", "pipe"],
+        });
+        const pid = child.pid as number;
+        this.gitRun = { pid, start: processStart(pid), project };
+        this.recordState();
+        let stderr = "";
+        child.stderr?.on("data", (chunk: Buffer) => {
+            stderr = `${stderr}${chunk}`.slice(-20_000);
+        });
+        const status = await new Promise<number>((resolve) => {
+            child.once("error", () => resolve(-1));
+            child.once("exit", (code, signal) =>
+                resolve(code ?? (signal === "SIGKILL" ? 137 : -1)),
+            );
+        });
+        this.gitRun = null;
+        this.recordState();
+        return { status, stderr: status === 137 ? `cut off after ${seconds} s` : stderr };
     }
 
-    private gitOk(dir: string, args: string[], dateMs?: number): void {
-        const r = this.git(dir, args, dateMs);
+    private async gitOk(project: string, dir: string, args: string[], dateMs?: number) {
+        const r = await this.git(project, dir, args, dateMs);
         if (r.status !== 0) throw new Error(`git ${args.join(" ")}: ${r.stderr}`);
     }
 
@@ -211,6 +238,7 @@ export class HostDriver implements ArmDriver {
             daemon: proc(this.daemonPid()),
             host: proc(this.sessionProject === null ? null : (this.host?.hostPid() ?? null)),
             ballast: this.ballastBytes,
+            git: this.gitRun,
         };
         mkdirSync(this.armDir, { recursive: true });
         writeWhole(this.stateFile, JSON.stringify(state));
@@ -236,8 +264,8 @@ export class HostDriver implements ArmDriver {
                     `store_full ballast ${this.ballast} changed before the kill`,
                 );
             }
-            rmSync(this.ballast as string, { force: true });
         }
+        if (this.ballast) rmSync(this.ballast, { force: true });
         try {
             if (eidnaraOn(this.o.arm)) {
                 realChild(this.o.armRoot, "runtime", "daemon runtime");
@@ -309,15 +337,29 @@ export class HostDriver implements ArmDriver {
         await this.reapStale();
     }
 
+    private async stopRecorded(proc: { pid: number; start: string | null } | null | undefined) {
+        if (!proc || !running(proc.pid) || processStart(proc.pid) !== proc.start) return;
+        if (!(await stopOwnedTree(proc.pid, 5_000))) {
+            throw new HarnessFailure(`recorded process ${proc.pid} survived SIGKILL`);
+        }
+    }
+
+    /** A git run cut off mid-way leaves `index.lock` behind; the replayed `apply_diff` needs it gone. */
+    private async reapGit(state: ArmState): Promise<void> {
+        if (!state.git) return;
+        await this.stopRecorded(state.git);
+        const gitDir = join(this.workspaceDir(state.git.project), ".git");
+        if (lstatSync(gitDir, { throwIfNoEntry: false })?.isDirectory()) {
+            rmSync(join(gitDir, "index.lock"), { force: true });
+        }
+        writeWhole(this.stateFile, JSON.stringify({ ...state, git: null }));
+    }
+
     private async reapStale(): Promise<void> {
         const state = this.readState();
-        for (const proc of [state?.host, state?.daemon]) {
-            if (proc && running(proc.pid) && processStart(proc.pid) === proc.start) {
-                if (!(await stopOwnedTree(proc.pid, 5_000))) {
-                    throw new HarnessFailure(`recorded process ${proc.pid} survived SIGKILL`);
-                }
-            }
-        }
+        if (state) await this.reapGit(state);
+        await this.stopRecorded(state?.host);
+        await this.stopRecorded(state?.daemon);
         if (spawnSync("findmnt", ["-n", "-M", this.storeRoot]).status === 0) {
             run(["sudo", "-n", "umount", this.storeRoot]);
         }
@@ -346,7 +388,7 @@ export class HostDriver implements ArmDriver {
             return {};
         }
         if (e.kind === "apply_diff") {
-            this.applyDiff(e);
+            await this.applyDiff(e);
             return {};
         }
         const result = await host.prompt(String(e.text), this.o.turnDeadlineMs);
@@ -364,8 +406,9 @@ export class HostDriver implements ArmDriver {
         return project;
     }
 
-    private applyDiff(e: ScenarioEvent): void {
-        const dir = this.workspaceDir(this.project(e));
+    private async applyDiff(e: ScenarioEvent): Promise<void> {
+        const project = this.project(e);
+        const dir = this.workspaceDir(project);
         const path = resolve(dir, String(e.path));
         const inside = (p: string) => {
             const real = realpathSync(p);
@@ -383,11 +426,13 @@ export class HostDriver implements ArmDriver {
             throw new HarnessFailure(`apply_diff path ${String(e.path)} leaves ${dir}`);
         }
         writeWhole(path, String(e.content));
-        this.gitOk(dir, ["add", "--", path]);
-        if (this.git(dir, ["diff", "--cached", "--quiet", "--", path]).status === 0) return;
+        await this.gitOk(project, dir, ["add", "--", path]);
+        const staged = await this.git(project, dir, ["diff", "--cached", "--quiet", "--", path]);
+        if (staged.status === 0) return;
         const message = `Add ${String(e.path)}`;
         const when = this.o.baseMs + e.scenario_ms;
-        this.gitOk(dir, ["commit", "--quiet", "--no-verify", "-m", message, "--", path], when);
+        const commit = ["commit", "--quiet", "--no-verify", "-m", message, "--", path];
+        await this.gitOk(project, dir, commit, when);
     }
 
     private checkTranscripts(host: SimHost): void {
@@ -481,7 +526,11 @@ export class HostDriver implements ArmDriver {
         return { mount: this.storeMount, avail_kb: avail };
     }
 
-    /** The ballast must still be whole at the episode's end, since the store is writable to the host. */
+    /**
+     * The ballast must still be whole at the episode's end, since the store is writable to the
+     * host. The state records the fault's end before the file goes, so a kill in between leaves a
+     * ballast the next resume removes as a leftover.
+     */
     private clearStoreFill(): void {
         const ballast = this.ballast;
         if (!ballast) return;
@@ -492,9 +541,10 @@ export class HostDriver implements ArmDriver {
                     `store_full ballast ${ballast} changed during the episode`,
                 );
             }
+            this.ballastBytes = null;
+            this.recordState();
         }
         rmSync(ballast, { force: true });
-        this.ballastBytes = null;
     }
 
     async finish(): Promise<void> {
