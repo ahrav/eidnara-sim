@@ -585,6 +585,42 @@ describe("P7 judge path", () => {
         expect(String(g?.metrics.permutation)).toContain("refused: permutation judge");
     });
 
+    test("a judgment with order verdicts outside the four words is refused", async () => {
+        const f = load("P7-pass");
+        const judgment = await judgePair(
+            scripted(f.judge_verdicts),
+            f.pair,
+            f.probe.check.judge,
+            [],
+        );
+        const garbage = {
+            ...judgment,
+            orders: {
+                a_then_b: "garbage",
+                b_then_a: "garbage",
+            } as unknown as typeof judgment.orders,
+            recall: { a: false, b: false },
+        };
+        expect(() =>
+            gradeP7(garbage, context(f.probe.id, f.pair, f.probe.check.judge), rules),
+        ).toThrow("is not a verdict");
+    });
+
+    test("reference-style links keep their label and lose identifier and definition", () => {
+        expect(normalise("see [the docs][x] now\n\n[x]: https://example.test/x")).toBe(
+            "see the docs now",
+        );
+        const base = { id: "p", a: "fine", b: "fine" };
+        expect(() =>
+            blind(
+                { ...base, b: "[Eid][x]nara found it\n[x]: https://example.test" },
+                "a_then_b",
+                "r",
+                [],
+            ),
+        ).toThrow("names an arm");
+    });
+
     test("the human-check sample is ten percent of P7 items, rounded up, from a seeded draw", () => {
         const items = Array.from({ length: 24 }, (_, i) => `q-${i}`);
         const a = humanCheckSample(items, rules, new Rng(9));

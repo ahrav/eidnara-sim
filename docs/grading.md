@@ -98,8 +98,8 @@ cannot call, and the divergences are listed below.
    matched with every separator removed, so `eid-nara` and `CAN-ARY-7f3`
    match. The
    arm names are eval-core's six plus `eidnara`, `host arm`, and
-   `memory arm`. Markdown links and images keep their label and lose their
-   destination, doubled or tripled emphasis marks (`**`, `***`, `__`, `___`), backticks, heading
+   `memory arm`. Markdown links and images, inline or reference-style, keep
+   their label and lose their destination, identifier, and definition line, doubled or tripled emphasis marks (`**`, `***`, `__`, `___`), backticks, heading
    marks, bullet marks, and code fence lines (a line that starts with three
    backticks and holds no further backtick, whatever its info string) are
    stripped and whitespace
@@ -119,7 +119,8 @@ cannot call, and the divergences are listed below.
    count, for the item, the exact answers, and the reference reason the
    judgment names (the judgment carries the answers' and the reference's
    digests, and the context must match), and only when the judgment's
-   recall is the one its two order verdicts imply. Each grade carries the judge model,
+   recall is the one its two order verdicts imply, each of which must be one
+   of the four verdict words. Each grade carries the judge model,
    the prompt and rubric digests, both order verdicts, both answer lengths
    and `longer_recalled_alone`, the calibration digest, and the permutation
    check's result and counts. It computes the digest and runs the check

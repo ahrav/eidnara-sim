@@ -38,6 +38,7 @@ export interface Pair {
 export type Order = "a_then_b" | "b_then_a";
 export const ORDERS: Order[] = ["a_then_b", "b_then_a"];
 export type RawVerdict = "first" | "second" | "both" | "neither";
+const VERDICTS: readonly string[] = ["first", "second", "both", "neither"];
 
 export interface BlindedPrompt {
     pair: string;
@@ -52,6 +53,8 @@ export function normalise(text: string): string {
         .replace(/^[ \t]*```[^`\n]*$/gm, "")
         .replace(/^#{1,6}\s+/gm, "")
         .replace(/^\s*[-*+]\s+/gm, "")
+        .replace(/^[ \t]*\[[^\]]+\]:[ \t]+\S.*$/gm, "")
+        .replace(/!?\[([^\]]*)\]\[[^\]]*\]/g, "$1")
         .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
         .replace(/\*{2,3}|_{2,3}|`/g, "")
         .replace(/\s+/g, " ")
@@ -221,6 +224,13 @@ function unswap(order: Order, verdict: RawVerdict): Recall {
 }
 
 function recallFrom(orders: Record<Order, RawVerdict>): Recall | "Inconsistent" {
+    for (const order of ORDERS) {
+        if (!VERDICTS.includes(orders[order])) {
+            throw new GradeRefused(
+                `order ${order} verdict ${JSON.stringify(orders[order])} is not a verdict`,
+            );
+        }
+    }
     const x = unswap("a_then_b", orders.a_then_b);
     const y = unswap("b_then_a", orders.b_then_a);
     return x.a === y.a && x.b === y.b ? x : "Inconsistent";
