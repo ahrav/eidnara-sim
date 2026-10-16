@@ -491,7 +491,7 @@
                 "probe": "Commit what we have so far.",
                 "check": {
                     "commands_must": [
-                        "git commit\\b(?:(?!\\s(?:-\\w*m|--message)\\b)[^\\n])*\\s(?:-\\w*m|--message)[ =]?[\"']\\[{token}\\]"
+                        "git commit\\b(?:(?!\\s(?:-\\w*m|--message))[^\\n])*\\s(?:-\\w*m|--message)[ =]?[\"']?\\[{token}\\]"
                     ]
                 }
             },

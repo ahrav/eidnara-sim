@@ -15,7 +15,7 @@ do not witness SIM-P08. The CLI accepts exactly `--tier`, `--seed`,
 `--embedder`, and `--out`, each once with a value; any other token, an
 `--embedder` value other than `local`, or a non-integer seed exits with the
 usage line, and a Titan compile accepts only a seed the tier's pre-registration
-lists (`--embedder local` compiles any seed, which the tests use). An `--out` path, or its sibling `embeddings.jsonl`, that resolves
+lists (`--embedder local` compiles any seed, which the tests use). An `--out` path, its directory, or its sibling `embeddings.jsonl` that resolves
 inside `eidnara_checkout` is refused before any directory is created, as is an
 `--out` that names the cache file itself, and an `embeddings.jsonl` that is a
 hard link. The scenario is written to a random same-directory temporary name,
@@ -198,15 +198,15 @@ thresholds (`bm25_max` 0.4, `cosine_max` 0.6):
 
 | Tier | Seed | `scenario_hash` | Largest BM25 ratio | Largest cosine |
 |---|---|---|---|---|
-| S | 101 | `70e8d4fb` | 0.2162 | 0.5194 |
-| S | 102 | `bd177a3a` | 0.2527 | 0.4867 |
-| M | 201 | `02542956` | 0.2508 | 0.4992 |
-| M | 202 | `7b888e89` | 0.254 | 0.4997 |
-| M | 203 | `3b2d59c4` | 0.255 | 0.4843 |
-| L | 301 | `58ac7801` | 0.2552 | 0.5092 |
-| L | 302 | `61b1a3c5` | 0.2557 | 0.4957 |
-| L | 303 | `b93aa0c5` | 0.2596 | 0.5083 |
-| XL | 401 | `91753571` | 0.2583 | 0.4962 |
+| S | 101 | `81ea8529` | 0.2162 | 0.5194 |
+| S | 102 | `674e0d9e` | 0.2527 | 0.4867 |
+| M | 201 | `28cb929c` | 0.2508 | 0.4992 |
+| M | 202 | `5e3bb6d2` | 0.254 | 0.4997 |
+| M | 203 | `de39d4ea` | 0.255 | 0.4843 |
+| L | 301 | `8a712460` | 0.2552 | 0.5092 |
+| L | 302 | `e1420f77` | 0.2557 | 0.4957 |
+| L | 303 | `88b49d34` | 0.2596 | 0.5083 |
+| XL | 401 | `91c091d2` | 0.2583 | 0.4962 |
 
 ## Known limits
 

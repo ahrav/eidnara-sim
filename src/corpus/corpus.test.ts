@@ -11,6 +11,7 @@ import {
     loadCited,
     loadDistributions,
     table,
+    waived,
 } from "./distributions";
 import { bankProblems } from "./fact-bank";
 import { type SampledSession, sampleSession } from "./sampler";
@@ -87,9 +88,11 @@ describe("committed corpus", () => {
         delete broken.rust.plan[0].probe;
         broken.any.lookup[0].check.musts = ["x"];
         broken.typescript.filler = "not a list";
+        broken.rust.filler = [];
         expect(bankProblems(broken)).toEqual([
             "fact-bank rust/plan[0] rs-plan-field: probe missing",
-            "fact-bank typescript/filler: expected a list of strings",
+            "fact-bank rust/filler: expected a non-empty list of non-blank strings",
+            "fact-bank typescript/filler: expected a non-empty list of non-blank strings",
             "fact-bank any/lookup[0] lookup-staging-alias: check key musts is not a check kind",
         ]);
     });
@@ -102,7 +105,7 @@ describe("committed corpus", () => {
     });
 
     test("only append p90 carries a recorded deviation", () => {
-        const deviations = cited.checks.filter((c) => c.deviation !== undefined);
+        const deviations = cited.checks.filter(waived);
         expect(deviations.map((c) => [c.quantity, c.q])).toEqual([["append_tokens_per_step", 0.9]]);
     });
 
@@ -243,5 +246,11 @@ describe("failedChecks", () => {
     });
     test("an in-band check that still carries a deviation fails", () => {
         expect(failedChecks([{ ...base, within: true, deviation: "stale" }])).toHaveLength(1);
+    });
+    test("a blank or non-string deviation waives nothing", () => {
+        for (const deviation of ["", "  ", null, 0] as unknown[]) {
+            const check = { ...base, within: false, deviation } as CheckResult;
+            expect(failedChecks([check])).toHaveLength(1);
+        }
     });
 });

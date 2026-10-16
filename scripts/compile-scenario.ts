@@ -57,7 +57,7 @@ const canonical = (path: string): string => {
 };
 const checkout = canonical(config.eidnara_checkout);
 const cache = join(dirname(out), "embeddings.jsonl");
-for (const path of [out, cache]) {
+for (const path of [out, cache, dirname(out)]) {
     if (`${canonical(path)}${sep}`.startsWith(`${checkout}${sep}`)) {
         console.error(`${path} resolves inside eidnara_checkout ${config.eidnara_checkout}`);
         process.exit(2);

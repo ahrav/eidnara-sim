@@ -56,6 +56,13 @@ export function loadRepos(): RepoSpec[] {
     if (new Set(ids).size !== ids.length) throw new Error(`repos.json: duplicate id in ${ids}`);
     for (const repo of repos) {
         if (!SHA.test(repo.commit)) throw new Error(`repos.json: ${repo.id}: commit is not a SHA`);
+        for (const [field, cmd] of [
+            ["prepare", repo.prepare],
+            ["test", repo.test],
+        ] as const) {
+            const ok = Array.isArray(cmd) && cmd.length > 0 && cmd.every((a) => a.trim() !== "");
+            if (!ok) throw new Error(`repos.json: ${repo.id}: ${field} must list a command`);
+        }
     }
     return repos;
 }

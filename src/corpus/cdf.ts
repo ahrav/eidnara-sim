@@ -58,6 +58,19 @@ export function cdfProblems(table: CdfTable): string[] {
     return problems;
 }
 
+/** A discrete table over `n` observations carries cumulative counts, so each p is round(k / n, 9) for an increasing integer k. */
+export function countProblems(table: CdfTable, n: number): string[] {
+    if (!Number.isSafeInteger(n) || n <= 0) return ["n must be a positive integer"];
+    let last = 0;
+    for (const p of table.p) {
+        const k = Math.round(p * n);
+        if (k <= last || Math.round((k / n) * 1e9) / 1e9 !== p)
+            return ["p must be cumulative counts over n"];
+        last = k;
+    }
+    return last === n ? [] : ["p must end at n / n"];
+}
+
 /** Inverse CDF at probability `q` in [0, 1]. */
 export function quantile(table: CdfTable, q: number): number {
     const { p, x } = table;

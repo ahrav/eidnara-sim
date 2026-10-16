@@ -160,6 +160,42 @@ describe("compile-scenario cache identity", () => {
     });
 });
 
+describe("compile-scenario output parent", () => {
+    test("an output symlink that lives inside the Eidnara checkout is refused", () => {
+        const dir = mkdtempSync(join(tmpdir(), "sim-cli-"));
+        const checkout = join(dir, "eidnara");
+        mkdirSync(join(checkout, "runs"), { recursive: true });
+        const safe = join(dir, "safe");
+        mkdirSync(safe);
+        writeFileSync(join(safe, "s.json"), "");
+        writeFileSync(join(safe, "embeddings.jsonl"), "");
+        symlinkSync(join(safe, "s.json"), join(checkout, "runs", "s.json"));
+        symlinkSync(join(safe, "embeddings.jsonl"), join(checkout, "runs", "embeddings.jsonl"));
+        const config = JSON.parse(readFileSync(join(ROOT, "sim.config.json"), "utf8"));
+        const configPath = join(dir, "sim.config.json");
+        writeFileSync(configPath, JSON.stringify({ ...config, eidnara_checkout: checkout }));
+        const r = Bun.spawnSync(
+            [
+                "bun",
+                "scripts/compile-scenario.ts",
+                "--tier",
+                "S",
+                "--seed",
+                "101",
+                "--embedder",
+                "local",
+                "--out",
+                join(checkout, "runs", "s.json"),
+            ],
+            { cwd: ROOT, env: { ...process.env, SIM_CONFIG: configPath } },
+        );
+        expect(r.exitCode).toBe(2);
+        expect(r.stderr.toString()).toContain("eidnara_checkout");
+        expect(readdirSync(join(checkout, "runs")).sort()).toEqual(["embeddings.jsonl", "s.json"]);
+        expect(readFileSync(join(safe, "s.json"), "utf8")).toBe("");
+    });
+});
+
 describe("compile-scenario arguments", () => {
     test("a seed outside the tier's registered seeds is refused for a Titan compile", () => {
         const out = join(mkdtempSync(join(tmpdir(), "sim-cli-")), "s.json");
