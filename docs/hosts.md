@@ -229,7 +229,9 @@ that is a link (a sparse replacement, a punched hole, or a look-alike
 elsewhere all count), or on a recorded gap, since neither may heal.
 A new harness process calls `reap()` and then `resume(open)` on an arm that
 has `StartArm` and no `EndArm`; an arm whose every event is journaled is only
-reaped and finished. `reap` requires the state and stops each recorded process, host first,
+reaped and finished. `reap` requires the state, refuses an arm whose `finish`
+failed earlier (the state records the failure, so a resume cannot heal it),
+and stops each recorded process, host first,
 whose start time still matches, then unmounts a store left mounted; every
 step runs and the first failure surfaces afterwards (a process that outlives
 SIGTERM and SIGKILL stops the resume with `HarnessFailure`),
@@ -239,8 +241,10 @@ existing store image (a missing image or `state.json` stops the resume,
 since only `reset` formats one and the state names what to stop), starts the daemon against the existing store, and, when
 the next event is inside a session, opens that session again. Pi reopens the
 same session transcript by its session id, and OpenCode reuses the session
-with the same title. `reset` stops recorded processes and unmounts the store
-the same way before it deletes anything, so a harness killed during `reset`
+with the same title. `reset` stops recorded processes first (a clone in
+flight is recorded like an `apply_diff`'s git), since a daemon the killed
+harness left holds the data directory busy, then its own, and unmounts the
+store before it deletes anything, so a harness killed during `reset`
 leaves no recorded process running into the next attempt, and it removes the
 `daemon.log` and `transcripts.json` of an abandoned attempt. A daemon or an
 OpenCode server still starting when the harness dies has no pid on record
