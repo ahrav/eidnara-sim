@@ -1,0 +1,37 @@
+{
+  "provenance": "constructed: a Pi turn that hit its deadline with no model call, with the Pi RPC timeout text the witness-6 journal recorded",
+  "tier": "S",
+  "kinds": {},
+  "arms": [
+    {
+      "arm": "eidnara",
+      "calls": [],
+      "journal": [
+        {
+          "kind": "BeginTurn",
+          "event": "e-2",
+          "arm": "eidnara",
+          "scenario_ms": 0,
+          "seq": 0,
+          "wall_ms": 0
+        },
+        {
+          "kind": "EndTurn",
+          "event": "e-2",
+          "outcome": "Error: Timed out after 900000ms waiting for Pi RPC event (agent_end)",
+          "arm": "eidnara",
+          "scenario_ms": 900000,
+          "seq": 1,
+          "wall_ms": 900000
+        }
+      ],
+      "pluginLog": [],
+      "daemonLog": [],
+      "resources": [],
+      "tools": []
+    }
+  ],
+  "expect": {
+    "F4": 1
+  }
+}

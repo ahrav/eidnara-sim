@@ -403,7 +403,7 @@ test("a recorder rebuilt after a harness kill keeps the open session's start tre
     const armDir = tmp();
     const first = new SnapshotRecorder(armDir, "eidnara", () => []);
     first.sessionStart("s-1", "p", repo);
-    first.addTools([{ command: "cargo build", exit: 0, scenario_ms: 1 }]);
+    first.addTools([{ command: "cargo build", exit: 0, scenario_ms: 1 }], "e-1");
     writeFileSync(join(repo, "new.rs"), "fn x() {}\n");
     const resumed = new SnapshotRecorder(armDir, "eidnara", () => []);
     resumed.sessionStart("s-1", "p", repo);

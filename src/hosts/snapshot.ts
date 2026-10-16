@@ -54,6 +54,7 @@ export class SnapshotRecorder {
         this.state = structuredClone(EMPTY);
         rmSync(this.stateFile, { force: true });
         rmSync(join(this.armDir, "snapshots.jsonl"), { force: true });
+        rmSync(join(this.armDir, "tools.jsonl"), { force: true });
     }
 
     tree(dir: string): string {
@@ -82,8 +83,10 @@ export class SnapshotRecorder {
         this.save();
     }
 
-    addTools(tools: Command[]): void {
+    addTools(tools: Command[], turn: string | null): void {
         if (tools.length === 0) return;
+        const lines = tools.map((t) => `${JSON.stringify({ turn, ...t })}\n`).join("");
+        appendFileSync(join(this.armDir, "tools.jsonl"), lines);
         this.state.commands.push(...tools);
         this.save();
     }

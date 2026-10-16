@@ -218,16 +218,18 @@ export abstract class SimHost {
 export class PiSimHost extends SimHost {
     private rpc: Untyped = null;
     readonly agentDir = join(this.ctx.root, "home/.pi/agent");
-    private readonly started = new Map<string, { tool: string; args: Record<string, unknown> }>();
+    private readonly started = new Map<
+        string,
+        { tool: string; args: Record<string, unknown>; ms: number }
+    >();
 
     protected override unfinished(): ToolRun[] {
-        const now = this.ctx.now?.() ?? 0;
         const open = [...this.started.values()];
         this.started.clear();
         return open.map((t) => ({
             command: toolCommand(t.tool, t.args),
             exit: null,
-            scenario_ms: now,
+            scenario_ms: t.ms,
         }));
     }
 
@@ -309,12 +311,14 @@ export class PiSimHost extends SimHost {
         const started = this.started;
         started.clear();
         this.rpc.onEvent((e: Untyped) => {
-            if (e.type === "tool_execution_start")
-                started.set(e.toolCallId, { tool: e.toolName, args: e.args });
+            if (e.type === "tool_execution_start") {
+                const ms = this.ctx.now?.() ?? 0;
+                started.set(e.toolCallId, { tool: e.toolName, args: e.args, ms });
+            }
             if (e.type !== "tool_execution_end") return;
             const run = started.get(e.toolCallId);
             started.delete(e.toolCallId);
-            if (run) this.logTool(run.tool, run.args, e.isError === true);
+            if (run) this.logTool(run.tool, run.args, e.isError === true, run.ms);
         });
         const ready = this.rpc.sendCommand("get_state", {}, { timeoutMs: 120_000 });
         await Promise.race([ready, spawnError]);
@@ -511,9 +515,11 @@ export class OpencodeSimHost extends SimHost {
             await Promise.race([abort.catch(() => undefined), Bun.sleep(5_000)]);
             const drained = await Promise.race([settled, Bun.sleep(30_000).then(() => null)]);
             if (drained === null) throw new Error("OpenCode turn still running 30 s after abort");
+            await this.logTurnTools(seen, startScenario).catch(() => undefined);
             return { error: `turn deadline ${timeoutMs} ms` };
         }
         if ("caught" in first) {
+            await this.logTurnTools(seen, startScenario).catch(() => undefined);
             const tail = String(this.oc?.stderr?.() ?? "").slice(-600);
             return { error: `${String(first.caught)} | serve stderr: ${tail}`.slice(0, 2000) };
         }

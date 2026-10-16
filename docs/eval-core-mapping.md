@@ -92,6 +92,9 @@ counterpart holds part of the value; the note names the rest), `extension`
 | `grading.judge.calibration_min_pairs` | `HUMAN_SAMPLE_MIN_PAIRS` | mapped | The calibration floor of 20 pairs. |
 | `grading.judge.human_sample_percent` | `HUMAN_SAMPLE_FLOOR_PERCENT` | mapped | The 10% human sample. |
 | `grading.judge.arm_identification_ceiling_percent` | `ARM_IDENTIFICATION_CEILING_PERCENT` | mapped | The 60% arm-identification ceiling, correct or inverted. |
+| `oracles` | none | extension | Failure-class oracle thresholds, added in revision 5 before any tier run, after the `grade-2` smoke run had shown the eidnara arm at 1.53 times the host arm's tokens; eval-core's oracles run over deterministic traces, and `eval-manifest/v10` would add live-log thresholds. |
+| `oracles.hang_quiet_ms` | none | extension | F4: five minutes of quiet after a completed model call, with no tool run, model call, or turn end, is a hang (SIM-P39). |
+| `oracles.cost_ratio_max` | none | extension | F6: an arm whose tokens exceed 1.5 times the host arm's activates the cost oracle. |
 | `bootstrap` | `AnalysisFamily.bootstrap_*` | mapped | |
 | `bootstrap.replicates` | `bootstrap_replicates` | mapped | 2,000 lies inside 40 to 10,000. |
 | `bootstrap.seed` | `bootstrap_seed` | mapped | |

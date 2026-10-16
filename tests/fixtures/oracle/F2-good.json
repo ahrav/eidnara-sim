@@ -1,0 +1,65 @@
+{
+  "provenance": "recorded: witness-2 history-summarizer HTTP 400s (temperature refusals), which are not array-shape faults",
+  "tier": "S",
+  "kinds": {},
+  "arms": [
+    {
+      "arm": "eidnara",
+      "calls": [
+        {
+          "arm": "eidnara",
+          "session": "s-0003",
+          "turn": "e-000011",
+          "started_wall_ms": 1792117786681,
+          "scenario_ms": 10923930,
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "first_byte_ms": null,
+          "proxy_retries": 0,
+          "fault_ref": null,
+          "finish_reason": null,
+          "error": "ValidationException: The model returned the following errors: `temperature` may only be set to 1 when thinking is enabled. Please consult our documentation at https://platform.claude.com/docs/en/build-with-claude/extended-thinking",
+          "component": "history_summarizer",
+          "componentSource": "inferred",
+          "model": "global.anthropic.claude-opus-5-5",
+          "status": 400,
+          "seq": 23,
+          "wall_ms": 1792117787224
+        },
+        {
+          "arm": "eidnara",
+          "session": "s-0005",
+          "turn": "e-000018",
+          "started_wall_ms": 1792117851778,
+          "scenario_ms": 10984274,
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "first_byte_ms": null,
+          "proxy_retries": 0,
+          "fault_ref": null,
+          "finish_reason": null,
+          "error": "ValidationException: The model returned the following errors: `temperature` may only be set to 1 when thinking is enabled. Please consult our documentation at https://platform.claude.com/docs/en/build-with-claude/extended-thinking",
+          "component": "history_summarizer",
+          "componentSource": "inferred",
+          "model": "global.anthropic.claude-opus-5-5",
+          "status": 400,
+          "seq": 43,
+          "wall_ms": 1792117852317
+        }
+      ],
+      "journal": [],
+      "pluginLog": [],
+      "daemonLog": [],
+      "resources": [],
+      "tools": []
+    }
+  ],
+  "expect": {
+    "F2": 0,
+    "F1": 0
+  }
+}

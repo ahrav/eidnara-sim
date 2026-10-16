@@ -151,6 +151,16 @@ export interface Preregistration {
             arm_identification_ceiling_percent: number;
         };
     };
+    /**
+     * Failure-class oracle thresholds (M5), added in revision 5 after the `grade-2` smoke run had
+     * shown the eidnara arm at 1.53 times the host arm's tokens, and before any tier run.
+     */
+    oracles: {
+        /** F4: quiet time after a completed model call with no tool run, call, or turn end. */
+        hang_quiet_ms: number;
+        /** F6: an arm's tokens per host-arm token above this activates the cost oracle. */
+        cost_ratio_max: string;
+    };
     families: Family[];
     /** S and M only: same-arm pairs under different labels, each run `repeats` times. */
     aa_controls?: { pairs: string[][]; repeats: number };

@@ -219,7 +219,7 @@ export class HostDriver implements ArmDriver {
         }
         if (e.kind === "session_end") {
             const project = this.project(e);
-            this.snapshots.addTools(host.drainTools());
+            this.snapshots.addTools(host.drainTools(), null);
             this.snapshots.sessionEnd(project, this.workspace(project));
             await host.closeSession();
             this.clearStoreFill();
@@ -238,7 +238,7 @@ export class HostDriver implements ArmDriver {
         const result = await host.prompt(String(e.text), this.o.turnDeadlineMs);
         if (this.daemon && this.daemonPid() === null) this.o.onDaemonExit({ after: e.id });
         const tools = host.drainTools();
-        this.snapshots.addTools(tools);
+        this.snapshots.addTools(tools, e.id);
         const outcome: { failed?: string; snapshot?: string } = {};
         if (result.error) outcome.failed = result.error;
         if (e.probe) {

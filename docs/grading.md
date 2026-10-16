@@ -43,7 +43,7 @@ snapshot id is `<arm>:<item>:<turn event>`, so each attempt has its own id.
 |---|---|
 | `diff` (`turn`) | A git tree of the workspace, untracked files included, written to a separate index before the prompt and after it, and diffed |
 | `diff` (`prior-session`) | The same trees at the start and end of the project's previous session |
-| `command-log` | The host's tool runs, each a bash command or the tool name and its path, with a 0 or 1 error flag (null for a run that never finished) and its scenario time. Pi reports `tool_execution_start` and `tool_execution_end` events; OpenCode's tool parts come from the session messages the turn added, each timed from its start relative to the turn's first new message, both in OpenCode's own clock |
+| `command-log` | The host's tool runs, each a bash command or the tool name and its path, with a 0 or 1 error flag (null for a run that never finished) and the scenario time it started. Pi reports `tool_execution_start` and `tool_execution_end` events; OpenCode's tool parts come from the session messages the turn added, each timed from its start relative to the turn's first new message, both in OpenCode's own clock |
 | `proxy-call` | The session's call records from `calls.jsonl`, each with the index of the user turn it belongs to (a background call takes the preceding turn's), and the response text the proxy records for agent, user-sim, and judge calls (the first 32,768 characters) |
 
 The recorder keeps each project's session-start tree, the last session's

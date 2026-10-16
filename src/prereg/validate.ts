@@ -150,6 +150,7 @@ const PREREG_SHAPE: Shape = {
             arm_identification_ceiling_percent: posInt,
         },
     },
+    oracles: { hang_quiet_ms: posInt, cost_ratio_max: decimal },
     families: new ArrayOf(FAMILY_SHAPE),
 };
 
