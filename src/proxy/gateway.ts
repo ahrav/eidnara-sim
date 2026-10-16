@@ -120,6 +120,8 @@ export interface GatewayOptions {
     requestDeadlineMs?: number;
     /** How long `stop` waits for aborted in-flight handlers to finish writing their records. */
     drainMs?: number;
+    /** The first arrival ordinal to assign; a resume passes one past the persisted maximum. */
+    firstArrival?: number;
 }
 
 const ROUTE = /^\/model\/([^/]+)\/(converse-stream|converse)$/;
@@ -178,12 +180,15 @@ export class Gateway {
     inFlight = 0;
     readonly failures: Error[] = [];
     private readonly active = new Map<Promise<void>, AbortController>();
-    private calls = 0;
+    /** Arrival ordinals continue after the highest one the persisted records carry. */
+    private calls: number;
     /** Set once `stop` returns; a handler that settles afterwards persists nothing. */
     private closed = false;
     readonly urls: string[] = [];
 
-    constructor(private readonly options: GatewayOptions) {}
+    constructor(private readonly options: GatewayOptions) {
+        this.calls = (options.firstArrival ?? 0) | 0;
+    }
 
     /** What a request is at its first byte: its scope, call order, and wall and monotonic start. */
     private arrival(): Arrival {

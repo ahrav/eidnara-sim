@@ -400,19 +400,22 @@ const armEvidence = (
             a.turns.length > 0 && a.turns.every((t) => String(t).endsWith(":ok")),
             `${name}/${arm}: every completed turn ended ok, including those after the faults`,
         );
-        if (arm === "eidnara") mechanismEvidence(name, a, expected);
+        mechanismEvidence(name, arm, a, expected);
     }
 };
 
-/** The Eidnara arm's restart and full-store episodes carry the evidence their mechanism produces. */
-const mechanismEvidence = (name: string, a: ArmSummary, expected: FaultEpisode[]) => {
+/**
+ * Each arm's model switch happened at its session boundary; on the Eidnara arm the restart and
+ * full-store episodes also carry the evidence their mechanism produces.
+ */
+const mechanismEvidence = (name: string, arm: string, a: ArmSummary, expected: FaultEpisode[]) => {
     const evidence = new Map(
         a.observed.map((o) => [o.fault, o.evidence as Record<string, unknown>]),
     );
     for (const f of expected) {
         const e = evidence.get(f.id);
         if (!e) continue;
-        if (f.type === "daemon_restart") {
+        if (f.type === "daemon_restart" && arm === "eidnara") {
             check(
                 typeof e.pid_before === "number" &&
                     typeof e.pid_after === "number" &&
@@ -432,10 +435,10 @@ const mechanismEvidence = (name: string, a: ArmSummary, expected: FaultEpisode[]
                     before.every(([, m]) => m.length === 1 && m[0] === first) &&
                     after.length > 0 &&
                     after.every(([, m]) => m.length === 1 && m[0] === second),
-                `${name}/eidnara: sessions before ${switched} used ${first}, sessions from it on used ${second}`,
+                `${name}/${arm}: sessions before ${switched} used ${first}, sessions from it on used ${second}`,
             );
         }
-        if (f.type === "store_full") {
+        if (f.type === "store_full" && arm === "eidnara") {
             check(e.avail_kb === 0, `${name}/eidnara: ${f.id} filled the store (avail_kb 0)`);
             const s = summary[name as "scheduled" | "resume"];
             check(

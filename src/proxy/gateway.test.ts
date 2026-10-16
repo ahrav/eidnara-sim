@@ -600,6 +600,26 @@ describe("witnesses", () => {
         expect(records.records.map((r) => r.component)).toEqual(["history_summarizer", "agent"]);
     });
 
+    test("a gateway continues arrival ordinals after the persisted ones", async () => {
+        const records = new RecordWriter(null);
+        const gateway = new Gateway({
+            upstream: scriptedUpstream(),
+            records,
+            injector: new FaultInjector([], new Rng(1), 1_000),
+            rng: new Rng(1),
+            clock: { scenarioMs: () => 0 },
+            scope: () => ({ arm: "a", session: null, turn: null }),
+            firstArrival: 7,
+        });
+        await gateway.start();
+        gateways.push(gateway);
+        await hostCall(gateway.urls[0] as string, AGENT_BODY, 2_000);
+        expect(records.records[0]?.arrival).toBe(7);
+        expect(recordProblems({ ...RECORD, seq: 0, wall_ms: 1, arrival: "0" })).toEqual([
+            "arrival invalid",
+        ]);
+    });
+
     test("restore orders same-millisecond requests by their arrival ordinal, not their seq", () => {
         const fault: ProxyFault = {
             id: "f",

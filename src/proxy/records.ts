@@ -75,6 +75,10 @@ export function recordProblems(input: Partial<CallRecord> | Record<string, unkno
     if (value.first_byte_ms !== null && !Number.isFinite(value.first_byte_ms)) {
         problems.push("first_byte_ms missing");
     }
+    const arrival = value.arrival;
+    if (arrival !== undefined && (!Number.isInteger(arrival) || (arrival as number) < 0)) {
+        problems.push("arrival invalid");
+    }
     return problems;
 }
 

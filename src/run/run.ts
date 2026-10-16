@@ -912,7 +912,8 @@ async function runArms(
     const proxyFaults = scenario.faults.filter((f) => f.seam.layer === "proxy-sink");
     const injector = new FaultInjector(proxyFaults, new Rng((seed ^ 0x5bd1e995) >>> 0), 120_000);
     const callsPath = join(o.out, "calls.jsonl");
-    injector.restore(readRecords(callsPath));
+    const priorCalls = readRecords(callsPath);
+    injector.restore(priorCalls);
     for (const e of journal.entries) {
         if (e.kind === "FaultFired" && e.layer === "proxy-sink" && typeof e.arm === "string") {
             injector.armedBefore(String(e.fault), e.arm);
@@ -969,6 +970,7 @@ async function runArms(
             return () => scheduler.jobEnd(id);
         },
         requestDeadlineMs: prereg.liveness_bounds.turn_deadline_ms,
+        firstArrival: priorCalls.reduce((n, r) => Math.max(n, (r.arrival ?? r.seq) + 1), 0),
     });
     await gateway.start();
     const handlersFailed = () => {
