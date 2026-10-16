@@ -128,7 +128,9 @@ call through it is refused:
    the error propagates. Scheduler faults call the driver's
    `fault` and journal its evidence. The mid-fold SIGKILL, the daemon restart,
    and the host upgrade open an outage window first.
-5. Deliver the event to the driver. A user turn is bracketed by `BeginTurn`
+5. Deliver the event to the driver. Its outcome must be an object whose
+   `failed` is absent or a string; anything else fails the run before any
+   terminal record. A user turn is bracketed by `BeginTurn`
    and `EndTurn` and holds the clock busy while it runs; its settle interval
    is raced against the fatal channel, and a fatal exit inside it refuses the
    run before the turn's `Event`. An `apply_diff`
@@ -190,13 +192,17 @@ naming a type or layer other than its episode's, a `FaultObserved` without an
 evidence object, an `Event` that passes a
 session-start or user-turn trigger whose fault neither fired nor was missed,
 a `BeginTurn` for a turn other than the one due, repeated for one turn,
-timestamped before its schedule, or while a job is open, a second `EndTurn`
-for a turn, an `Event` while a fired scheduler fault is still unobserved and
+timestamped before its schedule, while a job is open, before a fault keyed to
+that turn fired, or while such a scheduler fault is unresolved, a second
+`EndTurn` for a turn, an `Event` while a fired scheduler fault is still unobserved and
 unmarked, an interruption marker that closes no open turn
 or unobserved fault, a `RegisterJob` for a job still open or an `EndJob` with
 no open `RegisterJob`, an `AdvanceClock` while a turn or job is open, landing
-anywhere but the event due, jumping nowhere, or starting behind the arm's
-last clock reading, a `FaultFired` repeated or
+anywhere but the event due, jumping nowhere, or starting anywhere but the
+replayed clock, any other entry whose clock reading leaves the replayed clock
+(an entry written while idle carries the clock exactly; one written while a
+turn or job is open carries a reading at or past it and moves it; only an
+`AdvanceClock` or busy work moves the clock), a `FaultFired` repeated or
 away from its trigger's place in the event sequence (a session-start or
 user-turn trigger fires while its event is next due, a summarizer-call
 trigger while its session is open), a sleep's `FaultFired` without its tagged
@@ -211,6 +217,9 @@ unfinished arm has a driver, refuses an arm order or scenario hash different
 from the ones `StartRun` recorded, journals `ResumeRun`, and, for each arm
 without `EndArm`:
 
+- journals the recovery entries in replay order: open jobs closed, fired
+  faults counted and the unobserved ones marked interrupted, then the
+  interrupted turn's marker and `Event`;
 - waits one settle interval so a job an answered turn started can still
   register, waits for any kill that interval fired, and refuses the run if a
   fatal exit landed meanwhile; then journals `Event` for each turn with
