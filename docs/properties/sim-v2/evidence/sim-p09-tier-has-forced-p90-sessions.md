@@ -21,8 +21,9 @@ sessions at or above the fitted p90. The compile-time count of three such
 sessions per scenario lands in M2.
 
 M2 (#1026) draws the request count of `forced_p90_sessions` sessions from the
-tail above p90, spread evenly over the base projects' sessions, and then pads
-each forced session to the P13 turn range (30 turns per P13 item it hosts). A
+tail above p90, with an equal share per base project spread evenly over that
+project's sessions, and then pads each forced session to the P13 turn range
+(30 turns per P13 item it hosts). A
 test over 100 S seeds checks that each scenario has at least the pre-registered
 number of forced sessions and that each holds at least the fitted p90 request
 count. That count holds through the padding alone, so the scenario test
