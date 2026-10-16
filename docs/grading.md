@@ -126,7 +126,8 @@ cannot call, and the divergences are listed below.
    `longer_recalled_alone` records whether the longer answer was the one
    recalled alone, for the verbosity audit.
 5. `gradeP7` takes the judgment, the compiled P7 probe, and each arm's
-   snapshots in attempt order, grades the first snapshot of each arm and
+   snapshots in attempt order, requires every snapshot to come from the
+   probe's session, grades the first snapshot of each arm and
    counts the rest as later attempts (as `gradeItem` does), rebuilds the
    pair from those two snapshots (so the arms, snapshot ids, artefact
    inputs, answer digests, and lengths it records all come from the

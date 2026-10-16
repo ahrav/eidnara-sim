@@ -906,6 +906,21 @@ describe("P7 judge path", () => {
         expect(gradeP7(judgment, ctx, rules)).toHaveLength(2);
     });
 
+    test("a snapshot from another session than the probe's is refused", async () => {
+        const f = load("P7-pass");
+        const judgment = await judgePair(
+            scripted(f.judge_verdicts),
+            f.pair,
+            f.probe.check.judge,
+            [],
+        );
+        const ctx = context(f.probe.id, f.pair, f.probe.check.judge);
+        const other = { ...snapshotOf("snap-host", "host", f.pair.b, f.probe.id), session: "s-9" };
+        expect(() =>
+            gradeP7(judgment, { ...ctx, snapshots: { ...ctx.snapshots, b: [other] } }, rules),
+        ).toThrow("session s-9");
+    });
+
     test("the human-check sample is ten percent of P7 items, rounded up, from a seeded draw", () => {
         const items = Array.from({ length: 24 }, (_, i) => `q-${i}`);
         const a = humanCheckSample(items, rules, new Rng(9));

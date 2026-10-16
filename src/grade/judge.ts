@@ -453,6 +453,14 @@ export function gradeP7(j: Judgment, c: P7Context, rules: Rules, version = 1): G
         if (list.some((s) => s.item !== head.item || s.arm !== head.arm)) {
             throw new GradeRefused(`snapshots for ${item} side ${side} mix items or arms`);
         }
+        for (const s of list) {
+            const session = (s as { session?: unknown }).session;
+            if (session !== c.probe.session) {
+                throw new GradeRefused(
+                    `snapshot ${s.id} is from session ${String(session)}, not the probe's ${c.probe.session}`,
+                );
+            }
+        }
         return head;
     };
     const built = p7Pair(item, first("a"), first("b"));
