@@ -109,8 +109,13 @@ export function checkCorpus(): CorpusReport {
         quantityNames === QUANTITIES.join(","),
         `quantities: ${quantityNames}, need ${QUANTITIES.join(",")}`,
     );
+    const tracelab = sources.find((d) => d.id === "tracelab");
+    const origin = `${tracelab?.repo}@${tracelab?.revision}:`;
     for (const [name, q] of Object.entries(dist.quantities)) {
-        need(typeof q.source === "string" && q.source !== "", `${name}: source missing`);
+        need(
+            typeof q.source === "string" && q.source.startsWith(origin),
+            `${name}: source ${q.source}`,
+        );
         need(q.n > 0, `${name}: n missing`);
         need(CDF_KINDS.has(q.cdf.kind), `${name}: cdf kind ${q.cdf.kind}`);
         if (q.cdf.kind === "discrete") {

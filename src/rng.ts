@@ -1,4 +1,9 @@
-/** Seeded xoshiro128** generator; one seed yields one fixed draw sequence. */
+/**
+ * Seeded xoshiro128** generator; one seed yields one fixed draw sequence.
+ * A splitmix32 chain over the low 32 bits fills the state; a nonzero high
+ * half continues the same chain for four more rounds, which makes the two
+ * halves' contributions order-dependent.
+ */
 export class Rng {
     private s: Uint32Array;
 
@@ -6,12 +11,21 @@ export class Rng {
         if (!Number.isSafeInteger(seed) || seed < 0) {
             throw new Error(`Rng: seed ${seed} is not a non-negative safe integer`);
         }
-        this.s = splitmix32(seed % 4294967296);
+        this.s = new Uint32Array(4);
         const high = Math.floor(seed / 4294967296);
-        if (high > 0) {
-            const mixed = splitmix32(high);
-            for (let i = 0; i < 4; i++) this.s[i] = ((this.s[i] ?? 0) ^ (mixed[i] ?? 0)) >>> 0;
+        let x = seed % 4294967296;
+        for (let i = 0; i < 4; i++) {
+            x = (x + 0x9e3779b9) >>> 0;
+            this.s[i] = mix32(x);
         }
+        if (high > 0) {
+            x = (x ^ high) >>> 0;
+            for (let i = 0; i < 4; i++) {
+                x = (x + 0x9e3779b9) >>> 0;
+                this.s[i] = ((this.s[i] ?? 0) ^ mix32(x)) >>> 0;
+            }
+        }
+        if (this.s.every((w) => w === 0)) this.s[0] = 1;
     }
 
     nextU32(): number {
@@ -35,17 +49,11 @@ export class Rng {
     }
 }
 
-function splitmix32(seed: number): Uint32Array {
-    const s = new Uint32Array(4);
-    let x = seed >>> 0;
-    for (let i = 0; i < 4; i++) {
-        x = (x + 0x9e3779b9) >>> 0;
-        let z = x;
-        z = Math.imul(z ^ (z >>> 16), 0x85ebca6b) >>> 0;
-        z = Math.imul(z ^ (z >>> 13), 0xc2b2ae35) >>> 0;
-        s[i] = (z ^ (z >>> 16)) >>> 0;
-    }
-    return s;
+function mix32(x: number): number {
+    let z = x;
+    z = Math.imul(z ^ (z >>> 16), 0x85ebca6b) >>> 0;
+    z = Math.imul(z ^ (z >>> 13), 0xc2b2ae35) >>> 0;
+    return (z ^ (z >>> 16)) >>> 0;
 }
 
 function rotl(x: number, k: number): number {

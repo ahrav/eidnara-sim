@@ -17,6 +17,8 @@ describe("Rng", () => {
         };
         expect(draws(4294967296)).not.toEqual(draws(0));
         expect(draws(2 ** 53 - 1)).not.toEqual(draws(2 ** 32 - 1));
+        expect(draws(8589934593)).not.toEqual(draws(4294967298));
+        expect(draws(4294967297).some((v) => v !== 0)).toBe(true);
         expect(() => new Rng(-1)).toThrow("non-negative safe integer");
         expect(() => new Rng(1.5)).toThrow("non-negative safe integer");
     });
