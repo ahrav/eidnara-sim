@@ -38,8 +38,14 @@ free whichever machine released it.
 ## Journal
 
 `Journal` opens its file without following symlinks, requires a regular
-file with one link owned by the harness user, reads and truncates it
-through that one descriptor, and refuses every operation after `close`. On read it
+file with one link owned by the harness user, checks through
+`/proc/self/fd` that the file the kernel opened lives in the directory the
+caller fixed with `directoryIdentity` when it took the lease (by default the
+directory the path names as the constructor starts), so a directory symlink
+swapped underneath the path cannot route the journal elsewhere, refuses a
+file over `MAX_JOURNAL_BYTES` (256 MiB) before reading it, reads and
+truncates it through that one descriptor, and refuses every operation after
+`close`. On read it
 splits lines on raw newline bytes, so the complete prefix is measured in bytes,
 and accepts a line only when it is valid UTF-8 that parses, carries the next
 `seq`, names a known `kind`, has `arm` and finite `scenario_ms` and `wall_ms`,
@@ -126,15 +132,15 @@ call through it is refused:
    the event.
 
 Each arm's driver receives an `ArmHandle` through `bind` once the arm has
-started: on a fresh arm after `reset` returned and `StartArm` is journaled,
-so every entry the handle writes follows `StartArm`; on a resume at once,
-with the session the journal left open already restored so a
-late summarizer observation from it still fires its kill, and with an outage
-window still open when the journal's replay shows its fault fired and nothing
-closed it yet (the admitted daemon exit, the fault's evidence or interruption
-record, or the next scheduled step), so the delayed scheduled exit reads as
-expected and a window already spent stays closed. The handle carries `jobStart` and `jobEnd` (a failed `RegisterJob` or
-`EndJob` append is fatal, so a caller that swallows the throw cannot leave a
+started and its recovery entries are on disk: on a fresh arm after `reset`
+returned and `StartArm` is journaled; on a resume after the open jobs are
+closed, the interrupted turn and faults are marked, and the fired faults are
+counted, so every entry the handle writes follows the recovery it would
+otherwise race, a bind-time registration of a job id the crash left open is
+valid, an observation during `bind` fires no second kill, and a daemon exit
+reported through the new handle is unexpected because the interruption marker
+closed the outage window. The session the journal left open is restored
+before `bind`, so a late summarizer observation from it still fires its kill.
 live job unregistered or the clock busy forever), `observe`, and
 `daemonExited`, and every call checks that its arm is still the one running,
 so a callback a finished arm left behind is refused instead of writing under
@@ -156,10 +162,11 @@ A restarted harness opens the same journal. A journal whose first entry is anyth
 second `StartRun`, is refused, as is one with entries after `EndRun`, a run
 record (`StartRun`, `ResumeRun`, `EndRun`) carrying an arm or a clock reading,
 a `ResumeRun` naming another arm order or scenario, arms started out of the
-configured order or while another is open, or arm evidence before its
-`StartArm`. An arm is complete when its `EndArm` follows an `Event` for every
-scheduled event with no job registration open and every sleep jump fired;
-evidence journaled after `EndArm` does not count. A journal holding a fatal
+configured order or while another is open, a `StartArm` with a clock reading
+past zero, or arm evidence before its `StartArm`. An arm is complete when its
+`EndArm` follows an `Event` for every scheduled event with no job registration
+open, every sleep jump fired, and every fired scheduler fault observed or
+interrupted; evidence journaled after `EndArm` does not count. A journal holding a fatal
 `ItemState` (a daemon exit outside an outage window, or a scheduler fault the
 driver could not carry out), before or after `EndRun`, is a failed run and is
 refused with `HarnessFailure`; an arm with `EndArm` before every scheduled
@@ -173,7 +180,8 @@ a `BeginTurn` for a turn other than the one due or repeated for one turn, a
 second `EndTurn` for a turn, an interruption marker that closes no open turn
 or unobserved fault, a `RegisterJob` for a job still open or an `EndJob` with
 no open `RegisterJob`, an `AdvanceClock` while a turn or job is open, landing
-anywhere but the event due, or jumping nowhere, a `FaultFired` repeated or
+anywhere but the event due, jumping nowhere, or starting behind the arm's
+last clock reading, a `FaultFired` repeated or
 away from its trigger's place in the event sequence (a session-start or
 user-turn trigger fires while its event is next due, a summarizer-call
 trigger while its session is open), a sleep's `FaultFired` without its tagged

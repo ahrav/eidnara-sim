@@ -1311,8 +1311,12 @@ describe("every request yields one record", () => {
         expect(gateway.failures).toEqual([]);
     }, 20_000);
 
-    test("a record carries the scope that owned the request when its first bytes arrived", async () => {
-        let arm = "first";
+    test("a record carries the scope that owned the request when its first bytes arrived, copied out of a shared scope object", async () => {
+        const shared = {
+            arm: "first",
+            session: null as string | null,
+            turn: null as string | null,
+        };
         const records = new RecordWriter(null);
         const gateway = new Gateway({
             upstream: scriptedUpstream(),
@@ -1320,7 +1324,7 @@ describe("every request yields one record", () => {
             injector: new FaultInjector([], new Rng(1), 1_000),
             rng: new Rng(1),
             clock: { scenarioMs: () => 0 },
-            scope: () => ({ arm, session: null, turn: null }),
+            scope: () => shared,
         });
         await gateway.start();
         gateways.push(gateway);
@@ -1337,7 +1341,7 @@ describe("every request yields one record", () => {
         const head = `POST /model/m/converse HTTP/1.1\r\nHost: x\r\nContent-Length: ${body.length}\r\nConnection: close\r\n\r\n`;
         sock.write(`${head}${body.slice(0, 10)}`);
         await Bun.sleep(50);
-        arm = "second";
+        shared.arm = "second";
         sock.write(body.slice(10));
         expect((await reply).startsWith("HTTP/1.1 200")).toBe(true);
         while (records.records.length === 0) await Bun.sleep(5);

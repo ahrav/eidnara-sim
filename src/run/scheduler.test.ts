@@ -1,10 +1,14 @@
 import { describe, expect, setSystemTime, test } from "bun:test";
 import {
+    closeSync,
     existsSync,
+    ftruncateSync,
     linkSync,
     mkdtempSync,
+    openSync,
     readdirSync,
     readFileSync,
+    rmSync,
     symlinkSync,
     writeFileSync,
 } from "node:fs";
@@ -19,9 +23,11 @@ import { SEAMS } from "../scenario/faults";
 import { Clock } from "./clock";
 import {
     bootId,
+    directoryIdentity,
     type Entry,
     Journal,
     leaseHost,
+    MAX_JOURNAL_BYTES,
     pidNamespace,
     readJournal,
     releaseLease,
@@ -1927,6 +1933,35 @@ describe("Scheduler", () => {
         expect(calls).toEqual(["arm p1", "disarm p1"]);
     });
 
+    test("a journal over the size bound is refused before it is read", () => {
+        const path = join(dir(), "j.jsonl");
+        const j = new Journal(path);
+        j.append({ kind: "StartRun", arm: null, scenario_ms: 0, order: ["a"], scenario: "s" });
+        j.close();
+        const fd = openSync(path, "r+");
+        ftruncateSync(fd, MAX_JOURNAL_BYTES + 1);
+        closeSync(fd);
+        expect(() => new Journal(path)).toThrow(/over the .* limit/);
+        expect(() => readJournal(path)).toThrow(/over the .* limit/);
+    });
+
+    test("a journal opens only inside the directory its lease named", () => {
+        const leased = dir();
+        const other = dir();
+        const link = join(dir(), "run");
+        symlinkSync(leased, link);
+        const identity = directoryIdentity(leased);
+        const j = new Journal(join(link, "j.jsonl"), identity);
+        j.close();
+        rmSync(link);
+        symlinkSync(other, link);
+        expect(() => new Journal(join(link, "j.jsonl"), identity)).toThrow(
+            /opened outside its run directory/,
+        );
+        expect(existsSync(join(other, "j.jsonl"))).toBe(true);
+        expect(() => new Journal(join(other, "j.jsonl"), directoryIdentity(other))).not.toThrow();
+    });
+
     test("a lease-shaped file with a noncanonical number is corrupt, whatever its spelling", () => {
         for (const name of ["lease.-1.json", "lease.1e0.json", "lease.01.json"]) {
             const d = dir();
@@ -2208,10 +2243,6 @@ describe("Scheduler", () => {
     });
 
     test("journals with a run record in arm scope, an unhandled scheduled fault at EndArm, a jump while busy, a sleep fired without its jump, a missed sleep after its jump, an Event contradicting its EndTurn, or a job registered twice are refused", async () => {
-        const sleep = {
-            ...episode("z", "laptop_sleep", { kind: "session_start", session: "s-0000" }),
-            params: { duration_ms: 50 },
-        };
         const turnFault = episode("t", "daemon_restart", {
             kind: "user_turn",
             session: "s-0000",
@@ -2219,7 +2250,7 @@ describe("Scheduler", () => {
         });
         const events = fixtureEvents(1);
         const all = events.map((e) => e.id);
-        const open = (lines: Partial<Entry>[], faults: FaultEpisode[] = []) => {
+        const open = (lines: Partial<Entry>[], faults: FaultEpisode[] = [], within = events) => {
             const path = join(dir(), "j.jsonl");
             const j = new Journal(path);
             j.append({
@@ -2227,13 +2258,13 @@ describe("Scheduler", () => {
                 arm: null,
                 scenario_ms: 0,
                 order: ["a"],
-                scenario: scenarioId(events, faults),
+                scenario: scenarioId(within, faults),
             });
             j.append({ kind: "StartArm", arm: "a", scenario_ms: 0 });
             for (const l of lines) j.append({ arm: "a", scenario_ms: 0, ...l } as never);
             j.close();
             return new Scheduler({
-                events,
+                events: within,
                 faults,
                 journal: new Journal(path),
                 settleMs: 0,
@@ -2267,19 +2298,48 @@ describe("Scheduler", () => {
                 { kind: "AdvanceClock", from_ms: 0, scenario_ms: 60_000, next_event: e2, busy: [] },
             ]),
         ).rejects.toThrow(/AdvanceClock while the clock is busy/);
+        const later: ScenarioEvent[] = [
+            ...events,
+            { id: "e-100000", kind: "session_start", scenario_ms: 120_000, session: "s-0001" },
+            { id: "e-100001", kind: "session_end", scenario_ms: 120_000, session: "s-0001" },
+        ];
+        const nap = {
+            ...episode("z", "laptop_sleep", { kind: "session_start", session: "s-0001" }),
+            params: { duration_ms: 50 },
+        };
+        const toSecond: Partial<Entry>[] = [ev(e0), ...turn(), ev(e1), ev(e2, "ok", 60_000)];
+        const jump: Partial<Entry> = {
+            kind: "AdvanceClock",
+            from_ms: 60_000,
+            scenario_ms: 120_000,
+            fault: "z",
+            busy: [],
+        };
         await expect(
             open(
-                [{ kind: "FaultFired", fault: "z", type: "laptop_sleep", layer: "clock" }],
-                [sleep],
+                [
+                    ...toSecond,
+                    {
+                        kind: "FaultFired",
+                        fault: "z",
+                        type: "laptop_sleep",
+                        layer: "clock",
+                        scenario_ms: 60_000,
+                    },
+                ],
+                [nap],
+                later,
             ),
         ).rejects.toThrow(/FaultFired for sleep z has no jump/);
         await expect(
             open(
                 [
-                    { kind: "AdvanceClock", from_ms: -1, scenario_ms: 0, fault: "z", busy: [] },
-                    { kind: "ItemState", fault: "z", state: "missed" },
+                    ...toSecond,
+                    jump,
+                    { kind: "ItemState", fault: "z", state: "missed", scenario_ms: 120_000 },
                 ],
-                [sleep],
+                [nap],
+                later,
             ),
         ).rejects.toThrow(/missed z away from its sleep/);
         await expect(open([ev(e0), ...turn("failed"), ev(e1, "ok")])).rejects.toThrow(
@@ -2369,6 +2429,112 @@ describe("Scheduler", () => {
         }).run();
     });
 
+    test("journals with a StartArm past zero, a fired scheduler fault without terminal evidence at EndArm, or a jump starting behind the clock are refused", async () => {
+        const restart = episode("r", "daemon_restart", {
+            kind: "session_start",
+            session: "s-0000",
+        });
+        const events = fixtureEvents(1);
+        const [e0, e1, e2] = events.map((e) => e.id) as [string, string, string];
+        const open = (lines: Partial<Entry>[], faults: FaultEpisode[] = [], startMs = 0) => {
+            const path = join(dir(), "j.jsonl");
+            const j = new Journal(path);
+            j.append({
+                kind: "StartRun",
+                arm: null,
+                scenario_ms: 0,
+                order: ["a"],
+                scenario: scenarioId(events, faults),
+            });
+            j.append({ kind: "StartArm", arm: "a", scenario_ms: startMs });
+            for (const l of lines) j.append({ arm: "a", scenario_ms: startMs, ...l } as never);
+            j.close();
+            return new Scheduler({
+                events,
+                faults,
+                journal: new Journal(path),
+                settleMs: 0,
+                order: ["a"],
+                drivers: { a: fakeDriver([]) },
+            }).run();
+        };
+        const ev = (event: string, scenario_ms = 0): Partial<Entry> => ({
+            kind: "Event",
+            event,
+            outcome: "ok",
+            scenario_ms,
+        });
+        await expect(open([], [], 5)).rejects.toThrow(/StartArm for a starts past zero/);
+        await expect(
+            open(
+                [
+                    { kind: "FaultFired", fault: "r", type: "daemon_restart", layer: "scheduler" },
+                    ev(e0),
+                    { kind: "BeginTurn", event: e1 },
+                    { kind: "EndTurn", event: e1, outcome: "ok" },
+                    ev(e1),
+                    ev(e2, 60_000),
+                    { kind: "EndArm", scenario_ms: 60_000 },
+                    { kind: "EndRun", arm: null, scenario_ms: 0 } as never,
+                ],
+                [restart],
+            ),
+        ).rejects.toThrow(/EndArm with fault r unresolved/);
+        await expect(
+            open([
+                ev(e0),
+                { kind: "BeginTurn", event: e1 },
+                { kind: "EndTurn", event: e1, outcome: "ok", scenario_ms: 500 },
+                ev(e1, 500),
+                { kind: "AdvanceClock", from_ms: 0, scenario_ms: 60_000, next_event: e2, busy: [] },
+            ]),
+        ).rejects.toThrow(/AdvanceClock starts behind the clock/);
+    });
+
+    test("a resume closes the journal's open jobs before binding, so a bind-time registration of the same id is valid", async () => {
+        const path = join(dir(), "j.jsonl");
+        const j = new Journal(path);
+        j.append({
+            kind: "StartRun",
+            arm: null,
+            scenario_ms: 0,
+            order: ["a"],
+            scenario: scenarioId(fixtureEvents(1), []),
+        });
+        j.append({ kind: "StartArm", arm: "a", scenario_ms: 0 });
+        j.append({ kind: "Event", arm: "a", scenario_ms: 0, event: "e-000000", outcome: "ok" });
+        j.append({ kind: "RegisterJob", arm: "a", scenario_ms: 0, job: "fold" });
+        j.close();
+        const inner = fakeDriver([]);
+        const driver: ArmDriver = {
+            ...inner,
+            bind: (h) => {
+                inner.bind(h);
+                h.jobStart("fold");
+                h.jobEnd("fold");
+            },
+        };
+        const resumed = new Journal(path);
+        await new Scheduler({
+            events: fixtureEvents(1),
+            faults: [],
+            journal: resumed,
+            settleMs: 0,
+            order: ["a"],
+            drivers: { a: driver },
+        }).run();
+        const jobs = resumed.entries.filter((e) => e.job === "fold").map((e) => e.kind);
+        expect(jobs).toEqual(["RegisterJob", "EndJob", "RegisterJob", "EndJob"]);
+        await new Scheduler({
+            events: fixtureEvents(1),
+            faults: [],
+            journal: new Journal(path),
+            settleMs: 0,
+            order: ["a"],
+            drivers: { a: fakeDriver([]) },
+        }).run();
+    });
+
     test("a FaultObserved without its FaultFired is refused on resume", async () => {
         const path = join(dir(), "j.jsonl");
         const restart = episode("r", "daemon_restart", {
@@ -2405,7 +2571,7 @@ describe("Scheduler", () => {
         ).rejects.toThrow(/has no FaultFired/);
     });
 
-    test("a resume keeps an unobserved outage window open so the delayed scheduled exit is expected", async () => {
+    test("a resume interrupts an unobserved outage fault before binding, so a delayed exit is unexpected", async () => {
         const path = join(dir(), "j.jsonl");
         const restart = episode("r", "daemon_restart", {
             kind: "session_start",
@@ -2444,15 +2610,23 @@ describe("Scheduler", () => {
             },
         };
         const resumed = new Journal(path);
-        await new Scheduler({
-            events: fixtureEvents(1),
-            faults: [restart],
-            journal: resumed,
-            settleMs: 0,
-            order: ["a"],
-            drivers: { a: driver },
-        }).run();
-        expect(exit).toBe("expected");
+        await expect(
+            new Scheduler({
+                events: fixtureEvents(1),
+                faults: [restart],
+                journal: resumed,
+                settleMs: 0,
+                order: ["a"],
+                drivers: { a: driver },
+            }).run(),
+        ).rejects.toThrow(HarnessFailure);
+        expect(exit).toBeInstanceOf(HarnessFailure);
+        const kinds = resumed.entries.map((e) => e.kind);
+        expect(kinds.indexOf("ItemState")).toBeLessThan(kinds.lastIndexOf("ItemState"));
+        expect(resumed.entries.find((e) => e.kind === "ItemState")).toMatchObject({
+            fault: "r",
+            state: "failed(interrupted)",
+        });
     });
 
     test("a journal with EndRun whose arm has orphan markers and no events is refused", async () => {

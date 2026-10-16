@@ -285,7 +285,8 @@ export class Gateway {
     /** The owning scope and scenario time, read when a request's first bytes arrive. */
     private received(): Request["owner"] {
         try {
-            return { scope: this.options.scope(), scenario_ms: this.options.clock.scenarioMs() };
+            const { arm, session, turn } = this.options.scope();
+            return { scope: { arm, session, turn }, scenario_ms: this.options.clock.scenarioMs() };
         } catch (error) {
             return { error };
         }

@@ -120,7 +120,6 @@ export class Scheduler {
             const driver = this.o.drivers[arm] as ArmDriver;
             try {
                 this.session = this.openSession(mine);
-                this.outage = this.openOutage(mine);
                 for (const e of mine) {
                     const restored =
                         e.kind === "FaultFired" || (e.kind === "ItemState" && e.state === "missed");
@@ -133,9 +132,9 @@ export class Scheduler {
                         await this.untilFatal(driver.reset());
                         this.log({ kind: "StartArm" });
                     }
-                    driver.bind(this.handle(++this.generation, driver));
                     this.o.proxy?.reset();
                     const answered = this.resume(mine);
+                    driver.bind(this.handle(++this.generation, driver));
                     if (answered.length > 0) {
                         await this.untilFatal(Bun.sleep(this.o.settleMs ?? 1_000));
                     }
@@ -211,6 +210,7 @@ export class Scheduler {
         let jobs = new Map<unknown, number>();
         let done = 0;
         let outage: string | null = null;
+        let clockMs = 0;
         const scheduled = this.o.faults.filter((f) => f.trigger.kind !== "first_summarizer_call");
         entries.forEach((e, i) => {
             if (e.kind === "StartRun" || e.kind === "ResumeRun" || e.kind === "EndRun") {
@@ -240,6 +240,7 @@ export class Scheduler {
                 if (e.arm !== this.o.order[next]) {
                     throw fail(`StartArm for ${e.arm} out of arm order`, e);
                 }
+                if (e.scenario_ms !== 0) throw fail(`StartArm for ${e.arm} starts past zero`, e);
                 open = e.arm;
                 next++;
                 begun = new Set();
@@ -252,11 +253,14 @@ export class Scheduler {
                 jobs = new Map();
                 done = 0;
                 outage = null;
+                clockMs = 0;
                 return;
             }
             if (open === null || e.arm !== open) {
                 throw fail(`${e.kind} for arm ${e.arm} outside its arm`, e);
             }
+            const before = clockMs;
+            clockMs = Math.max(clockMs, e.scenario_ms);
             const due = events[done];
             const cursorOf = (fault: unknown) => {
                 const f = this.o.faults.find((x) => x.id === fault);
@@ -278,6 +282,17 @@ export class Scheduler {
                     const pending = [...jumped].find((f) => !fired.has(f));
                     if (pending !== undefined) {
                         throw fail(`arm ${open} has EndArm with sleep ${pending} unfired`, e);
+                    }
+                    for (const id of fired) {
+                        const f = this.o.faults.find((x) => x.id === id) as FaultEpisode;
+                        const terminal = observed.has(id) || marked.has(id);
+                        if (
+                            f.seam.layer !== PROXY_LAYER &&
+                            f.type !== "laptop_sleep" &&
+                            !terminal
+                        ) {
+                            throw fail(`arm ${open} has EndArm with fault ${id} unresolved`, e);
+                        }
                     }
                     open = null;
                     return;
@@ -362,6 +377,13 @@ export class Scheduler {
                     return;
                 }
                 case "AdvanceClock": {
+                    if (e.fault !== undefined) {
+                        const { f, range } = cursorOf(e.fault);
+                        if (f.type !== "laptop_sleep" || done !== range[0] || fired.has(f.id)) {
+                            throw fail(`AdvanceClock for ${f.id} is away from its sleep`, e);
+                        }
+                        if (jumped.has(f.id)) throw fail(`AdvanceClock for ${f.id} repeats`, e);
+                    }
                     const inFlight = [...begun].find((t) => !ended.has(t));
                     const working = [...jobs].find(([, n]) => n > 0);
                     if (inFlight !== undefined || working !== undefined) {
@@ -373,14 +395,9 @@ export class Scheduler {
                     if (typeof e.from_ms !== "number" || e.from_ms >= e.scenario_ms) {
                         throw fail("AdvanceClock jumps nowhere", e);
                     }
-                    if (e.fault !== undefined) {
-                        const { f, range } = cursorOf(e.fault);
-                        if (f.type !== "laptop_sleep" || done !== range[0] || fired.has(f.id)) {
-                            throw fail(`AdvanceClock for ${f.id} is away from its sleep`, e);
-                        }
-                        if (jumped.has(f.id)) throw fail(`AdvanceClock for ${f.id} repeats`, e);
-                        jumped.add(f.id);
-                    } else if (e.next_event !== undefined && e.next_event !== due.id) {
+                    if (e.from_ms < before) throw fail("AdvanceClock starts behind the clock", e);
+                    if (e.fault !== undefined) jumped.add(e.fault);
+                    else if (e.next_event !== undefined && e.next_event !== due.id) {
                         throw fail("AdvanceClock names an event other than the one due", e);
                     }
                     outage = null;
@@ -488,31 +505,6 @@ export class Scheduler {
     }
 
     /**
-     * Replays the arm's entries to find an outage window still open when the journal stopped:
-     * an outage fault's `FaultFired` opens it, and the daemon exit it admits, its evidence or
-     * interruption record, or the next scheduled step closes it.
-     */
-    private openOutage(mine: Entry[]): string | null {
-        let outage: string | null = null;
-        for (const e of mine) {
-            if (e.kind === "FaultFired" && typeof e.fault === "string") {
-                const type = this.o.faults.find((f) => f.id === e.fault)?.type ?? "";
-                if (OUTAGE.has(type)) outage = e.fault;
-            } else if (outage !== null) {
-                const closes =
-                    (e.kind === "FaultObserved" && e.fault === outage) ||
-                    (e.kind === "ItemState" &&
-                        (e.daemon_exit !== undefined || e.fault === outage)) ||
-                    e.kind === "AdvanceClock" ||
-                    e.kind === "BeginTurn" ||
-                    e.kind === "Event";
-                if (closes) outage = null;
-            }
-        }
-        return outage;
-    }
-
-    /**
      * The session the journal left open: the one of the last delivered or begun event, unless
      * its `session_end` already has an `Event`.
      */
@@ -598,7 +590,6 @@ export class Scheduler {
             if (f.seam.layer !== PROXY_LAYER) {
                 if (!observed.has(f.id) && !marked.has(f.id) && f.type !== "laptop_sleep") {
                     this.log({ kind: "ItemState", fault: f.id, state: "failed(interrupted)" });
-                    if (this.outage === f.id) this.outage = null;
                 }
                 continue;
             }

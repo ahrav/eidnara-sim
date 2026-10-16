@@ -12,11 +12,12 @@ import {
     readlinkSync,
     renameSync,
     rmSync,
+    statSync,
     writeFileSync,
     writeSync,
 } from "node:fs";
 import { hostname } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 
 export type EntryKind =
     | "StartRun"
@@ -230,6 +231,32 @@ export function pidNamespace(): string | undefined {
     }
 }
 
+/**
+ * A journal is read whole before it is replayed, so its size is bounded ahead of the read: a
+ * run of the largest tier journals a few thousand entries, each well under a kilobyte apart
+ * from fault evidence, and this limit leaves two orders of magnitude of room.
+ */
+export const MAX_JOURNAL_BYTES = 256 * 1024 * 1024;
+
+/** The device and inode of a run directory, fixed when its lease is taken. */
+export interface DirIdentity {
+    dev: number;
+    ino: number;
+}
+
+/** The identity of the directory `dir` resolves to now. */
+export function directoryIdentity(dir: string): DirIdentity {
+    const st = statSync(dir);
+    if (!st.isDirectory()) throw new Error(`${dir} is not a directory`);
+    return { dev: st.dev, ino: st.ino };
+}
+
+/** The directory the open descriptor's file lives in, read back from the kernel. */
+function parentOf(fd: number): DirIdentity {
+    const real = readlinkSync(`/proc/self/fd/${fd}`);
+    return directoryIdentity(dirname(real));
+}
+
 const LEASE = /^lease\.(0|[1-9]\d*)\.json$/;
 const LEASE_LIKE = /^lease\..*\.json$/;
 
@@ -313,6 +340,10 @@ export function readJournal(source: string | number): Entry[] & { bytes?: number
     entries.bytes = 0;
     if (typeof source === "string" && !existsSync(source)) return entries;
     const path = typeof source === "string" ? source : `fd ${source}`;
+    const size = (typeof source === "string" ? statSync(source) : fstatSync(source)).size;
+    if (size > MAX_JOURNAL_BYTES) {
+        throw new Error(`journal ${path} is ${size} bytes, over the ${MAX_JOURNAL_BYTES} limit`);
+    }
     const last = new Map<string | null, number>();
     const buf = readFileSync(source);
     const utf8 = new TextDecoder("utf-8", { fatal: true });
@@ -352,7 +383,16 @@ export class Journal {
     /** Bytes of complete lines on disk; a failed append truncates back to it. */
     private length = 0;
 
-    constructor(readonly path: string) {
+    /**
+     * Opens the journal at `path`, and checks that the file the kernel opened lives in the
+     * directory `within`, which the caller fixed when it took the run directory's lease, so a
+     * directory symlink swapped underneath the path cannot route the journal elsewhere. With
+     * `within` omitted, the directory is the one `path` names as the constructor starts.
+     */
+    constructor(
+        readonly path: string,
+        within: DirIdentity = directoryIdentity(dirname(resolve(path))),
+    ) {
         const { O_APPEND, O_CREAT, O_NOFOLLOW, O_RDWR } = constants;
         this.fd = openSync(path, O_RDWR | O_APPEND | O_CREAT | O_NOFOLLOW, 0o644);
         let read: Entry[] & { bytes?: number };
@@ -361,6 +401,10 @@ export class Journal {
             if (!st.isFile()) throw new Error(`journal ${path} is not a regular file`);
             if (st.nlink !== 1) throw new Error(`journal ${path} has ${st.nlink} links`);
             if (st.uid !== process.getuid?.()) throw new Error(`journal ${path} has another owner`);
+            const parent = parentOf(this.fd);
+            if (parent.dev !== within.dev || parent.ino !== within.ino) {
+                throw new Error(`journal ${basename(path)} opened outside its run directory`);
+            }
             read = readJournal(this.fd);
             ftruncateSync(this.fd, read.bytes ?? 0);
         } catch (caught) {
