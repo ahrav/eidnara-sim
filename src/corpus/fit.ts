@@ -37,6 +37,15 @@ const TOOL_CATEGORY = new Map(
 );
 export const CATEGORY_NAMES: readonly string[] = [...Object.keys(CATEGORIES), "other"].sort();
 
+export const KINDS: Record<keyof typeof TABLES, CdfTable["kind"]> = {
+    requests_per_session: "discrete",
+    tool_steps_per_request: "discrete",
+    append_tokens_per_step: "continuous",
+    idle_within_session_s: "continuous",
+    idle_between_sessions_s: "continuous",
+    tool_output_chars: "continuous",
+};
+
 export const TABLES = {
     requests_per_session: "rounds",
     tool_steps_per_request: "rounds+timing_events",
@@ -171,16 +180,16 @@ export async function fitTraceLab(dataset: Dataset): Promise<TraceLabFit> {
     const chars = toolRows.flatMap((t) =>
         t.result_chars === null ? [] : [Number(t.result_chars)],
     );
-    const specs: [keyof typeof DEFINITIONS, string, number[], CdfTable["kind"]][] = [
-        ["requests_per_session", "requests", [...requests.values()], "discrete"],
-        ["tool_steps_per_request", "steps", steps, "discrete"],
-        ["append_tokens_per_step", "tokens", append, "continuous"],
-        ["idle_within_session_s", "seconds", idle, "continuous"],
-        ["idle_between_sessions_s", "seconds", between, "continuous"],
-        ["tool_output_chars", "chars", chars, "continuous"],
+    const specs: [keyof typeof DEFINITIONS, string, number[]][] = [
+        ["requests_per_session", "requests", [...requests.values()]],
+        ["tool_steps_per_request", "steps", steps],
+        ["append_tokens_per_step", "tokens", append],
+        ["idle_within_session_s", "seconds", idle],
+        ["idle_between_sessions_s", "seconds", between],
+        ["tool_output_chars", "chars", chars],
     ];
-    const quantities = specs.map(([name, unit, values, kind]) => {
-        const cdf = fitCdf(values, kind);
+    const quantities = specs.map(([name, unit, values]) => {
+        const cdf = fitCdf(values, KINDS[name]);
         const source = `${origin}${TABLES[name]}`;
         return [name, { definition: DEFINITIONS[name], unit, source, n: values.length, cdf }];
     });

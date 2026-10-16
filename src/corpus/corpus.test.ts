@@ -11,6 +11,7 @@ import {
     loadCited,
     loadDistributions,
     table,
+    waived,
 } from "./distributions";
 import { type SampledSession, sampleSession } from "./sampler";
 import { CORPUS_DIR } from "./sources";
@@ -87,7 +88,7 @@ describe("committed corpus", () => {
     });
 
     test("only append p90 carries a recorded deviation", () => {
-        const deviations = cited.checks.filter((c) => c.deviation !== undefined);
+        const deviations = cited.checks.filter(waived);
         expect(deviations.map((c) => [c.quantity, c.q])).toEqual([["append_tokens_per_step", 0.9]]);
     });
 
@@ -228,5 +229,11 @@ describe("failedChecks", () => {
     });
     test("an in-band check that still carries a deviation fails", () => {
         expect(failedChecks([{ ...base, within: true, deviation: "stale" }])).toHaveLength(1);
+    });
+    test("a blank or non-string deviation waives nothing", () => {
+        for (const deviation of ["", "  ", null, 0] as unknown[]) {
+            const check = { ...base, within: false, deviation } as CheckResult;
+            expect(failedChecks([check])).toHaveLength(1);
+        }
     });
 });

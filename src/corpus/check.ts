@@ -11,13 +11,13 @@ import {
     table,
 } from "./distributions";
 import { ERROR_CODE_FIELDS, entryProblems, parseJsonl, SAMPLE_FIELDS } from "./entries";
-import { CATEGORY_NAMES, QUANTITIES, TABLES } from "./fit";
+import { CATEGORY_NAMES, KINDS, QUANTITIES, TABLES } from "./fit";
 import { loadRepos, REPOS_DIR } from "./repos";
 import { CORPUS_DIR, loadSources, parseJson } from "./sources";
 
 const SAMPLES_PER_KIND = 150;
 const ERROR_CODES = 200;
-const KINDS = ["stack_trace", "test_run", "grep", "file_read"];
+const SAMPLE_KINDS = ["stack_trace", "test_run", "grep", "file_read"];
 const SHA = /^[0-9a-f]{40}$/;
 const REPO_LICENSES = new Set(["MIT", "Apache-2.0"]);
 const OUTPUTS = [
@@ -25,7 +25,7 @@ const OUTPUTS = [
     "tool-outputs/error-codes.jsonl",
     "tool-outputs/samples.jsonl",
 ];
-const CDF_KINDS = new Set(["discrete", "continuous"]);
+const BUILD_INPUTS = ["tracelab", "openhands"];
 const CITED_CHECKS = [
     "append_tokens_per_step@0.5",
     "append_tokens_per_step@0.9",
@@ -47,12 +47,20 @@ export function checkCorpus(): CorpusReport {
     const problems: string[] = [];
     const need = (ok: boolean, problem: string) => ok || problems.push(problem);
     const read = (path: string) => readFileSync(join(CORPUS_DIR, path), "utf8");
-    const manifest = parseJson(read("manifest.json"), "manifest.json");
+    const manifest = parseJson<{
+        schema?: string;
+        files: Record<string, string>;
+        datasets: unknown;
+    }>(read("manifest.json"), "manifest.json");
     need(manifest.schema === "sim-corpus-manifest/v1", `manifest: schema ${manifest.schema}`);
-    const files = manifest.files as Record<string, string>;
+    const files = manifest.files;
     const listed = Object.keys(files).sort().join(",");
     need(listed === OUTPUTS.join(","), `manifest: files ${listed}, need ${OUTPUTS.join(",")}`);
     const sources = loadSources();
+    for (const id of BUILD_INPUTS) {
+        const dataset = sources.find((d) => d.id === id);
+        need(dataset?.access === "public", `sources.json: build input ${id} must be public`);
+    }
     const configured = sources.map((d) => ({ id: d.id, revision: d.revision, access: d.access }));
     need(
         JSON.stringify(manifest.datasets) === JSON.stringify(configured),
@@ -78,13 +86,18 @@ export function checkCorpus(): CorpusReport {
         byKind.set(kind, (byKind.get(kind) ?? 0) + 1);
     }
     need(
-        [...byKind.keys()].every((k) => KINDS.includes(k)),
+        [...byKind.keys()].every((k) => SAMPLE_KINDS.includes(k)),
         `samples: kinds ${[...byKind.keys()]}`,
     );
-    for (const kind of KINDS) {
+    for (const kind of SAMPLE_KINDS) {
         const n = byKind.get(kind) ?? 0;
         need(n === SAMPLES_PER_KIND, `samples: ${kind} has ${n}, need ${SAMPLES_PER_KIND}`);
     }
+    const perTrajectory = samples.map((s) => {
+        const e = s as { kind?: string; source_id?: string };
+        return `${e.kind} ${e.source_id?.replace(/#\d+$/, "")}`;
+    });
+    need(new Set(perTrajectory).size === samples.length, "samples: a trajectory repeats a kind");
     for (const [label, entries] of [
         ["samples", samples],
         ["error_codes", codes],
@@ -115,7 +128,8 @@ export function checkCorpus(): CorpusReport {
         const table = TABLES[name as keyof typeof TABLES];
         need(q.source === `${origin}${table}`, `${name}: source ${q.source}`);
         need(q.n > 0, `${name}: n missing`);
-        need(CDF_KINDS.has(q.cdf.kind), `${name}: cdf kind ${q.cdf.kind}`);
+        const kind = KINDS[name as keyof typeof KINDS];
+        need(q.cdf.kind === kind, `${name}: cdf kind ${q.cdf.kind}, need ${kind}`);
         const floor = name === "tool_steps_per_request" ? 1 : 0;
         need(
             q.cdf.x.every((v) => v >= floor),

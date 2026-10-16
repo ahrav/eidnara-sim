@@ -14,23 +14,30 @@ export interface Dataset {
     files: { path: string; sha256: string }[];
 }
 
-export function parseJson(text: string, file: string): Record<string, unknown> {
+export function parseJson<T>(text: string, file: string): T {
     try {
-        return JSON.parse(text);
+        return JSON.parse(text) as T;
     } catch (error) {
         throw new Error(`${file}: invalid JSON: ${(error as Error).message}`);
     }
 }
 
 export function loadSources(): Dataset[] {
-    const raw = parseJson(readFileSync(join(CORPUS_DIR, "sources.json"), "utf8"), "sources.json");
+    const raw = parseJson<{ schema?: string; datasets: Dataset[] }>(
+        readFileSync(join(CORPUS_DIR, "sources.json"), "utf8"),
+        "sources.json",
+    );
     if (raw.schema !== "sim-corpus-sources/v1") throw new Error("sources.json: unknown schema");
-    const datasets = raw.datasets as Dataset[];
+    const datasets = raw.datasets;
     const ids = datasets.map((d) => d.id);
     if (new Set(ids).size !== ids.length) throw new Error(`sources.json: duplicate id in ${ids}`);
     for (const d of datasets) {
         if (!/^[0-9a-f]{40}$/.test(d.revision)) {
             throw new Error(`sources.json: ${d.id}: revision is not a commit SHA`);
+        }
+        const paths = d.files.map((f) => f.path);
+        if (new Set(paths).size !== paths.length) {
+            throw new Error(`sources.json: ${d.id}: a file path repeats`);
         }
         for (const f of d.files) {
             if (!/^[0-9a-f]{64}$/.test(f.sha256)) {
@@ -88,8 +95,13 @@ export async function fetchDataset(dataset: Dataset, log = console.log): Promise
         }
         rmSync(dest, { force: true });
         const writer = Bun.file(dest).writer();
-        for await (const chunk of response.body) writer.write(chunk);
-        await writer.end();
+        try {
+            for await (const chunk of response.body) writer.write(chunk);
+            await writer.end();
+        } catch (error) {
+            rmSync(dest, { force: true });
+            throw error;
+        }
         const digest = await sha256File(dest);
         if (digest !== file.sha256) {
             rmSync(dest);
