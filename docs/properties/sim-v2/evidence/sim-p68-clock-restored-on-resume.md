@@ -14,8 +14,8 @@ v2 harness before any harness code existed.
 After `ResumeRun`, `scenario_ms` equals the last journaled clock value and
 `busy_set` is empty.
 
-No harness code, test, or run exists yet. The surface lands in M4
-(#1028).
+At the 2026-10-12 proposal no harness code, test, or run existed; the
+surface landed in M4 (#1028).
 
 M4 (#1028) restores each arm's clock from its last journaled `scenario_ms` on
 resume; the resume tests check that the first resumed entry carries that value.

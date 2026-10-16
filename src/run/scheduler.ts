@@ -72,6 +72,9 @@ export class Scheduler {
     async run(): Promise<void> {
         const entries = this.o.journal.entries;
         if (entries.some((e) => e.kind === "EndRun")) return;
+        if (entries.some((e) => e.kind === "ItemState" && e.expected === false)) {
+            throw new HarnessFailure("run failed: the daemon exited outside an outage window");
+        }
         const finished = new Set(entries.filter((e) => e.kind === "EndArm").map((e) => e.arm));
         for (const arm of this.o.order) {
             if (!finished.has(arm) && !this.o.drivers[arm])
@@ -145,7 +148,9 @@ export class Scheduler {
             if (e.kind === "EndJob") open.set(e.job, (open.get(e.job) ?? 0) - 1);
         }
         for (const [job, n] of open) {
-            if (n > 0) this.log({ kind: "EndJob", job, outcome: "failed(interrupted)" });
+            for (let i = 0; i < n; i++) {
+                this.log({ kind: "EndJob", job, outcome: "failed(interrupted)" });
+            }
         }
         const observed = new Set(kinds("FaultObserved").map((e) => e.fault));
         for (const fired of kinds("FaultFired")) {

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import {
     closeSync,
     existsSync,
@@ -45,6 +46,21 @@ interface Lease {
     pid: number;
     host: string;
     started_wall_ms: number;
+    started_ticks?: number;
+}
+
+/**
+ * The kernel's start time of `pid` in clock ticks since boot, field 22 of `/proc/<pid>/stat`,
+ * which with the pid identifies one process incarnation; `null` where `/proc` has no entry.
+ */
+function startTicks(pid: number): number | null {
+    try {
+        const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+        const ticks = Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19]);
+        return Number.isFinite(ticks) ? ticks : null;
+    } catch {
+        return null;
+    }
 }
 
 function alive(pid: number): boolean {
@@ -54,6 +70,12 @@ function alive(pid: number): boolean {
     } catch (caught) {
         return (caught as { code?: string }).code === "EPERM";
     }
+}
+
+/** A holder is alive when its incarnation still runs; a recycled pid is a dead holder. */
+function holderAlive(held: Lease): boolean {
+    const ticks = held.started_ticks === undefined ? null : startTicks(held.pid);
+    return ticks === null ? alive(held.pid) : ticks === held.started_ticks;
 }
 
 function readLease(path: string): Lease | null {
@@ -84,16 +106,21 @@ function leaseNumbers(dir: string): number[] {
  * killed run resumes.
  */
 export function takeLease(dir: string): Lease {
-    const mine: Lease = { pid: process.pid, host: hostname(), started_wall_ms: Date.now() };
+    const mine: Lease = {
+        pid: process.pid,
+        host: hostname(),
+        started_wall_ms: Date.now(),
+        started_ticks: startTicks(process.pid) ?? undefined,
+    };
     for (let attempt = 0; attempt < 3; attempt++) {
         const numbers = leaseNumbers(dir);
         const top = numbers.at(-1);
         const held = top === undefined ? null : readLease(join(dir, `lease.${top}.json`));
-        if (held && (held.host !== mine.host || alive(held.pid))) {
+        if (held && (held.host !== mine.host || holderAlive(held))) {
             throw new Error(`run directory ${dir} is leased by pid ${held.pid} on ${held.host}`);
         }
-        const staged = join(dir, `lease.${process.pid}.tmp`);
-        writeFileSync(staged, JSON.stringify(mine));
+        const staged = join(dir, `lease.${randomUUID()}.tmp`);
+        writeFileSync(staged, JSON.stringify(mine), { flag: "wx" });
         try {
             linkSync(staged, join(dir, `lease.${(top ?? -1) + 1}.json`));
         } catch {

@@ -7,10 +7,12 @@ both.
 
 Leases are files `lease.<n>.json`, and the highest number names the holder.
 `takeLease(dir)` reads the highest lease: one held by a live process, or by any
-process on another host, refuses the call. A lease whose process on this host
-has exited, or that a kill left unreadable, is taken over by writing a temporary
-file with the process id, host, and start time and linking it to
-`lease.<n+1>.json`. Exactly one of several racing resumers can create that
+process on another host, refuses the call. The holder is identified by pid and
+by its kernel start time (`/proc/<pid>/stat`), so a pid that a later process
+reuses still reads as a dead holder. A lease whose process on this host has
+exited, or that a kill left unreadable, is taken over by writing a uniquely
+named temporary file with the process id, host, start time, and start ticks
+and linking it to `lease.<n+1>.json`. Exactly one of several racing resumers can create that
 name; the others read the winner's live lease on their next attempt and are
 refused. The winner removes the lower-numbered files. `releaseLease` removes
 the calling process's own lease at the end of a run.
@@ -87,7 +89,9 @@ is journaled as expected; outside one, it throws `HarnessFailure`.
 ## Resume
 
 A restarted harness opens the same journal. A journal with `EndRun` is
-complete and the run returns at once. Otherwise the harness checks that every
+complete and the run returns at once; one holding an `ItemState` for a daemon
+exit outside an outage window is a failed run and is refused with
+`HarnessFailure`. Otherwise the harness checks that every
 unfinished arm has a driver, refuses an arm order or scenario hash different
 from the ones `StartRun` recorded, journals `ResumeRun`, and, for each arm
 without `EndArm`:

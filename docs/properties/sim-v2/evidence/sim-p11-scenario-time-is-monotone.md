@@ -14,8 +14,8 @@ v2 harness before any harness code existed.
 Within each arm, journal entries in sequence order have non-decreasing
 `scenario_ms`.
 
-No harness code, test, or run exists yet. The surface lands in M4
-(#1028).
+At the 2026-10-12 proposal no harness code, test, or run existed; the
+surface landed in M4 (#1028).
 
 M4 (#1028) refuses a journal entry whose `scenario_ms` is below the same arm's
 previous entry. Scenario time is monotone per arm, because each arm runs its

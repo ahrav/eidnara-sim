@@ -14,8 +14,8 @@ v2 harness before any harness code existed.
 A run directory holds one exclusive claim, and a second `StartRun` or
 `ResumeRun` on the same directory is refused before any write.
 
-No harness code, test, or run exists yet. The surface lands in M4
-(#1028).
+At the 2026-10-12 proposal no harness code, test, or run existed; the
+surface landed in M4 (#1028).
 
 M4 (#1028) links a numbered lease file into the run directory before opening
 the journal; a takeover links the next number, which exactly one racing

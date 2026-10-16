@@ -14,8 +14,8 @@ v2 harness before any harness code existed.
 Entries have strictly increasing `seq`, no entry is rewritten, and a partial
 trailing entry is detected on load.
 
-No harness code, test, or run exists yet. The surface lands in M4
-(#1028).
+At the 2026-10-12 proposal no harness code, test, or run existed; the
+surface landed in M4 (#1028).
 
 M4 (#1028) appends journal entries with consecutive `seq`, refuses a journal
 whose line is corrupt or carries another `seq`, and truncates only a last line

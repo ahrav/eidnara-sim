@@ -175,6 +175,29 @@ describe("Journal and lease", () => {
         expect(() => new Journal(path)).toThrow(/line 2 .*seq/);
     });
 
+    test("a dead holder whose pid a live process now carries is taken over", () => {
+        const d = dir();
+        const other = Bun.spawn(["sleep", "30"]);
+        try {
+            const mine = takeLease(d);
+            expect(typeof mine.started_ticks).toBe("number");
+            releaseLease(d);
+            writeFileSync(
+                join(d, "lease.0.json"),
+                JSON.stringify({
+                    pid: other.pid,
+                    host: hostname(),
+                    started_wall_ms: 0,
+                    started_ticks: (mine.started_ticks as number) - 1,
+                }),
+            );
+            expect(takeLease(d).pid).toBe(process.pid);
+            releaseLease(d);
+        } finally {
+            other.kill();
+        }
+    });
+
     test("releaseLease leaves a lease held by the same pid on another host", () => {
         const d = dir();
         writeFileSync(
@@ -246,7 +269,11 @@ describe("Scheduler", () => {
             "eidnara",
             "host",
         ]);
-        for (const a of j.entries.filter((e) => e.kind === "AdvanceClock")) {
+        const jumps = j.entries.filter((e) => e.kind === "AdvanceClock");
+        expect(jumps.map((e) => [e.arm, e.scenario_ms])).toEqual(
+            ["eidnara", "host"].flatMap((arm) => [60_000, 120_000, 180_000].map((t) => [arm, t])),
+        );
+        for (const a of jumps) {
             const next = events.find((e) => e.id === a.next_event);
             expect(a.scenario_ms).toBe(next?.scenario_ms ?? -1);
             const later = events.filter((e) => e.scenario_ms > (a.from_ms as number));
@@ -886,6 +913,37 @@ describe("resume of fired faults", () => {
         expect(count("BeginTurn", "event", "e-000002")).toBe(1);
     });
 
+    test("a journal that recorded an unexpected daemon exit is refused on resume", async () => {
+        const path = join(dir(), "j.jsonl");
+        const j = new Journal(path);
+        const start = { order: ["a"], scenario: scenarioId(fixtureEvents(2), []) };
+        j.append({ kind: "StartRun", arm: null, scenario_ms: 0, ...start });
+        j.append({ kind: "StartArm", arm: "a", scenario_ms: 0 });
+        j.append({ kind: "Event", arm: "a", scenario_ms: 0, event: "e-000000" });
+        j.append({ kind: "BeginTurn", arm: "a", scenario_ms: 0, event: "e-000001" });
+        j.append({
+            kind: "ItemState",
+            arm: "a",
+            scenario_ms: 5,
+            daemon_exit: { signal: "SIGKILL" },
+            expected: false,
+        });
+        j.close();
+        const resumed = new Journal(path);
+        const n = resumed.entries.length;
+        await expect(
+            new Scheduler({
+                events: fixtureEvents(2),
+                faults: [],
+                journal: resumed,
+                settleMs: 0,
+                order: ["a"],
+                drivers: { a: fakeDriver([]) },
+            }).run(),
+        ).rejects.toThrow(HarnessFailure);
+        expect(resumed.entries).toHaveLength(n);
+    });
+
     test("a background job in flight at the kill is closed on resume before the clock moves, even when its id was used before", async () => {
         const path = join(dir(), "j.jsonl");
         const j = new Journal(path);
@@ -897,6 +955,7 @@ describe("resume of fired faults", () => {
         j.append({ kind: "EndJob", arm: "a", scenario_ms: 0, job: "fold-1" });
         j.append({ kind: "BeginTurn", arm: "a", scenario_ms: 0, event: "e-000001" });
         j.append({ kind: "EndTurn", arm: "a", scenario_ms: 40, event: "e-000001", outcome: "ok" });
+        j.append({ kind: "RegisterJob", arm: "a", scenario_ms: 40, job: "fold-1" });
         j.append({ kind: "RegisterJob", arm: "a", scenario_ms: 40, job: "fold-1" });
         j.close();
         const resumed = new Journal(path);
@@ -910,8 +969,9 @@ describe("resume of fired faults", () => {
         }).run();
         invariants(resumed.entries);
         const ends = resumed.entries.filter((e) => e.kind === "EndJob" && e.job === "fold-1");
-        expect(ends).toHaveLength(2);
+        expect(ends).toHaveLength(3);
         expect(ends[1]).toMatchObject({ scenario_ms: 40, outcome: "failed(interrupted)" });
+        expect(ends[2]).toMatchObject({ scenario_ms: 40, outcome: "failed(interrupted)" });
         const kinds = resumed.entries.map((e) => e.kind);
         expect(kinds.lastIndexOf("EndJob")).toBeLessThan(kinds.indexOf("AdvanceClock"));
     });
