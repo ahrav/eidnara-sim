@@ -5,6 +5,7 @@ import {
     lstatSync,
     mkdirSync,
     readFileSync,
+    readlinkSync,
     realpathSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -59,6 +60,8 @@ export interface Manifest {
     eidnara_worktree: string;
     /** Commit and uncommitted-content digest of each corpus checkout the scenario's projects use. */
     corpus: Record<string, { commit: string; worktree: string }>;
+    /** The Bedrock region and profile name the proxy forwards to; a resume must present the same. */
+    bedrock: { region: string; aws_profile: string };
     /** The eidnara-sim revision that started the run; a resume must run the same one. */
     sim_commit: string;
     /** Digest of the eidnara-sim working tree's uncommitted content at the start (`treeIdentity`). */
@@ -191,13 +194,15 @@ export function treeIdentity(dir: string): { commit: string; worktree: string } 
         hash.update(`\0${file}\0`);
         const stat = lstatSync(join(dir, file), { throwIfNoEntry: false });
         if (stat?.isFile()) hash.update(readFileSync(join(dir, file)));
+        else if (stat?.isSymbolicLink()) hash.update(`->${readlinkSync(join(dir, file))}`);
+        else if (stat) hash.update(`?${stat.mode}`);
     }
     return { commit: gitHead(dir), worktree: hash.digest("hex") };
 }
 
 const PROJECT_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
-/** Every project id is a plain path segment, and every event's project is a declared id. */
+/** Project ids are plain path segments, event ids are unique, and event projects are declared. */
 export function requireDeclaredProjects(scenario: Scenario): void {
     const ids = new Set<string>();
     for (const p of scenario.projects as { id?: unknown }[]) {
@@ -208,7 +213,12 @@ export function requireDeclaredProjects(scenario: Scenario): void {
         }
         ids.add(p.id);
     }
-    for (const e of scenario.events as { id: string; project?: unknown }[]) {
+    const seen = new Set<string>();
+    for (const e of scenario.events as { id: unknown; project?: unknown }[]) {
+        if (typeof e.id !== "string" || seen.has(e.id)) {
+            throw new HarnessFailure(`event id ${JSON.stringify(e.id)} is missing or repeated`);
+        }
+        seen.add(e.id);
         if (e.project !== undefined && (typeof e.project !== "string" || !ids.has(e.project))) {
             throw new HarnessFailure(
                 `event ${e.id} names undeclared project ${JSON.stringify(e.project)}`,
@@ -276,6 +286,8 @@ function episodeProblems(value: unknown): string[] {
     const trigger = e.trigger as Record<string, unknown> | null;
     if (typeof trigger !== "object" || trigger === null || typeof trigger.kind !== "string") {
         problems.push("trigger missing");
+    } else if (e.type === "laptop_sleep" && trigger.kind !== "session_start") {
+        problems.push("laptop_sleep fires at a session_start trigger only");
     }
     const params = e.params as Record<string, unknown> | null;
     if (typeof params !== "object" || params === null || Array.isArray(params)) {
@@ -400,6 +412,7 @@ export async function loadManifest(
         ...simIdentity(),
         binaries: binaryDigests(o.config),
         corpus: corpusIdentity(scenario.projects.map((p) => p.id)),
+        bedrock: { region: o.config.bedrock.region, aws_profile: o.config.bedrock.aws_profile },
     };
     if (existsSync(path)) {
         const manifest = readJsonFile<Manifest>(path);
@@ -436,9 +449,13 @@ export async function loadManifest(
             const names = changed.map(([k]) => k).join(", ");
             throw new HarnessFailure(`inputs changed since the run started: ${names}`);
         }
-        const intercepted = (p: Preflight) => p.time_injection.map((t) => [t.name, t.intercepted]);
+        const intercepted = (p: Preflight) =>
+            p.time_injection.map((t) => [t.name, t.path, t.intercepted, t.wall_clock_only]);
         if (!sameJson(intercepted(manifest.preflight), intercepted(checks))) {
             throw new HarnessFailure("time interception changed since the run started");
+        }
+        if (!sameJson(manifest.preflight.toolchain, checks.toolchain)) {
+            throw new HarnessFailure("the toolchain changed since the run started");
         }
         const hostRow = (p: Preflight) => p.hosts.find((h) => h.host === o.host);
         if (!sameJson(hostRow(manifest.preflight), hostRow(checks))) {
@@ -562,7 +579,12 @@ async function runArms(
                 samplerFailure ??= caught;
                 stop.reason ??= `sampler failed: ${(caught as Error).message}`;
             } finally {
-                scheduler.jobEnd(hold);
+                try {
+                    scheduler.jobEnd(hold);
+                } catch (caught) {
+                    samplerFailure ??= caught;
+                    stop.reason ??= `post-turn hold failed: ${(caught as Error).message}`;
+                }
             }
         }, POST_TURN_SAMPLE_MS);
     };
@@ -589,7 +611,9 @@ async function runArms(
         hosts: checks.hosts,
     });
     const scenario = { ...compiled, faults: manifest.fault_override ?? compiled.faults };
-    const events = scenario.events.slice(0, manifest.events) as unknown as ScenarioEvent[];
+    const events: ScenarioEvent[] = scenario.events
+        .slice(0, manifest.events)
+        .map((e) => ({ ...e, id: String(e.id), session: String(e.session) }) as ScenarioEvent);
     const hostRow = manifest.preflight.hosts.find((h) => h.host === o.host);
     if (!hostRow) throw new Error(`preflight lists no ${o.host} host`);
 
@@ -616,6 +640,7 @@ async function runArms(
         proxy: injector,
         idleLimitMs: prereg.liveness_bounds.job_deadline_ms,
         onClock: (arm, ms) => writeOffset(offsetFile(arm), manifest.base_wall_ms, ms),
+        stopped: () => stop.reason,
         verify: (point) => {
             handlersFailed();
             if (samplerFailure !== null) throw samplerFailure;

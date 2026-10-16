@@ -20,12 +20,12 @@ unless the pinned OpenCode release's `node_modules/.bin` is on `PATH`.
 scenario's fault schedule, `--context-limit` sets the model window the host
 sees (200,000 by default), and `--models` lists the models `model_switch`
 cycles through (`agent_model` by default). The manifest records every one of
-these values. The run refuses a seed outside the pre-registration, an arm
+these values. An argument outside this list is refused. The run refuses a seed outside the pre-registration, an arm
 outside the seed's order, a non-positive count, a `--faults` file that is not
 an array of complete episodes (known type and strategy, numeric params with
 probabilities in [0, 1], positive integer counts, and non-negative
-durations, a seam, unique ids) valid against the compiled scenario
-(`validateFault`),
+durations, a seam, unique ids, and a `session_start` trigger for
+`laptop_sleep`) valid against the compiled scenario (`validateFault`),
 an `--out` directory that overlaps the Eidnara checkout in either direction
 by resolved path (an output directory above the checkout would derive an arm
 root inside it), a schedule with a fault type the host driver has no
@@ -41,8 +41,9 @@ and `state.json`, plus this process's staging names for the clock offset and
 `state.json`) must be absent or a regular file with a single link (arm and
 clock directories must be directories); a symlink, a hard link, or another
 file type there is refused. Every staged write (scenario, manifest, clock
-offset, `state.json`) creates its staging file exclusively without following
-a link, then renames it into place.
+offset, `state.json`, the sandbox launcher) creates its staging file
+exclusively without following a link, then renames it into place, and the
+toolchain wrappers are created exclusively after removing any planted name.
 
 ## Run sequence
 
@@ -56,13 +57,17 @@ a link, then renames it into place.
    whose start is still pending is stopped rather than orphaned. Later
    signals wait for the teardown. The tier's `tier_wall_budget_ms` starts a
    timer at the same point; once it fires, every driver call refuses the
-   same way, and a call that was in flight when it fired fails on return,
-   so the run stops before `EndArm` and fails.
+   same way, the scheduler's idle wait and next step fail at once, and a
+   call that was in flight when it fired fails on return, so the run stops
+   before `EndArm` and fails. A turn or job in flight is bounded by its own
+   deadline (15 or 20 minutes), so the overrun past the budget is at most
+   that long.
 2. Open the journal, and compile the scenario into `scenario.json` on the
    first invocation. Every invocation recomputes the SHA-256 of the file's
    body and refuses a `scenario.json` whose `scenario_hash` differs, one
    compiled for another tier or seed, one whose project ids are not plain
-   names, or one whose events name an undeclared project.
+   names, one with a repeated event id, or one whose events name an
+   undeclared project.
 3. Run `preflight` (`docs/time.md`). On the first invocation, write
    `manifest.json` with the tier, seed, host, arm order, event count, context
    limit, models, fault override, scenario hash, pre-registration hash,
@@ -70,12 +75,14 @@ a link, then renames it into place.
    working-tree digest (a digest covers tracked edits and untracked
    unignored files), the commit and working-tree digest of every corpus
    checkout the scenario's projects clone from, the SHA-256 of the daemon,
-   OpenCode, and Pi executables, base wall time, and preflight result.
+   OpenCode, and Pi executables, the Bedrock region and profile name, base
+   wall time, and preflight result. The working-tree digest hashes an
+   untracked symlink's target text.
    A later invocation refuses a manifest whose `schema` is not
    `sim-run-manifest/v1`, and refuses when any option it states differs from
    the manifest, when the manifest's arm order names an arm outside the
    tier's pre-registered arms, when any of those digests changed, when an
-   interception result
+   interception result, probed path, or toolchain version
    changed, or when the selected host's version or transcript paths changed,
    and appends its preflight result to `preflight.jsonl`; on resume the
    mechanism checks (fault types, models) run against the manifest's saved
@@ -145,6 +152,7 @@ event times and reports, per arm:
 | `events_inside_sleep` | sleep jumps that pass an unrun scheduled event (SIM-P18) |
 | `repeated_sleeps` | a second sleep jump for the same fault in one arm |
 | `missing_events` | scheduled events an arm never journaled as `Event` although it reached `EndArm` |
+| `out_of_order_events` | `Event` entries unknown to the schedule or breaking its order |
 | `jobs_held_after_turn` | jobs that held the clock while no turn was open, whether registered after the turn or registered inside it and outliving it, once per job at its `RegisterJob` seq (SIM-P13) |
 | `next_event_jumps`, `sleep_jumps` | how many jumps of each kind the check covered |
 
@@ -172,7 +180,9 @@ budget plus five minutes (it is then killed and reported `timed_out`), or
 when a check fails:
 `scheduled` exits 0, `rogue` exits nonzero with the daemon-exit refusal,
 `resume` is killed with 137 while `e-000007` has `BeginTurn` and no
-`EndTurn`, then exits 0 with no turn rebilled, and every finished run ends
+`EndTurn`, then exits 0 with no turn rebilled and exactly one `ItemState
+failed(interrupted)` and one `Event failed(interrupted)`, both for
+`e-000007`, and every finished run ends
 in `EndRun` with contiguous call `seq` values from 0 and no journal
 invariant violation (including a repeated sleep jump). The summary parses
 final journals and call records strictly; a corrupt complete line fails the

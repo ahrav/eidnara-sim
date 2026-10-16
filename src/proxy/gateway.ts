@@ -96,6 +96,7 @@ export interface GatewayOptions {
     injector: FaultInjector;
     rng: Rng;
     clock: { scenarioMs(): number };
+    /** Read when a request's first byte arrives; the call keeps that scope through its upload. */
     scope: () => Scope;
     /**
      * Sees every request as its first byte arrives, before the body is complete. A returned
@@ -190,6 +191,7 @@ export class Gateway {
         const h1 = createHttp1Server((req, res) => {
             const body = new Body();
             const gone = new AbortController();
+            const scope = this.options.scope();
             const release = this.arrive();
             const abandoned = () => {
                 gone.abort();
@@ -215,6 +217,7 @@ export class Gateway {
                             signal: gone.signal,
                         },
                         release,
+                        scope,
                     ),
                     gone,
                 );
@@ -228,6 +231,7 @@ export class Gateway {
         h2.on("stream", (stream, headers) => {
             const body = new Body();
             const gone = new AbortController();
+            const scope = this.options.scope();
             const release = this.arrive();
             const abandoned = () => {
                 gone.abort();
@@ -257,6 +261,7 @@ export class Gateway {
                             signal: gone.signal,
                         },
                         release,
+                        scope,
                     ),
                     gone,
                 );
@@ -300,6 +305,7 @@ export class Gateway {
         body: Body,
         outer: Sink,
         release: () => void,
+        scope: Scope,
     ) {
         let sent = 0;
         const sink: Sink & { sent: () => number } = {
@@ -311,7 +317,7 @@ export class Gateway {
             sent: () => sent,
         };
         const base = {
-            ...this.options.scope(),
+            ...scope,
             started_wall_ms: Date.now(),
             scenario_ms: this.options.clock.scenarioMs(),
             input_tokens: 0,
@@ -347,6 +353,7 @@ export class Gateway {
                     after.ended = end;
                 },
                 release,
+                scope.arm,
             );
         } catch (caught) {
             done = { ...done, error: `${(caught as Error).name}: ${(caught as Error).message}` };
@@ -372,6 +379,7 @@ export class Gateway {
         progress: (d: Done) => void,
         onEnd: (end: () => void) => void,
         release: () => void,
+        arm: string,
     ): Promise<Done> {
         const started = performance.now();
         const raw = received.bytes();
@@ -420,7 +428,7 @@ export class Gateway {
         const ended = this.options.observe?.(event as CallStarted);
         if (typeof ended === "function") onEnd(ended as () => void);
         release();
-        const fault = this.options.injector.take(tag.component, call, this.options.scope().arm);
+        const fault = this.options.injector.take(tag.component, call, arm);
         if (fault) done.fault_ref = fault.id;
         if (fault && fault.type !== "slow_stream") {
             const tool = body.toolConfig?.tools?.[0]?.toolSpec?.name;

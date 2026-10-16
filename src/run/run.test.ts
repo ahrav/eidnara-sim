@@ -143,6 +143,14 @@ describe("run inputs", () => {
         expect(() => requireDeclaredProjects(base)).not.toThrow();
         const traversal = { ...base, projects: [{ id: "../eidnara" }] };
         expect(() => requireDeclaredProjects(traversal as never)).toThrow(/not a plain name/);
+        const repeated = {
+            ...base,
+            events: [
+                { id: "e-000001", kind: "session_start" },
+                { id: "e-000001", kind: "user_turn" },
+            ],
+        };
+        expect(() => requireDeclaredProjects(repeated as never)).toThrow(/is missing or repeated/);
         const undeclared = {
             ...base,
             events: [{ id: "e-000001", kind: "apply_diff", project: "elsewhere" }],
@@ -208,6 +216,12 @@ describe("run inputs", () => {
         expect(added.worktree).not.toBe(clean.worktree);
         writeFileSync(join(repo, "b.txt"), "changed\n");
         expect(treeIdentity(repo).worktree).not.toBe(added.worktree);
+        rmSync(join(repo, "b.txt"));
+        symlinkSync("a.txt", join(repo, "b.txt"));
+        const linked = treeIdentity(repo).worktree;
+        rmSync(join(repo, "b.txt"));
+        symlinkSync("missing", join(repo, "b.txt"));
+        expect(treeIdentity(repo).worktree).not.toBe(linked);
         writeFileSync(join(repo, ".gitignore"), "b.txt\n");
         rmSync(join(repo, "b.txt"));
         run("add", ".gitignore");
@@ -272,6 +286,8 @@ describe("run inputs", () => {
             /params must be finite numbers/,
         );
         expect(() => faultOverride([episode, episode], scenario)).toThrow(/duplicate id f/);
+        const sleepOnTurn = { ...episode, type: "laptop_sleep", seam: SEAMS.laptop_sleep };
+        expect(() => faultOverride([sleepOnTurn], scenario)).toThrow(/session_start trigger only/);
         const ranges = {
             ...episode,
             params: { probability: 2, calls: -1, count: 0, delay_ms: -5 },

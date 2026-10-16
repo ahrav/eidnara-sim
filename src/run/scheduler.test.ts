@@ -1201,6 +1201,38 @@ test("a mid-fold kill observed in the arm's last turn is observed before finish 
     expect(kinds.indexOf("FaultObserved")).toBeLessThan(kinds.indexOf("EndArm"));
 });
 
+test("a stop reason raised while idling for a job ends the wait at once", async () => {
+    const j = new Journal(join(dir(), "j.jsonl"));
+    let scheduler: Scheduler | null = null;
+    const stop = { reason: null as string | null };
+    const driver: ArmDriver = {
+        reset: async () => undefined,
+        event: async (e) => {
+            if (e.kind !== "user_turn") return {};
+            scheduler?.jobStart("stuck");
+            setTimeout(() => {
+                stop.reason = "tier wall budget of 1 ms exhausted";
+            }, 50);
+            return {};
+        },
+        fault: async () => ({}),
+    };
+    scheduler = new Scheduler({
+        events: fixtureEvents(1),
+        faults: [],
+        journal: j,
+        settleMs: 0,
+        jobPollMs: 5,
+        idleLimitMs: 5_000,
+        order: ["a"],
+        drivers: { a: driver },
+        stopped: () => stop.reason,
+    });
+    const started = Date.now();
+    await expect(scheduler.run()).rejects.toThrow(/run stopping: tier wall budget/);
+    expect(Date.now() - started).toBeLessThan(2_000);
+});
+
 test("a job registered during another job's idle wait is measured from its own RegisterJob", async () => {
     const j = new Journal(join(dir(), "j.jsonl"));
     let scheduler: Scheduler | null = null;

@@ -220,6 +220,9 @@ function summarize(dir: string) {
                     interrupted: perArm(arm, "ItemState").filter(
                         (e) => e.state === "failed(interrupted)",
                     ),
+                    interrupted_events: perArm(arm, "Event")
+                        .filter((e) => e.outcome === "failed(interrupted)")
+                        .map((e) => e.event),
                     daemon_exits: perArm(arm, "ItemState").filter(
                         (e) => e.daemon_exit !== undefined,
                     ),
@@ -277,6 +280,7 @@ const invariantsClean = (name: "scheduled" | "rogue" | "resume") => {
         v.events_inside_sleep,
         v.repeated_sleeps,
         v.missing_events,
+        v.out_of_order_events,
     ];
     return s.ended === "EndRun" && s.call_seq_unique && violations.every((x) => x.length === 0);
 };
@@ -352,6 +356,17 @@ if (outcome.resume) {
     check(resume.rebilled.length === 0, "resume: no turn rebilled");
     check(invariantsClean("resume"), "resume: EndRun, unique seq, clean invariants");
     armEvidence("resume", ["eidnara"], RESUME_FAULTS, true);
+    const arm = summary.resume?.arms.eidnara as
+        | { interrupted: { event?: unknown }[]; interrupted_events: unknown[] }
+        | undefined;
+    check(
+        arm?.interrupted.map((e) => e.event).join() === "e-000007",
+        "resume/eidnara: exactly one ItemState failed(interrupted), for e-000007",
+    );
+    check(
+        arm?.interrupted_events.join() === "e-000007",
+        "resume/eidnara: exactly one Event failed(interrupted), for e-000007",
+    );
 }
 if (failures.length > 0) {
     console.error(`witness failed:\n  ${failures.join("\n  ")}`);

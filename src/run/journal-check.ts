@@ -11,6 +11,8 @@ export interface JournalReport {
     repeated_sleeps: number[];
     /** Scheduled events an arm never journaled as `Event` although it reached `EndArm`. */
     missing_events: { arm: string; event: string }[];
+    /** `Event` entries whose id is unknown to the schedule or out of its order, at their seq. */
+    out_of_order_events: { arm: string; event: string; seq: number }[];
     /** Jobs that held the clock with no turn open, at their `RegisterJob` seq (SIM-P13 coverage). */
     jobs_held_after_turn: { job: string; seq: number }[];
 }
@@ -31,8 +33,12 @@ export function checkJournal(entries: Entry[], schedule: Schedule): JournalRepor
         events_inside_sleep: [],
         repeated_sleeps: [],
         missing_events: [],
+        out_of_order_events: [],
         jobs_held_after_turn: [],
     };
+    const order = [...schedule.events.keys()];
+    const position = new Map(order.map((id, i) => [id, i]));
+    const cursor = new Map<string, number>();
     const last = new Map<string, number>();
     const open = new Map<string, Set<string>>();
     const ran = new Map<string, Set<string>>();
@@ -65,7 +71,15 @@ export function checkJournal(entries: Entry[], schedule: Schedule): JournalRepor
             busy.delete(turn);
             holding(arm, busy);
         }
-        if (e.kind === "Event") done.add(String(e.event));
+        if (e.kind === "Event") {
+            const id = String(e.event);
+            done.add(id);
+            const at = position.get(id);
+            const next = cursor.get(arm) ?? 0;
+            if (at === undefined || at < next)
+                report.out_of_order_events.push({ arm, event: id, seq });
+            if (at !== undefined && at >= next) cursor.set(arm, at + 1);
+        }
         if (e.kind === "EndArm") {
             for (const id of schedule.events.keys()) {
                 if (!done.has(id)) report.missing_events.push({ arm, event: id });

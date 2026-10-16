@@ -1,6 +1,7 @@
-import { realpathSync, renameSync, writeFileSync } from "node:fs";
+import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+import { writeAtomic } from "./atomic";
 
 // `--kill-child` sends SIGKILL to namespace PID 1 when the unshare parent dies.
 const UNSHARE_ARGS = [
@@ -82,9 +83,7 @@ exit 0' sh "$@"
 export function writeLauncher(runRoot: string): string {
     const root = realpathSync(runRoot);
     const path = join(root, "sandbox.sh");
-    const staged = `${path}.${process.pid}`;
-    writeFileSync(staged, script(maskedPaths(root)), { mode: 0o755 });
-    renameSync(staged, path);
+    writeAtomic(path, script(maskedPaths(root)), 0o755);
     return path;
 }
 

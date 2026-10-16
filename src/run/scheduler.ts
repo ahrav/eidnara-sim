@@ -57,6 +57,8 @@ export interface SchedulerOptions {
     onClock?: (arm: string, scenarioMs: number) => void;
     /** Runs before `EndArm` and before `EndRun`; a throw leaves the entry unwritten. */
     verify?: (point: "EndArm" | "EndRun") => void | Promise<void>;
+    /** A reason to stop; the idle wait and each step check it and fail with `HarnessFailure`. */
+    stopped?: () => string | null;
 }
 
 const PROXY_LAYER = "proxy-sink";
@@ -244,6 +246,7 @@ export class Scheduler {
         const limitMs = this.o.idleLimitMs ?? Number.POSITIVE_INFINITY;
         const entered = performance.now();
         while ((this.clock?.busyIds().length ?? 0) > 0) {
+            this.checkStop();
             const live = [...this.jobStarted.values()];
             const oldest = live.length > 0 ? Math.min(...live) : entered;
             if (performance.now() > oldest + limitMs) {
@@ -292,9 +295,15 @@ export class Scheduler {
         );
     }
 
+    private checkStop(): void {
+        const reason = this.o.stopped?.();
+        if (reason) throw new HarnessFailure(`run stopping: ${reason}`);
+    }
+
     private async step(driver: ArmDriver, e: ScenarioEvent): Promise<void> {
         await this.pendingKill;
         await this.idle();
+        this.checkStop();
         this.outage = null;
         const clock = this.clock as Clock;
         const sleep = this.sleepBefore(e);

@@ -8,7 +8,14 @@ import { Rng } from "../rng";
 import type { FaultType } from "../scenario/faults";
 import { classify } from "./classify";
 import { encodeEvent } from "./eventstream";
-import { backoffMs, type CallStarted, Gateway, sendWithRetry, type Upstream } from "./gateway";
+import {
+    backoffMs,
+    type CallStarted,
+    Gateway,
+    type Scope,
+    sendWithRetry,
+    type Upstream,
+} from "./gateway";
 import { excludedFromFaultMetrics, FaultInjector, type ProxyFault } from "./inject";
 import { type CallRecord, RecordWriter, recordProblems } from "./records";
 
@@ -606,6 +613,39 @@ describe("call records", () => {
         req.end(body.slice(10));
         await done;
         expect(log).toEqual(["arrived", "observed:history_summarizer", "released", "ended"]);
+    });
+
+    test("a call is attributed to the scope at its first byte, not at the end of its upload", async () => {
+        const scope: Scope = { arm: "a", session: "s-0001", turn: "e-000003" };
+        const records = new RecordWriter(null);
+        const gateway = new Gateway({
+            upstream: scriptedUpstream(),
+            records,
+            injector: new FaultInjector([], new Rng(1), 1_000),
+            rng: new Rng(1),
+            clock: { scenarioMs: () => 0 },
+            scope: () => ({ ...scope }),
+        });
+        await gateway.start();
+        gateways.push(gateway);
+        const url = new URL(`${gateway.urls[0]}/model/m/converse-stream`);
+        const body = JSON.stringify(SUMMARIZER_BODY);
+        const req = request({
+            host: url.hostname,
+            port: url.port,
+            method: "POST",
+            path: url.pathname,
+            headers: { "content-length": String(Buffer.byteLength(body)) },
+        });
+        const done = new Promise<void>((resolve) =>
+            req.on("response", (res) => res.on("data", () => undefined).on("end", resolve)),
+        );
+        req.write(body.slice(0, 10));
+        await Bun.sleep(100);
+        scope.turn = null;
+        req.end(body.slice(10));
+        await done;
+        expect(records.records[0]).toMatchObject({ turn: "e-000003", session: "s-0001" });
     });
 
     test("an upload the client abandons releases its arrival hold", async () => {
