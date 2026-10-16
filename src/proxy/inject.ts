@@ -83,7 +83,11 @@ export class FaultInjector {
             (this.witnesses.get(p.fault) as Witness).host_observed_seq.push(record.seq);
             this.pending.splice(this.pending.indexOf(p), 1);
         }
-        if (record.fault_ref === null) return;
+        if (record.fault_ref === null) {
+            const own = this.pending.findIndex((p) => p.call === call);
+            if (own >= 0) this.pending.splice(own, 1);
+            return;
+        }
         const w = this.witnesses.get(record.fault_ref) as Witness;
         w.injected_seq.push(record.seq);
         if (record.proxy_retries > 0) w.proxy_retried = true;
@@ -113,6 +117,8 @@ export interface FaultOutcome {
     status: number;
     finish_reason: string | null;
     error: string | null;
+    /** Whether the transport accepted the fault's defining effect; a timeout's silence always counts. */
+    applied: boolean;
 }
 
 export const sleep = (ms: number, signal: AbortSignal) =>
@@ -142,7 +148,10 @@ const text = (t: string): Ev => ["contentBlockDelta", { contentBlockIndex: 0, de
 const stop = (reason: string): Ev => ["messageStop", { stopReason: reason }];
 const blockStop: Ev = ["contentBlockStop", { contentBlockIndex: 0 }];
 
-export function wrongToolInput(tool: ToolSpec | undefined): Record<string, unknown> {
+/** A type-violating object for a schema with typed required properties, or a bare string a `type: object` schema rejects. */
+export type WrongToolInput = Record<string, unknown> | string;
+
+export function wrongToolInput(tool: ToolSpec | undefined): WrongToolInput {
     const schema = tool?.inputSchema?.json as
         | { properties?: Record<string, { type?: string }>; required?: string[] }
         | undefined;
@@ -151,7 +160,7 @@ export function wrongToolInput(tool: ToolSpec | undefined): Record<string, unkno
         const declared = schema?.properties?.[name]?.type;
         if (declared) input[name] = declared === "string" ? 0 : "not a value of the declared type";
     }
-    return Object.keys(input).length > 0 ? input : { unexpected_argument: "{not json" };
+    return Object.keys(input).length > 0 ? input : "{not json";
 }
 
 function faultEvents(type: FaultType, tool: string | undefined): [Ev[], string | null] {
@@ -185,23 +194,27 @@ export async function writeFault(
     tool: ToolSpec | undefined,
 ): Promise<FaultOutcome> {
     const error = (code: number, errorType: string): FaultOutcome => {
-        sink.status(code, { "content-type": "application/json", "x-amzn-errortype": errorType });
+        const applied = sink.status(code, {
+            "content-type": "application/json",
+            "x-amzn-errortype": errorType,
+        });
         sink.write(Buffer.from(JSON.stringify({ message: `${errorType} (injected)` })));
         sink.end();
-        return { status: code, finish_reason: null, error: `${errorType} (injected)` };
+        return { status: code, finish_reason: null, error: `${errorType} (injected)`, applied };
     };
     if (type === "provider_429") return error(429, "ThrottlingException");
     if (type === "provider_5xx") return error(503, "ServiceUnavailableException");
     if (type === "provider_timeout") {
         await sleep(params.timeout_ms ?? 120_000, sink.signal);
         sink.destroy();
-        return { status: 0, finish_reason: null, error: "timeout (injected)" };
+        return { status: 0, finish_reason: null, error: "timeout (injected)", applied: true };
     }
     const [events, finish] = faultEvents(type, tool?.name);
     const cut = finish === "stream_cut";
     if (!cut) events.push(["metadata", usage]);
+    let applied: boolean;
     if (streaming) {
-        sink.status(200, EVENTSTREAM);
+        applied = sink.status(200, EVENTSTREAM);
         for (const [t, member] of events) sink.write(encodeEvent(t, member));
     } else {
         const content: unknown[] = events.flatMap(([t, m]) => {
@@ -216,9 +229,14 @@ export async function writeFault(
         }
         const message = { role: "assistant", content };
         const json = JSON.stringify({ output: { message }, stopReason: finish, ...usage });
-        sink.status(200, { "content-type": "application/json" });
+        applied = sink.status(200, { "content-type": "application/json" });
         sink.write(Buffer.from(cut ? json.slice(0, json.length / 2) : json));
     }
     sink.end();
-    return { status: 200, finish_reason: finish, error: cut ? "stream cut (injected)" : null };
+    return {
+        status: 200,
+        finish_reason: finish,
+        error: cut ? "stream cut (injected)" : null,
+        applied,
+    };
 }

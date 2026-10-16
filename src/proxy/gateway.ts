@@ -85,7 +85,7 @@ export async function sendWithRetry<T>(
             const delay = backoffMs(attempt, opts.rng);
             if (Date.now() + delay >= opts.deadlineAt) throw caught;
             await (opts.wait ?? sleep)(delay, opts.signal);
-            if (opts.signal.aborted) throw caught;
+            if (opts.signal.aborted || Date.now() >= opts.deadlineAt) throw caught;
             opts.onRetry(delay);
         }
     }
@@ -352,7 +352,6 @@ export class Gateway {
         progress(done);
         const fault = this.options.injector.take(tag.component, call);
         const rng = new Rng(this.options.rng.nextU32());
-        if (fault && fault.type !== "slow_stream") done.fault_ref = fault.id;
         const firstByte = () => {
             if (done.first_byte_ms != null) return;
             done.first_byte_ms = performance.now() - started;
@@ -366,13 +365,14 @@ export class Gateway {
         };
         if (fault && fault.type !== "slow_stream") {
             const tool = body.toolConfig?.tools?.[0]?.toolSpec;
-            const outcome = await writeFault(
+            const { applied, ...outcome } = await writeFault(
                 fault.type,
                 fault.params,
                 streaming,
                 { ...sink, status: answer },
                 tool,
             );
+            if (applied) done.fault_ref = fault.id;
             return { ...done, ...outcome };
         }
         const usage: Usage = {};

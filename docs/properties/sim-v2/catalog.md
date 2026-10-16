@@ -913,8 +913,9 @@ Open questions: None.
 Type: reachability
 Reachability: explicit-config-only
 Status: active
-Exercised: partial - `src/proxy/gateway.test.ts` triggers each fault type under
-each strategy on both routes; no run constructs it yet
+Exercised: partial - `src/proxy/gateway.test.ts` triggers each of the eight
+provider fault types under each strategy on both routes; the eight
+infrastructure kinds land with the M4 scheduler; no run constructs it yet
 Guarantee: SIM-P34: Each fault kind triggers at least once: 429, 5xx, timeout,
 `finish_reason=length`, silent cut, empty content, schema-wrong tool call, slow
 stream, SIGKILL mid-fold, restart between sessions, ENOSPC, plugin reload, host
@@ -925,9 +926,10 @@ Fault/timing angle: SIGKILL must land inside an in-progress fold.
 Required faults and enabling state: the full fault catalogue scheduled across M,
 L, and XL.
 Confidence: low - [evidence](evidence/sim-p34-each-fault-kind-triggers.md). The
-M3 proxy (#1027) implements it and unit tests cover it; no run has exercised it.
+M3 proxy (#1027) implements the provider-fault half and unit tests cover it; the
+infrastructure half lands in M4; no run has exercised it.
 Existing check: `src/proxy/gateway.test.ts`: the `fault composition at the proxy
-sink` matrix
+sink` matrix (provider kinds only)
 Impact: A fault kind's recovery path is never tested.
 Open questions:
 - OQ-8: see SIM-P31 for the mid-fold SIGKILL evidence shape.

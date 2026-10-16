@@ -1,4 +1,4 @@
-import { appendFileSync, truncateSync } from "node:fs";
+import { appendFileSync, statSync, truncateSync } from "node:fs";
 
 export const COMPONENTS = [
     "agent",
@@ -73,6 +73,14 @@ export function recordProblems(value: Record<string, unknown>): string[] {
     return problems;
 }
 
+function existingBytes(path: string): number {
+    try {
+        return statSync(path).size;
+    } catch {
+        return 0;
+    }
+}
+
 /** `wall_ms` is the write-time Unix timestamp in milliseconds, clamped to the preceding record's value and to the record's own `started_wall_ms`. */
 export class RecordWriter {
     private seq = 0;
@@ -81,7 +89,11 @@ export class RecordWriter {
     private uncertain: Error | null = null;
     readonly records: CallRecord[] = [];
 
-    constructor(private readonly path: string | null) {}
+    constructor(private readonly path: string | null) {
+        if (path && existingBytes(path) > 0) {
+            throw new Error(`journal refused: ${path} already holds records`);
+        }
+    }
 
     write(partial: Omit<CallRecord, "seq" | "wall_ms">): CallRecord {
         if (this.uncertain) {

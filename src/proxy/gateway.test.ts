@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, rmSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { connect } from "node:http2";
 import { connect as tcp } from "node:net";
 import { BedrockRuntimeClient } from "@aws-sdk/client-bedrock-runtime";
@@ -7,7 +7,7 @@ import { decodeMessages } from "../../tests/eventstream-decode";
 import { Rng } from "../rng";
 import type { FaultType } from "../scenario/faults";
 import { classify } from "./classify";
-import { crc32, encodeEvent, encodeMessage } from "./eventstream";
+import { crc32, encodeEvent, encodeMessage, wireJson } from "./eventstream";
 import {
     backoffMs,
     bedrockUpstream,
@@ -17,7 +17,14 @@ import {
     type Upstream,
     wireBase64,
 } from "./gateway";
-import { excludedFromFaultMetrics, FaultInjector, type ProxyFault, wrongToolInput } from "./inject";
+import {
+    excludedFromFaultMetrics,
+    FaultInjector,
+    type ProxyFault,
+    type Sink,
+    writeFault,
+    wrongToolInput,
+} from "./inject";
 import { type CallRecord, RecordWriter, recordProblems } from "./records";
 
 /** A slow_stream fault delays each event by SLOW_DELAY_MS; the host classifies a status-200 answer as slow when any gap is at least SLOW_SEEN_MS. */
@@ -256,10 +263,8 @@ function hostSeesJson(type: FaultType, r: JsonResult): boolean {
         case "empty_content":
             return r.json?.stopReason === "end_turn" && content.length === 0;
         case "schema_wrong_tool_call": {
-            const use = content.find((c) => c.toolUse)?.toolUse as
-                | { input?: Record<string, unknown> }
-                | undefined;
-            return use?.input !== undefined && "unexpected_argument" in use.input;
+            const use = content.find((c) => c.toolUse)?.toolUse as { input?: unknown } | undefined;
+            return typeof use?.input === "string";
         }
         case "slow_stream":
             return r.status === 200 && r.ms >= SLOW_SEEN_MS;
@@ -416,7 +421,9 @@ describe("fault composition at the proxy sink", () => {
             command: 0,
             timeout: "not a value of the declared type",
         });
-        expect(wrongToolInput({ name: "bash" })).toEqual({ unexpected_argument: "{not json" });
+        expect(wrongToolInput({ name: "bash" })).toBe("{not json");
+        const permissive = { type: "object", additionalProperties: true };
+        expect(wrongToolInput({ name: "t", inputSchema: { json: permissive } })).toBe("{not json");
         const tooled = {
             ...AGENT_BODY,
             toolConfig: { tools: [{ toolSpec: { name: "bash", inputSchema: { json: schema } } }] },
@@ -613,6 +620,27 @@ describe("upstream retry", () => {
         expect([sends, retries]).toEqual([1, []]);
     });
 
+    test("a backoff that overran the deadline sends nothing more", async () => {
+        const delay = backoffMs(0, new Rng(5));
+        let sends = 0;
+        const retries: number[] = [];
+        const attempt = sendWithRetry(
+            async () => {
+                sends++;
+                throw Object.assign(new Error("slow down"), { $metadata: { httpStatusCode: 429 } });
+            },
+            {
+                rng: new Rng(5),
+                deadlineAt: Date.now() + delay + 20,
+                signal: new AbortController().signal,
+                onRetry: (d) => retries.push(d),
+                wait: () => Bun.sleep(delay + 60),
+            },
+        );
+        await expect(attempt).rejects.toThrow("slow down");
+        expect([sends, retries]).toEqual([1, []]);
+    }, 10_000);
+
     test("bedrockUpstream sends a wire-format blob string unchanged and a decoded blob back as base64", async () => {
         const client = new BedrockRuntimeClient({
             region: "us-east-1",
@@ -693,6 +721,26 @@ describe("classification", () => {
         expect(encodeMessage({}, new Uint8Array()).toString("hex")).toBe(
             "000000100000000005c248eb7d98c8ff",
         );
+    });
+
+    test("wireJson serializes a Buffer and a Uint8Array as base64", () => {
+        expect(wireJson({ a: Buffer.from([1, 2, 3]), b: new Uint8Array([4]) })).toBe(
+            '{"a":"AQID","b":"BA=="}',
+        );
+    });
+
+    test("a fault answer the transport refused is not applied", async () => {
+        const dead: Sink = {
+            status: () => false,
+            write: () => false,
+            end: () => undefined,
+            destroy: () => undefined,
+            signal: new AbortController().signal,
+        };
+        const live: Sink = { ...dead, status: () => true, write: () => true };
+        expect((await writeFault("provider_429", {}, false, dead, undefined)).applied).toBe(false);
+        expect((await writeFault("provider_429", {}, false, live, undefined)).applied).toBe(true);
+        expect((await writeFault("empty_content", {}, true, dead, undefined)).applied).toBe(false);
     });
 
     test("an agent request whose text mentions <new_messages> stays agent", () => {
@@ -904,6 +952,23 @@ describe("every request yields one record", () => {
         injector.arm("s");
         expect((await hostCallJson(url, AGENT_BODY, 2_000)).status).toBe(400);
         expect(records.records[0]?.fault_ref).toBeNull();
+        let calls = 0;
+        const flaky: Upstream = {
+            async converse(m, b, streaming, signal) {
+                if (calls++ === 0) return bad.converse(m, b, streaming, signal);
+                return scriptedUpstream().converse(m, b, streaming, signal);
+            },
+        };
+        const burst = { ...fault, id: "b", strategy: "burst", params: { count: 3, delay_ms: 10 } };
+        const second = await start(burst as ProxyFault, flaky);
+        second.injector.arm("b");
+        expect((await hostCallJson(second.url, AGENT_BODY, 2_000)).status).toBe(400);
+        expect((await hostCallJson(second.url, AGENT_BODY, 2_000)).status).toBe(200);
+        expect(second.injector.report()[0]).toMatchObject({
+            injected_seq: [1],
+            host_observed_seq: [],
+            status: "untriggered",
+        });
         expect(injector.report()[0]).toMatchObject({ injected_seq: [], status: "untriggered" });
     });
 
@@ -1032,6 +1097,8 @@ describe("every request yields one record", () => {
         expect(() => uncertain.write(partial)).toThrow();
         mkdirSync(dir, { recursive: true });
         expect(() => uncertain.write(partial)).toThrow(/journal refused/);
+        writeFileSync(`${dir}/records.jsonl`, "{}\n");
+        expect(() => new RecordWriter(`${dir}/records.jsonl`)).toThrow(/already holds records/);
         rmSync(dir, { recursive: true, force: true });
     });
 

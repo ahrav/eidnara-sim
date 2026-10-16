@@ -19,7 +19,8 @@ seed to one backoff sequence.
 ## Call records
 
 `RecordWriter` appends one record per request to a JSONL file and keeps them
-in memory; a record enters memory only after its line reached the file. A
+in memory; a path that already holds bytes is refused at construction, and a
+record enters memory only after its line reached the file. A
 failed append is truncated back to the bytes that reached the file, and when
 that truncation fails too the writer refuses every later record, so the
 journal never carries a partial line followed by a whole one.
@@ -84,7 +85,8 @@ calls' answers by strategy:
 
 Each fault type answers as follows. The injected answer goes to the host
 without an upstream call, so the host's SDK, not the proxy's retry, handles
-it, and the record's `proxy_retries` is 0.
+it, and the record's `proxy_retries` is 0. A record carries `fault_ref` only
+when the transport accepted the answer's status; a timeout's silence counts.
 
 | Type | Host-visible answer |
 |---|---|
@@ -94,8 +96,8 @@ it, and the record's `proxy_retries` is 0.
 | `truncated_length` | A partial text block and `messageStop` with `stopReason: max_tokens` |
 | `truncated_no_length` | A partial text block, then the stream ends with no `messageStop` or metadata; on `converse`, the first half of the JSON body |
 | `empty_content` | `messageStop` with `end_turn` and no content block |
-| `schema_wrong_tool_call` | A `toolUse` block for the request's first tool whose input is not JSON; on `converse`, an input object that gives each typed required property of the tool's schema a value of another type, or one undeclared argument when the schema has none |
-| `slow_stream` | The provider's answer, with `delay_ms` (default 2 s) before each event; on `converse`, before the body. The record carries `fault_ref` only once a delay ran, so an upstream that fails before answering leaves the episode untriggered |
+| `schema_wrong_tool_call` | A `toolUse` block for the request's first tool whose input is not JSON; on `converse`, an input object that gives each typed required property of the tool's schema a value of another type, or a bare string, which a `type: object` schema rejects, when the schema has none |
+| `slow_stream` | The provider's answer, with `delay_ms` (default 2 s) before each event; on `converse`, before the body. The record carries `fault_ref` only once a delay ran, so an upstream that fails before answering leaves the episode untriggered and clears its pending witness |
 
 ## Witnesses
 
