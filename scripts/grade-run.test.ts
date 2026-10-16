@@ -168,13 +168,16 @@ describe("grade-run", () => {
         expect(JSON.parse(grade as string).later_attempts_logged).toBe(2);
     });
 
-    test("a P7 pair without a completed host side is charged to the host arm", async () => {
+    test("a P7 pair that cannot be judged is charged to both arms, naming the side that failed", async () => {
         const p7 = fixture("P7-pass");
         const dir = run({ probes: [p7.probe] });
         snapshot(dir, "eidnara", { ...p7snapshot(p7.probe.id), turn_outcome: "ok" });
         snapshot(dir, "host", { ...p7snapshot(p7.probe.id), turn_outcome: "failed" });
         const summary = await gradeRun(dir, null);
-        expect(summary.skipped).toEqual({ host: { "P7 probe turn failed": 1 } });
+        expect(summary.skipped).toEqual({
+            host: { "P7 probe turn failed": 1 },
+            eidnara: { "P7 pairing lost": 1 },
+        });
     });
 
     test("probes whose turn lies past the run's event prefix are reported as outside the run", async () => {

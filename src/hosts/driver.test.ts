@@ -399,6 +399,31 @@ describe("probe snapshots", () => {
         expect(outcome.snapshot).toBe("host:q-1:e-1");
     });
 
+    test("a change to a file the source tracks despite its ignore rules is in the snapshot diff", async () => {
+        const source = gitRepo();
+        const g = (...args: string[]) =>
+            spawnSync("git", args, {
+                cwd: source,
+                env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" },
+            });
+        writeFileSync(join(source, ".gitignore"), "*.cfg\n");
+        writeFileSync(join(source, "limits.cfg"), "max = 1\n");
+        g("add", ".gitignore");
+        g("add", "--force", "limits.cfg");
+        g("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "track the ignored config");
+        const { driver, hosts, armDir } = fixture("host", { p: source });
+        const fresh = new HostDriver((driver as unknown as { o: DriverOptions }).o);
+        await fresh.reset();
+        const host = hosts.at(-1) as FakeHost;
+        const ws = fresh.workspace("p");
+        await fresh.event(ev("session_start", { session: "s-0" }));
+        host.onPrompt = () => writeFileSync(join(ws, "limits.cfg"), "max = 2\n");
+        await fresh.event(
+            ev("user_turn", { id: "e-1", session: "s-0", text: "raise it", probe: "q-1" }),
+        );
+        expect(captured(armDir)["host:q-1:e-1:diff"]?.patch).toContain("+max = 2");
+    });
+
     test("a probe turn's snapshot carries its diff, commands, prior session, and calls, and grades", async () => {
         const { driver, hosts, armDir, transcripts } = fixture("host", { p: gitRepo() });
         mkdirSync(join(transcripts, "sessions"), { recursive: true });

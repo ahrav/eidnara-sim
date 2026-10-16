@@ -43,6 +43,9 @@ resume after a kill between the two entries journals the snapshot from it.
 Snapshots append to `<arm>/snapshots.jsonl`, and a recorder rebuilt after a
 kill drops a cut last line; a
 snapshot id is `<arm>:<item>:<turn event>`, so each attempt has its own id.
+The snapshot tree adds, with `--force`, the paths the project's source
+repository tracks although its ignore rules match them (the driver lists
+them from the source at reset), so a change to such a file is in the diff.
 The snapshot tree leaves out a git repository nested in the workspace (git
 would index it as a gitlink, hiding its files), and a probe turn that leaves
 one behind ends `failed` with `embedded repository at <path>`, so the item

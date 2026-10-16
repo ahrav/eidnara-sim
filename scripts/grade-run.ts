@@ -158,15 +158,18 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
                 return [];
             }
             const sides = { [arm]: attempts(arm, probe.id), host: attempts("host", probe.id) };
-            let paired = true;
+            const lost = new Set<string>();
             for (const [side, rows] of Object.entries(sides)) {
                 if (!rows) skip(side, "no journaled snapshot");
                 else if (rows[0]?.turn_outcome !== "ok") skip(side, "P7 probe turn failed");
                 else continue;
-                paired = false;
+                lost.add(side);
+            }
+            for (const side of Object.keys(sides)) {
+                if (lost.size > 0 && !lost.has(side)) skip(side, "P7 pairing lost");
             }
             const [mine, host] = [sides[arm], sides.host];
-            if (!paired || !mine?.[0] || !host?.[0]) return [];
+            if (lost.size > 0 || !mine?.[0] || !host?.[0]) return [];
             const later_attempts = { a: mine.length - 1, b: host.length - 1 };
             return [{ probe, arm, a: mine[0], b: host[0], later_attempts }];
         }),

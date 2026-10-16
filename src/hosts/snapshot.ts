@@ -23,6 +23,8 @@ interface RecorderState {
     starts: Record<string, string>;
     last: Record<string, { from: string; to: string }>;
     commands: Command[];
+    /** Per project, the paths the source repository tracks although its ignore rules match them. */
+    forced?: Record<string, string[]>;
 }
 
 const EMPTY: RecorderState = { session: null, ended: null, starts: {}, last: {}, commands: [] };
@@ -114,9 +116,26 @@ export class SnapshotRecorder {
             .sort();
     }
 
+    /**
+     * Records the paths a project's source tracks although its ignore rules match them, so
+     * `tree` adds them with `--force`; the recorder's own index starts empty and `add --all`
+     * alone would treat them as ignored.
+     */
+    trackIgnored(project: string, paths: string[]): void {
+        this.state.forced = { ...this.state.forced, [project]: paths };
+        this.save();
+    }
+
     tree(dir: string): string {
-        const excluded = this.embedded(dir).map((path) => `:(exclude)${path}`);
+        const nested = this.embedded(dir);
+        const excluded = nested.map((path) => `:(exclude)${path}`);
         this.git(["add", "--all", "--", ".", ...excluded], dir);
+        const forced = (this.state.forced?.[basename(dir)] ?? []).filter(
+            (path) =>
+                existsSync(join(dir, path)) &&
+                !nested.some((repo) => path === repo || path.startsWith(`${repo}/`)),
+        );
+        if (forced.length > 0) this.git(["add", "--force", "--", ...forced], dir);
         return this.git(["write-tree"], dir).trim();
     }
 

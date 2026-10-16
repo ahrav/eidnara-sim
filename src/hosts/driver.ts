@@ -177,6 +177,9 @@ export class HostDriver implements ArmDriver {
         for (const [project, source] of Object.entries(this.o.projects)) {
             const target = this.workspace(project);
             git(this.o.armRoot, ["clone", "--quiet", "--no-hardlinks", source, target]);
+            const tracked = ["ls-files", "-z", "--cached", "--ignored", "--exclude-standard"];
+            const forced = git(source, tracked).split("\0").filter(Boolean);
+            this.snapshots.trackIgnored(project, forced);
         }
         await this.startArm(true);
     }
