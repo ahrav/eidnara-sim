@@ -163,7 +163,7 @@ export const EMPTY_PROMPT: BlindedPrompt = {
 };
 
 /** `PREPROCESSING_VERSION` changes whenever `normalise`, `foldWords`, `ARM_TOKENS`, or `INVISIBLE` change what the judge sees. */
-export const PREPROCESSING_VERSION = "sim-judge-preprocessing/v1";
+export const PREPROCESSING_VERSION = "sim-judge-preprocessing/v2";
 
 export interface JudgeClient {
     identity: JudgeIdentity;
@@ -408,7 +408,7 @@ export function p7Pair(item: string, a: Snapshot, b: Snapshot): P7Inputs | null 
         ["a", pair.a],
         ["b", pair.b],
     ] as const) {
-        if (normalise(text) === "")
+        if (foldWords(normalise(text)).trim() === "")
             throw new GradeRefused(`P7 item ${item}: answer ${side} is empty`);
     }
     return {
@@ -423,12 +423,8 @@ export function p7Pair(item: string, a: Snapshot, b: Snapshot): P7Inputs | null 
 
 export interface P7Context {
     item: string;
-    answers: { a: string; b: string };
     reference: string;
-    lengths: { a: number; b: number };
-    snapshots: { a: string; b: string };
-    arms: { a: string; b: string };
-    inputs: string[];
+    snapshots: { a: Snapshot; b: Snapshot };
     later_attempts: { a: number; b: number };
     calibration: CalibrationSet | null;
     permutation: { trials: number; correct: number; judge: JudgeIdentity } | null;
@@ -437,14 +433,17 @@ export interface P7Context {
 }
 
 export function gradeP7(j: Judgment, c: P7Context, rules: Rules, version = 1): GradeRecord[] {
+    if (typeof j !== "object" || j === null) throw new GradeRefused("judgment is not a record");
     if (!isIdentity(j.judge)) throw new GradeRefused(`judgment for ${j.pair} names no judge`);
     if (j.pair !== c.item) {
         throw new GradeRefused(`judgment for ${j.pair} cannot grade item ${c.item}`);
     }
+    const built = p7Pair(c.item, c.snapshots.a, c.snapshots.b);
+    if (!built) throw new GradeRefused(`P7 item ${c.item}: a probe turn failed; nothing to grade`);
     if (!isPair(j.answers, "string") || !isPair(j.lengths, "number")) {
         throw new GradeRefused(`judgment for ${j.pair} carries malformed answer evidence`);
     }
-    if (j.answers.a !== c.answers.a || j.answers.b !== c.answers.b) {
+    if (j.answers.a !== built.answers.a || j.answers.b !== built.answers.b) {
         throw new GradeRefused(`judgment for ${j.pair} was made on other answers`);
     }
     if (j.reference !== c.reference) {
@@ -453,7 +452,7 @@ export function gradeP7(j: Judgment, c: P7Context, rules: Rules, version = 1): G
     if (canonicalJson(recallFrom(j.orders)) !== canonicalJson(j.recall)) {
         throw new GradeRefused(`judgment for ${j.pair} records a recall its order verdicts deny`);
     }
-    if (j.lengths.a !== c.lengths.a || j.lengths.b !== c.lengths.b) {
+    if (j.lengths.a !== built.lengths.a || j.lengths.b !== built.lengths.b) {
         throw new GradeRefused(`judgment for ${j.pair} records other answer lengths`);
     }
     if (j.longer_recalled_alone !== longerRecalledAlone(j.recall, j.lengths)) {
@@ -530,11 +529,11 @@ export function gradeP7(j: Judgment, c: P7Context, rules: Rules, version = 1): G
     return (["a", "b"] as const).map((side) => {
         const common = {
             item: c.item,
-            arm: c.arms[side],
+            arm: built.arms[side],
             probe_type: "P7",
             version,
-            snapshot: c.snapshots[side],
-            inputs: c.inputs,
+            snapshot: built.snapshots[side],
+            inputs: built.inputs,
             later_attempts_logged: c.later_attempts[side],
         };
         if (j.recall === "Inconsistent") {

@@ -15,6 +15,7 @@ import {
     gradeP7,
     humanCheckSample,
     type JudgeClient,
+    type Judgment,
     judgeIdentity,
     judgePair,
     judgePrompt,
@@ -110,12 +111,11 @@ const context = (
     extra: Partial<Parameters<typeof gradeP7>[1]> = {},
 ) => ({
     item,
-    answers: pairDigests(pair),
     reference: referenceDigest(reference),
-    lengths: { a: normalise(pair.a).length, b: normalise(pair.b).length },
-    snapshots: { a: "snap-eidnara", b: "snap-host" },
-    arms: { a: "eidnara", b: "host" },
-    inputs: ["snap-eidnara:calls", "snap-host:calls"],
+    snapshots: {
+        a: snapshotOf("snap-eidnara", "eidnara", pair.a, item),
+        b: snapshotOf("snap-host", "host", pair.b, item),
+    },
     later_attempts: { a: 0, b: 0 },
     calibration: null,
     permutation: { trials: 20, correct: 11, judge: judgeIdentity(rules.judge.model) },
@@ -796,6 +796,51 @@ describe("P7 judge path", () => {
         expect(() => p7Pair("q-1", snap("eidnara", "because"), snap("host", "\u200b"))).toThrow(
             "answer b is empty",
         );
+    });
+
+    test("a grade's arm, snapshot, and inputs come from the snapshots that produced the answers", async () => {
+        const f = load("P7-pass");
+        const judgment = await judgePair(
+            scripted(f.judge_verdicts),
+            f.pair,
+            f.probe.check.judge,
+            [],
+        );
+        const ctx = context(f.probe.id, f.pair, f.probe.check.judge, {
+            snapshots: {
+                a: snapshotOf("snap-kl", "eidnara-kl", f.pair.a, f.probe.id),
+                b: snapshotOf("snap-host-2", "host", f.pair.b, f.probe.id),
+            },
+        });
+        const grades = gradeP7(judgment, ctx, rules);
+        expect(grades.map((g) => [g.arm, g.snapshot])).toEqual([
+            ["eidnara-kl", "snap-kl"],
+            ["host", "snap-host-2"],
+        ]);
+        expect(grades[0]?.inputs).toEqual(["snap-host-2:calls", "snap-kl:calls"]);
+        const swapped = context(f.probe.id, f.pair, f.probe.check.judge, {
+            snapshots: {
+                a: snapshotOf("snap-x", "eidnara", f.pair.b, f.probe.id),
+                b: snapshotOf("snap-y", "host", f.pair.a, f.probe.id),
+            },
+        });
+        expect(() => gradeP7(judgment, swapped, rules)).toThrow("other answers");
+    });
+
+    test("a null judgment and a mark-only answer are refused", async () => {
+        const f = load("P7-pass");
+        const ctx = context(f.probe.id, f.pair, f.probe.check.judge);
+        expect(() => gradeP7(null as unknown as Judgment, ctx, rules)).toThrow(GradeRefused);
+        const snap = (arm: string, text: string) => snapshotOf(`snap-${arm}`, arm, text);
+        for (const blank of ["\u034f", "...", "\u034f \u034f"]) {
+            expect(() => p7Pair("q-1", snap("eidnara", "because"), snap("host", blank))).toThrow(
+                "answer b is empty",
+            );
+        }
+    });
+
+    test("the preprocessing version moved with the normaliser", () => {
+        expect(PREPROCESSING_VERSION).toBe("sim-judge-preprocessing/v2");
     });
 
     test("the human-check sample is ten percent of P7 items, rounded up, from a seeded draw", () => {
