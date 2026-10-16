@@ -89,7 +89,12 @@ export function bedrockEmbedder(profile: string, region: string, cachePath: stri
             } catch {
                 throw new Error(`embedding cache ${cachePath} holds a malformed line`);
             }
-            if (wellFormed(entry.vector)) cache.set(entry.key, entry.vector);
+            if (wellFormed(entry.vector)) {
+                cache.set(
+                    entry.key,
+                    entry.vector.map((x) => Math.round(x * 1e6) / 1e6),
+                );
+            }
         }
     }
     return {
@@ -103,7 +108,15 @@ export function bedrockEmbedder(profile: string, region: string, cachePath: stri
                     const input = { inputText: text, dimensions: DIMENSIONS, normalize: true };
                     const outFile = `${cachePath}.${randomBytes(6).toString("hex")}.tmp`;
                     const cli = `bedrock-runtime invoke-model --cli-binary-format raw-in-base64-out`;
-                    const flags = ["--profile", profile, "--region", region, "--model-id", model];
+                    const flags = [
+                        "--no-cli-auto-prompt",
+                        "--profile",
+                        profile,
+                        "--region",
+                        region,
+                        "--model-id",
+                        model,
+                    ];
                     const argv = [
                         "aws",
                         ...cli.split(" "),

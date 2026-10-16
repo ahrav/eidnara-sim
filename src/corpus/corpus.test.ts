@@ -129,11 +129,17 @@ describe("committed corpus", () => {
         broken.rust.plan[1].check = { must: ["{code}"] };
         broken.rust.rejected[0].check = { answer: "x" };
         broken.typescript.rationale[0].check = { judge: "{codenam}" };
+        broken.rust.constraint[2].statement = "helpers use {tokne}";
+        broken.rust.constraint[3].check = { must_not: ["DO_NOT"] };
+        broken.rust.decision[1].authority.content = "// unrelated authority\n";
         expect(bankProblems(broken)).toEqual([
             "fact-bank any: language missing",
             "fact-bank rust/constraint[0] rs-cmd-const-prefix: statement missing",
             "fact-bank rust/constraint[1] rs-cmd-error-tag: out_probe missing",
+            "fact-bank rust/constraint[2] rs-db-helper-prefix: statement names an unknown placeholder",
+            "fact-bank rust/constraint[3] rs-test-suffix: check needs a positive channel",
             "fact-bank rust/decision[0] rs-scan-page: authority missing",
+            "fact-bank rust/decision[1] rs-conn-buffer: authority content does not satisfy the check",
             "fact-bank rust/plan[0] rs-plan-field: check key must pattern {tokne} names an unknown placeholder",
             "fact-bank rust/plan[1] rs-plan-cmd: check key must pattern {code} names an unknown placeholder",
             "fact-bank rust/rationale[0] rs-why-noalloc: check key judge is blank",

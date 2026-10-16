@@ -197,6 +197,28 @@ export function bankProblems(bank: unknown): string[] {
                     if (typeof t[field] !== "string" || t[field].trim() === "")
                         problems.push(`${where}: ${field} missing`);
                 }
+                for (const field of ["statement", "probe", "out_probe", "update"]) {
+                    const text = t[field];
+                    if (typeof text === "string" && placeholderProblem(text, kind)) {
+                        problems.push(`${where}: ${field} names an unknown placeholder`);
+                    }
+                }
+                for (const field of ["example", "authority"]) {
+                    const part = t[field];
+                    if (isObject(part)) {
+                        const text = `${part.path ?? ""}\n${part.content ?? ""}`;
+                        if (placeholderProblem(text, kind)) {
+                            problems.push(`${where}: ${field} names an unknown placeholder`);
+                        }
+                    }
+                }
+                if (kind === "constraint") {
+                    const positive = ["must", "paths_must", "first_line_must", "quote_style_must"];
+                    const check = t.check;
+                    if (!isObject(check) || !positive.some((k) => k in check)) {
+                        problems.push(`${where}: check needs a positive channel`);
+                    }
+                }
                 if (
                     kind === "constraint" &&
                     (typeof t.out_probe !== "string" || t.out_probe.trim() === "")
@@ -217,6 +239,21 @@ export function bankProblems(bank: unknown): string[] {
                 }
                 if (kind === "decision" && !("authority" in t)) {
                     problems.push(`${where}: authority missing`);
+                }
+                if (kind === "decision" && isObject(t.authority) && isObject(t.check)) {
+                    const fill = (text: string) =>
+                        text.replace(/\{(\w+)\}/g, (m, k: string) => SAMPLE_VARS[k] ?? m);
+                    const content = fill(String(t.authority.content ?? ""));
+                    const must = Array.isArray(t.check.must) ? (t.check.must as string[]) : [];
+                    const satisfied = must.every((pattern) => {
+                        try {
+                            return new RegExp(fill(pattern)).test(content);
+                        } catch {
+                            return false;
+                        }
+                    });
+                    if (!satisfied)
+                        problems.push(`${where}: authority content does not satisfy the check`);
                 }
                 if ("example" in t) {
                     const e = t.example;

@@ -641,6 +641,7 @@ describe("fact bank checks", () => {
         expect(re.test("git commit --message[quiet_vole]")).toBe(false);
         expect(re.test('git commit --dry-run -m "[quiet_vole] cap"')).toBe(false);
         expect(re.test("git commit -m=[quiet_vole] cap")).toBe(false);
+        expect(re.test("git -c commit.gpgSign=false commit -m '[quiet_vole] cap'")).toBe(true);
         const forbid = new RegExp(
             ((t?.check as { commands_must_not: string[] }).commands_must_not[0] ?? "$^").replaceAll(
                 "{token}",
@@ -649,6 +650,7 @@ describe("fact bank checks", () => {
         );
         expect(forbid.test("git commit --allow-empty -m 'untagged later'")).toBe(true);
         expect(forbid.test("git commit -m '[quiet_vole] first'")).toBe(false);
+        expect(forbid.test("git -c commit.gpgSign=false commit -m 'untagged later'")).toBe(true);
         expect(re.test('git commit -m "[quiet_vole] cap" --dry-run')).toBe(false);
         expect(re.test("git commit --message=[quiet_vole] cap")).toBe(true);
         expect(re.test("git commit -mwrong -m[quiet_vole]")).toBe(false);
@@ -738,6 +740,17 @@ describe("fact bank checks", () => {
                 "tracing::event!(Level::TRACE, command = %name);",
             ),
         ).toBe(true);
+    });
+
+    test("the ticket anchor matches the exact number only", () => {
+        const t = templates("anchor").find((x) => x.id === "anchor-ticket");
+        const c = t?.check as { must_not: string[]; answer_must_not: string[] };
+        for (const pattern of [c.must_not[0] ?? "$^", c.answer_must_not[0] ?? "$^"]) {
+            const re = new RegExp(pattern.replaceAll("{value}", "12345"));
+            expect(re.test("ticket 12345 closed")).toBe(true);
+            expect(re.test("ticket 123456 closed")).toBe(false);
+            expect(re.test("ticket 912345")).toBe(false);
+        }
     });
 
     test("every anchor forbids its value in the diff and in the final answer", () => {

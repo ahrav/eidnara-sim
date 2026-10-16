@@ -49,7 +49,7 @@ const unitRate: Check = (v) =>
         ? null
         : "expected a canonical decimal in (0, 1)";
 const unitClosed: Check = (v) =>
-    isCanonicalDecimal(v) && Number(v) >= 0 && Number(v) <= 1
+    isCanonicalDecimal(v) && (v === "0" || v === "1" || /^0\.\d+$/.test(v))
         ? null
         : "expected a canonical decimal in [0, 1]";
 const intAtLeast =
