@@ -1,11 +1,21 @@
-import { expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
+import { afterEach, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { checkBuildMarker, checkDaemonFromBuild } from "./buildmarker";
 
+const dirs: string[] = [];
+afterEach(() => {
+    for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+});
+function tempDir(prefix: string): string {
+    const d = realpathSync(mkdtempSync(join(tmpdir(), prefix)));
+    dirs.push(d);
+    return d;
+}
+
 function repo(): string {
-    const dir = realpathSync(mkdtempSync(join(tmpdir(), "sim-marker-")));
+    const dir = tempDir("sim-marker-");
     const git = (...args: string[]) => {
         const r = Bun.spawnSync(["git", "-C", dir, ...args]);
         if (r.exitCode !== 0) throw new Error(r.stderr.toString());
@@ -41,7 +51,7 @@ test("the daemon binary must be the build clone's own fixture", () => {
 });
 
 test("a directory that is not a Git checkout fails the build check even with an empty record", () => {
-    const dir = realpathSync(mkdtempSync(join(tmpdir(), "sim-marker-")));
+    const dir = tempDir("sim-marker-");
     writeFileSync(join(dir, ".sim-build-commit"), "");
     expect(() => checkBuildMarker(dir)).toThrow(/not a Git checkout|no completed build/);
 });

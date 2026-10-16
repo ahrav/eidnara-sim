@@ -99,7 +99,7 @@ through the abort and drain below. A prompt Pi refuses in preflight starts no
 turn, so its error is returned at once. After a Pi turn fails, the host
 aborts it and, alongside the abort, waits up to 30 s for its `agent_end`; a turn still running then
 stops the run, so a late end cannot finish the next turn. OpenCode turns race the deadline,
-abort the session (waiting at most 5 s for the abort call), and wait 30 s for
+abort the session (waiting at most 30 s for the abort call), and wait 30 s for
 the call to drain; a call still running then stops the run, and so does an
 abort call still pending after 30 s, since it would cancel the next turn,
 an OpenCode session setup (listing or creating the session) still pending

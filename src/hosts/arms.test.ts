@@ -1082,3 +1082,14 @@ test("a Pi turn ending just before its deadline still waits the full quiet windo
     expect(outcome).not.toEqual({});
     expect(Date.now() - started).toBeGreaterThanOrEqual(440);
 });
+
+test("a staged control file left by an earlier session does not block the next write", () => {
+    const ctx = context(runDir());
+    const host = new PiSimHost(ctx);
+    mkdirSync(host.agentDir, { recursive: true });
+    writeFileSync(join(host.agentDir, `settings.json.${process.pid}`), "stale\n");
+    (host as Untyped).writeConfigs(null);
+    expect(
+        JSON.parse(readFileSync(join(host.agentDir, "settings.json"), "utf8")).defaultModel,
+    ).toBe("m");
+});

@@ -1,6 +1,6 @@
 import { realpathSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 
 // `--kill-child` sends SIGKILL to namespace PID 1 when the unshare parent dies.
 const UNSHARE_ARGS = [
@@ -104,11 +104,14 @@ export function launch(
     const kept = keep.map(plainPath);
     const ro = readOnly.map(plainPath);
     // Binding a masked root, or a directory above one, would put the masked tree back in view.
-    const canonical = (path: string) => {
+    // A path not created yet resolves through its nearest existing ancestor, since mkdir -p and
+    // the bind mounts follow that ancestor's symlinks.
+    const canonical = (path: string): string => {
         try {
             return realpathSync(path);
         } catch {
-            return path;
+            const parent = dirname(path);
+            return parent === path ? path : join(canonical(parent), basename(path));
         }
     };
     const masked = ["/tmp", realpathSync(homedir()), canonical(dirname(launcher))];

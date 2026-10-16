@@ -281,6 +281,8 @@ export abstract class SimHost {
     /** The file is created fresh and renamed into place, so a symlink left at `path` is replaced, never followed. */
     protected writeControlFile(path: string, content: string): void {
         const staged = `${path}.${process.pid}`;
+        // A staged file left by an interrupted write is removed, never followed, before the fresh one.
+        rmSync(staged, { force: true });
         writeFileSync(staged, content, { flag: "wx" });
         renameSync(staged, path);
     }
