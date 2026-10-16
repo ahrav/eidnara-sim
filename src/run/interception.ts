@@ -108,7 +108,7 @@ export function interceptionTest(
                 .find(
                     (l) =>
                         l.includes(`binding file ${realpathSync(b.path)} [0] to `) &&
-                        /libfaketime\.so\.1 \[0\]: normal symbol `clock_gettime'/.test(l),
+                        /libfaketimeMT\.so\.1 \[0\]: normal symbol `clock_gettime'/.test(l),
                 );
             evidence = { ...evidence, binding: line?.trim() ?? null };
             intercepted = line !== undefined;

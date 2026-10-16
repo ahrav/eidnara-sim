@@ -23,6 +23,7 @@ bun scripts/compile-scenario.ts --tier S --seed 101   # compile a scenario (docs
 scripts/eidnara-build.sh <checkout> <clone>            # build eidnara artefacts in a clone (docs/hosts.md)
 PATH=<pinned opencode .bin>:$PATH bun scripts/run-tier.ts --tier S --seed 101 --out runs/S-101-pi   # run or resume a tier (docs/run-command.md)
 bun tests/witness-faults.ts runs/witness             # live fault and resume witness (docs/run-command.md)
+bun scripts/grade-run.ts runs/S-101-pi                 # grade a run's probe snapshots (docs/grading.md)
 ```
 
 ## Layout

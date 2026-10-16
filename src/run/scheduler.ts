@@ -19,7 +19,7 @@ export interface ArmDriver {
      * session the next event belongs to, or null between sessions.
      */
     resume?(open: ScenarioEvent | null): Promise<void>;
-    event(e: ScenarioEvent): Promise<{ failed?: string }>;
+    event(e: ScenarioEvent): Promise<{ failed?: string; snapshot?: string }>;
     fault(f: FaultEpisode): Promise<Record<string, unknown>>;
     /** Stops everything the arm runs, after its last event and before `EndArm`. */
     finish?(): Promise<void>;
@@ -155,6 +155,12 @@ export class Scheduler {
         return start;
     }
 
+    private snapshotted(item: string): boolean {
+        return this.o.journal.entries.some(
+            (x) => x.kind === "SnapshotArtefacts" && x.arm === this.arm && x.item === item,
+        );
+    }
+
     private async idle(): Promise<void> {
         const limit = Date.now() + (this.o.idleLimitMs ?? Number.POSITIVE_INFINITY);
         while ((this.clock?.busyIds().length ?? 0) > 0) {
@@ -209,7 +215,7 @@ export class Scheduler {
             const turn = `turn:${e.id}`;
             this.log({ kind: "BeginTurn", event: e.id, probe: e.probe ?? null });
             clock.begin(turn);
-            let outcome: { failed?: string };
+            let outcome: { failed?: string; snapshot?: string };
             try {
                 outcome = await driver.event(e);
             } finally {
@@ -218,6 +224,9 @@ export class Scheduler {
             const state = outcome.failed ? "failed" : "completed";
             const item = e.probe ? { probe: e.probe, state } : {};
             this.log({ kind: "EndTurn", event: e.id, outcome: outcome.failed ?? "ok", ...item });
+            if (e.probe && outcome.snapshot && !this.snapshotted(e.probe)) {
+                this.log({ kind: "SnapshotArtefacts", item: e.probe, snapshot: outcome.snapshot });
+            }
             await Bun.sleep(this.o.settleMs ?? 1_000);
         } else {
             await driver.event(e);

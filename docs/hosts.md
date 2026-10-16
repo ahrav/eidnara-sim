@@ -67,7 +67,14 @@ Pi runs in RPC mode with `--session-id sim-<session>`, its agent directory,
 settings, and model list under the arm root, and the Eidnara extension from
 the build clone on Eidnara arms. OpenCode runs through the v1 `spawnOpencode`,
 with a wrapper script that launches the pinned binary through the sandbox
-launcher, and titles each session `sim-<session>`. Both reach Bedrock only
+launcher, and titles each session `sim-<session>`. Each OpenCode session
+denies the `question`, `plan_enter`, and `plan_exit` permissions, as
+`opencode run` does for a non-interactive session: in the first live
+OpenCode run, the agent asked the user a question and the turn waited until
+its 900 s deadline. The harness also preloads `libfaketimeMT.so.1`, the
+build that serializes libfaketime's shared state across threads; under the
+single-threaded build, OpenCode crashed with `double free detected` after
+libfaketime read a torn timestamp line. Both reach Bedrock only
 through the proxy, with placeholder AWS credentials.
 
 The launcher binds kept paths read-write and read-only paths read-only.

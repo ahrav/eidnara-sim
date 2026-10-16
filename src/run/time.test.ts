@@ -57,7 +57,9 @@ describe("time injection", () => {
 
     test("transcript-store paths come from the per-version table; an unknown version is refused", () => {
         expect(transcriptPaths("pi", "0.80.2")).toEqual(["$PI_CODING_AGENT_DIR/sessions"]);
-        expect(transcriptPaths("opencode", "1.19.0")).toHaveLength(2);
+        expect(transcriptPaths("opencode", "1.19.0")).toEqual([
+            "$XDG_DATA_HOME/opencode/opencode.db",
+        ]);
         expect(() => transcriptPaths("opencode", "2.0.0")).toThrow(/no transcript-store paths/);
     });
 

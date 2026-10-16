@@ -469,9 +469,20 @@ describe("call records", () => {
             arm: "eidnara",
             session: "s-0001",
         });
-        expect(userSim).toMatchObject({ component: "user-sim", componentSource: "asserted" });
+        expect(userSim).toMatchObject({
+            component: "user-sim",
+            componentSource: "asserted",
+            response_text: "done",
+        });
+        expect(summary?.response_text).toBeUndefined();
         expect((userSim?.wall_ms ?? 0) >= (summary?.wall_ms ?? Infinity)).toBe(true);
         expect(started.map((e) => e.component)).toEqual(["history_summarizer", "user-sim"]);
+    });
+
+    test("a non-streaming agent call records the response text it relayed", async () => {
+        const { records, url } = await start(null);
+        await hostCallJson(url, AGENT_BODY, 2_000);
+        expect(records.records[0]?.response_text).toBe("done");
     });
 
     test("the writer refuses a record missing any required field", () => {

@@ -40,6 +40,21 @@ export interface HostContext {
     proxyHttp2: string;
     model: string;
     contextLimit: number;
+    now?: () => number;
+}
+
+export interface ToolRun {
+    command: string;
+    exit: number | null;
+    scenario_ms: number;
+}
+
+export function toolCommand(tool: string, args: Record<string, unknown> | undefined): string {
+    if (typeof args?.command === "string") return args.command;
+    const target = args?.path ?? args?.filePath ?? args?.pattern ?? args?.file_path;
+    return typeof target === "string"
+        ? `${tool} ${target}`
+        : `${tool} ${JSON.stringify(args ?? {})}`;
 }
 
 export interface PromptResult {
@@ -179,11 +194,42 @@ export abstract class SimHost {
     abstract closeSession(): Promise<void>;
     abstract transcriptEnv(): Record<string, string>;
     abstract hostPid(): number | null;
+
+    private tools: ToolRun[] = [];
+
+    protected logTool(
+        tool: string,
+        args: Record<string, unknown> | undefined,
+        failed: boolean,
+        scenario_ms = this.ctx.now?.() ?? 0,
+    ) {
+        this.tools.push({ command: toolCommand(tool, args), exit: failed ? 1 : 0, scenario_ms });
+    }
+
+    protected unfinished(): ToolRun[] {
+        return [];
+    }
+
+    drainTools(): ToolRun[] {
+        return [...this.tools.splice(0), ...this.unfinished()];
+    }
 }
 
 export class PiSimHost extends SimHost {
     private rpc: Untyped = null;
     readonly agentDir = join(this.ctx.root, "home/.pi/agent");
+    private readonly started = new Map<string, { tool: string; args: Record<string, unknown> }>();
+
+    protected override unfinished(): ToolRun[] {
+        const now = this.ctx.now?.() ?? 0;
+        const open = [...this.started.values()];
+        this.started.clear();
+        return open.map((t) => ({
+            command: toolCommand(t.tool, t.args),
+            exit: null,
+            scenario_ms: now,
+        }));
+    }
 
     private writeConfigs(connectionFile: string | null): void {
         mkdirSync(this.agentDir, { recursive: true });
@@ -260,6 +306,16 @@ export class PiSimHost extends SimHost {
         this.rpc = new rpcClient.PiRpcProcess(child, new rpcClient.PiRpcProtocol(), {
             stderrLimit: 20_000,
         });
+        const started = this.started;
+        started.clear();
+        this.rpc.onEvent((e: Untyped) => {
+            if (e.type === "tool_execution_start")
+                started.set(e.toolCallId, { tool: e.toolName, args: e.args });
+            if (e.type !== "tool_execution_end") return;
+            const run = started.get(e.toolCallId);
+            started.delete(e.toolCallId);
+            if (run) this.logTool(run.tool, run.args, e.isError === true);
+        });
         const ready = this.rpc.sendCommand("get_state", {}, { timeoutMs: 120_000 });
         await Promise.race([ready, spawnError]);
     }
@@ -314,6 +370,12 @@ export class PiSimHost extends SimHost {
         return { PI_CODING_AGENT_DIR: this.agentDir };
     }
 }
+
+const NON_INTERACTIVE = ["question", "plan_enter", "plan_exit"].map((permission) => ({
+    permission,
+    action: "deny",
+    pattern: "*",
+}));
 
 export class OpencodeSimHost extends SimHost {
     private oc: Untyped = null;
@@ -392,7 +454,7 @@ export class OpencodeSimHost extends SimHost {
         }
         const created = await this.client.session.create({
             query: { directory: cwd },
-            body: { title: `sim-${session}` },
+            body: { title: `sim-${session}`, permission: NON_INTERACTIVE },
         });
         if (!created.data)
             throw new Error(`session.create failed: ${JSON.stringify(created.error)}`);
@@ -414,7 +476,26 @@ export class OpencodeSimHost extends SimHost {
         return pids.length > 0 ? Math.min(...pids.map(Number)) : null;
     }
 
+    private async messages(): Promise<Array<{ info: Untyped; parts: Untyped[] }>> {
+        const listed = await this.client.session.messages({ path: { id: this.sid } });
+        return (listed.data ?? []) as Array<{ info: Untyped; parts: Untyped[] }>;
+    }
+
+    private async logTurnTools(seen: Set<string>, startScenario: number): Promise<void> {
+        const fresh = (await this.messages()).filter((m) => !seen.has(String(m.info?.id)));
+        const origin = Math.min(...fresh.map((m) => Number(m.info?.time?.created ?? Infinity)));
+        for (const m of fresh) {
+            for (const part of m.parts.filter((p) => p.type === "tool")) {
+                const at = Number(part.state?.time?.start ?? origin);
+                const ms = startScenario + (Number.isFinite(origin) ? Math.max(0, at - origin) : 0);
+                this.logTool(part.tool, part.state?.input, part.state?.status === "error", ms);
+            }
+        }
+    }
+
     async prompt(text: string, timeoutMs: number): Promise<PromptResult> {
+        const seen = new Set((await this.messages()).map((m) => String(m.info?.id)));
+        const startScenario = this.ctx.now?.() ?? 0;
         const model = { providerID: "amazon-bedrock", modelID: this.ctx.model };
         const call = this.client.session.prompt({
             path: { id: this.sid },
@@ -432,9 +513,13 @@ export class OpencodeSimHost extends SimHost {
             if (drained === null) throw new Error("OpenCode turn still running 30 s after abort");
             return { error: `turn deadline ${timeoutMs} ms` };
         }
-        if ("caught" in first) return { error: String(first.caught).slice(0, 2000) };
+        if ("caught" in first) {
+            const tail = String(this.oc?.stderr?.() ?? "").slice(-600);
+            return { error: `${String(first.caught)} | serve stderr: ${tail}`.slice(0, 2000) };
+        }
         const { result } = first;
         if (result.error) return { error: JSON.stringify(result.error).slice(0, 2000) };
+        await this.logTurnTools(seen, startScenario);
         const info = result.data?.info;
         return info?.error ? { error: JSON.stringify(info.error).slice(0, 2000) } : {};
     }

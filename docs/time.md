@@ -15,7 +15,7 @@ must be plain words, since the script splits them on spaces.
 ## Interposer
 
 `buildFaketime()` downloads libfaketime 0.9.10, checks its sha256 against the
-pinned digest, and builds `libfaketime.so.1` under `vendor/build/` (ignored by
+pinned digest, and builds `libfaketimeMT.so.1`, the thread-safe build, under `vendor/build/` (ignored by
 git). `faketimeEnv(file)` preloads it with these settings:
 
 | Variable | Value | Effect |
@@ -46,7 +46,7 @@ manifest, and refuses to resume when an interception result changes.
 |---|---|---|
 | Pi (its Node runtime) | `node -e` prints `Date.now()` and a 100 ms timer | The clock is within 5 s of the jump and the timer fires in 90 ms to 1 s |
 | OpenCode (Bun-compiled) | `BUN_BE_BUN=1 opencode -e` with the same script | As for Pi |
-| Daemon | `LD_DEBUG=bindings direct_host_fixture --help` | The dynamic linker binds the daemon binary's own `clock_gettime` import to `libfaketime.so.1` |
+| Daemon | `LD_DEBUG=bindings direct_host_fixture --help` | The dynamic linker binds the daemon binary's own `clock_gettime` import to `libfaketimeMT.so.1` |
 
 The Pi probe runs Pi's Node runtime, not the Pi CLI, so it shows that the
 runtime Pi runs on reads the interposed clock. A binary that fails is recorded
@@ -66,12 +66,15 @@ time between jumps (SIM-P19).
 its own transcripts, so the control arm's reads of them can be attributed
 (SIM-P35). Preflight reads each host's version (`pi --version`, `opencode
 --version`) and refuses a version with no row. After an arm's first session
-the driver checks that each resolved path exists (`docs/hosts.md`).
+the driver checks that each resolved path exists (`docs/hosts.md`). The
+first live OpenCode 1.18.22 run kept its sessions in `opencode.db` alone and
+created no `storage` directory, so the check stopped that run until the row
+named the database only.
 
 | Host | Versions | Paths |
 |---|---|---|
 | Pi | 0.80.x | `$PI_CODING_AGENT_DIR/sessions` |
-| OpenCode | 1.18.x, 1.19.x | `$XDG_DATA_HOME/opencode/opencode.db`, `$XDG_DATA_HOME/opencode/storage` |
+| OpenCode | 1.18.x, 1.19.x | `$XDG_DATA_HOME/opencode/opencode.db` |
 
 ## Resource sampler
 

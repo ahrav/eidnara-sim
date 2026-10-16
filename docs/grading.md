@@ -13,7 +13,7 @@ A snapshot holds the artefacts the harness captured at a probe turn's first
 | Class | Contents |
 |---|---|
 | `diff` | A unified diff: `turn` for the probe turn, `prior-session` for the project's previous session |
-| `command-log` | Each command the agent ran, with its exit code and scenario time |
+| `command-log` | Each command the agent ran, with its exit code and scenario time: `turn` for the probe turn, `session` for every turn of its session so far |
 | `test-result` | A test command, its exit code, and its summary lines |
 | `workspace-state` | Selected workspace files by path |
 | `proxy-call` | Call records with component, turn, scenario time, token counts, and the response text the proxy relayed |
@@ -30,6 +30,37 @@ artefact.
 `GradeLog` appends grades to one JSONL file. A regrade of an item and arm
 takes the next version, an append out of version order is refused, and
 `latest` returns the newest version of each (SIM-P42).
+
+## Capture
+
+The arm driver captures a snapshot at every probe turn
+(`src/hosts/snapshot.ts`), and the scheduler journals `SnapshotArtefacts`
+with the item and snapshot id once per item and arm, right after the turn's
+first `EndTurn` (SIM-P41). Snapshots append to `<arm>/snapshots.jsonl`; a
+snapshot id is `<arm>:<item>:<turn event>`, so each attempt has its own id.
+
+| Artefact | Source |
+|---|---|
+| `diff` (`turn`) | A git tree of the workspace, untracked files included, written to a separate index before the prompt and after it, and diffed |
+| `diff` (`prior-session`) | The same trees at the start and end of the project's previous session |
+| `command-log` | The host's tool runs, each a bash command or the tool name and its path, with a 0 or 1 error flag (null for a run that never finished) and its scenario time. Pi reports `tool_execution_start` and `tool_execution_end` events; OpenCode's tool parts come from the session messages the turn added, each timed from its start relative to the turn's first new message, both in OpenCode's own clock |
+| `proxy-call` | The session's call records from `calls.jsonl`, each with the index of the user turn it belongs to (a background call takes the preceding turn's), and the response text the proxy records for agent, user-sim, and judge calls (the first 32,768 characters) |
+
+The recorder keeps each project's session-start tree, the last session's
+tree pair, and the open session's commands in `<arm>/snapshot-state.json`,
+so a resumed arm reopens its session with the same start tree and commands.
+The harness captures no `test-result` or `workspace-state` artefact yet;
+the graders read neither.
+
+`scripts/grade-run.ts <run dir>` grades every snapshot the journal names
+into `grades.jsonl` and judges each P7 item for each memory arm against the
+host arm, through a gateway it starts for the judge. It prints the verdict
+counts per arm and probe type, the skipped items by reason, the summed
+`P11.weighted_score` per arm, Δmem per memory arm, and the judge errors,
+and exits 1 when a judge call failed. The scenario plants no canary
+strings, so it passes the judge none; blinding still refuses arm names. P14 items have no probe turn of their
+own and wait on the user simulator's labels (M6), so it lists them as
+skipped.
 
 ## Graders
 

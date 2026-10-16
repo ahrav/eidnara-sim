@@ -12,10 +12,13 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "../config/config";
+import { gradeItem } from "../grade/probes";
 import type { ScenarioEvent } from "../run/scheduler";
 import { type FaultType, SEAMS } from "../scenario/faults";
+import { loadPrereg } from "../scenario/inputs";
 import type { DaemonStack, HostContext, PromptResult, SimHost } from "./arms";
 import { type DriverOptions, expandTemplate, HostDriver } from "./driver";
+import { SnapshotRecorder } from "./snapshot";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -38,9 +41,12 @@ class FakeHost {
     async openSession(cwd: string, session: string) {
         this.opened.push(`${session}@${cwd}`);
     }
+    failNext = false;
     async prompt(): Promise<PromptResult> {
         this.onPrompt();
-        return {};
+        if (!this.failNext) return {};
+        this.failNext = false;
+        return { error: "boom" };
     }
     failClose = false;
     async closeSession() {
@@ -52,6 +58,10 @@ class FakeHost {
     }
     hostPid() {
         return null;
+    }
+    tools: { command: string; exit: number | null; scenario_ms: number }[] = [];
+    drainTools() {
+        return this.tools.splice(0);
     }
 }
 
@@ -235,14 +245,14 @@ describe("HostDriver lifecycle", () => {
     });
 
     test("the transcript store is checked after the first session and a gap stops the run", async () => {
-        const ok = fixture("host");
+        const ok = fixture("host", { p: gitRepo() });
         await ok.driver.reset();
         mkdirSync(join(ok.transcripts, "sessions"), { recursive: true });
         await ok.driver.event(ev("session_end"));
         const record = JSON.parse(readFileSync(join(ok.armDir, "transcripts.json"), "utf8"));
         expect(record.missing).toEqual([]);
 
-        const gap = fixture("host");
+        const gap = fixture("host", { p: gitRepo() });
         await gap.driver.reset();
         const missing = join(gap.transcripts, "sessions");
         await expect(gap.driver.event(ev("session_end"))).rejects.toThrow(missing);
@@ -316,4 +326,114 @@ describe("HostDriver faults", () => {
         await expect(driver.fault(episode("model_switch"))).rejects.toThrow("between sessions");
         await expect(driver.fault(episode("host_upgrade"))).rejects.toThrow("no mechanism");
     });
+});
+
+describe("probe snapshots", () => {
+    test("a probe turn's snapshot carries its diff, commands, prior session, and calls, and grades", async () => {
+        const { driver, hosts, armDir, transcripts } = fixture("host", { p: gitRepo() });
+        mkdirSync(join(transcripts, "sessions"), { recursive: true });
+        const calls = [
+            {
+                seq: 0,
+                component: "agent",
+                turn: "e-9",
+                scenario_ms: 0,
+                input_tokens: 5,
+                output_tokens: 2,
+                response_text: "done",
+            },
+        ];
+        (driver as unknown as { o: DriverOptions }).o.callsFor = () => calls;
+        const fresh = new HostDriver((driver as unknown as { o: DriverOptions }).o);
+        await fresh.reset();
+        const host = hosts.at(-1) as FakeHost;
+        const ws = fresh.workspace("p");
+        await fresh.event(ev("session_start", { session: "s-0" }));
+        host.onPrompt = () => writeFileSync(join(ws, "earlier.rs"), "fn earlier() {}\n");
+        await fresh.event(ev("user_turn", { id: "e-1", session: "s-0", text: "go" }));
+        await fresh.event(ev("session_end", { session: "s-0" }));
+        await fresh.event(ev("session_start", { session: "s-1" }));
+        host.onPrompt = () => {
+            writeFileSync(join(ws, "limits.rs"), "pub const DROWSY_EGRET_MAX: u32 = 1;\n");
+            host.tools.push({ command: "cargo test", exit: 0, scenario_ms: 7 });
+        };
+        const outcome = await fresh.event(
+            ev("user_turn", { id: "e-9", session: "s-1", text: "cap it", probe: "q-1" }),
+        );
+        expect(outcome.snapshot).toBe("host:q-1:e-9");
+        const [snap] = readFileSync(join(armDir, "snapshots.jsonl"), "utf8")
+            .trim()
+            .split("\n")
+            .map((l) => JSON.parse(l));
+        const byId = Object.fromEntries(snap.artefacts.map((a: { id: string }) => [a.id, a]));
+        expect(byId["host:q-1:e-9:diff"].patch).toContain("+pub const DROWSY_EGRET_MAX");
+        expect(byId["host:q-1:e-9:diff"].patch).not.toContain("earlier");
+        expect(byId["host:q-1:e-9:prior-diff"].patch).toContain("+fn earlier()");
+        expect(byId["host:q-1:e-9:turn-commands"].commands).toEqual([
+            { command: "cargo test", exit: 0, scenario_ms: 7 },
+        ]);
+        expect(byId["host:q-1:e-9:session-commands"].commands).toEqual([
+            { command: "cargo test", exit: 0, scenario_ms: 7 },
+        ]);
+        expect(byId["host:q-1:e-9:calls"].calls).toEqual(calls);
+        expect(snap.turn_outcome).toBe("ok");
+        host.onPrompt = () => undefined;
+        host.failNext = true;
+        const failed = await fresh.event(
+            ev("user_turn", { id: "e-10", session: "s-1", text: "again", probe: "q-2" }),
+        );
+        expect(failed).toMatchObject({ failed: "boom", snapshot: "host:q-2:e-10" });
+        const probe = {
+            id: "q-1",
+            type: "P1",
+            fact: "f-1",
+            project: "p",
+            session: "s-1",
+            text: "cap it",
+            check: { must: ["DROWSY_EGRET_[A-Z0-9_]+"] },
+        };
+        const grade = gradeItem(probe, [snap], loadPrereg("S").grading);
+        expect(grade?.verdict).toBe("pass");
+        expect(grade?.inputs).toEqual(["host:q-1:e-9:diff"]);
+    });
+});
+
+test("a recorder rebuilt after a harness kill keeps the open session's start tree and commands", () => {
+    const repo = gitRepo();
+    const armDir = tmp();
+    const first = new SnapshotRecorder(armDir, "eidnara", () => []);
+    first.sessionStart("s-1", "p", repo);
+    first.addTools([{ command: "cargo build", exit: 0, scenario_ms: 1 }]);
+    writeFileSync(join(repo, "new.rs"), "fn x() {}\n");
+    const resumed = new SnapshotRecorder(armDir, "eidnara", () => []);
+    resumed.sessionStart("s-1", "p", repo);
+    const before = resumed.tree(repo);
+    const id = resumed.capture(
+        { probe: "q", session: "s-1", id: "e-2" },
+        "p",
+        repo,
+        before,
+        [],
+        false,
+    );
+    const snap = JSON.parse(readFileSync(join(armDir, "snapshots.jsonl"), "utf8"));
+    expect(id).toBe("eidnara:q:e-2");
+    const session = snap.artefacts.find((a: { id: string }) => a.id.endsWith("session-commands"));
+    expect(session.commands).toEqual([{ command: "cargo build", exit: 0, scenario_ms: 1 }]);
+    resumed.sessionEnd("p", repo);
+    const later = new SnapshotRecorder(armDir, "eidnara", () => []);
+    later.sessionStart("s-2", "p", repo);
+    const next = later.capture(
+        { probe: "r", session: "s-2", id: "e-3" },
+        "p",
+        repo,
+        later.tree(repo),
+        [],
+        false,
+    );
+    const lines = readFileSync(join(armDir, "snapshots.jsonl"), "utf8").trim().split("\n");
+    const prior = JSON.parse(lines[1] as string).artefacts.find(
+        (a: { id: string }) => a.id === `${next}:prior-diff`,
+    );
+    expect(prior.patch).toContain("+fn x() {}");
 });

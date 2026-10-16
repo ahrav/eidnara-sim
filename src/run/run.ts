@@ -8,6 +8,7 @@ import {
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import type { SimConfig } from "../config/config";
+import type { CallView } from "../grade/artefacts";
 import type { ArmName } from "../hosts/arms";
 import { HostDriver } from "../hosts/driver";
 import { canonicalJson } from "../prereg/canonical";
@@ -21,7 +22,7 @@ import { compileScenario, type Scenario } from "../scenario/compile";
 import type { FaultEpisode } from "../scenario/faults";
 import { loadCompileInput, loadPrereg } from "../scenario/inputs";
 import { bedrockEmbedder } from "../scenario/similarity";
-import { Journal, releaseLease, takeLease } from "./journal";
+import { Journal, readJournal, releaseLease, takeLease } from "./journal";
 import { plainPath } from "./launcher";
 import { type Preflight, preflight } from "./preflight";
 import { ResourceSampler } from "./sampler";
@@ -223,6 +224,32 @@ export async function runTier(o: RunOptions): Promise<void> {
     }
 }
 
+function callsOf(
+    path: string,
+    arm: string,
+    session: string,
+    turnIndex: Map<string, number>,
+): CallView[] {
+    if (!existsSync(path)) return [];
+    let index: number | undefined;
+    return readJournal(path)
+        .map((r) => r as unknown as CallRecord)
+        .filter((r) => r.arm === arm && r.session === session)
+        .map((r) => {
+            index = (r.turn ? turnIndex.get(r.turn) : undefined) ?? index;
+            return {
+                seq: r.seq,
+                component: r.component,
+                turn: r.turn,
+                ...(index === undefined ? {} : { turn_index: index }),
+                scenario_ms: r.scenario_ms,
+                input_tokens: r.input_tokens,
+                output_tokens: r.output_tokens,
+                ...(r.response_text ? { response_text: r.response_text } : {}),
+            };
+        });
+}
+
 async function runArms(
     o: RunOptions,
     cleanup: Array<() => Promise<void> | void>,
@@ -296,6 +323,9 @@ async function runArms(
         scenario.projects.map((p) => [p.id, join(ROOT, "corpus/repos", p.id)]),
     );
     const loopStore = scenario.faults.some((f) => f.type === "store_full");
+    const turnIndex = new Map(
+        events.filter((e) => e.index !== undefined).map((e) => [e.id, e.index as number]),
+    );
     for (const arm of manifest.order) {
         const armRoot = join(o.out, arm, "r");
         mkdirSync(dirname(offsetFile(arm)), { recursive: true });
@@ -316,6 +346,8 @@ async function runArms(
             transcriptPaths: hostRow.transcript_paths,
             loopStore,
             onDaemonExit: (detail) => scheduler.daemonExited(detail),
+            callsFor: (session) => callsOf(join(o.out, "calls.jsonl"), arm, session, turnIndex),
+            now,
         });
         let cpuJob: string | null = null;
         const onBusy = (busy: boolean) => {

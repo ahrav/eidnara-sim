@@ -563,3 +563,27 @@ test("a busy set that outlives the idle limit stops the run with the held ids", 
     });
     await expect(scheduler.run()).rejects.toThrow("job:stuck");
 });
+
+test("a probe turn's snapshot is journaled once per item and arm, after its EndTurn", async () => {
+    const j = new Journal(join(dir(), "j.jsonl"));
+    const events = fixtureEvents(2).map((e) =>
+        e.kind === "user_turn" ? { ...e, probe: "q-1" } : e,
+    );
+    const driver: ArmDriver = {
+        reset: async () => undefined,
+        event: async (e) => (e.kind === "user_turn" ? { snapshot: `a:q-1:${e.id}` } : {}),
+        fault: async () => ({}),
+    };
+    await new Scheduler({
+        events,
+        faults: [],
+        journal: j,
+        settleMs: 0,
+        order: ["a"],
+        drivers: { a: driver },
+    }).run();
+    const kinds = j.entries.map((e) => e.kind);
+    const snaps = j.entries.filter((e) => e.kind === "SnapshotArtefacts");
+    expect(snaps.map((e) => e.snapshot)).toEqual(["a:q-1:e-000001"]);
+    expect(kinds.indexOf("SnapshotArtefacts")).toBe(kinds.indexOf("EndTurn") + 1);
+});

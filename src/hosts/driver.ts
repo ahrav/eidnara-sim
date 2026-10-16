@@ -9,10 +9,12 @@ import {
     writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import type { CallView } from "../grade/artefacts";
 import { processStart, running, stopOwnedTree } from "../run/procs";
 import { type ArmDriver, HarnessFailure, type ScenarioEvent } from "../run/scheduler";
 import type { FaultEpisode } from "../scenario/faults";
 import { DaemonStack, eidnaraOn, type HostContext, makeHost, type SimHost } from "./arms";
+import { SnapshotRecorder } from "./snapshot";
 
 interface ArmState {
     model: number;
@@ -27,6 +29,7 @@ export interface DriverOptions extends Omit<HostContext, "root" | "model"> {
     turnDeadlineMs: number;
     transcriptPaths: string[];
     loopStore: boolean;
+    callsFor?: (session: string) => CallView[];
     hostFactory?: (ctx: HostContext) => SimHost;
     onDaemonExit: (detail: Record<string, unknown>) => void;
 }
@@ -76,7 +79,11 @@ export class HostDriver implements ArmDriver {
     private sessionProject: string | null = null;
     private transcriptsChecked = false;
 
-    constructor(private readonly o: DriverOptions) {}
+    private readonly snapshots: SnapshotRecorder;
+
+    constructor(private readonly o: DriverOptions) {
+        this.snapshots = new SnapshotRecorder(dirname(o.armRoot), o.arm, o.callsFor ?? (() => []));
+    }
 
     private get armDir(): string {
         return dirname(this.o.armRoot);
@@ -160,6 +167,7 @@ export class HostDriver implements ArmDriver {
     async reset(): Promise<void> {
         await this.stop();
         this.model = 0;
+        this.snapshots.clear();
         await this.reapStale();
         for (const dir of [this.o.armRoot, this.storeRoot])
             rmSync(dir, { recursive: true, force: true });
@@ -197,17 +205,22 @@ export class HostDriver implements ArmDriver {
     private async openSession(e: ScenarioEvent, host: SimHost): Promise<void> {
         this.sessionProject = this.project(e);
         const connection = this.daemon?.connectionFile ?? null;
-        await host.openSession(this.workspace(this.sessionProject), e.session, connection);
+        const dir = this.workspace(this.sessionProject);
+        await host.openSession(dir, e.session, connection);
+        this.snapshots.sessionStart(e.session, this.sessionProject, dir);
         this.recordState();
     }
 
-    async event(e: ScenarioEvent): Promise<{ failed?: string }> {
+    async event(e: ScenarioEvent): Promise<{ failed?: string; snapshot?: string }> {
         const host = this.requireHost();
         if (e.kind === "session_start") {
             await this.openSession(e, host);
             return {};
         }
         if (e.kind === "session_end") {
+            const project = this.project(e);
+            this.snapshots.addTools(host.drainTools());
+            this.snapshots.sessionEnd(project, this.workspace(project));
             await host.closeSession();
             this.clearStoreFill();
             this.sessionProject = null;
@@ -219,9 +232,27 @@ export class HostDriver implements ArmDriver {
             this.applyDiff(e);
             return {};
         }
+        const project = this.project(e);
+        const dir = this.workspace(project);
+        const before = e.probe ? this.snapshots.tree(dir) : "";
         const result = await host.prompt(String(e.text), this.o.turnDeadlineMs);
         if (this.daemon && this.daemonPid() === null) this.o.onDaemonExit({ after: e.id });
-        return result.error ? { failed: result.error } : {};
+        const tools = host.drainTools();
+        this.snapshots.addTools(tools);
+        const outcome: { failed?: string; snapshot?: string } = {};
+        if (result.error) outcome.failed = result.error;
+        if (e.probe) {
+            const probe = { probe: e.probe, session: e.session, id: e.id };
+            outcome.snapshot = this.snapshots.capture(
+                probe,
+                project,
+                dir,
+                before,
+                tools,
+                !!result.error,
+            );
+        }
+        return outcome;
     }
 
     private project(e: ScenarioEvent): string {
