@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Rng } from "../rng";
 import { loadPrereg } from "../scenario/inputs";
-import { GradeRefused, type Snapshot } from "./artefacts";
+import { type CallView, GradeRefused, type Snapshot } from "./artefacts";
 import {
     BlindingRefused,
     blind,
@@ -33,6 +33,21 @@ const load = (name: string) =>
         judge_verdicts: Record<string, RawVerdict>;
         expect: { a: string; b: string };
     };
+
+const agentCall = (response_text: string): CallView => {
+    const view = {
+        seq: 1,
+        component: "agent",
+        turn: "e-1",
+        scenario_ms: 0,
+        status: 200,
+        error: null,
+        input_tokens: 1,
+        output_tokens: 1,
+        response_text,
+    };
+    return view;
+};
 
 function scripted(verdicts: Record<string, RawVerdict>): JudgeClient & { prompts: string[] } {
     const prompts: string[] = [];
@@ -112,17 +127,7 @@ describe("P7 judge path", () => {
                 {
                     id: `${id}:calls`,
                     class: "proxy-call",
-                    calls: [
-                        {
-                            seq: 1,
-                            component: "agent",
-                            turn: "e-1",
-                            scenario_ms: 0,
-                            input_tokens: 1,
-                            output_tokens: 1,
-                            response_text: text,
-                        },
-                    ],
+                    calls: [agentCall(text)],
                 },
             ],
         });
@@ -299,17 +304,7 @@ describe("P7 judge path", () => {
                 {
                     id: `${arm}:calls`,
                     class: "proxy-call",
-                    calls: [
-                        {
-                            seq: 1,
-                            component: "agent",
-                            turn: "e-1",
-                            scenario_ms: 0,
-                            input_tokens: 1,
-                            output_tokens: 1,
-                            response_text: "because",
-                        },
-                    ],
+                    calls: [agentCall("because")],
                 },
             ],
         });
