@@ -52,8 +52,8 @@ interposer environment, restarts it with SIGKILL against the same store, and
 stops it with SIGTERM so its store stays on disk; a daemon that outlives
 SIGTERM is killed with the stack's SIGKILL path and the stop still fails. It
 appends the daemon's output to the arm's `daemon.log` before each restart and
-at stop, opening the log with `O_NOFOLLOW` so a symlink left there fails the
-append; the v1
+after the daemon has stopped, opening the log with `O_NOFOLLOW` so a symlink
+left there fails the append; the v1
 stack keeps the last 256 KiB of that output, so a longer stretch keeps its
 tail.
 
@@ -121,7 +121,8 @@ proxy, with placeholder AWS credentials.
 
 The launcher binds kept paths read-write and read-only paths read-only, and
 refuses a writable kept path under a read-only one and any path that equals
-or contains a masked root (`/tmp`, the user's home), so narrow paths such as
+or contains a masked root (`/tmp`, the user's home), directly or through a
+symlink, so narrow paths such as
 `~/.cargo` stay visible while the home itself stays hidden. Configured paths
 must be normalized, since the launcher refuses others. The arm's own
 directories are read-write. The toolchain paths, the tool

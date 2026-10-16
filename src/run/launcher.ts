@@ -101,20 +101,28 @@ export function launch(
         }
         return `${k}=${v}`;
     });
+    const kept = keep.map(plainPath);
     const ro = readOnly.map(plainPath);
     // Binding a masked root, or a directory above one, would put the masked tree back in view.
     const masked = ["/tmp", realpathSync(homedir())];
-    for (const path of [...keep, ...ro]) {
-        const hidden = masked.find((m) => within(m, path));
+    const canonical = (path: string) => {
+        try {
+            return realpathSync(path);
+        } catch {
+            return path;
+        }
+    };
+    for (const path of [...kept, ...ro]) {
+        const hidden = masked.find((m) => within(m, path) || within(m, canonical(path)));
         if (hidden) throw new Error(`sandbox path ${path} would restore masked ${hidden}`);
     }
     // A read-only bind over a parent takes its writable children with it, so the two sets stay disjoint.
-    for (const path of keep) {
+    for (const path of kept) {
         const parent = ro.find((dir) => !ro.includes(path) && within(path, dir));
         if (parent)
             throw new Error(`sandbox path ${path} is kept writable under read-only ${parent}`);
     }
-    return [launcher, ...keep.map(plainPath), "--ro", ...ro, "--env", ...pairs, "--", ...command];
+    return [launcher, ...kept, "--ro", ...ro, "--env", ...pairs, "--", ...command];
 }
 
 export function sandboxAvailable(): boolean {

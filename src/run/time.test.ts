@@ -70,6 +70,11 @@ describe("time injection", () => {
         expect(() => launch("/x/sandbox.sh", ["/tmp"], {}, ["true"])).toThrow(
             "sandbox path /tmp would restore masked /tmp",
         );
+        const alias = join(realpathSync(mkdtempSync(join(tmpdir(), "sim-alias-"))), "home-link");
+        symlinkSync(home, alias);
+        expect(() => launch("/x/sandbox.sh", [], {}, ["true"], [alias])).toThrow(
+            `sandbox path ${alias} would restore masked ${home}`,
+        );
         expect(launch("/x/sandbox.sh", [], {}, ["true"], [join(home, ".cargo")])).toContain(
             join(home, ".cargo"),
         );

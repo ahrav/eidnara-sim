@@ -795,3 +795,26 @@ test("Pi launches the canonical node that preflight probed, whatever its install
     expect(install.bin).toBe(join(run, "opt/runtime"));
     expect(install.root).toBe(join(run, "opt"));
 });
+
+test("the daemon log keeps what the daemon wrote while it shut down", async () => {
+    const run = runDir();
+    let terminated = false;
+    const stack = new DaemonStack({
+        config: loadConfig(),
+        root: run,
+        dataDir: join(run, "data"),
+        logFile: join(run, "daemon.log"),
+        offsetFile: join(run, "offset"),
+        proxyHttp1: "",
+        proxyHttp2: "",
+        model: "m",
+    });
+    (stack as Untyped).stack = {
+        hostLog: () => (terminated ? "running\nshutting down\n" : "running\n"),
+        terminateHost: async () => {
+            terminated = true;
+        },
+    };
+    await stack.stop();
+    expect(readFileSync(join(run, "daemon.log"), "utf8")).toBe("running\nshutting down\n");
+});

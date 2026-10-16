@@ -185,6 +185,15 @@ export class DaemonStack {
     async stop(): Promise<void> {
         const stack = this.stack;
         if (!stack) return;
+        let stopError: unknown;
+        try {
+            await stack.terminateHost();
+        } catch (caught) {
+            // terminateHost gives up after SIGTERM; the stack's SIGKILL path ends the daemon.
+            stopError = caught;
+            await stack.crashHost();
+        }
+        // The log is taken after shutdown, so it keeps what the daemon wrote while stopping.
         let logError: unknown;
         try {
             this.saveLog();
@@ -192,13 +201,7 @@ export class DaemonStack {
             logError = caught;
         }
         this.stack = null;
-        try {
-            await stack.terminateHost();
-        } catch (caught) {
-            // terminateHost gives up after SIGTERM; the stack's SIGKILL path ends the daemon.
-            await stack.crashHost();
-            throw caught;
-        }
+        if (stopError !== undefined) throw stopError;
         if (logError !== undefined) throw logError;
     }
 }
