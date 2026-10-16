@@ -284,13 +284,14 @@ export class HostDriver implements ArmDriver {
             const project = this.project(e);
             host.drainTools();
             this.snapshots.sessionEnd(e.session, project, this.workspace(project));
-            // The session's background passes have settled by now, so a check they earned runs here.
-            const stores = this.owedStores();
             await host.closeSession();
             this.clearStoreFill();
             this.sessionProject = null;
             this.recordState();
             if (!this.transcriptsChecked) this.checkTranscripts(host);
+            // The session's background passes have settled by now, so a check they earned runs
+            // here, after the state write, so the recorded obligation outlives the journal append.
+            const stores = this.owedStores();
             return stores ? { stores } : {};
         }
         if (e.kind === "apply_diff") {

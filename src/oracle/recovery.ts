@@ -29,9 +29,13 @@ interface Turn {
     next: number;
 }
 
-/** One timeline for journal entries and plugin log stamps. */
+type Call = ArmLogs["calls"][number];
+
+/** One timeline for journal entries, call completions, and plugin log stamps. */
 interface Timeline {
     at(e: Entry): number;
+    /** When a call completed. */
+    done(c: Call): number;
     /** The timeline positions a log line's stamp can denote; empty for an unstamped line. */
     stamps(line: string): number[];
 }
@@ -62,7 +66,11 @@ function timeline(arm: ArmLogs, base: number): Timeline {
             const ms = logMs(line);
             return ms === null ? [] : [ms - base];
         };
-        return { at: (e) => e.scenario_ms, stamps };
+        return {
+            at: (e) => e.scenario_ms,
+            done: (c) => c.scenario_ms + (c.wall_ms - c.started_wall_ms),
+            stamps,
+        };
     }
     const spans = offsets.map((e, i) => ({
         offset: Number(e.offset_s) * 1000,
@@ -79,7 +87,7 @@ function timeline(arm: ArmLogs, base: number): Timeline {
                 return t >= span.from && t < span.to;
             });
     };
-    return { at: (e) => e.wall_ms, stamps };
+    return { at: (e) => e.wall_ms, done: (c) => c.wall_ms, stamps };
 }
 
 /** A turn's end: its `EndTurn`, or the `Event` a resume writes for a turn a harness kill cut. */
@@ -114,7 +122,8 @@ export function dirtyReasons(arm: ArmLogs, turn: Turn, tl: Timeline): string[] {
     const reasons: string[] = [];
     if (String(turn.end.outcome) !== "ok")
         reasons.push(`turn ended ${String(turn.end.outcome).slice(0, 80)}`);
-    const calls = arm.calls.filter((c) => c.turn === turn.event);
+    // The turn's calls, from where its window opens: a mid-turn fault excludes the calls before it.
+    const calls = arm.calls.filter((c) => c.turn === turn.event && tl.done(c) >= turn.from);
     if (calls.some((c) => c.status >= 400 && c.status < 500)) reasons.push("gateway 4xx");
     if (calls.some((c) => OVERFLOW.test(c.error ?? ""))) reasons.push("overflow");
     const failOpen = arm.pluginLog.filter(

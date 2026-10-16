@@ -14,6 +14,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
+import { SEGMENTS_DDL } from "../../tests/segments";
 import { loadConfig } from "../config/config";
 import type { CallView } from "../grade/artefacts";
 import { gradeItem } from "../grade/probes";
@@ -480,10 +481,10 @@ describe("HostDriver faults", () => {
         const daemon = fakeDaemon(10);
         mkdirSync(dirname(driver.storeDb), { recursive: true });
         const db = new Database(driver.storeDb);
+        db.run(SEGMENTS_DDL);
         db.run(
-            "create table history_segments (session_id text, sequence integer, start_message integer, end_message integer)",
+            "insert into history_segments (session_id, sequence, start_message, end_message) values ('s', 1, 0, 9)",
         );
-        db.run("insert into history_segments values ('s', 1, 0, 9)");
         db.close();
         const phases: string[] = [];
         daemon.crash = async () => {
@@ -499,7 +500,9 @@ describe("HostDriver faults", () => {
         const evidence = await driver.fault(episode("daemon_sigkill_mid_fold"));
         expect(phases).toEqual(["crash:10", "start"]);
         expect(evidence.pid_after).toBe(11);
-        expect((evidence.store as StoreCheck).ranges).toEqual([["s", 1, 0, 9]]);
+        expect((evidence.store as StoreCheck).ranges.map((r) => r.slice(0, 4))).toEqual([
+            ["s", 1, 0, 9],
+        ]);
     });
 
     test("a mid-fold kill's turn carries the store check once the replacement served a pass", async () => {
@@ -602,6 +605,9 @@ describe("HostDriver faults", () => {
         pluginLog(driver, PASS);
         const end = await driver.event(ev("session_end", { id: "e-2" }));
         expect(end.stores?.map((s) => s.fault)).toEqual(["f-daemon_restart"]);
+        // The recorded obligation outlives the session end until the scheduler has journaled it.
+        const recorded = () => JSON.parse(readFileSync(join(driver.armDir, "state.json"), "utf8"));
+        expect(Object.keys(recorded().store_faults)).toEqual(["f-daemon_restart"]);
         await driver.event(ev("session_start", { id: "e-3", session: "s-0001" }));
         await driver.fault(episode("daemon_sigkill_mid_fold"));
         await driver.event(ev("user_turn", { id: "e-4", text: "go", session: "s-0001" }));
@@ -644,9 +650,7 @@ describe("HostDriver faults", () => {
         };
         driver.daemon = daemon as unknown as DaemonStack;
         mkdirSync(dirname(driver.storeDb), { recursive: true });
-        new Database(driver.storeDb).run(
-            "create table history_segments (session_id text, sequence integer, start_message integer, end_message integer)",
-        );
+        new Database(driver.storeDb).run(SEGMENTS_DDL);
         await driver.finish();
         expect(stopped).toBe(true);
         const check = JSON.parse(readFileSync(join(driver.armDir, "store-check.json"), "utf8"));

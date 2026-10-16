@@ -498,8 +498,11 @@ describe("store checks outside turns", () => {
         const store = { integrity: "ok", segments: 0, overlaps: [], ranges: [] };
         const driver: ArmDriver = {
             reset: async () => undefined,
-            event: async (e) =>
-                e.kind === "session_end" ? { stores: [{ fault: "r-1", store }] } : {},
+            event: async (e) => {
+                if (e.kind === "session_end") return { stores: [{ fault: "r-1", store }] };
+                if (e.kind === "user_turn") return { stores: [{ fault: "r-0", store }] };
+                return {};
+            },
             fault: async () => ({}),
             finish: async () => ({ stores: [{ fault: "r-2", store }] }),
         };
@@ -513,10 +516,14 @@ describe("store checks outside turns", () => {
         }).run();
         const checks = j.entries.filter((e) => e.kind === "StoreChecked");
         expect(checks.map((e) => [e.fault, e.event])).toEqual([
+            ["r-0", "e-000001"],
             ["r-1", "e-999999"],
             ["r-2", null],
         ]);
         const kinds = j.entries.map((e) => e.kind);
+        // A turn's check precedes its EndTurn, so a kill between the two replays the turn with
+        // the check already on record, and the arm's last check precedes EndArm.
+        expect(kinds.indexOf("StoreChecked")).toBeLessThan(kinds.indexOf("EndTurn"));
         expect(kinds.lastIndexOf("StoreChecked")).toBeLessThan(kinds.indexOf("EndArm"));
     });
 });

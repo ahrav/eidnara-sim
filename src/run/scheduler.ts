@@ -288,12 +288,13 @@ export class Scheduler {
             }
             const state = outcome.failed ? "failed" : "completed";
             const item = e.probe ? { probe: e.probe, state } : {};
+            // The checks go first: a kill before EndTurn replays the turn with them on record.
+            for (const s of outcome.stores ?? [])
+                this.log({ kind: "StoreChecked", event: e.id, ...s });
             const snapshot = outcome.snapshot ? { snapshot: outcome.snapshot } : {};
             const end = { event: e.id, outcome: outcome.failed ?? "ok", ...item, ...snapshot };
             this.log({ kind: "EndTurn", ...end });
             this.snapshotTurn(end);
-            for (const s of outcome.stores ?? [])
-                this.log({ kind: "StoreChecked", event: e.id, ...s });
             await Bun.sleep(this.o.settleMs ?? 1_000);
         } else {
             const outcome = await driver.event(e);

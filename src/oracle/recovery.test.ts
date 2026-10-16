@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { SEGMENTS_DDL } from "../../tests/segments";
 import { checkStore, type StoreCheck } from "../hosts/storecheck";
 import type { Entry } from "../run/journal";
 import { loadPrereg } from "../scenario/inputs";
@@ -47,7 +48,7 @@ function arm(journal: Entry[], pluginLog: string[] = [], finalStore?: StoreCheck
         finalStore,
     };
 }
-const SEGMENT: StoreCheck["ranges"][number] = ["s", 1, 0, 9];
+const SEGMENT: StoreCheck["ranges"][number] = ["s", 1, 0, 9, "d1"];
 const store = (integrity: string, overlaps = 0, ranges = [SEGMENT]): StoreCheck => ({
     integrity,
     segments: ranges.length,
@@ -140,7 +141,7 @@ describe("recovery oracles", () => {
             return [r?.recovered, r?.reasons];
         };
         const [clean] = recoveries(
-            run([arm(journal(ok, store("ok", 0, [SEGMENT, ["s", 2, 10, 19]])), [], ok)]),
+            run([arm(journal(ok, store("ok", 0, [SEGMENT, ["s", 2, 10, 19, "d2"]])), [], ok)]),
         );
         expect(clean?.recovered).toBe(true);
         expect(clean?.store).toEqual({ after_crash: "ok", post_crash_pass: "ok", final: "ok" });
@@ -156,9 +157,13 @@ describe("recovery oracles", () => {
             false,
             ["1 overlapping history segments, post crash pass"],
         ]);
-        expect(verdict(ok, store("ok", 0, [["s", 1, 0, 12]]), ok)).toEqual([
+        expect(verdict(ok, store("ok", 0, [["s", 1, 0, 12, "d1"]]), ok)).toEqual([
             false,
-            ["post-crash pass removed or changed segments s/1/0/9"],
+            ["post-crash pass removed or changed segments s/1/0/9/d1"],
+        ]);
+        expect(verdict(ok, store("ok", 0, [["s", 1, 0, 9, "d9"]]), ok)).toEqual([
+            false,
+            ["post-crash pass removed or changed segments s/1/0/9/d1"],
         ]);
         expect(verdict(undefined, ok, ok)).toEqual([false, ["store unchecked: after crash"]]);
         expect(verdict(ok, undefined, ok)).toEqual([false, ["store unchecked: post crash pass"]]);
@@ -184,32 +189,41 @@ describe("recovery oracles", () => {
     test("the store check reports integrity and overlapping history segments", () => {
         const path = join(mkdtempSync(join(tmpdir(), "sim-store-")), "store.db");
         const db = new Database(path);
+        db.run(SEGMENTS_DDL);
         db.run(
-            "create table history_segments (session_id text, sequence integer, start_message integer, end_message integer)",
-        );
-        db.run(
-            "insert into history_segments values ('s', 1, 0, 9), ('s', 2, 10, 19), ('t', 1, 0, 5)",
+            "insert into history_segments (session_id, sequence, start_message, end_message, content) values ('s', 1, 0, 9, 'first'), ('s', 2, 10, 19, 'second'), ('t', 1, 0, 5, 'other')",
         );
         db.close();
-        expect(checkStore(path)).toEqual({
-            integrity: "ok",
-            segments: 3,
-            overlaps: [],
-            ranges: [
-                ["s", 1, 0, 9],
-                ["s", 2, 10, 19],
-                ["t", 1, 0, 5],
-            ],
-        });
+        const checked = checkStore(path);
+        expect(checked).toMatchObject({ integrity: "ok", segments: 3, overlaps: [] });
+        expect(checked.ranges.map((r) => r.slice(0, 4))).toEqual([
+            ["s", 1, 0, 9],
+            ["s", 2, 10, 19],
+            ["t", 1, 0, 5],
+        ]);
+        const digests = checked.ranges.map((r) => r[4]);
+        expect(digests.every((d) => /^[0-9a-f]{16}$/.test(d))).toBe(true);
+        expect(new Set(digests).size).toBe(3);
+        const rewritten = new Database(path);
+        rewritten.run(
+            "update history_segments set content = 'rewritten' where session_id = 's' and sequence = 1",
+        );
+        rewritten.close();
+        const after = checkStore(path).ranges;
+        expect(after[0]?.slice(0, 4)).toEqual(["s", 1, 0, 9]);
+        expect(after[0]?.[4]).not.toBe(digests[0]);
+        expect(after.slice(1)).toEqual(checked.ranges.slice(1));
         const again = new Database(path);
-        again.run("insert into history_segments values ('s', 3, 15, 25)");
+        again.run(
+            "insert into history_segments (session_id, sequence, start_message, end_message) values ('s', 3, 15, 25)",
+        );
         again.close();
         expect(checkStore(path).overlaps).toEqual([{ session: "s", first: 2, second: 3 }]);
         expect(checkStore(join(path, "missing")).integrity).toBe("missing");
         const nested = new Database(path);
         nested.run("delete from history_segments");
         nested.run(
-            "insert into history_segments values ('s', 1, 0, 30), ('s', 2, 5, 10), ('s', 3, 15, 20)",
+            "insert into history_segments (session_id, sequence, start_message, end_message) values ('s', 1, 0, 30), ('s', 2, 5, 10), ('s', 3, 15, 20)",
         );
         nested.close();
         expect(checkStore(path).overlaps).toEqual([
@@ -251,6 +265,38 @@ describe("recovery anchors", () => {
 });
 
 describe("recovery windows", () => {
+    test("a call that completed before a mid-turn fault does not dirty the turn it cut", () => {
+        seq = 0;
+        const journal = [
+            entry("BeginTurn", 10, { event: "e-1" }),
+            entry("FaultFired", 20, { fault: "k", type: "daemon_sigkill_mid_fold" }),
+            entry("FaultObserved", 21, {
+                fault: "k",
+                type: "daemon_sigkill_mid_fold",
+                evidence: { store: store("ok") },
+            }),
+            entry("EndTurn", 30, { event: "e-1", outcome: "ok" }),
+            entry("StoreChecked", 30, { event: "e-1", fault: "k", store: store("ok") }),
+        ];
+        const call = (scenario_ms: number, status: number) =>
+            ({
+                turn: "e-1",
+                status,
+                error: null,
+                started_wall_ms: scenario_ms,
+                wall_ms: scenario_ms + 2,
+                scenario_ms,
+            }) as unknown as ArmLogs["calls"][number];
+        const before = arm(journal, [], store("ok"));
+        before.calls = [call(12, 400), call(25, 200)];
+        const [r] = recoveries(run([before]));
+        expect([r?.recovered, r?.turns_to_first_clean, r?.reasons]).toEqual([true, 1, []]);
+        const after = arm(journal, [], store("ok"));
+        after.calls = [call(12, 200), call(25, 400)];
+        const [dirty] = recoveries(run([after]));
+        expect([dirty?.recovered, dirty?.reasons]).toEqual([false, ["e-1: gateway 4xx"]]);
+    });
+
     test("a clean turn's window closes when the next turn begins, even if that turn never ends", () => {
         seq = 0;
         const journal = [
