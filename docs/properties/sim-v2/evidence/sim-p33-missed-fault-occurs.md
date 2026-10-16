@@ -13,8 +13,8 @@ v2 harness before any harness code existed.
 
 A scheduled fault ends `missed` at least once per campaign.
 
-No harness code, test, or run exists yet. The surface lands in M3
-(#1027).
+M3 (#1027) reports an armed episode with no later host call, or a host call
+outside the window, as `untriggered`; tests construct both.
 
 ## Failure scenario
 

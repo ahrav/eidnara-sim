@@ -14,8 +14,13 @@ v2 harness before any harness code existed.
 Every forwarded record carries the provider `finish_reason` or an explicit
 `stream_cut` marker.
 
-No harness code, test, or run exists yet. The surface lands in M3
-(#1027).
+M3 (#1027) records `finish_reason` from the stream's `messageStop` or the
+response's `stopReason`, `stream_cut` when a stream ends or fails before both
+`messageStop` and `metadata` arrive, and `null` when the call had no answer;
+the writer refuses a record without the field. Tests check `end_turn` on a
+forwarded call, the host-visible `max_tokens` on an injected truncation, and
+`stream_cut` on a forwarded stream that stops early, carries an in-stream
+exception, or throws after `messageStop`.
 
 ## Failure scenario
 

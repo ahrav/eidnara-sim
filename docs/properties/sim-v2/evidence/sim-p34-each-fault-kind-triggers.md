@@ -16,8 +16,9 @@ Each fault kind triggers at least once: 429, 5xx, timeout,
 stream, SIGKILL mid-fold, restart between sessions, ENOSPC, plugin reload, host
 upgrade, model switch, two clients on one daemon, and laptop sleep.
 
-No harness code, test, or run exists yet. The surface lands in M3
-(#1027).
+M3 (#1027) implements an injected answer for each of the eight provider fault
+types, and a test triggers each one under each strategy. The infrastructure
+fault types land with the scheduler in M4.
 
 ## Failure scenario
 

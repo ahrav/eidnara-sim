@@ -14,8 +14,9 @@ v2 harness before any harness code existed.
 Every record with `fault_ref` set names a fault instance in state `armed` or
 `triggered` at that sequence.
 
-No harness code, test, or run exists yet. The surface lands in M3
-(#1027).
+M3 (#1027) injects only episodes the scheduler arms; an episode never armed
+injects nothing, and a test checks that its witness stays `untriggered` with no
+injected record.
 
 ## Failure scenario
 

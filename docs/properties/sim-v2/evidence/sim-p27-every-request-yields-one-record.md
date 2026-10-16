@@ -14,8 +14,10 @@ v2 harness before any harness code existed.
 Proxy requests received equal call records journaled per arm, including refused
 requests recorded as `rejected`.
 
-No harness code, test, or run exists yet. The surface lands in M3
-(#1027).
+M3 (#1027) writes one record per request, including requests the gateway
+rejects (unknown route, a body that is not a JSON object, a malformed path) and
+requests whose upstream stream throws before its first event; tests check each
+case and that no request is left in flight.
 
 ## Failure scenario
 

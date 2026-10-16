@@ -14,8 +14,10 @@ v2 harness before any harness code existed.
 Every record has exactly one component in the fixed set, and unknown shapes map
 to `other`, never dropped.
 
-No harness code, test, or run exists yet. The surface lands in M3
-(#1027).
+M3 (#1027) tags every record with a component from a closed set: asserted by
+the `x-sim-component` header for the user simulator and the judge, inferred
+from the request body otherwise, and `rejected` for refused requests. The
+writer refuses a record without a known component and source.
 
 ## Failure scenario
 
