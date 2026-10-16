@@ -147,15 +147,6 @@ function startTicks(pid: number): number | "gone" | "unknown" {
     }
 }
 
-function alive(pid: number): boolean {
-    try {
-        process.kill(pid, 0);
-        return true;
-    } catch (caught) {
-        return (caught as { code?: string }).code === "EPERM";
-    }
-}
-
 /** A holder is alive when its incarnation still runs; a recycled pid is a dead holder. */
 function holderAlive(held: Lease, mine: Lease): boolean {
     if (held.boot !== undefined && mine.boot !== undefined && held.boot !== mine.boot) {
