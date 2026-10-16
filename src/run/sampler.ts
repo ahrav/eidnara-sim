@@ -77,6 +77,8 @@ export class ResourceSampler {
             storeDir: string;
             scenarioMs: () => number;
             onBusy: (busy: boolean) => void;
+            /** Receives a failed interval sample; the timer stops first. Absent, the failure throws. */
+            onError?: (caught: unknown) => void;
         },
     ) {}
 
@@ -111,7 +113,15 @@ export class ResourceSampler {
     start(): void {
         if (this.timer) return;
         this.sample();
-        this.timer = setInterval(() => this.sample(), this.o.intervalMs);
+        this.timer = setInterval(() => {
+            try {
+                this.sample();
+            } catch (caught) {
+                if (!this.o.onError) throw caught;
+                this.stop();
+                this.o.onError(caught);
+            }
+        }, this.o.intervalMs);
     }
 
     stop(): void {

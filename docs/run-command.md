@@ -22,8 +22,18 @@ sees (200,000 by default), and `--models` lists the models `model_switch`
 cycles through (`agent_model` by default). The manifest records every one of
 these values. The run refuses a seed outside the pre-registration, an arm
 outside the seed's order, a non-positive count, a `--faults` file that is not
-an array of episodes valid against the compiled scenario (`validateFault`),
-and an `--out` directory inside the Eidnara checkout, by resolved path.
+an array of complete episodes (known type and strategy, numeric params, a
+seam, unique ids) valid against the compiled scenario (`validateFault`),
+an `--out` directory that overlaps the Eidnara checkout in either direction
+by resolved path (an output directory above the checkout would derive an arm
+root inside it), a schedule with a fault type the host driver has no
+mechanism for (`host_upgrade`, `two_hosts_one_daemon`, so a full XL run is
+refused up front), and a `model_switch` schedule with fewer than two distinct
+models. Before taking the lease, every artifact the run appends to or
+replaces (`journal.jsonl`, `calls.jsonl`, the manifest, the scenario, the
+fault and preflight files, and each arm's `resources.jsonl`, clock offset,
+and `state.json`) must be a regular file or absent; a symlink there is
+refused.
 
 ## Run sequence
 
@@ -31,7 +41,10 @@ and an `--out` directory inside the Eidnara checkout, by resolved path.
    as a normal end, which runs once however many paths reach it, and exit
    with 130 or 143. After a signal, every driver call refuses with
    `HarnessFailure`, so the scheduler starts nothing the teardown has already
-   passed, and later signals wait for the teardown. The tier's
+   passed; the teardown itself waits up to thirty seconds for the driver call
+   in flight (a reset, resume, event, or fault) before it stops the arm, so a
+   daemon or host whose start is still pending is stopped rather than
+   orphaned. Later signals wait for the teardown. The tier's
    `tier_wall_budget_ms` starts a timer at the same point; once it fires,
    every driver call refuses the same way, so the run stops at the next
    event and fails.
@@ -42,17 +55,25 @@ and an `--out` directory inside the Eidnara checkout, by resolved path.
 3. Run `preflight` (`docs/time.md`). On the first invocation, write
    `manifest.json` with the tier, seed, host, arm order, event count, context
    limit, models, fault override, scenario hash, pre-registration hash,
-   eidnara commit, base wall time, and preflight result. A later invocation
-   refuses when any option it states differs from the manifest, when the
-   scenario hash, pre-registration hash, or eidnara commit changed, when
-   an interception result changed, or when the selected host's version or
-   transcript paths changed, and appends its preflight result to
-   `preflight.jsonl`.
+   eidnara commit, eidnara-sim commit, the SHA-256 of the daemon, OpenCode,
+   and Pi executables, base wall time, and preflight result.
+   A later invocation refuses when any option it states differs from the
+   manifest, when the manifest's arm order names an arm outside the tier's
+   pre-registered arms, when the scenario hash, pre-registration hash,
+   eidnara commit, eidnara-sim commit, or an executable digest changed, when
+   an interception result
+   changed, or when the selected host's version or transcript paths changed,
+   and appends its preflight result to `preflight.jsonl`. Every invocation
+   then journals a `Preflight` entry with its interception results and host
+   identities before `StartRun` or `ResumeRun` (SIM-P16).
 4. Start the capture proxy; its records append to `calls.jsonl`, and a
    reopened writer continues the sequence after the last complete record. A
-   cut last line is dropped; a complete line that fails to parse refuses the
-   run. The fault injector replays the existing records, so a fault injected
-   and observed before a hard kill keeps its witness in the resumed run.
+   cut last line is dropped; a complete line that is not a record in
+   sequence refuses the run. The fault injector replays the existing
+   records, so a fault injected and observed before a hard kill keeps its
+   witness in the resumed run. Witnesses are kept per arm: the scheduler arms
+   each proxy fault for the arm it is running, and `faults.jsonl` lists one
+   witness per arm and episode.
 5. Run the scheduler over the arms. On resume, each started arm resumes
    through its driver.
 6. At the end, or after a failure or signal, stop each arm's sampler and
@@ -66,18 +87,22 @@ and an `--out` directory inside the Eidnara checkout, by resolved path.
    and again at teardown.
 
 The scheduler's `onClock` hook writes each arm's offset file, so every
-process the arm launches reads `base_wall_ms + scenario_ms`. The proxy's
-`observe` event for a background component (history summarizer, memory
-capture, memory classifier, context researcher, title, native compaction)
-registers a job, and that call's record ends it; jobs are matched per arm and
-component. The resource sampler takes a baseline sample when an arm starts,
+process the arm launches reads `base_wall_ms + scenario_ms`. A request that
+arrives while no turn is open registers a `request-<n>` job from its first
+byte, released once the call is classified, so a slow upload cannot straddle a
+clock jump. The proxy's `observe` event for a background component (history
+summarizer, memory capture, memory classifier, context researcher, title,
+native compaction) registers a job, and the completion of that same call ends
+it, whether its record was written or refused. The resource sampler takes a baseline sample when an arm starts,
 one at the end of every user turn, and one per pre-registered interval, and
 registers `daemon-cpu-<arm>` while the daemon's CPU fraction is above the
 pre-registered threshold, with one job id per busy period. Both hold the
 clock (SIM-P13, OQ-2). Job ids continue from the journal's count, so a
 resumed run issues new ones. A job that holds the clock longer than the
 pre-registered `job_deadline_ms` (20 minutes at S) after its `RegisterJob`
-stops the run with the held ids (SIM-L02).
+stops the run with the held ids (SIM-L02). A periodic sample that fails
+(for example, a full disk under `resources.jsonl`) stops the sampler and the
+run the same way a signal does, so the teardown runs.
 
 ## Journal check
 
@@ -88,9 +113,10 @@ event times and reports, per arm:
 |---|---|
 | `decreasing_scenario_ms` | entries whose `scenario_ms` falls below the arm's previous entry (SIM-P11) |
 | `advance_while_busy` | `AdvanceClock` entries while a turn or job is open, counting an interrupted turn and a job ended on resume as closed (SIM-P12) |
-| `off_schedule_jumps` | jumps, event or sleep, that land anywhere but the earliest unrun scheduled time after `from_ms` (SIM-P14, SIM-P18); a sleep is the jump onto its session's first event, so its size is the remaining gap, not the nominal `duration_ms` |
+| `off_schedule_jumps` | jumps, event or sleep, that land anywhere but the earliest unrun scheduled time at or after `from_ms` (SIM-P14, SIM-P18); a sleep is the jump onto its session's first event, so its size is the remaining gap, not the nominal `duration_ms` |
 | `events_inside_sleep` | sleep jumps that pass an unrun scheduled event (SIM-P18) |
-| `jobs_held_after_turn` | jobs registered with no turn or other job open (SIM-P13) |
+| `repeated_sleeps` | a second sleep jump for the same fault in one arm |
+| `jobs_held_after_turn` | jobs that held the clock while no turn was open, whether registered after the turn or registered inside it and outliving it, once per job at its `RegisterJob` seq (SIM-P13) |
 | `next_event_jumps`, `sleep_jumps` | how many jumps of each kind the check covered |
 
 ## Live witness
@@ -111,8 +137,10 @@ so folds happen within six sessions, and writes `witness.json`:
   command again, and compares each turn's call count before and after.
 
 `--summarize` rebuilds `witness.json` from an existing directory. The
-script exits nonzero when a run it started exits unexpectedly or never
-reaches the awaited state within twenty minutes, or when a check fails:
+script exits nonzero when a run it started exits unexpectedly, never
+reaches the awaited state within twenty minutes, or runs past the S wall
+budget plus five minutes (it is then killed and reported `timed_out`), or
+when a check fails:
 `scheduled` exits 0, `rogue` exits nonzero with the daemon-exit refusal,
 `resume` is killed with 137 while `e-000007` has `BeginTurn` and no
 `EndTurn`, then exits 0 with no turn rebilled, and every finished run ends

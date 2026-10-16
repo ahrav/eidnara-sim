@@ -5,7 +5,9 @@ import type { CallRecord, Component } from "./records";
 
 export type ProxyFault = Pick<FaultEpisode, "id" | "type" | "strategy" | "params">;
 
+/** One arm's execution of one episode; the scheduler arms and observes each arm separately. */
 export interface Witness {
+    arm: string;
     fault: string;
     type: FaultType;
     armed: boolean;
@@ -19,6 +21,7 @@ export interface WitnessReport extends Witness {
 }
 
 interface Armed {
+    arm: string;
     fault: ProxyFault;
     calls: number;
 }
@@ -28,48 +31,57 @@ export const TARGET: Component = "agent";
 export class FaultInjector {
     private readonly armed = new Map<string, Armed>();
     private readonly witnesses = new Map<string, Witness>();
-    private readonly pending: { fault: string; at: number; call: number }[] = [];
+    private readonly pending: { key: string; arm: string; at: number; call: number }[] = [];
 
     constructor(
         private readonly faults: ProxyFault[],
         private readonly rng: Rng,
         private readonly windowMs: number,
-    ) {
-        for (const f of faults) {
-            this.witnesses.set(f.id, {
-                fault: f.id,
-                type: f.type,
-                armed: false,
-                injected_seq: [],
-                host_observed_seq: [],
-                proxy_retried: false,
-            });
-        }
-    }
+    ) {}
 
-    arm(id: string): void {
+    private witness(arm: string, id: string): Witness {
+        const key = `${arm}/${id}`;
+        let w = this.witnesses.get(key);
+        if (w) return w;
         const fault = this.faults.find((f) => f.id === id);
         if (!fault) throw new Error(`unknown proxy fault ${id}`);
-        this.armed.set(id, { fault, calls: 0 });
-        (this.witnesses.get(id) as Witness).armed = true;
+        w = {
+            arm,
+            fault: id,
+            type: fault.type,
+            armed: false,
+            injected_seq: [],
+            host_observed_seq: [],
+            proxy_retried: false,
+        };
+        this.witnesses.set(key, w);
+        return w;
     }
 
-    disarm(id: string): void {
-        this.armed.delete(id);
+    arm(id: string, arm: string): void {
+        const w = this.witness(arm, id);
+        const fault = this.faults.find((f) => f.id === id) as ProxyFault;
+        this.armed.set(`${arm}/${id}`, { arm, fault, calls: 0 });
+        w.armed = true;
     }
 
-    take(component: Component, call: number): ProxyFault | null {
+    disarm(id: string, arm: string): void {
+        this.armed.delete(`${arm}/${id}`);
+    }
+
+    take(component: Component, call: number, arm: string): ProxyFault | null {
         if (component !== TARGET) return null;
-        for (const [id, a] of this.armed) {
+        for (const [key, a] of this.armed) {
+            if (a.arm !== arm) continue;
             const { strategy, params } = a.fault;
             a.calls++;
             const limit =
                 strategy === "persistent"
                     ? Number.POSITIVE_INFINITY
                     : (params.count ?? params.calls ?? 1);
-            if (a.calls >= limit) this.armed.delete(id);
+            if (a.calls >= limit) this.armed.delete(key);
             if (strategy !== "intermittent" || this.rng.next() < (params.probability ?? 1)) {
-                this.pending.push({ fault: id, at: Date.now(), call });
+                this.pending.push({ key, arm, at: Date.now(), call });
                 return a.fault;
             }
         }
@@ -77,22 +89,24 @@ export class FaultInjector {
     }
 
     observe(record: CallRecord, call: number): void {
-        for (const p of this.pending.filter((x) => call > x.call)) {
+        for (const p of this.pending.filter((x) => x.arm === record.arm && call > x.call)) {
             const inWindow = record.started_wall_ms <= p.at + this.windowMs;
             const sameCaller = record.component === TARGET;
             if (sameCaller && inWindow) {
-                (this.witnesses.get(p.fault) as Witness).host_observed_seq.push(record.seq);
+                (this.witnesses.get(p.key) as Witness).host_observed_seq.push(record.seq);
             }
             if (!inWindow || sameCaller) this.pending.splice(this.pending.indexOf(p), 1);
         }
         if (record.fault_ref === null) return;
-        const w = this.witnesses.get(record.fault_ref) as Witness;
+        const w = this.witness(record.arm, record.fault_ref);
         w.injected_seq.push(record.seq);
         if (record.proxy_retries > 0) w.proxy_retried = true;
     }
 
-    report(): WitnessReport[] {
-        return [...this.witnesses.values()].map((w) => {
+    /** Every episode's witness for `arm`; an episode never armed there is `untriggered`. */
+    report(arm: string): WitnessReport[] {
+        return this.faults.map((f) => {
+            const w = this.witness(arm, f.id);
             const fired = w.injected_seq.length > 0 && w.host_observed_seq.length > 0;
             return { ...w, status: fired ? "fired" : "untriggered" };
         });
@@ -105,12 +119,15 @@ export class FaultInjector {
      */
     restore(prior: CallRecord[]): void {
         prior.forEach((record, call) => {
-            const w = record.fault_ref === null ? undefined : this.witnesses.get(record.fault_ref);
-            if (w) {
+            const known =
+                record.fault_ref !== null && this.faults.some((f) => f.id === record.fault_ref);
+            if (known) {
+                const w = this.witness(record.arm, record.fault_ref as string);
                 w.armed = true;
-                this.pending.push({ fault: w.fault, at: record.started_wall_ms, call });
+                const key = `${record.arm}/${w.fault}`;
+                this.pending.push({ key, arm: record.arm, at: record.started_wall_ms, call });
             }
-            if (w || record.fault_ref === null) this.observe(record, call);
+            if (known || record.fault_ref === null) this.observe(record, call);
         });
         this.pending.length = 0;
     }

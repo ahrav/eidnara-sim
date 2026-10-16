@@ -26,9 +26,10 @@ export interface ArmDriver {
     finish?(): Promise<void>;
 }
 
+/** Proxy faults arm per arm, since each arm executes the schedule on its own. */
 export interface ProxyControl {
-    arm(id: string): void;
-    disarm(id: string): void;
+    arm(id: string, arm: string): void;
+    disarm(id: string, arm: string): void;
 }
 
 export class HarnessFailure extends Error {}
@@ -204,11 +205,12 @@ export class Scheduler {
             );
             if (end && done.has(end.id)) continue;
             const t = f.trigger;
+            const index = t.kind === "user_turn" ? t.n - 1 : 0;
             const target = this.o.events.find(
-                (e) => t.kind === "user_turn" && e.session === t.session && e.index === t.n - 1,
+                (e) => e.kind === "user_turn" && e.session === t.session && e.index === index,
             );
             if (f.strategy === "persistent" || (target && !begun.has(target.id)))
-                this.o.proxy?.arm(f.id);
+                this.o.proxy?.arm(f.id, this.arm as string);
         }
     }
 
@@ -251,7 +253,7 @@ export class Scheduler {
         this.fired.add(`${this.arm}/${f.id}`);
         this.log({ kind: "FaultFired", fault: f.id, type: f.type, layer: f.seam.layer });
         if (f.seam.layer === PROXY_LAYER) {
-            this.o.proxy?.arm(f.id);
+            this.o.proxy?.arm(f.id, this.arm as string);
             return;
         }
         if (f.type === "laptop_sleep") return;
@@ -305,7 +307,7 @@ export class Scheduler {
         if (e.kind === "session_end") {
             for (const f of this.o.faults) {
                 if (f.trigger.session === e.session && f.seam.layer === PROXY_LAYER)
-                    this.o.proxy?.disarm(f.id);
+                    this.o.proxy?.disarm(f.id, arm);
             }
             this.session = null;
         }

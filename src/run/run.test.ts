@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SimConfig } from "../config/config";
@@ -13,13 +13,29 @@ import {
     loadManifest,
     loadScenario,
     type RunOptions,
+    requireMechanisms,
     requireOutsideCheckout,
+    requirePlainArtifacts,
     runSteps,
 } from "./run";
 
 const ROOT = join(import.meta.dir, "..", "..");
 const dir = () => mkdtempSync(join(tmpdir(), "sim-run-"));
-const config = { eidnara_checkout: ROOT, bedrock: { aws_profile: "", region: "" } } as SimConfig;
+const bins = dir();
+const piInstall = join(bins, "pi");
+mkdirSync(join(piInstall, "node_modules/@earendil-works/pi-coding-agent/dist"), {
+    recursive: true,
+});
+writeFileSync(join(piInstall, "node_modules/@earendil-works/pi-coding-agent/dist/cli.js"), "pi 1");
+writeFileSync(join(bins, "daemon"), "daemon 1");
+writeFileSync(join(bins, "opencode"), "opencode 1");
+const config = {
+    eidnara_checkout: ROOT,
+    daemon_binary: join(bins, "daemon"),
+    opencode_binary: join(bins, "opencode"),
+    pi_install: piInstall,
+    bedrock: { aws_profile: "", region: "" },
+} as SimConfig;
 
 function scenarioBody(seed = 101, tier = "S") {
     return {
@@ -77,12 +93,52 @@ describe("run inputs", () => {
         mkdirSync(join(checkout, "target"), { recursive: true });
         symlinkSync(checkout, join(root, "link"));
         expect(() => requireOutsideCheckout(join(checkout, "runs/x"), checkout)).toThrow(
-            /inside the Eidnara checkout/,
+            /overlaps the Eidnara checkout/,
         );
-        expect(() => requireOutsideCheckout(checkout, checkout)).toThrow(/inside/);
-        expect(() => requireOutsideCheckout(join(root, "link/runs/x"), checkout)).toThrow(/inside/);
+        expect(() => requireOutsideCheckout(checkout, checkout)).toThrow(/overlaps/);
+        expect(() => requireOutsideCheckout(join(root, "link/runs/x"), checkout)).toThrow(
+            /overlaps/,
+        );
+        expect(() => requireOutsideCheckout(root, checkout)).toThrow(/overlaps/);
         expect(() => requireOutsideCheckout(join(root, "eidnara-runs/x"), checkout)).not.toThrow();
         expect(() => requireOutsideCheckout(join(root, "runs/x"), checkout)).not.toThrow();
+    });
+
+    test("a symlinked run artifact in an accepted output directory is refused", () => {
+        const root = dir();
+        const out = join(root, "run");
+        mkdirSync(join(out, "eidnara"), { recursive: true });
+        writeFileSync(join(root, "elsewhere.jsonl"), "");
+        expect(() => requirePlainArtifacts(out, ["host", "eidnara"])).not.toThrow();
+        symlinkSync(join(root, "elsewhere.jsonl"), join(out, "journal.jsonl"));
+        expect(() => requirePlainArtifacts(out, ["host", "eidnara"])).toThrow(
+            /journal.jsonl is a symlink/,
+        );
+        rmSync(join(out, "journal.jsonl"));
+        symlinkSync(join(root, "missing"), join(out, "eidnara", "resources.jsonl"));
+        expect(() => requirePlainArtifacts(out, ["host", "eidnara"])).toThrow(
+            /resources.jsonl is a symlink/,
+        );
+    });
+
+    test("a schedule needs a mechanism for every fault and two models for a model switch", () => {
+        const at = (type: FaultEpisode["type"]): FaultEpisode => ({
+            id: `f-${type}`,
+            type,
+            strategy: "single",
+            trigger: { kind: "session_start", session: "s-0000" },
+            params: {},
+            seam: SEAMS[type],
+        });
+        expect(() => requireMechanisms([at("provider_429")], ["m"])).not.toThrow();
+        expect(() => requireMechanisms([at("model_switch")], ["m", "n"])).not.toThrow();
+        expect(() => requireMechanisms([at("model_switch")], ["m"])).toThrow(
+            /two distinct --models/,
+        );
+        expect(() => requireMechanisms([at("model_switch")], ["m", "m"])).toThrow(/two distinct/);
+        expect(() => requireMechanisms([at("host_upgrade"), at("provider_429")], ["m"])).toThrow(
+            /without a mechanism: host_upgrade/,
+        );
     });
 
     test("scenario.json is refused when its body no longer hashes to its scenario_hash", async () => {
@@ -133,7 +189,18 @@ describe("run inputs", () => {
         };
         expect(faultOverride([episode], scenario)).toEqual([episode]);
         expect(() => faultOverride({}, scenario)).toThrow(/must hold an array/);
-        expect(() => faultOverride([{ id: 1 }], scenario)).toThrow(/is malformed/);
+        expect(() => faultOverride([{ id: 1 }], scenario)).toThrow(/is malformed: id missing/);
+        const noSeam = { ...episode, type: "quantum_flip", seam: undefined };
+        expect(() => faultOverride([noSeam], scenario)).toThrow(
+            /type quantum_flip unknown, seam missing/,
+        );
+        expect(() => faultOverride([{ ...episode, strategy: "often" }], scenario)).toThrow(
+            /strategy often unknown/,
+        );
+        expect(() => faultOverride([{ ...episode, params: { n: "3" } }], scenario)).toThrow(
+            /params must be finite numbers/,
+        );
+        expect(() => faultOverride([episode, episode], scenario)).toThrow(/duplicate id f/);
         const late = { ...episode, trigger: { kind: "user_turn", session: "s-0001", n: 2 } };
         expect(() => faultOverride([late], scenario)).toThrow(/outside the session's 1 turns/);
         const lost = { ...episode, trigger: { kind: "session_start", session: "s-9999" } };
@@ -152,8 +219,10 @@ describe("run inputs", () => {
         };
         const o: RunOptions = { config, tier: "S", seed: 101, host: "pi", out };
         const first = await loadManifest(o, scenario, checks);
-        expect(first.preflight.hosts[0]?.version).toBe("0.80.2");
-        await expect(loadManifest(o, scenario, checks)).resolves.toMatchObject({ seed: 101 });
+        expect(first.manifest.preflight.hosts[0]?.version).toBe("0.80.2");
+        await expect(loadManifest(o, scenario, checks)).resolves.toMatchObject({
+            manifest: { seed: 101 },
+        });
         const upgraded = {
             ...checks,
             hosts: [{ host: "pi" as const, version: "0.81.0", transcript_paths: ["a"] }],
@@ -161,5 +230,53 @@ describe("run inputs", () => {
         await expect(loadManifest(o, scenario, upgraded)).rejects.toThrow(
             /the pi host changed since the run started/,
         );
+    });
+
+    test("a resume is refused when the harness revision or the manifest's arm names are off", async () => {
+        const out = dir();
+        const scenario = writeScenario(out, scenarioBody());
+        const checks: Preflight = {
+            launcher: join(out, "launcher"),
+            time_injection: [],
+            distortions: [],
+            hosts: [{ host: "pi", version: "0.80.2", transcript_paths: [] }],
+            toolchain: [],
+        };
+        const o: RunOptions = { config, tier: "S", seed: 101, host: "pi", out };
+        const { manifest } = await loadManifest(o, scenario, checks);
+        expect(manifest.sim_commit).toMatch(/^[0-9a-f]{40}$/);
+        const path = join(out, "manifest.json");
+        writeFileSync(path, JSON.stringify({ ...manifest, sim_commit: "0".repeat(40) }));
+        await expect(loadManifest(o, scenario, checks)).rejects.toThrow(
+            /inputs changed since the run started: sim_commit/,
+        );
+        writeFileSync(path, JSON.stringify({ ...manifest, order: ["../../elsewhere"] }));
+        await expect(loadManifest(o, scenario, checks)).rejects.toThrow(
+            /names arms outside the S order/,
+        );
+    });
+
+    test("a resume is refused when an executable's content changed, whatever its version", async () => {
+        const out = dir();
+        const scenario = writeScenario(out, scenarioBody());
+        const checks: Preflight = {
+            launcher: join(out, "launcher"),
+            time_injection: [],
+            distortions: [],
+            hosts: [{ host: "pi", version: "0.80.2", transcript_paths: [] }],
+            toolchain: [],
+        };
+        const o: RunOptions = { config, tier: "S", seed: 101, host: "pi", out };
+        const { manifest } = await loadManifest(o, scenario, checks);
+        expect(Object.keys(manifest.binaries).sort()).toEqual(["daemon", "opencode", "pi"]);
+        const swapped = { ...config, daemon_binary: join(out, "daemon") };
+        writeFileSync(swapped.daemon_binary, "daemon 2");
+        await expect(loadManifest({ ...o, config: swapped }, scenario, checks)).rejects.toThrow(
+            /inputs changed since the run started: binaries/,
+        );
+        writeFileSync(swapped.daemon_binary, "daemon 1");
+        await expect(
+            loadManifest({ ...o, config: swapped }, scenario, checks),
+        ).resolves.toMatchObject({ manifest: { seed: 101 } });
     });
 });

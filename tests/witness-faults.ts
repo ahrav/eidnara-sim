@@ -5,6 +5,7 @@ import { checkJournal, type Schedule } from "../src/run/journal-check";
 import { pinnedBin } from "../src/run/run";
 import type { Scenario } from "../src/scenario/compile";
 import { type FaultEpisode, type FaultType, SEAMS, type Trigger } from "../src/scenario/faults";
+import { loadPrereg } from "../src/scenario/inputs";
 
 const ROOT = resolve(import.meta.dir, "..");
 const out = resolve(process.argv[2] ?? "runs/witness-faults");
@@ -103,9 +104,19 @@ const callsByTurn = (dir: string) =>
         return acc;
     }, {});
 
+/** A run gets the S wall budget plus the signal grace and teardown; past that it is killed. */
+const RUN_LIMIT_MS = loadPrereg("S").liveness_bounds.tier_wall_budget_ms + 5 * 60_000;
+
 async function finished(child: ReturnType<typeof launch>) {
+    const limit = { hit: false };
+    const timer = setTimeout(() => {
+        limit.hit = true;
+        child.kill("SIGKILL");
+    }, RUN_LIMIT_MS);
     const code = await child.exited;
-    return { code, stderr: (await new Response(child.stderr).text()).slice(-2000) };
+    clearTimeout(timer);
+    const stderr = (await new Response(child.stderr).text()).slice(-2000);
+    return { code, stderr, timed_out: limit.hit };
 }
 
 const dirs = {
@@ -134,10 +145,15 @@ if (only.includes("rogue")) {
     const child = launch(dirs.rogue, ["--arms", "eidnara", "--events", "6"]);
     await waitFor(child, begun(dirs.rogue, "e-000004"));
     const state = JSON.parse(readFileSync(join(dirs.rogue, "eidnara/state.json"), "utf8"));
-    try {
-        process.kill(state.daemon.pid, "SIGKILL");
-    } catch (caught) {
-        outcome.rogue_kill_error = String(caught);
+    const pid: unknown = state?.daemon?.pid;
+    if (typeof pid === "number" && Number.isInteger(pid) && pid > 1) {
+        try {
+            process.kill(pid, "SIGKILL");
+        } catch (caught) {
+            outcome.rogue_kill_error = String(caught);
+        }
+    } else {
+        outcome.rogue_kill_error = `state.json names no daemon pid: ${JSON.stringify(pid)}`;
     }
     outcome.rogue = await finished(child);
 }
@@ -251,6 +267,10 @@ const invariantsClean = (name: "scheduled" | "rogue" | "resume") => {
     ];
     return s.ended === "EndRun" && s.call_seq_unique && violations.every((x) => x.length === 0);
 };
+for (const name of ["scheduled", "rogue"]) {
+    const r = outcome[name] as { timed_out?: boolean } | undefined;
+    if (r) check(!r.timed_out, `${name}: finished within the run limit`);
+}
 if (run("scheduled")) {
     check(run("scheduled")?.code === 0, "scheduled: exit 0");
     check(invariantsClean("scheduled"), "scheduled: EndRun, unique seq, clean invariants");
@@ -265,6 +285,10 @@ if (outcome.resume) {
     check(resume.killed?.code === 137, "resume: first run killed with 137");
     check(resume.mid_turn, "resume: kill landed with e-000007 open");
     check(resume.second?.code === 0, "resume: second run exit 0");
+    check(
+        !(resume.second as { timed_out?: boolean } | undefined)?.timed_out,
+        "resume: second run within the run limit",
+    );
     check(resume.rebilled.length === 0, "resume: no turn rebilled");
     check(invariantsClean("resume"), "resume: EndRun, unique seq, clean invariants");
 }

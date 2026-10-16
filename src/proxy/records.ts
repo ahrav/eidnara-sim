@@ -76,10 +76,10 @@ export function recordProblems(input: Partial<CallRecord> | Record<string, unkno
     return problems;
 }
 
-/** `wall_ms` is the write-time Unix timestamp in milliseconds, clamped to the preceding record's value. */
 /**
  * `readRecords` truncates an unterminated final line to recover from an interrupted write and
- * rejects an unparseable complete line, so `RecordWriter` resumes only after a fully parsed file.
+ * requires each complete, nonempty line to contain a valid record whose `seq` equals its zero-based
+ * position among nonempty lines.
  */
 export function readRecords(path: string): CallRecord[] {
     if (!existsSync(path)) return [];
@@ -88,14 +88,23 @@ export function readRecords(path: string): CallRecord[] {
     if (complete.length < text.length) truncateSync(path, Buffer.byteLength(complete));
     const lines = complete.split("\n").filter((l) => l !== "");
     return lines.map((line, i) => {
+        const corrupt = (why: string) => new Error(`${path} line ${i + 1} is corrupt: ${why}`);
+        let value: unknown;
         try {
-            return JSON.parse(line) as CallRecord;
+            value = JSON.parse(line);
         } catch {
-            throw new Error(`${path} line ${i + 1} is corrupt`);
+            throw corrupt("not JSON");
         }
+        if (typeof value !== "object" || value === null) throw corrupt("not an object");
+        const problems = recordProblems(value as Record<string, unknown>);
+        if (problems.length > 0) throw corrupt(problems.join(", "));
+        const record = value as CallRecord;
+        if (record.seq !== i) throw corrupt(`seq ${record.seq} at position ${i}`);
+        return record;
     });
 }
 
+/** `wall_ms` is the write-time Unix timestamp in milliseconds, clamped to the preceding record's value. */
 export class RecordWriter {
     private seq = 0;
     private lastWall = 0;

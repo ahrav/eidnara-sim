@@ -8,6 +8,8 @@ export interface JournalReport {
     advance_while_busy: number[];
     off_schedule_jumps: number[];
     events_inside_sleep: number[];
+    repeated_sleeps: number[];
+    /** Jobs that held the clock with no turn open, at their `RegisterJob` seq (SIM-P13 coverage). */
     jobs_held_after_turn: { job: string; seq: number }[];
 }
 
@@ -25,11 +27,25 @@ export function checkJournal(entries: Entry[], schedule: Schedule): JournalRepor
         advance_while_busy: [],
         off_schedule_jumps: [],
         events_inside_sleep: [],
+        repeated_sleeps: [],
         jobs_held_after_turn: [],
     };
     const last = new Map<string, number>();
     const open = new Map<string, Set<string>>();
     const ran = new Map<string, Set<string>>();
+    const registered = new Map<string, number>();
+    const held = new Set<string>();
+    const slept = new Set<string>();
+    const noTurnOpen = (busy: Set<string>) => [...busy].every((id) => id.startsWith("job:"));
+    const holding = (arm: string, busy: Set<string>) => {
+        if (!noTurnOpen(busy)) return;
+        for (const id of busy) {
+            const key = `${arm}/${id}`;
+            if (held.has(key)) continue;
+            held.add(key);
+            report.jobs_held_after_turn.push({ job: id.slice(4), seq: registered.get(key) ?? -1 });
+        }
+    };
     for (const e of entries) {
         const arm = e.arm ?? "";
         const seq = Number(e.seq);
@@ -42,25 +58,33 @@ export function checkJournal(entries: Entry[], schedule: Schedule): JournalRepor
         ran.set(arm, done);
         const turn = `turn:${String(e.event)}`;
         if (e.kind === "BeginTurn") busy.add(turn);
-        if (e.kind === "EndTurn" || e.state === "failed(interrupted)") busy.delete(turn);
+        if (e.kind === "EndTurn" || e.state === "failed(interrupted)") {
+            busy.delete(turn);
+            holding(arm, busy);
+        }
         if (e.kind === "Event") done.add(String(e.event));
         if (e.kind === "RegisterJob") {
-            if (busy.size === 0) report.jobs_held_after_turn.push({ job: String(e.job), seq });
-            busy.add(`job:${String(e.job)}`);
+            const job = `job:${String(e.job)}`;
+            registered.set(`${arm}/${job}`, seq);
+            busy.add(job);
+            holding(arm, busy);
         }
         if (e.kind === "EndJob") busy.delete(`job:${String(e.job)}`);
         if (e.kind !== "AdvanceClock") continue;
         if (busy.size > 0) report.advance_while_busy.push(seq);
         const from = Number(e.from_ms);
         const pending = [...schedule.events].filter(([id]) => !done.has(id)).map(([, t]) => t);
-        const later = pending.filter((t) => t > from);
+        const later = pending.filter((t) => t >= from);
         if (later.length === 0 || Math.min(...later) !== ms) report.off_schedule_jumps.push(seq);
         if (e.fault === undefined) {
             report.next_event_jumps++;
             continue;
         }
         report.sleep_jumps++;
-        if (pending.some((t) => t > from && t < ms)) report.events_inside_sleep.push(seq);
+        if (pending.some((t) => t >= from && t < ms)) report.events_inside_sleep.push(seq);
+        const sleep = `${arm}/${String(e.fault)}`;
+        if (slept.has(sleep)) report.repeated_sleeps.push(seq);
+        slept.add(sleep);
     }
     return report;
 }
