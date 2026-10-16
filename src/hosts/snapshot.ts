@@ -233,6 +233,7 @@ export class SnapshotRecorder {
             id,
             item: e.probe,
             arm: this.arm,
+            session: e.session,
             turn: e.id,
             turn_outcome: failed ? "failed" : "ok",
             artefacts,

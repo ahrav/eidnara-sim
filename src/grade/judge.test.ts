@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { sha256Hex } from "../prereg/canonical";
 import { Rng } from "../rng";
+import type { ProbeItem } from "../scenario/compile";
 import { loadPrereg } from "../scenario/inputs";
 import { type CallView, GradeRefused, type Snapshot } from "./artefacts";
 import {
@@ -43,9 +44,11 @@ const load = (name: string) =>
         expect: { a: string; b: string };
     };
 
-const agentCall = (response_text: string): CallView => {
+const agentCall = (response_text: string, arm = "eidnara", session = "s-1"): CallView => {
     const view = {
         seq: 1,
+        arm,
+        session,
         component: "agent",
         turn: "e-1",
         scenario_ms: 0,
@@ -72,7 +75,9 @@ const snapshotOf = (
         session: "s-1",
         turn: "e-1",
         turn_outcome: outcome,
-        artefacts: [{ id: `${id}:calls`, class: "proxy-call" as const, calls: [agentCall(text)] }],
+        artefacts: [
+            { id: `${id}:calls`, class: "proxy-call" as const, calls: [agentCall(text, arm)] },
+        ],
     };
     return view;
 };
@@ -106,19 +111,27 @@ const crossJudged = (set: CalibrationSet) => ({
     calibration_digest: calibrationDigest(set, rules) as string,
 });
 
+const probeOf = (id: string, judge: string): ProbeItem => ({
+    id,
+    type: "P7",
+    fact: null,
+    project: "mini-redis",
+    session: "s-1",
+    text: null,
+    check: { judge },
+});
+
 const context = (
     item: string,
     pair: Pair,
     reference: string,
     extra: Partial<Parameters<typeof gradeP7>[1]> = {},
 ) => ({
-    item,
-    reference: referenceDigest(reference),
+    probe: probeOf(item, reference),
     snapshots: {
-        a: snapshotOf("snap-eidnara", "eidnara", pair.a, item),
-        b: snapshotOf("snap-host", "host", pair.b, item),
+        a: [snapshotOf("snap-eidnara", "eidnara", pair.a, item)],
+        b: [snapshotOf("snap-host", "host", pair.b, item)],
     },
-    later_attempts: { a: 0, b: 0 },
     calibration: null,
     permutation: { trials: 20, correct: 11, judge: judgeIdentity(rules.judge.model) },
     cross_judge: null,
@@ -186,8 +199,8 @@ describe("P7 judge path", () => {
             const judgment = await judgePair(client, f.pair, f.probe.check.judge, []);
             const pairing = context(f.probe.id, f.pair, f.probe.check.judge, {
                 snapshots: {
-                    a: snapshotOf(`snap-${arm}`, arm, f.pair.a, f.probe.id),
-                    b: snapshotOf("snap-host", "host", f.pair.b, f.probe.id),
+                    a: [snapshotOf(`snap-${arm}`, arm, f.pair.a, f.probe.id)],
+                    b: [snapshotOf("snap-host", "host", f.pair.b, f.probe.id)],
                 },
             });
             for (const g of gradeP7(judgment, pairing, rules)) {
@@ -424,12 +437,38 @@ describe("P7 judge path", () => {
             f.probe.check.judge,
             [],
         );
+        const retry = (n: number) =>
+            snapshotOf(`snap-eidnara-${n}`, "eidnara", "later", f.probe.id);
         const grades = gradeP7(
             judgment,
-            context(f.probe.id, f.pair, f.probe.check.judge, { later_attempts: { a: 2, b: 0 } }),
+            context(f.probe.id, f.pair, f.probe.check.judge, {
+                snapshots: {
+                    a: [
+                        snapshotOf("snap-eidnara", "eidnara", f.pair.a, f.probe.id),
+                        retry(2),
+                        retry(3),
+                    ],
+                    b: [snapshotOf("snap-host", "host", f.pair.b, f.probe.id)],
+                },
+            }),
             rules,
         );
         expect(grades.map((g) => g.later_attempts_logged)).toEqual([2, 0]);
+        expect(grades[0]?.snapshot).toBe("snap-eidnara");
+        const mixed = context(f.probe.id, f.pair, f.probe.check.judge, {
+            snapshots: {
+                a: [
+                    snapshotOf("snap-eidnara", "eidnara", f.pair.a, f.probe.id),
+                    snapshotOf("x", "host", "later", f.probe.id),
+                ],
+                b: [snapshotOf("snap-host", "host", f.pair.b, f.probe.id)],
+            },
+        });
+        expect(() => gradeP7(judgment, mixed, rules)).toThrow("mix items or arms");
+        const empty = context(f.probe.id, f.pair, f.probe.check.judge, {
+            snapshots: { a: [], b: [snapshotOf("snap-host", "host", f.pair.b, f.probe.id)] },
+        });
+        expect(() => gradeP7(judgment, empty, rules)).toThrow("has no snapshot");
     });
 
     test("a judgment from a judge other than the pre-registered one stays out of gates", async () => {
@@ -714,9 +753,10 @@ describe("P7 judge path", () => {
     test("the judge identity names the preprocessing version", () => {
         const id = judgeIdentity(rules.judge.model);
         expect(id.prompt_digest).toBe(
-            createHash("sha256")
-                .update(`${PREPROCESSING_VERSION}\n${judgePrompt(EMPTY_PROMPT)}`)
-                .digest("hex"),
+            "65c06cfd918d48dccecb428c26c9b0ae1a40ddd1126ba7eb67dfc785ea5da360",
+        );
+        expect(id.prompt_digest).toBe(
+            sha256Hex(`${PREPROCESSING_VERSION}\n${judgePrompt(EMPTY_PROMPT)}`),
         );
     });
 
@@ -844,8 +884,8 @@ describe("P7 judge path", () => {
         );
         const ctx = context(f.probe.id, f.pair, f.probe.check.judge, {
             snapshots: {
-                a: snapshotOf("snap-kl", "eidnara-kl", f.pair.a, f.probe.id),
-                b: snapshotOf("snap-host-2", "host", f.pair.b, f.probe.id),
+                a: [snapshotOf("snap-kl", "eidnara-kl", f.pair.a, f.probe.id)],
+                b: [snapshotOf("snap-host-2", "host", f.pair.b, f.probe.id)],
             },
         });
         const grades = gradeP7(judgment, ctx, rules);
@@ -856,8 +896,8 @@ describe("P7 judge path", () => {
         expect(grades[0]?.inputs).toEqual(["snap-host-2:calls", "snap-kl:calls"]);
         const swapped = context(f.probe.id, f.pair, f.probe.check.judge, {
             snapshots: {
-                a: snapshotOf("snap-x", "eidnara", f.pair.b, f.probe.id),
-                b: snapshotOf("snap-y", "host", f.pair.a, f.probe.id),
+                a: [snapshotOf("snap-x", "eidnara", f.pair.b, f.probe.id)],
+                b: [snapshotOf("snap-y", "host", f.pair.a, f.probe.id)],
             },
         });
         expect(() => gradeP7(judgment, swapped, rules)).toThrow("other answers");
@@ -877,6 +917,76 @@ describe("P7 judge path", () => {
 
     test("the preprocessing version moved with the normaliser", () => {
         expect(PREPROCESSING_VERSION).toBe("sim-judge-preprocessing/v2");
+    });
+
+    test("a calibration pair id made of combining marks is blank", () => {
+        const marks = calibration();
+        marks.labels["\u0300\u0301"] = "a";
+        expect(() => calibrationDigest(marks, rules)).toThrow("blank");
+    });
+
+    test("the reference comes from the compiled probe, which must be a P7 item with a reason", async () => {
+        const f = load("P7-pass");
+        const judgment = await judgePair(
+            scripted(f.judge_verdicts),
+            f.pair,
+            f.probe.check.judge,
+            [],
+        );
+        const ctx = context(f.probe.id, f.pair, f.probe.check.judge);
+        expect(() =>
+            gradeP7(judgment, { ...ctx, probe: { ...ctx.probe, type: "P8" } }, rules),
+        ).toThrow("not a P7 probe");
+        expect(() =>
+            gradeP7(judgment, { ...ctx, probe: { ...ctx.probe, check: {} } }, rules),
+        ).toThrow("not a P7 probe");
+        expect(gradeP7(judgment, ctx, rules)).toHaveLength(2);
+    });
+
+    test("a snapshot from another session than the probe's is refused", async () => {
+        const f = load("P7-pass");
+        const judgment = await judgePair(
+            scripted(f.judge_verdicts),
+            f.pair,
+            f.probe.check.judge,
+            [],
+        );
+        const ctx = context(f.probe.id, f.pair, f.probe.check.judge);
+        const other = { ...snapshotOf("snap-host", "host", f.pair.b, f.probe.id), session: "s-9" };
+        expect(() =>
+            gradeP7(judgment, { ...ctx, snapshots: { ...ctx.snapshots, b: [other] } }, rules),
+        ).toThrow("session s-9");
+    });
+
+    test("uppercase hexadecimal entities decode before blinding", () => {
+        const base = { id: "p", a: "fine", b: "fine" };
+        expect(() => blind({ ...base, b: "Eid&#X6E;ara found it" }, "a_then_b", "r", [])).toThrow(
+            "names an arm",
+        );
+    });
+
+    test("a snapshot of another turn than the probe's event is refused", async () => {
+        const f = load("P7-pass");
+        const judgment = await judgePair(
+            scripted(f.judge_verdicts),
+            f.pair,
+            f.probe.check.judge,
+            [],
+        );
+        const ctx = context(f.probe.id, f.pair, f.probe.check.judge);
+        const pinned = { ...ctx, probe: { ...ctx.probe, event: "e-1" } };
+        expect(gradeP7(judgment, pinned, rules)).toHaveLength(2);
+        const other = { ...snapshotOf("snap-host", "host", f.pair.b, f.probe.id), turn: "e-2" };
+        expect(() =>
+            gradeP7(judgment, { ...pinned, snapshots: { ...ctx.snapshots, b: [other] } }, rules),
+        ).toThrow("not the probe's event e-1");
+    });
+
+    test("the judge sees the reference reason normalised like the answers", () => {
+        const pair = { id: "p", a: "fine", b: "fine" };
+        expect(blind(pair, "a_then_b", "**allocation** dominated\n`p99`", []).reference).toBe(
+            "allocation dominated p99",
+        );
     });
 
     test("the human-check sample is ten percent of P7 items, rounded up, from a seeded draw", () => {
@@ -1018,6 +1128,35 @@ describe("proxy judge", () => {
         );
         await expect(judge.verdict("prompt")).rejects.toThrow("stopped for max_tokens");
         await expect(judge.verdict("prompt")).rejects.toThrow("stopped for");
+    });
+
+    test("a redirecting gateway is refused rather than followed", async () => {
+        const target = Bun.serve({
+            port: 0,
+            fetch: () =>
+                Response.json({
+                    output: { message: { content: [{ text: "first" }] } },
+                    stopReason: "end_turn",
+                }),
+        });
+        try {
+            server = Bun.serve({
+                port: 0,
+                fetch: (req) =>
+                    Response.redirect(
+                        `http://127.0.0.1:${target.port}${new URL(req.url).pathname}`,
+                        307,
+                    ),
+            });
+            const judge = proxyJudge(
+                `http://127.0.0.1:${server.port}`,
+                rules.judge.model,
+                "anthropic.x",
+            );
+            await expect(judge.verdict("prompt")).rejects.toThrow(GradeRefused);
+        } finally {
+            target.stop(true);
+        }
     });
 
     test("a well-formed status with a malformed body is a judge refusal, not a crash", async () => {

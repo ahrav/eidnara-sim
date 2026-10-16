@@ -69,6 +69,8 @@ export interface Snapshot {
     id: string;
     item: string;
     arm: string;
+    /** The scenario session the probe turn belongs to. */
+    session?: string;
     turn: string;
     turn_outcome: "ok" | "failed";
     artefacts: Artefact[];

@@ -127,6 +127,7 @@ const p7snapshot = (item: string): Snapshot => ({
     id: "x",
     item,
     arm: "x",
+    session: "s-1",
     turn: "e-1",
     turn_outcome: "ok",
     artefacts: [

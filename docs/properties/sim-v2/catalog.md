@@ -1132,7 +1132,7 @@ each condition on fixtures, and no tier run has exercised it yet.
 Existing check: `src/grade/judge.test.ts` (P7 judge path, proxy judge) covers
 the component header on each call, the family refusal, blinding, both orders
 in one judgment, and the digests on each grade; the journal that binds each
-judge call to its item, order, and calibration digest lands with the runner
+judge call to its item, order, and calibration digest lands with the runner; status unaudited
 Impact: The P7 judge identifies arms or prefers its own family.
 Open questions: None.
 
@@ -1153,7 +1153,7 @@ Confidence: low - [evidence](evidence/sim-p44-p7-human-check-sample.md).
 M5 (#1029) implements `humanCheckSample` in `src/grade/judge.ts` with a unit
 test; the journal entry and the verdict naming the sample land with M7.
 Existing check: `src/grade/judge.test.ts` (human-check sample) covers the count
-and the seeded reproducibility
+and the seeded reproducibility; status unaudited
 Impact: Judge calibration drifts with no human anchor.
 Open questions: None.
 

@@ -10,7 +10,6 @@ import {
     type P7Inputs,
     p7Pair,
     proxyJudge,
-    referenceDigest,
 } from "../src/grade/judge";
 import {
     deltaMem,
@@ -160,8 +159,7 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
             const [mine, host] = [sides[arm], sides.host];
             if (lost.size > 0 || !mine?.[0] || !host?.[0]) return [];
             for (const side of [mine[0], host[0]]) assertArtefactsOnly(side);
-            const later_attempts = { a: mine.length - 1, b: host.length - 1 };
-            return [{ probe, arm, a: mine[0], b: host[0], later_attempts }];
+            return [{ probe, arm, a: mine[0], b: host[0], rows: { a: mine, b: host } }];
         }),
     );
     const firewall = (url: string) => {
@@ -208,7 +206,7 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
         const staged: { arm: string; grades: GradeRecord[] }[] = [];
         try {
             const judge = firewall(gateway.urls[0] as string);
-            for (const { probe, arm, a, b, later_attempts } of pairs) {
+            for (const { probe, arm, a, b, rows } of pairs) {
                 const reference = String((probe.check as { judge?: string }).judge ?? "");
                 const both = (why: string) => {
                     for (const side of [arm, "host"]) skip(side, why);
@@ -242,10 +240,8 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
                     continue;
                 }
                 const context = {
-                    item: probe.id,
-                    reference: referenceDigest(reference),
-                    snapshots: { a, b },
-                    later_attempts,
+                    probe,
+                    snapshots: rows,
                     calibration: null,
                     permutation: null,
                     cross_judge: null,

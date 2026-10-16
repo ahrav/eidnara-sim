@@ -42,7 +42,9 @@ first `EndTurn` (SIM-P41). The `EndTurn` entry names the snapshot too, so a
 resume after a kill between the two entries journals the snapshot from it.
 Snapshots append to `<arm>/snapshots.jsonl`, and a recorder rebuilt after a
 kill drops a cut last line; a
-snapshot id is `<arm>:<item>:<turn event>`, so each attempt has its own id.
+snapshot id is `<arm>:<item>:<turn event>`, so each attempt has its own id,
+and each snapshot names its session, which the P7 grader checks against the
+probe's.
 The driver takes the snapshot after the scheduler's background jobs (a
 summarizer or compaction call the turn started) have ended, so the
 `proxy-call` artefact holds those calls. Each recorder git run against a
@@ -199,7 +201,8 @@ cannot call, and the divergences are listed below.
    collapsed before the judge sees either answer; backticks inside a line
    are removed and the text between them stays.
 3. `judgePair` shows the pair in both orders, under the rubric and the
-   item's reference reason, and reads one verdict per order: `first`,
+   item's reference reason (normalised like the answers), and reads one
+   verdict per order: `first`,
    `second`, `both`, or `neither`. eval-core's verdicts are `first`,
    `second`, and `tie`; recall needs `both` and `neither` to tell two
    recalls apart from none. Unswapped verdicts that disagree make the pair
@@ -209,13 +212,20 @@ cannot call, and the divergences are listed below.
 4. The judgment records each answer's length after normalisation, and
    `longer_recalled_alone` records whether the longer answer was the one
    recalled alone, for the verbosity audit.
-5. `gradeP7` takes the judgment and the two snapshots, rebuilds the pair
-   from them (so the arms, snapshot ids, artefact inputs, answer digests,
-   and lengths it records all come from the snapshots that produced the
-   judged answers), and writes one grade per arm, each naming the other arm in
-   `against` and carrying its arm's later-attempt count, for the item, the exact answers, and the reference
-   reason the judgment names (the judgment carries the answers' and the
-   reference's digests), and only when the judgment's
+5. `gradeP7` takes the judgment, the compiled P7 probe, and each arm's
+   snapshots in attempt order, requires every snapshot to come from the
+   probe's session and, when the probe names its event, from that turn,
+   grades the first snapshot of each arm and
+   counts the rest as later attempts (as `gradeItem` does), rebuilds the
+   pair from those two snapshots (so the arms, snapshot ids, artefact
+   inputs, answer digests, and lengths it records all come from the
+   snapshots that produced the judged answers) and the reference digest
+   from the probe's `check.judge`, and writes one grade per arm naming the other arm in
+   `against`, for the
+   item, the exact
+   answers, and the reference reason the judgment names (the judgment
+   carries the answers' and the reference's digests), and only when the
+   judgment's
    recall is the one its two order verdicts imply, each of which must be one
    of the four verdict words, and its answer lengths and
    `longer_recalled_alone` are the ones the pair and that recall imply. Each grade carries the judge model,
@@ -267,8 +277,10 @@ pre-registered judge is `global.openai.gpt-5.6-luna`.
 On 2026-10-16 the two P7 fixtures went through the gateway to that model,
 and the real verdicts (`first`, then `second`, and the reverse) graded as
 the fixtures record. The run's records (`judge-calls.jsonl` with the four
-`judge` call records, `judgments.json` with the verdicts) are run data and
-live under the git-ignored `runs/judge-smoke/`.
+`judge` call records, `judgments.json` with the verdicts) are run data under
+`runs/judge-smoke/` on the host that ran it; run data is never committed, so
+this claim is checked against that host's records, and the fixtures' own
+verdicts are scripted.
 
 The judge identity is the model id with the prompt and rubric digests; the
 prompt digest covers `PREPROCESSING_VERSION` (`sim-judge-preprocessing/v2`),

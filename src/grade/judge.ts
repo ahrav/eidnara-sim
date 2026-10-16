@@ -1,7 +1,7 @@
-import { createHash } from "node:crypto";
-import { canonicalJson } from "../prereg/canonical";
+import { canonicalJson, sha256Hex } from "../prereg/canonical";
 import { COMPONENT_HEADER } from "../proxy/classify";
 import type { Rng } from "../rng";
+import type { ProbeItem } from "../scenario/compile";
 import { ArtefactReader, assertArtefactsOnly, GradeRefused, type Snapshot } from "./artefacts";
 import type { GradeRecord, Rules } from "./probes";
 
@@ -68,7 +68,7 @@ export function normalise(text: string): string {
         .replace(/^\s*[-*+]\s+/gm, "")
         .replace(/^[ \t]*\[[^\]]+\]:[ \t]+\S.*$/gm, "")
         .replace(MARKUP, " ")
-        .replace(/&#x([0-9a-fA-F]+);/g, (_, hex: string) => codePoint(Number.parseInt(hex, 16)))
+        .replace(/&#[xX]([0-9a-fA-F]+);/g, (_, hex: string) => codePoint(Number.parseInt(hex, 16)))
         .replace(/&#(\d+);/g, (_, dec: string) => codePoint(Number(dec)))
         .replace(/&(amp|lt|gt|quot|apos|nbsp);/g, (_, name: string) => ENTITIES[name] ?? "")
         .replace(/&[A-Za-z][A-Za-z0-9]*;/g, " ")
@@ -111,7 +111,13 @@ export function blind(
         if (token) throw new BlindingRefused(`pair ${pair.id} ${label} names an arm: ${token}`);
     }
     const [first, second] = order === "a_then_b" ? [pair.a, pair.b] : [pair.b, pair.a];
-    return { pair: pair.id, order, reference, first: normalise(first), second: normalise(second) };
+    return {
+        pair: pair.id,
+        order,
+        reference: normalise(reference),
+        first: normalise(first),
+        second: normalise(second),
+    };
 }
 
 export const RUBRIC = `You compare two answers to one question against a reference reason.
@@ -122,7 +128,7 @@ export function judgePrompt(p: BlindedPrompt): string {
     return `${RUBRIC}\n\nReference reason:\n${p.reference}\n\nFirst answer:\n${p.first}\n\nSecond answer:\n${p.second}`;
 }
 
-const sha = (text: string) => createHash("sha256").update(text).digest("hex");
+const sha = sha256Hex;
 
 export const pairDigests = (pair: Pair) => ({ a: sha(pair.a), b: sha(pair.b) });
 export const referenceDigest = (reference: string) => sha(reference);
@@ -180,7 +186,7 @@ export function parseVerdict(text: string): RawVerdict {
         .trim()
         .toLowerCase()
         .replace(/[.!]+$/, "");
-    if (word === "first" || word === "second" || word === "both" || word === "neither") return word;
+    if (VERDICTS.includes(word)) return word as RawVerdict;
     throw new GradeRefused(`judge reply ${JSON.stringify(text.slice(0, 80))} is not a verdict`);
 }
 
@@ -222,6 +228,7 @@ export function proxyJudge(
                             inferenceConfig: { maxTokens: 256 },
                         }),
                         signal: AbortSignal.timeout(deadlineMs),
+                        redirect: "error",
                     },
                 );
                 if (!response.ok) throw new GradeRefused(`judge call failed: ${response.status}`);
@@ -367,7 +374,7 @@ export function calibrationDigest(set: CalibrationSet | null, rules: Rules): str
     if (set.human.length < floor || set.human.length > pairs) {
         throw new GradeRefused(`calibration has ${set.human.length} human labels; needs ${floor}`);
     }
-    if (Object.keys(set.labels).some((id) => id.replace(INVISIBLE, "").trim() === "")) {
+    if (Object.keys(set.labels).some((id) => foldWords(id).trim() === "")) {
         throw new GradeRefused("a calibration pair id is blank");
     }
     if (new Set(set.human).size !== set.human.length) {
@@ -422,10 +429,9 @@ export function p7Pair(item: string, a: Snapshot, b: Snapshot): P7Inputs | null 
 }
 
 export interface P7Context {
-    item: string;
-    reference: string;
-    snapshots: { a: Snapshot; b: Snapshot };
-    later_attempts: { a: number; b: number };
+    probe: ProbeItem;
+    /** Each arm's snapshots in attempt order; the first is graded and the rest are counted. */
+    snapshots: { a: Snapshot[]; b: Snapshot[] };
     calibration: CalibrationSet | null;
     permutation: { trials: number; correct: number; judge: JudgeIdentity } | null;
     /** `cross_judge` binds the pre-registered cross-judge identity to the calibration set through `calibration_digest`. */
@@ -435,18 +441,47 @@ export interface P7Context {
 export function gradeP7(j: Judgment, c: P7Context, rules: Rules, version = 1): GradeRecord[] {
     if (typeof j !== "object" || j === null) throw new GradeRefused("judgment is not a record");
     if (!isIdentity(j.judge)) throw new GradeRefused(`judgment for ${j.pair} names no judge`);
-    if (j.pair !== c.item) {
-        throw new GradeRefused(`judgment for ${j.pair} cannot grade item ${c.item}`);
+    const item = c.probe.id;
+    const reason = (c.probe.check as { judge?: unknown } | null)?.judge;
+    if (c.probe.type !== "P7" || typeof reason !== "string" || reason.trim() === "") {
+        throw new GradeRefused(`item ${item} is not a P7 probe with a reference reason`);
     }
-    const built = p7Pair(c.item, c.snapshots.a, c.snapshots.b);
-    if (!built) throw new GradeRefused(`P7 item ${c.item}: a probe turn failed; nothing to grade`);
+    if (j.pair !== item) {
+        throw new GradeRefused(`judgment for ${j.pair} cannot grade item ${item}`);
+    }
+    const first = (side: "a" | "b"): Snapshot => {
+        const list = c.snapshots[side];
+        if (!Array.isArray(list) || list.length === 0) {
+            throw new GradeRefused(`P7 item ${item}: side ${side} has no snapshot`);
+        }
+        const head = list[0] as Snapshot;
+        if (list.some((s) => s.item !== head.item || s.arm !== head.arm)) {
+            throw new GradeRefused(`snapshots for ${item} side ${side} mix items or arms`);
+        }
+        for (const s of list) {
+            const session = (s as { session?: unknown }).session;
+            if (session !== c.probe.session) {
+                throw new GradeRefused(
+                    `snapshot ${s.id} is from session ${String(session)}, not the probe's ${c.probe.session}`,
+                );
+            }
+            if (c.probe.event && s.turn !== c.probe.event) {
+                throw new GradeRefused(
+                    `snapshot ${s.id} is of turn ${s.turn}, not the probe's event ${c.probe.event}`,
+                );
+            }
+        }
+        return head;
+    };
+    const built = p7Pair(item, first("a"), first("b"));
+    if (!built) throw new GradeRefused(`P7 item ${item}: a probe turn failed; nothing to grade`);
     if (!isPair(j.answers, "string") || !isPair(j.lengths, "number")) {
         throw new GradeRefused(`judgment for ${j.pair} carries malformed answer evidence`);
     }
     if (j.answers.a !== built.answers.a || j.answers.b !== built.answers.b) {
         throw new GradeRefused(`judgment for ${j.pair} was made on other answers`);
     }
-    if (j.reference !== c.reference) {
+    if (j.reference !== referenceDigest(reason)) {
         throw new GradeRefused(`judgment for ${j.pair} was made against another reference`);
     }
     if (canonicalJson(recallFrom(j.orders)) !== canonicalJson(j.recall)) {
@@ -528,14 +563,14 @@ export function gradeP7(j: Judgment, c: P7Context, rules: Rules, version = 1): G
     };
     return (["a", "b"] as const).map((side) => {
         const common = {
-            item: c.item,
+            item,
             arm: built.arms[side],
             against: built.arms[side === "a" ? "b" : "a"],
             probe_type: "P7",
             version,
             snapshot: built.snapshots[side],
             inputs: built.inputs,
-            later_attempts_logged: c.later_attempts[side],
+            later_attempts_logged: c.snapshots[side].length - 1,
         };
         if (j.recall === "Inconsistent") {
             return { ...common, verdict: "excluded", reason: "Inconsistent", metrics };
