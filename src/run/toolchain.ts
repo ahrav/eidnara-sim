@@ -1,4 +1,11 @@
-import { existsSync, mkdirSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
+import {
+    existsSync,
+    lstatSync,
+    mkdirSync,
+    readdirSync,
+    realpathSync,
+    writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import type { SimConfig } from "../config/config";
@@ -137,10 +144,19 @@ export function checkToolchainBins(config: SimConfig): void {
  * writable tree shared between arms.
  */
 export function checkToolchainHomes(config: SimConfig): void {
+    const present = (path: string): boolean => {
+        try {
+            lstatSync(path);
+            return true;
+        } catch {
+            return false;
+        }
+    };
     const canonical = (path: string): string => {
         try {
             return realpathSync(path);
         } catch {
+            if (present(path)) throw new Error(`${path} is a dangling symlink`);
             const parent = dirname(path);
             return parent === path ? path : join(canonical(parent), basename(path));
         }
@@ -154,7 +170,12 @@ export function checkToolchainHomes(config: SimConfig): void {
         { named: "/tmp", real: "/tmp" },
     ];
     for (const [key, value] of Object.entries(config.toolchain.env)) {
-        const real = canonical(value);
+        let real: string;
+        try {
+            real = canonical(value);
+        } catch (caught) {
+            throw new Error(`toolchain.env.${key} ${value}: ${(caught as Error).message}`);
+        }
         if (!safe.some((dir) => within(value, dir.named) && within(real, dir.real))) {
             throw new Error(
                 `toolchain.env.${key} ${value} is neither kept read-only nor private to the sandbox`,

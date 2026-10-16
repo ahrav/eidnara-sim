@@ -233,3 +233,28 @@ test("a tool home is accepted only where its configured path and its target shar
         ),
     ).not.toThrow();
 });
+
+test("a tool home that is a dangling symlink inside a keep path is refused", () => {
+    const dir = root();
+    const base = loadConfig();
+    const kept = join(dir, "kept");
+    mkdirSync(join(kept, "rustup"), { recursive: true });
+    symlinkSync(join(dir, "not-yet/shared"), join(kept, "cargo"));
+    const config = {
+        ...base,
+        toolchain: {
+            ...base.toolchain,
+            keep: [kept],
+            env: { CARGO_HOME: join(kept, "cargo"), RUSTUP_HOME: join(kept, "rustup") },
+        },
+    };
+    expect(() => checkToolchainHomes(config)).toThrow(
+        `toolchain.env.CARGO_HOME ${join(kept, "cargo")}: ${join(kept, "cargo")} is a dangling symlink`,
+    );
+    mkdirSync(join(kept, "below/link-to-nowhere"), { recursive: true });
+    symlinkSync(join(dir, "not-yet"), join(kept, "below/hole"));
+    config.toolchain.env.CARGO_HOME = join(kept, "below/hole/cargo");
+    expect(() => checkToolchainHomes(config)).toThrow(
+        `${join(kept, "below/hole")} is a dangling symlink`,
+    );
+});
