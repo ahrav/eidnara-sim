@@ -556,10 +556,13 @@ Exercised: partial - the unit test "a laptop sleep is one event-free jump across
 the gap" constructs a scheduled sleep; no campaign run yet
 Guarantee: SIM-P18: A laptop-sleep fault produces exactly one `AdvanceClock`,
 carrying the fault id, that spans the idle gap before its session with
-`busy_set` empty and no events inside the gap.
-Check: `always` - for each sleep fault, assert one `AdvanceClock` carrying its
-id that lands on the session's first event, an empty busy set at that `seq`,
-and no event with `scenario_ms` inside the gap.
+`busy_set` empty and no events inside the gap; when a job kept the clock busy
+past the session's start there is no gap to jump and the fault is journaled
+`ItemState missed` with no `AdvanceClock` or `FaultFired`.
+Check: `always` - for each sleep fault, assert either one `AdvanceClock`
+carrying its id that lands on the session's first event, an empty busy set at
+that `seq`, and no event with `scenario_ms` inside the gap, or one
+`ItemState missed` and nothing else about the fault.
 Fault/timing angle: a sleep scheduled while a job is busy must wait for the job.
 Required faults and enabling state: a scheduled laptop-sleep fault.
 Confidence: low -

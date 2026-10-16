@@ -151,7 +151,7 @@ function holderAlive(held: Lease, mine: Lease): boolean {
     if (held.boot !== undefined && mine.boot !== undefined && held.boot !== mine.boot) {
         return held.host.startsWith("hostname:");
     }
-    if (held.ns !== undefined && mine.ns !== undefined && held.ns !== mine.ns) return true;
+    if ((held.ns === undefined) !== (mine.ns === undefined) || held.ns !== mine.ns) return true;
     const ticks = startTicks(held.pid);
     if (ticks === "unknown") return true;
     if (ticks === "gone") return false;

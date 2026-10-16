@@ -22,6 +22,7 @@ import {
     type Entry,
     Journal,
     leaseHost,
+    pidNamespace,
     readJournal,
     releaseLease,
     takeLease,
@@ -228,7 +229,15 @@ describe("Journal and lease", () => {
         expect(() => takeLease(d)).toThrow(/is leased by pid/);
         releaseLease(d, first);
         const dead = Bun.spawnSync(["true"]).pid;
-        writeTopLease(d, JSON.stringify({ pid: dead, host: leaseHost(), started_wall_ms: 0 }));
+        writeTopLease(
+            d,
+            JSON.stringify({
+                pid: dead,
+                host: leaseHost(),
+                ns: pidNamespace(),
+                started_wall_ms: 0,
+            }),
+        );
         const second = takeLease(d);
         expect(second.pid).toBe(process.pid);
         releaseLease(d, second);
@@ -250,6 +259,7 @@ describe("Journal and lease", () => {
                 JSON.stringify({
                     pid: other.pid,
                     host: leaseHost(),
+                    ns: pidNamespace(),
                     started_wall_ms: 0,
                     started_ticks: (mine.started_ticks as number) - 1,
                 }),
@@ -354,7 +364,7 @@ describe("Journal and lease", () => {
                 order: ["a", "b"],
                 drivers: { a: fakeDriver([]), b: fakeDriver([]) },
             }).run(),
-        ).rejects.toThrow(/EndRun with unfinished arms/);
+        ).rejects.toThrow(/unfinished arms|before its events completed/);
     });
 
     test("append refuses a non-finite scenario time", () => {
@@ -621,7 +631,12 @@ describe("Journal and lease", () => {
             const dead = Bun.spawnSync(["true"]).pid;
             writeFileSync(
                 join(d, "lease.0.json"),
-                JSON.stringify({ pid: dead, host: leaseHost(), started_wall_ms: 0 }),
+                JSON.stringify({
+                    pid: dead,
+                    host: leaseHost(),
+                    ns: pidNamespace(),
+                    started_wall_ms: 0,
+                }),
             );
             const out = join(d, "winners");
             const kids = Array.from({ length: 8 }, () =>
@@ -1585,6 +1600,57 @@ describe("Scheduler", () => {
         expect(j.entries.filter((e) => e.kind === "FaultFired")).toEqual([]);
     });
 
+    test("a completed journal with a reversed turn lifecycle, or arm entries before StartRun, is refused", async () => {
+        const base = (path: string, withStart: boolean) => {
+            const j = new Journal(path);
+            if (withStart)
+                j.append({
+                    kind: "StartRun",
+                    arm: null,
+                    scenario_ms: 0,
+                    order: ["a"],
+                    scenario: scenarioId(fixtureEvents(1), []),
+                });
+            j.append({ kind: "StartArm", arm: "a", scenario_ms: 0 });
+            j.append({ kind: "Event", arm: "a", scenario_ms: 0, event: "e-000000", outcome: "ok" });
+            return j;
+        };
+        const make = (path: string) =>
+            new Scheduler({
+                events: fixtureEvents(1),
+                faults: [],
+                journal: new Journal(path),
+                settleMs: 0,
+                order: ["a"],
+                drivers: { a: fakeDriver([]) },
+            });
+        const reversed = join(dir(), "j.jsonl");
+        const j = base(reversed, true);
+        j.append({ kind: "EndTurn", arm: "a", scenario_ms: 0, event: "e-000001", outcome: "ok" });
+        j.append({ kind: "BeginTurn", arm: "a", scenario_ms: 0, event: "e-000001" });
+        j.append({ kind: "Event", arm: "a", scenario_ms: 0, event: "e-000001", outcome: "ok" });
+        j.append({ kind: "Event", arm: "a", scenario_ms: 0, event: "e-999999", outcome: "ok" });
+        j.append({ kind: "EndArm", arm: "a", scenario_ms: 0 });
+        j.append({ kind: "EndRun", arm: null, scenario_ms: 0 });
+        j.close();
+        await expect(make(reversed).run()).rejects.toThrow(/has no BeginTurn/);
+        const headless = join(dir(), "j.jsonl");
+        base(headless, false).close();
+        await expect(make(headless).run()).rejects.toThrow(/precede StartRun/);
+    });
+
+    test("a lease with a namespace this contender lacks, or vice versa, is treated as alive", () => {
+        const d = dir();
+        const mine = takeLease(d);
+        releaseLease(d, mine);
+        const dead = Bun.spawnSync(["true"]).pid;
+        writeFileSync(
+            join(d, "lease.0.json"),
+            JSON.stringify({ ...mine, pid: dead, ns: undefined, released: undefined, token: "x" }),
+        );
+        expect(() => takeLease(d)).toThrow(/is leased by pid/);
+    });
+
     test("a FaultObserved without its FaultFired is refused on resume", async () => {
         const path = join(dir(), "j.jsonl");
         const restart = episode("r", "daemon_restart", {
@@ -1693,7 +1759,7 @@ describe("Scheduler", () => {
                 order: ["a"],
                 drivers: { a: fakeDriver([]) },
             }).run(),
-        ).rejects.toThrow(/unfinished arms/);
+        ).rejects.toThrow(/unfinished arms|before its events completed/);
     });
 
     test("a proxy fault whose arming failed once fires on the next run of the same scheduler", async () => {

@@ -108,6 +108,10 @@ export class Scheduler {
                 throw new Error(`scheduler: run was started with scenario ${start.scenario}`);
             }
         }
+        if (!start && entries.length > 0) {
+            throw new Error("journal: entries precede StartRun");
+        }
+        for (const arm of this.o.order) this.checkLifecycle(entries, arm);
         if (entries.some((e) => e.kind === "EndRun")) {
             const open = this.o.order.filter((arm) => !this.completed(entries, arm));
             if (!start || open.length > 0) {
@@ -118,7 +122,6 @@ export class Scheduler {
         for (const arm of this.o.order) {
             if (!finished.has(arm) && !this.o.drivers[arm])
                 throw new Error(`no driver for arm ${arm}`);
-            this.checkLifecycle(entries, arm);
         }
         if (!start) {
             this.log({ kind: "StartRun", order: this.o.order, scenario });
@@ -193,15 +196,15 @@ export class Scheduler {
                 );
             }
         }
-        const begun = new Set(kinds("BeginTurn").map((e) => e.event));
-        for (const e of kinds("EndTurn")) {
-            if (!begun.has(e.event)) {
+        const begun = new Set<unknown>();
+        const fired = new Set<unknown>();
+        for (const e of mine) {
+            if (e.kind === "BeginTurn") begun.add(e.event);
+            if (e.kind === "FaultFired") fired.add(e.fault);
+            if (e.kind === "EndTurn" && !begun.has(e.event)) {
                 throw new Error(`journal: EndTurn for ${e.event} in arm ${arm} has no BeginTurn`);
             }
-        }
-        const fired = new Set(kinds("FaultFired").map((e) => e.fault));
-        for (const e of kinds("FaultObserved")) {
-            if (!fired.has(e.fault)) {
+            if (e.kind === "FaultObserved" && !fired.has(e.fault)) {
                 throw new Error(
                     `journal: FaultObserved for ${e.fault} in arm ${arm} has no FaultFired`,
                 );

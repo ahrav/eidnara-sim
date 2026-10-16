@@ -12,8 +12,9 @@ process on another machine, refuses the call. The machine is `/etc/machine-id`
 share a hostname on one directory stay distinct; a lease carries the kernel
 boot id, so one left by an earlier boot of this machine reads as dead, while a
 boot mismatch under the hostname fallback is refused as another machine; it carries the
-holder's pid namespace, so a lease from another namespace on this machine is
-refused rather than probed against unrelated local pids; and the holder is
+holder's pid namespace, so a lease from another namespace on this machine, or
+one whose namespace is known on only one side, is refused rather than probed
+against unrelated local pids; and the holder is
 identified by pid and by its kernel start time (`/proc/<pid>/stat`), so a pid
 that a later process reuses still reads as a dead holder; a holder whose
 identity cannot be read is treated as alive and refused. A lease is read through
@@ -141,14 +142,14 @@ in flight.
 
 ## Resume
 
-A restarted harness opens the same journal. A journal holding a fatal
+A restarted harness opens the same journal. A journal with entries but no `StartRun` is refused. A journal holding a fatal
 `ItemState` (a daemon exit outside an outage window, or a scheduler fault the
 driver could not carry out), before or after `EndRun`, is a failed run and is
 refused with `HarnessFailure`; an arm with `EndArm` before every scheduled
 event completed, a turn entry naming anything but a configured user turn, an
-`EndTurn` without its `BeginTurn`, or a `FaultObserved` without its
-`FaultFired`, is refused as corrupt before `ResumeRun` or any recovery entry
-is written; otherwise a journal with `EndRun` is complete
+`EndTurn` before its `BeginTurn`, or a `FaultObserved` before its
+`FaultFired`, is refused as corrupt, complete or not, before `ResumeRun` or
+any recovery entry is written; otherwise a journal with `EndRun` is complete
 and the run returns at once, after checking that `StartRun` names this arm
 order and scenario and that every arm has `StartArm`, `EndArm`, and an `Event`
 for every scheduled event. Otherwise the harness checks that every

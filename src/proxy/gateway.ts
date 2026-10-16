@@ -157,6 +157,8 @@ interface Request {
     header: string | undefined;
     expect: string | undefined;
     body: Body;
+    /** Receipt of the request's first bytes on the monotonic clock, before its body arrived. */
+    receivedMono: number;
 }
 
 export class Gateway {
@@ -172,6 +174,7 @@ export class Gateway {
     async start(): Promise<void> {
         const onRequest = (req: IncomingMessage, res: ServerResponse) => {
             this.inFlight++;
+            const receivedMono = performance.now();
             const gone = new AbortController();
             res.on("close", () => !res.writableFinished && gone.abort());
             collectBody(req, (body) => {
@@ -181,6 +184,7 @@ export class Gateway {
                     header: req.headers[COMPONENT_HEADER] as string | undefined,
                     expect: req.headers.expect,
                     body,
+                    receivedMono,
                 };
                 this.handle(request, {
                     status: (code, headers) => {
@@ -208,6 +212,7 @@ export class Gateway {
         });
         h2.on("stream", (stream, headers) => {
             this.inFlight++;
+            const receivedMono = performance.now();
             const gone = new AbortController();
             stream.on("close", () => !stream.writableFinished && gone.abort());
             collectBody(stream, (body) => {
@@ -218,6 +223,7 @@ export class Gateway {
                     header: headers[COMPONENT_HEADER] as string | undefined,
                     expect: undefined,
                     body,
+                    receivedMono,
                 };
                 this.handle(request, {
                     status: (code, h) => {
@@ -280,7 +286,7 @@ export class Gateway {
         };
         const call = this.calls++;
         const startedWall = Date.now();
-        const startedMono = performance.now();
+        const startedMono = request.receivedMono;
         let done: Done = {
             component: "rejected",
             componentSource: "inferred",
