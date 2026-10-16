@@ -9,7 +9,8 @@ sends to Bedrock through the AWS SDK with the profile and region from
 `sim.config.json`; blob fields (image and document bytes) pass through as the
 base64 strings the wire format carries in both directions, and a failure
 mid-stream reaches the host as an event stream message: a modeled exception
-framed as `exception` with its own fields (for example `originalStatusCode`),
+framed as `exception` under its wire member name (`modelStreamErrorException`)
+with its own fields (for example `originalStatusCode`),
 any other throw as an `error` with its code and message, so the host's SDK
 raises the same failure. Header values are cut to the format's 65,535-byte
 limit. `Gateway.stop()`
@@ -113,7 +114,7 @@ timeout instead of the delayed answer.
 | `truncated_no_length` | A partial text block, then the stream ends with no `messageStop` or metadata; on `converse`, the first half of the JSON body |
 | `empty_content` | `messageStop` with `end_turn` and no content block |
 | `schema_wrong_tool_call` | A `toolUse` block for the request's first tool whose input is not JSON; on `converse`, an input object that gives each typed required property of the tool's schema a value of another type, or a bare string, which a `type: object` schema rejects, when the schema has none |
-| `slow_stream` | The provider's answer, with `delay_ms` (default 2 s) before each event; on `converse`, before the body. The record carries `fault_ref` only once a delay ran, so an upstream that fails before answering leaves the episode untriggered and clears its pending witness |
+| `slow_stream` | The provider's answer, with `delay_ms` (default 2 s) before each event; on `converse`, before the body. The record carries `fault_ref` only once the delayed answer reached the transport, so an upstream that fails before answering, or a client that leaves during the delay, leaves the episode untriggered and clears its pending witness |
 
 ## Witnesses
 

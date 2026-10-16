@@ -1125,7 +1125,7 @@ describe("every request yields one record", () => {
         });
         const m = await hostCall(modeled.url, AGENT_BODY, 2_000);
         expect(m.events.at(-1)).toEqual({
-            type: "ModelStreamErrorException",
+            type: "modelStreamErrorException",
             member: {
                 message: "boom",
                 originalStatusCode: 424,
@@ -1424,7 +1424,7 @@ describe("every request yields one record", () => {
         expect([seen.status, seen.timedOut, seen.events]).toEqual([
             200,
             false,
-            [{ type: "ModelStreamErrorException", member: { message: "boom" } }],
+            [{ type: "modelStreamErrorException", member: { message: "boom" } }],
         ]);
         expect(records.records.map((r) => [r.status, r.finish_reason, r.error])).toEqual([
             [200, "stream_cut", "ModelStreamErrorException: boom"],
@@ -1451,8 +1451,19 @@ describe("every request yields one record", () => {
         await Bun.sleep(100);
         session.destroy();
         while (gateway.inFlight > 0) await Bun.sleep(10);
-        expect(records.records.map((r) => [r.fault_ref, r.first_byte_ms])).toEqual([["s", null]]);
+        expect(records.records.map((r) => [r.fault_ref, r.first_byte_ms])).toEqual([[null, null]]);
         expect(started).toEqual([]);
+        const json = await start(fault);
+        json.injector.arm("s");
+        const other = connect(json.gateway.urls[1] as string);
+        const call = other.request({ ":method": "POST", ":path": "/model/m/converse" });
+        call.on("error", () => undefined);
+        call.end(JSON.stringify(AGENT_BODY));
+        await Bun.sleep(100);
+        other.destroy();
+        while (json.gateway.inFlight > 0) await Bun.sleep(10);
+        expect(json.records.records.map((r) => [r.status, r.fault_ref])).toEqual([[0, null]]);
+        expect(json.injector.report()[0]?.injected_seq).toEqual([]);
     });
 
     test("malformed paths and bodies are rejected; odd but parseable bodies are forwarded", async () => {

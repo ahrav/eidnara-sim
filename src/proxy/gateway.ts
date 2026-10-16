@@ -409,9 +409,11 @@ export class Gateway {
         const signal = AbortSignal.any([sink.signal, AbortSignal.timeout(deadlineMs)]);
         const delay = async () => {
             if (!fault) return;
-            done.fault_ref = fault.id;
             await sleep(fault.params.delay_ms ?? 2_000, signal);
             if (signal.aborted) throw signal.reason;
+        };
+        const delivered = () => {
+            if (fault) done.fault_ref = fault.id;
         };
         let retries = 0;
         let sawStop = false;
@@ -436,7 +438,7 @@ export class Gateway {
                     done.finish_reason = "stream_cut";
                     done.error ??= "the response carried no stopReason";
                 }
-                answer(200, { "content-type": "application/json" });
+                if (answer(200, { "content-type": "application/json" })) delivered();
                 sink.write(Buffer.from(wireJson(response.json)));
             } else {
                 const accepted = sink.status(200, {
@@ -459,7 +461,10 @@ export class Gateway {
                             ? encodeException(type, member)
                             : encodeEvent(type, member);
                         if (type.endsWith("Exception")) done.error = type;
-                        if (accepted && sink.write(frame)) firstByte();
+                        if (accepted && sink.write(frame)) {
+                            firstByte();
+                            delivered();
+                        }
                     }
                 }
                 if (!sawStop || !sawMetadata) {
@@ -493,8 +498,9 @@ export class Gateway {
                 sink.write(Buffer.from(JSON.stringify({ message: text })));
             } else if (streaming) {
                 if (!sawStop || !sawMetadata) done.finish_reason = "stream_cut";
+                const member = errorType[0]?.toLowerCase() + errorType.slice(1);
                 const frame = errorType.endsWith("Exception")
-                    ? encodeException(errorType, payload)
+                    ? encodeException(member, payload)
                     : encodeError(errorType, text);
                 if (sink.write(frame)) firstByte();
             }
