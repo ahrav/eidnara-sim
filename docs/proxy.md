@@ -109,7 +109,8 @@ For each episode and arm, `FaultInjector.report(arm)` returns whether it was arm
 `seq` of every injected record, the `seq` of the first later agent call that
 started within the window after each injection (host-observed; a faulted
 retry under a persistent or burst episode counts; a pending injection waits
-for such a call however late it completes; the window opens at the injected
+for that earliest-started call's record however late it completes, even when
+a later-started call completes first; the window opens at the injected
 request's first byte, so a live run and a restored one agree), and whether
 the proxy retried. An episode is `fired` only with both an injected record
 and a host-observed call (SIM-P31); otherwise it is `untriggered`, and

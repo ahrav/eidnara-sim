@@ -299,9 +299,12 @@ function summarize(dir: string) {
             try {
                 requireJournalShape(
                     journal as never,
-                    scenario.events
-                        .slice(0, manifestEvents)
-                        .map((e) => ({ id: String(e.id), kind: String(e.kind) })),
+                    scenario.events.slice(0, manifestEvents).map((e) => ({
+                        id: String(e.id),
+                        kind: String(e.kind),
+                        scenario_ms: Number(e.scenario_ms),
+                    })),
+                    manifest.order,
                 );
                 return journal.every((e, i) => e.seq === i) ? "ok" : "seq gap";
             } catch (caught) {

@@ -389,13 +389,15 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: yes - `src/run/scheduler.test.ts` (Clock refuses to advance while
-busy; every scheduler run asserts an empty busy set at each `AdvanceClock`)
-and the live witness (`tests/witness-faults.ts`, `checkJournal`
-`advance_while_busy`); see `evidence/sim-p12-clock-advances-only-when-idle.md`
+Exercised: partial - `src/run/scheduler.test.ts` (Clock refuses to advance
+while busy; every scheduler run asserts an empty busy set at each
+`AdvanceClock`) and the live witness (`tests/witness-faults.ts`, `checkJournal`
+`advance_while_busy`) establish the jump clause; the wall-speed clause (an
+open interval's `scenario_ms` moves only by wall-clock progression) has no
+check yet; see `evidence/sim-p12-clock-advances-only-when-idle.md`
 Guarantee: SIM-P12: Every `AdvanceClock` entry is preceded by `busy_set` empty
-at the same sequence, and no `scenario_ms` change appears between a `BeginTurn`
-or `RegisterJob` and the matching `EndTurn` or `EndJob`.
+at the same sequence, and between a `BeginTurn` or `RegisterJob` and the
+matching `EndTurn` or `EndJob` `scenario_ms` moves only at wall speed.
 Check: `always` - for each `AdvanceClock`, assert the busy set is empty at that
 `seq`, and for each open turn or job interval assert `scenario_ms` changes only
 by wall-clock progression; a jump mid-turn shows a turn a time it never lived

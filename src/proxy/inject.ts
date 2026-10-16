@@ -32,6 +32,8 @@ export class FaultInjector {
     private readonly armed = new Map<string, Armed>();
     private readonly witnesses = new Map<string, Witness>();
     private readonly pending: { key: string; arm: string; at: number; call: number }[] = [];
+    /** Agent calls by arm and arrival ordinal, with their record seq once written. */
+    private readonly candidates = new Map<string, Map<number, { at: number; seq?: number }>>();
 
     constructor(
         private readonly faults: ProxyFault[],
@@ -78,6 +80,7 @@ export class FaultInjector {
     /** `at` is the request's arrival time, the same instant `restore` reads from the record. */
     take(component: Component, call: number, arm: string, at = Date.now()): ProxyFault | null {
         if (component !== TARGET) return null;
+        this.candidate(arm).set(call, { at });
         for (const [key, a] of this.armed) {
             if (a.arm !== arm) continue;
             const { strategy, params } = a.fault;
@@ -99,19 +102,35 @@ export class FaultInjector {
         return null;
     }
 
+    private candidate(arm: string): Map<number, { at: number; seq?: number }> {
+        let calls = this.candidates.get(arm);
+        if (!calls) {
+            calls = new Map();
+            this.candidates.set(arm, calls);
+        }
+        return calls;
+    }
+
     /**
      * An injection is witnessed by the first later agent call that started inside the window.
-     * Records arrive in completion order, so a pending injection stays until such a call settles.
+     * Records arrive in completion order, so a pending injection waits until that earliest call
+     * has its record, even when a later-started call completes first.
      */
     observe(record: CallRecord, call: number): void {
-        for (const p of this.pending.filter((x) => x.arm === record.arm && call > x.call)) {
-            const inWindow = record.started_wall_ms <= p.at + this.windowMs;
-            const sameCaller = record.component === TARGET;
-            if (sameCaller && inWindow) {
-                (this.witnesses.get(p.key) as Witness).host_observed_seq.push(record.seq);
-                this.pending.splice(this.pending.indexOf(p), 1);
-            }
+        const calls = this.candidate(record.arm);
+        if (record.component === TARGET) {
+            calls.set(call, { at: calls.get(call)?.at ?? record.started_wall_ms, seq: record.seq });
         }
+        for (const p of this.pending.filter((x) => x.arm === record.arm)) {
+            const eligible = [...calls]
+                .filter(([c, x]) => c > p.call && x.at <= p.at + this.windowMs)
+                .sort(([a], [b]) => a - b);
+            const first = eligible[0];
+            if (!first || first[1].seq === undefined) continue;
+            (this.witnesses.get(p.key) as Witness).host_observed_seq.push(first[1].seq);
+            this.pending.splice(this.pending.indexOf(p), 1);
+        }
+        if (!this.pending.some((x) => x.arm === record.arm)) calls.clear();
         if (record.fault_ref === null) return;
         const w = this.witness(record.arm, record.fault_ref);
         w.injected_seq.push(record.seq);
@@ -151,6 +170,7 @@ export class FaultInjector {
             if (known || record.fault_ref === null) this.observe(record, call);
         });
         this.pending.length = 0;
+        this.candidates.clear();
     }
 }
 

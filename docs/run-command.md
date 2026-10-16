@@ -42,7 +42,8 @@ refused up front), a `--models` list that repeats an entry, and a
 `model_switch` schedule with fewer than two models. A `daemon_sigkill_mid_fold` needs a
 `first_summarizer_call` trigger, one session carries at most one mid-fold
 kill and one laptop sleep, a laptop sleep needs an idle gap before its
-session's start, a strategy accepts only its own limit parameters (`count`
+session's first event (an `apply_diff` that opens the session shares the
+start's time), a strategy accepts only its own limit parameters (`count`
 for `burst`; `probability` and `calls` for `intermittent`), and `store_full`
 supports `sessions: 1` only; a proxy `single` may carry the compiler's
 `count: 1`; each mechanism accepts only the parameter it reads
@@ -115,7 +116,8 @@ toolchain wrappers are created exclusively after removing any planted name.
    checkout the scenario's projects clone from, the configured toolchain
    (bin, keep, env, wall-clock tools) with each named tool's content digest
    (resolved through the toolchain bins, then the sandbox's system path), the
-   Git executable the identity checks run, the SHA-256 of the daemon,
+   Git executable the identity checks run (a Pi install symlink that escapes
+   the install also hashes its target's content), the SHA-256 of the daemon,
    OpenCode, and Pi executables, the whole Pi install tree (every file and
    link under `pi_install`, since Node resolves the CLI's dependencies
    there), the Node runtime Pi runs on, the libfaketime interposer, the
@@ -124,8 +126,10 @@ toolchain wrappers are created exclusively after removing any planted name.
    Bedrock region and profile name, base wall time, and preflight result. The working-tree digest hashes an
    untracked symlink's target text.
    A later invocation refuses a manifest whose `schema` is not
-   `sim-run-manifest/v1`, revalidates a saved fault override as on the first
-   run, and refuses when any option it states differs from the manifest, when the manifest's arm order is not a non-empty subsequence
+   `sim-run-manifest/v1` or whose execution fields are out of range (an event
+   count outside the compiled schedule, a non-positive context limit, an
+   unnamed model, a non-integer seed, an unknown host), revalidates a saved
+   fault override as on the first run, and refuses when any option it states differs from the manifest, when the manifest's arm order is not a non-empty subsequence
    of the seed's pre-registered arm order, when a resumed journal breaks the
    run's state machine (a `ResumeRun` or arm entry before `StartRun`, an arm
    entry before `StartArm` or after `EndArm`, an `EndTurn` or `EndJob` with
@@ -133,7 +137,8 @@ toolchain wrappers are created exclusively after removing any planted name.
    user turn's `Event` without its `EndTurn` or interruption marker, or an
    `EndArm` with an item open or events of the prefix still unrun, an item
    opened twice or a turn reopened, a `StartArm` out of the manifest's order,
-   an `Event` recorded before its scheduled time, any entry after `EndRun`, or
+   an `Event` recorded before its scheduled time, a `StartArm` while the
+   previous arm is open, any entry after `EndRun`, or
    a row whose `seq` or `scenario_ms` is not a number), when any of those digests changed, when an
    interception result, probed path, or toolchain version
    changed, or when the selected host's version or transcript paths changed,
@@ -164,7 +169,7 @@ toolchain wrappers are created exclusively after removing any planted name.
 6. At the end, or after a failure or signal, stop each arm's sampler and
    driver, stop the proxy, append this invocation's proxy-fault witness
    report to `faults.jsonl` (a completed run stops the proxy, drains its
-   handlers, and appends the report before `EndRun`, so
+   handlers, appends the report, and rechecks the wall budget before `EndRun`, so
    a sealed journal always has its witness line; teardown appends it only
    when that did not happen; an unterminated final line left by an earlier
    kill is dropped first), close the journal, and release the lease. A
@@ -231,7 +236,7 @@ event times and reports, per arm:
 | `events_inside_sleep` | sleep jumps that pass an unrun scheduled event (SIM-P18) |
 | `repeated_sleeps` | a second sleep jump for the same fault in one arm |
 | `missing_events` | scheduled events an arm never journaled as `Event` although it reached `EndArm` |
-| `out_of_order_events` | `Event` entries unknown to the schedule or breaking its order |
+| `out_of_order_events` | `Event` entries unknown to the schedule or not the next one it expects (a skip is reported at the row that skipped) |
 | `jump_origin_mismatch` | `AdvanceClock` entries whose `from_ms` differs from the arm's preceding `scenario_ms`; crossing checks use the observed value |
 | `jobs_held_after_turn` | jobs that held the clock while no turn was open, whether registered after the turn or registered inside it and outliving it, once per job at its `RegisterJob` seq (SIM-P13) |
 | `next_event_jumps`, `sleep_jumps`, `sleep_jump_faults` | how many jumps of each kind the check covered, and each sleep jump's arm and fault id |

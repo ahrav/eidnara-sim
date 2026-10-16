@@ -83,9 +83,8 @@ export function checkJournal(entries: Entry[], schedule: Schedule): JournalRepor
             done.add(id);
             const at = position.get(id);
             const next = cursor.get(arm) ?? 0;
-            if (at === undefined || at < next)
-                report.out_of_order_events.push({ arm, event: id, seq });
-            if (at !== undefined && at >= next) cursor.set(arm, at + 1);
+            if (at !== next) report.out_of_order_events.push({ arm, event: id, seq });
+            if (at !== undefined) cursor.set(arm, Math.max(next, at + 1));
         }
         if (e.kind === "EndArm") {
             for (const id of schedule.events.keys()) {

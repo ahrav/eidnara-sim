@@ -475,6 +475,37 @@ describe("witnesses", () => {
         expect(resumed.take("agent", 12, "eidnara")).toBeNull();
     });
 
+    test("the witnessed retry is the first later call to start, even when a later one completes first", async () => {
+        const fault: ProxyFault = {
+            id: "f",
+            type: "provider_5xx",
+            strategy: "single",
+            params: { count: 1 },
+        };
+        const releases: Array<() => void> = [];
+        const slowFirst: Upstream = {
+            async converse(m, b, streaming, signal) {
+                if (releases.length === 0) {
+                    await new Promise<void>((done) => releases.push(done));
+                }
+                return scriptedUpstream().converse(m, b, streaming, signal);
+            },
+        };
+        const { injector, records, started, url } = await start(fault, slowFirst);
+        injector.arm("f", "eidnara");
+        await hostCall(url, AGENT_BODY, 1_000);
+        const first = hostCall(url, AGENT_BODY, 5_000);
+        while (started.length < 2) await Bun.sleep(5);
+        await hostCall(url, AGENT_BODY, 1_000);
+        releases[0]?.();
+        await first;
+        expect(records.records.map((r) => r.arrival)).toEqual([0, 2, 1]);
+        expect(injector.report("eidnara")[0]).toMatchObject({
+            status: "fired",
+            host_observed_seq: [2],
+        });
+    });
+
     test("a later-started call that completes first does not expire an earlier eligible retry", () => {
         const fault: ProxyFault = {
             id: "f",

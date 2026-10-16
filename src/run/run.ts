@@ -264,6 +264,8 @@ export function requireJournalShape(
         const state = arms.get(e.arm);
         if (e.kind === "StartArm") {
             if (state) throw bad(e, "repeats StartArm");
+            const stillOpen = [...arms].find(([, st]) => st === "open");
+            if (stillOpen) throw bad(e, `starts arm ${e.arm} while arm ${stillOpen[0]} is open`);
             if (order && order[nextArm] !== e.arm) {
                 throw bad(
                     e,
@@ -322,6 +324,24 @@ export function requireJournalShape(
             cursor.set(e.arm, at + 1);
         }
     }
+}
+
+/** Range and type problems of a persisted manifest's execution fields, before any is inherited. */
+function manifestProblems(m: Manifest, compiledEvents: number): string[] {
+    const problems: string[] = [];
+    if (!Number.isInteger(m.events) || m.events < 1 || m.events > compiledEvents) {
+        problems.push(`events ${m.events} outside 1..${compiledEvents}`);
+    }
+    if (!Number.isInteger(m.context_limit) || m.context_limit < 1) {
+        problems.push(`context_limit ${m.context_limit} is not a positive integer`);
+    }
+    if (!Array.isArray(m.models) || m.models.some((x) => typeof x !== "string" || x === "")) {
+        problems.push("models is not a list of names");
+    }
+    if (!Number.isInteger(m.seed)) problems.push(`seed ${m.seed} is not an integer`);
+    if (m.host !== "pi" && m.host !== "opencode") problems.push(`host ${m.host} unknown`);
+    if (!Number.isFinite(m.base_wall_ms)) problems.push("base_wall_ms is not a number");
+    return problems;
 }
 
 /** The manifest's execution fields (everything but the per-invocation preflight), as one digest. */
@@ -639,9 +659,7 @@ function validateEpisodes(raw: unknown[], scenario: Scenario, source: string): v
                 session: String(e.session),
                 scenario_ms: Number(e.scenario_ms),
             }));
-            const at = events.findIndex(
-                (e) => e.kind === "session_start" && e.session === episode.trigger.session,
-            );
+            const at = events.findIndex((e) => e.session === episode.trigger.session);
             const before = at > 0 ? (events[at - 1]?.scenario_ms ?? null) : null;
             const gap = at >= 0 && before !== null && (events[at]?.scenario_ms ?? 0) > before;
             if (!gap) {
@@ -689,8 +707,15 @@ function eventCount(requested: number | undefined, compiled: number): number {
     return requested;
 }
 
-/** Every regular file under `dir`, hashed by length-framed relative path and content. */
-function directoryDigest(dir: string): string {
+/**
+ * Every regular file under `dir`, hashed by length-framed relative path and content. A symlink
+ * whose target stays inside `dir` contributes its link text (the target is walked in place); one
+ * that escapes contributes its link text and the digest of the target's content, so dependency
+ * code linked in from elsewhere is bound too. `seen` breaks cycles through escaping links.
+ */
+function directoryDigest(dir: string, seen = new Set<string>()): string {
+    const root = realpathSync(dir);
+    seen.add(root);
     const hash = createHash("sha256");
     const entries: string[] = [];
     const walk = (rel: string) => {
@@ -705,7 +730,9 @@ function directoryDigest(dir: string): string {
     for (const rel of entries) {
         const stat = lstatSync(join(dir, rel));
         const content = stat.isSymbolicLink()
-            ? Buffer.from(`->${readlinkSync(join(dir, rel))}`)
+            ? Buffer.from(
+                  `->${readlinkSync(join(dir, rel))}${linkTarget(join(dir, rel), root, seen)}`,
+              )
             : stat.isFile()
               ? readFileSync(join(dir, rel))
               : Buffer.from(`?${stat.mode}`);
@@ -713,6 +740,22 @@ function directoryDigest(dir: string): string {
         hash.update(`${name.length}:`).update(name).update(`${content.length}:`).update(content);
     }
     return hash.digest("hex");
+}
+
+/** The digest suffix of a symlink's target when the target lies outside `root`; empty inside. */
+function linkTarget(link: string, root: string, seen: Set<string>): string {
+    let target: string;
+    try {
+        target = realpathSync(link);
+    } catch {
+        return "=dangling";
+    }
+    if (target === root || target.startsWith(`${root}/`)) return "";
+    if (seen.has(target)) return "=cycle";
+    const stat = statSync(target);
+    if (stat.isDirectory()) return `=${directoryDigest(target, seen)}`;
+    if (stat.isFile()) return `=${createHash("sha256").update(readFileSync(target)).digest("hex")}`;
+    return `=?${stat.mode}`;
 }
 
 /** The OpenCode SDK module the host stack imports from the Eidnara checkout (`src/hosts/arms.ts`). */
@@ -851,6 +894,10 @@ export async function loadManifest(
             throw new HarnessFailure(
                 `manifest.json schema ${manifest?.schema} is not sim-run-manifest/v1`,
             );
+        }
+        const fieldProblems = manifestProblems(manifest, scenario.events.length);
+        if (fieldProblems.length > 0) {
+            throw new HarnessFailure(`manifest.json is malformed: ${fieldProblems.join(", ")}`);
         }
         const known = seedOrder(o);
         const order = Array.isArray(manifest.order) ? manifest.order : [];
@@ -1219,8 +1266,9 @@ async function runArms(
         let cpuJob: string | null = null;
         const onBusy = (busy: boolean) => {
             if (busy && cpuJob === null) {
-                cpuJob = `daemon-cpu-${arm}-${jobSeq++}`;
-                scheduler.jobStart(cpuJob);
+                const id = `daemon-cpu-${arm}-${jobSeq++}`;
+                scheduler.jobStart(id);
+                cpuJob = id;
             } else if (!busy && cpuJob !== null) {
                 scheduler.jobEnd(cpuJob);
                 cpuJob = null;

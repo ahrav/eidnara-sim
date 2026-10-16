@@ -782,4 +782,36 @@ describe("run inputs", () => {
             loadManifest({ ...o, config: swapped }, scenario, checks),
         ).resolves.toMatchObject({ manifest: { seed: 101 } });
     });
+
+    test("a resume is refused when a dependency linked from outside the Pi install changed", async () => {
+        const out = dir();
+        const scenario = writeScenario(out, scenarioBody());
+        const checks: Preflight = {
+            launcher: join(out, "launcher"),
+            time_injection: [],
+            distortions: [],
+            hosts: [{ host: "pi", version: "0.80.2", transcript_paths: [] }],
+            toolchain: [],
+        };
+        const install = join(out, "pi");
+        const store = join(out, "store/dep");
+        mkdirSync(join(install, "node_modules/@earendil-works/pi-coding-agent/dist"), {
+            recursive: true,
+        });
+        writeFileSync(
+            join(install, "node_modules/@earendil-works/pi-coding-agent/dist/cli.js"),
+            "pi",
+        );
+        mkdirSync(store, { recursive: true });
+        writeFileSync(join(store, "index.js"), "dep 1");
+        symlinkSync(store, join(install, "node_modules/dep"));
+        symlinkSync("..", join(store, "loop"));
+        const linked = { ...config, pi_install: install };
+        const o: RunOptions = { config: linked, tier: "S", seed: 101, host: "pi", out };
+        await loadManifest(o, scenario, checks);
+        writeFileSync(join(store, "index.js"), "dep 2");
+        await expect(loadManifest(o, scenario, checks)).rejects.toThrow(
+            /inputs changed since the run started: binaries/,
+        );
+    });
 });

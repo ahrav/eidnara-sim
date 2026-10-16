@@ -155,10 +155,12 @@ export class Scheduler {
             this.outage = null;
             this.session = null;
             await this.o.verify?.("EndArm");
+            this.checkStop();
             this.log({ kind: "EndArm" });
         }
         this.arm = null;
         await this.o.verify?.("EndRun");
+        this.checkStop();
         this.log({ kind: "EndRun" });
     }
 

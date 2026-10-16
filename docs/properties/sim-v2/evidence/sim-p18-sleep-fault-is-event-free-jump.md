@@ -11,8 +11,9 @@ v2 harness before any harness code existed.
 
 ## Evidence trail
 
-A laptop-sleep fault produces exactly one `AdvanceClock` of the scheduled
-duration with `busy_set` empty and no events inside the gap.
+A laptop-sleep fault produces exactly one `AdvanceClock`, spanning the idle
+gap that remains before its session's first event, with `busy_set` empty and
+no events inside the gap.
 
 M4 (#1028) makes a scheduled laptop sleep the one jump onto its session's
 first event, journaled with the fault id, whatever kind of event opens the

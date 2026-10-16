@@ -122,6 +122,7 @@ describe("checkJournal", () => {
         at("EndArm", 0);
         const report = checkJournal(entries, schedule({ "e-1": 0, "e-2": 0 }));
         expect(report.out_of_order_events).toEqual([
+            { arm: "a", event: "e-2", seq: 0 },
             { arm: "a", event: "e-1", seq: 1 },
             { arm: "a", event: "e-9", seq: 2 },
         ]);
