@@ -14,10 +14,15 @@ v2 harness before any harness code existed.
 Per-arm total tokens equal the sum of per-component tokens, and per-component
 cost uses the journaled price table version.
 
-No harness code, test, or run exists yet. The surface lands in M7
-(#1032).
+Before M5 (#1030) no harness code, test, or run existed; the token ledger
+landed with M5 and pricing lands with the report (M7, #1032).
 
-M5 (#1030) sums input, output, cache-read, and cache-write tokens per component and per arm, the per-arm total being the per-component sum; pricing lands with the report (M7).
+M5 (#1030) sums input, output, cache-read, and cache-write tokens per
+component and per arm in `ledger` (`src/oracle/oracles.ts`), leaving out the
+harness's own user-sim, judge, and refused calls; the per-arm total is the
+per-component sum. `src/oracle/oracles.test.ts` ("token ledger") asserts the
+four fields, the exclusion, and the sum on constructed calls. No tier run has
+exercised it yet.
 
 ## Failure scenario
 

@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { scenarioHash } from "../scenario/compile";
 import { loadPrereg } from "../scenario/inputs";
 import { type ArmLogs, loadRun, type RunLogs } from "./logs";
-import { ORACLES, oracleReport, rssFit, runOracles } from "./oracles";
+import { ledger, ORACLES, oracleReport, rssFit, runOracles } from "./oracles";
 
 const DIR = join(import.meta.dir, "../../tests/fixtures/oracle");
 const prereg = loadPrereg("S");
@@ -333,5 +333,31 @@ describe("oracle evidence integrity", () => {
             ],
         };
         expect(oracle(unsegmented, "F5")).toEqual([]);
+    });
+});
+
+describe("token ledger", () => {
+    test("ledger sums all four token fields per component and leaves the harness's own calls out (SIM-P38)", () => {
+        const tokens = {
+            input_tokens: 1,
+            output_tokens: 2,
+            cache_read_tokens: 4,
+            cache_write_tokens: 8,
+        };
+        const arm = armOf("eidnara", {
+            calls: [
+                call({ seq: 0, component: "agent", ...tokens }),
+                call({ seq: 1, component: "agent", ...tokens }),
+                call({ seq: 2, component: "memory_capture", ...tokens }),
+                call({ seq: 3, component: "title", ...tokens }),
+                call({ seq: 4, component: "user-sim", ...tokens }),
+                call({ seq: 5, component: "judge", ...tokens }),
+                call({ seq: 6, component: "rejected", ...tokens }),
+            ],
+        });
+        const l = ledger(arm);
+        expect(l.tokens).toEqual({ agent: 30, memory_capture: 15, title: 15 });
+        expect(l.total).toBe(Object.values(l.tokens).reduce((a, b) => a + b, 0));
+        expect(l.title_calls).toBe(1);
     });
 });

@@ -16,10 +16,25 @@ from the agent's component in that window, or a completed model call is followed
 by no persistence or tool execution within the bound; the turn ends `failed`
 with cause `hang`.
 
-No harness code, test, or run exists yet. The surface lands in M5
-(#1029).
+Before M5 (#1030) no harness code, test, or run existed; the F4 oracle landed
+with M5.
 
-M5 (#1030) derives a hang from the call records, journal, and tool runs: a turn at its deadline (OpenCode's `turn deadline` or Pi's `Timed out after ... ms`), or a completed agent call followed by five minutes (pre-registration revision 5, `oracles.hang_quiet_ms`) with no tool start, call, or turn end. A resumed run restarts its clock at the last journal entry, so a turn the harness kill cut has no measurable quiet time and is journaled `failed(interrupted)` instead. A recorded OpenCode turn that waited on its question tool fires it; a recorded Pi turn with tool runs does not.
+M5 (#1030) derives a hang from the call records, journal, and tool runs in `f4`
+(`src/oracle/oracles.ts`): a turn at its deadline (OpenCode's `turn deadline`
+or Pi's `Timed out after ... ms`), or a completed agent call followed by five
+minutes (pre-registration revision 5, `oracles.hang_quiet_ms`) with no tool
+start, other same-turn call, or turn end. The oracle reads the journaled
+turn after the fact rather than labelling the turn `failed(hang)` as it ends,
+and it counts a tool that starts within a second of the call's end as progress
+however long the tool runs, so a tool that waits forever surfaces at the
+deadline; the property's biconditional is checked against the recorded
+evidence, not enforced by the runner. A resumed run restarts its clock at the
+last journal entry, so a turn the harness kill cut has no measurable quiet
+time and is journaled `failed(interrupted)` instead. The recorded OpenCode
+turn that waited on its question tool fires it (`F4-bad.json`); the recorded
+Pi turn with tool runs does not (`F4-good.json`); `src/oracle/oracles.test.ts`
+constructs a sub-second call followed by silence and a persistence call inside
+the window. No tier run has exercised it yet.
 
 ## Failure scenario
 

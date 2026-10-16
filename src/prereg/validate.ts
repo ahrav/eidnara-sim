@@ -300,6 +300,9 @@ function checkGrading(p: Preregistration, errors: string[]): void {
     for (const field of ["human_sample_percent", "arm_identification_ceiling_percent"] as const) {
         if (g.judge[field] > 100) errors.push(`grading.judge.${field}: at most 100`);
     }
+    if (Number(p.oracles.cost_ratio_max) <= 0) {
+        errors.push("oracles.cost_ratio_max: must be positive");
+    }
 }
 
 /** Every refusal, each naming the field path it applies to; an empty list means accepted. */
