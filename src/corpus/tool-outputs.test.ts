@@ -182,7 +182,7 @@ describe("extractFrom", () => {
                         result(
                             "c7",
                             "execute_bash",
-                            'Traceback (most recent call last):\n  File "t.py", line 1, in <module>\n    input()\nKeyboardInterrupt',
+                            'Traceback (most recent call last):\n  File "t.py", line 1, in <module>\n    input()\nKeyboardInterrupt\n[Command finished with exit code 130]',
                         ),
                         call("c8", "execute_bash", { command: "python u.py" }),
                         result(
@@ -239,6 +239,27 @@ describe("extractFrom", () => {
             dataset,
         );
         expect(pending.samples).toEqual([]);
+    });
+
+    test("a traceback in a result without a completion footer is not harvested", () => {
+        const pending = extractFrom(
+            [
+                {
+                    trajectory_id: "t7",
+                    repo: "o/r",
+                    trajectory: [
+                        call("c13", "execute_bash", { command: "python t.py" }),
+                        result(
+                            "c13",
+                            "execute_bash",
+                            'Traceback (most recent call last):\n  File "t.py", line 1\nValueError: x\n[The command is still running.]',
+                        ),
+                    ],
+                },
+            ],
+            dataset,
+        );
+        expect(pending.error_codes).toEqual([]);
     });
 
     test("harvests codes only from failed commands", () => {

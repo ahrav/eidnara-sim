@@ -67,7 +67,7 @@ if (canonical(out) === canonical(cache)) {
     console.error(`--out ${out} is the embedding cache path; choose another file name`);
     process.exit(2);
 }
-if (kind(cache) !== "missing" && statSync(cache).nlink > 1) {
+if ((statSync(cache, { throwIfNoEntry: false })?.nlink ?? 0) > 1) {
     console.error(
         `${cache} is a hard link shared with another path; the cache must be its own file`,
     );

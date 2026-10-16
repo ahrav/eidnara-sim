@@ -8,6 +8,7 @@ import {
     failedChecks,
     loadCited,
     loadDistributions,
+    loadRates,
     table,
 } from "./distributions";
 import { ERROR_CODE_FIELDS, entryProblems, parseJsonl, SAMPLE_FIELDS } from "./entries";
@@ -141,6 +142,12 @@ export function checkCorpus(): CorpusReport {
     need(named.length === codes.length, "error codes: an entry has an empty code");
 
     const dist = loadDistributions();
+    const published = loadRates();
+    need(
+        JSON.stringify(dist.rates) ===
+            JSON.stringify({ source: published.source, note: published.note, ...published.rates }),
+        "rates: distributions.json differs from published-rates.json",
+    );
     const quantityNames = Object.keys(dist.quantities).sort().join(",");
     need(
         quantityNames === QUANTITIES.join(","),
@@ -151,7 +158,7 @@ export function checkCorpus(): CorpusReport {
     for (const [name, q] of Object.entries(dist.quantities)) {
         const table = TABLES[name as keyof typeof TABLES];
         need(q.source === `${origin}${table}`, `${name}: source ${q.source}`);
-        need(q.n > 0, `${name}: n missing`);
+        need(Number.isSafeInteger(q.n) && q.n > 0, `${name}: n must be a positive integer`);
         const kind = KINDS[name as keyof typeof KINDS];
         need(q.cdf.kind === kind, `${name}: cdf kind ${q.cdf.kind}, need ${kind}`);
         const floor = name === "tool_steps_per_request" ? 1 : 0;
@@ -160,7 +167,11 @@ export function checkCorpus(): CorpusReport {
             `${name}: values must be at least ${floor}`,
         );
         if (q.cdf.kind === "discrete") {
-            need(q.cdf.x.every(Number.isSafeInteger), `${name}: discrete values must be integers`);
+            const strict = q.cdf.x.every((v, i) => i === 0 || v > (q.cdf.x[i - 1] ?? 0));
+            need(
+                q.cdf.x.every(Number.isSafeInteger) && strict,
+                `${name}: discrete values must be increasing integers`,
+            );
             problems.push(...countProblems(q.cdf, q.n).map((why) => `${name}: ${why}`));
         } else {
             need(q.cdf.p.join(",") === GRID.join(","), `${name}: p must be the fit grid`);
@@ -178,10 +189,9 @@ export function checkCorpus(): CorpusReport {
         const count = Math.round(c.share * mix.n);
         const errors = Math.round(c.error_rate * count);
         counted += count;
+        const exact = round6(count / mix.n) === c.share && round6(errors / count) === c.error_rate;
         need(
-            count > 0 &&
-                round6(count / mix.n) === c.share &&
-                round6(errors / count) === c.error_rate,
+            count > 0 && errors >= 0 && errors <= count && exact,
             `tool_mix: ${c.category} share or error_rate is not a count over n`,
         );
         need(Array.isArray(c.tools), `tool_mix: ${c.category} tools`);

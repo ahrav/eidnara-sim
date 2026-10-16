@@ -738,8 +738,8 @@ describe("P4 scope across seeds", () => {
         for (const lang of ["rust", "typescript"]) {
             expect({ lang, in: counts.get(`${lang}/in`), out: counts.get(`${lang}/out`) }).toEqual({
                 lang,
-                in: counts.get(`${lang}/out`),
-                out: counts.get(`${lang}/out`),
+                in: 3,
+                out: 3,
             });
         }
     });

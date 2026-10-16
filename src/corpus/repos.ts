@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { CORPUS_DIR, under } from "./sources";
+import { CORPUS_DIR, isPlainRelativePath, under } from "./sources";
 
 export const REPOS_DIR = join(CORPUS_DIR, "repos");
 const TWINS_DIR = join(CORPUS_DIR, "twins");
@@ -53,9 +53,32 @@ export function loadRepos(): RepoSpec[] {
     if (raw.schema !== "sim-corpus-repos/v1") throw new Error("repos.json: unknown schema");
     const repos = raw.repos as RepoSpec[];
     const ids = repos.flatMap((r) => [r.id, r.twin.id]);
+    for (const id of ids) repoDir(id);
     if (new Set(ids).size !== ids.length) throw new Error(`repos.json: duplicate id in ${ids}`);
     for (const repo of repos) {
         if (!SHA.test(repo.commit)) throw new Error(`repos.json: ${repo.id}: commit is not a SHA`);
+        if (typeof repo.license_file !== "string" || !isPlainRelativePath(repo.license_file)) {
+            throw new Error(
+                `repos.json: ${repo.id}: license_file must be a relative path in the clone`,
+            );
+        }
+        if (!Array.isArray(repo.twin.renames)) {
+            throw new Error(`repos.json: ${repo.twin.id}: renames must be an array`);
+        }
+        for (const rename of repo.twin.renames) {
+            const fields = [rename.glob, rename.pattern, rename.replace];
+            if (!fields.every((f) => typeof f === "string") || rename.glob === "") {
+                throw new Error(
+                    `repos.json: ${repo.twin.id}: rename needs glob, pattern, and replace`,
+                );
+            }
+            try {
+                new RegExp(rename.pattern, "g");
+            } catch (error) {
+                const why = (error as Error).message;
+                throw new Error(`repos.json: ${repo.twin.id}: pattern ${rename.pattern}: ${why}`);
+            }
+        }
         for (const [field, cmd] of [
             ["prepare", repo.prepare],
             ["test", repo.test],

@@ -1,6 +1,13 @@
 import { expect, test } from "bun:test";
 import { join } from "node:path";
-import { CACHE_DIR, cachePath, type Dataset, fetchDataset, under } from "./sources";
+import {
+    CACHE_DIR,
+    cachePath,
+    type Dataset,
+    fetchDataset,
+    isPlainRelativePath,
+    under,
+} from "./sources";
 
 const dataset: Dataset = {
     id: "d",
@@ -18,6 +25,27 @@ test("under resolves inside its root and rejects parent, absolute, and root-equa
     expect(under("/root", "a/../b")).toBe("/root/b");
     for (const path of ["../sib.rs", "/etc/passwd", ".", "a/../.."]) {
         expect(() => under("/root", path)).toThrow("escapes /root");
+    }
+});
+
+test("isPlainRelativePath admits nested plain segments and rejects dots, separators, and URL characters", () => {
+    for (const ok of ["LICENSE", "data/v0.0.2/rounds/train.parquet", "org-name/data_set.v1"]) {
+        expect(isPlainRelativePath(ok)).toBe(true);
+    }
+    for (const bad of [
+        "",
+        "/abs",
+        "a//b",
+        "./a",
+        "../a",
+        "a/..",
+        ".hidden",
+        "foo#bar",
+        "foo?x",
+        "a\\b",
+        "a b",
+    ]) {
+        expect(isPlainRelativePath(bad)).toBe(false);
     }
 });
 

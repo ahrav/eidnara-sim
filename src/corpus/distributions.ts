@@ -40,6 +40,23 @@ export function loadDistributions(): Distributions {
     return raw;
 }
 
+export interface PublishedRates {
+    schema: string;
+    source: string;
+    note: string;
+    rates: Record<string, unknown>;
+}
+
+export function loadRates(): PublishedRates {
+    const raw = parseJson<PublishedRates>(
+        readFileSync(join(CORPUS_DIR, "published-rates.json"), "utf8"),
+        "published-rates.json",
+    );
+    if (raw.schema !== "sim-corpus-rates/v1")
+        throw new Error("published-rates.json: unknown schema");
+    return raw;
+}
+
 export function loadCited(): Cited {
     const raw = parseJson<Cited & { schema?: string }>(
         readFileSync(join(CORPUS_DIR, "cited-percentiles.json"), "utf8"),
