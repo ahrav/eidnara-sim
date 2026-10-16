@@ -423,6 +423,74 @@ touch ${escaped}
         expect(exits).toEqual([{ after: "e-9" }]);
     });
 
+    test("a resume refuses a daemon runtime or data directory the host replaced with a symlink", async () => {
+        const daemonFactory = () =>
+            ({ ...fakeDaemon(10), start: async () => undefined }) as unknown as DaemonStack;
+        const { driver, root } = fixture("eidnara", {}, { daemonFactory });
+        await driver.reset();
+        const runtime = join(root, "eidnara", "r", "runtime");
+        rmSync(runtime, { recursive: true, force: true });
+        symlinkSync(tmp(), runtime);
+        const fresh = new HostDriver((driver as unknown as { o: DriverOptions }).o);
+        await expect(fresh.resume(null)).rejects.toThrow("leaves");
+    });
+
+    test.skipIf(!sandbox)(
+        "apply_diff refuses a staged sibling the host planted as a symlink",
+        async () => {
+            const { driver } = fixture("host", { p: gitRepo() });
+            await driver.reset();
+            const elsewhere = join(tmp(), "victim");
+            writeFileSync(elsewhere, "theirs");
+            symlinkSync(elsewhere, join(driver.workspace("p"), `x.${process.pid}`));
+            await driver.event(ev("apply_diff", { path: "x", content: "mine" }));
+            expect(readFileSync(elsewhere, "utf8")).toBe("theirs");
+            expect(readFileSync(join(driver.workspace("p"), "x"), "utf8")).toBe("mine");
+        },
+    );
+
+    test.skipIf(!sandbox)("a hook that hangs is cut off at the turn deadline", async () => {
+        const { driver } = fixture("host", { p: gitRepo() });
+        await driver.reset();
+        const ws = driver.workspace("p");
+        writeFileSync(join(ws, ".git/hooks/post-commit"), "#!/bin/sh\nexec sleep 300\n", {
+            mode: 0o755,
+        });
+        const started = Date.now();
+        await expect(
+            driver.event(ev("apply_diff", { path: "a.txt", content: "A" })),
+        ).rejects.toThrow(/git commit/);
+        expect(Date.now() - started).toBeLessThan(10_000);
+    });
+
+    test("finish on a fresh harness reaps what the killed one recorded", async () => {
+        const { driver, armDir } = fixture("host", { p: gitRepo() });
+        await driver.reset();
+        await driver.stop();
+        const orphan = Bun.spawn(["sleep", "300"]);
+        const state = JSON.parse(readFileSync(join(armDir, "state.json"), "utf8"));
+        const start = readFileSync(`/proc/${orphan.pid}/stat`, "utf8")
+            .split(") ")[1]
+            ?.split(" ")[19];
+        state.host = { pid: orphan.pid, start };
+        writeFileSync(join(armDir, "state.json"), JSON.stringify(state));
+        const fresh = new HostDriver((driver as unknown as { o: DriverOptions }).o);
+        await fresh.reap();
+        await fresh.finish();
+        await orphan.exited;
+        expect(orphan.signalCode).toBe("SIGTERM");
+    });
+
+    test("reset clears the logs of an abandoned attempt", async () => {
+        const { driver, armDir } = fixture("host", { p: gitRepo() });
+        mkdirSync(armDir, { recursive: true });
+        writeFileSync(join(armDir, "daemon.log"), "from the attempt before\n");
+        writeFileSync(join(armDir, "transcripts.json"), "{}");
+        await driver.reset();
+        expect(existsSync(join(armDir, "daemon.log"))).toBe(false);
+        expect(existsSync(join(armDir, "transcripts.json"))).toBe(false);
+    });
+
     test("a resume with state.json gone stops instead of guessing the arm's state", async () => {
         const { driver, armDir } = fixture("host", { p: gitRepo() });
         await driver.reset();
@@ -535,6 +603,25 @@ describe("HostDriver faults", () => {
             await driver.stop();
         }
     });
+
+    test.skipIf(!sudo)(
+        "a ballast that vanished during the episode stops the run at session_end",
+        async () => {
+            const { driver, transcripts } = fixture("eidnara");
+            mkdirSync(join(transcripts, "sessions"), { recursive: true });
+            driver.daemon = fakeDaemon(10) as unknown as DaemonStack;
+            driver.host = new FakeHost({} as HostContext, transcripts) as unknown as SimHost;
+            const inner = driver as unknown as { mountStore(f: boolean): void };
+            inner.mountStore(true);
+            try {
+                await driver.fault(episode("store_full"));
+                rmSync(join(driver.storeRoot, "ballast"));
+                await expect(driver.event(ev("session_end"))).rejects.toThrow("ballast");
+            } finally {
+                await driver.stop().catch(() => undefined);
+            }
+        },
+    );
 
     test.skipIf(!sudo)(
         "a resume whose daemon start fails leaves the ballast in place for the next attempt",

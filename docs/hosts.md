@@ -88,14 +88,16 @@ stay uncommitted; content already committed adds no commit, and a path that
 resolves outside the workspace through `..` or a symlink stops the run before
 any directory is created. The file is written whole and renamed into place,
 so a hard link the agent left at the path keeps its other name's content, and
-the `git add` and `git commit` run inside the arm's sandbox, so a hook,
-filter, or config the agent planted in the repository acts with the host's
-own view of the filesystem. The commit's author and committer dates are the
+the `git add` and `git commit` run inside the arm's sandbox under the turn
+deadline, so a hook, filter, or config the agent planted in the repository
+acts with the host's own view of the filesystem and a hook that hangs stops
+the run instead of the harness. The commit's author and committer dates are the
 event's scenario instant (`baseMs + scenario_ms`), so paired arms and a
 resumed delivery produce the same commit. Every session and `apply_diff`
 requires the workspace to resolve to the real `<arm>/r/workspaces/<project>`;
 a symlink the agent put at it or above it stops the run, since the harness
-and the launcher would follow it with their own privileges.
+and the launcher would follow it with their own privileges; the daemon's
+`runtime` and data directories get the same check before every daemon start.
 
 Each host process starts in the session's workspace, which the launcher
 enters after its privilege drop. Pi runs in RPC mode with `--session-id sim-<session>`, its agent directory,
@@ -156,17 +158,20 @@ pid and start time of the daemon and of the host while a session is open,
 replacing the file whole so a kill mid-write leaves the previous state. Pi's
 pid is recorded as soon as its process exists, before the readiness wait;
 OpenCode's is known once `spawnOpencode` returns.
-A new harness process calls `resume(open)` on an arm that has `StartArm` and
-no `EndArm`. The driver restores the model index, stops each recorded process
+A new harness process calls `reap()` and then `resume(open)` on an arm that
+has `StartArm` and no `EndArm`; an arm whose every event is journaled is only
+reaped and finished. `reap` stops each recorded process
 whose start time still matches (a process that outlives SIGTERM and SIGKILL
-stops the resume with `HarnessFailure`), unmounts a store left mounted, mounts the
+stops the resume with `HarnessFailure`) and unmounts a store left mounted,
+before the scheduler arms any proxy fault again. `resume` restores the model index, mounts the
 existing store image (a missing image or `state.json` stops the resume,
 since only `reset` formats one and the state names what to stop), starts the daemon against the existing store, and, when
 the next event is inside a session, opens that session again. Pi reopens the
 same session transcript by its session id, and OpenCode reuses the session
 with the same title. `reset` stops recorded processes and unmounts the store
 the same way before it deletes anything, so a harness killed during `reset`
-leaves no recorded process running into the next attempt. A daemon or an
+leaves no recorded process running into the next attempt, and it removes the
+`daemon.log` and `transcripts.json` of an abandoned attempt. A daemon or an
 OpenCode server still starting when the harness dies has no pid on record
 yet; a daemon's mount then stays busy and the next `reset` or `resume` stops
 with the `umount` error.
@@ -189,7 +194,7 @@ against the same store (OQ-10).
 |---|---|---|
 | `daemon_sigkill_mid_fold` | The session's first observed history-summarizer call fires it; SIGKILL and restart | `pid_before`, `pid_after`, `restarted_by: harness` |
 | `daemon_restart` | At `session_start`, SIGKILL and restart | As above |
-| `store_full` | When the scenario schedules `store_full`, each Eidnara arm's store lives on a sparse 2 GiB ext4 loop mount (`nosuid,nodev,noexec`) at `<arm>/s`, room for the daemon to materialize its harness closures twice, with its image outside the sandbox's kept paths; the fault fills it with a `fallocate`d ballast topped up by `dd`, so the sparse image stays small, and `session_end` removes the ballast; a resume that finds the ballast removes it for the daemon's start and fills the store again, whether or not that start succeeds | `avail_kb: 0`; any other value stops the run |
+| `store_full` | When the scenario schedules `store_full`, each Eidnara arm's store lives on a sparse 2 GiB ext4 loop mount (`nosuid,nodev,noexec`) at `<arm>/s`, room for the daemon to materialize its harness closures twice, with its image outside the sandbox's kept paths; the fault fills it with a `fallocate`d ballast topped up by `dd`, so the sparse image stays small, and `session_end` removes the ballast; a resume that finds the ballast removes it for the daemon's start and fills the store again, whether or not that start succeeds; the store is writable to the host, so `session_end` requires the ballast to be whole and stops the run otherwise | `avail_kb: 0`; any other value stops the run |
 | `plugin_reload` | The host process and its plugin start afresh at every `session_start` | The reload note |
 | `model_switch` | Later sessions use the next configured model; the daemon keeps running with its summarizer model | The new model id |
 | `laptop_sleep` | One event-free clock jump (`docs/run.md`) | The `AdvanceClock` entry |

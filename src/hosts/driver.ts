@@ -7,6 +7,7 @@ import {
     realpathSync,
     renameSync,
     rmSync,
+    statSync,
     writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -63,11 +64,26 @@ const gitClone = (cwd: string, args: string[]) => {
     if (r.status !== 0) throw new Error(`git ${args.join(" ")}: ${r.stderr}`);
 };
 
-/** The rename publishes a complete file, so a kill mid-write leaves the previous one. */
+/**
+ * The rename publishes a complete file, so a kill mid-write leaves the previous one. The staged
+ * file is created exclusively, so a link planted at its name is removed, never written through.
+ */
 function writeWhole(path: string, text: string): void {
     const staged = `${path}.${process.pid}`;
-    writeFileSync(staged, text);
+    rmSync(staged, { force: true });
+    writeFileSync(staged, text, { flag: "wx" });
     renameSync(staged, path);
+}
+
+/** `path` resolves to `parent/name` through real directories only; a planted symlink stops the run. */
+function realChild(parent: string, name: string, what: string): string {
+    const path = join(parent, name);
+    if (!existsSync(path)) return path;
+    const real = realpathSync(path);
+    if (real !== join(realpathSync(parent), name)) {
+        throw new HarnessFailure(`${what} ${path} leaves ${parent}`);
+    }
+    return real;
 }
 
 function run(argv: string[]): string {
@@ -99,6 +115,7 @@ export class HostDriver implements ArmDriver {
     daemon: DaemonStack | null = null;
     private model = 0;
     private storeMount: string | null = null;
+    private ballastBytes: number | null = null;
     private sessionProject: string | null = null;
     private transcriptsChecked = false;
 
@@ -166,8 +183,11 @@ export class HostDriver implements ArmDriver {
         }
         const keep = [...new Set([...this.keep, this.o.armRoot])];
         const argv = launch(this.o.launcher, keep, env, ["git", ...args], [], dir);
-        const r = spawnSync(argv[0] as string, argv.slice(1), { encoding: "utf8" });
-        return { status: r.status ?? -1, stderr: r.stderr };
+        const seconds = String(Math.ceil(this.o.turnDeadlineMs / 1000));
+        const bounded = ["timeout", "-s", "KILL", seconds, ...argv];
+        const r = spawnSync(bounded[0] as string, bounded.slice(1), { encoding: "utf8" });
+        const stderr = r.status === 137 ? `cut off after ${seconds} s` : r.stderr;
+        return { status: r.status ?? -1, stderr };
     }
 
     private gitOk(dir: string, args: string[], dateMs?: number): void {
@@ -177,11 +197,8 @@ export class HostDriver implements ArmDriver {
 
     /** The real workspace directory; a symlink the host planted at it or above it stops the run. */
     private workspaceDir(project: string): string {
-        const dir = realpathSync(this.workspace(project));
-        if (dir !== join(realpathSync(this.o.armRoot), "workspaces", project)) {
-            throw new HarnessFailure(`workspace ${project} leaves ${this.o.armRoot}`);
-        }
-        return dir;
+        const workspaces = realChild(this.o.armRoot, "workspaces", "workspaces");
+        return realChild(workspaces, project, `workspace ${project}`);
     }
 
     private recordState(): void {
@@ -209,9 +226,11 @@ export class HostDriver implements ArmDriver {
         mkdirSync(this.storeRoot, { recursive: true, mode: 0o700 });
         if (this.o.loopStore && eidnaraOn(this.o.arm)) this.mountStore(fresh);
         const filled = this.ballast !== null && existsSync(this.ballast);
-        if (filled) this.clearStoreFill();
+        if (filled) rmSync(this.ballast as string, { force: true });
         try {
             if (eidnaraOn(this.o.arm)) {
+                realChild(this.o.armRoot, "runtime", "daemon runtime");
+                realChild(this.storeRoot, "d", "daemon data");
                 const make = this.o.daemonFactory ?? ((ctx: DaemonContext) => new DaemonStack(ctx));
                 this.daemon = make({
                     ...this.o,
@@ -238,6 +257,9 @@ export class HostDriver implements ArmDriver {
         for (const dir of [this.o.armRoot, this.storeRoot])
             rmSync(dir, { recursive: true, force: true });
         rmSync(this.image, { force: true });
+        for (const stale of ["daemon.log", "transcripts.json"]) {
+            rmSync(join(this.armDir, stale), { force: true });
+        }
         mkdirSync(join(this.o.armRoot, "workspaces"), { recursive: true });
         for (const [project, source] of Object.entries(this.o.projects)) {
             const target = this.workspace(project);
@@ -258,6 +280,10 @@ export class HostDriver implements ArmDriver {
         await this.reapStale();
         await this.startArm(false);
         if (open) await this.event(open);
+    }
+
+    async reap(): Promise<void> {
+        await this.reapStale();
     }
 
     private async reapStale(): Promise<void> {
@@ -414,6 +440,7 @@ export class HostDriver implements ArmDriver {
             "conv=notrunc",
         ];
         spawnSync("dd", tail);
+        this.ballastBytes = statSync(this.ballast).size;
     }
 
     private fillStore(): Record<string, unknown> {
@@ -425,8 +452,20 @@ export class HostDriver implements ArmDriver {
         return { mount: this.storeMount, avail_kb: avail };
     }
 
+    /** The ballast must still be whole at the episode's end, since the store is writable to the host. */
     private clearStoreFill(): void {
-        if (this.ballast) rmSync(this.ballast, { force: true });
+        const ballast = this.ballast;
+        if (!ballast) return;
+        if (this.ballastBytes !== null) {
+            const size = statSync(ballast, { throwIfNoEntry: false })?.size ?? null;
+            if (size !== this.ballastBytes) {
+                throw new HarnessFailure(
+                    `store_full ballast ${ballast} changed during the episode`,
+                );
+            }
+        }
+        rmSync(ballast, { force: true });
+        this.ballastBytes = null;
     }
 
     async finish(): Promise<void> {
