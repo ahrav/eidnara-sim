@@ -87,7 +87,7 @@ describe("classify and commandOf", () => {
 });
 
 describe("extractFrom", () => {
-    const longTrace = `Traceback (most recent call last):\n${"  frame\n".repeat(800)}OSError: disk full`;
+    const longTrace = `Traceback (most recent call last):\n${"  frame\n".repeat(800)}OSError: disk full\n${FOOTER}`;
     const longRead = `Here's the result of running \`cat -n\` on /a.py:\n${"x".repeat(5000)}`;
     const rows: TrajectoryRow[] = [
         {
@@ -200,6 +200,27 @@ describe("extractFrom", () => {
         expect(trace?.truncated).toBe(true);
         expect(trace?.content.startsWith("Traceback (most recent call last)")).toBe(true);
         expect(trace?.content).toContain("ValueError: bad input value");
+    });
+
+    test("a command result without a completion footer yields no sample", () => {
+        const pending = extractFrom(
+            [
+                {
+                    trajectory_id: "t6",
+                    repo: "o/r",
+                    trajectory: [
+                        call("c12", "execute_bash", { command: "python -m pytest tests" }),
+                        result(
+                            "c12",
+                            "execute_bash",
+                            `${"=".repeat(60)}\n[The command is still running. Send keys to interrupt it.]`,
+                        ),
+                    ],
+                },
+            ],
+            dataset,
+        );
+        expect(pending.samples).toEqual([]);
     });
 
     test("harvests codes only from failed commands", () => {
