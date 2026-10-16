@@ -102,15 +102,26 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
     requireComplete(entries, arms, scheduled);
     const log = new GradeLog(join(dir, "grades.jsonl"));
 
-    const journaled = new Set(
-        entries.filter((e) => e.kind === "SnapshotArtefacts").map((e) => String(e.snapshot)),
-    );
+    const named = new Map<string, { arm: string; item: string }>();
+    for (const e of entries.filter((e) => e.kind === "SnapshotArtefacts")) {
+        named.set(String(e.snapshot), { arm: String(e.arm), item: String(e.item) });
+    }
+    const journaled = new Set(named.keys());
     const snapshots = new Map<string, Snapshot[]>();
     for (const arm of arms) {
         const path = join(dir, arm, "snapshots.jsonl");
         if (!existsSync(path)) continue;
         for (const line of readFileSync(path, "utf8").split("\n").filter(Boolean)) {
             const s = JSON.parse(line) as Snapshot;
+            const entry = named.get(s.id);
+            if (entry) {
+                const bound = s.arm === arm && entry.arm === arm && entry.item === s.item;
+                if (!bound || !Array.isArray(s.artefacts) || s.artefacts.length === 0) {
+                    throw new Error(
+                        `snapshot ${s.id} in ${arm}/snapshots.jsonl does not match its journal entry (${entry.arm}, ${entry.item}) or has no artefacts`,
+                    );
+                }
+            }
             const key = `${arm}/${s.item}`;
             snapshots.set(key, [...(snapshots.get(key) ?? []), s]);
         }

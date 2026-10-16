@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import {
+    appendFileSync,
     existsSync,
     mkdirSync,
     mkdtempSync,
@@ -514,6 +515,35 @@ describe("probe snapshots", () => {
         expect(recorder.tree(repo)).toMatch(/^[0-9a-f]{40}$/);
     });
 
+    test("a probe turn that changes the ignore rules ends failed, naming the rule file", async () => {
+        const { driver, hosts } = fixture("host", { p: gitRepo() });
+        const fresh = new HostDriver((driver as unknown as { o: DriverOptions }).o);
+        await fresh.reset();
+        const host = hosts.at(-1) as FakeHost;
+        const ws = fresh.workspace("p");
+        await fresh.event(ev("session_start", { session: "s-0" }));
+        host.onPrompt = () => {
+            writeFileSync(join(ws, "cache.rs"), "static STORE: Mutex<u8>;\n");
+            writeFileSync(join(ws, ".gitignore"), "cache.rs\n");
+        };
+        const hidden = await fresh.event(
+            ev("user_turn", { id: "e-1", session: "s-0", text: "go", probe: "q-1" }),
+        );
+        expect(hidden.failed).toBe("ignore rules changed: .gitignore (added)");
+        host.onPrompt = () => appendFileSync(join(ws, ".git", "info", "exclude"), "cache.rs\n");
+        const excluded = await fresh.event(
+            ev("user_turn", { id: "e-2", session: "s-0", text: "go", probe: "q-2" }),
+        );
+        expect(excluded.failed).toContain(".git/info/exclude (changed)");
+        host.onPrompt = () => writeFileSync(join(ws, "plain.rs"), "fn ok() {}\n");
+        rmSync(join(ws, ".gitignore"));
+        const stillChanged = await fresh.event(
+            ev("user_turn", { id: "e-3", session: "s-0", text: "go", probe: "q-3" }),
+        );
+        expect(stillChanged.failed).toContain(".git/info/exclude (changed)");
+        expect(stillChanged.failed).not.toContain(".gitignore");
+    });
+
     test("a probe turn that leaves an embedded repository in the workspace ends failed, naming it", async () => {
         const { driver, hosts } = fixture("host", { p: gitRepo() });
         const fresh = new HostDriver((driver as unknown as { o: DriverOptions }).o);
@@ -821,6 +851,19 @@ test("snapshot git refuses a workspace path that an agent replaced with a symlin
     expect(() => recorder.embedded(join(workspaces, "p"))).toThrow("symlink");
     expect(() => recorder.tree(join(workspaces, "p"))).toThrow("symlink");
     expect(existsSync(join(armDir, "snapshot.git"))).toBe(false);
+});
+
+test("the workspace walk is bounded by the recorder deadline", () => {
+    const repo = gitRepo();
+    const armDir = tmp();
+    for (let i = 0; i < 3_000; i++) {
+        mkdirSync(join(repo, "wide", `d${i}`, "deeper"), { recursive: true });
+        writeFileSync(join(repo, "wide", `d${i}`, "f.rs"), "");
+    }
+    const recorder = new SnapshotRecorder(armDir, "eidnara", () => [], 1);
+    expect(() => recorder.embedded(repo)).toThrow("timed out");
+    const roomy = new SnapshotRecorder(armDir, "eidnara", () => [], 10_000);
+    expect(roomy.embedded(repo)).toEqual([]);
 });
 
 test("the nested-repository check is bounded like the other snapshot git runs", () => {

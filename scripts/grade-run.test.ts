@@ -283,6 +283,18 @@ describe("grade-run", () => {
         expect(() => readFileSync(join(broken, "grades.jsonl"))).toThrow();
     });
 
+    test("a journaled snapshot row whose arm or item differs from its journal entry is refused", async () => {
+        const dir = run({ probes: [p5.probe] });
+        snapshot(dir, "eidnara", snap);
+        const path = join(dir, "eidnara", "snapshots.jsonl");
+        const row = JSON.parse(readFileSync(path, "utf8").trim());
+        writeFileSync(path, `${JSON.stringify({ ...row, item: "P5-other" })}\n`);
+        await expect(gradeRun(dir, null)).rejects.toThrow("does not match its journal entry");
+        writeFileSync(path, `${JSON.stringify({ ...row, artefacts: [] })}\n`);
+        await expect(gradeRun(dir, null)).rejects.toThrow("has no artefacts");
+        expect(() => readFileSync(join(dir, "grades.jsonl"))).toThrow();
+    });
+
     test("a run directory leased by a live process is refused", async () => {
         const dir = run({ probes: [p5.probe] });
         takeLease(dir);

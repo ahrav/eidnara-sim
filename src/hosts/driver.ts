@@ -12,8 +12,9 @@ import {
     writeFileSync,
 } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
-import { GitTimeout, git } from "../git";
+import { GitBound, git } from "../git";
 import type { CallView } from "../grade/artefacts";
+import { sha256Hex } from "../prereg/canonical";
 import { processStart, running, stopOwnedTree } from "../run/procs";
 import { type ArmDriver, HarnessFailure, type ScenarioEvent } from "../run/scheduler";
 import type { FaultEpisode } from "../scenario/faults";
@@ -191,6 +192,22 @@ export class HostDriver implements ArmDriver {
             const tracked = ["ls-files", "-z", "--cached", "--ignored", "--exclude-standard"];
             const forced = git(source, tracked).split("\0").filter(Boolean);
             this.snapshots.trackIgnored(project, forced);
+            const rules: Record<string, string> = {};
+            const listed = git(source, [
+                "ls-files",
+                "-s",
+                "-z",
+                "--",
+                ".gitignore",
+                "**/.gitignore",
+            ]);
+            for (const row of listed.split("\0").filter(Boolean)) {
+                const [meta, path] = row.split("\t") as [string, string];
+                rules[path] = meta.split(" ")[1] as string;
+            }
+            const exclude = join(target, ".git", "info", "exclude");
+            const digest = existsSync(exclude) ? sha256Hex(readFileSync(exclude, "utf8")) : null;
+            this.snapshots.trackIgnoreRules(project, rules, digest);
         }
         await this.startArm(true);
     }
@@ -254,7 +271,7 @@ export class HostDriver implements ArmDriver {
             try {
                 before = this.snapshots.tree(dir);
             } catch (caught) {
-                if (!(caught instanceof GitTimeout)) throw caught;
+                if (!(caught instanceof GitBound)) throw caught;
                 before = null;
             }
         }
@@ -270,8 +287,17 @@ export class HostDriver implements ArmDriver {
             await this.o.settle?.();
             try {
                 const nested = this.snapshots.embedded(dir);
-                if (nested.length > 0) {
-                    const reason = `embedded repository at ${nested.join(", ")}`;
+                const after = this.snapshots.tree(dir, nested);
+                const reasons = [
+                    nested.length > 0 ? `embedded repository at ${nested.join(", ")}` : null,
+                    ...(() => {
+                        const changed = this.snapshots.ignoreChanges(dir, project);
+                        return changed.length > 0
+                            ? [`ignore rules changed: ${changed.join(", ")}`]
+                            : [];
+                    })(),
+                ].filter((r): r is string => r !== null);
+                for (const reason of reasons) {
                     outcome.failed = outcome.failed ? `${outcome.failed} | ${reason}` : reason;
                 }
                 const probe = { probe: e.probe, session: e.session, id: e.id };
@@ -282,9 +308,10 @@ export class HostDriver implements ArmDriver {
                     before,
                     tools,
                     !!outcome.failed,
+                    after,
                 );
             } catch (caught) {
-                if (!(caught instanceof GitTimeout)) throw caught;
+                if (!(caught instanceof GitBound)) throw caught;
                 const reason = `snapshot: ${caught.message}`;
                 outcome.failed = outcome.failed ? `${outcome.failed} | ${reason}` : reason;
             }
