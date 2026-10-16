@@ -17,6 +17,9 @@ After `ResumeRun`, `scenario_ms` equals the last journaled clock value and
 No harness code, test, or run exists yet. The surface lands in M4
 (#1028).
 
+M4 (#1028) restores each arm's clock from its last journaled `scenario_ms` on
+resume; the resume tests check that the first resumed entry carries that value.
+
 ## Failure scenario
 
 Resume moves time or holds stale busy entries.

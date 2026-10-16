@@ -17,6 +17,10 @@ A run directory holds one exclusive claim, and a second `StartRun` or
 No harness code, test, or run exists yet. The surface lands in M4
 (#1028).
 
+M4 (#1028) links a lease file into the run directory before opening the
+journal; tests check that a live holder and a holder on another host are
+refused and that a dead or unreadable lease is taken over.
+
 ## Failure scenario
 
 Two writers interleave sequence numbers and corrupt the journal.

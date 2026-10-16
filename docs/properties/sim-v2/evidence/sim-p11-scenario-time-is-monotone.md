@@ -16,6 +16,10 @@ Journal entries in sequence order have non-decreasing `scenario_ms`.
 No harness code, test, or run exists yet. The surface lands in M4
 (#1028).
 
+M4 (#1028) refuses a journal entry whose `scenario_ms` is below the same arm's
+previous entry. Scenario time is monotone per arm, because each arm runs its
+own clock from 0; the tests check every arm's entries.
+
 ## Failure scenario
 
 Age, idle-gap, and staleness metrics are computed on a reordered timeline.

@@ -18,6 +18,10 @@ billed once.
 No harness code, test, or run exists yet. The surface lands in M4
 (#1028).
 
+M4 (#1028) journals `ItemState failed(interrupted)` and `Event` once for a
+`BeginTurn` without `EndTurn` when a run resumes; the resume test checks both
+entries.
+
 ## Failure scenario
 
 An interrupted item is counted twice or vanishes.

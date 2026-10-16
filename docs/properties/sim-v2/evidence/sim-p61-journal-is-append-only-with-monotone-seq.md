@@ -17,6 +17,11 @@ trailing entry is detected on load.
 No harness code, test, or run exists yet. The surface lands in M4
 (#1028).
 
+M4 (#1028) appends journal entries with consecutive `seq`, truncates only a
+last line cut mid-write on reopen, and refuses a journal with a corrupt earlier
+line; tests check both and that a resumed journal starts with the killed run's
+entries.
+
 ## Failure scenario
 
 Resume reads a corrupt entry as valid.

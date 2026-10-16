@@ -17,6 +17,10 @@ index for all events before the interrupt.
 No harness code, test, or run exists yet. The surface lands in M4
 (#1028).
 
+M4 (#1028) resumes each arm from its own cursor over the shared event list; the
+resume tests check that every arm's completed events equal the full event list
+in order.
+
 ## Failure scenario
 
 Pairing breaks silently after resume.

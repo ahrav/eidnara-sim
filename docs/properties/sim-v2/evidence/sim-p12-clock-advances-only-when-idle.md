@@ -18,6 +18,11 @@ the matching `EndTurn` or `EndJob`.
 No harness code, test, or run exists yet. The surface lands in M4
 (#1028).
 
+M4 (#1028) advances scenario time only through `Clock.advanceTo`, which refuses
+while any turn or job is busy. The tests rebuild the busy set from the
+journal's turn and job entries and check that it is empty at every
+`AdvanceClock`.
+
 ## Failure scenario
 
 A fold or capture job sees a simulated gap mid-execution and its timing metrics
