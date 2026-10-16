@@ -755,3 +755,25 @@ test("OpenCode gets the hosts' sandbox PATH, not the harness's ambient one", asy
     expect(path.includes("/sim-ambient-marker")).toBe(false);
     expect(path.endsWith(":/usr/local/bin:/usr/bin:/bin")).toBe(true);
 });
+
+test("the daemon store is walked from the arm directory, so a symlinked ancestor is refused", async () => {
+    const run = runDir();
+    const checkout = fakeDaemonV1(run);
+    const root = join(run, "arm");
+    const elsewhere = join(run, "elsewhere");
+    mkdirSync(root);
+    mkdirSync(elsewhere);
+    symlinkSync(elsewhere, join(run, "daemon"));
+    const stack = new DaemonStack({
+        config: { ...loadConfig(), eidnara_checkout: checkout },
+        root,
+        dataDir: join(run, "daemon/store"),
+        logFile: join(run, "daemon.log"),
+        offsetFile: join(run, "offset"),
+        proxyHttp1: "",
+        proxyHttp2: "",
+        model: "m",
+    });
+    await expect(stack.start()).rejects.toThrow(/symlink/);
+    expect(existsSync(join(elsewhere, "store"))).toBe(false);
+});

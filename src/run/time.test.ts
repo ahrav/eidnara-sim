@@ -61,8 +61,11 @@ describe("time injection", () => {
             "sandbox path /a/b is kept writable under read-only /a",
         );
         const home = realpathSync(homedir());
+        expect(() => launch("/x/sandbox.sh", [], {}, ["true"], [home])).toThrow(
+            `sandbox path ${home} would restore masked ${home}`,
+        );
         expect(() => launch("/x/sandbox.sh", [], {}, ["true"], [dirname(home)])).toThrow(
-            `sandbox path ${dirname(home)} would restore masked ${home}`,
+            /would restore masked/,
         );
         expect(() => launch("/x/sandbox.sh", ["/tmp"], {}, ["true"])).toThrow(
             "sandbox path /tmp would restore masked /tmp",

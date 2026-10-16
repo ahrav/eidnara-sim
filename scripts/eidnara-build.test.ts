@@ -147,3 +147,22 @@ test("a second build of the same clone is refused while the first holds it", asy
         holder.kill("SIGKILL");
     }
 });
+
+test("a build after an interrupted first clone starts over instead of refusing the clone", () => {
+    const { stubs, src, root, dst } = fixture();
+    const realGit = Bun.which("git") as string;
+    const failing = join(root, "failing-git");
+    mkdirSync(failing);
+    writeFileSync(
+        join(failing, "git"),
+        `#!/bin/sh\nif [ "$1" = clone ]; then "${realGit}" "$@"; exit 1; fi\nexec "${realGit}" "$@"\n`,
+        { mode: 0o755 },
+    );
+    expect(build(src, dst, `${failing}:${stubs}`).exitCode).not.toBe(0);
+    const retry = build(src, dst, stubs);
+    expect(retry.stderr.toString()).toBe("");
+    expect(retry.exitCode).toBe(0);
+    expect(readFileSync(join(dst, ".sim-build-commit"), "utf8").trim()).toBe(
+        git(src, "rev-parse", "HEAD"),
+    );
+});

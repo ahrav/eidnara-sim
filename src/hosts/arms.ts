@@ -13,7 +13,7 @@ import {
     writeFileSync,
     writeSync,
 } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import type { SimConfig } from "../config/config";
 import { withDeadline } from "../run/deadline";
 import { launch, plainPath, shellQuote } from "../run/launcher";
@@ -131,7 +131,13 @@ export class DaemonStack {
         // The runtime is regenerated on every start, so whatever an earlier session left there goes first.
         rmSync(join(this.ctx.root, "runtime"), { recursive: true, force: true });
         const runtimeDir = realDir(this.ctx.root, "runtime");
-        realDir(dirname(this.ctx.dataDir), basename(this.ctx.dataDir));
+        // The store sits beside the arm root, so its walk starts at the arm directory both share.
+        const armDir = dirname(this.ctx.root);
+        const store = relative(armDir, this.ctx.dataDir);
+        if (store.startsWith("..") || isAbsolute(store)) {
+            throw new Error(`daemon store ${this.ctx.dataDir} lies outside ${armDir}`);
+        }
+        realDir(armDir, store);
         const harnessRuntime = hr.writeHarnessRuntime({
             dir: runtimeDir,
             sources: sources.sources,
