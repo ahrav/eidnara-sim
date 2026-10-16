@@ -45,7 +45,9 @@ kill and one laptop sleep, a laptop sleep needs an idle gap before its
 session's start, a strategy accepts only its own limit parameters (`count`
 for `burst`; `probability` and `calls` for `intermittent`), and `store_full`
 supports `sessions: 1` only; a proxy `single` may carry the compiler's
-`count: 1`; durations stay within the timer limit (2^31 - 1 ms). `--out /`
+`count: 1`; each mechanism accepts only the parameter it reads
+(`timeout_ms` for `provider_timeout`, `delay_ms` for `slow_stream`,
+`duration_ms` for `laptop_sleep`, `sessions` for `store_full`); durations stay within the timer limit (2^31 - 1 ms). `--out /`
 is refused.
 `--out` may not overlap the Pi install either. An `--out` inside this checkout must be
 ignored by git (`runs/` is), and may not overlap a corpus checkout, since
@@ -54,7 +56,10 @@ replaces (`journal.jsonl`, `calls.jsonl`, the manifest, the scenario, the
 fault and preflight files, this process's staging names for the lease, the
 scenario, and the manifest, and each arm's `resources.jsonl`, clock offset,
 `state.json`, `daemon.log`, `store.img`, and `transcripts.json`, plus this
-process's staging names for the clock offset and `state.json`) must be absent or a regular file with a single link (the arm,
+process's staging names for the clock offset and `state.json`) must be absent
+or a regular file with a single link; a `lease.<pid>.tmp` left by a dead
+acquirer is removed first, so a crash between link and unlink stays resumable
+(the arm,
 clock, `r`, `s`, `interception`, `toolbin`, and `hostbin` directories must be
 directories; the OpenCode wrapper and its staging name under `hostbin/<arm>`
 are checked the same way); a symlink, a hard link, or another
@@ -94,7 +99,10 @@ toolchain wrappers are created exclusively after removing any planted name.
    or one whose events name an undeclared project. A directory whose
    journal already ends in `EndRun` is refused before the scenario is read or
    preflight runs, so a sealed run's artifacts stay untouched.
-3. Run `preflight` (`docs/time.md`). On the first invocation, write
+3. On a resume, read the manifest and compare every passive identity (the
+   digests below) before running any probe, so a replaced executable is
+   refused before it executes; then run `preflight` (`docs/time.md`). On the
+   first invocation, write
    `manifest.json` with the tier, seed, host, arm order, event count, context
    limit, models, fault override, scenario hash, pre-registration hash,
    eidnara commit and working-tree digest, eidnara-sim commit and
@@ -190,7 +198,9 @@ one job id per busy period. The post-turn hold
 timers are owned by the run: teardown cancels any still pending and ends
 their holds before the journal closes. Both hold the
 clock (SIM-P13, OQ-2). Job ids continue from the journal's count, so a
-resumed run issues new ones. A job that holds the clock longer than the
+resumed run issues new ones. After an arm's reset or resume the same
+two-second hold runs, so daemon work that follows startup is measured before
+the first event. A job that holds the clock longer than the
 pre-registered `job_deadline_ms` (20 minutes at S) after its own
 `RegisterJob`, measured on the monotonic clock, stops the run with the held
 ids (SIM-L02). The sampler drops an unterminated final sample when it
