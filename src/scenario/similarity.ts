@@ -68,11 +68,15 @@ export const hashEmbedder: Embedder = {
  * caches vectors by a digest of the model and text. Embedding runs entirely
  * offline when `cachePath` contains vectors for every requested text.
  */
+const DIMENSIONS = 256;
+
 export function bedrockEmbedder(profile: string, region: string, cachePath: string): Embedder {
     const model = EMBEDDING_MODELS[0];
     const cache = new Map<string, number[]>();
     if (existsSync(cachePath)) {
-        for (const line of readFileSync(cachePath, "utf8").split("\n").filter(Boolean)) {
+        const text = readFileSync(cachePath, "utf8");
+        const complete = text.slice(0, text.lastIndexOf("\n") + 1);
+        for (const line of complete.split("\n").filter(Boolean)) {
             let entry: { key: string; vector: number[] };
             try {
                 entry = JSON.parse(line);
@@ -90,7 +94,7 @@ export function bedrockEmbedder(profile: string, region: string, cachePath: stri
                 const key = sha256Hex(`${model}\n${text}`);
                 let vector = cache.get(key);
                 if (vector === undefined) {
-                    const input = { inputText: text, dimensions: 256, normalize: true };
+                    const input = { inputText: text, dimensions: DIMENSIONS, normalize: true };
                     const outFile = `${cachePath}.${randomBytes(6).toString("hex")}.tmp`;
                     const cli = `bedrock-runtime invoke-model --cli-binary-format raw-in-base64-out`;
                     const flags = ["--profile", profile, "--region", region, "--model-id", model];
@@ -111,6 +115,16 @@ export function bedrockEmbedder(profile: string, region: string, cachePath: stri
                         rmSync(outFile, { force: true });
                     }
                     vector = response.embedding.map((x) => Math.round(x * 1e6) / 1e6);
+                    const norm = Math.sqrt(vector.reduce((sum, x) => sum + x * x, 0));
+                    if (
+                        vector.length !== DIMENSIONS ||
+                        !vector.every(Number.isFinite) ||
+                        !(norm > 0)
+                    ) {
+                        throw new Error(
+                            `embed: ${model} returned ${vector.length} components for a ${DIMENSIONS}-dimension model with norm ${norm}`,
+                        );
+                    }
                     cache.set(key, vector);
                     appendFileSync(cachePath, `${JSON.stringify({ key, vector })}\n`);
                 }

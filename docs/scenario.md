@@ -31,7 +31,7 @@ The scenario file is canonical JSON with these sections:
 | `projects` | Each repository in `corpus/repos.json` and its twin |
 | `sessions` | Session id, project, start time, request count, the idle gap before the session, the minimum gap the compiler enforced, and whether the request count was forced into the p90 regime |
 | `facts` | Ledger facts with template, kind, project, conveyance manner, statement, and the cue texts that carry it |
-| `probes` | Probe items P1 to P14 and the P1 controls with project, session, user text, the grading check, and the event that delivers it. Check keys: `must` and `must_not` regexes over the added lines of the agent's diff, `paths_must` and `paths_must_not` over the paths the diff adds or changes, `first_line_must` over the first line of every file the diff adds, `commands_must` over the command log, `answer`, `answer_must_not`, `abstain`, and `judge` over the final assistant text, and `window_from_turn` and `window_to_turn` for P14. Every `*_must` and `*_must_not` key holds a list of JavaScript regular expressions |
+| `probes` | Probe items P1 to P14 and the P1 controls with project, session, user text, the grading check, and the event that delivers it. Check keys: `must` and `must_not` regexes over the added lines of the agent's diff, `paths_must` and `paths_must_not` over the paths the diff adds or changes, `first_line_must` over the first line of every file the diff adds, `quote_style_must` (`double` or `single`) over the delimiter of every string literal in the added lines, `commands_must` over the command log, `answer`, `answer_must_not`, `abstain`, and `judge` over the final assistant text, and `window_from_turn` and `window_to_turn` for P14. Every `*_must` and `*_must_not` key holds a list of JavaScript regular expressions |
 | `similarity` | BM25 ratio and embedding cosine for every cue and probe pair, journaled to four decimals; the threshold gate compares the full-precision values |
 | `events` | `apply_diff`, `session_start`, `user_turn`, and `session_end` events in scenario time |
 | `faults` | Fault episodes with type, strategy, trigger, parameters, and seam-table entry |
@@ -197,15 +197,15 @@ thresholds (`bm25_max` 0.4, `cosine_max` 0.6):
 
 | Tier | Seed | `scenario_hash` | Largest BM25 ratio | Largest cosine |
 |---|---|---|---|---|
-| S | 101 | `aed02596` | 0.2162 | 0.5194 |
-| S | 102 | `40261f49` | 0.2527 | 0.4867 |
-| M | 201 | `da01bbd5` | 0.2508 | 0.4992 |
-| M | 202 | `27efa4bf` | 0.254 | 0.4997 |
-| M | 203 | `409018f6` | 0.255 | 0.4843 |
-| L | 301 | `5e81f985` | 0.2552 | 0.5092 |
-| L | 302 | `83eec9e2` | 0.2557 | 0.4957 |
-| L | 303 | `0d02b61a` | 0.2596 | 0.5083 |
-| XL | 401 | `2e0157bb` | 0.2583 | 0.4962 |
+| S | 101 | `6c2c61df` | 0.2162 | 0.5194 |
+| S | 102 | `e9f463f2` | 0.2527 | 0.4867 |
+| M | 201 | `047ee172` | 0.2508 | 0.4992 |
+| M | 202 | `f669e237` | 0.254 | 0.4997 |
+| M | 203 | `359ee7fe` | 0.255 | 0.4843 |
+| L | 301 | `f1fdc913` | 0.2552 | 0.5092 |
+| L | 302 | `7fe1acc5` | 0.2557 | 0.4957 |
+| L | 303 | `23f234c9` | 0.2596 | 0.5083 |
+| XL | 401 | `1a09076e` | 0.2583 | 0.4962 |
 
 ## Known limits
 
