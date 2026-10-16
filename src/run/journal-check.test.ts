@@ -9,12 +9,8 @@ function journal() {
     return { entries, at };
 }
 
-const schedule = (
-    events: Record<string, number>,
-    sleeps: Record<string, number> = {},
-): Schedule => ({
+const schedule = (events: Record<string, number>): Schedule => ({
     events: new Map(Object.entries(events)),
-    sleeps: new Map(Object.entries(sleeps)),
 });
 
 describe("checkJournal", () => {
@@ -27,9 +23,9 @@ describe("checkJournal", () => {
         at("EndJob", 25, { job: "j0" });
         at("RegisterJob", 30, { job: "j1" });
         at("EndJob", 40, { job: "j1" });
-        at("AdvanceClock", 140, { from_ms: 40, fault: "sleep" });
-        at("AdvanceClock", 500, { from_ms: 140, next_event: "e-2" });
-        expect(checkJournal(entries, schedule({ "e-1": 0, "e-2": 500 }, { sleep: 100 }))).toEqual({
+        at("AdvanceClock", 500, { from_ms: 40, fault: "sleep" });
+        at("AdvanceClock", 600, { from_ms: 500, next_event: "e-3" });
+        expect(checkJournal(entries, schedule({ "e-1": 0, "e-2": 500, "e-3": 600 }))).toEqual({
             entries: 9,
             next_event_jumps: 1,
             sleep_jumps: 1,
@@ -47,11 +43,22 @@ describe("checkJournal", () => {
         at("AdvanceClock", 400, { from_ms: 10, next_event: "e-3" });
         at("EndJob", 300, { job: "j" });
         at("AdvanceClock", 900, { from_ms: 400, fault: "sleep" });
-        const report = checkJournal(entries, schedule({ "e-2": 450, "e-3": 400 }, { sleep: 400 }));
+        const report = checkJournal(entries, schedule({ "e-2": 450, "e-3": 400 }));
         expect(report.advance_while_busy).toEqual([1]);
         expect(report.decreasing_scenario_ms).toEqual([2]);
         expect(report.off_schedule_jumps).toEqual([3]);
         expect(report.events_inside_sleep).toEqual([3]);
+    });
+
+    test("a sleep jump lands on its session's first event, whatever the nominal duration", () => {
+        const { entries, at } = journal();
+        at("EndTurn", 140, { event: "e-1" });
+        at("Event", 140, { event: "e-1" });
+        at("AdvanceClock", 500, { from_ms: 140, fault: "sleep" });
+        const report = checkJournal(entries, schedule({ "e-1": 0, "e-2": 500 }));
+        expect([report.sleep_jumps, report.off_schedule_jumps, report.events_inside_sleep]).toEqual(
+            [1, [], []],
+        );
     });
 
     test("a jump past an earlier pending event is off schedule", () => {

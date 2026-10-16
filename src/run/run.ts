@@ -390,6 +390,7 @@ async function runArms(
             armRoot,
             launcher: manifest.preflight.launcher,
             offsetFile: offsetFile(arm),
+            baseMs: manifest.base_wall_ms,
             keep: [armRoot, dirname(offsetFile(arm))],
             proxyHttp1: gateway.urls[0] as string,
             proxyHttp2: gateway.urls[1] as string,

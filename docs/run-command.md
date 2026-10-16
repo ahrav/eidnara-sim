@@ -82,13 +82,13 @@ stops the run with the held ids (SIM-L02).
 ## Journal check
 
 `checkJournal(entries, schedule)` reads a journal against the scenario's
-event times and the sleep faults' durations and reports, per arm:
+event times and reports, per arm:
 
 | Field | Meaning |
 |---|---|
 | `decreasing_scenario_ms` | entries whose `scenario_ms` falls below the arm's previous entry (SIM-P11) |
 | `advance_while_busy` | `AdvanceClock` entries while a turn or job is open, counting an interrupted turn and a job ended on resume as closed (SIM-P12) |
-| `off_schedule_jumps` | event jumps that land anywhere but the earliest unrun scheduled time after `from_ms`, and sleep jumps of another size (SIM-P14, SIM-P18) |
+| `off_schedule_jumps` | jumps, event or sleep, that land anywhere but the earliest unrun scheduled time after `from_ms` (SIM-P14, SIM-P18); a sleep is the jump onto its session's first event, so its size is the remaining gap, not the nominal `duration_ms` |
 | `events_inside_sleep` | sleep jumps that pass an unrun scheduled event (SIM-P18) |
 | `jobs_held_after_turn` | jobs registered with no turn or other job open (SIM-P13) |
 | `next_event_jumps`, `sleep_jumps` | how many jumps of each kind the check covered |

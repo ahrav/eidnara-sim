@@ -16,8 +16,10 @@ An item `issued` but not `attempted` at interrupt becomes exactly one of
 billed once.
 
 M4 (#1028) journals `ItemState failed(interrupted)` and `Event` once for a
-`BeginTurn` without `EndTurn` when a run resumes; the resume test checks both
-entries.
+`BeginTurn` without `EndTurn` when a run resumes, and a later resume writes
+neither again. One resume test kills after `BeginTurn` and before the fixture
+bills the turn, the `issued` state, and checks both entries and that the
+interrupted turn is billed nowhere; another kills after the bill.
 
 The live witness (`tests/witness-faults.ts`, `docs/run-command.md`) on 2026-10-16
 killed a live Pi run with one model call of `e-000007` recorded; after the

@@ -5,10 +5,12 @@ import {
     readdirSync,
     readFileSync,
     realpathSync,
+    renameSync,
     writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import type { SimConfig } from "../config/config";
+import { withDeadline } from "../run/deadline";
 import { launch, plainPath, shellQuote } from "../run/launcher";
 import { stopOwnedTree } from "../run/procs";
 import { FAKETIME_LIB, faketimeEnv } from "../run/timeinject";
@@ -40,6 +42,8 @@ export interface HostContext {
     proxyHttp2: string;
     model: string;
     contextLimit: number;
+    /** Runs once the host process exists, before its readiness wait. */
+    onSpawn?: () => void;
 }
 
 export interface PromptResult {
@@ -135,9 +139,15 @@ export class DaemonStack {
     async stop(): Promise<void> {
         const stack = this.stack;
         if (!stack) return;
-        this.saveLog();
-        await stack.terminateHost();
-        this.stack = null;
+        try {
+            await stack.terminateHost();
+        } finally {
+            try {
+                this.saveLog();
+            } finally {
+                this.stack = null;
+            }
+        }
     }
 }
 
@@ -249,7 +259,14 @@ export class PiSimHost extends SimHost {
         };
         const node = join(nodeRoot(), "bin/node");
         const ro = [...this.readOnly, nodeRoot(), config.pi_install];
-        const argv = launch(this.ctx.launcher, this.ctx.keep, this.timeEnv, [node, ...args], ro);
+        const argv = launch(
+            this.ctx.launcher,
+            this.ctx.keep,
+            this.timeEnv,
+            [node, ...args],
+            ro,
+            cwd,
+        );
         const child: ChildProcess = spawn(argv[0] as string, argv.slice(1), {
             cwd,
             env,
@@ -260,6 +277,7 @@ export class PiSimHost extends SimHost {
         this.rpc = new rpcClient.PiRpcProcess(child, new rpcClient.PiRpcProtocol(), {
             stderrLimit: 20_000,
         });
+        this.ctx.onSpawn?.();
         const ready = this.rpc.sendCommand("get_state", {}, { timeoutMs: 120_000 });
         await Promise.race([ready, spawnError]);
     }
@@ -268,11 +286,13 @@ export class PiSimHost extends SimHost {
         return this.rpc?.child?.pid ?? null;
     }
 
+    // Pi emits `agent_end` with `willRetry: true` before it retries a failed request itself,
+    // so the turn is over only at an end Pi will not retry.
     private agentEnd(timeoutMs: number): Promise<Untyped> {
-        const end = this.rpc.waitForEvent((e: Untyped) => e.type === "agent_end", {
-            timeoutMs,
-            label: "agent_end",
-        });
+        const end = this.rpc.waitForEvent(
+            (e: Untyped) => e.type === "agent_end" && e.willRetry !== true,
+            { timeoutMs, label: "agent_end" },
+        );
         end.catch(() => undefined);
         return end;
     }
@@ -293,7 +313,10 @@ export class PiSimHost extends SimHost {
         } catch (caught) {
             const drained = this.agentEnd(30_000);
             await this.rpc.sendCommand("abort", {}, { timeoutMs: 60_000 }).catch(() => undefined);
-            await drained.catch(() => undefined);
+            // A turn that outlives the abort would end during the next turn and be taken for it.
+            await drained.catch((reason: unknown) => {
+                throw new Error(`Pi turn still running 30 s after abort (${String(reason)})`);
+            });
             return { error: String(caught).slice(0, 2000) };
         }
     }
@@ -333,14 +356,12 @@ export class OpencodeSimHost extends SimHost {
             extra.compaction = { auto: true, prune: true };
         }
         if (!connection) extra.plugin = [];
-        const sbin = join(this.ctx.root, "sbin");
-        mkdirSync(sbin, { recursive: true });
         const binary = plainPath(config.opencode_binary);
         const ro = [...this.readOnly, dirname(dirname(dirname(binary)))];
         const launcher = plainPath(this.ctx.launcher);
-        const argv = launch(launcher, this.ctx.keep, this.timeEnv, [binary], ro);
-        const wrapper = `#!/bin/sh\nexec ${argv.map(shellQuote).join(" ")} "$@"\n`;
-        writeFileSync(join(sbin, "opencode"), wrapper, { mode: 0o755 });
+        const hostbin = dirname(
+            this.writeWrapper(launch(launcher, this.ctx.keep, this.timeEnv, [binary], ro, cwd)),
+        );
         const env = {
             configDir: join(this.home, "config"),
             dataDir: join(this.home, "data"),
@@ -376,7 +397,7 @@ export class OpencodeSimHost extends SimHost {
                 HOME: this.home,
                 XDG_STATE_HOME: join(this.home, "state"),
                 EIDNARA_LOG_PATH: join(this.ctx.root, "eidnara.log"),
-                PATH: `${sbin}:${this.toolchain.path}:${process.env.PATH ?? ""}`,
+                PATH: `${hostbin}:${this.toolchain.path}:${process.env.PATH ?? ""}`,
             },
         });
         const sdkPath = "packages/e2e-tests/node_modules/@opencode-ai/sdk/dist/index.js";
@@ -397,6 +418,18 @@ export class OpencodeSimHost extends SimHost {
         if (!created.data)
             throw new Error(`session.create failed: ${JSON.stringify(created.error)}`);
         this.sid = created.data.id;
+    }
+
+    private writeWrapper(argv: string[]): string {
+        const dir = join(dirname(this.ctx.launcher), "hostbin", this.ctx.arm);
+        mkdirSync(dir, { recursive: true });
+        const path = join(dir, "opencode");
+        const staged = `${path}.${process.pid}`;
+        writeFileSync(staged, `#!/bin/sh\nexec ${argv.map(shellQuote).join(" ")} "$@"\n`, {
+            mode: 0o755,
+        });
+        renameSync(staged, path);
+        return path;
     }
 
     hostPid(): number | null {
@@ -420,15 +453,18 @@ export class OpencodeSimHost extends SimHost {
             path: { id: this.sid },
             body: { model, parts: [{ type: "text", text }] },
         });
-        const settled = call.then(
+        const settled: Promise<{ result: Untyped } | { caught: unknown }> = call.then(
             (result: Untyped) => ({ result }),
             (caught: unknown) => ({ caught }),
         );
-        const first = await Promise.race([settled, Bun.sleep(timeoutMs).then(() => null)]);
+        const first = await withDeadline(settled, timeoutMs);
         if (first === null) {
             const abort = this.client.session.abort({ path: { id: this.sid } });
-            await Promise.race([abort.catch(() => undefined), Bun.sleep(5_000)]);
-            const drained = await Promise.race([settled, Bun.sleep(30_000).then(() => null)]);
+            await withDeadline(
+                abort.catch(() => undefined),
+                5_000,
+            );
+            const drained = await withDeadline(settled, 30_000);
             if (drained === null) throw new Error("OpenCode turn still running 30 s after abort");
             return { error: `turn deadline ${timeoutMs} ms` };
         }

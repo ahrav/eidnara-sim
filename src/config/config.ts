@@ -3,7 +3,7 @@ import { isAbsolute, resolve } from "node:path";
 
 export const CONFIG_SCHEMA = "sim-config/v1";
 
-/** Paths the harness reads; the sim tree never writes under any of them. */
+/** Paths the runtime reads; `scripts/eidnara-build.sh` is the one writer of the build clone. */
 export interface SimConfig {
     schema: typeof CONFIG_SCHEMA;
     eidnara_checkout: string;

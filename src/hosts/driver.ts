@@ -5,6 +5,7 @@ import {
     mkdirSync,
     readFileSync,
     realpathSync,
+    renameSync,
     rmSync,
     writeFileSync,
 } from "node:fs";
@@ -12,7 +13,14 @@ import { dirname, join, resolve } from "node:path";
 import { processStart, running, stopOwnedTree } from "../run/procs";
 import { type ArmDriver, HarnessFailure, type ScenarioEvent } from "../run/scheduler";
 import type { FaultEpisode } from "../scenario/faults";
-import { DaemonStack, eidnaraOn, type HostContext, makeHost, type SimHost } from "./arms";
+import {
+    type DaemonContext,
+    DaemonStack,
+    eidnaraOn,
+    type HostContext,
+    makeHost,
+    type SimHost,
+} from "./arms";
 
 interface ArmState {
     model: number;
@@ -27,12 +35,15 @@ export interface DriverOptions extends Omit<HostContext, "root" | "model"> {
     turnDeadlineMs: number;
     transcriptPaths: string[];
     loopStore: boolean;
+    /** Wall time of scenario time 0, the same value the clock offset targets. */
+    baseMs: number;
     hostFactory?: (ctx: HostContext) => SimHost;
+    daemonFactory?: (ctx: DaemonContext) => DaemonStack;
     onDaemonExit: (detail: Record<string, unknown>) => void;
 }
 
-const git = (cwd: string, ...args: string[]) => {
-    const env = {
+const git = (cwd: string, args: string[], dateMs?: number) => {
+    const env: NodeJS.ProcessEnv = {
         ...process.env,
         GIT_CONFIG_GLOBAL: "/dev/null",
         GIT_CONFIG_NOSYSTEM: "1",
@@ -41,10 +52,21 @@ const git = (cwd: string, ...args: string[]) => {
         GIT_COMMITTER_NAME: "sim-user",
         GIT_COMMITTER_EMAIL: "sim-user@users.noreply.github.com",
     };
+    if (dateMs !== undefined) {
+        env.GIT_AUTHOR_DATE = `@${Math.floor(dateMs / 1000)} +0000`;
+        env.GIT_COMMITTER_DATE = env.GIT_AUTHOR_DATE;
+    }
     const r = spawnSync("git", args, { cwd, env, encoding: "utf8" });
     if (r.status !== 0) throw new Error(`git ${args.join(" ")}: ${r.stderr}`);
     return r.stdout.trim();
 };
+
+/** The rename publishes a complete file, so a kill mid-write leaves the previous one. */
+function writeWhole(path: string, text: string): void {
+    const staged = `${path}.${process.pid}`;
+    writeFileSync(staged, text);
+    renameSync(staged, path);
+}
 
 function run(argv: string[]): string {
     const r = spawnSync(argv[0] as string, argv.slice(1), { encoding: "utf8" });
@@ -59,6 +81,8 @@ export function expandTemplate(template: string, env: Record<string, string>): s
         return value;
     });
 }
+
+const BETWEEN_SESSIONS = new Set(["daemon_restart", "plugin_reload", "model_switch"]);
 
 const SUPPORTED = new Set([
     "daemon_sigkill_mid_fold",
@@ -119,7 +143,8 @@ export class HostDriver implements ArmDriver {
     private newHost(): SimHost {
         const make = this.o.hostFactory ?? makeHost;
         const keep = eidnaraOn(this.o.arm) ? [...this.o.keep, this.storeRoot] : this.o.keep;
-        return make({ ...this.o, keep, root: this.o.armRoot, model: this.currentModel() });
+        const onSpawn = () => this.recordState();
+        return make({ ...this.o, keep, root: this.o.armRoot, model: this.currentModel(), onSpawn });
     }
 
     private recordState(): void {
@@ -131,7 +156,7 @@ export class HostDriver implements ArmDriver {
             host: proc(this.sessionProject === null ? null : (this.host?.hostPid() ?? null)),
         };
         mkdirSync(this.armDir, { recursive: true });
-        writeFileSync(this.stateFile, JSON.stringify(state));
+        writeWhole(this.stateFile, JSON.stringify(state));
     }
 
     private readState(): ArmState | null {
@@ -139,11 +164,18 @@ export class HostDriver implements ArmDriver {
         return JSON.parse(readFileSync(this.stateFile, "utf8")) as ArmState;
     }
 
+    private get ballast(): string | null {
+        return this.storeMount ? join(this.storeMount, "ballast") : null;
+    }
+
     private async startArm(fresh: boolean): Promise<void> {
         mkdirSync(this.storeRoot, { recursive: true, mode: 0o700 });
         if (this.o.loopStore && eidnaraOn(this.o.arm)) this.mountStore(fresh);
+        const filled = this.ballast !== null && existsSync(this.ballast);
+        if (filled) this.clearStoreFill();
         if (eidnaraOn(this.o.arm)) {
-            this.daemon = new DaemonStack({
+            const make = this.o.daemonFactory ?? ((ctx: DaemonContext) => new DaemonStack(ctx));
+            this.daemon = make({
                 ...this.o,
                 root: this.o.armRoot,
                 dataDir: this.dataDir,
@@ -153,6 +185,7 @@ export class HostDriver implements ArmDriver {
             await this.daemon.start();
             this.recordState();
         }
+        if (filled) this.fillStore();
         this.host = this.newHost();
         this.recordState();
     }
@@ -160,6 +193,7 @@ export class HostDriver implements ArmDriver {
     async reset(): Promise<void> {
         await this.stop();
         this.model = 0;
+        this.transcriptsChecked = false;
         await this.reapStale();
         for (const dir of [this.o.armRoot, this.storeRoot])
             rmSync(dir, { recursive: true, force: true });
@@ -167,13 +201,17 @@ export class HostDriver implements ArmDriver {
         mkdirSync(join(this.o.armRoot, "workspaces"), { recursive: true });
         for (const [project, source] of Object.entries(this.o.projects)) {
             const target = this.workspace(project);
-            git(this.o.armRoot, "clone", "--quiet", "--no-hardlinks", source, target);
+            git(this.o.armRoot, ["clone", "--quiet", "--no-hardlinks", source, target]);
         }
         await this.startArm(true);
     }
 
     async resume(open: ScenarioEvent | null): Promise<void> {
-        this.model = this.readState()?.model ?? 0;
+        const state = this.readState();
+        if (!state) {
+            throw new HarnessFailure(`resume of arm ${this.o.arm}: ${this.stateFile} is gone`);
+        }
+        this.model = state.model;
         const checked = join(this.armDir, "transcripts.json");
         this.transcriptsChecked =
             existsSync(checked) && JSON.parse(readFileSync(checked, "utf8")).missing.length === 0;
@@ -186,7 +224,9 @@ export class HostDriver implements ArmDriver {
         const state = this.readState();
         for (const proc of [state?.daemon, state?.host]) {
             if (proc && running(proc.pid) && processStart(proc.pid) === proc.start) {
-                await stopOwnedTree(proc.pid, 5_000);
+                if (!(await stopOwnedTree(proc.pid, 5_000))) {
+                    throw new HarnessFailure(`recorded process ${proc.pid} survived SIGKILL`);
+                }
             }
         }
         if (spawnSync("findmnt", ["-n", "-M", this.storeRoot]).status === 0) {
@@ -231,22 +271,37 @@ export class HostDriver implements ArmDriver {
     }
 
     private applyDiff(e: ScenarioEvent): void {
-        const dir = realpathSync(this.workspace(this.project(e)));
+        const project = this.project(e);
+        const dir = realpathSync(this.workspace(project));
+        if (dir !== join(realpathSync(this.o.armRoot), "workspaces", project)) {
+            throw new HarnessFailure(`apply_diff workspace ${project} leaves ${this.o.armRoot}`);
+        }
         const path = resolve(dir, String(e.path));
+        const inside = (p: string) => {
+            const real = realpathSync(p);
+            return real === dir || real.startsWith(`${dir}/`);
+        };
+        let existing = dirname(path);
+        while (!existsSync(existing)) existing = dirname(existing);
+        if (!inside(existing))
+            throw new HarnessFailure(`apply_diff path ${String(e.path)} leaves ${dir}`);
         mkdirSync(dirname(path), { recursive: true });
-        const parent = realpathSync(dirname(path));
-        const inside = parent === dir || parent.startsWith(`${dir}/`);
-        if (!inside || lstatSync(path, { throwIfNoEntry: false })?.isSymbolicLink()) {
+        if (
+            !inside(dirname(path)) ||
+            lstatSync(path, { throwIfNoEntry: false })?.isSymbolicLink()
+        ) {
             throw new HarnessFailure(`apply_diff path ${String(e.path)} leaves ${dir}`);
         }
         writeFileSync(path, String(e.content));
-        git(dir, "add", "--", path);
+        git(dir, ["add", "--", path]);
         if (
             spawnSync("git", ["diff", "--cached", "--quiet", "--", path], { cwd: dir }).status === 0
         ) {
             return;
         }
-        git(dir, "commit", "--quiet", "--no-verify", "-m", `Add ${String(e.path)}`, "--", path);
+        const message = `Add ${String(e.path)}`;
+        const when = this.o.baseMs + e.scenario_ms;
+        git(dir, ["commit", "--quiet", "--no-verify", "-m", message, "--", path], when);
     }
 
     private checkTranscripts(host: SimHost): void {
@@ -254,7 +309,7 @@ export class HostDriver implements ArmDriver {
         const paths = this.o.transcriptPaths.map((t) => expandTemplate(t, env));
         const missing = paths.filter((p) => !existsSync(p));
         const record = { checked_after: "first session_end", paths, missing };
-        writeFileSync(join(this.armDir, "transcripts.json"), JSON.stringify(record));
+        writeWhole(join(this.armDir, "transcripts.json"), JSON.stringify(record));
         if (missing.length > 0) throw new Error(`transcript store missing: ${missing.join(", ")}`);
         this.transcriptsChecked = true;
     }
@@ -262,6 +317,9 @@ export class HostDriver implements ArmDriver {
     async fault(f: FaultEpisode): Promise<Record<string, unknown>> {
         if (!SUPPORTED.has(f.type))
             throw new HarnessFailure(`fault type ${f.type} has no mechanism`);
+        if (BETWEEN_SESSIONS.has(f.type) && this.sessionProject !== null) {
+            throw new HarnessFailure(`${f.type} fires between sessions; ${f.id} fired inside one`);
+        }
         if (f.type === "daemon_sigkill_mid_fold" || f.type === "daemon_restart") {
             if (!this.daemon) return { skipped: "arm runs no daemon" };
             const before = this.daemonPid();
@@ -276,9 +334,6 @@ export class HostDriver implements ArmDriver {
             };
         }
         if (f.type === "store_full") return this.fillStore();
-        if (this.sessionProject !== null) {
-            throw new HarnessFailure(`${f.type} fires between sessions; ${f.id} fired inside one`);
-        }
         if (f.type === "plugin_reload") {
             return { reload: "host process and plugin respawn at the next session_start" };
         }
@@ -290,7 +345,12 @@ export class HostDriver implements ArmDriver {
 
     private mountStore(fresh: boolean): void {
         mkdirSync(this.storeRoot, { recursive: true, mode: 0o700 });
-        if (fresh || !existsSync(this.image)) {
+        if (!fresh && !existsSync(this.image)) {
+            throw new HarnessFailure(
+                `resume of arm ${this.o.arm}: store image ${this.image} is gone`,
+            );
+        }
+        if (fresh) {
             run(["truncate", "-s", "2G", this.image]);
             run(["/usr/sbin/mkfs.ext4", "-q", "-F", "-m", "0", this.image]);
         }
@@ -304,7 +364,13 @@ export class HostDriver implements ArmDriver {
     private fillStore(): Record<string, unknown> {
         if (!this.storeMount) return { skipped: "arm runs no loop-mounted store" };
         const ballast = join(this.storeMount, "ballast");
-        spawnSync("dd", ["if=/dev/zero", `of=${ballast}`, "bs=1M", "count=4096"]);
+        const free = run(["df", "-B1", "--output=avail", this.storeMount])
+            .trim()
+            .split("\n")
+            .at(-1);
+        spawnSync("fallocate", ["-l", String(free), ballast]);
+        const append = ["if=/dev/zero", `of=${ballast}`, "bs=1M", "oflag=append", "conv=notrunc"];
+        spawnSync("dd", append);
         const df = run(["df", "--output=avail", this.storeMount]);
         const avail = Number(df.trim().split("\n").at(-1));
         if (avail !== 0) throw new HarnessFailure(`store_full left ${avail} KiB free`);
@@ -312,7 +378,7 @@ export class HostDriver implements ArmDriver {
     }
 
     private clearStoreFill(): void {
-        if (this.storeMount) rmSync(join(this.storeMount, "ballast"), { force: true });
+        if (this.ballast) rmSync(this.ballast, { force: true });
     }
 
     async finish(): Promise<void> {
@@ -324,6 +390,7 @@ export class HostDriver implements ArmDriver {
         const daemon = this.daemon;
         this.host = null;
         this.daemon = null;
+        this.sessionProject = null;
         let failure: unknown = null;
         try {
             await host?.closeSession();

@@ -167,9 +167,7 @@ writeFileSync(join(out, "outcome.json"), `${JSON.stringify(outcome, null, 2)}\n`
 
 function schedule(dir: string): Schedule {
     const scenario = JSON.parse(readFileSync(join(dir, "scenario.json"), "utf8")) as Scenario;
-    const events = new Map(scenario.events.map((e) => [String(e.id), Number(e.scenario_ms)]));
-    const sleeps = new Map(FAULTS.map((f) => [f.id, Number(f.params.duration_ms)]));
-    return { events, sleeps };
+    return { events: new Map(scenario.events.map((e) => [String(e.id), Number(e.scenario_ms)])) };
 }
 
 function summarize(dir: string) {
