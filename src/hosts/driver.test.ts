@@ -11,8 +11,9 @@ import {
     writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { loadConfig } from "../config/config";
+import type { CallView } from "../grade/artefacts";
 import { gradeItem } from "../grade/probes";
 import { diffPaths } from "../grade/text";
 import type { ScenarioEvent } from "../run/scheduler";
@@ -412,6 +413,38 @@ describe("probe snapshots", () => {
         expect(outcome.snapshot).toBe("host:q-1:e-1");
     });
 
+    test("the snapshot's proxy calls are read after the run has settled its background jobs", async () => {
+        const { driver, hosts } = fixture("host", { p: gitRepo() });
+        const calls: CallView[] = [];
+        const o = (driver as unknown as { o: DriverOptions }).o;
+        o.callsFor = () => [...calls];
+        o.settle = async () => {
+            await Bun.sleep(20);
+            calls.push({
+                seq: 0,
+                component: "history_summarizer",
+                turn: "e-1",
+                scenario_ms: 5,
+                input_tokens: 9,
+                output_tokens: 3,
+            });
+        };
+        const fresh = new HostDriver(o);
+        await fresh.reset();
+        hosts.at(-1);
+        await fresh.event(ev("session_start", { session: "s-0" }));
+        const outcome = await fresh.event(
+            ev("user_turn", { id: "e-1", session: "s-0", text: "go", probe: "q-1" }),
+        );
+        const armDir = dirname(o.armRoot);
+        const snap = JSON.parse(readFileSync(join(armDir, "snapshots.jsonl"), "utf8").trim());
+        const byId = Object.fromEntries(snap.artefacts.map((a: { id: string }) => [a.id, a]));
+        expect(outcome.snapshot).toBe("host:q-1:e-1");
+        expect(byId["host:q-1:e-1:calls"].calls.map((c: CallView) => c.component)).toEqual([
+            "history_summarizer",
+        ]);
+    });
+
     test("a change to a file the source tracks despite its ignore rules is in the snapshot diff", async () => {
         const source = gitRepo();
         const g = (...args: string[]) =>
@@ -576,6 +609,17 @@ function captured(armDir: string): Record<string, { patch?: string }> {
     return Object.fromEntries(snap.artefacts.map((a: { id: string }) => [a.id, a]));
 }
 
+test("a recorder rebuilt over a stale index lock removes it and indexes the workspace", () => {
+    const repo = gitRepo();
+    const armDir = tmp();
+    const first = new SnapshotRecorder(armDir, "eidnara", () => []);
+    first.sessionStart("s-1", "p", repo);
+    writeFileSync(join(armDir, "snapshot.git", `${basename(repo)}.index.lock`), "");
+    const resumed = new SnapshotRecorder(armDir, "eidnara", () => []);
+    writeFileSync(join(repo, "new.rs"), "fn x() {}\n");
+    expect(resumed.tree(repo)).toMatch(/^[0-9a-f]{40}$/);
+});
+
 test("a recorder rebuilt over a cut last snapshot line drops the cut and appends whole records", () => {
     const repo = gitRepo();
     const armDir = tmp();
@@ -674,5 +718,35 @@ test("snapshot patches keep their b/ paths under a system git config and inherit
             if (value === undefined) delete process.env[key];
             else process.env[key] = value;
         }
+    }
+});
+
+test("snapshot git that outlives its bound fails the probe turn instead of hanging the harness", async () => {
+    const shim = tmp();
+    const real = spawnSync("sh", ["-c", "command -v git"]).stdout.toString().trim();
+    writeFileSync(
+        join(shim, "git"),
+        `#!/bin/sh\nif [ "$1" = "add" ]; then sleep 30; fi\nexec ${real} "$@"\n`,
+        { mode: 0o755 },
+    );
+    const { driver, hosts } = fixture("host", { p: gitRepo() });
+    const o = { ...(driver as unknown as { o: DriverOptions }).o, turnDeadlineMs: 300 };
+    const fresh = new HostDriver(o);
+    await fresh.reset();
+    const host = hosts.at(-1) as FakeHost;
+    await fresh.event(ev("session_start", { session: "s-0" }));
+    const path = process.env.PATH;
+    process.env.PATH = `${shim}:${path}`;
+    try {
+        const started = Date.now();
+        const outcome = await fresh.event(
+            ev("user_turn", { id: "e-1", session: "s-0", text: "go", probe: "q-1" }),
+        );
+        expect(Date.now() - started).toBeLessThan(10_000);
+        expect(outcome.failed).toContain("timed out");
+        expect(outcome.snapshot).toBeUndefined();
+        expect(host.closed).toBe(0);
+    } finally {
+        process.env.PATH = path;
     }
 });

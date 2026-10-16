@@ -180,15 +180,16 @@ describe("grade-run", () => {
         });
     });
 
-    test("probes whose turn lies past the run's event prefix are reported as outside the run", async () => {
+    test("probes whose turn lies past the run's event prefix are reported as outside the run, for every arm", async () => {
         const second = { ...p5.probe, id: "P5-b" };
-        const dir = run({ probes: [p5.probe, second], events: 2 });
+        const p7 = fixture("P7-pass").probe;
+        const dir = run({ probes: [p5.probe, second, p7], events: 2 });
         snapshot(dir, "eidnara", snap);
         snapshot(dir, "host", snap);
         const summary = await gradeRun(dir, null);
         expect(summary.skipped).toEqual({
-            host: { "probe turn outside the run's 2 events": 1 },
-            eidnara: { "probe turn outside the run's 2 events": 1 },
+            host: { "probe turn outside the run's 2 events": 2 },
+            eidnara: { "probe turn outside the run's 2 events": 2 },
         });
     });
 

@@ -135,7 +135,7 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
     const pairs = p7.flatMap((probe) =>
         memoryArms.flatMap((arm) => {
             if (!ran.has(probe.id)) {
-                skip(arm, outside);
+                for (const side of [arm, "host"]) skip(side, outside);
                 return [];
             }
             const sides = { [arm]: attempts(arm, probe.id), host: attempts("host", probe.id) };
@@ -196,6 +196,7 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
             scope: () => ({ arm: "judge", session: null, turn: null }),
         });
         await gateway.start();
+        const staged: { arm: string; grades: GradeRecord[] }[] = [];
         try {
             const judge = firewall(gateway.urls[0] as string);
             for (const { probe, arm, a, b, later_attempts } of pairs) {
@@ -241,13 +242,21 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
                     cross_judge: null,
                 };
                 try {
-                    for (const g of gradeP7(judgment, context, rules)) append(g);
+                    staged.push({ arm, grades: gradeP7(judgment, context, rules) });
                 } catch (caught) {
                     fail(caught);
                 }
             }
         } finally {
             await gateway.stop();
+        }
+        if (gateway.failures.length > 0) {
+            judgeErrors += gateway.failures.length;
+            for (const f of gateway.failures) console.error(`judge-calls.jsonl: ${String(f)}`);
+            for (const { arm } of staged)
+                for (const side of [arm, "host"]) skip(side, "P7 judge call failed");
+        } else {
+            for (const { grades } of staged) for (const g of grades) append(g);
         }
     }
 

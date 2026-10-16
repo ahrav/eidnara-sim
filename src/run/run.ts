@@ -347,6 +347,7 @@ async function runArms(
             loopStore,
             onDaemonExit: (detail) => scheduler.daemonExited(detail),
             callsFor: (session) => callsOf(join(o.out, "calls.jsonl"), arm, session, turnIndex),
+            settle: () => scheduler.quiesceJobs(),
             now,
         });
         let cpuJob: string | null = null;

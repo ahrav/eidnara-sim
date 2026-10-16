@@ -43,6 +43,12 @@ resume after a kill between the two entries journals the snapshot from it.
 Snapshots append to `<arm>/snapshots.jsonl`, and a recorder rebuilt after a
 kill drops a cut last line; a
 snapshot id is `<arm>:<item>:<turn event>`, so each attempt has its own id.
+The driver takes the snapshot after the scheduler's background jobs (a
+summarizer or compaction call the turn started) have ended, so the
+`proxy-call` artefact holds those calls. Each recorder git run against a
+workspace is bounded by the turn deadline; a run past it fails the probe turn
+with `snapshot: git ... timed out` and the item has no snapshot. A recorder
+rebuilt after a kill also removes an index lock the killed git left.
 The snapshot tree adds, with `--force`, the paths the project's source
 repository tracks although its ignore rules match them (the driver lists
 them from the source at reset), so a change to such a file is in the diff.
@@ -82,7 +88,9 @@ the graders read neither.
 time allocates versions, refuses a run whose pre-registration or scenario no
 longer hashes to the digests in its manifest or whose journal lacks `EndRun`
 or an arm's `EndArm` and one terminal `Event` per scheduled event (SIM-P67),
-drops a cut last line of `grades.jsonl`, and grades every snapshot the
+drops a cut last line of `grades.jsonl`, holds P7 grades until the judge
+gateway has stopped and reports no failed `judge-calls.jsonl` write, and
+grades every snapshot the
 journal names
 into `grades.jsonl` and judges each P7 item for each memory arm against the
 host arm, through a gateway it starts for the judge. It checks the judge

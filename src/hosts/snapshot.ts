@@ -2,6 +2,7 @@ import {
     appendFileSync,
     existsSync,
     mkdirSync,
+    readdirSync,
     readFileSync,
     realpathSync,
     renameSync,
@@ -38,6 +39,8 @@ export class SnapshotRecorder {
         private readonly armDir: string,
         private readonly arm: string,
         private readonly callsFor: (session: string) => CallView[],
+        /** Bound on each git run against a workspace; a run past it throws `GitTimeout`. */
+        private readonly gitTimeoutMs?: number,
     ) {
         mkdirSync(armDir, { recursive: true });
         this.gitDir = join(armDir, "snapshot.git");
@@ -46,6 +49,18 @@ export class SnapshotRecorder {
             ? (JSON.parse(readFileSync(this.stateFile, "utf8")) as RecorderState)
             : structuredClone(EMPTY);
         this.dropCutLine();
+        this.dropIndexLocks();
+    }
+
+    /**
+     * The run lease makes this recorder the only writer of its repository, so an
+     * `<project>.index.lock` found at construction is one a killed git left behind.
+     */
+    private dropIndexLocks(): void {
+        if (!existsSync(this.gitDir)) return;
+        for (const name of readdirSync(this.gitDir)) {
+            if (name.endsWith(".index.lock")) rmSync(join(this.gitDir, name), { force: true });
+        }
     }
 
     /**
@@ -75,7 +90,7 @@ export class SnapshotRecorder {
             scope.GIT_WORK_TREE = work;
             scope.GIT_INDEX_FILE = join(this.gitDir, `${basename(work)}.index`);
         }
-        return git(work ?? this.armDir, args, scope);
+        return git(work ?? this.armDir, args, scope, work ? this.gitTimeoutMs : undefined);
     }
 
     private save(): void {

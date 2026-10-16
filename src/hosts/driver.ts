@@ -10,7 +10,7 @@ import {
     writeFileSync,
 } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
-import { git, gitEnv } from "../git";
+import { GitTimeout, git, gitEnv } from "../git";
 import type { CallView } from "../grade/artefacts";
 import { processStart, running, stopOwnedTree } from "../run/procs";
 import { type ArmDriver, HarnessFailure, type ScenarioEvent } from "../run/scheduler";
@@ -39,6 +39,8 @@ export interface DriverOptions extends Omit<HostContext, "root" | "model"> {
     transcriptPaths: string[];
     loopStore: boolean;
     callsFor?: (session: string) => CallView[];
+    /** Awaited after a probe turn and before its snapshot, so background calls the turn started are on record. */
+    settle?: () => Promise<void>;
     hostFactory?: (ctx: HostContext) => SimHost;
     onDaemonExit: (detail: Record<string, unknown>) => void;
 }
@@ -83,7 +85,12 @@ export class HostDriver implements ArmDriver {
     private readonly snapshots: SnapshotRecorder;
 
     constructor(private readonly o: DriverOptions) {
-        this.snapshots = new SnapshotRecorder(dirname(o.armRoot), o.arm, o.callsFor ?? (() => []));
+        this.snapshots = new SnapshotRecorder(
+            dirname(o.armRoot),
+            o.arm,
+            o.callsFor ?? (() => []),
+            o.turnDeadlineMs,
+        );
     }
 
     private get armDir(): string {
@@ -239,27 +246,45 @@ export class HostDriver implements ArmDriver {
         }
         const project = this.project(e);
         const dir = this.workspace(project);
-        const before = e.probe ? this.snapshots.tree(dir) : "";
+        let before: string | null = "";
+        if (e.probe) {
+            try {
+                before = this.snapshots.tree(dir);
+            } catch (caught) {
+                if (!(caught instanceof GitTimeout)) throw caught;
+                before = null;
+            }
+        }
         const result = await host.prompt(String(e.text), this.o.turnDeadlineMs);
         if (this.daemon && this.daemonPid() === null) this.o.onDaemonExit({ after: e.id });
         const tools = host.drainTools();
         const outcome: { failed?: string; snapshot?: string } = {};
         if (result.error) outcome.failed = result.error;
-        if (e.probe) {
-            const nested = this.snapshots.embedded(dir);
-            if (nested.length > 0) {
-                const reason = `embedded repository at ${nested.join(", ")}`;
+        if (e.probe && before === null) {
+            const reason = "snapshot: git timed out before the turn";
+            outcome.failed = outcome.failed ? `${outcome.failed} | ${reason}` : reason;
+        } else if (e.probe && before !== null) {
+            await this.o.settle?.();
+            try {
+                const nested = this.snapshots.embedded(dir);
+                if (nested.length > 0) {
+                    const reason = `embedded repository at ${nested.join(", ")}`;
+                    outcome.failed = outcome.failed ? `${outcome.failed} | ${reason}` : reason;
+                }
+                const probe = { probe: e.probe, session: e.session, id: e.id };
+                outcome.snapshot = this.snapshots.capture(
+                    probe,
+                    project,
+                    dir,
+                    before,
+                    tools,
+                    !!outcome.failed,
+                );
+            } catch (caught) {
+                if (!(caught instanceof GitTimeout)) throw caught;
+                const reason = `snapshot: ${caught.message}`;
                 outcome.failed = outcome.failed ? `${outcome.failed} | ${reason}` : reason;
             }
-            const probe = { probe: e.probe, session: e.session, id: e.id };
-            outcome.snapshot = this.snapshots.capture(
-                probe,
-                project,
-                dir,
-                before,
-                tools,
-                !!outcome.failed,
-            );
         }
         return outcome;
     }

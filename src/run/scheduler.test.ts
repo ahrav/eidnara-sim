@@ -632,3 +632,36 @@ test("a harness killed between a probe's EndTurn and its SnapshotArtefacts journ
     const kinds = second.entries.map((e) => `${e.kind}:${e.event ?? e.item ?? ""}`);
     expect(kinds.indexOf("SnapshotArtefacts:q-1")).toBeLessThan(kinds.indexOf("Event:e-000001"));
 });
+
+test("quiescing jobs waits for background jobs while the turn itself stays open", async () => {
+    const j = new Journal(join(dir(), "j.jsonl"));
+    let scheduler: Scheduler | null = null;
+    let settled = false;
+    const driver: ArmDriver = {
+        reset: async () => undefined,
+        event: async (e) => {
+            if (e.kind !== "user_turn") return {};
+            scheduler?.jobStart("history_summarizer-0");
+            setTimeout(() => scheduler?.jobEnd("history_summarizer-0"), 60);
+            await scheduler?.quiesceJobs();
+            settled = true;
+            return {};
+        },
+        fault: async () => ({}),
+    };
+    scheduler = new Scheduler({
+        events: fixtureEvents(1),
+        faults: [],
+        journal: j,
+        settleMs: 0,
+        jobPollMs: 5,
+        order: ["a"],
+        drivers: { a: driver },
+    });
+    await scheduler.run();
+    expect(settled).toBe(true);
+    const kinds = j.entries.map((e) => `${e.kind}:${e.job ?? e.event ?? ""}`);
+    expect(kinds.indexOf("EndJob:history_summarizer-0")).toBeLessThan(
+        kinds.indexOf("EndTurn:e-000001"),
+    );
+});

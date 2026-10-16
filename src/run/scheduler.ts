@@ -176,12 +176,22 @@ export class Scheduler {
     }
 
     private async idle(): Promise<void> {
+        await this.quiesce(() => this.clock?.busyIds() ?? []);
+    }
+
+    /** Waits for the background jobs in the busy set, with the turn itself still open. */
+    async quiesceJobs(): Promise<void> {
+        await this.quiesce(() =>
+            (this.clock?.busyIds() ?? []).filter((id) => id.startsWith("job:")),
+        );
+    }
+
+    private async quiesce(pending: () => string[]): Promise<void> {
         const limit = Date.now() + (this.o.idleLimitMs ?? Number.POSITIVE_INFINITY);
-        while ((this.clock?.busyIds().length ?? 0) > 0) {
+        while (pending().length > 0) {
             if (Date.now() > limit) {
-                const busy = this.clock?.busyIds().join(", ");
                 throw new HarnessFailure(
-                    `busy set held the clock past ${this.o.idleLimitMs} ms: ${busy}`,
+                    `busy set held the clock past ${this.o.idleLimitMs} ms: ${pending().join(", ")}`,
                 );
             }
             await Bun.sleep(this.o.jobPollMs ?? 50);
