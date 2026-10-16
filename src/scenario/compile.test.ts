@@ -270,6 +270,13 @@ describe("over 100 seeds", () => {
             const forced = s.sessions.filter((x) => x.forced_p90);
             expect(forced.length).toBeGreaterThanOrEqual(input.prereg.scenario.forced_p90_sessions);
             for (const x of forced) expect(x.requests).toBeGreaterThanOrEqual(p90Of(input));
+            const perProject = new Map<string, number>();
+            for (const x of forced) perProject.set(x.project, (perProject.get(x.project) ?? 0) + 1);
+            const bases = input.projects.filter((p) => !p.twin_of).length;
+            expect(perProject.size).toBe(Math.min(bases, forced.length));
+            expect(
+                Math.max(...perProject.values()) - Math.min(...perProject.values()),
+            ).toBeLessThanOrEqual(1);
             for (const f of s.facts) counts.set(f.manner, (counts.get(f.manner) ?? 0) + 1);
             total += s.facts.length;
         }
@@ -310,6 +317,21 @@ describe("markerHits", () => {
     });
 });
 
+describe("corpus identity", () => {
+    test("corpus/manifest.json digests every corpus file the compiler reads", () => {
+        const manifest = JSON.parse(readFileSync(join(ROOT, "corpus", "manifest.json"), "utf8"));
+        expect(Object.keys(manifest.files).sort()).toEqual(
+            [
+                "distributions.json",
+                "fact-bank.json",
+                "repos.json",
+                "tool-outputs/error-codes.jsonl",
+                "tool-outputs/samples.jsonl",
+            ].sort(),
+        );
+    });
+});
+
 describe("compile-time refusals", () => {
     const withInput = (edit: (bank: Bank) => void, embedder: Embedder = hashEmbedder) => {
         const input = loadCompileInput(101, "S", embedder, true);
@@ -329,6 +351,23 @@ describe("compile-time refusals", () => {
                 for (const t of lookups(bank)) t.probe = `${t.statement}, for the record`;
             }, orthogonal),
         ).rejects.toThrow(/bm25 1, cosine 0 exceeds/);
+    });
+
+    test("an embedder that returns empty or short vectors is refused", async () => {
+        const empty: Embedder = { model: "empty", embed: async (texts) => texts.map(() => []) };
+        await expect(withInput(() => undefined, empty)).rejects.toThrow(/embedder empty returned/);
+        const short: Embedder = {
+            model: "short",
+            embed: async (texts) => texts.slice(1).map(() => [1, 0]),
+        };
+        await expect(withInput(() => undefined, short)).rejects.toThrow(/embedder short returned/);
+    });
+
+    test("a seed outside the unsigned 32-bit range is refused", async () => {
+        const input = loadCompileInput(0, "S", hashEmbedder, true);
+        await expect(compileScenario({ ...input, seed: 2 ** 32 })).rejects.toThrow(
+            /seed 4294967296 is outside/,
+        );
     });
 
     test("a probe whose embedding matches its cue is refused on the cosine alone", async () => {
@@ -514,7 +553,7 @@ describe("fault schedule", () => {
             );
         }, 60_000);
 
-    for (const seed of [300, 301])
+    for (const seed of [314, 301])
         test(`the laptop sleep spans an event-free gap of its full duration (seed ${seed})`, async () => {
             const s = await compileScenario(loadCompileInput(seed, "L", hashEmbedder, true));
             const sleep = s.faults.find((f) => f.type === "laptop_sleep") as FaultEpisode;

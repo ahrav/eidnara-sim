@@ -170,6 +170,9 @@ const range = (lo: number, hi: number) =>
 
 export async function compileScenario(input: CompileInput) {
     const { seed, prereg, dist, bank } = input;
+    if (!Number.isInteger(seed) || seed < 0 || seed > 0xffff_ffff) {
+        throw new Error(`seed ${seed} is outside the unsigned 32-bit range of the random streams`);
+    }
     const s = prereg.scenario;
     const thresholds = s.cue_probe_similarity;
     if (input.embedder.model !== thresholds.embedding_model) {
@@ -184,15 +187,23 @@ export async function compileScenario(input: CompileInput) {
     const sessRng = rngFor("sessions");
     const count = (p: Project) =>
         p.twin_of ? Math.ceil(s.sessions_per_project / 4) : s.sessions_per_project;
+    const bases = input.projects.filter((p) => !p.twin_of);
     const plan = shuffle(
         input.projects.flatMap((p) => Array<Project>(count(p)).fill(p)),
         sessRng,
     );
-    const baseIdx = plan.flatMap((p, i) => (p.twin_of ? [] : [i]));
+    const extra = new Set(
+        shuffle([...bases], sessRng)
+            .slice(0, s.forced_p90_sessions % bases.length)
+            .map((p) => p.id),
+    );
     const forced = new Set(
-        range(0, s.forced_p90_sessions).map(
-            (k) => baseIdx[Math.floor(((k + 0.5) * baseIdx.length) / s.forced_p90_sessions)],
-        ),
+        bases.flatMap((p) => {
+            const own = plan.flatMap((q, i) => (q.id === p.id ? [i] : []));
+            const quota =
+                Math.floor(s.forced_p90_sessions / bases.length) + (extra.has(p.id) ? 1 : 0);
+            return range(0, quota).map((k) => own[Math.floor(((k + 0.5) * own.length) / quota)]);
+        }),
     );
     const [reqTable, idleTable, betweenTable] = [
         table(dist, "requests_per_session"),
@@ -274,7 +285,6 @@ export async function compileScenario(input: CompileInput) {
         return t;
     };
 
-    const bases = input.projects.filter((p) => !p.twin_of);
     const twinOf = (p: string) => input.projects.find((x) => x.twin_of === p)?.id ?? p;
     const facts: Fact[] = [];
     const probes: ProbeItem[] = [];
@@ -523,6 +533,13 @@ export async function compileScenario(input: CompileInput) {
     });
     const texts = [...new Set(pairs.flatMap((x) => [x.cue, x.text]))];
     const vectors = await input.embedder.embed(texts);
+    const dims = vectors[0]?.length ?? 0;
+    const wellFormed = (v: number[]) => v.length === dims && v.every(Number.isFinite);
+    if (vectors.length !== texts.length || dims === 0 || !vectors.every(wellFormed)) {
+        throw new Error(
+            `embedder ${input.embedder.model} returned ${vectors.length} vectors for ${texts.length} texts; each must hold the same positive count of finite numbers`,
+        );
+    }
     const vec = new Map(texts.map((t, i) => [t, vectors[i] ?? []]));
     const similarity = pairs.map(({ probe, fact, cue, text }) => ({
         probe,

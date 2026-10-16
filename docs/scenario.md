@@ -34,9 +34,10 @@ The scenario file is canonical JSON with these sections:
 ## Sessions and time
 
 Each base repository gets `sessions_per_project` sessions and each twin a
-quarter as many, shuffled into one sequence. `forced_p90_sessions` sessions,
-spread evenly over the base sessions, draw their request count from the tail
-above p90; every other session draws from the full fitted distribution with
+quarter as many, shuffled into one sequence. `forced_p90_sessions` sessions
+draw their request count from the tail above p90: each base repository takes
+an equal share, a seeded draw assigns any remainder, and each share spreads
+evenly over that repository's sessions; every other session draws from the full fitted distribution with
 at least one request. Idle gaps within a session come from
 `idle_within_session_s` and gaps between sessions from
 `idle_between_sessions_s`.
@@ -111,7 +112,9 @@ fact bank, or, with probability 0.1, a paste of a corpus tool-output sample.
 
 The compiler throws, and writes nothing, when:
 
-- the embedder differs from `cue_probe_similarity.embedding_model`;
+- the seed is outside the unsigned 32-bit range of the random streams;
+- the embedder differs from `cue_probe_similarity.embedding_model`, or returns
+  a vector count or shape that does not match the texts;
 - a cue and probe pair has a BM25 ratio above `bm25_max` or a cosine above
   `cosine_max` (SIM-P08);
 - any user text or diff path or content matches the marker set: probe ids,
@@ -160,15 +163,15 @@ thresholds (`bm25_max` 0.4, `cosine_max` 0.6):
 
 | Tier | Seed | `scenario_hash` | Largest BM25 ratio | Largest cosine |
 |---|---|---|---|---|
-| S | 101 | `3fd98a19` | 0.2125 | 0.5194 |
-| S | 102 | `0b72fb57` | 0.2628 | 0.4867 |
-| M | 201 | `50cd39da` | 0.2516 | 0.4992 |
-| M | 202 | `c6ae6add` | 0.2551 | 0.4997 |
-| M | 203 | `acadb760` | 0.2535 | 0.4843 |
-| L | 301 | `ddb72e23` | 0.2558 | 0.5092 |
-| L | 302 | `c4d2ced9` | 0.2535 | 0.4957 |
-| L | 303 | `4e78fec8` | 0.2514 | 0.5083 |
-| XL | 401 | `d0052acb` | 0.2561 | 0.4962 |
+| S | 101 | `807b8ccb` | 0.2111 | 0.5194 |
+| S | 102 | `911f9849` | 0.256 | 0.4867 |
+| M | 201 | `aa0185f5` | 0.2516 | 0.4992 |
+| M | 202 | `68283323` | 0.2532 | 0.4997 |
+| M | 203 | `47df1b4d` | 0.2508 | 0.4843 |
+| L | 301 | `ea818c97` | 0.2555 | 0.5092 |
+| L | 302 | `4b4d5c13` | 0.2523 | 0.4957 |
+| L | 303 | `329a43b2` | 0.2514 | 0.5083 |
+| XL | 401 | `71ff92a2` | 0.251 | 0.4962 |
 
 ## Known limits
 
