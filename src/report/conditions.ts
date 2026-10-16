@@ -13,12 +13,12 @@ export const V1_CONTINUITY: Record<string, [number, number]> = {
 };
 
 const TRANSCRIPT_READ =
-    /\.pi\/agent\/sessions|opencode\.db|opencode\/storage|\/sessions\/\S*\.jsonl/;
+    /\.pi\/agent\/sessions|PI_CODING_AGENT_DIR\}?\/sessions|XDG_DATA_HOME\}?\/opencode|opencode\.db|opencode\/storage|\/sessions\/\S*\.jsonl/;
 
 export interface TranscriptOrder {
     arm: string;
     sessions: number;
-    in_order: boolean;
+    in_order: boolean | null;
     max_lead_ms: number | null;
     max_lag_ms: number | null;
 }
@@ -28,6 +28,7 @@ export interface RunConditions {
     host: string;
     seed: number;
     events: number;
+    events_run: number;
     scenario_events: number;
     interception: { name: string; intercepted: boolean; wall_clock_only: boolean }[];
     transcripts: { arm: string; paths: string[]; missing: string[] }[];
@@ -35,6 +36,7 @@ export interface RunConditions {
 }
 
 export interface Continuity {
+    host: string;
     arm: string;
     probe: "P8" | "P9";
     n: number;
@@ -68,26 +70,32 @@ function transcriptTimes(path: string): Map<string, number> {
         return out;
     }
     for (const f of files(path).filter((p) => p.endsWith(".jsonl"))) {
-        const head = JSON.parse(readFileSync(f, "utf8").split("\n")[0] || "{}");
-        if (head.type === "session") out.set(head.id, Date.parse(head.timestamp));
+        try {
+            const head = JSON.parse(readFileSync(f, "utf8").split("\n")[0] || "{}");
+            if (head.type === "session") out.set(head.id, Date.parse(head.timestamp));
+        } catch {}
     }
     return out;
 }
 
 function order(g: GradedRun, arm: ArmLogs, paths: string[]): TranscriptOrder {
-    const session = new Map(g.scenario.events.map((e) => [e.id, String(e.session)]));
+    const scheduled = new Map(g.scenario.events.map((e) => [e.id, e]));
     const times = new Map(paths.flatMap((p) => [...transcriptTimes(p)]));
     const pairs = arm.journal
         .filter((e) => e.kind === "Event" && g.run.kinds.get(String(e.event)) === "session_start")
         .flatMap((e) => {
-            const t = times.get(`sim-${session.get(String(e.event))}`);
-            return t === undefined ? [] : [{ t, d: t - (g.run.base_wall_ms + e.scenario_ms) }];
+            const at = scheduled.get(String(e.event));
+            const t = times.get(`sim-${at?.session}`);
+            if (t === undefined || !at) return [];
+            return [{ t, d: t - (g.run.base_wall_ms + Number(at.scenario_ms)) }];
         });
     const d = pairs.map((p) => p.d);
     return {
         arm: arm.arm,
         sessions: pairs.length,
-        in_order: pairs.every((p, i) => i === 0 || p.t >= (pairs[i - 1]?.t ?? 0)),
+        in_order: pairs.length
+            ? pairs.every((p, i) => i === 0 || p.t >= (pairs[i - 1]?.t ?? 0))
+            : null,
         max_lead_ms: d.length ? Math.max(0, ...d) : null,
         max_lag_ms: d.length ? Math.max(0, ...d.map((x) => -x)) : null,
     };
@@ -107,6 +115,10 @@ export function runConditions(g: GradedRun): RunConditions {
         host: manifest.host,
         seed: manifest.seed,
         events: manifest.events ?? g.scenario.events.length,
+        events_run: Math.max(
+            0,
+            ...g.run.arms.map((a) => a.journal.filter((e) => e.kind === "Event").length),
+        ),
         scenario_events: g.scenario.events.length,
         interception: probes.map(({ name, intercepted, wall_clock_only }) => ({
             name,
@@ -123,10 +135,14 @@ const turnOf = (r: GradeRecord) => r.snapshot.split(":").at(-1) ?? "";
 export function continuity(runs: GradedRun[]): Continuity[] {
     const out = new Map<string, Continuity>();
     for (const g of runs) {
+        const m = join(g.run.dir, "manifest.json");
+        const host = existsSync(m) ? String(JSON.parse(readFileSync(m, "utf8")).host) : "-";
         for (const r of g.grades) {
             if (r.probe_type !== "P8" && r.probe_type !== "P9") continue;
-            const key = `${r.arm}/${r.probe_type}`;
+            if (r.verdict === "excluded") continue;
+            const key = `${host}/${r.arm}/${r.probe_type}`;
             const c = out.get(key) ?? {
+                host,
                 arm: r.arm,
                 probe: r.probe_type,
                 n: 0,
@@ -162,9 +178,9 @@ export function renderConditions(conditions: RunConditions[], recall: Continuity
                 c.run,
                 c.host,
                 c.seed,
-                c.events < c.scenario_events
-                    ? `${c.events} of ${c.scenario_events} (capped prefix)`
-                    : c.events,
+                `${c.events_run} of ${c.events} planned${
+                    c.events < c.scenario_events ? `, a capped prefix of ${c.scenario_events}` : ""
+                }`,
                 c.interception
                     .map((i) => `${i.name} ${i.intercepted ? "intercepted" : "not intercepted"}`)
                     .join(", "),
@@ -182,7 +198,7 @@ export function renderConditions(conditions: RunConditions[], recall: Continuity
                     c.run,
                     o.arm,
                     o.sessions,
-                    o.in_order ? "yes" : "no",
+                    o.in_order === null ? "-" : o.in_order ? "yes" : "no",
                     o.max_lead_ms ?? "-",
                     o.max_lag_ms ?? "-",
                 ]),
@@ -191,9 +207,18 @@ export function renderConditions(conditions: RunConditions[], recall: Continuity
         "",
         "## Continuity against the v1 baseline",
         "",
-        ...head(["arm", "probe", "n", "pass", "passes reading transcripts", "v1 cross-session"]),
+        ...head([
+            "host",
+            "arm",
+            "probe",
+            "n",
+            "pass",
+            "passes reading transcripts",
+            "v1 cross-session",
+        ]),
         ...recall.map((c) =>
             row([
+                c.host,
                 c.arm,
                 c.probe,
                 c.n,

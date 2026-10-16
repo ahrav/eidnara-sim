@@ -782,6 +782,8 @@ describe("downstream diagnostics", () => {
                 kind: "stream_reset",
                 code: constants.NGHTTP2_CANCEL,
                 arm: "eidnara",
+                session: "s-0001",
+                h2_session: 0,
             }),
         );
     });

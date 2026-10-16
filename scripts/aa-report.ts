@@ -11,7 +11,7 @@ import type { PairingRecord } from "../src/usersim/usersim";
 
 const dir = resolve(process.argv[2] ?? "");
 if (!existsSync(join(dir, "manifest.json"))) {
-    console.error("usage: bun scripts/aa-report.ts <graded run dir>");
+    console.error("usage: bun scripts/aa-report.ts <run dir>");
     process.exit(2);
 }
 const manifest = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8"));
@@ -40,7 +40,9 @@ const report = controls.map((control) => {
         control,
         metrics,
         method: "ledger-fact cluster percentile bootstrap, 95%",
-        every_interval_covers_zero: informative.every((m) => m.covers_zero),
+        every_interval_covers_zero:
+            informative.length > 0 ? informative.every((m) => m.covers_zero) : null,
+        graded_items: grades.filter((g) => g.arm === arm || g.arm === control).length,
         intervals_missing_zero: informative.filter((m) => !m.covers_zero).map((m) => m.metric),
         expected_by_chance: 0.05 * informative.length,
         uninformative: metrics.filter((m) => m.clusters < MIN_CLUSTERS).map((m) => m.metric),

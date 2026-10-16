@@ -1,23 +1,31 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { GradeLog } from "../grade/probes";
-import { readJournal } from "../run/journal";
+import { GradeLog, type GradeRecord } from "../grade/probes";
+import { type Entry, readJournal } from "../run/journal";
 import { checkJournal } from "../run/journal-check";
 import { referenceArm } from "../run/run";
 import { LABELS } from "../usersim/plan";
 import { type PairingRecord, pairingMismatches } from "../usersim/usersim";
 import type { GradedRun } from "./observe";
 
-export type Witness = "witnessed" | "unreached" | "violated";
+export type Witness = "witnessed" | "unreached" | "violated" | "unchecked";
 
 export interface PropertyWitness {
     id: string;
-    name: string;
     status: Witness;
     detail: string;
 }
 
-type Check = (runs: GradedRun[]) => { status: Witness; detail: string };
+/** One run's artefacts, read once for every check. */
+interface Ctx {
+    g: GradedRun;
+    pairing: PairingRecord[];
+    manifest: { order: string[]; events: number };
+    entries: Entry[];
+    grades: GradeRecord[];
+}
+
+type Check = (runs: Ctx[]) => { status: Witness; detail: string };
 
 const outcome = (instances: number, bad: string[], what: string) =>
     bad.length > 0
@@ -26,56 +34,87 @@ const outcome = (instances: number, bad: string[], what: string) =>
           ? { status: "unreached" as const, detail: `no ${what}` }
           : { status: "witnessed" as const, detail: `${instances} ${what}` };
 
-const pairing = (g: GradedRun) => {
-    const path = join(g.run.dir, "pairing.jsonl");
-    return existsSync(path) ? (readJournal(path) as unknown as PairingRecord[]) : [];
-};
-const manifestOf = (g: GradedRun) =>
-    JSON.parse(readFileSync(join(g.run.dir, "manifest.json"), "utf8")) as {
-        order: string[];
-        events: number;
+const jsonl = <T>(path: string): T[] =>
+    existsSync(path) ? (readJournal(path) as unknown as T[]) : [];
+
+function context(g: GradedRun): Ctx {
+    const grades = join(g.run.dir, "grades.jsonl");
+    const manifest = join(g.run.dir, "manifest.json");
+    return {
+        g,
+        pairing: jsonl<PairingRecord>(join(g.run.dir, "pairing.jsonl")),
+        manifest: existsSync(manifest)
+            ? JSON.parse(readFileSync(manifest, "utf8"))
+            : { order: g.run.arms.map((a) => a.arm), events: g.scenario.events.length },
+        entries: jsonl<Entry>(join(g.run.dir, "journal.jsonl")),
+        grades: existsSync(grades) ? new GradeLog(grades).all() : [],
     };
-const journalOf = (g: GradedRun) => g.run.arms.flatMap((a) => a.journal);
+}
+
+const journalOf = (c: Ctx) => c.g.run.arms.flatMap((a) => a.journal);
+
+/**
+ * Delivered turns whose context digest differs from the reference arm's with no divergence
+ * record yet; a skipped turn issues no text, so the divergence check runs at the next delivery.
+ */
+function hiddenDivergences(c: Ctx): string[] {
+    const reference = referenceArm(c.manifest.order);
+    const turns = c.pairing.filter((r) => r.kind === "turn");
+    const byArm = new Map(turns.map((r) => [`${r.arm}/${r.event}`, r]));
+    const diverged = new Map<string, number>();
+    const bad: string[] = [];
+    for (const r of c.pairing) {
+        const key = `${r.arm}/${r.session}`;
+        if (r.kind === "divergedAt") {
+            diverged.set(key, Math.min(diverged.get(key) ?? r.index, r.index));
+            continue;
+        }
+        if (r.arm === reference(r.arm) || r.delivered === false) continue;
+        const other = byArm.get(`${reference(r.arm)}/${r.event}`);
+        const recorded = r.index >= (diverged.get(key) ?? Number.POSITIVE_INFINITY);
+        if (other && other.digest !== r.digest && !recorded) bad.push(`${r.arm} ${r.event} hidden`);
+    }
+    return bad;
+}
 
 const CHECKS: Record<string, Check> = {
     "SIM-P02": (runs) => {
-        const bad = runs.flatMap((g) =>
-            pairingMismatches(pairing(g), referenceArm(manifestOf(g).order)),
+        const bad = runs.flatMap((c) =>
+            pairingMismatches(c.pairing, referenceArm(c.manifest.order)),
         );
-        const n = runs.reduce((s, g) => s + pairing(g).filter((r) => r.kind === "turn").length, 0);
+        const n = runs.reduce((s, c) => s + c.pairing.filter((r) => r.kind === "turn").length, 0);
         return outcome(n, bad, "paired user turns");
     },
     "SIM-P03": (runs) => {
         const bad: string[] = [];
         let n = 0;
-        for (const g of runs) {
-            const records = pairing(g);
-            records.forEach((r, i) => {
+        for (const c of runs) {
+            c.pairing.forEach((r, i) => {
                 if (r.kind !== "divergedAt") return;
                 n++;
-                const turn = records.findIndex(
+                const turn = c.pairing.findIndex(
                     (x) => x.kind === "turn" && x.arm === r.arm && x.event === r.event,
                 );
                 if (turn >= 0 && turn < i) bad.push(`${r.arm} ${r.event}`);
             });
+            bad.push(...hiddenDivergences(c));
         }
-        return outcome(n, bad, "divergence records, each ahead of its turn");
+        return outcome(n, bad, "divergence records, each ahead of its turn, none hidden");
     },
     "SIM-P04": (runs) => {
         const n = runs.reduce(
-            (s, g) => s + pairing(g).filter((r) => r.kind === "divergedAt").length,
+            (s, c) => s + c.pairing.filter((r) => r.kind === "divergedAt").length,
             0,
         );
         return outcome(n, [], "divergences");
     },
     "SIM-P10": (runs) => {
-        const capped = runs.some((g) => manifestOf(g).events < g.scenario.events.length);
-        if (capped)
+        if (runs.some((c) => c.manifest.events < c.g.scenario.events.length))
             return {
                 status: "unreached",
                 detail: "a capped prefix cannot match whole-scenario rates",
             };
-        const rates = runs.flatMap((g) => journalOf(g).filter((e) => e.kind === "UserSimRates"));
+        const rates = runs.flatMap((c) => journalOf(c).filter((e) => e.kind === "UserSimRates"));
         const bad = rates
             .filter((e) => (e.outside as string[]).length > 0)
             .map((e) => `${e.arm}: ${e.outside}`);
@@ -93,26 +132,36 @@ const CHECKS: Record<string, Check> = {
     "SIM-P14": (runs) =>
         journalCheck(runs, (r) => r.off_schedule_jumps, jumps, "clock jumps, each on schedule"),
     "SIM-P15": (runs) => {
-        const calls = runs.flatMap((g) => g.run.arms.flatMap((a) => a.calls));
-        const bad = calls
-            .filter((c) => !Number.isFinite(c.scenario_ms) || !Number.isFinite(c.wall_ms))
-            .map((c) => `call ${c.seq}`);
-        return outcome(calls.length, bad, "proxy records with both times");
+        const bad: string[] = [];
+        let n = 0;
+        for (const c of runs) {
+            for (const a of c.g.run.arms) {
+                let wall = Number.NEGATIVE_INFINITY;
+                for (const call of [...a.calls].sort((x, y) => x.seq - y.seq)) {
+                    n++;
+                    if (!Number.isFinite(call.scenario_ms) || !Number.isFinite(call.wall_ms))
+                        bad.push(`call ${call.seq} lacks a time`);
+                    else if (call.wall_ms < wall) bad.push(`call ${call.seq} wall time decreases`);
+                    wall = Math.max(wall, call.wall_ms);
+                }
+            }
+        }
+        return outcome(n, bad, "proxy records with both times, wall time in order");
     },
     "SIM-P25": (runs) => {
-        const turns = runs.flatMap((g) => journalOf(g).filter((e) => e.kind === "UserTurn"));
+        const turns = runs.flatMap((c) => journalOf(c).filter((e) => e.kind === "UserTurn"));
         const bad = turns
             .filter((e) => !(LABELS as readonly string[]).includes(String(e.label)))
             .map((e) => String(e.event));
         return outcome(turns.length, bad, "labelled user turns");
     },
     "SIM-P30": (runs) => {
-        const observed = runs.flatMap((g) =>
-            journalOf(g)
+        const observed = runs.flatMap((c) =>
+            journalOf(c)
                 .filter((e) => e.kind === "FaultObserved")
                 .map((e) => ({
                     id: String(e.fault),
-                    known: g.scenario.faults.some((f) => f.id === e.fault),
+                    known: c.g.scenario.faults.some((f) => f.id === e.fault),
                 })),
         );
         return outcome(
@@ -122,24 +171,29 @@ const CHECKS: Record<string, Check> = {
         );
     },
     "SIM-P41": (runs) => {
-        const seen = new Map<string, number>();
-        for (const g of runs) {
-            for (const e of journalOf(g).filter((x) => x.kind === "SnapshotArtefacts")) {
-                const key = `${g.run.dir}/${e.arm}/${e.item}`;
-                seen.set(key, (seen.get(key) ?? 0) + 1);
+        const seen = new Map<string, { n: number; snapshot: unknown }>();
+        const bad: string[] = [];
+        for (const c of runs) {
+            for (const e of journalOf(c).filter((x) => x.kind === "SnapshotArtefacts")) {
+                const key = `${c.g.run.dir}/${e.arm}/${e.item}`;
+                const prior = seen.get(key);
+                seen.set(key, { n: (prior?.n ?? 0) + 1, snapshot: prior?.snapshot ?? e.snapshot });
+            }
+            for (const r of c.g.grades) {
+                const s = seen.get(`${c.g.run.dir}/${r.arm}/${r.item}`);
+                if (s && s.snapshot !== undefined && s.snapshot !== r.snapshot)
+                    bad.push(`${r.arm}/${r.item} grades ${r.snapshot}`);
             }
         }
-        const bad = [...seen].filter(([, n]) => n > 1).map(([k]) => k);
-        return outcome(seen.size, bad, "item snapshots set once");
+        bad.unshift(...[...seen].filter(([, s]) => s.n > 1).map(([k]) => `${k} set twice`));
+        return outcome(seen.size, bad, "item snapshots set once and cited by their grades");
     },
     "SIM-P42": (runs) => {
         let n = 0;
         const bad: string[] = [];
-        for (const g of runs) {
-            const path = join(g.run.dir, "grades.jsonl");
-            if (!existsSync(path)) continue;
+        for (const c of runs) {
             const versions = new Map<string, number>();
-            for (const r of new GradeLog(path).all()) {
+            for (const r of c.grades) {
                 n++;
                 const key = `${r.arm}/${r.item}`;
                 if (r.version <= (versions.get(key) ?? 0)) bad.push(key);
@@ -154,15 +208,14 @@ type JournalReport = ReturnType<typeof checkJournal>;
 const jumps = (r: JournalReport) => r.next_event_jumps + r.sleep_jumps;
 
 function journalCheck(
-    runs: GradedRun[],
+    runs: Ctx[],
     pick: (r: JournalReport) => unknown[],
     count: (r: JournalReport) => number,
     what: string,
 ) {
     let n = 0;
     const bad: string[] = [];
-    for (const g of runs) {
-        const entries = readJournal(join(g.run.dir, "journal.jsonl"));
+    for (const { g, entries } of runs) {
         const events = new Map(g.scenario.events.map((e) => [e.id, e.scenario_ms as number]));
         const sleeps = new Map(
             g.scenario.faults
@@ -177,11 +230,12 @@ function journalCheck(
 }
 
 export function propertyWitness(catalog: string, runs: GradedRun[]): PropertyWitness[] {
-    return [...catalog.matchAll(/^\| (SIM-P\d+) \| \[([^\]]+)\]/gm)].map(([, id, name]) => {
+    const ctx = runs.map(context);
+    return [...catalog.matchAll(/^\| (SIM-P\d+) \|/gm)].map(([, id]) => {
         const check = CHECKS[id as string];
         const result = check
-            ? check(runs)
-            : { status: "unreached" as const, detail: "no run-level check" };
-        return { id: id as string, name: name as string, ...result };
+            ? check(ctx)
+            : { status: "unchecked" as const, detail: "no run-level check" };
+        return { id: id as string, ...result };
     });
 }

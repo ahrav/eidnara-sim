@@ -161,29 +161,27 @@ export class Gateway {
         });
         const h2 = createHttp2Server();
         const log = (kind: string, detail: Record<string, unknown>) =>
-            this.options.downstream?.({
-                kind,
-                wall_ms: Date.now(),
-                ...this.options.scope(),
-                ...detail,
-            });
+            this.options.downstream?.({ kind, wall_ms: Date.now(), ...detail });
+        const ids = new WeakMap<object, number>();
         let sessions = 0;
         h2.on("session", (session) => {
-            const id = sessions++;
-            session.on("error", (e: Error) =>
-                log("session_error", { session: id, error: e.message }),
-            );
+            const h2_session = sessions++;
+            ids.set(session, h2_session);
+            const at = () => ({ ...this.options.scope(), h2_session });
+            session.on("error", (e: Error) => log("session_error", { ...at(), error: e.message }));
             session.on("frameError", (type: number, code: number) =>
-                log("frame_error", { session: id, type, code }),
+                log("frame_error", { ...at(), type, code }),
             );
-            session.on("goaway", (code: number) => log("goaway", { session: id, code }));
+            session.on("goaway", (code: number) => log("goaway", { ...at(), code }));
         });
         h2.on("stream", (stream, headers) => {
             const chunks: Buffer[] = [];
             const gone = new AbortController();
+            const opened = { ...this.options.scope(), h2_session: ids.get(stream.session ?? {}) };
             stream.on("close", () => {
                 if (stream.rstCode)
                     log("stream_reset", {
+                        ...opened,
                         code: stream.rstCode,
                         finished: stream.writableFinished,
                     });

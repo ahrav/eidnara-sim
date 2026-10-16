@@ -267,6 +267,7 @@ function panels(r: TierReport): string[] {
 }
 
 export function renderTier(r: TierReport): string {
+    const count = (status: string) => r.witness.filter((w) => w.status === status).length;
     const lines = [
         `# Tier ${r.tier} report`,
         "",
@@ -283,11 +284,11 @@ export function renderTier(r: TierReport): string {
                 .filter((w) => w.status === "violated")
                 .map((w) => w.id)
                 .join(", ") || "none"
-        }. Unreached: ${r.witness.filter((w) => w.status === "unreached").length} of ${r.witness.length}.`,
+        }. Unreached: ${count("unreached")}. Without a run-level check: ${count("unchecked")} of ${r.witness.length}.`,
         "",
         ...table(
-            ["record", "name", "status", "detail"],
-            r.witness.map((w) => [w.id, w.name, w.status, w.detail.replaceAll("|", "/")]),
+            ["record", "status", "detail"],
+            r.witness.map((w) => [w.id, w.status, w.detail.replaceAll("|", "/")]),
         ),
         "## Claim boundary",
         "",
@@ -304,7 +305,6 @@ export function renderTier(r: TierReport): string {
     const own = text
         .replace(r.claim_boundary.trim(), "")
         .replace(JSON.stringify(r.prereg, null, 2), "");
-    const verdicts = own.replace(/sim-p53-parity-never-emitted/g, "");
-    if (/parity/i.test(verdicts)) throw new Error("a report may not use the word parity");
+    if (/parity/i.test(own)) throw new Error("a report may not use the word parity");
     return text;
 }

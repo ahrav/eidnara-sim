@@ -44,6 +44,7 @@ export function tierPlan(
         prereg.seeds.map((seed, i) => {
             const order = prereg.arms.order_by_seed[i] ?? prereg.arms.run;
             const controls = (prereg.aa_controls?.pairs ?? [])
+                .filter(([arm, twin]) => arm === twin)
                 .map(([arm]) => arm as string)
                 .filter((arm) => order.includes(arm as never))
                 .map((arm) => `${arm}~aa`);

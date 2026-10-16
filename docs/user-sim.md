@@ -116,7 +116,8 @@ difference with a percentile bootstrap interval that resamples ledger
 facts (the pre-registered `cluster_key`), using the pre-registered
 `bootstrap` replicates and seed. A metric over fewer than five ledger
 facts is listed as uninformative and decides nothing. Over the rest it
-reports whether every interval covers zero and the metrics whose interval
+reports whether every interval covers zero (`null` when no metric is
+informative, as on a run with no graded items) and the metrics whose interval
 misses it against the five percent expected by chance, the share of paired items whose verdicts
 differ (the disagreement rate), and how many sessions diverged at which
 index. With fewer than five pre-registered A/A repeats the result is

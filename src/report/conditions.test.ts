@@ -57,9 +57,9 @@ function fixture(): GradedRun {
         ({ arm: name, journal, tools, calls: [], resources: [] }) as unknown as ArmLogs;
     const read = { turn: "e-1", command: "grep -r cache ~/.pi/agent/sessions", exit: 0 };
     const events = [
-        { id: "e-0", kind: "session_start", session: "s-1" },
+        { id: "e-0", kind: "session_start", session: "s-1", scenario_ms: 0 },
         { id: "e-1", kind: "user_turn", session: "s-1" },
-        { id: "e-2", kind: "session_start", session: "s-2" },
+        { id: "e-2", kind: "session_start", session: "s-2", scenario_ms: HOUR },
         { id: "e-3", kind: "user_turn", session: "s-2" },
         { id: "e-4", kind: "session_end", session: "s-2" },
     ];
@@ -78,6 +78,7 @@ function fixture(): GradedRun {
             grade("host", "P8", "e-3", "pass"),
             grade("host", "P8", "e-3", "fail"),
             grade("eidnara", "P9", "e-3", "pass"),
+            grade("eidnara", "P9", "e-3", "excluded"),
             grade("eidnara", "P1", "e-3", "pass"),
         ],
     } as unknown as GradedRun;
@@ -87,7 +88,13 @@ describe("run conditions", () => {
     test("transcript times read back from both stores are checked against scenario order", () => {
         const g = fixture();
         const c = runConditions(g);
-        expect(c).toMatchObject({ host: "pi", seed: 101, events: 4, scenario_events: 5 });
+        expect(c).toMatchObject({
+            host: "pi",
+            seed: 101,
+            events: 4,
+            events_run: 2,
+            scenario_events: 5,
+        });
         expect(c.interception).toEqual([{ name: "pi", intercepted: true, wall_clock_only: false }]);
         expect(c.transcript_order).toEqual([
             { arm: "host", sessions: 2, in_order: true, max_lead_ms: 40, max_lag_ms: 25 },
@@ -100,13 +107,14 @@ describe("run conditions", () => {
             },
         ]);
         const text = renderConditions([c], continuity([g])).join("\n");
-        expect(text).toContain("4 of 5 (capped prefix)");
+        expect(text).toContain("2 of 4 planned, a capped prefix of 5");
         expect(text).toContain("| /gone |");
     });
 
     test("P8 and P9 rates carry the v1 band and the passes that read the host's transcripts", () => {
         expect(continuity([fixture()])).toEqual([
             {
+                host: "pi",
                 arm: "host",
                 probe: "P8",
                 n: 3,
@@ -115,6 +123,7 @@ describe("run conditions", () => {
                 v1: [0, 0.03],
             },
             {
+                host: "pi",
                 arm: "eidnara",
                 probe: "P9",
                 n: 1,

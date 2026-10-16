@@ -95,7 +95,7 @@ describe("property witness", () => {
             "SIM-P25": "witnessed",
             "SIM-P41": "witnessed",
             "SIM-P42": "unreached",
-            "SIM-P99": "unreached",
+            "SIM-P99": "unchecked",
         });
         expect(status([run(true)])).toEqual({
             "SIM-P02": "violated",
@@ -104,7 +104,97 @@ describe("property witness", () => {
             "SIM-P25": "violated",
             "SIM-P41": "violated",
             "SIM-P42": "unreached",
-            "SIM-P99": "unreached",
+            "SIM-P99": "unchecked",
         });
     });
+
+    test("clock, call-time, fault, snapshot, grade, and hidden-divergence checks catch their breaks", () => {
+        const ids = ["P03", "P12", "P14", "P15", "P30", "P41", "P42"];
+        const catalog = ids.map((n) => `| SIM-${n} | [x](#x) | safety |`).join("\n");
+        const status = (broken: boolean) =>
+            Object.fromEntries(
+                propertyWitness(catalog, [second(broken)]).map((w) => [w.id, w.status]),
+            );
+        const sound = status(false);
+        expect(Object.values(sound)).toEqual(
+            ids.map((n) => (n === "P03" ? "unreached" : "witnessed")),
+        );
+        expect(Object.values(status(true))).toEqual(ids.map(() => "violated"));
+        const busy = propertyWitness(catalog, [second(false, true)]);
+        expect(
+            busy.filter((w) => ["SIM-P12", "SIM-P14"].includes(w.id)).map((w) => w.status),
+        ).toEqual(["violated", "witnessed"]);
+    });
 });
+
+function second(broken: boolean, busy = false): GradedRun {
+    const dir = mkdtempSync(join(tmpdir(), "sim-witness-"));
+    writeFileSync(
+        join(dir, "manifest.json"),
+        JSON.stringify({ order: ["host", "eidnara"], events: 3 }),
+    );
+    const turn = (arm: string, digest: string, event = "e-1", delivered = true) => ({
+        kind: "turn",
+        arm,
+        session: "s-1",
+        event,
+        index: event === "e-1" ? 0 : 1,
+        delivered,
+        digest,
+        text_sha256: "t",
+    });
+    writeFileSync(
+        join(dir, "pairing.jsonl"),
+        lines([
+            turn("host", "a"),
+            turn("eidnara", broken ? "b" : "a"),
+            turn("host", "x", "e-2", false),
+            turn("eidnara", "y", "e-2", false),
+        ]),
+    );
+    let seq = 0;
+    const at = (kind: string, scenario_ms: number, extra: object = {}) =>
+        ({ kind, arm: "eidnara", scenario_ms, seq: seq++, wall_ms: 0, ...extra }) as Entry;
+    const begin = at("BeginTurn", 10, { event: "e-1" });
+    const end = at("EndTurn", 20, { event: "e-1", outcome: "ok" });
+    const jump = at("AdvanceClock", broken ? 150 : 100, { from_ms: 20 });
+    const journal = [
+        begin,
+        ...(broken || busy ? [jump, end] : [end, jump]),
+        at("Event", 20, { event: "e-1" }),
+        at("FaultObserved", 100, { fault: broken ? "f-9" : "f-1" }),
+        at("SnapshotArtefacts", 100, { item: "q-1", snapshot: "eidnara:q-1:e-1" }),
+    ];
+    writeFileSync(join(dir, "journal.jsonl"), lines(journal));
+    const grade = (version: number, snapshot: string) => ({
+        item: "q-1",
+        arm: "eidnara",
+        version,
+        snapshot,
+        verdict: "pass",
+    });
+    const cited = broken ? "eidnara:q-1:e-2" : "eidnara:q-1:e-1";
+    const grades = broken ? [grade(1, cited), grade(1, cited)] : [grade(1, cited)];
+    writeFileSync(join(dir, "grades.jsonl"), lines(grades));
+    const call = (s: number, wall_ms: number) => ({ seq: s, scenario_ms: 10, wall_ms });
+    const arm = {
+        arm: "eidnara",
+        journal,
+        calls: broken ? [call(0, 5), call(1, 3)] : [call(0, 3), call(1, 5)],
+        resources: [],
+        tools: [],
+    } as unknown as ArmLogs;
+    const scenario = {
+        events: [
+            { id: "e-1", scenario_ms: 10 },
+            { id: "e-2", scenario_ms: 100 },
+        ],
+        faults: [{ id: "f-1", type: "daemon_restart", params: {} }],
+        probes: [],
+    } as unknown as Scenario;
+    return {
+        run: { dir, tier: "S", base_wall_ms: 0, prereg, kinds: new Map(), arms: [arm] },
+        scenario,
+        grades: [grade(1, cited)],
+    } as unknown as GradedRun;
+}
