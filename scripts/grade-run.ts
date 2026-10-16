@@ -1,7 +1,12 @@
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { loadConfig, type SimConfig } from "../src/config/config";
-import { AnswerRefused, assertArtefactsOnly, type Snapshot } from "../src/grade/artefacts";
+import {
+    AnswerRefused,
+    assertArtefactsOnly,
+    GradeRefused,
+    type Snapshot,
+} from "../src/grade/artefacts";
 import {
     BlindingRefused,
     gradeP7,
@@ -23,7 +28,13 @@ import { bedrockUpstream, Gateway } from "../src/proxy/gateway";
 import { FaultInjector } from "../src/proxy/inject";
 import { RecordWriter } from "../src/proxy/records";
 import { Rng } from "../src/rng";
-import { readJournal, releaseLease, requireComplete, takeLease } from "../src/run/journal";
+import {
+    keepCompleteLines,
+    readJournal,
+    releaseLease,
+    requireComplete,
+    takeLease,
+} from "../src/run/journal";
 import { type Scenario, scenarioHash } from "../src/scenario/compile";
 import { loadPrereg } from "../src/scenario/inputs";
 
@@ -239,7 +250,6 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
                     continue;
                 }
                 const calls = records.records.slice(firstCall).map((r) => r.seq);
-                judgments.push({ item: probe.id, arm, against: "host", calls, judgment });
                 const context = {
                     probe,
                     snapshots: rows,
@@ -247,11 +257,16 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
                     permutation: null,
                     cross_judge: null,
                 };
+                let grades: GradeRecord[];
                 try {
-                    judged.push({ arm, grades: gradeP7(judgment, context, rules) });
+                    grades = gradeP7(judgment, context, rules);
                 } catch (caught) {
+                    if (caught instanceof GradeRefused) throw caught;
                     fail(caught);
+                    continue;
                 }
+                judged.push({ arm, grades });
+                judgments.push({ item: probe.id, arm, against: "host", calls, judgment });
             }
         } finally {
             await gateway.stop();
@@ -263,7 +278,9 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
                 for (const side of [arm, "host"]) skip(side, "P7 judge call failed");
         } else {
             const rows = judgments.map((j) => `${JSON.stringify(j)}\n`).join("");
-            appendFileSync(join(dir, "judgments.jsonl"), rows);
+            const log = join(dir, "judgments.jsonl");
+            keepCompleteLines(log);
+            appendFileSync(log, rows);
             for (const { grades } of judged) staged.push(...grades);
         }
     }

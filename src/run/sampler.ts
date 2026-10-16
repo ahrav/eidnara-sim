@@ -1,6 +1,6 @@
 import { appendFileSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { dropCutLine } from "./journal";
+import { keepCompleteLines } from "./journal";
 
 const TICKS_PER_SECOND = 100;
 const PAGE_BYTES = 4096;
@@ -95,7 +95,7 @@ export class ResourceSampler {
     /** The first sample is taken at once, so RSS(0) precedes any session's work; a line a kill cut goes first. */
     start(): void {
         if (this.timer) return;
-        dropCutLine(this.o.path);
+        keepCompleteLines(this.o.path);
         this.sample();
         this.timer = setInterval(() => this.sample(), this.o.intervalMs);
     }

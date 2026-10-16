@@ -285,7 +285,13 @@ export class HostDriver implements ArmDriver {
         }
         this.turn = e.id;
         const result = await host.prompt(String(e.text), this.o.turnDeadlineMs);
-        if (this.daemon && this.daemonPid() === null) this.o.onDaemonExit({ after: e.id });
+        let reported = false;
+        const checkDaemon = () => {
+            if (reported || !this.daemon || this.daemonPid() !== null) return;
+            reported = true;
+            this.o.onDaemonExit({ after: e.id });
+        };
+        checkDaemon();
         const tools = host.drainTools();
         this.turn = null;
         const outcome: { failed?: string; snapshot?: string } = {};
@@ -325,6 +331,7 @@ export class HostDriver implements ArmDriver {
                 const reason = `snapshot: ${caught.message}`;
                 outcome.failed = outcome.failed ? `${outcome.failed} | ${reason}` : reason;
             }
+            checkDaemon();
         }
         return outcome;
     }

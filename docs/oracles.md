@@ -12,8 +12,9 @@ repeats a sequence number, a journal entry, resource sample, or tool run
 missing a field, or an evidence file with a line that does not parse. It
 gathers, per arm, the call records, journal entries,
 plugin log (`<arm>/r/eidnara.log`), daemon log (`<arm>/daemon.log`),
-resource samples, and tool runs (`<arm>/tools.jsonl`, one line per tool run
-with its turn). `runOracles` returns every activation with its arm, where it
+resource samples, and tool runs (`<arm>/tools.jsonl`, one line per tool
+report with its turn; a Pi run with a `call` id is reported at its start with
+a null exit and again at its end, so it has two lines with one start time). `runOracles` returns every activation with its arm, where it
 happened, and the evidence.
 
 | Oracle | Fires on |
