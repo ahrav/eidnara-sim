@@ -180,7 +180,8 @@ end of every user turn and another two seconds later while a `settle-cpu`
 job holds the clock, so daemon work that follows a turn is measured before
 the clock may jump, and one per pre-registered interval, and
 registers `daemon-cpu-<arm>` while the daemon's CPU fraction is above the
-pre-registered threshold, with one job id per busy period. The post-turn hold
+pre-registered threshold (the fraction is measured over monotonic time), with
+one job id per busy period. The post-turn hold
 timers are owned by the run: teardown cancels any still pending and ends
 their holds before the journal closes. Both hold the
 clock (SIM-P13, OQ-2). Job ids continue from the journal's count, so a
