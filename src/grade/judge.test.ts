@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Rng } from "../rng";
@@ -10,13 +11,16 @@ import {
     CALIBRATION_SCHEMA,
     type CalibrationSet,
     calibrationDigest,
+    EMPTY_PROMPT,
     gradeP7,
     humanCheckSample,
     type JudgeClient,
     judgeIdentity,
     judgePair,
+    judgePrompt,
     normalise,
     type Pair,
+    PREPROCESSING_VERSION,
     p7Pair,
     pairDigests,
     parseVerdict,
@@ -103,6 +107,7 @@ const context = (
     item,
     answers: pairDigests(pair),
     reference: referenceDigest(reference),
+    lengths: { a: normalise(pair.a).length, b: normalise(pair.b).length },
     snapshots: { a: "snap-eidnara", b: "snap-host" },
     arms: { a: "eidnara", b: "host" },
     inputs: ["snap-eidnara:calls", "snap-host:calls"],
@@ -604,6 +609,63 @@ describe("P7 judge path", () => {
         ).toThrow("names an arm");
     });
 
+    test("HTML markup and entities are folded before blinding", () => {
+        const base = { id: "p", a: "fine", b: "fine" };
+        for (const leak of [
+            "<span>Eid</span>nara found it",
+            "E&#105;dnara found it",
+            "Eidnar&#x61; found it",
+        ]) {
+            expect(() => blind({ ...base, b: leak }, "a_then_b", "r", [])).toThrow("names an arm");
+        }
+        expect(normalise("a &lt; b &amp; c<br/>d")).toBe("a < b & c d");
+    });
+
+    test("a judgment's verbosity fields must match the bound answers", async () => {
+        const f = load("P7-pass");
+        const judgment = await judgePair(
+            scripted(f.judge_verdicts),
+            f.pair,
+            f.probe.check.judge,
+            [],
+        );
+        const ctx = context(f.probe.id, f.pair, f.probe.check.judge);
+        const padded = { ...judgment, lengths: { a: 1, b: 2 } };
+        expect(() => gradeP7(padded, ctx, rules)).toThrow(GradeRefused);
+        const flipped = { ...judgment, longer_recalled_alone: !judgment.longer_recalled_alone };
+        expect(() => gradeP7(flipped, ctx, rules)).toThrow(GradeRefused);
+    });
+
+    test("the judge identity names the preprocessing version", () => {
+        const id = judgeIdentity(rules.judge.model);
+        expect(id.prompt_digest).toBe(
+            createHash("sha256")
+                .update(`${PREPROCESSING_VERSION}\n${judgePrompt(EMPTY_PROMPT)}`)
+                .digest("hex"),
+        );
+    });
+
+    test("an inconsistent judgment is never gate-eligible", async () => {
+        const f = load("P7-inconsistent");
+        const judgment = await judgePair(
+            scripted(f.judge_verdicts),
+            f.pair,
+            f.probe.check.judge,
+            [],
+        );
+        const [g] = gradeP7(
+            judgment,
+            context(f.probe.id, f.pair, f.probe.check.judge, { calibration: calibration() }),
+            rules,
+        );
+        expect([
+            g?.verdict,
+            g?.metrics.calibration,
+            g?.metrics.permutation,
+            g?.metrics.gate_eligible,
+        ]).toEqual(["excluded", "valid", "pass", false]);
+    });
+
     test("the human-check sample is ten percent of P7 items, rounded up, from a seeded draw", () => {
         const items = Array.from({ length: 24 }, (_, i) => `q-${i}`);
         const a = humanCheckSample(items, rules, new Rng(9));
@@ -661,7 +723,14 @@ describe("proxy judge", () => {
     });
 
     test("a judge call that never completes is refused at its deadline", async () => {
-        server = Bun.serve({ port: 0, fetch: () => new Promise<Response>(() => {}) });
+        let release: (() => void) | undefined;
+        server = Bun.serve({
+            port: 0,
+            fetch: () =>
+                new Promise<Response>((resolve) => {
+                    release = () => resolve(new Response("late"));
+                }),
+        });
         const judge = proxyJudge(
             `http://127.0.0.1:${server.port}`,
             rules.judge.model,
@@ -669,6 +738,7 @@ describe("proxy judge", () => {
             { deadlineMs: 50 },
         );
         await expect(judge.verdict("prompt")).rejects.toThrow("judge call timed out");
+        release?.();
     });
 
     test("a body that stalls after the headers is refused at the deadline", async () => {

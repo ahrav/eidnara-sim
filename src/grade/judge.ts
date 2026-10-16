@@ -19,6 +19,15 @@ export const ARM_TOKENS = [
 
 const INVISIBLE = /[\u00ad\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u206f\ufeff]/g;
 
+const ENTITIES: Record<string, string> = {
+    amp: "&",
+    lt: "<",
+    gt: ">",
+    quot: '"',
+    apos: "'",
+    nbsp: " ",
+};
+
 export function foldWords(text: string): string {
     const ascii = text.normalize("NFKD").replace(/\p{M}/gu, "").replace(INVISIBLE, "");
     return ` ${ascii
@@ -54,6 +63,12 @@ export function normalise(text: string): string {
         .replace(/^#{1,6}\s+/gm, "")
         .replace(/^\s*[-*+]\s+/gm, "")
         .replace(/^[ \t]*\[[^\]]+\]:[ \t]+\S.*$/gm, "")
+        .replace(/<\/?[a-zA-Z][^<>]*>/g, " ")
+        .replace(/&#x([0-9a-fA-F]+);/g, (_, hex: string) =>
+            String.fromCodePoint(Number.parseInt(hex, 16)),
+        )
+        .replace(/&#(\d+);/g, (_, dec: string) => String.fromCodePoint(Number(dec)))
+        .replace(/&(amp|lt|gt|quot|apos|nbsp);/g, (_, name: string) => ENTITIES[name] ?? "")
         .replace(/!?\[([^\]]*)\]\[[^\]]*\]/g, "$1")
         .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
         .replace(/\*{2,3}|_{2,3}|`/g, "")
@@ -114,9 +129,23 @@ export interface JudgeIdentity {
 }
 
 export function judgeIdentity(model: string): JudgeIdentity {
-    const empty = { pair: "", order: "a_then_b" as const, reference: "", first: "", second: "" };
-    return { model, prompt_digest: sha(judgePrompt(empty)), rubric_digest: sha(RUBRIC) };
+    return {
+        model,
+        prompt_digest: sha(`${PREPROCESSING_VERSION}\n${judgePrompt(EMPTY_PROMPT)}`),
+        rubric_digest: sha(RUBRIC),
+    };
 }
+
+export const EMPTY_PROMPT: BlindedPrompt = {
+    pair: "",
+    order: "a_then_b",
+    reference: "",
+    first: "",
+    second: "",
+};
+
+/** `PREPROCESSING_VERSION` changes whenever `normalise`, `foldWords`, `ARM_TOKENS`, or `INVISIBLE` change what the judge sees. */
+export const PREPROCESSING_VERSION = "sim-judge-preprocessing/v1";
 
 export interface JudgeClient {
     identity: JudgeIdentity;
@@ -247,11 +276,7 @@ export async function judgePair(
     for (const prompt of prompts) verdicts.push(await client.verdict(prompt));
     const orders = { a_then_b: verdicts[0], b_then_a: verdicts[1] } as Record<Order, RawVerdict>;
     const recall = recallFrom(orders);
-    const lengths = { a: normalise(pair.a).length, b: normalise(pair.b).length };
-    let longer: boolean | null = null;
-    if (recall !== "Inconsistent" && recall.a !== recall.b && lengths.a !== lengths.b) {
-        longer = recall[lengths.a > lengths.b ? "a" : "b"];
-    }
+    const lengths = answerLengths(pair);
     return {
         pair: pair.id,
         answers: pairDigests(pair),
@@ -260,8 +285,21 @@ export async function judgePair(
         orders,
         recall,
         lengths,
-        longer_recalled_alone: longer,
+        longer_recalled_alone: longerRecalledAlone(recall, lengths),
     };
+}
+
+export const answerLengths = (pair: Pair) => ({
+    a: normalise(pair.a).length,
+    b: normalise(pair.b).length,
+});
+
+function longerRecalledAlone(
+    recall: Recall | "Inconsistent",
+    lengths: { a: number; b: number },
+): boolean | null {
+    if (recall === "Inconsistent" || recall.a === recall.b || lengths.a === lengths.b) return null;
+    return recall[lengths.a > lengths.b ? "a" : "b"];
 }
 
 export function permutationCheck(trials: number, correct: number, rules: Rules): void {
@@ -324,6 +362,7 @@ export function calibrationDigest(set: CalibrationSet | null, rules: Rules): str
 export interface P7Inputs {
     pair: Pair;
     answers: { a: string; b: string };
+    lengths: { a: number; b: number };
     snapshots: { a: string; b: string };
     arms: { a: string; b: string };
     inputs: string[];
@@ -351,6 +390,7 @@ export function p7Pair(item: string, a: Snapshot, b: Snapshot): P7Inputs | null 
     return {
         pair,
         answers: pairDigests(pair),
+        lengths: answerLengths(pair),
         snapshots: { a: a.id, b: b.id },
         arms: { a: a.arm, b: b.arm },
         inputs: [...ra.read, ...rb.read].sort(),
@@ -361,6 +401,7 @@ export interface P7Context {
     item: string;
     answers: { a: string; b: string };
     reference: string;
+    lengths: { a: number; b: number };
     snapshots: { a: string; b: string };
     arms: { a: string; b: string };
     inputs: string[];
@@ -381,6 +422,14 @@ export function gradeP7(j: Judgment, c: P7Context, rules: Rules, version = 1): G
     }
     if (canonicalJson(recallFrom(j.orders)) !== canonicalJson(j.recall)) {
         throw new GradeRefused(`judgment for ${j.pair} records a recall its order verdicts deny`);
+    }
+    if (j.lengths.a !== c.lengths.a || j.lengths.b !== c.lengths.b) {
+        throw new GradeRefused(`judgment for ${j.pair} records other answer lengths`);
+    }
+    if (j.longer_recalled_alone !== longerRecalledAlone(j.recall, j.lengths)) {
+        throw new GradeRefused(
+            `judgment for ${j.pair} records a verbosity audit its recall denies`,
+        );
     }
     const expected = canonicalJson(judgeIdentity(rules.judge.model));
     const requireJudge = (source: string, identity: JudgeIdentity) => {
@@ -422,7 +471,7 @@ export function gradeP7(j: Judgment, c: P7Context, rules: Rules, version = 1): G
         permutation_counts: c.permutation
             ? `${c.permutation.correct}/${c.permutation.trials}`
             : "none",
-        gate_eligible: digest !== null && permutation === "pass",
+        gate_eligible: digest !== null && permutation === "pass" && j.recall !== "Inconsistent",
         verdict_a_then_b: j.orders.a_then_b,
         verdict_b_then_a: j.orders.b_then_a,
         length_a: j.lengths.a,

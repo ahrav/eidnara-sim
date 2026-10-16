@@ -98,7 +98,8 @@ cannot call, and the divergences are listed below.
    matched with every separator removed, so `eid-nara` and `CAN-ARY-7f3`
    match. The
    arm names are eval-core's six plus `eidnara`, `host arm`, and
-   `memory arm`. Markdown links and images, inline or reference-style, keep
+   `memory arm`. HTML tags are dropped and the common and numeric entities
+   decoded, Markdown links and images, inline or reference-style, keep
    their label and lose their destination, identifier, and definition line, doubled or tripled emphasis marks (`**`, `***`, `__`, `___`), backticks, heading
    marks, bullet marks, and code fence lines (a line that starts with three
    backticks and holds no further backtick, whatever its info string) are
@@ -120,14 +121,15 @@ cannot call, and the divergences are listed below.
    judgment names (the judgment carries the answers' and the reference's
    digests, and the context must match), and only when the judgment's
    recall is the one its two order verdicts imply, each of which must be one
-   of the four verdict words. Each grade carries the judge model,
+   of the four verdict words, and its answer lengths and
+   `longer_recalled_alone` are the ones the pair and that recall imply. Each grade carries the judge model,
    the prompt and rubric digests, both order verdicts, both answer lengths
    and `longer_recalled_alone`, the calibration digest, and the permutation
    check's result and counts. It computes the digest and runs the check
    itself and records a refusal of either as `refused: <reason>`, so
    `gate_eligible` is true only when the judgment's judge identity, the
    calibration set's judge identity, and the permutation evidence's judge
-   identity all equal the pre-registered judge's
+   identity all equal the pre-registered judge's, the recall is consistent,
    (`grading.judge.model` with the current prompt and rubric digests), the
    set validates, and the permutation check passes.
 6. `permutationCheck` refuses counts that are not safe whole numbers and arm
@@ -166,7 +168,11 @@ On 2026-10-16 the two P7 fixtures went through the gateway to that model
 records and `judgments.json` the verdicts), and the real verdicts (`first`,
 then `second`, and the reverse) graded as the fixtures record.
 
-The judge identity is the model id with the prompt and rubric digests;
+The judge identity is the model id with the prompt and rubric digests; the
+prompt digest covers `PREPROCESSING_VERSION` (`sim-judge-preprocessing/v1`),
+which changes whenever normalisation, folding, or the arm tokens change what
+the judge sees, so judgments and calibration sets made under older
+preprocessing stop matching;
 eval-core's `JudgeIdentity` also names the provider and tokenizer profile,
 and digests a rubric document under `eval-judge-rubric/v1` where the sim
 digests the rubric text.
