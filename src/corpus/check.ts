@@ -10,7 +10,7 @@ import {
     loadDistributions,
     table,
 } from "./distributions";
-import { entryProblems, parseJsonl } from "./entries";
+import { ERROR_CODE_FIELDS, entryProblems, parseJsonl, SAMPLE_FIELDS } from "./entries";
 import { QUANTITIES } from "./fit";
 import { loadRepos, REPOS_DIR } from "./repos";
 import { CORPUS_DIR, loadSources } from "./sources";
@@ -58,7 +58,10 @@ export function checkCorpus(): CorpusReport {
     const codes = parseJsonl(read("tool-outputs/error-codes.jsonl"));
     need(samples.length >= MIN_SAMPLES, `samples: ${samples.length} < ${MIN_SAMPLES}`);
     need(codes.length >= MIN_ERROR_CODES, `error codes: ${codes.length} < ${MIN_ERROR_CODES}`);
-    problems.push(...entryProblems(samples, "samples"), ...entryProblems(codes, "error_codes"));
+    problems.push(
+        ...entryProblems(samples, "samples", SAMPLE_FIELDS),
+        ...entryProblems(codes, "error_codes", ERROR_CODE_FIELDS),
+    );
     const kinds = new Set(samples.map((s) => (s as { kind?: string }).kind));
     need(
         KINDS.every((k) => kinds.has(k)),
@@ -79,6 +82,20 @@ export function checkCorpus(): CorpusReport {
         need(CDF_KINDS.has(q.cdf.kind), `${name}: cdf kind ${q.cdf.kind}`);
         problems.push(...cdfProblems(q.cdf).map((why) => `${name}: ${why}`));
     }
+    const mix = dist.tool_mix;
+    need(typeof mix?.source === "string" && mix.source !== "", "tool_mix: source missing");
+    need(mix?.n > 0, "tool_mix: n missing");
+    const names = (mix?.categories ?? []).map((c) => c.category);
+    need(names.length > 0 && new Set(names).size === names.length, "tool_mix: categories");
+    const shareSum = (mix?.categories ?? []).reduce((sum, c) => sum + c.share, 0);
+    need(Math.abs(shareSum - 1) < 1e-5, `tool_mix: shares sum to ${shareSum}`);
+    for (const c of mix?.categories ?? []) {
+        const unit = (v: number) => Number.isFinite(v) && v >= 0 && v <= 1;
+        need(unit(c.share) && unit(c.error_rate), `tool_mix: ${c.category} share or error_rate`);
+        need(Array.isArray(c.tools), `tool_mix: ${c.category} tools`);
+    }
+    const tools = (mix?.categories ?? []).flatMap((c) => c.tools);
+    need(new Set(tools).size === tools.length, "tool_mix: a tool appears in two categories");
     const cited = loadCited();
     const percentiles = compareCited(cited, (name, q) => quantile(table(dist, name), q));
     for (const r of failedChecks(percentiles)) {

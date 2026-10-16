@@ -173,6 +173,15 @@ describe("SIM-P09: forced p90 sessions", () => {
 describe("SIM-P10: user-behaviour rates", () => {
     const published = JSON.parse(readFileSync(join(CORPUS_DIR, "published-rates.json"), "utf8"));
 
+    test("the four behaviour rates are present", () => {
+        expect(Object.keys(published.rates).sort()).toEqual([
+            "abandon_per_session",
+            "interrupt_per_turn",
+            "pushback_per_turn",
+            "redirect_per_session",
+        ]);
+    });
+
     test("distributions.json carries the published rates unchanged", () => {
         expect(dist.rates).toEqual({
             source: published.source,

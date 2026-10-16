@@ -40,10 +40,18 @@ export interface RepoSpec {
     twin: TwinSpec;
 }
 
+const SHA = /^[0-9a-f]{40}$/;
+
 export function loadRepos(): RepoSpec[] {
     const raw = JSON.parse(readFileSync(join(CORPUS_DIR, "repos.json"), "utf8"));
     if (raw.schema !== "sim-corpus-repos/v1") throw new Error("repos.json: unknown schema");
-    return raw.repos as RepoSpec[];
+    const repos = raw.repos as RepoSpec[];
+    const ids = repos.flatMap((r) => [r.id, r.twin.id]);
+    if (new Set(ids).size !== ids.length) throw new Error(`repos.json: duplicate id in ${ids}`);
+    for (const repo of repos) {
+        if (!SHA.test(repo.commit)) throw new Error(`repos.json: ${repo.id}: commit is not a SHA`);
+    }
+    return repos;
 }
 
 const inherited = Object.fromEntries(
@@ -106,16 +114,17 @@ export function buildTwin(baseDir: string, twinDir: string, twin: TwinSpec): str
     return git(twinDir, "rev-parse", "HEAD");
 }
 
-/** summarize removes timing differences from result-line comparisons. */
+/** Identical Cargo result lines can represent distinct targets, so summarize preserves their multiplicity. */
 export function summarize(output: string): string[] {
-    const lines = new Set<string>();
+    const results: string[] = [];
+    const fails = new Set<string>();
     for (const raw of output.split("\n")) {
         const line = raw.trim();
-        if (/^test result:/.test(line)) lines.add(line.replace(/; finished in .*$/, ""));
-        else if (/^\(fail\) /.test(line)) lines.add(line.replace(/ \[[\d.]+m?s\]$/, ""));
-        else if (/^\d+ (pass|fail|skip)$/.test(line)) lines.add(line);
+        if (/^test result:/.test(line)) results.push(line.replace(/; finished in .*$/, ""));
+        else if (/^\(fail\) /.test(line)) fails.add(line.replace(/ \[[\d.]+m?s\]$/, ""));
+        else if (/^\d+ (pass|fail|skip)$/.test(line)) results.push(line);
     }
-    return [...lines].sort();
+    return [...results, ...fails].sort();
 }
 
 export function runOffline(dir: string, test: string[]) {
