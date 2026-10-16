@@ -93,8 +93,12 @@ export class ArtefactReader {
     constructor(private readonly snapshot: Snapshot) {}
 
     private find<T extends Artefact>(label: string, test: (a: Artefact) => a is T): T {
-        const found = this.snapshot.artefacts.find(test);
+        const matches = this.snapshot.artefacts.filter(test);
+        const found = matches[0];
         if (!found) throw new GradeRefused(`snapshot ${this.snapshot.id} has no ${label} artefact`);
+        if (matches.length > 1) {
+            throw new GradeRefused(`snapshot ${this.snapshot.id} has two ${label} artefacts`);
+        }
         this.read.add(found.id);
         return found;
     }
@@ -124,13 +128,23 @@ export class ArtefactReader {
         );
     }
 
+    private completedResponses(): string[] {
+        const texts = this.turnCalls().flatMap((c) =>
+            c.response_text === undefined ? [] : [c.response_text],
+        );
+        if (texts.length === 0) {
+            throw new GradeRefused(
+                `snapshot ${this.snapshot.id} has no completed agent response for turn ${this.snapshot.turn}`,
+            );
+        }
+        return texts;
+    }
+
     answer(): string {
-        return this.turnCalls().at(-1)?.response_text ?? "";
+        return this.completedResponses().at(-1) as string;
     }
 
     responses(): string {
-        return this.turnCalls()
-            .map((c) => c.response_text ?? "")
-            .join("\n");
+        return this.completedResponses().join("\n");
     }
 }

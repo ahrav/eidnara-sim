@@ -93,6 +93,14 @@ describe("pre-registration validator", () => {
         ]);
     });
 
+    test("refuses a cross-judge that is the primary judge", () => {
+        const prereg = load("S") as any;
+        prereg.grading.judge.cross_judge = prereg.grading.judge.model;
+        expect(validatePreregistration(prereg)).toEqual([
+            "grading.judge.cross_judge: must differ from grading.judge.model",
+        ]);
+    });
+
     test("refuses a P11 weight that Number cannot represent", () => {
         const prereg = load("S") as any;
         prereg.grading.p11_false_positive_weight = `1${"0".repeat(400)}`;

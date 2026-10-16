@@ -222,6 +222,8 @@ describe("grading harness", () => {
         for (const guess of [
             "I do not know, but probably Alice owns it.",
             "We never decided; probably us-east-1.",
+            "I do not know. Use us-east-1.",
+            "UNKNOWN\nI think eu-west-2 is the one.",
         ]) {
             const snap = structuredClone(f.snapshots[0]) as Snapshot;
             const calls = snap.artefacts.find((a) => a.class === "proxy-call");
@@ -375,6 +377,90 @@ describe("grading harness", () => {
         appendFileSync(path, '{"item":"x","arm":"host"}\n');
         expect(() => log.all()).toThrow(GradeRefused);
         expect(() => log.all()).toThrow("line 2 is not a grade record");
+        appendFileSync(path, "null\n");
+        expect(() => log.all()).toThrow("line 2 is not a grade record");
+    });
+
+    test("a grade record without its inputs list is refused", () => {
+        const path = join(mkdtempSync(join(tmpdir(), "sim-grades-")), "grades.jsonl");
+        const log = new GradeLog(path);
+        const { inputs: _inputs, ...bare } = grade("P2-pass");
+        appendFileSync(path, `${JSON.stringify(bare)}\n`);
+        expect(() => log.all()).toThrow("line 1 is not a grade record");
+    });
+
+    test("an answer grader refuses a turn with no completed agent response", () => {
+        const f = fixture("P10-pass");
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        const calls = snap.artefacts.find((a) => a.class === "proxy-call");
+        if (calls?.class !== "proxy-call") throw new Error("fixture lacks proxy-call");
+        for (const c of calls.calls) Object.assign(c, { status: 502, error: "upstream" });
+        expect(() => gradeItem(f.probe, [snap], rules)).toThrow("no completed agent response");
+        const p8 = fixture("P8-pass");
+        const s8 = structuredClone(p8.snapshots[0]) as Snapshot;
+        const c8 = s8.artefacts.find((a) => a.class === "proxy-call");
+        if (c8?.class !== "proxy-call") throw new Error("fixture lacks proxy-call");
+        for (const c of c8.calls) delete c.response_text;
+        expect(() => gradeItem(p8.probe, [s8], rules)).toThrow("no completed agent response");
+    });
+
+    test("a snapshot of another turn than the probe's event is refused", () => {
+        const f = fixture("P8-pass");
+        const other = { ...(f.snapshots[0] as Snapshot), turn: "e-2" };
+        expect(() => gradeItem(f.probe, [other], rules)).toThrow("turn e-2");
+    });
+
+    test("two artefacts of one class and role are refused as ambiguous", () => {
+        const f = fixture("P2-pass");
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        const diff = snap.artefacts.find((a) => a.class === "diff");
+        if (diff?.class !== "diff") throw new Error("fixture lacks diff");
+        snap.artefacts.push({ ...diff, id: "d2", patch: "+++ b/x\n@@\n+use crate::ALPHA_RULE;\n" });
+        expect(() => gradeItem(f.probe, [snap], rules)).toThrow("two turn diff artefacts");
+    });
+
+    test("P13 treats a repeated test command as quiet, in every package-script form", () => {
+        const f = fixture("P13-pass");
+        for (const cmd of ["bun run test", "npm test", "pnpm run test", "cargo test"]) {
+            const snap = structuredClone(f.snapshots[0]) as Snapshot;
+            const log = snap.artefacts.find((a) => a.class === "command-log");
+            if (log?.class !== "command-log") throw new Error("fixture lacks command-log");
+            log.commands.unshift({ command: cmd, exit: 0, scenario_ms: 100 });
+            log.commands.push({ command: cmd, exit: 0, scenario_ms: 900 });
+            expect(gradeItem(f.probe, [snap], rules)?.metrics["P13.repeated_action"]).toBe(false);
+        }
+    });
+
+    test("P14 orders a pushback against the fold by call sequence, not by equal millisecond", () => {
+        const f = fixture("P14-pass");
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        const calls = snap.artefacts.find((a) => a.class === "proxy-call");
+        if (calls?.class !== "proxy-call") throw new Error("fixture lacks proxy-call");
+        const fold = calls.calls.find((c) => c.component === "history_summarizer") as CallView;
+        calls.calls.push({
+            ...fold,
+            component: "user-sim",
+            seq: fold.seq - 1,
+            label: "pushback",
+            turn_index: 5,
+        });
+        expect(gradeItem(f.probe, [snap], rules)?.verdict).toBe("pass");
+    });
+
+    test("P14 is excluded when no completed labelled user-sim turn follows the fold inside the window", () => {
+        const f = fixture("P14-pass");
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        const calls = snap.artefacts.find((a) => a.class === "proxy-call");
+        if (calls?.class !== "proxy-call") throw new Error("fixture lacks proxy-call");
+        for (const c of calls.calls) {
+            if (c.component === "user-sim" && c.scenario_ms > 500)
+                Object.assign(c, { status: 503, error: "upstream" });
+        }
+        const g = gradeItem(f.probe, [snap], rules) as GradeRecord;
+        expect([g.verdict, g.reason]).toEqual([
+            "excluded",
+            "no user-sim turn after compaction in the window",
+        ]);
     });
 
     test("grade versions for one item and arm strictly increase; an out-of-order version is refused", () => {

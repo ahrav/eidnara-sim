@@ -45,7 +45,7 @@ export interface GradeRecord extends Outcome {
 const READS = /\b(cat|less|more|head|tail|sed|view|bat|grep|rg)\b|^read /;
 const TESTS = /\b(cargo test|(bun|npm|pnpm) (run )?test)\b/;
 const QUIET =
-    /^\s*(cargo (build|check|test)|bun (test|install)|git (status|log|diff)|ls|pwd)\b[^&|;`$()]*$/;
+    /^\s*(cargo (build|check|test)|bun install|(bun|npm|pnpm) (run )?test|git (status|log|diff)|ls|pwd)\b[^&|;`$()]*$/;
 const FOLDS = ["history_summarizer", "native_compaction"];
 const USER_SIM_LABELS = [
     "task",
@@ -180,7 +180,7 @@ function p14(r: ArtefactReader, c: Check): Outcome {
     if (folds.length === 0) {
         return { verdict: "excluded", reason: "no compaction in the session", metrics: {} };
     }
-    const boundary = Math.min(...folds.map((x) => x.scenario_ms));
+    const boundary = Math.min(...folds.map((x) => x.seq));
     const userSim = r.calls().filter((x) => x.component === "user-sim" && completed(x));
     if (userSim.length === 0 || userSim.some((x) => !x.label || x.turn_index === undefined)) {
         return { verdict: "excluded", reason: "no labelled user-sim turns", metrics: {} };
@@ -191,10 +191,12 @@ function p14(r: ArtefactReader, c: Check): Outcome {
         return { verdict: "excluded", reason, metrics: {} };
     }
     const from = c.window_from_turn ?? 0;
-    const pushback = userSim.filter(
-        (x) => x.label === "pushback" && x.scenario_ms >= boundary && (x.turn_index ?? -1) >= from,
-    );
-    const count = pushback.length;
+    const observed = userSim.filter((x) => x.seq > boundary && (x.turn_index ?? -1) >= from);
+    if (observed.length === 0) {
+        const reason = "no user-sim turn after compaction in the window";
+        return { verdict: "excluded", reason, metrics: {} };
+    }
+    const count = observed.filter((x) => x.label === "pushback").length;
     const outcome: Outcome = {
         verdict: count === 0 ? "pass" : "fail",
         metrics: { "P14.post_compaction_correction_count": count },
@@ -288,6 +290,11 @@ export function gradeItem(
     if (first.turn_outcome !== "ok") {
         throw new GradeRefused(`snapshot ${first.id} has turn_outcome ${first.turn_outcome}`);
     }
+    if (probe.event && first.turn !== probe.event) {
+        throw new GradeRefused(
+            `snapshot ${first.id} is of turn ${first.turn}, not the probe's event ${probe.event}`,
+        );
+    }
     const grader = graderFor(probe);
     const reader = new ArtefactReader(first);
     const outcome = grader(reader, (probe.check ?? {}) as Check, rules, probe);
@@ -317,7 +324,9 @@ function isGradeRecord(value: unknown): value is GradeRecord {
     );
     const version = typeof g.version === "number" && Number.isInteger(g.version) && g.version >= 1;
     const verdict = VERDICTS.includes(g.verdict as Verdict);
-    return strings && version && verdict && typeof g.metrics === "object" && g.metrics !== null;
+    const metrics = typeof g.metrics === "object" && g.metrics !== null;
+    const inputs = Array.isArray(g.inputs) && g.inputs.every((i) => typeof i === "string");
+    return strings && version && verdict && metrics && inputs;
 }
 
 function newest(grades: GradeRecord[]): GradeRecord[] {

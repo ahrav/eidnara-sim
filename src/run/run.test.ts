@@ -1,11 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SimConfig } from "../config/config";
 import { canonicalJson, sha256Hex } from "../prereg/canonical";
 import { GENERATOR_VERSION, type Scenario } from "../scenario/compile";
 import { type FaultEpisode, SEAMS } from "../scenario/faults";
+import { loadPrereg } from "../scenario/inputs";
 import type { Preflight } from "./preflight";
 import {
     faultOverride,
@@ -23,7 +24,15 @@ const config = { eidnara_checkout: ROOT, bedrock: { aws_profile: "", region: "" 
 function scenarioBody(seed = 101, tier = "S") {
     return {
         schema: "test",
-        manifest: { seed, tier, generator_version: GENERATOR_VERSION },
+        manifest: {
+            seed,
+            tier,
+            generator_version: GENERATOR_VERSION,
+            embedding_model: loadPrereg("S").scenario.cue_probe_similarity.embedding_model,
+            corpus_manifest_sha256: sha256Hex(
+                readFileSync(join(ROOT, "corpus/manifest.json"), "utf8"),
+            ),
+        },
         projects: [],
         sessions: [
             { id: "s-0000", requests: 2 },
@@ -95,6 +104,21 @@ describe("run inputs", () => {
         });
         const o = { config, out, seed: 101, tier: "S" as const };
         await expect(loadScenario(o)).rejects.toThrow(/from generator sim-scenario\/v1/);
+    });
+
+    test("scenario.json compiled from other inputs than the pre-registration names is refused", async () => {
+        for (const manifest of [
+            { embedding_model: "local-hash-256/v1" },
+            { corpus_manifest_sha256: "0".repeat(64) },
+        ]) {
+            const out = dir();
+            const body = scenarioBody();
+            writeScenario(out, { ...body, manifest: { ...body.manifest, ...manifest } });
+            const o = { config, out, seed: 101, tier: "S" as const };
+            await expect(loadScenario(o)).rejects.toThrow(
+                /scenario\.json was compiled (with|from)/,
+            );
+        }
     });
 
     test("a fault override must be an array of episodes valid against the compiled scenario", () => {

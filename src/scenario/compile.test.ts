@@ -14,7 +14,7 @@ import {
     mannerQuota,
     markerHits,
     type Scenario,
-    scenarioGeneratorMismatch,
+    scenarioInputMismatch,
     type Template,
 } from "./compile";
 import { type FaultEpisode, SEAMS, validateFault } from "./faults";
@@ -166,9 +166,13 @@ describe("compiled S scenario", async () => {
     });
 
     test("a scenario from an earlier generator is refused for reuse", () => {
-        expect(scenarioGeneratorMismatch(s)).toBeNull();
+        const inputs = {
+            embedding_model: s.manifest.embedding_model,
+            corpus_manifest_sha256: s.manifest.corpus_manifest_sha256,
+        };
+        expect(scenarioInputMismatch(s, inputs)).toBeNull();
         const stale = { ...s, manifest: { ...s.manifest, generator_version: "sim-scenario/v1" } };
-        expect(scenarioGeneratorMismatch(stale as Scenario)).toContain("sim-scenario/v1");
+        expect(scenarioInputMismatch(stale as Scenario, inputs)).toContain("sim-scenario/v1");
     });
 
     test("no two live facts of one template and project share a probe window", () => {

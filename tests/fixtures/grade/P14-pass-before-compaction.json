@@ -35,7 +35,7 @@
               "error": null
             },
             {
-              "seq": 13,
+              "seq": 2,
               "component": "user-sim",
               "turn": null,
               "turn_index": 3,
@@ -71,7 +71,7 @@
               "error": null
             },
             {
-              "seq": 31,
+              "seq": 4,
               "component": "user-sim",
               "turn": null,
               "turn_index": 6,

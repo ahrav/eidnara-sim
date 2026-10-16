@@ -18,7 +18,7 @@ import { bedrockUpstream, Gateway } from "../proxy/gateway";
 import { FaultInjector } from "../proxy/inject";
 import { type CallRecord, type Component, RecordWriter, readRecords } from "../proxy/records";
 import { Rng } from "../rng";
-import { compileScenario, type Scenario, scenarioGeneratorMismatch } from "../scenario/compile";
+import { compileScenario, type Scenario, scenarioInputMismatch } from "../scenario/compile";
 import { type FaultEpisode, validateFault } from "../scenario/faults";
 import { loadCompileInput, loadPrereg } from "../scenario/inputs";
 import { bedrockEmbedder } from "../scenario/similarity";
@@ -127,7 +127,10 @@ export async function loadScenario(o: Pick<RunOptions, "config" | "out" | "seed"
             `scenario.json does not hash to its scenario_hash ${scenario_hash}`,
         );
     }
-    const stale = scenarioGeneratorMismatch(scenario);
+    const stale = scenarioInputMismatch(scenario, {
+        embedding_model: loadPrereg(o.tier).scenario.cue_probe_similarity.embedding_model,
+        corpus_manifest_sha256: sha256Hex(readFileSync(join(ROOT, "corpus/manifest.json"), "utf8")),
+    });
     if (stale) throw new HarnessFailure(stale);
     const { seed, tier } = scenario.manifest as { seed: number; tier: string };
     if (seed !== o.seed || tier !== o.tier) {

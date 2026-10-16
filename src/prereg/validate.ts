@@ -300,6 +300,9 @@ function checkGrading(p: Preregistration, errors: string[]): void {
         errors.push("grading.p11_false_positive_weight: must be positive");
     }
     const judge = g.judge;
+    if (judge.cross_judge === judge.model) {
+        errors.push("grading.judge.cross_judge: must differ from grading.judge.model");
+    }
     if (judge.calibration_min_pairs < 20) {
         errors.push("grading.judge.calibration_min_pairs: at least 20");
     }

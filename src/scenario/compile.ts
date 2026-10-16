@@ -642,9 +642,22 @@ export async function compileScenario(input: CompileInput) {
 
 export type Scenario = Awaited<ReturnType<typeof compileScenario>>;
 
-/** A cached scenario is reusable only when the current generator produced it. */
-export function scenarioGeneratorMismatch(scenario: Scenario): string | null {
-    const version = scenario.manifest.generator_version;
-    if (version === GENERATOR_VERSION) return null;
-    return `scenario.json is from generator ${version}, not ${GENERATOR_VERSION}`;
+export interface ScenarioInputs {
+    embedding_model: string;
+    corpus_manifest_sha256: string;
+}
+
+/** A cached scenario is reusable only when the current generator and the named inputs produced it. */
+export function scenarioInputMismatch(scenario: Scenario, inputs: ScenarioInputs): string | null {
+    const m = scenario.manifest;
+    if (m.generator_version !== GENERATOR_VERSION) {
+        return `scenario.json is from generator ${m.generator_version}, not ${GENERATOR_VERSION}`;
+    }
+    if (m.embedding_model !== inputs.embedding_model) {
+        return `scenario.json was compiled with embedder ${m.embedding_model}, not ${inputs.embedding_model}`;
+    }
+    if (m.corpus_manifest_sha256 !== inputs.corpus_manifest_sha256) {
+        return `scenario.json was compiled from corpus ${m.corpus_manifest_sha256}, not ${inputs.corpus_manifest_sha256}`;
+    }
+    return null;
 }
