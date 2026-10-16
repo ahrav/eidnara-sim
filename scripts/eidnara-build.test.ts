@@ -118,3 +118,32 @@ test("a relative clone path records the build in the clone", () => {
         git(src, "rev-parse", "HEAD"),
     );
 });
+
+test("a relative checkout path is fetched from the checkout, not from inside the clone", () => {
+    const { stubs, src, root } = fixture();
+    const r = build("src", join(root, "abs-clone"), stubs, root);
+    expect(r.stderr.toString()).toBe("");
+    expect(r.exitCode).toBe(0);
+    expect(readFileSync(join(root, "abs-clone/.sim-build-commit"), "utf8").trim()).toBe(
+        git(src, "rev-parse", "HEAD"),
+    );
+});
+
+test("a second build of the same clone is refused while the first holds it", async () => {
+    const { stubs, src, dst } = fixture();
+    expect(build(src, dst, stubs).exitCode).toBe(0);
+    const holder = Bun.spawn(["flock", `${dst}.lock`, "sleep", "5"], {
+        stdio: ["ignore", "ignore", "ignore"],
+    });
+    try {
+        await Bun.sleep(200);
+        const r = build(src, dst, stubs);
+        expect(r.exitCode).not.toBe(0);
+        expect(r.stderr.toString()).toContain("another build holds");
+        expect(readFileSync(join(dst, ".sim-build-commit"), "utf8").trim()).toBe(
+            git(src, "rev-parse", "HEAD"),
+        );
+    } finally {
+        holder.kill("SIGKILL");
+    }
+});

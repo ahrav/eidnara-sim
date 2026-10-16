@@ -9,9 +9,14 @@ export function checkBuildMarker(checkout: string): string {
     } catch {
         throw new Error(`${checkout}: no completed build recorded; run scripts/eidnara-build.sh`);
     }
-    const head = Bun.spawnSync(["git", "-C", checkout, "rev-parse", "HEAD"], { stdout: "pipe" })
-        .stdout.toString()
-        .trim();
+    const r = Bun.spawnSync(["git", "-C", checkout, "rev-parse", "HEAD"], {
+        stdout: "pipe",
+        stderr: "pipe",
+    });
+    const head = r.stdout.toString().trim();
+    if (r.exitCode !== 0 || !/^[0-9a-f]{40,64}$/.test(head)) {
+        throw new Error(`${checkout}: not a Git checkout (${r.stderr.toString().trim()})`);
+    }
     if (recorded !== head) {
         throw new Error(`${checkout}: recorded build ${recorded} differs from HEAD ${head}`);
     }

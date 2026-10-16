@@ -11,7 +11,9 @@ The plugins, native addon, daemon, and host fixture come from one commit.
 checkout, checks out its `HEAD`, and builds every artefact inside the clone,
 so the source checkout itself stays read-only; it refuses a clone path that
 is the checkout or lies beneath it, and reuses an existing clone only when
-its `.sim-build-source` names the same checkout. `.sim-build-commit` holds
+its `.sim-build-source` names the same checkout. It holds `<clone>.lock`
+with `flock` for the whole build, so a second build of the same clone is
+refused. `.sim-build-commit` holds
 the built commit from the end of one successful build until the next build
 starts, and preflight requires it to match the clone's `HEAD` and
 `daemon_binary` to be the clone's own
@@ -57,14 +59,17 @@ refuses it, or the OpenCode SDK setup or session listing fails after the
 launch, `openSession` closes the session it started before it throws. The
 control files the hosts write under the arm root (Pi's settings, model list,
 and Eidnara config; OpenCode's config, data, and cache directories; the
-daemon's runtime and store directories) go through real directories only
-and are created fresh and renamed into place, so a symlink an earlier
+daemon's runtime and store directories) go through real directories only,
+walked one component at a time so a symlinked ancestor is refused before
+anything is created below it, and are created fresh and renamed into place, so a symlink an earlier
 session left there is refused or replaced, never followed. OpenCode's config
 directory and the daemon's runtime directory are regenerated on every start,
 so they are removed first. The sandbox runs the host under
 root-owned `sudo` and `unshare`, so closing a host walks the launcher's
 process tree and signals every process the user owns, with SIGKILL after
-10 s; a process that survives SIGKILL stops the run. Each pid in that walk is
+10 s; a process that survives SIGKILL stops the run, and so does a launcher
+root that has not exited by then, since a launcher still in its privileged
+setup has no user-owned process to signal. Each pid in that walk is
 paired with its start time and checked against it before every signal, so a
 pid the kernel reuses during the grace period is left alone. The launcher's
 pid namespace ends with its init, so a child forked while the tree stops dies
@@ -74,13 +79,17 @@ before it retries a failed request itself, so a Pi turn ends only at an
 `agent_end` Pi will not retry. After that end Pi may compact the session and
 continue the run, so a turn is settled only once `get_state` reports Pi
 neither streaming nor compacting and a 1 s window passes with no
-`agent_start` or `compaction_start`; its result is the last such `agent_end`. A prompt Pi refuses in preflight starts no
+`agent_start` or `compaction_start`; its result is the last such `agent_end`.
+Both waits are bounded by the turn's remaining time (the state check gets at
+least 1 s), and a refused `get_state` counts as unsettled, so the turn goes
+through the abort and drain below. A prompt Pi refuses in preflight starts no
 turn, so its error is returned at once. After a Pi turn fails, the host
 aborts it and waits up to 30 s for its `agent_end`; a turn still running then
 stops the run, so a late end cannot finish the next turn. OpenCode turns race the deadline,
 abort the session (waiting at most 5 s for the abort call), and wait 30 s for
 the call to drain; a call still running then stops the run, and so does an
-abort call still pending after 30 s, since it would cancel the next turn. A
+abort call still pending after 30 s, since it would cancel the next turn,
+and so does an abort that fails or reports an error. A
 prompt request that fails before the server answers is aborted the same way,
 and an abort that fails stops the run, since the turn's completion cannot be
 established. A Pi `agent_end` seen before the prompt response fails settles

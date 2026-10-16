@@ -90,10 +90,13 @@ function signal(targets: Target[], name: NodeJS.Signals): void {
     }
 }
 
+// The launcher root stays root-owned while the sandbox is set up, so the stop succeeds only
+// once the root itself has exited too; a root still privileged then reports failure.
 export async function stopOwnedTree(rootPid: number, graceMs: number): Promise<boolean> {
     const targets = ownedProcesses(rootPid).map((pid) => ({ pid, start: processStart(pid) }));
+    const all = [...targets, { pid: rootPid, start: processStart(rootPid) }];
     signal(targets, "SIGTERM");
-    if (await stopped(targets, graceMs)) return true;
+    if (await stopped(all, graceMs)) return true;
     signal(targets, "SIGKILL");
-    return stopped(targets, 2_000);
+    return stopped(all, 2_000);
 }

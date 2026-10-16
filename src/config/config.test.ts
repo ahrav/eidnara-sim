@@ -36,3 +36,25 @@ test("a missing or relative path is refused by field name", () => {
     );
     expect(() => parseConfig(env({ CARGO_HOME: 1 }))).toThrow("config.toolchain.env.CARGO_HOME");
 });
+
+test("a config in the pre-toolchain sim-config/v1 shape is refused by its schema", () => {
+    const base = loadConfig() as any;
+    expect(base.schema).toBe("sim-config/v2");
+    expect(() => parseConfig({ ...base, schema: "sim-config/v1" })).toThrow(
+        "config.schema: expected sim-config/v2",
+    );
+});
+
+test("toolchain env entries must be words the sandbox launcher can pass", () => {
+    const base = loadConfig() as any;
+    const env = (extra: Record<string, unknown>) => ({
+        ...base,
+        toolchain: { ...base.toolchain, env: { ...base.toolchain.env, ...extra } },
+    });
+    expect(() => parseConfig(env({ "rust-flags": "x" }))).toThrow(
+        "config.toolchain.env.rust-flags",
+    );
+    expect(() => parseConfig(env({ RUSTFLAGS: "-C debuginfo=0" }))).toThrow(
+        "config.toolchain.env.RUSTFLAGS",
+    );
+});

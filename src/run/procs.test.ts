@@ -118,3 +118,18 @@ test.skipIf(!canMount())("a mount nested inside a read-only path is read-only to
         Bun.spawnSync(["sudo", "-n", "umount", sub]);
     }
 });
+
+test.skipIf(!canMount())(
+    "a launcher still privileged at teardown makes the stop report failure",
+    async () => {
+        const child = spawn("sudo", ["-n", "sleep", "300"], { stdio: "ignore" });
+        const pid = child.pid as number;
+        await Bun.sleep(300);
+        try {
+            expect(await stopOwnedTree(pid, 300)).toBe(false);
+        } finally {
+            Bun.spawnSync(["sudo", "-n", "pkill", "-KILL", "-P", String(pid)]);
+            Bun.spawnSync(["sudo", "-n", "kill", "-KILL", String(pid)]);
+        }
+    },
+);

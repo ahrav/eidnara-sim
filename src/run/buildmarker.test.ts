@@ -39,3 +39,9 @@ test("the daemon binary must be the build clone's own fixture", () => {
     expect(() => checkDaemonFromBuild(clone, fixture(other))).toThrow(/not the build clone's/);
     expect(checkDaemonFromBuild(clone, fixture(clone))).toBe(fixture(clone));
 });
+
+test("a directory that is not a Git checkout fails the build check even with an empty record", () => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "sim-marker-")));
+    writeFileSync(join(dir, ".sim-build-commit"), "");
+    expect(() => checkBuildMarker(dir)).toThrow(/not a Git checkout|no completed build/);
+});

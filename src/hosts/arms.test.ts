@@ -203,6 +203,7 @@ function liveRpc(script: Array<[number, Untyped]>, idleAt: number) {
 function piHost(ctx: HostContext): PiSimHost {
     const host = new PiSimHost(ctx);
     (host as Untyped).settleMs = 1;
+    (host as Untyped).drainMs = 200;
     return host;
 }
 
@@ -550,4 +551,78 @@ test("a Pi turn waits through Pi's post-run overflow compaction and its continua
         120,
     );
     expect(await host.prompt("hi", 5_000)).toEqual({});
+});
+
+test("a control directory under a symlinked ancestor is refused before anything is created", () => {
+    const run = runDir();
+    const ctx = context(run);
+    const elsewhere = join(run, "elsewhere");
+    mkdirSync(elsewhere);
+    mkdirSync(join(ctx.root, "home"));
+    symlinkSync(elsewhere, join(ctx.root, "home/.pi"));
+    const host = new PiSimHost(ctx);
+    expect(() => (host as Untyped).writeConfigs(null)).toThrow(/symlink/);
+    expect(existsSync(join(elsewhere, "agent"))).toBe(false);
+});
+
+test("an OpenCode session under a symlinked home leaves the link's target untouched", async () => {
+    const run = runDir();
+    const checkout = fakeV1(run);
+    const ctx = { ...context(run), host: "opencode" as const };
+    const elsewhere = join(run, "elsewhere");
+    mkdirSync(join(elsewhere, "config"), { recursive: true });
+    writeFileSync(join(elsewhere, "config/precious"), "keep\n");
+    symlinkSync(elsewhere, join(ctx.root, "home"));
+    const host = new OpencodeSimHost({
+        ...ctx,
+        config: { ...ctx.config, eidnara_checkout: checkout },
+    });
+    const outcome = await host.openSession(run, "s1", null).then(
+        () => "opened",
+        (e: unknown) => String(e),
+    );
+    for (const pid of serving()) process.kill(pid, "SIGKILL");
+    expect(outcome).toMatch(/symlink/);
+    expect(readFileSync(join(elsewhere, "config/precious"), "utf8")).toBe("keep\n");
+});
+
+test("an OpenCode deadline whose abort fails stops the session", async () => {
+    const host = new OpencodeSimHost({ ...context(runDir()), host: "opencode" });
+    (host as Untyped).sid = "s";
+    (host as Untyped).client = {
+        session: {
+            prompt: () => Bun.sleep(100).then(() => Promise.reject(new Error("late failure"))),
+            abort: async () => ({ error: { name: "NotFound" } }),
+        },
+    };
+    await expect(host.prompt("hi", 20)).rejects.toThrow(/not aborted/);
+});
+
+test("a refused Pi get_state while settling does not count the turn as settled", async () => {
+    const host = piHost(context(runDir()));
+    const final = { type: "agent_end", willRetry: false, messages: [{ role: "assistant" }] };
+    const rpc = liveRpc([[0, final]], 0);
+    const send = rpc.sendCommand.bind(rpc);
+    rpc.sendCommand = (method: string) =>
+        method === "get_state" ? Promise.resolve({ success: false, error: "busy" }) : send(method);
+    (host as Untyped).rpc = rpc;
+    await expect(host.prompt("hi", 2_000)).rejects.toThrow(/still running/);
+});
+
+test("settling a Pi turn stays within the turn deadline when get_state hangs", async () => {
+    const host = piHost(context(runDir()));
+    (host as Untyped).settleMs = 50;
+    const final = { type: "agent_end", willRetry: false, messages: [{ role: "assistant" }] };
+    const rpc = liveRpc([[0, final]], 0);
+    const send = rpc.sendCommand.bind(rpc);
+    rpc.sendCommand = (method: string, _p?: Untyped, o?: { timeoutMs: number }) =>
+        method === "get_state"
+            ? Bun.sleep(o?.timeoutMs ?? 0).then(() =>
+                  Promise.reject(new Error("get_state timeout")),
+              )
+            : send(method);
+    (host as Untyped).rpc = rpc;
+    const started = Date.now();
+    await expect(host.prompt("hi", 300)).rejects.toThrow();
+    expect(Date.now() - started).toBeLessThan(2_000);
 });

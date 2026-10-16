@@ -1,6 +1,7 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import {
     appendFileSync,
+    lstatSync,
     mkdirSync,
     readdirSync,
     readFileSync,
@@ -23,12 +24,28 @@ async function v1(config: SimConfig, path: string): Promise<Untyped> {
     return import(join(config.eidnara_checkout, path));
 }
 
-/** `base/rel` created and confirmed reachable through real directories, with no symlink in `rel`. */
+/**
+ * `base/rel`, walked one component at a time: each existing component must be a real
+ * directory, and each missing one is created only after its parent passed, so a symlink
+ * anywhere in `rel` stops the walk before anything is created beyond it.
+ */
 function realDir(base: string, rel: string): string {
-    const dir = join(base, rel);
-    mkdirSync(dir, { recursive: true });
-    if (realpathSync(dir) !== join(realpathSync(base), rel)) {
-        throw new Error(`${dir} is reached through a symlink; control files need a real directory`);
+    mkdirSync(base, { recursive: true });
+    let dir = base;
+    for (const part of rel.split("/").filter((p) => p !== "")) {
+        dir = join(dir, part);
+        let stat: ReturnType<typeof lstatSync> | undefined;
+        try {
+            stat = lstatSync(dir);
+        } catch {
+            mkdirSync(dir);
+            continue;
+        }
+        if (stat.isSymbolicLink() || !stat.isDirectory()) {
+            throw new Error(
+                `${dir} is a symlink or not a directory; control files need a real directory`,
+            );
+        }
     }
     return dir;
 }
@@ -353,11 +370,13 @@ export class PiSimHost extends SimHost {
                     return turnResult(await this.settle(watch, deadline));
                 } catch {}
             }
-            const drained = this.agentEnd(30_000);
+            const drained = this.agentEnd(this.drainMs);
             await this.rpc.sendCommand("abort", {}, { timeoutMs: 60_000 }).catch(() => undefined);
             // A turn that outlives the abort would end during the next turn and be taken for it.
             await drained.catch((reason: unknown) => {
-                throw new Error(`Pi turn still running 30 s after abort (${String(reason)})`);
+                throw new Error(
+                    `Pi turn still running ${this.drainMs} ms after abort (${String(reason)})`,
+                );
             });
             return { error: String(caught).slice(0, 2000) };
         } finally {
@@ -369,6 +388,7 @@ export class PiSimHost extends SimHost {
     // and a fresh agent_start. The turn is settled once Pi reports itself idle and a quiet window
     // passes with neither, and the turn's result is then the last agent_end Pi will not retry.
     protected settleMs = 1_000;
+    protected drainMs = 30_000;
 
     private async settle(
         watch: { activity: number; last: Untyped },
@@ -376,8 +396,13 @@ export class PiSimHost extends SimHost {
     ): Promise<Untyped> {
         for (;;) {
             const mark = watch.activity;
-            await Bun.sleep(this.settleMs);
-            const state = await this.rpc.sendCommand("get_state", {}, { timeoutMs: 10_000 });
+            await Bun.sleep(Math.max(0, Math.min(this.settleMs, deadline - Date.now())));
+            // The state check gets the turn's remaining time, with at least 1 s to answer.
+            const timeoutMs = Math.max(1_000, deadline - Date.now());
+            const state = await this.rpc.sendCommand("get_state", {}, { timeoutMs });
+            if (state.success === false) {
+                throw new Error(`Pi get_state refused while settling: ${JSON.stringify(state)}`);
+            }
             const busy = state.data?.isStreaming === true || state.data?.isCompacting === true;
             if (!busy && watch.activity === mark) return watch.last;
             if (Date.now() >= deadline) throw new Error("Pi turn still busy at its deadline");
@@ -427,7 +452,7 @@ export class OpencodeSimHost extends SimHost {
             this.writeWrapper(launch(launcher, this.ctx.keep, this.timeEnv, [binary], ro)),
         );
         // The v1 runner rewrites the configuration on each spawn, so an earlier session's files go first.
-        rmSync(join(this.home, "config"), { recursive: true, force: true });
+        rmSync(join(this.controlDir("home"), "config"), { recursive: true, force: true });
         const env = {
             configDir: this.controlDir("home/config"),
             dataDir: this.controlDir("home/data"),
@@ -539,8 +564,8 @@ export class OpencodeSimHost extends SimHost {
             // An abort still in flight when the next turn starts would cancel that turn instead.
             const answered = await withDeadline(
                 abort.then(
-                    () => true,
-                    () => true,
+                    (r: Untyped) => !r?.error,
+                    () => false,
                 ),
                 this.abortWaitMs,
             );
@@ -549,6 +574,7 @@ export class OpencodeSimHost extends SimHost {
                     `OpenCode abort still pending ${this.abortWaitMs} ms after the deadline`,
                 );
             }
+            if (!answered) throw new Error("OpenCode turn not aborted after its deadline");
             const drained = await withDeadline(settled, 30_000);
             if (drained === null) throw new Error("OpenCode turn still running 30 s after abort");
             return { error: `turn deadline ${timeoutMs} ms` };
