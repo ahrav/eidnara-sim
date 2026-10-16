@@ -843,6 +843,12 @@ describe("P7 judge path", () => {
         expect(PREPROCESSING_VERSION).toBe("sim-judge-preprocessing/v2");
     });
 
+    test("a calibration pair id made of combining marks is blank", () => {
+        const marks = calibration();
+        marks.labels["\u0300\u0301"] = "a";
+        expect(() => calibrationDigest(marks, rules)).toThrow("blank");
+    });
+
     test("the human-check sample is ten percent of P7 items, rounded up, from a seeded draw", () => {
         const items = Array.from({ length: 24 }, (_, i) => `q-${i}`);
         const a = humanCheckSample(items, rules, new Rng(9));
@@ -982,6 +988,35 @@ describe("proxy judge", () => {
         );
         await expect(judge.verdict("prompt")).rejects.toThrow("stopped for max_tokens");
         await expect(judge.verdict("prompt")).rejects.toThrow("stopped for");
+    });
+
+    test("a redirecting gateway is refused rather than followed", async () => {
+        const target = Bun.serve({
+            port: 0,
+            fetch: () =>
+                Response.json({
+                    output: { message: { content: [{ text: "first" }] } },
+                    stopReason: "end_turn",
+                }),
+        });
+        try {
+            server = Bun.serve({
+                port: 0,
+                fetch: (req) =>
+                    Response.redirect(
+                        `http://127.0.0.1:${target.port}${new URL(req.url).pathname}`,
+                        307,
+                    ),
+            });
+            const judge = proxyJudge(
+                `http://127.0.0.1:${server.port}`,
+                rules.judge.model,
+                "anthropic.x",
+            );
+            await expect(judge.verdict("prompt")).rejects.toThrow(GradeRefused);
+        } finally {
+            target.stop(true);
+        }
     });
 
     test("a well-formed status with a malformed body is a judge refusal, not a crash", async () => {

@@ -222,6 +222,7 @@ export function proxyJudge(
                             inferenceConfig: { maxTokens: 256 },
                         }),
                         signal: AbortSignal.timeout(deadlineMs),
+                        redirect: "error",
                     },
                 );
                 if (!response.ok) throw new GradeRefused(`judge call failed: ${response.status}`);
@@ -367,7 +368,7 @@ export function calibrationDigest(set: CalibrationSet | null, rules: Rules): str
     if (set.human.length < floor || set.human.length > pairs) {
         throw new GradeRefused(`calibration has ${set.human.length} human labels; needs ${floor}`);
     }
-    if (Object.keys(set.labels).some((id) => id.replace(INVISIBLE, "").trim() === "")) {
+    if (Object.keys(set.labels).some((id) => foldWords(id).trim() === "")) {
         throw new GradeRefused("a calibration pair id is blank");
     }
     if (new Set(set.human).size !== set.human.length) {

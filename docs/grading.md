@@ -183,8 +183,10 @@ pre-registered judge is `global.openai.gpt-5.6-luna`.
 On 2026-10-16 the two P7 fixtures went through the gateway to that model,
 and the real verdicts (`first`, then `second`, and the reverse) graded as
 the fixtures record. The run's records (`judge-calls.jsonl` with the four
-`judge` call records, `judgments.json` with the verdicts) are run data and
-live under the git-ignored `runs/judge-smoke/`.
+`judge` call records, `judgments.json` with the verdicts) are run data under
+`runs/judge-smoke/` on the host that ran it; run data is never committed, so
+this claim is checked against that host's records, and the fixtures' own
+verdicts are scripted.
 
 The judge identity is the model id with the prompt and rubric digests; the
 prompt digest covers `PREPROCESSING_VERSION` (`sim-judge-preprocessing/v2`),
