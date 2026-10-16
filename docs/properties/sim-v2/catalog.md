@@ -20,7 +20,7 @@ pre-registers. Each id is the slug prefix and opens the `Guarantee:` line.
   surface.
 - `explicit-config-only`: the surface runs only when a tier schedules faults,
   the counterfactual arm, or two host clients on one daemon.
-- `test-only`: no record uses it; every surface runs in real tier runs.
+- `test-only`: a surface only a test constructs; no record carries this class.
 
 `scripts/check-catalog.ts` checks the record schema and field order against
 `METHOD.md`, the index against the records, and one evidence file per record.

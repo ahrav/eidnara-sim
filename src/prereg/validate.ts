@@ -58,12 +58,16 @@ const atLeast =
     (floor: number): Check =>
     (v) =>
         Number.isSafeInteger(v) && (v as number) >= floor ? null : `at least ${floor}`;
+/** True when `actual` holds exactly the strings of `expected`, in any order, without repeats. */
+function sameSet(actual: unknown, expected: readonly string[]): boolean {
+    if (!Array.isArray(actual) || actual.length !== expected.length) return false;
+    const want = new Set(expected);
+    return new Set(actual).size === want.size && actual.every((x) => want.has(x as string));
+}
 const exactSet =
     (expected: readonly string[], name: string): Check =>
     (v) =>
-        Array.isArray(v) && [...v].sort().join(",") === [...expected].sort().join(",")
-            ? null
-            : `expected ${name}`;
+        sameSet(v, expected) ? null : `expected ${name}`;
 const list =
     (item: Check, distinct = true): Check =>
     (v) => {
@@ -86,6 +90,8 @@ interface Shape {
 }
 
 const MARGIN_SHAPE: Shape = { value: decimal, scale: oneOf(MARGIN_SCALES) };
+/** The divergence normalisers OQ-3 fixes (#1024). */
+const NORMALISERS = ["iso-8601-timestamps", "durations", "pids", "temp-paths", "run-ids"];
 
 const FAMILY_SHAPE: Shape = {
     id: text,
@@ -142,7 +148,7 @@ const PREREG_SHAPE: Shape = {
     },
     divergence_policy: {
         hash_input: literal("normalised-last-agent-output"),
-        normalisation: list(text),
+        normalisation: exactSet(NORMALISERS, NORMALISERS.join(", ")),
         diagnostic_hash: literal("agent-visible-prefix"),
         on_divergence: literal("record-then-live"),
     },
@@ -187,12 +193,12 @@ export const HARM_METRICS = ["P2.harm", "P3.harm", "P4.harm", "P10.harm", "P11.h
 function scaleGroup(scale: string): string {
     return scale === "pp" || scale === "ratio" ? "rate" : scale;
 }
-/** Arms a tier runs beyond `host` and `eidnara`; `eidnara-cf` is L's alone. */
-const TIER_COMPARISON_ARMS: Record<string, readonly string[]> = {
-    S: ["eidnara-kl"],
-    M: ["eidnara-kl"],
-    L: ["eidnara-kl", "eidnara-cf"],
-    XL: [],
+/** The arm set each tier runs (spec #1007): `eidnara-kl` at S, M, L; `eidnara-cf` at L alone. */
+const TIER_ARMS: Record<string, readonly string[]> = {
+    S: ["host", "eidnara", "eidnara-kl"],
+    M: ["host", "eidnara", "eidnara-kl"],
+    L: ["host", "eidnara", "eidnara-kl", "eidnara-cf"],
+    XL: ["host", "eidnara"],
 };
 /** The A/A pairs S and M register, sorted as `arm/arm`. */
 const AA_CONTROL_PAIRS = ["eidnara/eidnara", "host/host"];
@@ -281,11 +287,10 @@ function checkFamilies(p: Preregistration, errors: string[]): void {
         if (f.direction === "zero-tolerance" && Number(f.margin.value) !== 0) {
             errors.push(`${at}.margin.value: a zero-tolerance gate has a margin of 0`);
         }
-        if (
-            f.id === "harm" &&
-            (f.multiplicity !== "holm" ||
-                [...f.metrics].sort().join() !== [...HARM_METRICS].sort().join())
-        ) {
+        if (f.direction === "zero-tolerance" && f.margin.scale !== "count") {
+            errors.push(`${at}.margin.scale: a zero-tolerance gate counts events`);
+        }
+        if (f.id === "harm" && (f.multiplicity !== "holm" || !sameSet(f.metrics, HARM_METRICS))) {
             errors.push(
                 `${at}: the harm family is Holm-corrected over exactly ${HARM_METRICS.join(", ")}`,
             );
@@ -294,18 +299,16 @@ function checkFamilies(p: Preregistration, errors: string[]): void {
     for (const id of REQUIRED_FAMILIES) if (!seen.has(id)) errors.push(`families[${id}]: missing`);
     p.stopping_rule.cusum.forEach((c, i) => {
         if (!seen.has(c.metric)) errors.push(`stopping_rule.cusum[${i}].metric: names no family`);
+        else if (c.kind === "harm" && c.metric !== "harm") {
+            errors.push(`stopping_rule.cusum[${i}].metric: a harm CUSUM monitors the harm family`);
+        }
     });
 }
 
 function checkArms(p: Preregistration, errors: string[]): void {
-    if (!(p.arms.run.includes("host") && p.arms.run.includes("eidnara"))) {
-        errors.push("arms.run: must include host and eidnara");
-    }
-    for (const arm of TIER_COMPARISON_ARMS[p.tier] ?? []) {
-        if (!p.arms.run.includes(arm)) errors.push(`arms.run: tier ${p.tier} runs ${arm}`);
-    }
-    if (p.tier !== "L" && p.arms.run.includes("eidnara-cf")) {
-        errors.push("arms.run: eidnara-cf runs at tier L alone");
+    const arms = TIER_ARMS[p.tier] ?? [];
+    if (!sameSet(p.arms.run, arms)) {
+        errors.push(`arms.run: tier ${p.tier} runs exactly ${arms.join(", ")}`);
     }
     if (p.arms.order_by_seed.length !== p.seeds.length) {
         errors.push("arms.order_by_seed: needs one order per seed");
@@ -317,7 +320,7 @@ function checkArms(p: Preregistration, errors: string[]): void {
     });
     if (p.aa_controls) {
         const pairs = p.aa_controls.pairs.map((pair) => pair.join("/")).sort();
-        if (pairs.join(",") !== AA_CONTROL_PAIRS.join(",")) {
+        if (!sameSet(pairs, AA_CONTROL_PAIRS)) {
             errors.push("aa_controls.pairs: expected host/host and eidnara/eidnara");
         }
         if (p.tier === "M" && p.aa_controls.repeats < AA_REPEATS_FOR_FALSE_POSITIVE_RATE) {

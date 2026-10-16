@@ -25,6 +25,12 @@ export const VERDICT_KINDS = [
 const BOUND_VERDICTS: readonly string[] = ["passed-gate", "failed-gate"];
 /** A one-sided paired gate: its pass is `passed-gate`, and it registers no superiority claim. */
 const MARGIN_DIRECTIONS: readonly string[] = ["noninferiority", "at-most"];
+const MARGIN_VERDICTS: readonly string[] = [
+    "passed-gate",
+    "failed-gate",
+    "inconclusive",
+    "insufficient-runs",
+];
 
 const NULL_VERDICT = "no-difference-above-x-pp-detectable-at-n";
 
@@ -84,9 +90,9 @@ function checkVerdict(
         errors.push(
             `${at}.verdict: a ${family.direction} gate compares each run to a bound and reports passed-gate or failed-gate`,
         );
-    } else if (MARGIN_DIRECTIONS.includes(family.direction) && verdict === "better") {
+    } else if (MARGIN_DIRECTIONS.includes(family.direction) && !MARGIN_VERDICTS.includes(verdict)) {
         errors.push(
-            `${at}.verdict: a ${family.direction} family claims at most its margin, never better`,
+            `${at}.verdict: a ${family.direction} gate reports passed-gate, failed-gate, inconclusive, or insufficient-runs`,
         );
     } else if (
         !bound &&

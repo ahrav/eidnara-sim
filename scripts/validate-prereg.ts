@@ -8,6 +8,9 @@ let failed = false;
 for (const tier of TIERS) {
     const value = JSON.parse(readFileSync(join(dir, `${tier}.json`), "utf8"));
     const errors = validatePreregistration(value);
+    if (errors.length === 0 && value.tier !== tier) {
+        errors.push(`tier: ${tier}.json registers tier ${value.tier}`);
+    }
     if (errors.length > 0) {
         failed = true;
         console.error(`${tier}: refused\n  ${errors.join("\n  ")}`);

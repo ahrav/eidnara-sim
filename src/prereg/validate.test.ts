@@ -170,6 +170,41 @@ describe("pre-registration validator", () => {
         ]);
     });
 
+    test("compares sets element by element, never by a joined string", () => {
+        const s = load("S") as any;
+        s.hosts = ["opencode,pi"];
+        expect(validatePreregistration(s)).toEqual(["hosts: expected pi and opencode"]);
+        const m = load("M") as any;
+        m.families.find((f: any) => f.id === "harm").metrics = [
+            "P2.harm",
+            "P3.harm",
+            "P4.harm",
+            "P10.harm,P11.harm",
+        ];
+        expect(validatePreregistration(m)).toEqual([
+            "families[harm]: the harm family is Holm-corrected over exactly P2.harm, P3.harm, P4.harm, P10.harm, P11.harm",
+        ]);
+    });
+
+    test("binds the harm CUSUM to the harm family, zero-tolerance gates to counts, and the normaliser set", () => {
+        const m = load("M") as any;
+        m.stopping_rule.cusum[0].metric = "cost";
+        const intr = m.families.find((f: any) => f.id === "intrusiveness");
+        intr.margin.scale = "ms";
+        intr.mde.scale = "ms";
+        expect(validatePreregistration(m).sort()).toEqual(
+            [
+                "stopping_rule.cusum[0].metric: a harm CUSUM monitors the harm family",
+                "families[intrusiveness].margin.scale: a zero-tolerance gate counts events",
+            ].sort(),
+        );
+        const s = load("S") as any;
+        s.divergence_policy.normalisation = ["run-ids"];
+        expect(validatePreregistration(s)).toEqual([
+            "divergence_policy.normalisation: expected iso-8601-timestamps, durations, pids, temp-paths, run-ids",
+        ]);
+    });
+
     test("requires eidnara-kl at S, M, and L and eidnara-cf exactly at L", () => {
         const m = load("M") as any;
         m.arms.run = ["host", "eidnara"];
@@ -178,17 +213,29 @@ describe("pre-registration validator", () => {
             ["eidnara", "host"],
             ["host", "eidnara"],
         ];
-        expect(validatePreregistration(m)).toContain("arms.run: tier M runs eidnara-kl");
+        expect(validatePreregistration(m)).toContain(
+            "arms.run: tier M runs exactly host, eidnara, eidnara-kl",
+        );
         const l = load("L") as any;
         l.arms.run = ["host", "eidnara", "eidnara-kl"];
         l.arms.order_by_seed = l.arms.order_by_seed.map((o: string[]) =>
             o.filter((a) => a !== "eidnara-cf"),
         );
-        expect(validatePreregistration(l)).toEqual(["arms.run: tier L runs eidnara-cf"]);
+        expect(validatePreregistration(l)).toEqual([
+            "arms.run: tier L runs exactly host, eidnara, eidnara-kl, eidnara-cf",
+        ]);
         const s = load("S") as any;
         s.arms.run.push("eidnara-cf");
         s.arms.order_by_seed = s.arms.order_by_seed.map((o: string[]) => [...o, "eidnara-cf"]);
-        expect(validatePreregistration(s)).toEqual(["arms.run: eidnara-cf runs at tier L alone"]);
+        expect(validatePreregistration(s)).toEqual([
+            "arms.run: tier S runs exactly host, eidnara, eidnara-kl",
+        ]);
+        const xl = load("XL") as any;
+        xl.arms.run.push("eidnara-kl");
+        xl.arms.order_by_seed = [["host", "eidnara", "eidnara-kl"]];
+        expect(validatePreregistration(xl)).toEqual([
+            "arms.run: tier XL runs exactly host, eidnara",
+        ]);
     });
 
     test("requires distinct seed orders and, when seeds cover the arms, a balanced first position", () => {
@@ -329,6 +376,17 @@ describe("report check against the pre-registration", () => {
         expect(checkReport(r, m)).toEqual([]);
     });
 
+    test("a margin gate fails as failed-gate naming its metric, never as worse", () => {
+        const r = acceptedReport(m);
+        at(r, "dependability").verdict = "worse";
+        at(r, "harm").verdict = "no-difference-above-x-pp-detectable-at-n";
+        at(r, "harm").resolution_ratio = "0.5";
+        expect(checkReport(r, m)).toEqual([
+            "families[harm].verdict: a noninferiority gate reports passed-gate, failed-gate, inconclusive, or insufficient-runs",
+            "families[dependability].verdict: a at-most gate reports passed-gate, failed-gate, inconclusive, or insufficient-runs",
+        ]);
+    });
+
     test("caps n at the paired items or paired runs the pre-registration produces", () => {
         const r = acceptedReport(m);
         at(r, "probe-P1").n = 121;
@@ -405,6 +463,7 @@ describe("report check against the pre-registration", () => {
         at(r, "cost").verdict = "better";
         expect(checkReport(r, m)).toEqual([
             "families[latency].verdict: a gate family cannot report descriptive",
+            "families[latency].verdict: a at-most gate reports passed-gate, failed-gate, inconclusive, or insufficient-runs",
             "families[cost].verdict: a descriptive family cannot report better",
         ]);
     });
@@ -442,8 +501,8 @@ describe("report check against the pre-registration", () => {
         at(r, "harm").verdict = "better";
         expect(checkReport(r, m)).toEqual([
             "families[probe-P1].verdict: a superiority-two-sided family makes a paired claim, never passed-gate",
-            "families[harm].verdict: a noninferiority family claims at most its margin, never better",
-            "families[dependability].verdict: a at-most family claims at most its margin, never better",
+            "families[harm].verdict: a noninferiority gate reports passed-gate, failed-gate, inconclusive, or insufficient-runs",
+            "families[dependability].verdict: a at-most gate reports passed-gate, failed-gate, inconclusive, or insufficient-runs",
             "families[resources].verdict: a threshold gate compares each run to a bound and reports passed-gate or failed-gate",
             "families[resources].resolution_ratio: a null verdict carries its resolution ratio as a positive canonical decimal; other verdicts omit it",
             "families[intrusiveness].verdict: a zero-tolerance gate compares each run to a bound and reports passed-gate or failed-gate",
@@ -455,7 +514,7 @@ describe("report check against the pre-registration", () => {
         });
         at(r, "resources").verdict = "passed-gate";
         at(r, "probe-P1").verdict = "better";
-        at(r, "dependability").verdict = "worse";
+        at(r, "dependability").verdict = "inconclusive";
         at(r, "harm").verdict = "passed-gate";
         expect(checkReport(r, m)).toEqual([]);
     });

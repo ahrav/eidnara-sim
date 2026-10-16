@@ -115,6 +115,8 @@ export function checkRecord(record: Record, spec: FieldSpec[], catalogDir: strin
     const oq = field("Open questions");
     if (oq !== "None." && !(oq.startsWith("\n- ") || oq.startsWith("- "))) {
         errors.push(`${at}: Open questions is neither None. nor a list`);
+    } else if (oq !== "None." && oq.split("\n").some((line) => line.trim() === "-")) {
+        errors.push(`${at}: Open questions has an empty entry`);
     }
     return errors;
 }
