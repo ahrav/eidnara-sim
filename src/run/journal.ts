@@ -177,13 +177,14 @@ export function releaseLease(dir: string): void {
 /**
  * Every newline-terminated line must parse and carry the next `seq`; a cut last line without
  * its newline, which a kill mid-write leaves, is dropped. `bytes` is the length of the complete
- * prefix.
+ * prefix. `source` is a path, or an open descriptor positioned at the start of the file.
  */
-export function readJournal(path: string): Entry[] & { bytes?: number } {
+export function readJournal(source: string | number): Entry[] & { bytes?: number } {
     const entries: Entry[] & { bytes?: number } = [];
     entries.bytes = 0;
-    if (!existsSync(path)) return entries;
-    const lines = readFileSync(path, "utf8").split("\n");
+    if (typeof source === "string" && !existsSync(source)) return entries;
+    const path = typeof source === "string" ? source : `fd ${source}`;
+    const lines = readFileSync(source, "utf8").split("\n");
     lines.forEach((line, i) => {
         if (i === lines.length - 1) return;
         let entry: Entry;
@@ -206,15 +207,19 @@ export class Journal {
     private fd: number;
 
     constructor(readonly path: string) {
-        const read = readJournal(path);
-        this.entries = [...read];
-        for (const e of this.entries) this.last.set(e.arm, e.scenario_ms);
         const { O_APPEND, O_CREAT, O_NOFOLLOW, O_RDWR } = constants;
         this.fd = openSync(path, O_RDWR | O_APPEND | O_CREAT | O_NOFOLLOW, 0o644);
-        if (!fstatSync(this.fd).isFile()) {
+        let read: Entry[] & { bytes?: number };
+        try {
+            if (!fstatSync(this.fd).isFile())
+                throw new Error(`journal ${path} is not a regular file`);
+            read = readJournal(this.fd);
+        } catch (caught) {
             closeSync(this.fd);
-            throw new Error(`journal ${path} is not a regular file`);
+            throw caught;
         }
+        this.entries = [...read];
+        for (const e of this.entries) this.last.set(e.arm, e.scenario_ms);
         ftruncateSync(this.fd, read.bytes ?? 0);
     }
 

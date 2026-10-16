@@ -19,8 +19,9 @@ the calling process's own lease at the end of a run.
 
 ## Journal
 
-`Journal` opens its file without following symlinks and requires a regular
-file. On read it accepts a line only when it parses, carries the next `seq`,
+`Journal` opens its file without following symlinks, requires a regular
+file, and reads and truncates it through that one descriptor. On read it
+accepts a line only when it parses, carries the next `seq`,
 names a known `kind`, and has `arm`, `scenario_ms`, and `wall_ms` of the right
 types. It appends one JSON line per entry with `seq` (0, 1, 2, ... in append
 order), `kind`, `arm`, `scenario_ms`, and `wall_ms`; a line is written whole
@@ -34,7 +35,7 @@ entries of different arms are not ordered by scenario time.
 
 | Kind | Written when |
 |---|---|
-| `StartRun`, `ResumeRun`, `EndRun` | The run starts (with the arm order and a hash of the events and faults), a restarted harness takes it up (with the same), and it ends; these carry `arm` null and `scenario_ms` 0 |
+| `StartRun`, `ResumeRun`, `EndRun` | The run starts (with the arm order and the canonical-JSON SHA-256 of the events and faults), a restarted harness takes it up (with the same), and it ends; these carry `arm` null and `scenario_ms` 0 |
 | `StartArm`, `EndArm` | An arm starts, after its driver's reset, and finishes |
 | `AdvanceClock` | The clock jumps; carries `from_ms`, an empty `busy` list, and the next event id or the laptop-sleep fault |
 | `BeginTurn` | A user turn is delivered |

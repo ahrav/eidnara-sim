@@ -65,17 +65,32 @@ function invariants(entries: Entry[]): void {
             );
         }
     }
-    const busy = new Set<unknown>();
+    const busy = new BusyCount();
     for (const e of entries) {
-        if (e.kind === "BeginTurn") busy.add(`t${e.arm}${e.event}`);
-        if (e.kind === "EndTurn") busy.delete(`t${e.arm}${e.event}`);
-        if (e.kind === "RegisterJob") busy.add(`j${e.arm}${e.job}`);
-        if (e.kind === "EndJob") busy.delete(`j${e.arm}${e.job}`);
-        if (e.kind === "ItemState" && e.state === "failed(interrupted)")
-            busy.delete(`t${e.arm}${e.event}`);
-        if (e.kind === "AdvanceClock") expect([...busy]).toEqual([]);
+        busy.apply(e);
+        if (e.kind === "AdvanceClock") expect(busy.open()).toEqual([]);
     }
     expect(entries.map((e) => e.seq)).toEqual(entries.map((_, i) => i));
+}
+
+/** The busy set a journal implies, counting each key's open registrations. */
+class BusyCount {
+    private readonly n = new Map<string, number>();
+    apply(e: Entry): void {
+        const bump = (key: string, d: number) => this.n.set(key, (this.n.get(key) ?? 0) + d);
+        if (e.kind === "BeginTurn") bump(`t${e.arm}${e.event}`, 1);
+        if (e.kind === "EndTurn") bump(`t${e.arm}${e.event}`, -1);
+        if (e.kind === "RegisterJob") bump(`j${e.arm}${e.job}`, 1);
+        if (e.kind === "EndJob") bump(`j${e.arm}${e.job}`, -1);
+        if (e.kind === "ItemState" && e.state === "failed(interrupted)" && e.event)
+            bump(`t${e.arm}${e.event}`, -1);
+    }
+    open(): string[] {
+        return [...this.n].filter(([, c]) => c > 0).map(([k]) => k);
+    }
+    size(): number {
+        return this.open().length;
+    }
 }
 
 /**
@@ -84,26 +99,21 @@ function invariants(entries: Entry[]): void {
  * while it is busy, so a change to `scenario_ms` on any entry has a wall-clock cause.
  */
 function wallRate(entries: Entry[], slackMs = 5): void {
-    const busy = new Set<unknown>();
+    const busy = new BusyCount();
     const prev = new Map<string | null, Entry>();
     for (const e of entries) {
         const p = prev.get(e.arm);
         if (p) {
             const dScenario = e.scenario_ms - p.scenario_ms;
             const dWall = e.wall_ms - p.wall_ms;
-            if (busy.size === 0) {
+            if (busy.size() === 0) {
                 if (e.kind !== "AdvanceClock") expect(dScenario).toBe(0);
             } else {
                 expect(dScenario).toBeLessThanOrEqual(dWall + slackMs);
             }
         }
         prev.set(e.arm, e);
-        if (e.kind === "BeginTurn") busy.add(`t${e.arm}${e.event}`);
-        if (e.kind === "EndTurn") busy.delete(`t${e.arm}${e.event}`);
-        if (e.kind === "RegisterJob") busy.add(`j${e.arm}${e.job}`);
-        if (e.kind === "EndJob") busy.delete(`j${e.arm}${e.job}`);
-        if (e.kind === "ItemState" && e.state === "failed(interrupted)")
-            busy.delete(`t${e.arm}${e.event}`);
+        busy.apply(e);
     }
 }
 
@@ -239,6 +249,24 @@ describe("Journal and lease", () => {
         } finally {
             other.kill();
         }
+    });
+
+    test("a journal path that is a fifo is refused without blocking on a read", () => {
+        const d = dir();
+        const fifo = join(d, "journal.jsonl");
+        expect(Bun.spawnSync(["mkfifo", fifo]).exitCode).toBe(0);
+        const child = Bun.spawnSync(
+            [
+                "bun",
+                "-e",
+                'import { Journal } from "./src/run/journal"; new Journal(process.argv[1]);',
+                fifo,
+            ],
+            { cwd: ROOT, timeout: 5_000 },
+        );
+        expect(child.signalCode ?? null).toBeNull();
+        expect(child.exitCode).not.toBe(0);
+        expect(child.stderr.toString()).toMatch(/not a regular file/);
     });
 
     test("a journal path that is a symlink is refused and its target left alone", () => {
@@ -701,6 +729,15 @@ describe("Scheduler", () => {
         expect(unexpected.map((e) => e.arm)).toEqual(["b"]);
     });
 
+    test("the scenario hash ignores property order", () => {
+        const events = fixtureEvents(1);
+        const reordered = events.map((e) => {
+            const { id, ...rest } = e;
+            return { ...rest, id } as ScenarioEvent;
+        });
+        expect(scenarioId(reordered, [])).toBe(scenarioId(events, []));
+    });
+
     test("a proxy fault without proxy control is refused before the run", () => {
         const j = new Journal(join(dir(), "j.jsonl"));
         const faults = [
@@ -1011,11 +1048,16 @@ describe("resume", () => {
         expect(resumed[0]).toMatchObject({ kind: "Event", event: last.event, outcome: "ok" });
     }, 60_000);
 
-    test("a harness killed in the second arm leaves the finished arm alone", async () => {
-        const { resumed } = await killAt(
-            (e, b) => e.some((x) => x.kind === "EndArm" && x.arm === "host") && inFlight(e, b),
+    test("a harness killed in the second arm leaves the finished arm alone and restores a clock past zero", async () => {
+        const { resumed, last } = await killAt(
+            (e, b) =>
+                e.some((x) => x.kind === "EndArm" && x.arm === "host") &&
+                e.filter((x) => x.kind === "EndTurn" && x.arm === "eidnara").length >= 2 &&
+                inFlight(e, b),
         );
         expect(resumed.filter((e) => e.arm === "host")).toEqual([]);
+        expect(last.arm).toBe("eidnara");
+        expect(last.scenario_ms).toBeGreaterThan(0);
     }, 60_000);
 });
 

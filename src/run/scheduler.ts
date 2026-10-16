@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { canonicalJson, sha256Hex } from "../prereg/canonical";
 import type { FaultEpisode } from "../scenario/faults";
 import { Clock } from "./clock";
 import type { Entry, EntryKind, Journal } from "./journal";
@@ -30,9 +30,7 @@ export class HarnessFailure extends Error {}
 
 /** The identity `StartRun` records and a resume must present again. */
 export function scenarioId(events: ScenarioEvent[], faults: FaultEpisode[]): string {
-    return createHash("sha256")
-        .update(JSON.stringify([events, faults]))
-        .digest("hex");
+    return sha256Hex(canonicalJson([events, faults]));
 }
 
 export interface SchedulerOptions {
