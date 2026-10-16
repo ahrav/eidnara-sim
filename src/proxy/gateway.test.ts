@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { connect } from "node:http2";
 import { connect as tcp } from "node:net";
 import { BedrockRuntimeClient } from "@aws-sdk/client-bedrock-runtime";
@@ -473,6 +473,64 @@ describe("witnesses", () => {
         expect(excludedFromFaultMetrics(injector.report())).toBe(true);
     });
 
+    test("the witness window runs on the monotonic clock, whatever the wall clock says", () => {
+        const fault = {
+            id: "f",
+            type: "provider_429",
+            strategy: "single",
+            params: {},
+        } as ProxyFault;
+        const injector = new FaultInjector([fault], new Rng(1), 100);
+        injector.arm("f");
+        const base = {
+            arm: "a",
+            session: null,
+            turn: null,
+            componentSource: "inferred",
+            model: "m",
+            status: 200,
+            finish_reason: null,
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            scenario_ms: 0,
+            first_byte_ms: null,
+            proxy_retries: 0,
+            error: null,
+            wall_ms: 0,
+        } as const;
+        const taken = injector.take("agent", 0);
+        expect(taken?.id).toBe("f");
+        const t0 = performance.now();
+        const injected = {
+            ...base,
+            seq: 0,
+            component: "agent",
+            fault_ref: "f",
+            started_wall_ms: 0,
+        } as const;
+        injector.observe(injected, 0, t0);
+        const late = {
+            ...base,
+            seq: 1,
+            component: "agent",
+            fault_ref: null,
+            started_wall_ms: 0,
+        } as const;
+        injector.observe(late, 1, t0 + 500);
+        expect(injector.report()[0]?.status).toBe("untriggered");
+        const inside = {
+            ...base,
+            seq: 2,
+            component: "agent",
+            fault_ref: null,
+            started_wall_ms: 9e15,
+        } as const;
+        injector.observe(inside, 2, t0 + 50);
+        expect(injector.report()[0]).toMatchObject({ status: "fired", host_observed_seq: [2] });
+    });
+
     test("a fault never armed is untriggered", async () => {
         const { injector, url } = await start({
             id: "f",
@@ -738,6 +796,9 @@ describe("classification", () => {
         );
         expect(wireJson({ input: { type: "Buffer", data: [1, 2, 3] } })).toBe(
             '{"input":{"type":"Buffer","data":[1,2,3]}}',
+        );
+        expect(wireJson(JSON.parse('{"a":{"__proto__":{"x":1},"ok":1}}'))).toBe(
+            '{"a":{"__proto__":{"x":1},"ok":1}}',
         );
     });
 
@@ -1086,6 +1147,43 @@ describe("every request yields one record", () => {
         const r = await hostCallJson(url, AGENT_BODY, 1_500);
         expect(r.status).toBe(500);
         expect(records.records[0]?.error).toMatch(/TimeoutError/);
+        const fault = {
+            id: "s",
+            type: "slow_stream",
+            strategy: "single",
+            params: { count: 1, delay_ms: 2_000 },
+        } as ProxyFault;
+        const slow = await start(fault, scriptedUpstream(), 5_000, 100);
+        slow.injector.arm("s");
+        const seen = await hostCallJson(slow.url, AGENT_BODY, 1_500);
+        expect([seen.status, slow.records.records[0]?.error]).toEqual([
+            500,
+            expect.stringMatching(/TimeoutError/),
+        ]);
+    });
+
+    test("a scope() that throws still yields one record and frees inFlight", async () => {
+        const records = new RecordWriter(null);
+        let calls = 0;
+        const gateway = new Gateway({
+            upstream: scriptedUpstream(),
+            records,
+            injector: new FaultInjector([], new Rng(1), 1_000),
+            rng: new Rng(1),
+            clock: { scenarioMs: () => 0 },
+            scope: () => {
+                if (calls++ === 0) throw new Error("scheduler state unavailable");
+                return { arm: "a", session: null, turn: null };
+            },
+        });
+        await gateway.start();
+        gateways.push(gateway);
+        const r = await hostCallJson(gateway.urls[0] as string, AGENT_BODY, 1_500);
+        expect(r.status).toBe(500);
+        expect(records.records.map((x) => [x.component, x.status, x.error])).toEqual([
+            ["rejected", 500, "Error: scheduler state unavailable"],
+        ]);
+        expect([gateway.inFlight, gateway.failures]).toEqual([0, []]);
     });
 
     test("a method other than POST and a body over the limit are rejected with one record each", async () => {
@@ -1139,6 +1237,10 @@ describe("every request yields one record", () => {
         symlinkSync("target.txt", `${dir}/linked.jsonl`);
         expect(() => new RecordWriter(`${dir}/linked.jsonl`)).toThrow(/journal refused/);
         expect(readFileSync(`${dir}/target.txt`, "utf8")).toBe("");
+        mkdirSync(`${dir}/real`);
+        symlinkSync("real", `${dir}/link`);
+        expect(() => new RecordWriter(`${dir}/link/records.jsonl`)).toThrow(/through a link/);
+        expect(existsSync(`${dir}/real/records.jsonl`)).toBe(false);
         rmSync(dir, { recursive: true, force: true });
     });
 

@@ -266,10 +266,32 @@ export class Gateway {
             },
             sent: () => sent,
         };
+        const call = this.calls++;
+        const startedWall = Date.now();
+        const startedMono = performance.now();
+        let done: Done = {
+            component: "rejected",
+            componentSource: "inferred",
+            model: "",
+            status: 500,
+        };
+        let scope: Scope = { arm: "", session: null, turn: null };
+        let scenario_ms = 0;
+        try {
+            scope = this.options.scope();
+            scenario_ms = this.options.clock.scenarioMs();
+            done = await this.serve(request, sink, call, (d) => {
+                done = d;
+            });
+        } catch (caught) {
+            done = { ...done, error: `${(caught as Error).name}: ${(caught as Error).message}` };
+            sink.status(500, { "content-type": "application/json" });
+        }
+        sink.end();
         const base = {
-            ...this.options.scope(),
-            started_wall_ms: Date.now(),
-            scenario_ms: this.options.clock.scenarioMs(),
+            ...scope,
+            started_wall_ms: startedWall,
+            scenario_ms,
             input_tokens: 0,
             output_tokens: 0,
             cache_read_tokens: 0,
@@ -280,25 +302,9 @@ export class Gateway {
             finish_reason: null,
             error: null,
         };
-        const call = this.calls++;
-        let done: Done = {
-            component: "rejected",
-            componentSource: "inferred",
-            model: "",
-            status: 500,
-        };
-        try {
-            done = await this.serve(request, sink, call, (d) => {
-                done = d;
-            });
-        } catch (caught) {
-            done = { ...done, error: `${(caught as Error).name}: ${(caught as Error).message}` };
-            sink.status(500, { "content-type": "application/json" });
-        }
-        sink.end();
         try {
             const record = this.options.records.write({ ...base, ...done, status: sent });
-            this.options.injector.observe(record, call);
+            this.options.injector.observe(record, call, startedMono);
         } finally {
             this.inFlight--;
         }
@@ -387,6 +393,7 @@ export class Gateway {
             if (!fault) return;
             done.fault_ref = fault.id;
             await sleep(fault.params.delay_ms ?? 2_000, signal);
+            if (signal.aborted) throw signal.reason;
         };
         let retries = 0;
         let sawStop = false;

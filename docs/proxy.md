@@ -20,16 +20,17 @@ seed to one backoff sequence.
 
 `RecordWriter` appends one record per request to a JSONL file and keeps them
 in memory. The journal is created exclusively at construction with
-`O_NOFOLLOW`, so an existing path, a symlink, or anything other than a fresh
-regular file is refused, and a record enters memory only after its line
-reached the file. A
+`O_NOFOLLOW` after checking that its parent directory resolves without a
+link, so an existing path, a symlink in any component, or anything other than
+a fresh regular file is refused, and a record enters memory only after its
+line reached the file. A
 failed append is truncated back to the bytes that reached the file, and when
 that truncation fails too the writer refuses every later record, so the
 journal never carries a partial line followed by a whole one.
 Requests the gateway rejects (an unknown route, a method other than `POST`, a
 body that is not a JSON object, a body over 32 MiB, a malformed path, an
-upload the client abandoned) and requests whose handling throws still get a
-record. The gateway retains at most 32 MiB of a request body and counts the
+upload the client abandoned) and requests whose handling throws, including a
+throw from the scheduler's `scope()` or clock callback, still get a record. The gateway retains at most 32 MiB of a request body and counts the
 rest. The writer refuses a record that lacks any field below.
 
 | Field | Contents |
@@ -88,10 +89,14 @@ calls' answers by strategy:
 | intermittent | Each of the next 10 agent calls with probability 0.3, drawn from the injector's `rng` |
 | persistent | Every agent call until `disarm` |
 
-Each fault type answers as follows. The injected answer goes to the host
-without an upstream call, so the host's SDK, not the proxy's retry, handles
-it, and the record's `proxy_retries` is 0. A record carries `fault_ref` only
-when the transport accepted the answer's status; a timeout's silence counts.
+Each fault type answers as follows. For every type except `slow_stream` the
+injected answer goes to the host without an upstream call, so the host's SDK,
+not the proxy's retry, handles it, and the record's `proxy_retries` is 0.
+`slow_stream` forwards the real upstream answer, so the proxy's own retry can
+run first and the record counts it. A record carries `fault_ref` only when the
+transport accepted the answer's status; a timeout's silence counts. A
+`slow_stream` delay that runs past the request deadline ends the call with the
+timeout instead of the delayed answer.
 
 | Type | Host-visible answer |
 |---|---|

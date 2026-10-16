@@ -44,7 +44,7 @@ function toWire(value: unknown): WireJson {
     if (value instanceof Uint8Array) return Buffer.from(value).toString("base64");
     if (Array.isArray(value)) return value.map(toWire);
     if (value !== null && typeof value === "object") {
-        const out: { [key: string]: WireJson } = {};
+        const out: { [key: string]: WireJson } = Object.create(null);
         for (const [k, v] of Object.entries(value)) out[k] = toWire(v);
         return out;
     }

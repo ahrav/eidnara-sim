@@ -28,6 +28,7 @@ export const TARGET: Component = "agent";
 export class FaultInjector {
     private readonly armed = new Map<string, Armed>();
     private readonly witnesses = new Map<string, Witness>();
+    /** `at` is a monotonic `performance.now()` stamp, so a wall-clock step cannot move the window. */
     private readonly pending: { fault: string; at: number; call: number }[] = [];
 
     constructor(
@@ -69,16 +70,17 @@ export class FaultInjector {
                     : (params.count ?? params.calls ?? 1);
             if (a.calls >= limit) this.armed.delete(id);
             if (strategy !== "intermittent" || this.rng.next() < (params.probability ?? 1)) {
-                this.pending.push({ fault: id, at: Date.now(), call });
+                this.pending.push({ fault: id, at: performance.now(), call });
                 return a.fault;
             }
         }
         return null;
     }
 
-    observe(record: CallRecord, call: number): void {
+    /** `startedMono` is the call's receipt on the same monotonic clock `take()` stamps. */
+    observe(record: CallRecord, call: number, startedMono: number): void {
         for (const p of this.pending.filter((x) => call > x.call)) {
-            const inWindow = record.started_wall_ms <= p.at + this.windowMs;
+            const inWindow = startedMono <= p.at + this.windowMs;
             if (record.component !== TARGET || !inWindow) continue;
             (this.witnesses.get(p.fault) as Witness).host_observed_seq.push(record.seq);
             this.pending.splice(this.pending.indexOf(p), 1);

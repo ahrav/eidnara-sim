@@ -1,4 +1,5 @@
-import { constants, fstatSync, ftruncateSync, openSync, writeSync } from "node:fs";
+import { constants, fstatSync, ftruncateSync, openSync, realpathSync, writeSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 
 export const COMPONENTS = [
     "agent",
@@ -73,8 +74,16 @@ export function recordProblems(value: Record<string, unknown>): string[] {
     return problems;
 }
 
-/** Creates the journal exclusively without following a symlink, so a path that already exists in any form is refused. */
+/** Creates the journal exclusively without following a symlink in any path component, so an existing path or a linked parent is refused. */
 function openJournal(path: string): number {
+    const parent = resolve(dirname(path));
+    let real: string;
+    try {
+        real = realpathSync(parent);
+    } catch (caught) {
+        throw new Error(`journal refused: ${path} (${(caught as Error).message})`);
+    }
+    if (real !== parent) throw new Error(`journal refused: ${parent} resolves through a link`);
     const flags = constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW;
     let fd: number;
     try {
