@@ -6,6 +6,7 @@ type FieldType = "string" | "number" | "boolean" | "number|null";
 const COMMON: Record<string, FieldType> = { id: "string", repo: "string", source_id: "string" };
 /** `<repo>@<revision>:<trajectory>#<message index>` names the exact source message. */
 const SOURCE_ID = /^[^@\s]+@[0-9a-f]{40}:[^#\s]+#\d+$/;
+const REPO = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
 export const SAMPLE_FIELDS: Record<string, FieldType> = {
     ...COMMON,
     kind: "string",
@@ -50,6 +51,9 @@ export function entryProblems(
         }
         if (typeof e.source_id === "string" && !SOURCE_ID.test(e.source_id)) {
             problems.push(`${where}: source_id must be repo@revision:trajectory#index`);
+        }
+        if (typeof e.repo === "string" && !REPO.test(e.repo)) {
+            problems.push(`${where}: repo must be owner/name`);
         }
     });
     return problems;

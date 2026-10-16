@@ -42,6 +42,15 @@ export interface RepoSpec {
 
 const SHA = /^[0-9a-f]{40}$/;
 
+function httpsHost(url: string): boolean {
+    try {
+        const parsed = new URL(url);
+        return parsed.protocol === "https:" && parsed.hostname !== "";
+    } catch {
+        return false;
+    }
+}
+
 export function loadRepos(): RepoSpec[] {
     const text = readFileSync(join(CORPUS_DIR, "repos.json"), "utf8");
     let raw: { schema?: string; repos?: RepoSpec[] };
@@ -57,8 +66,8 @@ export function loadRepos(): RepoSpec[] {
     if (new Set(ids).size !== ids.length) throw new Error(`repos.json: duplicate id in ${ids}`);
     for (const repo of repos) {
         if (!SHA.test(repo.commit)) throw new Error(`repos.json: ${repo.id}: commit is not a SHA`);
-        if (typeof repo.url !== "string" || !/^https:\/\/\S+$/.test(repo.url)) {
-            throw new Error(`repos.json: ${repo.id}: url must be an https URL`);
+        if (typeof repo.url !== "string" || !httpsHost(repo.url)) {
+            throw new Error(`repos.json: ${repo.id}: url must be an https URL with a host`);
         }
         if (typeof repo.license_file !== "string" || !isPlainRelativePath(repo.license_file)) {
             throw new Error(

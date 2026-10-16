@@ -73,11 +73,9 @@ export function kindMatches(sample: {
     content: string;
 }): boolean {
     if (sample.kind === "stack_trace") {
-        const last = sample.content.trimEnd().split("\n").at(-1) ?? "";
-        return (
-            sample.tool === "execute_bash" &&
-            (sample.content.includes(TRACEBACK) || TRACE_END.test(last))
-        );
+        const lines = sample.content.trimEnd().split("\n");
+        const framed = lines.some((l) => FRAME.test(l)) && TRACE_END.test(lines.at(-1) ?? "");
+        return sample.tool === "execute_bash" && (sample.content.includes(TRACEBACK) || framed);
     }
     return classify(sample.tool, sample.command, sample.content) === sample.kind;
 }

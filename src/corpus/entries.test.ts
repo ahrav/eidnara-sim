@@ -62,6 +62,15 @@ describe("entryProblems", () => {
         ]);
     });
 
+    test("rejects a blank or single-segment repo", () => {
+        expect(entryProblems([{ ...good, repo: "" }], "samples", SAMPLE_FIELDS)).toEqual([
+            "samples[0] (out-0001): repo must be owner/name",
+        ]);
+        expect(entryProblems([{ ...good, repo: "solo" }], "samples", SAMPLE_FIELDS)).toHaveLength(
+            1,
+        );
+    });
+
     test("reports every field for an empty or null entry", () => {
         const n = Object.keys(ERROR_CODE_FIELDS).length + 1;
         expect(entryProblems([{}, null], "x", ERROR_CODE_FIELDS)).toHaveLength(2 * n);
