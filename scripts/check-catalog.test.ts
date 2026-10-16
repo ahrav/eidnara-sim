@@ -205,6 +205,32 @@ describe("catalog checker", () => {
         );
     });
 
+    test("refuses a blank milestone cell and out-of-order evidence headings", () => {
+        const path = copy();
+        edit(path, /^(\| SIM-P06 \|.*\| )M\d+ \|$/m, "$1 |");
+        const evidence = join(dir, "evidence/sim-p07-probe-text-never-announces-probe.md");
+        const text = readFileSync(evidence, "utf8");
+        writeFileSync(
+            evidence,
+            text
+                .replace(
+                    "## Discovery trigger\n",
+                    "## Investigation log\n\nx\n\n## Discovery trigger\n",
+                )
+                .replace(
+                    /\n## Investigation log\n(?![\s\S]*## Investigation log)/,
+                    "\n## Investigation log two\n",
+                ),
+        );
+        const errors = checkCatalog(path, METHOD, IDS);
+        expect(errors.some((e) => e.startsWith("catalog: index row malformed: | SIM-P06 |"))).toBe(
+            true,
+        );
+        expect(errors).toContain(
+            "sim-p07-probe-text-never-announces-probe: evidence heading ## Investigation log is out of order",
+        );
+    });
+
     test("refuses a Guarantee that carries its id and no claim", () => {
         const path = copy();
         edit(path, /Guarantee: SIM-P01:[^\n]*\n(?:[^\n]+\n)*?(?=Check:)/, "Guarantee: SIM-P01:\n");

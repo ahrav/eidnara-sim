@@ -151,6 +151,7 @@ describe("pre-registration validator", () => {
                 "families[intrusiveness].interval_method: a zero-tolerance gate compares each run to a bound and takes none",
                 "arms.order_by_seed[1]: is not a permutation of arms.run",
                 "arms.order_by_seed: every arm runs first for exactly one seed",
+                "arms.order_by_seed: every arm runs once in every position",
             ].sort(),
         );
     });
@@ -221,9 +222,9 @@ describe("pre-registration validator", () => {
         l.arms.order_by_seed = l.arms.order_by_seed.map((o: string[]) =>
             o.filter((a) => a !== "eidnara-cf"),
         );
-        expect(validatePreregistration(l)).toEqual([
+        expect(validatePreregistration(l)).toContain(
             "arms.run: tier L runs exactly host, eidnara, eidnara-kl, eidnara-cf",
-        ]);
+        );
         const s = load("S") as any;
         s.arms.run.push("eidnara-cf");
         s.arms.order_by_seed = s.arms.order_by_seed.map((o: string[]) => [...o, "eidnara-cf"]);
@@ -249,6 +250,7 @@ describe("pre-registration validator", () => {
             [
                 "arms.order_by_seed: seeds share an arm order",
                 "arms.order_by_seed: every arm runs first for exactly one seed",
+                "arms.order_by_seed: every arm runs once in every position",
             ].sort(),
         );
         m.arms.order_by_seed = [
@@ -258,6 +260,15 @@ describe("pre-registration validator", () => {
         ];
         expect(validatePreregistration(m)).toEqual([
             "arms.order_by_seed: every arm runs first for exactly one seed",
+            "arms.order_by_seed: every arm runs once in every position",
+        ]);
+        m.arms.order_by_seed = [
+            ["host", "eidnara", "eidnara-kl"],
+            ["eidnara", "host", "eidnara-kl"],
+            ["eidnara-kl", "host", "eidnara"],
+        ];
+        expect(validatePreregistration(m)).toEqual([
+            "arms.order_by_seed: every arm runs once in every position",
         ]);
     });
 

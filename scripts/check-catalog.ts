@@ -153,16 +153,26 @@ export function checkRecord(record: Record, spec: FieldSpec[], catalogDir: strin
             const evidence = withoutFences(readFileSync(path, "utf8"));
             if (!evidence.startsWith(`# ${at}\n`))
                 errors.push(`${at}: evidence title differs from slug`);
+            let cursor = 0;
             for (const h of EVIDENCE_HEADINGS) {
-                const start = evidence.indexOf(`\n${h}\n`);
+                const start = evidence.indexOf(`\n${h}\n`, cursor);
                 if (start < 0) {
-                    errors.push(`${at}: evidence lacks ${h}`);
+                    errors.push(
+                        evidence.includes(`\n${h}\n`)
+                            ? `${at}: evidence heading ${h} is out of order`
+                            : `${at}: evidence lacks ${h}`,
+                    );
                     continue;
                 }
-                const rest = evidence.slice(start + h.length + 2);
+                cursor = start + h.length + 2;
+                const rest = evidence.slice(cursor);
                 const end = rest.indexOf("\n## ");
                 const body = end < 0 ? rest : rest.slice(0, end);
                 if (body.trim() === "") errors.push(`${at}: evidence section ${h} is empty`);
+            }
+            const headings = evidence.split("\n").filter((line) => line.startsWith("## "));
+            if (new Set(headings).size !== headings.length) {
+                errors.push(`${at}: evidence repeats a heading`);
             }
         }
     }
@@ -199,7 +209,7 @@ export function checkCatalog(
         .filter((line) => line.startsWith("|"))
         .slice(2)) {
         const m =
-            /^\| ([A-Z0-9-]+) \| \[([a-z0-9-]+)\]\(#\2\) \| ([a-z]+) \| (`[^`]+`) \| ([a-z-]+) \| /.exec(
+            /^\| ([A-Z0-9-]+) \| \[([a-z0-9-]+)\]\(#\2\) \| ([a-z]+) \| (`[^`]+`) \| ([a-z-]+) \| (M\d+) \|$/.exec(
                 row,
             );
         if (!m) {

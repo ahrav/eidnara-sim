@@ -384,6 +384,14 @@ function checkArms(p: Preregistration, errors: string[]): void {
     if (p.seeds.length >= p.arms.run.length && !sameSet(firsts, p.arms.run)) {
         errors.push("arms.order_by_seed: every arm runs first for exactly one seed");
     }
+    if (p.seeds.length === p.arms.run.length) {
+        const square = p.arms.run.every((_, position) =>
+            sameSet([...new Set(p.arms.order_by_seed.map((order) => order[position]))], p.arms.run),
+        );
+        if (!square) {
+            errors.push("arms.order_by_seed: every arm runs once in every position");
+        }
+    }
 }
 
 /** Every refusal, each naming the field path it applies to; an empty list means accepted. */
