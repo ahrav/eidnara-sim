@@ -446,3 +446,25 @@ test("the daemon stack refuses a symlinked store directory and replaces a symlin
     expect(lstatSync(join(root, "runtime")).isSymbolicLink()).toBe(false);
     expect(existsSync(join(root, "runtime/runtime.json"))).toBe(true);
 });
+
+test("OpenCode teardown targets the server this harness spawned, not another process on the port", async () => {
+    const host = new OpencodeSimHost({ ...context(runDir()), host: "opencode" });
+    // The decoy's parent exits at once, so the decoy is reparented away from this process.
+    Bun.spawnSync([
+        "/bin/sh",
+        "-c",
+        `/bin/sh -c 'sleep 300; exit 0' sh serve ${PORT} >/dev/null 2>&1 &`,
+    ]);
+    const real = Bun.spawn(["/bin/sh", "-c", "sleep 300; exit 0", "sh", "serve", PORT], {
+        stdio: ["ignore", "ignore", "ignore"],
+    });
+    await Bun.sleep(100);
+    (host as Untyped).oc = { port: Number(PORT) };
+    try {
+        expect(serving().length).toBe(2);
+        expect(host.hostPid()).toBe(real.pid);
+    } finally {
+        (host as Untyped).oc = null;
+        for (const pid of serving()) process.kill(pid, "SIGKILL");
+    }
+}, 10_000);

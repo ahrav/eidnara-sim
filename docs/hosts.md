@@ -86,7 +86,10 @@ Pi runs in RPC mode with `--session-id sim-<session>`, its agent directory,
 settings, and model list under the arm root, and the Eidnara extension from
 the build clone on Eidnara arms. OpenCode runs through the v1 `spawnOpencode`,
 with a wrapper script that launches the pinned binary through the sandbox
-launcher, and titles each session `sim-<session>`. The v1 runner executes the
+launcher, and titles each session `sim-<session>`. The v1 runner starts the
+wrapper as the harness's own child and the wrapper execs the launcher, so
+`closeSession` stops the one process serving the session's port whose parent
+is the harness. The v1 runner executes the
 wrapper on the host, outside the sandbox, so it lives at
 `<run>/hostbin/<arm>/opencode` beside the launcher: the sandbox masks the run
 root, and the arm root the agent can write holds nothing a later session

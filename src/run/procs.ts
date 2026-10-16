@@ -48,6 +48,11 @@ export function ownedProcesses(rootPid: number): number[] {
     return out;
 }
 
+export function parentPid(pid: number): number | null {
+    const ppid = statFields(pid)?.[1];
+    return ppid === undefined ? null : Number(ppid);
+}
+
 export function processStart(pid: number): string | null {
     return statFields(pid)?.[19] ?? null;
 }

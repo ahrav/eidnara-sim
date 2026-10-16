@@ -13,7 +13,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import type { SimConfig } from "../config/config";
 import { withDeadline } from "../run/deadline";
 import { launch, plainPath, shellQuote } from "../run/launcher";
-import { stopOwnedTree } from "../run/procs";
+import { parentPid, stopOwnedTree } from "../run/procs";
 import { FAKETIME_LIB, faketimeEnv } from "../run/timeinject";
 import { toolbinDir, toolchainEnv } from "../run/toolchain";
 
@@ -483,8 +483,13 @@ export class OpencodeSimHost extends SimHost {
                 return false;
             }
         };
-        const pids = readdirSync("/proc").filter((e) => /^\d+$/.test(e) && serves(e));
-        return pids.length > 0 ? Math.min(...pids.map(Number)) : null;
+        // The v1 runner spawns the wrapper as this process's child, and the wrapper execs the
+        // launcher, so the launcher root is the one serving process whose parent is this process.
+        const pids = readdirSync("/proc")
+            .filter((e) => /^\d+$/.test(e) && serves(e))
+            .map(Number)
+            .filter((pid) => parentPid(pid) === process.pid);
+        return pids.length === 1 ? (pids[0] as number) : null;
     }
 
     async prompt(text: string, timeoutMs: number): Promise<PromptResult> {
