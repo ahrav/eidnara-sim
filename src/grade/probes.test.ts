@@ -846,6 +846,72 @@ describe("grading harness", () => {
         expect(log.all().length).toBe(1);
     });
 
+    test("a repeated package build is quiet", () => {
+        const f = fixture("P13-pass");
+        for (const cmd of ["npm run build", "pnpm run build", "bun run build"]) {
+            const snap = structuredClone(f.snapshots[0]) as Snapshot;
+            const log = snap.artefacts.find((a) => a.class === "command-log");
+            if (log?.class !== "command-log") throw new Error("fixture lacks command-log");
+            log.commands.unshift({ command: cmd, exit: 0, scenario_ms: 100 });
+            log.commands.push({ command: cmd, exit: 0, scenario_ms: 900 });
+            expect(gradeItem(f.probe, [snap], rules)?.metrics["P13.repeated_action"]).toBe(false);
+        }
+    });
+
+    test("a quoted multiword grep pattern is one operand", () => {
+        const f = fixture("P6-pass");
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        const log = snap.artefacts.find((a) => a.class === "command-log" && a.role === "turn");
+        if (log?.class !== "command-log") throw new Error("fixture lacks command-log");
+        log.commands.push({
+            command: "rg 'mentions src/connection.rs' README.md",
+            exit: 1,
+            scenario_ms: 10,
+        });
+        expect(gradeItem(f.probe, [snap], rules)?.metrics["P6.reread_files"]).toBe(0);
+    });
+
+    test("a header-only deletion names no surviving path", () => {
+        const f = fixture("P1-pass");
+        const probe = { ...f.probe, check: { must: ["\\.drowsy-egret-12\\.test\\.ts"] } };
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        const diff = snap.artefacts.find((a) => a.class === "diff" && a.role === "turn");
+        if (diff?.class !== "diff") throw new Error("fixture lacks diff");
+        diff.patch =
+            "diff --git a/src/get.drowsy-egret-12.test.ts b/src/get.drowsy-egret-12.test.ts\ndeleted file mode 100644\nindex e69de29..0000000\n";
+        expect(gradeItem(probe, [snap], rules)?.verdict).toBe("fail");
+    });
+
+    test("a non-empty diff payload without unified-diff structure is refused", () => {
+        const f = fixture("P2-pass");
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        const diff = snap.artefacts.find((a) => a.class === "diff");
+        if (diff?.class !== "diff") throw new Error("fixture lacks diff");
+        diff.patch = "fatal: not a git repository";
+        expect(() => gradeItem(f.probe, [snap], rules)).toThrow("patch");
+        diff.patch = "";
+        expect(gradeItem(f.probe, [snap], rules)?.verdict).toBe("pass");
+    });
+
+    test("an inherited object property is not a probe type", () => {
+        const path = join(mkdtempSync(join(tmpdir(), "sim-grades-")), "grades.jsonl");
+        const log = new GradeLog(path);
+        const g = grade("P2-pass");
+        expect(() =>
+            log.append({ ...g, probe_type: "toString", metrics: { "toString.pass": true } }),
+        ).toThrow(GradeRefused);
+    });
+
+    test("segments after a top-level exit are unreachable", () => {
+        const f = fixture("P13-pass");
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        const log = snap.artefacts.find((a) => a.class === "command-log");
+        if (log?.class !== "command-log") throw new Error("fixture lacks command-log");
+        const commit = log.commands.find((c) => c.command.startsWith("git commit")) as Command;
+        commit.command = `exit 0; ${commit.command}`;
+        expect(gradeItem(f.probe, [snap], rules)?.metrics["P13.rule_kept"]).toBe(false);
+    });
+
     test("a check pattern that is empty after its prefix or fails to compile is refused", () => {
         const f = fixture("P1-fail");
         for (const bad of ["(?i)", "["]) {

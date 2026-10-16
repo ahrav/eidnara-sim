@@ -93,8 +93,9 @@ function parseDiff(patch: string): { added: string[]; paths: string[]; surviving
         } else if (line.startsWith("@@")) inHunk = true;
         else if (inHunk) {
             if (line.startsWith("+")) added.push(line.slice(1));
-        } else if (line.startsWith("+++ /dev/null")) deleted = true;
-        else if (line.startsWith("+++ b/") || line.startsWith('+++ "b/')) {
+        } else if (line.startsWith("+++ /dev/null") || line.startsWith("deleted file mode ")) {
+            deleted = true;
+        } else if (line.startsWith("+++ b/") || line.startsWith('+++ "b/')) {
             const path = gitPath(line.slice("+++ ".length));
             paths.push(path);
             if (current === null) surviving.push(path);
@@ -103,6 +104,10 @@ function parseDiff(patch: string): { added: string[]; paths: string[]; surviving
     close();
     return { added, paths: [...new Set(paths)], surviving: [...new Set(surviving)] };
 }
+
+/** A non-empty patch must open as a unified diff; an empty patch is a turn that changed nothing. */
+export const unifiedDiff = (v: unknown) =>
+    typeof v === "string" && (v.length === 0 || /^(diff --git |--- |\+\+\+ |@@ )/m.test(v));
 
 export function addedLines(patch: string): string {
     return parseDiff(patch).added.join("\n");

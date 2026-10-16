@@ -1,4 +1,5 @@
 import { COMPONENTS } from "../proxy/records";
+import { unifiedDiff } from "./text";
 export const ARTEFACT_CLASSES = [
     "diff",
     "command-log",
@@ -159,7 +160,8 @@ const unordered = (calls: unknown, path: string): string | null => {
 /** The payload check for each artefact class, run after id and class are known. */
 const PAYLOADS: Record<ArtefactClass, (a: Record<string, unknown>, path: string) => string | null> =
     {
-        diff: (a, p) => badField({ role: oneOf(["turn", "prior-session"]), patch: str }, a, p),
+        diff: (a, p) =>
+            badField({ role: oneOf(["turn", "prior-session"]), patch: unifiedDiff }, a, p),
         "command-log": (a, p) =>
             badField({ role: oneOf(["turn", "session"]) }, a, p) ??
             listOf(COMMAND, `${p}.commands`, a.commands),

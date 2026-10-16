@@ -71,7 +71,7 @@ export interface GradeRecord extends Outcome {
 const READS = /^(cat|less|more|head|tail|sed|view|bat|grep|rg|read)\b/;
 const TESTS = /^(cargo test|(bun|npm|pnpm) (run )?test)\b/;
 const QUIET =
-    /^\s*(cargo (build|check|test)|(bun|npm|pnpm) (install|i|ci|(run )?test)|git (status|log|diff)|ls|pwd)\b[^&|;`$()\n]*$/;
+    /^\s*(cargo (build|check|test)|(bun|npm|pnpm) (install|i|ci|(run )?(test|build))|git (status|log|diff)|ls|pwd)\b[^&|;`$()\n]*$/;
 const FOLDS = ["history_summarizer", "native_compaction"];
 const USER_SIM_LABELS = [
     "task",
@@ -246,13 +246,40 @@ const executed = (x: Command): string[] => {
     const lastList = guarded.reduce((n, p, i) => (/^[;&\n]$/.test(p.op) ? i : n), 0);
     const mixed = guarded.slice(lastList).some((p) => p.op === "||");
     const firstListEnd = guarded.findIndex((p, i) => i > 0 && /^[;&\n]$/.test(p.op));
-    const reached = x.exit === null && firstListEnd >= 0 ? firstListEnd : guarded.length;
+    const exitAt = guarded.findIndex(
+        (p) => /^[;&\n]$/.test(p.op) && /^(exit|return)\b/.test(p.seg),
+    );
+    const afterExit = exitAt < 0 ? guarded.length : exitAt + 1;
+    const unfinished = x.exit === null && firstListEnd >= 0 ? firstListEnd : guarded.length;
+    const reached = Math.min(afterExit, unfinished);
     return guarded
         .slice(0, reached)
         .filter(
             (p, i) => p.op !== "||" && (p.op !== "&&" || (x.exit === 0 && i >= lastList && !mixed)),
         )
         .map((p) => unprefixed(p.seg));
+};
+/** Shell words of a segment, with quotes grouping and removed. */
+const shellWords = (segment: string): string[] => {
+    const words: string[] = [];
+    let word = "";
+    let quote = "";
+    let open = false;
+    for (const ch of segment) {
+        if (quote) {
+            if (ch === quote) quote = "";
+            else word += ch;
+        } else if (ch === "'" || ch === '"') {
+            quote = ch;
+            open = true;
+        } else if (/\s/.test(ch)) {
+            if (word.length > 0 || open) words.push(word);
+            word = "";
+            open = false;
+        } else word += ch;
+    }
+    if (word.length > 0 || open) words.push(word);
+    return words;
 };
 /** grep and rg options whose value is the next word, so that word is neither pattern nor file. */
 const GREP_OPERAND_OPTIONS =
@@ -263,7 +290,7 @@ const GREP_OPERAND_OPTIONS =
  */
 const operands = (segment: string): string => {
     const unredirected = segment.replace(/(^|\s)\d*&?>>?\s*\S+/g, " ").trim();
-    const words = unredirected.split(/\s+/);
+    const words = shellWords(unredirected);
     if (!/^(grep|rg)$/.test(words[0] as string)) return unredirected;
     const files: string[] = [];
     let supplied = false;
@@ -550,7 +577,7 @@ function isGradeRecord(value: unknown): value is GradeRecord {
     const g = value as Record<string, unknown>;
     const strings =
         ["item", "arm", "snapshot"].every((k) => text(g[k])) && typeof g.probe_type === "string";
-    const known = g.probe_type === "P7" || (g.probe_type as string) in GRADERS;
+    const known = g.probe_type === "P7" || Object.hasOwn(GRADERS, g.probe_type as string);
     const version = typeof g.version === "number" && Number.isInteger(g.version) && g.version >= 1;
     const verdict = VERDICTS.includes(g.verdict as Verdict);
     const metricValue = (v: unknown) => typeof v === "boolean" || str(v) || num(v);
