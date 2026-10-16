@@ -255,8 +255,10 @@ export class HostDriver implements ArmDriver {
         if (r.status !== 0) throw new Error(`git ${args.join(" ")}: ${r.stderr}`);
     }
 
+    /** Provider faults belong to the proxy and the sleep to the clock; the rest need a mechanism here. */
     supports(f: FaultEpisode): boolean {
-        return f.type === "laptop_sleep" || SUPPORTED.has(f.type);
+        if (f.seam.layer !== "scheduler") return true;
+        return SUPPORTED.has(f.type);
     }
 
     /** The daemon's directories are host-writable, so every daemon start and restart rechecks them. */

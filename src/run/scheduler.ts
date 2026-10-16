@@ -91,7 +91,8 @@ export class Scheduler {
         }
         for (const arm of this.o.order) {
             const driver = this.o.drivers[arm];
-            const refused = this.o.faults.find((f) => driver?.supports?.(f) === false);
+            const owned = this.o.faults.filter((f) => f.seam.layer !== PROXY_LAYER);
+            const refused = owned.find((f) => driver?.supports?.(f) === false);
             if (refused) {
                 throw new HarnessFailure(
                     `scheduler: arm ${arm} has no mechanism for fault type ${refused.type} (${refused.id})`,

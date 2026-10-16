@@ -725,6 +725,8 @@ touch ${escaped}
         expect(driver.supports(episode("two_hosts_one_daemon"))).toBe(false);
         expect(driver.supports(episode("model_switch"))).toBe(true);
         expect(driver.supports(episode("laptop_sleep"))).toBe(true);
+        expect(driver.supports(episode("provider_429"))).toBe(true);
+        expect(driver.supports(episode("slow_stream"))).toBe(true);
     });
 
     test.skipIf(!sandbox)("a hook cannot write into the configured checkout", async () => {
