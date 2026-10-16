@@ -113,6 +113,9 @@ describe("classify and commandOf", () => {
             "test_run",
         );
         expect(classify("execute_bash", "pytest tests/test_h.py", "ok")).toBe("test_run");
+        expect(
+            classify("execute_bash", "echo \\; pytest followed by a long unquoted message", "x"),
+        ).toBeNull();
     });
     test("commandOf reads command and path, and falls back to the raw text", () => {
         expect(commandOf('{"command":"view","path":"/a.py"}')).toBe("view /a.py");

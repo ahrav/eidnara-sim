@@ -272,6 +272,10 @@ export function checkCorpus(): CorpusReport {
         (dist.quantities.append_tokens_per_step?.n ?? 0) <= totalSteps,
         `append_tokens_per_step: n exceeds the ${totalSteps} modelled steps`,
     );
+    need(
+        (dist.quantities.tool_output_chars?.n ?? 0) <= (dist.tool_mix?.n ?? 0),
+        "tool_output_chars: n exceeds the tool-call count",
+    );
     const cited = loadCited();
     const citedKeys = cited.checks
         .map((c) => `${c.quantity}@${c.q}`)

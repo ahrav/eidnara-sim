@@ -59,7 +59,7 @@ export function classify(tool: string, command: string, content: string): Sample
     if (content.includes(TRACEBACK)) return "stack_trace";
     if (tool !== "execute_bash" || SHELL_ERROR.test(content)) return null;
     const bare = command.replace(QUOTED, '""');
-    const runner = bare.split(/&&|;|\|/).find((segment) => RUNNER.test(segment));
+    const runner = bare.split(SEPARATOR).find((segment) => RUNNER.test(segment));
     if (runner !== undefined) return NO_RUN.test(runner) ? null : "test_run";
     if (SEARCH.test(bare)) return "grep";
     if (/^\s*(cat|head|tail|sed -n)\b/.test(command)) return "file_read";
@@ -110,14 +110,15 @@ type Provenanced = Omit<Provenance, "id">;
 
 const FRAME = /^\s*File "/;
 const RUNNER =
-    /(^|&&|;|\|)\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*(?:python3?\s+-m\s+)?(?:pytest|py\.test|tox|nox|unittest)\b/;
+    /(^|(?<!\\)&&|(?<!\\);|(?<!\\)\|)\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*(?:python3?\s+-m\s+)?(?:pytest|py\.test|tox|nox|unittest)\b/;
+const SEPARATOR = /(?<!\\)(?:&&|;|\|)/;
 const QUOTED = /"(?:\\.|[^"\\])*"|'[^']*'/g;
 const NO_RUN = /(^|\s)(--help|-h|--version|--co|--collect-only|--fixtures|--markers)(\s|$)/;
 const SHELL_ERROR = /^(?:bash|sh): (?:line \d+: )?(?:syntax error|.*: command not found)/;
 const TRACEBACK = "Traceback (most recent call last)";
 const TRACE_END = /^(?:E\s+)?\s*[\w.]*(?:Error|Exception|Failure|Exit|Interrupt|Warning)\b/;
 const SEARCH =
-    /(^|&&|;|\|)\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*(?:sudo\s+|xargs\s+(?:-\S+\s+)*)?(?:grep|rg|ag)\b|(^|&&|;|\|)\s*find\b[^&;|]*-exec\s+(?:grep|rg|ag)\b/;
+    /(^|(?<!\\)&&|(?<!\\);|(?<!\\)\|)\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*(?:sudo\s+|xargs\s+(?:-\S+\s+)*)?(?:grep|rg|ag)\b|(^|(?<!\\)&&|(?<!\\);|(?<!\\)\|)\s*find\b.*?-exec\s+(?:grep|rg|ag)\b/;
 
 function harvestCodes(lines: string[], base: Provenanced, codes: Map<string, ErrorCodeEntry>) {
     for (const [i, line] of lines.entries()) {
