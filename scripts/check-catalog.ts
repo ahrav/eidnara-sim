@@ -20,6 +20,31 @@ interface FieldSpec {
     values: string[] | null;
 }
 
+/**
+ * The text outside fenced code blocks. A fence opens with three or more backticks or tildes after
+ * up to three spaces and closes with a same-character run at least as long, as Markdown defines.
+ */
+export function withoutFences(text: string): string {
+    const kept: string[] = [];
+    let open: { char: string; length: number } | null = null;
+    for (const line of text.split("\n")) {
+        const m = /^ {0,3}([`~])\1{2,}/.exec(line);
+        const run = m ? m[0].trimStart().length : 0;
+        if (open) {
+            if (m && m[1] === open.char && run >= open.length && line.trim() === m[0].trim()) {
+                open = null;
+            }
+            continue;
+        }
+        if (m) {
+            open = { char: m[1] ?? "", length: run };
+            continue;
+        }
+        kept.push(line);
+    }
+    return kept.join("\n");
+}
+
 /** The record fields in schema order, read from the code block under `## Record schema`. */
 export function methodFields(method: string): FieldSpec[] {
     const section = method.slice(method.indexOf("## Record schema"));
@@ -123,10 +148,7 @@ export function checkRecord(record: Record, spec: FieldSpec[], catalogDir: strin
         const path = join(catalogDir, link);
         if (!existsSync(path)) errors.push(`${at}: ${link} missing`);
         else {
-            const evidence = readFileSync(path, "utf8").replace(
-                /^([`~])\1{2,}[^\n]*\n[\s\S]*?^\1{3,}\s*$/gm,
-                "",
-            );
+            const evidence = withoutFences(readFileSync(path, "utf8"));
             if (!evidence.startsWith(`# ${at}\n`))
                 errors.push(`${at}: evidence title differs from slug`);
             for (const h of EVIDENCE_HEADINGS) {
