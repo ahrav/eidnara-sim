@@ -97,7 +97,8 @@ cannot call, and the divergences are listed below.
    matched with every separator removed, so `eid-nara` and `CAN-ARY-7f3`
    match. The
    arm names are eval-core's six plus `eidnara`, `host arm`, and
-   `memory arm`. Doubled emphasis marks (`**`, `__`), backticks, heading
+   `memory arm`. Markdown links and images keep their label and lose their
+   destination, doubled or tripled emphasis marks (`**`, `***`, `__`, `___`), backticks, heading
    marks, bullet marks, and code fence lines (a line that starts with three
    backticks and holds no further backtick, whatever its info string) are
    stripped and whitespace
@@ -126,7 +127,8 @@ cannot call, and the divergences are listed below.
    (`grading.judge.model` with the current prompt and rubric digests), the
    set validates, and the permutation check passes.
 6. `permutationCheck` refuses counts that are not safe whole numbers and arm
-   identification above the pre-registered 60% ceiling, correct or inverted.
+   identification above the pre-registered 60% ceiling, correct or inverted,
+   compared in exact integer arithmetic.
 7. `calibrationDigest` validates a calibration set: at least 20 pairs, and a
    human sample of at least 10% rounded up and never below 20 pairs. Only a
    set that passes gets a digest; a blank pair id, a human label naming no
@@ -149,7 +151,10 @@ cannot call, and the divergences are listed below.
 `proxyJudge` sends each verdict request through the capture proxy with the
 `judge` component header, bounded by a per-call deadline (900 s by default)
 covering the request and the body read, whose expiry is a judge refusal. It refuses a judge model from the agent model's
-family (SIM-P43) and a model id whose family it cannot name; the
+family (SIM-P43), where the family is the provider segment of the model id
+(`provider.model` or `region.provider.model`), and a model id whose provider
+it does not know; a reply that is not JSON, carries no text block, or whose
+text blocks together are not one verdict word is a judge refusal. The
 pre-registered judge is `global.openai.gpt-5.6-luna`.
 On 2026-10-16 the two P7 fixtures went through the gateway to that model
 (`sim-runs/judge-smoke/judge-calls.jsonl` holds the four `judge` call

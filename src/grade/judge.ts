@@ -52,7 +52,8 @@ export function normalise(text: string): string {
         .replace(/^[ \t]*```[^`\n]*$/gm, "")
         .replace(/^#{1,6}\s+/gm, "")
         .replace(/^\s*[-*+]\s+/gm, "")
-        .replace(/\*\*|__|`/g, "")
+        .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
+        .replace(/\*{2,3}|_{2,3}|`/g, "")
         .replace(/\s+/g, " ")
         .trim();
 }
@@ -133,10 +134,14 @@ export function parseVerdict(text: string): RawVerdict {
     throw new GradeRefused(`judge reply ${JSON.stringify(text.slice(0, 80))} is not a verdict`);
 }
 
+const PROVIDERS = new Set(["anthropic", "openai", "amazon", "meta", "mistral"]);
+
+/** `family` extracts the provider from a model id of the form `provider.model` or `region.provider.model`. */
 function family(model: string): string {
-    const found = /(anthropic|openai|amazon|meta|mistral)/.exec(model)?.[1];
-    if (!found) throw new GradeRefused(`model ${model} has no known family`);
-    return found;
+    const [first = "", second = ""] = model.split(".");
+    const provider = [first, second].find((segment) => PROVIDERS.has(segment));
+    if (!provider) throw new GradeRefused(`model ${model} has no known family`);
+    return provider;
 }
 
 export function proxyJudge(
@@ -175,14 +180,19 @@ export function proxyJudge(
                 if ((caught as Error).name === "TimeoutError") {
                     throw new GradeRefused(`judge call timed out after ${deadlineMs} ms`);
                 }
+                if (caught instanceof SyntaxError)
+                    throw new GradeRefused("judge reply is not JSON");
                 throw caught;
             }
             const content = body?.output?.message?.content;
-            const text = Array.isArray(content)
-                ? (content as Array<{ text?: unknown }>).find((b) => b.text !== undefined)?.text
-                : undefined;
-            if (typeof text !== "string") throw new GradeRefused("judge reply carries no text");
-            return parseVerdict(text);
+            const texts = Array.isArray(content)
+                ? content.flatMap((block: unknown) => {
+                      const text = (block as { text?: unknown } | null)?.text;
+                      return typeof text === "string" ? [text] : [];
+                  })
+                : [];
+            if (texts.length === 0) throw new GradeRefused("judge reply carries no text");
+            return parseVerdict(texts.join("\n"));
         },
     };
 }
@@ -247,7 +257,8 @@ export function permutationCheck(trials: number, correct: number, rules: Rules):
     if (correct > trials)
         throw new GradeRefused("permutation check counts more correct than trials");
     const identified = Math.max(correct, trials - correct);
-    if (identified * 100 > trials * rules.judge.arm_identification_ceiling_percent) {
+    const ceiling = BigInt(rules.judge.arm_identification_ceiling_percent);
+    if (BigInt(identified) * 100n > BigInt(trials) * ceiling) {
         throw new GradeRefused(`judge identified the arms in ${identified} of ${trials} trials`);
     }
 }

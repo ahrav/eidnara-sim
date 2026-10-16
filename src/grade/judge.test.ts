@@ -523,6 +523,31 @@ describe("P7 judge path", () => {
         expect(() => gradeP7(judgment, stale, rules)).toThrow(GradeRefused);
     });
 
+    test("the permutation ceiling is compared exactly at large safe counts", () => {
+        expect(() => permutationCheck(9007199254740981, 5404319552844589, rules)).toThrow(
+            "identified the arms",
+        );
+    });
+
+    test("triple emphasis marks and link destinations are formatting", () => {
+        for (const blank of ["***", "___", "*** ___"]) expect(normalise(blank)).toBe("");
+        expect(normalise("see [the docs](https://example.test/x) now")).toBe("see the docs now");
+        expect(normalise("![alt text](img.png)")).toBe("alt text");
+        const base = { id: "p", a: "fine", b: "fine" };
+        expect(() =>
+            blind({ ...base, b: "[Eid](https://example.test)nara found it" }, "a_then_b", "r", []),
+        ).toThrow("names an arm");
+    });
+
+    test("the model family is the provider segment of the model id", () => {
+        const url = "http://127.0.0.1:1";
+        expect(() =>
+            proxyJudge(url, "global.cohere.openai-command", "global.cohere.anthropic-command"),
+        ).toThrow("no known family");
+        expect(() => proxyJudge(url, "us.openai.gpt-5.6-luna", "anthropic.x")).not.toThrow();
+        expect(() => proxyJudge(url, "openai.gpt-5.6-luna", "us.anthropic.x")).not.toThrow();
+    });
+
     test("the human-check sample is ten percent of P7 items, rounded up, from a seeded draw", () => {
         const items = Array.from({ length: 24 }, (_, i) => `q-${i}`);
         const a = humanCheckSample(items, rules, new Rng(9));
@@ -607,6 +632,27 @@ describe("proxy judge", () => {
             },
         );
         await expect(judge.verdict("prompt")).rejects.toThrow("judge call timed out");
+    });
+
+    test("invalid JSON, null blocks, and several text blocks are judge refusals or joined", async () => {
+        const replies: Array<() => Response> = [
+            () => new Response("not json", { status: 200 }),
+            () => Response.json({ output: { message: { content: [null, { text: "first" }] } } }),
+            () =>
+                Response.json({
+                    output: { message: { content: [{ text: "first" }, { text: "second" }] } },
+                }),
+        ];
+        let i = 0;
+        server = Bun.serve({ port: 0, fetch: () => (replies[i++] as () => Response)() });
+        const judge = proxyJudge(
+            `http://127.0.0.1:${server.port}`,
+            rules.judge.model,
+            "anthropic.x",
+        );
+        await expect(judge.verdict("prompt")).rejects.toThrow("judge reply is not JSON");
+        expect(await judge.verdict("prompt")).toBe("first");
+        await expect(judge.verdict("prompt")).rejects.toThrow("is not a verdict");
     });
 
     test("a well-formed status with a malformed body is a judge refusal, not a crash", async () => {
