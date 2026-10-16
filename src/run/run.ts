@@ -170,7 +170,7 @@ export async function loadScenario(o: Pick<RunOptions, "config" | "out" | "seed"
         );
     }
     const stale = scenarioInputMismatch(scenario, {
-        embedding_model: loadPrereg(o.tier).scenario.cue_probe_similarity.embedding_model,
+        preregistration_sha256: preregistrationHash(loadPrereg(o.tier)),
         corpus_manifest_sha256: sha256Hex(readFileSync(join(ROOT, "corpus/manifest.json"), "utf8")),
     });
     if (stale) throw new HarnessFailure(stale);

@@ -381,6 +381,46 @@ describe("grading harness", () => {
         expect(() => log.all()).toThrow("line 2 is not a grade record");
     });
 
+    test("a P13 item with an empty rule list is refused", () => {
+        const f = fixture("P13-pass");
+        const check = f.probe.check as { turns: [number, number] };
+        for (const empty of [{ commands_must: [] }, { must: [] }]) {
+            const probe = { ...f.probe, check: { turns: check.turns, ...empty } };
+            expect(() => gradeItem(probe, f.snapshots, rules)).toThrow(GradeRefused);
+        }
+    });
+
+    test("two artefacts sharing an id are refused", () => {
+        const f = fixture("P5-pass");
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        for (const a of snap.artefacts) a.id = "same";
+        expect(() => gradeItem(f.probe, [snap], rules)).toThrow("artefact id same twice");
+    });
+
+    test("a P13 command rule matches the invoked command, not a quoted mention", () => {
+        const f = fixture("P13-pass");
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        const log = snap.artefacts.find((a) => a.class === "command-log");
+        if (log?.class !== "command-log") throw new Error("fixture lacks command-log");
+        const commit = log.commands.find((c) => c.command.startsWith("git commit"));
+        if (!commit) throw new Error("fixture lacks the commit");
+        commit.command = `echo "${commit.command}"`;
+        expect(gradeItem(f.probe, [snap], rules)?.metrics["P13.rule_kept"]).toBe(false);
+        commit.command = `cd repo && ${commit.command.slice(6, -1)}`;
+        expect(gradeItem(f.probe, [snap], rules)?.metrics["P13.rule_kept"]).toBe(true);
+    });
+
+    test("P6 counts a re-read only when the read command is the segment's command", () => {
+        const f = fixture("P6-pass");
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        const log = snap.artefacts.find((a) => a.class === "command-log" && a.role === "turn");
+        if (log?.class !== "command-log") throw new Error("fixture lacks command-log");
+        log.commands.push({ command: "echo 'cat ./src/connection.rs'", exit: 0, scenario_ms: 10 });
+        expect(gradeItem(f.probe, [snap], rules)?.metrics["P6.reread_files"]).toBe(0);
+        log.commands.push({ command: "cat src/connection.rs | head", exit: 0, scenario_ms: 20 });
+        expect(gradeItem(f.probe, [snap], rules)?.metrics["P6.reread_files"]).toBe(1);
+    });
+
     test("a grade record without its inputs list is refused", () => {
         const path = join(mkdtempSync(join(tmpdir(), "sim-grades-")), "grades.jsonl");
         const log = new GradeLog(path);

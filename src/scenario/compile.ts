@@ -622,6 +622,7 @@ export async function compileScenario(input: CompileInput) {
             seed,
             tier: prereg.tier,
             corpus_manifest_sha256: input.corpusManifestSha256,
+            preregistration_sha256: sha256Hex(canonicalJson(prereg)),
             embedding_model: input.embedder.model,
             cue_probe_similarity: thresholds,
             within_session_gap_scale: Math.round(withinScale * 1e6) / 1e6,
@@ -643,7 +644,7 @@ export async function compileScenario(input: CompileInput) {
 export type Scenario = Awaited<ReturnType<typeof compileScenario>>;
 
 export interface ScenarioInputs {
-    embedding_model: string;
+    preregistration_sha256: string;
     corpus_manifest_sha256: string;
 }
 
@@ -653,8 +654,8 @@ export function scenarioInputMismatch(scenario: Scenario, inputs: ScenarioInputs
     if (m.generator_version !== GENERATOR_VERSION) {
         return `scenario.json is from generator ${m.generator_version}, not ${GENERATOR_VERSION}`;
     }
-    if (m.embedding_model !== inputs.embedding_model) {
-        return `scenario.json was compiled with embedder ${m.embedding_model}, not ${inputs.embedding_model}`;
+    if (m.preregistration_sha256 !== inputs.preregistration_sha256) {
+        return `scenario.json was compiled with pre-registration ${m.preregistration_sha256}, not ${inputs.preregistration_sha256}`;
     }
     if (m.corpus_manifest_sha256 !== inputs.corpus_manifest_sha256) {
         return `scenario.json was compiled from corpus ${m.corpus_manifest_sha256}, not ${inputs.corpus_manifest_sha256}`;

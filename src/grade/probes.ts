@@ -5,6 +5,7 @@ import {
     ArtefactReader,
     assertArtefactsOnly,
     type CallView,
+    type Command,
     completed,
     GradeRefused,
     type Snapshot,
@@ -42,7 +43,7 @@ export interface GradeRecord extends Outcome {
     pair?: string;
 }
 
-const READS = /\b(cat|less|more|head|tail|sed|view|bat|grep|rg)\b|^read /;
+const READS = /^(cat|less|more|head|tail|sed|view|bat|grep|rg|read)\b/;
 const TESTS = /^(cargo test|(bun|npm|pnpm) (run )?test)\b/;
 const QUIET =
     /^\s*(cargo (build|check|test)|bun install|(bun|npm|pnpm) (run )?test|git (status|log|diff)|ls|pwd)\b[^&|;`$()]*$/;
@@ -152,8 +153,15 @@ function p13(r: ArtefactReader, c: Check, rules: Rules): Outcome {
     const commands = r.commands("session");
     const after = commands.filter((x) => x.scenario_ms >= boundary);
     const before = new Set(commands.filter((x) => x.scenario_ms < boundary).map((x) => x.command));
+    const invoked = (patterns: string[]) => (x: Command) =>
+        segments(x.command).some((seg) =>
+            matchesAll(
+                seg,
+                patterns.map((p) => `^${p}`),
+            ),
+        );
     const kept = c.commands_must
-        ? after.some((x) => matchesAll(x.command, c.commands_must ?? []))
+        ? after.some(invoked(c.commands_must))
         : matchesAll(changed(r), c.must ?? []);
     const min = Number(rules.p13_reduction_ratio.min);
     const max = Number(rules.p13_reduction_ratio.max);
@@ -258,7 +266,8 @@ function graderFor(probe: ProbeItem): Grader {
     const grader = GRADERS[probe.type];
     if (!grader) throw new GradeRefused(`no programmatic grader for ${probe.type}`);
     const check = (probe.check ?? {}) as Record<string, unknown>;
-    if (probe.type === "P13" && !check.must && !check.commands_must) {
+    const rules = [check.must, check.commands_must].filter((v) => v !== undefined);
+    if (probe.type === "P13" && !rules.some((v) => Array.isArray(v) && v.length > 0)) {
         throw new GradeRefused(
             `P13 item ${probe.id} has neither check.must nor check.commands_must`,
         );

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SimConfig } from "../config/config";
 import { canonicalJson, sha256Hex } from "../prereg/canonical";
+import { preregistrationHash } from "../prereg/validate";
 import { GENERATOR_VERSION, type Scenario } from "../scenario/compile";
 import { type FaultEpisode, SEAMS } from "../scenario/faults";
 import { loadPrereg } from "../scenario/inputs";
@@ -44,7 +45,7 @@ function scenarioBody(seed = 101, tier = "S") {
             seed,
             tier,
             generator_version: GENERATOR_VERSION,
-            embedding_model: loadPrereg("S").scenario.cue_probe_similarity.embedding_model,
+            preregistration_sha256: preregistrationHash(loadPrereg("S")),
             corpus_manifest_sha256: sha256Hex(
                 readFileSync(join(ROOT, "corpus/manifest.json"), "utf8"),
             ),
@@ -164,7 +165,7 @@ describe("run inputs", () => {
 
     test("scenario.json compiled from other inputs than the pre-registration names is refused", async () => {
         for (const manifest of [
-            { embedding_model: "local-hash-256/v1" },
+            { preregistration_sha256: "0".repeat(64) },
             { corpus_manifest_sha256: "0".repeat(64) },
         ]) {
             const out = dir();

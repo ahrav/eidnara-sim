@@ -167,9 +167,10 @@ describe("compiled S scenario", async () => {
 
     test("a scenario from an earlier generator is refused for reuse", () => {
         const inputs = {
-            embedding_model: s.manifest.embedding_model,
+            preregistration_sha256: s.manifest.preregistration_sha256,
             corpus_manifest_sha256: s.manifest.corpus_manifest_sha256,
         };
+        expect(inputs.preregistration_sha256).toHaveLength(64);
         expect(scenarioInputMismatch(s, inputs)).toBeNull();
         const stale = { ...s, manifest: { ...s.manifest, generator_version: "sim-scenario/v1" } };
         expect(scenarioInputMismatch(stale as Scenario, inputs)).toContain("sim-scenario/v1");
