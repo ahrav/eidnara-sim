@@ -61,14 +61,16 @@ or a regular file with a single link; a `lease.<pid>.tmp` left by a dead
 acquirer is removed first, so a crash between link and unlink stays resumable
 (the arm,
 clock, `r`, `s`, `interception`, `toolbin`, and `hostbin` directories must be
-directories; `toolbin` is recreated from scratch before preflight, so only
+directories; `toolbin` is recreated from scratch before preflight on a resume, so only
 the configured wrappers are on the sandbox `PATH`; the OpenCode wrapper and its staging name under `hostbin/<arm>`
 are checked the same way); a symlink, a hard link, or another
 file type there is refused. A run whose journal is still empty refuses an
-output directory that already holds call, fault, or preflight evidence or an
-arm's payload (`r`, `s`, `store.img`, `daemon.log`, `transcripts.json`,
-`resources.jsonl`, `state.json`), since a fresh run would extend or delete
-them. Every staged write (scenario, manifest, clock
+output directory that already holds call, fault, or preflight evidence, a
+`toolbin`, `interception`, or `hostbin` directory, or an arm's payload (`r`,
+`s`, `store.img`, `daemon.log`, `transcripts.json`, `resources.jsonl`,
+`state.json`), since a fresh run would extend or delete them; a
+`journal.jsonl` with bytes but no complete entry is refused rather than
+truncated. Every staged write (scenario, manifest, clock
 offset, `state.json`, the sandbox launcher) creates its staging file
 exclusively without following a link, then renames it into place, and the
 toolchain wrappers are created exclusively after removing any planted name.
@@ -111,8 +113,9 @@ toolchain wrappers are created exclusively after removing any planted name.
    working-tree digest (a digest covers tracked edits and untracked
    unignored files), the commit and working-tree digest of every corpus
    checkout the scenario's projects clone from, the configured toolchain
-   (bin, keep, env, wall-clock tools) with each named tool's content digest,
-   the SHA-256 of the daemon,
+   (bin, keep, env, wall-clock tools) with each named tool's content digest
+   (resolved through the toolchain bins, then the sandbox's system path), the
+   Git executable the identity checks run, the SHA-256 of the daemon,
    OpenCode, and Pi executables, the whole Pi install tree (every file and
    link under `pi_install`, since Node resolves the CLI's dependencies
    there), the Node runtime Pi runs on, the libfaketime interposer, the
@@ -128,8 +131,10 @@ toolchain wrappers are created exclusively after removing any planted name.
    entry before `StartArm` or after `EndArm`, an `EndTurn` or `EndJob` with
    no open item, an `Event` that is not the arm's next scheduled event, a
    user turn's `Event` without its `EndTurn` or interruption marker, or an
-   `EndArm` with an item open or events of the prefix still unrun, or a row
-   whose `seq` or `scenario_ms` is not a number), when any of those digests changed, when an
+   `EndArm` with an item open or events of the prefix still unrun, an item
+   opened twice or a turn reopened, a `StartArm` out of the manifest's order,
+   an `Event` recorded before its scheduled time, any entry after `EndRun`, or
+   a row whose `seq` or `scenario_ms` is not a number), when any of those digests changed, when an
    interception result, probed path, or toolchain version
    changed, or when the selected host's version or transcript paths changed,
    and appends its preflight result to `preflight.jsonl` (dropping an
@@ -158,7 +163,8 @@ toolchain wrappers are created exclusively after removing any planted name.
    trigger a mid-fold kill that the arm then awaits.
 6. At the end, or after a failure or signal, stop each arm's sampler and
    driver, stop the proxy, append this invocation's proxy-fault witness
-   report to `faults.jsonl` (a completed run appends it before `EndRun`, so
+   report to `faults.jsonl` (a completed run stops the proxy, drains its
+   handlers, and appends the report before `EndRun`, so
    a sealed journal always has its witness line; teardown appends it only
    when that did not happen; an unterminated final line left by an earlier
    kill is dropped first), close the journal, and release the lease. A
@@ -262,10 +268,13 @@ invariant violation (including a repeated sleep jump). The summary parses
 final journals and call records strictly; a corrupt or unterminated final line
 fails the witness, while polling during a run tolerates an unterminated final
 line. Every case needs its launch outcome in `outcome.json`; each cached
-`scenario.json` must still hash to its `scenario_hash` and each `manifest.json`
-must match the digest its journal's first `Preflight` entry bound; each
-session-start fault must have fired exactly once, right before its session's
-first event; each sleep jump must land on its session's first event; every
+`scenario.json` must still hash to its `scenario_hash`, each `manifest.json`
+must name that hash, carry the case's prescribed tier, seed, arms, event
+count, context limit, models, and fault override, and match the digest its
+journal's first `Preflight` entry bound; the rogue journal must record exactly
+one unexpected daemon exit; each
+session-start fault must have fired exactly once, at the session's scheduled
+start time, right before its first event; each sleep jump must land on its session's first event; every
 `StartRun` or `ResumeRun` must follow its own all-intercepted `Preflight`
 entry; and the journal must pass the resume shape check with contiguous
 `seq`. The rogue witness signals the daemon only while its recorded pid still
