@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { sha256Hex } from "../prereg/canonical";
-import { cdfProblems, quantile, tailShare } from "./cdf";
+import { cdfProblems, GRID, quantile, tailShare } from "./cdf";
 import {
     type CheckResult,
     compareCited,
@@ -121,6 +121,8 @@ export function checkCorpus(): CorpusReport {
         if (q.cdf.kind === "discrete") {
             const counts = q.cdf.x.every((v) => Number.isSafeInteger(v) && v >= 0);
             need(counts, `${name}: discrete values must be non-negative integers`);
+        } else {
+            need(q.cdf.p.join(",") === GRID.join(","), `${name}: p must be the fit grid`);
         }
         problems.push(...cdfProblems(q.cdf).map((why) => `${name}: ${why}`));
     }

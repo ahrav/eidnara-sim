@@ -43,7 +43,13 @@ export interface RepoSpec {
 const SHA = /^[0-9a-f]{40}$/;
 
 export function loadRepos(): RepoSpec[] {
-    const raw = JSON.parse(readFileSync(join(CORPUS_DIR, "repos.json"), "utf8"));
+    const text = readFileSync(join(CORPUS_DIR, "repos.json"), "utf8");
+    let raw: { schema?: string; repos?: RepoSpec[] };
+    try {
+        raw = JSON.parse(text);
+    } catch (error) {
+        throw new Error(`repos.json: invalid JSON: ${(error as Error).message}`);
+    }
     if (raw.schema !== "sim-corpus-repos/v1") throw new Error("repos.json: unknown schema");
     const repos = raw.repos as RepoSpec[];
     const ids = repos.flatMap((r) => [r.id, r.twin.id]);

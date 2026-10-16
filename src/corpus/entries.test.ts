@@ -2,7 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { ERROR_CODE_FIELDS, entryProblems, parseJsonl, SAMPLE_FIELDS } from "./entries";
 
 describe("entryProblems", () => {
-    const common = { license: "CC-BY-4.0", source_id: "ds@rev:traj#3", repo: "o/r" };
+    const rev = "0123456789abcdef0123456789abcdef01234567";
+    const common = { license: "CC-BY-4.0", source_id: `org/ds@${rev}:traj#3`, repo: "o/r" };
     const good = {
         ...common,
         id: "out-0001",
@@ -36,9 +37,11 @@ describe("entryProblems", () => {
     test("rejects an entry without a source id or with a blank one", () => {
         const { source_id: _s, ...rest } = good;
         const blank = { ...good, id: "out-0002", source_id: "  " };
-        expect(entryProblems([rest, blank], "codes", SAMPLE_FIELDS)).toEqual([
+        const bare = { ...good, id: "out-0003", source_id: `org/ds@${rev}:` };
+        expect(entryProblems([rest, blank, bare], "codes", SAMPLE_FIELDS)).toEqual([
             "codes[0] (out-0001): source_id must be string",
-            "codes[1] (out-0002): source_id missing",
+            "codes[1] (out-0002): source_id must be repo@revision:trajectory#index",
+            "codes[2] (out-0003): source_id must be repo@revision:trajectory#index",
         ]);
     });
 

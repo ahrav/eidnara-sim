@@ -4,6 +4,8 @@ const ALLOWED_LICENSES = new Set(["CC-BY-4.0", "ODC-BY-1.0", "MIT", "Apache-2.0"
 type FieldType = "string" | "number" | "boolean" | "number|null";
 
 const COMMON: Record<string, FieldType> = { id: "string", repo: "string", source_id: "string" };
+/** `<repo>@<revision>:<trajectory>#<message index>` names the exact source message. */
+const SOURCE_ID = /^[^@\s]+@[0-9a-f]{40}:[^#\s]+#\d+$/;
 export const SAMPLE_FIELDS: Record<string, FieldType> = {
     ...COMMON,
     kind: "string",
@@ -46,8 +48,8 @@ export function entryProblems(
         if (typeof e.license !== "string" || !ALLOWED_LICENSES.has(e.license)) {
             problems.push(`${where}: license missing or not permitted`);
         }
-        if (typeof e.source_id === "string" && e.source_id.trim() === "") {
-            problems.push(`${where}: source_id missing`);
+        if (typeof e.source_id === "string" && !SOURCE_ID.test(e.source_id)) {
+            problems.push(`${where}: source_id must be repo@revision:trajectory#index`);
         }
     });
     return problems;
@@ -56,6 +58,13 @@ export function entryProblems(
 export function parseJsonl(text: string): unknown[] {
     return text
         .split("\n")
-        .filter((line) => line.trim() !== "")
-        .map((line) => JSON.parse(line));
+        .map((line, i) => [line, i + 1] as const)
+        .filter(([line]) => line.trim() !== "")
+        .map(([line, n]) => {
+            try {
+                return JSON.parse(line) as unknown;
+            } catch (error) {
+                throw new Error(`line ${n}: invalid JSON: ${(error as Error).message}`);
+            }
+        });
 }
