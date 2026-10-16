@@ -60,6 +60,15 @@ export interface SchedulerOptions {
 const PROXY_LAYER = "proxy-sink";
 const OUTAGE = new Set(["daemon_sigkill_mid_fold", "daemon_restart", "host_upgrade"]);
 
+/** Names a driver's malformed result in an error message. */
+function describe(v: unknown): string {
+    if (v === null) return "null";
+    if (Array.isArray(v)) return "an array";
+    if (typeof v === "object")
+        return `an object with failed: ${typeof (v as { failed: unknown }).failed}`;
+    return typeof v;
+}
+
 export class Scheduler {
     clock: Clock | null = null;
     private arm: string | null = null;
@@ -262,8 +271,13 @@ export class Scheduler {
             if (open === null || e.arm !== open) {
                 throw fail(`${e.kind} for arm ${e.arm} outside its arm`, e);
             }
-            const before = clockMs;
-            clockMs = Math.max(clockMs, e.scenario_ms);
+            const busy = [...begun].some((t) => !ended.has(t)) || [...jobs].some(([, n]) => n > 0);
+            if (e.kind !== "AdvanceClock") {
+                if (busy ? e.scenario_ms < clockMs : e.scenario_ms !== clockMs) {
+                    throw fail(`${e.kind} is stamped away from the replayed clock`, e);
+                }
+                clockMs = e.scenario_ms;
+            }
             const due = events[done];
             const cursorOf = (fault: unknown) => {
                 const f = this.o.faults.find((x) => x.id === fault);
@@ -336,6 +350,20 @@ export class Scheduler {
                     const working = [...jobs].find(([, n]) => n > 0);
                     if (working !== undefined) {
                         throw fail(`BeginTurn for ${e.event} while job ${working[0]} is open`, e);
+                    }
+                    for (const f of scheduled) {
+                        const [lo, hi] = this.triggerCursor(f);
+                        if (lo !== done || hi !== done || f.type === "laptop_sleep") continue;
+                        if (!fired.has(f.id)) {
+                            throw fail(`BeginTurn for ${e.event} before fault ${f.id} fired`, e);
+                        }
+                        const terminal = observed.has(f.id) || marked.has(f.id);
+                        if (f.seam.layer !== PROXY_LAYER && !terminal) {
+                            throw fail(
+                                `BeginTurn for ${e.event} while fault ${f.id} is unresolved`,
+                                e,
+                            );
+                        }
                     }
                     begun.add(e.event);
                     outage = null;
@@ -428,7 +456,9 @@ export class Scheduler {
                     if (typeof e.from_ms !== "number" || e.from_ms >= e.scenario_ms) {
                         throw fail("AdvanceClock jumps nowhere", e);
                     }
-                    if (e.from_ms < before) throw fail("AdvanceClock starts behind the clock", e);
+                    if (e.from_ms !== clockMs)
+                        throw fail("AdvanceClock starts away from the clock", e);
+                    clockMs = e.scenario_ms;
                     if (e.fault !== undefined) jumped.add(e.fault);
                     else if (e.next_event !== undefined && e.next_event !== due.id) {
                         throw fail("AdvanceClock names an event other than the one due", e);
@@ -577,14 +607,6 @@ export class Scheduler {
             seen.add(x.event);
             return true;
         });
-        for (const e of kinds("BeginTurn").filter(
-            (x) => !ended.has(x.event) && !done.has(x.event),
-        )) {
-            if (!marked.has(e.event)) {
-                this.log({ kind: "ItemState", event: e.event, state: "failed(interrupted)" });
-            }
-            this.log({ kind: "Event", event: e.event, outcome: "failed(interrupted)" });
-        }
         const open = new Map<unknown, number>();
         for (const e of mine) {
             if (e.kind === "RegisterJob") open.set(e.job, (open.get(e.job) ?? 0) + 1);
@@ -637,6 +659,14 @@ export class Scheduler {
             if (f.strategy === "persistent" || (target && !begun.has(target.id)))
                 this.o.proxy?.arm(f.id);
         }
+        for (const e of kinds("BeginTurn").filter(
+            (x) => !ended.has(x.event) && !done.has(x.event),
+        )) {
+            if (!marked.has(e.event)) {
+                this.log({ kind: "ItemState", event: e.event, state: "failed(interrupted)" });
+            }
+            this.log({ kind: "Event", event: e.event, outcome: "failed(interrupted)" });
+        }
         return answered;
     }
 
@@ -672,7 +702,7 @@ export class Scheduler {
         try {
             const got: unknown = await this.untilFatal(driver.fault(f));
             if (typeof got !== "object" || got === null || Array.isArray(got)) {
-                throw new Error(`fault evidence is ${got === null ? "null" : typeof got}`);
+                throw new Error(`fault evidence is ${describe(got)}`);
             }
             evidence = got as Record<string, unknown>;
         } catch (caught) {
@@ -716,13 +746,24 @@ export class Scheduler {
             await this.fire(driver, sleep);
         }
         for (const f of this.faultsAt(e)) await this.fire(driver, f);
+        const deliver = async (): Promise<{ failed?: string }> => {
+            const got: unknown = await this.untilFatal(driver.event(e));
+            const shaped =
+                typeof got === "object" &&
+                got !== null &&
+                !Array.isArray(got) &&
+                ((got as { failed?: unknown }).failed === undefined ||
+                    typeof (got as { failed?: unknown }).failed === "string");
+            if (!shaped) throw new Error(`event ${e.id}: driver outcome is ${describe(got)}`);
+            return got as { failed?: string };
+        };
         let outcome: { failed?: string };
         if (e.kind === "user_turn") {
             const turn = `turn:${e.id}`;
             this.log({ kind: "BeginTurn", event: e.id, probe: e.probe ?? null });
             clock.begin(turn);
             try {
-                outcome = await this.untilFatal(driver.event(e));
+                outcome = await deliver();
             } finally {
                 clock.end(turn);
             }
@@ -731,7 +772,7 @@ export class Scheduler {
             this.log({ kind: "EndTurn", event: e.id, outcome: outcome.failed ?? "ok", ...item });
             await this.untilFatal(Bun.sleep(this.o.settleMs ?? 1_000));
         } else {
-            outcome = await this.untilFatal(driver.event(e));
+            outcome = await deliver();
         }
         if (e.kind === "session_end") {
             for (const f of this.o.faults) {

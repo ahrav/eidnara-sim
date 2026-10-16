@@ -1139,10 +1139,12 @@ describe("Scheduler", () => {
         for (const id of ["e-000000", "e-000001", "e-000002"]) {
             if (id === "e-000001") {
                 j.append({ kind: "BeginTurn", arm: "a", scenario_ms: 0, event: id });
+                j.append({ kind: "RegisterJob", arm: "a", scenario_ms: 0, job: "fold" });
                 j.append({ kind: "EndTurn", arm: "a", scenario_ms: 0, event: id, outcome: "ok" });
             }
             j.append({ kind: "Event", arm: "a", scenario_ms: 0, event: id, outcome: "ok" });
         }
+        j.append({ kind: "EndJob", arm: "a", scenario_ms: 120, job: "fold" });
         j.append({
             kind: "ItemState",
             arm: "a",
@@ -2349,7 +2351,14 @@ describe("Scheduler", () => {
         ).rejects.toThrow(/ResumeRun carries an arm scope/);
         await expect(
             open([ev(e0), ...turn(), ev(e1), ev(e2, "ok", 60_000)], [turnFault]),
-        ).rejects.toThrow(/fault t passed its trigger unhandled/);
+        ).rejects.toThrow(/BeginTurn for e-000001 before fault t fired/);
+        const startFault = episode("s", "daemon_restart", {
+            kind: "session_start",
+            session: "s-0000",
+        });
+        await expect(open([ev(e0)], [startFault])).rejects.toThrow(
+            /fault s passed its trigger unhandled/,
+        );
         await expect(
             open([
                 ev(e0),
@@ -2366,7 +2375,13 @@ describe("Scheduler", () => {
             ...episode("z", "laptop_sleep", { kind: "session_start", session: "s-0001" }),
             params: { duration_ms: 50 },
         };
-        const toSecond: Partial<Entry>[] = [ev(e0), ...turn(), ev(e1), ev(e2, "ok", 60_000)];
+        const toSecond: Partial<Entry>[] = [
+            ev(e0),
+            ...turn(),
+            ev(e1),
+            { kind: "AdvanceClock", from_ms: 0, scenario_ms: 60_000, next_event: e2, busy: [] },
+            ev(e2, "ok", 60_000),
+        ];
         const jump: Partial<Entry> = {
             kind: "AdvanceClock",
             from_ms: 60_000,
@@ -2547,7 +2562,7 @@ describe("Scheduler", () => {
                 ev(e1, 500),
                 { kind: "AdvanceClock", from_ms: 0, scenario_ms: 60_000, next_event: e2, busy: [] },
             ]),
-        ).rejects.toThrow(/AdvanceClock starts behind the clock/);
+        ).rejects.toThrow(/AdvanceClock starts away from the clock/);
     });
 
     test("a resume closes the journal's open jobs before binding, so a bind-time registration of the same id is valid", async () => {
@@ -2754,6 +2769,123 @@ describe("Scheduler", () => {
             fatal: true,
         });
         expect(k.entries.map((e) => e.kind)).not.toContain("FaultObserved");
+    });
+
+    test("journals whose stamps leave the replayed clock, or that begin a turn before its fault fired or resolved, are refused; a driver outcome off its shape fails the run; recovery resolves a fired kill before the interrupted turn's Event", async () => {
+        const events = fixtureEvents(1);
+        const [e0, e1, e2] = events.map((e) => e.id) as [string, string, string];
+        const turnFault = episode("t", "daemon_restart", {
+            kind: "user_turn",
+            session: "s-0000",
+            n: 1,
+        });
+        const open = (lines: Partial<Entry>[], faults: FaultEpisode[] = []) => {
+            const path = join(dir(), "j.jsonl");
+            const j = new Journal(path);
+            j.append({
+                kind: "StartRun",
+                arm: null,
+                scenario_ms: 0,
+                order: ["a"],
+                scenario: scenarioId(events, faults),
+            });
+            j.append({ kind: "StartArm", arm: "a", scenario_ms: 0 });
+            for (const l of lines) j.append({ arm: "a", scenario_ms: 0, ...l } as never);
+            j.close();
+            return new Scheduler({
+                events,
+                faults,
+                journal: new Journal(path),
+                settleMs: 0,
+                order: ["a"],
+                drivers: { a: fakeDriver([]) },
+            }).run();
+        };
+        const ev = (event: string, scenario_ms = 0): Partial<Entry> => ({
+            kind: "Event",
+            event,
+            outcome: "ok",
+            scenario_ms,
+        });
+        const fired: Partial<Entry> = {
+            kind: "FaultFired",
+            fault: "t",
+            type: "daemon_restart",
+            layer: "scheduler",
+        };
+        await expect(
+            open([
+                ev(e0),
+                { kind: "BeginTurn", event: e1 },
+                { kind: "EndTurn", event: e1, outcome: "ok" },
+                ev(e1),
+                ev(e2, 60_000),
+            ]),
+        ).rejects.toThrow(/Event is stamped away from the replayed clock/);
+        await expect(
+            open([ev(e0), { kind: "BeginTurn", event: e1 }, fired], [turnFault]),
+        ).rejects.toThrow(/BeginTurn for e-000001 before fault t fired/);
+        await expect(
+            open([ev(e0), fired, { kind: "BeginTurn", event: e1 }], [turnFault]),
+        ).rejects.toThrow(/BeginTurn for e-000001 while fault t is unresolved/);
+        for (const got of [{ failed: false }, "ok", [] as never]) {
+            const j = new Journal(join(dir(), "j.jsonl"));
+            await expect(
+                new Scheduler({
+                    events,
+                    faults: [],
+                    journal: j,
+                    settleMs: 0,
+                    order: ["a"],
+                    drivers: { a: { ...fakeDriver([]), event: async () => got as never } },
+                }).run(),
+            ).rejects.toThrow(/driver outcome is/);
+            expect(j.entries.map((e) => e.kind)).not.toContain("EndRun");
+        }
+        const kill = episode("k", "daemon_sigkill_mid_fold", {
+            kind: "first_summarizer_call",
+            session: "s-0000",
+        });
+        const path = join(dir(), "j.jsonl");
+        const j = new Journal(path);
+        j.append({
+            kind: "StartRun",
+            arm: null,
+            scenario_ms: 0,
+            order: ["a"],
+            scenario: scenarioId(events, [kill]),
+        });
+        j.append({ kind: "StartArm", arm: "a", scenario_ms: 0 });
+        j.append({ kind: "Event", arm: "a", scenario_ms: 0, event: e0, outcome: "ok" });
+        j.append({ kind: "BeginTurn", arm: "a", scenario_ms: 0, event: e1 });
+        j.append({
+            kind: "FaultFired",
+            arm: "a",
+            scenario_ms: 0,
+            fault: "k",
+            type: "daemon_sigkill_mid_fold",
+            layer: "scheduler",
+        });
+        j.close();
+        const resumed = new Journal(path);
+        await new Scheduler({
+            events,
+            faults: [kill],
+            journal: resumed,
+            settleMs: 0,
+            order: ["a"],
+            drivers: { a: fakeDriver([]) },
+        }).run();
+        const kinds = resumed.entries.map((e) => `${e.kind}:${e.fault ?? e.event ?? ""}`);
+        expect(kinds.indexOf("ItemState:k")).toBeLessThan(kinds.indexOf(`Event:${e1}`));
+        await new Scheduler({
+            events,
+            faults: [kill],
+            journal: new Journal(path),
+            settleMs: 0,
+            order: ["a"],
+            drivers: { a: fakeDriver([]) },
+        }).run();
     });
 
     test("a FaultObserved without its FaultFired is refused on resume", async () => {
@@ -3758,6 +3890,14 @@ describe("resume of fired faults", () => {
             scenario_ms: 0,
             event: "e-000001",
             outcome: "failed(interrupted)",
+        });
+        j.append({
+            kind: "AdvanceClock",
+            arm: "a",
+            scenario_ms: 60_000,
+            from_ms: 0,
+            next_event: "e-000002",
+            busy: [],
         });
         j.append({ kind: "BeginTurn", arm: "a", scenario_ms: 60_000, event: "e-000002" });
         j.append({
