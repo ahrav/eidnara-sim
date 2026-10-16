@@ -61,6 +61,8 @@ export interface SchedulerOptions {
     verify?: (point: "EndArm" | "EndRun") => void | Promise<void>;
     /** A reason to stop; the idle wait and each step check it and fail with `HarnessFailure`. */
     stopped?: () => string | null;
+    /** Runs once an arm's `StartArm` is journaled (or its processes reaped), before its first step. */
+    onArmReady?: (arm: string) => void;
 }
 
 const PROXY_LAYER = "proxy-sink";
@@ -141,6 +143,7 @@ export class Scheduler {
                 }
             });
             this.resume(mine);
+            this.o.onArmReady?.(arm);
             const done = new Set(
                 this.o.journal.entries
                     .filter((e) => e.arm === arm && e.kind === "Event")

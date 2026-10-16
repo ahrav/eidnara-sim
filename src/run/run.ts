@@ -235,6 +235,9 @@ export function requireJournalShape(
     const arms = new Map<string, "open" | "ended">();
     const open = new Set<string>();
     for (const e of entries) {
+        if (!Number.isFinite(e.scenario_ms))
+            throw bad(e, `has scenario_ms ${JSON.stringify(e.scenario_ms)}`);
+        if (!Number.isInteger(e.seq)) throw bad(e, `has seq ${JSON.stringify(e.seq)}`);
         if (e.kind === "Preflight") continue;
         if (e.kind === "StartRun") {
             if (started) throw bad(e, "repeats StartRun");
@@ -797,14 +800,15 @@ export async function loadManifest(
         models: o.models ?? [o.config.agent_model],
         fault_override: o.faults === undefined ? null : faultOverride(o.faults, scenario),
     };
-    const digests = {
+    /** Computed once the inputs it hashes exist: before the probe on a resume, after it on a first run. */
+    const digests = () => ({
         scenario_hash: scenario.scenario_hash,
         ...runIdentity(
             o.config,
             o.tier,
             scenario.projects.map((p) => p.id),
         ),
-    };
+    });
     if (existsSync(path)) {
         const manifest = readJsonFile<Manifest>(path);
         if (manifest?.schema !== "sim-run-manifest/v1") {
@@ -837,7 +841,7 @@ export async function loadManifest(
             const names = differs.map(([k]) => k).join(", ");
             throw new HarnessFailure(`resume options differ from the manifest: ${names}`);
         }
-        const changed = Object.entries(digests).filter(
+        const changed = Object.entries(digests()).filter(
             ([k, v]) => !sameJson(manifest[k as keyof Manifest], v),
         );
         if (changed.length > 0) {
@@ -874,7 +878,7 @@ export async function loadManifest(
     const manifest: Manifest = {
         schema: "sim-run-manifest/v1",
         ...wanted,
-        ...digests,
+        ...digests(),
         base_wall_ms: Date.now(),
         preflight: checks,
     };
@@ -1024,6 +1028,7 @@ async function runArms(
     }
     requireJournalShape(journal.entries);
     if (journal.entries.length === 0) requireFreshArmRoots(o.out, loadPrereg(o.tier).arms.run);
+    rmSync(join(o.out, "toolbin"), { recursive: true, force: true });
     const compiled = await tracked(() => loadScenario(o));
     const { manifest, checks } = await tracked(() => loadManifest(o, compiled));
     requireJournalShape(
@@ -1055,6 +1060,7 @@ async function runArms(
     if (!hostRow) throw new Error(`preflight lists no ${o.host} host`);
 
     const drivers: Partial<Record<ArmName, ArmDriver>> = {};
+    const samplers = new Map<string, ResourceSampler>();
     const proxyFaults = scenario.faults.filter((f) => f.seam.layer === "proxy-sink");
     const injector = new FaultInjector(proxyFaults, new Rng((seed ^ 0x5bd1e995) >>> 0), 120_000);
     const callsPath = join(o.out, "calls.jsonl");
@@ -1086,6 +1092,10 @@ async function runArms(
         idleLimitMs: prereg.liveness_bounds.job_deadline_ms,
         onClock: (arm, ms) => writeOffset(offsetFile(arm), manifest.base_wall_ms, ms),
         stopped: () => stop.reason,
+        onArmReady: (arm) => {
+            const sampler = samplers.get(arm);
+            if (sampler) holdForCpu(sampler, arm);
+        },
         verify: (point) => {
             handlersFailed();
             if (samplerFailure !== null) throw samplerFailure;
@@ -1180,6 +1190,7 @@ async function runArms(
                 stop.reason ??= `sampler failed: ${(caught as Error).message}`;
             },
         });
+        samplers.set(arm, sampler);
         cleanup.push(() => driver.stop());
         cleanup.push(() => sampler.stop());
         drivers[arm] = {
@@ -1188,7 +1199,6 @@ async function runArms(
                     scope.arm = arm;
                     await driver.reset();
                     sampler.start();
-                    holdForCpu(sampler, arm);
                 }),
             resume: (open) =>
                 tracked(async () => {
@@ -1196,7 +1206,6 @@ async function runArms(
                     scope.session = open?.session ?? null;
                     await driver.resume(open);
                     sampler.start();
-                    holdForCpu(sampler, arm);
                 }),
             event: (e) =>
                 tracked(async () => {

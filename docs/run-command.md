@@ -61,7 +61,8 @@ or a regular file with a single link; a `lease.<pid>.tmp` left by a dead
 acquirer is removed first, so a crash between link and unlink stays resumable
 (the arm,
 clock, `r`, `s`, `interception`, `toolbin`, and `hostbin` directories must be
-directories; the OpenCode wrapper and its staging name under `hostbin/<arm>`
+directories; `toolbin` is recreated from scratch before preflight, so only
+the configured wrappers are on the sandbox `PATH`; the OpenCode wrapper and its staging name under `hostbin/<arm>`
 are checked the same way); a symlink, a hard link, or another
 file type there is refused. A run whose journal is still empty refuses an
 output directory that already holds call, fault, or preflight evidence or an
@@ -102,7 +103,8 @@ toolchain wrappers are created exclusively after removing any planted name.
 3. On a resume, read the manifest and compare every passive identity (the
    digests below) before running any probe, so a replaced executable is
    refused before it executes; then run `preflight` (`docs/time.md`). On the
-   first invocation, write
+   first invocation, run `preflight` first (it builds the interposer), then
+   compute the digests and write
    `manifest.json` with the tier, seed, host, arm order, event count, context
    limit, models, fault override, scenario hash, pre-registration hash,
    eidnara commit and working-tree digest, eidnara-sim commit and
@@ -126,7 +128,8 @@ toolchain wrappers are created exclusively after removing any planted name.
    entry before `StartArm` or after `EndArm`, an `EndTurn` or `EndJob` with
    no open item, an `Event` that is not the arm's next scheduled event, a
    user turn's `Event` without its `EndTurn` or interruption marker, or an
-   `EndArm` with an item open or events of the prefix still unrun), when any of those digests changed, when an
+   `EndArm` with an item open or events of the prefix still unrun, or a row
+   whose `seq` or `scenario_ms` is not a number), when any of those digests changed, when an
    interception result, probed path, or toolchain version
    changed, or when the selected host's version or transcript paths changed,
    and appends its preflight result to `preflight.jsonl` (dropping an
@@ -198,9 +201,9 @@ one job id per busy period. The post-turn hold
 timers are owned by the run: teardown cancels any still pending and ends
 their holds before the journal closes. Both hold the
 clock (SIM-P13, OQ-2). Job ids continue from the journal's count, so a
-resumed run issues new ones. After an arm's reset or resume the same
-two-second hold runs, so daemon work that follows startup is measured before
-the first event. A job that holds the clock longer than the
+resumed run issues new ones. Once an arm's `StartArm` is journaled (or its
+processes reaped on resume) the same two-second hold runs, so daemon work
+that follows startup is measured before the first event. A job that holds the clock longer than the
 pre-registered `job_deadline_ms` (20 minutes at S) after its own
 `RegisterJob`, measured on the monotonic clock, stops the run with the held
 ids (SIM-L02). The sampler drops an unterminated final sample when it
@@ -281,7 +284,9 @@ store filled by `store_full` still served the turns after it) and, on
 daemon-cpu job while no turn is open (the synthetic `settle-cpu` and
 `request` holds do not count) (SIM-P13), and every finished run's journal must open with a
 `Preflight` entry, before `StartRun` or `ResumeRun`, whose probes are exactly
-`pi`, `opencode`, and `daemon`, all intercepted, hold exactly one `EndArm` per arm the manifest names, and
+`pi`, `opencode`, and `daemon`, all intercepted (the same for every later
+`Preflight` entry), the `host` arm's restart and full store recorded as
+`skipped`, hold exactly one `EndArm` per arm the manifest names, and
 include at least one ordinary event jump. All three case directories must be
 present.
 Every summarized directory's manifest identity (pre-registration, Eidnara

@@ -1295,6 +1295,29 @@ test("a mid-fold kill observed in the arm's last turn is observed before finish 
     expect(kinds.indexOf("FaultObserved")).toBeLessThan(kinds.indexOf("EndArm"));
 });
 
+test("onArmReady runs after StartArm is journaled and before the first jump", async () => {
+    const j = new Journal(join(dir(), "j.jsonl"));
+    let scheduler: Scheduler | null = null;
+    scheduler = new Scheduler({
+        events: fixtureEvents(1),
+        faults: [],
+        journal: j,
+        settleMs: 0,
+        jobPollMs: 5,
+        order: ["a"],
+        drivers: { a: fakeDriver([]) },
+        onArmReady: () => {
+            scheduler?.jobStart("startup-hold");
+            setTimeout(() => scheduler?.jobEnd("startup-hold"), 60);
+        },
+    });
+    await scheduler.run();
+    const kinds = j.entries.map((e) => e.kind);
+    expect(kinds.indexOf("StartArm")).toBeLessThan(kinds.indexOf("RegisterJob"));
+    expect(kinds.indexOf("RegisterJob")).toBeLessThan(kinds.indexOf("AdvanceClock"));
+    expect(kinds.indexOf("EndJob")).toBeLessThan(kinds.indexOf("AdvanceClock"));
+});
+
 test("a daemon exit reported at finish after the last turn's outage closed is unexpected", async () => {
     const j = new Journal(join(dir(), "j.jsonl"));
     let scheduler: Scheduler | null = null;

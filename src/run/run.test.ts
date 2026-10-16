@@ -382,6 +382,12 @@ describe("run inputs", () => {
         );
         expect(() => requireJournalShape([e("ResumeRun", null)])).toThrow(/precedes StartRun/);
         expect(() =>
+            requireJournalShape([
+                ...start,
+                { ...e("Event", "a", { event: "x" }), scenario_ms: "10" as never },
+            ]),
+        ).toThrow(/has scenario_ms "10"/);
+        expect(() =>
             requireJournalShape([...start, e("EndArm", "a"), e("EndRun", null)]),
         ).not.toThrow();
         expect(() => requireJournalShape([...start, e("EndRun", null)])).toThrow(

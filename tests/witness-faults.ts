@@ -273,10 +273,12 @@ function summarize(dir: string) {
             ).map((t) => `${t.name}:${t.intercepted}`),
             every_intercepted: journal
                 .filter((e) => e.kind === "Preflight")
-                .every((e) =>
-                    ((e.time_injection as { intercepted: boolean }[]) ?? []).every(
-                        (t) => t.intercepted === true,
-                    ),
+                .every(
+                    (e) =>
+                        ((e.time_injection as { name: string; intercepted: boolean }[]) ?? [])
+                            .map((t) => `${t.name}:${t.intercepted}`)
+                            .sort()
+                            .join() === "daemon:true,opencode:true,pi:true",
                 ),
         },
         journal_shape: (() => {
@@ -500,6 +502,18 @@ const mechanismEvidence = (name: string, arm: string, a: ArmSummary, expected: F
     for (const f of expected) {
         const e = evidence.get(f.id);
         if (!e) continue;
+        if (f.type === "daemon_restart" && arm === "host") {
+            check(
+                e.skipped === "arm runs no daemon",
+                `${name}/host: ${f.id} recorded skipped: arm runs no daemon`,
+            );
+        }
+        if (f.type === "store_full" && arm === "host") {
+            check(
+                e.skipped === "arm runs no loop-mounted store",
+                `${name}/host: ${f.id} recorded skipped: arm runs no loop-mounted store`,
+            );
+        }
         if (f.type === "daemon_restart" && arm === "eidnara") {
             check(
                 typeof e.pid_before === "number" &&
