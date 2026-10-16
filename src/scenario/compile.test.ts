@@ -289,6 +289,28 @@ describe("compiled S scenario", async () => {
         }
     });
 
+    test("a check never forbids a pattern it requires", () => {
+        for (const p of s.probes) {
+            const c = p.check as Record<string, string[] | undefined>;
+            for (const key of Object.keys(c).filter((k) => k.endsWith("must"))) {
+                const forbidden = new Set(c[`${key}_not`] ?? []);
+                for (const pattern of c[key] ?? []) {
+                    expect({
+                        probe: p.id,
+                        key,
+                        pattern,
+                        forbidden: forbidden.has(pattern),
+                    }).toEqual({
+                        probe: p.id,
+                        key,
+                        pattern,
+                        forbidden: false,
+                    });
+                }
+            }
+        }
+    });
+
     test("SIM-P08: every cue/probe pair is journaled below both thresholds", () => {
         const expected = s.probes
             .filter((p) => p.text)
@@ -501,9 +523,26 @@ describe("fact bank checks", () => {
         }
     });
 
-    test("the file-header rule grades the first line of each new file", () => {
+    test("the file-header rule grades the first line of each new file from its start", () => {
         const t = templates("session_rule").find((x) => x.id === "session-file-header");
         expect(Object.keys(t?.check ?? {})).toEqual(["first_line_must"]);
+        const re = new RegExp(
+            ((t?.check as { first_line_must: string[] }).first_line_must[0] ?? "$^").replaceAll(
+                "{token}",
+                "quiet_vole",
+            ),
+        );
+        expect(re.test("// quiet_vole")).toBe(true);
+        expect(re.test("export const x = 1; // quiet_vole")).toBe(false);
+    });
+
+    test("the helper-prefix rule accepts underscores after the token", () => {
+        const t = templates("constraint").find((x) => x.id === "ts-utils-prefix");
+        const re = new RegExp(
+            ((t?.check as { must: string[] }).must[0] ?? "$^").replaceAll("{token}", "quiet_vole"),
+        );
+        expect(re.test("function quiet_vole_strip_slash(path: string) {}")).toBe(true);
+        expect(re.test("const quiet_voleClamp = (n: number) => n")).toBe(true);
     });
 
     test("the Proxy rule matches generic constructions", () => {
@@ -564,6 +603,8 @@ describe("fact bank checks", () => {
         const re = new RegExp(pattern.replaceAll("{token}", "quiet_vole"));
         expect(re.test('git commit -m"[quiet_vole] implement cap"')).toBe(true);
         expect(re.test("git commit -m[quiet_vole]")).toBe(true);
+        expect(re.test("git commit --message[quiet_vole]")).toBe(false);
+        expect(re.test("git commit --message=[quiet_vole] cap")).toBe(true);
         expect(re.test("git commit -mwrong -m[quiet_vole]")).toBe(false);
         expect(re.test('git commit -m "wrong" -m"[quiet_vole] later"')).toBe(false);
     });

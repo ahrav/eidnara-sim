@@ -112,6 +112,25 @@ describe("committed corpus", () => {
         ]);
     });
 
+    test("the fact bank gate names kind-specific omissions and unusable patterns", () => {
+        const bank = JSON.parse(readFileSync(join(CORPUS_DIR, "fact-bank.json"), "utf8"));
+        const broken = structuredClone(bank);
+        delete broken.rust.scoped_update[0].update;
+        delete broken.rust.decision[0].authority;
+        broken.rust.plan[0].check.must = ["{tokne}"];
+        broken.rust.rationale[0].check.judge = "  ";
+        broken.any.lookup[0].check.answer = "";
+        broken.any.anchor[0].check.must_not = [""];
+        expect(bankProblems(broken)).toEqual([
+            "fact-bank rust/decision[0] rs-scan-page: authority missing",
+            "fact-bank rust/plan[0] rs-plan-field: check key must pattern {tokne} names an unknown placeholder",
+            "fact-bank rust/rationale[0] rs-why-noalloc: check key judge is blank",
+            "fact-bank rust/scoped_update[0] rs-scope-log-level: update missing",
+            "fact-bank any/lookup[0] lookup-staging-alias: check key answer is blank",
+            "fact-bank any/anchor[0] anchor-ticket: check key must_not pattern is blank",
+        ]);
+    });
+
     test("every quantity names its source and sample size", () => {
         for (const q of Object.values(dist.quantities)) {
             expect(q.source).toContain("@");

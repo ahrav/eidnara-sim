@@ -476,10 +476,10 @@ export async function compileScenario(input: CompileInput) {
         const negate = (c: Check): Check =>
             Object.fromEntries(lists(c, "must").map(([k, v]) => [`${k}_not`, v]));
         const superseded = swap ? renderDeep<Check>(tpl.check, { ...vars, ...swap }) : {};
-        const swappedOnly = (pattern: string) =>
-            [...pattern.matchAll(/\{(\w+)\}/g)].every(
-                ([, k]) => k !== undefined && k in (swap ?? {}),
-            );
+        const swappedOnly = (pattern: string) => {
+            const keys = [...pattern.matchAll(/\{(\w+)\}/g)].map(([, k]) => k ?? "");
+            return swap !== undefined && keys.length > 0 && keys.every((k) => k in swap);
+        };
         const obsolete: Check = Object.fromEntries(
             lists(tpl.check as Check, "must").flatMap(([k, patterns]) =>
                 patterns.every(swappedOnly)

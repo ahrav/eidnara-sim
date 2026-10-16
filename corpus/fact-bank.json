@@ -239,7 +239,7 @@
                 "out_probe": "Add a small function to the trace module that formats a duration in milliseconds.",
                 "check": {
                     "must": [
-                        "{token}[A-Za-z0-9]*\\s*[=(]"
+                        "{token}[A-Za-z0-9_]*\\s*[=(]"
                     ]
                 }
             },
@@ -491,7 +491,7 @@
                 "probe": "Commit what we have so far.",
                 "check": {
                     "commands_must": [
-                        "git commit\\b(?:(?!\\s(?:-\\w*m|--message))[^\\n])*\\s(?:-\\w*m|--message)[ =]?[\"']?\\[{token}\\]"
+                        "git commit\\b(?:(?!\\s(?:-\\w*m|--message))[^\\n])*\\s(?:-\\w*m[ =]?|--message[ =])[\"']?\\[{token}\\]"
                     ]
                 }
             },
@@ -501,7 +501,7 @@
                 "probe": "Start a new module for the {codename} work with one exported placeholder function.",
                 "check": {
                     "first_line_must": [
-                        "// {token}"
+                        "^// {token}"
                     ]
                 }
             }
