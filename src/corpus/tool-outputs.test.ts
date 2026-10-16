@@ -42,6 +42,21 @@ describe("classify and commandOf", () => {
         expect(classify("str_replace_editor", "view /a.py", view)).toBe("file_read");
         expect(classify("str_replace_editor", "view /", "Here's the files")).toBeNull();
     });
+    test("a viewed file that quotes a traceback is still a file read", () => {
+        const view =
+            "Here's the result of running `cat -n` on /README.md:\n1 Traceback (most recent call last):";
+        expect(classify("str_replace_editor", "view /README.md", view)).toBe("file_read");
+        expect(
+            classify("str_replace_editor", "view /", "Traceback (most recent call last)"),
+        ).toBeNull();
+    });
+    test("a test runner's help text is no test run", () => {
+        expect(
+            classify("execute_bash", "python -m pytest --help | head -20", "usage: pytest"),
+        ).toBeNull();
+        expect(classify("execute_bash", "pytest -h", "usage: pytest")).toBeNull();
+        expect(classify("execute_bash", "pytest tests/test_h.py", "ok")).toBe("test_run");
+    });
     test("commandOf reads command and path, and falls back to the raw text", () => {
         expect(commandOf('{"command":"view","path":"/a.py"}')).toBe("view /a.py");
         expect(commandOf('{"command":"ls -la"}')).toBe("ls -la");

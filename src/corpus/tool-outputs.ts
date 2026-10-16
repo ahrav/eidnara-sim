@@ -53,14 +53,17 @@ interface Message {
 }
 
 export function classify(tool: string, command: string, content: string): SampleKind | null {
-    if (content.includes("Traceback (most recent call last)")) return "stack_trace";
-    if (tool === "execute_bash") {
-        if (/\b(pytest|py\.test|unittest|tox|nox)\b/.test(command)) return "test_run";
-        if (/\b(grep|rg|ag)\b/.test(command)) return "grep";
-        if (/^\s*(cat|head|tail|sed -n)\b/.test(command)) return "file_read";
+    if (tool === "str_replace_editor") {
+        return content.startsWith("Here's the result of running `cat -n`") ? "file_read" : null;
     }
-    const view = content.startsWith("Here's the result of running `cat -n`");
-    return tool === "str_replace_editor" && view ? "file_read" : null;
+    if (content.includes("Traceback (most recent call last)")) return "stack_trace";
+    if (tool !== "execute_bash") return null;
+    if (/\b(pytest|py\.test|unittest|tox|nox)\b/.test(command)) {
+        return /(^|\s)(--help|-h)(\s|$)/.test(command) ? null : "test_run";
+    }
+    if (/\b(grep|rg|ag)\b/.test(command)) return "grep";
+    if (/^\s*(cat|head|tail|sed -n)\b/.test(command)) return "file_read";
+    return null;
 }
 
 export function commandOf(args: string): string {

@@ -20,12 +20,16 @@ export function loadSources(): Dataset[] {
     return raw.datasets as Dataset[];
 }
 
-export function cachePath(dataset: Dataset, path: string): string {
-    const dest = resolve(CACHE_DIR, dataset.id, dataset.revision, path);
-    if (!dest.startsWith(CACHE_DIR + sep)) {
-        throw new Error(`sources.json: ${dataset.id}/${path} escapes corpus/cache`);
+export function under(root: string, ...parts: string[]): string {
+    const dest = resolve(root, ...parts);
+    if (!dest.startsWith(root + sep)) {
+        throw new Error(`${parts.join("/")} escapes ${root}`);
     }
     return dest;
+}
+
+export function cachePath(dataset: Dataset, path: string): string {
+    return under(CACHE_DIR, dataset.id, dataset.revision, path);
 }
 
 async function sha256File(path: string): Promise<string> {
