@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SimConfig } from "../config/config";
@@ -14,12 +14,27 @@ import {
     type RunOptions,
     requireMechanisms,
     requireOutsideCheckout,
+    requirePlainArtifacts,
     runSteps,
 } from "./run";
 
 const ROOT = join(import.meta.dir, "..", "..");
 const dir = () => mkdtempSync(join(tmpdir(), "sim-run-"));
-const config = { eidnara_checkout: ROOT, bedrock: { aws_profile: "", region: "" } } as SimConfig;
+const bins = dir();
+const piInstall = join(bins, "pi");
+mkdirSync(join(piInstall, "node_modules/@earendil-works/pi-coding-agent/dist"), {
+    recursive: true,
+});
+writeFileSync(join(piInstall, "node_modules/@earendil-works/pi-coding-agent/dist/cli.js"), "pi 1");
+writeFileSync(join(bins, "daemon"), "daemon 1");
+writeFileSync(join(bins, "opencode"), "opencode 1");
+const config = {
+    eidnara_checkout: ROOT,
+    daemon_binary: join(bins, "daemon"),
+    opencode_binary: join(bins, "opencode"),
+    pi_install: piInstall,
+    bedrock: { aws_profile: "", region: "" },
+} as SimConfig;
 
 function scenarioBody(seed = 101, tier = "S") {
     return {
@@ -80,6 +95,23 @@ describe("run inputs", () => {
         expect(() => requireOutsideCheckout(join(root, "runs/x"), checkout)).not.toThrow();
     });
 
+    test("a symlinked run artifact in an accepted output directory is refused", () => {
+        const root = dir();
+        const out = join(root, "run");
+        mkdirSync(join(out, "eidnara"), { recursive: true });
+        writeFileSync(join(root, "elsewhere.jsonl"), "");
+        expect(() => requirePlainArtifacts(out, ["host", "eidnara"])).not.toThrow();
+        symlinkSync(join(root, "elsewhere.jsonl"), join(out, "journal.jsonl"));
+        expect(() => requirePlainArtifacts(out, ["host", "eidnara"])).toThrow(
+            /journal.jsonl is a symlink/,
+        );
+        rmSync(join(out, "journal.jsonl"));
+        symlinkSync(join(root, "missing"), join(out, "eidnara", "resources.jsonl"));
+        expect(() => requirePlainArtifacts(out, ["host", "eidnara"])).toThrow(
+            /resources.jsonl is a symlink/,
+        );
+    });
+
     test("a schedule needs a mechanism for every fault and two models for a model switch", () => {
         const at = (type: FaultEpisode["type"]): FaultEpisode => ({
             id: `f-${type}`,
@@ -122,7 +154,18 @@ describe("run inputs", () => {
         };
         expect(faultOverride([episode], scenario)).toEqual([episode]);
         expect(() => faultOverride({}, scenario)).toThrow(/must hold an array/);
-        expect(() => faultOverride([{ id: 1 }], scenario)).toThrow(/is malformed/);
+        expect(() => faultOverride([{ id: 1 }], scenario)).toThrow(/is malformed: id missing/);
+        const noSeam = { ...episode, type: "quantum_flip", seam: undefined };
+        expect(() => faultOverride([noSeam], scenario)).toThrow(
+            /type quantum_flip unknown, seam missing/,
+        );
+        expect(() => faultOverride([{ ...episode, strategy: "often" }], scenario)).toThrow(
+            /strategy often unknown/,
+        );
+        expect(() => faultOverride([{ ...episode, params: { n: "3" } }], scenario)).toThrow(
+            /params must be finite numbers/,
+        );
+        expect(() => faultOverride([episode, episode], scenario)).toThrow(/duplicate id f/);
         const late = { ...episode, trigger: { kind: "user_turn", session: "s-0001", n: 2 } };
         expect(() => faultOverride([late], scenario)).toThrow(/outside the session's 1 turns/);
         const lost = { ...episode, trigger: { kind: "session_start", session: "s-9999" } };
@@ -176,5 +219,29 @@ describe("run inputs", () => {
         await expect(loadManifest(o, scenario, checks)).rejects.toThrow(
             /names arms outside the S order/,
         );
+    });
+
+    test("a resume is refused when an executable's content changed, whatever its version", async () => {
+        const out = dir();
+        const scenario = writeScenario(out, scenarioBody());
+        const checks: Preflight = {
+            launcher: join(out, "launcher"),
+            time_injection: [],
+            distortions: [],
+            hosts: [{ host: "pi", version: "0.80.2", transcript_paths: [] }],
+            toolchain: [],
+        };
+        const o: RunOptions = { config, tier: "S", seed: 101, host: "pi", out };
+        const { manifest } = await loadManifest(o, scenario, checks);
+        expect(Object.keys(manifest.binaries).sort()).toEqual(["daemon", "opencode", "pi"]);
+        const swapped = { ...config, daemon_binary: join(out, "daemon") };
+        writeFileSync(swapped.daemon_binary, "daemon 2");
+        await expect(loadManifest({ ...o, config: swapped }, scenario, checks)).rejects.toThrow(
+            /inputs changed since the run started: binaries/,
+        );
+        writeFileSync(swapped.daemon_binary, "daemon 1");
+        await expect(
+            loadManifest({ ...o, config: swapped }, scenario, checks),
+        ).resolves.toMatchObject({ manifest: { seed: 101 } });
     });
 });

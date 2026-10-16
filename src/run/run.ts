@@ -1,6 +1,8 @@
+import { createHash } from "node:crypto";
 import {
     appendFileSync,
     existsSync,
+    lstatSync,
     mkdirSync,
     readFileSync,
     realpathSync,
@@ -19,12 +21,12 @@ import { FaultInjector } from "../proxy/inject";
 import { type Component, RecordWriter, readRecords } from "../proxy/records";
 import { Rng } from "../rng";
 import { compileScenario, type Scenario } from "../scenario/compile";
-import { type FaultEpisode, validateFault } from "../scenario/faults";
+import { type FaultEpisode, SEAMS, validateFault } from "../scenario/faults";
 import { loadCompileInput, loadPrereg } from "../scenario/inputs";
 import { bedrockEmbedder } from "../scenario/similarity";
 import { Journal, releaseLease, takeLease } from "./journal";
 import { plainPath } from "./launcher";
-import { type Preflight, preflight } from "./preflight";
+import { type Preflight, piCli, preflight } from "./preflight";
 import { ResourceSampler } from "./sampler";
 import { type ArmDriver, HarnessFailure, type ScenarioEvent, Scheduler } from "./scheduler";
 import { writeOffset } from "./timeinject";
@@ -56,6 +58,8 @@ export interface Manifest {
     eidnara_commit: string;
     /** The eidnara-sim revision that started the run; a resume must run the same one. */
     sim_commit: string;
+    /** SHA-256 of the daemon, OpenCode, and Pi executables; a resume must present the same. */
+    binaries: Record<string, string>;
     fault_override: FaultEpisode[] | null;
     prereg_sha256: string;
     base_wall_ms: number;
@@ -93,6 +97,36 @@ const realExisting = (path: string): string => {
 };
 
 const within = (path: string, dir: string) => path === dir || path.startsWith(`${dir}/`);
+
+const ARTIFACTS = [
+    "lease.json",
+    "journal.jsonl",
+    "scenario.json",
+    "manifest.json",
+    "preflight.jsonl",
+    "calls.jsonl",
+    "faults.jsonl",
+];
+
+/**
+ * Every run artifact the harness appends to or replaces is a regular file or absent, so a
+ * symlink planted in an accepted output directory cannot redirect a write elsewhere.
+ */
+export function requirePlainArtifacts(out: string, arms: readonly string[]): void {
+    const perArm = arms.flatMap((arm) => [
+        arm,
+        join(arm, "resources.jsonl"),
+        join(arm, "clock"),
+        join(arm, "clock", "offset"),
+        join(arm, "state.json"),
+    ]);
+    for (const rel of [...ARTIFACTS, ...perArm]) {
+        const path = join(out, rel);
+        if (lstatSync(path, { throwIfNoEntry: false })?.isSymbolicLink()) {
+            throw new HarnessFailure(`${path} is a symlink; run artifacts must be regular files`);
+        }
+    }
+}
 
 /**
  * Run outputs and the Eidnara checkout stay disjoint, by resolved path: arm resets delete output
@@ -144,20 +178,50 @@ export async function loadScenario(o: Pick<RunOptions, "config" | "out" | "seed"
     return scenario;
 }
 
-/** A `--faults` override is an array of episodes, each valid against the compiled scenario. */
+const STRATEGIES = new Set(["single", "burst", "intermittent", "persistent"]);
+
+/** The field problems of one `--faults` episode, before the compiler's trigger and seam checks. */
+function episodeProblems(value: unknown): string[] {
+    if (typeof value !== "object" || value === null || Array.isArray(value))
+        return ["not an object"];
+    const e = value as Record<string, unknown>;
+    const problems: string[] = [];
+    if (typeof e.id !== "string" || e.id === "") problems.push("id missing");
+    if (typeof e.type !== "string" || !(e.type in SEAMS)) problems.push(`type ${e.type} unknown`);
+    if (!STRATEGIES.has(e.strategy as string)) problems.push(`strategy ${e.strategy} unknown`);
+    const trigger = e.trigger as Record<string, unknown> | null;
+    if (typeof trigger !== "object" || trigger === null || typeof trigger.kind !== "string") {
+        problems.push("trigger missing");
+    }
+    const params = e.params as Record<string, unknown> | null;
+    if (typeof params !== "object" || params === null || Array.isArray(params)) {
+        problems.push("params missing");
+    } else if (Object.values(params).some((v) => typeof v !== "number" || !Number.isFinite(v))) {
+        problems.push("params must be finite numbers");
+    }
+    if (typeof e.seam !== "object" || e.seam === null) problems.push("seam missing");
+    return problems;
+}
+
+/** A `--faults` override is an array of complete episodes, each valid against the compiled scenario. */
 export function faultOverride(raw: unknown, scenario: Scenario): FaultEpisode[] {
     if (!Array.isArray(raw)) throw new HarnessFailure("--faults must hold an array of episodes");
     const turns = new Map(scenario.sessions.map((x) => [x.id, x.requests]));
-    for (const episode of raw as FaultEpisode[]) {
-        if (typeof episode?.id !== "string" || typeof episode.trigger !== "object") {
-            throw new HarnessFailure(`--faults episode ${JSON.stringify(episode)} is malformed`);
+    const ids = new Set<string>();
+    raw.forEach((value, i) => {
+        const problems = episodeProblems(value);
+        if (problems.length > 0) {
+            throw new HarnessFailure(`--faults episode ${i} is malformed: ${problems.join(", ")}`);
         }
+        const episode = value as FaultEpisode;
+        if (ids.has(episode.id)) throw new HarnessFailure(`--faults: duplicate id ${episode.id}`);
+        ids.add(episode.id);
         try {
             validateFault(episode, turns);
         } catch (caught) {
             throw new HarnessFailure(`--faults: ${(caught as Error).message}`);
         }
-    }
+    });
     return raw as FaultEpisode[];
 }
 
@@ -174,6 +238,20 @@ function armOrder(o: RunOptions): ArmName[] {
 }
 
 const sameJson = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+
+function binaryDigests(config: SimConfig): Record<string, string> {
+    const files = {
+        daemon: config.daemon_binary,
+        opencode: config.opencode_binary,
+        pi: piCli(config),
+    };
+    return Object.fromEntries(
+        Object.entries(files).map(([name, path]) => [
+            name,
+            createHash("sha256").update(readFileSync(path)).digest("hex"),
+        ]),
+    );
+}
 
 /** Fault types the host driver has no mechanism for; a schedule that needs one is refused up front. */
 const UNIMPLEMENTED = new Set<string>(["host_upgrade", "two_hosts_one_daemon"]);
@@ -215,6 +293,7 @@ export async function loadManifest(
         prereg_sha256: preregistrationHash(loadPrereg(o.tier)),
         eidnara_commit: gitHead(o.config.eidnara_checkout),
         sim_commit: gitHead(ROOT),
+        binaries: binaryDigests(o.config),
     };
     if (existsSync(path)) {
         const manifest = JSON.parse(readFileSync(path, "utf8")) as Manifest;
@@ -240,7 +319,7 @@ export async function loadManifest(
             throw new HarnessFailure(`resume options differ from the manifest: ${names}`);
         }
         const changed = Object.entries(digests).filter(
-            ([k, v]) => manifest[k as keyof Manifest] !== v,
+            ([k, v]) => !sameJson(manifest[k as keyof Manifest], v),
         );
         if (changed.length > 0) {
             const names = changed.map(([k]) => k).join(", ");
@@ -295,6 +374,7 @@ export async function runTier(o: RunOptions): Promise<void> {
     requireOutsideCheckout(o.out, o.config.eidnara_checkout);
     requirePinnedPath(o.config);
     mkdirSync(o.out, { recursive: true });
+    requirePlainArtifacts(o.out, loadPrereg(o.tier).arms.run);
     takeLease(o.out);
     const cleanup: Array<() => Promise<void> | void> = [() => releaseLease(o.out)];
     let done: Promise<void> | null = null;
@@ -400,6 +480,12 @@ async function runArms(
         rng: new Rng((seed ^ 0x27d4eb2f) >>> 0),
         clock: { scenarioMs: now },
         scope: () => ({ ...scope }),
+        arrival: () => {
+            if (scope.turn !== null || scope.arm === "") return;
+            const id = `request-${jobSeq++}`;
+            scheduler.jobStart(id);
+            return () => scheduler.jobEnd(id);
+        },
         observe: (e) => {
             const driver = drivers[scope.arm as ArmName];
             if (driver) scheduler.observe(e.component, driver);

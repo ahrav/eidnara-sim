@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { appendFileSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { decodeMessages } from "../../tests/eventstream-decode";
@@ -513,6 +514,47 @@ const RECORD = {
 } as const;
 
 describe("call records", () => {
+    test("arrival holds from the first byte of a slow upload until the call is classified", async () => {
+        const log: string[] = [];
+        const records = new RecordWriter(null);
+        const gateway = new Gateway({
+            upstream: scriptedUpstream(),
+            records,
+            injector: new FaultInjector([], new Rng(1), 1_000),
+            rng: new Rng(1),
+            clock: { scenarioMs: () => 0 },
+            scope: () => ({ arm: "a", session: null, turn: null }),
+            arrival: () => {
+                log.push("arrived");
+                return () => log.push("released");
+            },
+            observe: (e) => {
+                log.push(`observed:${e.component}`);
+                return () => log.push("ended");
+            },
+        });
+        await gateway.start();
+        gateways.push(gateway);
+        const url = new URL(`${gateway.urls[0]}/model/m/converse-stream`);
+        const body = JSON.stringify(SUMMARIZER_BODY);
+        const req = request({
+            host: url.hostname,
+            port: url.port,
+            method: "POST",
+            path: url.pathname,
+            headers: { "content-length": String(Buffer.byteLength(body)) },
+        });
+        const done = new Promise<void>((resolve) =>
+            req.on("response", (res) => res.on("data", () => undefined).on("end", resolve)),
+        );
+        req.write(body.slice(0, 10));
+        await Bun.sleep(150);
+        expect(log).toEqual(["arrived"]);
+        req.end(body.slice(10));
+        await done;
+        expect(log).toEqual(["arrived", "observed:history_summarizer", "released", "ended"]);
+    });
+
     test("a function returned by observe runs once the call's record is written, even when the write fails", async () => {
         const records = new RecordWriter(null);
         const seen: string[] = [];

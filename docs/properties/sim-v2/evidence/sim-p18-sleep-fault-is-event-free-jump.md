@@ -27,10 +27,13 @@ duration" cannot hold exactly, because the previous session's last turn runs
 at wall speed and consumes part of the nominal gap.
 
 The live witness (`tests/witness-faults.ts`, `docs/run-command.md`) on 2026-10-16
-fired a two-minute laptop sleep at a session start on both arms, inside the
-idle gap before that session; each sleep jump measured its scheduled duration
-with no unrun event inside it, and the next jump landed on the session's
-scheduled start.
+fired a laptop sleep at a session start on both arms; the journal check found
+no unrun event inside either sleep jump. That run predates the jump described
+above (its scheduler sized the sleep jump to the configured `duration_ms` and
+then jumped again to the session start), so it does not evidence the
+remaining-gap jump; the checker now judges a sleep jump by its landing on the
+session's first event, and the next witness run must show one `AdvanceClock`
+per sleep, tagged with the fault id, landing on that event.
 
 ## Failure scenario
 

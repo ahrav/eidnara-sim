@@ -97,6 +97,12 @@ export interface GatewayOptions {
     rng: Rng;
     clock: { scenarioMs(): number };
     scope: () => Scope;
+    /**
+     * Sees every request as its first byte arrives, before the body is complete. A returned
+     * function runs once the call is classified and `observe` has seen it, or once the request is
+     * rejected, so the hold it represents hands over to the classified call without a gap.
+     */
+    arrival?: () => unknown;
     /** A returned function runs once the call's record is written, or once the write failed. */
     observe?: (event: CallStarted) => unknown;
     requestDeadlineMs?: number;
@@ -146,6 +152,16 @@ export class Gateway {
 
     constructor(private readonly options: GatewayOptions) {}
 
+    private arrive(): () => void {
+        const release = this.options.arrival?.();
+        const once = { done: false };
+        return () => {
+            if (once.done || typeof release !== "function") return;
+            once.done = true;
+            (release as () => void)();
+        };
+    }
+
     private track(handled: Promise<void>, gone: AbortController): void {
         const settled: Promise<void> = handled
             .catch((caught) => void this.failures.push(caught as Error))
@@ -157,18 +173,25 @@ export class Gateway {
         const h1 = createHttp1Server((req, res) => {
             const chunks: Buffer[] = [];
             const gone = new AbortController();
+            const release = this.arrive();
             res.on("close", () => !res.writableFinished && gone.abort());
             req.on("data", (c: Buffer) => chunks.push(c));
             req.on("end", () => {
                 const header = req.headers[COMPONENT_HEADER] as string | undefined;
                 this.track(
-                    this.handle(req.url ?? "", header, Buffer.concat(chunks), {
-                        status: (code, headers) => res.writeHead(code, headers),
-                        write: (chunk) => res.write(chunk),
-                        end: () => res.end(),
-                        destroy: () => res.destroy(),
-                        signal: gone.signal,
-                    }),
+                    this.handle(
+                        req.url ?? "",
+                        header,
+                        Buffer.concat(chunks),
+                        {
+                            status: (code, headers) => res.writeHead(code, headers),
+                            write: (chunk) => res.write(chunk),
+                            end: () => res.end(),
+                            destroy: () => res.destroy(),
+                            signal: gone.signal,
+                        },
+                        release,
+                    ),
                     gone,
                 );
             });
@@ -181,6 +204,7 @@ export class Gateway {
         h2.on("stream", (stream, headers) => {
             const chunks: Buffer[] = [];
             const gone = new AbortController();
+            const release = this.arrive();
             stream.on("close", () => !stream.writableFinished && gone.abort());
             stream.on("data", (c: Buffer) => chunks.push(c));
             stream.on("error", () => undefined);
@@ -188,16 +212,22 @@ export class Gateway {
                 const live = () => !stream.destroyed;
                 const header = headers[COMPONENT_HEADER] as string | undefined;
                 this.track(
-                    this.handle(String(headers[":path"] ?? ""), header, Buffer.concat(chunks), {
-                        status: (code, h) => {
-                            if (live() && !stream.headersSent)
-                                stream.respond({ ":status": code, ...h });
+                    this.handle(
+                        String(headers[":path"] ?? ""),
+                        header,
+                        Buffer.concat(chunks),
+                        {
+                            status: (code, h) => {
+                                if (live() && !stream.headersSent)
+                                    stream.respond({ ":status": code, ...h });
+                            },
+                            write: (chunk) => live() && stream.write(chunk),
+                            end: () => live() && stream.end(),
+                            destroy: () => stream.destroy(),
+                            signal: gone.signal,
                         },
-                        write: (chunk) => live() && stream.write(chunk),
-                        end: () => live() && stream.end(),
-                        destroy: () => stream.destroy(),
-                        signal: gone.signal,
-                    }),
+                        release,
+                    ),
                     gone,
                 );
             });
@@ -227,7 +257,13 @@ export class Gateway {
         });
     }
 
-    private async handle(path: string, header: string | undefined, raw: Buffer, outer: Sink) {
+    private async handle(
+        path: string,
+        header: string | undefined,
+        raw: Buffer,
+        outer: Sink,
+        release: () => void,
+    ) {
         let sent = 0;
         const sink: Sink & { sent: () => number } = {
             ...outer,
@@ -273,6 +309,7 @@ export class Gateway {
                 (end) => {
                     after.ended = end;
                 },
+                release,
             );
         } catch (caught) {
             done = { ...done, error: `${(caught as Error).name}: ${(caught as Error).message}` };
@@ -284,6 +321,7 @@ export class Gateway {
             this.options.injector.observe(record, call);
         } finally {
             this.inFlight--;
+            release();
             after.ended?.();
         }
     }
@@ -296,6 +334,7 @@ export class Gateway {
         call: number,
         progress: (d: Done) => void,
         onEnd: (end: () => void) => void,
+        release: () => void,
     ): Promise<Done> {
         const started = performance.now();
         const route = ROUTE.exec(path.split("?", 1)[0] ?? "");
@@ -342,6 +381,7 @@ export class Gateway {
         const event = { kind: "call_started", component: tag.component, wall_ms: Date.now() };
         const ended = this.options.observe?.(event as CallStarted);
         if (typeof ended === "function") onEnd(ended as () => void);
+        release();
         const fault = this.options.injector.take(tag.component, call, this.options.scope().arm);
         if (fault) done.fault_ref = fault.id;
         if (fault && fault.type !== "slow_stream") {

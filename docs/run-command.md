@@ -22,13 +22,18 @@ sees (200,000 by default), and `--models` lists the models `model_switch`
 cycles through (`agent_model` by default). The manifest records every one of
 these values. The run refuses a seed outside the pre-registration, an arm
 outside the seed's order, a non-positive count, a `--faults` file that is not
-an array of episodes valid against the compiled scenario (`validateFault`),
+an array of complete episodes (known type and strategy, numeric params, a
+seam, unique ids) valid against the compiled scenario (`validateFault`),
 an `--out` directory that overlaps the Eidnara checkout in either direction
 by resolved path (an output directory above the checkout would derive an arm
 root inside it), a schedule with a fault type the host driver has no
 mechanism for (`host_upgrade`, `two_hosts_one_daemon`, so a full XL run is
 refused up front), and a `model_switch` schedule with fewer than two distinct
-models.
+models. Before taking the lease, every artifact the run appends to or
+replaces (`journal.jsonl`, `calls.jsonl`, the manifest, the scenario, the
+fault and preflight files, and each arm's `resources.jsonl`, clock offset,
+and `state.json`) must be a regular file or absent; a symlink there is
+refused.
 
 ## Run sequence
 
@@ -50,11 +55,13 @@ models.
 3. Run `preflight` (`docs/time.md`). On the first invocation, write
    `manifest.json` with the tier, seed, host, arm order, event count, context
    limit, models, fault override, scenario hash, pre-registration hash,
-   eidnara commit, eidnara-sim commit, base wall time, and preflight result.
+   eidnara commit, eidnara-sim commit, the SHA-256 of the daemon, OpenCode,
+   and Pi executables, base wall time, and preflight result.
    A later invocation refuses when any option it states differs from the
    manifest, when the manifest's arm order names an arm outside the tier's
    pre-registered arms, when the scenario hash, pre-registration hash,
-   eidnara commit, or eidnara-sim commit changed, when an interception result
+   eidnara commit, eidnara-sim commit, or an executable digest changed, when
+   an interception result
    changed, or when the selected host's version or transcript paths changed,
    and appends its preflight result to `preflight.jsonl`. Every invocation
    then journals a `Preflight` entry with its interception results and host
@@ -80,11 +87,13 @@ models.
    and again at teardown.
 
 The scheduler's `onClock` hook writes each arm's offset file, so every
-process the arm launches reads `base_wall_ms + scenario_ms`. The proxy's
-`observe` event for a background component (history summarizer, memory
-capture, memory classifier, context researcher, title, native compaction)
-registers a job, and the completion of that same call ends it, whether its
-record was written or refused. The resource sampler takes a baseline sample when an arm starts,
+process the arm launches reads `base_wall_ms + scenario_ms`. A request that
+arrives while no turn is open registers a `request-<n>` job from its first
+byte, released once the call is classified, so a slow upload cannot straddle a
+clock jump. The proxy's `observe` event for a background component (history
+summarizer, memory capture, memory classifier, context researcher, title,
+native compaction) registers a job, and the completion of that same call ends
+it, whether its record was written or refused. The resource sampler takes a baseline sample when an arm starts,
 one at the end of every user turn, and one per pre-registered interval, and
 registers `daemon-cpu-<arm>` while the daemon's CPU fraction is above the
 pre-registered threshold, with one job id per busy period. Both hold the
@@ -128,8 +137,10 @@ so folds happen within six sessions, and writes `witness.json`:
   command again, and compares each turn's call count before and after.
 
 `--summarize` rebuilds `witness.json` from an existing directory. The
-script exits nonzero when a run it started exits unexpectedly or never
-reaches the awaited state within twenty minutes, or when a check fails:
+script exits nonzero when a run it started exits unexpectedly, never
+reaches the awaited state within twenty minutes, or runs past the S wall
+budget plus five minutes (it is then killed and reported `timed_out`), or
+when a check fails:
 `scheduled` exits 0, `rogue` exits nonzero with the daemon-exit refusal,
 `resume` is killed with 137 while `e-000007` has `BeginTurn` and no
 `EndTurn`, then exits 0 with no turn rebilled, and every finished run ends
