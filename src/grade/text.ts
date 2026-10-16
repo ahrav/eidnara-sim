@@ -105,9 +105,37 @@ function parseDiff(patch: string): { added: string[]; paths: string[]; surviving
     return { added, paths: [...new Set(paths)], surviving: [...new Set(surviving)] };
 }
 
-/** A non-empty patch must open as a unified diff; an empty patch is a turn that changed nothing. */
-export const unifiedDiff = (v: unknown) =>
-    typeof v === "string" && (v.length === 0 || /^(diff --git |--- |\+\+\+ |@@ )/m.test(v));
+const HUNK_HEADER = /^@@ -\d+(,\d+)? \+\d+(,\d+)? @@/;
+const FILE_META =
+    /^(index |old mode |new mode |deleted file mode |new file mode |similarity index |dissimilarity index |rename from |rename to |copy from |copy to |Binary files |GIT binary patch|literal |delta )/;
+
+/**
+ * A non-empty patch must be a well-formed unified diff: every line is a file header, Git file
+ * metadata, a hunk header, or a hunk line (` `, `+`, `-`, `\`) inside a hunk, and the text opens
+ * with a `diff --git` or `---` header. An empty patch is a turn that changed nothing.
+ */
+export const unifiedDiff = (v: unknown): boolean => {
+    if (typeof v !== "string") return false;
+    if (v.length === 0) return true;
+    let inHunk = false;
+    let opened = false;
+    for (const line of v.replace(/\n$/, "").split("\n")) {
+        if (line.startsWith("diff --git ")) {
+            inHunk = false;
+            opened = true;
+        } else if (line.startsWith("--- ") || line.startsWith("+++ ")) {
+            inHunk = false;
+            opened = true;
+        } else if (HUNK_HEADER.test(line)) {
+            if (!opened) return false;
+            inHunk = true;
+        } else if (FILE_META.test(line)) inHunk = false;
+        else if (inHunk && /^[ +\-\\]/.test(line)) continue;
+        else if (inHunk && line.length === 0) continue;
+        else return false;
+    }
+    return opened;
+};
 
 export function addedLines(patch: string): string {
     return parseDiff(patch).added.join("\n");

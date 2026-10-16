@@ -289,7 +289,10 @@ const GREP_OPERAND_OPTIONS =
  * an option supplies it (`-e`, `--regexp`, `-f`, `--file`), in which case every positional word is a file.
  */
 const operands = (segment: string): string => {
-    const unredirected = segment.replace(/(^|\s)\d*&?>>?\s*\S+/g, " ").trim();
+    const unredirected = segment
+        .replace(/(^|\s)\d*&?>>?\s*\S+/g, " ")
+        .replace(/(^|\s)\d*<\s*(?=\S)/g, " ")
+        .trim();
     const words = shellWords(unredirected);
     if (!/^(grep|rg)$/.test(words[0] as string)) return unredirected;
     const files: string[] = [];
@@ -309,7 +312,7 @@ const operands = (segment: string): string => {
 /** The command after any leading `NAME=value` assignments. */
 const unprefixed = (seg: string) =>
     seg.replace(/^(\s*[A-Za-z_]\w*=(?:'[^']*'|"[^"]*"|\S*)\s+)+/, "");
-const anchored = (p: string) => (p.startsWith("(?i)") ? `(?i)^${p.slice(4)}` : `^${p}`);
+const anchored = (p: string) => (p.startsWith("(?i)") ? `(?i)^(?:${p.slice(4)})` : `^(?:${p})`);
 /** Match from the segment's first character; the `m` flag of `pattern` would let `^` match an inner line. */
 const startsWithAll = (seg: string, sources: string[]) =>
     sources.every((src) => {
