@@ -201,16 +201,11 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
                         for (const side of [arm, "host"]) skip(side, "P7 probe turn failed");
                         continue;
                     }
-                    const { pair, answers, lengths, snapshots: ids, arms: sides, inputs } = built;
-                    const judgment = await judgePair(judge, pair, reference, []);
+                    const judgment = await judgePair(judge, built.pair, reference, []);
                     const context = {
                         item: probe.id,
-                        answers,
                         reference: referenceDigest(reference),
-                        lengths,
-                        snapshots: ids,
-                        arms: sides,
-                        inputs,
+                        snapshots: { a, b },
                         later_attempts,
                         calibration: null,
                         permutation: null,

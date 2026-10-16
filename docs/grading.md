@@ -165,11 +165,18 @@ cannot call, and the divergences are listed below.
    both match, the normalised text is checked as well as the raw text, so
    `Ei**dnara` matches, and canaries and one-word arm names are also
    matched with every separator removed, so `eid-nara` and `CAN-ARY-7f3`
-   match. The
+   match. Blinding covers the forms an agent's answer takes when it
+   mentions an arm through formatting, encoding, or spacing; it is a safety
+   net under the structural guarantee that no arm is told its label, and
+   adversarial obfuscation (entity references nested inside entity
+   references, letters of a multi-word label split by punctuation, and
+   confusable or mixed-script homoglyphs) is outside what it refuses. The
    arm names are eval-core's six plus `eidnara`, `host arm`, and
-   `memory arm`. HTML comments and tags are dropped and the common and
+   `memory arm`. HTML comments and tags are dropped, the common and
    numeric entities decoded (an entity outside the code-point range is
-   dropped), Markdown links and images, inline or reference-style, keep
+   dropped, any other named entity becomes a space), markup the decoding
+   exposed is dropped again, invisible characters are dropped, Markdown
+   links and images, inline or reference-style, keep
    their label and lose their destination, identifier, and definition line, doubled or tripled emphasis marks (`**`, `***`, `__`, `___`), backticks, heading
    marks, bullet marks, and code fence lines (a line that starts with three
    backticks and holds no further backtick, whatever its info string) are
@@ -182,14 +189,18 @@ cannot call, and the divergences are listed below.
    `second`, and `tie`; recall needs `both` and `neither` to tell two
    recalls apart from none. Unswapped verdicts that disagree make the pair
    `Inconsistent`, which grades as excluded with that reason and is never
-   averaged. A reply that is not exactly one verdict word refuses the call.
+   averaged. A reply that is not exactly one verdict word, with trailing
+   `.` or `!` at most, refuses the call.
 4. The judgment records each answer's length after normalisation, and
    `longer_recalled_alone` records whether the longer answer was the one
    recalled alone, for the verbosity audit.
-5. `gradeP7` writes one grade per arm, each naming the other arm in
-   `against` and carrying its arm's later-attempt count, for the item, the exact answers, and the reference reason the
-   judgment names (the judgment carries the answers' and the reference's
-   digests, and the context must match), and only when the judgment's
+5. `gradeP7` takes the judgment and the two snapshots, rebuilds the pair
+   from them (so the arms, snapshot ids, artefact inputs, answer digests,
+   and lengths it records all come from the snapshots that produced the
+   judged answers), and writes one grade per arm, each naming the other arm in
+   `against` and carrying its arm's later-attempt count, for the item, the exact answers, and the reference
+   reason the judgment names (the judgment carries the answers' and the
+   reference's digests), and only when the judgment's
    recall is the one its two order verdicts imply, each of which must be one
    of the four verdict words, and its answer lengths and
    `longer_recalled_alone` are the ones the pair and that recall imply. Each grade carries the judge model,
@@ -245,7 +256,7 @@ the fixtures record. The run's records (`judge-calls.jsonl` with the four
 live under the git-ignored `runs/judge-smoke/`.
 
 The judge identity is the model id with the prompt and rubric digests; the
-prompt digest covers `PREPROCESSING_VERSION` (`sim-judge-preprocessing/v1`),
+prompt digest covers `PREPROCESSING_VERSION` (`sim-judge-preprocessing/v2`),
 which changes whenever normalisation, folding, or the arm tokens change what
 the judge sees, so judgments and calibration sets made under older
 preprocessing stop matching;

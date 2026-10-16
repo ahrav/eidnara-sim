@@ -1130,8 +1130,9 @@ Confidence: medium - [evidence](evidence/sim-p43-judge-hygiene-on-p7-only.md).
 M5 (#1029) implements the judge path in `src/grade/judge.ts`; unit tests cover
 each condition on fixtures, and no tier run has exercised it yet.
 Existing check: `src/grade/judge.test.ts` (P7 judge path, proxy judge) covers
-the component header, the family refusal, blinding, both orders, and the
-digests on each grade
+the component header on each call, the family refusal, blinding, both orders
+in one judgment, and the digests on each grade; the journal that binds each
+judge call to its item, order, and calibration digest lands with the runner
 Impact: The P7 judge identifies arms or prefers its own family.
 Open questions: None.
 
