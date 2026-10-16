@@ -46,6 +46,8 @@ export interface DriverOptions extends Omit<HostContext, "root" | "model"> {
     settle?: () => Promise<void>;
     hostFactory?: (ctx: HostContext) => SimHost;
     onDaemonExit: (detail: Record<string, unknown>) => void;
+    /** Called once the daemon a fault restarted is up, before it handles more work. */
+    onDaemonRestart?: () => void;
 }
 
 const IDENTITY = {
@@ -452,6 +454,7 @@ export class HostDriver implements ArmDriver {
             const before = this.daemonPid();
             await this.daemon.restart();
             this.recordState();
+            this.o.onDaemonRestart?.();
             const after = this.daemonPid();
             return {
                 signal: "SIGKILL",

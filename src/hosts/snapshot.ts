@@ -8,13 +8,13 @@ import {
     realpathSync,
     renameSync,
     rmSync,
-    truncateSync,
     writeFileSync,
 } from "node:fs";
 import { basename, join, relative, sep } from "node:path";
 import { GitBound, git, gitEnv } from "../git";
 import type { Artefact, CallView, Command, Snapshot } from "../grade/artefacts";
 import { sha256Hex } from "../prereg/canonical";
+import { dropCutLine as dropCutJsonlLine } from "../run/journal";
 
 interface RecorderState {
     session: string | null;
@@ -76,16 +76,8 @@ export class SnapshotRecorder {
         for (const name of locks) rmSync(join(this.gitDir, name), { force: true });
     }
 
-    /**
-     * `dropCutLine` truncates `snapshots.jsonl` to its newline-terminated prefix: a line cut by
-     * a kill mid-append is discarded and the next record starts at a line boundary.
-     */
     private dropCutLine(): void {
-        const path = join(this.armDir, "snapshots.jsonl");
-        if (!existsSync(path)) return;
-        const text = readFileSync(path, "utf8");
-        const complete = text.slice(0, text.lastIndexOf("\n") + 1);
-        if (complete.length < text.length) truncateSync(path, Buffer.byteLength(complete));
+        dropCutJsonlLine(join(this.armDir, "snapshots.jsonl"));
     }
 
     /**

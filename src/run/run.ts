@@ -347,6 +347,7 @@ async function runArms(
             transcriptPaths: hostRow.transcript_paths,
             loopStore,
             onDaemonExit: (detail) => scheduler.daemonExited(detail),
+            onDaemonRestart: () => sampler.sample(),
             callsFor: (session) => callsOf(join(o.out, "calls.jsonl"), arm, session, turnIndex),
             settle: () => scheduler.quiesceJobs(),
             now,

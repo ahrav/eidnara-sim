@@ -4,8 +4,8 @@
 class fired. `loadRun` admits a complete run only, through the journal
 check grading uses (`requireComplete`, SIM-P67): every scheduled event
 ended once per arm, an `EndArm` per arm, and an `EndRun`; a `scenario.json`
-whose digest differs from the manifest's `scenario_hash` is refused. It
-gathers, per arm, the call records, journal entries,
+whose digest differs from the manifest's `scenario_hash` is refused, and so
+is a daemon arm with no numeric RSS sample. It gathers, per arm, the call records, journal entries,
 plugin log (`<arm>/r/eidnara.log`), daemon log (`<arm>/daemon.log`),
 resource samples, and tool runs (`<arm>/tools.jsonl`, one line per tool run
 with its turn). `runOracles` returns every activation with its arm, where it
@@ -13,11 +13,11 @@ happened, and the evidence.
 
 | Oracle | Fires on |
 |---|---|
-| F1 fold-lag overflow | An HTTP 4xx call whose error says the prompt exceeds the context (`prompt is too long`, `ContextOverflow`, `input is too long`), or a failed turn whose outcome says so |
+| F1 fold-lag overflow | An HTTP 4xx call whose error says the prompt exceeds the context (`prompt is too long`, `ContextOverflow`, `input is too long`), or a failed turn whose outcome says so and that has no agent-call overflow of its own (an auxiliary call's overflow in the same turn leaves the turn's activation in place) |
 | F2 array-shape 400 | An HTTP 4xx call whose error names a message-array shape fault: roles that fail to alternate, an assistant prefill, a final assistant message, modified thinking blocks, or empty or non-list content |
 | F3 raw-history fallback | A plugin `rust pass` line with `served_from=raw`, one per transform pass that served its input unchanged; the warning the plugin logs before a failed pass is not counted again; a pass the daemon declined by policy (`declined:invocation_budget`) also serves raw and counts |
-| F4 hang | A turn that hit its deadline (OpenCode's `turn deadline` or Pi's `Timed out after ... ms`), with or without agent calls, or an agent call that completed and was followed by no tool start, other same-turn call (a persistence call counts), or turn end within `oracles.hang_quiet_ms` (five minutes, SIM-P39); a tool that starts within a second of the call's end counts as progress however long it runs, so a tool that waits forever surfaces at the deadline |
-| F5 RSS growth | A daemon RSS sample at or above `2 x RSS(0) + sessions x leak_bound.c_bytes_per_session`, or an RSS-per-session slope above that bound with a fit at or above `leak_bound.r2_threshold`; each daemon lifetime (the samples sharing a pid) is read on its own, with its first sample as RSS(0) and sessions counted from its start, so a restart hides no leak. The sampler records RSS(0) when the arm starts and a final sample when the arm finishes |
+| F4 hang | A turn that hit its deadline (OpenCode's `turn deadline` or Pi's `Timed out after ... ms`), with or without agent calls; a turn that began and saw no call, tool start, or turn end within `oracles.hang_quiet_ms` (five minutes, SIM-P39), whatever its outcome; or an agent call that completed and was followed by no tool start, other same-turn call (a persistence call counts), or turn end within that bound; a tool that starts within a second of the call's end counts as progress however long it runs, so a tool that waits forever surfaces at the deadline |
+| F5 RSS growth | A daemon RSS sample at or above `2 x RSS(0) + sessions x leak_bound.c_bytes_per_session`, or an RSS-per-session slope above that bound with a fit at or above `leak_bound.r2_threshold`; each daemon lifetime (the samples sharing a pid) is read on its own, with its first sample as RSS(0) and sessions counted from its start, so a restart hides no leak. The sampler records RSS(0) when the arm starts, a sample once a fault has restarted the daemon, and a final sample when the arm finishes; a run whose daemon arm has no numeric RSS sample is refused by `loadRun` rather than read as leak-free |
 | F6 cost | An arm whose total tokens exceed `oracles.cost_ratio_max` (1.5) times the host arm's, or that makes more title calls than the host arm: one activation per arm and run, its evidence naming each exceeded bound; until the report prices tokens (M7) this is a token ratio |
 | F7 visible internal text | An agent response carrying plugin markup or diagnostics: history-segment tags, `eidnara` tags, context-researcher augmentation, `[eidnara]` log prefixes, or pass fields such as `row_version` and `served_from`; read from the recorded response text, the first 262,144 characters; a call whose text ran past that cap carries `response_text_truncated` |
 | F8 invalid memory-capture array | A plugin or daemon log line where the daemon refused capture output (`memory capture output rejected`, or the refusal reason: schema mismatch, unsupported version, size or decision bounds, an unclosed code fence, missing or unknown source ids) |

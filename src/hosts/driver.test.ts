@@ -447,8 +447,11 @@ describe("HostDriver faults", () => {
         });
     });
 
-    test("a daemon fault restarts through the stack and reports both pids", async () => {
+    test("a daemon fault restarts through the stack, reports both pids, and tells the restart hook", async () => {
         const { driver } = fixture("eidnara");
+        const seen: number[] = [];
+        (driver as unknown as { o: DriverOptions }).o.onDaemonRestart = () =>
+            void seen.push(driver.daemonPid() ?? -1);
         driver.daemon = fakeDaemon(10) as unknown as DaemonStack;
         expect(await driver.fault(episode("daemon_restart"))).toEqual({
             signal: "SIGKILL",
@@ -456,6 +459,7 @@ describe("HostDriver faults", () => {
             pid_after: 11,
             restarted_by: "harness",
         });
+        expect(seen).toEqual([11]);
     });
 
     test("a model switch moves later sessions to the next model and keeps the daemon", async () => {

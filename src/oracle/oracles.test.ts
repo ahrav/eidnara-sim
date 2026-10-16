@@ -103,6 +103,7 @@ describe("oracle report", () => {
         mkdirSync(join(dir, "eidnara", "r"), { recursive: true });
         writeFileSync(join(dir, "eidnara", "r", "eidnara.log"), "a\nb\n");
         writeFileSync(join(dir, "eidnara", "daemon.log"), "c\n");
+        writeFileSync(join(dir, "eidnara", "resources.jsonl"), line({ scenario_ms: 0, rss: 100 }));
         const run = loadRun(dir, prereg);
         const eidnara = run.arms.find((a) => a.arm === "eidnara");
         expect(run.kinds.get("e-1")).toBe("session_end");
@@ -359,5 +360,81 @@ describe("token ledger", () => {
         expect(l.tokens).toEqual({ agent: 30, memory_capture: 15, title: 15 });
         expect(l.total).toBe(Object.values(l.tokens).reduce((a, b) => a + b, 0));
         expect(l.title_calls).toBe(1);
+    });
+});
+
+describe("oracle round three", () => {
+    const beginTurn = (arm: string, event: string, scenario_ms: number) => ({
+        kind: "BeginTurn" as const,
+        arm,
+        event,
+        seq: 0,
+        wall_ms: 0,
+        scenario_ms,
+    });
+
+    test("F4 fires on a long turn with no agent call that ended without a deadline", () => {
+        const long = runWith(
+            armOf("host", {
+                journal: [beginTurn("host", "e-1", 1_000), endTurn("host", "e-1", 1_000 + 400_000)],
+            }),
+        );
+        expect(oracle(long, "F4").map((a) => a.evidence)).toEqual([
+            "turn began, then 400 s with no tool run, call, or turn end",
+        ]);
+        const short = runWith(
+            armOf("host", {
+                journal: [beginTurn("host", "e-1", 1_000), endTurn("host", "e-1", 1_000 + 200_000)],
+            }),
+        );
+        expect(oracle(short, "F4")).toEqual([]);
+    });
+
+    test("an auxiliary call's overflow leaves the same turn's agent overflow in place", () => {
+        const overflow = "ValidationException: prompt is too long";
+        const both = runWith(
+            armOf("eidnara", {
+                calls: [call({ component: "memory_capture", status: 400, error: overflow })],
+                journal: [endTurn("eidnara", "e-1", 0, overflow)],
+            }),
+        );
+        expect(oracle(both, "F1").map((a) => a.component ?? "turn")).toEqual([
+            "memory_capture",
+            "turn",
+        ]);
+        expect(oracle(both, "F9")).toHaveLength(1);
+        const agentCall = runWith(
+            armOf("eidnara", {
+                calls: [call({ status: 400, error: overflow })],
+                journal: [endTurn("eidnara", "e-1", 0, overflow)],
+            }),
+        );
+        expect(oracle(agentCall, "F1")).toHaveLength(1);
+    });
+
+    test("a completed arm that runs a daemon must have RSS samples", () => {
+        const dir = mkdtempSync(join(tmpdir(), "sim-oracle-"));
+        const line = (o: unknown) => `${JSON.stringify(o)}\n`;
+        const order = ["host", "eidnara"];
+        const scenario = { events: [{ id: "e-1", kind: "user_turn" }] };
+        const scenario_hash = scenarioHash(scenario);
+        const manifest = { tier: "S", order, events: 1, scenario_hash };
+        writeFileSync(join(dir, "manifest.json"), JSON.stringify(manifest));
+        writeFileSync(join(dir, "scenario.json"), JSON.stringify({ ...scenario, scenario_hash }));
+        const journal = [
+            { kind: "StartRun", arm: null, order },
+            { kind: "Event", arm: "host", event: "e-1" },
+            { kind: "EndArm", arm: "host" },
+            { kind: "Event", arm: "eidnara", event: "e-1" },
+            { kind: "EndArm", arm: "eidnara" },
+            { kind: "EndRun", arm: null },
+        ];
+        writeFileSync(join(dir, "journal.jsonl"), journal.map(line).join(""));
+        expect(() => loadRun(dir, prereg)).toThrow("arm eidnara has no daemon RSS samples");
+        mkdirSync(join(dir, "eidnara"));
+        writeFileSync(join(dir, "eidnara", "resources.jsonl"), line({ scenario_ms: 0, rss: null }));
+        expect(() => loadRun(dir, prereg)).toThrow("arm eidnara has no daemon RSS samples");
+        writeFileSync(join(dir, "eidnara", "resources.jsonl"), line({ scenario_ms: 0, rss: 100 }));
+        expect(loadRun(dir, prereg).arms.map((a) => a.arm)).toEqual(order);
     });
 });

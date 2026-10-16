@@ -1,6 +1,7 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import {
     appendFileSync,
+    existsSync,
     mkdirSync,
     readdirSync,
     readFileSync,
@@ -148,14 +149,17 @@ export class DaemonStack {
     }
 
     /**
-     * Appends the daemon's stdout and stderr since the last host start. The v1 stack's
-     * `hostLog` concatenates its stderr buffer with the log file that buffer was also
-     * written to, so each stderr line appears twice there; the `diagnostics` view gives the
-     * two streams once.
+     * Appends the daemon's stdout and stderr since the last host start, each line once. The
+     * v1 stack keeps the last 256 KiB of each stream in memory and writes every stderr chunk
+     * to a log file it truncates at each host start, so stderr is read whole from that file
+     * (`logPath`, a private field the stack's own `diagnostics` view reads the same way) and
+     * stdout from the `diagnostics` view.
      */
     private saveLog(): void {
         if (!this.stack) return;
-        const { stdout, stderr } = this.hh.__hermeticHostTest.diagnostics(this.stack);
+        const { stdout } = this.hh.__hermeticHostTest.diagnostics(this.stack);
+        const logPath = String(this.stack.logPath ?? "");
+        const stderr = existsSync(logPath) ? readFileSync(logPath, "utf8") : "";
         appendFileSync(this.ctx.logFile, `${stdout}${stderr}`);
     }
 

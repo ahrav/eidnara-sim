@@ -62,5 +62,13 @@ export function loadRun(dir: string, prereg: Preregistration): RunLogs {
         resources: jsonl<Sample>(join(dir, arm, "resources.jsonl")),
         tools: jsonl<Command & { turn: string | null }>(join(dir, arm, "tools.jsonl")),
     }));
+    for (const arm of arms) {
+        if (arm.arm === "host") continue;
+        if (!arm.resources.some((s) => typeof s.rss === "number")) {
+            throw new Error(
+                `arm ${arm.arm} has no daemon RSS samples in ${arm.arm}/resources.jsonl`,
+            );
+        }
+    }
     return { dir, tier: manifest.tier, prereg, kinds, arms };
 }

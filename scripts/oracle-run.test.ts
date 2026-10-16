@@ -46,6 +46,8 @@ function completeRun(root: string, tier: string, prereg_sha256: string): string 
         scenario_ms: 0,
     };
     writeFileSync(join(dir, "calls.jsonl"), line(overflow));
+    mkdirSync(join(dir, "eidnara"));
+    writeFileSync(join(dir, "eidnara", "resources.jsonl"), line({ scenario_ms: 0, rss: 100 }));
     return dir;
 }
 
