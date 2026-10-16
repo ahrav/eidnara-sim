@@ -92,7 +92,7 @@ function checkVerdict(f: FamilyVerdict, family: Family, errors: string[]): void 
         family.metrics.includes(f.failed_metric) &&
         Array.isArray(f.failed_items) &&
         f.failed_items.length > 0 &&
-        f.failed_items.every((item) => typeof item === "string" && item !== "");
+        f.failed_items.every((item) => typeof item === "string" && item.trim() !== "");
     const anyPayload = f.failed_metric !== undefined || f.failed_items !== undefined;
     if (failed ? !payload : anyPayload) {
         errors.push(

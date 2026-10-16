@@ -401,7 +401,7 @@ describe("report check against the pre-registration", () => {
         ]);
         at(r, "harm").failed_metric = "P3.harm";
         delete at(r, "probe-P1").failed_items;
-        for (const items of [[], [""]]) {
+        for (const items of [[], [""], ["  "]]) {
             at(r, "harm").failed_items = items;
             at(r, "probe-P5").mde = "0.1";
             expect(checkReport(r, m)).toEqual([

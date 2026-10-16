@@ -175,6 +175,8 @@ export function checkCatalog(
                 errors.push(`catalog: id ${id} appears ${matches.length} times`);
             } else if (!guarantee.startsWith(`${id}:`)) {
                 errors.push(`catalog: ${id} absent from its Guarantee`);
+            } else if (guarantee.slice(id.length + 1).trim() === "") {
+                errors.push(`catalog: ${id} Guarantee states no claim`);
             }
         }
     }

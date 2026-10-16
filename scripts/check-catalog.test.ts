@@ -130,6 +130,14 @@ describe("catalog checker", () => {
         );
     });
 
+    test("refuses a Guarantee that carries its id and no claim", () => {
+        const path = copy();
+        edit(path, /Guarantee: SIM-P01:[^\n]*\n(?:[^\n]+\n)*?(?=Check:)/, "Guarantee: SIM-P01:\n");
+        expect(checkCatalog(path, METHOD, IDS)).toContain(
+            "catalog: SIM-P01 Guarantee states no claim",
+        );
+    });
+
     test("refuses a record without its evidence file and an id that is missing", () => {
         const path = copy();
         unlinkSync(join(dir, "evidence/sim-p05-scheduled-events-identical-across-arms.md"));
