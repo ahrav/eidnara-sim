@@ -1,6 +1,6 @@
 import { realpathSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 const UNSHARE_ARGS = ["--mount", "--pid", "--fork", "--mount-proc", "--propagation", "private"];
 const PLAIN_PATH = /^\/[A-Za-z0-9._@+/-]*$/;
@@ -9,6 +9,9 @@ const PLAIN_VALUE = /^[A-Za-z0-9._@+/:,=-]*$/;
 export function plainPath(path: string): string {
     if (!PLAIN_PATH.test(path)) {
         throw new Error(`sandbox path ${JSON.stringify(path)} must match ${PLAIN_PATH}`);
+    }
+    if (resolve(path) !== path) {
+        throw new Error(`sandbox path ${JSON.stringify(path)} must be normalized`);
     }
     return path;
 }
@@ -28,7 +31,8 @@ export function maskedPaths(runRoot: string): string[] {
 }
 
 // The setuid sudo boundary strips LD_PRELOAD, so the interposer reaches the host only
-// through variables set after setpriv.
+// through variables set after setpriv. The staging tree and the interposer's own
+// shared-memory objects live in a private /dev/shm that ends with the namespace.
 function script(hidden: readonly string[]): string {
     const mounts = hidden
         .map((dir) => `mount -t tmpfs -o mode=1777 tmpfs ${plainPath(dir)}`)
@@ -43,6 +47,7 @@ shift
 envs=""
 while [ "$1" != "--" ]; do envs="$envs $1"; shift; done
 shift
+mount -t tmpfs -o mode=1777 tmpfs /dev/shm
 st=$(mktemp -d /dev/shm/simst.XXXXXX)
 for p in $keep; do mkdir -p "$st$p"; mount --rbind "$p" "$st$p"; done
 ${mounts}

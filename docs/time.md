@@ -4,13 +4,20 @@
 
 `writeLauncher(runRoot)` writes `sandbox.sh` into the run root. The script
 runs a command in private mount and PID namespaces through `sudo` and
-`unshare`, masks `/tmp`, the home directory, and the run root with tmpfs,
-binds the kept paths back in, and drops privilege with `setpriv` (same UID
-and GID, no new privileges, no capabilities). `launch(launcher, keep, env,
+`unshare`, mounts a private `/dev/shm`, masks `/tmp`, the home directory,
+and the run root with tmpfs, binds the kept paths back in, and drops
+privilege with `setpriv` (same UID and GID, no new privileges, no
+capabilities). The staging tree for the kept paths and the interposer's
+shared-memory objects live in the private `/dev/shm`, so they end with the
+namespace on every exit path. `launch(launcher, keep, env,
 command)` builds the argv: kept paths, then `--env` and `NAME=value` pairs,
 then `--` and the command. `env` sets those variables after `setpriv`,
 because the setuid `sudo` boundary strips `LD_PRELOAD`. Paths and values
-must be plain words, since the script splits them on spaces.
+must be plain words, since the script splits them on spaces, and kept paths
+must be normalized absolute paths, since the script joins them onto the
+staging directory. `probes` resolves each configured binary to its canonical
+path, so the kept directory and the path the loader reports in its binding
+lines match.
 
 ## Interposer
 

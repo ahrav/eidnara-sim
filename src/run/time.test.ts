@@ -1,5 +1,14 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync } from "node:fs";
+import {
+    existsSync,
+    mkdirSync,
+    mkdtempSync,
+    readdirSync,
+    readFileSync,
+    realpathSync,
+    symlinkSync,
+    writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "../config/config";
@@ -13,7 +22,7 @@ import {
 } from "./interception";
 import { Journal } from "./journal";
 import { launch, sandboxAvailable, writeLauncher } from "./launcher";
-import { ResourceSampler } from "./sampler";
+import { ResourceSampler, treeBytes } from "./sampler";
 import { Scheduler } from "./scheduler";
 import { FAKETIME_LIB, faketimeEnv, readOffsetSeconds, writeOffset } from "./timeinject";
 import { transcriptPaths } from "./transcripts";
@@ -42,6 +51,9 @@ describe("time injection", () => {
 
     test("the launcher refuses paths and values the shell would split", () => {
         expect(() => launch("/x/sandbox.sh", ["/a b"], {}, ["true"])).toThrow(/must match/);
+        expect(() => launch("/x/sandbox.sh", ["/../tmp"], {}, ["true"])).toThrow(/normalized/);
+        expect(() => launch("/x/sandbox.sh", ["/a/./b"], {}, ["true"])).toThrow(/normalized/);
+        expect(() => launch("/x/sandbox.sh", ["/a//b"], {}, ["true"])).toThrow(/normalized/);
         expect(() => launch("/x/sandbox.sh", [], { A: "x y" }, ["true"])).toThrow(/plain word/);
         expect(launch("/x/sandbox.sh", ["/k"], { A: "1" }, ["true"])).toEqual([
             "/x/sandbox.sh",
@@ -85,10 +97,10 @@ describe("time injection", () => {
     );
 
     test.skipIf(!live)(
-        "a binary that drops the interposer is recorded wall-clock-only",
+        "a binary that drops the interposer or leaves clock_gettime unbound is recorded wall-clock-only",
         () => {
             const root = runRoot();
-            const [pi] = probes({
+            const [pi, , unbound] = probes({
                 node: realpathSync(Bun.which("node") ?? "node"),
                 opencode: "/bin/true",
                 daemon: "/bin/true",
@@ -97,9 +109,51 @@ describe("time injection", () => {
                 ...(pi as BinaryProbe),
                 argv: ["/usr/bin/env", "-u", "LD_PRELOAD", ...(pi as BinaryProbe).argv],
             };
-            const [result] = interceptionTest(writeLauncher(root), root, [stripped]);
-            expect(result?.intercepted).toBe(false);
-            expect(result?.wall_clock_only).toBe(true);
+            const results = interceptionTest(writeLauncher(root), root, [
+                stripped,
+                unbound as BinaryProbe,
+            ]);
+            expect(results.map((r) => [r.name, r.intercepted, r.wall_clock_only])).toEqual([
+                ["pi", false, true],
+                ["daemon", false, true],
+            ]);
+            expect(results[1]?.evidence.binding).toBeNull();
+        },
+        60_000,
+    );
+
+    test.skipIf(!live)(
+        "a binds-clock binary reached through a symlink is detected",
+        () => {
+            const root = runRoot();
+            const node = realpathSync(Bun.which("node") ?? "node");
+            const linkDir = join(root, "bin");
+            mkdirSync(linkDir);
+            symlinkSync(node, join(linkDir, "daemon"));
+            const [, , daemon] = probes({
+                node,
+                opencode: "/bin/true",
+                daemon: join(linkDir, "daemon"),
+            });
+            const [result] = interceptionTest(writeLauncher(root), root, [daemon as BinaryProbe]);
+            expect(result?.intercepted).toBe(true);
+            expect(result?.path).toBe(node);
+        },
+        60_000,
+    );
+
+    test.skipIf(!live)(
+        "a launch that fails while staging leaves nothing in the host's /dev/shm",
+        () => {
+            const root = runRoot();
+            const before = readdirSync("/dev/shm");
+            const missing = join(root, "missing");
+            const r = Bun.spawnSync(launch(writeLauncher(root), [missing], {}, ["/bin/true"]), {
+                stdout: "pipe",
+                stderr: "pipe",
+            });
+            expect(r.exitCode).not.toBe(0);
+            expect(readdirSync("/dev/shm")).toEqual(before);
         },
         60_000,
     );
@@ -167,6 +221,54 @@ describe("clock hook", () => {
 });
 
 describe("ResourceSampler", () => {
+    test("treeBytes counts regular files under the store and does not follow symlinks", () => {
+        const base = mkdtempSync(join(tmpdir(), "tree-"));
+        const store = join(base, "store");
+        const outside = join(base, "outside");
+        mkdirSync(join(store, "sub"), { recursive: true });
+        mkdirSync(outside);
+        writeFileSync(join(store, "a"), "12345");
+        writeFileSync(join(store, "sub", "b"), "123");
+        writeFileSync(join(outside, "big"), "x".repeat(1000));
+        symlinkSync(outside, join(store, "to-outside"));
+        symlinkSync(join(outside, "big"), join(store, "to-big"));
+        symlinkSync(store, join(store, "sub", "loop"));
+        expect(treeBytes(store)).toBe(8);
+    });
+
+    test("a sample for a different PID reports no fraction, and stop() while busy reports idle", () => {
+        const path = join(mkdtempSync(join(tmpdir(), "samp-")), "resources.jsonl");
+        const events: boolean[] = [];
+        let pid = process.pid;
+        const sampler = new ResourceSampler({
+            path,
+            intervalMs: 50,
+            busyFraction: 0.2,
+            pid: () => pid,
+            storeDir: import.meta.dir,
+            scenarioMs: () => 0,
+            onBusy: (b) => void events.push(b),
+        });
+        const spin = () => {
+            const until = Date.now() + 150;
+            while (Date.now() < until) Math.sqrt(Math.random());
+        };
+        sampler.sample();
+        spin();
+        pid = process.ppid;
+        const restarted = sampler.sample();
+        expect(restarted.pid).toBe(process.ppid);
+        expect(restarted.cpu_fraction).toBeNull();
+        expect(events).toEqual([]);
+        pid = process.pid;
+        sampler.sample();
+        spin();
+        expect(sampler.sample().cpu_fraction ?? 0).toBeGreaterThan(0.2);
+        expect(events).toEqual([true]);
+        sampler.stop();
+        expect(events).toEqual([true, false]);
+    });
+
     test("samples a process, writes each sample, and reports busy while CPU use is above the threshold", async () => {
         const path = join(mkdtempSync(join(tmpdir(), "samp-")), "resources.jsonl");
         const events: boolean[] = [];

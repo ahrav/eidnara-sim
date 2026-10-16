@@ -42,28 +42,33 @@ const PRINT_TIME =
     "const t=performance.now();setTimeout(()=>console.log(JSON.stringify({now:Date.now(),timer:performance.now()-t})),100)";
 
 export function probes(paths: { node: string; opencode: string; daemon: string }): BinaryProbe[] {
-    const nodeRoot = resolve(paths.node, "../..");
+    // The kept directory and the path the loader reports in its binding lines are the
+    // binary's canonical location, so a symlinked configured path resolves before use.
+    const node = realpathSync(paths.node);
+    const opencode = realpathSync(paths.opencode);
+    const daemon = realpathSync(paths.daemon);
+    const nodeRoot = resolve(node, "../..");
     return [
         {
             name: "pi",
-            path: paths.node,
+            path: node,
             keep: [nodeRoot],
-            argv: [paths.node, "-e", PRINT_TIME],
+            argv: [node, "-e", PRINT_TIME],
             mode: "prints-time",
         },
         {
             name: "opencode",
-            path: paths.opencode,
-            keep: [dirname(paths.opencode)],
-            argv: [paths.opencode, "-e", PRINT_TIME],
+            path: opencode,
+            keep: [dirname(opencode)],
+            argv: [opencode, "-e", PRINT_TIME],
             env: { BUN_BE_BUN: "1" },
             mode: "prints-time",
         },
         {
             name: "daemon",
-            path: paths.daemon,
-            keep: [dirname(paths.daemon)],
-            argv: [paths.daemon, "build-profile"],
+            path: daemon,
+            keep: [dirname(daemon)],
+            argv: [daemon, "build-profile"],
             env: { LD_DEBUG: "bindings" },
             mode: "binds-clock",
         },
@@ -107,7 +112,7 @@ export function interceptionTest(
                 .split("\n")
                 .find(
                     (l) =>
-                        l.includes(`binding file ${realpathSync(b.path)} [0] to `) &&
+                        l.includes(`binding file ${b.path} [0] to `) &&
                         /libfaketime\.so\.1 \[0\]: normal symbol `clock_gettime'/.test(l),
                 );
             evidence = { ...evidence, binding: line?.trim() ?? null };

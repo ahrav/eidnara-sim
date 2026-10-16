@@ -1,4 +1,4 @@
-import { appendFileSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { appendFileSync, lstatSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 const TICKS_PER_SECOND = 100;
@@ -27,10 +27,12 @@ export function treeBytes(dir: string): number {
         for (const name of names) {
             const p = join(d, name);
             try {
-                const st = statSync(p);
+                const st = lstatSync(p);
                 if (st.isDirectory()) walk(p);
                 else if (st.isFile()) total += st.size;
-            } catch {}
+            } catch {
+                // The scan skips entries removed between readdir and lstat.
+            }
         }
     };
     walk(dir);
