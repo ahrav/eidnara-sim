@@ -27,6 +27,8 @@ function byId(datasets: Dataset[], id: string): Dataset {
 export async function buildCorpus(datasets: Dataset[]): Promise<Map<string, string>> {
     const fit = await fitTraceLab(byId(datasets, "tracelab"));
     const rates = JSON.parse(readFileSync(join(CORPUS_DIR, "published-rates.json"), "utf8"));
+    if (rates.schema !== "sim-corpus-rates/v1")
+        throw new Error("published-rates.json: unknown schema");
     const extraction = await extractToolOutputs(byId(datasets, "openhands"));
 
     const files = new Map<string, string>();

@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { sha256Hex } from "../prereg/canonical";
-import { cdfProblems, quantile, tailShare } from "./cdf";
+import { cdfProblems, GRID, quantile, tailShare } from "./cdf";
 import {
     type CheckResult,
     compareCited,
@@ -111,13 +111,20 @@ export function checkCorpus(): CorpusReport {
         quantityNames === QUANTITIES.join(","),
         `quantities: ${quantityNames}, need ${QUANTITIES.join(",")}`,
     );
+    const tracelab = sources.find((d) => d.id === "tracelab");
+    const origin = `${tracelab?.repo}@${tracelab?.revision}:`;
     for (const [name, q] of Object.entries(dist.quantities)) {
-        need(typeof q.source === "string" && q.source !== "", `${name}: source missing`);
+        need(
+            typeof q.source === "string" && q.source.startsWith(origin),
+            `${name}: source ${q.source}`,
+        );
         need(q.n > 0, `${name}: n missing`);
         need(CDF_KINDS.has(q.cdf.kind), `${name}: cdf kind ${q.cdf.kind}`);
         if (q.cdf.kind === "discrete") {
             const counts = q.cdf.x.every((v) => Number.isSafeInteger(v) && v >= 0);
             need(counts, `${name}: discrete values must be non-negative integers`);
+        } else {
+            need(q.cdf.p.join(",") === GRID.join(","), `${name}: p must be the fit grid`);
         }
         problems.push(...cdfProblems(q.cdf).map((why) => `${name}: ${why}`));
     }
