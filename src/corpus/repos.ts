@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { CORPUS_DIR, isPlainRelativePath, under } from "./sources";
 
@@ -61,6 +61,9 @@ export function loadRepos(): RepoSpec[] {
             throw new Error(
                 `repos.json: ${repo.id}: license_file must be a relative path in the clone`,
             );
+        }
+        if (!existsSync(join(TWINS_DIR, repo.twin.id))) {
+            throw new Error(`repos.json: ${repo.twin.id}: corpus/twins/${repo.twin.id} is missing`);
         }
         if (!Array.isArray(repo.twin.renames)) {
             throw new Error(`repos.json: ${repo.twin.id}: renames must be an array`);

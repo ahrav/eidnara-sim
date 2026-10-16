@@ -10,6 +10,9 @@ test("renderJson compacts numeric arrays and leaves bracketed prose alone", () =
     expect(out).toContain('"b": [1, 2.5, -3e-7]');
     expect(out).toContain('"c": []');
     expect(out).toContain('"d": [\n        "x"\n    ]');
+    const marker = renderJson({ note: "@@numbers:0@@", values: [1, 2], empty: {} });
+    expect(marker).toContain('"note": "@@numbers:0@@"');
+    expect(marker).toContain('"empty": {}');
 });
 
 test("renderJson reproduces the committed corpus files byte for byte", () => {

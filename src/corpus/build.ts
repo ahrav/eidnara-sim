@@ -4,22 +4,30 @@ import { fitTraceLab } from "./fit";
 import type { Dataset } from "./sources";
 import { extractToolOutputs } from "./tool-outputs";
 
-const MARK = /"@@numbers:(\d+)@@"/g;
-
 export function renderJson(value: unknown): string {
-    const compact: string[] = [];
-    const text = JSON.stringify(
-        value,
-        (_key, v: unknown) => {
-            const numeric =
-                Array.isArray(v) && v.length > 0 && v.every((n) => typeof n === "number");
-            if (!numeric) return v;
-            compact.push(`[${(v as number[]).map((n) => JSON.stringify(n)).join(", ")}]`);
-            return `@@numbers:${compact.length - 1}@@`;
-        },
-        4,
-    );
-    return `${text.replace(MARK, (_m, i: string) => compact[Number(i)] ?? "[]")}\n`;
+    return `${render(value, 0)}\n`;
+}
+
+function render(value: unknown, depth: number): string {
+    const inner = " ".repeat(4 * (depth + 1));
+    const outer = " ".repeat(4 * depth);
+    if (Array.isArray(value)) {
+        if (value.length === 0) return "[]";
+        if (value.every((n) => typeof n === "number")) {
+            return `[${value.map((n) => JSON.stringify(n)).join(", ")}]`;
+        }
+        const items = value.map((v) => `${inner}${render(v ?? null, depth + 1)}`);
+        return `[\n${items.join(",\n")}\n${outer}]`;
+    }
+    if (value !== null && typeof value === "object") {
+        const entries = Object.entries(value).filter(([, v]) => v !== undefined);
+        if (entries.length === 0) return "{}";
+        const items = entries.map(
+            ([k, v]) => `${inner}${JSON.stringify(k)}: ${render(v, depth + 1)}`,
+        );
+        return `{\n${items.join(",\n")}\n${outer}}`;
+    }
+    return JSON.stringify(value);
 }
 
 const jsonl = (entries: readonly unknown[]) =>
