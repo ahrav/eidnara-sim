@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fixtureEvents } from "../../tests/run-fixture";
 import { FaultInjector, TARGET } from "../proxy/inject";
+import type { CallRecord } from "../proxy/records";
 import { Rng } from "../rng";
 import type { FaultEpisode } from "../scenario/faults";
 import { SEAMS } from "../scenario/faults";
@@ -774,11 +775,44 @@ describe("Scheduler", () => {
         };
         const injector = new FaultInjector([fault], new Rng(3), 1_000);
         const masks: Record<string, boolean[]> = { a: [], b: [] };
+        const record = (seq: number, fault_ref: string | null): CallRecord => ({
+            seq,
+            arm: "a",
+            session: "s-0000",
+            turn: "e-000001",
+            component: TARGET,
+            componentSource: "asserted",
+            model: "m",
+            status: fault_ref ? 429 : 200,
+            finish_reason: null,
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            started_wall_ms: Date.now(),
+            wall_ms: Date.now(),
+            scenario_ms: 0,
+            first_byte_ms: null,
+            proxy_retries: 0,
+            fault_ref,
+            error: null,
+        });
         const driver = (arm: string) =>
             fakeDriver([], 0, (e) => {
                 if (e.kind === "user_turn") {
                     for (let call = 0; call < 6; call++) {
-                        masks[arm]?.push(injector.take(TARGET, call) !== null);
+                        const injected = injector.take(TARGET, call) !== null;
+                        masks[arm]?.push(injected);
+                        if (arm === "a") {
+                            injector.observe(
+                                record(call, injected ? "p1" : null),
+                                call,
+                                performance.now(),
+                            );
+                        }
+                    }
+                    if (arm === "a") {
+                        expect(injector.report()[0]?.injected_seq.length).toBeGreaterThan(0);
                     }
                 }
             });
