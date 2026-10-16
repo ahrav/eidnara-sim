@@ -28,7 +28,7 @@ const RAW_PASS = /served_from=raw/;
 const CAPTURE_REFUSED =
     /memory capture output rejected|capture output (does not match the JSON schema|version is unsupported|exceeds (its decision bounds|\d+ bytes)|has no source id|has an unclosed code fence|names an unknown or duplicate source)/;
 const DEADLINE = /deadline|Timed out after \d+ ?ms/;
-const HARNESS = new Set(["user-sim", "judge", "rejected"]);
+export const HARNESS = new Set(["user-sim", "judge", "rejected"]);
 export const INTERNAL_TEXT = [
     /<\/?history[_-]segments?\b/i,
     /<\/?eidnara[\w-]*>/i,

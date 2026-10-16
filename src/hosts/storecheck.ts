@@ -60,3 +60,27 @@ function inspect(path: string): StoreCheck {
         db.close();
     }
 }
+
+export interface MemoryNote {
+    id: number;
+    content: string;
+    status: string;
+    deliveries: number;
+    first_delivery_ms: number | null;
+}
+
+export function memoryNotes(path: string): MemoryNote[] | null {
+    if (!existsSync(path)) return null;
+    const db = new Database(path, { readonly: true });
+    try {
+        return db
+            .query(
+                "select n.id, n.content, n.status, (select count(*) from note_deliveries d where d.note_id = n.id) as deliveries, (select min(d.created_at_ms) from note_deliveries d where d.note_id = n.id) as first_delivery_ms from notes n order by n.id",
+            )
+            .all() as MemoryNote[];
+    } catch {
+        return null;
+    } finally {
+        db.close();
+    }
+}

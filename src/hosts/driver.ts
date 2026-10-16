@@ -20,7 +20,7 @@ import {
 import type { FaultEpisode } from "../scenario/faults";
 import { armBase, DaemonStack, eidnaraOn, type HostContext, makeHost, type SimHost } from "./arms";
 import { SnapshotRecorder } from "./snapshot";
-import { checkStore } from "./storecheck";
+import { checkStore, memoryNotes } from "./storecheck";
 
 interface ArmState {
     model: number;
@@ -389,6 +389,8 @@ export class HostDriver implements ArmDriver {
             if (daemon && checkFinalStore) {
                 const check = checkStore(this.storeDb);
                 writeFileSync(join(this.armDir, "store-check.json"), `${JSON.stringify(check)}\n`);
+                const notes = memoryNotes(this.storeDb);
+                writeFileSync(join(this.armDir, "memory.json"), `${JSON.stringify(notes)}\n`);
             }
         } catch (caught) {
             failure ??= caught;

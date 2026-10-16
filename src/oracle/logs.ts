@@ -8,7 +8,7 @@ import { type Entry, readJournal } from "../run/journal";
 import type { Sample as ResourceSample } from "../run/sampler";
 import type { Scenario } from "../scenario/compile";
 
-export type Sample = Pick<ResourceSample, "scenario_ms" | "rss">;
+export type Sample = Pick<ResourceSample, "scenario_ms" | "rss"> & Partial<ResourceSample>;
 
 export interface ArmLogs {
     arm: string;
