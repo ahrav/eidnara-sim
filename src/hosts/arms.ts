@@ -1,10 +1,13 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import {
     appendFileSync,
+    closeSync,
     existsSync,
     mkdirSync,
+    openSync,
     readdirSync,
     readFileSync,
+    readSync,
     realpathSync,
     writeFileSync,
 } from "node:fs";
@@ -101,6 +104,21 @@ export interface DaemonContext {
     model: string;
 }
 
+/** Appends `source` to `target` a megabyte at a time, so a long daemon log stays off the heap. */
+function appendFileFrom(source: string, target: string): void {
+    const fd = openSync(source, "r");
+    try {
+        const chunk = Buffer.alloc(1 << 20);
+        for (;;) {
+            const read = readSync(fd, chunk, 0, chunk.length, null);
+            if (read === 0) break;
+            appendFileSync(target, chunk.subarray(0, read));
+        }
+    } finally {
+        closeSync(fd);
+    }
+}
+
 export class DaemonStack {
     private stack: Untyped = null;
     /** The v1 hermetic-host module the stack came from. */
@@ -158,9 +176,9 @@ export class DaemonStack {
     private saveLog(): void {
         if (!this.stack) return;
         const { stdout } = this.hh.__hermeticHostTest.diagnostics(this.stack);
+        appendFileSync(this.ctx.logFile, stdout);
         const logPath = String(this.stack.logPath ?? "");
-        const stderr = existsSync(logPath) ? readFileSync(logPath, "utf8") : "";
-        appendFileSync(this.ctx.logFile, `${stdout}${stderr}`);
+        if (existsSync(logPath)) appendFileFrom(logPath, this.ctx.logFile);
     }
 
     async restart(): Promise<void> {

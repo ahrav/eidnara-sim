@@ -101,26 +101,28 @@ function f4(arm: ArmLogs, quietMs: number): Activation[] {
             }
             continue;
         }
-        const quietAfter = (done: number, activity: number[]): number => {
+        /** Proxy records and the turn end are on the harness clock; only a tool start gets the slack. */
+        const quietAfter = (done: number, recorded: number[]): number => {
             const next = Math.min(
-                ...activity.filter((ms) => ms >= done - CLOCK_SLACK_MS),
+                ...recorded.filter((ms) => ms >= done),
+                ...tools.filter((ms) => ms >= done - CLOCK_SLACK_MS),
                 Number.POSITIVE_INFINITY,
             );
             return next - done;
         };
         const silence = "with no tool run, call, or turn end";
         if (began) {
-            const all = [...turnCalls.map((c) => c.scenario_ms), ...tools, e.scenario_ms];
-            const quiet = quietAfter(began.scenario_ms, all);
+            const starts = turnCalls.map((c) => c.scenario_ms);
+            const quiet = quietAfter(began.scenario_ms, [...starts, e.scenario_ms]);
             if (quiet > quietMs) {
                 const evidence = `turn began, then ${Math.round(quiet / 1000)} s ${silence}`;
                 out.push({ oracle: "F4", arm: arm.arm, at: turn, evidence });
             }
         }
-        for (const c of calls.filter((x) => x.status === 200)) {
+        for (const c of calls) {
             const done = c.scenario_ms + (c.wall_ms - c.started_wall_ms);
             const others = turnCalls.filter((x) => x !== c).map((x) => x.scenario_ms);
-            const quiet = quietAfter(done, [...others, ...tools, e.scenario_ms]);
+            const quiet = quietAfter(done, [...others, e.scenario_ms]);
             if (quiet > quietMs) {
                 const evidence = `call ${c.seq} completed, then ${Math.round(quiet / 1000)} s ${silence}`;
                 out.push({ oracle: "F4", arm: arm.arm, at: turn, evidence });

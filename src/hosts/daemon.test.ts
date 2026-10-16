@@ -44,7 +44,7 @@ test("daemon.log keeps the whole stderr of a lifetime, past the 256 KiB tail the
     const logFile = join(dir, "daemon.log");
     const logPath = join(dir, "direct-host.log");
     const refusal = "daemon: memory capture output rejected\n";
-    const filler = `${"x".repeat(1023)}\n`.repeat(300);
+    const filler = `${"x".repeat(1023)}\n`.repeat(3_000);
     writeFileSync(logPath, `${refusal}${filler}`);
     const daemon = new DaemonStack({
         config: loadConfig(),

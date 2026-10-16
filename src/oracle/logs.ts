@@ -28,8 +28,21 @@ export interface RunLogs {
     arms: ArmLogs[];
 }
 
+/** Evidence files are read strictly: every newline-terminated line must parse. A completed run's writers leave no cut tail. */
 function jsonl<T>(path: string): T[] {
-    return existsSync(path) ? (readJournal(path) as unknown as T[]) : [];
+    if (!existsSync(path)) return [];
+    const lines = readFileSync(path, "utf8").split("\n");
+    return lines.flatMap((text, i) => {
+        if (i === lines.length - 1) {
+            if (text !== "") throw new Error(`${path}: line ${i + 1} is cut`);
+            return [];
+        }
+        try {
+            return [JSON.parse(text) as T];
+        } catch {
+            throw new Error(`${path}: line ${i + 1} is corrupt`);
+        }
+    });
 }
 
 const lines = (path: string) =>

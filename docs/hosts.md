@@ -46,9 +46,9 @@ there before each restart.
 interposer environment, restarts it with SIGKILL against the same store, and
 stops it with SIGTERM so its store stays on disk. It appends the daemon's
 stdout and stderr to the arm's `daemon.log` before each restart and at stop,
-each line once: stderr whole from the log file the v1 stack writes each chunk
-to and truncates at each host start, stdout from the stack's `diagnostics`
-view, which keeps the last 256 KiB. The run's resource sampler takes a sample
+each line once: stderr copied a megabyte at a time from the log file the v1
+stack writes each chunk to and truncates at each host start, stdout from the
+stack's `diagnostics` view, which keeps the last 256 KiB. The run's resource sampler takes a sample
 once a restarted daemon is up.
 
 Each `session_start` launches one host process in the session's workspace
