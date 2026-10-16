@@ -1,5 +1,12 @@
 import { describe, expect, setSystemTime, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+    existsSync,
+    mkdtempSync,
+    readdirSync,
+    readFileSync,
+    symlinkSync,
+    writeFileSync,
+} from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { fixtureEvents } from "../../tests/run-fixture";
@@ -8,9 +15,10 @@ import { Rng } from "../rng";
 import type { FaultEpisode } from "../scenario/faults";
 import { SEAMS } from "../scenario/faults";
 import { Clock } from "./clock";
-import { type Entry, Journal, readJournal, releaseLease, takeLease } from "./journal";
+import { type Entry, Journal, leaseHost, readJournal, releaseLease, takeLease } from "./journal";
 import {
     type ArmDriver,
+    type ArmHandle,
     HarnessFailure,
     type ScenarioEvent,
     Scheduler,
@@ -20,12 +28,22 @@ import {
 const ROOT = join(import.meta.dir, "..", "..");
 const dir = () => mkdtempSync(join(tmpdir(), "sim-run-"));
 
+type FakeDriver = ArmDriver & { arm: () => ArmHandle };
+
 function fakeDriver(
     log: string[],
     turnMs = 0,
     onTurn?: (e: ScenarioEvent) => Promise<void> | void,
-): ArmDriver {
+): FakeDriver {
+    let handle: ArmHandle | null = null;
     return {
+        bind: (h) => {
+            handle = h;
+        },
+        arm: () => {
+            if (!handle) throw new Error("driver is not bound to an arm");
+            return handle;
+        },
         reset: async () => void log.push("reset"),
         event: async (e) => {
             log.push(`${e.kind}:${e.id}`);
@@ -184,26 +202,52 @@ describe("Journal and lease", () => {
         expect(readJournal(path).map((e) => e.seq)).toEqual([0, 1, 2, 3]);
     });
 
+    /** Overwrites the directory's highest lease file, the one `takeLease` reads. */
+    const writeTopLease = (d: string, body: string) => {
+        const top = readdirSync(d)
+            .flatMap((n) => (/^lease\.(\d+)\.json$/.test(n) ? [Number(n.split(".")[1])] : []))
+            .sort((a, b) => a - b)
+            .at(-1);
+        writeFileSync(join(d, `lease.${top ?? 0}.json`), body);
+    };
+
     test("one live process holds the lease; a dead holder's lease is taken over", () => {
         const d = dir();
         takeLease(d);
         expect(() => takeLease(d)).toThrow(/is leased by pid/);
         releaseLease(d);
         const dead = Bun.spawnSync(["true"]).pid;
-        writeFileSync(
-            join(d, "lease.0.json"),
-            JSON.stringify({ pid: dead, host: hostname(), started_wall_ms: 0 }),
-        );
+        writeTopLease(d, JSON.stringify({ pid: dead, host: leaseHost(), started_wall_ms: 0 }));
         expect(takeLease(d).pid).toBe(process.pid);
         releaseLease(d);
-        writeFileSync(join(d, "lease.0.json"), "");
+        writeTopLease(d, "");
         expect(takeLease(d).pid).toBe(process.pid);
         releaseLease(d);
-        writeFileSync(
-            join(d, "lease.0.json"),
-            JSON.stringify({ pid: dead, host: "elsewhere", started_wall_ms: 0 }),
-        );
+        writeTopLease(d, JSON.stringify({ pid: dead, host: "elsewhere", started_wall_ms: 0 }));
         expect(() => takeLease(d)).toThrow(/on elsewhere/);
+    });
+
+    test("a dead holder whose pid a live process now carries is taken over", () => {
+        const d = dir();
+        const other = Bun.spawn(["sleep", "30"]);
+        try {
+            const mine = takeLease(d);
+            expect(typeof mine.started_ticks).toBe("number");
+            releaseLease(d);
+            writeFileSync(
+                join(d, "lease.0.json"),
+                JSON.stringify({
+                    pid: other.pid,
+                    host: leaseHost(),
+                    started_wall_ms: 0,
+                    started_ticks: (mine.started_ticks as number) - 1,
+                }),
+            );
+            expect(takeLease(d).pid).toBe(process.pid);
+            releaseLease(d);
+        } finally {
+            other.kill();
+        }
     });
 
     test("a corrupt complete line refuses the journal, wherever it sits", () => {
@@ -221,35 +265,42 @@ describe("Journal and lease", () => {
         expect(() => new Journal(path)).toThrow(/line 1 is not an entry/);
         writeFileSync(path, `${line(0)}\n${line(1).replace("StartRun", "Bogus")}\n`);
         expect(() => new Journal(path)).toThrow(/line 2 is not an entry/);
+        writeFileSync(path, `${line(0).replace('"scenario_ms":0', '"scenario_ms":1e999')}\n`);
+        expect(() => new Journal(path)).toThrow(/line 1 is not an entry/);
+        const at = (seq: number, ms: number) =>
+            JSON.stringify({ seq, kind: "Event", arm: "a", scenario_ms: ms, wall_ms: 1 });
+        writeFileSync(path, `${at(0, 10)}\n${at(1, 5)}\n`);
+        expect(() => new Journal(path)).toThrow(/line 2 .*precedes/);
+    });
+
+    test("a released lease keeps its generation, so later takers link a higher number", () => {
+        const d = dir();
+        takeLease(d);
+        releaseLease(d);
+        const left = readdirSync(d).filter((n) => /^lease\.\d+\.json$/.test(n));
+        expect(left).toEqual(["lease.0.json"]);
+        expect(JSON.parse(readFileSync(join(d, "lease.0.json"), "utf8")).released).toBe(true);
+        takeLease(d);
+        expect(readdirSync(d).filter((n) => /^lease\.\d+\.json$/.test(n))).toEqual([
+            "lease.1.json",
+        ]);
+        releaseLease(d);
+    });
+
+    test("a lease naming this hostname without its boot id belongs to another machine", () => {
+        const d = dir();
+        const dead = Bun.spawnSync(["true"]).pid;
+        writeFileSync(
+            join(d, "lease.0.json"),
+            JSON.stringify({ pid: dead, host: hostname(), started_wall_ms: 0 }),
+        );
+        expect(() => takeLease(d)).toThrow(/is leased by pid/);
     });
 
     test("a lease file whose number is outside the safe integer range refuses the directory", () => {
         const d = dir();
         writeFileSync(join(d, "lease.99999999999999999999.json"), "{}");
         expect(() => takeLease(d)).toThrow(/lease/);
-    });
-
-    test("a dead holder whose pid a live process now carries is taken over", () => {
-        const d = dir();
-        const other = Bun.spawn(["sleep", "30"]);
-        try {
-            const mine = takeLease(d);
-            expect(typeof mine.started_ticks).toBe("number");
-            releaseLease(d);
-            writeFileSync(
-                join(d, "lease.0.json"),
-                JSON.stringify({
-                    pid: other.pid,
-                    host: hostname(),
-                    started_wall_ms: 0,
-                    started_ticks: (mine.started_ticks as number) - 1,
-                }),
-            );
-            expect(takeLease(d).pid).toBe(process.pid);
-            releaseLease(d);
-        } finally {
-            other.kill();
-        }
     });
 
     test("a journal path that is a fifo is refused without blocking on a read", () => {
@@ -309,7 +360,7 @@ describe("Journal and lease", () => {
             const dead = Bun.spawnSync(["true"]).pid;
             writeFileSync(
                 join(d, "lease.0.json"),
-                JSON.stringify({ pid: dead, host: hostname(), started_wall_ms: 0 }),
+                JSON.stringify({ pid: dead, host: leaseHost(), started_wall_ms: 0 }),
             );
             const out = join(d, "winners");
             const kids = Array.from({ length: 8 }, () =>
@@ -369,8 +420,8 @@ describe("Scheduler", () => {
         let scheduler: Scheduler | null = null;
         const driver = fakeDriver([], 0, (e) => {
             if (e.kind === "user_turn" && e.index === 0) {
-                setTimeout(() => scheduler?.jobStart("fold-1"), 0);
-                setTimeout(() => scheduler?.jobEnd("fold-1"), 120);
+                setTimeout(() => driver.arm().jobStart("fold-1"), 0);
+                setTimeout(() => driver.arm().jobEnd("fold-1"), 120);
             }
         });
         scheduler = new Scheduler({
@@ -531,16 +582,24 @@ describe("Scheduler", () => {
             kind: "first_summarizer_call",
             session: "s-0000",
         });
+        let handle: ArmHandle | null = null;
         const driver: ArmDriver = {
+            bind: (h) => {
+                handle = h;
+            },
             reset: async () => undefined,
             event: async (e) => {
-                if (e.kind === "user_turn" && e.index === 2)
-                    scheduler?.observe("history_summarizer", driver);
+                if (e.kind === "user_turn" && e.index === 0) {
+                    expect(() => handle?.daemonExited({ signal: "SIGKILL" })).toThrow(
+                        HarnessFailure,
+                    );
+                }
+                if (e.kind === "user_turn" && e.index === 2) handle?.observe("history_summarizer");
                 return {};
             },
             fault: async () => {
                 await Bun.sleep(20);
-                scheduler?.daemonExited({ signal: "SIGKILL" });
+                handle?.daemonExited({ signal: "SIGKILL" });
                 return { restarted_by: "harness" };
             },
         };
@@ -561,7 +620,8 @@ describe("Scheduler", () => {
         expect(observed).toBeGreaterThan(-1);
         expect(observed).toBeLessThan(turnDone);
         expect(j.entries[observed]?.arm).toBe("a");
-        expect(() => scheduler?.daemonExited({ signal: "SIGKILL" })).toThrow(HarnessFailure);
+        expect(kinds).toContainEqual(["ItemState", false]);
+        expect(() => handle?.daemonExited({ signal: "SIGKILL" })).toThrow(/arm has ended/);
         j.close();
         const reopened = new Journal(j.path);
         await expect(
@@ -583,11 +643,15 @@ describe("Scheduler", () => {
             kind: "first_summarizer_call",
             session: "s-0000",
         });
+        let handle: ArmHandle | null = null;
         const driver: ArmDriver = {
+            bind: (h) => {
+                handle = h;
+            },
             reset: async () => undefined,
             event: async (e) => {
                 if (e.kind === "user_turn") {
-                    scheduler?.observe("history_summarizer", driver);
+                    handle?.observe("history_summarizer");
                     throw new Error("daemon gone");
                 }
                 return {};
@@ -618,18 +682,22 @@ describe("Scheduler", () => {
             session: "s-0000",
         });
         let exit: unknown = "pending";
+        let handle: ArmHandle | null = null;
         const driver: ArmDriver = {
+            bind: (h) => {
+                handle = h;
+            },
             reset: async () => undefined,
             event: async (e) => {
                 if (e.kind === "user_turn" && e.index === 0) {
-                    scheduler?.jobStart("fold-1");
+                    handle?.jobStart("fold-1");
                     setTimeout(() => {
-                        scheduler?.observe("history_summarizer", driver);
-                        scheduler?.jobEnd("fold-1");
+                        handle?.observe("history_summarizer");
+                        handle?.jobEnd("fold-1");
                     }, 30);
                     setTimeout(() => {
                         try {
-                            scheduler?.daemonExited({ signal: "SIGKILL" });
+                            handle?.daemonExited({ signal: "SIGKILL" });
                             exit = "expected";
                         } catch (caught) {
                             exit = caught;
@@ -658,15 +726,15 @@ describe("Scheduler", () => {
         expect(kinds.indexOf("FaultObserved")).toBeLessThan(kinds.lastIndexOf("AdvanceClock"));
     });
 
-    test("a job that registers after its arm closed is refused and journals nothing", async () => {
+    test("a callback a finished arm left behind is refused, even while the next arm is resetting", async () => {
         const j = new Journal(join(dir(), "j.jsonl"));
-        let scheduler: Scheduler | null = null;
         let late: unknown = "pending";
-        const driver = fakeDriver([], 0, (e) => {
+        const a = fakeDriver([], 0, (e) => {
             if (e.kind === "session_end") {
+                const stale = a.arm();
                 setTimeout(() => {
                     try {
-                        scheduler?.jobStart("late");
+                        stale.jobStart("late");
                         late = "accepted";
                     } catch (caught) {
                         late = caught;
@@ -674,19 +742,48 @@ describe("Scheduler", () => {
                 }, 30);
             }
         });
-        scheduler = new Scheduler({
+        const b: ArmDriver = { ...fakeDriver([]), reset: async () => await Bun.sleep(100) };
+        await new Scheduler({
             events: fixtureEvents(1),
             faults: [],
             journal: j,
             settleMs: 0,
-            order: ["a"],
-            drivers: { a: driver },
-        });
-        await scheduler.run();
-        await Bun.sleep(80);
+            order: ["a", "b"],
+            drivers: { a, b },
+        }).run();
         expect(late).toBeInstanceOf(Error);
+        expect(String(late)).toMatch(/arm has ended/);
         expect(j.entries.filter((e) => e.kind === "RegisterJob")).toEqual([]);
-        expect(j.entries.at(-1)?.kind).toBe("EndRun");
+        invariants(j.entries);
+    });
+
+    test("a fault the driver cannot carry out fails the run, and the journal stays failed on reopen", async () => {
+        const path = join(dir(), "j.jsonl");
+        const j = new Journal(path);
+        const restart = episode("r", "daemon_restart", {
+            kind: "session_start",
+            session: "s-0000",
+        });
+        const broken: ArmDriver = {
+            ...fakeDriver([]),
+            fault: async () => {
+                throw new Error("daemon would not come back");
+            },
+        };
+        const make = (journal: Journal, driver: ArmDriver) =>
+            new Scheduler({
+                events: fixtureEvents(1),
+                faults: [restart],
+                journal,
+                settleMs: 0,
+                order: ["a"],
+                drivers: { a: driver },
+            });
+        await expect(make(j, broken).run()).rejects.toThrow(/would not come back/);
+        expect(j.entries.at(-1)).toMatchObject({ kind: "ItemState", fault: "r", fatal: true });
+        j.close();
+        const healthy = fakeDriver([]);
+        await expect(make(new Journal(path), healthy).run()).rejects.toThrow(HarnessFailure);
     });
 
     test("an outage window opened on an arm's final event is closed before the next arm resets", async () => {
@@ -698,12 +795,16 @@ describe("Scheduler", () => {
         });
         let resets = 0;
         let secondReset: unknown = null;
+        let handle: ArmHandle | null = null;
         const driver: ArmDriver = {
+            bind: (h) => {
+                handle = h;
+            },
             reset: async () => {
                 resets++;
                 if (resets === 2) {
                     try {
-                        scheduler?.daemonExited({ signal: "SIGKILL" });
+                        handle?.daemonExited({ signal: "SIGKILL" });
                         secondReset = "accepted";
                     } catch (caught) {
                         secondReset = caught;
@@ -711,7 +812,7 @@ describe("Scheduler", () => {
                 }
             },
             event: async (e) => {
-                if (e.kind === "user_turn") scheduler?.observe("history_summarizer", driver);
+                if (e.kind === "user_turn") handle?.observe("history_summarizer");
                 return {};
             },
             fault: async () => ({ restarted_by: "harness" }),
@@ -823,16 +924,20 @@ describe("Scheduler", () => {
             kind: "first_summarizer_call",
             session: "s-0000",
         });
+        let handle: ArmHandle | null = null;
         const driver: ArmDriver = {
+            bind: (h) => {
+                handle = h;
+            },
             reset: async () => undefined,
             event: async (e) => {
                 if (e.kind === "user_turn" && e.index === 0) {
-                    scheduler?.jobStart("fold-1");
+                    handle?.jobStart("fold-1");
                     setTimeout(() => {
-                        scheduler?.observe("history_summarizer", driver);
-                        scheduler?.jobEnd("fold-1");
-                        setTimeout(() => scheduler?.jobStart("fold-2"), 20);
-                        setTimeout(() => scheduler?.jobEnd("fold-2"), 120);
+                        handle?.observe("history_summarizer");
+                        handle?.jobEnd("fold-1");
+                        setTimeout(() => handle?.jobStart("fold-2"), 20);
+                        setTimeout(() => handle?.jobEnd("fold-2"), 120);
                     }, 60);
                 }
                 return {};
@@ -861,7 +966,7 @@ describe("Scheduler", () => {
         let scheduler: Scheduler | null = null;
         const driver = fakeDriver([], 0, (e) => {
             if (e.kind === "user_turn") {
-                expect(() => scheduler?.jobEnd("ghost")).toThrow(/not busy/);
+                expect(() => driver.arm().jobEnd("ghost")).toThrow(/not busy/);
             }
         });
         scheduler = new Scheduler({
@@ -881,8 +986,8 @@ describe("Scheduler", () => {
         let scheduler: Scheduler | null = null;
         const driver = fakeDriver([], 0, (e) => {
             if (e.kind === "session_end") {
-                scheduler?.jobStart("late");
-                setTimeout(() => scheduler?.jobEnd("late"), 40);
+                driver.arm().jobStart("late");
+                setTimeout(() => driver.arm().jobEnd("late"), 40);
             }
         });
         scheduler = new Scheduler({
@@ -1195,6 +1300,7 @@ describe("resume of fired faults", () => {
             scenario_ms: 5,
             daemon_exit: { signal: "SIGKILL" },
             expected: false,
+            fatal: true,
         });
         j.close();
         const resumed = new Journal(path);

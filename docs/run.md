@@ -7,23 +7,26 @@ both.
 
 Leases are files `lease.<n>.json`, and the highest number names the holder.
 `takeLease(dir)` reads the highest lease: one held by a live process, or by any
-process on another host, refuses the call. The holder is identified by pid and
-by its kernel start time (`/proc/<pid>/stat`), so a pid that a later process
-reuses still reads as a dead holder. A lease whose process on this host has
+process on another machine, refuses the call. The machine is the hostname
+joined with the kernel boot id, so machines or containers that share a hostname
+on one directory stay distinct; the holder is identified by pid and by its
+kernel start time (`/proc/<pid>/stat`), so a pid that a later process reuses
+still reads as a dead holder. A lease whose process on this host has
 exited, or that a kill left unreadable, is taken over by writing a uniquely
 named temporary file with the process id, host, start time, and start ticks
 and linking it to `lease.<n+1>.json`. Exactly one of several racing resumers can create that
 name; the others read the winner's live lease on their next attempt and are
-refused. The winner removes the lower-numbered files. `releaseLease` removes
-the calling process's own lease at the end of a run.
+refused. The winner removes the lower-numbered files. `releaseLease` marks the calling
+process's own lease released in place, so the directory keeps its highest
+generation and every later taker targets the next number.
 
 ## Journal
 
 `Journal` opens its file without following symlinks, requires a regular
 file, and reads and truncates it through that one descriptor. On read it
-accepts a line only when it parses, carries the next `seq`,
-names a known `kind`, and has `arm`, `scenario_ms`, and `wall_ms` of the right
-types. It appends one JSON line per entry with `seq` (0, 1, 2, ... in append
+accepts a line only when it parses, carries the next `seq`, names a known
+`kind`, has `arm` and finite `scenario_ms` and `wall_ms`, and keeps its arm's
+`scenario_ms` non-decreasing. It appends one JSON line per entry with `seq` (0, 1, 2, ... in append
 order), `kind`, `arm`, `scenario_ms`, and `wall_ms`; a line is written whole
 before the entry counts as appended. On open, it truncates the
 file to its complete prefix, dropping only a last line that a kill cut
@@ -42,7 +45,7 @@ entries of different arms are not ordered by scenario time.
 | `EndTurn` | The turn is answered; a probe turn carries `probe` and `state` (`completed` or `failed`) |
 | `RegisterJob`, `EndJob` | A background job starts and ends; on resume, a job in flight at the kill gets an `EndJob` with outcome `failed(interrupted)` |
 | `FaultFired`, `FaultObserved` | A scheduled fault fires, and the driver returns its evidence |
-| `ItemState` | On resume, an in-flight turn or a scheduler fault without evidence is `failed(interrupted)`; the daemon exits |
+| `ItemState` | On resume, an in-flight turn or a scheduler fault without evidence is `failed(interrupted)`; the daemon exits; a scheduler fault the driver could not carry out is `failed` with `fatal: true`, as is a daemon exit outside an outage window |
 | `Event` | A scheduled event is complete, with its outcome |
 
 ## Clock
@@ -67,9 +70,8 @@ For each arm, it resets the driver and the proxy's fault state
 (`ProxyControl.reset`, when the proxy offers it), then walks the events, and
 before `EndArm` waits for a pending kill and for the busy set to empty, then
 closes any outage window and the current session. A turn that rejects still
-waits for a pending kill's evidence before the error propagates. Between
-`EndArm` and the next `StartArm`, and after `EndRun`, no arm is running and a
-`jobStart` or `jobEnd` is refused:
+waits for a pending kill's evidence before the error propagates. After
+`EndArm` the arm's handle is dead, and a call through it is refused:
 
 1. Wait one settle interval after each answered turn (`settleMs`, 1 s by
    default), so a background job the host starts after its answer registers
@@ -93,15 +95,22 @@ waits for a pending kill's evidence before the error propagates. Between
 7. Wait for a mid-fold kill fired during the event, then journal `Event` for
    the event.
 
-`observe("history_summarizer", driver)` fires the session's mid-fold SIGKILL
-on the first observed summarizer call. `daemonExited` inside an outage window
-is journaled as expected; outside one, it throws `HarnessFailure`.
+Each arm's driver receives an `ArmHandle` through `bind` at the arm's start,
+before `reset`. The handle carries `jobStart`, `jobEnd`, `observe`, and
+`daemonExited`, and every call checks that its arm is still the one running,
+so a callback a finished arm left behind is refused instead of writing under
+the next arm. `observe("history_summarizer")` fires the session's mid-fold
+SIGKILL on the first observed summarizer call. `daemonExited` inside an outage
+window is journaled as expected; outside one, it journals a fatal `ItemState`
+and throws `HarnessFailure`. A scheduler fault whose driver call rejects
+journals a fatal `ItemState` and fails the run.
 
 ## Resume
 
-A restarted harness opens the same journal. A journal holding an
-`ItemState` for a daemon exit outside an outage window, before or after
-`EndRun`, is a failed run and is refused with `HarnessFailure`; otherwise a
+A restarted harness opens the same journal. A journal holding a fatal
+`ItemState` (a daemon exit outside an outage window, or a scheduler fault the
+driver could not carry out), before or after `EndRun`, is a failed run and is
+refused with `HarnessFailure`; otherwise a
 journal with `EndRun` is complete and the run returns at once. Otherwise the harness checks that every
 unfinished arm has a driver, refuses an arm order or scenario hash different
 from the ones `StartRun` recorded, journals `ResumeRun`, and, for each arm

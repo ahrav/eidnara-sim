@@ -34,6 +34,7 @@ if (import.meta.main) {
     takeLease(dir);
     const journal = new Journal(join(dir, "journal.jsonl"));
     const driver = (arm: string): ArmDriver => ({
+        bind: () => undefined,
         reset: async () => appendFileSync(join(dir, "resets.log"), `${arm}\n`),
         event: async (e) => {
             if (e.kind === "user_turn") {

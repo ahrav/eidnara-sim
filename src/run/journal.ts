@@ -9,6 +9,7 @@ import {
     openSync,
     readdirSync,
     readFileSync,
+    renameSync,
     rmSync,
     writeFileSync,
     writeSync,
@@ -65,8 +66,8 @@ function shaped(e: Entry): boolean {
     return (
         KINDS.has(e.kind) &&
         (e.arm === null || typeof e.arm === "string") &&
-        typeof e.scenario_ms === "number" &&
-        typeof e.wall_ms === "number"
+        Number.isFinite(e.scenario_ms) &&
+        Number.isFinite(e.wall_ms)
     );
 }
 
@@ -75,6 +76,19 @@ interface Lease {
     host: string;
     started_wall_ms: number;
     started_ticks?: number;
+    released?: boolean;
+}
+
+/**
+ * The machine a lease belongs to: the hostname joined with the kernel's boot id, so two
+ * machines or containers that share a hostname on one shared directory stay distinct.
+ */
+export function leaseHost(): string {
+    let boot = "";
+    try {
+        boot = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+    } catch {}
+    return `${hostname()}:${boot}`;
 }
 
 /**
@@ -102,6 +116,7 @@ function alive(pid: number): boolean {
 
 /** A holder is alive when its incarnation still runs; a recycled pid is a dead holder. */
 function holderAlive(held: Lease): boolean {
+    if (held.released) return false;
     const ticks = held.started_ticks === undefined ? null : startTicks(held.pid);
     return ticks === null ? alive(held.pid) : ticks === held.started_ticks;
 }
@@ -140,7 +155,7 @@ function leaseNumbers(dir: string): number[] {
 export function takeLease(dir: string): Lease {
     const mine: Lease = {
         pid: process.pid,
-        host: hostname(),
+        host: leaseHost(),
         started_wall_ms: Date.now(),
         started_ticks: startTicks(process.pid) ?? undefined,
     };
@@ -166,11 +181,19 @@ export function takeLease(dir: string): Lease {
     throw new Error(`could not lease ${dir}`);
 }
 
+/**
+ * Marks this process's lease released in place, by an atomic rename over the same number, so
+ * the directory keeps its highest generation and later takers all target the next one.
+ */
 export function releaseLease(dir: string): void {
+    const host = leaseHost();
     for (const n of leaseNumbers(dir)) {
         const path = join(dir, `lease.${n}.json`);
         const held = readLease(path);
-        if (held?.pid === process.pid && held.host === hostname()) rmSync(path, { force: true });
+        if (held?.pid !== process.pid || held.host !== host) continue;
+        const staged = join(dir, `lease.${randomUUID()}.tmp`);
+        writeFileSync(staged, JSON.stringify({ ...held, released: true }), { flag: "wx" });
+        renameSync(staged, path);
     }
 }
 
@@ -184,6 +207,7 @@ export function readJournal(source: string | number): Entry[] & { bytes?: number
     entries.bytes = 0;
     if (typeof source === "string" && !existsSync(source)) return entries;
     const path = typeof source === "string" ? source : `fd ${source}`;
+    const last = new Map<string | null, number>();
     const lines = readFileSync(source, "utf8").split("\n");
     lines.forEach((line, i) => {
         if (i === lines.length - 1) return;
@@ -195,6 +219,13 @@ export function readJournal(source: string | number): Entry[] & { bytes?: number
         }
         if (entry.seq !== i) throw new Error(`journal ${path}: line ${i + 1} has seq ${entry.seq}`);
         if (!shaped(entry)) throw new Error(`journal ${path}: line ${i + 1} is not an entry`);
+        const before = last.get(entry.arm);
+        if (before !== undefined && entry.scenario_ms < before) {
+            throw new Error(
+                `journal ${path}: line ${i + 1} precedes ${before} in arm ${entry.arm}`,
+            );
+        }
+        last.set(entry.arm, entry.scenario_ms);
         entries.push(entry);
         entries.bytes = (entries.bytes ?? 0) + Buffer.byteLength(line) + 1;
     });

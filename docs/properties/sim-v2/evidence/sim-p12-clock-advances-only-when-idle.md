@@ -12,8 +12,8 @@ v2 harness before any harness code existed.
 ## Evidence trail
 
 Every `AdvanceClock` entry is preceded by `busy_set` empty at the same sequence,
-and no `scenario_ms` change appears between a `BeginTurn` or `RegisterJob` and
-the matching `EndTurn` or `EndJob`.
+and between a `BeginTurn` or `RegisterJob` and the matching `EndTurn` or
+`EndJob` `scenario_ms` grows only at wall-clock rate.
 
 At the 2026-10-12 proposal no harness code, test, or run existed; the
 surface landed in M4 (#1028).

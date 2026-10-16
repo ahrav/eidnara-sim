@@ -395,8 +395,9 @@ set from the journal, assert it is empty at every `AdvanceClock`, and bound
 every `scenario_ms` change by the wall time that passed while busy; no campaign
 run yet
 Guarantee: SIM-P12: Every `AdvanceClock` entry is preceded by `busy_set` empty
-at the same sequence, and no `scenario_ms` change appears between a `BeginTurn`
-or `RegisterJob` and the matching `EndTurn` or `EndJob`.
+at the same sequence, and between a `BeginTurn` or `RegisterJob` and the
+matching `EndTurn` or `EndJob` `scenario_ms` grows only at wall-clock rate, by
+at most the elapsed `wall_ms`.
 Check: `always` - for each `AdvanceClock`, assert the busy set is empty at that
 `seq`, and for each open turn or job interval assert `scenario_ms` changes only
 by wall-clock progression; a jump mid-turn shows a turn a time it never lived
@@ -1575,7 +1576,7 @@ Required faults and enabling state: a harness kill at varied points.
 Confidence: low -
 [evidence](evidence/sim-p62-resume-does-not-reissue-completed-items.md).
 PROPOSED: reconstructed from the condensed index in spec #1007; the M4 unit
-tests verify the record, and a default tier run reaches it.
+tests verify the `BeginTurn` half, and a default tier run reaches it.
 Existing check: src/run/scheduler.test.ts - each arm's events appear once after
 resume and the fixture's per-event billing log has no duplicate
 Impact: Completed items are re-billed and double-counted.
@@ -1643,7 +1644,7 @@ Fault/timing angle: resume rebuilds tape state from disk.
 Required faults and enabling state: an interrupt in a sibling arm.
 Confidence: low - [evidence](evidence/sim-p65-resume-preserves-pairing.md).
 PROPOSED: reconstructed from the condensed index in spec #1007; the M4 unit
-tests verify the record, and a default tier run reaches it.
+tests verify event-list identity, and a default tier run reaches it.
 Existing check: src/run/scheduler.test.ts - each arm's completed events equal
 the full event list after resume
 Impact: Pairing breaks silently after resume.

@@ -14,9 +14,22 @@ export interface ScenarioEvent {
 }
 
 export interface ArmDriver {
+    /** Called at every start of the driver's arm, before `reset`; the handle dies with the arm. */
+    bind(arm: ArmHandle): void;
     reset(): Promise<void>;
     event(e: ScenarioEvent): Promise<{ failed?: string }>;
     fault(f: FaultEpisode): Promise<Record<string, unknown>>;
+}
+
+/**
+ * The scheduler as one arm sees it. Every call checks that its arm is the one running, so a
+ * callback a finished arm left behind is refused instead of writing under the next arm.
+ */
+export interface ArmHandle {
+    jobStart(id: string): void;
+    jobEnd(id: string): void;
+    observe(component: string): void;
+    daemonExited(detail: Record<string, unknown>): void;
 }
 
 export interface ProxyControl {
@@ -54,6 +67,7 @@ export class Scheduler {
     private outage: string | null = null;
     private readonly fired = new Set<string>();
     private pendingKill: Promise<unknown> | null = null;
+    private generation = 0;
 
     constructor(private readonly o: SchedulerOptions) {
         if (!o.proxy && o.faults.some((f) => f.seam.layer === PROXY_LAYER)) {
@@ -71,8 +85,12 @@ export class Scheduler {
 
     async run(): Promise<void> {
         const entries = this.o.journal.entries;
-        if (entries.some((e) => e.kind === "ItemState" && e.expected === false)) {
-            throw new HarnessFailure("run failed: the daemon exited outside an outage window");
+        const fatal = entries.find((e) => e.kind === "ItemState" && e.fatal === true);
+        if (fatal) {
+            const cause = fatal.fault
+                ? `fault ${fatal.fault} failed`
+                : "the daemon exited outside an outage window";
+            throw new HarnessFailure(`run failed: ${cause}`);
         }
         if (entries.some((e) => e.kind === "EndRun")) return;
         const finished = new Set(entries.filter((e) => e.kind === "EndArm").map((e) => e.arm));
@@ -101,6 +119,7 @@ export class Scheduler {
             this.arm = arm;
             this.clock = new Clock(mine.at(-1)?.scenario_ms ?? 0, this.o.journal);
             const driver = this.o.drivers[arm] as ArmDriver;
+            driver.bind(this.handle(++this.generation, driver));
             if (!mine.some((e) => e.kind === "StartArm")) {
                 await driver.reset();
                 this.o.proxy?.reset?.();
@@ -217,7 +236,14 @@ export class Scheduler {
         }
         if (f.type === "laptop_sleep") return;
         if (OUTAGE.has(f.type)) this.outage = f.id;
-        const evidence = await driver.fault(f);
+        let evidence: Record<string, unknown>;
+        try {
+            evidence = await driver.fault(f);
+        } catch (caught) {
+            const error = caught instanceof Error ? caught.message : String(caught);
+            this.log({ kind: "ItemState", fault: f.id, state: "failed", error, fatal: true });
+            throw caught;
+        }
         this.log({ kind: "FaultObserved", fault: f.id, type: f.type, evidence });
     }
 
@@ -273,35 +299,41 @@ export class Scheduler {
         this.log({ kind: "Event", event: e.id, outcome: outcome.failed ?? "ok" });
     }
 
-    jobStart(id: string): void {
-        this.active().begin(`job:${id}`);
-        this.log({ kind: "RegisterJob", job: id });
-    }
-
-    jobEnd(id: string): void {
-        this.active().end(`job:${id}`);
-        this.log({ kind: "EndJob", job: id });
-    }
-
-    private active(): Clock {
-        if (!this.clock) throw new Error("scheduler: no arm is running");
-        return this.clock;
-    }
-
-    observe(component: string, driver: ArmDriver): void {
-        if (component !== "history_summarizer") return;
-        const f = this.o.faults.find(
-            (x) =>
-                x.trigger.kind === "first_summarizer_call" &&
-                x.trigger.session === this.session &&
-                !this.fired.has(`${this.arm}/${x.id}`),
-        );
-        if (f) this.pendingKill = this.fire(driver, f);
-    }
-
-    daemonExited(detail: Record<string, unknown>): void {
-        const expected = this.outage !== null;
-        this.log({ kind: "ItemState", daemon_exit: detail, expected });
-        if (!expected) throw new HarnessFailure("daemon exited outside a scheduled outage window");
+    private handle(generation: number, driver: ArmDriver): ArmHandle {
+        const live = (): Clock => {
+            if (generation !== this.generation || !this.clock) {
+                throw new Error("scheduler: this arm has ended");
+            }
+            return this.clock;
+        };
+        return {
+            jobStart: (id) => {
+                live().begin(`job:${id}`);
+                this.log({ kind: "RegisterJob", job: id });
+            },
+            jobEnd: (id) => {
+                live().end(`job:${id}`);
+                this.log({ kind: "EndJob", job: id });
+            },
+            observe: (component) => {
+                live();
+                if (component !== "history_summarizer") return;
+                const f = this.o.faults.find(
+                    (x) =>
+                        x.trigger.kind === "first_summarizer_call" &&
+                        x.trigger.session === this.session &&
+                        !this.fired.has(`${this.arm}/${x.id}`),
+                );
+                if (f) this.pendingKill = this.fire(driver, f);
+            },
+            daemonExited: (detail) => {
+                live();
+                const expected = this.outage !== null;
+                this.log({ kind: "ItemState", daemon_exit: detail, expected, fatal: !expected });
+                if (!expected) {
+                    throw new HarnessFailure("daemon exited outside a scheduled outage window");
+                }
+            },
+        };
     }
 }
