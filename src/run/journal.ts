@@ -44,6 +44,32 @@ export interface Entry extends NewEntry {
     wall_ms: number;
 }
 
+const KINDS: ReadonlySet<string> = new Set<EntryKind>([
+    "StartRun",
+    "ResumeRun",
+    "StartArm",
+    "BeginTurn",
+    "EndTurn",
+    "RegisterJob",
+    "EndJob",
+    "AdvanceClock",
+    "Event",
+    "FaultFired",
+    "FaultObserved",
+    "ItemState",
+    "EndArm",
+    "EndRun",
+]);
+
+function shaped(e: Entry): boolean {
+    return (
+        KINDS.has(e.kind) &&
+        (e.arm === null || typeof e.arm === "string") &&
+        typeof e.scenario_ms === "number" &&
+        typeof e.wall_ms === "number"
+    );
+}
+
 interface Lease {
     pid: number;
     host: string;
@@ -95,7 +121,11 @@ function leaseNumbers(dir: string): number[] {
     return readdirSync(dir)
         .flatMap((name) => {
             const m = LEASE.exec(name);
-            return m ? [Number(m[1])] : [];
+            if (!m) return [];
+            const n = Number(m[1]);
+            if (!Number.isSafeInteger(n))
+                throw new Error(`lease ${name} in ${dir} has no safe number`);
+            return [n];
         })
         .sort((a, b) => a - b);
 }
@@ -163,6 +193,7 @@ export function readJournal(path: string): Entry[] & { bytes?: number } {
             throw new Error(`journal ${path}: line ${i + 1} is corrupt`);
         }
         if (entry.seq !== i) throw new Error(`journal ${path}: line ${i + 1} has seq ${entry.seq}`);
+        if (!shaped(entry)) throw new Error(`journal ${path}: line ${i + 1} is not an entry`);
         entries.push(entry);
         entries.bytes = (entries.bytes ?? 0) + Buffer.byteLength(line) + 1;
     });

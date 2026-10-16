@@ -22,6 +22,8 @@ export interface ArmDriver {
 export interface ProxyControl {
     arm(id: string): void;
     disarm(id: string): void;
+    /** Called at each arm's start, after the driver's reset, so arms see one fault schedule. */
+    reset?(): void;
 }
 
 export class HarnessFailure extends Error {}
@@ -71,10 +73,10 @@ export class Scheduler {
 
     async run(): Promise<void> {
         const entries = this.o.journal.entries;
-        if (entries.some((e) => e.kind === "EndRun")) return;
         if (entries.some((e) => e.kind === "ItemState" && e.expected === false)) {
             throw new HarnessFailure("run failed: the daemon exited outside an outage window");
         }
+        if (entries.some((e) => e.kind === "EndRun")) return;
         const finished = new Set(entries.filter((e) => e.kind === "EndArm").map((e) => e.arm));
         for (const arm of this.o.order) {
             if (!finished.has(arm) && !this.o.drivers[arm])
@@ -103,6 +105,7 @@ export class Scheduler {
             const driver = this.o.drivers[arm] as ArmDriver;
             if (!mine.some((e) => e.kind === "StartArm")) {
                 await driver.reset();
+                this.o.proxy?.reset?.();
                 this.log({ kind: "StartArm" });
             }
             this.resume(mine);
@@ -111,17 +114,34 @@ export class Scheduler {
                     .filter((e) => e.arm === arm && e.kind === "Event")
                     .map((e) => e.event as string),
             );
-            for (const e of this.o.events) if (!done.has(e.id)) await this.step(driver, e);
-            await this.pendingKill;
-            await this.idle();
+            try {
+                for (const e of this.o.events) if (!done.has(e.id)) await this.step(driver, e);
+                await this.quiesce();
+            } finally {
+                await this.pendingKill?.catch(() => undefined);
+            }
             this.pendingKill = null;
             this.outage = null;
             this.session = null;
             this.log({ kind: "EndArm" });
+            this.arm = null;
+            this.clock = null;
         }
-        this.arm = null;
-        this.clock = null;
         this.log({ kind: "EndRun" });
+    }
+
+    /**
+     * Waits until every pending kill has returned its evidence and the busy set is empty at the
+     * same time: a kill fired by a job during the idle wait, or a job registered during a kill,
+     * starts the wait over.
+     */
+    private async quiesce(): Promise<void> {
+        let kill: Promise<unknown> | null;
+        do {
+            kill = this.pendingKill;
+            await kill;
+            await this.idle();
+        } while (kill !== this.pendingKill);
     }
 
     /** Existing Event and failed(interrupted) entries make recovery writes idempotent across resumes. */
@@ -218,8 +238,7 @@ export class Scheduler {
     }
 
     private async step(driver: ArmDriver, e: ScenarioEvent): Promise<void> {
-        await this.pendingKill;
-        await this.idle();
+        await this.quiesce();
         this.outage = null;
         const clock = this.clock as Clock;
         const sleep = this.sleepBefore(e);
@@ -257,13 +276,18 @@ export class Scheduler {
     }
 
     jobStart(id: string): void {
-        this.clock?.begin(`job:${id}`);
+        this.active().begin(`job:${id}`);
         this.log({ kind: "RegisterJob", job: id });
     }
 
     jobEnd(id: string): void {
-        this.clock?.end(`job:${id}`);
+        this.active().end(`job:${id}`);
         this.log({ kind: "EndJob", job: id });
+    }
+
+    private active(): Clock {
+        if (!this.clock) throw new Error("scheduler: no arm is running");
+        return this.clock;
     }
 
     observe(component: string, driver: ArmDriver): void {

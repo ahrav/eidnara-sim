@@ -197,13 +197,25 @@ describe("Journal and lease", () => {
 
     test("a corrupt complete line refuses the journal, wherever it sits", () => {
         const path = join(dir(), "j.jsonl");
-        writeFileSync(path, '{"seq":0}\nnot json\n{"seq":2}\n');
+        const line = (seq: number) =>
+            JSON.stringify({ seq, kind: "StartRun", arm: null, scenario_ms: 0, wall_ms: 1 });
+        writeFileSync(path, `${line(0)}\nnot json\n${line(2)}\n`);
         expect(() => new Journal(path)).toThrow(/line 2 is corrupt/);
-        writeFileSync(path, '{"seq":0}\nnot json\n');
+        writeFileSync(path, `${line(0)}\nnot json\n`);
         expect(() => new Journal(path)).toThrow(/line 2 is corrupt/);
-        expect(readFileSync(path, "utf8")).toBe('{"seq":0}\nnot json\n');
-        writeFileSync(path, '{"seq":0}\n{"seq":0}\n');
+        expect(readFileSync(path, "utf8")).toBe(`${line(0)}\nnot json\n`);
+        writeFileSync(path, `${line(0)}\n${line(0)}\n`);
         expect(() => new Journal(path)).toThrow(/line 2 .*seq/);
+        writeFileSync(path, '{"seq":0,"kind":"EndRun"}\n');
+        expect(() => new Journal(path)).toThrow(/line 1 is not an entry/);
+        writeFileSync(path, `${line(0)}\n${line(1).replace("StartRun", "Bogus")}\n`);
+        expect(() => new Journal(path)).toThrow(/line 2 is not an entry/);
+    });
+
+    test("a lease file whose number is outside the safe integer range refuses the directory", () => {
+        const d = dir();
+        writeFileSync(join(d, "lease.99999999999999999999.json"), "{}");
+        expect(() => takeLease(d)).toThrow(/lease/);
     });
 
     test("a dead holder whose pid a live process now carries is taken over", () => {
@@ -521,6 +533,131 @@ describe("Scheduler", () => {
         expect(observed).toBeLessThan(turnDone);
         expect(j.entries[observed]?.arm).toBe("a");
         expect(() => scheduler?.daemonExited({ signal: "SIGKILL" })).toThrow(HarnessFailure);
+        j.close();
+        const reopened = new Journal(j.path);
+        await expect(
+            new Scheduler({
+                events: fixtureEvents(3),
+                faults: [kill],
+                journal: reopened,
+                settleMs: 0,
+                order: ["a"],
+                drivers: { a: driver },
+            }).run(),
+        ).rejects.toThrow(HarnessFailure);
+    });
+
+    test("a turn that rejects while a mid-fold kill is in flight waits for the kill's evidence", async () => {
+        const j = new Journal(join(dir(), "j.jsonl"));
+        let scheduler: Scheduler | null = null;
+        const kill = episode("k", "daemon_sigkill_mid_fold", {
+            kind: "first_summarizer_call",
+            session: "s-0000",
+        });
+        const driver: ArmDriver = {
+            reset: async () => undefined,
+            event: async (e) => {
+                if (e.kind === "user_turn") {
+                    scheduler?.observe("history_summarizer", driver);
+                    throw new Error("daemon gone");
+                }
+                return {};
+            },
+            fault: async () => {
+                await Bun.sleep(40);
+                return { restarted_by: "harness" };
+            },
+        };
+        scheduler = new Scheduler({
+            events: fixtureEvents(1),
+            faults: [kill],
+            journal: j,
+            settleMs: 0,
+            order: ["a"],
+            drivers: { a: driver },
+        });
+        await expect(scheduler.run()).rejects.toThrow(/daemon gone/);
+        expect(j.entries.map((e) => e.kind)).toContain("FaultObserved");
+        j.close();
+    });
+
+    test("a kill fired by a job during the idle wait keeps its outage window open until it is observed", async () => {
+        const j = new Journal(join(dir(), "j.jsonl"));
+        let scheduler: Scheduler | null = null;
+        const kill = episode("k", "daemon_sigkill_mid_fold", {
+            kind: "first_summarizer_call",
+            session: "s-0000",
+        });
+        let exit: unknown = "pending";
+        const driver: ArmDriver = {
+            reset: async () => undefined,
+            event: async (e) => {
+                if (e.kind === "user_turn" && e.index === 0) {
+                    scheduler?.jobStart("fold-1");
+                    setTimeout(() => {
+                        scheduler?.observe("history_summarizer", driver);
+                        scheduler?.jobEnd("fold-1");
+                    }, 30);
+                    setTimeout(() => {
+                        try {
+                            scheduler?.daemonExited({ signal: "SIGKILL" });
+                            exit = "expected";
+                        } catch (caught) {
+                            exit = caught;
+                        }
+                    }, 60);
+                }
+                return {};
+            },
+            fault: async () => {
+                await Bun.sleep(80);
+                return { restarted_by: "harness" };
+            },
+        };
+        scheduler = new Scheduler({
+            events: fixtureEvents(2),
+            faults: [kill],
+            journal: j,
+            settleMs: 0,
+            jobPollMs: 5,
+            order: ["a"],
+            drivers: { a: driver },
+        });
+        await scheduler.run();
+        expect(exit).toBe("expected");
+        const kinds = j.entries.map((e) => e.kind);
+        expect(kinds.indexOf("FaultObserved")).toBeLessThan(kinds.lastIndexOf("AdvanceClock"));
+    });
+
+    test("a job that registers after its arm closed is refused and journals nothing", async () => {
+        const j = new Journal(join(dir(), "j.jsonl"));
+        let scheduler: Scheduler | null = null;
+        let late: unknown = "pending";
+        const driver = fakeDriver([], 0, (e) => {
+            if (e.kind === "session_end") {
+                setTimeout(() => {
+                    try {
+                        scheduler?.jobStart("late");
+                        late = "accepted";
+                    } catch (caught) {
+                        late = caught;
+                    }
+                }, 30);
+            }
+        });
+        scheduler = new Scheduler({
+            events: fixtureEvents(1),
+            faults: [],
+            journal: j,
+            settleMs: 0,
+            order: ["a"],
+            drivers: { a: driver },
+        });
+        await scheduler.run();
+        await Bun.sleep(80);
+        expect(late).toBeInstanceOf(Error);
+        expect(j.entries.filter((e) => e.kind === "RegisterJob")).toEqual([]);
+        expect(j.entries.at(-1)?.kind).toBe("EndRun");
     });
 
     test("an outage window opened on an arm's final event is closed before the next arm resets", async () => {

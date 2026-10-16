@@ -20,7 +20,9 @@ the calling process's own lease at the end of a run.
 ## Journal
 
 `Journal` opens its file without following symlinks and requires a regular
-file, then appends one JSON line per entry with `seq` (0, 1, 2, ... in append
+file. On read it accepts a line only when it parses, carries the next `seq`,
+names a known `kind`, and has `arm`, `scenario_ms`, and `wall_ms` of the right
+types. It appends one JSON line per entry with `seq` (0, 1, 2, ... in append
 order), `kind`, `arm`, `scenario_ms`, and `wall_ms`; a line is written whole
 before the entry counts as appended. On open, it truncates the
 file to its complete prefix, dropping only a last line that a kill cut
@@ -60,15 +62,20 @@ last journaled `scenario_ms`.
 `Scheduler` runs the arms in the given order, one at a time, over one event
 list. A scheduler whose scenario holds provider faults requires proxy
 control at construction, so a journaled `FaultFired` always armed the proxy.
-For each arm, it resets the driver, then walks the events, and before `EndArm`
-waits for a pending kill and for the busy set to empty, then closes any
-outage window and the current session:
+For each arm, it resets the driver and the proxy's fault state
+(`ProxyControl.reset`, when the proxy offers it), then walks the events, and
+before `EndArm` waits for a pending kill and for the busy set to empty, then
+closes any outage window and the current session. A turn that rejects still
+waits for a pending kill's evidence before the error propagates. Between
+`EndArm` and the next `StartArm`, and after `EndRun`, no arm is running and a
+`jobStart` or `jobEnd` is refused:
 
 1. Wait one settle interval after each answered turn (`settleMs`, 1 s by
    default), so a background job the host starts after its answer registers
-   before the clock moves; then wait for any pending mid-fold kill, and last
-   until the busy set is empty, so a job that registers during the kill is
-   seen before the jump.
+   before the clock moves; then wait until no mid-fold kill is pending and the
+   busy set is empty at the same time, so a kill a job fires during the wait,
+   or a job that registers during a kill, holds the clock and the outage
+   window until it is observed.
 2. Close any outage window from the previous event.
 3. Jump to the event's scheduled time if it is later than now. When the event
    opens a session with a laptop sleep, that jump carries the fault id and the
@@ -91,10 +98,10 @@ is journaled as expected; outside one, it throws `HarnessFailure`.
 
 ## Resume
 
-A restarted harness opens the same journal. A journal with `EndRun` is
-complete and the run returns at once; one holding an `ItemState` for a daemon
-exit outside an outage window is a failed run and is refused with
-`HarnessFailure`. Otherwise the harness checks that every
+A restarted harness opens the same journal. A journal holding an
+`ItemState` for a daemon exit outside an outage window, before or after
+`EndRun`, is a failed run and is refused with `HarnessFailure`; otherwise a
+journal with `EndRun` is complete and the run returns at once. Otherwise the harness checks that every
 unfinished arm has a driver, refuses an arm order or scenario hash different
 from the ones `StartRun` recorded, journals `ResumeRun`, and, for each arm
 without `EndArm`:
