@@ -159,6 +159,14 @@ describe("pre-registration validator", () => {
         );
     });
 
+    test("refuses a P11 false-positive weight other than two", () => {
+        const prereg = load("S") as any;
+        prereg.scoring.p11_false_positive_weight = "0";
+        expect(validatePreregistration(prereg)).toEqual([
+            'scoring.p11_false_positive_weight: expected "2"',
+        ]);
+    });
+
     test("refuses a non-canonical decimal and an alpha outside (0, 1)", () => {
         const prereg = load("S") as any;
         prereg.families[0].alpha = "0.050";

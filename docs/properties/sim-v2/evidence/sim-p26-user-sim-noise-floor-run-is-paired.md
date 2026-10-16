@@ -43,5 +43,3 @@ An A/A run at S or M, the tiers whose pre-registration carries `aa_controls`.
 - Missing evidence: a design decision on whether L's paired claims need a
   same-tier noise floor.
 - Conclusion: needs human input
-
-No open questions.

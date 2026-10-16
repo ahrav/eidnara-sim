@@ -732,7 +732,8 @@ config, different user-sim seeds, and a reported disagreement rate.
 Fault/timing angle: none.
 Required faults and enabling state: an A/A run at S or M, the tiers whose
 pre-registration carries `aa_controls` (host/host and eidnara/eidnara; M repeats
-five times); L and XL register no A/A pairs and standardise their CUSUM on M's.
+five times); L and XL register no A/A pairs, and L standardises its CUSUM on
+M's.
 Confidence: low -
 [evidence](evidence/sim-p26-user-sim-noise-floor-run-is-paired.md). PROPOSED:
 reconstructed from the condensed index in spec #1007; no implementation exists
@@ -1282,9 +1283,10 @@ Confidence: low -
 [evidence](evidence/sim-p50-p11-false-positive-weight-applied.md). PROPOSED:
 reconstructed from the condensed index in spec #1007; only the validator exists
 to verify against, and a default tier run reaches it.
-Existing check: `src/prereg/validate.test.ts`: every tier file carries
-`scoring.p11_false_positive_weight` (`"2"` in all four), and removing it is
-refused by name; the score formula has no check
+Existing check: `src/prereg/validate.test.ts`: the validator requires
+`scoring.p11_false_positive_weight` to read `"2"` in every tier file and refuses
+its removal or any other value by name; the score formula has no check; status
+unaudited
 Impact: Wrong-project injection is under-penalised.
 Open questions: None.
 
@@ -2001,7 +2003,7 @@ Open questions:
   feed P13; P43 and P44 gate P7.
 - Gates: SIM-P51 to P58 consume the pre-registration; P52 and P53 are checked
   at M0 by `checkReport`; P56 is also enforced by the pre-registration
-  validator.
+  validator, and P50's weight is required by it.
 - Journal: SIM-P60 to P68 share the sequence authority; P66 regenerates every
   observable from it.
 - Counterfactual: SIM-P69 to P74 share the deletion record; P73 is fixed at

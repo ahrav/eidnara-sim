@@ -15,8 +15,8 @@ The P11 harm score weights a false positive at twice a hit, and the weight is in
 the pre-registration record.
 
 Every tier file carries `scoring.p11_false_positive_weight: "2"`, and
-`src/prereg/validate.test.ts` shows the validator refuses its removal by name,
-so the pre-registration hash binds the weight. The P11 score formula lands in
+`src/prereg/validate.test.ts` shows the validator refuses its removal or any
+other value by name, so the pre-registration hash binds the weight. The P11 score formula lands in
 M5 (#1029); no run exists yet.
 
 ## Failure scenario
