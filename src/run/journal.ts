@@ -234,6 +234,9 @@ export function pidNamespace(): string | undefined {
     }
 }
 
+/** A run that failed in a way the harness owns: the run is refused rather than retried. */
+export class HarnessFailure extends Error {}
+
 /**
  * A journal is read whole before it is replayed, so its size is bounded ahead of the read: a
  * run of the largest tier journals a few thousand entries, each well under a kilobyte apart
@@ -419,6 +422,10 @@ export class Journal {
         within: DirIdentity = directoryIdentity(dirname(resolve(path))),
     ) {
         const { O_APPEND, O_CREAT, O_NOFOLLOW, O_RDWR } = constants;
+        if (existsSync(`${path}.failed`)) {
+            const reason = readFileSync(`${path}.failed`, "utf8").trim();
+            throw new HarnessFailure(`run failed: ${reason}`);
+        }
         this.fd = openSync(path, O_RDWR | O_APPEND | O_CREAT | O_NOFOLLOW, 0o644);
         let read: Entry[] & { bytes?: number };
         try {
@@ -487,6 +494,36 @@ export class Journal {
         const fd = this.open();
         this.fd = -1;
         closeSync(fd);
+    }
+
+    /**
+     * Marks the run failed on disk: writes `<journal>.failed` with the reason and flushes it,
+     * so a later process refuses to open the journal even when the entry recording the failure
+     * could not be appended. The journal is closed afterwards.
+     */
+    poison(reason: string): void {
+        const marker = `${this.path}.failed`;
+        try {
+            const fd = openSync(
+                marker,
+                constants.O_WRONLY | constants.O_CREAT | constants.O_NOFOLLOW,
+                0o644,
+            );
+            try {
+                writeSync(fd, `${reason}\n`);
+                fsyncSync(fd);
+            } finally {
+                closeSync(fd);
+            }
+        } finally {
+            if (this.fd >= 0) {
+                const fd = this.fd;
+                this.fd = -1;
+                try {
+                    closeSync(fd);
+                } catch {}
+            }
+        }
     }
 
     private open(): number {

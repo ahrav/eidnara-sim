@@ -1,7 +1,7 @@
 import { canonicalJson, sha256Hex } from "../prereg/canonical";
 import type { FaultEpisode } from "../scenario/faults";
 import { Clock } from "./clock";
-import type { Entry, EntryKind, Journal } from "./journal";
+import { type Entry, type EntryKind, HarnessFailure, type Journal } from "./journal";
 
 export interface ScenarioEvent {
     id: string;
@@ -39,7 +39,7 @@ export interface ProxyControl {
     reset(): void;
 }
 
-export class HarnessFailure extends Error {}
+export { HarnessFailure };
 
 /** The identity `StartRun` records and a resume must present again. */
 export function scenarioId(events: ScenarioEvent[], faults: FaultEpisode[]): string {
@@ -85,6 +85,17 @@ export class Scheduler {
         if (!o.proxy && o.faults.some((f) => f.seam.layer === PROXY_LAYER)) {
             throw new Error("scheduler: proxy faults are scheduled but no proxy control was given");
         }
+    }
+
+    /**
+     * A journal append that must land has failed: the failure is fatal for this process, and the
+     * run directory is marked failed on disk so a later process cannot resume past it.
+     */
+    private poison(what: string, caught: unknown): void {
+        const error = caught instanceof Error ? caught.message : String(caught);
+        this.fatal ??= new HarnessFailure(`${what}: ${error}`);
+        this.fail?.(this.fatal);
+        this.o.journal.poison(`${what}: ${error}`);
     }
 
     private log(entry: { kind: EntryKind; [field: string]: unknown }): Entry {
@@ -313,6 +324,9 @@ export class Scheduler {
                     if (turns.has(due.id) && !ended.has(due.id)) {
                         throw fail(`Event for ${e.event} has no EndTurn`, e);
                     }
+                    if (typeof e.outcome !== "string") {
+                        throw fail(`Event for ${e.event} has no outcome`, e);
+                    }
                     if (turns.has(due.id) && e.outcome !== outcomes.get(due.id)) {
                         throw fail(`Event for ${e.event} contradicts its EndTurn outcome`, e);
                     }
@@ -425,6 +439,9 @@ export class Scheduler {
                     }
                     if (observed.has(e.fault)) {
                         throw fail(`FaultObserved for ${e.fault} repeats`, e);
+                    }
+                    if (marked.has(e.fault)) {
+                        throw fail(`FaultObserved for ${e.fault} after its interruption`, e);
                     }
                     const { f } = cursorOf(e.fault);
                     if (e.type !== f.type) {
@@ -709,7 +726,14 @@ export class Scheduler {
             const error = caught instanceof Error ? caught.message : String(caught);
             this.fatal ??= new HarnessFailure(`fault ${f.id} failed: ${error}`);
             this.fail?.(this.fatal);
-            this.log({ kind: "ItemState", fault: f.id, state: "failed", error, fatal: true });
+            try {
+                this.log({ kind: "ItemState", fault: f.id, state: "failed", error, fatal: true });
+            } catch (unwritten) {
+                this.poison(
+                    `fault ${f.id} failed and its record could not be journaled`,
+                    unwritten,
+                );
+            }
             throw caught;
         }
         this.log({ kind: "FaultObserved", fault: f.id, type: f.type, evidence });
@@ -796,32 +820,30 @@ export class Scheduler {
         return {
             jobStart: (id) => {
                 const clock = live();
-                clock.begin(`job:${id}`);
+                if (clock.busyIds().includes(`job:${id}`)) {
+                    throw new Error(`clock: job:${id} is already busy`);
+                }
                 try {
                     this.log({ kind: "RegisterJob", job: id });
                 } catch (caught) {
-                    const error = caught instanceof Error ? caught.message : String(caught);
-                    this.fatal ??= new HarnessFailure(
-                        `job ${id} could not be registered: ${error}`,
-                    );
-                    this.fail?.(this.fatal);
+                    this.poison(`job ${id} could not be registered`, caught);
                     throw caught;
                 }
+                clock.begin(`job:${id}`);
             },
             jobEnd: (id) => {
                 const clock = live();
                 if (!clock.busyIds().includes(`job:${id}`)) {
                     throw new Error(`clock: job:${id} is not busy`);
                 }
+                let ended: Entry;
                 try {
-                    this.log({ kind: "EndJob", job: id });
+                    ended = this.log({ kind: "EndJob", job: id });
                 } catch (caught) {
-                    const error = caught instanceof Error ? caught.message : String(caught);
-                    this.fatal ??= new HarnessFailure(`job ${id} could not be ended: ${error}`);
-                    this.fail?.(this.fatal);
+                    this.poison(`job ${id} could not be ended`, caught);
                     throw caught;
                 }
-                clock.end(`job:${id}`);
+                clock.end(`job:${id}`, ended.scenario_ms);
             },
             observe: (component) => {
                 live();
@@ -839,6 +861,9 @@ export class Scheduler {
             },
             daemonExited: (detail) => {
                 live();
+                if (typeof detail !== "object" || detail === null || Array.isArray(detail)) {
+                    throw new Error(`daemon exit detail is ${describe(detail)}`);
+                }
                 const expected = this.outage !== null;
                 this.outage = null;
                 if (!expected) {
@@ -855,11 +880,7 @@ export class Scheduler {
                         fatal: !expected,
                     });
                 } catch (caught) {
-                    const error = caught instanceof Error ? caught.message : String(caught);
-                    this.fatal ??= new HarnessFailure(
-                        `daemon exit could not be journaled: ${error}`,
-                    );
-                    this.fail?.(this.fatal);
+                    this.poison("daemon exit could not be journaled", caught);
                     throw caught;
                 }
                 if (this.fatal && !expected) throw this.fatal;

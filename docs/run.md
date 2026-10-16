@@ -50,7 +50,11 @@ carry it over, flushes the directory when it creates the file and each
 appended line with `fdatasync` before the entry counts as appended, so an
 acknowledged entry survives a power loss, and flushes the truncation that
 rolls a failed append back (closing the journal when that flush fails), so a
-refused entry cannot reappear after a crash, reads and truncates the file
+refused entry cannot reappear after a crash, and refuses to open while a
+`journal.jsonl.failed` marker sits beside the file (`poison` writes and
+flushes it when a record that must land, such as a fatal fault or exit, cannot
+be appended, so a later process cannot resume past a failure the journal
+itself could not record), reads and truncates the file
 through that one descriptor, and refuses every operation after `close`. On
 read it
 splits lines on raw newline bytes, so the complete prefix is measured in bytes,
@@ -150,8 +154,12 @@ valid, an observation during `bind` fires no second kill, and a daemon exit
 reported through the new handle is unexpected because the interruption marker
 closed the outage window. The session the journal left open is restored
 before `bind`, so a late summarizer observation from it still fires its kill.
-live job unregistered or the clock busy forever), `observe`, and
-`daemonExited`, and every call checks that its arm is still the one running,
+The handle carries `jobStart` and `jobEnd`, which journal `RegisterJob`
+before the job holds the clock and `EndJob` with the reading the clock then
+stops at, so each busy transition and its record share one clock sample (a
+failed append of either is fatal and poisons the run, so a caller that
+swallows the throw cannot leave a live job unregistered or the clock busy
+forever), `observe`, and `daemonExited` (its detail must be an object), and every call checks that its arm is still the one running,
 so a callback a finished arm left behind is refused instead of writing under
 the next arm. `observe("history_summarizer")` fires the session's mid-fold
 SIGKILL on the first observed summarizer call. `daemonExited` inside an outage
@@ -186,8 +194,9 @@ event completed, a turn entry naming anything but a configured user turn, an
 `EndTurn` before its `BeginTurn`, a `FaultObserved` before its `FaultFired`,
 `Event` records outside the configured order or timestamped before their
 schedule, a turn's `Event` with no `EndTurn` or interruption marker before
-it or with an outcome other than that record's, an `EndTurn` without an
-outcome or misreporting its event's probe, a `FaultFired` or `FaultObserved`
+it or with an outcome other than that record's, an `Event` or `EndTurn`
+without a string outcome, an `EndTurn` misreporting its event's probe, a
+`FaultObserved` after the fault's interruption marker, a `FaultFired` or `FaultObserved`
 naming a type or layer other than its episode's, a `FaultObserved` without an
 evidence object, an `Event` that passes a
 session-start or user-turn trigger whose fault neither fired nor was missed,

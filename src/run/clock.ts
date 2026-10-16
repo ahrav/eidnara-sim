@@ -40,10 +40,16 @@ export class Clock {
         this.busy.add(id);
     }
 
-    end(id: string): void {
+    /**
+     * Ends a busy item; when the last one ends the clock stops at `at` when given (the reading
+     * an entry just journaled carries, so the stop and the record share one sample) or at the
+     * current reading otherwise.
+     */
+    end(id: string, at?: number): void {
         if (!this.busy.delete(id)) throw new Error(`clock: ${id} is not busy`);
         if (this.busy.size > 0) return;
-        this.now();
+        if (at === undefined) this.now();
+        else this.scenario = at;
         this.anchor = null;
     }
 

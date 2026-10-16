@@ -1647,8 +1647,9 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: partial - the SIGKILL resume tests check event-list identity only;
-`tape_id` and divergence indices land in M6
+Exercised: not yet - `tape_id` and divergence indices land in M6; the M4
+SIGKILL resume tests observe event-list identity, which this record does not
+promise
 Guarantee: SIM-P65: A resumed sibling arm replays the same `tape_id` and reports
 the same divergence index for all events before the interrupt.
 Check: `always` - compare `tape_id` and pre-interrupt divergence indices before
@@ -1658,8 +1659,7 @@ Required faults and enabling state: an interrupt in a sibling arm.
 Confidence: low - [evidence](evidence/sim-p65-resume-preserves-pairing.md).
 PROPOSED: reconstructed from the condensed index in spec #1007; the M4 unit
 tests verify event-list identity, and a default tier run reaches it.
-Existing check: src/run/scheduler.test.ts - each arm's completed events equal
-the full event list after resume
+Existing check: none
 Impact: Pairing breaks silently after resume.
 Open questions: None.
 

@@ -2888,6 +2888,167 @@ describe("Scheduler", () => {
         }).run();
     });
 
+    test("a job's registration and end share one clock sample with their records, so the writer's own journal replays across clock ticks", async () => {
+        const path = join(dir(), "j.jsonl");
+        const j = new Journal(path);
+        let handle: ArmHandle | null = null;
+        const driver: ArmDriver = {
+            ...fakeDriver([]),
+            bind: (h) => {
+                handle = h;
+            },
+            event: async (e) => {
+                if (e.kind === "user_turn") {
+                    handle?.jobStart("fold");
+                    setTimeout(() => handle?.jobEnd("fold"), 20);
+                }
+                return {};
+            },
+        };
+        const realNow = performance.now.bind(performance);
+        let tick = 1_000;
+        performance.now = () => ++tick;
+        try {
+            await new Scheduler({
+                events: fixtureEvents(1),
+                faults: [],
+                journal: j,
+                settleMs: 60,
+                order: ["a"],
+                drivers: { a: driver },
+            }).run();
+        } finally {
+            performance.now = realNow;
+        }
+        const endJob = j.entries.find((e) => e.kind === "EndJob") as Entry;
+        const after = j.entries[j.entries.indexOf(endJob) + 1] as Entry;
+        expect(after.scenario_ms).toBe(endJob.scenario_ms);
+        await new Scheduler({
+            events: fixtureEvents(1),
+            faults: [],
+            journal: new Journal(path),
+            settleMs: 0,
+            order: ["a"],
+            drivers: { a: fakeDriver([]) },
+        }).run();
+    });
+
+    test("journals with an Event lacking its outcome, or a FaultObserved after the fault's interruption, are refused; a malformed daemon-exit detail is refused before the window closes", async () => {
+        const restart = episode("r", "daemon_restart", {
+            kind: "session_start",
+            session: "s-0000",
+        });
+        const events = fixtureEvents(1);
+        const e0 = events[0]?.id as string;
+        const open = (lines: Partial<Entry>[], faults: FaultEpisode[] = []) => {
+            const path = join(dir(), "j.jsonl");
+            const j = new Journal(path);
+            j.append({
+                kind: "StartRun",
+                arm: null,
+                scenario_ms: 0,
+                order: ["a"],
+                scenario: scenarioId(events, faults),
+            });
+            j.append({ kind: "StartArm", arm: "a", scenario_ms: 0 });
+            for (const l of lines) j.append({ arm: "a", scenario_ms: 0, ...l } as never);
+            j.close();
+            return new Scheduler({
+                events,
+                faults,
+                journal: new Journal(path),
+                settleMs: 0,
+                order: ["a"],
+                drivers: { a: fakeDriver([]) },
+            }).run();
+        };
+        await expect(open([{ kind: "Event", event: e0 }])).rejects.toThrow(
+            /Event for e-000000 has no outcome/,
+        );
+        await expect(
+            open(
+                [
+                    { kind: "FaultFired", fault: "r", type: "daemon_restart", layer: "scheduler" },
+                    { kind: "ItemState", fault: "r", state: "failed(interrupted)" },
+                    { kind: "FaultObserved", fault: "r", type: "daemon_restart", evidence: {} },
+                ],
+                [restart],
+            ),
+        ).rejects.toThrow(/FaultObserved for r after its interruption/);
+        const j = new Journal(join(dir(), "j.jsonl"));
+        let handle: ArmHandle | null = null;
+        let refused: unknown = null;
+        const driver: ArmDriver = {
+            ...fakeDriver([]),
+            bind: (h) => {
+                handle = h;
+            },
+            fault: async () => {
+                try {
+                    handle?.daemonExited(undefined as never);
+                } catch (caught) {
+                    refused = caught;
+                }
+                handle?.daemonExited({ signal: "SIGTERM" });
+                return { restarted_by: "harness" };
+            },
+        };
+        await new Scheduler({
+            events,
+            faults: [restart],
+            journal: j,
+            settleMs: 0,
+            order: ["a"],
+            drivers: { a: driver },
+        }).run();
+        expect(String(refused)).toMatch(/daemon exit detail is undefined/);
+        const exits = j.entries.filter((e) => e.kind === "ItemState");
+        expect(exits).toHaveLength(1);
+        expect(exits[0]).toMatchObject({ expected: true, fatal: false });
+    });
+
+    test("a fatal record that cannot be journaled poisons the run directory, so a later process refuses the journal", async () => {
+        const restart = episode("r", "daemon_restart", {
+            kind: "session_start",
+            session: "s-0000",
+        });
+        const path = join(dir(), "j.jsonl");
+        const inner = new Journal(path);
+        const journal = new Proxy(inner, {
+            get(target, key, receiver) {
+                if (key === "append") {
+                    return (entry: Entry) => {
+                        if (entry.kind === "ItemState" && entry.fatal === true) {
+                            throw new Error("ENOSPC");
+                        }
+                        return target.append(entry);
+                    };
+                }
+                return Reflect.get(target, key, receiver);
+            },
+        });
+        await expect(
+            new Scheduler({
+                events: fixtureEvents(1),
+                faults: [restart],
+                journal,
+                settleMs: 0,
+                order: ["a"],
+                drivers: {
+                    a: {
+                        ...fakeDriver([]),
+                        fault: async () => {
+                            throw new Error("daemon never came back");
+                        },
+                    },
+                },
+            }).run(),
+        ).rejects.toThrow(/daemon never came back/);
+        expect(existsSync(`${path}.failed`)).toBe(true);
+        expect(() => new Journal(path)).toThrow(HarnessFailure);
+        expect(() => new Journal(path)).toThrow(/run failed: fault r failed/);
+    });
+
     test("a FaultObserved without its FaultFired is refused on resume", async () => {
         const path = join(dir(), "j.jsonl");
         const restart = episode("r", "daemon_restart", {
@@ -3776,7 +3937,7 @@ describe("resume of fired faults", () => {
             type: "daemon_restart",
             evidence: { restarted_by: "harness" },
         });
-        j.append({ kind: "Event", arm: "a", scenario_ms: 0, event: "e-000000" });
+        j.append({ kind: "Event", arm: "a", scenario_ms: 0, event: "e-000000", outcome: "ok" });
         j.append({
             kind: "FaultFired",
             arm: "a",
@@ -3875,7 +4036,7 @@ describe("resume of fired faults", () => {
             fault: "restart",
             state: "failed(interrupted)",
         });
-        j.append({ kind: "Event", arm: "a", scenario_ms: 0, event: "e-000000" });
+        j.append({ kind: "Event", arm: "a", scenario_ms: 0, event: "e-000000", outcome: "ok" });
         j.append({ kind: "BeginTurn", arm: "a", scenario_ms: 0, event: "e-000001" });
         j.append({
             kind: "ItemState",
@@ -3934,7 +4095,7 @@ describe("resume of fired faults", () => {
         const start = { order: ["a"], scenario: scenarioId(fixtureEvents(2), []) };
         j.append({ kind: "StartRun", arm: null, scenario_ms: 0, ...start });
         j.append({ kind: "StartArm", arm: "a", scenario_ms: 0 });
-        j.append({ kind: "Event", arm: "a", scenario_ms: 0, event: "e-000000" });
+        j.append({ kind: "Event", arm: "a", scenario_ms: 0, event: "e-000000", outcome: "ok" });
         j.append({ kind: "BeginTurn", arm: "a", scenario_ms: 0, event: "e-000001" });
         j.append({
             kind: "ItemState",
@@ -3966,7 +4127,7 @@ describe("resume of fired faults", () => {
         const start = { order: ["a"], scenario: scenarioId(fixtureEvents(2), []) };
         j.append({ kind: "StartRun", arm: null, scenario_ms: 0, ...start });
         j.append({ kind: "StartArm", arm: "a", scenario_ms: 0 });
-        j.append({ kind: "Event", arm: "a", scenario_ms: 0, event: "e-000000" });
+        j.append({ kind: "Event", arm: "a", scenario_ms: 0, event: "e-000000", outcome: "ok" });
         j.append({ kind: "RegisterJob", arm: "a", scenario_ms: 0, job: "fold-1" });
         j.append({ kind: "EndJob", arm: "a", scenario_ms: 0, job: "fold-1" });
         j.append({ kind: "BeginTurn", arm: "a", scenario_ms: 0, event: "e-000001" });
