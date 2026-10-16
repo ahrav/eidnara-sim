@@ -89,6 +89,7 @@ sequence.
 the witnesses, returns each episode's own generator (seeded from the injector's generator and
 the episode id) to its seed so every arm draws the same intermittent masks, and ignores calls whose first bytes arrived before the reset, both when they
 ask for a fault and when their records are observed; a call received before
+a fault was armed takes nothing from that fault, and a call received before
 an injection is never that injection's host observation; a record carries the
 arm, session, turn, and scenario time that owned the request at receipt; `arm(id)` when an episode's trigger event occurs; and
 `disarm(id)` at the end of an episode's session. While armed, an episode replaces agent

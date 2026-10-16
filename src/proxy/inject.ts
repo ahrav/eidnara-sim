@@ -21,6 +21,8 @@ export interface WitnessReport extends Witness {
 interface Armed {
     fault: ProxyFault;
     calls: number;
+    /** The arming on the monotonic clock; a call received before it takes nothing from this fault. */
+    at: number;
 }
 
 export const TARGET: Component = "agent";
@@ -88,7 +90,7 @@ export class FaultInjector {
     arm(id: string): void {
         const fault = this.faults.find((f) => f.id === id);
         if (!fault) throw new Error(`unknown proxy fault ${id}`);
-        this.armed.set(id, { fault, calls: 0 });
+        this.armed.set(id, { fault, calls: 0, at: performance.now() });
         (this.witnesses.get(id) as Witness).armed = true;
     }
 
@@ -98,11 +100,13 @@ export class FaultInjector {
 
     /**
      * `startedMono` is the call's receipt on the monotonic clock; a call received before the
-     * last reset belongs to the previous arm and takes nothing from this one.
+     * last reset belongs to the previous arm and takes nothing from this one, and a call
+     * received before a fault was armed takes nothing from that fault.
      */
     take(component: Component, call: number, startedMono = performance.now()): ProxyFault | null {
         if (component !== TARGET || startedMono < this.resetAt) return null;
         for (const [id, a] of this.armed) {
+            if (startedMono < a.at) continue;
             const { strategy, params } = a.fault;
             a.calls++;
             const limit =

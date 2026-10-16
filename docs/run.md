@@ -131,7 +131,9 @@ late summarizer observation from it still fires its kill, and with an outage
 window still open when the journal's replay shows its fault fired and nothing
 closed it yet (the admitted daemon exit, the fault's evidence or interruption
 record, or the next scheduled step), so the delayed scheduled exit reads as
-expected and a window already spent stays closed. The handle carries `jobStart`, `jobEnd`, `observe`, and
+expected and a window already spent stays closed. The handle carries `jobStart` (a failed `RegisterJob` append is fatal, so a
+caller that swallows the throw cannot leave a live job unregistered),
+`jobEnd`, `observe`, and
 `daemonExited`, and every call checks that its arm is still the one running,
 so a callback a finished arm left behind is refused instead of writing under
 the next arm. `observe("history_summarizer")` fires the session's mid-fold
@@ -149,21 +151,28 @@ in flight.
 ## Resume
 
 A restarted harness opens the same journal. A journal whose first entry is anything but `StartRun`, or that holds a
-second `StartRun`, is refused, as is one with entries after `EndRun`. An arm
-is complete when its `EndArm` follows an `Event` for every scheduled event;
-evidence journaled after `EndArm` does not count. A journal holding a fatal
+second `StartRun`, is refused, as is one with entries after `EndRun`, a
+`ResumeRun` naming another arm order or scenario, arms started out of the
+configured order or while another is open, or arm evidence before its
+`StartArm`. An arm is complete when its `EndArm` follows an `Event` for every
+scheduled event with no job registration open; evidence journaled after
+`EndArm` does not count. A journal holding a fatal
 `ItemState` (a daemon exit outside an outage window, or a scheduler fault the
 driver could not carry out), before or after `EndRun`, is a failed run and is
 refused with `HarnessFailure`; an arm with `EndArm` before every scheduled
 event completed, a turn entry naming anything but a configured user turn, an
 `EndTurn` before its `BeginTurn`, a `FaultObserved` before its `FaultFired`,
-`Event` records outside the configured order, a turn's `Event` with no
-`EndTurn` or interruption marker before it, an `EndJob` with no open
-`RegisterJob`, or a `FaultFired` away from its trigger's place in the event
-sequence (a session-start or user-turn trigger fires while its event is next
-due, a summarizer-call trigger while its session is open), is refused as
-corrupt, complete or not, before `ResumeRun` or any recovery entry is
-written; otherwise a journal with `EndRun` is complete
+`Event` records outside the configured order or timestamped before their
+schedule, a turn's `Event` with no `EndTurn` or interruption marker before
+it, a `BeginTurn` for a turn other than the one due or repeated for one turn,
+a second `EndTurn` for a turn, an interruption marker that closes no open turn
+or unobserved fault, an `EndJob` with no open `RegisterJob`, a `FaultFired`
+repeated or away from its trigger's place in the event sequence (a
+session-start or user-turn trigger fires while its event is next due, a
+summarizer-call trigger while its session is open), a missed sleep or
+fault-tagged jump for anything but a laptop sleep at its place, or a daemon
+exit marked expected outside a replayed outage window, is refused as corrupt,
+complete or not, before `ResumeRun` or any recovery entry is written; otherwise a journal with `EndRun` is complete
 and the run returns at once, after checking that `StartRun` names this arm
 order and scenario and that every arm has `StartArm`, `EndArm`, and an `Event`
 for every scheduled event. Otherwise the harness checks that every

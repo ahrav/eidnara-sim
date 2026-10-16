@@ -496,6 +496,9 @@ describe("witnesses", () => {
             params: {},
         } as ProxyFault;
         const injector = new FaultInjector([fault], new Rng(1), 100);
+        Bun.sleepSync(5);
+        const beforeArm = performance.now();
+        Bun.sleepSync(5);
         injector.arm("f");
         Bun.sleepSync(30);
         const base = {
@@ -516,6 +519,7 @@ describe("witnesses", () => {
             error: null,
             wall_ms: 0,
         } as const;
+        expect(injector.take("agent", 9, beforeArm)).toBeNull();
         const taken = injector.take("agent", 0);
         expect(taken?.id).toBe("f");
         const t0 = performance.now();

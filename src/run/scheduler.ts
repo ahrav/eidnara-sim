@@ -98,34 +98,11 @@ export class Scheduler {
         const finished = new Set(entries.filter((e) => e.kind === "EndArm").map((e) => e.arm));
         const scenario = scenarioId(this.o.events, this.o.faults);
         const start = entries[0]?.kind === "StartRun" ? entries[0] : undefined;
-        if (entries.some((e, i) => e.kind === "StartRun" && i > 0)) {
-            throw new Error("journal: StartRun is not the first entry");
-        }
-        if (start) {
-            if (JSON.stringify(start.order) !== JSON.stringify(this.o.order)) {
-                throw new Error(
-                    `scheduler: run was started with arm order ${JSON.stringify(start.order)}`,
-                );
-            }
-            if (start.scenario !== scenario) {
-                throw new Error(`scheduler: run was started with scenario ${start.scenario}`);
-            }
-        }
         if (!start && entries.length > 0) {
             throw new Error("journal: StartRun is not the first entry");
         }
-        const endRun = entries.findIndex((e) => e.kind === "EndRun");
-        if (endRun >= 0 && endRun !== entries.length - 1) {
-            throw new Error("journal: entries follow EndRun");
-        }
-        for (const arm of this.o.order) this.checkLifecycle(entries, arm);
-        if (endRun >= 0) {
-            const open = this.o.order.filter((arm) => !this.completed(entries, arm));
-            if (!start || open.length > 0) {
-                throw new Error(`journal: EndRun with unfinished arms ${JSON.stringify(open)}`);
-            }
-            return;
-        }
+        this.checkJournal(entries, scenario);
+        if (entries.at(-1)?.kind === "EndRun") return;
         for (const arm of this.o.order) {
             if (!finished.has(arm) && !this.o.drivers[arm])
                 throw new Error(`no driver for arm ${arm}`);
@@ -194,64 +171,213 @@ export class Scheduler {
     }
 
     /**
-     * Refuses an arm whose entries contradict the scheduler's lifecycle, replayed in journal
-     * order: `EndArm` before every event completed; a turn entry naming anything but a
-     * configured user turn; `Event` records outside the configured order, or for a turn with
-     * no `EndTurn` or interruption marker before it; an `EndTurn` without its `BeginTurn`; a
-     * `FaultObserved` without its `FaultFired`; an `EndJob` with no open registration; and a
-     * `FaultFired` away from its trigger's place in the event sequence. Runs before any recovery
-     * entry is written, so a corrupt journal is refused unchanged.
+     * Refuses a journal whose entries contradict the scheduler's lifecycle, replayed in order:
+     * `StartRun` first and once, every `ResumeRun` naming this run's arm order and scenario,
+     * `EndRun` last and only after every arm ended; arms started in the configured order, one
+     * at a time, each `StartArm` preceding all of its arm's evidence and each `EndArm` following
+     * an `Event` for every scheduled event with no job open; `Event` records in the configured
+     * order, each timestamped no earlier than its schedule, a turn's `Event` preceded by its
+     * `EndTurn` or interruption marker; one `BeginTurn` per turn, for the turn next due, and one
+     * `EndTurn` after it; an interruption marker closing an open turn or an unobserved fault;
+     * `EndJob` only for an open registration; `FaultFired` once per configured fault, at its
+     * trigger's place in the event sequence; `FaultObserved` after its `FaultFired`; a missed
+     * sleep or a fault-tagged jump only for a laptop sleep at its place; and a daemon exit
+     * marked expected only inside a replayed outage window. Runs before any recovery entry is
+     * written, so a corrupt journal is refused unchanged.
      */
-    private checkLifecycle(entries: Entry[], arm: string): void {
-        const mine = entries.filter((e) => e.arm === arm);
-        const fail = (what: string) => new Error(`journal: ${what} in arm ${arm}`);
-        if (mine.some((e) => e.kind === "EndArm") && !this.completed(entries, arm)) {
-            throw fail("EndArm before its events completed");
-        }
-        const turns = new Set(this.o.events.filter((e) => e.kind === "user_turn").map((e) => e.id));
-        const begun = new Set<unknown>();
-        const ended = new Set<unknown>();
-        const fired = new Set<unknown>();
-        const jobs = new Map<unknown, number>();
+    private checkJournal(entries: Entry[], scenario: string): void {
+        const events = this.o.events;
+        const turns = new Set(events.filter((e) => e.kind === "user_turn").map((e) => e.id));
+        const fail = (what: string, e: Entry) => new Error(`journal: ${what} (seq ${e.seq})`);
+        const identity = (e: Entry) => {
+            if (JSON.stringify(e.order) !== JSON.stringify(this.o.order)) {
+                throw new Error(
+                    `scheduler: run was started with arm order ${JSON.stringify(e.order)}`,
+                );
+            }
+            if (e.scenario !== scenario) {
+                throw new Error(`scheduler: run was started with scenario ${e.scenario}`);
+            }
+        };
+        let next = 0;
+        let open: string | null = null;
+        let begun = new Set<unknown>();
+        let ended = new Set<unknown>();
+        let fired = new Set<unknown>();
+        let observed = new Set<unknown>();
+        let marked = new Set<unknown>();
+        let jobs = new Map<unknown, number>();
         let done = 0;
-        for (const e of mine) {
-            if ((e.kind === "BeginTurn" || e.kind === "EndTurn") && !turns.has(e.event as string)) {
-                throw fail(`${e.kind} for ${e.event} is not a user turn`);
+        let outage: string | null = null;
+        entries.forEach((e, i) => {
+            if (e.kind === "StartRun") {
+                if (i > 0) throw fail("StartRun is not the first entry", e);
+                identity(e);
+                return;
             }
-            if (e.kind === "BeginTurn") begun.add(e.event);
-            if (e.kind === "EndTurn") {
-                if (!begun.has(e.event)) throw fail(`EndTurn for ${e.event} has no BeginTurn`);
-                ended.add(e.event);
+            if (e.kind === "ResumeRun") {
+                identity(e);
+                return;
             }
-            if (e.kind === "ItemState" && e.state === "failed(interrupted)") ended.add(e.event);
-            if (e.kind === "Event") {
-                if (e.event !== this.o.events[done]?.id) {
-                    throw fail(`Event for ${e.event} is out of scenario order`);
+            if (e.kind === "EndRun") {
+                if (i !== entries.length - 1) throw fail("entries follow EndRun", e);
+                if (open !== null || next < this.o.order.length) {
+                    const left = this.o.order.slice(next - (open === null ? 0 : 1));
+                    throw fail(`EndRun with unfinished arms ${JSON.stringify(left)}`, e);
                 }
-                if (turns.has(e.event as string) && !ended.has(e.event)) {
-                    throw fail(`Event for ${e.event} has no EndTurn`);
+                return;
+            }
+            if (e.kind === "StartArm") {
+                if (open !== null) throw fail(`StartArm for ${e.arm} while ${open} is open`, e);
+                if (e.arm !== this.o.order[next]) {
+                    throw fail(`StartArm for ${e.arm} out of arm order`, e);
                 }
-                done++;
+                open = e.arm;
+                next++;
+                begun = new Set();
+                ended = new Set();
+                fired = new Set();
+                observed = new Set();
+                marked = new Set();
+                jobs = new Map();
+                done = 0;
+                outage = null;
+                return;
             }
-            if (e.kind === "RegisterJob") jobs.set(e.job, (jobs.get(e.job) ?? 0) + 1);
-            if (e.kind === "EndJob") {
-                const open = jobs.get(e.job) ?? 0;
-                if (open <= 0) throw fail(`EndJob for ${e.job} has no RegisterJob`);
-                jobs.set(e.job, open - 1);
+            if (open === null || e.arm !== open) {
+                throw fail(`${e.kind} for arm ${e.arm} outside its arm`, e);
             }
-            if (e.kind === "FaultFired") {
-                const f = this.o.faults.find((x) => x.id === e.fault);
-                if (!f) throw fail(`FaultFired for unknown fault ${e.fault}`);
-                const [lo, hi] = this.triggerCursor(f);
-                if (done < lo || done > hi) {
-                    throw fail(`FaultFired for ${f.id} is away from its trigger`);
+            const due = events[done];
+            const cursorOf = (fault: unknown) => {
+                const f = this.o.faults.find((x) => x.id === fault);
+                if (!f) throw fail(`${e.kind} for unknown fault ${fault}`, e);
+                return { f, range: this.triggerCursor(f) };
+            };
+            switch (e.kind) {
+                case "EndArm": {
+                    if (done < events.length) {
+                        throw fail(`arm ${open} has EndArm before its events completed`, e);
+                    }
+                    const busy = [...jobs].filter(([, n]) => n > 0).map(([job]) => job);
+                    if (busy.length > 0) {
+                        throw fail(
+                            `arm ${open} has EndArm with jobs open ${JSON.stringify(busy)}`,
+                            e,
+                        );
+                    }
+                    open = null;
+                    return;
                 }
-                fired.add(e.fault);
+                case "Event": {
+                    if (!due || e.event !== due.id) {
+                        throw fail(`Event for ${e.event} is out of scenario order`, e);
+                    }
+                    if (e.scenario_ms < due.scenario_ms) {
+                        throw fail(`Event for ${e.event} precedes its schedule`, e);
+                    }
+                    if (turns.has(due.id) && !ended.has(due.id)) {
+                        throw fail(`Event for ${e.event} has no EndTurn`, e);
+                    }
+                    done++;
+                    outage = null;
+                    return;
+                }
+                case "BeginTurn": {
+                    if (!turns.has(e.event as string)) {
+                        throw fail(`BeginTurn for ${e.event} is not a user turn`, e);
+                    }
+                    if (e.event !== due?.id) throw fail(`BeginTurn for ${e.event} is not due`, e);
+                    if (begun.has(e.event)) throw fail(`BeginTurn for ${e.event} repeats`, e);
+                    begun.add(e.event);
+                    outage = null;
+                    return;
+                }
+                case "EndTurn": {
+                    if (!turns.has(e.event as string)) {
+                        throw fail(`EndTurn for ${e.event} is not a user turn`, e);
+                    }
+                    if (!begun.has(e.event))
+                        throw fail(`EndTurn for ${e.event} has no BeginTurn`, e);
+                    if (ended.has(e.event)) throw fail(`EndTurn for ${e.event} repeats`, e);
+                    ended.add(e.event);
+                    return;
+                }
+                case "RegisterJob":
+                    jobs.set(e.job, (jobs.get(e.job) ?? 0) + 1);
+                    return;
+                case "EndJob": {
+                    const n = jobs.get(e.job) ?? 0;
+                    if (n <= 0) throw fail(`EndJob for ${e.job} has no RegisterJob`, e);
+                    jobs.set(e.job, n - 1);
+                    return;
+                }
+                case "FaultFired": {
+                    const { f, range } = cursorOf(e.fault);
+                    if (fired.has(f.id)) throw fail(`FaultFired for ${f.id} repeats`, e);
+                    if (done < range[0] || done > range[1]) {
+                        throw fail(`FaultFired for ${f.id} is away from its trigger`, e);
+                    }
+                    fired.add(f.id);
+                    if (OUTAGE.has(f.type)) outage = f.id;
+                    return;
+                }
+                case "FaultObserved": {
+                    if (!fired.has(e.fault)) {
+                        throw fail(`FaultObserved for ${e.fault} has no FaultFired`, e);
+                    }
+                    if (observed.has(e.fault))
+                        throw fail(`FaultObserved for ${e.fault} repeats`, e);
+                    observed.add(e.fault);
+                    if (outage === e.fault) outage = null;
+                    return;
+                }
+                case "AdvanceClock": {
+                    if (e.fault !== undefined) {
+                        const { f, range } = cursorOf(e.fault);
+                        if (f.type !== "laptop_sleep" || done !== range[0] || fired.has(f.id)) {
+                            throw fail(`AdvanceClock for ${f.id} is away from its sleep`, e);
+                        }
+                    }
+                    outage = null;
+                    return;
+                }
+                case "ItemState": {
+                    if (e.daemon_exit !== undefined) {
+                        if (e.expected !== true || e.fatal !== false || outage === null) {
+                            throw fail("daemon exit outside a replayed outage window", e);
+                        }
+                        outage = null;
+                        return;
+                    }
+                    if (e.state === "missed") {
+                        const { f, range } = cursorOf(e.fault);
+                        if (f.type !== "laptop_sleep" || done !== range[0] || fired.has(f.id)) {
+                            throw fail(`missed ${f.id} away from its sleep`, e);
+                        }
+                        fired.add(f.id);
+                        return;
+                    }
+                    if (e.state === "failed(interrupted)" && e.event !== undefined) {
+                        if (!begun.has(e.event) || ended.has(e.event)) {
+                            throw fail(`interruption of ${e.event} closes no open turn`, e);
+                        }
+                        ended.add(e.event);
+                        return;
+                    }
+                    if (e.state === "failed(interrupted)" && e.fault !== undefined) {
+                        if (!fired.has(e.fault) || observed.has(e.fault) || marked.has(e.fault)) {
+                            throw fail(`interruption of ${e.fault} closes no open fault`, e);
+                        }
+                        marked.add(e.fault);
+                        if (outage === e.fault) outage = null;
+                        return;
+                    }
+                    throw fail("ItemState of unknown shape", e);
+                }
+                default:
+                    throw fail(`${e.kind} is not a journal kind`, e);
             }
-            if (e.kind === "FaultObserved" && !fired.has(e.fault)) {
-                throw fail(`FaultObserved for ${e.fault} has no FaultFired`);
-            }
-        }
+        });
     }
 
     /**
@@ -283,23 +409,6 @@ export class Scheduler {
                           e.kind === "user_turn" && e.session === t.session && e.index === t.n - 1,
                   );
         return [i, i];
-    }
-
-    /**
-     * An arm is complete when it started, then journaled an `Event` for every event, then ended:
-     * the `EndArm` is judged at its own position, so evidence recorded after it does not count.
-     */
-    private completed(entries: Entry[], arm: string): boolean {
-        const mine = entries.filter((e) => e.arm === arm);
-        const end = mine.findIndex((e) => e.kind === "EndArm");
-        if (end < 0 || !mine.slice(0, end).some((e) => e.kind === "StartArm")) return false;
-        const done = new Set(
-            mine
-                .slice(0, end)
-                .filter((e) => e.kind === "Event")
-                .map((e) => e.event),
-        );
-        return this.o.events.every((e) => done.has(e.id));
     }
 
     /**
@@ -575,7 +684,11 @@ export class Scheduler {
                 try {
                     this.log({ kind: "RegisterJob", job: id });
                 } catch (caught) {
-                    clock.end(`job:${id}`);
+                    const error = caught instanceof Error ? caught.message : String(caught);
+                    this.fatal ??= new HarnessFailure(
+                        `job ${id} could not be registered: ${error}`,
+                    );
+                    this.fail?.(this.fatal);
                     throw caught;
                 }
             },

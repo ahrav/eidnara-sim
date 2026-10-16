@@ -71,6 +71,7 @@ export const SEAMS = {
         layer: "clock",
         legal_outcomes: [
             "one event-free clock jump spanning the idle gap before the session (SIM-P18)",
+            "missed: a job carried the clock past the session's start, so no jump and no firing",
         ],
         in_flight_fate: "none: fires while idle",
         surviving_state: "all processes kept",
