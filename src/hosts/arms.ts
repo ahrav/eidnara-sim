@@ -205,13 +205,15 @@ export class DaemonStack {
         const stack = this.stack;
         if (!stack) return;
         this.stack = null;
+        let stopError: unknown;
         try {
             await stack.terminateHost();
         } catch (caught) {
             // terminateHost gives up after SIGTERM; the stack's SIGKILL path ends the daemon.
+            stopError = caught;
             await stack.crashHost();
-            throw caught;
         }
+        if (stopError !== undefined) throw stopError;
         if (this.logError !== undefined) throw this.logError;
     }
 }

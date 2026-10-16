@@ -13,6 +13,12 @@ case "$dst_real/" in
         exit 64
         ;;
 esac
+case "$src_real/" in
+    "$dst_real/"* | "$dst_real.partial/"*)
+        echo "eidnara-build: <checkout> must be a separate directory outside <clone> $dst and its partial clone" >&2
+        exit 64
+        ;;
+esac
 dst=$dst_real
 src=$src_real
 # One build per clone at a time, held from the record's removal to its publication.

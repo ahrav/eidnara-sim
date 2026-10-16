@@ -151,7 +151,8 @@ proxy, with placeholder AWS credentials.
 
 The launcher binds kept paths read-write and read-only paths read-only, and
 refuses a writable kept path under a read-only one and any path that equals
-or contains a masked root (`/tmp`, the user's home), so narrow paths such as
+or contains a masked root (`/tmp`, the user's home), directly or through a
+symlink, so narrow paths such as
 `~/.cargo` stay visible while the home itself stays hidden. Configured paths
 must be normalized, since the launcher refuses others. The arm's own
 directories are read-write. The toolchain paths, the tool

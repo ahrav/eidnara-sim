@@ -5,6 +5,7 @@ import {
     mkdtempSync,
     readFileSync,
     realpathSync,
+    renameSync,
     rmSync,
     symlinkSync,
     writeFileSync,
@@ -177,4 +178,14 @@ test("the build refuses a symlink at its lock path and leaves the link target al
     expect(r.stderr.toString()).toContain("is a symlink");
     expect(readFileSync(join(src, "README"), "utf8")).toBe("edited\n");
     expect(root).toBeTruthy();
+});
+
+test("the build refuses a checkout at its own partial-clone path", () => {
+    const { stubs, src, root } = fixture();
+    const dst = join(root, "built");
+    renameSync(src, `${dst}.partial`);
+    const r = build(`${dst}.partial`, dst, stubs);
+    expect(r.exitCode).not.toBe(0);
+    expect(r.stderr.toString()).toContain("must be a separate directory");
+    expect(existsSync(join(`${dst}.partial`, "README"))).toBe(true);
 });
