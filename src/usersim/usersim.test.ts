@@ -293,23 +293,44 @@ describe("tape and pairing", () => {
 
     test("one changed agent output gives one divergence record, written before the turn, and live replies after it", async () => {
         const root = dir();
-        const llm = counting();
+        const inner = counting();
+        const onDisk = () =>
+            readFileSync(join(root, "pairing.jsonl"), "utf8")
+                .trim()
+                .split("\n")
+                .map((l) => JSON.parse(l) as PairingRecord);
+        const seenAtCall: PairingRecord[][] = [];
+        const llm: Llm & { calls: number } = Object.assign(
+            async (prompt: string) => {
+                seenAtCall.push(onDisk());
+                return inner(prompt);
+            },
+            { calls: 0 },
+        );
         const { user, pairing } = sim(root, llm);
         const reference = await play(user, "a", outputs);
-        const before = llm.calls;
+        const before = inner.calls;
         const changed = [...outputs];
         changed[2] = "Added parser_test.rs and fixed a typo.";
         const texts: string[] = [];
         for (const [i, t] of script.entries()) {
             texts.push((await user.deliver("b", t, changed[i] ?? "")).text);
-            const onDisk = readFileSync(join(root, "pairing.jsonl"), "utf8").trim().split("\n");
-            const last = JSON.parse(onDisk.at(-1) ?? "{}") as PairingRecord;
+            const last = onDisk().at(-1) as PairingRecord;
             expect([last.kind, last.event]).toEqual(["turn", t.id]);
         }
         const divergences = pairing.records.filter((r) => r.kind === "divergedAt");
         expect(divergences).toHaveLength(1);
         expect(divergences[0]).toMatchObject({ arm: "b", session: "s-1", event: "e-3", index: 2 });
-        expect(llm.calls - before).toBe(2);
+        // The live call for e-3 found the divergence on disk, and no turn record for e-3 yet.
+        const atLiveCall = seenAtCall[before] ?? [];
+        expect(atLiveCall.at(-1)).toMatchObject({ kind: "divergedAt", arm: "b", event: "e-3" });
+        expect(
+            atLiveCall.some((r) => r.kind === "turn" && r.arm === "b" && r.event === "e-3"),
+        ).toBe(false);
+        const order = pairing.records.map((r) => `${r.kind}:${r.arm}:${r.event}`);
+        expect(order.indexOf("divergedAt:b:e-3")).toBeLessThan(order.indexOf("turn:b:e-3"));
+        const llmCalls = inner.calls;
+        expect(llmCalls - before).toBe(2);
         expect(texts.slice(0, 2)).toEqual(reference.slice(0, 2));
         expect(texts[2]).not.toBe(reference[2]);
         expect(pairingMismatches(pairing.records, () => "a")).toEqual([]);
@@ -422,5 +443,19 @@ describe("tape and pairing", () => {
         const sent = await user.deliver("a", abandon, "ok");
         expect(sent.text).not.toContain("Next.");
         expect(pairing.records.at(-2)).toMatchObject({ event: "e-10", delivered: false });
+    });
+
+    test("a delivered text that carries a ledger key or probe id stops the run", async () => {
+        const { user } = sim(dir(), counting());
+        const leak: ScriptTurn = {
+            id: "e-8",
+            session: "s-2",
+            index: 2,
+            role: "filler",
+            text: "Check f-0000 again.",
+        };
+        await expect(user.deliver("a", leak, "ok")).rejects.toThrow(
+            "e-8: delivered text carries markers f-0000",
+        );
     });
 });

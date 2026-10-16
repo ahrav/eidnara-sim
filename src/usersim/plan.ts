@@ -57,7 +57,11 @@ export function behaviourPlan(
     const skipped = new Set<string>();
     const interruptMs = new Map<string, number>();
     const sessions = new Map<string, PlanTurn[]>();
-    for (const t of turns) sessions.set(t.session, [...(sessions.get(t.session) ?? []), t]);
+    for (const t of turns) {
+        const s = sessions.get(t.session);
+        if (s) s.push(t);
+        else sessions.set(t.session, [t]);
+    }
     for (const t of turns) if (t.role === "paste") labels.set(t.id, "paste");
 
     const trailing = (s: PlanTurn[]) => {

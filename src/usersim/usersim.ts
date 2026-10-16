@@ -1,6 +1,7 @@
 import { appendFileSync, existsSync, readFileSync, truncateSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { sha256Hex } from "../prereg/canonical";
+import type { NormalisationRule } from "../prereg/schema";
 import { COMPONENT_HEADER } from "../proxy/classify";
 import { readJournal } from "../run/journal";
 import { HarnessFailure } from "../run/scheduler";
@@ -30,7 +31,7 @@ export function proxyUserSim(gatewayUrl: string, model: string, maxTokens: numbe
     };
 }
 
-const RULES: Record<string, [RegExp, string]> = {
+const RULES: Record<NormalisationRule, [RegExp, string]> = {
     "iso-8601-timestamps": [
         /\d{4}-\d\d-\d\d[T ]\d\d:\d\d(?::\d\d(?:\.\d+)?)?(?:Z|[+-]\d\d:?\d\d)?/g,
         "<ts>",
@@ -50,7 +51,7 @@ const RULES: Record<string, [RegExp, string]> = {
 /** The pre-registered digest normalisation, in its listed order; an unknown rule is refused. */
 export function normaliser(rules: readonly string[]): (text: string) => string {
     const steps = rules.map((name) => {
-        const rule = RULES[name];
+        const rule = RULES[name as NormalisationRule];
         if (!rule)
             throw new HarnessFailure(`divergence_policy.normalisation: unknown rule ${name}`);
         return rule;

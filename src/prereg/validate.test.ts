@@ -87,6 +87,14 @@ describe("pre-registration validator", () => {
         );
     });
 
+    test("refuses a normalisation rule the user-sim does not know", () => {
+        const prereg = load("S") as any;
+        prereg.divergence_policy.normalisation.push("colours");
+        expect(validatePreregistration(prereg)).toEqual([
+            "divergence_policy.normalisation: expected one of iso-8601-timestamps, durations, pids, temp-paths, run-ids",
+        ]);
+    });
+
     test("refuses a missing family by name", () => {
         const errors = validatePreregistration(without(load("M"), "families[harm]"));
         expect(errors).toContain("families[harm]: missing");

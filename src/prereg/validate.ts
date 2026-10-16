@@ -11,6 +11,7 @@ import {
     MARGIN_SCALES,
     MIN_PAIRED_RUNS_FOR_RUN_GATE,
     MULTIPLICITY,
+    NORMALISATION_RULES,
     needsPairedRuns,
     OUTCOMES,
     PREREG_SCHEMA,
@@ -125,7 +126,7 @@ const PREREG_SHAPE: Shape = {
     },
     divergence_policy: {
         hash_input: literal("normalised-last-agent-output"),
-        normalisation: list(text),
+        normalisation: list(oneOf(NORMALISATION_RULES)),
         diagnostic_hash: literal("agent-visible-prefix"),
         on_divergence: literal("record-then-live"),
     },

@@ -7,11 +7,19 @@ const ROOT = join(import.meta.dir, "..");
 let dir = "";
 afterEach(() => dir && rmSync(dir, { recursive: true, force: true }));
 
-function run(journal: object[]): { exit: number; report: Record<string, unknown> } {
+function run(
+    journal: object[],
+    events: object[] = [],
+    pairing: object[] = [],
+): { exit: number; report: Record<string, unknown> } {
     dir = mkdtempSync(join(tmpdir(), "pairing-check-"));
-    writeFileSync(join(dir, "manifest.json"), JSON.stringify({ order: ["a", "b"] }));
-    writeFileSync(join(dir, "scenario.json"), JSON.stringify({ events: [] }));
-    writeFileSync(join(dir, "pairing.jsonl"), "");
+    const manifest = { order: ["a", "b"], events: events.length };
+    writeFileSync(join(dir, "manifest.json"), JSON.stringify(manifest));
+    writeFileSync(join(dir, "scenario.json"), JSON.stringify({ events }));
+    writeFileSync(
+        join(dir, "pairing.jsonl"),
+        pairing.map((e) => `${JSON.stringify(e)}\n`).join(""),
+    );
     writeFileSync(
         join(dir, "journal.jsonl"),
         journal.map((e) => `${JSON.stringify(e)}\n`).join(""),
@@ -31,5 +39,31 @@ test("the pairing check fails a run that lacks an arm's rate summary, and passes
     expect(partial.exit).toBe(1);
     const whole = run([rates("a"), rates("b")]);
     expect(whole.report.missing_rates).toEqual([]);
+    expect(whole.exit).toBe(0);
+});
+
+test("the pairing check fails a run whose log lacks a scheduled turn for an arm", () => {
+    const events = [
+        { id: "e-1", kind: "user_turn", session: "s-1", index: 0, role: "filler", text: "Go." },
+        { id: "e-2", kind: "session_end", session: "s-1" },
+    ];
+    const turn = (arm: string) => ({
+        kind: "turn",
+        arm,
+        session: "s-1",
+        event: "e-1",
+        index: 0,
+        label: "task",
+        delivered: true,
+        digest: "d",
+        prefix_sha256: "p",
+        text_sha256: "t",
+        source: "script",
+    });
+    const partial = run([rates("a"), rates("b")], events, [turn("a")]);
+    expect(partial.report.missing_turns).toEqual(["b e-1"]);
+    expect(partial.exit).toBe(1);
+    const whole = run([rates("a"), rates("b")], events, [turn("a"), turn("b")]);
+    expect(whole.report.missing_turns).toEqual([]);
     expect(whole.exit).toBe(0);
 });

@@ -14,9 +14,6 @@ v2 harness before any harness code existed.
 Every user-sim turn carries a label in task, pushback, interrupt, redirect,
 abandon, clarify, or paste, and P14 derives from labels only.
 
-No harness code, test, or run exists yet. The surface lands in M6
-(#1031).
-
 M6 (#1031) journals one `UserTurn` per sent or skipped turn with a label from
 task, pushback, interrupt, redirect, abandon, clarify, or paste, ahead of the
 turn's `EndTurn`, and lists the delivered turns' labels as `user-sim` entries
