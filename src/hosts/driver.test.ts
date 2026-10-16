@@ -818,6 +818,52 @@ touch ${escaped}
         expect(log.stdout.trim().split("\n")).toHaveLength(1);
     });
 
+    test("the state records the daemon identity captured at its start", async () => {
+        const starts = new Map<number, string>();
+        const procStart = (pid: number) => starts.get(pid) ?? processStart(pid);
+        const { driver, armDir } = fixture("eidnara", {}, { procStart });
+        starts.set(10, "first");
+        driver.daemon = fakeDaemon(10) as unknown as DaemonStack;
+        const inner = driver as unknown as { noteDaemon(): void; recordState(): void };
+        inner.noteDaemon();
+        starts.set(10, "reused");
+        inner.recordState();
+        const state = JSON.parse(readFileSync(join(armDir, "state.json"), "utf8"));
+        expect(state.daemon).toEqual({ pid: 10, start: "first" });
+    });
+
+    test("a model switch the journal lost is rolled back on resume", async () => {
+        const { driver, armDir } = fixture("host", { p: gitRepo() });
+        await driver.reset();
+        await driver.fault(episode("model_switch"));
+        expect(JSON.parse(readFileSync(join(armDir, "state.json"), "utf8")).model).toBe(1);
+        await driver.stop();
+        const fresh = new HostDriver((driver as unknown as { o: DriverOptions }).o);
+        await fresh.resume(null, ["f-model_switch"]);
+        expect(JSON.parse(readFileSync(join(armDir, "state.json"), "utf8")).model).toBe(0);
+        await fresh.event(ev("session_start"));
+        expect(fresh.host?.ctx.model).toBe("model-a");
+        await fresh.stop();
+    });
+
+    test.skipIf(!sandbox)("a hook that moves .git out of the workspace stops the run", async () => {
+        const { driver } = fixture("host", { p: gitRepo() });
+        try {
+            await driver.reset();
+            const ws = driver.workspace("p");
+            writeFileSync(
+                join(ws, ".git/hooks/post-commit"),
+                `#!/bin/sh\nmv ${ws}/.git "$HOME/stolen" && ln -s "$HOME/stolen" ${ws}/.git\n`,
+                { mode: 0o755 },
+            );
+            await expect(
+                driver.event(ev("apply_diff", { path: "a.txt", content: "A" })),
+            ).rejects.toThrow("workspace's own directory");
+        } finally {
+            await driver.stop().catch(() => undefined);
+        }
+    });
+
     test("a daemon whose process has exited is reported with the event id", async () => {
         const { driver, exits, transcripts } = fixture("eidnara");
         const gone = spawnSync("true").pid as number;
@@ -1296,6 +1342,24 @@ describe("HostDriver faults", () => {
                 rmSync(ballast);
                 symlinkSync(twin, ballast);
                 await expect(driver.event(ev("session_end"))).rejects.toThrow("ballast");
+            } finally {
+                await driver.stop().catch(() => undefined);
+            }
+        },
+    );
+
+    test.skipIf(!sudo)(
+        "a directory left at the ballast's name is replaced by the fill",
+        async () => {
+            const { driver } = fixture("eidnara");
+            driver.daemon = fakeDaemon(10) as unknown as DaemonStack;
+            const inner = driver as unknown as { mountStore(f: boolean): void };
+            inner.mountStore(true);
+            try {
+                mkdirSync(join(driver.storeRoot, "ballast", "deep"), { recursive: true });
+                const evidence = await driver.fault(episode("store_full"));
+                expect(evidence).toMatchObject({ avail_kb: 0 });
+                expect(statSync(join(driver.storeRoot, "ballast")).isFile()).toBe(true);
             } finally {
                 await driver.stop().catch(() => undefined);
             }

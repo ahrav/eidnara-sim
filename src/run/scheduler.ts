@@ -124,13 +124,17 @@ export class Scheduler {
             const start = mine.at(-1)?.scenario_ms ?? 0;
             const onClock = (ms: number) => this.o.onClock?.(arm, ms);
             this.clock = new Clock(start, this.o.journal, undefined, onClock);
-            onClock(start);
             const driver = this.o.drivers[arm] as ArmDriver;
             const started = mine.some((e) => e.kind === "StartArm");
+            // A fresh arm's processes start under the published clock; on a resume, the killed
+            // harness's processes read the shared clock too, so they are gone before the restored
+            // time reaches it.
             await this.orFinish(driver, async () => {
                 if (started) {
                     await driver.reap?.();
+                    onClock(start);
                 } else {
+                    onClock(start);
                     await driver.reset();
                     this.log({ kind: "StartArm" });
                 }

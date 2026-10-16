@@ -701,8 +701,17 @@ export class OpencodeSimHost extends SimHost {
     /**
      * The wrapper records its own pid and start time beside the arm before it execs the launcher,
      * so a harness killed during the server's startup leaves a record the next resume can reap.
+     * It then execs only while the harness that spawned it is still that process, so a wrapper the
+     * kernel scheduled after the harness died ends before the launcher instead of running a server
+     * no record reached recovery in time to name.
      */
-    private writeWrapper(argv: string[]): string {
+    private writeWrapper(
+        argv: string[],
+        harness: { pid: number; start: string | null } = {
+            pid: process.pid,
+            start: processStart(process.pid),
+        },
+    ): string {
         const dir = join(dirname(this.ctx.launcher), "hostbin", this.ctx.arm);
         mkdirSync(dir, { recursive: true });
         const path = join(dir, "opencode");
@@ -715,6 +724,7 @@ export class OpencodeSimHost extends SimHost {
             `r=${record}`,
             `printf '%s %s\\n' "$$" "$(awk '{print $22}' /proc/$$/stat)" > "$r.$$" || exit 70`,
             `mv -f "$r.$$" "$r" || exit 70`,
+            `[ "${harness.pid} $(awk '{print $22}' /proc/${harness.pid}/stat 2>/dev/null)" = ${shellQuote(`${harness.pid} ${harness.start ?? ""}`)} ] || exit 70`,
             `exec ${argv.map(shellQuote).join(" ")} "$@"`,
             "",
         ].join("\n");

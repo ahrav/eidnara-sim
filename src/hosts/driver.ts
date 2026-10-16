@@ -41,6 +41,8 @@ interface ArmState {
     git: { pid: number; start: string | null; project: string } | null;
     /** The message of a `finish` that failed; a resume refuses the arm while it stands. */
     failed: string | null;
+    /** The latest model switch: its fault and the index it left, so an unobserved one rolls back. */
+    switched?: { fault: string; from: number } | null;
 }
 
 export interface DriverOptions extends Omit<HostContext, "root" | "model"> {
@@ -128,6 +130,7 @@ export class HostDriver implements ArmDriver {
     private failed: string | null = null;
     /** The identity the daemon's pid had when it started, so a later exit shows as one. */
     private daemonId: { pid: number; start: string | null } | null = null;
+    private switched: { fault: string; from: number } | null = null;
     /** True once this process has reset or resumed the arm, so its in-memory state is the arm's. */
     private live = false;
     private sessionProject: string | null = null;
@@ -167,14 +170,18 @@ export class HostDriver implements ArmDriver {
     private daemonAlive(): boolean {
         const pid = this.daemonPid();
         if (pid === null) return false;
-        const start = processStart(pid);
+        const start = this.procStart(pid);
         if (start === null) return false;
         return this.daemonId?.pid !== pid || this.daemonId.start === start;
     }
 
     private noteDaemon(): void {
         const pid = this.daemonPid();
-        this.daemonId = pid === null ? null : { pid, start: processStart(pid) };
+        this.daemonId = pid === null ? null : { pid, start: this.procStart(pid) };
+    }
+
+    private procStart(pid: number): string | null {
+        return (this.o.procStart ?? processStart)(pid);
     }
 
     private requireHost(): SimHost {
@@ -243,8 +250,12 @@ export class HostDriver implements ArmDriver {
         const seconds = String(Math.ceil(this.o.turnDeadlineMs / 1000));
         const bounded = ["timeout", "-s", "KILL", seconds, "git", ...args];
         const argv = launch(this.o.launcher, keep, env, bounded, ro, dir);
+        // A hook or filter runs inside this command, so the workspace's .git is checked on both
+        // sides of it; one moved out of the workspace stops the run.
+        this.requireOwnGitDir(dir);
         const r = await this.recorded(project, argv, { PATH: process.env.PATH ?? "" });
         if (r.status !== 0) this.unlockGit(dir);
+        this.requireOwnGitDir(dir);
         return { ...r, stderr: r.status === 137 ? `cut off after ${seconds} s` : r.stderr };
     }
 
@@ -278,7 +289,7 @@ export class HostDriver implements ArmDriver {
             stdio: ["pipe", "ignore", "pipe"],
         });
         const pid = child.pid as number;
-        const start = (this.o.procStart ?? processStart)(pid);
+        const start = this.procStart(pid);
         // The record names the process by pid and start; a start the kernel did not report
         // leaves nothing the next reap could match, so the gated shell ends unreleased.
         this.gitRun = start === null ? null : { pid, start, project };
@@ -350,10 +361,15 @@ export class HostDriver implements ArmDriver {
 
     private recordState(): void {
         const proc = (pid: number | null) =>
-            pid === null ? null : { pid, start: processStart(pid) };
+            pid === null ? null : { pid, start: this.procStart(pid) };
+        // The daemon's identity is the one captured at its start, so a pid reused after an exit
+        // is never recorded as the daemon.
+        const daemonPid = this.daemonPid();
+        const daemon = this.daemonId?.pid === daemonPid ? this.daemonId : proc(daemonPid);
         const state: ArmState = {
             model: this.model,
-            daemon: proc(this.daemonPid()),
+            daemon,
+            switched: this.switched,
             host: proc(this.sessionProject === null ? null : (this.host?.hostPid() ?? null)),
             ballast: this.ballastShape,
             refilling: this.refilling,
@@ -382,6 +398,12 @@ export class HostDriver implements ArmDriver {
         return this.storeMount ? join(this.storeMount, "ballast") : null;
     }
 
+    /** Whatever the host left at the ballast's name goes: a directory tree, a link, or a file. */
+    private removeBallast(): void {
+        if (!this.ballast) return;
+        rmSync(this.ballast, { recursive: true, force: true });
+    }
+
     private async startArm(fresh: boolean, state: ArmState | null = null): Promise<void> {
         mkdirSync(this.storeRoot, { recursive: true, mode: 0o700 });
         if (this.o.loopStore && eidnaraOn(this.o.arm)) this.mountStore(fresh);
@@ -393,7 +415,7 @@ export class HostDriver implements ArmDriver {
             this.refilling = true;
             this.recordState();
         }
-        if (this.ballast) rmSync(this.ballast, { force: true });
+        this.removeBallast();
         try {
             if (eidnaraOn(this.o.arm)) {
                 this.checkDaemonDirs();
@@ -452,6 +474,7 @@ export class HostDriver implements ArmDriver {
         this.refilling = false;
         this.gitRun = null;
         this.failed = null;
+        this.switched = null;
         for (const dir of [this.o.armRoot, this.storeRoot])
             rmSync(dir, { recursive: true, force: true });
         rmSync(this.image, { force: true });
@@ -471,7 +494,11 @@ export class HostDriver implements ArmDriver {
         if (!state) {
             throw new HarnessFailure(`resume of arm ${this.o.arm}: ${this.stateFile} is gone`);
         }
-        this.model = state.model;
+        // A switch the journal never observed ended with the killed harness; the model it left
+        // goes back to the index it came from.
+        const undone = state.switched && interrupted.includes(state.switched.fault);
+        this.model = undone && state.switched ? state.switched.from : state.model;
+        this.switched = undone ? null : (state.switched ?? null);
         this.live = true;
         const checked = join(this.armDir, "transcripts.json");
         if (existsSync(checked)) {
@@ -738,6 +765,7 @@ export class HostDriver implements ArmDriver {
         if (f.type === "plugin_reload") {
             return { reload: "host process and plugin respawn at the next session_start" };
         }
+        this.switched = { fault: f.id, from: this.model };
         this.model++;
         this.host = this.newHost();
         this.recordState();
@@ -765,7 +793,7 @@ export class HostDriver implements ArmDriver {
     /** An unwritten `fallocate` extent and a short `dd` tail fill the store while the sparse image stays small. */
     private fill(): void {
         if (!this.storeMount || !this.ballast) return;
-        rmSync(this.ballast, { force: true });
+        this.removeBallast();
         writeFileSync(this.ballast, "", { flag: "wx" });
         const free = run(["df", "-B1", "--output=avail", this.storeMount])
             .trim()
@@ -814,7 +842,7 @@ export class HostDriver implements ArmDriver {
             this.ballastShape = null;
             this.recordState();
         }
-        rmSync(ballast, { force: true });
+        this.removeBallast();
     }
 
     /** A failed finish is recorded, so a resume of an otherwise exhausted arm cannot heal it. */

@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
 import {
     existsSync,
     lstatSync,
@@ -15,7 +16,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { loadConfig } from "../config/config";
-import { running } from "../run/procs";
+import { processStart, running } from "../run/procs";
 import {
     DaemonStack,
     type HostContext,
@@ -313,14 +314,30 @@ test("the daemon's harness runtime lives beside the arm, outside what the host c
     expect(stack.runtimeDir).toBe(join(run, "arm", "runtime"));
 });
 
+test("the OpenCode wrapper stops before the launcher when the harness that spawned it is gone", async () => {
+    const run = runDir();
+    const ctx = { ...context(run), host: "opencode" as const };
+    const host = new OpencodeSimHost(ctx);
+    const gone = spawnSync("true").pid as number;
+    const path = (host as Untyped).writeWrapper(["/bin/sh", "-c", "touch ran"], {
+        pid: gone,
+        start: "1",
+    }) as string;
+    const r = Bun.spawnSync([path], { cwd: run, stdout: "pipe", stderr: "pipe" });
+    expect(r.exitCode).toBe(70);
+    expect(existsSync(join(run, "ran"))).toBe(false);
+    expect(existsSync(join(dirname(ctx.root), "opencode.launch"))).toBe(true);
+});
+
 test("the OpenCode wrapper lives outside every path the sandbox keeps writable", async () => {
     const ctx = { ...context(runDir()), host: "opencode" as const };
     const host = new OpencodeSimHost(ctx);
     const path = (host as Untyped).writeWrapper(["/x/sandbox.sh", "--", "/x/opencode"]) as string;
     for (const kept of ctx.keep) expect(path.startsWith(`${kept}/`)).toBe(false);
     const record = join(dirname(ctx.root), "opencode.launch");
+    const harness = `${process.pid} ${processStart(process.pid)}`;
     expect(await Bun.file(path).text()).toBe(
-        `#!/bin/sh\nr='${record}'\nprintf '%s %s\\n' "$$" "$(awk '{print $22}' /proc/$$/stat)" > "$r.$$" || exit 70\nmv -f "$r.$$" "$r" || exit 70\nexec '/x/sandbox.sh' '--' '/x/opencode' "$@"\n`,
+        `#!/bin/sh\nr='${record}'\nprintf '%s %s\\n' "$$" "$(awk '{print $22}' /proc/$$/stat)" > "$r.$$" || exit 70\nmv -f "$r.$$" "$r" || exit 70\n[ "${process.pid} $(awk '{print $22}' /proc/${process.pid}/stat 2>/dev/null)" = '${harness}' ] || exit 70\nexec '/x/sandbox.sh' '--' '/x/opencode' "$@"\n`,
     );
 });
 
