@@ -23,7 +23,9 @@ jumps it only through `Clock.advanceTo`, which refuses while any turn or job is
 busy, so no jump lands inside a busy interval. The tests rebuild the busy set from the
 journal's turn and job entries, check that it is empty at every
 `AdvanceClock`, and check that `scenario_ms` holds while the set is empty and
-grows by at most the elapsed `wall_ms` while it is busy.
+grows by at most the elapsed `wall_ms` while it is busy. `wall_ms` comes from
+the system clock, so the rate bound is evidence under a steady system clock
+during the test; a step would loosen or break it.
 
 ## Failure scenario
 

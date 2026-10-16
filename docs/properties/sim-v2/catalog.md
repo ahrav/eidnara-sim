@@ -412,7 +412,8 @@ tests verify the record, and a default tier run reaches it.
 Existing check: src/run/scheduler.test.ts `invariants()` and `wallRate()` - busy
 set rebuilt from turn and job entries, empty at every `AdvanceClock`; while idle
 `scenario_ms` holds except across `AdvanceClock`, and while busy it advances by
-at most the elapsed `wall_ms`
+at most the elapsed `wall_ms`, a bound that holds under a steady system clock
+during the test
 Impact: A fold or capture job sees a simulated gap mid-execution and its timing
 metrics are invalid.
 Open questions:

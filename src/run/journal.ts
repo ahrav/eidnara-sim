@@ -74,21 +74,32 @@ function shaped(e: Entry): boolean {
 interface Lease {
     pid: number;
     host: string;
+    boot?: string;
     started_wall_ms: number;
     started_ticks?: number;
     released?: boolean;
 }
 
+function readTrimmed(path: string): string | null {
+    try {
+        return readFileSync(path, "utf8").trim() || null;
+    } catch {
+        return null;
+    }
+}
+
 /**
- * The machine a lease belongs to: the hostname joined with the kernel's boot id, so two
- * machines or containers that share a hostname on one shared directory stay distinct.
+ * The machine a lease belongs to: `/etc/machine-id`, which survives reboots, so two machines
+ * or containers that share a hostname on one shared directory stay distinct; the hostname
+ * stands in where the file is absent.
  */
 export function leaseHost(): string {
-    let boot = "";
-    try {
-        boot = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
-    } catch {}
-    return `${hostname()}:${boot}`;
+    return readTrimmed("/etc/machine-id") ?? hostname();
+}
+
+/** The kernel's boot id: a lease from an earlier boot of this machine names a dead process. */
+export function bootId(): string | undefined {
+    return readTrimmed("/proc/sys/kernel/random/boot_id") ?? undefined;
 }
 
 /**
@@ -115,8 +126,9 @@ function alive(pid: number): boolean {
 }
 
 /** A holder is alive when its incarnation still runs; a recycled pid is a dead holder. */
-function holderAlive(held: Lease): boolean {
+function holderAlive(held: Lease, boot: string | undefined): boolean {
     if (held.released) return false;
+    if (held.boot !== undefined && boot !== undefined && held.boot !== boot) return false;
     const ticks = held.started_ticks === undefined ? null : startTicks(held.pid);
     return ticks === null ? alive(held.pid) : ticks === held.started_ticks;
 }
@@ -156,6 +168,7 @@ export function takeLease(dir: string): Lease {
     const mine: Lease = {
         pid: process.pid,
         host: leaseHost(),
+        boot: bootId(),
         started_wall_ms: Date.now(),
         started_ticks: startTicks(process.pid) ?? undefined,
     };
@@ -163,7 +176,7 @@ export function takeLease(dir: string): Lease {
         const numbers = leaseNumbers(dir);
         const top = numbers.at(-1);
         const held = top === undefined ? null : readLease(join(dir, `lease.${top}.json`));
-        if (held && (held.host !== mine.host || holderAlive(held))) {
+        if (held && (held.host !== mine.host || holderAlive(held, mine.boot))) {
             throw new Error(`run directory ${dir} is leased by pid ${held.pid} on ${held.host}`);
         }
         const staged = join(dir, `lease.${randomUUID()}.tmp`);

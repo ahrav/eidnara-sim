@@ -7,7 +7,7 @@ import {
     symlinkSync,
     writeFileSync,
 } from "node:fs";
-import { hostname, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fixtureEvents } from "../../tests/run-fixture";
 import { FaultInjector, TARGET } from "../proxy/inject";
@@ -15,7 +15,15 @@ import { Rng } from "../rng";
 import type { FaultEpisode } from "../scenario/faults";
 import { SEAMS } from "../scenario/faults";
 import { Clock } from "./clock";
-import { type Entry, Journal, leaseHost, readJournal, releaseLease, takeLease } from "./journal";
+import {
+    bootId,
+    type Entry,
+    Journal,
+    leaseHost,
+    readJournal,
+    releaseLease,
+    takeLease,
+} from "./journal";
 import {
     type ArmDriver,
     type ArmHandle,
@@ -287,14 +295,25 @@ describe("Journal and lease", () => {
         releaseLease(d);
     });
 
-    test("a lease naming this hostname without its boot id belongs to another machine", () => {
+    test("a lease this machine left before a reboot is taken over; one from another machine is refused", () => {
         const d = dir();
-        const dead = Bun.spawnSync(["true"]).pid;
+        const mine = takeLease(d);
+        releaseLease(d);
+        expect(typeof mine.boot).toBe("string");
+        const stale = { ...mine, boot: "an-earlier-boot", released: undefined };
+        writeFileSync(join(d, "lease.0.json"), JSON.stringify(stale));
+        expect(takeLease(d).pid).toBe(process.pid);
+        releaseLease(d);
         writeFileSync(
-            join(d, "lease.0.json"),
-            JSON.stringify({ pid: dead, host: hostname(), started_wall_ms: 0 }),
+            join(d, "lease.1.json"),
+            JSON.stringify({
+                ...mine,
+                host: "another-machine",
+                boot: bootId(),
+                released: undefined,
+            }),
         );
-        expect(() => takeLease(d)).toThrow(/is leased by pid/);
+        expect(() => takeLease(d)).toThrow(/on another-machine/);
     });
 
     test("a lease file whose number is outside the safe integer range refuses the directory", () => {
@@ -420,8 +439,10 @@ describe("Scheduler", () => {
         let scheduler: Scheduler | null = null;
         const driver = fakeDriver([], 0, (e) => {
             if (e.kind === "user_turn" && e.index === 0) {
-                setTimeout(() => driver.arm().jobStart("fold-1"), 0);
-                setTimeout(() => driver.arm().jobEnd("fold-1"), 120);
+                setTimeout(() => {
+                    driver.arm().jobStart("fold-1");
+                    setTimeout(() => driver.arm().jobEnd("fold-1"), 120);
+                }, 0);
             }
         });
         scheduler = new Scheduler({
@@ -671,6 +692,8 @@ describe("Scheduler", () => {
         });
         await expect(scheduler.run()).rejects.toThrow(/daemon gone/);
         expect(j.entries.map((e) => e.kind)).toContain("FaultObserved");
+        expect(() => handle?.jobStart("after-the-fact")).toThrow(/arm has ended/);
+        expect(j.entries.filter((e) => e.kind === "RegisterJob")).toEqual([]);
         j.close();
     });
 
@@ -1098,14 +1121,22 @@ describe("resume", () => {
                 stderr: "pipe",
             });
         const a = spawn();
+        const journalPath = join(d, "journal.jsonl");
+        for (;;) {
+            await Bun.sleep(5);
+            if (existsSync(journalPath) && readJournal(journalPath).length > 0) break;
+            if (a.exitCode !== null)
+                throw new Error("first fixture exited before taking the lease");
+        }
         const b = spawn();
         const [codeA, codeB] = await Promise.all([a.exited, b.exited]);
         const errs = await Promise.all([
             new Response(a.stderr).text(),
             new Response(b.stderr).text(),
         ]);
-        expect([codeA, codeB].filter((c) => c === 0)).toHaveLength(1);
-        expect(errs.join("\n")).toMatch(/is leased by pid/);
+        expect(codeA).toBe(0);
+        expect(codeB).not.toBe(0);
+        expect(errs[1]).toMatch(/is leased by pid/);
         const after = readJournal(join(d, "journal.jsonl"));
         invariants(after);
         expect(after.filter((e) => e.kind === "StartRun")).toHaveLength(1);

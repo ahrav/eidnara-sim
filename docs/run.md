@@ -7,11 +7,12 @@ both.
 
 Leases are files `lease.<n>.json`, and the highest number names the holder.
 `takeLease(dir)` reads the highest lease: one held by a live process, or by any
-process on another machine, refuses the call. The machine is the hostname
-joined with the kernel boot id, so machines or containers that share a hostname
-on one directory stay distinct; the holder is identified by pid and by its
-kernel start time (`/proc/<pid>/stat`), so a pid that a later process reuses
-still reads as a dead holder. A lease whose process on this host has
+process on another machine, refuses the call. The machine is `/etc/machine-id`
+(the hostname where that file is absent), so machines or containers that share
+a hostname on one directory stay distinct; a lease carries the kernel boot id,
+so one left by an earlier boot of this machine reads as dead; and the holder is
+identified by pid and by its kernel start time (`/proc/<pid>/stat`), so a pid
+that a later process reuses still reads as a dead holder. A lease whose process on this host has
 exited, or that a kill left unreadable, is taken over by writing a uniquely
 named temporary file with the process id, host, start time, and start ticks
 and linking it to `lease.<n+1>.json`. Exactly one of several racing resumers can create that
@@ -71,7 +72,8 @@ For each arm, it resets the driver and the proxy's fault state
 before `EndArm` waits for a pending kill and for the busy set to empty, then
 closes any outage window and the current session. A turn that rejects still
 waits for a pending kill's evidence before the error propagates. After
-`EndArm` the arm's handle is dead, and a call through it is refused:
+`EndArm`, and on any error that ends the arm, the arm's handle is dead and a
+call through it is refused:
 
 1. Wait one settle interval after each answered turn (`settleMs`, 1 s by
    default), so a background job the host starts after its answer registers

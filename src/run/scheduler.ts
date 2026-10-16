@@ -120,29 +120,35 @@ export class Scheduler {
             this.clock = new Clock(mine.at(-1)?.scenario_ms ?? 0, this.o.journal);
             const driver = this.o.drivers[arm] as ArmDriver;
             driver.bind(this.handle(++this.generation, driver));
-            if (!mine.some((e) => e.kind === "StartArm")) {
-                await driver.reset();
-                this.o.proxy?.reset?.();
-                this.log({ kind: "StartArm" });
-            }
-            this.resume(mine);
-            const done = new Set(
-                this.o.journal.entries
-                    .filter((e) => e.arm === arm && e.kind === "Event")
-                    .map((e) => e.event as string),
-            );
             try {
-                for (const e of this.o.events) if (!done.has(e.id)) await this.step(driver, e);
-                await this.quiesce();
+                if (!mine.some((e) => e.kind === "StartArm")) {
+                    await driver.reset();
+                    this.o.proxy?.reset?.();
+                    this.log({ kind: "StartArm" });
+                }
+                this.resume(mine);
+                const done = new Set(
+                    this.o.journal.entries
+                        .filter((e) => e.arm === arm && e.kind === "Event")
+                        .map((e) => e.event as string),
+                );
+                try {
+                    for (const e of this.o.events) {
+                        if (!done.has(e.id)) await this.step(driver, e);
+                    }
+                    await this.quiesce();
+                } finally {
+                    await this.pendingKill?.catch(() => undefined);
+                }
+                this.log({ kind: "EndArm" });
             } finally {
-                await this.pendingKill?.catch(() => undefined);
+                this.generation++;
+                this.pendingKill = null;
+                this.outage = null;
+                this.session = null;
+                this.arm = null;
+                this.clock = null;
             }
-            this.pendingKill = null;
-            this.outage = null;
-            this.session = null;
-            this.log({ kind: "EndArm" });
-            this.arm = null;
-            this.clock = null;
         }
         this.log({ kind: "EndRun" });
     }
