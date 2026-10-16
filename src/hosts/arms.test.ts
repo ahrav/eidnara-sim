@@ -1,5 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import {
+    existsSync,
+    lstatSync,
     mkdirSync,
     mkdtempSync,
     readdirSync,
@@ -7,6 +9,7 @@ import {
     realpathSync,
     rmSync,
     statSync,
+    symlinkSync,
     writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -60,7 +63,10 @@ function fakeV1(run: string): string {
         `export class PiRpcProtocol {}
 export class PiRpcProcess {
     constructor(public child: any) { globalThis.__simPiChild = child; }
-    sendCommand() { return Promise.reject(new Error("get_state failed")); }
+    sendCommand() {
+        if (globalThis.__simGetState === "refuse") return Promise.resolve({ success: false, error: "no model" });
+        return Promise.reject(new Error("get_state failed"));
+    }
     shutdown() { return Promise.resolve(); }
 }
 `,
@@ -76,7 +82,13 @@ export class PiRpcProcess {
     writeFileSync(
         join(e2e, "node_modules/@opencode-ai/sdk/dist/index.js"),
         `export function createOpencodeClient() {
-    return { session: { list: async () => { throw new Error("list failed"); } } };
+    return { session: {
+        list: async () => {
+            if (globalThis.__simList === "error") return { error: { name: "ServerError" } };
+            throw new Error("list failed");
+        },
+        create: async () => { globalThis.__simCreated = true; return { data: { id: "fresh" } }; },
+    } };
 }
 `,
     );
@@ -253,12 +265,17 @@ test("a Pi session whose readiness check fails stops the launcher tree it spawne
     const ctx = context(run);
     const config = { ...ctx.config, eidnara_checkout: checkout, pi_install: checkout };
     const host = new PiSimHost({ ...ctx, config });
-    await expect(host.openSession(run, "s1", null)).rejects.toThrow("get_state failed");
+    const outcome = await host.openSession(run, "s1", null).then(
+        () => "opened",
+        (e: unknown) => String(e),
+    );
     const child = (globalThis as Untyped).__simPiChild;
     try {
+        expect(outcome).toContain("get_state failed");
         expect(await gone(child.pid)).toBe(true);
     } finally {
         child.kill("SIGKILL");
+        await host.closeSession().catch(() => undefined);
     }
 });
 
@@ -268,9 +285,109 @@ test("an OpenCode session whose SDK setup fails stops the server it spawned", as
     const ctx = { ...context(run), host: "opencode" as const };
     const config = { ...ctx.config, eidnara_checkout: checkout };
     const host = new OpencodeSimHost({ ...ctx, config });
-    await expect(host.openSession(run, "s1", null)).rejects.toThrow("list failed");
+    const outcome = await host.openSession(run, "s1", null).then(
+        () => "opened",
+        (e: unknown) => String(e),
+    );
     await Bun.sleep(200);
     const left = serving();
     for (const pid of left) process.kill(pid, "SIGKILL");
+    await host.closeSession().catch(() => undefined);
+    expect(outcome).toContain("list failed");
     expect(left).toEqual([]);
+});
+
+test("a Pi session whose readiness response is a refusal fails and stops the launcher tree", async () => {
+    const run = runDir();
+    const checkout = fakeV1(run);
+    const ctx = context(run);
+    const config = { ...ctx.config, eidnara_checkout: checkout, pi_install: checkout };
+    const host = new PiSimHost({ ...ctx, config });
+    (globalThis as Untyped).__simGetState = "refuse";
+    const opened = host.openSession(run, "s1", null).then(
+        () => "opened",
+        (e: unknown) => String(e),
+    );
+    const outcome = await opened;
+    const child = (globalThis as Untyped).__simPiChild;
+    try {
+        expect(outcome).toMatch(/no model/);
+        expect(await gone(child.pid)).toBe(true);
+    } finally {
+        (globalThis as Untyped).__simGetState = undefined;
+        child.kill("SIGKILL");
+        await host.closeSession().catch(() => undefined);
+    }
+});
+
+test("an OpenCode session-list error fails the open instead of creating a second session", async () => {
+    const run = runDir();
+    const checkout = fakeV1(run);
+    const ctx = { ...context(run), host: "opencode" as const };
+    const config = { ...ctx.config, eidnara_checkout: checkout };
+    const host = new OpencodeSimHost({ ...ctx, config });
+    (globalThis as Untyped).__simList = "error";
+    (globalThis as Untyped).__simCreated = false;
+    const outcome = await host.openSession(run, "s1", null).then(
+        () => "opened",
+        (e: unknown) => String(e),
+    );
+    try {
+        expect(outcome).toMatch(/ServerError/);
+        expect((globalThis as Untyped).__simCreated).toBe(false);
+    } finally {
+        (globalThis as Untyped).__simList = undefined;
+        await host.closeSession().catch(() => undefined);
+        for (const pid of serving()) process.kill(pid, "SIGKILL");
+    }
+});
+
+test("a rejected OpenCode prompt request aborts the turn before reporting the error", async () => {
+    const run = runDir();
+    const host = new OpencodeSimHost({ ...context(run), host: "opencode" });
+    const calls: string[] = [];
+    (host as Untyped).sid = "s";
+    (host as Untyped).client = {
+        session: {
+            prompt: async () => {
+                calls.push("prompt");
+                throw new Error("socket hang up");
+            },
+            abort: async () => {
+                calls.push("abort");
+                return { data: true };
+            },
+        },
+    };
+    expect(await host.prompt("hi", 1_000)).toEqual({ error: "Error: socket hang up" });
+    expect(calls).toEqual(["prompt", "abort"]);
+    (host as Untyped).client.session.abort = async () => {
+        throw new Error("abort failed");
+    };
+    await expect(host.prompt("hi", 1_000)).rejects.toThrow(/rejected prompt/);
+});
+
+test("Pi control files are written only through a real directory under the arm root", () => {
+    const run = runDir();
+    const ctx = context(run);
+    const elsewhere = join(run, "elsewhere");
+    mkdirSync(elsewhere);
+    mkdirSync(join(ctx.root, "home/.pi"), { recursive: true });
+    symlinkSync(elsewhere, join(ctx.root, "home/.pi/agent"));
+    const host = new PiSimHost(ctx);
+    expect(() => (host as Untyped).writeConfigs(null)).toThrow(/symlink|real directory/);
+    expect(existsSync(join(elsewhere, "settings.json"))).toBe(false);
+});
+
+test("a Pi control file that an agent replaced with a symlink is replaced, and its target kept", () => {
+    const run = runDir();
+    const ctx = context(run);
+    const target = join(run, "precious.json");
+    writeFileSync(target, "keep\n");
+    const host = new PiSimHost(ctx);
+    mkdirSync(host.agentDir, { recursive: true });
+    symlinkSync(target, join(host.agentDir, "settings.json"));
+    (host as Untyped).writeConfigs(null);
+    expect(readFileSync(target, "utf8")).toBe("keep\n");
+    expect(lstatSync(join(host.agentDir, "settings.json")).isSymbolicLink()).toBe(false);
 });

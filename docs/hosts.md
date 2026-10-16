@@ -23,9 +23,9 @@ builds in the checkout's own `dist` directories can lag its daemon source: on
 commit `bb866266c` the stale Pi plugin sent a window the daemon refused, and
 every transform pass served its input unchanged.
 
-The v1 harness closure pins OpenCode 1.18.22 and finds it on `PATH`, so
-`opencode_binary` names that release, and an Eidnara arm needs the release's
-`node_modules/.bin` first on `PATH`.
+The v1 harness closure pins OpenCode 1.18.22 and starts `opencode` from
+`PATH`, so `opencode_binary` names that release and the host's wrapper, first
+on `PATH` as `opencode`, launches it through the sandbox.
 
 ## Arms
 
@@ -57,9 +57,14 @@ stack keeps the last 256 KiB of that output, so a longer stretch keeps its
 tail.
 
 Each `session_start` launches one host process in the session's workspace
-through the sandbox launcher, and each `session_end` closes it; when the
-readiness check or the OpenCode SDK setup fails after the launch,
-`openSession` closes the session it started before it throws. The sandbox runs the host under
+through the sandbox launcher, and each `session_end` closes it; when the readiness check fails or Pi
+refuses it, or the OpenCode SDK setup or session listing fails after the
+launch, `openSession` closes the session it started before it throws. The
+control files the hosts write under the arm root (Pi's settings, model list,
+and Eidnara config; OpenCode's config, data, and cache directories) go
+through real directories only and are created fresh and renamed into place,
+so a symlink an earlier session left there is refused or replaced, never
+followed. The sandbox runs the host under
 root-owned `sudo` and `unshare`, so closing a host walks the launcher's
 process tree and signals every process the user owns, with SIGKILL after
 10 s; a process that survives SIGKILL stops the run. Each pid in that walk is
@@ -74,8 +79,10 @@ turn, so its error is returned at once. After a Pi turn fails, the host
 aborts it and waits up to 30 s for its `agent_end`; a turn still running then
 stops the run, so a late end cannot finish the next turn. OpenCode turns race the deadline,
 abort the session (waiting at most 5 s for the abort call), and wait 30 s for
-the call to drain; a call still running then stops the run. Every deadline
-timer is cleared once its race settles. An `apply_diff` event writes its file inside the
+the call to drain; a call still running then stops the run. A prompt request
+that fails before the server answers is aborted the same way, and an abort
+that fails stops the run, since the turn's completion cannot be established.
+Every deadline timer is cleared once its race settles. An `apply_diff` event writes its file inside the
 workspace and commits that path alone, so the agent's own uncommitted edits
 stay uncommitted; content already committed adds no commit, and a path that
 resolves outside the workspace through `..` or a symlink stops the run before
