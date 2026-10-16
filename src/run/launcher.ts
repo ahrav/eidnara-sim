@@ -99,6 +99,12 @@ export function launch(
         return `${k}=${v}`;
     });
     const ro = readOnly.map(plainPath);
+    // A read-only bind over a parent takes its writable children with it, so the two sets stay disjoint.
+    for (const path of keep) {
+        const parent = ro.find((dir) => !ro.includes(path) && within(path, dir));
+        if (parent)
+            throw new Error(`sandbox path ${path} is kept writable under read-only ${parent}`);
+    }
     return [launcher, ...keep.map(plainPath), "--ro", ...ro, "--env", ...pairs, "--", ...command];
 }
 

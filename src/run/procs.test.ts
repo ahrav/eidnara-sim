@@ -80,7 +80,7 @@ test.skipIf(!sandboxAvailable())(
 );
 
 test("a process start time identifies one process across pid reuse", () => {
-    expect(processStart(process.pid)).toBe(processStart(process.pid));
+    expect(processStart(process.pid)).toMatch(/^\d+$/);
     expect(processStart(2 ** 22 + 7)).toBeNull();
 });
 

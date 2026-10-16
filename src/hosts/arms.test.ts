@@ -1,11 +1,26 @@
-import { expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, realpathSync } from "node:fs";
+import { afterEach, expect, test } from "bun:test";
+import {
+    mkdirSync,
+    mkdtempSync,
+    readdirSync,
+    readFileSync,
+    realpathSync,
+    rmSync,
+    statSync,
+    writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "../config/config";
+import { running } from "../run/procs";
 import { DaemonStack, type HostContext, OpencodeSimHost, PiSimHost } from "./arms";
 
 type Untyped = any;
+
+const dirs: string[] = [];
+afterEach(() => {
+    for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+});
 
 function context(run: string): HostContext {
     const root = join(run, "arm");
@@ -25,7 +40,73 @@ function context(run: string): HostContext {
     };
 }
 
-const runDir = () => realpathSync(mkdtempSync(join(tmpdir(), "sim-arms-")));
+const runDir = () => {
+    const d = realpathSync(mkdtempSync(join(tmpdir(), "sim-arms-")));
+    dirs.push(d);
+    return d;
+};
+
+const PORT = "45981";
+
+/** Stands in for the v1 harness modules `arms.ts` imports from `eidnara_checkout`. */
+function fakeV1(run: string): string {
+    const checkout = join(run, "eidnara");
+    const e2e = join(checkout, "packages/e2e-tests");
+    mkdirSync(join(e2e, "src/pi-runner"), { recursive: true });
+    mkdirSync(join(e2e, "src/opencode-runner"), { recursive: true });
+    mkdirSync(join(e2e, "node_modules/@opencode-ai/sdk/dist"), { recursive: true });
+    writeFileSync(
+        join(e2e, "src/pi-runner/rpc-client.ts"),
+        `export class PiRpcProtocol {}
+export class PiRpcProcess {
+    constructor(public child: any) { globalThis.__simPiChild = child; }
+    sendCommand() { return Promise.reject(new Error("get_state failed")); }
+    shutdown() { return Promise.resolve(); }
+}
+`,
+    );
+    writeFileSync(
+        join(e2e, "src/opencode-runner/spawn.ts"),
+        `export async function spawnOpencode() {
+    const child = Bun.spawn(["/bin/sh", "-c", "sleep 300; exit 0", "sh", "serve", "${PORT}"]);
+    return { url: "http://127.0.0.1:${PORT}", port: ${PORT}, kill: async () => child.kill() };
+}
+`,
+    );
+    writeFileSync(
+        join(e2e, "node_modules/@opencode-ai/sdk/dist/index.js"),
+        `export function createOpencodeClient() {
+    return { session: { list: async () => { throw new Error("list failed"); } } };
+}
+`,
+    );
+    writeFileSync(join(run, "sandbox.sh"), "#!/bin/sh\nexec sleep 300\n", { mode: 0o755 });
+    return checkout;
+}
+
+function serving(): number[] {
+    const uid = process.getuid?.();
+    return readdirSync("/proc")
+        .filter((e) => /^\d+$/.test(e))
+        .map(Number)
+        .filter((pid) => {
+            try {
+                const cmd = readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0");
+                return (
+                    statSync(`/proc/${pid}`).uid === uid &&
+                    cmd.includes("serve") &&
+                    cmd.includes(PORT)
+                );
+            } catch {
+                return false;
+            }
+        });
+}
+
+async function gone(pid: number): Promise<boolean> {
+    for (let i = 0; i < 100 && running(pid); i++) await Bun.sleep(50);
+    return !running(pid);
+}
 
 function fakeRpc(opts: { promptFails?: boolean; ends: Untyped[]; drainEnds?: boolean }) {
     const commands: string[] = [];
@@ -62,6 +143,18 @@ test("a Pi turn waits through an agent_end that Pi will retry", async () => {
     const final = { type: "agent_end", willRetry: false, messages: [{ role: "assistant" }] };
     (host as Untyped).rpc = fakeRpc({ ends: [retrying, final] });
     expect(await host.prompt("hi", 1_000)).toEqual({});
+});
+
+test("a Pi prompt Pi refuses returns its error without aborting or draining a turn", async () => {
+    const host = new PiSimHost(context(runDir()));
+    const rpc = fakeRpc({ ends: [] });
+    rpc.sendCommand = (method: string) => {
+        rpc.commands.push(method);
+        return Promise.resolve({ success: false, error: "busy" });
+    };
+    (host as Untyped).rpc = rpc;
+    expect(await host.prompt("hi", 1_000)).toEqual({ error: '{"success":false,"error":"busy"}' });
+    expect(rpc.commands).toEqual(["prompt"]);
 });
 
 test("a Pi turn whose abort cannot drain the previous turn fails the session", async () => {
@@ -129,4 +222,32 @@ test("the OpenCode wrapper lives outside every path the sandbox keeps writable",
     expect(await Bun.file(path).text()).toBe(
         `#!/bin/sh\nexec '/x/sandbox.sh' '--' '/x/opencode' "$@"\n`,
     );
+});
+
+test("a Pi session whose readiness check fails stops the launcher tree it spawned", async () => {
+    const run = runDir();
+    const checkout = fakeV1(run);
+    const ctx = context(run);
+    const config = { ...ctx.config, eidnara_checkout: checkout, pi_install: checkout };
+    const host = new PiSimHost({ ...ctx, config });
+    await expect(host.openSession(run, "s1", null)).rejects.toThrow("get_state failed");
+    const child = (globalThis as Untyped).__simPiChild;
+    try {
+        expect(await gone(child.pid)).toBe(true);
+    } finally {
+        child.kill("SIGKILL");
+    }
+});
+
+test("an OpenCode session whose SDK setup fails stops the server it spawned", async () => {
+    const run = runDir();
+    const checkout = fakeV1(run);
+    const ctx = { ...context(run), host: "opencode" as const };
+    const config = { ...ctx.config, eidnara_checkout: checkout };
+    const host = new OpencodeSimHost({ ...ctx, config });
+    await expect(host.openSession(run, "s1", null)).rejects.toThrow("list failed");
+    await Bun.sleep(200);
+    const left = serving();
+    for (const pid of left) process.kill(pid, "SIGKILL");
+    expect(left).toEqual([]);
 });

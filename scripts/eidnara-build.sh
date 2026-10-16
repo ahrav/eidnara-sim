@@ -5,6 +5,10 @@
 set -euo pipefail
 src=$1
 dst=$2
+if [ "$(realpath -m "$src")" = "$(realpath -m "$dst")" ]; then
+    echo "eidnara-build: <clone> must be a separate directory from <checkout> $src" >&2
+    exit 64
+fi
 if [ ! -d "$dst/.git" ]; then
     git clone --quiet --no-hardlinks "$src" "$dst"
 fi
