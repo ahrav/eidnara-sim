@@ -77,6 +77,7 @@ counterpart holds part of the value; the note names the rest), `extension`
 | `liveness_bounds.turn_deadline_ms` | none | extension | 15 minutes; SIM-L01. |
 | `liveness_bounds.job_deadline_ms` | none | extension | 20 minutes; SIM-L02. |
 | `liveness_bounds.tier_wall_budget_ms` | none | extension | S 2 h, M 10 h, L 30 h, XL 96 h; SIM-L03. |
+| `liveness_bounds.daemon_busy_cpu_fraction` | none | extension | Daemon CPU time per wall second above which the M4 sampler holds the scenario clock (OQ-2), added in revision 3 before any run. |
 | `bootstrap` | `AnalysisFamily.bootstrap_*` | mapped | |
 | `bootstrap.replicates` | `bootstrap_replicates` | mapped | 2,000 lies inside 40 to 10,000. |
 | `bootstrap.seed` | `bootstrap_seed` | mapped | |

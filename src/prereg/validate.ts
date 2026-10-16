@@ -132,6 +132,7 @@ const PREREG_SHAPE: Shape = {
         turn_deadline_ms: posInt,
         job_deadline_ms: posInt,
         tier_wall_budget_ms: posInt,
+        daemon_busy_cpu_fraction: unitRate,
     },
     bootstrap: { replicates: posInt, seed: nonNegInt },
     leak_bound: { c_bytes_per_session: posInt, r2_threshold: unitRate, sample_interval_ms: posInt },

@@ -18,6 +18,12 @@ reconstructible.
 No harness code, test, or run exists yet. The surface lands in M3
 (#1027).
 
+M4 (#1028) records in every preflight result that monotonic clocks stay real,
+that provider-side time, cache warmth, and rate limits follow wall time, and
+that host clocks lead scenario time between jumps, plus a line for each
+wall-clock-only binary; a test checks the list. Call records carry cache read
+and write tokens from M3.
+
 ## Failure scenario
 
 A reader attributes prompt-cache effects to scenario time.
