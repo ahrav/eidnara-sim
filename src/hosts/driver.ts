@@ -111,7 +111,7 @@ export class HostDriver implements ArmDriver {
      * mark, shows a pass the daemon served (`served_from=transform`): the wire contract's first
      * pass after the crash.
      */
-    private storeFaults: Record<string, number> = {};
+    private storeFaults = new Map<string, number>();
     /** A daemon restart in progress; the turn it interrupts ends after it and fails with it. */
     private restarting: Promise<unknown> = Promise.resolve();
 
@@ -176,7 +176,7 @@ export class HostDriver implements ArmDriver {
             model: this.model,
             daemon: proc(this.daemonPid()),
             host: proc(this.sessionProject === null ? null : (this.host?.hostPid() ?? null)),
-            store_faults: this.storeFaults,
+            store_faults: Object.fromEntries(this.storeFaults),
         };
         mkdirSync(this.armDir, { recursive: true });
         // Staged and renamed, so a kill mid-write leaves the previous state, never a torn file.
@@ -248,7 +248,7 @@ export class HostDriver implements ArmDriver {
     async resume(open: ScenarioEvent | null): Promise<void> {
         const state = this.readState();
         this.model = state?.model ?? 0;
-        this.storeFaults = state?.store_faults ?? {};
+        this.storeFaults = new Map(Object.entries(state?.store_faults ?? {}));
         const checked = join(this.armDir, "transcripts.json");
         this.transcriptsChecked =
             existsSync(checked) && JSON.parse(readFileSync(checked, "utf8")).missing.length === 0;
@@ -526,7 +526,7 @@ export class HostDriver implements ArmDriver {
         // Marked before the start, so a pass the replacement serves while its start settles counts.
         const mark = this.pluginLogLength();
         await daemon.restart();
-        this.storeFaults[fault] = mark;
+        this.storeFaults.set(fault, mark);
         this.recordState();
         this.o.sampleDaemon?.();
         return {
@@ -541,12 +541,10 @@ export class HostDriver implements ArmDriver {
 
     /** The store checks whose restart the plugin log now shows a served pass after, if any. */
     private owedStores(): TurnOutcome["stores"] {
-        const passed = Object.entries(this.storeFaults).filter(([, mark]) =>
-            this.passedSince(mark),
-        );
+        const passed = [...this.storeFaults].filter(([, mark]) => this.passedSince(mark));
         if (passed.length === 0 || !this.daemon) return undefined;
         const store = checkStore(this.storeDb);
-        for (const [fault] of passed) delete this.storeFaults[fault];
+        for (const [fault] of passed) this.storeFaults.delete(fault);
         return passed.map(([fault]) => ({ fault, store }));
     }
 

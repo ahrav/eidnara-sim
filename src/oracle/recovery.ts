@@ -5,8 +5,13 @@ import type { ArmLogs, RunLogs } from "./logs";
 
 const INFRA = new Set<string>([...INFRA_FAULTS, "host_upgrade", "two_hosts_one_daemon"]);
 const RESTARTS = new Set(["daemon_sigkill_mid_fold", "daemon_restart"]);
-/** A failed pass, not a policy decline such as `declined:invocation_budget`, which also serves raw. */
-const FAIL_OPEN = /serving the input unchanged|decision=error/;
+/**
+ * A failed pass, not a policy decline such as `declined:invocation_budget`, which also serves raw.
+ * The plugin logs one as a warning and then as its pass record; the record counts, and the
+ * warning stands in when a window holds warnings alone.
+ */
+const FAIL_OPEN_RECORD = /decision=error/;
+const FAIL_OPEN_WARNING = /serving the input unchanged/;
 const OVERFLOW = /prompt is too long|ContextOverflow|input is too long/i;
 
 export interface Recovery {
@@ -64,7 +69,13 @@ function timeline(arm: ArmLogs, base: number): Timeline {
     if (offsets.length === 0) {
         const stamps = (line: string) => {
             const ms = logMs(line);
-            return ms === null ? [] : [ms - base];
+            if (ms === null) return [];
+            if (!Number.isFinite(base)) {
+                throw new Error(
+                    `${arm.arm}: the journal carries no clock offsets and the manifest's base_wall_ms is not a finite number, so log stamps cannot be placed`,
+                );
+            }
+            return [ms - base];
         };
         return {
             at: (e) => e.scenario_ms,
@@ -126,10 +137,11 @@ export function dirtyReasons(arm: ArmLogs, turn: Turn, tl: Timeline): string[] {
     const calls = arm.calls.filter((c) => c.turn === turn.event && tl.done(c) >= turn.from);
     if (calls.some((c) => c.status >= 400 && c.status < 500)) reasons.push("gateway 4xx");
     if (calls.some((c) => OVERFLOW.test(c.error ?? ""))) reasons.push("overflow");
-    const failOpen = arm.pluginLog.filter(
-        (l) => FAIL_OPEN.test(l) && tl.stamps(l).some((t) => t >= turn.from && t < turn.next),
-    );
-    if (failOpen.length > 0) reasons.push(`${failOpen.length} fail-open publications`);
+    const inWindow = (l: string) => tl.stamps(l).some((t) => t >= turn.from && t < turn.next);
+    const records = arm.pluginLog.filter((l) => FAIL_OPEN_RECORD.test(l) && inWindow(l)).length;
+    const warnings = arm.pluginLog.filter((l) => FAIL_OPEN_WARNING.test(l) && inWindow(l)).length;
+    const failOpen = records > 0 ? records : warnings;
+    if (failOpen > 0) reasons.push(`${failOpen} fail-open publications`);
     return reasons;
 }
 

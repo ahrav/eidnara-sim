@@ -120,7 +120,7 @@ two clients reading one proposal.
 The recorded `witness-8` eidnara arm reaches a clean turn after each of its
 four faults: the restart and plugin reload at the first later turn, and the
 model switch and full store at the second, because the turn on the full
-store published two fail-open passes. That run predates the store check, so
+store published a fail-open pass. That run predates the store check, so
 its restart is unrecovered for want of one.
 
 In the live `recovery-3` run (S seed 101, Pi, eidnara arm, a 30000-token
@@ -128,16 +128,18 @@ context limit so that sessions fold), the daemon took a SIGKILL during the
 history-summarizer calls of `s-0004` and `s-0005` and a restart at
 `s-0005`'s start. Each restart left the one segment of `s-0003`; each
 post-crash check and the final store kept it with integrity `ok` and no
-overlap. The `s-0005` faults recovered at the first turn. The `s-0004` kill
-recovered at the second: in the turn it cut, the plugin logged a failed pass
-(`connection generation retired`) and a `decision=error` pass about a
-second after the restart. The final store
-holds two segments of `s-0005` and none of `s-0004`, whose only fold the
-kill cut. The run is the fixture `tests/fixtures/recovery/recovery-3-eidnara.json`;
-a test that empties its post-crash segment lists turns all three verdicts
-unrecovered. In `recovery-2`, a restart of an empty store recovered the same
-way, and the plugin logged two `declined:invocation_budget` passes, which
-count toward F3 and leave their turns clean.
+overlap, by bounds. The `s-0005` faults reach a clean turn at the first
+turn. The `s-0004` kill reaches one at the second: in the turn it cut, the
+plugin logged a failed pass (`connection generation retired`) about a second
+after the restart. The final store holds two segments of `s-0005` and none
+of `s-0004`, whose only fold the kill cut. The run is the fixture
+`tests/fixtures/recovery/recovery-3-eidnara.json`. Its store checks predate
+the content digests, so the oracle withholds `recovered` from all three
+faults with the reason `store ranges lack content digests`; a test that
+empties its post-crash segment lists adds the removed segment as a second
+reason. In `recovery-2`, a restart of an empty store behaved the same way,
+and the plugin logged two `declined:invocation_budget` passes, which count
+toward F3 and leave their turns clean.
 
 ## Fixtures
 

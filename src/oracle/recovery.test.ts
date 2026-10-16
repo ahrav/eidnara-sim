@@ -99,6 +99,23 @@ describe("recovery oracles", () => {
         ]);
     });
 
+    test("a failed pass's warning and its decision record count as one publication", () => {
+        seq = 0;
+        const journal = [
+            entry("FaultObserved", 0, { fault: "f", type: "plugin_reload", evidence: {} }),
+            entry("BeginTurn", 10, { event: "e-1" }),
+            entry("EndTurn", 20, { event: "e-1", outcome: "ok" }),
+        ];
+        const log = [
+            `${stamp(15)} [eidnara][s-1] rust transform failed; serving the input unchanged: x`,
+            `${stamp(15)} [eidnara][s-1] rust pass: decision=error reason=none served_from=raw`,
+        ];
+        const [r] = recoveries(run([arm(journal, log)]));
+        expect(r?.reasons).toEqual(["e-1: 1 fail-open publications"]);
+        const [warned] = recoveries(run([arm(journal, [log[0] as string])]));
+        expect(warned?.reasons).toEqual(["e-1: 1 fail-open publications"]);
+    });
+
     test("a fail-open publication in every later turn prevents a recovered verdict", () => {
         seq = 0;
         const journal = [
@@ -233,6 +250,14 @@ describe("recovery oracles", () => {
             { session: "s", first: 1, second: 2 },
             { session: "s", first: 1, second: 3 },
         ]);
+        const nul = new Database(path);
+        nul.run("delete from history_segments");
+        nul.run(
+            "insert into history_segments (session_id, sequence, start_message, end_message, title, content) values ('n', 1, 0, 1, 'a', 'b' || char(0) || 'c'), ('n', 2, 2, 3, 'a' || char(0) || 'b', 'c')",
+        );
+        nul.close();
+        const [first, second] = checkStore(path).ranges;
+        expect(first?.[4]).not.toBe(second?.[4]);
         const inverted = new Database(path);
         inverted.run(
             "insert into history_segments (session_id, sequence, start_message, end_message) values ('u', 1, 9, 2)",
@@ -392,6 +417,21 @@ describe("plugin log attribution", () => {
         expect([r?.recovered, r?.turns_to_first_clean]).toEqual([true, 2]);
         const [both] = recoveries(run([arm(journal.slice(0, 4), log)], base));
         expect(both?.reasons).toEqual(["e-1: 1 fail-open publications"]);
+    });
+
+    test("a journal without clock offsets needs a finite manifest base to place stamps", () => {
+        seq = 0;
+        const journal = [
+            entry("FaultObserved", 0, { fault: "f", type: "plugin_reload", evidence: {} }),
+            entry("BeginTurn", 10, { event: "e-1" }),
+            entry("EndTurn", 20, { event: "e-1", outcome: "ok" }),
+        ];
+        const log = [`${stamp(15)} [eidnara][s-1] rust pass: decision=error served_from=raw`];
+        expect(() => recoveries(run([arm(journal, log)], Number.NaN))).toThrow(
+            "base_wall_ms is not a finite number",
+        );
+        const unset = { ...run([arm(journal, log)]), base_wall_ms: undefined as unknown as number };
+        expect(() => recoveries(unset)).toThrow("base_wall_ms is not a finite number");
     });
 
     test("a journal whose turns began before its first clock offset is refused", () => {

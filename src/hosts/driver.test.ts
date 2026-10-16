@@ -680,6 +680,18 @@ describe("HostDriver faults", () => {
         expect(outcome.stores?.map((s) => s.fault)).toEqual(["f-daemon_restart"]);
     });
 
+    test("a fault whose id is an object prototype key still owes and settles its check", async () => {
+        const { driver } = fixture("eidnara");
+        driver.daemon = fakeDaemon(10) as unknown as DaemonStack;
+        driver.host = new FakeHost({} as HostContext, "/x") as unknown as SimHost;
+        await driver.fault({ ...episode("daemon_restart"), id: "__proto__" });
+        const state = JSON.parse(readFileSync(join(driver.armDir, "state.json"), "utf8"));
+        expect(Object.keys(state.store_faults)).toEqual(["__proto__"]);
+        pluginLog(driver, PASS);
+        const outcome = await driver.event(ev("user_turn", { id: "e-1", text: "go" }));
+        expect(outcome.stores?.map((s) => s.fault)).toEqual(["__proto__"]);
+    });
+
     test("the store check waits for the first pass the replacement daemon serves", async () => {
         const { driver } = fixture("eidnara");
         driver.daemon = fakeDaemon(10) as unknown as DaemonStack;
