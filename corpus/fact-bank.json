@@ -451,10 +451,10 @@
                 "probe": "Add a short doc comment to the main entry point describing what it does.",
                 "check": {
                     "must_not": [
-                        "{value}"
+                        "(?<!\\d){value}(?!\\d)"
                     ],
                     "answer_must_not": [
-                        "{value}"
+                        "(?<!\\d){value}(?!\\d)"
                     ]
                 }
             },
@@ -491,10 +491,10 @@
                 "probe": "Commit what we have so far.",
                 "check": {
                     "commands_must": [
-                        "git commit\\b(?![^\\n]*--dry-run)(?:(?!\\s(?:-\\w*m|--message))[^\\n])*\\s(?:-\\w*m ?|--message[ =])[\"']?\\[{token}\\]"
+                        "git(?:\\s+(?:-[cC]\\s+\\S+|--[\\w-]+(?:=\\S+)?))*\\s+commit\\b(?![^\\n]*--dry-run)(?:(?!\\s(?:-\\w*m|--message))[^\\n])*\\s(?:-\\w*m ?|--message[ =])[\"']?\\[{token}\\]"
                     ],
                     "commands_must_not": [
-                        "git commit\\b(?![^\\n]*--dry-run)(?:(?!\\s(?:-\\w*m|--message))[^\\n])*\\s(?:-\\w*m ?|--message[ =])(?!\\s*[\"']?\\[{token}\\])"
+                        "git(?:\\s+(?:-[cC]\\s+\\S+|--[\\w-]+(?:=\\S+)?))*\\s+commit\\b(?![^\\n]*--dry-run)(?:(?!\\s(?:-\\w*m|--message))[^\\n])*\\s(?:-\\w*m ?|--message[ =])(?!\\s*[\"']?\\[{token}\\])"
                     ]
                 }
             },

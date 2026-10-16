@@ -74,6 +74,22 @@ describe("bedrockEmbedder", () => {
         expect(r.stdout.toString().trim()).toBe("256");
     });
 
+    test("a full-precision cached vector is rounded like a fresh response", () => {
+        const dir = mkdtempSync(join(tmpdir(), "sim-embed-"));
+        const cache = join(dir, "embeddings.jsonl");
+        const script = `
+            import { sha256Hex } from "${join(import.meta.dir, "..", "prereg", "canonical.ts")}";
+            import { bedrockEmbedder } from "${join(import.meta.dir, "similarity.ts")}";
+            const key = sha256Hex("amazon.titan-embed-text-v2:0\\ntext");
+            const vector = Array(256).fill(0.123456789);
+            require("node:fs").writeFileSync("${cache}", JSON.stringify({ key, vector }) + "\\n");
+            const [v] = await bedrockEmbedder("p", "r", "${cache}").embed(["text"]);
+            console.log(v[0]);
+        `;
+        const r = Bun.spawnSync(["bun", "-e", script]);
+        expect(r.stdout.toString().trim()).toBe("0.123457");
+    });
+
     test("a failed CLI call leaves no temporary file beside the cache", () => {
         const dir = mkdtempSync(join(tmpdir(), "sim-embed-"));
         const fake = join(dir, "aws");

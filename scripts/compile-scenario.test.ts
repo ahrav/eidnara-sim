@@ -254,6 +254,13 @@ describe("compile-scenario arguments", () => {
         expect(existsSync(out)).toBe(false);
     });
 
+    test("an output that names an existing directory is refused before compiling", () => {
+        const out = mkdtempSync(join(tmpdir(), "sim-cli-"));
+        const r = run("--tier", "S", "--seed", "101", "--embedder", "local", "--out", out);
+        expect(r.exitCode).toBe(2);
+        expect(r.stderr.toString()).toContain("is a directory");
+    });
+
     test("an output that aliases the embedding cache is refused", () => {
         const out = join(mkdtempSync(join(tmpdir(), "sim-cli-")), "embeddings.jsonl");
         const r = run("--tier", "S", "--seed", "101", "--embedder", "local", "--out", out);

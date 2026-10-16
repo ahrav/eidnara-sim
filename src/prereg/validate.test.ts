@@ -107,6 +107,14 @@ describe("pre-registration validator", () => {
         );
     });
 
+    test("refuses a similarity ceiling whose decimal exceeds 1 by less than double precision", () => {
+        const prereg = load("S") as any;
+        prereg.scenario.cue_probe_similarity.cosine_max = "1.0000000000000000001";
+        expect(validatePreregistration(prereg)).toContain(
+            "scenario.cue_probe_similarity.cosine_max: expected a canonical decimal in [0, 1]",
+        );
+    });
+
     test("accepts the boundary similarity ceilings 0 and 1", () => {
         const prereg = load("S") as any;
         prereg.scenario.cue_probe_similarity.bm25_max = "0";

@@ -77,6 +77,10 @@ if ((statSync(cache, { throwIfNoEntry: false })?.nlink ?? 0) > 1) {
     );
     process.exit(2);
 }
+if (statSync(out, { throwIfNoEntry: false })?.isDirectory()) {
+    console.error(`--out ${out} is a directory; name the scenario file`);
+    process.exit(2);
+}
 const local = embedderArg === "local";
 const registered = loadPrereg(tier as Tier).seeds;
 if (!local && !registered.includes(seed)) {
