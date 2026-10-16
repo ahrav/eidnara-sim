@@ -31,8 +31,26 @@ export const CONSUMED_FILES = [
 
 export function verifyCorpus(corpusDir = CORPUS_DIR): void {
     const manifest = readJson(join(corpusDir, "manifest.json")) as {
+        schema?: string;
+        datasets?: unknown;
         files: Record<string, string>;
     };
+    if (manifest.schema !== "sim-corpus-manifest/v1") {
+        throw new Error(
+            `corpus/manifest.json: schema ${manifest.schema} is not sim-corpus-manifest/v1`,
+        );
+    }
+    const sources = readJson(join(corpusDir, "sources.json")) as {
+        datasets: { id: string; revision: string; access: string }[];
+    };
+    const configured = sources.datasets.map((d) => ({
+        id: d.id,
+        revision: d.revision,
+        access: d.access,
+    }));
+    if (JSON.stringify(manifest.datasets) !== JSON.stringify(configured)) {
+        throw new Error("corpus/manifest.json: datasets differ from sources.json");
+    }
     for (const path of CONSUMED_FILES) {
         const actual = sha256Hex(readFileSync(join(corpusDir, path), "utf8"));
         if (actual !== manifest.files[path]) {

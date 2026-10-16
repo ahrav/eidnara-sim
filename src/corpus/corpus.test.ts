@@ -132,12 +132,15 @@ describe("committed corpus", () => {
         broken.rust.constraint[2].statement = "helpers use {tokne}";
         broken.rust.constraint[3].check = { must_not: ["DO_NOT"] };
         broken.rust.decision[1].authority.content = "// unrelated authority\n";
+        broken.typescript.decision[0].check = { must_not: ["{value}"] };
+        broken.typescript.scoped_update[0].update = "   ";
+        broken.typescript.constraint[0].check = { first_line_must: ["^x"] };
         expect(bankProblems(broken)).toEqual([
             "fact-bank any: language missing",
             "fact-bank rust/constraint[0] rs-cmd-const-prefix: statement missing",
             "fact-bank rust/constraint[1] rs-cmd-error-tag: out_probe missing",
             "fact-bank rust/constraint[2] rs-db-helper-prefix: statement names an unknown placeholder",
-            "fact-bank rust/constraint[3] rs-test-suffix: check needs a positive channel",
+            "fact-bank rust/constraint[3] rs-test-suffix: check needs must or paths_must",
             "fact-bank rust/decision[0] rs-scan-page: authority missing",
             "fact-bank rust/decision[1] rs-conn-buffer: authority content does not satisfy the check",
             "fact-bank rust/plan[0] rs-plan-field: check key must pattern {tokne} names an unknown placeholder",
@@ -145,7 +148,10 @@ describe("committed corpus", () => {
             "fact-bank rust/rationale[0] rs-why-noalloc: check key judge is blank",
             "fact-bank rust/rejected[0] rs-no-global-mutex: check key answer is not graded for rejected facts",
             "fact-bank rust/scoped_update[0] rs-scope-log-level: update missing",
+            "fact-bank typescript/constraint[0] ts-const-prefix: check needs must or paths_must",
+            "fact-bank typescript/decision[0] ts-body-limit: check needs must",
             "fact-bank typescript/rationale[0] ts-why-aot: check key judge names an unknown placeholder",
+            "fact-bank typescript/scoped_update[0] ts-scope-quotes: update missing",
             "fact-bank typescript/scoped_update[0] ts-scope-quotes: out_probe missing",
             "fact-bank typescript/scoped_update[0] ts-scope-quotes: out_check missing",
         ]);

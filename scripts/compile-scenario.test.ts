@@ -245,6 +245,38 @@ describe("compile-scenario root checkout", () => {
     });
 });
 
+describe("compile-scenario dot-dot after a symlink", () => {
+    test("a parent step after a symlinked directory is resolved in traversal order", () => {
+        const dir = mkdtempSync(join(tmpdir(), "sim-cli-"));
+        const checkout = join(dir, "eidnara");
+        mkdirSync(join(checkout, "sub"), { recursive: true });
+        const safe = join(dir, "safe");
+        mkdirSync(safe);
+        symlinkSync(join(checkout, "sub"), join(safe, "link"));
+        const config = JSON.parse(readFileSync(join(ROOT, "sim.config.json"), "utf8"));
+        const configPath = join(dir, "sim.config.json");
+        writeFileSync(configPath, JSON.stringify({ ...config, eidnara_checkout: checkout }));
+        const out = `${safe}/link/../owned.json`;
+        const r = Bun.spawnSync(
+            [
+                "bun",
+                "scripts/compile-scenario.ts",
+                "--tier",
+                "S",
+                "--seed",
+                "101",
+                "--embedder",
+                "local",
+                "--out",
+                out,
+            ],
+            { cwd: ROOT, env: { ...process.env, SIM_CONFIG: configPath } },
+        );
+        expect(r.exitCode).toBe(2);
+        expect(readdirSync(checkout).sort()).toEqual(["sub"]);
+    });
+});
+
 describe("compile-scenario arguments", () => {
     test("a seed outside the tier's registered seeds is refused for a Titan compile", () => {
         const out = join(mkdtempSync(join(tmpdir(), "sim-cli-")), "s.json");

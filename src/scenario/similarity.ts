@@ -125,12 +125,29 @@ export function bedrockEmbedder(profile: string, region: string, cachePath: stri
                         JSON.stringify(input),
                     ];
                     let response: { embedding: number[] };
+                    writeFileSync(outFile, "", { flag: "wx" });
+                    const proc = Bun.spawn([...argv, outFile], {
+                        stdout: "ignore",
+                        stderr: "pipe",
+                        timeout: 60_000,
+                    });
+                    const stop = () => {
+                        proc.kill();
+                        rmSync(outFile, { force: true });
+                        process.exit(143);
+                    };
+                    process.once("SIGTERM", stop);
+                    process.once("SIGINT", stop);
                     try {
-                        writeFileSync(outFile, "", { flag: "wx" });
-                        const r = Bun.spawnSync([...argv, outFile], { timeout: 60_000 });
-                        if (r.exitCode !== 0) throw new Error(`embed: ${r.stderr.toString()}`);
+                        const [code, stderr] = await Promise.all([
+                            proc.exited,
+                            new Response(proc.stderr).text(),
+                        ]);
+                        if (code !== 0) throw new Error(`embed: ${stderr}`);
                         response = JSON.parse(readFileSync(outFile, "utf8"));
                     } finally {
+                        process.off("SIGTERM", stop);
+                        process.off("SIGINT", stop);
                         rmSync(outFile, { force: true });
                     }
                     const rounded: unknown = response.embedding.map(

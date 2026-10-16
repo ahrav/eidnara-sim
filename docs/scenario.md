@@ -32,7 +32,7 @@ The scenario file is canonical JSON with these sections:
 | `projects` | Each repository in `corpus/repos.json` and its twin |
 | `sessions` | Session id, project, start time, request count, the idle gap before the session, the minimum gap the compiler enforced, and whether the request count was forced into the p90 regime |
 | `facts` | Ledger facts with template, kind, project, conveyance manner, statement, and the cue texts that carry it |
-| `probes` | Probe items P1 to P14 and the P1 controls with project, session, user text, the grading check, and the event that delivers it. Check keys: `must` and `must_not` regexes over the added lines of the agent's diff, `paths_must` and `paths_must_not` over the paths the diff adds or changes, `first_line_must` over the first line of every file the diff adds, `quote_style_must` (`double` or `single`) over the delimiter of every string literal in the added lines, `commands_must` and `commands_must_not` over the command log, `answer`, `answer_must_not`, `abstain`, and `judge` over the final assistant text, and `window_from_turn` and `window_to_turn` for P14. Every `*_must` and `*_must_not` key holds a list of JavaScript regular expressions |
+| `probes` | Probe items P1 to P14 and the P1 controls with project, session, user text, the grading check, and the event that delivers it. Check keys: `must` and `must_not` regexes over the added lines of the agent's diff, `paths_must` and `paths_must_not` over the paths the diff adds or changes, `first_line_must` over the first line of every file the diff adds, `quote_style_must` (`double` or `single`) over the delimiter of every string literal in the added lines, `commands_must` and `commands_must_not` over the command log, an optional `scope` (a directory prefix) that limits the diff-channel keys to files under it, `answer`, `answer_must_not`, `abstain`, and `judge` over the final assistant text, and `window_from_turn` and `window_to_turn` for P14. Every `*_must` and `*_must_not` key holds a list of JavaScript regular expressions |
 | `similarity` | BM25 ratio and embedding cosine for every cue and probe pair, and for a decision fact's authoritative diff content against its probes, journaled to four decimals; the threshold gate compares the full-precision values |
 | `events` | `apply_diff`, `session_start`, `user_turn`, and `session_end` events in scenario time |
 | `faults` | Fault episodes with type, strategy, trigger, parameters, and seam-table entry |
@@ -91,7 +91,7 @@ the earlier one and supersedes it.
 | P1 | constraint | Later session of the same project, inside the constraint's scope |
 | P1 control | the P1 fact | The same task as the P1 item, in the same window before the fact is conveyed |
 | P2 | the P1 fact | Later session of the same project, outside the scope; the check forbids the convention |
-| P3 | decision | A diff changes the authoritative value before a later session; the check requires the new value |
+| P3 | decision | A diff adds or replaces the template's authoritative file (one stable path per template, so a repeated decision supersedes the earlier file) before a later session; the check requires the new value |
 | P4 | scoped update | A second conveyance narrows the rule to one module; items alternate inside and outside it, with the alternation offset by seed parity so the pooled counts balance per language across seeds |
 | P5 | rejected approach | Later session; the check forbids the rejected approach |
 | P6 | plan | First turn of a later session, at least one hour after the previous session ends |
@@ -198,15 +198,15 @@ thresholds (`bm25_max` 0.4, `cosine_max` 0.6):
 
 | Tier | Seed | `scenario_hash` | Largest BM25 ratio | Largest cosine |
 |---|---|---|---|---|
-| S | 101 | `0047091a` | 0.2631 | 0.5194 |
-| S | 102 | `5a741fce` | 0.2573 | 0.4867 |
-| M | 201 | `0e5fb3e2` | 0.2743 | 0.4992 |
-| M | 202 | `0910b55b` | 0.2783 | 0.4997 |
-| M | 203 | `09c2d518` | 0.2784 | 0.4843 |
-| L | 301 | `ac55b909` | 0.2729 | 0.5092 |
-| L | 302 | `67c373b7` | 0.259 | 0.4957 |
-| L | 303 | `feeb6134` | 0.2803 | 0.5083 |
-| XL | 401 | `765219a1` | 0.2806 | 0.4962 |
+| S | 101 | `5b259bdb` | 0.2631 | 0.5194 |
+| S | 102 | `9b6e0ed7` | 0.2573 | 0.4867 |
+| M | 201 | `f6db84d6` | 0.2743 | 0.4992 |
+| M | 202 | `55879e1f` | 0.2783 | 0.4997 |
+| M | 203 | `0cef873a` | 0.2784 | 0.4843 |
+| L | 301 | `13e2911d` | 0.2729 | 0.5092 |
+| L | 302 | `da3a3579` | 0.259 | 0.4957 |
+| L | 303 | `f0f30632` | 0.2803 | 0.5083 |
+| XL | 401 | `fd2c0c15` | 0.2806 | 0.4962 |
 
 ## Known limits
 

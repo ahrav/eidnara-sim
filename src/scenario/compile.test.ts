@@ -597,7 +597,7 @@ describe("fact bank checks", () => {
 
     test("the quote-style rule is a structural check over string literals", () => {
         const t = templates("scoped_update").find((x) => x.id === "ts-scope-quotes");
-        expect(t?.check).toEqual({ quote_style_must: "double" });
+        expect(t?.check).toEqual({ scope: "src/ws/", quote_style_must: "double" });
         expect(t?.out_check).toEqual({ quote_style_must: "single" });
     });
 
@@ -642,6 +642,7 @@ describe("fact bank checks", () => {
         expect(re.test('git commit --dry-run -m "[quiet_vole] cap"')).toBe(false);
         expect(re.test("git commit -m=[quiet_vole] cap")).toBe(false);
         expect(re.test("git -c commit.gpgSign=false commit -m '[quiet_vole] cap'")).toBe(true);
+        expect(re.test("git -P commit -m '[quiet_vole] cap'")).toBe(true);
         const forbid = new RegExp(
             ((t?.check as { commands_must_not: string[] }).commands_must_not[0] ?? "$^").replaceAll(
                 "{token}",
@@ -651,6 +652,8 @@ describe("fact bank checks", () => {
         expect(forbid.test("git commit --allow-empty -m 'untagged later'")).toBe(true);
         expect(forbid.test("git commit -m '[quiet_vole] first'")).toBe(false);
         expect(forbid.test("git -c commit.gpgSign=false commit -m 'untagged later'")).toBe(true);
+        expect(forbid.test("git -P commit --allow-empty -m untagged")).toBe(true);
+        expect(forbid.test("git --no-pager commit -m untagged")).toBe(true);
         expect(re.test('git commit -m "[quiet_vole] cap" --dry-run')).toBe(false);
         expect(re.test("git commit --message=[quiet_vole] cap")).toBe(true);
         expect(re.test("git commit -mwrong -m[quiet_vole]")).toBe(false);
@@ -750,6 +753,22 @@ describe("fact bank checks", () => {
             expect(re.test("ticket 12345 closed")).toBe(true);
             expect(re.test("ticket 123456 closed")).toBe(false);
             expect(re.test("ticket 912345")).toBe(false);
+        }
+    });
+
+    test("decision authorities live at stable per-template paths and scoped checks name their scope", () => {
+        for (const t of templates("decision")) {
+            expect({ id: t.id, path: t.authority?.path ?? "" }).toEqual({
+                id: t.id,
+                path: expect.not.stringContaining("{"),
+            });
+        }
+        for (const t of templates("scoped_update")) {
+            expect({ id: t.id, scope: (t.check as { scope?: string }).scope }).toEqual({
+                id: t.id,
+                scope: expect.stringMatching(/^src\//),
+            });
+            expect((t.out_check as { scope?: string })?.scope).toBeUndefined();
         }
     });
 
@@ -923,13 +942,32 @@ describe("P4 scope across seeds", () => {
 describe("corpus verification", () => {
     test("a consumed corpus file whose bytes differ from the manifest digest is refused", () => {
         const dir = mkdtempSync(join(tmpdir(), "sim-corpus-"));
-        for (const path of ["manifest.json", ...CONSUMED_FILES]) {
+        for (const path of ["manifest.json", "sources.json", ...CONSUMED_FILES]) {
             mkdirSync(join(dir, dirname(path)), { recursive: true });
             copyFileSync(join(ROOT, "corpus", path), join(dir, path));
         }
         expect(() => verifyCorpus(dir)).not.toThrow();
         appendFileSync(join(dir, "fact-bank.json"), "\n");
         expect(() => verifyCorpus(dir)).toThrow(/corpus\/fact-bank\.json: sha256 .* differs/);
+    });
+
+    test("a manifest with another schema or dataset revisions is refused", () => {
+        const dir = mkdtempSync(join(tmpdir(), "sim-corpus-"));
+        for (const path of ["manifest.json", "sources.json", ...CONSUMED_FILES]) {
+            mkdirSync(join(dir, dirname(path)), { recursive: true });
+            copyFileSync(join(ROOT, "corpus", path), join(dir, path));
+        }
+        const manifest = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8"));
+        writeFileSync(
+            join(dir, "manifest.json"),
+            JSON.stringify({ ...manifest, schema: "sim-corpus-manifest/v0" }),
+        );
+        expect(() => verifyCorpus(dir)).toThrow(/manifest\.json: schema sim-corpus-manifest\/v0/);
+        manifest.datasets[0].revision = "0".repeat(40);
+        writeFileSync(join(dir, "manifest.json"), JSON.stringify(manifest));
+        expect(() => verifyCorpus(dir)).toThrow(
+            /manifest\.json: datasets differ from sources\.json/,
+        );
     });
 });
 
