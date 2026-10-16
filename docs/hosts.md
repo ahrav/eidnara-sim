@@ -10,7 +10,12 @@ wires them to the proxy, clock, and scheduler.
 The plugins, native addon, daemon, and host fixture come from one commit.
 `scripts/eidnara-build.sh <checkout> <clone>` clones the eidnara source
 checkout, checks out its `HEAD`, and builds every artefact inside the clone,
-so the source checkout itself stays read-only. On a reused clone it force-checks
+so the source checkout itself stays read-only; it refuses a clone path that
+is the checkout or lies beneath it, and reuses an existing clone only when
+its `.sim-build-source` names the same checkout. `.sim-build-commit` holds
+the built commit from the end of one successful build until the next build
+starts, and preflight requires it to match the clone's `HEAD`, so a partial
+or mixed tree stops the run. On a reused clone it force-checks
 out the fetched commit and removes untracked files, so edits and stray files
 from an earlier build go while ignored outputs (`node_modules`, `target`, the
 plugin `dist` directories) stay for the incremental build. The clone is the
@@ -22,9 +27,9 @@ builds in the checkout's own `dist` directories can lag its daemon source: on
 commit `bb866266c` the stale Pi plugin sent a window the daemon refused, and
 every transform pass served its input unchanged.
 
-The v1 harness closure pins OpenCode 1.18.22 and finds it on `PATH`, so
-`opencode_binary` names that release, and an Eidnara arm needs the release's
-`node_modules/.bin` first on `PATH`.
+The v1 harness closure pins OpenCode 1.18.22 and starts `opencode` from
+`PATH`, so `opencode_binary` names that release and the host's wrapper, first
+on `PATH` as `opencode`, launches it through the sandbox.
 
 ## Arms
 
@@ -50,13 +55,22 @@ there before each restart.
 `DaemonStack` starts the daemon through the v1 `HermeticHostStack` with the
 interposer environment, restarts it with SIGKILL against the same store, and
 stops it with SIGTERM so its store stays on disk. It appends the daemon's
-output to the arm's `daemon.log` before each restart and after the stop, so
-the shutdown's own output is kept; the v1
+output to the arm's `daemon.log` before each restart and before and after
+the stop, so a kill between the two loses only the shutdown lines; the v1
 stack keeps the last 256 KiB of that output, so a longer stretch keeps its
 tail.
 
 Each `session_start` launches one host process in the session's workspace
-through the sandbox launcher, and each `session_end` closes it. The sandbox runs the host under
+through the sandbox launcher, and each `session_end` closes it; when the readiness check fails or Pi
+refuses it, or the OpenCode SDK setup or session listing fails after the
+launch, `openSession` closes the session it started before it throws. The
+control files the hosts write under the arm root (Pi's settings, model list,
+and Eidnara config; OpenCode's config, data, and cache directories; the
+daemon's runtime and store directories) go through real directories only
+and are created fresh and renamed into place, so a symlink an earlier
+session left there is refused or replaced, never followed. OpenCode's config
+directory and the daemon's runtime directory are regenerated on every start,
+so they are removed first. The sandbox runs the host under
 root-owned `sudo` and `unshare`, so closing a host walks the launcher's
 process tree and signals every process the user owns, with SIGKILL after
 10 s; a process that survives SIGKILL stops the run. Each pid in that walk is
@@ -66,19 +80,33 @@ pid namespace ends with its init, so a child forked while the tree stops dies
 with the namespace. `prompt` sends one user turn with the turn deadline and
 returns the host's error, if any. Pi emits `agent_end` with `willRetry: true`
 before it retries a failed request itself, so a Pi turn ends only at an
-`agent_end` Pi will not retry. After a Pi turn fails, the host aborts it and
-waits up to 30 s for its `agent_end`; a turn still running then stops the run,
-so a late end cannot finish the next turn. OpenCode turns race the deadline,
+`agent_end` Pi will not retry. A prompt Pi refuses in preflight starts no
+turn, so its error is returned at once. After a Pi turn fails, the host
+aborts it and waits up to 30 s for its `agent_end`; a turn still running then
+stops the run, so a late end cannot finish the next turn. OpenCode turns race the deadline,
 abort the session (waiting at most 5 s for the abort call), and wait 30 s for
-the call to drain; a call still running then stops the run. Every deadline
-timer is cleared once its race settles. An `apply_diff` event writes its file inside the
+the call to drain; a call still running then stops the run, and so does an
+abort call still pending after 30 s, since it would cancel the next turn. A
+prompt request that fails before the server answers is aborted the same way,
+and an abort that fails stops the run, since the turn's completion cannot be
+established. A Pi `agent_end` seen before the prompt response fails settles
+that turn with its result.
+Every deadline timer is cleared once its race settles. An `apply_diff` event writes its file inside the
 workspace and commits that path alone, so the agent's own uncommitted edits
 stay uncommitted; content already committed adds no commit, and a path that
 resolves outside the workspace through `..` or a symlink stops the run before
-any directory is created, and so does a workspace directory the host replaced
-with a symlink, since the harness writes with its own privileges. The commit's author and committer dates are the
+any directory is created. The file is written whole and renamed into place,
+so a hard link the agent left at the path keeps its other name's content, and
+the `git add` and `git commit` run inside the arm's sandbox under the turn
+deadline, so a hook, filter, or config the agent planted in the repository
+acts with the host's own view of the filesystem and a hook that hangs stops
+the run instead of the harness. The commit's author and committer dates are the
 event's scenario instant (`baseMs + scenario_ms`), so paired arms and a
-resumed delivery produce the same commit.
+resumed delivery produce the same commit. Every session and `apply_diff`
+requires the workspace to resolve to the real `<arm>/r/workspaces/<project>`;
+a symlink the agent put at it or above it stops the run, since the harness
+and the launcher would follow it with their own privileges; the daemon's
+`runtime` and data directories get the same check before every daemon start.
 
 Each host process starts in the session's workspace, which the launcher
 enters after its privilege drop. Pi runs in RPC mode with `--session-id sim-<session>`, its agent directory,
@@ -92,8 +120,9 @@ root, and the arm root the agent can write holds nothing a later session
 executes with the user's privileges. Both reach Bedrock only through the
 proxy, with placeholder AWS credentials.
 
-The launcher binds kept paths read-write and read-only paths read-only.
-The arm's own directories are read-write. The toolchain paths, the tool
+The launcher binds kept paths read-write and read-only paths read-only, and
+refuses a writable kept path under a read-only one. The arm's own
+directories are read-write. The toolchain paths, the tool
 wrappers, the interposer build, the eidnara build clone, and the Node and Pi
 installs are read-only, so the agent reads and runs them while later
 sessions and arms run the same files; `touch` under `~/.cargo/bin` fails inside
@@ -102,12 +131,16 @@ the sandbox with `Read-only file system`.
 The agent's build tools come from `config.toolchain`: its `bin` directories
 join the host's `PATH`, its `keep` paths (the cargo binaries, registry, and
 git cache, rustup, and the bun binary and install cache) stay visible and
-read-only inside the sandbox, and its `env` sets `CARGO_HOME`, `RUSTUP_HOME`,
+read-only inside the sandbox (a mount nested inside a read-only path is
+remounted read-only too), and its `env` sets `CARGO_HOME`, `RUSTUP_HOME`,
 and `BUN_INSTALL_CACHE_DIR`. The hosts replace `HOME`, and Bun resolves its
 cache from `HOME` unless that variable names it, so the variable is what points
 `bun install` at the kept cache. The agent builds and tests against the
-dependencies already in those caches; fetching a dependency they lack fails,
-and preflight records that distortion.
+dependencies already in those caches; fetching a dependency they lack fails
+against those caches. The sandbox keeps the host network namespace, since the
+hosts reach the proxy over loopback, so an agent that points a cache at its
+writable workspace can fetch, and preflight records the distortion in those
+terms.
 
 Every process the host starts inherits the interposer. rustc 1.99 hangs at
 startup under libfaketime 0.9.10: in the first two-arm witness run
@@ -137,18 +170,25 @@ The driver keeps `<arm>/state.json` current with the model index and the
 pid and start time of the daemon and of the host while a session is open,
 replacing the file whole so a kill mid-write leaves the previous state. Pi's
 pid is recorded as soon as its process exists, before the readiness wait;
-OpenCode's is known once `spawnOpencode` returns.
-A new harness process calls `resume(open)` on an arm that has `StartArm` and
-no `EndArm`. The driver restores the model index, stops each recorded process
+OpenCode's once `spawnOpencode` returns, before the SDK setup. The state
+also carries the size of an active `store_full` ballast and, through
+`transcripts.json`, a transcript-store gap already found; a resume stops on
+either a changed ballast or a recorded gap, since neither may heal.
+A new harness process calls `reap()` and then `resume(open)` on an arm that
+has `StartArm` and no `EndArm`; an arm whose every event is journaled is only
+reaped and finished. `reap` requires the state and stops each recorded process, host first,
 whose start time still matches (a process that outlives SIGTERM and SIGKILL
-stops the resume with `HarnessFailure`), unmounts a store left mounted, mounts the
+stops the resume with `HarnessFailure`) and unmounts a store left mounted,
+before the scheduler arms any proxy fault again. `resume` restores the host model index (the daemon keeps the arm's first
+model, as it did before the kill), mounts the
 existing store image (a missing image or `state.json` stops the resume,
 since only `reset` formats one and the state names what to stop), starts the daemon against the existing store, and, when
 the next event is inside a session, opens that session again. Pi reopens the
 same session transcript by its session id, and OpenCode reuses the session
 with the same title. `reset` stops recorded processes and unmounts the store
 the same way before it deletes anything, so a harness killed during `reset`
-leaves no recorded process running into the next attempt. A daemon or an
+leaves no recorded process running into the next attempt, and it removes the
+`daemon.log` and `transcripts.json` of an abandoned attempt. A daemon or an
 OpenCode server still starting when the harness dies has no pid on record
 yet; a daemon's mount then stays busy and the next `reset` or `resume` stops
 with the `umount` error.
@@ -171,7 +211,7 @@ against the same store (OQ-10).
 |---|---|---|
 | `daemon_sigkill_mid_fold` | The session's first observed history-summarizer call fires it; SIGKILL and restart | `pid_before`, `pid_after`, `restarted_by: harness` |
 | `daemon_restart` | At `session_start`, SIGKILL and restart | As above |
-| `store_full` | When the scenario schedules `store_full`, each Eidnara arm's store lives on a sparse 2 GiB ext4 loop mount (`nosuid,nodev,noexec`) at `<arm>/s`, room for the daemon to materialize its harness closures twice, with its image outside the sandbox's kept paths; the fault fills it with a `fallocate`d ballast topped up by `dd`, so the sparse image stays small, and `session_end` removes the ballast; a resume that finds the ballast removes it for the daemon's start and fills the store again | `avail_kb: 0`; any other value stops the run |
+| `store_full` | When the scenario schedules `store_full`, each Eidnara arm's store lives on a sparse 2 GiB ext4 loop mount (`nosuid,nodev,noexec`) at `<arm>/s`, room for the daemon to materialize its harness closures twice, with its image outside the sandbox's kept paths; the fault fills it with a `fallocate`d ballast topped up by `dd`, so the sparse image stays small, and `session_end` removes the ballast; a resume that finds the ballast removes it for the daemon's start and fills the store again, whether or not that start succeeds; the store is writable to the host, so `session_end` requires the ballast to be whole and stops the run otherwise; the fault replaces whatever the host left at the ballast's name with a fresh regular file before allocating | `avail_kb: 0`; any other value stops the run |
 | `plugin_reload` | The host process and its plugin start afresh at every `session_start` | The reload note |
 | `model_switch` | Later sessions use the next configured model; the daemon keeps running with its summarizer model | The new model id |
 | `laptop_sleep` | One event-free clock jump (`docs/run.md`) | The `AdvanceClock` entry |
@@ -181,13 +221,15 @@ one fired inside a
 session stops the run, and so does a fault type with no mechanism here
 (`host_upgrade`, `two_hosts_one_daemon`). A daemon that exits outside an
 outage window stops the run with `HarnessFailure`; the driver checks the
-daemon after every turn.
+daemon after every turn and at every `session_end`.
 
 ## Limits
 
 - Closing the host at `session_end` can cut a memory capture still
   streaming; one smoke run recorded it as `stream_cut`.
-- A daemon that dies during a turn is detected when the turn ends.
+- A daemon that dies during a turn is detected when the turn ends; one that
+  dies after the last `session_end` of an arm is detected by the next arm's
+  resume or by its own log.
 - `plugin_reload` adds no mechanism beyond the per-session host process.
 - On OpenCode, the turn deadline aborts the session through the server, so a
   server that ignores the abort holds the run for the 30 s drain window.

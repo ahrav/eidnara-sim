@@ -1,5 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+    linkSync,
+    mkdirSync,
+    mkdtempSync,
+    readFileSync,
+    rmSync,
+    symlinkSync,
+    writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SimConfig } from "../config/config";
@@ -10,14 +18,17 @@ import { type FaultEpisode, SEAMS } from "../scenario/faults";
 import { loadPrereg } from "../scenario/inputs";
 import type { Preflight } from "./preflight";
 import {
+    corpusIdentity,
     faultOverride,
     loadManifest,
     loadScenario,
     type RunOptions,
+    requireDeclaredProjects,
     requireMechanisms,
     requireOutsideCheckout,
     requirePlainArtifacts,
     runSteps,
+    treeIdentity,
 } from "./run";
 
 const ROOT = join(import.meta.dir, "..", "..");
@@ -120,6 +131,98 @@ describe("run inputs", () => {
         expect(() => requirePlainArtifacts(out, ["host", "eidnara"])).toThrow(
             /resources.jsonl is a symlink/,
         );
+        rmSync(join(out, "eidnara", "resources.jsonl"));
+        symlinkSync(join(root, "elsewhere-dir"), join(out, "host"));
+        expect(() => requirePlainArtifacts(out, ["host", "eidnara"])).toThrow(/host is a symlink/);
+        rmSync(join(out, "host"));
+        linkSync(join(root, "elsewhere.jsonl"), join(out, "calls.jsonl"));
+        expect(() => requirePlainArtifacts(out, ["host", "eidnara"])).toThrow(/has 2 links/);
+        rmSync(join(out, "calls.jsonl"));
+        writeFileSync(join(out, `lease.${process.pid}.tmp`), "");
+        linkSync(join(out, `lease.${process.pid}.tmp`), join(root, "twin"));
+        expect(() => requirePlainArtifacts(out, ["host", "eidnara"])).toThrow(/has 2 links/);
+        rmSync(join(root, "twin"));
+        mkdirSync(join(out, "eidnara", "state.json"));
+        expect(() => requirePlainArtifacts(out, ["host", "eidnara"])).toThrow(
+            /state.json is not a regular file/,
+        );
+    });
+
+    test("a scenario's project ids are plain names and every event project is declared", () => {
+        const base = writeScenario(dir(), { ...scenarioBody(), projects: [{ id: "mini-redis" }] });
+        expect(() => requireDeclaredProjects(base)).not.toThrow();
+        const traversal = { ...base, projects: [{ id: "../eidnara" }] };
+        expect(() => requireDeclaredProjects(traversal as never)).toThrow(/not a plain name/);
+        const undeclared = {
+            ...base,
+            events: [{ id: "e-000001", kind: "apply_diff", project: "elsewhere" }],
+        };
+        expect(() => requireDeclaredProjects(undeclared as never)).toThrow(
+            /event e-000001 names undeclared project "elsewhere"/,
+        );
+    });
+
+    test("the corpus identity covers each project checkout's commit and content", () => {
+        const repos = dir();
+        const init = (id: string) => {
+            const r = (...args: string[]) => {
+                const x = Bun.spawnSync(["git", "-C", join(repos, id), ...args], {
+                    stderr: "pipe",
+                });
+                if (x.exitCode !== 0) throw new Error(x.stderr.toString());
+            };
+            mkdirSync(join(repos, id));
+            writeFileSync(join(repos, id, "f"), id);
+            r("init", "-q");
+            r("config", "user.email", "t@example.com");
+            r("config", "user.name", "t");
+            r("add", "f");
+            r("commit", "-q", "-m", id);
+        };
+        init("p1");
+        init("p2");
+        const first = corpusIdentity(["p1", "p2"], repos);
+        expect(Object.keys(first).sort()).toEqual(["p1", "p2"]);
+        writeFileSync(join(repos, "p2", "f"), "edited");
+        const second = corpusIdentity(["p1", "p2"], repos);
+        expect(second.p1).toEqual(first.p1);
+        expect(second.p2?.worktree).not.toBe(first.p2?.worktree);
+        expect(() => corpusIdentity(["p3"], repos)).toThrow();
+    });
+
+    test("the harness identity covers the commit, tracked edits, and untracked files", () => {
+        const repo = dir();
+        const run = (...args: string[]) => {
+            const r = Bun.spawnSync(["git", "-C", repo, ...args], {
+                stdout: "pipe",
+                stderr: "pipe",
+            });
+            if (r.exitCode !== 0) throw new Error(r.stderr.toString());
+        };
+        run("init", "-q");
+        run("config", "user.email", "t@example.com");
+        run("config", "user.name", "t");
+        writeFileSync(join(repo, "a.txt"), "one\n");
+        run("add", "a.txt");
+        run("commit", "-q", "-m", "one");
+        const clean = treeIdentity(repo);
+        expect(clean.commit).toMatch(/^[0-9a-f]{40}$/);
+        expect(treeIdentity(repo)).toEqual(clean);
+        writeFileSync(join(repo, "a.txt"), "two\n");
+        const edited = treeIdentity(repo);
+        expect(edited.commit).toBe(clean.commit);
+        expect(edited.worktree).not.toBe(clean.worktree);
+        writeFileSync(join(repo, "a.txt"), "one\n");
+        writeFileSync(join(repo, "b.txt"), "new\n");
+        const added = treeIdentity(repo);
+        expect(added.worktree).not.toBe(clean.worktree);
+        writeFileSync(join(repo, "b.txt"), "changed\n");
+        expect(treeIdentity(repo).worktree).not.toBe(added.worktree);
+        writeFileSync(join(repo, ".gitignore"), "b.txt\n");
+        rmSync(join(repo, "b.txt"));
+        run("add", ".gitignore");
+        run("commit", "-q", "-m", "ignore");
+        expect(treeIdentity(repo).worktree).toBe(clean.worktree);
     });
 
     test("a schedule needs a mechanism for every fault and two models for a model switch", () => {
@@ -136,7 +239,10 @@ describe("run inputs", () => {
         expect(() => requireMechanisms([at("model_switch")], ["m"])).toThrow(
             /two distinct --models/,
         );
-        expect(() => requireMechanisms([at("model_switch")], ["m", "m"])).toThrow(/two distinct/);
+        expect(() => requireMechanisms([at("model_switch")], ["m", "m"])).toThrow(/repeats/);
+        expect(() => requireMechanisms([at("provider_429")], ["a", "a", "b"])).toThrow(
+            /--models repeats an entry: a,a,b/,
+        );
         expect(() => requireMechanisms([at("host_upgrade"), at("provider_429")], ["m"])).toThrow(
             /without a mechanism: host_upgrade/,
         );
@@ -202,6 +308,13 @@ describe("run inputs", () => {
             /params must be finite numbers/,
         );
         expect(() => faultOverride([episode, episode], scenario)).toThrow(/duplicate id f/);
+        const ranges = {
+            ...episode,
+            params: { probability: 2, calls: -1, count: 0, delay_ms: -5 },
+        };
+        expect(() => faultOverride([ranges], scenario)).toThrow(
+            /probability 2 outside \[0, 1\], calls -1 is not a positive integer, count 0 is not a positive integer, delay_ms -5 is negative/,
+        );
         const late = { ...episode, trigger: { kind: "user_turn", session: "s-0001", n: 2 } };
         expect(() => faultOverride([late], scenario)).toThrow(/outside the session's 1 turns/);
         const lost = { ...episode, trigger: { kind: "session_start", session: "s-9999" } };
@@ -255,6 +368,76 @@ describe("run inputs", () => {
         await expect(loadManifest(o, scenario, checks)).rejects.toThrow(
             /names arms outside the S order/,
         );
+    });
+
+    test("a staging file that is a link is refused instead of followed", async () => {
+        const out = dir();
+        const scenario = writeScenario(out, scenarioBody());
+        const target = join(out, "elsewhere.json");
+        writeFileSync(target, "keep");
+        symlinkSync(target, join(out, `manifest.json.${process.pid}`));
+        const checks: Preflight = {
+            launcher: "",
+            time_injection: [],
+            distortions: [],
+            hosts: [{ host: "pi", version: "0.80.2", transcript_paths: [] }],
+            toolchain: [],
+        };
+        const o: RunOptions = { config, tier: "S", seed: 101, host: "pi", out };
+        await expect(loadManifest(o, scenario, checks)).rejects.toThrow(/exists or is a link/);
+        expect(readFileSync(target, "utf8")).toBe("keep");
+    });
+
+    test("a manifest with another schema is refused before any field is read", async () => {
+        const out = dir();
+        const scenario = writeScenario(out, scenarioBody());
+        const checks: Preflight = {
+            launcher: "",
+            time_injection: [],
+            distortions: [],
+            hosts: [{ host: "pi", version: "0.80.2", transcript_paths: [] }],
+            toolchain: [],
+        };
+        const o: RunOptions = { config, tier: "S", seed: 101, host: "pi", out };
+        const { manifest } = await loadManifest(o, scenario, checks);
+        writeFileSync(
+            join(out, "manifest.json"),
+            JSON.stringify({ ...manifest, schema: "sim-run-manifest/v2" }),
+        );
+        await expect(loadManifest(o, scenario, checks)).rejects.toThrow(
+            /schema sim-run-manifest\/v2 is not sim-run-manifest\/v1/,
+        );
+    });
+
+    test("a resume validates mechanisms against the saved manifest, not the CLI defaults", async () => {
+        const out = dir();
+        const body = scenarioBody();
+        const scenario = writeScenario(out, {
+            ...body,
+            faults: [
+                {
+                    id: "f",
+                    type: "model_switch",
+                    strategy: "single",
+                    trigger: { kind: "session_start", session: "s-0000" },
+                    params: {},
+                    seam: SEAMS.model_switch,
+                },
+            ],
+        });
+        const checks: Preflight = {
+            launcher: "",
+            time_injection: [],
+            distortions: [],
+            hosts: [{ host: "pi", version: "0.80.2", transcript_paths: [] }],
+            toolchain: [],
+        };
+        const o: RunOptions = { config, tier: "S", seed: 101, host: "pi", out };
+        await expect(loadManifest(o, scenario, checks)).rejects.toThrow(/two distinct --models/);
+        await loadManifest({ ...o, models: ["a", "b"] }, scenario, checks);
+        await expect(loadManifest(o, scenario, checks)).resolves.toMatchObject({
+            manifest: { models: ["a", "b"] },
+        });
     });
 
     test("a resume is refused when an executable's content changed, whatever its version", async () => {

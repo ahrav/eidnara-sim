@@ -1,4 +1,11 @@
-import { appendFileSync, lstatSync, readdirSync, readFileSync } from "node:fs";
+import {
+    appendFileSync,
+    existsSync,
+    lstatSync,
+    readdirSync,
+    readFileSync,
+    truncateSync,
+} from "node:fs";
 import { join } from "node:path";
 
 /** The kernel reports CPU time in clock ticks; `getconf CLK_TCK` supplies the ticks per second. */
@@ -80,7 +87,13 @@ export class ResourceSampler {
             /** Receives a failed interval sample; the timer stops first. Absent, the failure throws. */
             onError?: (caught: unknown) => void;
         },
-    ) {}
+    ) {
+        if (!existsSync(o.path)) return;
+        const text = readFileSync(o.path, "utf8");
+        const complete = text.lastIndexOf("\n") + 1;
+        if (complete < text.length)
+            truncateSync(o.path, Buffer.byteLength(text.slice(0, complete)));
+    }
 
     sample(): Sample {
         const pid = this.o.pid();
@@ -118,7 +131,11 @@ export class ResourceSampler {
                 this.sample();
             } catch (caught) {
                 if (!this.o.onError) throw caught;
-                this.stop();
+                try {
+                    this.stop();
+                } catch {
+                    this.busy = false;
+                }
                 this.o.onError(caught);
             }
         }, this.o.intervalMs);
@@ -127,7 +144,8 @@ export class ResourceSampler {
     stop(): void {
         if (this.timer) clearInterval(this.timer);
         this.timer = null;
-        if (this.busy) this.o.onBusy(false);
+        const wasBusy = this.busy;
         this.busy = false;
+        if (wasBusy) this.o.onBusy(false);
     }
 }

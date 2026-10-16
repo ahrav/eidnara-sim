@@ -9,6 +9,8 @@ export interface JournalReport {
     off_schedule_jumps: number[];
     events_inside_sleep: number[];
     repeated_sleeps: number[];
+    /** Scheduled events an arm never journaled as `Event` although it reached `EndArm`. */
+    missing_events: { arm: string; event: string }[];
     /** Jobs that held the clock with no turn open, at their `RegisterJob` seq (SIM-P13 coverage). */
     jobs_held_after_turn: { job: string; seq: number }[];
 }
@@ -28,6 +30,7 @@ export function checkJournal(entries: Entry[], schedule: Schedule): JournalRepor
         off_schedule_jumps: [],
         events_inside_sleep: [],
         repeated_sleeps: [],
+        missing_events: [],
         jobs_held_after_turn: [],
     };
     const last = new Map<string, number>();
@@ -63,6 +66,11 @@ export function checkJournal(entries: Entry[], schedule: Schedule): JournalRepor
             holding(arm, busy);
         }
         if (e.kind === "Event") done.add(String(e.event));
+        if (e.kind === "EndArm") {
+            for (const id of schedule.events.keys()) {
+                if (!done.has(id)) report.missing_events.push({ arm, event: id });
+            }
+        }
         if (e.kind === "RegisterJob") {
             const job = `job:${String(e.job)}`;
             registered.set(`${arm}/${job}`, seq);

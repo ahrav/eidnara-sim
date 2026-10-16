@@ -80,7 +80,7 @@ test.skipIf(!sandboxAvailable())(
 );
 
 test("a process start time identifies one process across pid reuse", () => {
-    expect(processStart(process.pid)).toBe(processStart(process.pid));
+    expect(processStart(process.pid)).toMatch(/^\d+$/);
     expect(processStart(2 ** 22 + 7)).toBeNull();
 });
 
@@ -98,4 +98,33 @@ test("a pid whose start time changed is another process, so it is neither runnin
     const start = processStart(process.pid) as string;
     expect(running(process.pid, start)).toBe(true);
     expect(running(process.pid, "1")).toBe(false);
+});
+
+const canMount = () => sandboxAvailable() && Bun.spawnSync(["sudo", "-n", "true"]).exitCode === 0;
+
+test.skipIf(!canMount())("a mount nested inside a read-only path is read-only too", () => {
+    const r = root();
+    const ro = join(r, "ro");
+    const sub = join(ro, "sub");
+    mkdirSync(sub, { recursive: true });
+    const mounted = Bun.spawnSync([
+        "sudo",
+        "-n",
+        "mount",
+        "-t",
+        "tmpfs",
+        "-o",
+        "mode=1777",
+        "tmpfs",
+        sub,
+    ]);
+    expect(mounted.exitCode).toBe(0);
+    try {
+        const argv = launch(writeLauncher(r), [r], {}, ["/bin/sh", "-c", `touch ${sub}/x`], [ro]);
+        const result = Bun.spawnSync(argv, { stdout: "pipe", stderr: "pipe" });
+        expect(result.stderr.toString()).toContain("Read-only file system");
+        expect(result.exitCode).not.toBe(0);
+    } finally {
+        Bun.spawnSync(["sudo", "-n", "umount", sub]);
+    }
 });

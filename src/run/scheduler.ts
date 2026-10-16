@@ -20,6 +20,8 @@ export interface ArmDriver {
      * session the next event belongs to, or null between sessions.
      */
     resume?(open: ScenarioEvent | null): Promise<void>;
+    /** Stops what a killed harness left running, before any fault is armed again. */
+    reap?(): Promise<void>;
     event(e: ScenarioEvent): Promise<{ failed?: string }>;
     fault(f: FaultEpisode): Promise<Record<string, unknown>>;
     /** Stops everything the arm runs, after its last event and before `EndArm`. */
@@ -53,6 +55,8 @@ export interface SchedulerOptions {
     idleLimitMs?: number;
     settleMs?: number;
     onClock?: (arm: string, scenarioMs: number) => void;
+    /** Runs before `EndArm` and before `EndRun`; a throw leaves the entry unwritten. */
+    verify?: (point: "EndArm" | "EndRun") => void | Promise<void>;
 }
 
 const PROXY_LAYER = "proxy-sink";
@@ -114,10 +118,14 @@ export class Scheduler {
             onClock(start);
             const driver = this.o.drivers[arm] as ArmDriver;
             const started = mine.some((e) => e.kind === "StartArm");
-            if (!started) {
-                await this.orFinish(driver, () => driver.reset());
-                this.log({ kind: "StartArm" });
-            }
+            await this.orFinish(driver, async () => {
+                if (started) {
+                    await driver.reap?.();
+                } else {
+                    await driver.reset();
+                    this.log({ kind: "StartArm" });
+                }
+            });
             this.resume(mine);
             const done = new Set(
                 this.o.journal.entries
@@ -129,9 +137,11 @@ export class Scheduler {
             this.pendingKill = null;
             this.outage = null;
             this.session = null;
+            await this.o.verify?.("EndArm");
             this.log({ kind: "EndArm" });
         }
         this.arm = null;
+        await this.o.verify?.("EndRun");
         this.log({ kind: "EndRun" });
     }
 
@@ -143,7 +153,9 @@ export class Scheduler {
         done: Set<string>,
     ): Promise<void> {
         await this.orFinish(driver, async () => {
-            if (started) await driver.resume?.(this.openSession(pending[0], done));
+            if (started && pending.length > 0) {
+                await driver.resume?.(this.openSession(pending[0], done));
+            }
             for (const e of pending) await this.step(driver, e);
             await this.pendingKill;
             await this.idle();
@@ -209,7 +221,7 @@ export class Scheduler {
             const target = this.o.events.find(
                 (e) => e.kind === "user_turn" && e.session === t.session && e.index === index,
             );
-            if (f.strategy === "persistent" || (target && !begun.has(target.id)))
+            if (f.strategy !== "single" || (target && !begun.has(target.id)))
                 this.o.proxy?.arm(f.id, this.arm as string);
         }
     }
@@ -224,13 +236,17 @@ export class Scheduler {
         return start;
     }
 
-    /** The busy set may hold the clock for `idleLimitMs` of wall time from its oldest `RegisterJob`. */
+    /**
+     * Each live job may hold the clock for `idleLimitMs` of wall time from its own `RegisterJob`,
+     * measured on the monotonic clock so a wall-clock step does not move the deadline.
+     */
     private async idle(): Promise<void> {
         const limitMs = this.o.idleLimitMs ?? Number.POSITIVE_INFINITY;
-        const entered = Date.now();
+        const entered = performance.now();
         while ((this.clock?.busyIds().length ?? 0) > 0) {
-            const oldest = Math.min(entered, ...this.jobStarted.values());
-            if (Date.now() > oldest + limitMs) {
+            const live = [...this.jobStarted.values()];
+            const oldest = live.length > 0 ? Math.min(...live) : entered;
+            if (performance.now() > oldest + limitMs) {
                 const busy = this.clock?.busyIds().join(", ");
                 throw new HarnessFailure(
                     `busy set held the clock past ${this.o.idleLimitMs} ms: ${busy}`,
@@ -316,7 +332,7 @@ export class Scheduler {
     }
 
     jobStart(id: string): void {
-        this.jobStarted.set(id, Date.now());
+        this.jobStarted.set(id, performance.now());
         this.clock?.begin(`job:${id}`);
         this.log({ kind: "RegisterJob", job: id });
     }

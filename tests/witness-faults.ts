@@ -41,17 +41,23 @@ const FAULTS = [
     ),
 ];
 
-function lines(path: string): Record<string, unknown>[] {
+/**
+ * JSONL rows. While a run is live, only an unterminated final fragment is tolerated; a final
+ * artifact (`strict`) must parse on every complete line, so a corrupt row fails the witness.
+ */
+function lines(path: string, strict = false): Record<string, unknown>[] {
     if (!existsSync(path)) return [];
-    return readFileSync(path, "utf8")
-        .split("\n")
-        .flatMap((l) => {
-            try {
-                return [JSON.parse(l) as Record<string, unknown>];
-            } catch {
-                return [];
-            }
-        });
+    const text = readFileSync(path, "utf8");
+    const complete = text.slice(0, text.lastIndexOf("\n") + 1);
+    const rows = complete.split("\n").filter((l) => l !== "");
+    return rows.flatMap((l, i) => {
+        try {
+            return [JSON.parse(l) as Record<string, unknown>];
+        } catch {
+            if (strict) throw new Error(`${path} line ${i + 1} is corrupt`);
+            return [];
+        }
+    });
 }
 
 const RESUME_FAULTS = [
@@ -181,14 +187,19 @@ if (only.includes("resume")) {
 }
 writeFileSync(join(out, "outcome.json"), `${JSON.stringify(outcome, null, 2)}\n`);
 
+/** The run's event prefix (`manifest.events`) with each event's scheduled time. */
 function schedule(dir: string): Schedule {
     const scenario = JSON.parse(readFileSync(join(dir, "scenario.json"), "utf8")) as Scenario;
-    return { events: new Map(scenario.events.map((e) => [String(e.id), Number(e.scenario_ms)])) };
+    const manifest = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8")) as {
+        events: number;
+    };
+    const events = scenario.events.slice(0, manifest.events);
+    return { events: new Map(events.map((e) => [String(e.id), Number(e.scenario_ms)])) };
 }
 
 function summarize(dir: string) {
-    const journal = lines(join(dir, "journal.jsonl"));
-    const calls = lines(join(dir, "calls.jsonl"));
+    const journal = lines(join(dir, "journal.jsonl"), true);
+    const calls = lines(join(dir, "calls.jsonl"), true);
     const perArm = (arm: string, kind: string) =>
         journal.filter((e) => e.arm === arm && e.kind === kind);
     const arms = [
@@ -225,7 +236,7 @@ function summarize(dir: string) {
                 },
             ]),
         ),
-        call_seq_unique: new Set(calls.map((c) => c.seq)).size === calls.length,
+        call_seq_unique: calls.every((c, i) => c.seq === i),
         agent_calls_by_turn: calls.reduce<Record<string, number>>((acc, c) => {
             if (c.component === "agent")
                 acc[`${c.arm}/${c.turn}`] = (acc[`${c.arm}/${c.turn}`] ?? 0) + 1;
@@ -264,6 +275,8 @@ const invariantsClean = (name: "scheduled" | "rogue" | "resume") => {
         v.advance_while_busy,
         v.off_schedule_jumps,
         v.events_inside_sleep,
+        v.repeated_sleeps,
+        v.missing_events,
     ];
     return s.ended === "EndRun" && s.call_seq_unique && violations.every((x) => x.length === 0);
 };
@@ -271,9 +284,56 @@ for (const name of ["scheduled", "rogue"]) {
     const r = outcome[name] as { timed_out?: boolean } | undefined;
     if (r) check(!r.timed_out, `${name}: finished within the run limit`);
 }
+type ArmSummary = {
+    fired: unknown[];
+    observed: { fault: unknown }[];
+    models: unknown[];
+    duplicate_events: number;
+};
+/** Each listed arm fired every expected fault, observed those with a mechanism, and saw both models. */
+const armEvidence = (
+    name: "scheduled" | "resume",
+    arms: string[],
+    expected: FaultEpisode[],
+    bothModels: boolean,
+) => {
+    const s = summary[name];
+    if (!s) return check(false, `${name}: no summary`);
+    const observable = expected.filter((f) => f.type !== "laptop_sleep").map((f) => f.id);
+    for (const arm of arms) {
+        const a = s.arms[arm] as ArmSummary | undefined;
+        if (!a) {
+            check(false, `${name}: arm ${arm} has no journal entries`);
+            continue;
+        }
+        const fired = new Set(a.fired);
+        const observed = new Set(a.observed.map((x) => x.fault));
+        check(
+            expected.every((f) => fired.has(f.id)),
+            `${name}/${arm}: fired ${expected.map((f) => f.id).join(", ")}`,
+        );
+        check(
+            observable.every((id) => observed.has(id)),
+            `${name}/${arm}: observed ${observable.join(", ")}`,
+        );
+        if (bothModels) {
+            check(
+                models.split(",").every((m) => a.models.includes(m)),
+                `${name}/${arm}: agent calls used both configured models`,
+            );
+        }
+        check(a.duplicate_events === 0, `${name}/${arm}: no duplicate Event entry`);
+    }
+};
+const deterministic = FAULTS.filter((f) => f.trigger.kind !== "first_summarizer_call");
 if (run("scheduled")) {
     check(run("scheduled")?.code === 0, "scheduled: exit 0");
     check(invariantsClean("scheduled"), "scheduled: EndRun, unique seq, clean invariants");
+    armEvidence("scheduled", ["host", "eidnara"], deterministic, true);
+}
+if (summary.rogue) {
+    const rogueArm = summary.rogue.arms.eidnara as ArmSummary | undefined;
+    check(rogueArm?.duplicate_events === 0, "rogue/eidnara: no duplicate Event entry");
 }
 if (run("rogue")) {
     const rogue = outcome.rogue as { code: number; stderr: string };
@@ -291,6 +351,7 @@ if (outcome.resume) {
     );
     check(resume.rebilled.length === 0, "resume: no turn rebilled");
     check(invariantsClean("resume"), "resume: EndRun, unique seq, clean invariants");
+    armEvidence("resume", ["eidnara"], RESUME_FAULTS, true);
 }
 if (failures.length > 0) {
     console.error(`witness failed:\n  ${failures.join("\n  ")}`);

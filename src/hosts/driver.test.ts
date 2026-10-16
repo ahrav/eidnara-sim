@@ -2,6 +2,8 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import {
     existsSync,
+    linkSync,
+    lstatSync,
     mkdirSync,
     mkdtempSync,
     readdirSync,
@@ -13,6 +15,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "../config/config";
+import { sandboxAvailable, writeLauncher } from "../run/launcher";
 import type { ScenarioEvent } from "../run/scheduler";
 import { type FaultType, SEAMS } from "../scenario/faults";
 import type { DaemonStack, HostContext, PromptResult, SimHost } from "./arms";
@@ -29,6 +32,7 @@ const tmp = () => {
 };
 
 const BASE_MS = Date.UTC(2031, 0, 1);
+const sandbox = sandboxAvailable();
 
 class FakeHost {
     opened: string[] = [];
@@ -49,8 +53,10 @@ class FakeHost {
         return {};
     }
     failClose = false;
+    onClose: () => void = () => undefined;
     async closeSession() {
         this.closed++;
+        this.onClose();
         if (this.failClose) throw new Error("host survived");
     }
     transcriptEnv() {
@@ -75,7 +81,7 @@ function fixture(
         arm,
         host: "pi",
         armRoot: join(root, arm, "r"),
-        launcher: "/bin/false",
+        launcher: sandbox ? writeLauncher(root) : "/bin/false",
         offsetFile: join(root, "offset"),
         keep: [],
         proxyHttp1: "http://127.0.0.1:1",
@@ -174,34 +180,37 @@ describe("HostDriver lifecycle", () => {
         }
     });
 
-    test("apply_diff commits only its own path and tolerates unchanged content", async () => {
-        const { driver } = fixture("host", { p: gitRepo() });
-        await driver.reset();
-        const ws = driver.workspace("p");
-        writeFileSync(join(ws, "agent-edit"), "mine");
-        const diff = ev("apply_diff", { path: "src/a.txt", content: "A" });
-        await driver.event(diff);
-        await driver.event(diff);
-        const log = spawnSync("git", ["log", "--name-only", "--format=%s"], { cwd: ws });
-        expect(log.stdout.toString().trim().split("\n")).toEqual([
-            "Add src/a.txt",
-            "",
-            "src/a.txt",
-            "init",
-            "",
-            "README",
-        ]);
-        const status = spawnSync("git", ["status", "--porcelain"], { cwd: ws });
-        expect(status.stdout.toString().trim()).toBe("?? agent-edit");
-        const outside = ev("apply_diff", { path: "../x", content: "A" });
-        await expect(driver.event(outside)).rejects.toThrow("leaves");
-        symlinkSync(tmp(), join(ws, "link"));
-        symlinkSync(join(tmp(), "absent"), join(ws, "dangling"));
-        const dangling = ev("apply_diff", { path: "dangling", content: "A" });
-        await expect(driver.event(dangling)).rejects.toThrow("leaves");
-        const through = ev("apply_diff", { path: "link/x", content: "A" });
-        await expect(driver.event(through)).rejects.toThrow("leaves");
-    });
+    test.skipIf(!sandbox)(
+        "apply_diff commits only its own path and tolerates unchanged content",
+        async () => {
+            const { driver } = fixture("host", { p: gitRepo() });
+            await driver.reset();
+            const ws = driver.workspace("p");
+            writeFileSync(join(ws, "agent-edit"), "mine");
+            const diff = ev("apply_diff", { path: "src/a.txt", content: "A" });
+            await driver.event(diff);
+            await driver.event(diff);
+            const log = spawnSync("git", ["log", "--name-only", "--format=%s"], { cwd: ws });
+            expect(log.stdout.toString().trim().split("\n")).toEqual([
+                "Add src/a.txt",
+                "",
+                "src/a.txt",
+                "init",
+                "",
+                "README",
+            ]);
+            const status = spawnSync("git", ["status", "--porcelain"], { cwd: ws });
+            expect(status.stdout.toString().trim()).toBe("?? agent-edit");
+            const outside = ev("apply_diff", { path: "../x", content: "A" });
+            await expect(driver.event(outside)).rejects.toThrow("leaves");
+            symlinkSync(tmp(), join(ws, "link"));
+            symlinkSync(join(tmp(), "absent"), join(ws, "dangling"));
+            const dangling = ev("apply_diff", { path: "dangling", content: "A" });
+            await expect(driver.event(dangling)).rejects.toThrow("leaves");
+            const through = ev("apply_diff", { path: "link/x", content: "A" });
+            await expect(driver.event(through)).rejects.toThrow("leaves");
+        },
+    );
 
     test("a resumed arm reopens the session the next event belongs to", async () => {
         const { driver, hosts } = fixture("host", { p: gitRepo() });
@@ -307,29 +316,37 @@ describe("HostDriver lifecycle", () => {
         expect(plain.exits).toEqual([]);
     });
 
-    test("apply_diff commits carry the scenario instant, so paired arms get one hash", async () => {
-        const { driver } = fixture("host", { p: gitRepo() });
-        await driver.reset();
-        const ws = driver.workspace("p");
-        await driver.event(ev("apply_diff", { path: "a.txt", content: "A", scenario_ms: 90_000 }));
-        const dates = spawnSync("git", ["log", "-1", "--format=%at %ct"], { cwd: ws });
-        const at = String(Math.floor((BASE_MS + 90_000) / 1000));
-        expect(dates.stdout.toString().trim()).toBe(`${at} ${at}`);
-    });
+    test.skipIf(!sandbox)(
+        "apply_diff commits carry the scenario instant, so paired arms get one hash",
+        async () => {
+            const { driver } = fixture("host", { p: gitRepo() });
+            await driver.reset();
+            const ws = driver.workspace("p");
+            await driver.event(
+                ev("apply_diff", { path: "a.txt", content: "A", scenario_ms: 90_000 }),
+            );
+            const dates = spawnSync("git", ["log", "-1", "--format=%at %ct"], { cwd: ws });
+            const at = String(Math.floor((BASE_MS + 90_000) / 1000));
+            expect(dates.stdout.toString().trim()).toBe(`${at} ${at}`);
+        },
+    );
 
-    test("apply_diff rejects an escaping path before creating any directory", async () => {
-        const { driver, root } = fixture("host", { p: gitRepo() });
-        await driver.reset();
-        const ws = driver.workspace("p");
-        const outside = tmp();
-        symlinkSync(outside, join(ws, "link"));
-        const viaLink = ev("apply_diff", { path: "link/new/x", content: "A" });
-        await expect(driver.event(viaLink)).rejects.toThrow("leaves");
-        expect(existsSync(join(outside, "new"))).toBe(false);
-        const up = ev("apply_diff", { path: "../made/x", content: "A" });
-        await expect(driver.event(up)).rejects.toThrow("leaves");
-        expect(existsSync(join(root, "host/r/workspaces/made"))).toBe(false);
-    });
+    test.skipIf(!sandbox)(
+        "apply_diff rejects an escaping path before creating any directory",
+        async () => {
+            const { driver, root } = fixture("host", { p: gitRepo() });
+            await driver.reset();
+            const ws = driver.workspace("p");
+            const outside = tmp();
+            symlinkSync(outside, join(ws, "link"));
+            const viaLink = ev("apply_diff", { path: "link/new/x", content: "A" });
+            await expect(driver.event(viaLink)).rejects.toThrow("leaves");
+            expect(existsSync(join(outside, "new"))).toBe(false);
+            const up = ev("apply_diff", { path: "../made/x", content: "A" });
+            await expect(driver.event(up)).rejects.toThrow("leaves");
+            expect(existsSync(join(root, "host/r/workspaces/made"))).toBe(false);
+        },
+    );
 
     test("apply_diff refuses a workspace whose directory the host replaced with a symlink", async () => {
         const { driver } = fixture("host", { p: gitRepo() });
@@ -341,6 +358,171 @@ describe("HostDriver lifecycle", () => {
         const diff = ev("apply_diff", { path: "planted.txt", content: "A" });
         await expect(driver.event(diff)).rejects.toThrow("leaves");
         expect(existsSync(join(elsewhere, "planted.txt"))).toBe(false);
+    });
+
+    test("a session_start refuses a workspace the host replaced with a symlink", async () => {
+        const { driver, hosts } = fixture("host", { p: gitRepo() });
+        await driver.reset();
+        const ws = driver.workspace("p");
+        rmSync(ws, { recursive: true, force: true });
+        symlinkSync(gitRepo(), ws);
+        await expect(driver.event(ev("session_start"))).rejects.toThrow("leaves");
+        expect(hosts.at(-1)?.opened).toEqual([]);
+    });
+
+    test.skipIf(!sandbox)(
+        "apply_diff replaces a hard-linked target instead of writing through it",
+        async () => {
+            const { driver } = fixture("host", { p: gitRepo() });
+            await driver.reset();
+            const shared = join(tmp(), "shared");
+            writeFileSync(shared, "theirs");
+            linkSync(shared, join(driver.workspace("p"), "x"));
+            await driver.event(ev("apply_diff", { path: "x", content: "mine" }));
+            expect(readFileSync(shared, "utf8")).toBe("theirs");
+            expect(readFileSync(join(driver.workspace("p"), "x"), "utf8")).toBe("mine");
+        },
+    );
+
+    test.skipIf(!sandbox)(
+        "a hook the agent planted runs inside the sandbox, so it cannot reach the host",
+        async () => {
+            const { driver, root } = fixture("host", { p: gitRepo() });
+            await driver.reset();
+            const ws = driver.workspace("p");
+            const escaped = join(root, "escaped");
+            writeFileSync(
+                join(ws, ".git/hooks/post-commit"),
+                `#!/bin/sh
+touch ${escaped}
+`,
+                {
+                    mode: 0o755,
+                },
+            );
+            await driver.event(ev("apply_diff", { path: "a.txt", content: "A" }));
+            const log = spawnSync("git", ["log", "--format=%s", "-1"], {
+                cwd: ws,
+                encoding: "utf8",
+            });
+            expect(log.stdout.trim()).toBe("Add a.txt");
+            expect(existsSync(escaped)).toBe(false);
+        },
+    );
+
+    test("a daemon gone by session_end is reported with the session_end id", async () => {
+        const { driver, exits, transcripts } = fixture("eidnara");
+        const daemon = fakeDaemon(10);
+        const host = new FakeHost({} as HostContext, transcripts);
+        mkdirSync(join(transcripts, "sessions"), { recursive: true });
+        host.onClose = () => {
+            daemon.current = null;
+        };
+        driver.host = host as unknown as SimHost;
+        driver.daemon = daemon as unknown as DaemonStack;
+        await driver.event(ev("session_end", { id: "e-9" }));
+        expect(exits).toEqual([{ after: "e-9" }]);
+    });
+
+    test("a resume refuses a daemon runtime or data directory the host replaced with a symlink", async () => {
+        const daemonFactory = () =>
+            ({ ...fakeDaemon(10), start: async () => undefined }) as unknown as DaemonStack;
+        const { driver, root } = fixture("eidnara", {}, { daemonFactory });
+        await driver.reset();
+        const runtime = join(root, "eidnara", "r", "runtime");
+        rmSync(runtime, { recursive: true, force: true });
+        symlinkSync(tmp(), runtime);
+        const fresh = new HostDriver((driver as unknown as { o: DriverOptions }).o);
+        await expect(fresh.resume(null)).rejects.toThrow("leaves");
+    });
+
+    test.skipIf(!sandbox)(
+        "apply_diff refuses a staged sibling the host planted as a symlink",
+        async () => {
+            const { driver } = fixture("host", { p: gitRepo() });
+            await driver.reset();
+            const elsewhere = join(tmp(), "victim");
+            writeFileSync(elsewhere, "theirs");
+            symlinkSync(elsewhere, join(driver.workspace("p"), `x.${process.pid}`));
+            await driver.event(ev("apply_diff", { path: "x", content: "mine" }));
+            expect(readFileSync(elsewhere, "utf8")).toBe("theirs");
+            expect(readFileSync(join(driver.workspace("p"), "x"), "utf8")).toBe("mine");
+        },
+    );
+
+    test.skipIf(!sandbox)("a hook that hangs is cut off at the turn deadline", async () => {
+        const { driver } = fixture("host", { p: gitRepo() });
+        await driver.reset();
+        const ws = driver.workspace("p");
+        writeFileSync(join(ws, ".git/hooks/post-commit"), "#!/bin/sh\nexec sleep 300\n", {
+            mode: 0o755,
+        });
+        const started = Date.now();
+        await expect(
+            driver.event(ev("apply_diff", { path: "a.txt", content: "A" })),
+        ).rejects.toThrow(/git commit/);
+        expect(Date.now() - started).toBeLessThan(10_000);
+    });
+
+    test("finish on a fresh harness reaps what the killed one recorded", async () => {
+        const { driver, armDir } = fixture("host", { p: gitRepo() });
+        await driver.reset();
+        await driver.stop();
+        const orphan = Bun.spawn(["sleep", "300"]);
+        const state = JSON.parse(readFileSync(join(armDir, "state.json"), "utf8"));
+        const start = readFileSync(`/proc/${orphan.pid}/stat`, "utf8")
+            .split(") ")[1]
+            ?.split(" ")[19];
+        state.host = { pid: orphan.pid, start };
+        writeFileSync(join(armDir, "state.json"), JSON.stringify(state));
+        const fresh = new HostDriver((driver as unknown as { o: DriverOptions }).o);
+        await fresh.reap();
+        await fresh.finish();
+        await orphan.exited;
+        expect(orphan.signalCode).toBe("SIGTERM");
+    });
+
+    test("reset clears the logs of an abandoned attempt", async () => {
+        const { driver, armDir } = fixture("host", { p: gitRepo() });
+        mkdirSync(armDir, { recursive: true });
+        writeFileSync(join(armDir, "daemon.log"), "from the attempt before\n");
+        writeFileSync(join(armDir, "transcripts.json"), "{}");
+        await driver.reset();
+        expect(existsSync(join(armDir, "daemon.log"))).toBe(false);
+        expect(existsSync(join(armDir, "transcripts.json"))).toBe(false);
+    });
+
+    test("a resume refuses to retry a transcript-store check that already recorded a gap", async () => {
+        const { driver, armDir } = fixture("host", { p: gitRepo() });
+        await driver.reset();
+        const record = { checked_after: "first session_end", paths: ["/x"], missing: ["/x"] };
+        writeFileSync(join(armDir, "transcripts.json"), JSON.stringify(record));
+        const fresh = new HostDriver((driver as unknown as { o: DriverOptions }).o);
+        await expect(fresh.resume(null)).rejects.toThrow("transcript store missing");
+    });
+
+    test("reap on an arm with no recorded state stops, since it cannot know what to stop", async () => {
+        const { driver, armDir } = fixture("host", { p: gitRepo() });
+        await driver.reset();
+        rmSync(join(armDir, "state.json"));
+        const fresh = new HostDriver((driver as unknown as { o: DriverOptions }).o);
+        await expect(fresh.reap()).rejects.toThrow("state.json");
+    });
+
+    test("a resumed daemon keeps the arm's first model after a model switch", async () => {
+        const models: string[] = [];
+        const daemonFactory = (ctx: { model: string }) =>
+            ({
+                ...fakeDaemon(10),
+                start: async () => void models.push(ctx.model),
+            }) as unknown as DaemonStack;
+        const { driver } = fixture("eidnara", {}, { daemonFactory });
+        await driver.reset();
+        await driver.fault(episode("model_switch"));
+        const fresh = new HostDriver((driver as unknown as { o: DriverOptions }).o);
+        await fresh.resume(null);
+        expect(models).toEqual(["model-a", "model-a"]);
+        expect(fresh.host?.ctx.model).toBe("model-b");
     });
 
     test("a resume with state.json gone stops instead of guessing the arm's state", async () => {
@@ -455,6 +637,92 @@ describe("HostDriver faults", () => {
             await driver.stop();
         }
     });
+
+    test.skipIf(!sudo)("store_full replaces a ballast link the host planted", async () => {
+        const { driver } = fixture("eidnara");
+        driver.daemon = fakeDaemon(10) as unknown as DaemonStack;
+        const inner = driver as unknown as { mountStore(f: boolean): void };
+        inner.mountStore(true);
+        const victim = join(tmp(), "victim");
+        writeFileSync(victim, "small");
+        try {
+            symlinkSync(victim, join(driver.storeRoot, "ballast"));
+            expect(await driver.fault(episode("store_full"))).toMatchObject({ avail_kb: 0 });
+            expect(readFileSync(victim, "utf8")).toBe("small");
+            expect(lstatSync(join(driver.storeRoot, "ballast")).isSymbolicLink()).toBe(false);
+        } finally {
+            await driver.stop().catch(() => undefined);
+        }
+    });
+
+    test.skipIf(!sudo)("a ballast that vanished before the kill stops the resume", async () => {
+        const daemonFactory = (ctx: { dataDir: string }) =>
+            ({
+                ...fakeDaemon(10),
+                start: async () => void mkdirSync(ctx.dataDir, { recursive: true }),
+            }) as unknown as DaemonStack;
+        const { driver } = fixture("eidnara", {}, { loopStore: true, daemonFactory });
+        let fresh: HostDriver | null = null;
+        try {
+            await driver.reset();
+            await driver.fault(episode("store_full"));
+            rmSync(join(driver.storeRoot, "ballast"));
+            fresh = new HostDriver((driver as unknown as { o: DriverOptions }).o);
+            await expect(fresh.resume(null)).rejects.toThrow("ballast");
+        } finally {
+            await fresh?.stop().catch(() => undefined);
+            await driver.stop().catch(() => undefined);
+        }
+    });
+
+    test.skipIf(!sudo)(
+        "a ballast that vanished during the episode stops the run at session_end",
+        async () => {
+            const { driver, transcripts } = fixture("eidnara");
+            mkdirSync(join(transcripts, "sessions"), { recursive: true });
+            driver.daemon = fakeDaemon(10) as unknown as DaemonStack;
+            driver.host = new FakeHost({} as HostContext, transcripts) as unknown as SimHost;
+            const inner = driver as unknown as { mountStore(f: boolean): void };
+            inner.mountStore(true);
+            try {
+                await driver.fault(episode("store_full"));
+                rmSync(join(driver.storeRoot, "ballast"));
+                await expect(driver.event(ev("session_end"))).rejects.toThrow("ballast");
+            } finally {
+                await driver.stop().catch(() => undefined);
+            }
+        },
+    );
+
+    test.skipIf(!sudo)(
+        "a resume whose daemon start fails leaves the ballast in place for the next attempt",
+        async () => {
+            let starts = 0;
+            const daemonFactory = (ctx: { dataDir: string }) =>
+                ({
+                    pid: () => null,
+                    connectionFile: join(ctx.dataDir, "conn"),
+                    start: async () => {
+                        if (starts++ > 0) throw new Error("daemon refused to start");
+                        mkdirSync(ctx.dataDir, { recursive: true });
+                    },
+                    restart: async () => undefined,
+                    stop: async () => undefined,
+                }) as unknown as DaemonStack;
+            const { driver } = fixture("eidnara", {}, { loopStore: true, daemonFactory });
+            let fresh: HostDriver | null = null;
+            try {
+                await driver.reset();
+                await driver.fault(episode("store_full"));
+                fresh = new HostDriver((driver as unknown as { o: DriverOptions }).o);
+                await expect(fresh.resume(null)).rejects.toThrow("refused to start");
+                expect(existsSync(join(fresh.storeRoot, "ballast"))).toBe(true);
+            } finally {
+                await fresh?.stop().catch(() => undefined);
+                await driver.stop().catch(() => undefined);
+            }
+        },
+    );
 
     test.skipIf(!sudo)(
         "a resume with the ballast still in place starts the daemon, then fills the store again",

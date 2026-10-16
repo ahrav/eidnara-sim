@@ -6,8 +6,6 @@ import {
     mkdirSync,
     readFileSync,
     realpathSync,
-    renameSync,
-    writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import type { SimConfig } from "../config/config";
@@ -24,6 +22,7 @@ import { compileScenario, type Scenario, scenarioInputMismatch } from "../scenar
 import { type FaultEpisode, SEAMS, validateFault } from "../scenario/faults";
 import { loadCompileInput, loadPrereg } from "../scenario/inputs";
 import { bedrockEmbedder } from "../scenario/similarity";
+import { writeAtomic } from "./atomic";
 import { Journal, releaseLease, takeLease } from "./journal";
 import { plainPath } from "./launcher";
 import { type Preflight, piCli, preflight } from "./preflight";
@@ -56,8 +55,14 @@ export interface Manifest {
     models: string[];
     scenario_hash: string;
     eidnara_commit: string;
+    /** Digest of the Eidnara checkout's uncommitted content at the start (`treeIdentity`). */
+    eidnara_worktree: string;
+    /** Commit and uncommitted-content digest of each corpus checkout the scenario's projects use. */
+    corpus: Record<string, { commit: string; worktree: string }>;
     /** The eidnara-sim revision that started the run; a resume must run the same one. */
     sim_commit: string;
+    /** Digest of the eidnara-sim working tree's uncommitted content at the start (`treeIdentity`). */
+    sim_worktree: string;
     /** SHA-256 of the daemon, OpenCode, and Pi executables; a resume must present the same. */
     binaries: Record<string, string>;
     fault_override: FaultEpisode[] | null;
@@ -100,9 +105,12 @@ const within = (path: string, dir: string) => path === dir || path.startsWith(`$
 
 const ARTIFACTS = [
     "lease.json",
+    `lease.${process.pid}.tmp`,
     "journal.jsonl",
     "scenario.json",
+    `scenario.json.${process.pid}`,
     "manifest.json",
+    `manifest.json.${process.pid}`,
     "preflight.jsonl",
     "calls.jsonl",
     "faults.jsonl",
@@ -113,18 +121,28 @@ const ARTIFACTS = [
  * symlink planted in an accepted output directory cannot redirect a write elsewhere.
  */
 export function requirePlainArtifacts(out: string, arms: readonly string[]): void {
-    const perArm = arms.flatMap((arm) => [
-        arm,
+    const dirs = arms.flatMap((arm) => [arm, join(arm, "clock")]);
+    const files = arms.flatMap((arm) => [
         join(arm, "resources.jsonl"),
-        join(arm, "clock"),
         join(arm, "clock", "offset"),
+        join(arm, "clock", `offset.${process.pid}`),
         join(arm, "state.json"),
+        join(arm, `state.json.${process.pid}`),
     ]);
-    for (const rel of [...ARTIFACTS, ...perArm]) {
+    for (const rel of [...dirs, ...ARTIFACTS, ...files]) {
         const path = join(out, rel);
-        if (lstatSync(path, { throwIfNoEntry: false })?.isSymbolicLink()) {
-            throw new HarnessFailure(`${path} is a symlink; run artifacts must be regular files`);
+        const stat = lstatSync(path, { throwIfNoEntry: false });
+        if (!stat) continue;
+        const refuse = (why: string) => {
+            throw new HarnessFailure(`${path} ${why}; run artifacts must be plain files`);
+        };
+        if (stat.isSymbolicLink()) refuse("is a symlink");
+        if (dirs.includes(rel)) {
+            if (!stat.isDirectory()) refuse("is not a directory");
+            continue;
         }
+        if (!stat.isFile()) refuse("is not a regular file");
+        if (stat.nlink > 1) refuse(`has ${stat.nlink} links`);
     }
 }
 
@@ -140,15 +158,63 @@ export function requireOutsideCheckout(out: string, checkout: string): void {
     }
 }
 
-function writeAtomic(path: string, text: string): void {
-    writeFileSync(`${path}.${process.pid}`, text);
-    renameSync(`${path}.${process.pid}`, path);
+/** A run artifact that fails to parse names itself in the failure. */
+function readJsonFile<T>(path: string): T {
+    try {
+        return JSON.parse(readFileSync(path, "utf8")) as T;
+    } catch (caught) {
+        throw new HarnessFailure(`${path} is not valid JSON: ${(caught as Error).message}`);
+    }
+}
+
+function git(dir: string, args: string[]): string {
+    const r = Bun.spawnSync(["git", "-C", dir, ...args], { stdout: "pipe", stderr: "pipe" });
+    if (r.exitCode !== 0) throw new Error(`git ${args.join(" ")} in ${dir} failed`);
+    return r.stdout.toString();
 }
 
 function gitHead(dir: string): string {
-    const r = Bun.spawnSync(["git", "-C", dir, "rev-parse", "HEAD"], { stdout: "pipe" });
-    if (r.exitCode !== 0) throw new Error(`git rev-parse HEAD in ${dir} failed`);
-    return r.stdout.toString().trim();
+    return git(dir, ["rev-parse", "HEAD"]).trim();
+}
+
+/**
+ * The commit a working tree is at plus a digest of its uncommitted content: tracked changes as
+ * `git diff HEAD --binary`, and each untracked, unignored file's path and content.
+ */
+export function treeIdentity(dir: string): { commit: string; worktree: string } {
+    const hash = createHash("sha256").update(git(dir, ["diff", "HEAD", "--binary"]));
+    const untracked = git(dir, ["ls-files", "--others", "--exclude-standard", "-z"])
+        .split("\0")
+        .filter((f) => f !== "")
+        .sort();
+    for (const file of untracked) {
+        hash.update(`\0${file}\0`);
+        const stat = lstatSync(join(dir, file), { throwIfNoEntry: false });
+        if (stat?.isFile()) hash.update(readFileSync(join(dir, file)));
+    }
+    return { commit: gitHead(dir), worktree: hash.digest("hex") };
+}
+
+const PROJECT_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+/** Every project id is a plain path segment, and every event's project is a declared id. */
+export function requireDeclaredProjects(scenario: Scenario): void {
+    const ids = new Set<string>();
+    for (const p of scenario.projects as { id?: unknown }[]) {
+        if (typeof p?.id !== "string" || !PROJECT_ID.test(p.id) || p.id === "." || p.id === "..") {
+            throw new HarnessFailure(
+                `scenario project id ${JSON.stringify(p?.id)} is not a plain name`,
+            );
+        }
+        ids.add(p.id);
+    }
+    for (const e of scenario.events as { id: string; project?: unknown }[]) {
+        if (e.project !== undefined && (typeof e.project !== "string" || !ids.has(e.project))) {
+            throw new HarnessFailure(
+                `event ${e.id} names undeclared project ${JSON.stringify(e.project)}`,
+            );
+        }
+    }
 }
 
 /** `scenario.json` is accepted only when its body still hashes to its `scenario_hash`. */
@@ -162,7 +228,7 @@ export async function loadScenario(o: Pick<RunOptions, "config" | "out" | "seed"
         const compiled = await compileScenario(loadCompileInput(o.seed, o.tier, embedder));
         writeAtomic(path, `${canonicalJson(compiled)}\n`);
     }
-    const scenario = JSON.parse(readFileSync(path, "utf8")) as Scenario;
+    const scenario = readJsonFile<Scenario>(path);
     const { scenario_hash, ...body } = scenario;
     if (sha256Hex(canonicalJson(body)) !== scenario_hash) {
         throw new HarnessFailure(
@@ -180,10 +246,28 @@ export async function loadScenario(o: Pick<RunOptions, "config" | "out" | "seed"
             `scenario.json is ${tier} seed ${seed}, not ${o.tier} seed ${o.seed}`,
         );
     }
+    requireDeclaredProjects(scenario);
     return scenario;
 }
 
 const STRATEGIES = new Set(["single", "burst", "intermittent", "persistent"]);
+const COUNTS = ["count", "calls", "sessions"];
+const DURATIONS = ["duration_ms", "delay_ms"];
+
+/** Range rules per parameter: probabilities in [0, 1], counts positive integers, durations >= 0. */
+function paramProblems(params: Record<string, unknown>): string[] {
+    const problems: string[] = [];
+    for (const [k, v] of Object.entries(params)) {
+        if (typeof v !== "number" || !Number.isFinite(v)) continue;
+        if (k === "probability" && (v < 0 || v > 1))
+            problems.push(`probability ${v} outside [0, 1]`);
+        if (COUNTS.includes(k) && (!Number.isInteger(v) || v < 1)) {
+            problems.push(`${k} ${v} is not a positive integer`);
+        }
+        if (DURATIONS.includes(k) && v < 0) problems.push(`${k} ${v} is negative`);
+    }
+    return problems;
+}
 
 /** The field problems of one `--faults` episode, before the compiler's trigger and seam checks. */
 function episodeProblems(value: unknown): string[] {
@@ -205,6 +289,7 @@ function episodeProblems(value: unknown): string[] {
         problems.push("params must be finite numbers");
     }
     if (typeof e.seam !== "object" || e.seam === null) problems.push("seam missing");
+    if (typeof params === "object" && params !== null) problems.push(...paramProblems(params));
     return problems;
 }
 
@@ -244,6 +329,24 @@ function armOrder(o: RunOptions): ArmName[] {
 
 const sameJson = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 
+const simIdentity = () => {
+    const { commit, worktree } = treeIdentity(ROOT);
+    return { sim_commit: commit, sim_worktree: worktree };
+};
+
+const eidnaraIdentity = (checkout: string) => {
+    const { commit, worktree } = treeIdentity(checkout);
+    return { eidnara_commit: commit, eidnara_worktree: worktree };
+};
+
+/** The commit and uncommitted-content digest of every corpus checkout an arm clones from. */
+export function corpusIdentity(
+    projects: string[],
+    reposDir = join(ROOT, "corpus/repos"),
+): Record<string, { commit: string; worktree: string }> {
+    return Object.fromEntries(projects.map((id) => [id, treeIdentity(join(reposDir, id))]));
+}
+
 function binaryDigests(config: SimConfig): Record<string, string> {
     const files = {
         daemon: config.daemon_binary,
@@ -269,7 +372,10 @@ export function requireMechanisms(faults: FaultEpisode[], models: string[]): voi
             `scheduled fault types without a mechanism: ${missing.join(", ")}`,
         );
     }
-    if (faults.some((f) => f.type === "model_switch") && new Set(models).size < 2) {
+    if (new Set(models).size !== models.length) {
+        throw new HarnessFailure(`--models repeats an entry: ${models.join(",")}`);
+    }
+    if (faults.some((f) => f.type === "model_switch") && models.length < 2) {
         throw new HarnessFailure("a model_switch fault needs two distinct --models");
     }
 }
@@ -292,16 +398,21 @@ export async function loadManifest(
         models: o.models ?? [o.config.agent_model],
         fault_override: o.faults === undefined ? null : faultOverride(o.faults, scenario),
     };
-    requireMechanisms(wanted.fault_override ?? scenario.faults, wanted.models);
     const digests = {
         scenario_hash: scenario.scenario_hash,
         prereg_sha256: preregistrationHash(loadPrereg(o.tier)),
-        eidnara_commit: gitHead(o.config.eidnara_checkout),
-        sim_commit: gitHead(ROOT),
+        ...eidnaraIdentity(o.config.eidnara_checkout),
+        ...simIdentity(),
         binaries: binaryDigests(o.config),
+        corpus: corpusIdentity(scenario.projects.map((p) => p.id)),
     };
     if (existsSync(path)) {
-        const manifest = JSON.parse(readFileSync(path, "utf8")) as Manifest;
+        const manifest = readJsonFile<Manifest>(path);
+        if (manifest?.schema !== "sim-run-manifest/v1") {
+            throw new HarnessFailure(
+                `manifest.json schema ${manifest?.schema} is not sim-run-manifest/v1`,
+            );
+        }
         const known = new Set<string>(loadPrereg(o.tier).arms.run);
         const foreign = (Array.isArray(manifest.order) ? manifest.order : []).filter(
             (a) => typeof a !== "string" || !known.has(a),
@@ -338,9 +449,11 @@ export async function loadManifest(
         if (!sameJson(hostRow(manifest.preflight), hostRow(checks))) {
             throw new HarnessFailure(`the ${o.host} host changed since the run started`);
         }
+        requireMechanisms(manifest.fault_override ?? scenario.faults, manifest.models);
         appendFileSync(join(o.out, "preflight.jsonl"), `${JSON.stringify(checks)}\n`);
         return { manifest, checks };
     }
+    requireMechanisms(wanted.fault_override ?? scenario.faults, wanted.models);
     const manifest: Manifest = {
         schema: "sim-run-manifest/v1",
         ...wanted,
@@ -354,11 +467,13 @@ export async function loadManifest(
 
 interface Stop {
     reason: string | null;
-    /** The driver call in flight, which a signal teardown waits for up to `SIGNAL_GRACE_MS`. */
-    active: Promise<unknown> | null;
+    /** Every driver call in flight; a signal teardown waits for them up to `SIGNAL_GRACE_MS`. */
+    active: Set<Promise<unknown>>;
 }
 
 const SIGNAL_GRACE_MS = 30_000;
+/** Wall time after a turn during which the daemon's CPU is measured before the clock may jump. */
+const POST_TURN_SAMPLE_MS = 2_000;
 
 /** Runs every cleanup step in reverse order and rethrows the first failure. */
 export async function runSteps(steps: Array<() => Promise<void> | void>): Promise<void> {
@@ -387,11 +502,11 @@ export async function runTier(o: RunOptions): Promise<void> {
         done ??= runSteps(cleanup.splice(0));
         return done;
     };
-    const stop: Stop = { reason: null, active: null };
+    const stop: Stop = { reason: null, active: new Set() };
     const onSignal = (signal: NodeJS.Signals) => {
         if (done) return;
         stop.reason ??= `signal ${signal}`;
-        const settled = stop.active?.catch(() => undefined) ?? Promise.resolve();
+        const settled = Promise.allSettled([...stop.active]);
         void Promise.race([settled, Bun.sleep(SIGNAL_GRACE_MS)])
             .then(() => teardown())
             .catch(() => undefined)
@@ -423,18 +538,39 @@ async function runArms(
     const guard = () => {
         if (stop.reason) throw new HarnessFailure(`run stopping: ${stop.reason}`);
     };
-    /** Each driver call runs after the stop check and is recorded as the active call. */
+    /** Each driver call runs between two stop checks and is recorded while in flight. */
     const tracked = async <T>(call: () => Promise<T>): Promise<T> => {
         guard();
         const active = call();
-        stop.active = active;
+        stop.active.add(active);
         try {
-            return await active;
+            const result = await active;
+            guard();
+            return result;
         } finally {
-            if (stop.active === active) stop.active = null;
+            stop.active.delete(active);
         }
     };
     let samplerFailure: unknown = null;
+    /**
+     * After a turn, a hold job keeps the clock while the sampler measures the daemon's CPU over
+     * `POST_TURN_SAMPLE_MS`; a busy reading registers the daemon-cpu job before the hold ends.
+     */
+    const holdForCpu = (sampler: ResourceSampler, arm: string) => {
+        sampler.sample();
+        const hold = `settle-cpu-${arm}-${jobSeq++}`;
+        scheduler.jobStart(hold);
+        setTimeout(() => {
+            try {
+                sampler.sample();
+            } catch (caught) {
+                samplerFailure ??= caught;
+                stop.reason ??= `sampler failed: ${(caught as Error).message}`;
+            } finally {
+                scheduler.jobEnd(hold);
+            }
+        }, POST_TURN_SAMPLE_MS);
+    };
     const { config, seed } = o;
     const prereg = loadPrereg(o.tier);
     const wallBudgetMs = prereg.liveness_bounds.tier_wall_budget_ms;
@@ -447,6 +583,9 @@ async function runArms(
     cleanup.push(() => journal.close());
     const compiled = await loadScenario(o);
     const { manifest, checks } = await loadManifest(o, compiled);
+    if (journal.entries.some((e) => e.kind === "EndRun")) {
+        throw new HarnessFailure(`${o.out} holds a completed run; its journal ends with EndRun`);
+    }
     journal.append({
         kind: "Preflight",
         arm: null,
@@ -464,6 +603,14 @@ async function runArms(
     const injector = new FaultInjector(proxyFaults, new Rng((seed ^ 0x5bd1e995) >>> 0), 120_000);
     const callsPath = join(o.out, "calls.jsonl");
     injector.restore(readRecords(callsPath));
+    /** This invocation's witness report, appended once: before `EndRun`, or at teardown otherwise. */
+    const witnessed = { done: false };
+    const writeWitnesses = () => {
+        if (witnessed.done) return;
+        const report = manifest.order.flatMap((arm) => injector.report(arm));
+        appendFileSync(join(o.out, "faults.jsonl"), `${JSON.stringify(report)}\n`);
+        witnessed.done = true;
+    };
     const offsetFile = (arm: string) => join(o.out, arm, "clock", "offset");
     const scheduler = new Scheduler({
         events,
@@ -474,6 +621,11 @@ async function runArms(
         proxy: injector,
         idleLimitMs: prereg.liveness_bounds.job_deadline_ms,
         onClock: (arm, ms) => writeOffset(offsetFile(arm), manifest.base_wall_ms, ms),
+        verify: (point) => {
+            handlersFailed();
+            if (samplerFailure !== null) throw samplerFailure;
+            if (point === "EndRun") writeWitnesses();
+        },
     });
     const now = () => scheduler.clock?.now() ?? 0;
     const scope = { arm: "", session: null as string | null, turn: null as string | null };
@@ -486,7 +638,7 @@ async function runArms(
         clock: { scenarioMs: now },
         scope: () => ({ ...scope }),
         arrival: () => {
-            if (scope.turn !== null || scope.arm === "") return;
+            if (scope.arm === "") return;
             const id = `request-${jobSeq++}`;
             scheduler.jobStart(id);
             return () => scheduler.jobEnd(id);
@@ -510,8 +662,7 @@ async function runArms(
     };
     cleanup.push(async () => {
         await gateway.stop();
-        const report = manifest.order.flatMap((arm) => injector.report(arm));
-        appendFileSync(join(o.out, "faults.jsonl"), `${JSON.stringify(report)}\n`);
+        writeWitnesses();
         handlersFailed();
     });
 
@@ -527,7 +678,7 @@ async function runArms(
             arm,
             host: o.host,
             armRoot,
-            launcher: manifest.preflight.launcher,
+            launcher: checks.launcher,
             offsetFile: offsetFile(arm),
             baseMs: manifest.base_wall_ms,
             keep: [armRoot, dirname(offsetFile(arm))],
@@ -564,10 +715,8 @@ async function runArms(
                 stop.reason ??= `sampler failed: ${(caught as Error).message}`;
             },
         });
-        cleanup.push(async () => {
-            sampler.stop();
-            await driver.stop();
-        });
+        cleanup.push(() => driver.stop());
+        cleanup.push(() => sampler.stop());
         drivers[arm] = {
             reset: () =>
                 tracked(async () => {
@@ -591,14 +740,21 @@ async function runArms(
                         return await driver.event(e);
                     } finally {
                         scope.turn = null;
-                        if (e.kind === "user_turn") sampler.sample();
+                        if (e.kind === "user_turn") holdForCpu(sampler, arm);
                     }
                 }),
             fault: (f) => tracked(() => driver.fault(f)),
-            finish: async () => {
-                sampler.stop();
-                await driver.finish();
-            },
+            finish: () =>
+                tracked(async () => {
+                    try {
+                        if (driver.daemon && driver.daemonPid() === null) {
+                            scheduler.daemonExited({ after: "last event" });
+                        }
+                        sampler.stop();
+                    } finally {
+                        await driver.finish();
+                    }
+                }),
         };
     }
     await scheduler.run();

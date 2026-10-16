@@ -58,10 +58,11 @@ export class FaultInjector {
         return w;
     }
 
+    /** Arming after `restore` continues a multi-call episode from the injections already made. */
     arm(id: string, arm: string): void {
         const w = this.witness(arm, id);
         const fault = this.faults.find((f) => f.id === id) as ProxyFault;
-        this.armed.set(`${arm}/${id}`, { arm, fault, calls: 0 });
+        this.armed.set(`${arm}/${id}`, { arm, fault, calls: w.injected_seq.length });
         w.armed = true;
     }
 

@@ -35,6 +35,7 @@ describe("checkJournal", () => {
             off_schedule_jumps: [],
             events_inside_sleep: [],
             repeated_sleeps: [],
+            missing_events: [],
             jobs_held_after_turn: [
                 { job: "j0", seq: 1 },
                 { job: "j1", seq: 5 },
@@ -97,6 +98,17 @@ describe("checkJournal", () => {
         at("AdvanceClock", 900, { from_ms: 500, fault: "sleep" });
         const report = checkJournal(entries, schedule({ "e-2": 500, "e-3": 900 }));
         expect([report.sleep_jumps, report.repeated_sleeps]).toEqual([2, [2]]);
+    });
+
+    test("an arm that reached EndArm without journaling every scheduled event is incomplete", () => {
+        const { entries, at } = journal();
+        at("StartArm", 0);
+        at("Event", 0, { event: "e-1" });
+        at("AdvanceClock", 900, { from_ms: 0, next_event: "e-3" });
+        at("Event", 900, { event: "e-3" });
+        at("EndArm", 900);
+        const report = checkJournal(entries, schedule({ "e-1": 0, "e-2": 0, "e-3": 900 }));
+        expect(report.missing_events).toEqual([{ arm: "a", event: "e-2" }]);
     });
 
     test("a jump past an earlier pending event is off schedule", () => {

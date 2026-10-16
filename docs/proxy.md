@@ -117,12 +117,21 @@ calling arm, and an observation counts only for the arm that made the call,
 so one arm's injection and retry cannot stand in for another arm's.
 `FaultInjector.restore(records)` rebuilds both sequences from the call
 records an earlier invocation of the same run persisted, so a resumed run
-reports a fault that fired before a hard kill.
+reports a fault that fired before a hard kill, and arming an episode after
+`restore` continues a burst or intermittent window from the injections
+already made; an intermittent window's unsuccessful attempts and its RNG
+position are not persisted, so a resumed window grants its remaining
+attempts from the injections alone.
 
 `Gateway.stop()` closes every connection, aborts the in-flight handlers, and
 waits up to `drainMs` (ten seconds by default) for them to write their call
-records, returning as soon as they have; a handler failure is kept in
-`gateway.failures`. The `observe` hook sees each classified call as it
+records, returning as soon as they have; a handler still active when the
+wait ends is recorded in `gateway.failures` alongside any handler failure.
+Request bodies are buffered up to 32 MiB; bytes past the limit are counted
+and dropped, and the request is answered 413 with one record. The
+`arrival` hook sees each request at its first byte and may return a function
+that runs once the call is classified or rejected, or once the client
+abandons the upload; the run holds the clock with it for every request. The `observe` hook sees each classified call as it
 starts and may return a function, which the gateway calls once that call's
 record is written or its write failed; the run uses it to end the background
 job the call registered.

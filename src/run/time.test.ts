@@ -58,6 +58,9 @@ describe("time injection", () => {
         expect(() => launch("/x/sandbox.sh", ["/a//b"], {}, ["true"])).toThrow(/normalized/);
         expect(() => launch("/x/sandbox.sh", [], { A: "x y" }, ["true"])).toThrow(/plain word/);
         expect(() => launch("/x/sandbox.sh", [], {}, ["true"], [], "/a b")).toThrow(/must match/);
+        expect(() => launch("/x/sandbox.sh", ["/a/b"], {}, ["true"], ["/a"])).toThrow(
+            "sandbox path /a/b is kept writable under read-only /a",
+        );
         expect(launch("/x/sandbox.sh", ["/k"], { A: "1" }, ["true"], ["/r"])).toEqual([
             "/x/sandbox.sh",
             "/",
@@ -475,6 +478,45 @@ describe("ResourceSampler", () => {
         expect(lines[0]).toMatchObject({ scenario_ms: 42, pid: process.pid });
         expect(lines[0].rss).toBeGreaterThan(0);
         expect(lines[0].store_bytes).toBeGreaterThan(0);
+    });
+
+    test("a busy callback that throws inside an interval sample still reaches onError once", async () => {
+        const path = join(mkdtempSync(join(tmpdir(), "samp-")), "resources.jsonl");
+        const errors: string[] = [];
+        const sampler = new ResourceSampler({
+            path,
+            intervalMs: 20,
+            busyFraction: -1,
+            pid: () => process.pid,
+            storeDir: import.meta.dir,
+            scenarioMs: () => 0,
+            onBusy: () => {
+                throw new Error("journal closed");
+            },
+            onError: (caught) => void errors.push((caught as Error).message),
+        });
+        sampler.start();
+        await Bun.sleep(120);
+        expect(errors).toEqual(["journal closed"]);
+        expect(() => sampler.stop()).not.toThrow();
+    });
+
+    test("a cut final sample is dropped when the sampler reopens its file", () => {
+        const path = join(mkdtempSync(join(tmpdir(), "samp-")), "resources.jsonl");
+        writeFileSync(path, '{"wall_ms":1}\n{"wall_ms":2,"sce');
+        const sampler = new ResourceSampler({
+            path,
+            intervalMs: 60_000,
+            busyFraction: 0.2,
+            pid: () => process.pid,
+            storeDir: import.meta.dir,
+            scenarioMs: () => 0,
+            onBusy: () => undefined,
+        });
+        sampler.sample();
+        const lines = readFileSync(path, "utf8").trim().split("\n");
+        expect(lines).toHaveLength(2);
+        expect(() => lines.map((l) => JSON.parse(l))).not.toThrow();
     });
 
     test("an interval sample that fails reports through onError and stops the timer", async () => {
