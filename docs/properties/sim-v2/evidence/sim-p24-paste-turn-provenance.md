@@ -17,6 +17,8 @@ delivered equal the corpus bytes.
 No harness code, test, or run exists yet. The surface lands in M6
 (#1031).
 
+M6 (#1031) delivers paste turns verbatim, and `pairing-check.ts` checks each paste and probe turn's delivered-text hash against the compiled text; `usersim-1` passed.
+
 ## Failure scenario
 
 A paste carries unlicensed or altered content.

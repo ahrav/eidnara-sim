@@ -18,6 +18,8 @@ export interface TurnOutcome {
     snapshot?: string;
     /** Store checks the arm owed daemon restarts, one `StoreChecked` entry each. */
     stores?: { fault: string; store: StoreCheck }[];
+    /** The user turn the user-sim sent or skipped, journaled as `UserTurn`. */
+    user?: Record<string, unknown>;
 }
 
 export interface ArmDriver {
@@ -52,6 +54,8 @@ export interface SchedulerOptions {
     idleLimitMs?: number;
     settleMs?: number;
     onClock?: (arm: string, scenarioMs: number) => void;
+    /** The arm's realised user-sim rates, journaled as `UserSimRates` before `EndArm`. */
+    armSummary?: (arm: string) => object | undefined;
 }
 
 const PROXY_LAYER = "proxy-sink";
@@ -107,6 +111,8 @@ export class Scheduler {
             await this.idle();
             await this.pendingKill;
             await driver.finish?.();
+            const rates = this.o.armSummary?.(arm);
+            if (rates) this.log({ kind: "UserSimRates", ...rates });
             this.log({ kind: "EndArm" });
         }
         this.arm = null;
@@ -241,6 +247,7 @@ export class Scheduler {
             }
             for (const s of outcome.stores ?? [])
                 this.log({ kind: "StoreChecked", event: e.id, ...s });
+            if (outcome.user) this.log({ kind: "UserTurn", event: e.id, ...outcome.user });
             await Bun.sleep(this.o.settleMs ?? 1_000);
         } else {
             await driver.event(e);

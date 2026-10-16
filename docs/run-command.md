@@ -8,7 +8,8 @@ the capture proxy, the clock, the scheduler, and the arm drivers
 PATH=<opencode release>/node_modules/.bin:$PATH \
 bun scripts/run-tier.ts --tier S --seed 101 --out runs/S-101-pi \
     [--host pi|opencode] [--arms host,eidnara] [--events N] \
-    [--faults episodes.json] [--context-limit N] [--models a,b]
+    [--faults episodes.json] [--context-limit N] [--models a,b] \
+    [--tapes tape.jsonl,...]
 ```
 
 The v1 harness closure resolves `opencode` through a shell, and that shell
@@ -19,7 +20,9 @@ unless the pinned OpenCode release's `node_modules/.bin` is on `PATH`.
 `--events N` runs the first N scenario events. `--faults` replaces the
 scenario's fault schedule, `--context-limit` sets the model window the host
 sees (200,000 by default), and `--models` lists the models `model_switch`
-cycles through (`agent_model` by default). The manifest records every one of
+cycles through (`agent_model` by default). `--tapes` names earlier runs'
+user-sim tapes to replay replies from (`docs/user-sim.md`). The manifest
+records every one of
 these values. The run refuses a seed outside the pre-registration, an arm
 outside the seed's order, and a non-positive count.
 

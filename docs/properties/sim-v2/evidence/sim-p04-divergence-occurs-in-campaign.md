@@ -16,6 +16,8 @@ At least one arm pair diverges before the last event of its run.
 No harness code, test, or run exists yet. The surface lands in M6
 (#1031).
 
+The live `usersim-1` run diverged in three of its ten sessions, each at the second user turn.
+
 ## Failure scenario
 
 The replay-to-live transition is never exercised and its defects stay hidden.

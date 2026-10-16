@@ -143,6 +143,34 @@ describe("Journal and lease", () => {
 });
 
 describe("Scheduler", () => {
+    test("a turn's user record lands after its EndTurn, and each arm's rates before its EndArm", async () => {
+        const j = new Journal(join(dir(), "j.jsonl"));
+        const driver: ArmDriver = {
+            ...fakeDriver([]),
+            event: async (e) =>
+                e.kind === "user_turn" ? { user: { label: "pushback", delivered: true } } : {},
+        };
+        await new Scheduler({
+            events: fixtureEvents(2),
+            faults: [],
+            journal: j,
+            settleMs: 0,
+            order: ["a"],
+            drivers: { a: driver },
+            armSummary: (arm) => ({ rates: { arm } }),
+        }).run();
+        const kinds = j.entries.map((e) => e.kind);
+        const users = j.entries.filter((e) => e.kind === "UserTurn");
+        expect(users.length).toBeGreaterThan(0);
+        for (const u of users) {
+            const end = j.entries.find((e) => e.kind === "EndTurn" && e.event === u.event);
+            expect(end && end.seq < u.seq).toBe(true);
+            expect(u.label).toBe("pushback");
+        }
+        expect(kinds.slice(-3)).toEqual(["UserSimRates", "EndArm", "EndRun"]);
+        expect(j.entries.at(-3)?.rates).toEqual({ arm: "a" });
+    });
+
     test("arms run in order from one event list, each reset first, with every jump landing on the next event", async () => {
         const j = new Journal(join(dir(), "j.jsonl"));
         const logs: Record<string, string[]> = { host: [], eidnara: [] };

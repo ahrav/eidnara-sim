@@ -43,8 +43,11 @@ class FakeHost {
         this.opened.push(`${session}@${cwd}`);
     }
     failNext = false;
-    async prompt(): Promise<PromptResult> {
+    interrupts: (number | undefined)[] = [];
+    async prompt(_text: string, _timeoutMs: number, interruptMs?: number): Promise<PromptResult> {
         this.onPrompt();
+        this.interrupts.push(interruptMs);
+        if (interruptMs !== undefined) return { interrupted: true };
         if (!this.failNext) return {};
         this.failNext = false;
         return { error: "boom" };
@@ -259,6 +262,22 @@ describe("HostDriver lifecycle", () => {
         await expect(gap.driver.event(ev("session_end"))).rejects.toThrow(missing);
         const listed = JSON.parse(readFileSync(join(gap.armDir, "transcripts.json"), "utf8"));
         expect(listed.missing).toEqual([missing]);
+    });
+
+    test("a scheduled interrupt reaches the host's prompt and the turn reports it", async () => {
+        const { driver } = fixture("host");
+        const host = new FakeHost({} as HostContext, "/x");
+        driver.host = host as unknown as SimHost;
+        const cut = await driver.event(
+            ev("user_turn", { id: "e-1", text: "go", interrupt_ms: 7_000 }),
+        );
+        const plain = await driver.event(ev("user_turn", { id: "e-2", text: "go" }));
+        expect(host.interrupts).toEqual([7_000, undefined]);
+        expect([cut.user, cut.failed, plain.user]).toEqual([
+            { interrupted: true },
+            undefined,
+            undefined,
+        ]);
     });
 
     test("a daemon gone after a turn is reported once with the turn id", async () => {

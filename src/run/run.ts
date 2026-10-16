@@ -22,6 +22,8 @@ import { compileScenario, type Scenario } from "../scenario/compile";
 import type { FaultEpisode } from "../scenario/faults";
 import { loadCompileInput, loadPrereg } from "../scenario/inputs";
 import { bedrockEmbedder } from "../scenario/similarity";
+import { behaviourPlan, type Label, realisedRates } from "../usersim/plan";
+import { normaliser, Pairing, proxyUserSim, Tape, UserSim } from "../usersim/usersim";
 import { Journal, readJournal, releaseLease, takeLease } from "./journal";
 import { plainPath } from "./launcher";
 import { type Preflight, preflight } from "./preflight";
@@ -40,6 +42,8 @@ export interface RunOptions {
     faults?: FaultEpisode[];
     contextLimit?: number;
     models?: string[];
+    /** Earlier runs' user-sim tapes to replay from. */
+    tapes?: string[];
 }
 
 interface Manifest {
@@ -54,6 +58,7 @@ interface Manifest {
     scenario_hash: string;
     eidnara_commit: string;
     fault_override: FaultEpisode[] | null;
+    tapes: string[];
     prereg_sha256: string;
     base_wall_ms: number;
     preflight: Preflight;
@@ -139,6 +144,7 @@ async function loadManifest(o: RunOptions, scenario: Scenario): Promise<Manifest
         context_limit: o.contextLimit ?? 200_000,
         models: o.models ?? [o.config.agent_model],
         fault_override: o.faults ?? null,
+        tapes: o.tapes ?? [],
     };
     if (existsSync(path)) {
         const manifest = JSON.parse(readFileSync(path, "utf8")) as Manifest;
@@ -148,6 +154,7 @@ async function loadManifest(o: RunOptions, scenario: Scenario): Promise<Manifest
             context_limit: o.contextLimit !== undefined,
             models: o.models !== undefined,
             fault_override: o.faults !== undefined,
+            tapes: o.tapes !== undefined,
         };
         const differs = Object.entries(wanted).filter(
             ([k, v]) => given[k] !== false && !sameJson(manifest[k as keyof Manifest], v),
@@ -282,14 +289,29 @@ async function runArms(
         proxy: injector,
         idleLimitMs: prereg.liveness_bounds.job_deadline_ms,
         onClock: (arm, ms) => writeOffset(offsetFile(arm), manifest.base_wall_ms, ms),
+        armSummary: (arm) => {
+            const turns = userTurns(arm).map((e) => ({
+                session: String(e.session),
+                label: e.label as Label,
+            }));
+            return realisedRates(turns, prereg);
+        },
     });
     const now = () => scheduler.clock?.now() ?? 0;
     const scope = { arm: "", session: null as string | null, turn: null as string | null };
     const jobs = new Map<string, string[]>();
     let jobSeq = journal.entries.filter((e) => e.kind === "RegisterJob").length;
+    const agentText = new Map<string, string>();
+    const noteAgent = (r: CallRecord) => {
+        if (r.component === "agent" && r.response_text) {
+            agentText.set(`${r.arm}/${r.session}`, r.response_text);
+        }
+    };
+    for (const r of readJournal(join(o.out, "calls.jsonl"))) noteAgent(r as unknown as CallRecord);
     class RunRecords extends RecordWriter {
         override write(partial: Omit<CallRecord, "seq" | "wall_ms">): CallRecord {
             const record = super.write(partial);
+            noteAgent(record);
             const id = jobs.get(`${record.arm}/${record.component}`)?.shift();
             if (id) scheduler.jobEnd(id);
             return record;
@@ -326,6 +348,42 @@ async function runArms(
     const turnIndex = new Map(
         events.filter((e) => e.index !== undefined).map((e) => [e.id, e.index as number]),
     );
+    const scripted = scenario.events.filter((e) => e.kind === "user_turn") as unknown as {
+        id: string;
+        session: string;
+        index: number;
+        role: string;
+        text: string;
+    }[];
+    const userSim = new UserSim({
+        seed,
+        plan: behaviourPlan(scripted, prereg, seed),
+        tape: new Tape(join(o.out, "tape.jsonl"), manifest.tapes),
+        pairing: new Pairing(
+            join(o.out, "pairing.jsonl"),
+            () => manifest.order[0] as string,
+            manifest.tapes.map((t) => join(dirname(t), "pairing.jsonl")),
+        ),
+        llm: proxyUserSim(
+            gateway.urls[0] as string,
+            prereg.user_sim.model,
+            prereg.user_sim.max_tokens,
+        ),
+        normalise: normaliser(prereg.divergence_policy.normalisation),
+        keys: [
+            ...scenario.facts.flatMap((f) => [f.id, f.template]),
+            ...scenario.probes.map((p) => p.id),
+        ],
+    });
+    const userTurns = (arm: string, session?: string) =>
+        journal.entries.filter(
+            (e) =>
+                e.kind === "UserTurn" &&
+                e.arm === arm &&
+                e.delivered === true &&
+                (session === undefined || e.session === session),
+        );
+    const lastAgent = (arm: string, session: string) => agentText.get(`${arm}/${session}`) ?? "";
     for (const arm of manifest.order) {
         const armRoot = join(o.out, arm, "r");
         mkdirSync(dirname(offsetFile(arm)), { recursive: true });
@@ -346,7 +404,21 @@ async function runArms(
             transcriptPaths: hostRow.transcript_paths,
             loopStore,
             onDaemonExit: (detail) => scheduler.daemonExited(detail),
-            callsFor: (session) => callsOf(join(o.out, "calls.jsonl"), arm, session, turnIndex),
+            callsFor: (session) => [
+                ...callsOf(join(o.out, "calls.jsonl"), arm, session, turnIndex).filter(
+                    (c) => c.component !== "user-sim",
+                ),
+                ...userTurns(arm, session).map((e) => ({
+                    seq: e.seq,
+                    component: "user-sim",
+                    turn: String(e.event),
+                    turn_index: turnIndex.get(String(e.event)),
+                    scenario_ms: e.scenario_ms,
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    label: String(e.label),
+                })),
+            ],
             now,
         });
         let cpuJob: string | null = null;
@@ -392,7 +464,21 @@ async function runArms(
                 scope.session = e.session;
                 scope.turn = e.kind === "user_turn" ? e.id : null;
                 try {
-                    return await driver.event(e);
+                    if (e.kind !== "user_turn") return await driver.event(e);
+                    const turn = scripted.find((t) => t.id === e.id);
+                    if (!turn) throw new HarnessFailure(`${e.id}: no scripted user turn`);
+                    const d = await userSim.deliver(arm, turn, lastAgent(arm, e.session));
+                    const user = { session: e.session, label: d.label, delivered: d.delivered };
+                    if (!d.delivered) return { user };
+                    const out = await driver.event({
+                        ...e,
+                        text: d.text,
+                        interrupt_ms: d.interruptMs,
+                    });
+                    const cut = d.label !== "interrupt" || out.user?.interrupted === true;
+                    const label = cut ? d.label : "task";
+                    const scheduled = cut ? {} : { scheduled: "interrupt" };
+                    return { ...out, user: { ...user, ...out.user, label, ...scheduled } };
                 } finally {
                     scope.turn = null;
                 }

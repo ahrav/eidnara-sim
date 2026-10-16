@@ -27,6 +27,8 @@ export type EntryKind =
     | "ItemState"
     | "SnapshotArtefacts"
     | "StoreChecked"
+    | "UserTurn"
+    | "UserSimRates"
     | "EndArm"
     | "EndRun";
 

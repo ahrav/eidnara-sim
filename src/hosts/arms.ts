@@ -59,6 +59,8 @@ export function toolCommand(tool: string, args: Record<string, unknown> | undefi
 
 export interface PromptResult {
     error?: string;
+    /** The user aborted the turn through the host's abort path. */
+    interrupted?: boolean;
 }
 
 export const eidnaraOn = (arm: ArmName) => arm !== "host";
@@ -190,7 +192,7 @@ export abstract class SimHost {
     }
 
     abstract openSession(cwd: string, session: string, connection: string | null): Promise<void>;
-    abstract prompt(text: string, timeoutMs: number): Promise<PromptResult>;
+    abstract prompt(text: string, timeoutMs: number, interruptMs?: number): Promise<PromptResult>;
     abstract closeSession(): Promise<void>;
     abstract transcriptEnv(): Record<string, string>;
     abstract hostPid(): number | null;
@@ -337,14 +339,21 @@ export class PiSimHost extends SimHost {
         return end;
     }
 
-    async prompt(text: string, timeoutMs: number): Promise<PromptResult> {
+    async prompt(text: string, timeoutMs: number, interruptMs?: number): Promise<PromptResult> {
         const end = this.agentEnd(timeoutMs);
         try {
             const response = await this.rpc.sendCommand("prompt", { message: text }, { timeoutMs });
             if (response.success === false) {
                 throw new Error(JSON.stringify(response).slice(0, 2000));
             }
-            const outcome = await end;
+            const cut = interruptMs === undefined ? null : Bun.sleep(interruptMs).then(() => null);
+            const first = await Promise.race(cut ? [end, cut] : [end]);
+            if (first === null) {
+                await this.rpc.sendCommand("abort", {}, { timeoutMs: 60_000 });
+                await end;
+                return { interrupted: true };
+            }
+            const outcome = first;
             const messages = (outcome.messages ?? []) as Array<Record<string, Untyped>>;
             const last = messages.filter((m) => m.role === "assistant").at(-1);
             return last?.stopReason === "error"
@@ -497,7 +506,7 @@ export class OpencodeSimHost extends SimHost {
         }
     }
 
-    async prompt(text: string, timeoutMs: number): Promise<PromptResult> {
+    async prompt(text: string, timeoutMs: number, interruptMs?: number): Promise<PromptResult> {
         const seen = new Set((await this.messages()).map((m) => String(m.info?.id)));
         const startScenario = this.ctx.now?.() ?? 0;
         const model = { providerID: "amazon-bedrock", modelID: this.ctx.model };
@@ -509,13 +518,15 @@ export class OpencodeSimHost extends SimHost {
             (result: Untyped) => ({ result }),
             (caught: unknown) => ({ caught }),
         );
-        const first = await Promise.race([settled, Bun.sleep(timeoutMs).then(() => null)]);
+        const wait = Math.min(timeoutMs, interruptMs ?? timeoutMs);
+        const first = await Promise.race([settled, Bun.sleep(wait).then(() => null)]);
         if (first === null) {
             const abort = this.client.session.abort({ path: { id: this.sid } });
             await Promise.race([abort.catch(() => undefined), Bun.sleep(5_000)]);
             const drained = await Promise.race([settled, Bun.sleep(30_000).then(() => null)]);
             if (drained === null) throw new Error("OpenCode turn still running 30 s after abort");
             await this.logTurnTools(seen, startScenario).catch(() => undefined);
+            if (wait < timeoutMs) return { interrupted: true };
             return { error: `turn deadline ${timeoutMs} ms` };
         }
         if ("caught" in first) {

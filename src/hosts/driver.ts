@@ -243,11 +243,12 @@ export class HostDriver implements ArmDriver {
         const project = this.project(e);
         const dir = this.workspace(project);
         const before = e.probe ? this.snapshots.tree(dir) : "";
-        const result = await host.prompt(String(e.text), this.o.turnDeadlineMs);
+        const interruptMs = typeof e.interrupt_ms === "number" ? e.interrupt_ms : undefined;
+        const result = await host.prompt(String(e.text), this.o.turnDeadlineMs, interruptMs);
         if (this.daemon && this.daemonPid() === null) this.o.onDaemonExit({ after: e.id });
         const tools = host.drainTools();
         this.snapshots.addTools(tools, e.id);
-        const outcome: TurnOutcome = {};
+        const outcome: TurnOutcome = result.interrupted ? { user: { interrupted: true } } : {};
         if (result.error) outcome.failed = result.error;
         if (this.storeFaults.length > 0 && this.daemon) {
             const store = checkStore(this.storeDb);
