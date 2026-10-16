@@ -142,8 +142,8 @@ A restarted harness opens the same journal. A journal holding a fatal
 `ItemState` (a daemon exit outside an outage window, or a scheduler fault the
 driver could not carry out), before or after `EndRun`, is a failed run and is
 refused with `HarnessFailure`; an arm with `EndArm` before every scheduled
-event completed, or an `EndTurn` without its `BeginTurn`, is refused as
-corrupt; otherwise a journal with `EndRun` is complete
+event completed, an `EndTurn` without its `BeginTurn`, or a `FaultObserved` without its
+`FaultFired`, is refused as corrupt before any recovery entry is written; otherwise a journal with `EndRun` is complete
 and the run returns at once, after checking that `StartRun` names this arm
 order and scenario and that every arm has `StartArm`, `EndArm`, and an `Event`
 for every scheduled event. Otherwise the harness checks that every

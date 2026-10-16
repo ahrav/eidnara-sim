@@ -1417,6 +1417,42 @@ describe("Scheduler", () => {
         await dup.run();
     });
 
+    test("a FaultObserved without its FaultFired is refused on resume", async () => {
+        const path = join(dir(), "j.jsonl");
+        const restart = episode("r", "daemon_restart", {
+            kind: "session_start",
+            session: "s-0000",
+        });
+        const j = new Journal(path);
+        j.append({
+            kind: "StartRun",
+            arm: null,
+            scenario_ms: 0,
+            order: ["a"],
+            scenario: scenarioId(fixtureEvents(1), [restart]),
+        });
+        j.append({ kind: "StartArm", arm: "a", scenario_ms: 0 });
+        j.append({
+            kind: "FaultObserved",
+            arm: "a",
+            scenario_ms: 0,
+            fault: "r",
+            type: "daemon_restart",
+            evidence: {},
+        });
+        j.close();
+        await expect(
+            new Scheduler({
+                events: fixtureEvents(1),
+                faults: [restart],
+                journal: new Journal(path),
+                settleMs: 0,
+                order: ["a"],
+                drivers: { a: fakeDriver([]) },
+            }).run(),
+        ).rejects.toThrow(/has no FaultFired/);
+    });
+
     test("a resume keeps an unobserved outage window open so the delayed scheduled exit is expected", async () => {
         const path = join(dir(), "j.jsonl");
         const restart = episode("r", "daemon_restart", {

@@ -254,15 +254,25 @@ export class Scheduler {
         const done = new Set(kinds("Event").map((e) => e.event));
         const ended = new Set(kinds("EndTurn").map((e) => e.event));
         const begun = new Set(kinds("BeginTurn").map((e) => e.event));
+        const firedBefore = new Set(kinds("FaultFired").map((e) => e.fault));
+        for (const e of kinds("EndTurn")) {
+            if (!begun.has(e.event)) {
+                throw new Error(
+                    `journal: EndTurn for ${e.event} in arm ${this.arm} has no BeginTurn`,
+                );
+            }
+        }
+        for (const e of kinds("FaultObserved")) {
+            if (!firedBefore.has(e.fault)) {
+                throw new Error(
+                    `journal: FaultObserved for ${e.fault} in arm ${this.arm} has no FaultFired`,
+                );
+            }
+        }
         const interrupted = kinds("ItemState").filter((e) => e.state === "failed(interrupted)");
         const marked = new Set(interrupted.map((e) => e.event ?? e.fault));
         const seen = new Set<unknown>();
         const answered = kinds("EndTurn").filter((x) => {
-            if (!begun.has(x.event)) {
-                throw new Error(
-                    `journal: EndTurn for ${x.event} in arm ${this.arm} has no BeginTurn`,
-                );
-            }
             if (done.has(x.event) || seen.has(x.event)) return false;
             seen.add(x.event);
             return true;
@@ -358,9 +368,9 @@ export class Scheduler {
             evidence = await this.untilFatal(driver.fault(f));
         } catch (caught) {
             const error = caught instanceof Error ? caught.message : String(caught);
-            this.log({ kind: "ItemState", fault: f.id, state: "failed", error, fatal: true });
             this.fatal ??= new HarnessFailure(`fault ${f.id} failed: ${error}`);
             this.fail?.(this.fatal);
+            this.log({ kind: "ItemState", fault: f.id, state: "failed", error, fatal: true });
             throw caught;
         }
         this.log({ kind: "FaultObserved", fault: f.id, type: f.type, evidence });
@@ -433,8 +443,14 @@ export class Scheduler {
         };
         return {
             jobStart: (id) => {
-                live().begin(`job:${id}`);
-                this.log({ kind: "RegisterJob", job: id });
+                const clock = live();
+                clock.begin(`job:${id}`);
+                try {
+                    this.log({ kind: "RegisterJob", job: id });
+                } catch (caught) {
+                    clock.end(`job:${id}`);
+                    throw caught;
+                }
             },
             jobEnd: (id) => {
                 live().end(`job:${id}`);
