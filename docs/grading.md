@@ -23,7 +23,7 @@ an agent transcript or self-report (SIM-P40), a snapshot that lacks an
 artefact its grader reads (a missing diff or command log is refused, so it
 cannot pass a negative-match grader as empty evidence), an artefact without a
 unique nonempty id or with a payload outside its class's shape (a non-empty
-patch that is not a well-formed unified diff with complete file headers, Git binary patches included, a command or test result without its text or with a
+patch that is not a well-formed unified diff with complete, paired file headers, at least one hunk per text file, and hunks whose line counts match their headers, Git binary patches included, a command or test result without its text or with a
 fractional exit status, a call with a non-integer
 status, a component outside the proxy's set, a negative token count or
 scenario time, a sequence number that fails to increase, or an arm or session
@@ -39,8 +39,8 @@ class check, every snapshot's turn and session must be the probe's compiled
 event and session before the first one's outcome is read, a `turn_outcome`
 other than `ok` or `failed` is refused, and a class and
 role present twice in one snapshot is refused as ambiguous. The answer a P8, P9, or P10 grader reads is the last completed agent response
-of the probe turn in the `proxy-call` artefact; a turn with no completed
-response refuses the grade.
+of the probe turn in the `proxy-call` artefact; a turn whose final completed call has no response text, or with no
+completed response, refuses the grade.
 
 `GradeLog` appends grades to one JSONL file, validating each record's shape before writing it, in full, through a no-follow descriptor to a regular, single-link file. A regrade of an item and arm
 takes the next version, an append out of version order is refused, and
@@ -65,7 +65,7 @@ the complete earlier grades stay readable.
 | P3 | The added lines carry the authoritative value and no stale one | `P3.reliance` (`authoritative`, `stale`, `neither`), `P3.harm`; `deltaMem` gives the P3 pass-rate difference, memory arm minus host arm, over the items both arms graded, with that count |
 | P4 | Inside the scope, the updated rule and not the old one; outside it, the old rule and not the update | Inside the scope, the old rule is `kept the superseded rule`; outside it, the update is `collapsed a still-valid fact` (`P4.collapsed`, `P4.harm`); a missing expected rule is named too, and `check.scope` must be `in` or `out` |
 | P5 | Neither the added lines nor the turn's commands match the rejected approach | A command that only names the signature, such as a search for it, also fails the item; the check vocabulary has no read-only exemption |
-| P6 | The added lines or the commands carry the planned next step | `P6.reread_files` (executed shell segments whose command is a read, including Pi's `read` tool, with a file operand naming a path the prior session added, changed, renamed (either path), or deleted (in Git or plain unified form), as a whole, with or without a leading `./`; a grep or rg pattern, positional (a quoted phrase is one word) or supplied by `-e`, `--regexp`, `-f`, or `--file`, is not an operand, an option's own value such as `-m 1` is neither, an output redirection target, quoted or bare, is written, and an input redirection target in either `< file` or `<file` form is read), `P6.rediscovery_tokens` requires at least one agent call of the turn, `P6.ran_tests` (an executed shell segment of the turn starts with a test command; a quoted mention is not a run), `P6.rediscovery_tokens` (input and output tokens of every agent call of the turn, failed calls included, cache reads excluded) |
+| P6 | The added lines or the commands carry the planned next step | `P6.reread_files` (executed shell segments whose command is a read, including Pi's `read` tool, with a file operand naming a path the prior session added, changed, renamed (either path), or deleted (in Git or plain unified form), as a whole, with or without a leading `./`; a grep or rg pattern, positional (a quoted phrase is one word) or supplied by `-e`, `--regexp`, `-f`, or `--file`, is not an operand, an option's own value such as `-m 1` is neither, an output redirection target, quoted, bare, or attached to the preceding word, is written, and an input redirection target in either `< file` or `<file` form is read), `P6.rediscovery_tokens` requires at least one agent call of the turn, `P6.ran_tests` (an executed shell segment of the turn starts with a test command; a quoted mention is not a run), `P6.rediscovery_tokens` (input and output tokens of every agent call of the turn, failed calls included, cache reads excluded) |
 | P8 | The answer carries the value as a whole word (`lookup_match`) | |
 | P9 | With `check.abstain` set to `true`, the answer abstains: `UNKNOWN` alone on the first line, or abstention wording, with no value-shaped guess (a five-digit number, a codename, or a cloud-region name) and no hedged guess such as `probably` or `I think` (`abstain_rule`) | An unhedged free-text assertion beside the abstention wording, such as a bare person's name, passes; the regex rule has no model of the subject |
 | P10 | The added lines carry no `must_not` pattern and the final completed response carries no `answer_must_not` pattern, compared case-insensitively; both keys are required | `P10.harm` |
@@ -92,8 +92,9 @@ the executed commands; a segment counts as executed when it is unconditional,
 or follows `&&` in the command's last list when that list has no `||` and
 the command exited 0 (the exit code is that list's); every member of a
 pipeline shares the guard of its first command; a command without a recorded
-exit status credits its first list only; segments after a top-level `exit`
-or `return`, assignment-prefixed or bare, are unreachable; leading `NAME=value` assignments are
+exit status credits its first list only; segments after a top-level `exit`,
+`return`, or command-bearing `exec`, assignment-prefixed or bare, are
+unreachable; leading `NAME=value` assignments are
 dropped before the command word is classified; a `||` continuation is left out
 because the exit code does not say whether it ran. The P13 fold boundary
 sits at the fold call's scenario millisecond: a command logged in that same millisecond counts as after the

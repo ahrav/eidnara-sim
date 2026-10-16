@@ -275,15 +275,19 @@ export class ArtefactReader {
     }
 
     private completedResponses(): string[] {
-        const texts = this.turnCalls().flatMap((c) =>
-            completed(c) && c.response_text !== undefined ? [c.response_text] : [],
-        );
-        if (texts.length === 0) {
+        const done = this.turnCalls().filter(completed);
+        const last = done.at(-1);
+        if (!last) {
             throw new GradeRefused(
                 `snapshot ${this.snapshot.id} has no completed agent response for turn ${this.snapshot.turn}`,
             );
         }
-        return texts;
+        if (last.response_text === undefined) {
+            throw new GradeRefused(
+                `snapshot ${this.snapshot.id}: the final completed agent call (seq ${last.seq}) has no response text`,
+            );
+        }
+        return done.flatMap((c) => (c.response_text === undefined ? [] : [c.response_text]));
     }
 
     answer(): string {

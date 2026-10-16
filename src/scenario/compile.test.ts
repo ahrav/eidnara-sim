@@ -165,6 +165,13 @@ describe("compiled S scenario", async () => {
         }
     });
 
+    test("each P14 item's event is its session's last user turn", () => {
+        for (const p of s.probes.filter((x) => x.type === "P14")) {
+            const last = all.filter((t) => t.session === p.session).at(-1) as TurnEvent;
+            expect(p.event).toBe(last.id);
+        }
+    });
+
     test("a scenario from an earlier generator is refused for reuse", () => {
         const inputs = {
             preregistration_sha256: s.manifest.preregistration_sha256,

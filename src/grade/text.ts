@@ -125,6 +125,7 @@ export const unifiedDiff = (v: unknown): boolean => {
     let fileBody = true;
     let oldLeft = 0;
     let newLeft = 0;
+    let pendingNew = false;
     const hunkComplete = () => !inHunk || (oldLeft === 0 && newLeft === 0);
     for (const line of v.replace(/\n$/, "").split("\n")) {
         if (inHunk && /^[ +-]/.test(line) && !(oldLeft === 0 && newLeft === 0)) {
@@ -143,7 +144,7 @@ export const unifiedDiff = (v: unknown): boolean => {
         }
         if (inBinary && !line.startsWith("diff --git ")) continue;
         if (line.startsWith("diff --git ")) {
-            if (!fileBody || !hunkComplete()) return false;
+            if (!fileBody || !hunkComplete() || pendingNew) return false;
             inBinary = false;
             if (
                 !/^diff --git ("a\/(?:[^"\\]|\\.)*"|a\/\S+) ("b\/(?:[^"\\]|\\.)*"|b\/.+)$/.test(
@@ -154,13 +155,19 @@ export const unifiedDiff = (v: unknown): boolean => {
             inHunk = false;
             opened = true;
             fileBody = false;
-        } else if (line.startsWith("--- ") || line.startsWith("+++ ")) {
-            if (!hunkComplete()) return false;
+        } else if (line.startsWith("--- ")) {
+            if (!hunkComplete() || pendingNew) return false;
             inHunk = false;
             opened = true;
-            fileBody = true;
+            pendingNew = true;
+            fileBody = false;
+        } else if (line.startsWith("+++ ")) {
+            if (!hunkComplete() || !pendingNew) return false;
+            pendingNew = false;
+            inHunk = false;
+            fileBody = false;
         } else if (HUNK_HEADER.test(line)) {
-            if (!opened || !hunkComplete()) return false;
+            if (!opened || !hunkComplete() || pendingNew) return false;
             const m = HUNK_HEADER.exec(line) as RegExpExecArray;
             oldLeft = m[1] === undefined ? 1 : Number(m[1].slice(1));
             newLeft = m[2] === undefined ? 1 : Number(m[2].slice(1));
@@ -173,7 +180,7 @@ export const unifiedDiff = (v: unknown): boolean => {
             if (line.startsWith("GIT binary patch")) inBinary = true;
         } else return false;
     }
-    return opened && fileBody && hunkComplete();
+    return opened && fileBody && hunkComplete() && !pendingNew;
 };
 
 export function addedLines(patch: string): string {

@@ -9,7 +9,8 @@
     "text": null,
     "check": {
       "window_from_turn": 4
-    }
+    },
+    "event": "e-1"
   },
   "snapshots": [
     {

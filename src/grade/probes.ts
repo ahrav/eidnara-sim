@@ -247,7 +247,8 @@ const executed = (x: Command): string[] => {
     const mixed = guarded.slice(lastList).some((p) => p.op === "||");
     const firstListEnd = guarded.findIndex((p, i) => i > 0 && /^[;&\n]$/.test(p.op));
     const exitAt = guarded.findIndex(
-        (p) => /^[;&\n]$/.test(p.op) && /^(exit|return)\b/.test(unprefixed(p.seg)),
+        (p) =>
+            /^[;&\n]$/.test(p.op) && /^(exit|return)\b|^exec\s+[^\s<>&\d]/.test(unprefixed(p.seg)),
     );
     const afterExit = exitAt < 0 ? guarded.length : exitAt + 1;
     const unfinished = x.exit === null && firstListEnd >= 0 ? firstListEnd : guarded.length;
@@ -319,7 +320,11 @@ const operands = (segment: string): string => {
  * Shell words with output redirections removed (operator and target) and input redirections
  * reduced to their target, which the command reads.
  */
-const unredirectedWords = (words: string[]): string[] => {
+const unredirectedWords = (raw: string[]): string[] => {
+    const words = raw.flatMap((w) => {
+        const at = w.search(/(?<=.)\d*&?[<>]/);
+        return at > 0 ? [w.slice(0, at), w.slice(at)] : [w];
+    });
     const out: string[] = [];
     for (let i = 0; i < words.length; i++) {
         const w = words[i] as string;

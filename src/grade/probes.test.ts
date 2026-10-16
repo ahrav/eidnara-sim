@@ -1125,6 +1125,49 @@ describe("grading harness", () => {
         expect(gradeItem(f.probe, [snap], rules)?.metrics["P6.reread_files"]).toBe(1);
     });
 
+    test("a plain unified diff needs its paired header and a hunk", () => {
+        const f = fixture("P2-pass");
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        const diff = snap.artefacts.find((a) => a.class === "diff");
+        if (diff?.class !== "diff") throw new Error("fixture lacks diff");
+        for (const bad of ["--- a/x\n", "--- a/x\n+++ b/x\n", "diff --git a/x b/x\n--- a/x\n"]) {
+            diff.patch = bad;
+            expect(() => gradeItem(f.probe, [snap], rules)).toThrow("patch");
+        }
+    });
+
+    test("a command-bearing exec ends the segment list", () => {
+        const f = fixture("P13-pass");
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        const log = snap.artefacts.find((a) => a.class === "command-log");
+        if (log?.class !== "command-log") throw new Error("fixture lacks command-log");
+        const commit = log.commands.find((c) => c.command.startsWith("git commit")) as Command;
+        const original = commit.command;
+        commit.command = `exec true; ${original}`;
+        expect(gradeItem(f.probe, [snap], rules)?.metrics["P13.rule_kept"]).toBe(false);
+        commit.command = `exec >/dev/null; ${original}`;
+        expect(gradeItem(f.probe, [snap], rules)?.metrics["P13.rule_kept"]).toBe(true);
+    });
+
+    test("a redirection attached to an operand is split from it", () => {
+        const f = fixture("P6-pass");
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        const log = snap.artefacts.find((a) => a.class === "command-log" && a.role === "turn");
+        if (log?.class !== "command-log") throw new Error("fixture lacks command-log");
+        log.commands.push({ command: "cat src/connection.rs>/dev/null", exit: 0, scenario_ms: 10 });
+        expect(gradeItem(f.probe, [snap], rules)?.metrics["P6.reread_files"]).toBe(1);
+    });
+
+    test("a final completed call without response text refuses the grade", () => {
+        const f = fixture("P10-pass");
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        const calls = snap.artefacts.find((a) => a.class === "proxy-call");
+        if (calls?.class !== "proxy-call") throw new Error("fixture lacks proxy-call");
+        const last = calls.calls.at(-1) as CallView;
+        calls.calls.push({ ...last, seq: last.seq + 1, response_text: undefined });
+        expect(() => gradeItem(f.probe, [snap], rules)).toThrow("no response text");
+    });
+
     test("a check pattern that is empty after its prefix or fails to compile is refused", () => {
         const f = fixture("P1-fail");
         for (const bad of ["(?i)", "["]) {
@@ -1514,7 +1557,7 @@ describe("grading harness", () => {
         const c8 = s8.artefacts.find((a) => a.class === "proxy-call");
         if (c8?.class !== "proxy-call") throw new Error("fixture lacks proxy-call");
         for (const c of c8.calls) delete c.response_text;
-        expect(() => gradeItem(p8.probe, [s8], rules)).toThrow("no completed agent response");
+        expect(() => gradeItem(p8.probe, [s8], rules)).toThrow("has no response text");
     });
 
     test("a snapshot of another turn than the probe's event is refused", () => {
@@ -1531,7 +1574,7 @@ describe("grading harness", () => {
         snap.artefacts.push({
             ...diff,
             id: "d2",
-            patch: "diff --git a/x b/x\n+++ b/x\n@@ -0,0 +1 @@\n+use crate::ALPHA_RULE;\n",
+            patch: "diff --git a/x b/x\n--- /dev/null\n+++ b/x\n@@ -0,0 +1 @@\n+use crate::ALPHA_RULE;\n",
         });
         expect(() => gradeItem(f.probe, [snap], rules)).toThrow("two turn diff artefacts");
     });

@@ -85,7 +85,7 @@ the earlier one and supersedes it.
 | P11 | the P1 fact | A session of the twin project after the conveyance; the check forbids the convention |
 | P12 | tool error | A real error from `corpus/tool-outputs/error-codes.jsonl`; the check requires the exception name |
 | P13 | session rule | Conveyed in the first third of a turn range in a forced p90 session and probed in its last third; each P13 item has its own range of at least 30 turns, so at least 11 turns separate cue and probe, and `check.turns` gives the turn after the cue and the turn after the probe, so the range holds exactly the folds the probe turn's snapshot can carry |
-| P14 | none | The last third of a forced p90 session, measured from user-sim labels |
+| P14 | none | The last third of a forced p90 session, measured from user-sim labels; the item's `event` is the session's last user turn, where its snapshot is taken |
 
 Conveyance manners follow the fixed weights 35/20/15/10/10/10 for correction,
 hand-applied diff, tool error, rejected approach, direct statement, and stated
@@ -155,15 +155,15 @@ thresholds (`bm25_max` 0.4, `cosine_max` 0.6):
 
 | Tier | Seed | `scenario_hash` | Largest BM25 ratio | Largest cosine |
 |---|---|---|---|---|
-| S | 101 | `4896069e` | 0.2125 | 0.5194 |
-| S | 102 | `b9800247` | 0.2628 | 0.4867 |
-| M | 201 | `156032fc` | 0.2516 | 0.4992 |
-| M | 202 | `cf1a93e3` | 0.2551 | 0.4997 |
-| M | 203 | `0324152b` | 0.2535 | 0.4843 |
-| L | 301 | `2abf6cdd` | 0.2558 | 0.5092 |
-| L | 302 | `57963ef4` | 0.2535 | 0.4957 |
-| L | 303 | `addcad7e` | 0.2514 | 0.5083 |
-| XL | 401 | `4de46a62` | 0.2561 | 0.4962 |
+| S | 101 | `d77a5a97` | 0.2125 | 0.5194 |
+| S | 102 | `a29bd7b2` | 0.2628 | 0.4867 |
+| M | 201 | `620f950d` | 0.2516 | 0.4992 |
+| M | 202 | `9bcf2602` | 0.2551 | 0.4997 |
+| M | 203 | `b374beaf` | 0.2535 | 0.4843 |
+| L | 301 | `2a2b1751` | 0.2558 | 0.5092 |
+| L | 302 | `9ec64e42` | 0.2535 | 0.4957 |
+| L | 303 | `6f94f158` | 0.2514 | 0.5083 |
+| XL | 401 | `75877d67` | 0.2561 | 0.4962 |
 
 ## Known limits
 

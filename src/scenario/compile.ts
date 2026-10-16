@@ -587,6 +587,10 @@ export async function compileScenario(input: CompileInput) {
         ),
     );
     for (const p of probes) if (p.text) p.event = probeEvent.get(p.id);
+    const lastTurnEvent = new Map<string, string>();
+    for (const e of events)
+        if (e.kind === "user_turn") lastTurnEvent.set(e.session as string, e.id);
+    for (const p of probes) if (p.type === "P14") p.event = lastTurnEvent.get(p.session);
     const lastCue = new Map<unknown, number>();
     events.forEach((e, i) => {
         if (e.fact && e.role !== "probe") lastCue.set(e.fact, i);
