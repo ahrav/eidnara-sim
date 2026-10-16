@@ -1,3 +1,5 @@
+import { isPlainRelativePath } from "./sources";
+
 /** Licenses a corpus entry may carry; each permits redistribution with attribution. */
 const ALLOWED_LICENSES = new Set(["CC-BY-4.0", "ODC-BY-1.0", "MIT", "Apache-2.0"]);
 
@@ -6,6 +8,7 @@ type FieldType = "string" | "number" | "boolean" | "number|null";
 const COMMON: Record<string, FieldType> = { id: "string", repo: "string", source_id: "string" };
 /** `<repo>@<revision>:<trajectory>#<message index>` names the exact source message. */
 const SOURCE_ID = /^[^@\s]+@[0-9a-f]{40}:[^#\s]+#\d+$/;
+
 export const SAMPLE_FIELDS: Record<string, FieldType> = {
     ...COMMON,
     kind: "string",
@@ -50,6 +53,12 @@ export function entryProblems(
         }
         if (typeof e.source_id === "string" && !SOURCE_ID.test(e.source_id)) {
             problems.push(`${where}: source_id must be repo@revision:trajectory#index`);
+        }
+        if (
+            typeof e.repo === "string" &&
+            !(e.repo.split("/").length === 2 && isPlainRelativePath(e.repo))
+        ) {
+            problems.push(`${where}: repo must be owner/name`);
         }
     });
     return problems;

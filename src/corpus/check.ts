@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { sha256Hex } from "../prereg/canonical";
 import { cdfProblems, countProblems, GRID, quantile, tailShare } from "./cdf";
@@ -16,7 +16,7 @@ import { bankProblems } from "./fact-bank";
 import { CATEGORIES, CATEGORY_NAMES, KINDS, QUANTITIES, TABLES, TRACELAB_FILES } from "./fit";
 import { loadRepos, REPOS_DIR } from "./repos";
 import { CORPUS_DIR, loadSources, parseJson } from "./sources";
-import { OPENHANDS_FILE } from "./tool-outputs";
+import { exceptionLine, kindMatches, OPENHANDS_FILE } from "./tool-outputs";
 
 const SAMPLES_PER_KIND = 150;
 const ERROR_CODES = 200;
@@ -101,10 +101,11 @@ export function checkCorpus(): CorpusReport {
     const codeNames = new Set(codes.map((c) => (c as { code?: string }).code?.trim()));
     need(codeNames.size === codes.length, "error codes: a name repeats");
     for (const c of codes) {
-        const e = c as { id?: string; code?: string; context?: string };
+        const e = c as { id?: string; code?: string; message?: string; context?: string };
+        const parsed = exceptionLine((e.context ?? "").split("\n").at(-1) ?? "");
         const anchored =
-            (e.context ?? "").trim() !== "" && (e.context ?? "").includes(e.code ?? "\u0000");
-        need(anchored, `error_codes ${e.id}: context must contain the code`);
+            parsed !== undefined && parsed.code === e.code && parsed.message === e.message;
+        need(anchored, `error_codes ${e.id}: context must end at the recorded code and message`);
     }
     problems.push(
         ...entryProblems(samples, "samples", SAMPLE_FIELDS),
@@ -128,9 +129,36 @@ export function checkCorpus(): CorpusReport {
         return `${e.kind} ${e.source_id?.replace(/#\d+$/, "")}`;
     });
     need(new Set(perTrajectory).size === samples.length, "samples: a trajectory repeats a kind");
+    const sourceIds = samples.map((s) => (s as { source_id?: string }).source_id);
+    need(new Set(sourceIds).size === samples.length, "samples: a source message repeats");
     for (const s of samples) {
-        const e = s as { id?: string; content?: string; chars?: number; truncated?: boolean };
+        const e = s as {
+            id?: string;
+            kind?: string;
+            tool?: string;
+            command?: string;
+            content?: string;
+            chars?: number;
+            truncated?: boolean;
+            exit_code?: number | null;
+        };
         const content = e.content ?? "";
+        const exitOk =
+            e.tool === "execute_bash" ? Number.isSafeInteger(e.exit_code) : e.exit_code === null;
+        need(
+            exitOk,
+            `samples ${e.id}: exit_code must be an integer for a command and null otherwise`,
+        );
+        const consistent = kindMatches({
+            kind: e.kind ?? "",
+            tool: e.tool ?? "",
+            command: e.command ?? "",
+            content,
+        });
+        need(
+            consistent,
+            `samples ${e.id}: kind ${e.kind} does not follow from tool, command, and content`,
+        );
         const sized = e.truncated
             ? content.length <= CONTENT_CAP && (e.chars ?? 0) > CONTENT_CAP
             : content.length === e.chars && content.length <= CONTENT_CAP;
@@ -220,6 +248,49 @@ export function checkCorpus(): CorpusReport {
     need(counted === mix?.n, `tool_mix: category counts total ${counted}, n is ${mix?.n}`);
     const tools = (mix?.categories ?? []).flatMap((c) => c.tools);
     need(new Set(tools).size === tools.length, "tool_mix: a tool appears in two categories");
+    const requests = table(dist, "requests_per_session");
+    const sessions = dist.quantities.requests_per_session?.n ?? 0;
+    let totalRequests = 0;
+    let last = 0;
+    for (const [i, p] of requests.p.entries()) {
+        const k = Math.round(p * sessions);
+        totalRequests += (requests.x[i] ?? 0) * (k - last);
+        last = k;
+    }
+    const emptySessions = requests.x[0] === 0 ? Math.round((requests.p[0] ?? 0) * sessions) : 0;
+    need(
+        dist.quantities.tool_steps_per_request?.n === totalRequests,
+        `tool_steps_per_request: n ${dist.quantities.tool_steps_per_request?.n}, requests total ${totalRequests}`,
+    );
+    need(
+        dist.quantities.idle_within_session_s?.n === totalRequests - (sessions - emptySessions),
+        `idle_within_session_s: n must be one gap per request after each session's first`,
+    );
+    const stepsTable = table(dist, "tool_steps_per_request");
+    const stepsN = dist.quantities.tool_steps_per_request?.n ?? 0;
+    let totalSteps = 0;
+    let lastStep = 0;
+    for (const [i, p] of stepsTable.p.entries()) {
+        const k = Math.round(p * stepsN);
+        totalSteps += (stepsTable.x[i] ?? 0) * (k - lastStep);
+        lastStep = k;
+    }
+    need(
+        (dist.quantities.append_tokens_per_step?.n ?? 0) <= totalSteps,
+        `append_tokens_per_step: n exceeds the ${totalSteps} modelled steps`,
+    );
+    need(
+        (dist.quantities.tool_output_chars?.n ?? 0) <= (dist.tool_mix?.n ?? 0),
+        "tool_output_chars: n exceeds the tool-call count",
+    );
+    need(
+        (dist.quantities.idle_between_sessions_s?.n ?? 0) < sessions,
+        "idle_between_sessions_s: n must be below the session count",
+    );
+    need(
+        table(dist, "idle_between_sessions_s").x.every((v) => v > 0),
+        "idle_between_sessions_s: gaps must be positive",
+    );
     const cited = loadCited();
     const citedKeys = cited.checks
         .map((c) => `${c.quantity}@${c.q}`)
@@ -249,7 +320,8 @@ export function checkCorpus(): CorpusReport {
         need(SHA.test(repo.commit), `${repo.id}: commit not a SHA`);
         need(SHA.test(repo.twin.commit), `${repo.twin.id}: commit not a SHA`);
         need(REPO_LICENSES.has(repo.license), `${repo.id}: license ${repo.license}`);
-        need(existsSync(join(REPOS_DIR, `${repo.id}.LICENSE`)), `${repo.id}: license copy missing`);
+        const copy = statSync(join(REPOS_DIR, `${repo.id}.LICENSE`), { throwIfNoEntry: false });
+        need(copy?.isFile() === true && copy.size > 0, `${repo.id}: license copy missing or empty`);
     }
     const roles = new Set(repos.map((r) => r.role));
     need(

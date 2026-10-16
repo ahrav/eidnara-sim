@@ -10,7 +10,7 @@ import {
     repoDir,
     runOffline,
 } from "../src/corpus/repos";
-import { CORPUS_DIR, under } from "../src/corpus/sources";
+import { CORPUS_DIR, parseJson, under } from "../src/corpus/sources";
 
 // Usage: bun scripts/corpus-repos.ts [--record]
 const record = process.argv.includes("--record");
@@ -36,7 +36,10 @@ for (const repo of repos) {
         console.log(`${label}: exit ${outcome.exit_code}\n  ${outcome.summary.join("\n  ")}`);
         if (outcome.summary.length === 0) failures.push(`${label}: no test result lines in output`);
         else if (record && label === repo.id) repo.expected = outcome;
-        else if (JSON.stringify(outcome) !== JSON.stringify(repo.expected)) {
+        else if (
+            outcome.exit_code !== repo.expected.exit_code ||
+            outcome.summary.join("\n") !== repo.expected.summary.join("\n")
+        ) {
             failures.push(`${label}: offline test outcome differs from repos.json`);
         }
     }
@@ -44,7 +47,7 @@ for (const repo of repos) {
 
 if (record && failures.length === 0) {
     const path = join(CORPUS_DIR, "repos.json");
-    const raw = JSON.parse(readFileSync(path, "utf8"));
+    const raw = parseJson<Record<string, unknown>>(readFileSync(path, "utf8"), "repos.json");
     writeFileSync(path, renderJson({ ...raw, repos }));
 }
 for (const failure of failures) console.log(`FAIL ${failure}`);

@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { CORPUS_DIR, isPlainRelativePath, under } from "./sources";
 
@@ -41,6 +41,16 @@ export interface RepoSpec {
 }
 
 const SHA = /^[0-9a-f]{40}$/;
+const ROLES = new Set<RepoSpec["role"]>(["rust-service", "typescript-package"]);
+
+function httpsHost(url: string): boolean {
+    try {
+        const parsed = new URL(url);
+        return parsed.protocol === "https:" && parsed.hostname !== "";
+    } catch {
+        return false;
+    }
+}
 
 export function loadRepos(): RepoSpec[] {
     const text = readFileSync(join(CORPUS_DIR, "repos.json"), "utf8");
@@ -57,13 +67,32 @@ export function loadRepos(): RepoSpec[] {
     if (new Set(ids).size !== ids.length) throw new Error(`repos.json: duplicate id in ${ids}`);
     for (const repo of repos) {
         if (!SHA.test(repo.commit)) throw new Error(`repos.json: ${repo.id}: commit is not a SHA`);
+        if (!ROLES.has(repo.role)) throw new Error(`repos.json: ${repo.id}: role ${repo.role}`);
+        if (typeof repo.url !== "string" || !httpsHost(repo.url)) {
+            throw new Error(`repos.json: ${repo.id}: url must be an https URL with a host`);
+        }
         if (typeof repo.license_file !== "string" || !isPlainRelativePath(repo.license_file)) {
             throw new Error(
                 `repos.json: ${repo.id}: license_file must be a relative path in the clone`,
             );
         }
-        if (!existsSync(join(TWINS_DIR, repo.twin.id))) {
-            throw new Error(`repos.json: ${repo.twin.id}: corpus/twins/${repo.twin.id} is missing`);
+        const overlay = join(TWINS_DIR, repo.twin.id);
+        if (!statSync(overlay, { throwIfNoEntry: false })?.isDirectory()) {
+            throw new Error(
+                `repos.json: ${repo.twin.id}: corpus/twins/${repo.twin.id} is not a directory`,
+            );
+        }
+        const expected = repo.expected;
+        const outcome =
+            typeof expected === "object" &&
+            expected !== null &&
+            Number.isSafeInteger(expected.exit_code) &&
+            Array.isArray(expected.summary) &&
+            expected.summary.every((s) => typeof s === "string" && s.trim() !== "");
+        if (!outcome) {
+            throw new Error(
+                `repos.json: ${repo.id}: expected needs an integer exit_code and summary lines`,
+            );
         }
         if (!Array.isArray(repo.twin.renames)) {
             throw new Error(`repos.json: ${repo.twin.id}: renames must be an array`);
@@ -92,7 +121,11 @@ export function loadRepos(): RepoSpec[] {
             ["prepare", repo.prepare],
             ["test", repo.test],
         ] as const) {
-            const ok = Array.isArray(cmd) && cmd.length > 0 && cmd.every((a) => a.trim() !== "");
+            const ok =
+                Array.isArray(cmd) &&
+                cmd.length > 0 &&
+                cmd.every((a) => typeof a === "string" && a.trim() !== "") &&
+                cmd[0] === cmd[0]?.trim();
             if (!ok) throw new Error(`repos.json: ${repo.id}: ${field} must list a command`);
         }
     }
@@ -113,6 +146,7 @@ function run(cmd: string[], cwd: string, env: Record<string, string> = {}) {
         maxBuffer: 256 * 1024 * 1024,
     });
     if (result.error) throw new Error(`${bin}: ${result.error.message}`);
+    if (result.signal) throw new Error(`${bin}: terminated by ${result.signal}`);
     return { code: result.status ?? -1, output: `${result.stdout}${result.stderr}` };
 }
 
@@ -160,11 +194,13 @@ export function buildTwin(baseDir: string, twinDir: string, twin: TwinSpec): str
 }
 
 /** Identical Cargo result lines can represent distinct targets, so summarize preserves their multiplicity. */
+const ANSI = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
+
 export function summarize(output: string): string[] {
     const results: string[] = [];
     const fails = new Set<string>();
     for (const raw of output.split("\n")) {
-        const line = raw.trim();
+        const line = raw.replace(ANSI, "").trim();
         if (/^test result:/.test(line)) results.push(line.replace(/; finished in .*$/, ""));
         else if (/^\(fail\) /.test(line)) fails.add(line.replace(/ \[[\d.]+m?s\]$/, ""));
         else if (/^\d+ (pass|fail|skip)$/.test(line)) results.push(line);

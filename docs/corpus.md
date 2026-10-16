@@ -50,7 +50,7 @@ The scenario compiler conditions on at least one request.
 |---|---|---|---|---|
 | `requests_per_session` | 8,058 | 1 | 16 | 152 |
 | `tool_steps_per_request` | 79,216 | 2 | 18 | 90 |
-| `append_tokens_per_step` | 665,453 | 1,045 | 6,963 | 159,485 |
+| `append_tokens_per_step` | 661,022 | 1,042 | 6,964 | 160,073 |
 | `idle_within_session_s` | 71,290 | 101 | 938 | 40,358 |
 | `idle_between_sessions_s` | 1,675 | 2,641 | 245,896 | 1,787,034 |
 | `tool_output_chars` | 743,050 | 407 | 8,219 | 40,151 |
@@ -76,8 +76,8 @@ Paper v2 reports append percentiles per provider only.
 |---|---|---|---|
 | requests/session p50, p90, p99 | 1, 16, 161 | 1, 16, 152 | within |
 | idle p50, p90, p99 (s) | 86, 900, 39,600 | 101, 938, 40,358 | within |
-| append p50 | ~1k | 1,045 | within |
-| append p90 | ~4.4k | 6,963 | recorded deviation |
+| append p50 | ~1k | 1,042 | within |
+| append p90 | ~4.4k | 6,964 | recorded deviation |
 
 The append p90 deviation is a recorded waiver, and the M1 exit criterion
 holds for that percentile only through it. TraceLab paper v2
