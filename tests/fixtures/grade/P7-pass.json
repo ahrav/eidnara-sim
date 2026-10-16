@@ -1,5 +1,5 @@
 {
-  "provenance": "constructed from the compiled P7 check of seed 101 (S); judge_verdicts are scripted; the live judge returned the same verdicts on 2026-10-16 (sim-runs/judge-smoke)",
+  "provenance": "constructed from the compiled P7 check of seed 101 (S); judge_verdicts are scripted; the live judge returned the same verdicts on 2026-10-16 (runs/judge-smoke)",
   "probe": {
     "id": "q-0054",
     "type": "P7",

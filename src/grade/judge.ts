@@ -59,17 +59,19 @@ export interface BlindedPrompt {
     second: string;
 }
 
+const MARKUP = /<!--[\s\S]*?-->|<\/?[a-zA-Z][^<>]*>/g;
+
 export function normalise(text: string): string {
     return text
         .replace(/^[ \t]*```[^`\n]*$/gm, "")
         .replace(/^#{1,6}\s+/gm, "")
         .replace(/^\s*[-*+]\s+/gm, "")
         .replace(/^[ \t]*\[[^\]]+\]:[ \t]+\S.*$/gm, "")
-        .replace(/<!--[\s\S]*?-->/g, " ")
-        .replace(/<\/?[a-zA-Z][^<>]*>/g, " ")
+        .replace(MARKUP, " ")
         .replace(/&#x([0-9a-fA-F]+);/g, (_, hex: string) => codePoint(Number.parseInt(hex, 16)))
         .replace(/&#(\d+);/g, (_, dec: string) => codePoint(Number(dec)))
         .replace(/&(amp|lt|gt|quot|apos|nbsp);/g, (_, name: string) => ENTITIES[name] ?? "")
+        .replace(MARKUP, " ")
         .replace(/!?\[([^\]]*)\]\[[^\]]*\]/g, "$1")
         .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
         .replace(/\*{2,3}|_{2,3}|`/g, "")
@@ -130,6 +132,12 @@ const isIdentity = (value: unknown): value is JudgeIdentity =>
         (key) => typeof (value as Record<string, unknown>)[key] === "string",
     );
 
+const isPair = (value: unknown, kind: "string" | "number") =>
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as Record<string, unknown>).a === kind &&
+    typeof (value as Record<string, unknown>).b === kind;
+
 export interface JudgeIdentity {
     model: string;
     prompt_digest: string;
@@ -169,7 +177,7 @@ export function parseVerdict(text: string): RawVerdict {
     const word = text
         .trim()
         .toLowerCase()
-        .replace(/[^a-z]/g, "");
+        .replace(/[.!]+$/, "");
     if (word === "first" || word === "second" || word === "both" || word === "neither") return word;
     throw new GradeRefused(`judge reply ${JSON.stringify(text.slice(0, 80))} is not a verdict`);
 }
@@ -430,6 +438,9 @@ export function gradeP7(j: Judgment, c: P7Context, rules: Rules, version = 1): G
     if (!isIdentity(j.judge)) throw new GradeRefused(`judgment for ${j.pair} names no judge`);
     if (j.pair !== c.item) {
         throw new GradeRefused(`judgment for ${j.pair} cannot grade item ${c.item}`);
+    }
+    if (!isPair(j.answers, "string") || !isPair(j.lengths, "number")) {
+        throw new GradeRefused(`judgment for ${j.pair} carries malformed answer evidence`);
     }
     if (j.answers.a !== c.answers.a || j.answers.b !== c.answers.b) {
         throw new GradeRefused(`judgment for ${j.pair} was made on other answers`);

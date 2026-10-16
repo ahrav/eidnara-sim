@@ -748,6 +748,43 @@ describe("P7 judge path", () => {
         }
     });
 
+    test("encoded markup is stripped after entity decoding", () => {
+        const base = { id: "p", a: "fine", b: "fine" };
+        expect(() =>
+            blind({ ...base, b: "Eid&lt;span&gt;&lt;/span&gt;nara found it" }, "a_then_b", "r", []),
+        ).toThrow("names an arm");
+        expect(normalise("Eid&lt;!-- x --&gt;nara")).toBe("Eid nara");
+    });
+
+    test("a judgment without answer or length containers is refused", async () => {
+        const f = load("P7-pass");
+        const judgment = await judgePair(
+            scripted(f.judge_verdicts),
+            f.pair,
+            f.probe.check.judge,
+            [],
+        );
+        const ctx = context(f.probe.id, f.pair, f.probe.check.judge);
+        for (const broken of [
+            { ...judgment, answers: null },
+            { ...judgment, answers: { a: 1, b: "x" } },
+            { ...judgment, lengths: undefined },
+            { ...judgment, lengths: { a: "3", b: 4 } },
+        ]) {
+            expect(() => gradeP7(broken as unknown as typeof judgment, ctx, rules)).toThrow(
+                GradeRefused,
+            );
+        }
+    });
+
+    test("a verdict is one word with trailing punctuation at most", () => {
+        expect(parseVerdict(" Second.\n")).toBe("second");
+        expect(parseVerdict("both!")).toBe("both");
+        for (const bad of ["fi\nrst", "f-i-r-s-t", "first second", "the first"]) {
+            expect(() => parseVerdict(bad)).toThrow("is not a verdict");
+        }
+    });
+
     test("the human-check sample is ten percent of P7 items, rounded up, from a seeded draw", () => {
         const items = Array.from({ length: 24 }, (_, i) => `q-${i}`);
         const a = humanCheckSample(items, rules, new Rng(9));
