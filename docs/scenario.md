@@ -1,7 +1,9 @@
 # Scenario compiler
 
 `bun scripts/compile-scenario.ts --tier <S|M|L|XL> --seed <n>` compiles one
-scenario to `runs/scenarios/<tier>-<seed>.json`. The inputs are the seed, the
+scenario to `runs/scenarios/<tier>-<seed>.json`; a `--embedder local` compile
+defaults to `runs/scenarios/<tier>-<seed>.local.json`, so a stand-in never
+replaces a Titan scenario. The inputs are the seed, the
 tier's pre-registration in `prereg/<tier>.json`, the corpus under `corpus/`,
 and the generator version `sim-scenario/v1`. The same inputs produce the same
 bytes in any process. The compiler scores cue and probe pairs with
@@ -153,15 +155,15 @@ thresholds (`bm25_max` 0.4, `cosine_max` 0.6):
 
 | Tier | Seed | `scenario_hash` | Largest BM25 ratio | Largest cosine |
 |---|---|---|---|---|
-| S | 101 | `977e4c30` | 0.2638 | 0.5194 |
-| S | 102 | `f7ea972f` | 0.2659 | 0.4867 |
-| M | 201 | `d0f228ab` | 0.2625 | 0.4992 |
-| M | 202 | `76a535f6` | 0.2592 | 0.4997 |
-| M | 203 | `1c0b0953` | 0.2618 | 0.4843 |
-| L | 301 | `f853b74b` | 0.2658 | 0.5092 |
-| L | 302 | `47a07a62` | 0.2643 | 0.4957 |
-| L | 303 | `7b7b083c` | 0.264 | 0.5083 |
-| XL | 401 | `2a49bfd4` | 0.2644 | 0.4962 |
+| S | 101 | `cc090dbb` | 0.263 | 0.5194 |
+| S | 102 | `4d13cb38` | 0.2647 | 0.4867 |
+| M | 201 | `adff2964` | 0.2543 | 0.4992 |
+| M | 202 | `930a2e1b` | 0.2532 | 0.4997 |
+| M | 203 | `ab66ded8` | 0.2548 | 0.4843 |
+| L | 301 | `81f28433` | 0.2648 | 0.5092 |
+| L | 302 | `e7e9e5c7` | 0.2555 | 0.4957 |
+| L | 303 | `02b29517` | 0.256 | 0.5083 |
+| XL | 401 | `d74adcfa` | 0.2574 | 0.4962 |
 
 ## Known limits
 

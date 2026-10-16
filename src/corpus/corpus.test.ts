@@ -136,9 +136,13 @@ describe("committed corpus", () => {
         broken.typescript.scoped_update[0].update = "   ";
         broken.typescript.constraint[0].check = { first_line_must: ["^x"] };
         broken.typescript.decision[1].authority.path = "  ";
+        broken.rust.constraint[1].example.path = "../../outside.rs";
+        broken.rust.constraint[0].example.content = "pub const WRONG = 1;";
         expect(bankProblems(broken)).toEqual([
             "fact-bank any: language missing",
             "fact-bank rust/constraint[0] rs-cmd-const-prefix: statement missing",
+            "fact-bank rust/constraint[0] rs-cmd-const-prefix: example content does not satisfy the check",
+            "fact-bank rust/constraint[1] rs-cmd-error-tag: example path escapes the project",
             "fact-bank rust/constraint[1] rs-cmd-error-tag: out_probe missing",
             "fact-bank rust/constraint[2] rs-db-helper-prefix: statement names an unknown placeholder",
             "fact-bank rust/constraint[3] rs-test-suffix: check needs must or paths_must",

@@ -240,7 +240,7 @@
                 "out_probe": "Add a small function to the trace module that formats a duration in milliseconds.",
                 "check": {
                     "must": [
-                        "{token}[A-Za-z0-9_]*\\s*[=(]"
+                        "(?<![A-Za-z0-9_$]){token}[A-Za-z0-9_]*\\s*[=(]"
                     ]
                 }
             },
@@ -493,10 +493,10 @@
                 "probe": "Commit what we have so far.",
                 "check": {
                     "commands_must": [
-                        "git(?:\\s+(?:-[cC]\\s+\\S+|-[pP]|--[\\w-]+(?:=\\S+)?))*\\s+commit\\b(?![^\\n]*--dry-run)(?:(?!\\s(?:-\\w*m|--message))[^\\n])*\\s(?:-\\w*m ?|--message[ =])[\"']?\\[{token}\\]"
+                        "git(?:\\s+(?:-[cC]\\s+\\S+|-[pP]|--[\\w-]+(?:=\\S+)?))*\\s+commit\\b(?!(?:[^\"'\\n]*(?:\"[^\"\\n]*\"|'[^'\\n]*'))*[^\"'\\n]*\\s--dry-run(?:\\s|$))(?:(?!\\s(?:-\\w*m|--message))[^\\n])*\\s(?:-\\w*m ?|--message[ =])[\"']?\\[{token}\\]"
                     ],
                     "commands_must_not": [
-                        "git(?:\\s+(?:-[cC]\\s+\\S+|-[pP]|--[\\w-]+(?:=\\S+)?))*\\s+commit\\b(?![^\\n]*--dry-run)(?!(?:(?!\\s(?:-\\w*m|--message))[^\\n])*\\s(?:-\\w*m ?|--message[ =])\\s*[\"']?\\[{token}\\])"
+                        "git(?:\\s+(?:-[cC]\\s+\\S+|-[pP]|--[\\w-]+(?:=\\S+)?))*\\s+commit\\b(?!(?:[^\"'\\n]*(?:\"[^\"\\n]*\"|'[^'\\n]*'))*[^\"'\\n]*\\s--dry-run(?:\\s|$))(?!(?:(?!\\s(?:-\\w*m|--message))[^\\n])*\\s(?:-\\w*m ?|--message[ =])\\s*[\"']?\\[{token}\\])"
                     ]
                 }
             },

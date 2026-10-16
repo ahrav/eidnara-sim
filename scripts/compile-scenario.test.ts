@@ -309,6 +309,14 @@ describe("compile-scenario dot-dot inside a symlink target", () => {
     });
 });
 
+describe("compile-scenario default output", () => {
+    test("the local stand-in defaults to a path distinct from a Titan scenario", () => {
+        const r = run("--tier", "S", "--seed", "101", "--embedder", "local");
+        expect(r.exitCode).toBe(0);
+        expect(r.stdout.toString()).toContain("runs/scenarios/S-101.local.json");
+    });
+});
+
 describe("compile-scenario arguments", () => {
     test("a blank flag value is refused with the usage line", () => {
         const r = run("--tier", "S", "--seed", "101", "--embedder", "local", "--out", "");

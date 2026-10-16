@@ -24,7 +24,7 @@ import {
     type Template,
 } from "./compile";
 import { CONSUMED_FILES, langOf, loadCompileInput, loadPrereg, verifyCorpus } from "./inputs";
-import { type Embedder, hashEmbedder } from "./similarity";
+import { bm25Ratio, type Embedder, hashEmbedder } from "./similarity";
 
 const ROOT = join(import.meta.dir, "..", "..");
 const inputS = (seed: number): CompileInput => loadCompileInput(seed, "S", hashEmbedder, true);
@@ -325,6 +325,29 @@ describe("compiled S scenario", async () => {
         }
     });
 
+    test("the BM25 collection holds each delivered cue once", () => {
+        const diffs = s.events.filter((e) => e.kind === "apply_diff") as unknown as {
+            fact: string;
+            content: string;
+        }[];
+        const texts = new Map<string, string>();
+        for (const f of s.facts) for (const c of f.cues) texts.set(sha256Hex(c), c);
+        for (const d of diffs) texts.set(sha256Hex(d.content), d.content);
+        const authorities = diffs.filter(
+            (d) => !s.facts.find((f) => f.id === d.fact)?.cues.includes(d.content),
+        );
+        const collection = [
+            ...s.facts.flatMap((f) => f.cues),
+            ...authorities.map((d) => d.content),
+        ];
+        for (const x of s.similarity as { probe: string; cue_sha256: string; bm25: number }[]) {
+            const text = s.probes.find((p) => p.id === x.probe)?.text ?? "";
+            const expected =
+                Math.round(bm25Ratio(text, texts.get(x.cue_sha256) ?? "", collection) * 1e4) / 1e4;
+            expect({ probe: x.probe, bm25: x.bm25 }).toEqual({ probe: x.probe, bm25: expected });
+        }
+    });
+
     test("SIM-P08: an authoritative P3 diff is scored against its fact's probes", () => {
         const diffs = s.events.filter((e) => e.kind === "apply_diff") as unknown as {
             fact: string;
@@ -582,6 +605,8 @@ describe("fact bank checks", () => {
         );
         expect(re.test("function quiet_vole_strip_slash(path: string) {}")).toBe(true);
         expect(re.test("const quiet_voleClamp = (n: number) => n")).toBe(true);
+        expect(re.test("function notquiet_voleStrip(path: string) {}")).toBe(false);
+        expect(re.test("const disquiet_vole = (n: number) => n")).toBe(false);
     });
 
     test("the Proxy rule matches generic constructions", () => {
@@ -662,6 +687,8 @@ describe("fact bank checks", () => {
         expect(forbid.test("git commit -C HEAD~1")).toBe(true);
         expect(forbid.test("git commit --dry-run -F msg.txt")).toBe(false);
         expect(forbid.test("git commit --amend -m '[quiet_vole] fixed'")).toBe(false);
+        expect(forbid.test('git commit -m "fix --dry-run behavior"')).toBe(true);
+        expect(re.test('git commit -m "[quiet_vole] fix --dry-run behavior"')).toBe(true);
         expect(re.test('git commit -m "[quiet_vole] cap" --dry-run')).toBe(false);
         expect(re.test("git commit --message=[quiet_vole] cap")).toBe(true);
         expect(re.test("git commit -mwrong -m[quiet_vole]")).toBe(false);
