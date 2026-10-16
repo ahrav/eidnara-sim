@@ -26,7 +26,7 @@ None.
 
 ## What a test must construct
 
-A scheduled harness kill.
+The harness kill every campaign schedules.
 
 ## Investigation log
 

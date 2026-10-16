@@ -16,10 +16,12 @@ pre-registers. Each id is the slug prefix and opens the `Guarantee:` line.
 
 ## Reachability classes
 
-- `default-production`: a default tier run with no scheduled faults reaches the
-  surface.
-- `explicit-config-only`: the surface runs only when a tier schedules faults,
-  the counterfactual arm, or two host clients on one daemon.
+- `default-production`: a default tier run reaches the surface. Every campaign
+  schedules one harness kill while an item is issued (SIM-P64), so the journal
+  and resume records that need an interrupt are reached by default.
+- `explicit-config-only`: the surface runs only when a tier schedules provider
+  or infrastructure faults, the counterfactual arm, or two host clients on one
+  daemon.
 - `test-only`: a surface only a test constructs; no record carries this class.
 
 `scripts/check-catalog.ts` checks the record schema and field order against
@@ -1631,7 +1633,7 @@ per campaign.
 Check: `sometimes` - observe at least one interrupt with an issued item; only
 then does SIM-P63 run.
 Fault/timing angle: none.
-Required faults and enabling state: a scheduled harness kill.
+Required faults and enabling state: the harness kill every campaign schedules.
 Confidence: low - [evidence](evidence/sim-p64-interrupt-mid-turn-exercised.md).
 PROPOSED: reconstructed from the condensed index in spec #1007; no
 implementation exists to verify against, and a default tier run reaches it.

@@ -433,6 +433,17 @@ describe("report check against the pre-registration", () => {
         ]);
     });
 
+    test("a claim-bearing verdict needs at least one observation", () => {
+        const r = acceptedReport(m);
+        at(r, "probe-P1").n = 0;
+        at(r, "resources").n = 0;
+        at(r, "cost").n = 0;
+        expect(checkReport(r, m)).toEqual([
+            "families[probe-P1].n: a better verdict rests on at least one observation",
+            "families[resources].n: a passed-gate verdict rests on at least one observation",
+        ]);
+    });
+
     test("caps n at the paired items or paired runs the pre-registration produces", () => {
         const r = acceptedReport(m);
         at(r, "probe-P1").n = 121;

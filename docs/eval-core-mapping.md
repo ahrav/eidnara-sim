@@ -88,7 +88,7 @@ counterpart holds part of the value; the note names the rest), `extension`
 | `families[].outcome` | `ArmResult` | partial | `binary` maps to pass and fail; `graded`, `count`, and `slope` need `eval-analysis-family/v3`. |
 | `families[].treatment_unit` | none | extension | The arm is applied per run; eval-core has no treatment-unit field. |
 | `families[].analysis_unit` | `ClusterKey` granularity | partial | `item` maps to one pair; `run` needs `eval-analysis-family/v3`. |
-| `families[].cluster_key` | `ClusteringUnit` (`family`, `world_seed`) | partial | `run` maps to `world_seed`; `ledger_fact_id` needs a third unit in `eval-analysis-family/v3`. |
+| `families[].cluster_key` | `ClusteringUnit` (`family`, `world_seed`) | partial | A v2 run is one (seed, host) pair, so M's six paired runs are three seeds on two hosts; `world_seed` alone merges each seed's two host runs, and `run` needs a host-aware unit in `eval-analysis-family/v3`, as does `ledger_fact_id`. |
 | `families[].direction` | gate verdicts | partial | `noninferiority` maps to `quality_loss` against `noninferiority_margin`; `threshold` maps to `floor`; the others need `eval-analysis-family/v3`. |
 | `families[].margin` | `CampaignProfile` rates | partial | |
 | `families[].margin.value` | `noninferiority_margin`, `floor_threshold` | partial | The harm family's 10 pp margin projects to `noninferiority_margin = "0.1"`; the S P8/P9 floor to `floor_threshold = "0.9"`. Margins in ms, bytes, ratios, and counts need `eval-analysis-family/v3`. |

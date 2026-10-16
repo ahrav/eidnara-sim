@@ -38,6 +38,14 @@ const SUPERIORITY_VERDICTS: readonly string[] = [
     "inconclusive",
     "insufficient-runs",
 ];
+/** Verdicts that state a result about the data, each needing at least one observation. */
+const CLAIM_VERDICTS: readonly string[] = [
+    "better",
+    "worse",
+    "no-difference-above-x-pp-detectable-at-n",
+    "passed-gate",
+    "failed-gate",
+];
 const REPORT_FIELDS = ["tier", "claim_boundary", "prereg_hash", "families"];
 const VERDICT_FIELDS = [
     "family",
@@ -83,7 +91,9 @@ function checkVerdict(
     if (verdict === "") errors.push(`${at}.verdict: expected a verdict kind`);
     else if (!VERDICT_KINDS.includes(f.verdict)) errors.push(`${at}.verdict: ${verdict}`);
     if (!Number.isSafeInteger(f.n) || f.n < 0) errors.push(`${at}.n: missing`);
-    else if (
+    else if (f.n === 0 && CLAIM_VERDICTS.includes(verdict)) {
+        errors.push(`${at}.n: a ${verdict} verdict rests on at least one observation`);
+    } else if (
         family.analysis_unit === "item" &&
         f.n > prereg.stopping_rule.paired_items_per_probe_type
     ) {
