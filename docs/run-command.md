@@ -13,7 +13,8 @@ bun scripts/run-tier.ts --tier S --seed 101 --out runs/S-101-pi \
 
 The v1 harness closure resolves `opencode` through a shell, and that shell
 sees the `PATH` the harness started with, so the run refuses to start
-unless the pinned OpenCode release's `node_modules/.bin` is on `PATH`.
+unless the pinned OpenCode release's `node_modules/.bin` is on `PATH` and is
+the first entry there that holds an `opencode`.
 
 `--arms` keeps the listed arms of the seed's pre-registered order, and
 `--events N` runs the first N scenario events. `--faults` replaces the

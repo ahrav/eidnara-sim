@@ -632,8 +632,9 @@ describe("witnesses", () => {
         const earlierButLater = { ...base, seq: 1, wall_ms: at + 50, arrival: 0 };
         const injected = { ...base, seq: 0, wall_ms: at + 10, arrival: 1, fault_ref: "f" };
         const retry = { ...base, seq: 2, wall_ms: at + 60, arrival: 2 };
+        const stepped = { ...retry, started_wall_ms: at - 5_000 };
         const resumed = new FaultInjector([fault], new Rng(7), 5_000);
-        resumed.restore([injected, earlierButLater, retry]);
+        resumed.restore([injected, earlierButLater, stepped]);
         expect(resumed.report("eidnara")[0]).toMatchObject({
             status: "fired",
             injected_seq: [0],

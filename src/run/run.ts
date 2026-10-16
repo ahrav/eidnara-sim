@@ -85,11 +85,19 @@ export function pinnedBin(config: SimConfig): string {
     return resolve(dirname(config.opencode_binary), "../../.bin");
 }
 
+/** The pinned release's `.bin` is the first PATH entry that resolves `opencode`, so a shell lookup picks it. */
 export function requirePinnedPath(config: SimConfig): void {
     const bin = pinnedBin(config);
-    if (!(process.env.PATH ?? "").split(":").includes(bin)) {
+    const entries = (process.env.PATH ?? "").split(":").filter((d) => d !== "");
+    if (!entries.includes(bin)) {
         throw new HarnessFailure(
             `PATH lacks the pinned OpenCode release; run with PATH=${bin}:$PATH`,
+        );
+    }
+    const first = entries.find((dir) => existsSync(join(dir, "opencode")));
+    if (first !== undefined && first !== bin) {
+        throw new HarnessFailure(
+            `PATH resolves opencode from ${first} before the pinned release ${bin}`,
         );
     }
 }
@@ -267,6 +275,20 @@ export function requireJournalShape(
 export function manifestIdentity(manifest: Manifest): string {
     const { preflight: _preflight, ...fields } = manifest;
     return sha256Hex(canonicalJson(fields));
+}
+
+/** A run with no journal yet owns no arm payload; an existing `<arm>/r` or `<arm>/s` is refused. */
+export function requireFreshArmRoots(out: string, arms: readonly string[]): void {
+    for (const arm of arms) {
+        for (const sub of ["r", "s"]) {
+            const path = join(out, arm, sub);
+            if (existsSync(path)) {
+                throw new HarnessFailure(
+                    `${path} exists but ${out} has no journal; a fresh run would delete it`,
+                );
+            }
+        }
+    }
 }
 
 /** A JSONL artifact's unterminated final line is a cut write; it is removed before appending. */
@@ -952,6 +974,7 @@ async function runArms(
         throw new HarnessFailure(`${o.out} holds a completed run; its journal ends with EndRun`);
     }
     requireJournalShape(journal.entries);
+    if (journal.entries.length === 0) requireFreshArmRoots(o.out, loadPrereg(o.tier).arms.run);
     const compiled = await tracked(() => loadScenario(o));
     const { manifest, checks } = await tracked(() => loadManifest(o, compiled));
     requireJournalShape(

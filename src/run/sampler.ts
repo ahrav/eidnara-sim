@@ -72,7 +72,8 @@ export interface Sample {
 
 export class ResourceSampler {
     private timer: ReturnType<typeof setInterval> | null = null;
-    private last: { pid: number; wall: number; cpu: number } | null = null;
+    /** The previous sample's monotonic time, so a wall-clock step cannot distort the CPU fraction. */
+    private last: { pid: number; mono: number; cpu: number } | null = null;
     private busy = false;
 
     constructor(
@@ -99,11 +100,12 @@ export class ResourceSampler {
         const pid = this.o.pid();
         const stats = pid === null ? null : procStats(pid);
         const wall = Date.now();
+        const mono = performance.now();
         let fraction: number | null = null;
-        if (stats && this.last?.pid === pid && wall > this.last.wall) {
-            fraction = (stats.cpuMs - this.last.cpu) / (wall - this.last.wall);
+        if (stats && this.last?.pid === pid && mono > this.last.mono) {
+            fraction = (stats.cpuMs - this.last.cpu) / (mono - this.last.mono);
         }
-        this.last = stats && pid !== null ? { pid, wall, cpu: stats.cpuMs } : null;
+        this.last = stats && pid !== null ? { pid, mono, cpu: stats.cpuMs } : null;
         const busy = fraction === null ? this.busy : fraction > this.o.busyFraction;
         if (busy !== this.busy) {
             this.busy = busy;

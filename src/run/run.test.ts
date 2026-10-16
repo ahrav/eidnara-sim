@@ -25,10 +25,12 @@ import {
     manifestIdentity,
     type RunOptions,
     requireDeclaredProjects,
+    requireFreshArmRoots,
     requireJournalShape,
     requireMechanisms,
     requireOutsideCheckout,
     requireOutsideIdentity,
+    requirePinnedPath,
     requirePlainArtifacts,
     runSteps,
     treeIdentity,
@@ -158,6 +160,38 @@ describe("run inputs", () => {
         expect(() => requirePlainArtifacts(out, ["host", "eidnara"])).toThrow(
             /state.json is not a regular file/,
         );
+    });
+
+    test("a fresh run refuses an output directory that already holds arm payloads", () => {
+        const out = dir();
+        expect(() => requireFreshArmRoots(out, ["host", "eidnara"])).not.toThrow();
+        mkdirSync(join(out, "eidnara", "r"), { recursive: true });
+        expect(() => requireFreshArmRoots(out, ["host", "eidnara"])).toThrow(/has no journal/);
+    });
+
+    test("the pinned OpenCode release must be the first PATH entry that resolves opencode", () => {
+        const saved = process.env.PATH;
+        const other = dir();
+        writeFileSync(join(other, "opencode"), "");
+        const pinned = join(bins, "node_modules", ".bin");
+        mkdirSync(pinned, { recursive: true });
+        writeFileSync(join(pinned, "opencode"), "");
+        const cfg = {
+            ...config,
+            opencode_binary: join(bins, "node_modules/opencode-ai/bin/opencode"),
+        };
+        try {
+            process.env.PATH = `${pinned}:${other}`;
+            expect(() => requirePinnedPath(cfg)).not.toThrow();
+            process.env.PATH = `${other}:${pinned}`;
+            expect(() => requirePinnedPath(cfg)).toThrow(
+                /resolves opencode from .* before the pinned release/,
+            );
+            process.env.PATH = other;
+            expect(() => requirePinnedPath(cfg)).toThrow(/PATH lacks the pinned OpenCode release/);
+        } finally {
+            process.env.PATH = saved;
+        }
     });
 
     test("a scenario's project ids are plain names and every event project is declared", () => {

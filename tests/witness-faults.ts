@@ -210,6 +210,7 @@ const IDENTITY_FIELDS = [
     "binaries",
     "corpus",
     "bedrock",
+    "toolchain",
 ] as const;
 
 function summarize(dir: string) {
