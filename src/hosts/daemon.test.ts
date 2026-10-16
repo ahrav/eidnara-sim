@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "../config/config";
@@ -115,4 +115,26 @@ test("a lifetime's stderr log left by a harness kill is saved before the next da
     expect(readFileSync(logFile, "utf8")).toBe(
         "daemon: memory capture output rejected\nsecond lifetime\n",
     );
+});
+
+test("the recovery marker outlives the copy, so a kill during recovery leaves the log findable", () => {
+    const dir = mkdtempSync(join(tmpdir(), "sim-daemon-"));
+    const logFile = join(dir, "daemon.log");
+    const logPath = join(dir, "direct-host.log");
+    mkdirSync(logFile);
+    const daemon = new DaemonStack({
+        config: loadConfig(),
+        root: dir,
+        dataDir: dir,
+        logFile,
+        offsetFile: join(dir, "offset"),
+        proxyHttp1: "",
+        proxyHttp2: "",
+        model: "m",
+    });
+    writeFileSync(`${logFile}.source`, logPath);
+    writeFileSync(logPath, "daemon: memory capture output rejected\n");
+    expect(() => daemon.recoverLog()).toThrow();
+    expect(existsSync(`${logFile}.source`)).toBe(true);
+    expect(existsSync(logPath)).toBe(true);
 });

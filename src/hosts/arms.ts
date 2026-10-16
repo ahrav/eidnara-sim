@@ -143,16 +143,19 @@ export class DaemonStack {
     }
 
     /**
-     * Saves the stderr log a killed lifetime left behind, then removes it. A clean `stop` or
-     * `restart` has already saved and removed its log, so this finds a file only after a kill.
+     * Saves the stderr log a killed lifetime left behind, then removes it and its marker, in
+     * that order, so a kill during the copy leaves the log findable (and the copy restarts
+     * from its beginning). A clean `stop` or `restart` has already saved and removed its log,
+     * so this finds a file only after a kill.
      */
     recoverLog(): void {
         if (!existsSync(this.logSourceFile)) return;
         const source = readFileSync(this.logSourceFile, "utf8").trim();
+        if (source !== "" && existsSync(source)) {
+            appendFileFrom(source, this.ctx.logFile);
+            rmSync(source, { force: true });
+        }
         rmSync(this.logSourceFile, { force: true });
-        if (source === "" || !existsSync(source)) return;
-        appendFileFrom(source, this.ctx.logFile);
-        rmSync(source, { force: true });
     }
 
     async start(): Promise<void> {

@@ -59,7 +59,11 @@ function f1(arm: ArmLogs): Activation[] {
         evidence: errorOf(c).slice(0, 200),
         component: c.component,
     }));
-    const agentAt = new Set(calls.filter((c) => c.component === "agent").map((c) => c.at));
+    const agentAt = new Set(
+        arm.calls
+            .filter((c) => c.component === "agent" && c.status >= 400 && OVERFLOW.test(errorOf(c)))
+            .map(at),
+    );
     const turns = arm.journal
         .filter((e) => e.kind === "EndTurn" && OVERFLOW.test(String(e.outcome)))
         .filter((e) => !agentAt.has(String(e.event)))
@@ -113,7 +117,7 @@ function f4(arm: ArmLogs, quietMs: number): Activation[] {
         };
         const silence = "with no tool run, call, or turn end";
         if (began) {
-            const starts = turnCalls.map((c) => c.scenario_ms);
+            const starts = calls.map((c) => c.scenario_ms);
             const quiet = quietAfter(began.scenario_ms, [...starts, e.scenario_ms]);
             if (quiet > quietMs) windows.push(`turn began, then ${Math.round(quiet / 1000)} s`);
         }
