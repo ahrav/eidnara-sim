@@ -103,7 +103,7 @@ type Usage = Record<string, number>;
 type Done = Partial<CallRecord> &
     Pick<CallRecord, "component" | "componentSource" | "model" | "status">;
 
-const RESPONSE_TEXT_LIMIT = 32_768;
+const RESPONSE_TEXT_LIMIT = 262_144;
 const RELAYED_TEXT = new Set<string>(["agent", "user-sim", "judge"]);
 
 const CLAUDE_5_5 = /anthropic\.claude-(opus|sonnet|haiku)-5-5/;
@@ -387,10 +387,14 @@ export class Gateway {
                 sink.write(Buffer.from(JSON.stringify({ message: failure.message ?? "error" })));
             } else if (!done.finish_reason) done.finish_reason = "stream_cut";
         }
-        const relayed = text.join("").slice(0, RESPONSE_TEXT_LIMIT);
+        const whole = text.join("");
+        const relayed = whole.slice(0, RESPONSE_TEXT_LIMIT);
+        const cut = whole.length > relayed.length ? { response_text_truncated: true as const } : {};
         return {
             ...done,
-            ...(relayed && RELAYED_TEXT.has(done.component) ? { response_text: relayed } : {}),
+            ...(relayed && RELAYED_TEXT.has(done.component)
+                ? { response_text: relayed, ...cut }
+                : {}),
             proxy_retries: retries,
             input_tokens: usage.inputTokens ?? 0,
             output_tokens: usage.outputTokens ?? 0,

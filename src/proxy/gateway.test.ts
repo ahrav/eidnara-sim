@@ -502,6 +502,30 @@ describe("call records", () => {
         expect(records.records[0]?.response_text).toBe("done");
     });
 
+    test("a reply past the recorded-text cap is marked truncated", async () => {
+        const long: Upstream = {
+            async converse() {
+                const usage = { inputTokens: 1, outputTokens: 1 };
+                async function* events() {
+                    yield { messageStart: { role: "assistant" } };
+                    for (let i = 0; i < 70; i++) {
+                        const text = "x".repeat(4_096);
+                        yield { contentBlockDelta: { contentBlockIndex: 0, delta: { text } } };
+                    }
+                    yield { contentBlockStop: { contentBlockIndex: 0 } };
+                    yield { messageStop: { stopReason: "end_turn" } };
+                    yield { metadata: { usage, metrics: { latencyMs: 3 } } };
+                }
+                return { events: events() };
+            },
+        };
+        const { records, url } = await start(null, long);
+        await hostCall(url, AGENT_BODY, 5_000);
+        const record = records.records[0];
+        expect(record?.response_text_truncated).toBe(true);
+        expect((record?.response_text ?? "").length).toBe(262_144);
+    });
+
     test("a streamed reply with two text blocks records the same text as its non-streaming form", async () => {
         const usage = { inputTokens: 1, outputTokens: 1 };
         const twoBlocks: Upstream = {

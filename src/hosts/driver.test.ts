@@ -235,6 +235,68 @@ describe("HostDriver lifecycle", () => {
         ).toBe("Add src/a.txt");
     });
 
+    test("apply_diff runs plumbing under a pristine repo config and refuses alternates", async () => {
+        const { driver } = fixture("host", { p: gitRepo() });
+        await driver.reset();
+        const ws = driver.workspace("p");
+        const outside = tmp();
+        const ran = join(outside, "ran");
+        const hook = join(outside, "hook.sh");
+        writeFileSync(hook, `#!/bin/sh\ntouch ${ran}\ncat\n`, { mode: 0o755 });
+        const hooks = join(outside, "hooks");
+        mkdirSync(hooks);
+        writeFileSync(join(hooks, "post-index-change"), `#!/bin/sh\ntouch ${ran}\n`, {
+            mode: 0o755,
+        });
+        writeFileSync(join(outside, "more.gitconfig"), `[core]\n\thooksPath = ${hooks}\n`);
+        const config = join(ws, ".git", "config");
+        const before = readFileSync(config, "utf8");
+        writeFileSync(
+            config,
+            `${before}[filter "a=b"]\n\tclean = ${hook}\n\trequired = true\n[include]\n\tpath = ${join(outside, "more.gitconfig")}\n[user]\n\tname = agent\n`,
+        );
+        writeFileSync(join(ws, ".gitattributes"), "* filter=a=b\n");
+        await driver.event(ev("apply_diff", { path: "src/a.txt", content: "A" }));
+        expect(existsSync(ran)).toBe(false);
+        expect(spawnSync("git", ["show", "HEAD:src/a.txt"], { cwd: ws }).stdout.toString()).toBe(
+            "A",
+        );
+        expect(readFileSync(config, "utf8")).toContain("name = agent");
+        mkdirSync(join(ws, ".git", "objects", "info"), { recursive: true });
+        writeFileSync(join(ws, ".git", "objects", "info", "alternates"), `${outside}\n`);
+        const next = ev("apply_diff", { path: "src/b.txt", content: "B" });
+        await expect(driver.event(next)).rejects.toThrow("alternates");
+    });
+
+    test("apply_diff proceeds over a scratch index lock a killed git left behind", async () => {
+        const { driver, armDir } = fixture("host", { p: gitRepo() });
+        await driver.reset();
+        writeFileSync(join(armDir, "apply-diff.index.lock"), "");
+        await driver.event(ev("apply_diff", { path: "src/a.txt", content: "A" }));
+        const ws = driver.workspace("p");
+        expect(spawnSync("git", ["show", "HEAD:src/a.txt"], { cwd: ws }).stdout.toString()).toBe(
+            "A",
+        );
+    });
+
+    test("apply_diff refuses a workspace replaced by a symlink and creates no directory through one", async () => {
+        const { driver } = fixture("host", { p: gitRepo() });
+        await driver.reset();
+        const ws = driver.workspace("p");
+        const outside = tmp();
+        symlinkSync(outside, join(ws, "vendor"));
+        const through = ev("apply_diff", { path: "vendor/deep/x.txt", content: "A" });
+        await expect(driver.event(through)).rejects.toThrow("leaves");
+        expect(readdirSync(outside)).toEqual([]);
+        const elsewhere = tmp();
+        spawnSync("git", ["init", "-q"], { cwd: elsewhere });
+        rmSync(ws, { recursive: true });
+        symlinkSync(elsewhere, ws);
+        const root = ev("apply_diff", { path: "src/a.txt", content: "A" });
+        await expect(driver.event(root)).rejects.toThrow("symlink");
+        expect(existsSync(join(elsewhere, "src"))).toBe(false);
+    });
+
     test("apply_diff refuses a workspace whose .git internals are symlinks", async () => {
         const { driver } = fixture("host", { p: gitRepo() });
         await driver.reset();
@@ -393,6 +455,24 @@ describe("probe snapshots", () => {
         expect(state.commands).toEqual([run]);
     });
 
+    test("an embedded repository inside an already-indexed directory, or empty, is found; an ignored one is not", () => {
+        const repo = gitRepo();
+        mkdirSync(join(repo, "src"));
+        writeFileSync(join(repo, "src", "lib.rs"), "fn lib() {}\n");
+        writeFileSync(join(repo, ".gitignore"), "target/\n");
+        const armDir = tmp();
+        const recorder = new SnapshotRecorder(armDir, "eidnara", () => []);
+        recorder.sessionStart("s-1", "p", repo);
+        recorder.tree(repo);
+        spawnSync("git", ["init", "-q"], { cwd: join(repo, "src") });
+        mkdirSync(join(repo, "empty"));
+        spawnSync("git", ["init", "-q"], { cwd: join(repo, "empty") });
+        mkdirSync(join(repo, "target"));
+        spawnSync("git", ["init", "-q"], { cwd: join(repo, "target") });
+        expect(recorder.embedded(repo)).toEqual(["empty", "src"]);
+        expect(recorder.tree(repo)).toMatch(/^[0-9a-f]{40}$/);
+    });
+
     test("a probe turn that leaves an embedded repository in the workspace ends failed, naming it", async () => {
         const { driver, hosts } = fixture("host", { p: gitRepo() });
         const fresh = new HostDriver((driver as unknown as { o: DriverOptions }).o);
@@ -443,6 +523,18 @@ describe("probe snapshots", () => {
         expect(byId["host:q-1:e-1:calls"].calls.map((c: CallView) => c.component)).toEqual([
             "history_summarizer",
         ]);
+    });
+
+    test("a tracked-but-ignored path whose parent became a symlink is left out of the tree", () => {
+        const repo = gitRepo();
+        const armDir = tmp();
+        const recorder = new SnapshotRecorder(armDir, "eidnara", () => []);
+        recorder.trackIgnored(basename(repo), ["sub/limits.cfg"]);
+        const outside = tmp();
+        writeFileSync(join(outside, "limits.cfg"), "max = 9\n");
+        symlinkSync(outside, join(repo, "sub"));
+        recorder.sessionStart("s-1", "p", repo);
+        expect(recorder.tree(repo)).toMatch(/^[0-9a-f]{40}$/);
     });
 
     test("a change to a file the source tracks despite its ignore rules is in the snapshot diff", async () => {
@@ -648,6 +740,22 @@ test("a recorder rebuilt over a cut last snapshot line drops the cut and appends
     );
     const lines = readFileSync(path, "utf8").trim().split("\n");
     expect(lines.map((l) => JSON.parse(l).id)).toEqual(["eidnara:q:e-1", "eidnara:r:e-2"]);
+});
+
+test("a snapshot diff shows added lines of a file git would call binary", () => {
+    const repo = gitRepo();
+    const armDir = tmp();
+    const recorder = new SnapshotRecorder(armDir, "eidnara", () => []);
+    recorder.sessionStart("s-1", "p", repo);
+    const before = recorder.tree(repo);
+    writeFileSync(join(repo, ".gitattributes"), "*.ts -diff\n");
+    writeFileSync(join(repo, "rule.ts"), "const DROWSY_EGRET_MAX = 1;\n");
+    writeFileSync(join(repo, "blob.rs"), "static STORE: Mutex<u8>;\n\0padding\n");
+    recorder.capture({ probe: "q", session: "s-1", id: "e-1" }, "p", repo, before, [], false);
+    const patch = captured(armDir)["eidnara:q:e-1:diff"]?.patch ?? "";
+    expect(patch).toContain("+const DROWSY_EGRET_MAX = 1;");
+    expect(patch).toContain("+static STORE: Mutex<u8>;");
+    expect(patch).not.toContain("Binary files");
 });
 
 test("snapshot git refuses a workspace path that an agent replaced with a symlink", () => {

@@ -16,7 +16,7 @@ A snapshot holds the artefacts the harness captured at a probe turn's first
 | `command-log` | Each command the agent ran, with its exit code and scenario time: `turn` for the probe turn, `session` for every turn of its session so far |
 | `test-result` | A test command, its exit code, and its summary lines |
 | `workspace-state` | Selected workspace files by path |
-| `proxy-call` | Call records with component, turn, scenario time, token counts, and the response text the proxy relayed |
+| `proxy-call` | Call records with component, turn, scenario time, token counts, and the response text the proxy relayed  A call whose relayed text ran past the proxy's 262,144-character cap carries `response_text_truncated`, and a grader that reads that answer refuses the item|
 
 `gradeItem` refuses a snapshot with an artefact of any other class, such as
 an agent transcript or self-report (SIM-P40), and an item whose check lacks
@@ -57,7 +57,10 @@ would index it as a gitlink, hiding its files), and a probe turn that leaves
 one behind ends `failed` with `embedded repository at <path>`, so the item
 is excluded (SIM-P46) instead of graded on a diff that lacks that content.
 The recorder's git refuses a workspace path that is a symlink or lies behind
-one.
+one, and a tracked-but-ignored path whose parent became a symlink is left out
+of the tree. Nested repositories are found by their `.git` entries, with the
+ones the workspace's ignore rules match left alone. Snapshot diffs run with
+`--text`, so a NUL byte or a `-diff` attribute hides no added line.
 
 | Artefact | Source |
 |---|---|

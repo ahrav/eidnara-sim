@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { loadConfig, type SimConfig } from "../src/config/config";
-import type { Snapshot } from "../src/grade/artefacts";
+import { assertArtefactsOnly, type Snapshot } from "../src/grade/artefacts";
 import {
     BlindingRefused,
     gradeP7,
@@ -55,6 +55,14 @@ export async function gradeRun(dir: string, config: SimConfig | null): Promise<S
 }
 
 function requireComplete(entries: Entry[], arms: string[], scheduled: number): void {
+    const started = entries.find((e) => e.kind === "StartRun");
+    const journaled = Array.isArray(started?.order) ? started.order : null;
+    const malformed = arms.some((a) => typeof a !== "string") || new Set(arms).size !== arms.length;
+    if (malformed || !journaled || JSON.stringify(journaled) !== JSON.stringify(arms)) {
+        throw new Error(
+            `manifest order ${JSON.stringify(arms)} differs from the journaled order ${JSON.stringify(journaled)}`,
+        );
+    }
     for (const arm of arms) {
         const mine = entries.filter((e) => e.arm === arm);
         const ended = new Set(mine.filter((e) => e.kind === "Event").map((e) => e.event)).size;
@@ -151,6 +159,7 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
             }
             const [mine, host] = [sides[arm], sides.host];
             if (lost.size > 0 || !mine?.[0] || !host?.[0]) return [];
+            for (const side of [mine[0], host[0]]) assertArtefactsOnly(side);
             const later_attempts = { a: mine.length - 1, b: host.length - 1 };
             return [{ probe, arm, a: mine[0], b: host[0], later_attempts }];
         }),

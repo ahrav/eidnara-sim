@@ -81,7 +81,9 @@ function run(o: RunOptions): string {
     };
     writeFileSync(join(dir, "manifest.json"), JSON.stringify(manifest));
     const ran = events.slice(0, manifest.events);
-    const journal: Record<string, unknown>[] = [{ kind: "StartRun", arm: null }];
+    const journal: Record<string, unknown>[] = [
+        { kind: "StartRun", arm: null, order: manifest.order },
+    ];
     for (const arm of manifest.order) {
         const ended = o.interrupted?.[arm] ?? ran.length;
         journal.push({ kind: "StartArm", arm });
@@ -215,6 +217,28 @@ describe("grade-run", () => {
         const dir = run({ probes: [p5.probe], interrupted: { eidnara: 1 } });
         snapshot(dir, "host", snap);
         await expect(gradeRun(dir, null)).rejects.toThrow(/arm eidnara .*1 of 3 events/);
+        expect(() => readFileSync(join(dir, "grades.jsonl"))).toThrow();
+    });
+
+    test("a P7 snapshot carrying a transcript artefact aborts grading instead of reading as a refusal", async () => {
+        const p7 = fixture("P7-pass");
+        const dir = run({ probes: [p7.probe] });
+        const leaky = p7snapshot(p7.probe.id);
+        (leaky.artefacts as unknown[]).push({ id: "t", class: "transcript" });
+        snapshot(dir, "host", p7snapshot(p7.probe.id));
+        snapshot(dir, "eidnara", leaky);
+        await expect(gradeRun(dir, null)).rejects.toThrow("is not a grade input");
+    });
+
+    test("a manifest whose arm order differs from the journaled StartRun is refused", async () => {
+        const dir = run({ probes: [p5.probe] });
+        snapshot(dir, "eidnara", snap);
+        const path = join(dir, "manifest.json");
+        const manifest = JSON.parse(readFileSync(path, "utf8"));
+        writeFileSync(path, JSON.stringify({ ...manifest, order: ["host"] }));
+        await expect(gradeRun(dir, null)).rejects.toThrow(/order .*host.*eidnara/);
+        writeFileSync(path, JSON.stringify({ ...manifest, order: ["host", "host"] }));
+        await expect(gradeRun(dir, null)).rejects.toThrow(/order/);
         expect(() => readFileSync(join(dir, "grades.jsonl"))).toThrow();
     });
 

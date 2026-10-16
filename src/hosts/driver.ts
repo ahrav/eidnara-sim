@@ -1,16 +1,18 @@
 import { spawnSync } from "node:child_process";
 import {
+    copyFileSync,
     existsSync,
     lstatSync,
     mkdirSync,
     readdirSync,
     readFileSync,
     realpathSync,
+    renameSync,
     rmSync,
     writeFileSync,
 } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
-import { GitTimeout, git, gitEnv } from "../git";
+import { GitTimeout, git } from "../git";
 import type { CallView } from "../grade/artefacts";
 import { processStart, running, stopOwnedTree } from "../run/procs";
 import { type ArmDriver, HarnessFailure, type ScenarioEvent } from "../run/scheduler";
@@ -185,6 +187,7 @@ export class HostDriver implements ArmDriver {
         for (const [project, source] of Object.entries(this.o.projects)) {
             const target = this.workspace(project);
             git(this.o.armRoot, ["clone", "--quiet", "--no-hardlinks", source, target]);
+            copyFileSync(join(target, ".git", "config"), join(this.armDir, `${project}.gitconfig`));
             const tracked = ["ls-files", "-z", "--cached", "--ignored", "--exclude-standard"];
             const forced = git(source, tracked).split("\0").filter(Boolean);
             this.snapshots.trackIgnored(project, forced);
@@ -296,36 +299,65 @@ export class HostDriver implements ArmDriver {
     }
 
     private applyDiff(e: ScenarioEvent): void {
-        const dir = realpathSync(this.workspace(this.project(e)));
+        const workspace = this.workspace(this.project(e));
+        const expected = join(realpathSync(this.armDir), relative(this.armDir, workspace));
+        if (realpathSync(workspace) !== expected) {
+            throw new HarnessFailure(`workspace ${workspace} is a symlink or lies behind one`);
+        }
+        const dir = realpathSync(workspace);
         const path = resolve(dir, String(e.path));
-        mkdirSync(dirname(path), { recursive: true });
-        const parent = realpathSync(dirname(path));
-        const inside = parent === dir || parent.startsWith(`${dir}/`);
-        if (!inside || lstatSync(path, { throwIfNoEntry: false })?.isSymbolicLink()) {
+        const inside = path.startsWith(`${dir}/`);
+        let ancestor = dirname(path);
+        while (inside && ancestor !== dir && !existsSync(ancestor)) ancestor = dirname(ancestor);
+        const parent = inside ? realpathSync(ancestor) : "";
+        const contained = parent === dir || parent.startsWith(`${dir}/`);
+        if (!inside || !contained || lstatSync(path, { throwIfNoEntry: false })?.isSymbolicLink()) {
             throw new HarnessFailure(`apply_diff path ${String(e.path)} leaves ${dir}`);
         }
+        mkdirSync(dirname(path), { recursive: true });
         writeFileSync(path, String(e.content));
-        const blob = this.workspaceGit(dir, ["hash-object", "-w", "--no-filters", "--", path]);
-        const entry = `100644,${blob},${relative(dir, path)}`;
-        const head = this.workspaceGit(dir, ["rev-parse", "--verify", "HEAD"]);
-        const scratch = { GIT_INDEX_FILE: join(this.armDir, "apply-diff.index") };
-        this.workspaceGit(dir, ["read-tree", head], scratch);
-        this.workspaceGit(dir, ["update-index", "--add", "--cacheinfo", entry], scratch);
-        const tree = this.workspaceGit(dir, ["write-tree"], scratch);
-        rmSync(scratch.GIT_INDEX_FILE, { force: true });
-        this.workspaceGit(dir, ["update-index", "--add", "--cacheinfo", entry]);
-        if (tree === this.workspaceGit(dir, ["rev-parse", `${head}^{tree}`])) return;
-        const message = `Add ${String(e.path)}`;
-        const commit = this.workspaceGit(
-            dir,
-            ["commit-tree", tree, "-p", head, "-m", message],
-            IDENTITY,
-        );
-        this.workspaceGit(dir, ["update-ref", "HEAD", commit, head]);
+        this.withPristineRepo(dir, this.project(e), () => {
+            const blob = this.workspaceGit(dir, ["hash-object", "-w", "--no-filters", "--", path]);
+            const entry = `100644,${blob},${relative(dir, path)}`;
+            const head = this.workspaceGit(dir, ["rev-parse", "--verify", "HEAD"]);
+            const scratch = { GIT_INDEX_FILE: join(this.armDir, "apply-diff.index") };
+            rmSync(`${scratch.GIT_INDEX_FILE}.lock`, { force: true });
+            this.workspaceGit(dir, ["read-tree", head], scratch);
+            this.workspaceGit(dir, ["update-index", "--add", "--cacheinfo", entry], scratch);
+            const tree = this.workspaceGit(dir, ["write-tree"], scratch);
+            rmSync(scratch.GIT_INDEX_FILE, { force: true });
+            this.workspaceGit(dir, ["update-index", "--add", "--cacheinfo", entry]);
+            if (tree === this.workspaceGit(dir, ["rev-parse", `${head}^{tree}`])) return;
+            const message = `Add ${String(e.path)}`;
+            const commit = this.workspaceGit(
+                dir,
+                ["commit-tree", tree, "-p", head, "-m", message],
+                IDENTITY,
+            );
+            this.workspaceGit(dir, ["update-ref", "HEAD", commit, head]);
+        });
     }
 
     /** Workspace git operations override agent-controlled execution settings to constrain which programs git can invoke. */
     private workspaceGit(dir: string, args: string[], extra: Record<string, string> = {}): string {
+        const gitDir = join(dir, ".git");
+        const scope = { GIT_DIR: gitDir, GIT_WORK_TREE: dir, ...extra };
+        const off = [
+            `core.hooksPath=${join(this.armDir, "no-hooks")}`,
+            "core.fsmonitor=false",
+            "commit.gpgsign=false",
+        ];
+        return git(dir, [...off.flatMap((setting) => ["-c", setting]), ...args], scope).trim();
+    }
+
+    /**
+     * The agent can write the workspace repository's config, hooks, and object-store
+     * pointers. While `fn` runs, the repository's config is the clone's baseline, so an
+     * include, filter driver, or command the agent configured is out of git's view; the
+     * agent's config returns afterwards. A symlink under `.git` or an `alternates` file
+     * stops the run.
+     */
+    private withPristineRepo<T>(dir: string, project: string, fn: () => T): T {
         const gitDir = join(dir, ".git");
         if (!lstatSync(gitDir, { throwIfNoEntry: false })?.isDirectory()) {
             throw new HarnessFailure(`${gitDir} is not a directory`);
@@ -336,34 +368,19 @@ export class HostDriver implements ArmDriver {
                 throw new HarnessFailure(`${at} is a symlink; git would write through it`);
             }
         }
-        const scope = { GIT_DIR: gitDir, GIT_WORK_TREE: dir, ...extra };
-        const off = [
-            `core.hooksPath=${join(this.armDir, "no-hooks")}`,
-            "core.fsmonitor=false",
-            "commit.gpgsign=false",
-            ...this.filterDrivers(dir, scope).flatMap((name) => [
-                `filter.${name}.clean=`,
-                `filter.${name}.smudge=`,
-                `filter.${name}.process=`,
-                `filter.${name}.required=false`,
-            ]),
-        ];
-        return git(dir, [...off.flatMap((setting) => ["-c", setting]), ...args], scope).trim();
-    }
-
-    /** Index refreshes can execute configured filter drivers, so `workspaceGit` overrides their commands. */
-    private filterDrivers(dir: string, scope: Record<string, string>): string[] {
-        const listed = spawnSync(
-            "git",
-            ["config", "-z", "--name-only", "--get-regexp", "^filter\\."],
-            { cwd: dir, env: gitEnv(scope), encoding: "utf8" },
-        );
-        if (listed.status !== 0) return [];
-        const names = listed.stdout
-            .split("\0")
-            .map((key) => /^filter\.(.+)\.[^.]+$/.exec(key)?.[1])
-            .filter((name): name is string => name !== undefined);
-        return [...new Set(names)];
+        if (existsSync(join(gitDir, "objects", "info", "alternates"))) {
+            throw new HarnessFailure(".git/objects/info/alternates names another object store");
+        }
+        const config = join(gitDir, "config");
+        const aside = join(gitDir, "config.sim-aside");
+        if (existsSync(aside)) renameSync(aside, config);
+        renameSync(config, aside);
+        try {
+            copyFileSync(join(this.armDir, `${project}.gitconfig`), config);
+            return fn();
+        } finally {
+            renameSync(aside, config);
+        }
     }
 
     private checkTranscripts(host: SimHost): void {

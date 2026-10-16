@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import {
     appendFileSync,
     existsSync,
@@ -10,8 +11,8 @@ import {
     truncateSync,
     writeFileSync,
 } from "node:fs";
-import { basename, join, relative } from "node:path";
-import { git } from "../git";
+import { basename, join, relative, sep } from "node:path";
+import { git, gitEnv } from "../git";
 import type { Artefact, CallView, Command, Snapshot } from "../grade/artefacts";
 
 interface RecorderState {
@@ -118,17 +119,28 @@ export class SnapshotRecorder {
     }
 
     /**
-     * Directories under `dir` that are git repositories of their own. Git lists each as one
-     * untracked directory and would index a committed one as a gitlink, so the tree leaves
-     * them out.
+     * Directories under `dir` that hold a `.git` entry of their own and that the workspace's
+     * ignore rules keep: git would index a committed one as a gitlink and refuse an
+     * uncommitted one, so the tree leaves them out. An ignored one is outside the evidence
+     * either way.
      */
     embedded(dir: string): string[] {
-        const status = this.git(["status", "--porcelain", "-z", "--untracked-files=all"], dir);
-        return status
-            .split("\0")
-            .filter((line) => line.startsWith("?? ") && line.endsWith("/"))
-            .map((line) => line.slice(3, -1))
-            .sort();
+        const found: string[] = [];
+        for (const entry of readdirSync(dir, { recursive: true, withFileTypes: true })) {
+            if (entry.name !== ".git" || entry.parentPath === dir) continue;
+            const inside = relative(dir, entry.parentPath).split(sep);
+            if (inside.includes(".git")) continue;
+            found.push(inside.join("/"));
+        }
+        if (found.length === 0) return [];
+        const ignored = spawnSync("git", ["check-ignore", "-z", "--stdin"], {
+            cwd: dir,
+            env: gitEnv({ GIT_DIR: this.gitDir, GIT_WORK_TREE: dir }),
+            encoding: "utf8",
+            input: found.map((path) => `${path}\0`).join(""),
+        });
+        const skipped = new Set(ignored.stdout.split("\0").filter(Boolean));
+        return found.filter((path) => !skipped.has(path)).sort();
     }
 
     /**
@@ -145,17 +157,27 @@ export class SnapshotRecorder {
         const nested = this.embedded(dir);
         const excluded = nested.map((path) => `:(exclude)${path}`);
         this.git(["add", "--all", "--", ".", ...excluded], dir);
+        const root = realpathSync(dir);
+        const inPlace = (path: string): boolean => {
+            try {
+                return realpathSync(join(dir, path)) === join(root, path);
+            } catch {
+                return false;
+            }
+        };
         const forced = (this.state.forced?.[basename(dir)] ?? []).filter(
             (path) =>
-                existsSync(join(dir, path)) &&
+                inPlace(path) &&
                 !nested.some((repo) => path === repo || path.startsWith(`${repo}/`)),
         );
         if (forced.length > 0) this.git(["add", "--force", "--", ...forced], dir);
         return this.git(["write-tree"], dir).trim();
     }
 
+    /** `--text` diffs every file as text, so a NUL byte or a `-diff` attribute hides no added line. */
     private diff(from: string, to: string): string {
-        return this.git(["diff", "--no-color", "--no-ext-diff", "--no-textconv", from, to]);
+        const flags = ["--no-color", "--no-ext-diff", "--no-textconv", "--text"];
+        return this.git(["diff", ...flags, from, to]);
     }
 
     sessionStart(session: string, project: string, dir: string): void {

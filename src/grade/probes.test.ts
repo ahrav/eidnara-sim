@@ -142,3 +142,14 @@ describe("grading harness", () => {
         expect(new GradeLog(path).all().map((x) => x.version)).toEqual([1, 2]);
     });
 });
+
+test("an answer the proxy cut at its cap is refused rather than graded on its prefix", () => {
+    const f = fixture("P8-pass");
+    const snap = f.snapshots[0] as Snapshot;
+    const calls = snap.artefacts.find((a) => a.class === "proxy-call") as unknown as {
+        calls: Record<string, unknown>[];
+    };
+    const last = calls.calls.at(-1) as Record<string, unknown>;
+    last.response_text_truncated = true;
+    expect(() => gradeItem(f.probe, [snap], rules)).toThrow("truncated");
+});
