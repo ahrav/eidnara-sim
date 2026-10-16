@@ -153,3 +153,14 @@ test("an answer the proxy cut at its cap is refused rather than graded on its pr
     last.response_text_truncated = true;
     expect(() => gradeItem(f.probe, [snap], rules)).toThrow("truncated");
 });
+
+test("a snapshot without the artefact its grader reads is refused rather than graded on a default", () => {
+    const f = fixture("P2-pass");
+    const snap = structuredClone(f.snapshots[0]) as Snapshot;
+    snap.artefacts = [{ id: "c", class: "command-log", role: "turn", commands: [] }];
+    expect(() => gradeItem(f.probe, [snap], rules)).toThrow("lacks the diff (turn) artefact");
+    const p13 = fixture("P13-pass");
+    const only = structuredClone(p13.snapshots[0]) as Snapshot;
+    only.artefacts = only.artefacts.filter((a) => a.class !== "proxy-call");
+    expect(() => gradeItem(p13.probe, [only], rules)).toThrow("lacks the proxy-call artefact");
+});
