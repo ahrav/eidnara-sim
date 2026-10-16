@@ -106,3 +106,35 @@ test("a toolchain bin reached through a symlink out of its keep path is refused"
     mkdirSync(join(kept, "bin"));
     expect(() => checkToolchainBins(config(join(kept, "bin")))).not.toThrow();
 });
+
+test("a tool in a kept bin that links to an executable outside the keep paths is refused", () => {
+    const dir = root();
+    const kept = join(dir, "kept/bin");
+    mkdirSync(kept, { recursive: true });
+    writeFileSync(join(dir, "rustc-elsewhere"), "", { mode: 0o755 });
+    symlinkSync(join(dir, "rustc-elsewhere"), join(kept, "rustc"));
+    const base = loadConfig();
+    const config = {
+        ...base,
+        toolchain: { ...base.toolchain, bin: [kept], keep: [join(dir, "kept")] },
+    };
+    expect(() => checkToolchainBins(config)).toThrow(
+        `toolchain tool ${join(kept, "rustc")} resolves outside its keep paths`,
+    );
+});
+
+test("any executable in a kept bin that resolves outside the keep paths is refused", () => {
+    const dir = root();
+    const kept = join(dir, "kept/bin");
+    mkdirSync(kept, { recursive: true });
+    writeFileSync(join(dir, "rustfmt-elsewhere"), "", { mode: 0o755 });
+    symlinkSync(join(dir, "rustfmt-elsewhere"), join(kept, "rustfmt"));
+    const base = loadConfig();
+    const config = {
+        ...base,
+        toolchain: { ...base.toolchain, bin: [kept], keep: [join(dir, "kept")] },
+    };
+    expect(() => checkToolchainBins(config)).toThrow(
+        `toolchain tool ${join(kept, "rustfmt")} resolves outside its keep paths`,
+    );
+});

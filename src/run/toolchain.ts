@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, realpathSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { SimConfig } from "../config/config";
 import { writeExclusive } from "./atomic";
@@ -111,10 +111,17 @@ export function versionLine(tool: string, out: string): string {
 /** The containment check compares canonical paths, so a symlink cannot lead a bin out of its keep path. */
 export function checkToolchainBins(config: SimConfig): void {
     const keep = config.toolchain.keep.map((k) => realpathSync(k));
+    const kept = (real: string) => keep.some((k) => real === k || real.startsWith(`${k}/`));
     for (const bin of config.toolchain.bin) {
-        const real = realpathSync(bin);
-        if (!keep.some((k) => real === k || real.startsWith(`${k}/`))) {
+        if (!kept(realpathSync(bin))) {
             throw new Error(`toolchain bin ${bin} resolves outside its keep paths`);
+        }
+        // Every entry is on the agent's PATH, so every entry must resolve inside the keep paths.
+        for (const entry of readdirSync(bin)) {
+            const path = join(bin, entry);
+            if (existsSync(path) && !kept(realpathSync(path))) {
+                throw new Error(`toolchain tool ${path} resolves outside its keep paths`);
+            }
         }
     }
 }

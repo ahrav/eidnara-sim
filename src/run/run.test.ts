@@ -16,6 +16,7 @@ import { preregistrationHash } from "../prereg/validate";
 import { GENERATOR_VERSION, type Scenario } from "../scenario/compile";
 import { type FaultEpisode, SEAMS } from "../scenario/faults";
 import { corpusInputsSha256, loadPrereg } from "../scenario/inputs";
+import type { Entry } from "./journal";
 import type { Preflight } from "./preflight";
 import {
     corpusIdentity,
@@ -24,6 +25,7 @@ import {
     loadScenario,
     type RunOptions,
     requireDeclaredProjects,
+    requireJournalShape,
     requireMechanisms,
     requireOutsideCheckout,
     requireOutsideIdentity,
@@ -276,6 +278,32 @@ describe("run inputs", () => {
         expect(() => requireOutsideIdentity(dir())).not.toThrow();
     });
 
+    test("a resumed journal must follow the run's state machine", () => {
+        const e = (kind: Entry["kind"], arm: string | null, extra: Record<string, unknown> = {}) =>
+            ({ kind, arm, scenario_ms: 0, seq: 0, wall_ms: 0, ...extra }) as Entry;
+        const start = [e("Preflight", null), e("StartRun", null), e("StartArm", "a")];
+        expect(() =>
+            requireJournalShape([...start, e("Event", "a", { event: "x" }), e("EndArm", "a")]),
+        ).not.toThrow();
+        expect(() => requireJournalShape([e("StartArm", "a")])).toThrow(/precedes StartRun/);
+        expect(() => requireJournalShape([e("StartRun", null), e("EndArm", "a")])).toThrow(
+            /precedes StartArm/,
+        );
+        expect(() =>
+            requireJournalShape([...start, e("EndArm", "a"), e("Event", "a", { event: "x" })]),
+        ).toThrow(/follows EndArm/);
+        expect(() => requireJournalShape([...start, e("StartArm", "a")])).toThrow(
+            /repeats StartArm/,
+        );
+        expect(() =>
+            requireJournalShape([
+                ...start,
+                e("EndTurn", "a", { event: "t" }),
+                e("EndTurn", "a", { event: "t" }),
+            ]),
+        ).toThrow(/closes an item twice/);
+    });
+
     test("a schedule needs a mechanism for every fault and two models for a model switch", () => {
         const at = (type: FaultEpisode["type"]): FaultEpisode => ({
             id: `f-${type}`,
@@ -416,6 +444,9 @@ describe("run inputs", () => {
             toolchain: [],
         };
         const o: RunOptions = { config, tier: "S", seed: 101, host: "pi", out };
+        await expect(loadManifest({ ...o, events: 9 }, scenario, checks)).rejects.toThrow(
+            /--events 9 exceeds the 1 compiled events/,
+        );
         const first = await loadManifest(o, scenario, checks);
         expect(first.manifest.preflight.hosts[0]?.version).toBe("0.80.2");
         await expect(loadManifest(o, scenario, checks)).resolves.toMatchObject({
@@ -448,6 +479,14 @@ describe("run inputs", () => {
         await expect(loadManifest(o, scenario, checks)).rejects.toThrow(
             /inputs changed since the run started: sim_commit/,
         );
+        const out102 = dir();
+        const scenario102 = writeScenario(out102, scenarioBody(102));
+        const o102: RunOptions = { ...o, seed: 102, out: out102 };
+        const seed102 = await loadManifest(o102, scenario102, checks);
+        expect(seed102.manifest.order).toEqual(["eidnara-kl", "eidnara", "host"]);
+        await expect(loadManifest(o102, scenario102, checks)).resolves.toMatchObject({
+            manifest: { seed: 102 },
+        });
         for (const order of [["../../elsewhere"], [], ["host", "host"], ["eidnara", "host"]]) {
             writeFileSync(path, JSON.stringify({ ...manifest, order }));
             await expect(loadManifest(o, scenario, checks)).rejects.toThrow(
@@ -545,6 +584,8 @@ describe("run inputs", () => {
             "opencode",
             "opencode_sdk",
             "pi",
+            "pi_lock",
+            "pi_package",
         ]);
         const swapped = { ...config, daemon_binary: join(out, "daemon") };
         writeFileSync(swapped.daemon_binary, "daemon 2");

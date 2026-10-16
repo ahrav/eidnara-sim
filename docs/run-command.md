@@ -20,8 +20,9 @@ unless the pinned OpenCode release's `node_modules/.bin` is on `PATH`.
 scenario's fault schedule, `--context-limit` sets the model window the host
 sees (200,000 by default), and `--models` lists the models `model_switch`
 cycles through (`agent_model` by default). The manifest records every one of
-these values. An argument outside this list, an option without a value, or
-an empty model name is refused. The run refuses a seed outside the pre-registration, an arm
+these values. An argument outside this list, an option without a value, an
+empty model name, or an `--events` count above the compiled schedule is
+refused. The run refuses a seed outside the pre-registration, an arm
 outside the seed's order, a non-positive count, a `--faults` file that is not
 an array of complete episodes (known type and strategy, numeric params with
 probabilities in [0, 1], positive integer counts, non-negative durations and
@@ -88,7 +89,8 @@ toolchain wrappers are created exclusively after removing any planted name.
    working-tree digest (a digest covers tracked edits and untracked
    unignored files), the commit and working-tree digest of every corpus
    checkout the scenario's projects clone from, the SHA-256 of the daemon,
-   OpenCode, and Pi executables, the Node runtime Pi runs on, the libfaketime
+   OpenCode, and Pi executables, the whole installed Pi package directory and
+   the Pi install's lock file, the Node runtime Pi runs on, the libfaketime
    interposer, and the OpenCode SDK module the host stack imports (`absent`
    when not installed), the
    Bedrock region and profile name, base wall time, and preflight result. The working-tree digest hashes an
@@ -96,7 +98,9 @@ toolchain wrappers are created exclusively after removing any planted name.
    A later invocation refuses a manifest whose `schema` is not
    `sim-run-manifest/v1`, and refuses when any option it states differs from
    the manifest, when the manifest's arm order is not a non-empty subsequence
-   of the tier's pre-registered arms, when any of those digests changed, when an
+   of the seed's pre-registered arm order, when a resumed journal breaks the
+   run's state machine (an arm entry before `StartRun` or `StartArm`, after
+   `EndArm`, or an item closed twice), when any of those digests changed, when an
    interception result, probed path, or toolchain version
    changed, or when the selected host's version or transcript paths changed,
    and appends its preflight result to `preflight.jsonl`; on resume the
@@ -121,13 +125,16 @@ toolchain wrappers are created exclusively after removing any planted name.
    driver, stop the proxy, append this invocation's proxy-fault witness
    report to `faults.jsonl` (a completed run appends it before `EndRun`, so
    a sealed journal always has its witness line; teardown appends it only
-   when that did not happen), close the journal, and release the lease. A
+   when that did not happen; an unterminated final line left by an earlier
+   kill is dropped first), close the journal, and release the lease. A
    request's arrival hook, completion hook, or release that fails to journal
    its job is recorded as a handler failure and fails the run at the next
    verification; the busy set still clears. A handler that settles after the
    proxy's drain gave up on it writes no record and ends no job; it is
-   recorded as a failure instead. Each call's record carries the wall time of
-   its first byte and the call order of its arrival. Each
+   recorded as a failure instead. Each call's record carries the wall time,
+   scenario time, and call order of its first byte, and the fault window
+   opens at that instant; an upload the client abandons yields one `rejected`
+   record with status 499. Each
    step runs even when an earlier one fails, and the first failure is
    rethrown after the last step, so the command exits nonzero. Stopping the
    proxy aborts in-flight handlers and waits up to ten seconds for them to

@@ -34,6 +34,8 @@ interface ArmState {
     refilling: boolean;
     /** The sandboxed git run of an apply_diff in flight, with the workspace it holds. */
     git: { pid: number; start: string | null; project: string } | null;
+    /** The message of a `finish` that failed; a resume refuses the arm while it stands. */
+    failed: string | null;
 }
 
 export interface DriverOptions extends Omit<HostContext, "root" | "model"> {
@@ -61,14 +63,6 @@ const GIT_ENV = {
 };
 
 /** Clones from a harness-owned source into a fresh workspace run with the harness's own view. */
-const gitClone = (cwd: string, args: string[]) => {
-    const r = spawnSync("git", args, {
-        cwd,
-        env: { ...process.env, ...GIT_ENV },
-        encoding: "utf8",
-    });
-    if (r.status !== 0) throw new Error(`git ${args.join(" ")}: ${r.stderr}`);
-};
 
 /**
  * The rename publishes a complete file, so a kill mid-write leaves the previous one. The staged
@@ -124,6 +118,7 @@ export class HostDriver implements ArmDriver {
     private ballastShape: ArmState["ballast"] = null;
     private refilling = false;
     private gitRun: ArmState["git"] = null;
+    private failed: string | null = null;
     private sessionProject: string | null = null;
     private transcriptsChecked = false;
 
@@ -202,16 +197,46 @@ export class HostDriver implements ArmDriver {
         const seconds = String(Math.ceil(this.o.turnDeadlineMs / 1000));
         const bounded = ["timeout", "-s", "KILL", seconds, "git", ...args];
         const argv = launch(this.o.launcher, keep, env, bounded, ro, dir);
-        // The shell waits for one line on stdin before it execs, so the run starts only once
-        // its pid is on disk; a harness that dies first closes stdin and the shell exits.
+        const r = await this.recorded(project, argv, { PATH: process.env.PATH ?? "" });
+        if (r.status !== 0) this.unlockGit(dir);
+        return { ...r, stderr: r.status === 137 ? `cut off after ${seconds} s` : r.stderr };
+    }
+
+    /** Clones a harness-owned source into a fresh workspace with the harness's own view. */
+    private async gitClone(project: string, source: string, target: string): Promise<void> {
+        const argv = ["git", "clone", "--quiet", "--no-hardlinks", source, target];
+        const env = { ...process.env, ...GIT_ENV } as Record<string, string>;
+        const r = await this.recorded(project, argv, env, this.o.armRoot);
+        if (r.status !== 0) throw new Error(`${argv.join(" ")}: ${r.stderr}`);
+    }
+
+    /**
+     * Runs a git command whose pid is in `state.json` before the command starts: the shell waits
+     * for one line on stdin before it execs, so a harness that dies first closes stdin and the
+     * shell exits, and a record that cannot be written ends the shell the same way.
+     */
+    private async recorded(
+        project: string,
+        argv: string[],
+        env: Record<string, string>,
+        cwd?: string,
+    ): Promise<{ status: number; stderr: string }> {
         const gated = ["/bin/sh", "-c", 'read _ && exec "$@"', "sh", ...argv];
         const child = spawn(gated[0] as string, gated.slice(1), {
-            env: { PATH: process.env.PATH ?? "" },
+            cwd,
+            env,
             stdio: ["pipe", "ignore", "pipe"],
         });
         const pid = child.pid as number;
         this.gitRun = { pid, start: processStart(pid), project };
-        this.recordState();
+        try {
+            this.recordState();
+        } catch (caught) {
+            this.gitRun = null;
+            child.stdin?.destroy();
+            child.kill("SIGKILL");
+            throw caught;
+        }
         child.stdin?.end("\n");
         let stderr = "";
         child.stderr?.on("data", (chunk: Buffer) => {
@@ -223,10 +248,9 @@ export class HostDriver implements ArmDriver {
                 resolve(code ?? (signal === "SIGKILL" ? 137 : -1)),
             );
         });
-        if (status !== 0) this.unlockGit(dir);
         this.gitRun = null;
         this.recordState();
-        return { status, stderr: status === 137 ? `cut off after ${seconds} s` : stderr };
+        return { status, stderr };
     }
 
     private async gitOk(project: string, dir: string, args: string[], dateMs?: number) {
@@ -234,10 +258,32 @@ export class HostDriver implements ArmDriver {
         if (r.status !== 0) throw new Error(`git ${args.join(" ")}: ${r.stderr}`);
     }
 
+    /** Provider faults belong to the proxy and the sleep to the clock; the rest need a mechanism here. */
+    supports(f: FaultEpisode): boolean {
+        if (f.seam.layer !== "scheduler") return true;
+        return SUPPORTED.has(f.type);
+    }
+
     /** The daemon's directories are host-writable, so every daemon start and restart rechecks them. */
     private checkDaemonDirs(): void {
         realChild(this.o.armRoot, "runtime", "daemon runtime");
         realChild(this.storeRoot, "d", "daemon data");
+    }
+
+    /**
+     * Bound to itself, the data directory is a mount point, which the host cannot rename or
+     * replace while a restart writes under it.
+     */
+    private pinDataDir(): void {
+        mkdirSync(this.dataDir, { recursive: true, mode: 0o700 });
+        if (spawnSync("findmnt", ["-n", "-M", this.dataDir]).status === 0) return;
+        run(["sudo", "-n", "mount", "--bind", this.dataDir, this.dataDir]);
+    }
+
+    private unmount(path: string): void {
+        if (spawnSync("findmnt", ["-n", "-M", path]).status === 0) {
+            run(["sudo", "-n", "umount", path]);
+        }
     }
 
     /** The real workspace directory; a symlink the host planted at it or above it stops the run. */
@@ -256,6 +302,7 @@ export class HostDriver implements ArmDriver {
             ballast: this.ballastShape,
             refilling: this.refilling,
             git: this.gitRun,
+            failed: this.failed,
         };
         mkdirSync(this.armDir, { recursive: true });
         writeWhole(this.stateFile, JSON.stringify(state));
@@ -285,6 +332,7 @@ export class HostDriver implements ArmDriver {
         try {
             if (eidnaraOn(this.o.arm)) {
                 this.checkDaemonDirs();
+                this.pinDataDir();
                 const make = this.o.daemonFactory ?? ((ctx: DaemonContext) => new DaemonStack(ctx));
                 this.daemon = make({
                     ...this.o,
@@ -325,14 +373,16 @@ export class HostDriver implements ArmDriver {
         }
     }
 
+    /** Recorded processes go first: a daemon the killed harness left holds the data directory busy. */
     async reset(): Promise<void> {
+        await this.reapStale();
         await this.stop();
         this.model = 0;
         this.transcriptsChecked = false;
         this.ballastShape = null;
         this.refilling = false;
         this.gitRun = null;
-        await this.reapStale();
+        this.failed = null;
         for (const dir of [this.o.armRoot, this.storeRoot])
             rmSync(dir, { recursive: true, force: true });
         rmSync(this.image, { force: true });
@@ -342,7 +392,7 @@ export class HostDriver implements ArmDriver {
         mkdirSync(join(this.o.armRoot, "workspaces"), { recursive: true });
         for (const [project, source] of Object.entries(this.o.projects)) {
             const target = this.workspace(project);
-            gitClone(this.o.armRoot, ["clone", "--quiet", "--no-hardlinks", source, target]);
+            await this.gitClone(project, source, target);
         }
         await this.startArm(true);
     }
@@ -366,10 +416,17 @@ export class HostDriver implements ArmDriver {
         if (open) await this.event(open);
     }
 
-    /** Stops what the killed harness recorded; a missing record is a lost arm, so the resume stops. */
+    /**
+     * Stops what the killed harness recorded; a missing record is a lost arm, and a recorded
+     * finish failure is final, so either stops the resume.
+     */
     async reap(): Promise<void> {
-        if (!this.readState()) {
+        const state = this.readState();
+        if (!state) {
             throw new HarnessFailure(`resume of arm ${this.o.arm}: ${this.stateFile} is gone`);
+        }
+        if (state.failed !== null && state.failed !== undefined) {
+            throw new HarnessFailure(`arm ${this.o.arm} failed to finish earlier: ${state.failed}`);
         }
         await this.reapStale();
     }
@@ -405,11 +462,8 @@ export class HostDriver implements ArmDriver {
             () => (state ? this.reapGit(state) : undefined),
             () => this.stopRecorded(state?.host),
             () => this.stopRecorded(state?.daemon),
-            () => {
-                if (spawnSync("findmnt", ["-n", "-M", this.storeRoot]).status === 0) {
-                    run(["sudo", "-n", "umount", this.storeRoot]);
-                }
-            },
+            () => this.unmount(this.dataDir),
+            () => this.unmount(this.storeRoot),
         ];
         for (const step of steps) {
             try {
@@ -605,8 +659,19 @@ export class HostDriver implements ArmDriver {
         rmSync(ballast, { force: true });
     }
 
+    /** A failed finish is recorded, so a resume of an otherwise exhausted arm cannot heal it. */
     async finish(): Promise<void> {
-        await this.stop();
+        try {
+            await this.stop();
+        } catch (caught) {
+            this.failed = String(caught);
+            try {
+                this.recordState();
+            } catch {
+                // The failure itself is what surfaces; a record that cannot be written changes nothing.
+            }
+            throw caught;
+        }
     }
 
     async stop(): Promise<void> {
@@ -623,6 +688,11 @@ export class HostDriver implements ArmDriver {
         }
         try {
             await daemon?.stop();
+        } catch (caught) {
+            failure ??= caught;
+        }
+        try {
+            this.unmount(this.dataDir);
         } catch (caught) {
             failure ??= caught;
         }

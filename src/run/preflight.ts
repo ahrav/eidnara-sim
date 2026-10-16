@@ -16,8 +16,15 @@ export interface Preflight {
     toolchain: ToolchainProbe[];
 }
 
+/** The canonical CLI, which must lie inside the Pi install the sandbox keeps read-only. */
 export function piCli(config: SimConfig): string {
-    return join(config.pi_install, "node_modules/@earendil-works/pi-coding-agent/dist/cli.js");
+    const cli = join(config.pi_install, "node_modules/@earendil-works/pi-coding-agent/dist/cli.js");
+    const install = realpathSync(config.pi_install);
+    const real = realpathSync(cli);
+    if (!real.startsWith(`${install}/`)) {
+        throw new Error(`Pi CLI ${cli} resolves outside ${config.pi_install}`);
+    }
+    return real;
 }
 
 /** The claim names the paths the sandbox actually keeps read-only. */

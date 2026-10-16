@@ -831,6 +831,74 @@ describe("call records", () => {
         expect(gateway.failures.map((f) => f.message)).toEqual(["RegisterJob append failed"]);
     });
 
+    test("an upload the client abandons still yields one rejected record", async () => {
+        const records = new RecordWriter(null);
+        const gateway = new Gateway({
+            upstream: scriptedUpstream(),
+            records,
+            injector: new FaultInjector([], new Rng(1), 1_000),
+            rng: new Rng(1),
+            clock: { scenarioMs: () => 7 },
+            scope: () => ({ arm: "a", session: "s", turn: "t" }),
+        });
+        await gateway.start();
+        gateways.push(gateway);
+        const url = new URL(`${gateway.urls[0]}/model/m/converse`);
+        const req = request({
+            host: url.hostname,
+            port: url.port,
+            method: "POST",
+            path: url.pathname,
+            headers: { "content-length": "100" },
+        });
+        req.on("error", () => undefined);
+        req.write("partial");
+        await Bun.sleep(100);
+        req.destroy();
+        await Bun.sleep(200);
+        expect(records.records).toHaveLength(1);
+        expect(records.records[0]).toMatchObject({
+            component: "rejected",
+            status: 499,
+            turn: "t",
+            scenario_ms: 7,
+            error: "upload aborted after 7 bytes",
+        });
+    });
+
+    test("scenario time is read at a request's first byte", async () => {
+        let clock = 100;
+        const records = new RecordWriter(null);
+        const gateway = new Gateway({
+            upstream: scriptedUpstream(),
+            records,
+            injector: new FaultInjector([], new Rng(1), 1_000),
+            rng: new Rng(1),
+            clock: { scenarioMs: () => clock },
+            scope: () => ({ arm: "a", session: null, turn: null }),
+        });
+        await gateway.start();
+        gateways.push(gateway);
+        const url = new URL(`${gateway.urls[0]}/model/m/converse-stream`);
+        const body = JSON.stringify(AGENT_BODY);
+        const req = request({
+            host: url.hostname,
+            port: url.port,
+            method: "POST",
+            path: url.pathname,
+            headers: { "content-length": String(Buffer.byteLength(body)) },
+        });
+        const done = new Promise<void>((resolve) =>
+            req.on("response", (res) => res.on("data", () => undefined).on("end", resolve)),
+        );
+        req.write(body.slice(0, 10));
+        await Bun.sleep(100);
+        clock = 900;
+        req.end(body.slice(10));
+        await done;
+        expect(records.records[0]?.scenario_ms).toBe(100);
+    });
+
     test("an upload the client abandons releases its arrival hold", async () => {
         const log: string[] = [];
         const gateway = new Gateway({
