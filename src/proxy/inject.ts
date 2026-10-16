@@ -30,6 +30,7 @@ export class FaultInjector {
     private readonly witnesses = new Map<string, Witness>();
     private readonly pending: { fault: string; at: number; call: number }[] = [];
     private readonly seed: Uint32Array;
+    private resetAt = 0;
 
     constructor(
         private readonly faults: ProxyFault[],
@@ -46,6 +47,7 @@ export class FaultInjector {
      * calls it at each arm's start; `report()` therefore describes the current arm only.
      */
     reset(): void {
+        this.resetAt = Date.now();
         this.armed.clear();
         this.pending.length = 0;
         this.rng.restore(this.seed);
@@ -91,6 +93,7 @@ export class FaultInjector {
     }
 
     observe(record: CallRecord, call: number): void {
+        if (record.started_wall_ms < this.resetAt) return;
         for (const p of this.pending.filter((x) => call > x.call)) {
             const inWindow = record.started_wall_ms <= p.at + this.windowMs;
             const sameCaller = record.component === TARGET;

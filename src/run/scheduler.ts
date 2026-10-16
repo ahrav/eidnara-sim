@@ -350,6 +350,7 @@ export class Scheduler {
             daemonExited: (detail) => {
                 live();
                 const expected = this.outage !== null;
+                this.outage = null;
                 this.log({ kind: "ItemState", daemon_exit: detail, expected, fatal: !expected });
                 if (!expected) {
                     this.fatal ??= new HarnessFailure(

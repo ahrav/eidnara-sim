@@ -59,8 +59,9 @@ in, so one seed gives one backoff sequence.
 
 `FaultInjector` holds the scenario's proxy-sink episodes. The scheduler calls
 `reset()` at each arm's start, which clears armed and pending episodes, empties
-the witnesses, and returns the generator to its seed so every arm draws the
-same intermittent mask; `arm(id)` when an episode's trigger event occurs; and
+the witnesses, returns the generator to its seed so every arm draws the same
+intermittent mask, and ignores observations of calls that started before the
+reset; `arm(id)` when an episode's trigger event occurs; and
 `disarm(id)` at the end of an episode's session. While armed, an episode replaces agent
 calls' answers by strategy:
 

@@ -432,6 +432,92 @@ describe("Journal and lease", () => {
         expect(child.stderr.toString()).toMatch(/not a regular file/);
     });
 
+    test("two acquisitions in one millisecond are different tokens", () => {
+        const d = dir();
+        const first = takeLease(d);
+        releaseLease(d, first);
+        const second = takeLease(d);
+        releaseLease(d, { ...second, token: first.token });
+        expect(JSON.parse(readFileSync(join(d, "lease.1.json"), "utf8")).released).toBeUndefined();
+        releaseLease(d, second);
+        expect(JSON.parse(readFileSync(join(d, "lease.1.json"), "utf8")).released).toBe(true);
+    });
+
+    test("a lease name with a non-canonical number refuses the directory", () => {
+        const d = dir();
+        writeFileSync(
+            join(d, "lease.000.json"),
+            JSON.stringify({ pid: process.pid, host: leaseHost(), started_wall_ms: 0 }),
+        );
+        expect(() => takeLease(d)).toThrow(/canonical/);
+    });
+
+    test("a lease with negative start ticks is malformed", () => {
+        const d = dir();
+        writeFileSync(
+            join(d, "lease.0.json"),
+            JSON.stringify({
+                pid: process.pid,
+                host: leaseHost(),
+                started_wall_ms: 0,
+                started_ticks: -1,
+            }),
+        );
+        expect(() => takeLease(d)).toThrow(/malformed/);
+    });
+
+    test("a zombie holder is a dead holder", () => {
+        const d = dir();
+        const child = Bun.spawn(["true"]);
+        const start = Date.now();
+        while (!existsSync(`/proc/${child.pid}/stat`) || Date.now() - start > 2_000) break;
+        let state = "";
+        for (let i = 0; i < 200 && state !== "Z"; i++) {
+            const stat = readFileSync(`/proc/${child.pid}/stat`, "utf8");
+            state = stat.slice(stat.lastIndexOf(")") + 2).split(" ")[0] ?? "";
+            if (state !== "Z") Bun.sleepSync(5);
+        }
+        expect(state).toBe("Z");
+        const mine = takeLease(d);
+        releaseLease(d, mine);
+        const stat = readFileSync(`/proc/${child.pid}/stat`, "utf8");
+        const ticks = Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19]);
+        writeFileSync(
+            join(d, "lease.0.json"),
+            JSON.stringify({
+                ...mine,
+                pid: child.pid,
+                started_ticks: ticks,
+                released: undefined,
+                token: "z",
+            }),
+        );
+        const taken = takeLease(d);
+        expect(taken.pid).toBe(process.pid);
+        releaseLease(d, taken);
+        child.kill();
+    });
+
+    test("a journal line with invalid UTF-8 is corrupt, and the complete prefix is measured in bytes", () => {
+        const path = join(dir(), "j.jsonl");
+        const good = Buffer.from(
+            `${JSON.stringify({ seq: 0, kind: "StartRun", arm: null, scenario_ms: 0, wall_ms: 1 })}\n`,
+        );
+        const bad = Buffer.concat([
+            Buffer.from('{"seq":1,"kind":"StartArm","arm":"'),
+            Buffer.from([0xff]),
+            Buffer.from('","scenario_ms":0,"wall_ms":1}\n'),
+        ]);
+        writeFileSync(path, Buffer.concat([good, bad]));
+        expect(() => new Journal(path)).toThrow(/line 2 is corrupt/);
+        const cut = Buffer.concat([good, Buffer.from([0xff, 0x7b])]);
+        writeFileSync(path, cut);
+        const j = new Journal(path);
+        expect(j.entries).toHaveLength(1);
+        j.close();
+        expect(readFileSync(path).equals(good)).toBe(true);
+    });
+
     test("a lease file whose number is outside the safe integer range refuses the directory", () => {
         const d = dir();
         writeFileSync(join(d, "lease.99999999999999999999.json"), "{}");
@@ -822,6 +908,51 @@ describe("Scheduler", () => {
         expect(observed).toBeLessThan(turnDone);
         expect(j.entries[observed]?.arm).toBe("a");
         expect(() => handle?.daemonExited({ signal: "SIGKILL" })).toThrow(/arm has ended/);
+    });
+
+    test("an outage window admits one daemon exit; a second exit of the replacement is fatal", async () => {
+        const j = new Journal(join(dir(), "j.jsonl"));
+        let handle: ArmHandle | null = null;
+        let second: unknown = "none";
+        const kill = episode("k", "daemon_sigkill_mid_fold", {
+            kind: "first_summarizer_call",
+            session: "s-0000",
+        });
+        const driver: ArmDriver = {
+            ...fakeDriver([]),
+            bind: (h) => {
+                handle = h;
+            },
+            event: async (e) => {
+                if (e.kind === "user_turn" && e.index === 0) handle?.observe("history_summarizer");
+                return {};
+            },
+            fault: async () => {
+                handle?.daemonExited({ signal: "SIGKILL" });
+                try {
+                    handle?.daemonExited({ signal: "SIGSEGV" });
+                    second = "accepted";
+                } catch (caught) {
+                    second = caught;
+                }
+                return { restarted_by: "harness" };
+            },
+        };
+        await expect(
+            new Scheduler({
+                events: fixtureEvents(1),
+                faults: [kill],
+                journal: j,
+                settleMs: 0,
+                order: ["a"],
+                drivers: { a: driver },
+            }).run(),
+        ).rejects.toThrow(HarnessFailure);
+        expect(second).toBeInstanceOf(HarnessFailure);
+        expect(j.entries.filter((e) => e.kind === "ItemState").map((e) => e.expected)).toEqual([
+            true,
+            false,
+        ]);
     });
 
     test("an unexpected daemon exit ends an idle wait on a job that never finishes", async () => {

@@ -79,6 +79,8 @@ export interface Lease {
     ns?: string;
     started_wall_ms: number;
     started_ticks?: number;
+    /** Random per acquisition, so a release names one acquisition and no other. */
+    token?: string;
     released?: boolean;
 }
 
@@ -93,7 +95,11 @@ function isLease(v: unknown): v is Lease {
         optional(l.boot, "string") &&
         optional(l.ns, "string") &&
         Number.isFinite(l.started_wall_ms) &&
-        (l.started_ticks === undefined || Number.isFinite(l.started_ticks)) &&
+        (l.started_ticks === undefined ||
+            (typeof l.started_ticks === "number" &&
+                Number.isFinite(l.started_ticks) &&
+                l.started_ticks >= 0)) &&
+        optional(l.token, "string") &&
         optional(l.released, "boolean")
     );
 }
@@ -127,7 +133,9 @@ export function bootId(): string | undefined {
 function startTicks(pid: number): number | null {
     try {
         const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
-        const ticks = Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19]);
+        const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+        if (fields[0] === "Z" || fields[0] === "X") return null;
+        const ticks = Number(fields[19]);
         return Number.isFinite(ticks) ? ticks : null;
     } catch {
         return null;
@@ -147,8 +155,9 @@ function alive(pid: number): boolean {
 function holderAlive(held: Lease, mine: Lease): boolean {
     if (held.boot !== undefined && mine.boot !== undefined && held.boot !== mine.boot) return false;
     if (held.ns !== undefined && mine.ns !== undefined && held.ns !== mine.ns) return true;
-    const ticks = held.started_ticks === undefined ? null : startTicks(held.pid);
-    return ticks === null ? alive(held.pid) : ticks === held.started_ticks;
+    const ticks = startTicks(held.pid);
+    if (held.started_ticks === undefined) return ticks === null ? alive(held.pid) : true;
+    return ticks === held.started_ticks;
 }
 
 const LEASE_BYTES = 4096;
@@ -196,6 +205,7 @@ function ownIdentity(): Lease {
         ns: pidNamespace(),
         started_wall_ms: Date.now(),
         started_ticks: startTicks(process.pid) ?? undefined,
+        token: randomUUID(),
     };
 }
 
@@ -207,7 +217,8 @@ function sameLease(a: Lease, b: Lease): boolean {
         a.boot === b.boot &&
         a.ns === b.ns &&
         a.started_ticks === b.started_ticks &&
-        a.started_wall_ms === b.started_wall_ms
+        a.started_wall_ms === b.started_wall_ms &&
+        a.token === b.token
     );
 }
 
@@ -220,13 +231,16 @@ export function pidNamespace(): string | undefined {
     }
 }
 
-const LEASE = /^lease\.(\d+)\.json$/;
+const LEASE = /^lease\.(0|[1-9]\d*)\.json$/;
+const LEASE_LIKE = /^lease\.\d+\.json$/;
 
 /** The numbers of every lease file in `dir`, ascending. The highest names the holder. */
 function leaseNumbers(dir: string): number[] {
     return readdirSync(dir)
         .flatMap((name) => {
             const m = LEASE.exec(name);
+            if (!m && LEASE_LIKE.test(name))
+                throw new Error(`lease ${name} in ${dir} has no canonical number`);
             if (!m) return [];
             const n = Number(m[1]);
             if (!Number.isSafeInteger(n))
@@ -295,12 +309,19 @@ export function readJournal(source: string | number): Entry[] & { bytes?: number
     if (typeof source === "string" && !existsSync(source)) return entries;
     const path = typeof source === "string" ? source : `fd ${source}`;
     const last = new Map<string | null, number>();
-    const lines = readFileSync(source, "utf8").split("\n");
-    lines.forEach((line, i) => {
-        if (i === lines.length - 1) return;
+    const buf = readFileSync(source);
+    const utf8 = new TextDecoder("utf-8", { fatal: true });
+    const lines: Buffer[] = [];
+    for (let at = 0; ; ) {
+        const nl = buf.indexOf(0x0a, at);
+        if (nl < 0) break;
+        lines.push(buf.subarray(at, nl));
+        at = nl + 1;
+    }
+    lines.forEach((raw, i) => {
         let entry: Entry;
         try {
-            entry = JSON.parse(line) as Entry;
+            entry = JSON.parse(utf8.decode(raw)) as Entry;
         } catch {
             throw new Error(`journal ${path}: line ${i + 1} is corrupt`);
         }
@@ -314,7 +335,7 @@ export function readJournal(source: string | number): Entry[] & { bytes?: number
         }
         last.set(entry.arm, entry.scenario_ms);
         entries.push(entry);
-        entries.bytes = (entries.bytes ?? 0) + Buffer.byteLength(line) + 1;
+        entries.bytes = (entries.bytes ?? 0) + raw.length + 1;
     });
     return entries;
 }

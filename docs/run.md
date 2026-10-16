@@ -19,7 +19,9 @@ a descriptor that follows no symlink and must name a small regular file; a
 lease that cannot be read or does not parse to a lease refuses the directory,
 since a lease is linked into place whole and a damaged one is corruption, never
 a holder to take over. `releaseLease(dir, lease)` releases only the acquisition `takeLease` returned,
-compared on every identifying field including its start time. A lease whose process on this host has
+compared on every identifying field including its random token. A zombie
+holder reads as dead, and a lease file whose number is spelled other than as a
+canonical decimal refuses the directory. A lease whose process on this host has
 exited is taken over by writing a uniquely named temporary file with the process id, host, start time, and start ticks
 and linking it to `lease.<n+1>.json`. Exactly one of several racing resumers can create that
 name; the others read the winner's live lease on their next attempt and are
@@ -33,9 +35,10 @@ free whichever machine released it.
 `Journal` opens its file without following symlinks, requires a regular
 file with one link owned by the harness user, reads and truncates it
 through that one descriptor, and refuses every operation after `close`. On read it
-accepts a line only when it parses, carries the next `seq`, names a known
-`kind`, has `arm` and finite `scenario_ms` and `wall_ms`, and keeps its arm's
-`scenario_ms` non-decreasing. It appends one JSON line per entry with `seq` (0, 1, 2, ... in append
+splits lines on raw newline bytes, so the complete prefix is measured in bytes,
+and accepts a line only when it is valid UTF-8 that parses, carries the next
+`seq`, names a known `kind`, has `arm` and finite `scenario_ms` and `wall_ms`,
+and keeps its arm's `scenario_ms` non-decreasing. It appends one JSON line per entry with `seq` (0, 1, 2, ... in append
 order), `kind`, `arm`, `scenario_ms`, and `wall_ms`; a line is written whole
 before the entry counts as appended. On open, it truncates the
 file to its complete prefix, dropping only a last line that a kill cut
@@ -115,7 +118,8 @@ before `reset`. The handle carries `jobStart`, `jobEnd`, `observe`, and
 so a callback a finished arm left behind is refused instead of writing under
 the next arm. `observe("history_summarizer")` fires the session's mid-fold
 SIGKILL on the first observed summarizer call. `daemonExited` inside an outage
-window is journaled as expected; outside one, it journals a fatal `ItemState`,
+window is journaled as expected and closes the window, so a second exit of the
+replacement daemon is unexpected; outside one, it journals a fatal `ItemState`,
 throws `HarnessFailure`, and fails the run at its next wait, including an idle
 wait on a job that never ends, or before `EndRun`, whether or not the caller
 swallowed the throw. A scheduler fault whose driver call rejects

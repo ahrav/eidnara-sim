@@ -1600,7 +1600,7 @@ Required faults and enabling state: a harness kill while an item is issued.
 Confidence: low -
 [evidence](evidence/sim-p63-in-flight-item-resolved-once-on-resume.md).
 PROPOSED: reconstructed from the condensed index in spec #1007; the M4 unit
-tests verify the record, and a default tier run reaches it.
+tests verify the recovery-state half, and a default tier run reaches it.
 Existing check: src/run/scheduler.test.ts - one `ItemState failed(interrupted)`
 and one `Event` for the in-flight turn, billed nowhere when killed before the
 attempt
@@ -1624,7 +1624,8 @@ Fault/timing angle: none.
 Required faults and enabling state: a scheduled harness kill.
 Confidence: low - [evidence](evidence/sim-p64-interrupt-mid-turn-exercised.md).
 PROPOSED: reconstructed from the condensed index in spec #1007; the M4 unit
-tests verify the record, and a default tier run reaches it.
+tests construct the interrupt path; a campaign check of its occurrence is
+still to come, and a default tier run reaches it.
 Existing check: src/run/scheduler.test.ts - a kill lands while a `BeginTurn` is
 open
 Impact: The in-flight resolution path is never exercised.
