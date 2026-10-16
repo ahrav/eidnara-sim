@@ -222,7 +222,9 @@ pid is recorded as soon as its process exists, before the readiness wait;
 OpenCode's once `spawnOpencode` returns, before the SDK setup; the OpenCode
 wrapper also writes its own pid and start time to `<arm>/opencode.launch`
 before it execs the launcher, so a harness killed while the server starts
-leaves a record the next resume reaps. The state
+leaves a record the next resume reaps. A daemon the fixture spawned before
+the harness died carries this arm's data directory as its `--state-root`, and
+the reaper finds and stops it by that argument. The state
 also carries the length and allocated blocks of an active `store_full`
 ballast (cleared before the file goes, so a kill in between leaves a leftover
 the resume removes), a `refilling` flag while a resume has removed the ballast
@@ -278,9 +280,9 @@ against the same store (OQ-10).
 | `model_switch` | Later sessions use the next configured model; the daemon keeps running with its summarizer model | The new model id |
 | `laptop_sleep` | One event-free clock jump (`docs/run.md`) | The `AdvanceClock` entry |
 
-`daemon_restart`, `plugin_reload`, and `model_switch` fire between sessions;
-one fired inside a
-session stops the run. A scheduler-layer fault type with no mechanism here
+`daemon_restart`, `plugin_reload`, `model_switch`, and `apply_diff` fire
+between sessions, while the host is stopped, so the harness's writes meet no
+concurrent host process; one fired inside a session stops the run. A scheduler-layer fault type with no mechanism here
 (`host_upgrade`, `two_hosts_one_daemon`) stops the run before `StartRun`,
 through the driver's `supports`, so a resume cannot heal it; provider faults
 belong to the proxy and the sleep to the clock, so `supports` accepts them.
