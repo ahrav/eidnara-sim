@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { connect } from "node:http2";
 import { decodeMessages } from "../../tests/eventstream-decode";
 import { Rng } from "../rng";
 import type { FaultType } from "../scenario/faults";
@@ -7,6 +8,12 @@ import { encodeEvent } from "./eventstream";
 import { backoffMs, type CallStarted, Gateway, sendWithRetry, type Upstream } from "./gateway";
 import { excludedFromFaultMetrics, FaultInjector, type ProxyFault } from "./inject";
 import { type CallRecord, RecordWriter, recordProblems } from "./records";
+
+/** A slow_stream fault delays each event by SLOW_DELAY_MS; the host classifies a status-200 answer as slow when any gap is at least SLOW_SEEN_MS. */
+const SLOW_DELAY_MS = 100;
+const SLOW_SEEN_MS = 70;
+/** The host's 300 ms timeout expires before the provider_timeout fault's 2,000 ms timeout; other fault types get 2,000 ms. */
+const HOST_TIMEOUT_MS = (type: FaultType) => (type === "provider_timeout" ? 300 : 2_000);
 
 const AGENT_BODY = {
     system: [{ text: "You are a coding agent." }],
@@ -127,7 +134,7 @@ function hostSees(type: FaultType, r: HostResult): boolean {
             }
         }
         case "slow_stream":
-            return r.status === 200 && Math.max(...r.gaps) >= 40;
+            return r.status === 200 && Math.max(...r.gaps) >= SLOW_SEEN_MS;
         default:
             return false;
     }
@@ -236,7 +243,7 @@ function hostSeesJson(type: FaultType, r: JsonResult): boolean {
             return use?.input !== undefined && "unexpected_argument" in use.input;
         }
         case "slow_stream":
-            return r.status === 200 && r.ms >= 45;
+            return r.status === 200 && r.ms >= SLOW_SEEN_MS;
         default:
             return false;
     }
@@ -252,21 +259,25 @@ describe("fault composition at the proxy sink", () => {
         for (const type of PROVIDER_TYPES) {
             for (const [strategy, base] of Object.entries(STRATEGIES)) {
                 test(`${route} ${type} / ${strategy}: the host sees the fault, the proxy did not retry, and the host's next call lands in the window`, async () => {
-                    const params = { ...base, timeout_ms: 2_000, delay_ms: 50 } as Record<
-                        string,
-                        number
-                    >;
+                    const params = {
+                        ...base,
+                        timeout_ms: 2_000,
+                        delay_ms: SLOW_DELAY_MS,
+                    } as Record<string, number>;
                     const fault = { id: "fault-000", type, strategy, params } as ProxyFault;
                     const { gateway, records, injector, url } = await start(fault);
                     injector.arm("fault-000");
                     const seen: boolean[] = [];
+                    const timeoutMs = HOST_TIMEOUT_MS(type);
                     for (let call = 0; call < 12; call++) {
                         if (route === "converse")
-                            seen.push(hostSeesJson(type, await hostCallJson(url, AGENT_BODY, 300)));
-                        else seen.push(hostSees(type, await hostCall(url, AGENT_BODY, 300)));
+                            seen.push(
+                                hostSeesJson(type, await hostCallJson(url, AGENT_BODY, timeoutMs)),
+                            );
+                        else seen.push(hostSees(type, await hostCall(url, AGENT_BODY, timeoutMs)));
                     }
                     if (strategy === "persistent") injector.disarm("fault-000");
-                    await hostCall(url, AGENT_BODY, 300);
+                    await hostCall(url, AGENT_BODY, timeoutMs);
                     while (gateway.inFlight > 0) await Bun.sleep(10);
                     expect(records.records).toHaveLength(13);
                     const injected = records.records.filter((r) => r.fault_ref === "fault-000");
@@ -314,10 +325,34 @@ describe("fault composition at the proxy sink", () => {
         } as ProxyFault;
         const { injector, url } = await start(fault, scriptedUpstream(), 100);
         injector.arm("p");
-        for (let i = 0; i < 3; i++) await hostCall(url, AGENT_BODY, 1_000);
+        await hostCall(url, AGENT_BODY, 1_000);
         await Bun.sleep(150);
         await hostCall(url, AGENT_BODY, 1_000);
-        expect(injector.report()[0]?.status).toBe("fired");
+        expect(injector.report()[0]?.status).toBe("untriggered");
+        await hostCall(url, AGENT_BODY, 1_000);
+        expect(injector.report()[0]).toMatchObject({
+            status: "fired",
+            injected_seq: [0, 1, 2],
+            host_observed_seq: [2],
+        });
+    });
+
+    test("a fast call from another component past the window leaves an in-flight agent call to witness", async () => {
+        const slowAgent: Upstream = {
+            async converse(m, b, s, signal) {
+                if (b.toolConfig) await Bun.sleep(300);
+                return scriptedUpstream().converse(m, b, s, signal);
+            },
+        };
+        const fault = { id: "f", type: "provider_429", strategy: "single", params: { count: 1 } };
+        const { injector, url } = await start(fault as ProxyFault, slowAgent, 100);
+        injector.arm("f");
+        expect((await hostCall(url, AGENT_BODY, 1_000)).status).toBe(429);
+        const agent = hostCall(url, AGENT_BODY, 2_000);
+        await Bun.sleep(150);
+        expect((await hostCall(url, SUMMARIZER_BODY, 1_000)).status).toBe(200);
+        expect((await agent).status).toBe(200);
+        expect(injector.report()[0]).toMatchObject({ status: "fired", host_observed_seq: [2] });
     });
 
     test("slow_stream over an upstream that throttles first records the proxy's retry", async () => {
@@ -541,8 +576,12 @@ describe("every request yields one record", () => {
         expect((await fetch(`${url}/model/m/converse`, { method: "POST", body: "{" })).status).toBe(
             400,
         );
+        expect(
+            (await fetch(`${url}/model/m/converse`, { method: "POST", body: "[]" })).status,
+        ).toBe(400);
         expect(records.records.map((r) => [r.component, r.status])).toEqual([
             ["rejected", 404],
+            ["rejected", 400],
             ["rejected", 400],
         ]);
     });
@@ -584,6 +623,46 @@ describe("every request yields one record", () => {
         expect((await hostCall(url, AGENT_BODY, 2_000)).status).toBe(200);
         expect(records.records[0]).toMatchObject({ status: 200, finish_reason: "stream_cut" });
     });
+
+    test("an in-stream exception before messageStop is recorded as stream_cut with the exception as its error", async () => {
+        const failing: Upstream = {
+            async converse() {
+                async function* events() {
+                    yield { messageStart: { role: "assistant" } };
+                    yield { internalServerException: { message: "boom" } };
+                }
+                return { events: events() };
+            },
+        };
+        const { records, url } = await start(null, failing);
+        expect((await hostCall(url, AGENT_BODY, 2_000)).status).toBe(200);
+        expect(records.records[0]).toMatchObject({
+            status: 200,
+            finish_reason: "stream_cut",
+            error: "internalServerException",
+        });
+    });
+
+    test("an HTTP/2 call is served and stop() returns while the client session stays open", async () => {
+        const { gateway, records } = await start(null);
+        gateways = gateways.filter((g) => g !== gateway);
+        const session = connect(gateway.urls[1] as string);
+        const status = await new Promise<number>((resolve, reject) => {
+            const req = session.request({ ":method": "POST", ":path": "/model/m/converse" });
+            req.on("response", (h) => resolve(Number(h[":status"])));
+            req.on("error", reject);
+            req.end(JSON.stringify(AGENT_BODY));
+            req.resume();
+        });
+        expect(status).toBe(200);
+        expect(records.records.map((r) => [r.component, r.status])).toEqual([["agent", 200]]);
+        const outcome = await Promise.race([
+            gateway.stop().then(() => "stopped"),
+            Bun.sleep(2_000).then(() => "hung"),
+        ]);
+        session.destroy();
+        expect(outcome).toBe("stopped");
+    }, 10_000);
 
     test("an upstream stream that throws before its first event still yields one record", async () => {
         const broken: Upstream = {

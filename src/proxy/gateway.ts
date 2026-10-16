@@ -231,7 +231,8 @@ export class Gateway {
                 return undefined;
             }
         };
-        const body = parse(() => JSON.parse(raw.toString("utf8")) as ConverseBody);
+        const parsed = route && raw.length <= MAX_BODY;
+        const body = parsed ? parse(() => JSON.parse(raw.toString("utf8")) as ConverseBody) : null;
         const model = parse(() => decodeURIComponent(route?.[1] ?? ""));
         const problem = !route
             ? [404, `unknown operation ${path}`]
@@ -239,7 +240,7 @@ export class Gateway {
               ? [413, `body of ${raw.length} bytes over the limit`]
               : model === undefined
                 ? [400, "malformed model id"]
-                : !body || typeof body !== "object"
+                : !body || typeof body !== "object" || Array.isArray(body)
                   ? [400, `malformed body (${raw.length} bytes)`]
                   : null;
         if (!route || !body || model === undefined || problem) {
@@ -310,9 +311,9 @@ export class Gateway {
                         sink.write(encodeEvent(type, member));
                     }
                 }
-                if (complete < 2 && !done.error) {
+                if (complete < 2) {
                     done.finish_reason = "stream_cut";
-                    done.error = sink.signal.aborted
+                    done.error ??= sink.signal.aborted
                         ? "client disconnected before the stream ended"
                         : "the stream ended before messageStop and metadata";
                 }

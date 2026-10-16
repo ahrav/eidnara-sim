@@ -79,11 +79,9 @@ export class FaultInjector {
     observe(record: CallRecord, call: number): void {
         for (const p of this.pending.filter((x) => call > x.call)) {
             const inWindow = record.started_wall_ms <= p.at + this.windowMs;
-            const sameCaller = record.component === TARGET;
-            if (sameCaller && inWindow) {
-                (this.witnesses.get(p.fault) as Witness).host_observed_seq.push(record.seq);
-            }
-            if (!inWindow || sameCaller) this.pending.splice(this.pending.indexOf(p), 1);
+            if (record.component !== TARGET || !inWindow) continue;
+            (this.witnesses.get(p.fault) as Witness).host_observed_seq.push(record.seq);
+            this.pending.splice(this.pending.indexOf(p), 1);
         }
         if (record.fault_ref === null) return;
         const w = this.witnesses.get(record.fault_ref) as Witness;
