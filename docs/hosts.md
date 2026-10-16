@@ -261,8 +261,11 @@ against the same store (OQ-10).
 
 `daemon_restart`, `plugin_reload`, and `model_switch` fire between sessions;
 one fired inside a
-session stops the run, and so does a fault type with no mechanism here
-(`host_upgrade`, `two_hosts_one_daemon`). A daemon that exits outside an
+session stops the run. A scheduler-layer fault type with no mechanism here
+(`host_upgrade`, `two_hosts_one_daemon`) stops the run before `StartRun`,
+through the driver's `supports`, so a resume cannot heal it; provider faults
+belong to the proxy and the sleep to the clock, so `supports` accepts them.
+A daemon that exits outside an
 outage window stops the run with `HarnessFailure`; the driver checks the
 daemon after every turn and at every `session_end`.
 
