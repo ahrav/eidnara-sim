@@ -363,7 +363,7 @@ describe("grading harness", () => {
     test("every snapshot is artefacts-only, and a turn outcome outside the contract is refused", () => {
         const f = fixture("P8-pass");
         const first = f.snapshots[0] as Snapshot;
-        const leak = structuredClone(first);
+        const leak = { ...structuredClone(first), id: `${first.id}-retry` };
         (leak.artefacts as unknown[]).push({ id: "t1", class: "transcript", messages: [] });
         expect(() => gradeItem(f.probe, [first, leak], rules)).toThrow("class transcript");
         const odd = { ...first, turn_outcome: "failed(interrupted)" as never };
@@ -580,6 +580,62 @@ describe("grading harness", () => {
         const sim = calls.calls.find((c) => c.component === "user-sim") as CallView;
         calls.calls.push({ ...sim, seq: sim.seq + 1, label: "task" });
         expect(() => gradeItem(f.probe, [snap], rules)).toThrow("two user-sim calls for turn");
+    });
+
+    test("shell comments, mixed chains, and spaced heredoc terminators do not fabricate executed segments", () => {
+        const f = fixture("P6-pass");
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        const log = snap.artefacts.find((a) => a.class === "command-log" && a.role === "turn");
+        if (log?.class !== "command-log") throw new Error("fixture lacks command-log");
+        log.commands.push(
+            { command: "echo ok # && cargo test", exit: 0, scenario_ms: 10 },
+            { command: "false && cargo test || true", exit: 0, scenario_ms: 20 },
+            { command: "cat <<EOF\n EOF \ncargo test\nEOF", exit: 0, scenario_ms: 30 },
+            { command: "cat <<-EOF\n\tbody\n\tEOF\necho done", exit: 0, scenario_ms: 40 },
+        );
+        expect(gradeItem(f.probe, [snap], rules)?.metrics["P6.ran_tests"]).toBe(false);
+        log.commands.push({
+            command: "cat <<-EOF\n\tbody\n\tEOF\ncargo test",
+            exit: 0,
+            scenario_ms: 50,
+        });
+        expect(gradeItem(f.probe, [snap], rules)?.metrics["P6.ran_tests"]).toBe(true);
+    });
+
+    test("token counters are non-negative integers", () => {
+        const f = fixture("P6-pass");
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        const calls = snap.artefacts.find((a) => a.class === "proxy-call");
+        if (calls?.class !== "proxy-call") throw new Error("fixture lacks proxy-call");
+        (calls.calls[0] as CallView).input_tokens = -999999;
+        expect(() => gradeItem(f.probe, [snap], rules)).toThrow("calls[0].input_tokens");
+    });
+
+    test("a renamed file counts under both of its paths", () => {
+        const f = fixture("P6-pass");
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        const prior = snap.artefacts.find((a) => a.class === "diff" && a.role === "prior-session");
+        if (prior?.class !== "diff") throw new Error("fixture lacks prior diff");
+        prior.patch =
+            "diff --git a/src/old.rs b/src/new.rs\nsimilarity index 90%\nrename from src/old.rs\nrename to src/new.rs\n--- a/src/old.rs\n+++ b/src/new.rs\n@@ -1,1 +1,1 @@\n-fn a() {}\n+fn b() {}\n";
+        const log = snap.artefacts.find((a) => a.class === "command-log" && a.role === "turn");
+        if (log?.class !== "command-log") throw new Error("fixture lacks command-log");
+        log.commands.push({ command: "cat src/old.rs", exit: 1, scenario_ms: 10 });
+        expect(gradeItem(f.probe, [snap], rules)?.metrics["P6.reread_files"]).toBe(1);
+    });
+
+    test("a grade record names at least one distinct input artefact", () => {
+        const path = join(mkdtempSync(join(tmpdir(), "sim-grades-")), "grades.jsonl");
+        const log = new GradeLog(path);
+        const g = grade("P2-pass");
+        expect(() => log.append({ ...g, inputs: [] })).toThrow(GradeRefused);
+        expect(() => log.append({ ...g, inputs: ["d1", "d1"] })).toThrow(GradeRefused);
+    });
+
+    test("a snapshot listed twice is refused rather than counted as a later attempt", () => {
+        const f = fixture("P8-pass");
+        const first = f.snapshots[0] as Snapshot;
+        expect(() => gradeItem(f.probe, [first, first], rules)).toThrow("snapshot s-P8-a twice");
     });
 
     test("proxy calls must carry strictly increasing sequence numbers", () => {

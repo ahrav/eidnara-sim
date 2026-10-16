@@ -85,6 +85,7 @@ export type Field = (v: unknown) => boolean;
 export const str: Field = (v) => typeof v === "string";
 export const text: Field = (v) => typeof v === "string" && v.length > 0;
 export const num: Field = (v) => typeof v === "number" && Number.isFinite(v);
+const count: Field = (v) => Number.isInteger(v) && (v as number) >= 0;
 export const bool: Field = (v) => typeof v === "boolean";
 export const optional =
     (f: Field): Field =>
@@ -133,8 +134,8 @@ const CALL: Record<string, Field> = {
     scenario_ms: num,
     status: num,
     error: nullable(str),
-    input_tokens: num,
-    output_tokens: num,
+    input_tokens: count,
+    output_tokens: count,
     response_text: optional(str),
     label: optional(str),
 };

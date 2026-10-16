@@ -145,12 +145,14 @@ function splitShell(command: string): { op: string; seg: string }[] {
         op = next;
     };
     let heredoc = "";
+    let stripTabs = false;
     for (let i = 0; i < command.length; i++) {
         const ch = command[i] as string;
         if (heredoc) {
             if (ch === "\n") {
                 const end = command.indexOf("\n", i + 1);
-                const line = command.slice(i + 1, end < 0 ? command.length : end).trim();
+                const raw = command.slice(i + 1, end < 0 ? command.length : end);
+                const line = stripTabs ? raw.replace(/^\t+/, "") : raw;
                 if (line === heredoc) {
                     heredoc = "";
                     i = end < 0 ? command.length : end;
@@ -159,10 +161,16 @@ function splitShell(command: string): { op: string; seg: string }[] {
             }
             continue;
         }
+        if (!quote && ch === "#" && /^|[\s;&|(]$/.test(seg.slice(-1))) {
+            const end = command.indexOf("\n", i);
+            i = end < 0 ? command.length : end - 1;
+            continue;
+        }
         if (!quote && command.startsWith("<<", i)) {
-            const m = /^<<-?\s*(['"]?)([A-Za-z_][\w-]*)\1/.exec(command.slice(i));
+            const m = /^<<(-?)\s*(['"]?)([A-Za-z_][\w-]*)\2/.exec(command.slice(i));
             if (m) {
-                heredoc = m[2] as string;
+                stripTabs = m[1] === "-";
+                heredoc = m[3] as string;
                 seg += m[0];
                 i += m[0].length - 1;
                 continue;
@@ -192,8 +200,11 @@ function splitShell(command: string): { op: string; seg: string }[] {
 const executed = (x: Command): string[] => {
     const parts = splitShell(x.command);
     const lastList = parts.reduce((n, p, i) => (p.op === ";" || p.op === "\n" ? i : n), 0);
+    const mixed = parts.slice(lastList).some((p) => p.op === "||");
     return parts
-        .filter((p, i) => p.op !== "||" && (p.op !== "&&" || (x.exit === 0 && i >= lastList)))
+        .filter(
+            (p, i) => p.op !== "||" && (p.op !== "&&" || (x.exit === 0 && i >= lastList && !mixed)),
+        )
         .map((p) => p.seg);
 };
 const anchored = (p: string) => (p.startsWith("(?i)") ? `(?i)^${p.slice(4)}` : `^${p}`);
@@ -396,6 +407,12 @@ export function gradeItem(
     if (snapshots.some((s) => s.item !== probe.id || s.arm !== first.arm)) {
         throw new GradeRefused(`snapshots for ${probe.id} mix items or arms`);
     }
+    const seenIds = new Set<string>();
+    for (const s of snapshots) {
+        if (seenIds.has(s.id))
+            throw new GradeRefused(`item ${probe.id} lists snapshot ${s.id} twice`);
+        seenIds.add(s.id);
+    }
     for (const s of snapshots) assertArtefactsOnly(s);
     if (probe.event && first.turn !== probe.event) {
         throw new GradeRefused(
@@ -446,7 +463,11 @@ function isGradeRecord(value: unknown): value is GradeRecord {
         g.metrics !== null &&
         !Array.isArray(g.metrics) &&
         Object.values(g.metrics).every(metricValue);
-    const inputs = Array.isArray(g.inputs) && g.inputs.every(str);
+    const inputs =
+        Array.isArray(g.inputs) &&
+        g.inputs.length > 0 &&
+        g.inputs.every(text) &&
+        new Set(g.inputs).size === g.inputs.length;
     const attempts =
         Number.isInteger(g.later_attempts_logged) && (g.later_attempts_logged as number) >= 0;
     const optionals = optional(str)(g.pair) && optional(str)(g.reason);
