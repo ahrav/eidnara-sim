@@ -7,22 +7,21 @@ export const CONFIG_SCHEMA = "sim-config/v1";
 export interface SimConfig {
     schema: typeof CONFIG_SCHEMA;
     eidnara_checkout: string;
-    opencode_plugin_dist: string;
-    pi_plugin_dist: string;
     daemon_binary: string;
     pi_install: string;
     opencode_binary: string;
+    agent_model: string;
+    /** Build tools the agent runs inside the sandbox: `bin` joins PATH, `keep` stays visible. */
+    toolchain: {
+        bin: string[];
+        keep: string[];
+        env: Record<string, string>;
+        wall_clock_tools: string[];
+    };
     bedrock: { aws_profile: string; region: string };
 }
 
-const PATH_FIELDS = [
-    "eidnara_checkout",
-    "opencode_plugin_dist",
-    "pi_plugin_dist",
-    "daemon_binary",
-    "pi_install",
-    "opencode_binary",
-] as const;
+const PATH_FIELDS = ["eidnara_checkout", "daemon_binary", "pi_install", "opencode_binary"] as const;
 
 export class ConfigError extends Error {}
 
@@ -43,6 +42,31 @@ export function parseConfig(value: unknown): SimConfig {
             throw new ConfigError(`config.${field}: missing`);
         }
         if (!isAbsolute(path)) throw new ConfigError(`config.${field}: not an absolute path`);
+    }
+    if (typeof v.agent_model !== "string" || v.agent_model === "") {
+        throw new ConfigError("config.agent_model: missing");
+    }
+    const toolchain = v.toolchain as Record<string, unknown> | undefined;
+    for (const field of ["bin", "keep"] as const) {
+        const paths = toolchain?.[field];
+        if (!Array.isArray(paths) || !paths.every((x) => typeof x === "string" && isAbsolute(x))) {
+            throw new ConfigError(`config.toolchain.${field}: expected absolute paths`);
+        }
+    }
+    const tools = toolchain?.wall_clock_tools;
+    if (!Array.isArray(tools) || !tools.every((t) => typeof t === "string" && /^[\w-]+$/.test(t))) {
+        throw new ConfigError("config.toolchain.wall_clock_tools: expected command names");
+    }
+    const env = toolchain?.env;
+    if (typeof env !== "object" || env === null || Array.isArray(env)) {
+        throw new ConfigError("config.toolchain.env: missing");
+    }
+    for (const [key, value] of Object.entries(env)) {
+        if (typeof value !== "string" || ["PATH", "HOME", "LD_PRELOAD"].includes(key)) {
+            throw new ConfigError(
+                `config.toolchain.env.${key}: expected a string for a tool variable`,
+            );
+        }
     }
     const bedrock = v.bedrock as Record<string, unknown> | undefined;
     for (const field of ["aws_profile", "region"] as const) {

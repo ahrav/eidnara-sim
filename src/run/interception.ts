@@ -63,7 +63,7 @@ export function probes(paths: { node: string; opencode: string; daemon: string }
             name: "daemon",
             path: paths.daemon,
             keep: [dirname(paths.daemon)],
-            argv: [paths.daemon, "build-profile"],
+            argv: [paths.daemon, "--help"],
             env: { LD_DEBUG: "bindings" },
             mode: "binds-clock",
         },

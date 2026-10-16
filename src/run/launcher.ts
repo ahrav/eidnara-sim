@@ -6,6 +6,8 @@ const UNSHARE_ARGS = ["--mount", "--pid", "--fork", "--mount-proc", "--propagati
 const PLAIN_PATH = /^\/[A-Za-z0-9._@+/-]*$/;
 const PLAIN_VALUE = /^[A-Za-z0-9._@+/:,=-]*$/;
 
+export const shellQuote = (arg: string) => `'${arg.replaceAll("'", "'\\''")}'`;
+
 export function plainPath(path: string): string {
     if (!PLAIN_PATH.test(path)) {
         throw new Error(`sandbox path ${JSON.stringify(path)} must match ${PLAIN_PATH}`);
@@ -38,7 +40,10 @@ function script(hidden: readonly string[]): string {
 SIM_PATH="$PATH" exec sudo -n --preserve-env unshare ${UNSHARE_ARGS.join(" ")} /bin/sh -c '
 set -e
 keep=""
-while [ "$1" != "--env" ]; do keep="$keep $1"; shift; done
+while [ "$1" != "--ro" ]; do keep="$keep $1"; shift; done
+shift
+ro=""
+while [ "$1" != "--env" ]; do ro="$ro $1"; keep="$keep $1"; shift; done
 shift
 envs=""
 while [ "$1" != "--" ]; do envs="$envs $1"; shift; done
@@ -48,6 +53,7 @@ for p in $keep; do mkdir -p "$st$p"; mount --rbind "$p" "$st$p"; done
 ${mounts}
 for p in $keep; do mkdir -p "$p"; mount --rbind "$st$p" "$p"; done
 for p in $keep; do umount -R "$st$p" || true; done
+for p in $ro; do mount -o remount,bind,ro "$p"; done
 find "$st" -depth -type d -empty -delete || true
 export PATH="$SIM_PATH"
 setpriv ${ids} --init-groups --no-new-privs --inh-caps=-all --bounding-set=-all -- env --default-signal=INT,TERM $envs "$@"
@@ -69,6 +75,7 @@ export function launch(
     keep: readonly string[],
     env: Record<string, string>,
     command: readonly string[],
+    readOnly: readonly string[] = [],
 ): string[] {
     const pairs = Object.entries(env).map(([k, v]) => {
         if (!/^[A-Z_][A-Z0-9_]*$/.test(k) || !PLAIN_VALUE.test(v)) {
@@ -76,7 +83,8 @@ export function launch(
         }
         return `${k}=${v}`;
     });
-    return [launcher, ...keep.map(plainPath), "--env", ...pairs, "--", ...command];
+    const ro = readOnly.map(plainPath);
+    return [launcher, ...keep.map(plainPath), "--ro", ...ro, "--env", ...pairs, "--", ...command];
 }
 
 export function sandboxAvailable(): boolean {

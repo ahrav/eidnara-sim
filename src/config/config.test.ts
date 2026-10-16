@@ -17,4 +17,22 @@ test("a missing or relative path is refused by field name", () => {
     expect(() => parseConfig({ ...base, bedrock: { region: "us-west-2" } })).toThrow(
         "config.bedrock.aws_profile: missing",
     );
+    expect(() => parseConfig({ ...base, agent_model: "" })).toThrow("config.agent_model: missing");
+    expect(() => parseConfig({ ...base, toolchain: { ...base.toolchain, bin: ["bin"] } })).toThrow(
+        "config.toolchain.bin: expected absolute paths",
+    );
+    expect(() =>
+        parseConfig({ ...base, toolchain: { ...base.toolchain, wall_clock_tools: ["a b"] } }),
+    ).toThrow("config.toolchain.wall_clock_tools: expected command names");
+    expect(() =>
+        parseConfig({ ...base, toolchain: { bin: [], keep: [], wall_clock_tools: [] } }),
+    ).toThrow("config.toolchain.env: missing");
+    const env = (extra: Record<string, unknown>) => ({
+        ...base,
+        toolchain: { ...base.toolchain, env: { ...base.toolchain.env, ...extra } },
+    });
+    expect(() => parseConfig(env({ LD_PRELOAD: "/x.so" }))).toThrow(
+        "config.toolchain.env.LD_PRELOAD",
+    );
+    expect(() => parseConfig(env({ CARGO_HOME: 1 }))).toThrow("config.toolchain.env.CARGO_HOME");
 });

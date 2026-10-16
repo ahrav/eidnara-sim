@@ -4,6 +4,7 @@ import type { SimConfig } from "../config/config";
 import { assess, type Interception, interceptionTest, probes } from "./interception";
 import { writeLauncher } from "./launcher";
 import { buildFaketime } from "./timeinject";
+import { type ToolchainProbe, toolchainProbe } from "./toolchain";
 import { hostVersion, transcriptPaths } from "./transcripts";
 
 export interface Preflight {
@@ -11,6 +12,7 @@ export interface Preflight {
     time_injection: Interception[];
     distortions: string[];
     hosts: { host: "pi" | "opencode"; version: string; transcript_paths: string[] }[];
+    toolchain: ToolchainProbe[];
 }
 
 export function piCli(config: SimConfig): string {
@@ -27,6 +29,11 @@ export async function preflight(config: SimConfig, runRoot: string): Promise<Pre
         probes({ node, opencode: config.opencode_binary, daemon: config.daemon_binary }),
     );
     const { distortions } = assess(time_injection);
+    const wallTools = config.toolchain.wall_clock_tools;
+    if (wallTools.length > 0) distortions.push(`${wallTools.join(", ")} read wall-clock time`);
+    distortions.push(
+        "toolchain caches are read-only, so a dependency missing from them fails to fetch",
+    );
     const hosts = (
         [
             ["pi", [node, piCli(config), "--version"]],
@@ -36,5 +43,7 @@ export async function preflight(config: SimConfig, runRoot: string): Promise<Pre
         const version = hostVersion([...argv]);
         return { host, version, transcript_paths: transcriptPaths(host, version) };
     });
-    return { launcher, time_injection, distortions, hosts };
+    const offset = join(runRoot, "interception", "offset");
+    const toolchain = await toolchainProbe(config, launcher, offset);
+    return { launcher, time_injection, distortions, hosts, toolchain };
 }

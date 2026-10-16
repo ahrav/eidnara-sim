@@ -43,9 +43,11 @@ describe("time injection", () => {
     test("the launcher refuses paths and values the shell would split", () => {
         expect(() => launch("/x/sandbox.sh", ["/a b"], {}, ["true"])).toThrow(/must match/);
         expect(() => launch("/x/sandbox.sh", [], { A: "x y" }, ["true"])).toThrow(/plain word/);
-        expect(launch("/x/sandbox.sh", ["/k"], { A: "1" }, ["true"])).toEqual([
+        expect(launch("/x/sandbox.sh", ["/k"], { A: "1" }, ["true"], ["/r"])).toEqual([
             "/x/sandbox.sh",
             "/k",
+            "--ro",
+            "/r",
             "--env",
             "A=1",
             "--",

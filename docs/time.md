@@ -45,14 +45,14 @@ its result in the run manifest.
 |---|---|---|
 | Pi (its Node runtime) | `node -e` prints `Date.now()` and a 100 ms timer | The clock is within 5 s of the jump and the timer fires in 90 ms to 1 s |
 | OpenCode (Bun-compiled) | `BUN_BE_BUN=1 opencode -e` with the same script | As for Pi |
-| Daemon | `LD_DEBUG=bindings eidnara-host build-profile` | The dynamic linker binds the daemon binary's own `clock_gettime` import to `libfaketime.so.1` |
+| Daemon | `LD_DEBUG=bindings direct_host_fixture --help` | The dynamic linker binds the daemon binary's own `clock_gettime` import to `libfaketime.so.1` |
 
 The Pi probe runs Pi's Node runtime, not the Pi CLI, so it shows that the
 runtime Pi runs on reads the interposed clock. A binary that fails is recorded
 `wall_clock_only`, and the run proceeds with that limitation in its
 distortions. If neither Pi nor the daemon is
 intercepted, preflight throws (OQ-9 stop condition). On this host all three
-intercept, which resolves OQ-9 for OpenCode 1.19.0.
+intercept, which resolves OQ-9 for OpenCode 1.18.22 and 1.19.0.
 
 The preflight result's `distortions` always records that monotonic clocks are
 real, so in-process idle timers see wall time; that provider-side time, cache
@@ -70,7 +70,7 @@ path exists after an arm's first session lands with the host drivers.
 | Host | Versions | Paths |
 |---|---|---|
 | Pi | 0.80.x | `$PI_CODING_AGENT_DIR/sessions` |
-| OpenCode | 1.19.x | `$XDG_DATA_HOME/opencode/opencode.db`, `$XDG_DATA_HOME/opencode/storage` |
+| OpenCode | 1.18.x, 1.19.x | `$XDG_DATA_HOME/opencode/opencode.db`, `$XDG_DATA_HOME/opencode/storage` |
 
 ## Resource sampler
 
