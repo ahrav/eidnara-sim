@@ -45,6 +45,8 @@ export function methodFields(method: string): FieldSpec[] {
 export interface Record {
     slug: string;
     fields: [string, string][];
+    /** Non-blank lines between the heading and the first field. */
+    preamble: string[];
 }
 
 /** Records are `### <slug>` blocks; a line that names no schema field continues the previous field. */
@@ -57,7 +59,7 @@ export function parseRecords(catalog: string, fieldNames: string[]): Record[] {
             continue;
         }
         if (line.startsWith("### ")) {
-            current = { slug: line.slice(4).trim(), fields: [] };
+            current = { slug: line.slice(4).trim(), fields: [], preamble: [] };
             records.push(current);
             continue;
         }
@@ -67,6 +69,7 @@ export function parseRecords(catalog: string, fieldNames: string[]): Record[] {
         else {
             const last = current.fields.at(-1);
             if (last) last[1] = `${last[1]}\n${line}`;
+            else current.preamble.push(line);
         }
     }
     return records;
@@ -76,6 +79,7 @@ export function checkRecord(record: Record, spec: FieldSpec[], catalogDir: strin
     const errors: string[] = [];
     const at = record.slug;
     if (!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(at)) errors.push(`${at}: slug is not kebab-case`);
+    for (const line of record.preamble) errors.push(`${at}: text before the first field: ${line}`);
     const names = record.fields.map(([n]) => n);
     const expected = spec.map((f) => f.name);
     if (names.join("|") !== expected.join("|")) {
@@ -98,6 +102,9 @@ export function checkRecord(record: Record, spec: FieldSpec[], catalogDir: strin
         if (name === "Check" && (value.split(/ -(?:\s|$)/)[1] ?? "").trim() === "") {
             errors.push(`${at}: Check states no condition after its semantics`);
         }
+        if (name === "Exercised" && (value.split(/ -(?:\s|$)/)[1] ?? "").trim() === "") {
+            errors.push(`${at}: Exercised states nothing after its value`);
+        }
         const allowed = spec[i]?.values;
         const head = (value.split(/ -(?:\s|$)/)[0] ?? "").trim();
         if (allowed && !allowed.includes(head)) {
@@ -116,7 +123,7 @@ export function checkRecord(record: Record, spec: FieldSpec[], catalogDir: strin
         const path = join(catalogDir, link);
         if (!existsSync(path)) errors.push(`${at}: ${link} missing`);
         else {
-            const evidence = readFileSync(path, "utf8");
+            const evidence = readFileSync(path, "utf8").replace(/^```[\s\S]*?^```\s*$/gm, "");
             if (!evidence.startsWith(`# ${at}\n`))
                 errors.push(`${at}: evidence title differs from slug`);
             for (const h of EVIDENCE_HEADINGS) {
@@ -162,7 +169,7 @@ export function checkCatalog(
     const linked: string[] = [];
     for (const row of table
         .split("\n")
-        .filter((line) => line.startsWith("| "))
+        .filter((line) => line.startsWith("|"))
         .slice(2)) {
         const m =
             /^\| ([A-Z0-9-]+) \| \[([a-z0-9-]+)\]\(#\2\) \| ([a-z]+) \| (`[^`]+`) \| ([a-z-]+) \| /.exec(

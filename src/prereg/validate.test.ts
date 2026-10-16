@@ -293,6 +293,7 @@ describe("pre-registration validator", () => {
         const fam = (id: string) => m.families.find((f: any) => f.id === id);
         fam("probe-P1").outcome = "slope";
         fam("probe-P5").mde.value = "0";
+        fam("latency").cluster_key = "ledger_fact_id";
         m.leak_bound.c_bytes_per_session = 1;
         const l = load("L") as any;
         const res = l.families.find((f: any) => f.id === "resources");
@@ -305,6 +306,7 @@ describe("pre-registration validator", () => {
             [
                 "families[probe-P1].interval_method: exact-mcnemar-newcombe-cluster-bootstrap does not analyse a slope outcome",
                 "families[probe-P5].mde.value: a superiority family detects a positive effect",
+                "families[latency].cluster_key: a run-level family clusters by run",
                 "families[resources].margin: the resources margin is leak_bound.c_bytes_per_session in bytes",
             ].sort(),
         );

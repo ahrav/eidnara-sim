@@ -169,6 +169,42 @@ describe("catalog checker", () => {
         );
     });
 
+    test("refuses a pre-field line, a bare Exercised state, a compact index row, and fenced headings", () => {
+        const path = copy();
+        edit(
+            path,
+            "### sim-p02-paired-arms-share-event-prefix\n",
+            "### sim-p02-paired-arms-share-event-prefix\nStray: line\n",
+        );
+        edit(
+            path,
+            /Exercised: not yet - [^\n]*\n(?:[^\n]+\n)*?(?=Guarantee: SIM-P03)/,
+            "Exercised: not yet -\n",
+        );
+        edit(
+            path,
+            "| SIM-P04 | [sim-p04-",
+            "|SIM-P99|[phantom](#phantom)|safety|`always`|default-production|M0|\n| SIM-P04 | [sim-p04-",
+        );
+        writeFileSync(
+            join(dir, "evidence/sim-p05-scheduled-events-identical-across-arms.md"),
+            "# sim-p05-scheduled-events-identical-across-arms\n\n```\n## Discovery trigger\nx\n## Evidence trail\nx\n## Failure scenario\nx\n## Timing windows and dependencies\nx\n## What a test must construct\nx\n## Investigation log\nx\n```\n",
+        );
+        const errors = checkCatalog(path, METHOD, IDS);
+        expect(errors).toContain(
+            "sim-p02-paired-arms-share-event-prefix: text before the first field: Stray: line",
+        );
+        expect(errors).toContain(
+            "sim-p03-divergence-is-recorded-never-hidden: Exercised states nothing after its value",
+        );
+        expect(errors).toContain(
+            "catalog: index row malformed: |SIM-P99|[phantom](#phantom)|safety|`always`|default-production|M0|",
+        );
+        expect(errors).toContain(
+            "sim-p05-scheduled-events-identical-across-arms: evidence lacks ## Discovery trigger",
+        );
+    });
+
     test("refuses a Guarantee that carries its id and no claim", () => {
         const path = copy();
         edit(path, /Guarantee: SIM-P01:[^\n]*\n(?:[^\n]+\n)*?(?=Check:)/, "Guarantee: SIM-P01:\n");

@@ -297,6 +297,13 @@ function checkFamilies(p: Preregistration, errors: string[]): void {
         if (f.direction === "zero-tolerance" && f.margin.scale !== "count") {
             errors.push(`${at}.margin.scale: a zero-tolerance gate counts events`);
         }
+        if ((f.analysis_unit === "run") !== (f.cluster_key === "run")) {
+            errors.push(
+                f.analysis_unit === "run"
+                    ? `${at}.cluster_key: a run-level family clusters by run`
+                    : `${at}.cluster_key: an item-level family clusters by ledger_fact_id`,
+            );
+        }
         if (f.direction === "superiority-two-sided" && Number(f.mde.value) <= 0) {
             errors.push(`${at}.mde.value: a superiority family detects a positive effect`);
         }
