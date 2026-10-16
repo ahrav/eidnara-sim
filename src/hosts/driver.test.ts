@@ -791,6 +791,48 @@ touch ${escaped}
         expect(existsSync(join(tools, "poisoned"))).toBe(false);
     });
 
+    test("an apply_diff inside an open session is refused, since a host would be running", async () => {
+        const { driver } = fixture("host", { p: gitRepo() });
+        await driver.reset();
+        await driver.event(ev("session_start"));
+        const diff = ev("apply_diff", { path: "a.txt", content: "A" });
+        await expect(driver.event(diff)).rejects.toThrow("between sessions");
+    });
+
+    test("the reaper stops a daemon the killed harness started against this arm's store", async () => {
+        const { driver } = fixture("eidnara");
+        const orphan = Bun.spawn([
+            "sh",
+            "-c",
+            "sleep 300; true",
+            "sh",
+            "--state-root",
+            driver.dataDir,
+        ]);
+        await Bun.sleep(100);
+        const sleeper = Number(
+            spawnSync("pgrep", ["-P", String(orphan.pid)], { encoding: "utf8" }).stdout.trim(),
+        );
+        expect(sleeper).toBeGreaterThan(0);
+        mkdirSync(join(driver.storeRoot, ".."), { recursive: true });
+        writeFileSync(
+            join(driver.storeRoot, "..", "state.json"),
+            JSON.stringify({
+                model: 0,
+                daemon: null,
+                host: null,
+                ballast: null,
+                refilling: false,
+                git: null,
+                failed: null,
+            }),
+        );
+        await driver.reap();
+        await orphan.exited;
+        expect(orphan.signalCode).toBe("SIGTERM");
+        expect(spawnSync("kill", ["-0", String(sleeper)]).status).not.toBe(0);
+    });
+
     test("the reaper stops the OpenCode launch the wrapper recorded before the server answered", async () => {
         const { driver, armDir } = fixture("host", { p: gitRepo() });
         await driver.reset();

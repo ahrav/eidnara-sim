@@ -3,6 +3,7 @@ import {
     existsSync,
     lstatSync,
     mkdirSync,
+    readdirSync,
     readFileSync,
     realpathSync,
     renameSync,
@@ -440,6 +441,27 @@ export class HostDriver implements ArmDriver {
         }
     }
 
+    /**
+     * Daemons the fixture started against this arm's store, found by their `--state-root`
+     * argument; one spawned before the harness died has no record in `state.json` yet.
+     */
+    private daemonsOnStore(): number[] {
+        const uid = process.getuid?.();
+        const ours = (pid: string) => {
+            try {
+                if (statSync(`/proc/${pid}`).uid !== uid) return false;
+                const cmd = readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0");
+                const at = cmd.indexOf("--state-root");
+                return at >= 0 && cmd[at + 1] === this.dataDir;
+            } catch {
+                return false;
+            }
+        };
+        return readdirSync("/proc")
+            .filter((e) => /^\d+$/.test(e) && ours(e))
+            .map(Number);
+    }
+
     /** The OpenCode wrapper's own record of its pid and start time, written before the server answers. */
     private launchRecord(): { pid: number; start: string | null } | null {
         const path = join(this.armDir, "opencode.launch");
@@ -474,6 +496,11 @@ export class HostDriver implements ArmDriver {
             () => (state ? this.reapGit(state) : undefined),
             () => this.stopRecorded(state?.host),
             () => this.stopRecorded(this.launchRecord()),
+            async () => {
+                for (const pid of this.daemonsOnStore()) {
+                    await this.stopRecorded({ pid, start: processStart(pid) });
+                }
+            },
             () => this.stopRecorded(state?.daemon),
             () => this.unmount(this.dataDir),
             () => this.unmount(this.storeRoot),
@@ -511,6 +538,11 @@ export class HostDriver implements ArmDriver {
             return {};
         }
         if (e.kind === "apply_diff") {
+            if (this.sessionProject !== null) {
+                throw new HarnessFailure(
+                    `apply_diff fires between sessions; ${e.id} fired inside one`,
+                );
+            }
             await this.applyDiff(e);
             return {};
         }
