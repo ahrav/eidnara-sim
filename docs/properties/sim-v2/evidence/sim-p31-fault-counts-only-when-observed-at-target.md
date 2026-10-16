@@ -18,6 +18,11 @@ faults, the observing oracle's record from the target component.
 No harness code, test, or run exists yet. The surface lands in M3
 (#1027).
 
+M3 (#1027) counts an episode as `fired` only with an injected record and a
+host-observed agent call within the window after the injection. Tests run every
+provider fault type under every strategy against a host stand-in and check both
+witnesses.
+
 ## Failure scenario
 
 A fault that never reached its target is counted as survived.

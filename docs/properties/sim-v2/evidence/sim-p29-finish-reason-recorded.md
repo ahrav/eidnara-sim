@@ -17,6 +17,11 @@ Every forwarded record carries the provider `finish_reason` or an explicit
 No harness code, test, or run exists yet. The surface lands in M3
 (#1027).
 
+M3 (#1027) records `finish_reason` from the stream's `messageStop` or the
+response's `stopReason`, and `null` when the answer had none; the writer
+refuses a record without the field. Tests check `end_turn` on a forwarded call
+and `max_tokens` on an injected truncation.
+
 ## Failure scenario
 
 The fold-lag and truncation failure classes cannot be told apart.

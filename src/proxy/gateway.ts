@@ -1,0 +1,285 @@
+import { createServer as createHttp1Server, type Server } from "node:http";
+import { createServer as createHttp2Server, type Http2Server } from "node:http2";
+import type { AddressInfo } from "node:net";
+import {
+    BedrockRuntimeClient,
+    ConverseCommand,
+    ConverseStreamCommand,
+} from "@aws-sdk/client-bedrock-runtime";
+import { defaultProvider } from "@aws-sdk/credential-provider-node";
+import type { Rng } from "../rng";
+import { COMPONENT_HEADER, type ConverseBody, classify } from "./classify";
+import { encodeEvent } from "./eventstream";
+import { type FaultInjector, type Sink, sleep, writeFault } from "./inject";
+import type { CallRecord, Component, RecordWriter } from "./records";
+
+export type UpstreamResponse =
+    | { events: AsyncIterable<Record<string, unknown>> }
+    | { json: Record<string, unknown> };
+
+export interface Upstream {
+    converse(
+        modelId: string,
+        body: ConverseBody,
+        streaming: boolean,
+        signal: AbortSignal,
+    ): Promise<UpstreamResponse>;
+}
+
+export function bedrockUpstream(region: string, profile: string): Upstream {
+    const credentials = defaultProvider({ profile });
+    const client = new BedrockRuntimeClient({ region, maxAttempts: 1, credentials });
+    return {
+        async converse(modelId, body, streaming, abortSignal) {
+            const input = { ...body, modelId } as never;
+            if (!streaming) {
+                const response = await client.send(new ConverseCommand(input), { abortSignal });
+                const { $metadata: _m, ...json } = response;
+                return { json };
+            }
+            const response = await client.send(new ConverseStreamCommand(input), { abortSignal });
+            return { events: response.stream as AsyncIterable<Record<string, unknown>> };
+        },
+    };
+}
+
+const RETRYABLE = new Set([429, 500, 502, 503, 504]);
+
+/** Backoff jitter uses `rng` so the same seed and attempt sequence reproduce the same delays. */
+export function backoffMs(attempt: number, rng: Rng): number {
+    return Math.min(60_000, 2_000 * 2 ** Math.min(attempt, 5)) * (0.5 + rng.next());
+}
+
+export async function sendWithRetry<T>(
+    send: () => Promise<T>,
+    opts: {
+        rng: Rng;
+        deadlineAt: number;
+        signal: AbortSignal;
+        onRetry: (delay: number) => void;
+        wait?: (ms: number, signal: AbortSignal) => Promise<void>;
+    },
+): Promise<T> {
+    for (let attempt = 0; ; attempt++) {
+        try {
+            return await send();
+        } catch (caught) {
+            const meta = (caught as { $metadata?: { httpStatusCode?: number } }).$metadata;
+            if (opts.signal.aborted || !RETRYABLE.has(meta?.httpStatusCode ?? 0)) throw caught;
+            const delay = backoffMs(attempt, opts.rng);
+            if (Date.now() + delay >= opts.deadlineAt) throw caught;
+            opts.onRetry(delay);
+            await (opts.wait ?? sleep)(delay, opts.signal);
+        }
+    }
+}
+
+export interface Scope {
+    arm: string;
+    session: string | null;
+    turn: string | null;
+}
+
+export interface CallStarted {
+    kind: "call_started";
+    component: Component;
+    wall_ms: number;
+}
+
+export interface GatewayOptions {
+    upstream: Upstream;
+    records: RecordWriter;
+    injector: FaultInjector;
+    rng: Rng;
+    clock: { scenarioMs(): number };
+    scope: () => Scope;
+    observe?: (event: CallStarted) => void;
+    requestDeadlineMs?: number;
+}
+
+const ROUTE = /^\/model\/([^/]+)\/(converse-stream|converse)$/;
+type Usage = Record<string, number>;
+type Done = Partial<CallRecord> &
+    Pick<CallRecord, "component" | "componentSource" | "model" | "status">;
+
+export class Gateway {
+    private servers: (Server | Http2Server)[] = [];
+    inFlight = 0;
+    readonly urls: string[] = [];
+
+    constructor(private readonly options: GatewayOptions) {}
+
+    async start(): Promise<void> {
+        const h1 = createHttp1Server((req, res) => {
+            const chunks: Buffer[] = [];
+            const gone = new AbortController();
+            res.on("close", () => !res.writableFinished && gone.abort());
+            req.on("data", (c: Buffer) => chunks.push(c));
+            req.on("end", () => {
+                const header = req.headers[COMPONENT_HEADER] as string | undefined;
+                void this.handle(req.url ?? "", header, Buffer.concat(chunks), {
+                    status: (code, headers) => res.writeHead(code, headers),
+                    write: (chunk) => res.write(chunk),
+                    end: () => res.end(),
+                    destroy: () => res.destroy(),
+                    signal: gone.signal,
+                });
+            });
+        });
+        const h2 = createHttp2Server();
+        h2.on("stream", (stream, headers) => {
+            const chunks: Buffer[] = [];
+            const gone = new AbortController();
+            stream.on("close", () => !stream.writableFinished && gone.abort());
+            stream.on("data", (c: Buffer) => chunks.push(c));
+            stream.on("error", () => undefined);
+            stream.on("end", () => {
+                const live = () => !stream.destroyed;
+                const header = headers[COMPONENT_HEADER] as string | undefined;
+                void this.handle(String(headers[":path"] ?? ""), header, Buffer.concat(chunks), {
+                    status: (code, h) => {
+                        if (live() && !stream.headersSent)
+                            stream.respond({ ":status": code, ...h });
+                    },
+                    write: (chunk) => live() && stream.write(chunk),
+                    end: () => live() && stream.end(),
+                    destroy: () => stream.destroy(),
+                    signal: gone.signal,
+                });
+            });
+        });
+        this.servers = [h1, h2];
+        for (const server of this.servers) {
+            await new Promise<void>((done) => server.listen(0, "127.0.0.1", () => done()));
+            this.urls.push(`http://127.0.0.1:${(server.address() as AddressInfo).port}`);
+        }
+    }
+
+    async stop(): Promise<void> {
+        (this.servers[0] as Server | undefined)?.closeAllConnections();
+        await Promise.all(
+            this.servers.map((s) => new Promise<void>((done) => s.close(() => done()))),
+        );
+    }
+
+    private async handle(path: string, header: string | undefined, raw: Buffer, sink: Sink) {
+        const started = performance.now();
+        const base = {
+            ...this.options.scope(),
+            started_wall_ms: Date.now(),
+            scenario_ms: this.options.clock.scenarioMs(),
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            first_byte_ms: null,
+            proxy_retries: 0,
+            fault_ref: null,
+            finish_reason: null,
+            error: null,
+        };
+        this.inFlight++;
+        const finish = (done: Done) => {
+            this.inFlight--;
+            this.options.injector.observe(this.options.records.write({ ...base, ...done }));
+        };
+        const route = ROUTE.exec(path.split("?", 1)[0] ?? "");
+        let body: ConverseBody | undefined;
+        try {
+            body = JSON.parse(raw.toString("utf8")) as ConverseBody;
+        } catch {
+            body = undefined;
+        }
+        if (!route || !body) {
+            const status = route ? 400 : 404;
+            sink.status(status, { "content-type": "application/json" });
+            sink.end();
+            const error = route ? "malformed body" : `unknown operation ${path}`;
+            finish({
+                component: "rejected",
+                componentSource: "inferred",
+                model: "",
+                status,
+                error,
+            });
+            return;
+        }
+        const model = decodeURIComponent(route[1] ?? "");
+        const streaming = route[2] === "converse-stream";
+        const tag = classify(body, header);
+        const fault = this.options.injector.take(tag.component);
+        if (fault && fault.type !== "slow_stream") {
+            const tool = body.toolConfig?.tools?.[0]?.toolSpec?.name;
+            const outcome = await writeFault(fault.type, fault.params, streaming, sink, tool);
+            finish({ ...tag, model, ...outcome, fault_ref: fault.id });
+            return;
+        }
+        const usage: Usage = {};
+        const done: Done = { ...tag, model, status: 200, fault_ref: fault?.id ?? null };
+        const firstByte = () => {
+            if (done.first_byte_ms != null) return;
+            done.first_byte_ms = performance.now() - started;
+            const event = { kind: "call_started", component: tag.component, wall_ms: Date.now() };
+            this.options.observe?.(event as CallStarted);
+        };
+        let retries = 0;
+        try {
+            const deadlineAt = Date.now() + (this.options.requestDeadlineMs ?? 900_000);
+            const response = await sendWithRetry(
+                () => this.options.upstream.converse(model, body, streaming, sink.signal),
+                {
+                    rng: this.options.rng,
+                    deadlineAt,
+                    signal: sink.signal,
+                    onRetry: () => retries++,
+                },
+            );
+            if ("json" in response) {
+                firstByte();
+                Object.assign(usage, response.json.usage ?? {});
+                done.finish_reason = (response.json.stopReason as string | undefined) ?? null;
+                sink.status(200, { "content-type": "application/json" });
+                sink.write(Buffer.from(JSON.stringify(response.json)));
+            } else {
+                sink.status(200, { "content-type": "application/vnd.amazon.eventstream" });
+                for await (const event of response.events) {
+                    for (const [type, member] of Object.entries(event)) {
+                        if (member === undefined) continue;
+                        firstByte();
+                        if (fault) await sleep(fault.params.delay_ms ?? 2_000, sink.signal);
+                        const m = member as { usage?: Usage; stopReason?: string };
+                        if (type === "metadata") Object.assign(usage, m.usage ?? {});
+                        if (type === "messageStop") done.finish_reason = m.stopReason ?? null;
+                        if (type.endsWith("Exception")) [done.status, done.error] = [500, type];
+                        sink.write(encodeEvent(type, member));
+                    }
+                }
+            }
+        } catch (caught) {
+            const failure = caught as {
+                name?: string;
+                message?: string;
+                $metadata?: { httpStatusCode?: number };
+            };
+            done.status = failure.$metadata?.httpStatusCode ?? 500;
+            done.error = `${failure.name}: ${failure.message}`;
+            if (done.first_byte_ms == null) {
+                const errorType = failure.name ?? "InternalServerException";
+                sink.status(done.status, {
+                    "content-type": "application/json",
+                    "x-amzn-errortype": errorType,
+                });
+                sink.write(Buffer.from(JSON.stringify({ message: failure.message ?? "error" })));
+            }
+        }
+        sink.end();
+        finish({
+            ...done,
+            proxy_retries: retries,
+            input_tokens: usage.inputTokens ?? 0,
+            output_tokens: usage.outputTokens ?? 0,
+            cache_read_tokens: usage.cacheReadInputTokens ?? 0,
+            cache_write_tokens: usage.cacheWriteInputTokens ?? 0,
+        });
+    }
+}

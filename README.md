@@ -32,5 +32,5 @@ bun scripts/compile-scenario.ts --tier S --seed 101   # compile a scenario (docs
 | `corpus/` | fitted distributions, tool-output samples, error codes, repositories (see `docs/corpus.md`) |
 | `sim.config.json` | paths to the eidnara checkout, plugin builds, daemon, hosts, and Bedrock profile; `SIM_CONFIG` overrides the file |
 | `scripts/` | repository checks |
-| `src/` | harness source |
+| `src/` | harness source; `src/proxy/` is the capture proxy (see `docs/proxy.md`) |
 | `runs/` | run data, journals, reports (git-ignored) |

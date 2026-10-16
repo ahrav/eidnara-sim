@@ -17,6 +17,10 @@ Every record with `fault_ref` set names a fault instance in state `armed` or
 No harness code, test, or run exists yet. The surface lands in M3
 (#1027).
 
+M3 (#1027) injects only episodes the scheduler arms; an episode never armed
+injects nothing, and a test checks that its witness stays `untriggered` with no
+injected record.
+
 ## Failure scenario
 
 Faults the schedule did not plan corrupt both arms' metrics.

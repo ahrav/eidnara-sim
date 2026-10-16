@@ -17,6 +17,11 @@ Every call record has `scenario_ms` equal to the clock at receipt and a
 No harness code, test, or run exists yet. The surface lands in M3
 (#1027).
 
+M3 (#1027) stamps every call record with `scenario_ms` from the scheduler's
+clock handle at receipt and with `wall_ms` at write time, clamped so it never
+decreases in `seq` order. Tests in `src/proxy/gateway.test.ts` check both on
+concurrent calls. The clock itself lands in M4.
+
 ## Failure scenario
 
 Latency and age cannot be reconstructed for a call.

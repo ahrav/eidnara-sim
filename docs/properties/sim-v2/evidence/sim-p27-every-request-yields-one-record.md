@@ -17,6 +17,10 @@ requests recorded as `rejected`.
 No harness code, test, or run exists yet. The surface lands in M3
 (#1027).
 
+M3 (#1027) writes one record per request, including requests the gateway
+rejects for an unknown route or a malformed body; a test checks both rejection
+records.
+
 ## Failure scenario
 
 Cost and fault evidence silently drop calls.
