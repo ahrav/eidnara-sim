@@ -101,6 +101,7 @@ export function judgePrompt(p: BlindedPrompt): string {
 const sha = (text: string) => createHash("sha256").update(text).digest("hex");
 
 export const pairDigests = (pair: Pair) => ({ a: sha(pair.a), b: sha(pair.b) });
+export const referenceDigest = (reference: string) => sha(reference);
 
 export interface JudgeIdentity {
     model: string;
@@ -151,9 +152,9 @@ export function proxyJudge(
     return {
         identity: judgeIdentity(model),
         async verdict(prompt) {
-            let response: Response;
+            let body: { output?: { message?: { content?: unknown } } };
             try {
-                response = await fetch(
+                const response = await fetch(
                     `${gatewayUrl}/model/${encodeURIComponent(model)}/converse`,
                     {
                         method: "POST",
@@ -168,16 +169,14 @@ export function proxyJudge(
                         signal: AbortSignal.timeout(deadlineMs),
                     },
                 );
+                if (!response.ok) throw new GradeRefused(`judge call failed: ${response.status}`);
+                body = (await response.json()) as typeof body;
             } catch (caught) {
                 if ((caught as Error).name === "TimeoutError") {
                     throw new GradeRefused(`judge call timed out after ${deadlineMs} ms`);
                 }
                 throw caught;
             }
-            if (!response.ok) throw new GradeRefused(`judge call failed: ${response.status}`);
-            const body = (await response.json()) as {
-                output?: { message?: { content?: unknown } };
-            };
             const content = body?.output?.message?.content;
             const text = Array.isArray(content)
                 ? (content as Array<{ text?: unknown }>).find((b) => b.text !== undefined)?.text
@@ -196,6 +195,7 @@ export interface Recall {
 export interface Judgment {
     pair: string;
     answers: { a: string; b: string };
+    reference: string;
     judge: JudgeIdentity;
     orders: Record<Order, RawVerdict>;
     recall: Recall | "Inconsistent";
@@ -230,6 +230,7 @@ export async function judgePair(
     return {
         pair: pair.id,
         answers: pairDigests(pair),
+        reference: referenceDigest(reference),
         judge: client.identity,
         orders,
         recall,
@@ -333,6 +334,7 @@ export function p7Pair(item: string, a: Snapshot, b: Snapshot): P7Inputs | null 
 export interface P7Context {
     item: string;
     answers: { a: string; b: string };
+    reference: string;
     snapshots: { a: string; b: string };
     arms: { a: string; b: string };
     inputs: string[];
@@ -347,6 +349,9 @@ export function gradeP7(j: Judgment, c: P7Context, rules: Rules, version = 1): G
     }
     if (j.answers.a !== c.answers.a || j.answers.b !== c.answers.b) {
         throw new GradeRefused(`judgment for ${j.pair} was made on other answers`);
+    }
+    if (j.reference !== c.reference) {
+        throw new GradeRefused(`judgment for ${j.pair} was made against another reference`);
     }
     let digest: string | null = null;
     let calibration = "none";

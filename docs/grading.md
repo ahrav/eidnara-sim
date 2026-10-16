@@ -114,8 +114,9 @@ cannot call, and the divergences are listed below.
    `longer_recalled_alone` records whether the longer answer was the one
    recalled alone, for the verbosity audit.
 5. `gradeP7` writes one grade per arm, each with its arm's later-attempt
-   count, for the item and the exact answers the judgment names (the
-   judgment and the pair both carry the answers' digests). Each grade carries the judge model,
+   count, for the item, the exact answers, and the reference reason the
+   judgment names (the judgment carries the answers' and the reference's
+   digests, and the context must match). Each grade carries the judge model,
    the prompt and rubric digests, both order verdicts, both answer lengths
    and `longer_recalled_alone`, the calibration digest, and the permutation
    check's result and counts. It computes the digest and runs the check
@@ -147,7 +148,7 @@ cannot call, and the divergences are listed below.
 
 `proxyJudge` sends each verdict request through the capture proxy with the
 `judge` component header, bounded by a per-call deadline (900 s by default)
-whose expiry is a judge refusal. It refuses a judge model from the agent model's
+covering the request and the body read, whose expiry is a judge refusal. It refuses a judge model from the agent model's
 family (SIM-P43) and a model id whose family it cannot name; the
 pre-registered judge is `global.openai.gpt-5.6-luna`.
 On 2026-10-16 the two P7 fixtures went through the gateway to that model
