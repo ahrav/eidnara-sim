@@ -86,8 +86,8 @@ sequence.
 
 `FaultInjector` holds the scenario's proxy-sink episodes. The scheduler calls
 `reset()` at each arm's start, which clears armed and pending episodes, empties
-the witnesses, returns the generator to its seed so every arm draws the same
-intermittent mask, and ignores observations of calls that started before the
+the witnesses, returns each episode's own generator (seeded from the injector's generator and
+the episode id) to its seed so every arm draws the same intermittent masks, and ignores observations of calls that started before the
 reset; `arm(id)` when an episode's trigger event occurs; and
 `disarm(id)` at the end of an episode's session. While armed, an episode replaces agent
 calls' answers by strategy:

@@ -20,8 +20,9 @@ identity cannot be read is treated as alive and refused. A lease is read through
 a descriptor that follows no symlink and must name a small regular file; a
 lease that cannot be read or does not parse to a lease refuses the directory,
 since a lease is linked into place whole and a damaged one is corruption, never
-a holder to take over. `releaseLease(dir, lease)` releases only the acquisition `takeLease` returned,
-compared on every identifying field including its random token. A zombie
+a holder to take over. `releaseLease(dir, lease)` reads the highest lease only and releases it when
+it is the acquisition `takeLease` returned, compared on every identifying field
+including its random token. A zombie
 holder reads as dead, and a lease file whose number is spelled other than as a
 canonical decimal refuses the directory. A lease whose process on this host has
 exited is taken over by writing a uniquely named temporary file with the process id, host, start time, and start ticks
@@ -40,7 +41,8 @@ through that one descriptor, and refuses every operation after `close`. On read 
 splits lines on raw newline bytes, so the complete prefix is measured in bytes,
 and accepts a line only when it is valid UTF-8 that parses, carries the next
 `seq`, names a known `kind`, has `arm` and finite `scenario_ms` and `wall_ms`,
-and keeps its arm's `scenario_ms` non-decreasing. It appends one JSON line per entry with `seq` (0, 1, 2, ... in append
+and keeps its arm's `scenario_ms` non-decreasing. An append that fails part-way truncates back to the complete prefix, or
+closes the journal when it cannot. It appends one JSON line per entry with `seq` (0, 1, 2, ... in append
 order), `kind`, `arm`, `scenario_ms`, and `wall_ms`; a line is written whole
 before the entry counts as appended. On open, it truncates the
 file to its complete prefix, dropping only a last line that a kill cut
@@ -118,7 +120,8 @@ call through it is refused:
    the event.
 
 Each arm's driver receives an `ArmHandle` through `bind` at the arm's start,
-before `reset`. The handle carries `jobStart`, `jobEnd`, `observe`, and
+before `reset`, with the session the journal left open already restored so a
+late summarizer observation from it still fires its kill. The handle carries `jobStart`, `jobEnd`, `observe`, and
 `daemonExited`, and every call checks that its arm is still the one running,
 so a callback a finished arm left behind is refused instead of writing under
 the next arm. `observe("history_summarizer")` fires the session's mid-fold
@@ -145,9 +148,10 @@ unfinished arm has a driver, refuses an arm order or scenario hash different
 from the ones `StartRun` recorded, journals `ResumeRun`, and, for each arm
 without `EndArm`:
 
-- journals `Event` for a turn with `EndTurn` but no `Event`, so the answered
-  turn is never delivered again, then waits one settle interval so a job that
-  turn started can still register before the clock moves;
+- waits one settle interval so a job an answered turn started can still
+  register, then journals `Event` for each turn with `EndTurn` but no `Event`,
+  so the answered turn is never delivered again and a kill inside the window
+  repeats it;
 - journals `ItemState failed(interrupted)` and `Event` for a `BeginTurn`
   with no `EndTurn`, and `EndJob failed(interrupted)` for each `RegisterJob`
   beyond its id's `EndJob` count;

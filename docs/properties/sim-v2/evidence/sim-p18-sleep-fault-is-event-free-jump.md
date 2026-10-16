@@ -24,6 +24,7 @@ session. The compiler sizes `duration_ms` to the gap before the session, so the
 jump spans that gap. A test opens the session with an `apply_diff` at the same
 time as `session_start` and checks one such jump, landing on the session's
 first event, with the fault fired right after it and no event inside the gap.
+The fault seam's legal outcome in `src/scenario/faults.ts` reads the same way.
 The catalog record's check follows this wording and the M4 ticket's acceptance
 criterion ("exactly one jump with no events inside", with every `AdvanceClock`
 landing on the earliest later event). The condensed index's "of the scheduled
