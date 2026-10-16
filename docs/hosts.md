@@ -79,10 +79,16 @@ timer is cleared once its race settles. An `apply_diff` event writes its file in
 workspace and commits that path alone, so the agent's own uncommitted edits
 stay uncommitted; content already committed adds no commit, and a path that
 resolves outside the workspace through `..` or a symlink stops the run before
-any directory is created, and so does a workspace directory the host replaced
-with a symlink, since the harness writes with its own privileges. The commit's author and committer dates are the
+any directory is created. The file is written whole and renamed into place,
+so a hard link the agent left at the path keeps its other name's content, and
+the `git add` and `git commit` run inside the arm's sandbox, so a hook,
+filter, or config the agent planted in the repository acts with the host's
+own view of the filesystem. The commit's author and committer dates are the
 event's scenario instant (`baseMs + scenario_ms`), so paired arms and a
-resumed delivery produce the same commit.
+resumed delivery produce the same commit. Every session and `apply_diff`
+requires the workspace to resolve to the real `<arm>/r/workspaces/<project>`;
+a symlink the agent put at it or above it stops the run, since the harness
+and the launcher would follow it with their own privileges.
 
 Each host process starts in the session's workspace, which the launcher
 enters after its privilege drop. Pi runs in RPC mode with `--session-id sim-<session>`, its agent directory,
@@ -176,7 +182,7 @@ against the same store (OQ-10).
 |---|---|---|
 | `daemon_sigkill_mid_fold` | The session's first observed history-summarizer call fires it; SIGKILL and restart | `pid_before`, `pid_after`, `restarted_by: harness` |
 | `daemon_restart` | At `session_start`, SIGKILL and restart | As above |
-| `store_full` | When the scenario schedules `store_full`, each Eidnara arm's store lives on a sparse 2 GiB ext4 loop mount (`nosuid,nodev,noexec`) at `<arm>/s`, room for the daemon to materialize its harness closures twice, with its image outside the sandbox's kept paths; the fault fills it with a `fallocate`d ballast topped up by `dd`, so the sparse image stays small, and `session_end` removes the ballast; a resume that finds the ballast removes it for the daemon's start and fills the store again | `avail_kb: 0`; any other value stops the run |
+| `store_full` | When the scenario schedules `store_full`, each Eidnara arm's store lives on a sparse 2 GiB ext4 loop mount (`nosuid,nodev,noexec`) at `<arm>/s`, room for the daemon to materialize its harness closures twice, with its image outside the sandbox's kept paths; the fault fills it with a `fallocate`d ballast topped up by `dd`, so the sparse image stays small, and `session_end` removes the ballast; a resume that finds the ballast removes it for the daemon's start and fills the store again, whether or not that start succeeds | `avail_kb: 0`; any other value stops the run |
 | `plugin_reload` | The host process and its plugin start afresh at every `session_start` | The reload note |
 | `model_switch` | Later sessions use the next configured model; the daemon keeps running with its summarizer model | The new model id |
 | `laptop_sleep` | One event-free clock jump (`docs/run.md`) | The `AdvanceClock` entry |
@@ -186,13 +192,15 @@ one fired inside a
 session stops the run, and so does a fault type with no mechanism here
 (`host_upgrade`, `two_hosts_one_daemon`). A daemon that exits outside an
 outage window stops the run with `HarnessFailure`; the driver checks the
-daemon after every turn.
+daemon after every turn and at every `session_end`.
 
 ## Limits
 
 - Closing the host at `session_end` can cut a memory capture still
   streaming; one smoke run recorded it as `stream_cut`.
-- A daemon that dies during a turn is detected when the turn ends.
+- A daemon that dies during a turn is detected when the turn ends; one that
+  dies after the last `session_end` of an arm is detected by the next arm's
+  resume or by its own log.
 - `plugin_reload` adds no mechanism beyond the per-session host process.
 - On OpenCode, the turn deadline aborts the session through the server, so a
   server that ignores the abort holds the run for the 30 s drain window.

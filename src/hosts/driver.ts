@@ -10,6 +10,7 @@ import {
     writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { launch } from "../run/launcher";
 import { processStart, running, stopOwnedTree } from "../run/procs";
 import { type ArmDriver, HarnessFailure, type ScenarioEvent } from "../run/scheduler";
 import type { FaultEpisode } from "../scenario/faults";
@@ -42,23 +43,24 @@ export interface DriverOptions extends Omit<HostContext, "root" | "model"> {
     onDaemonExit: (detail: Record<string, unknown>) => void;
 }
 
-const git = (cwd: string, args: string[], dateMs?: number) => {
-    const env: NodeJS.ProcessEnv = {
-        ...process.env,
-        GIT_CONFIG_GLOBAL: "/dev/null",
-        GIT_CONFIG_NOSYSTEM: "1",
-        GIT_AUTHOR_NAME: "sim-user",
-        GIT_AUTHOR_EMAIL: "sim-user@users.noreply.github.com",
-        GIT_COMMITTER_NAME: "sim-user",
-        GIT_COMMITTER_EMAIL: "sim-user@users.noreply.github.com",
-    };
-    if (dateMs !== undefined) {
-        env.GIT_AUTHOR_DATE = `@${Math.floor(dateMs / 1000)} +0000`;
-        env.GIT_COMMITTER_DATE = env.GIT_AUTHOR_DATE;
-    }
-    const r = spawnSync("git", args, { cwd, env, encoding: "utf8" });
+const GIT_ENV = {
+    GIT_CONFIG_GLOBAL: "/dev/null",
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_AUTHOR_NAME: "sim-user",
+    GIT_AUTHOR_EMAIL: "sim-user@users.noreply.github.com",
+    GIT_COMMITTER_NAME: "sim-user",
+    GIT_COMMITTER_EMAIL: "sim-user@users.noreply.github.com",
+    TZ: "UTC",
+};
+
+/** Clones from a harness-owned source into a fresh workspace run with the harness's own view. */
+const gitClone = (cwd: string, args: string[]) => {
+    const r = spawnSync("git", args, {
+        cwd,
+        env: { ...process.env, ...GIT_ENV },
+        encoding: "utf8",
+    });
     if (r.status !== 0) throw new Error(`git ${args.join(" ")}: ${r.stderr}`);
-    return r.stdout.trim();
 };
 
 /** The rename publishes a complete file, so a kill mid-write leaves the previous one. */
@@ -140,11 +142,46 @@ export class HostDriver implements ArmDriver {
         return this.o.models[this.model % this.o.models.length] as string;
     }
 
+    /** The paths the sandbox keeps writable for this arm: the host's, plus the store on Eidnara arms. */
+    private get keep(): string[] {
+        return eidnaraOn(this.o.arm) ? [...this.o.keep, this.storeRoot] : this.o.keep;
+    }
+
     private newHost(): SimHost {
         const make = this.o.hostFactory ?? makeHost;
-        const keep = eidnaraOn(this.o.arm) ? [...this.o.keep, this.storeRoot] : this.o.keep;
+        const { keep } = this;
         const onSpawn = () => this.recordState();
         return make({ ...this.o, keep, root: this.o.armRoot, model: this.currentModel(), onSpawn });
+    }
+
+    /**
+     * Git over an agent-written repository runs inside the arm's sandbox, so a hook, filter, or
+     * config the agent planted acts with the host's own view of the filesystem.
+     */
+    private git(dir: string, args: string[], dateMs?: number): { status: number; stderr: string } {
+        const env: Record<string, string> = { ...GIT_ENV, HOME: join(this.o.armRoot, "home") };
+        if (dateMs !== undefined) {
+            env.GIT_AUTHOR_DATE = `@${Math.floor(dateMs / 1000)}`;
+            env.GIT_COMMITTER_DATE = env.GIT_AUTHOR_DATE;
+        }
+        const keep = [...new Set([...this.keep, this.o.armRoot])];
+        const argv = launch(this.o.launcher, keep, env, ["git", ...args], [], dir);
+        const r = spawnSync(argv[0] as string, argv.slice(1), { encoding: "utf8" });
+        return { status: r.status ?? -1, stderr: r.stderr };
+    }
+
+    private gitOk(dir: string, args: string[], dateMs?: number): void {
+        const r = this.git(dir, args, dateMs);
+        if (r.status !== 0) throw new Error(`git ${args.join(" ")}: ${r.stderr}`);
+    }
+
+    /** The real workspace directory; a symlink the host planted at it or above it stops the run. */
+    private workspaceDir(project: string): string {
+        const dir = realpathSync(this.workspace(project));
+        if (dir !== join(realpathSync(this.o.armRoot), "workspaces", project)) {
+            throw new HarnessFailure(`workspace ${project} leaves ${this.o.armRoot}`);
+        }
+        return dir;
     }
 
     private recordState(): void {
@@ -173,19 +210,22 @@ export class HostDriver implements ArmDriver {
         if (this.o.loopStore && eidnaraOn(this.o.arm)) this.mountStore(fresh);
         const filled = this.ballast !== null && existsSync(this.ballast);
         if (filled) this.clearStoreFill();
-        if (eidnaraOn(this.o.arm)) {
-            const make = this.o.daemonFactory ?? ((ctx: DaemonContext) => new DaemonStack(ctx));
-            this.daemon = make({
-                ...this.o,
-                root: this.o.armRoot,
-                dataDir: this.dataDir,
-                logFile: join(this.armDir, "daemon.log"),
-                model: this.currentModel(),
-            });
-            await this.daemon.start();
-            this.recordState();
+        try {
+            if (eidnaraOn(this.o.arm)) {
+                const make = this.o.daemonFactory ?? ((ctx: DaemonContext) => new DaemonStack(ctx));
+                this.daemon = make({
+                    ...this.o,
+                    root: this.o.armRoot,
+                    dataDir: this.dataDir,
+                    logFile: join(this.armDir, "daemon.log"),
+                    model: this.currentModel(),
+                });
+                await this.daemon.start();
+                this.recordState();
+            }
+        } finally {
+            if (filled) this.fill();
         }
-        if (filled) this.fillStore();
         this.host = this.newHost();
         this.recordState();
     }
@@ -201,7 +241,7 @@ export class HostDriver implements ArmDriver {
         mkdirSync(join(this.o.armRoot, "workspaces"), { recursive: true });
         for (const [project, source] of Object.entries(this.o.projects)) {
             const target = this.workspace(project);
-            git(this.o.armRoot, ["clone", "--quiet", "--no-hardlinks", source, target]);
+            gitClone(this.o.armRoot, ["clone", "--quiet", "--no-hardlinks", source, target]);
         }
         await this.startArm(true);
     }
@@ -237,7 +277,7 @@ export class HostDriver implements ArmDriver {
     private async openSession(e: ScenarioEvent, host: SimHost): Promise<void> {
         this.sessionProject = this.project(e);
         const connection = this.daemon?.connectionFile ?? null;
-        await host.openSession(this.workspace(this.sessionProject), e.session, connection);
+        await host.openSession(this.workspaceDir(this.sessionProject), e.session, connection);
         this.recordState();
     }
 
@@ -252,6 +292,7 @@ export class HostDriver implements ArmDriver {
             this.clearStoreFill();
             this.sessionProject = null;
             this.recordState();
+            this.checkDaemon(e);
             if (!this.transcriptsChecked) this.checkTranscripts(host);
             return {};
         }
@@ -260,8 +301,12 @@ export class HostDriver implements ArmDriver {
             return {};
         }
         const result = await host.prompt(String(e.text), this.o.turnDeadlineMs);
-        if (this.daemon && this.daemonPid() === null) this.o.onDaemonExit({ after: e.id });
+        this.checkDaemon(e);
         return result.error ? { failed: result.error } : {};
+    }
+
+    private checkDaemon(e: ScenarioEvent): void {
+        if (this.daemon && this.daemonPid() === null) this.o.onDaemonExit({ after: e.id });
     }
 
     private project(e: ScenarioEvent): string {
@@ -271,11 +316,7 @@ export class HostDriver implements ArmDriver {
     }
 
     private applyDiff(e: ScenarioEvent): void {
-        const project = this.project(e);
-        const dir = realpathSync(this.workspace(project));
-        if (dir !== join(realpathSync(this.o.armRoot), "workspaces", project)) {
-            throw new HarnessFailure(`apply_diff workspace ${project} leaves ${this.o.armRoot}`);
-        }
+        const dir = this.workspaceDir(this.project(e));
         const path = resolve(dir, String(e.path));
         const inside = (p: string) => {
             const real = realpathSync(p);
@@ -292,16 +333,12 @@ export class HostDriver implements ArmDriver {
         ) {
             throw new HarnessFailure(`apply_diff path ${String(e.path)} leaves ${dir}`);
         }
-        writeFileSync(path, String(e.content));
-        git(dir, ["add", "--", path]);
-        if (
-            spawnSync("git", ["diff", "--cached", "--quiet", "--", path], { cwd: dir }).status === 0
-        ) {
-            return;
-        }
+        writeWhole(path, String(e.content));
+        this.gitOk(dir, ["add", "--", path]);
+        if (this.git(dir, ["diff", "--cached", "--quiet", "--", path]).status === 0) return;
         const message = `Add ${String(e.path)}`;
         const when = this.o.baseMs + e.scenario_ms;
-        git(dir, ["commit", "--quiet", "--no-verify", "-m", message, "--", path], when);
+        this.gitOk(dir, ["commit", "--quiet", "--no-verify", "-m", message, "--", path], when);
     }
 
     private checkTranscripts(host: SimHost): void {
@@ -361,16 +398,27 @@ export class HostDriver implements ArmDriver {
         run(["sudo", "-n", "chmod", "0700", this.storeRoot]);
     }
 
-    private fillStore(): Record<string, unknown> {
-        if (!this.storeMount) return { skipped: "arm runs no loop-mounted store" };
-        const ballast = join(this.storeMount, "ballast");
+    /** An unwritten `fallocate` extent and a short `dd` tail fill the store while the sparse image stays small. */
+    private fill(): void {
+        if (!this.storeMount || !this.ballast) return;
         const free = run(["df", "-B1", "--output=avail", this.storeMount])
             .trim()
             .split("\n")
             .at(-1);
-        spawnSync("fallocate", ["-l", String(free), ballast]);
-        const append = ["if=/dev/zero", `of=${ballast}`, "bs=1M", "oflag=append", "conv=notrunc"];
-        spawnSync("dd", append);
+        spawnSync("fallocate", ["-l", String(free), this.ballast]);
+        const tail = [
+            "if=/dev/zero",
+            `of=${this.ballast}`,
+            "bs=1M",
+            "oflag=append",
+            "conv=notrunc",
+        ];
+        spawnSync("dd", tail);
+    }
+
+    private fillStore(): Record<string, unknown> {
+        if (!this.storeMount) return { skipped: "arm runs no loop-mounted store" };
+        this.fill();
         const df = run(["df", "--output=avail", this.storeMount]);
         const avail = Number(df.trim().split("\n").at(-1));
         if (avail !== 0) throw new HarnessFailure(`store_full left ${avail} KiB free`);
