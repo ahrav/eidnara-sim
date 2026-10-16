@@ -99,7 +99,7 @@ entries of different arms are not ordered by scenario time.
 | `EndTurn` | The turn is answered; a probe turn carries `probe` and `state` (`completed`, or `failed` whenever the driver returned `failed`, even empty) |
 | `RegisterJob`, `EndJob` | A background job starts and ends; on resume, a job in flight at the kill gets an `EndJob` with outcome `failed(interrupted)` |
 | `FaultFired`, `FaultObserved` | A scheduled fault fires, and the driver returns its evidence |
-| `ItemState` | On resume, an in-flight turn or a scheduler fault without evidence is `failed(interrupted)`; the daemon exits; a scheduler fault the driver could not carry out is `failed` with `fatal: true`, as is a daemon exit outside an outage window |
+| `ItemState` | On resume, an in-flight turn or a scheduler fault without evidence is `failed(interrupted)`, as is a kill the fatal channel cut; the daemon exits; a scheduler fault the driver could not carry out, or an event whose delivery failed, is `failed` with `fatal: true`, as is a daemon exit outside an outage window; a sleep or summarizer fault that never fired is `missed` |
 | `Event` | A scheduled event is complete, with its outcome |
 
 ## Clock
@@ -125,8 +125,9 @@ including a resume, the proxy's fault state (`ProxyControl.reset`: `FaultInjecto
 its witnesses, and returns its generator to its seed, so every arm draws one
 fault mask and `report()` describes the current arm), then walks the events, and
 before `EndArm` waits for a pending kill and for the busy set to empty, then
-closes any outage window and the current session. A turn that rejects still
-waits for a pending kill's evidence before the error propagates. After
+closes any outage window and the current session. A turn that rejects fails
+the run and cuts a pending kill through the fatal channel; the cut kill is
+journaled `failed(interrupted)`, and the one fatal record names the turn. After
 `EndArm`, and on any error that ends the arm, the arm's handle is dead and a
 call through it is refused:
 
@@ -170,7 +171,11 @@ call through it is refused:
 6. At a session end, disarm every provider fault of the session, so one that
    its turn left unexhausted reaches no later session or arm.
 7. Wait for a mid-fold kill fired during the event, then journal `Event` for
-   the event. At a `session_end`, a summarizer-call fault of that session that
+   the event. Every record written after the driver acted (`Event`, a
+   recovered turn's `Event`, a missed fault) poisons the run when its append
+   fails, so a later process cannot deliver the event again. A fatal record
+   lands before the fatal channel is rejected, so the paths the channel wakes
+   find it on disk. At a `session_end`, a summarizer-call fault of that session that
    never fired is journaled `ItemState missed` first, so every configured
    fault leaves a record.
 
@@ -219,8 +224,9 @@ open, every sleep jump fired, and every fired scheduler fault observed or
 interrupted; evidence journaled after `EndArm` does not count. The clock keeps
 the highest wall reading it has seen, so a wall source that steps backward
 across an idle gap never counts the rollback twice. A journal holding a fatal
-`ItemState` (a daemon exit outside an outage window, or a scheduler fault the
-driver could not carry out), before or after `EndRun`, is a failed run and is
+`ItemState` (a daemon exit outside an outage window, a scheduler fault the
+driver could not carry out, or an event whose delivery failed), before or
+after `EndRun`, is a failed run and is
 refused with `HarnessFailure`; an arm with `EndArm` before every scheduled
 event completed, a turn entry naming anything but a configured user turn, an
 `EndTurn` before its `BeginTurn`, a `FaultObserved` before its `FaultFired`,

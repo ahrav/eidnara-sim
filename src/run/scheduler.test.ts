@@ -3635,6 +3635,85 @@ describe("Scheduler", () => {
         expect(performance.now() - started).toBeLessThan(2_000);
     });
 
+    test("a kill cut by another fatal is interrupted rather than failed twice, and a post-delivery append that fails poisons the run", async () => {
+        const events = fixtureEvents(1);
+        const kill = episode("k", "daemon_sigkill_mid_fold", {
+            kind: "first_summarizer_call",
+            session: "s-0000",
+        });
+        let handle: ArmHandle | null = null;
+        const j = new Journal(join(dir(), "j.jsonl"));
+        await expect(
+            new Scheduler({
+                events,
+                faults: [kill],
+                journal: j,
+                settleMs: 0,
+                order: ["a"],
+                drivers: {
+                    a: {
+                        ...fakeDriver([]),
+                        bind: (h) => {
+                            handle = h;
+                        },
+                        event: async (e) => {
+                            if (e.kind === "user_turn") {
+                                handle?.observe("history_summarizer");
+                                await Bun.sleep(10);
+                                try {
+                                    handle?.daemonExited({ signal: "SIGBUS" });
+                                } catch {}
+                                handle?.daemonExited({ signal: "SIGBUS" });
+                            }
+                            return {};
+                        },
+                        fault: () => new Promise(() => undefined),
+                    },
+                },
+            }).run(),
+        ).rejects.toThrow(HarnessFailure);
+        const fatal = j.entries.filter((e) => e.kind === "ItemState" && e.fatal === true);
+        expect(fatal).toHaveLength(1);
+        expect(fatal[0]?.daemon_exit).toBeDefined();
+        expect(j.entries).toContainEqual(
+            expect.objectContaining({
+                kind: "ItemState",
+                fault: "k",
+                state: "failed(interrupted)",
+            }),
+        );
+        for (const kind of ["Event", "ItemState"] as const) {
+            const path = join(dir(), "j.jsonl");
+            const inner = new Journal(path);
+            const journal = new Proxy(inner, {
+                get(target, key, receiver) {
+                    if (key === "append") {
+                        return (entry: Entry) => {
+                            const hit =
+                                kind === "Event"
+                                    ? entry.kind === "Event" && entry.event === "e-000000"
+                                    : entry.kind === "ItemState" && entry.state === "missed";
+                            if (hit) throw new Error("ENOSPC");
+                            return target.append(entry);
+                        };
+                    }
+                    return Reflect.get(target, key, receiver);
+                },
+            });
+            await expect(
+                new Scheduler({
+                    events,
+                    faults: kind === "Event" ? [] : [kill],
+                    journal,
+                    settleMs: 0,
+                    order: ["a"],
+                    drivers: { a: fakeDriver([]) },
+                }).run(),
+            ).rejects.toThrow(/ENOSPC/);
+            expect(() => new Journal(path)).toThrow(/its record could not be journaled/);
+        }
+    });
+
     test("a FaultObserved without its FaultFired is refused on resume", async () => {
         const path = join(dir(), "j.jsonl");
         const restart = episode("r", "daemon_restart", {
@@ -3883,7 +3962,14 @@ describe("Scheduler", () => {
         });
         await expect(scheduler.run()).rejects.toThrow(/daemon gone/);
         expect(j.entries.map((e) => e.kind)).not.toContain("FaultObserved");
-        expect(j.entries.filter((e) => e.kind === "ItemState" && e.fatal === true)).toHaveLength(2);
+        expect(j.entries.filter((e) => e.kind === "ItemState" && e.fatal === true)).toHaveLength(1);
+        expect(j.entries).toContainEqual(
+            expect.objectContaining({
+                kind: "ItemState",
+                fault: "k",
+                state: "failed(interrupted)",
+            }),
+        );
         expect(() => handle?.jobStart("after-the-fact")).toThrow(/arm has ended/);
         expect(j.entries.filter((e) => e.kind === "RegisterJob")).toEqual([]);
         j.close();

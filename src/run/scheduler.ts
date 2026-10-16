@@ -120,6 +120,34 @@ export class Scheduler {
         this.o.journal.poison(`${what}: ${error}`);
     }
 
+    /**
+     * Appends a record that must land: when the append fails the run is poisoned under `what`
+     * before the failure propagates, so a later process cannot resume past the gap.
+     */
+    private record(entry: { kind: EntryKind; [field: string]: unknown }, what: string): Entry {
+        try {
+            return this.log(entry);
+        } catch (caught) {
+            this.poison(`${what}: its record could not be journaled`, caught);
+            throw caught;
+        }
+    }
+
+    /**
+     * Appends the record of a failure that is fatal for the run, then rejects the fatal channel
+     * so every in-flight driver call is cut: the record lands first, so the paths the channel
+     * wakes find it on disk, and a record that cannot land has already poisoned the run.
+     */
+    private recordFatal(entry: { kind: EntryKind; [field: string]: unknown }, what: string): void {
+        try {
+            this.record(entry, what);
+        } catch {
+            return;
+        } finally {
+            if (this.fatal) this.fail?.(this.fatal);
+        }
+    }
+
     private log(entry: { kind: EntryKind; [field: string]: unknown }): Entry {
         return this.o.journal.append({
             ...entry,
@@ -189,7 +217,10 @@ export class Scheduler {
                     await this.pendingKill;
                     if (this.fatal) throw this.fatal;
                     for (const e of answered) {
-                        this.log({ kind: "Event", event: e.event, outcome: e.outcome });
+                        this.record(
+                            { kind: "Event", event: e.event, outcome: e.outcome },
+                            `recovered event ${e.event}`,
+                        );
                     }
                     const done = new Set(
                         this.o.journal.entries
@@ -689,11 +720,6 @@ export class Scheduler {
                 this.log({ kind: "EndJob", job, outcome: "failed(interrupted)" });
             }
         }
-        for (const e of kinds("ItemState")) {
-            if (e.state === "missed" && typeof e.fault === "string") {
-                this.fired.add(`${this.arm}/${e.fault}`);
-            }
-        }
         const firedIds = new Set(kinds("FaultFired").map((e) => e.fault));
         for (const jump of kinds("AdvanceClock")) {
             if (typeof jump.fault === "string" && !firedIds.has(jump.fault)) {
@@ -712,7 +738,6 @@ export class Scheduler {
         const observed = new Set(kinds("FaultObserved").map((e) => e.fault));
         for (const fired of kinds("FaultFired")) {
             const f = this.o.faults.find((x) => x.id === fired.fault);
-            this.fired.add(`${this.arm}/${fired.fault}`);
             if (!f) continue;
             if (f.seam.layer !== PROXY_LAYER) {
                 if (!observed.has(f.id) && !marked.has(f.id) && f.type !== "laptop_sleep") {
@@ -778,17 +803,23 @@ export class Scheduler {
             const got: unknown = await this.untilFatal(driver.fault(structuredClone(f)));
             evidence = plainObject(got, "fault evidence");
         } catch (caught) {
+            if (caught === this.fatal) {
+                try {
+                    this.record(
+                        { kind: "ItemState", fault: f.id, state: "failed(interrupted)" },
+                        `fault ${f.id} was cut`,
+                    );
+                } catch {
+                    throw caught;
+                }
+                throw caught;
+            }
             const error = caught instanceof Error ? caught.message : String(caught);
             this.fatal ??= new HarnessFailure(`fault ${f.id} failed: ${error}`);
-            this.fail?.(this.fatal);
-            try {
-                this.log({ kind: "ItemState", fault: f.id, state: "failed", error, fatal: true });
-            } catch (unwritten) {
-                this.poison(
-                    `fault ${f.id} failed and its record could not be journaled`,
-                    unwritten,
-                );
-            }
+            this.recordFatal(
+                { kind: "ItemState", fault: f.id, state: "failed", error, fatal: true },
+                `fault ${f.id} failed`,
+            );
             throw caught;
         }
         try {
@@ -847,21 +878,10 @@ export class Scheduler {
                 if (caught === this.fatal) throw caught;
                 const error = caught instanceof Error ? caught.message : String(caught);
                 this.fatal ??= new HarnessFailure(`event ${e.id} failed: ${error}`);
-                this.fail?.(this.fatal);
-                try {
-                    this.log({
-                        kind: "ItemState",
-                        event: e.id,
-                        state: "failed",
-                        error,
-                        fatal: true,
-                    });
-                } catch (unwritten) {
-                    this.poison(
-                        `event ${e.id} failed and its record could not be journaled`,
-                        unwritten,
-                    );
-                }
+                this.recordFatal(
+                    { kind: "ItemState", event: e.id, state: "failed", error, fatal: true },
+                    `event ${e.id} failed`,
+                );
                 throw caught;
             }
             return got as { failed?: string };
@@ -904,7 +924,10 @@ export class Scheduler {
                 if (f.trigger.kind !== "first_summarizer_call" || f.trigger.session !== e.session)
                     continue;
                 if (unfired) {
-                    this.log({ kind: "ItemState", fault: f.id, state: "missed" });
+                    this.record(
+                        { kind: "ItemState", fault: f.id, state: "missed" },
+                        `missed ${f.id}`,
+                    );
                     this.fired.add(`${this.arm}/${f.id}`);
                 }
             }
@@ -912,7 +935,10 @@ export class Scheduler {
         }
         await this.pendingKill;
         if (this.fatal) throw this.fatal;
-        this.log({ kind: "Event", event: e.id, outcome: outcome.failed ?? "ok" });
+        this.record(
+            { kind: "Event", event: e.id, outcome: outcome.failed ?? "ok" },
+            `event ${e.id}`,
+        );
     }
 
     private handle(generation: number, driver: ArmDriver): ArmHandle {
@@ -979,18 +1005,14 @@ export class Scheduler {
                     this.fatal ??= new HarnessFailure(
                         "daemon exited outside a scheduled outage window",
                     );
-                    this.fail?.(this.fatal);
                 }
                 try {
-                    this.log({
-                        kind: "ItemState",
-                        daemon_exit: detail,
-                        expected,
-                        fatal: !expected,
-                    });
-                } catch (caught) {
-                    this.poison("daemon exit could not be journaled", caught);
-                    throw caught;
+                    this.record(
+                        { kind: "ItemState", daemon_exit: detail, expected, fatal: !expected },
+                        "daemon exit",
+                    );
+                } finally {
+                    if (!expected && this.fatal) this.fail?.(this.fatal);
                 }
                 if (this.fatal && !expected) throw this.fatal;
             },
