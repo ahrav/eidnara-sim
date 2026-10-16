@@ -137,9 +137,12 @@ export class DaemonStack {
     async stop(): Promise<void> {
         const stack = this.stack;
         if (!stack) return;
-        this.saveLog();
-        await stack.terminateHost();
-        this.stack = null;
+        try {
+            await stack.terminateHost();
+        } finally {
+            this.saveLog();
+            this.stack = null;
+        }
     }
 }
 

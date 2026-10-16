@@ -4,6 +4,7 @@ import {
     existsSync,
     mkdirSync,
     mkdtempSync,
+    readdirSync,
     readFileSync,
     rmSync,
     symlinkSync,
@@ -60,7 +61,11 @@ class FakeHost {
     }
 }
 
-function fixture(arm: DriverOptions["arm"], projects: Record<string, string> = {}) {
+function fixture(
+    arm: DriverOptions["arm"],
+    projects: Record<string, string> = {},
+    extra: Partial<DriverOptions> = {},
+) {
     const root = tmp();
     const transcripts = join(root, "agent");
     const exits: Record<string, unknown>[] = [];
@@ -88,6 +93,7 @@ function fixture(arm: DriverOptions["arm"], projects: Record<string, string> = {
             return h as unknown as SimHost;
         },
         onDaemonExit: (d) => void exits.push(d),
+        ...extra,
     };
     const driver = new HostDriver(o);
     return { driver, root, transcripts, exits, hosts, armDir: join(root, arm) };
@@ -218,12 +224,38 @@ describe("HostDriver lifecycle", () => {
             .split(") ")[1]
             ?.split(" ")[19];
         state.host = { pid: orphan.pid, start };
+        const recycled = Bun.spawn(["sleep", "300"]);
+        state.daemon = { pid: recycled.pid, start: "1" };
         writeFileSync(join(armDir, "state.json"), JSON.stringify(state));
         const fresh = new HostDriver((driver as unknown as { o: DriverOptions }).o);
         await fresh.resume(null);
         await orphan.exited;
         expect(orphan.signalCode).toBe("SIGTERM");
         expect(fresh.host?.ctx.model).toBe("model-b");
+        expect(recycled.exitCode).toBeNull();
+        expect(recycled.signalCode).toBeNull();
+        recycled.kill();
+    });
+
+    test("a reset after an open session starts between sessions, with the transcript check pending", async () => {
+        const { driver, armDir } = fixture("host", { p: gitRepo() });
+        await driver.reset();
+        mkdirSync(join(driver.workspace("p"), "..", "..", "agent", "sessions"), {
+            recursive: true,
+        });
+        await driver.event(ev("session_start"));
+        await driver.reset();
+        expect(await driver.fault(episode("model_switch"))).toEqual({ model: "model-b" });
+        expect(JSON.parse(readFileSync(join(armDir, "state.json"), "utf8")).host).toBeNull();
+    });
+
+    test("transcripts.json is replaced whole, with no staged sibling left behind", async () => {
+        const { driver, armDir, transcripts } = fixture("host");
+        await driver.reset();
+        mkdirSync(join(transcripts, "sessions"), { recursive: true });
+        await driver.event(ev("session_end"));
+        const files = readdirSync(armDir).filter((f) => f.startsWith("transcripts.json"));
+        expect(files).toEqual(["transcripts.json"]);
     });
 
     test("stop still stops the daemon when the host refuses to close", async () => {
@@ -317,7 +349,7 @@ describe("HostDriver lifecycle", () => {
     test("state.json is replaced whole, with no staged sibling left behind", async () => {
         const { driver, armDir } = fixture("host", { p: gitRepo() });
         await driver.reset();
-        const files = (await import("node:fs")).readdirSync(armDir);
+        const files = readdirSync(armDir);
         expect(files.filter((f) => f.startsWith("state.json"))).toEqual(["state.json"]);
         expect(JSON.parse(readFileSync(join(armDir, "state.json"), "utf8")).model).toBe(0);
     });
@@ -389,6 +421,63 @@ describe("HostDriver faults", () => {
         await driver.reset();
         await driver.event(ev("session_start"));
         await expect(driver.fault(episode("model_switch"))).rejects.toThrow("between sessions");
+        driver.daemon = fakeDaemon(10) as unknown as DaemonStack;
+        await expect(driver.fault(episode("daemon_restart"))).rejects.toThrow("between sessions");
         await expect(driver.fault(episode("host_upgrade"))).rejects.toThrow("no mechanism");
     });
+
+    test("a resume with the store image gone stops instead of formatting a new store", async () => {
+        const { driver } = fixture("eidnara");
+        const inner = driver as unknown as { mountStore(fresh: boolean): void };
+        try {
+            expect(() => inner.mountStore(false)).toThrow("store image");
+        } finally {
+            await driver.stop();
+        }
+    });
+
+    test.skipIf(!sudo)(
+        "a resume with the ballast still in place starts the daemon, then fills the store again",
+        async () => {
+            const started: number[] = [];
+            const daemonFactory = (ctx: { dataDir: string }) =>
+                ({
+                    pid: () => null,
+                    connectionFile: join(ctx.dataDir, "conn"),
+                    start: async () => {
+                        mkdirSync(ctx.dataDir, { recursive: true });
+                        writeFileSync(join(ctx.dataDir, "conn"), "x".repeat(4096));
+                        started.push(
+                            Number(
+                                spawnSync("df", ["--output=avail", ctx.dataDir], {
+                                    encoding: "utf8",
+                                })
+                                    .stdout.trim()
+                                    .split("\n")
+                                    .at(-1),
+                            ),
+                        );
+                    },
+                    restart: async () => undefined,
+                    stop: async () => undefined,
+                }) as unknown as DaemonStack;
+            const { driver } = fixture("eidnara", {}, { loopStore: true, daemonFactory });
+            let fresh: HostDriver | null = null;
+            try {
+                await driver.reset();
+                expect(await driver.fault(episode("store_full"))).toMatchObject({ avail_kb: 0 });
+                fresh = new HostDriver((driver as unknown as { o: DriverOptions }).o);
+                await fresh.resume(null);
+                expect(started).toHaveLength(2);
+                expect(started[1]).toBeGreaterThan(0);
+                const df = spawnSync("df", ["--output=avail", fresh.storeRoot], {
+                    encoding: "utf8",
+                });
+                expect(Number(df.stdout.trim().split("\n").at(-1))).toBe(0);
+            } finally {
+                await fresh?.stop().catch(() => undefined);
+                await driver.stop().catch(() => undefined);
+            }
+        },
+    );
 });
