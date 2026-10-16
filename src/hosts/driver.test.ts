@@ -4,6 +4,7 @@ import {
     existsSync,
     mkdirSync,
     mkdtempSync,
+    readdirSync,
     readFileSync,
     rmSync,
     symlinkSync,
@@ -231,6 +232,18 @@ describe("HostDriver lifecycle", () => {
         expect(
             spawnSync("git", ["log", "--format=%s", "-1"], { cwd: ws }).stdout.toString().trim(),
         ).toBe("Add src/a.txt");
+    });
+
+    test("apply_diff refuses a workspace whose .git internals are symlinks", async () => {
+        const { driver } = fixture("host", { p: gitRepo() });
+        await driver.reset();
+        const ws = driver.workspace("p");
+        const outside = tmp();
+        rmSync(join(ws, ".git", "objects"), { recursive: true });
+        symlinkSync(outside, join(ws, ".git", "objects"));
+        const diff = ev("apply_diff", { path: "src/a.txt", content: "A" });
+        await expect(driver.event(diff)).rejects.toThrow("symlink");
+        expect(readdirSync(outside)).toEqual([]);
     });
 
     test("a resumed arm reopens the session the next event belongs to", async () => {

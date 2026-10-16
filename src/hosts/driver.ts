@@ -3,6 +3,7 @@ import {
     existsSync,
     lstatSync,
     mkdirSync,
+    readdirSync,
     readFileSync,
     realpathSync,
     rmSync,
@@ -303,6 +304,12 @@ export class HostDriver implements ArmDriver {
         const gitDir = join(dir, ".git");
         if (!lstatSync(gitDir, { throwIfNoEntry: false })?.isDirectory()) {
             throw new HarnessFailure(`${gitDir} is not a directory`);
+        }
+        for (const entry of readdirSync(gitDir, { recursive: true, withFileTypes: true })) {
+            if (entry.isSymbolicLink()) {
+                const at = join(relative(dir, entry.parentPath), entry.name);
+                throw new HarnessFailure(`${at} is a symlink; git would write through it`);
+            }
         }
         const scope = { GIT_DIR: gitDir, GIT_WORK_TREE: dir, ...extra };
         const off = [

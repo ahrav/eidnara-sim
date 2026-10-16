@@ -324,6 +324,23 @@ describe("fault composition at the proxy sink", () => {
         expect(injector.report()[0]?.status).toBe("fired");
     });
 
+    test("an injected truncated reply records the text the host saw", async () => {
+        const fault = {
+            id: "t",
+            type: "truncated_length",
+            strategy: "burst",
+            params: { count: 2 },
+        } as ProxyFault;
+        const { injector, records, url } = await start(fault);
+        injector.arm("t");
+        await hostCall(url, AGENT_BODY, 2_000);
+        await hostCallJson(url, AGENT_BODY, 2_000);
+        expect(records.records.map((r) => [r.fault_ref, r.response_text])).toEqual([
+            ["t", "The change is partly"],
+            ["t", "The change is partly"],
+        ]);
+    });
+
     test("slow_stream over an upstream that throttles first records the proxy's retry", async () => {
         const fault = {
             id: "s",

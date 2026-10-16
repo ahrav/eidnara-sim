@@ -57,7 +57,7 @@ one.
 |---|---|
 | `diff` (`turn`) | A git tree of the workspace's files that its `.gitignore` rules leave in, untracked files included, taken before the prompt and after it, and diffed |
 | `diff` (`prior-session`) | The same trees at the start and end of the project's previous session |
-| `command-log` | The host's tool runs, each a bash command or the tool name and its path followed by the text and structured arguments it was given (a `write`'s content, an `edit`'s edits), with a 0 or 1 error flag (null for a run that never finished) and its scenario time. The recorder saves each run as the host logs it, so a harness kill mid-turn keeps the runs logged so far in the session log. Pi reports `tool_execution_start` and `tool_execution_end` events as they happen; OpenCode's tool parts come from the session messages the turn added, read after the turn whatever its outcome, each timed from its start relative to the turn's first new message, both in OpenCode's own clock, with a pending or running part's exit null, so a turn OpenCode was running when the harness was killed leaves no tool runs |
+| `command-log` | The host's tool runs, each a bash command or the tool name and its path followed by the text and structured arguments it was given (a `write`'s content, an `edit`'s edits), with a 0 or 1 error flag (null for a run that never finished) and the scenario time the run started. The recorder saves each run as the host logs it, so a harness kill mid-turn keeps the runs logged so far in the session log. Pi reports `tool_execution_start` and `tool_execution_end` events as they happen, and a run is timed from its start event; OpenCode's tool parts come from the session messages the turn added, read after the turn whatever its outcome, each timed from its start relative to the turn's first new message, both in OpenCode's own clock, with a pending or running part's exit null, so a turn OpenCode was running when the harness was killed leaves no tool runs |
 | `proxy-call` | The session's call records from `calls.jsonl`, each with the index of the user turn it belongs to (a background call takes the preceding turn's), and the response text the proxy records for agent, user-sim, and judge calls (the first 32,768 characters) |
 
 The recorder keeps each project's session-start tree, the last session's
@@ -85,8 +85,12 @@ or an arm's `EndArm` and one terminal `Event` per scheduled event (SIM-P67),
 drops a cut last line of `grades.jsonl`, and grades every snapshot the
 journal names
 into `grades.jsonl` and judges each P7 item for each memory arm against the
-host arm, through a gateway it starts for the judge after checking the judge
-model's family against every model the manifest records. The journaled
+host arm, through a gateway it starts for the judge. It checks the judge
+model's family against every model the manifest records before it appends
+the first grade, so a refused judge leaves the log untouched. A P7 pair
+whose answers are refused before the judge call (empty, or carrying an arm
+name) is skipped as refused; a judge call that fails or returns no verdict
+is a judge error. The journaled
 snapshot is an item's first attempt and the arm's later snapshots of that
 item are its later attempts. A probe whose turn lies past the run's event
 count is listed as outside the run. It prints the verdict

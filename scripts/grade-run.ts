@@ -1,11 +1,13 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { loadConfig, type SimConfig } from "../src/config/config";
-import { GradeRefused, type Snapshot } from "../src/grade/artefacts";
+import type { Snapshot } from "../src/grade/artefacts";
 import {
     BlindingRefused,
     gradeP7,
+    type Judgment,
     judgePair,
+    type P7Inputs,
     p7Pair,
     proxyJudge,
     referenceDigest,
@@ -127,27 +129,6 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
         graded.push(record);
     };
     const outside = `probe turn outside the run's ${manifest.events} events`;
-    for (const probe of scenario.probes.filter((p) => p.type !== "P7")) {
-        for (const arm of arms) {
-            if (probe.type === "P14") {
-                skip(arm, "P14 has no probe turn");
-                continue;
-            }
-            if (!ran.has(probe.id)) {
-                skip(arm, outside);
-                continue;
-            }
-            const mine = attempts(arm, probe.id);
-            if (!mine) {
-                skip(arm, "no journaled snapshot");
-                continue;
-            }
-            const grade = gradeItem(probe, mine, rules);
-            if (grade) append(grade);
-            else skip(arm, "probe turn failed");
-        }
-    }
-
     let judgeErrors = 0;
     const p7 = scenario.probes.filter((p) => p.type === "P7");
     const memoryArms = arms.filter((a) => a !== "host");
@@ -174,14 +155,38 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
             return [{ probe, arm, a: mine[0], b: host[0], later_attempts }];
         }),
     );
+    const firewall = (url: string) => {
+        const judges = models.map((m) => proxyJudge(url, rules.judge.model, m));
+        if (!judges[0]) throw new Error("the manifest records no run model");
+        return judges[0];
+    };
     if (pairs.length > 0) {
-        const firewall = (url: string) => {
-            const judges = models.map((m) => proxyJudge(url, rules.judge.model, m));
-            if (!judges[0]) throw new Error("the manifest records no run model");
-            return judges[0];
-        };
         firewall("http://judge.invalid");
         if (!config) throw new Error("P7 judging needs the sim config");
+    }
+
+    for (const probe of scenario.probes.filter((p) => p.type !== "P7")) {
+        for (const arm of arms) {
+            if (probe.type === "P14") {
+                skip(arm, "P14 has no probe turn");
+                continue;
+            }
+            if (!ran.has(probe.id)) {
+                skip(arm, outside);
+                continue;
+            }
+            const mine = attempts(arm, probe.id);
+            if (!mine) {
+                skip(arm, "no journaled snapshot");
+                continue;
+            }
+            const grade = gradeItem(probe, mine, rules);
+            if (grade) append(grade);
+            else skip(arm, "probe turn failed");
+        }
+    }
+
+    if (pairs.length > 0 && config) {
         const gateway = new Gateway({
             upstream: bedrockUpstream(config.bedrock.region, config.bedrock.aws_profile),
             records: new RecordWriter(join(dir, "judge-calls.jsonl")),
@@ -195,31 +200,50 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
             const judge = firewall(gateway.urls[0] as string);
             for (const { probe, arm, a, b, later_attempts } of pairs) {
                 const reference = String((probe.check as { judge?: string }).judge ?? "");
+                const both = (why: string) => {
+                    for (const side of [arm, "host"]) skip(side, why);
+                };
+                const refuse = (caught: unknown) => {
+                    both("P7 refused");
+                    console.error(`${probe.id} (${arm}): ${String(caught)}`);
+                };
+                const fail = (caught: unknown) => {
+                    judgeErrors++;
+                    both("P7 judge call failed");
+                    console.error(`${probe.id} (${arm}): ${String(caught)}`);
+                };
+                let built: P7Inputs | null;
                 try {
-                    const built = p7Pair(probe.id, a, b);
-                    if (!built) {
-                        for (const side of [arm, "host"]) skip(side, "P7 probe turn failed");
-                        continue;
-                    }
-                    const judgment = await judgePair(judge, built.pair, reference, []);
-                    const context = {
-                        item: probe.id,
-                        reference: referenceDigest(reference),
-                        snapshots: { a, b },
-                        later_attempts,
-                        calibration: null,
-                        permutation: null,
-                        cross_judge: null,
-                    };
+                    built = p7Pair(probe.id, a, b);
+                } catch (caught) {
+                    refuse(caught);
+                    continue;
+                }
+                if (!built) {
+                    both("P7 probe turn failed");
+                    continue;
+                }
+                let judgment: Judgment;
+                try {
+                    judgment = await judgePair(judge, built.pair, reference, []);
+                } catch (caught) {
+                    if (caught instanceof BlindingRefused) refuse(caught);
+                    else fail(caught);
+                    continue;
+                }
+                const context = {
+                    item: probe.id,
+                    reference: referenceDigest(reference),
+                    snapshots: { a, b },
+                    later_attempts,
+                    calibration: null,
+                    permutation: null,
+                    cross_judge: null,
+                };
+                try {
                     for (const g of gradeP7(judgment, context, rules)) append(g);
                 } catch (caught) {
-                    const refused =
-                        caught instanceof GradeRefused || caught instanceof BlindingRefused;
-                    if (!refused) judgeErrors++;
-                    for (const side of [arm, "host"]) {
-                        skip(side, refused ? "P7 refused" : "P7 judge call failed");
-                    }
-                    console.error(`${probe.id} (${arm}): ${String(caught)}`);
+                    fail(caught);
                 }
             }
         } finally {

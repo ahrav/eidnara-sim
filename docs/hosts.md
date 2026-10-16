@@ -67,8 +67,8 @@ commit is built with plumbing (`hash-object --no-filters`, a scratch index,
 `GIT_WORK_TREE`, points `core.hooksPath` at an absent directory, turns
 `core.fsmonitor` and `commit.gpgsign` off, and blanks every filter driver the
 repository's config names, because the agent can write that config and the
-harness process runs outside the sandbox. A `.git` that is a file or symlink
-stops the run.
+harness process runs outside the sandbox. A `.git` that is a file or symlink,
+or any symlink under `.git`, stops the run before git writes anything.
 
 Pi runs in RPC mode with `--session-id sim-<session>`, its agent directory,
 settings, and model list under the arm root, and the Eidnara extension from

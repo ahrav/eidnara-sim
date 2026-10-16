@@ -293,10 +293,15 @@ export class Gateway {
         if (fault) done.fault_ref = fault.id;
         if (fault && fault.type !== "slow_stream") {
             const tool = body.toolConfig?.tools?.[0]?.toolSpec?.name;
-            return {
-                ...done,
-                ...(await writeFault(fault.type, fault.params, streaming, sink, tool)),
-            };
+            const { text, ...outcome } = await writeFault(
+                fault.type,
+                fault.params,
+                streaming,
+                sink,
+                tool,
+            );
+            const relayed = text && RELAYED_TEXT.has(done.component) ? { response_text: text } : {};
+            return { ...done, ...outcome, ...relayed };
         }
         const usage: Usage = {};
         const firstByte = () => {

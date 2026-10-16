@@ -301,24 +301,38 @@ export function gradeItem(
     };
 }
 
+/**
+ * The log's single writer holds the run lease, so the records read at construction plus the
+ * ones appended since are the file's content; each version lookup reads that memory.
+ */
 export class GradeLog {
+    private readonly records: GradeRecord[] = [];
+    private readonly newest = new Map<string, number>();
+
     /** A log reopened over a line cut by a kill mid-append keeps its newline-terminated prefix. */
     constructor(private readonly path: string) {
         if (!existsSync(path)) return;
         const text = readFileSync(path, "utf8");
         const complete = text.slice(0, text.lastIndexOf("\n") + 1);
         if (complete.length < text.length) truncateSync(path, Buffer.byteLength(complete));
+        for (const line of complete.split("\n").filter(Boolean)) {
+            this.remember(JSON.parse(line) as GradeRecord);
+        }
+    }
+
+    private remember(g: GradeRecord): void {
+        this.records.push(g);
+        const key = keyOf(g);
+        this.newest.set(key, Math.max(this.newest.get(key) ?? 0, g.version));
     }
 
     all(): GradeRecord[] {
-        if (!existsSync(this.path)) return [];
-        const lines = readFileSync(this.path, "utf8").split("\n").filter(Boolean);
-        return lines.map((l) => JSON.parse(l) as GradeRecord);
+        return [...this.records];
     }
 
     latest(): GradeRecord[] {
         const newest = new Map<string, GradeRecord>();
-        for (const g of this.all()) {
+        for (const g of this.records) {
             const key = keyOf(g);
             if ((newest.get(key)?.version ?? 0) < g.version) newest.set(key, g);
         }
@@ -326,9 +340,7 @@ export class GradeLog {
     }
 
     nextVersion(key: GradeKey): number {
-        const id = keyOf(key);
-        const mine = this.all().filter((g) => keyOf(g) === id);
-        return mine.length === 0 ? 1 : Math.max(...mine.map((g) => g.version)) + 1;
+        return (this.newest.get(keyOf(key)) ?? 0) + 1;
     }
 
     append(record: GradeRecord): void {
@@ -340,6 +352,7 @@ export class GradeLog {
             );
         }
         appendFileSync(this.path, `${JSON.stringify(record)}\n`);
+        this.remember(record);
     }
 }
 

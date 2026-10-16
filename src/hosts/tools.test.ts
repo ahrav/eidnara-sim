@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { loadConfig } from "../config/config";
-import { type HostContext, OpencodeSimHost, toolCommand } from "./arms";
+import { type HostContext, OpencodeSimHost, PiSimHost, toolCommand } from "./arms";
 
 test("a tool run reads as its bash command, or as the tool and its target path", () => {
     expect(toolCommand("bash", { command: "cargo test" })).toBe("cargo test");
@@ -172,4 +172,36 @@ test("a message listing that returns an error instead of data is a capture failu
     });
     await expect(host.prompt("go", 5_000)).rejects.toThrow("Unauthorized");
     expect(host.drainTools()).toEqual([]);
+});
+
+test("a Pi tool run is timed from its start event, and an unfinished one keeps its start time", () => {
+    let now = 10;
+    const host = new PiSimHost({
+        ...({} as HostContext),
+        config: loadConfig(),
+        root: "/x",
+        launcher: "/x/sandbox.sh",
+        now: () => now,
+    });
+    const event = (e: Record<string, unknown>) =>
+        (host as unknown as { toolEvent: (e: unknown) => void }).toolEvent(e);
+    event({
+        type: "tool_execution_start",
+        toolCallId: "t1",
+        toolName: "bash",
+        args: { command: "cargo test" },
+    });
+    event({
+        type: "tool_execution_start",
+        toolCallId: "t2",
+        toolName: "bash",
+        args: { command: "sleep 9" },
+    });
+    now = 50;
+    event({ type: "tool_execution_end", toolCallId: "t1", isError: false });
+    now = 70;
+    expect(host.drainTools()).toEqual([
+        { command: "cargo test", exit: 0, scenario_ms: 10 },
+        { command: "sleep 9", exit: null, scenario_ms: 10 },
+    ]);
 });

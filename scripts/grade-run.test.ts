@@ -227,15 +227,17 @@ describe("grade-run", () => {
         }
     });
 
-    test("the judge firewall is checked against every model the manifest records", async () => {
+    test("the judge firewall is checked against every model the manifest records, before any grade is appended", async () => {
         const p7 = fixture("P7-pass");
         const p7snap = p7snapshot(p7.probe.id);
         const dir = run({
-            probes: [p7.probe],
+            probes: [p5.probe, p7.probe],
             models: ["global.anthropic.claude-opus-5-5", "global.openai.gpt-5.6-luna"],
         });
+        snapshot(dir, "eidnara", snap);
         snapshot(dir, "host", p7snap);
         snapshot(dir, "eidnara", p7snap);
         await expect(gradeRun(dir, null)).rejects.toThrow("shares the agent model's family");
+        expect(() => readFileSync(join(dir, "grades.jsonl"))).toThrow();
     });
 });

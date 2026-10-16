@@ -139,5 +139,6 @@ describe("grading harness", () => {
         expect(reopened.nextVersion(g)).toBe(2);
         reopened.append({ ...g, version: 2 });
         expect(reopened.all().map((x) => x.version)).toEqual([1, 2]);
+        expect(new GradeLog(path).all().map((x) => x.version)).toEqual([1, 2]);
     });
 });

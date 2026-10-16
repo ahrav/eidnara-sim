@@ -228,17 +228,31 @@ export abstract class SimHost {
 export class PiSimHost extends SimHost {
     private rpc: Untyped = null;
     readonly agentDir = join(this.ctx.root, "home/.pi/agent");
-    private readonly started = new Map<string, { tool: string; args: Record<string, unknown> }>();
+    private readonly started = new Map<
+        string,
+        { tool: string; args: Record<string, unknown>; scenario_ms: number }
+    >();
 
     protected override unfinished(): ToolRun[] {
-        const now = this.ctx.now?.() ?? 0;
         const open = [...this.started.values()];
         this.started.clear();
         return open.map((t) => ({
             command: toolCommand(t.tool, t.args),
             exit: null,
-            scenario_ms: now,
+            scenario_ms: t.scenario_ms,
         }));
+    }
+
+    /** A tool run is timed from its start event, the moment the action began. */
+    private toolEvent(e: Untyped): void {
+        if (e.type === "tool_execution_start") {
+            const scenario_ms = this.ctx.now?.() ?? 0;
+            this.started.set(e.toolCallId, { tool: e.toolName, args: e.args, scenario_ms });
+        }
+        if (e.type !== "tool_execution_end") return;
+        const run = this.started.get(e.toolCallId);
+        this.started.delete(e.toolCallId);
+        if (run) this.logTool(run.tool, run.args, e.isError === true ? 1 : 0, run.scenario_ms);
     }
 
     private writeConfigs(connectionFile: string | null): void {
@@ -316,16 +330,8 @@ export class PiSimHost extends SimHost {
         this.rpc = new rpcClient.PiRpcProcess(child, new rpcClient.PiRpcProtocol(), {
             stderrLimit: 20_000,
         });
-        const started = this.started;
-        started.clear();
-        this.rpc.onEvent((e: Untyped) => {
-            if (e.type === "tool_execution_start")
-                started.set(e.toolCallId, { tool: e.toolName, args: e.args });
-            if (e.type !== "tool_execution_end") return;
-            const run = started.get(e.toolCallId);
-            started.delete(e.toolCallId);
-            if (run) this.logTool(run.tool, run.args, e.isError === true ? 1 : 0);
-        });
+        this.started.clear();
+        this.rpc.onEvent((e: Untyped) => this.toolEvent(e));
         const ready = this.rpc.sendCommand("get_state", {}, { timeoutMs: 120_000 });
         await Promise.race([ready, spawnError]);
     }
