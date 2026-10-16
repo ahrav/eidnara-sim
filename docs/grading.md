@@ -23,15 +23,17 @@ an agent transcript or self-report (SIM-P40), a snapshot that lacks an
 artefact its grader reads (a missing diff or command log is refused, so it
 cannot pass a negative-match grader as empty evidence), an artefact without a
 unique nonempty id or with a payload outside its class's shape (a command
-without its text, a call with a non-numeric status or a component outside
-the proxy's set), a snapshot without its own id or from another session than
+without its text, a call with a non-numeric status, a component outside
+the proxy's set, or a sequence number that fails to increase), a snapshot without its own id or from another session than
 the probe's, and an item whose check lacks a key its grader needs or holds a
-malformed value (an empty pattern, an empty answer, a non-numeric window). It grades the first snapshot of an item and arm only
+malformed value (a pattern that is empty after its `(?i)` prefix or fails to compile, an
+empty answer, a non-numeric window). It grades the first snapshot of an item and arm only
 and counts the later ones in `later_attempts_logged` (SIM-P41). An item
 whose probe turn ended `failed` gets no grade (SIM-P46). Each grade lists the
 ids of the artefacts its grader read. Every snapshot of an item passes the
-class check, a `turn_outcome` other than `ok` or `failed` is refused, the
-first snapshot's turn must be the probe's compiled event, and a class and
+class check, the first snapshot's turn and session must be the probe's
+compiled event and session before its outcome is read, a `turn_outcome`
+other than `ok` or `failed` is refused, and a class and
 role present twice in one snapshot is refused as ambiguous. The answer a P8
 or P9 grader reads is the last completed agent response of the probe turn in
 the `proxy-call` artefact; P10 reads every completed agent response of the
@@ -74,7 +76,8 @@ as well as its content. Added lines are the `+` lines inside hunks, told
 apart from `+++` headers by position, so a source line that begins with `++`
 is graded content. Shell segments split on operators outside quotes, so quoted text
 stays one segment; a segment counts as executed when it is unconditional,
-or follows `&&` in a command that exited 0; a `||` continuation is left out
+or follows `&&` in the command's last list and the command exited 0 (the
+exit code is that list's); a `||` continuation is left out
 because the exit code does not say whether it ran. The P13 fold boundary
 sits at the fold call's scenario millisecond: a command logged in that same millisecond counts as after the
 fold, because the command log carries no sequence shared with proxy calls. A pattern that starts with `(?i)` matches

@@ -25,17 +25,6 @@
           "class": "proxy-call",
           "calls": [
             {
-              "seq": 5,
-              "component": "history_summarizer",
-              "turn": "e-0",
-              "scenario_ms": 500,
-              "input_tokens": 20000,
-              "output_tokens": 2000,
-              "turn_index": 5,
-              "status": 200,
-              "error": null
-            },
-            {
               "seq": 2,
               "component": "user-sim",
               "turn": null,
@@ -43,6 +32,17 @@
               "scenario_ms": 400,
               "input_tokens": 10,
               "output_tokens": 10,
+              "status": 200,
+              "error": null
+            },
+            {
+              "seq": 5,
+              "component": "history_summarizer",
+              "turn": "e-0",
+              "scenario_ms": 500,
+              "input_tokens": 20000,
+              "output_tokens": 2000,
+              "turn_index": 5,
               "status": 200,
               "error": null
             },

@@ -98,7 +98,6 @@ export const oneOf =
     (values: readonly string[]): Field =>
     (v) =>
         values.includes(v as string);
-export const textList: Field = (v) => Array.isArray(v) && v.length > 0 && v.every(text);
 const listOf = (shape: Record<string, Field>, path: string, v: unknown): string | null => {
     if (!Array.isArray(v)) return path;
     for (const [i, item] of v.entries()) {
@@ -141,6 +140,13 @@ const CALL: Record<string, Field> = {
 };
 const COMMAND: Record<string, Field> = { command: str, exit: nullable(num), scenario_ms: num };
 
+/** The first call whose `seq` fails to exceed its predecessor's, as a path, or null. */
+const unordered = (calls: unknown, path: string): string | null => {
+    const seqs = (calls as { seq: number }[]).map((c) => c.seq);
+    const i = seqs.findIndex((s, k) => k > 0 && s <= (seqs[k - 1] as number));
+    return i < 0 ? null : `${path}[${i}].seq`;
+};
+
 /** The payload check for each artefact class, run after id and class are known. */
 const PAYLOADS: Record<ArtefactClass, (a: Record<string, unknown>, path: string) => string | null> =
     {
@@ -155,7 +161,8 @@ const PAYLOADS: Record<ArtefactClass, (a: Record<string, unknown>, path: string)
                 p,
             ),
         "workspace-state": (a, p) => badField({ files: mapOf(str) }, a, p),
-        "proxy-call": (a, p) => listOf(CALL, `${p}.calls`, a.calls),
+        "proxy-call": (a, p) =>
+            listOf(CALL, `${p}.calls`, a.calls) ?? unordered(a.calls, `${p}.calls`),
     };
 
 const SNAPSHOT: Record<string, Field> = {

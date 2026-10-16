@@ -16,9 +16,8 @@ import {
     type Snapshot,
     str,
     text,
-    textList,
 } from "./artefacts";
-import { abstains, addedLines, carries, diffPaths, matchesAll, matchesAny } from "./text";
+import { abstains, addedLines, carries, diffPaths, matchesAll, matchesAny, pattern } from "./text";
 
 export type Rules = Preregistration["grading"];
 export type Verdict = "pass" | "fail" | "excluded";
@@ -66,10 +65,23 @@ const USER_SIM_LABELS = [
     "paste",
 ];
 
+const compiles: Field = (v) => {
+    if (!text(v)) return false;
+    const source = (v as string).startsWith("(?i)") ? (v as string).slice(4) : (v as string);
+    if (source.length === 0) return false;
+    try {
+        pattern(v as string);
+        return true;
+    } catch {
+        return false;
+    }
+};
+const patternList: Field = (v) => Array.isArray(v) && v.length > 0 && v.every(compiles);
+
 const CHECK_FIELDS: Record<keyof Check, Field> = {
-    must: textList,
-    must_not: textList,
-    commands_must: textList,
+    must: patternList,
+    must_not: patternList,
+    commands_must: patternList,
     answer: text,
     abstain: bool,
     scope: oneOf(["in", "out"]),
@@ -154,10 +166,14 @@ function splitShell(command: string): { op: string; seg: string }[] {
     return out.filter((x) => x.seg.length > 0);
 }
 
-const executed = (x: Command): string[] =>
-    splitShell(x.command)
-        .filter((p) => p.op !== "||" && (p.op !== "&&" || x.exit === 0))
+/** The exit code belongs to the last list of a command, so only an `&&` segment there is established by it. */
+const executed = (x: Command): string[] => {
+    const parts = splitShell(x.command);
+    const lastList = parts.reduce((n, p, i) => (p.op === ";" || p.op === "\n" ? i : n), 0);
+    return parts
+        .filter((p, i) => p.op !== "||" && (p.op !== "&&" || (x.exit === 0 && i >= lastList)))
         .map((p) => p.seg);
+};
 const anchored = (p: string) => (p.startsWith("(?i)") ? `(?i)^${p.slice(4)}` : `^${p}`);
 const namesPath = (segment: string, path: string) =>
     new RegExp(`(^|[\\s'"=])(\\./)?${path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}($|[\\s'"])`).test(
@@ -352,10 +368,6 @@ export function gradeItem(
         throw new GradeRefused(`snapshots for ${probe.id} mix items or arms`);
     }
     for (const s of snapshots) assertArtefactsOnly(s);
-    if (first.turn_outcome === "failed") return null;
-    if (first.turn_outcome !== "ok") {
-        throw new GradeRefused(`snapshot ${first.id} has turn_outcome ${first.turn_outcome}`);
-    }
     if (probe.event && first.turn !== probe.event) {
         throw new GradeRefused(
             `snapshot ${first.id} is of turn ${first.turn}, not the probe's event ${probe.event}`,
@@ -365,6 +377,10 @@ export function gradeItem(
         throw new GradeRefused(
             `snapshot ${first.id} is of session ${first.session}, not the probe's ${probe.session}`,
         );
+    }
+    if (first.turn_outcome === "failed") return null;
+    if (first.turn_outcome !== "ok") {
+        throw new GradeRefused(`snapshot ${first.id} has turn_outcome ${first.turn_outcome}`);
     }
     const grader = graderFor(probe);
     const reader = new ArtefactReader(first);

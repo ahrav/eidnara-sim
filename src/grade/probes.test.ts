@@ -465,6 +465,49 @@ describe("grading harness", () => {
         const f = fixture("P14-pass");
         const other = { ...(f.snapshots[0] as Snapshot), session: "s-9" };
         expect(() => gradeItem(f.probe, [other], rules)).toThrow("session s-9");
+        const failed = { ...other, turn_outcome: "failed" as const };
+        expect(() => gradeItem(f.probe, [failed], rules)).toThrow("session s-9");
+        const p8 = fixture("P8-pass");
+        const wrongTurn = {
+            ...(p8.snapshots[0] as Snapshot),
+            turn: "e-2",
+            turn_outcome: "failed" as const,
+        };
+        expect(() => gradeItem(p8.probe, [wrongTurn], rules)).toThrow("turn e-2");
+    });
+
+    test("an && segment counts as executed only when the exit code is its own", () => {
+        const f = fixture("P6-pass");
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        const log = snap.artefacts.find((a) => a.class === "command-log" && a.role === "turn");
+        if (log?.class !== "command-log") throw new Error("fixture lacks command-log");
+        log.commands.push({ command: "false && cargo test; true", exit: 0, scenario_ms: 10 });
+        expect(gradeItem(f.probe, [snap], rules)?.metrics["P6.ran_tests"]).toBe(false);
+        log.commands.push({ command: "true; cd crate && cargo test", exit: 0, scenario_ms: 20 });
+        expect(gradeItem(f.probe, [snap], rules)?.metrics["P6.ran_tests"]).toBe(true);
+    });
+
+    test("a check pattern that is empty after its prefix or fails to compile is refused", () => {
+        const f = fixture("P1-fail");
+        for (const bad of ["(?i)", "["]) {
+            expect(() =>
+                gradeItem({ ...f.probe, check: { must: [bad] } }, f.snapshots, rules),
+            ).toThrow("check.must");
+        }
+    });
+
+    test("proxy calls must carry strictly increasing sequence numbers", () => {
+        const f = fixture("P8-pass");
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        const calls = snap.artefacts.find((a) => a.class === "proxy-call");
+        if (calls?.class !== "proxy-call") throw new Error("fixture lacks proxy-call");
+        const last = calls.calls.at(-1) as CallView;
+        calls.calls.push({
+            ...last,
+            seq: last.seq - 1,
+            response_text: "stale draft without the value",
+        });
+        expect(() => gradeItem(f.probe, [snap], rules)).toThrow("calls[1].seq");
     });
 
     test("a P13 command rule keeps its case-insensitive prefix when anchored", () => {
@@ -644,8 +687,9 @@ describe("grading harness", () => {
         const snap = structuredClone(f.snapshots[0]) as Snapshot;
         const calls = snap.artefacts.find((a) => a.class === "proxy-call");
         if (calls?.class !== "proxy-call") throw new Error("fixture lacks proxy-call");
-        const fold = calls.calls.find((c) => c.component === "history_summarizer") as CallView;
-        calls.calls.push({
+        const at = calls.calls.findIndex((c) => c.component === "history_summarizer");
+        const fold = calls.calls[at] as CallView;
+        calls.calls.splice(at, 0, {
             ...fold,
             component: "user-sim",
             seq: fold.seq - 1,
