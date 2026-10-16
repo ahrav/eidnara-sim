@@ -4,10 +4,12 @@ import {
     existsSync,
     ftruncateSync,
     linkSync,
+    mkdirSync,
     mkdtempSync,
     openSync,
     readdirSync,
     readFileSync,
+    renameSync,
     rmSync,
     symlinkSync,
     writeFileSync,
@@ -3540,6 +3542,67 @@ describe("Scheduler", () => {
         expect(() => new Journal(join(d, "j.jsonl"))).toThrow(/run failed: short$/);
     });
 
+    test("a failed delivery signals the fatal channel so a pending kill cannot hold the run, the marker follows a renamed run directory, and the journal refuses entries with toJSON and reads through one validated descriptor", async () => {
+        const events = fixtureEvents(1);
+        const kill = episode("k", "daemon_sigkill_mid_fold", {
+            kind: "first_summarizer_call",
+            session: "s-0000",
+        });
+        let handle: ArmHandle | null = null;
+        let settle: (() => void) | null = null;
+        const j = new Journal(join(dir(), "j.jsonl"));
+        const run = new Scheduler({
+            events,
+            faults: [kill],
+            journal: j,
+            settleMs: 0,
+            order: ["a"],
+            drivers: {
+                a: {
+                    ...fakeDriver([]),
+                    bind: (h) => {
+                        handle = h;
+                    },
+                    event: async (e) => {
+                        if (e.kind === "user_turn") {
+                            handle?.observe("history_summarizer");
+                            throw new Error("daemon gone");
+                        }
+                        return {};
+                    },
+                    fault: () =>
+                        new Promise((resolve) => {
+                            settle = () => resolve({ restarted_by: "harness" });
+                        }),
+                },
+            },
+        }).run();
+        await expect(run).rejects.toThrow(/daemon gone/);
+        expect(settle).not.toBeNull();
+        expect(j.entries.filter((e) => e.kind === "ItemState" && e.fault === "k")).toHaveLength(1);
+        const base = dir();
+        const first = join(base, "run-a");
+        mkdirSync(first);
+        const moved = new Journal(join(first, "j.jsonl"));
+        renameSync(first, join(base, "run-b"));
+        moved.poison("moved mid-run");
+        expect(existsSync(join(base, "run-b", "j.jsonl.failed"))).toBe(true);
+        expect(() => new Journal(join(base, "run-b", "j.jsonl"))).toThrow(/moved mid-run/);
+        const k = new Journal(join(dir(), "j.jsonl"));
+        expect(() =>
+            k.append({
+                kind: "StartRun",
+                arm: null,
+                scenario_ms: 0,
+                toJSON: () => ({ kind: "EndRun", arm: null, scenario_ms: 0, seq: 0, wall_ms: 0 }),
+            } as never),
+        ).toThrow(/cannot be stored/);
+        expect(k.entries).toHaveLength(0);
+        k.close();
+        expect(readJournal(k.path)).toHaveLength(0);
+        expect(() => readJournal("/dev/zero")).toThrow(/is not a regular file/);
+    });
+
     test("a FaultObserved without its FaultFired is refused on resume", async () => {
         const path = join(dir(), "j.jsonl");
         const restart = episode("r", "daemon_restart", {
@@ -3753,7 +3816,7 @@ describe("Scheduler", () => {
         await expect(make(new Journal(j.path)).run()).rejects.toThrow(HarnessFailure);
     });
 
-    test("a turn that rejects while a mid-fold kill is in flight waits for the kill's evidence", async () => {
+    test("a turn that rejects while a mid-fold kill is in flight cuts the kill with a fatal record", async () => {
         const j = new Journal(join(dir(), "j.jsonl"));
         let scheduler: Scheduler | null = null;
         const kill = episode("k", "daemon_sigkill_mid_fold", {
@@ -3787,7 +3850,8 @@ describe("Scheduler", () => {
             drivers: { a: driver },
         });
         await expect(scheduler.run()).rejects.toThrow(/daemon gone/);
-        expect(j.entries.map((e) => e.kind)).toContain("FaultObserved");
+        expect(j.entries.map((e) => e.kind)).not.toContain("FaultObserved");
+        expect(j.entries.filter((e) => e.kind === "ItemState" && e.fatal === true)).toHaveLength(2);
         expect(() => handle?.jobStart("after-the-fact")).toThrow(/arm has ended/);
         expect(j.entries.filter((e) => e.kind === "RegisterJob")).toEqual([]);
         j.close();

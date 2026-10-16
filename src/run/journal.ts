@@ -2,7 +2,6 @@ import { randomUUID } from "node:crypto";
 import {
     closeSync,
     constants,
-    existsSync,
     fdatasyncSync,
     fstatSync,
     fsyncSync,
@@ -409,14 +408,34 @@ export function releaseLease(runDir: string, lease: Lease): void {
 export function readJournal(source: string | number): Entry[] & { bytes?: number } {
     const entries: Entry[] & { bytes?: number } = [];
     entries.bytes = 0;
-    if (typeof source === "string" && !existsSync(source)) return entries;
-    const path = typeof source === "string" ? source : `fd ${source}`;
-    const size = (typeof source === "string" ? statSync(source) : fstatSync(source)).size;
-    if (size > MAX_JOURNAL_BYTES) {
-        throw new Error(`journal ${path} is ${size} bytes, over the ${MAX_JOURNAL_BYTES} limit`);
+    if (typeof source === "string") {
+        let fd: number;
+        try {
+            const { O_NOFOLLOW, O_NONBLOCK, O_RDONLY } = constants;
+            fd = openSync(source, O_RDONLY | O_NOFOLLOW | O_NONBLOCK);
+        } catch (caught) {
+            if ((caught as NodeJS.ErrnoException).code === "ENOENT") return entries;
+            throw caught;
+        }
+        try {
+            return readJournal(fd);
+        } finally {
+            closeSync(fd);
+        }
+    }
+    const path = `fd ${source}`;
+    const st = fstatSync(source);
+    if (!st.isFile()) throw new Error(`journal ${path} is not a regular file`);
+    if (st.size > MAX_JOURNAL_BYTES) {
+        throw new Error(`journal ${path} is ${st.size} bytes, over the ${MAX_JOURNAL_BYTES} limit`);
     }
     const last = new Map<string | null, number>();
-    const buf = readFileSync(source);
+    const buf = Buffer.alloc(st.size);
+    for (let at = 0; at < st.size; ) {
+        const n = readSync(source, buf, at, st.size - at, at);
+        if (n <= 0) throw new Error(`journal ${path} shrank while being read`);
+        at += n;
+    }
     const utf8 = new TextDecoder("utf-8", { fatal: true });
     const lines: Buffer[] = [];
     for (let at = 0; ; ) {
@@ -505,7 +524,19 @@ export class Journal {
         if (last !== undefined && entry.scenario_ms < last) {
             throw new Error(`journal: scenario_ms ${entry.scenario_ms} precedes ${last}`);
         }
-        const full = { ...entry, seq: this.entries.length, wall_ms: Date.now() } as Entry;
+        let full: Entry;
+        try {
+            full = structuredClone({
+                ...entry,
+                seq: this.entries.length,
+                wall_ms: Date.now(),
+            }) as Entry;
+        } catch (caught) {
+            const error = caught instanceof Error ? caught.message : String(caught);
+            throw new Error(
+                `journal: entry at seq ${this.entries.length} cannot be stored: ${error}`,
+            );
+        }
         const line = Buffer.from(`${JSON.stringify(full)}\n`);
         const fd = this.open();
         if (this.length + line.length > MAX_JOURNAL_BYTES) {
@@ -550,7 +581,8 @@ export class Journal {
      * could not be appended. The journal is closed afterwards.
      */
     poison(reason: string): void {
-        const marker = `${this.realPath}.failed`;
+        const current = this.fd >= 0 ? readlinkSync(`/proc/self/fd/${this.fd}`) : this.realPath;
+        const marker = `${current}.failed`;
         try {
             const { O_CREAT, O_EXCL, O_NOFOLLOW, O_WRONLY } = constants;
             let fd: number;

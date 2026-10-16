@@ -847,6 +847,7 @@ export class Scheduler {
                 if (caught === this.fatal) throw caught;
                 const error = caught instanceof Error ? caught.message : String(caught);
                 this.fatal ??= new HarnessFailure(`event ${e.id} failed: ${error}`);
+                this.fail?.(this.fatal);
                 try {
                     this.log({
                         kind: "ItemState",

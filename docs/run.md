@@ -57,23 +57,28 @@ acknowledged entry survives a power loss, and flushes the truncation that
 rolls a failed append back (closing the journal when that flush fails), so a
 refused entry cannot reappear after a crash, and refuses to open while a
 `journal.jsonl.failed` marker sits beside the file the kernel opened
-(`poison` creates it exclusively at that pinned path, or truncates and
-rewrites an existing marker only when that file is this user's regular
-single-link file,
+(`poison` reads the journal's current path back from the kernel, so a run
+directory renamed since the open still gets its marker beside the journal,
+creates it exclusively, or truncates and rewrites an existing marker only
+when that file is this user's regular single-link file,
 and flushes it and its directory entry when a record that must land, such as a fatal fault, its evidence, an
 exit, or a job transition, cannot be appended; the marker is read through a
 descriptor opened without following links or blocking and must be a regular
 single-link file of at most 4 KiB, so a marker of any other shape is itself a
 failed run), so a later process cannot resume past a failure the journal
 itself could not record), reads and truncates the file
-through that one descriptor, and refuses every operation after `close`. On
+through that one descriptor (a path handed to `readJournal` is likewise opened
+once, without following links or blocking, and must be a regular file), and
+refuses every operation after `close`. On
 read it
 splits lines on raw newline bytes, so the complete prefix is measured in bytes,
 and accepts a line only when it is valid UTF-8 that parses, carries the next
 `seq`, names a known `kind`, has `arm` and finite `scenario_ms` and `wall_ms`,
 and keeps its arm's `scenario_ms` non-decreasing. An append that fails part-way truncates back to the complete prefix, or
 closes the journal when it cannot. It appends one JSON line per entry with `seq` (0, 1, 2, ... in append
-order), `kind`, `arm`, `scenario_ms`, and `wall_ms`; a line is written whole
+order), `kind`, `arm`, `scenario_ms`, and `wall_ms`, taking a structured
+clone of the entry so a caller's `toJSON` or other function cannot change
+what lands on disk; a line is written whole
 before the entry counts as appended. On open, it truncates the
 file to its complete prefix, dropping only a last line that a kill cut
 mid-write before its newline, and refuses a journal whose newline-terminated
@@ -151,8 +156,8 @@ call through it is refused:
    `failed` is absent or a string other than `"ok"` (the success literal);
    anything else, or a delivery that rejects, fails the run: a fatal
    `ItemState` names the event (poisoning the run when that record cannot be
-   appended), in-flight work such as a pending kill still lands its evidence,
-   and a later process refuses the journal. An `EndTurn` that cannot be
+   appended), the fatal channel cuts a pending kill like any other in-flight
+   driver call, and a later process refuses the journal. An `EndTurn` that cannot be
    appended poisons the run the same way. When a fault keyed
    to the turn fired, the scheduler quiesces again before `BeginTurn`, so a
    job the fault's callback started ends first. A user turn is bracketed by `BeginTurn`
