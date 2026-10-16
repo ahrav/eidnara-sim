@@ -9,6 +9,7 @@ import {
     HOSTS,
     INTERVAL_METHODS,
     MARGIN_SCALES,
+    MIN_FORCED_P90_SESSIONS,
     MIN_PAIRED_RUNS_FOR_RUN_GATE,
     MULTIPLICITY,
     needsPairedRuns,
@@ -45,6 +46,16 @@ const unitRate: Check = (v) =>
         : "expected a canonical decimal in (0, 1)";
 const text: Check = (v) =>
     typeof v === "string" && v.trim() !== "" ? null : "expected a non-blank string";
+const atLeast =
+    (floor: number): Check =>
+    (v) =>
+        Number.isSafeInteger(v) && (v as number) >= floor ? null : `at least ${floor}`;
+const exactSet =
+    (expected: readonly string[], name: string): Check =>
+    (v) =>
+        Array.isArray(v) && [...v].sort().join(",") === [...expected].sort().join(",")
+            ? null
+            : `expected ${name}`;
 const list =
     (item: Check, distinct = true): Check =>
     (v) => {
@@ -96,9 +107,13 @@ const PREREG_SHAPE: Shape = {
         run: list(oneOf(ARMS)),
         order_by_seed: list(list(oneOf(ARMS)), false),
     },
-    hosts: list(oneOf(HOSTS)),
+    hosts: exactSet(HOSTS, "pi and opencode"),
     seeds: list(nonNegInt),
-    scenario: { simulated_days: posInt, sessions_per_project: posInt, forced_p90_sessions: posInt },
+    scenario: {
+        simulated_days: posInt,
+        sessions_per_project: posInt,
+        forced_p90_sessions: atLeast(MIN_FORCED_P90_SESSIONS),
+    },
     stopping_rule: {
         kind: literal("fixed_n"),
         paired_items_per_probe_type: posInt,
@@ -158,7 +173,15 @@ const TIER_SECTIONS: Record<string, { tiers: readonly string[]; shape: Shape }> 
     },
 };
 
-export const HARM_METRIC_COUNT = 5;
+/** The five harm metrics the harm family is Holm-corrected over (spec #1007). */
+export const HARM_METRICS = ["P2.harm", "P3.harm", "P4.harm", "P10.harm", "P11.harm"];
+/** Arms a tier runs beyond `host` and `eidnara`; `eidnara-cf` is L's alone. */
+const TIER_COMPARISON_ARMS: Record<string, readonly string[]> = {
+    S: ["eidnara-kl"],
+    M: ["eidnara-kl"],
+    L: ["eidnara-kl", "eidnara-cf"],
+    XL: [],
+};
 /** The A/A pairs S and M register, sorted as `arm/arm`. */
 const AA_CONTROL_PAIRS = ["eidnara/eidnara", "host/host"];
 /** M repeats its A/A pairs this many times before a pipeline false-positive rate is claimed. */
@@ -240,10 +263,11 @@ function checkFamilies(p: Preregistration, errors: string[]): void {
         }
         if (
             f.id === "harm" &&
-            (f.multiplicity !== "holm" || f.metrics.length !== HARM_METRIC_COUNT)
+            (f.multiplicity !== "holm" ||
+                [...f.metrics].sort().join() !== [...HARM_METRICS].sort().join())
         ) {
             errors.push(
-                `${at}: the harm family is Holm-corrected over exactly ${HARM_METRIC_COUNT} metrics`,
+                `${at}: the harm family is Holm-corrected over exactly ${HARM_METRICS.join(", ")}`,
             );
         }
     });
@@ -256,6 +280,12 @@ function checkFamilies(p: Preregistration, errors: string[]): void {
 function checkArms(p: Preregistration, errors: string[]): void {
     if (!(p.arms.run.includes("host") && p.arms.run.includes("eidnara"))) {
         errors.push("arms.run: must include host and eidnara");
+    }
+    for (const arm of TIER_COMPARISON_ARMS[p.tier] ?? []) {
+        if (!p.arms.run.includes(arm)) errors.push(`arms.run: tier ${p.tier} runs ${arm}`);
+    }
+    if (p.tier !== "L" && p.arms.run.includes("eidnara-cf")) {
+        errors.push("arms.run: eidnara-cf runs at tier L alone");
     }
     if (p.arms.order_by_seed.length !== p.seeds.length) {
         errors.push("arms.order_by_seed: needs one order per seed");

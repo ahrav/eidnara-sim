@@ -154,6 +154,42 @@ describe("pre-registration validator", () => {
         );
     });
 
+    test("requires both hosts, three forced p90 sessions, and the five harm metrics", () => {
+        const prereg = load("S") as any;
+        prereg.hosts = ["pi"];
+        prereg.scenario.forced_p90_sessions = 2;
+        expect(validatePreregistration(prereg).sort()).toEqual([
+            "hosts: expected pi and opencode",
+            "scenario.forced_p90_sessions: at least 3",
+        ]);
+        const m = load("M") as any;
+        m.families.find((f: any) => f.id === "harm").metrics[4] = "P12.harm";
+        expect(validatePreregistration(m)).toEqual([
+            "families[harm]: the harm family is Holm-corrected over exactly P2.harm, P3.harm, P4.harm, P10.harm, P11.harm",
+        ]);
+    });
+
+    test("requires eidnara-kl at S, M, and L and eidnara-cf exactly at L", () => {
+        const m = load("M") as any;
+        m.arms.run = ["host", "eidnara"];
+        m.arms.order_by_seed = [
+            ["host", "eidnara"],
+            ["eidnara", "host"],
+            ["host", "eidnara"],
+        ];
+        expect(validatePreregistration(m)).toEqual(["arms.run: tier M runs eidnara-kl"]);
+        const l = load("L") as any;
+        l.arms.run = ["host", "eidnara", "eidnara-kl"];
+        l.arms.order_by_seed = l.arms.order_by_seed.map((o: string[]) =>
+            o.filter((a) => a !== "eidnara-cf"),
+        );
+        expect(validatePreregistration(l)).toEqual(["arms.run: tier L runs eidnara-cf"]);
+        const s = load("S") as any;
+        s.arms.run.push("eidnara-cf");
+        s.arms.order_by_seed = s.arms.order_by_seed.map((o: string[]) => [...o, "eidnara-cf"]);
+        expect(validatePreregistration(s)).toEqual(["arms.run: eidnara-cf runs at tier L alone"]);
+    });
+
     test("requires both A/A control pairs and five M repeats", () => {
         const prereg = load("M") as any;
         prereg.aa_controls.pairs = [["host", "host"]];
@@ -227,6 +263,19 @@ describe("report check against the pre-registration", () => {
     test("accepts a report that carries every pre-registered family with an allowed verdict", () => {
         expect(checkReport(acceptedReport(s), s)).toEqual([]);
         expect(checkReport(acceptedReport(m), m)).toEqual([]);
+    });
+
+    test("requires a resolution ratio exactly on a null verdict", () => {
+        const r = acceptedReport(m);
+        at(r, "probe-P1").verdict = "no-difference-above-x-pp-detectable-at-n";
+        at(r, "probe-P2").resolution_ratio = "0.5";
+        expect(checkReport(r, m)).toEqual([
+            "families[probe-P1].resolution_ratio: a null verdict carries its resolution ratio as a canonical decimal; other verdicts omit it",
+            "families[probe-P2].resolution_ratio: a null verdict carries its resolution ratio as a canonical decimal; other verdicts omit it",
+        ]);
+        at(r, "probe-P1").resolution_ratio = "0.5";
+        delete at(r, "probe-P2").resolution_ratio;
+        expect(checkReport(r, m)).toEqual([]);
     });
 
     test("refuses a verdict without n or without an MDE by name", () => {
@@ -321,6 +370,7 @@ describe("report check against the pre-registration", () => {
             "families[harm].verdict: a noninferiority family claims at most its margin, never better",
             "families[dependability].verdict: a at-most family claims at most its margin, never better",
             "families[resources].verdict: a threshold gate compares each run to a bound and reports passed-gate or failed-gate",
+            "families[resources].resolution_ratio: a null verdict carries its resolution ratio as a canonical decimal; other verdicts omit it",
             "families[intrusiveness].verdict: a zero-tolerance gate compares each run to a bound and reports passed-gate or failed-gate",
         ]);
         Object.assign(at(r, "intrusiveness"), {

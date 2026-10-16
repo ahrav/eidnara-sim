@@ -32,4 +32,25 @@ A soak run with sampler output.
 
 ## Investigation log
 
-No open questions.
+### Q: Is the return-to-baseline criterion pre-registered?
+- Sources examined: spec #1007 Verification Strategy (soak: "leak verdict by
+  fitted slope with an R² threshold plus return-to-baseline, and the bound
+  RSS(T) < 2·RSS(0) + N_sessions·c with c pre-registered"); `prereg/*.json`
+  `leak_bound`.
+- Findings: `leak_bound` carries `c_bytes_per_session`, `r2_threshold`, and
+  `sample_interval_ms`. The spec names `c` as the pre-registered value; it gives
+  the return-to-baseline check no tolerance, and no tier file registers one.
+- Missing evidence: a decision on the tolerance and whether it enters the
+  hashed file.
+- Conclusion: needs human input
+
+### Q: Is external memory gated or sampled only?
+- Sources examined: spec #1007 soak line ("sample daemon RSS, heap, external,
+  and store bytes every 10 s"); the resources family in `prereg/*.json`.
+- Findings: every tier's resources family gates
+  `daemon_rss_growth_bytes_per_session`, `daemon_heap_growth_bytes_per_session`,
+  and `store_growth_bytes_per_session` against `c`; the spec's gate is the RSS
+  bound, and external bytes appear in its sampling list only.
+- Missing evidence: a decision on whether external growth joins the gated
+  metrics.
+- Conclusion: needs human input

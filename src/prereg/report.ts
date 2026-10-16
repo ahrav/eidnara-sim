@@ -26,12 +26,18 @@ const BOUND_VERDICTS: readonly string[] = ["passed-gate", "failed-gate"];
 /** A one-sided paired gate: its pass is `passed-gate`, and it registers no superiority claim. */
 const MARGIN_DIRECTIONS: readonly string[] = ["noninferiority", "at-most"];
 
-/** `mde` is the minimum detectable effect at `n` in the family's margin scale. */
+const NULL_VERDICT = "no-difference-above-x-pp-detectable-at-n";
+
+/**
+ * `mde` is the minimum detectable effect at `n` in the family's margin scale; `resolution_ratio`
+ * accompanies the null verdict alone.
+ */
 export interface FamilyVerdict {
     family: string;
     verdict: (typeof VERDICT_KINDS)[number];
     n: number;
     mde: string;
+    resolution_ratio?: string;
     failed_metric?: string;
     failed_items?: string[];
 }
@@ -67,6 +73,11 @@ function checkVerdict(f: FamilyVerdict, family: Family, errors: string[]): void 
     ) {
         errors.push(
             `${at}.verdict: a ${family.direction} family makes a paired claim, never passed-gate`,
+        );
+    }
+    if ((f.verdict === NULL_VERDICT) !== isCanonicalDecimal(f.resolution_ratio)) {
+        errors.push(
+            `${at}.resolution_ratio: a null verdict carries its resolution ratio as a canonical decimal; other verdicts omit it`,
         );
     }
     const belowFloor = needsPairedRuns(family) && f.n < family.min_paired_runs;

@@ -1469,7 +1469,15 @@ reconstructed from the condensed index in spec #1007; no implementation exists
 to verify against, and a default tier run reaches it.
 Existing check: none
 Impact: The observed linear RSS growth is missed or misreported.
-Open questions: None.
+Open questions:
+- The spec's soak verdict adds a return-to-baseline check to the slope, R
+  squared, and bound, and `leak_bound` pre-registers `c`, `r2_threshold`, and
+  the sample interval only; the recovery tolerance is unregistered, so it is
+  chosen at M7 unless a field is added (needs human input).
+- The spec samples RSS, heap, external, and store bytes; the resources family
+  gates RSS, heap, and store growth and registers no external-memory metric.
+  Whether external growth is gated or sampled only is a design decision (needs
+  human input).
 
 ### sim-p58-harm-metric-direction
 

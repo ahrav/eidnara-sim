@@ -151,6 +151,8 @@ export interface Preregistration {
 
 /** A run-level gate with a paired claim needs six paired runs (SIM-P56); a bound gate needs none. */
 export const MIN_PAIRED_RUNS_FOR_RUN_GATE = 6;
+/** A compiled scenario holds at least three sessions in the p90 request-count regime (SIM-P09). */
+export const MIN_FORCED_P90_SESSIONS = 3;
 
 export function needsPairedRuns(f: Family): boolean {
     return (
