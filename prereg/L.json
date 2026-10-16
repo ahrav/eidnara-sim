@@ -1,0 +1,629 @@
+{
+    "schema": "sim-prereg/v1",
+    "tier": "L",
+    "revision": 7,
+    "frozen": true,
+    "arms": {
+        "default": "eidnara",
+        "run": [
+            "host",
+            "eidnara",
+            "eidnara-kl",
+            "eidnara-cf"
+        ],
+        "order_by_seed": [
+            [
+                "host",
+                "eidnara",
+                "eidnara-cf",
+                "eidnara-kl"
+            ],
+            [
+                "eidnara",
+                "eidnara-kl",
+                "host",
+                "eidnara-cf"
+            ],
+            [
+                "eidnara-kl",
+                "eidnara-cf",
+                "eidnara",
+                "host"
+            ]
+        ]
+    },
+    "hosts": [
+        "pi",
+        "opencode"
+    ],
+    "seeds": [
+        301,
+        302,
+        303
+    ],
+    "scenario": {
+        "simulated_days": 42,
+        "sessions_per_project": 400,
+        "forced_p90_sessions": 3
+    },
+    "stopping_rule": {
+        "kind": "fixed_n",
+        "paired_items_per_probe_type": 150,
+        "cusum": [
+            {
+                "kind": "harm",
+                "metric": "harm",
+                "statistic": "the maximum over the five harm metrics of the paired difference eidnara minus host, one value per completed paired item in issue order",
+                "sd_source": "the M tier's A/A pairs",
+                "k": "0.5",
+                "h": "4"
+            },
+            {
+                "kind": "futility",
+                "metric": "probe-P1",
+                "statistic": "the paired difference host minus eidnara on probe-P1, one value per completed paired item in issue order",
+                "sd_source": "the M tier's A/A pairs",
+                "k": "0.5",
+                "h": "5"
+            }
+        ]
+    },
+    "missingness_policy": {
+        "in_flight_at_interrupt": "failed(interrupted)",
+        "failed_turn_items": "exclude-from-recall-and-count",
+        "excluded_counts_reported_per_arm": true,
+        "failed_items_counted_in": "dependability"
+    },
+    "divergence_policy": {
+        "hash_input": "normalised-last-agent-output",
+        "normalisation": [
+            "iso-8601-timestamps",
+            "durations",
+            "pids",
+            "temp-paths",
+            "run-ids"
+        ],
+        "diagnostic_hash": "agent-visible-prefix",
+        "on_divergence": "record-then-live"
+    },
+    "liveness_bounds": {
+        "turn_deadline_ms": 900000,
+        "job_deadline_ms": 1200000,
+        "tier_wall_budget_ms": 108000000
+    },
+    "bootstrap": {
+        "replicates": 2000,
+        "seed": 3001
+    },
+    "leak_bound": {
+        "c_bytes_per_session": 8388608,
+        "r2_threshold": "0.8",
+        "sample_interval_ms": 10000
+    },
+    "scoring": {
+        "p11_false_positive_weight": "2"
+    },
+    "families": [
+        {
+            "id": "probe-P1",
+            "metrics": [
+                "P1.pass"
+            ],
+            "outcome": "binary",
+            "treatment_unit": "run",
+            "analysis_unit": "item",
+            "cluster_key": "ledger_fact_id",
+            "direction": "superiority-two-sided",
+            "margin": {
+                "value": "0",
+                "scale": "pp"
+            },
+            "mde": {
+                "value": "12",
+                "scale": "pp"
+            },
+            "power": "0.8",
+            "alpha": "0.05",
+            "interval_method": "exact-mcnemar-newcombe-cluster-bootstrap",
+            "multiplicity": "none",
+            "claim": "gate",
+            "min_paired_runs": 6
+        },
+        {
+            "id": "probe-P2",
+            "metrics": [
+                "P2.pass"
+            ],
+            "outcome": "binary",
+            "treatment_unit": "run",
+            "analysis_unit": "item",
+            "cluster_key": "ledger_fact_id",
+            "direction": "descriptive",
+            "margin": {
+                "value": "10",
+                "scale": "pp"
+            },
+            "mde": {
+                "value": "12",
+                "scale": "pp"
+            },
+            "power": "0.8",
+            "alpha": "0.05",
+            "interval_method": "exact-mcnemar-newcombe-cluster-bootstrap",
+            "multiplicity": "none",
+            "claim": "descriptive",
+            "min_paired_runs": 6
+        },
+        {
+            "id": "probe-P3",
+            "metrics": [
+                "P3.pass"
+            ],
+            "outcome": "binary",
+            "treatment_unit": "run",
+            "analysis_unit": "item",
+            "cluster_key": "ledger_fact_id",
+            "direction": "descriptive",
+            "margin": {
+                "value": "10",
+                "scale": "pp"
+            },
+            "mde": {
+                "value": "12",
+                "scale": "pp"
+            },
+            "power": "0.8",
+            "alpha": "0.05",
+            "interval_method": "exact-mcnemar-newcombe-cluster-bootstrap",
+            "multiplicity": "none",
+            "claim": "descriptive",
+            "min_paired_runs": 6
+        },
+        {
+            "id": "probe-P4",
+            "metrics": [
+                "P4.pass"
+            ],
+            "outcome": "binary",
+            "treatment_unit": "run",
+            "analysis_unit": "item",
+            "cluster_key": "ledger_fact_id",
+            "direction": "descriptive",
+            "margin": {
+                "value": "10",
+                "scale": "pp"
+            },
+            "mde": {
+                "value": "12",
+                "scale": "pp"
+            },
+            "power": "0.8",
+            "alpha": "0.05",
+            "interval_method": "exact-mcnemar-newcombe-cluster-bootstrap",
+            "multiplicity": "none",
+            "claim": "descriptive",
+            "min_paired_runs": 6
+        },
+        {
+            "id": "probe-P5",
+            "metrics": [
+                "P5.pass"
+            ],
+            "outcome": "binary",
+            "treatment_unit": "run",
+            "analysis_unit": "item",
+            "cluster_key": "ledger_fact_id",
+            "direction": "superiority-two-sided",
+            "margin": {
+                "value": "0",
+                "scale": "pp"
+            },
+            "mde": {
+                "value": "12",
+                "scale": "pp"
+            },
+            "power": "0.8",
+            "alpha": "0.05",
+            "interval_method": "exact-mcnemar-newcombe-cluster-bootstrap",
+            "multiplicity": "none",
+            "claim": "gate",
+            "min_paired_runs": 6
+        },
+        {
+            "id": "probe-P6",
+            "metrics": [
+                "P6.pass"
+            ],
+            "outcome": "binary",
+            "treatment_unit": "run",
+            "analysis_unit": "item",
+            "cluster_key": "ledger_fact_id",
+            "direction": "superiority-two-sided",
+            "margin": {
+                "value": "0",
+                "scale": "pp"
+            },
+            "mde": {
+                "value": "12",
+                "scale": "pp"
+            },
+            "power": "0.8",
+            "alpha": "0.05",
+            "interval_method": "exact-mcnemar-newcombe-cluster-bootstrap",
+            "multiplicity": "none",
+            "claim": "gate",
+            "min_paired_runs": 6
+        },
+        {
+            "id": "probe-P7",
+            "metrics": [
+                "P7.pass"
+            ],
+            "outcome": "binary",
+            "treatment_unit": "run",
+            "analysis_unit": "item",
+            "cluster_key": "ledger_fact_id",
+            "direction": "superiority-two-sided",
+            "margin": {
+                "value": "0",
+                "scale": "pp"
+            },
+            "mde": {
+                "value": "12",
+                "scale": "pp"
+            },
+            "power": "0.8",
+            "alpha": "0.05",
+            "interval_method": "exact-mcnemar-newcombe-cluster-bootstrap",
+            "multiplicity": "none",
+            "claim": "gate",
+            "min_paired_runs": 6
+        },
+        {
+            "id": "probe-P8",
+            "metrics": [
+                "P8.pass"
+            ],
+            "outcome": "binary",
+            "treatment_unit": "run",
+            "analysis_unit": "item",
+            "cluster_key": "ledger_fact_id",
+            "direction": "superiority-two-sided",
+            "margin": {
+                "value": "0",
+                "scale": "pp"
+            },
+            "mde": {
+                "value": "12",
+                "scale": "pp"
+            },
+            "power": "0.8",
+            "alpha": "0.05",
+            "interval_method": "exact-mcnemar-newcombe-cluster-bootstrap",
+            "multiplicity": "none",
+            "claim": "gate",
+            "min_paired_runs": 6
+        },
+        {
+            "id": "probe-P9",
+            "metrics": [
+                "P9.pass"
+            ],
+            "outcome": "binary",
+            "treatment_unit": "run",
+            "analysis_unit": "item",
+            "cluster_key": "ledger_fact_id",
+            "direction": "superiority-two-sided",
+            "margin": {
+                "value": "0",
+                "scale": "pp"
+            },
+            "mde": {
+                "value": "12",
+                "scale": "pp"
+            },
+            "power": "0.8",
+            "alpha": "0.05",
+            "interval_method": "exact-mcnemar-newcombe-cluster-bootstrap",
+            "multiplicity": "none",
+            "claim": "gate",
+            "min_paired_runs": 6
+        },
+        {
+            "id": "probe-P10",
+            "metrics": [
+                "P10.pass"
+            ],
+            "outcome": "binary",
+            "treatment_unit": "run",
+            "analysis_unit": "item",
+            "cluster_key": "ledger_fact_id",
+            "direction": "descriptive",
+            "margin": {
+                "value": "10",
+                "scale": "pp"
+            },
+            "mde": {
+                "value": "12",
+                "scale": "pp"
+            },
+            "power": "0.8",
+            "alpha": "0.05",
+            "interval_method": "exact-mcnemar-newcombe-cluster-bootstrap",
+            "multiplicity": "none",
+            "claim": "descriptive",
+            "min_paired_runs": 6
+        },
+        {
+            "id": "probe-P11",
+            "metrics": [
+                "P11.pass"
+            ],
+            "outcome": "binary",
+            "treatment_unit": "run",
+            "analysis_unit": "item",
+            "cluster_key": "ledger_fact_id",
+            "direction": "descriptive",
+            "margin": {
+                "value": "10",
+                "scale": "pp"
+            },
+            "mde": {
+                "value": "12",
+                "scale": "pp"
+            },
+            "power": "0.8",
+            "alpha": "0.05",
+            "interval_method": "exact-mcnemar-newcombe-cluster-bootstrap",
+            "multiplicity": "none",
+            "claim": "descriptive",
+            "min_paired_runs": 6
+        },
+        {
+            "id": "probe-P12",
+            "metrics": [
+                "P12.pass"
+            ],
+            "outcome": "binary",
+            "treatment_unit": "run",
+            "analysis_unit": "item",
+            "cluster_key": "ledger_fact_id",
+            "direction": "superiority-two-sided",
+            "margin": {
+                "value": "0",
+                "scale": "pp"
+            },
+            "mde": {
+                "value": "12",
+                "scale": "pp"
+            },
+            "power": "0.8",
+            "alpha": "0.05",
+            "interval_method": "exact-mcnemar-newcombe-cluster-bootstrap",
+            "multiplicity": "none",
+            "claim": "gate",
+            "min_paired_runs": 6
+        },
+        {
+            "id": "probe-P13",
+            "metrics": [
+                "P13.fold_fidelity_score"
+            ],
+            "outcome": "graded",
+            "treatment_unit": "run",
+            "analysis_unit": "run",
+            "cluster_key": "run",
+            "direction": "superiority-two-sided",
+            "margin": {
+                "value": "0",
+                "scale": "pp"
+            },
+            "mde": {
+                "value": "1",
+                "scale": "pp"
+            },
+            "power": "0.8",
+            "alpha": "0.05",
+            "interval_method": "paired-bca-bootstrap",
+            "multiplicity": "none",
+            "claim": "gate",
+            "min_paired_runs": 6
+        },
+        {
+            "id": "probe-P14",
+            "metrics": [
+                "P14.post_compaction_correction_count"
+            ],
+            "outcome": "count",
+            "treatment_unit": "run",
+            "analysis_unit": "run",
+            "cluster_key": "run",
+            "direction": "at-most",
+            "margin": {
+                "value": "1.5",
+                "scale": "ratio"
+            },
+            "mde": {
+                "value": "1",
+                "scale": "ratio"
+            },
+            "power": "0.8",
+            "alpha": "0.03",
+            "interval_method": "paired-sign-test",
+            "multiplicity": "none",
+            "claim": "gate",
+            "min_paired_runs": 6
+        },
+        {
+            "id": "harm",
+            "metrics": [
+                "P2.harm",
+                "P3.harm",
+                "P4.harm",
+                "P10.harm",
+                "P11.harm"
+            ],
+            "outcome": "binary",
+            "treatment_unit": "run",
+            "analysis_unit": "item",
+            "cluster_key": "ledger_fact_id",
+            "direction": "noninferiority",
+            "margin": {
+                "value": "10",
+                "scale": "pp"
+            },
+            "mde": {
+                "value": "0",
+                "scale": "pp"
+            },
+            "power": "0.54",
+            "alpha": "0.05",
+            "interval_method": "exact-mcnemar-newcombe-cluster-bootstrap",
+            "multiplicity": "holm",
+            "claim": "gate",
+            "min_paired_runs": 6
+        },
+        {
+            "id": "dependability",
+            "metrics": [
+                "failed_turns",
+                "hangs"
+            ],
+            "outcome": "count",
+            "treatment_unit": "run",
+            "analysis_unit": "run",
+            "cluster_key": "run",
+            "direction": "at-most",
+            "margin": {
+                "value": "1.5",
+                "scale": "ratio"
+            },
+            "mde": {
+                "value": "1",
+                "scale": "ratio"
+            },
+            "power": "0.8",
+            "alpha": "0.03",
+            "interval_method": "paired-sign-test",
+            "multiplicity": "none",
+            "claim": "gate",
+            "min_paired_runs": 6
+        },
+        {
+            "id": "latency",
+            "metrics": [
+                "turn_latency_p50_delta_ms",
+                "turn_latency_p95_delta_ms"
+            ],
+            "outcome": "graded",
+            "treatment_unit": "run",
+            "analysis_unit": "run",
+            "cluster_key": "run",
+            "direction": "at-most",
+            "margin": {
+                "value": "300",
+                "scale": "ms"
+            },
+            "mde": {
+                "value": "150",
+                "scale": "ms"
+            },
+            "power": "0.8",
+            "alpha": "0.05",
+            "interval_method": "paired-bca-bootstrap",
+            "multiplicity": "none",
+            "claim": "gate",
+            "min_paired_runs": 6
+        },
+        {
+            "id": "resources",
+            "metrics": [
+                "daemon_rss_growth_bytes_per_session",
+                "daemon_heap_growth_bytes_per_session",
+                "store_growth_bytes_per_session"
+            ],
+            "outcome": "slope",
+            "treatment_unit": "run",
+            "analysis_unit": "run",
+            "cluster_key": "run",
+            "direction": "at-most",
+            "margin": {
+                "value": "8388608",
+                "scale": "bytes"
+            },
+            "mde": {
+                "value": "0",
+                "scale": "bytes"
+            },
+            "power": "0.8",
+            "alpha": "0.05",
+            "interval_method": "slope-paired-bootstrap",
+            "multiplicity": "none",
+            "claim": "gate",
+            "min_paired_runs": 6
+        },
+        {
+            "id": "intrusiveness",
+            "metrics": [
+                "internal_string_hits",
+                "user_corrections_referencing_injected_text",
+                "reverted_memory_edits"
+            ],
+            "outcome": "count",
+            "treatment_unit": "run",
+            "analysis_unit": "run",
+            "cluster_key": "run",
+            "direction": "zero-tolerance",
+            "margin": {
+                "value": "0",
+                "scale": "count"
+            },
+            "mde": {
+                "value": "1",
+                "scale": "count"
+            },
+            "power": "0.8",
+            "alpha": "0.05",
+            "interval_method": "none",
+            "multiplicity": "none",
+            "claim": "gate",
+            "min_paired_runs": 6
+        },
+        {
+            "id": "cost",
+            "metrics": [
+                "usd_per_component",
+                "usd_per_useful_retrieval"
+            ],
+            "outcome": "count",
+            "treatment_unit": "run",
+            "analysis_unit": "run",
+            "cluster_key": "run",
+            "direction": "descriptive",
+            "margin": {
+                "value": "0",
+                "scale": "none"
+            },
+            "mde": {
+                "value": "0",
+                "scale": "none"
+            },
+            "power": "0.8",
+            "alpha": "0.05",
+            "interval_method": "none",
+            "multiplicity": "none",
+            "claim": "descriptive",
+            "min_paired_runs": 6
+        }
+    ],
+    "resizing": {
+        "planning_paired_items_per_probe_type": 150,
+        "source_tier": "M",
+        "rule": "t ranges over the item-level probe-type families registered as superiority-two-sided gates and over the five harm metrics; descriptive probe families, the run-level probe-P13 family, and the at-most probe-P14 family take the resulting count without entering the maximum. For each such t, n_t = ceil(DE_t * ((z_a * sqrt(d_t) + z_b * sqrt(d_t - e_t^2)) / e_t)^2), where d_t is the paired discordance observed at M, floored at e_t because a paired difference of e_t needs discordance of at least e_t, so the term under the root stays non-negative when M observes little or no discordance; e_t is the family's registered L mde for superiority families and its 10 pp margin for noninferiority families, each divided by 100 so that e_t is a proportion on the same scale as d_t; z_a is z(1 - alpha/2) for superiority and z(1 - alpha/5) for the five Holm-corrected harm metrics, the Holm first step; z_b is z(0.8), the target power for every family (the harm family's registered power records what its planning count reaches, so it is an input to no re-sizing), with the variance term sqrt(d_t) in place of sqrt(d_t - e_t^2) for noninferiority families, whose power is planned at a true difference of 0; and DE_t = 1 + (m_t - 1) * ICC_t is the design effect over ledger_fact_id clusters, with m_t the mean paired items per fact and ICC_t estimated at M. L's paired_items_per_probe_type becomes max_t n_t and is recorded before the first L run."
+    },
+    "load_stress": {
+        "arms_concurrent": true,
+        "record_start_skew": true,
+        "margins_family": "dependability"
+    }
+}

@@ -10,7 +10,9 @@
         "lint": "scripts/forbid-comment-markers.sh && biome check .",
         "lint:fix": "biome check --write .",
         "test": "bun test",
-        "check": "bun run typecheck && bun run lint && bun run test"
+        "prereg:validate": "bun scripts/validate-prereg.ts",
+        "catalog:check": "bun scripts/check-catalog.ts",
+        "check": "bun run typecheck && bun run lint && bun run test && bun run prereg:validate && bun run catalog:check"
     },
     "devDependencies": {
         "@biomejs/biome": "2.5.1",

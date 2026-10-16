@@ -1,0 +1,13 @@
+{
+    "schema": "sim-config/v1",
+    "eidnara_checkout": "/local/home/ahrav/scratch/eidnara",
+    "opencode_plugin_dist": "/local/home/ahrav/scratch/eidnara/packages/opencode-plugin/dist",
+    "pi_plugin_dist": "/local/home/ahrav/scratch/eidnara/packages/pi-plugin/dist",
+    "daemon_binary": "/local/home/ahrav/scratch/eidnara/target/debug/eidnara-host",
+    "pi_install": "/tmp/eidnara-e2e-pi-install-0.80.2",
+    "opencode_binary": "/local/home/ahrav/.local/share/mise/installs/node/24.18.0/lib/node_modules/opencode-ai/bin/opencode.exe",
+    "bedrock": {
+        "aws_profile": "default",
+        "region": "us-west-2"
+    }
+}

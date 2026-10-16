@@ -14,7 +14,9 @@ milestone lands through one implementation ticket in that tracker.
 
 ```sh
 bun install
-bun run check      # typecheck, lint, test
+bun run check            # typecheck, lint, test, pre-registration, catalog
+bun run prereg:validate  # validate prereg/<tier>.json and print each digest
+bun run catalog:check    # check docs/properties/sim-v2 against METHOD.md
 ```
 
 ## Layout
@@ -22,7 +24,9 @@ bun run check      # typecheck, lint, test
 | Path | Contents |
 | --- | --- |
 | `AGENTS.md`, `REVIEW.md` | agent and review guidance |
-| `docs/` | system documents, agent guidance, property catalog |
+| `docs/` | system documents (claim boundary, eval-core mapping), agent guidance, property catalog |
+| `prereg/` | frozen per-tier pre-registrations (`sim-prereg/v1`) |
+| `sim.config.json` | paths to the eidnara checkout, plugin builds, daemon, hosts, and Bedrock profile; `SIM_CONFIG` overrides the file |
 | `scripts/` | repository checks |
 | `src/` | harness source |
 | `runs/` | run data, journals, reports (git-ignored) |

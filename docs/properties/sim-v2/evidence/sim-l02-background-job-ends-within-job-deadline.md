@@ -1,0 +1,38 @@
+# sim-l02-background-job-ends-within-job-deadline
+
+Evidence status: PROPOSED. SIM-L02, from OQ-6 in spec
+[ahrav/eidnara#1007](https://github.com/ahrav/eidnara/issues/1007), resolved
+in the M0 pre-registration.
+
+## Discovery trigger
+
+OQ-6 asked for per-event and per-tier liveness bounds. M0 pre-registers them
+as `liveness_bounds` in `prereg/<tier>.json`.
+
+## Evidence trail
+
+A background job registered in the busy set ends within the pre-registered job
+deadline of 20 minutes of wall time.
+
+## Failure scenario
+
+A turn or background job that never ends holds the scenario clock, and the
+tier exhausts its wall budget without a verdict.
+
+## Timing windows and dependencies
+
+The bound runs from `RegisterJob` to `EndJob` in wall time.
+
+## What a test must construct
+
+A fault-free window after the last turn of a session, then a poll of registered
+jobs against the bound.
+
+## Investigation log
+
+### Q: Is the starting value tight enough?
+- Sources examined: spec #1007 OQ-6; the v1 baseline runs.
+- Findings: the v1 Pi hang held a turn far past 15 minutes; this tree holds no
+  background job duration to compare against the 20 minute bound.
+- Missing evidence: an S run with the v2 scheduler.
+- Conclusion: unresolved, needs the S run

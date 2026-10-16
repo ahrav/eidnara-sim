@@ -1,0 +1,34 @@
+# sim-p18-sleep-fault-is-event-free-jump
+
+Evidence status: PROPOSED. SIM-P18, reconstructed from the condensed property
+index in spec [ahrav/eidnara#1007](https://github.com/ahrav/eidnara/issues/1007)
+at its 2026-10-12 revision.
+
+## Discovery trigger
+
+The spec's invariant-driven domain-modeling pass proposed this record for the
+v2 harness before any harness code existed.
+
+## Evidence trail
+
+A laptop-sleep fault produces exactly one `AdvanceClock` of the scheduled
+duration with `busy_set` empty and no events inside the gap.
+
+No harness code, test, or run exists yet. The surface lands in M4
+(#1028).
+
+## Failure scenario
+
+The sleep fault tests a different condition than the one scheduled.
+
+## Timing windows and dependencies
+
+A sleep scheduled while a job is busy must wait for the job.
+
+## What a test must construct
+
+A scheduled laptop-sleep fault.
+
+## Investigation log
+
+No open questions.

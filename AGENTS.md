@@ -18,7 +18,8 @@ Eidnara, specified by
   re-defined. A needed extension is recorded in `docs/eval-core-mapping.md`
   with the protocol version it would need.
 - Use `.github/workflows/ci.yml` as the source of truth for required checks.
-  `bun run check` runs typecheck, lint, and tests in that order.
+  `bun run check` runs typecheck, lint, tests, the pre-registration
+  validator, and the catalog checker, in that order.
 - Never append a comment-lint `allow(...)` override marker to a comment.
   `scripts/forbid-comment-markers.sh` rejects it in CI and in the tracked
   `.githooks/pre-commit` hook (installed by `bun install` through the
