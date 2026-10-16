@@ -286,7 +286,7 @@ export class HostDriver implements ArmDriver {
 
     /** The daemon's directories are host-writable, so every daemon start and restart rechecks them. */
     private checkDaemonDirs(): void {
-        realChild(this.o.armRoot, "runtime", "daemon runtime");
+        realChild(this.armDir, "runtime", "daemon runtime");
         realChild(this.storeRoot, "d", "daemon data");
     }
 
@@ -762,20 +762,22 @@ export class HostDriver implements ArmDriver {
         }
     }
 
+    /**
+     * A host or daemon whose teardown fails stays held, with its session and recorded identity, so
+     * the failure's state names it and a later stop can try again.
+     */
     async stop(): Promise<void> {
-        const host = this.host;
-        const daemon = this.daemon;
-        this.host = null;
-        this.daemon = null;
-        this.sessionProject = null;
         let failure: unknown = null;
         try {
-            await host?.closeSession();
+            await this.host?.closeSession();
+            this.host = null;
+            this.sessionProject = null;
         } catch (caught) {
             failure = caught;
         }
         try {
-            await daemon?.stop();
+            await this.daemon?.stop();
+            this.daemon = null;
         } catch (caught) {
             failure ??= caught;
         }
@@ -785,9 +787,12 @@ export class HostDriver implements ArmDriver {
             failure ??= caught;
         }
         if (this.storeMount) {
-            const r = spawnSync("sudo", ["-n", "umount", this.storeMount], { encoding: "utf8" });
-            if (r.status === 0) this.storeMount = null;
-            else failure ??= new Error(`umount ${this.storeMount}: ${r.stderr}`);
+            try {
+                this.unmount(this.storeMount);
+                this.storeMount = null;
+            } catch (caught) {
+                failure ??= caught;
+            }
         }
         if (failure) throw failure;
     }

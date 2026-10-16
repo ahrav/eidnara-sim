@@ -56,7 +56,9 @@ deletes the arm root and store, clones each scenario repository into a
 workspace, and, on an Eidnara arm, starts a fresh daemon through the v1
 `HermeticHostStack` with the interposer environment. `finish` runs after the
 arm's last event, before `EndArm`: it closes the host, stops the daemon with
-SIGTERM so its store stays on disk, and unmounts the store; the daemon's
+SIGTERM so its store stays on disk, and unmounts the store; a host or daemon
+whose teardown fails stays held with its recorded identity, so the failure's
+state names it for the next reap; the daemon's
 output reaches `<arm>/daemon.log` as it is written.
 
 `DaemonStack` starts the daemon through the v1 `HermeticHostStack` with the

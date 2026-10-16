@@ -454,7 +454,7 @@ touch ${escaped}
             const { driver, root } = fixture("eidnara", {}, { daemonFactory });
             try {
                 await driver.reset();
-                const runtime = join(root, "eidnara", "r", "runtime");
+                const runtime = join(root, "eidnara", "runtime");
                 rmSync(runtime, { recursive: true, force: true });
                 symlinkSync(tmp(), runtime);
                 await expect(driver.fault(episode("daemon_restart"))).rejects.toThrow("leaves");
@@ -498,7 +498,7 @@ touch ${escaped}
             try {
                 await driver.reset();
                 await driver.stop();
-                const runtime = join(root, "eidnara", "r", "runtime");
+                const runtime = join(root, "eidnara", "runtime");
                 rmSync(runtime, { recursive: true, force: true });
                 symlinkSync(tmp(), runtime);
                 fresh = new HostDriver((driver as unknown as { o: DriverOptions }).o);
@@ -716,6 +716,53 @@ touch ${escaped}
             }
         },
     );
+
+    test("a host that survives its close keeps its recorded identity for the next reap", async () => {
+        const { driver, hosts, armDir } = fixture("host", { p: gitRepo() });
+        await driver.reset();
+        const host = hosts.at(-1) as FakeHost;
+        host.pid = process.pid;
+        await driver.event(ev("session_start"));
+        host.failClose = true;
+        await expect(driver.finish()).rejects.toThrow("host survived");
+        const state = JSON.parse(readFileSync(join(armDir, "state.json"), "utf8"));
+        expect(state.host).toMatchObject({ pid: process.pid });
+        expect(state.failed).toContain("host survived");
+    });
+
+    test.skipIf(!sudo)(
+        "a link the host left at the arm root's runtime name does not block a restart",
+        async () => {
+            const daemonFactory = () =>
+                ({ ...fakeDaemon(null), start: async () => undefined }) as unknown as DaemonStack;
+            const { driver, root } = fixture("eidnara", {}, { daemonFactory });
+            try {
+                await driver.reset();
+                symlinkSync(tmp(), join(root, "eidnara", "r", "runtime"));
+                expect(await driver.fault(episode("daemon_restart"))).toMatchObject({
+                    restarted_by: "harness",
+                });
+            } finally {
+                await driver.stop().catch(() => undefined);
+            }
+        },
+    );
+
+    test.skipIf(!sudo)("a second reset of a loop-store arm succeeds", async () => {
+        const daemonFactory = (ctx: { dataDir: string }) =>
+            ({
+                ...fakeDaemon(null),
+                start: async () => void mkdirSync(ctx.dataDir, { recursive: true }),
+            }) as unknown as DaemonStack;
+        const { driver } = fixture("eidnara", {}, { loopStore: true, daemonFactory });
+        try {
+            await driver.reset();
+            await driver.reset();
+            expect(spawnSync("findmnt", ["-n", "-M", driver.storeRoot]).status).toBe(0);
+        } finally {
+            await driver.stop().catch(() => undefined);
+        }
+    });
 
     test("a finish that fails is recorded, so a resume cannot heal the arm", async () => {
         const { driver, armDir } = fixture("eidnara");
