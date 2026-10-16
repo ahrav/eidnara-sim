@@ -79,19 +79,105 @@ export class GradeRefused extends Error {}
 
 export const completed = (c: CallView) => c.status >= 200 && c.status < 300 && c.error === null;
 
+type Field = (v: unknown) => boolean;
+const str: Field = (v) => typeof v === "string";
+const text: Field = (v) => typeof v === "string" && v.length > 0;
+const num: Field = (v) => typeof v === "number" && Number.isFinite(v);
+const optional =
+    (f: Field): Field =>
+    (v) =>
+        v === undefined || f(v);
+const nullable =
+    (f: Field): Field =>
+    (v) =>
+        v === null || f(v);
+const oneOf =
+    (values: readonly string[]): Field =>
+    (v) =>
+        values.includes(v as string);
+const listOf = (shape: Record<string, Field>, path: string, v: unknown): string | null => {
+    if (!Array.isArray(v)) return path;
+    for (const [i, item] of v.entries()) {
+        const bad = badField(shape, item, `${path}[${i}]`);
+        if (bad) return bad;
+    }
+    return null;
+};
+const mapOf =
+    (f: Field): Field =>
+    (v) =>
+        typeof v === "object" && v !== null && Object.values(v).every(f);
+
+/** The first field of `value` that fails `shape`, as a dotted path, or null when every field holds. */
+function badField(shape: Record<string, Field>, value: unknown, path: string): string | null {
+    if (typeof value !== "object" || value === null) return path;
+    const record = value as Record<string, unknown>;
+    for (const [key, f] of Object.entries(shape)) {
+        if (!f(record[key])) return `${path}.${key}`;
+    }
+    return null;
+}
+
+const CALL: Record<string, Field> = {
+    seq: num,
+    component: text,
+    turn: nullable(str),
+    turn_index: optional(num),
+    scenario_ms: num,
+    status: num,
+    error: nullable(str),
+    input_tokens: num,
+    output_tokens: num,
+    response_text: optional(str),
+    label: optional(str),
+};
+const COMMAND: Record<string, Field> = { command: str, exit: nullable(num), scenario_ms: num };
+
+/** The payload check for each artefact class, run after id and class are known. */
+const PAYLOADS: Record<ArtefactClass, (a: Record<string, unknown>, path: string) => string | null> =
+    {
+        diff: (a, p) => badField({ role: oneOf(["turn", "prior-session"]), patch: str }, a, p),
+        "command-log": (a, p) =>
+            badField({ role: oneOf(["turn", "session"]) }, a, p) ??
+            listOf(COMMAND, `${p}.commands`, a.commands),
+        "test-result": (a, p) =>
+            badField(
+                { command: str, exit: num, summary: (v) => Array.isArray(v) && v.every(str) },
+                a,
+                p,
+            ),
+        "workspace-state": (a, p) => badField({ files: mapOf(str) }, a, p),
+        "proxy-call": (a, p) => listOf(CALL, `${p}.calls`, a.calls),
+    };
+
+const SNAPSHOT: Record<string, Field> = {
+    id: text,
+    item: text,
+    arm: text,
+    turn: text,
+    turn_outcome: oneOf(["ok", "failed"]),
+    artefacts: Array.isArray,
+};
+
+/** Refuses a snapshot whose shape or artefacts fall outside the grade-input contract. */
 export function assertArtefactsOnly(snapshot: Snapshot): void {
+    const top = badField(SNAPSHOT, snapshot, "snapshot");
+    if (top) throw new GradeRefused(`${top} is missing or malformed`);
     const ids = new Set<string>();
-    for (const a of snapshot.artefacts as Array<{ id?: unknown; class: string }>) {
-        if (typeof a.id !== "string" || a.id.length === 0) {
+    for (const [i, raw] of snapshot.artefacts.entries()) {
+        const a = raw as unknown as Record<string, unknown>;
+        if (!text(a.id)) {
             throw new GradeRefused(`snapshot ${snapshot.id} has an artefact without an id`);
         }
-        if (ids.has(a.id)) {
-            throw new GradeRefused(`snapshot ${snapshot.id} has artefact id ${a.id} twice`);
+        const id = a.id as string;
+        if (ids.has(id))
+            throw new GradeRefused(`snapshot ${snapshot.id} has artefact id ${id} twice`);
+        ids.add(id);
+        if (!(ARTEFACT_CLASSES as readonly string[]).includes(a.class as string)) {
+            throw new GradeRefused(`artefact ${id} of class ${a.class} is not a grade input`);
         }
-        ids.add(a.id);
-        if (!(ARTEFACT_CLASSES as readonly string[]).includes(a.class)) {
-            throw new GradeRefused(`artefact ${a.id} of class ${a.class} is not a grade input`);
-        }
+        const bad = PAYLOADS[a.class as ArtefactClass](a, `artefacts[${i}]`);
+        if (bad) throw new GradeRefused(`snapshot ${snapshot.id}: ${bad} is missing or malformed`);
     }
 }
 

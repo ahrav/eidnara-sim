@@ -31,8 +31,11 @@ function parseDiff(patch: string): { added: string[]; paths: string[] } {
     const paths: string[] = [];
     let inHunk = false;
     for (const line of patch.split("\n")) {
-        if (line.startsWith("diff --git ")) inHunk = false;
-        else if (line.startsWith("@@")) inHunk = true;
+        if (line.startsWith("diff --git ")) {
+            inHunk = false;
+            const named = / b\/(.+)$/.exec(line);
+            if (named) paths.push(named[1] as string);
+        } else if (line.startsWith("@@")) inHunk = true;
         else if (inHunk) {
             if (line.startsWith("+")) added.push(line.slice(1));
         } else if (line.startsWith("+++ b/")) paths.push(line.slice("+++ b/".length));

@@ -96,13 +96,31 @@ const changed = (r: ArtefactReader) => {
 };
 const work = (r: ArtefactReader) => `${changed(r)}\n${commandText(r)}`;
 
-/** P6 requires the read and the prior-session path to occur in the same shell segment. */
-const segments = (command: string) => command.split(/[;&|\n]+/).map((s) => s.trim());
+/** P6 requires the read and the prior-session path to occur in the same executed shell segment. */
+/**
+ * Segments known to have run: every unconditional segment, and a `&&` continuation when the
+ * command exited 0. A `||` continuation is left out, because its execution cannot be read from
+ * the exit code.
+ */
+const executed = (x: Command): string[] => {
+    const parts = x.command.split(/(\|\||&&|[;|\n])/);
+    const ran: string[] = [];
+    for (let i = 0; i < parts.length; i += 2) {
+        const op = i === 0 ? ";" : (parts[i - 1] as string);
+        const seg = (parts[i] as string).trim();
+        if (seg.length === 0) continue;
+        if (op === "||") continue;
+        if (op === "&&" && x.exit !== 0) continue;
+        ran.push(seg);
+    }
+    return ran;
+};
+const anchored = (p: string) => (p.startsWith("(?i)") ? `(?i)^${p.slice(4)}` : `^${p}`);
 const namesPath = (segment: string, path: string) =>
     new RegExp(`(^|[\\s'"=])(\\./)?${path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}($|[\\s'"])`).test(
         segment,
     );
-const ranTests = (command: string) => segments(command).some((s) => TESTS.test(s));
+const ranTests = (x: Command) => executed(x).some((s) => TESTS.test(s));
 
 function foldsIn(r: ArtefactReader, turns?: [number, number]): CallView[] {
     const folds = r.calls().filter((c) => FOLDS.includes(c.component) && completed(c));
@@ -134,12 +152,12 @@ function p6(r: ArtefactReader, c: Check): Outcome {
     const prior = diffPaths(r.diff("prior-session"));
     const commands = r.commands();
     const reread = prior.filter((p) =>
-        commands.some((x) => segments(x.command).some((s) => READS.test(s) && namesPath(s, p))),
+        commands.some((x) => executed(x).some((s) => READS.test(s) && namesPath(s, p))),
     );
     const tokens = r.turnCalls().reduce((n, x) => n + x.input_tokens + x.output_tokens, 0);
     return binary("P6", matchesAll(work(r), c.must ?? []), {
         "P6.reread_files": reread.length,
-        "P6.ran_tests": commands.some((x) => ranTests(x.command)),
+        "P6.ran_tests": commands.some(ranTests),
         "P6.rediscovery_tokens": tokens,
     });
 }
@@ -154,12 +172,7 @@ function p13(r: ArtefactReader, c: Check, rules: Rules): Outcome {
     const after = commands.filter((x) => x.scenario_ms >= boundary);
     const before = new Set(commands.filter((x) => x.scenario_ms < boundary).map((x) => x.command));
     const invoked = (patterns: string[]) => (x: Command) =>
-        segments(x.command).some((seg) =>
-            matchesAll(
-                seg,
-                patterns.map((p) => `^${p}`),
-            ),
-        );
+        executed(x).some((seg) => matchesAll(seg, patterns.map(anchored)));
     const kept = c.commands_must
         ? after.some(invoked(c.commands_must))
         : matchesAll(changed(r), c.must ?? []);

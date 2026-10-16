@@ -390,6 +390,62 @@ describe("grading harness", () => {
         }
     });
 
+    test("a snapshot with a malformed artefact payload or no id is refused", () => {
+        const p5 = fixture("P5-fail-in-commands");
+        const s5 = structuredClone(p5.snapshots[0]) as Snapshot;
+        const log = s5.artefacts.find((a) => a.class === "command-log");
+        if (log?.class !== "command-log") throw new Error("fixture lacks command-log");
+        delete (log.commands[1] as { command?: string }).command;
+        expect(() => gradeItem(p5.probe, [s5], rules)).toThrow("commands[1].command");
+        const p14 = fixture("P14-pass");
+        const s14 = structuredClone(p14.snapshots[0]) as Snapshot;
+        const calls = s14.artefacts.find((a) => a.class === "proxy-call");
+        if (calls?.class !== "proxy-call") throw new Error("fixture lacks proxy-call");
+        (calls.calls[0] as { status: unknown }).status = "200";
+        expect(() => gradeItem(p14.probe, [s14], rules)).toThrow("calls[0].status");
+        const p8 = fixture("P8-pass");
+        const noId = { ...(p8.snapshots[0] as Snapshot), id: "" };
+        expect(() => gradeItem(p8.probe, [noId], rules)).toThrow(
+            "snapshot.id is missing or malformed",
+        );
+    });
+
+    test("a P13 command rule keeps its case-insensitive prefix when anchored", () => {
+        const f = fixture("P13-pass");
+        const check = f.probe.check as { turns: [number, number]; commands_must: string[] };
+        const upper = check.commands_must.map((p) => `(?i)${p.toUpperCase()}`);
+        const probe = { ...f.probe, check: { ...check, commands_must: upper } };
+        expect(gradeItem(probe, f.snapshots, rules)?.metrics["P13.rule_kept"]).toBe(true);
+    });
+
+    test("a shell segment on an unestablished conditional branch does not count as executed", () => {
+        const f = fixture("P6-pass");
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        const log = snap.artefacts.find((a) => a.class === "command-log" && a.role === "turn");
+        if (log?.class !== "command-log") throw new Error("fixture lacks command-log");
+        log.commands.push(
+            { command: "true || npm run test", exit: 0, scenario_ms: 10 },
+            { command: "false && cargo test", exit: 1, scenario_ms: 20 },
+            { command: "cd crate && cargo test", exit: 101, scenario_ms: 30 },
+        );
+        expect(gradeItem(f.probe, [snap], rules)?.metrics["P6.ran_tests"]).toBe(false);
+        log.commands.push({ command: "cd crate && cargo test", exit: 0, scenario_ms: 40 });
+        expect(gradeItem(f.probe, [snap], rules)?.metrics["P6.ran_tests"]).toBe(true);
+    });
+
+    test("a file the prior session deleted counts among its changed paths", () => {
+        const f = fixture("P6-pass");
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        const prior = snap.artefacts.find((a) => a.class === "diff" && a.role === "prior-session");
+        if (prior?.class !== "diff") throw new Error("fixture lacks prior diff");
+        prior.patch =
+            "diff --git a/src/old.rs b/src/old.rs\ndeleted file mode 100644\n--- a/src/old.rs\n+++ /dev/null\n@@ -1,1 +0,0 @@\n-fn old() {}\n";
+        const log = snap.artefacts.find((a) => a.class === "command-log" && a.role === "turn");
+        if (log?.class !== "command-log") throw new Error("fixture lacks command-log");
+        log.commands.push({ command: "cat src/old.rs", exit: 1, scenario_ms: 10 });
+        expect(gradeItem(f.probe, [snap], rules)?.metrics["P6.reread_files"]).toBe(1);
+    });
+
     test("two artefacts sharing an id are refused", () => {
         const f = fixture("P5-pass");
         const snap = structuredClone(f.snapshots[0]) as Snapshot;
