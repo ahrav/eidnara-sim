@@ -294,6 +294,19 @@ describe("run inputs", () => {
                 e("EndTurn", "a", { event: "t" }),
             ]),
         ).toThrow(/closes an item twice/);
+        expect(() => requireJournalShape([e("ResumeRun", null)])).toThrow(/precedes StartRun/);
+        const ids = ["e-1", "e-2"];
+        const ev = (id: string) => e("Event", "a", { event: id });
+        expect(() => requireJournalShape([...start, ev("e-1"), ev("e-2")], ids)).not.toThrow();
+        expect(() => requireJournalShape([...start, ev("e-9")], ids)).toThrow(
+            /unscheduled event e-9/,
+        );
+        expect(() => requireJournalShape([...start, ev("e-2"), ev("e-1")], ids)).toThrow(
+            /reorders event e-1/,
+        );
+        expect(() => requireJournalShape([...start, ev("e-1"), ev("e-1")], ids)).toThrow(
+            /repeats or reorders/,
+        );
     });
 
     test("a schedule needs a mechanism for every fault and two models for a model switch", () => {
@@ -371,7 +384,28 @@ describe("run inputs", () => {
             trigger: { kind: "first_summarizer_call", session: "s-0000" },
         });
         expect(() => faultOverride([kill("k1"), kill("k2")], scenario)).toThrow(
-            /two mid-fold kills target session s-0000/,
+            /two daemon_sigkill_mid_fold episodes target session s-0000/,
+        );
+        const sleep = (id: string) => ({
+            ...episode,
+            id,
+            type: "laptop_sleep",
+            seam: SEAMS.laptop_sleep,
+            trigger: { kind: "session_start", session: "s-0000" },
+        });
+        expect(() => faultOverride([sleep("z1"), sleep("z2")], scenario)).toThrow(
+            /two laptop_sleep episodes target session s-0000/,
+        );
+        const longFull = {
+            ...episode,
+            type: "store_full",
+            seam: SEAMS.store_full,
+            strategy: "persistent",
+            trigger: { kind: "session_start", session: "s-0000" },
+            params: { sessions: 2 },
+        };
+        expect(() => faultOverride([longFull], scenario)).toThrow(
+            /store_full supports sessions: 1 only/,
         );
         const switchOnTurn = { ...episode, type: "model_switch", seam: SEAMS.model_switch };
         expect(() => faultOverride([switchOnTurn], scenario)).toThrow(
@@ -559,6 +593,7 @@ describe("run inputs", () => {
             "node",
             "opencode",
             "opencode_sdk",
+            "opencode_sdk_lock",
             "pi",
             "pi_install",
         ]);

@@ -39,7 +39,9 @@ root inside it), a schedule with a fault type the host driver has no
 mechanism for (`host_upgrade`, `two_hosts_one_daemon`, so a full XL run is
 refused up front), a `--models` list that repeats an entry, and a
 `model_switch` schedule with fewer than two models. A `daemon_sigkill_mid_fold` needs a
-`first_summarizer_call` trigger, and one session carries at most one. An `--out` inside this checkout must be
+`first_summarizer_call` trigger, one session carries at most one mid-fold
+kill and one laptop sleep, and `store_full` supports `sessions: 1` only.
+`--out` may not overlap the Pi install either. An `--out` inside this checkout must be
 ignored by git (`runs/` is), and may not overlap a corpus checkout, since
 both trees are part of the run identity. Before taking the lease, every artifact the run appends to or
 replaces (`journal.jsonl`, `calls.jsonl`, the manifest, the scenario, the
@@ -89,22 +91,24 @@ toolchain wrappers are created exclusively after removing any planted name.
    working-tree digest (a digest covers tracked edits and untracked
    unignored files), the commit and working-tree digest of every corpus
    checkout the scenario's projects clone from, the SHA-256 of the daemon,
-   OpenCode, and Pi executables, the whole Pi install tree (every file under
-   `pi_install`, since Node resolves the CLI's dependencies there), the Node
-   runtime Pi runs on, the libfaketime
-   interposer, and the OpenCode SDK module the host stack imports (`absent`
-   when not installed), the
+   OpenCode, and Pi executables, the whole Pi install tree (every file and
+   link under `pi_install`, since Node resolves the CLI's dependencies
+   there), the Node runtime Pi runs on, the libfaketime interposer, the
+   OpenCode SDK package directory the host stack imports and the e2e
+   workspace's lock file (`absent` when not installed), the
    Bedrock region and profile name, base wall time, and preflight result. The working-tree digest hashes an
    untracked symlink's target text.
    A later invocation refuses a manifest whose `schema` is not
-   `sim-run-manifest/v1`, and refuses when any option it states differs from
-   the manifest, when the manifest's arm order is not a non-empty subsequence
+   `sim-run-manifest/v1`, revalidates a saved fault override as on the first
+   run, and refuses when any option it states differs from the manifest, when the manifest's arm order is not a non-empty subsequence
    of the seed's pre-registered arm order, when a resumed journal breaks the
    run's state machine (a `ResumeRun` or arm entry before `StartRun`, an arm
-   entry before `StartArm` or after `EndArm`, or an item closed twice), when any of those digests changed, when an
+   entry before `StartArm` or after `EndArm`, an item closed twice, or an
+   `Event` naming an unscheduled, repeated, or reordered event), when any of those digests changed, when an
    interception result, probed path, or toolchain version
    changed, or when the selected host's version or transcript paths changed,
-   and appends its preflight result to `preflight.jsonl`; on resume the
+   and appends its preflight result to `preflight.jsonl` (dropping an
+   unterminated final line first); on resume the
    mechanism checks (fault types, models) run against the manifest's saved
    values, so omitted options inherit. Every invocation
    then journals a `Preflight` entry with its interception results and host

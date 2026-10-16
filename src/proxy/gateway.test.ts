@@ -600,6 +600,27 @@ describe("witnesses", () => {
         expect(records.records.map((r) => r.component)).toEqual(["history_summarizer", "agent"]);
     });
 
+    test("restore orders same-millisecond requests by their arrival ordinal, not their seq", () => {
+        const fault: ProxyFault = {
+            id: "f",
+            type: "provider_5xx",
+            strategy: "single",
+            params: { count: 1 },
+        };
+        const at = Date.now();
+        const base = { ...RECORD, arm: "eidnara", started_wall_ms: at };
+        const earlierButLater = { ...base, seq: 1, wall_ms: at + 50, arrival: 0 };
+        const injected = { ...base, seq: 0, wall_ms: at + 10, arrival: 1, fault_ref: "f" };
+        const retry = { ...base, seq: 2, wall_ms: at + 60, arrival: 2 };
+        const resumed = new FaultInjector([fault], new Rng(7), 5_000);
+        resumed.restore([injected, earlierButLater, retry]);
+        expect(resumed.report("eidnara")[0]).toMatchObject({
+            status: "fired",
+            injected_seq: [0],
+            host_observed_seq: [2],
+        });
+    });
+
     test("a burst that already made every injection is not injected again after resume", async () => {
         const fault: ProxyFault = {
             id: "b",

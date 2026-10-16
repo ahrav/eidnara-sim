@@ -382,6 +382,7 @@ export class Gateway {
         };
         const base = {
             ...scope,
+            arrival: arrived.call,
             started_wall_ms: arrived.wall,
             scenario_ms: arrived.scenario,
             input_tokens: 0,

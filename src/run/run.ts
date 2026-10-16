@@ -4,6 +4,7 @@ import {
     existsSync,
     lstatSync,
     mkdirSync,
+    readdirSync,
     readFileSync,
     readlinkSync,
     realpathSync,
@@ -161,11 +162,15 @@ export function requirePlainArtifacts(out: string, arms: readonly string[]): voi
  * Run outputs and the Eidnara checkout stay disjoint, by resolved path: arm resets delete output
  * subtrees, and an output directory above the checkout would derive an arm root inside it.
  */
-export function requireOutsideCheckout(out: string, checkout: string): void {
+export function requireOutsideCheckout(
+    out: string,
+    checkout: string,
+    what = "the Eidnara checkout",
+): void {
     const dir = realExisting(resolve(checkout));
     const target = realExisting(resolve(out));
     if (within(target, dir) || within(dir, target)) {
-        throw new HarnessFailure(`--out ${out} overlaps the Eidnara checkout ${checkout}`);
+        throw new HarnessFailure(`--out ${out} overlaps ${what} ${checkout}`);
     }
 }
 
@@ -193,7 +198,12 @@ export function requireOutsideIdentity(out: string, root = ROOT): void {
  * entry, each arm's entries sit between its `StartArm` and at most one `EndArm`, and a turn or job
  * closes at most once. A planted or reordered entry refuses the resume before it drives recovery.
  */
-export function requireJournalShape(entries: readonly Entry[]): void {
+export function requireJournalShape(
+    entries: readonly Entry[],
+    scheduled?: readonly string[],
+): void {
+    const position = new Map((scheduled ?? []).map((id, i) => [id, i]));
+    const cursor = new Map<string, number>();
     const bad = (e: Entry, why: string) =>
         new HarnessFailure(`journal entry ${e.seq} (${e.kind}) ${why}`);
     let started = false;
@@ -220,6 +230,13 @@ export function requireJournalShape(entries: readonly Entry[]): void {
         }
         if (state !== "open") throw bad(e, state ? "follows EndArm" : "precedes StartArm");
         if (e.kind === "EndArm") arms.set(e.arm, "ended");
+        if (e.kind === "Event" && scheduled) {
+            const at = position.get(String(e.event));
+            const next = cursor.get(e.arm) ?? 0;
+            if (at === undefined) throw bad(e, `names unscheduled event ${String(e.event)}`);
+            if (at < next) throw bad(e, `repeats or reorders event ${String(e.event)}`);
+            cursor.set(e.arm, at + 1);
+        }
         if (e.kind === "EndTurn" || e.kind === "EndJob") {
             const key = `${e.arm}/${e.kind}/${String(e.event ?? e.job)}`;
             if (ended.has(key)) throw bad(e, "closes an item twice");
@@ -448,7 +465,7 @@ export function faultOverride(raw: unknown, scenario: Scenario): FaultEpisode[] 
 function validateEpisodes(raw: unknown[], scenario: Scenario, source: string): void {
     const turns = new Map(scenario.sessions.map((x) => [x.id, x.requests]));
     const ids = new Set<string>();
-    const foldKills = new Set<string>();
+    const perSession = new Set<string>();
     raw.forEach((value, i) => {
         const problems = episodeProblems(value);
         if (problems.length > 0) {
@@ -457,13 +474,17 @@ function validateEpisodes(raw: unknown[], scenario: Scenario, source: string): v
         const episode = value as FaultEpisode;
         if (ids.has(episode.id)) throw new HarnessFailure(`${source}: duplicate id ${episode.id}`);
         ids.add(episode.id);
-        if (episode.type === "daemon_sigkill_mid_fold") {
-            if (foldKills.has(episode.trigger.session)) {
+        if (episode.type === "daemon_sigkill_mid_fold" || episode.type === "laptop_sleep") {
+            const key = `${episode.type}/${episode.trigger.session}`;
+            if (perSession.has(key)) {
                 throw new HarnessFailure(
-                    `${source}: two mid-fold kills target session ${episode.trigger.session}`,
+                    `${source}: two ${episode.type} episodes target session ${episode.trigger.session}`,
                 );
             }
-            foldKills.add(episode.trigger.session);
+            perSession.add(key);
+        }
+        if (episode.type === "store_full" && episode.params.sessions !== 1) {
+            throw new HarnessFailure(`${source}: store_full supports sessions: 1 only`);
         }
         try {
             validateFault(episode, turns);
@@ -504,19 +525,31 @@ function eventCount(requested: number | undefined, compiled: number): number {
 /** Every regular file under `dir`, hashed by length-framed relative path and content. */
 function directoryDigest(dir: string): string {
     const hash = createHash("sha256");
-    const files = [
-        ...new Bun.Glob("**/*").scanSync({ cwd: dir, dot: true, onlyFiles: true }),
-    ].sort();
-    for (const rel of files) {
+    const entries: string[] = [];
+    const walk = (rel: string) => {
+        for (const name of readdirSync(join(dir, rel)).sort()) {
+            const child = rel === "" ? name : `${rel}/${name}`;
+            const stat = lstatSync(join(dir, child));
+            if (stat.isDirectory()) walk(child);
+            else entries.push(child);
+        }
+    };
+    walk("");
+    for (const rel of entries) {
+        const stat = lstatSync(join(dir, rel));
+        const content = stat.isSymbolicLink()
+            ? Buffer.from(`->${readlinkSync(join(dir, rel))}`)
+            : stat.isFile()
+              ? readFileSync(join(dir, rel))
+              : Buffer.from(`?${stat.mode}`);
         const name = Buffer.from(rel);
-        const content = readFileSync(join(dir, rel));
         hash.update(`${name.length}:`).update(name).update(`${content.length}:`).update(content);
     }
     return hash.digest("hex");
 }
 
 /** The OpenCode SDK module the host stack imports from the Eidnara checkout (`src/hosts/arms.ts`). */
-const OPENCODE_SDK = "packages/e2e-tests/node_modules/@opencode-ai/sdk/dist/index.js";
+const OPENCODE_SDK = "packages/e2e-tests/node_modules/@opencode-ai/sdk";
 
 const simIdentity = () => {
     const { commit, worktree } = treeIdentity(ROOT);
@@ -550,10 +583,11 @@ function binaryDigests(config: SimConfig): Record<string, string> {
         faketime: FAKETIME_LIB,
         node: realpathSync(Bun.which("node") ?? "node"),
         opencode_sdk: join(config.eidnara_checkout, OPENCODE_SDK),
+        opencode_sdk_lock: join(config.eidnara_checkout, "packages/e2e-tests/bun.lock"),
     };
     return Object.fromEntries(
         Object.entries(files).map(([name, path]) => {
-            const optional = name === "opencode_sdk" || name === "faketime";
+            const optional = name.startsWith("opencode_sdk") || name === "faketime";
             if (optional && !existsSync(path)) return [name, "absent"];
             if (lstatSync(path).isDirectory()) return [name, directoryDigest(path)];
             return [name, createHash("sha256").update(readFileSync(path)).digest("hex")];
@@ -661,8 +695,16 @@ export async function loadManifest(
         if (!sameJson(hostRow(manifest.preflight), hostRow(checks))) {
             throw new HarnessFailure(`the ${o.host} host changed since the run started`);
         }
+        if (manifest.fault_override !== null) {
+            if (!Array.isArray(manifest.fault_override)) {
+                throw new HarnessFailure("manifest.json fault_override is not an array");
+            }
+            validateEpisodes(manifest.fault_override, scenario, "manifest.json fault_override");
+        }
         requireMechanisms(manifest.fault_override ?? scenario.faults, manifest.models);
-        appendFileSync(join(o.out, "preflight.jsonl"), `${JSON.stringify(checks)}\n`);
+        const preflightLog = join(o.out, "preflight.jsonl");
+        dropCutTail(preflightLog);
+        appendFileSync(preflightLog, `${JSON.stringify(checks)}\n`);
         return { manifest, checks };
     }
     requireMechanisms(wanted.fault_override ?? scenario.faults, wanted.models);
@@ -704,6 +746,7 @@ export async function runSteps(steps: Array<() => Promise<void> | void>): Promis
 export async function runTier(o: RunOptions): Promise<void> {
     plainPath(o.out);
     requireOutsideCheckout(o.out, o.config.eidnara_checkout);
+    requireOutsideCheckout(o.out, o.config.pi_install, "the Pi install");
     requireOutsideIdentity(o.out);
     requirePinnedPath(o.config);
     mkdirSync(o.out, { recursive: true });
@@ -818,6 +861,10 @@ async function runArms(
     requireJournalShape(journal.entries);
     const compiled = await tracked(() => loadScenario(o));
     const { manifest, checks } = await tracked(() => loadManifest(o, compiled));
+    requireJournalShape(
+        journal.entries,
+        compiled.events.slice(0, manifest.events).map((e) => String(e.id)),
+    );
     journal.append({
         kind: "Preflight",
         arm: null,

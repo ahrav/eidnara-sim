@@ -134,8 +134,9 @@ export class FaultInjector {
      * the live pending list starts empty.
      */
     restore(prior: CallRecord[]): void {
+        const order = (r: CallRecord) => r.arrival ?? r.seq;
         const byStart = [...prior].sort(
-            (a, b) => a.started_wall_ms - b.started_wall_ms || a.seq - b.seq,
+            (a, b) => a.started_wall_ms - b.started_wall_ms || order(a) - order(b),
         );
         byStart.forEach((record, call) => {
             const known =

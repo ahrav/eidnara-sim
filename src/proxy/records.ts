@@ -38,6 +38,8 @@ export interface CallRecord {
     error: string | null;
     /** Request fields the proxy removed before forwarding, keyed by field path. */
     stripped?: Record<string, unknown>;
+    /** The request's arrival ordinal within its proxy process, so restores can order same-ms calls. */
+    arrival?: number;
 }
 
 const NUMBERS = [
