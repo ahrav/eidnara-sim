@@ -1,5 +1,13 @@
 import { expect, test } from "bun:test";
-import { summarize } from "./repos";
+import { join } from "node:path";
+import { REPOS_DIR, repoDir, summarize } from "./repos";
+
+test("repoDir accepts a plain name and rejects ids that leave corpus/repos", () => {
+    expect(repoDir("mini-redis")).toBe(join(REPOS_DIR, "mini-redis"));
+    for (const id of ["../eidnara", "a/b", "", ".", "..", ".hidden"]) {
+        expect(() => repoDir(id)).toThrow("not a plain directory name");
+    }
+});
 
 test("summarize keeps cargo result lines without timings", () => {
     const out = [

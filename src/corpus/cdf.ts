@@ -63,6 +63,17 @@ export function sample(table: CdfTable, rng: Rng, floor = 0): number {
     return quantile(table, floor + (1 - floor) * rng.next());
 }
 
+/** Probability mass at or above `v`; a continuous table interpolates its CDF at `v`. */
+export function tailShare(table: CdfTable, v: number): number {
+    const { p, x } = table;
+    const hi = x.findIndex((xi) => xi >= v);
+    if (hi < 0) return 0;
+    if (hi === 0) return 1;
+    const [pLo, pHi, xLo, xHi] = [p[hi - 1] ?? 0, p[hi] ?? 1, x[hi - 1] ?? 0, x[hi] ?? 0];
+    if (table.kind === "discrete") return 1 - pLo;
+    return 1 - (pLo + ((v - xLo) / (xHi - xLo)) * (pHi - pLo));
+}
+
 function round3(v: number): number {
     return Math.round(v * 1000) / 1000;
 }

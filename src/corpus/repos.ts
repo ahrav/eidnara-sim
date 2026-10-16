@@ -1,10 +1,19 @@
 import { spawnSync } from "node:child_process";
 import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { CORPUS_DIR } from "./sources";
+import { CORPUS_DIR, under } from "./sources";
 
 export const REPOS_DIR = join(CORPUS_DIR, "repos");
 const TWINS_DIR = join(CORPUS_DIR, "twins");
+const ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+/** The id restriction keeps the returned path a direct child of REPOS_DIR. */
+export function repoDir(id: string): string {
+    if (!ID.test(id)) {
+        throw new Error(`repos.json: id ${JSON.stringify(id)} is not a plain directory name`);
+    }
+    return join(REPOS_DIR, id);
+}
 
 export interface Rename {
     glob: string;
@@ -75,7 +84,7 @@ export function buildTwin(baseDir: string, twinDir: string, twin: TwinSpec): str
     git(CORPUS_DIR, "clone", "-q", "--no-hardlinks", baseDir, twinDir);
     for (const rename of twin.renames) {
         for (const path of new Bun.Glob(rename.glob).scanSync({ cwd: twinDir })) {
-            const file = join(twinDir, path);
+            const file = under(twinDir, path);
             const text = readFileSync(file, "utf8");
             const next = text.replace(new RegExp(rename.pattern, "g"), rename.replace);
             if (next !== text) writeFileSync(file, next);

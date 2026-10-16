@@ -1,7 +1,15 @@
 import { cpSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { renderJson } from "../src/corpus/build";
-import { buildTwin, cloneAt, loadRepos, prepare, REPOS_DIR, runOffline } from "../src/corpus/repos";
+import {
+    buildTwin,
+    cloneAt,
+    loadRepos,
+    prepare,
+    REPOS_DIR,
+    repoDir,
+    runOffline,
+} from "../src/corpus/repos";
 import { CORPUS_DIR } from "../src/corpus/sources";
 
 // Usage: bun scripts/corpus-repos.ts [--record]
@@ -10,8 +18,8 @@ const repos = loadRepos();
 const failures: string[] = [];
 
 for (const repo of repos) {
-    const base = join(REPOS_DIR, repo.id);
-    const twinDir = join(REPOS_DIR, repo.twin.id);
+    const base = repoDir(repo.id);
+    const twinDir = repoDir(repo.twin.id);
     cloneAt(repo.url, repo.commit, base);
     cpSync(join(base, repo.license_file), join(REPOS_DIR, `${repo.id}.LICENSE`));
     const twinCommit = buildTwin(base, twinDir, repo.twin);
