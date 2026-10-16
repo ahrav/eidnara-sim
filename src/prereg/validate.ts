@@ -352,9 +352,8 @@ function checkArms(p: Preregistration, errors: string[]): void {
             );
         }
     }
-    const runSet = [...p.arms.run].sort().join(",");
     p.arms.order_by_seed.forEach((order, i) => {
-        if ([...order].sort().join(",") !== runSet) {
+        if (!sameSet(order, p.arms.run)) {
             errors.push(`arms.order_by_seed[${i}]: is not a permutation of arms.run`);
         }
     });
@@ -362,8 +361,8 @@ function checkArms(p: Preregistration, errors: string[]): void {
     if (new Set(orders).size !== orders.length) {
         errors.push("arms.order_by_seed: seeds share an arm order");
     }
-    const firsts = p.arms.order_by_seed.map((order) => order[0]);
-    if (p.seeds.length >= p.arms.run.length && [...new Set(firsts)].sort().join(",") !== runSet) {
+    const firsts = [...new Set(p.arms.order_by_seed.map((order) => order[0]))];
+    if (p.seeds.length >= p.arms.run.length && !sameSet(firsts, p.arms.run)) {
         errors.push("arms.order_by_seed: every arm runs first for exactly one seed");
     }
 }

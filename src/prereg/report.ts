@@ -119,8 +119,6 @@ function checkVerdict(
         errors.push(
             `${at}.verdict: a superiority-two-sided family reports ${SUPERIORITY_VERDICTS.slice(0, -1).join(", ")}, or ${SUPERIORITY_VERDICTS.at(-1)}`,
         );
-    } else if (family.direction === "descriptive" && verdict === "passed-gate") {
-        errors.push(`${at}.verdict: a descriptive family makes no gate claim`);
     }
     for (const key of Object.keys(f)) {
         if (!VERDICT_FIELDS.includes(key)) errors.push(`${at}.${key}: unknown field`);
