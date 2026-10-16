@@ -38,7 +38,10 @@ its own versions.
 The arm driver captures a snapshot at every probe turn
 (`src/hosts/snapshot.ts`), and the scheduler journals `SnapshotArtefacts`
 with the item and snapshot id once per item and arm, right after the turn's
-first `EndTurn` (SIM-P41). Snapshots append to `<arm>/snapshots.jsonl`; a
+first `EndTurn` (SIM-P41). The `EndTurn` entry names the snapshot too, so a
+resume after a kill between the two entries journals the snapshot from it.
+Snapshots append to `<arm>/snapshots.jsonl`, and a recorder rebuilt after a
+kill drops a cut last line; a
 snapshot id is `<arm>:<item>:<turn event>`, so each attempt has its own id.
 
 | Artefact | Source |
@@ -66,12 +69,21 @@ changed.
 The harness captures no `test-result` or `workspace-state` artefact yet;
 the graders read neither.
 
-`scripts/grade-run.ts <run dir>` grades every snapshot the journal names
+`scripts/grade-run.ts <run dir>` takes the run's lease, so one grader at a
+time allocates versions, refuses a run whose pre-registration or scenario no
+longer hashes to the digests in its manifest, and grades every snapshot the
+journal names
 into `grades.jsonl` and judges each P7 item for each memory arm against the
-host arm, through a gateway it starts for the judge. It prints the verdict
+host arm, through a gateway it starts for the judge after checking the judge
+model's family against every model the manifest records. The journaled
+snapshot is an item's first attempt and the arm's later snapshots of that
+item are its later attempts. A probe whose turn lies past the run's event
+count is listed as outside the run. It prints the verdict
 counts per arm and probe type (a P7 row also names the arm judged against),
-the skipped items by reason, the summed
-`P11.weighted_score` per arm, Δmem per memory arm, and the judge errors,
+the skipped items by arm and reason, the grade versions the summary
+aggregates, the summed
+`P11.weighted_score` per arm, Δmem per memory arm from this invocation's
+grades, and the judge errors,
 and exits 1 when a judge call failed. The scenario plants no canary
 strings, so it passes the judge none; blinding still refuses arm names. P14 items have no probe turn of their
 own and wait on the user simulator's labels (M6), so it lists them as

@@ -485,6 +485,38 @@ describe("call records", () => {
         expect(records.records[0]?.response_text).toBe("done");
     });
 
+    test("a streamed reply with two text blocks records the same text as its non-streaming form", async () => {
+        const usage = { inputTokens: 1, outputTokens: 1 };
+        const twoBlocks: Upstream = {
+            async converse(_m: string, _b: unknown, streaming: boolean) {
+                if (!streaming) {
+                    const message = {
+                        role: "assistant",
+                        content: [{ text: "foo" }, { text: "bar" }],
+                    };
+                    return { json: { output: { message }, stopReason: "end_turn", usage } };
+                }
+                async function* events() {
+                    yield { messageStart: { role: "assistant" } };
+                    yield { contentBlockDelta: { contentBlockIndex: 0, delta: { text: "fo" } } };
+                    yield { contentBlockDelta: { contentBlockIndex: 0, delta: { text: "o" } } };
+                    yield { contentBlockStop: { contentBlockIndex: 0 } };
+                    yield { contentBlockDelta: { contentBlockIndex: 1, delta: { text: "bar" } } };
+                    yield { contentBlockStop: { contentBlockIndex: 1 } };
+                    yield { messageStop: { stopReason: "end_turn" } };
+                    yield { metadata: { usage, metrics: { latencyMs: 3 } } };
+                }
+                return { events: events() };
+            },
+        };
+        const { records, url } = await start(null, twoBlocks);
+        await hostCallJson(url, AGENT_BODY, 2_000);
+        await hostCall(url, AGENT_BODY, 2_000);
+        const [plain, streamed] = records.records;
+        expect(plain?.response_text).toBe("foo\nbar");
+        expect(streamed?.response_text).toBe(plain?.response_text);
+    });
+
     test("the writer refuses a record missing any required field", () => {
         const writer = new RecordWriter(null);
         const full = {

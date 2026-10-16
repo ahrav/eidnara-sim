@@ -3,11 +3,13 @@ import {
     existsSync,
     mkdirSync,
     readFileSync,
+    realpathSync,
     renameSync,
     rmSync,
+    truncateSync,
     writeFileSync,
 } from "node:fs";
-import { basename, join } from "node:path";
+import { basename, join, relative } from "node:path";
 import { git } from "../git";
 import type { Artefact, CallView, Command, Snapshot } from "../grade/artefacts";
 
@@ -41,6 +43,19 @@ export class SnapshotRecorder {
         this.state = existsSync(this.stateFile)
             ? (JSON.parse(readFileSync(this.stateFile, "utf8")) as RecorderState)
             : structuredClone(EMPTY);
+        this.dropCutLine();
+    }
+
+    /**
+     * `dropCutLine` truncates `snapshots.jsonl` to its newline-terminated prefix: a line cut by
+     * a kill mid-append is discarded and the next record starts at a line boundary.
+     */
+    private dropCutLine(): void {
+        const path = join(this.armDir, "snapshots.jsonl");
+        if (!existsSync(path)) return;
+        const text = readFileSync(path, "utf8");
+        const complete = text.slice(0, text.lastIndexOf("\n") + 1);
+        if (complete.length < text.length) truncateSync(path, Buffer.byteLength(complete));
     }
 
     /**
@@ -51,6 +66,7 @@ export class SnapshotRecorder {
      * index there, so a later tree rehashes only the files whose stat data changed.
      */
     private git(args: string[], work?: string): string {
+        if (work) this.requireRealDir(work);
         if (!existsSync(this.gitDir)) git(this.armDir, ["init", "--quiet", "--bare", this.gitDir]);
         const scope: Record<string, string> = { GIT_DIR: this.gitDir };
         if (work) {
@@ -63,6 +79,18 @@ export class SnapshotRecorder {
     private save(): void {
         writeFileSync(`${this.stateFile}.tmp`, JSON.stringify(this.state));
         renameSync(`${this.stateFile}.tmp`, this.stateFile);
+    }
+
+    /**
+     * The agent can rename a workspace and put a symlink at its path, which `GIT_WORK_TREE`
+     * would follow. A work tree is accepted when every path component below the arm
+     * directory is a real directory.
+     */
+    private requireRealDir(work: string): void {
+        const expected = join(realpathSync(this.armDir), relative(this.armDir, work));
+        if (realpathSync(work) !== expected) {
+            throw new Error(`workspace ${work} is a symlink or lies behind one`);
+        }
     }
 
     clear(): void {

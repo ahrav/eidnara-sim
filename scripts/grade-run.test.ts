@@ -1,0 +1,191 @@
+import { afterEach, describe, expect, test } from "bun:test";
+import {
+    appendFileSync,
+    mkdirSync,
+    mkdtempSync,
+    readFileSync,
+    rmSync,
+    writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { Snapshot } from "../src/grade/artefacts";
+import { canonicalJson, sha256Hex } from "../src/prereg/canonical";
+import { preregistrationHash } from "../src/prereg/validate";
+import { releaseLease, takeLease } from "../src/run/journal";
+import { loadPrereg } from "../src/scenario/inputs";
+import { gradeRun } from "./grade-run";
+
+const ROOT = join(import.meta.dir, "..");
+const dirs: string[] = [];
+afterEach(() => {
+    for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+});
+
+interface Fixture {
+    probe: Record<string, unknown> & { id: string; type: string };
+    snapshots: Snapshot[];
+}
+
+const fixture = (name: string): Fixture =>
+    JSON.parse(readFileSync(join(ROOT, "tests/fixtures/grade", `${name}.json`), "utf8"));
+
+interface RunOptions {
+    probes: Fixture["probe"][];
+    events?: number;
+    models?: string[];
+    prereg_sha256?: string;
+    scenario_hash?: string;
+}
+
+function run(o: RunOptions): string {
+    const dir = mkdtempSync(join(tmpdir(), "grade-run-"));
+    dirs.push(dir);
+    const events: Record<string, unknown>[] = [
+        { id: "e-0", kind: "session_start", scenario_ms: 0, session: "s-1" },
+        ...o.probes.map((p, i) => ({
+            id: `e-${i + 1}`,
+            kind: "user_turn",
+            scenario_ms: 1_000 * (i + 1),
+            session: "s-1",
+            index: i,
+            probe: p.id,
+            text: p.text,
+        })),
+        {
+            id: "e-end",
+            kind: "session_end",
+            scenario_ms: 1_000 * (o.probes.length + 1),
+            session: "s-1",
+        },
+    ];
+    const body = {
+        manifest: { seed: 1, tier: "S" },
+        probes: o.probes.map((p, i) => ({ ...p, session: "s-1", event: `e-${i + 1}` })),
+        events,
+    };
+    const scenario = { ...body, scenario_hash: sha256Hex(canonicalJson(body)) };
+    writeFileSync(join(dir, "scenario.json"), `${canonicalJson(scenario)}\n`);
+    const manifest = {
+        schema: "sim-run-manifest/v1",
+        tier: "S",
+        seed: 1,
+        host: "pi",
+        order: ["host", "eidnara"],
+        events: o.events ?? events.length,
+        models: o.models ?? ["global.anthropic.claude-opus-5-5"],
+        scenario_hash: o.scenario_hash ?? scenario.scenario_hash,
+        prereg_sha256: o.prereg_sha256 ?? preregistrationHash(loadPrereg("S")),
+    };
+    writeFileSync(join(dir, "manifest.json"), JSON.stringify(manifest));
+    writeFileSync(join(dir, "journal.jsonl"), "");
+    return dir;
+}
+
+let seq = 0;
+function snapshot(dir: string, arm: string, s: Snapshot, journaled = true): void {
+    const row = { ...s, arm, id: `${arm}:${s.item}:${s.turn}:${seq++}` };
+    mkdirSync(join(dir, arm), { recursive: true });
+    appendFileSync(join(dir, arm, "snapshots.jsonl"), `${JSON.stringify(row)}\n`);
+    if (!journaled) return;
+    const entry = {
+        seq,
+        wall_ms: seq,
+        kind: "SnapshotArtefacts",
+        arm,
+        scenario_ms: 0,
+        item: s.item,
+        snapshot: row.id,
+    };
+    appendFileSync(join(dir, "journal.jsonl"), `${JSON.stringify(entry)}\n`);
+}
+
+const p5 = fixture("P5-pass");
+const snap = p5.snapshots[0] as Snapshot;
+
+describe("grade-run", () => {
+    test("grades a journaled snapshot and keys skipped items by arm and reason", async () => {
+        const dir = run({ probes: [p5.probe] });
+        snapshot(dir, "eidnara", snap);
+        const summary = await gradeRun(dir, null);
+        expect(summary.verdicts).toEqual({ "eidnara/P5": { pass: 1 } });
+        expect(summary.skipped).toEqual({ host: { "no journaled snapshot": 1 } });
+    });
+
+    test("later attempts after the journaled first snapshot are counted, not dropped", async () => {
+        const dir = run({ probes: [p5.probe] });
+        snapshot(dir, "eidnara", snap);
+        snapshot(dir, "eidnara", { ...snap, turn: "e-1-retry" }, false);
+        await gradeRun(dir, null);
+        const [grade] = readFileSync(join(dir, "grades.jsonl"), "utf8").trim().split("\n");
+        expect(JSON.parse(grade as string).later_attempts_logged).toBe(1);
+    });
+
+    test("probes whose turn lies past the run's event prefix are reported as outside the run", async () => {
+        const second = { ...p5.probe, id: "P5-b" };
+        const dir = run({ probes: [p5.probe, second], events: 2 });
+        snapshot(dir, "eidnara", snap);
+        snapshot(dir, "host", snap);
+        const summary = await gradeRun(dir, null);
+        expect(summary.skipped).toEqual({
+            host: { "probe turn outside the run's 2 events": 1 },
+            eidnara: { "probe turn outside the run's 2 events": 1 },
+        });
+    });
+
+    test("refuses a run whose pre-registration or scenario digest differs from its manifest", async () => {
+        const stale = run({ probes: [p5.probe], prereg_sha256: "0".repeat(64) });
+        await expect(gradeRun(stale, null)).rejects.toThrow("prereg_sha256");
+        const edited = run({ probes: [p5.probe] });
+        const path = join(edited, "scenario.json");
+        const scenario = JSON.parse(readFileSync(path, "utf8"));
+        scenario.probes[0].check.must_not = [];
+        writeFileSync(path, canonicalJson(scenario));
+        await expect(gradeRun(edited, null)).rejects.toThrow("scenario_hash");
+    });
+
+    test("the summary names the grade versions it aggregates", async () => {
+        const dir = run({ probes: [p5.probe] });
+        snapshot(dir, "eidnara", snap);
+        expect((await gradeRun(dir, null)).versions).toEqual({ "1": 1 });
+        expect((await gradeRun(dir, null)).versions).toEqual({ "2": 1 });
+    });
+
+    test("a run directory leased by a live process is refused", async () => {
+        const dir = run({ probes: [p5.probe] });
+        takeLease(dir);
+        try {
+            await expect(gradeRun(dir, null)).rejects.toThrow(/is leased by pid/);
+        } finally {
+            releaseLease(dir);
+        }
+    });
+
+    test("the judge firewall is checked against every model the manifest records", async () => {
+        const p7 = fixture("P7-pass");
+        const call = {
+            seq: 1,
+            component: "agent",
+            turn: "e-1",
+            scenario_ms: 0,
+            input_tokens: 1,
+            output_tokens: 1,
+            response_text: "because",
+        };
+        const p7snap: Snapshot = {
+            id: "x",
+            item: p7.probe.id,
+            arm: "x",
+            turn: "e-1",
+            turn_outcome: "ok",
+            artefacts: [{ id: "calls", class: "proxy-call", calls: [call] }],
+        };
+        const dir = run({
+            probes: [p7.probe],
+            models: ["global.anthropic.claude-opus-5-5", "global.openai.gpt-5.6-luna"],
+        });
+        snapshot(dir, "host", p7snap);
+        snapshot(dir, "eidnara", p7snap);
+        await expect(gradeRun(dir, null)).rejects.toThrow("shares the agent model's family");
+    });
+});

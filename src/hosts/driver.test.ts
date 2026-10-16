@@ -469,6 +469,48 @@ function captured(armDir: string): Record<string, { patch?: string }> {
     return Object.fromEntries(snap.artefacts.map((a: { id: string }) => [a.id, a]));
 }
 
+test("a recorder rebuilt over a cut last snapshot line drops the cut and appends whole records", () => {
+    const repo = gitRepo();
+    const armDir = tmp();
+    const first = new SnapshotRecorder(armDir, "eidnara", () => []);
+    first.sessionStart("s-1", "p", repo);
+    first.capture(
+        { probe: "q", session: "s-1", id: "e-1" },
+        "p",
+        repo,
+        first.tree(repo),
+        [],
+        false,
+    );
+    const path = join(armDir, "snapshots.jsonl");
+    const whole = readFileSync(path, "utf8");
+    writeFileSync(path, `${whole}{"id":"eidnara:r:e-2","item":"r","arte`);
+    const resumed = new SnapshotRecorder(armDir, "eidnara", () => []);
+    resumed.sessionStart("s-1", "p", repo);
+    resumed.capture(
+        { probe: "r", session: "s-1", id: "e-2" },
+        "p",
+        repo,
+        resumed.tree(repo),
+        [],
+        false,
+    );
+    const lines = readFileSync(path, "utf8").trim().split("\n");
+    expect(lines.map((l) => JSON.parse(l).id)).toEqual(["eidnara:q:e-1", "eidnara:r:e-2"]);
+});
+
+test("snapshot git refuses a workspace path that an agent replaced with a symlink", () => {
+    const armDir = tmp();
+    const workspaces = join(armDir, "r", "workspaces");
+    mkdirSync(workspaces, { recursive: true });
+    const outside = tmp();
+    writeFileSync(join(outside, "credentials"), "aws_secret_access_key = leaked\n");
+    symlinkSync(outside, join(workspaces, "p"));
+    const recorder = new SnapshotRecorder(armDir, "eidnara", () => []);
+    expect(() => recorder.tree(join(workspaces, "p"))).toThrow("symlink");
+    expect(existsSync(join(armDir, "snapshot.git"))).toBe(false);
+});
+
 test("snapshot git runs no command and indexes no path that the workspace repo's config names", () => {
     const repo = gitRepo();
     const outside = tmp();

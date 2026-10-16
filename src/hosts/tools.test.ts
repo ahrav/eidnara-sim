@@ -9,6 +9,19 @@ test("a tool run reads as its bash command, or as the tool and its target path",
     expect(toolCommand("eidnara_search", { query: "cap" })).toBe('eidnara_search {"query":"cap"}');
 });
 
+test("a structured write or edit keeps the content it wrote under its target path", () => {
+    expect(
+        toolCommand("write", { path: "src/cache.ts", content: "const cache = new Map();\n" }),
+    ).toBe("write src/cache.ts\nconst cache = new Map();\n");
+    const edits = [{ oldText: "let a", newText: "static A: Mutex<u8>" }];
+    expect(toolCommand("edit", { path: "src/x.rs", edits })).toBe(
+        `edit src/x.rs\n${JSON.stringify(edits)}`,
+    );
+    expect(toolCommand("read", { path: "src/db.rs", offset: 10, limit: 20 })).toBe(
+        "read src/db.rs",
+    );
+});
+
 test("an OpenCode turn logs only its own messages' tools, timed in OpenCode's clock from the turn's first message", async () => {
     const fakeNow = 9_000_000_000;
     const old = {
@@ -128,4 +141,32 @@ test("a failed OpenCode turn whose messages cannot be listed keeps its error and
     const result = await failingTurn("rejected", false).prompt("go", 50);
     expect(result.error).toContain("socket closed");
     expect(result.error).toContain("tool capture: Error: serve gone");
+});
+
+test("a message listing that returns an error instead of data is a capture failure, not an empty turn", async () => {
+    let listed = 0;
+    const client = {
+        session: {
+            messages: async () =>
+                listed++ === 0
+                    ? { data: [] }
+                    : { error: { name: "Unauthorized" }, data: undefined },
+            prompt: async () => ({ data: { info: {} } }),
+            abort: async () => ({}),
+        },
+    };
+    const host = new OpencodeSimHost({
+        ...({} as HostContext),
+        config: loadConfig(),
+        root: "/x",
+        launcher: "/x/sandbox.sh",
+        now: () => 100,
+    });
+    Object.assign(host as unknown as Record<string, unknown>, {
+        client,
+        sid: "s",
+        oc: { stderr: () => "" },
+    });
+    await expect(host.prompt("go", 5_000)).rejects.toThrow("Unauthorized");
+    expect(host.drainTools()).toEqual([]);
 });

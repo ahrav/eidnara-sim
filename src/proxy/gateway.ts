@@ -333,6 +333,7 @@ export class Gateway {
             } else {
                 sink.status(200, { "content-type": "application/vnd.amazon.eventstream" });
                 let complete = 0;
+                let block: number | null = null;
                 for await (const event of response.events) {
                     for (const [type, member] of Object.entries(event)) {
                         if (member === undefined) continue;
@@ -341,9 +342,15 @@ export class Gateway {
                         const m = member as {
                             usage?: Usage;
                             stopReason?: string;
+                            contentBlockIndex?: number;
                             delta?: { text?: string };
                         };
-                        if (type === "contentBlockDelta" && m.delta?.text) text.push(m.delta.text);
+                        if (type === "contentBlockDelta" && m.delta?.text) {
+                            const index = m.contentBlockIndex ?? 0;
+                            if (block !== null && index !== block) text.push("\n");
+                            block = index;
+                            text.push(m.delta.text);
+                        }
                         if (type === "metadata") Object.assign(usage, m.usage ?? {});
                         if (type === "messageStop") done.finish_reason = m.stopReason ?? null;
                         if (type === "messageStop" || type === "metadata") complete++;

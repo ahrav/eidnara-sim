@@ -587,3 +587,48 @@ test("a probe turn's snapshot is journaled once per item and arm, after its EndT
     expect(snaps.map((e) => e.snapshot)).toEqual(["a:q-1:e-000001"]);
     expect(kinds.indexOf("SnapshotArtefacts")).toBe(kinds.indexOf("EndTurn") + 1);
 });
+
+test("a harness killed between a probe's EndTurn and its SnapshotArtefacts journals the snapshot on resume", async () => {
+    const path = join(dir(), "j.jsonl");
+    const events = fixtureEvents(1).map((e) =>
+        e.kind === "user_turn" ? { ...e, probe: "q-1" } : e,
+    );
+    const driver: ArmDriver = {
+        reset: async () => undefined,
+        event: async (e) => (e.kind === "user_turn" ? { snapshot: `a:q-1:${e.id}` } : {}),
+        fault: async () => ({}),
+    };
+    const first = new Journal(path);
+    await new Scheduler({
+        events,
+        faults: [],
+        journal: first,
+        settleMs: 0,
+        order: ["a"],
+        drivers: { a: driver },
+    }).run();
+    first.close();
+    const whole = readJournal(path);
+    const cut = whole.findIndex((e) => e.kind === "SnapshotArtefacts");
+    writeFileSync(
+        path,
+        whole
+            .slice(0, cut)
+            .map((e) => `${JSON.stringify(e)}\n`)
+            .join(""),
+    );
+
+    const second = new Journal(path);
+    await new Scheduler({
+        events,
+        faults: [],
+        journal: second,
+        settleMs: 0,
+        order: ["a"],
+        drivers: { a: driver },
+    }).run();
+    const snaps = second.entries.filter((e) => e.kind === "SnapshotArtefacts");
+    expect(snaps.map((e) => [e.item, e.snapshot])).toEqual([["q-1", "a:q-1:e-000001"]]);
+    const kinds = second.entries.map((e) => `${e.kind}:${e.event ?? e.item ?? ""}`);
+    expect(kinds.indexOf("SnapshotArtefacts:q-1")).toBeLessThan(kinds.indexOf("Event:e-000001"));
+});

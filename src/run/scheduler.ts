@@ -111,6 +111,7 @@ export class Scheduler {
         const ended = new Set(kinds("EndTurn").map((e) => e.event));
         const begun = new Set(kinds("BeginTurn").map((e) => e.event));
         for (const e of kinds("EndTurn").filter((x) => !done.has(x.event))) {
+            this.snapshotTurn(e);
             this.log({ kind: "Event", event: e.event, outcome: e.outcome });
         }
         for (const e of kinds("BeginTurn").filter((x) => !ended.has(x.event))) {
@@ -159,6 +160,19 @@ export class Scheduler {
         return this.o.journal.entries.some(
             (x) => x.kind === "SnapshotArtefacts" && x.arm === this.arm && x.item === item,
         );
+    }
+
+    /**
+     * Journals the first `SnapshotArtefacts` of a probe item from the snapshot its `EndTurn`
+     * names. A resume replays it from the `EndTurn` entry, so a kill between the two leaves
+     * the snapshot id in the journal once the run continues.
+     */
+    private snapshotTurn(end: Record<string, unknown>): void {
+        const item = typeof end.probe === "string" ? end.probe : null;
+        const snapshot = typeof end.snapshot === "string" ? end.snapshot : null;
+        if (item && snapshot && !this.snapshotted(item)) {
+            this.log({ kind: "SnapshotArtefacts", item, snapshot });
+        }
     }
 
     private async idle(): Promise<void> {
@@ -223,10 +237,10 @@ export class Scheduler {
             }
             const state = outcome.failed ? "failed" : "completed";
             const item = e.probe ? { probe: e.probe, state } : {};
-            this.log({ kind: "EndTurn", event: e.id, outcome: outcome.failed ?? "ok", ...item });
-            if (e.probe && outcome.snapshot && !this.snapshotted(e.probe)) {
-                this.log({ kind: "SnapshotArtefacts", item: e.probe, snapshot: outcome.snapshot });
-            }
+            const snapshot = outcome.snapshot ? { snapshot: outcome.snapshot } : {};
+            const end = { event: e.id, outcome: outcome.failed ?? "ok", ...item, ...snapshot };
+            this.log({ kind: "EndTurn", ...end });
+            this.snapshotTurn(end);
             await Bun.sleep(this.o.settleMs ?? 1_000);
         } else {
             await driver.event(e);

@@ -49,12 +49,16 @@ export interface ToolRun {
     scenario_ms: number;
 }
 
+const TARGET_KEYS = ["path", "filePath", "pattern", "file_path"];
+
 export function toolCommand(tool: string, args: Record<string, unknown> | undefined): string {
     if (typeof args?.command === "string") return args.command;
-    const target = args?.path ?? args?.filePath ?? args?.pattern ?? args?.file_path;
-    return typeof target === "string"
-        ? `${tool} ${target}`
-        : `${tool} ${JSON.stringify(args ?? {})}`;
+    const key = TARGET_KEYS.find((k) => typeof args?.[k] === "string");
+    if (!key || !args) return `${tool} ${JSON.stringify(args ?? {})}`;
+    const body = Object.entries(args)
+        .filter(([k, v]) => k !== key && (typeof v === "string" || typeof v === "object"))
+        .map(([, v]) => (typeof v === "string" ? v : JSON.stringify(v)));
+    return [`${tool} ${args[key]}`, ...body].join("\n");
 }
 
 export interface PromptResult {
@@ -481,7 +485,10 @@ export class OpencodeSimHost extends SimHost {
 
     private async messages(): Promise<Array<{ info: Untyped; parts: Untyped[] }>> {
         const listed = await this.client.session.messages({ path: { id: this.sid } });
-        return (listed.data ?? []) as Array<{ info: Untyped; parts: Untyped[] }>;
+        if (listed.error || !listed.data) {
+            throw new Error(`session.messages failed: ${JSON.stringify(listed.error ?? null)}`);
+        }
+        return listed.data as Array<{ info: Untyped; parts: Untyped[] }>;
     }
 
     private async logTurnTools(seen: Set<string>, startScenario: number): Promise<void> {
