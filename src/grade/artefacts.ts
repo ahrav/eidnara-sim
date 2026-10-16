@@ -130,7 +130,7 @@ const CALL: Record<string, Field> = {
     seq: num,
     component: oneOf(COMPONENTS),
     turn: nullable(str),
-    turn_index: optional(num),
+    turn_index: optional(count),
     scenario_ms: num,
     status: num,
     error: nullable(str),

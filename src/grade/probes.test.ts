@@ -141,7 +141,10 @@ describe("grading harness", () => {
 
     test("P10 grades a literal anchor case-insensitively", () => {
         const f = fixture("P10-pass");
-        const probe = { ...f.probe, check: { must_not: ["xeric-magpie-81"] } };
+        const probe = {
+            ...f.probe,
+            check: { must_not: ["xeric-magpie-81"], answer_must_not: "xeric-magpie-81" },
+        };
         const snap = structuredClone(f.snapshots[0]) as Snapshot;
         const calls = snap.artefacts.find((a) => a.class === "proxy-call");
         if (calls?.class !== "proxy-call") throw new Error("fixture lacks proxy-call");
@@ -662,6 +665,67 @@ describe("grading harness", () => {
         expect(gradeItem(f.probe, [snap], rules)?.metrics["P6.ran_tests"]).toBe(true);
     });
 
+    test("subshells, multiple heredocs, and background lists follow shell execution", () => {
+        const f = fixture("P6-pass");
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        const log = snap.artefacts.find((a) => a.class === "command-log" && a.role === "turn");
+        if (log?.class !== "command-log") throw new Error("fixture lacks command-log");
+        log.commands.push(
+            { command: "false && (echo x; cargo test); true", exit: 0, scenario_ms: 10 },
+            { command: "cat <<A <<B\nA\ncargo test\nB", exit: 0, scenario_ms: 20 },
+        );
+        expect(gradeItem(f.probe, [snap], rules)?.metrics["P6.ran_tests"]).toBe(false);
+        log.commands.push({
+            command: "cat <<EOF >/dev/null; cargo test\nbody\nEOF",
+            exit: 0,
+            scenario_ms: 30,
+        });
+        expect(gradeItem(f.probe, [snap], rules)?.metrics["P6.ran_tests"]).toBe(true);
+        log.commands.pop();
+        log.commands.push({ command: "echo ok 2>&1 & cargo test", exit: 0, scenario_ms: 40 });
+        expect(gradeItem(f.probe, [snap], rules)?.metrics["P6.ran_tests"]).toBe(true);
+    });
+
+    test("a turn index is a non-negative integer", () => {
+        const f = fixture("P13-pass");
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        const calls = snap.artefacts.find((a) => a.class === "proxy-call");
+        if (calls?.class !== "proxy-call") throw new Error("fixture lacks proxy-call");
+        (calls.calls[0] as CallView).turn_index = 29.5;
+        expect(() => gradeItem(f.probe, [snap], rules)).toThrow("calls[0].turn_index");
+    });
+
+    test("a persisted P1 record carries its pair, a graded record its probe's metrics, and versions run consecutively", () => {
+        const path = join(mkdtempSync(join(tmpdir(), "sim-grades-")), "grades.jsonl");
+        const log = new GradeLog(path);
+        const p1 = grade("P1-pass");
+        const { pair: _pair, ...unpaired } = p1;
+        expect(() => log.append(unpaired as GradeRecord)).toThrow(GradeRefused);
+        const p2 = grade("P2-pass");
+        expect(() => log.append({ ...p2, metrics: {} })).toThrow(GradeRefused);
+        appendFileSync(path, `${JSON.stringify(p2)}\n${JSON.stringify({ ...p2, version: 3 })}\n`);
+        expect(() => log.all()).toThrow("line 2 has version 3 after version 1");
+    });
+
+    test("every counted snapshot is bound to the probe's session and event", () => {
+        const f = fixture("P8-pass");
+        const first = f.snapshots[0] as Snapshot;
+        const stray = { ...structuredClone(first), id: "other", session: "s-9" };
+        expect(() => gradeItem(f.probe, [first, stray], rules)).toThrow("session s-9");
+    });
+
+    test("P10 applies must_not to the diff and answer_must_not to the response", () => {
+        const f = fixture("P10-pass");
+        const check = f.probe.check as { must_not: string[]; answer_must_not: string };
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        const calls = snap.artefacts.find((a) => a.class === "proxy-call");
+        if (calls?.class !== "proxy-call") throw new Error("fixture lacks proxy-call");
+        (calls.calls[0] as { response_text: string }).response_text = "The port is 80095.";
+        expect(gradeItem(f.probe, [snap], rules)?.verdict).toBe("fail");
+        const diffOnly = { ...f.probe, check: { must_not: check.must_not } };
+        expect(gradeItem(diffOnly, [snap], rules)?.verdict).toBe("pass");
+    });
+
     test("proxy calls must carry strictly increasing sequence numbers", () => {
         const f = fixture("P8-pass");
         const snap = structuredClone(f.snapshots[0]) as Snapshot;
@@ -789,7 +853,7 @@ describe("grading harness", () => {
             path,
             `${JSON.stringify(g)}\n${JSON.stringify({ ...g, verdict: "fail" })}\n`,
         );
-        expect(() => log.all()).toThrow("line 2 repeats version 1");
+        expect(() => log.all()).toThrow("line 2 has version 1 after version 1");
     });
 
     test("P6 counts a test run only when a shell segment starts with the test command", () => {

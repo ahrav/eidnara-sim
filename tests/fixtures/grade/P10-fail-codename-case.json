@@ -10,7 +10,8 @@
     "check": {
       "must_not": [
         "xeric-magpie-81"
-      ]
+      ],
+      "answer_must_not": "xeric-magpie-81"
     },
     "event": "e-1"
   },

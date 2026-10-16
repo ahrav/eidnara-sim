@@ -10,7 +10,8 @@
     "check": {
       "must_not": [
         "80095"
-      ]
+      ],
+      "answer_must_not": "80095"
     },
     "event": "e-1"
   },

@@ -21,7 +21,7 @@ The scenario file is canonical JSON with these sections:
 
 | Section | Contents |
 |---|---|
-| `manifest` | Seed, tier, generator and random-schema versions, one sha256 over `corpus/manifest.json`, `corpus/fact-bank.json`, and `corpus/repos.json`, the sha256 of the pre-registration, the embedding model, the similarity thresholds, the gap scale factors, and the probe count per type |
+| `manifest` | Seed, tier, generator and random-schema versions, one sha256 over every corpus file the compiler reads (`manifest.json`, `fact-bank.json`, `repos.json`, `distributions.json`, and the two `tool-outputs` files), the sha256 of the pre-registration, the embedding model, the similarity thresholds, the gap scale factors, and the probe count per type |
 | `projects` | Each repository in `corpus/repos.json` and its twin |
 | `sessions` | Session id, project, start time, request count, the idle gap before the session, the minimum gap the compiler enforced, and whether the request count was forced into the p90 regime |
 | `facts` | Ledger facts with template, kind, project, conveyance manner, statement, and the cue texts that carry it |
@@ -155,15 +155,15 @@ thresholds (`bm25_max` 0.4, `cosine_max` 0.6):
 
 | Tier | Seed | `scenario_hash` | Largest BM25 ratio | Largest cosine |
 |---|---|---|---|---|
-| S | 101 | `754baee2` | 0.2125 | 0.5194 |
-| S | 102 | `2ce34ca6` | 0.2628 | 0.4867 |
-| M | 201 | `970894b6` | 0.2516 | 0.4992 |
-| M | 202 | `0166034d` | 0.2551 | 0.4997 |
-| M | 203 | `2a930c40` | 0.2535 | 0.4843 |
-| L | 301 | `7314dfd1` | 0.2558 | 0.5092 |
-| L | 302 | `61cd75a7` | 0.2535 | 0.4957 |
-| L | 303 | `8e134b38` | 0.2514 | 0.5083 |
-| XL | 401 | `ef4c1c73` | 0.2561 | 0.4962 |
+| S | 101 | `4896069e` | 0.2125 | 0.5194 |
+| S | 102 | `b9800247` | 0.2628 | 0.4867 |
+| M | 201 | `156032fc` | 0.2516 | 0.4992 |
+| M | 202 | `cf1a93e3` | 0.2551 | 0.4997 |
+| M | 203 | `0324152b` | 0.2535 | 0.4843 |
+| L | 301 | `2abf6cdd` | 0.2558 | 0.5092 |
+| L | 302 | `57963ef4` | 0.2535 | 0.4957 |
+| L | 303 | `addcad7e` | 0.2514 | 0.5083 |
+| XL | 401 | `4de46a62` | 0.2561 | 0.4962 |
 
 ## Known limits
 

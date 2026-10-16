@@ -12,9 +12,16 @@ import type { Embedder } from "./similarity";
 
 const read = (path: string) => readFileSync(join(CORPUS_DIR, path), "utf8");
 
-/** One digest over every corpus file the compiler reads, so a change to any of them recompiles. */
+/** One digest over every corpus file the compiler reads directly, so a change to any of them recompiles. */
 export function corpusInputsSha256(): string {
-    const files = ["manifest.json", "fact-bank.json", "repos.json"];
+    const files = [
+        "manifest.json",
+        "fact-bank.json",
+        "repos.json",
+        "distributions.json",
+        "tool-outputs/samples.jsonl",
+        "tool-outputs/error-codes.jsonl",
+    ];
     return sha256Hex(files.map((f) => `${f}:${sha256Hex(read(f))}`).join("\n"));
 }
 

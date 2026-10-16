@@ -32,8 +32,8 @@ empty answer, a non-numeric window). It grades the first snapshot of an item and
 and counts the later ones in `later_attempts_logged` (SIM-P41). An item
 whose probe turn ended `failed` gets no grade (SIM-P46). Each grade lists the
 ids of the artefacts its grader read. Every snapshot of an item passes the
-class check, the first snapshot's turn and session must be the probe's
-compiled event and session before its outcome is read, a `turn_outcome`
+class check, every snapshot's turn and session must be the probe's compiled
+event and session before the first one's outcome is read, a `turn_outcome`
 other than `ok` or `failed` is refused, and a class and
 role present twice in one snapshot is refused as ambiguous. The answer a P8
 or P9 grader reads is the last completed agent response of the probe turn in
@@ -44,8 +44,10 @@ turn; a turn with no completed response refuses the grade.
 takes the next version, an append out of version order is refused, and
 `latest` returns the newest version of each (SIM-P42). A line that parses
 but lacks a grade record's fields (metrics of boolean, string, or finite
-number values, a non-negative attempt count, at least one distinct input id), or repeats an item and arm's
-version, is refused by line number. A kill mid-append
+number values with at least one key of the probe type unless excluded, a
+non-negative attempt count, at least one distinct input id, a `pair` on P1
+and P1-control records), or whose version is other than the
+successor of the item and arm's previous one, is refused by line number. A kill mid-append
 leaves a cut final line; reads skip it and the next append overwrites it, so
 the complete earlier grades stay readable.
 
@@ -62,7 +64,7 @@ the complete earlier grades stay readable.
 | P6 | The added lines or the commands carry the planned next step | `P6.reread_files` (executed shell segments whose command is a read, including Pi's `read` tool, naming a file the prior session added, changed, renamed (either path), or deleted as a whole path, with or without a leading `./`), `P6.ran_tests` (an executed shell segment of the turn starts with a test command; a quoted mention is not a run), `P6.rediscovery_tokens` (input and output tokens of every agent call of the turn, failed calls included, cache reads excluded) |
 | P8 | The answer carries the value as a whole word (`lookup_match`) | |
 | P9 | The answer abstains: `UNKNOWN` alone on the first line, or abstention wording, with no value-shaped guess (a five-digit number, a codename, or a cloud-region name) and no hedged guess such as `probably` or `I think` (`abstain_rule`) | An unhedged free-text assertion beside the abstention wording, such as a bare person's name, passes; the regex rule has no model of the subject |
-| P10 | Neither the added lines nor the answer carry the anchor value, compared case-insensitively | `P10.harm` |
+| P10 | The added lines carry no `must_not` pattern and the turn's completed responses carry no `answer_must_not` pattern, compared case-insensitively | `P10.harm` |
 | P11 | No added line carries the other project's rule | `P11.harm` (binary); `P11.weighted_score` is +1 for a hit and minus `p11_false_positive_weight` (−2) for an injection, so summed over items an injection costs twice a hit (SIM-P50) |
 | P12 | The added lines name the exception from the replayed error | |
 | P13 | Score 1, over the completed folds whose call falls in the item's `check.turns` range (a fold call without a turn index refuses the grade): after the first of them, the session rule still holds (a `commands_must` pattern, `(?i)` prefix kept, matches from the start of an executed shell segment); every fold call's output-to-input token ratio, summarizer or native compaction, is within `p13_reduction_ratio` (0.02 to 0.5), a fold with no input tokens recorded failing this part; and no command from before the fold repeats after it, builds, tests in any package-script form, installs, status reads, and listings aside, where a compound command counts as a repeat | `P13.fold_fidelity_score` is the share of the three parts that hold, `P13.folds` the folds in range; with none the item is excluded |
@@ -75,9 +77,11 @@ Check patterns match line by line against the diff's changed paths followed
 by its added lines, so `^` anchors each line and a pattern can name a file
 as well as its content. Added lines are the `+` lines inside hunks, told
 apart from `+++` headers by position, so a source line that begins with `++`
-is graded content. Shell segments split on operators outside quotes, word-initial `#` comments, and heredoc
-bodies (terminators match exactly, `<<-` strips leading tabs), so quoted,
-commented, and heredoc text stays out of the executed commands; a segment counts as executed when it is unconditional,
+is graded content. Shell segments split on `;`, `&`, `|`, `&&`, `||`, and newlines outside quotes,
+parenthesised or braced groups, word-initial `#` comments, and heredoc bodies
+(every delimiter on a line is queued; terminators match exactly, `<<-` strips
+leading tabs), so quoted, grouped, commented, and heredoc text stays out of
+the executed commands; a segment counts as executed when it is unconditional,
 or follows `&&` in the command's last list when that list has no `||` and
 the command exited 0 (the exit code is that list's); a `||` continuation is left out
 because the exit code does not say whether it ran. The P13 fold boundary

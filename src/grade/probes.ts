@@ -27,6 +27,7 @@ export interface Check {
     must_not?: string[];
     commands_must?: string[];
     answer?: string;
+    answer_must_not?: string | string[];
     abstain?: boolean;
     scope?: "in" | "out";
     window_from_turn?: number;
@@ -83,6 +84,7 @@ const CHECK_FIELDS: Record<keyof Check, Field> = {
     must_not: patternList,
     commands_must: patternList,
     answer: text,
+    answer_must_not: (v: unknown) => compiles(v) || patternList(v),
     abstain: bool,
     scope: oneOf(["in", "out"]),
     window_from_turn: num,
@@ -133,49 +135,37 @@ const work = (r: ArtefactReader) => `${changed(r)}\n${commandText(r)}`;
  * command exited 0. A `||` continuation is left out, because its execution cannot be read from
  * the exit code.
  */
-/** Operator-separated segments with the operator that led to each; quoted text is one segment. */
+/**
+ * Operator-separated segments with the operator that led to each. Quoted text, a parenthesised
+ * or braced group, a word-initial comment, and a heredoc body stay out of the operator scan, so
+ * only top-level commands become segments.
+ */
 function splitShell(command: string): { op: string; seg: string }[] {
     const out: { op: string; seg: string }[] = [];
     let quote = "";
+    let depth = 0;
     let seg = "";
     let op = ";";
+    const pending: { delim: string; stripTabs: boolean }[] = [];
     const push = (next: string) => {
         out.push({ op, seg: seg.trim() });
         seg = "";
         op = next;
     };
-    let heredoc = "";
-    let stripTabs = false;
+    const skipBodies = (from: number): number => {
+        let i = from;
+        while (pending.length > 0 && i < command.length) {
+            const end = command.indexOf("\n", i);
+            const raw = command.slice(i, end < 0 ? command.length : end);
+            const head = pending[0] as { delim: string; stripTabs: boolean };
+            const line = head.stripTabs ? raw.replace(/^\t+/, "") : raw;
+            if (line === head.delim) pending.shift();
+            i = end < 0 ? command.length : end + 1;
+        }
+        return i;
+    };
     for (let i = 0; i < command.length; i++) {
         const ch = command[i] as string;
-        if (heredoc) {
-            if (ch === "\n") {
-                const end = command.indexOf("\n", i + 1);
-                const raw = command.slice(i + 1, end < 0 ? command.length : end);
-                const line = stripTabs ? raw.replace(/^\t+/, "") : raw;
-                if (line === heredoc) {
-                    heredoc = "";
-                    i = end < 0 ? command.length : end;
-                    push("\n");
-                } else i = end < 0 ? command.length : end - 1;
-            }
-            continue;
-        }
-        if (!quote && ch === "#" && (seg.length === 0 || /[\s;&|(]$/.test(seg))) {
-            const end = command.indexOf("\n", i);
-            i = end < 0 ? command.length : end - 1;
-            continue;
-        }
-        if (!quote && command.startsWith("<<", i)) {
-            const m = /^<<(-?)\s*(['"]?)([A-Za-z_][\w-]*)\2/.exec(command.slice(i));
-            if (m) {
-                stripTabs = m[1] === "-";
-                heredoc = m[3] as string;
-                seg += m[0];
-                i += m[0].length - 1;
-                continue;
-            }
-        }
         if (quote) {
             seg += ch;
             if (ch === quote) quote = "";
@@ -186,11 +176,32 @@ function splitShell(command: string): { op: string; seg: string }[] {
             quote = ch;
             seg += ch;
         } else if (ch === "\\") seg += ch + (command[++i] ?? "");
-        else if (command.startsWith("&&", i) || command.startsWith("||", i)) {
+        else if (ch === "(" || ch === "{") {
+            depth++;
+            seg += ch;
+        } else if (ch === ")" || ch === "}") {
+            depth = Math.max(0, depth - 1);
+            seg += ch;
+        } else if (depth > 0) seg += ch;
+        else if (ch === "#" && (seg.length === 0 || /[\s;&|(]$/.test(seg))) {
+            const end = command.indexOf("\n", i);
+            i = end < 0 ? command.length : end - 1;
+        } else if (command.startsWith("<<", i)) {
+            const m = /^<<(-?)\s*(['"]?)([A-Za-z_][\w-]*)\2/.exec(command.slice(i));
+            if (m) {
+                pending.push({ delim: m[3] as string, stripTabs: m[1] === "-" });
+                seg += m[0];
+                i += m[0].length - 1;
+            } else seg += ch;
+        } else if (command.startsWith("&&", i) || command.startsWith("||", i)) {
             push(command.slice(i, i + 2));
             i++;
-        } else if (ch === ";" || ch === "|" || ch === "\n") push(ch);
-        else seg += ch;
+        } else if (ch === "&" && command[i - 1] !== ">" && command[i + 1] !== ">") push("&");
+        else if (ch === ";" || ch === "|") push(ch);
+        else if (ch === "\n") {
+            push("\n");
+            if (pending.length > 0) i = skipBodies(i + 1) - 1;
+        } else seg += ch;
     }
     out.push({ op, seg: seg.trim() });
     return out.filter((x) => x.seg.length > 0);
@@ -199,7 +210,7 @@ function splitShell(command: string): { op: string; seg: string }[] {
 /** The exit code belongs to the last list of a command, so only an `&&` segment there is established by it. */
 const executed = (x: Command): string[] => {
     const parts = splitShell(x.command);
-    const lastList = parts.reduce((n, p, i) => (p.op === ";" || p.op === "\n" ? i : n), 0);
+    const lastList = parts.reduce((n, p, i) => (/^[;&\n]$/.test(p.op) ? i : n), 0);
     const mixed = parts.slice(lastList).some((p) => p.op === "||");
     return parts
         .filter(
@@ -360,8 +371,12 @@ const GRADERS: Record<string, Grader> = {
         return binary("P9", hit, extra, "answered instead of abstaining");
     },
     P10: (r, c) => {
-        const anchors = (c.must_not ?? []).map((s) => (s.startsWith("(?i)") ? s : `(?i)${s}`));
-        const leaked = matchesAny(`${changed(r)}\n${r.responses()}`, anchors);
+        const fold = (p: string) => (p.startsWith("(?i)") ? p : `(?i)${p}`);
+        const inDiff = matchesAny(changed(r), (c.must_not ?? []).map(fold));
+        const answerPatterns = [c.answer_must_not ?? []].flat();
+        const inAnswer =
+            answerPatterns.length > 0 && matchesAny(r.responses(), answerPatterns.map(fold));
+        const leaked = inDiff || inAnswer;
         return binary("P10", !leaked, { "P10.harm": leaked }, "anchor value leaked");
     },
     P11: (r, c, rules) => {
@@ -415,16 +430,18 @@ export function gradeItem(
             throw new GradeRefused(`item ${probe.id} lists snapshot ${s.id} twice`);
         seenIds.add(s.id);
     }
-    for (const s of snapshots) assertArtefactsOnly(s);
-    if (probe.event && first.turn !== probe.event) {
-        throw new GradeRefused(
-            `snapshot ${first.id} is of turn ${first.turn}, not the probe's event ${probe.event}`,
-        );
-    }
-    if (first.session !== probe.session) {
-        throw new GradeRefused(
-            `snapshot ${first.id} is of session ${first.session}, not the probe's ${probe.session}`,
-        );
+    for (const s of snapshots) {
+        assertArtefactsOnly(s);
+        if (probe.event && s.turn !== probe.event) {
+            throw new GradeRefused(
+                `snapshot ${s.id} is of turn ${s.turn}, not the probe's event ${probe.event}`,
+            );
+        }
+        if (s.session !== probe.session) {
+            throw new GradeRefused(
+                `snapshot ${s.id} is of session ${s.session}, not the probe's ${probe.session}`,
+            );
+        }
     }
     if (first.turn_outcome === "failed") return null;
     if (first.turn_outcome !== "ok") {
@@ -472,8 +489,24 @@ function isGradeRecord(value: unknown): value is GradeRecord {
         new Set(g.inputs).size === g.inputs.length;
     const attempts =
         Number.isInteger(g.later_attempts_logged) && (g.later_attempts_logged as number) >= 0;
-    const optionals = optional(str)(g.pair) && optional(str)(g.reason);
-    return strings && version && verdict && metrics && inputs && attempts && optionals;
+    const paired = g.probe_type === "P1" || g.probe_type === "P1-control";
+    const pair = paired ? text(g.pair) : g.pair === undefined;
+    const graded =
+        metrics &&
+        (g.verdict === "excluded" ||
+            Object.keys(g.metrics as object).some((k) => k.startsWith(`${g.probe_type}.`)));
+    const optionals = optional(str)(g.reason);
+    return (
+        strings &&
+        version &&
+        verdict &&
+        metrics &&
+        inputs &&
+        attempts &&
+        optionals &&
+        pair &&
+        graded
+    );
 }
 
 function newest(grades: GradeRecord[]): GradeRecord[] {
@@ -497,7 +530,7 @@ export class GradeLog {
 
     all(): GradeRecord[] {
         const lines = this.complete().split("\n").filter(Boolean);
-        const seen = new Set<string>();
+        const seen = new Map<string, number>();
         return lines.map((l, i) => {
             let parsed: unknown;
             try {
@@ -510,13 +543,14 @@ export class GradeLog {
                     `grade log ${this.path}: line ${i + 1} is not a grade record`,
                 );
             }
-            const key = `${parsed.item}/${parsed.arm}/${parsed.version}`;
-            if (seen.has(key)) {
+            const key = `${parsed.item}/${parsed.arm}`;
+            const previous = seen.get(key) ?? 0;
+            if (parsed.version !== previous + 1) {
                 throw new GradeRefused(
-                    `grade log ${this.path}: line ${i + 1} repeats version ${parsed.version} of ${parsed.item}/${parsed.arm}`,
+                    `grade log ${this.path}: line ${i + 1} has version ${parsed.version} after version ${previous} of ${key}`,
                 );
             }
-            seen.add(key);
+            seen.set(key, parsed.version);
             return parsed;
         });
     }
