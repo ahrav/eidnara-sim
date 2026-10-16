@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { FaultEpisode } from "../scenario/faults";
 import { Clock } from "./clock";
 import type { Entry, EntryKind, Journal } from "./journal";
@@ -32,6 +33,13 @@ export interface ProxyControl {
 
 export class HarnessFailure extends Error {}
 
+/** The identity `StartRun` records and a resume must present again. */
+export function scenarioId(events: ScenarioEvent[], faults: FaultEpisode[]): string {
+    return createHash("sha256")
+        .update(JSON.stringify([events, faults]))
+        .digest("hex");
+}
+
 export interface SchedulerOptions {
     events: ScenarioEvent[];
     faults: FaultEpisode[];
@@ -55,7 +63,11 @@ export class Scheduler {
     private readonly fired = new Set<string>();
     private pendingKill: Promise<unknown> | null = null;
 
-    constructor(private readonly o: SchedulerOptions) {}
+    constructor(private readonly o: SchedulerOptions) {
+        if (!o.proxy && o.faults.some((f) => f.seam.layer === PROXY_LAYER)) {
+            throw new Error("scheduler: proxy faults are scheduled but no proxy control was given");
+        }
+    }
 
     private log(entry: { kind: EntryKind; [field: string]: unknown }): Entry {
         return this.o.journal.append({
@@ -67,8 +79,26 @@ export class Scheduler {
 
     async run(): Promise<void> {
         const entries = this.o.journal.entries;
-        if (!entries.some((e) => e.kind === "StartRun")) {
-            this.log({ kind: "StartRun", order: this.o.order });
+        if (entries.some((e) => e.kind === "EndRun")) return;
+        const finished = new Set(entries.filter((e) => e.kind === "EndArm").map((e) => e.arm));
+        for (const arm of this.o.order) {
+            if (!finished.has(arm) && !this.o.drivers[arm])
+                throw new Error(`no driver for arm ${arm}`);
+        }
+        const scenario = scenarioId(this.o.events, this.o.faults);
+        const start = entries.find((e) => e.kind === "StartRun");
+        if (!start) {
+            this.log({ kind: "StartRun", order: this.o.order, scenario });
+        } else {
+            if (JSON.stringify(start.order) !== JSON.stringify(this.o.order)) {
+                throw new Error(
+                    `scheduler: run was started with arm order ${JSON.stringify(start.order)}`,
+                );
+            }
+            if (start.scenario !== scenario) {
+                throw new Error(`scheduler: run was started with scenario ${start.scenario}`);
+            }
+            this.log({ kind: "ResumeRun", order: this.o.order, scenario });
         }
         for (const arm of this.o.order) {
             const mine = entries.filter((e) => e.arm === arm);
@@ -76,10 +106,9 @@ export class Scheduler {
             this.arm = arm;
             const start = mine.at(-1)?.scenario_ms ?? 0;
             const onClock = (ms: number) => this.o.onClock?.(arm, ms);
-            this.clock = new Clock(start, this.o.journal, Date.now, onClock);
+            this.clock = new Clock(start, this.o.journal, undefined, onClock);
             onClock(start);
-            const driver = this.o.drivers[arm];
-            if (!driver) throw new Error(`no driver for arm ${arm}`);
+            const driver = this.o.drivers[arm] as ArmDriver;
             const started = mine.some((e) => e.kind === "StartArm");
             if (!started) {
                 await driver.reset();
@@ -94,30 +123,44 @@ export class Scheduler {
             const pending = this.o.events.filter((e) => !done.has(e.id));
             if (started) await driver.resume?.(this.openSession(pending[0], done));
             for (const e of pending) await this.step(driver, e);
-            await this.idle();
             await this.pendingKill;
+            await this.idle();
             await driver.finish?.();
+            this.pendingKill = null;
+            this.outage = null;
+            this.session = null;
             this.log({ kind: "EndArm" });
         }
         this.arm = null;
         this.log({ kind: "EndRun" });
     }
 
+    /** Existing Event and failed(interrupted) entries make recovery writes idempotent across resumes. */
     private resume(mine: Entry[]): void {
         const kinds = (k: string) => mine.filter((e) => e.kind === k);
         const done = new Set(kinds("Event").map((e) => e.event));
         const ended = new Set(kinds("EndTurn").map((e) => e.event));
         const begun = new Set(kinds("BeginTurn").map((e) => e.event));
+        const interrupted = kinds("ItemState").filter((e) => e.state === "failed(interrupted)");
+        const marked = new Set(interrupted.map((e) => e.event ?? e.fault));
         for (const e of kinds("EndTurn").filter((x) => !done.has(x.event))) {
             this.log({ kind: "Event", event: e.event, outcome: e.outcome });
         }
-        for (const e of kinds("BeginTurn").filter((x) => !ended.has(x.event))) {
-            this.log({ kind: "ItemState", event: e.event, state: "failed(interrupted)" });
+        for (const e of kinds("BeginTurn").filter(
+            (x) => !ended.has(x.event) && !done.has(x.event),
+        )) {
+            if (!marked.has(e.event)) {
+                this.log({ kind: "ItemState", event: e.event, state: "failed(interrupted)" });
+            }
             this.log({ kind: "Event", event: e.event, outcome: "failed(interrupted)" });
         }
-        const closed = new Set(kinds("EndJob").map((e) => e.job));
-        for (const e of kinds("RegisterJob").filter((x) => !closed.has(x.job))) {
-            this.log({ kind: "EndJob", job: e.job, interrupted: true });
+        const open = new Map<unknown, number>();
+        for (const e of mine) {
+            if (e.kind === "RegisterJob") open.set(e.job, (open.get(e.job) ?? 0) + 1);
+            if (e.kind === "EndJob") open.set(e.job, (open.get(e.job) ?? 0) - 1);
+        }
+        for (const [job, n] of open) {
+            if (n > 0) this.log({ kind: "EndJob", job, outcome: "failed(interrupted)" });
         }
         const observed = new Set(kinds("FaultObserved").map((e) => e.fault));
         for (const fired of kinds("FaultFired")) {
@@ -125,7 +168,7 @@ export class Scheduler {
             this.fired.add(`${this.arm}/${fired.fault}`);
             if (!f) continue;
             if (f.seam.layer !== PROXY_LAYER) {
-                if (!observed.has(f.id) && f.type !== "laptop_sleep") {
+                if (!observed.has(f.id) && !marked.has(f.id) && f.type !== "laptop_sleep") {
                     this.log({ kind: "ItemState", fault: f.id, state: "failed(interrupted)" });
                 }
                 continue;
@@ -179,26 +222,36 @@ export class Scheduler {
         this.log({ kind: "FaultObserved", fault: f.id, type: f.type, evidence });
     }
 
+    /**
+     * The idle clock advance onto a session's first event is the jump across the gap before
+     * that session, so a laptop sleep scheduled for the session fires there, whatever kind of
+     * event opens it.
+     */
+    private sleepBefore(e: ScenarioEvent): FaultEpisode | undefined {
+        return this.o.faults.find(
+            (f) =>
+                f.type === "laptop_sleep" &&
+                f.trigger.session === e.session &&
+                !this.fired.has(`${this.arm}/${f.id}`),
+        );
+    }
+
     private async step(driver: ArmDriver, e: ScenarioEvent): Promise<void> {
-        await this.idle();
         await this.pendingKill;
+        await this.idle();
         this.outage = null;
         const clock = this.clock as Clock;
-        const faults = this.faultsAt(e);
-        const sleep = faults.find((f) => f.type === "laptop_sleep");
+        const sleep = this.sleepBefore(e);
         const arm = this.arm ?? "";
-        if (sleep)
-            clock.advanceTo(clock.now() + (sleep.params.duration_ms ?? 0), arm, {
-                fault: sleep.id,
-            });
-        clock.advanceTo(e.scenario_ms, arm, { next_event: e.id });
+        clock.advanceTo(e.scenario_ms, arm, sleep ? { fault: sleep.id } : { next_event: e.id });
         this.session = e.session;
-        for (const f of faults) await this.fire(driver, f);
+        if (sleep) await this.fire(driver, sleep);
+        for (const f of this.faultsAt(e)) await this.fire(driver, f);
+        let outcome: { failed?: string };
         if (e.kind === "user_turn") {
             const turn = `turn:${e.id}`;
             this.log({ kind: "BeginTurn", event: e.id, probe: e.probe ?? null });
             clock.begin(turn);
-            let outcome: { failed?: string };
             try {
                 outcome = await driver.event(e);
             } finally {
@@ -209,16 +262,17 @@ export class Scheduler {
             this.log({ kind: "EndTurn", event: e.id, outcome: outcome.failed ?? "ok", ...item });
             await Bun.sleep(this.o.settleMs ?? 1_000);
         } else {
-            await driver.event(e);
+            outcome = await driver.event(e);
         }
         if (e.kind === "session_end") {
             for (const f of this.o.faults) {
-                const mine = f.trigger.session === e.session && f.seam.layer === PROXY_LAYER;
-                if (mine && f.strategy === "persistent") this.o.proxy?.disarm(f.id);
+                if (f.trigger.session === e.session && f.seam.layer === PROXY_LAYER)
+                    this.o.proxy?.disarm(f.id);
             }
             this.session = null;
         }
-        this.log({ kind: "Event", event: e.id, outcome: "ok" });
+        await this.pendingKill;
+        this.log({ kind: "Event", event: e.id, outcome: outcome.failed ?? "ok" });
     }
 
     jobStart(id: string): void {

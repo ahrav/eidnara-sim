@@ -11,12 +11,18 @@ export class Clock {
     constructor(
         private scenario: number,
         private readonly journal: Journal,
-        private readonly wall: () => number = Date.now,
+        private readonly wall: () => number = () => Math.round(performance.now()),
         private readonly onAdvance: (scenarioMs: number) => void = () => undefined,
     ) {}
 
     now(): number {
-        return this.anchor === null ? this.scenario : this.scenario + (this.wall() - this.anchor);
+        if (this.anchor === null) return this.scenario;
+        const wall = this.wall();
+        if (wall > this.anchor) {
+            this.scenario += wall - this.anchor;
+            this.anchor = wall;
+        }
+        return this.scenario;
     }
 
     busyIds(): string[] {
@@ -30,7 +36,7 @@ export class Clock {
 
     end(id: string): void {
         if (!this.busy.delete(id) || this.busy.size > 0) return;
-        this.scenario = this.now();
+        this.now();
         this.anchor = null;
     }
 
@@ -40,8 +46,6 @@ export class Clock {
         }
         if (target <= this.scenario) return;
         const from_ms = this.scenario;
-        this.scenario = target;
-        this.onAdvance(target);
         this.journal.append({
             ...detail,
             kind: "AdvanceClock",
@@ -50,5 +54,7 @@ export class Clock {
             from_ms,
             busy: [],
         });
+        this.scenario = target;
+        this.onAdvance(target);
     }
 }
