@@ -74,10 +74,12 @@ describe("pre-registration validator", () => {
         prereg.grading.p13_reduction_ratio = { min: "0.5", max: "0.2" };
         prereg.grading.p11_false_positive_weight = "0";
         prereg.grading.judge.human_sample_percent = 140;
+        prereg.oracles.cost_ratio_max = "0";
         expect(validatePreregistration(prereg)).toEqual([
             "grading.p13_reduction_ratio: min must be below max",
             "grading.p11_false_positive_weight: must be positive",
             "grading.judge.human_sample_percent: at most 100",
+            "oracles.cost_ratio_max: must be positive",
         ]);
     });
 

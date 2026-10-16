@@ -1003,18 +1003,21 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M7 (#1032); nothing constructs
-it yet
+Exercised: partial - `src/oracle/oracles.test.ts` ("token ledger") constructs
+calls across every component with all four token fields; pricing and the
+price table version land with M7 (#1032)
 Guarantee: SIM-P38: Per-arm total tokens equal the sum of per-component tokens,
 and per-component cost uses the journaled price table version.
 Check: `always` - assert per-arm token totals equal the per-component sum and
 each cost cites the journaled price table version.
 Fault/timing angle: none.
 Required faults and enabling state: a run with every component active.
-Confidence: low - [evidence](evidence/sim-p38-cost-conserves-by-component.md).
-PROPOSED: reconstructed from the condensed index in spec #1007; no
-implementation exists to verify against, and a default tier run reaches it.
-Existing check: none
+Confidence: medium - [evidence](evidence/sim-p38-cost-conserves-by-component.md).
+M5 (#1030) implements the token half in `ledger` (`src/oracle/oracles.ts`);
+the price table half has no implementation yet.
+Existing check: `src/oracle/oracles.test.ts` (token ledger) covers the four
+token fields per component, the harness-call exclusion, and the per-arm sum;
+status unaudited
 Impact: Cost ratios are computed on tokens that do not add up.
 Open questions: None.
 
@@ -1023,8 +1026,10 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M5 (#1029); nothing constructs
-it yet
+Exercised: partial - `src/oracle/oracles.test.ts` constructs the deadline
+turns, a completed call with no follow-up, a sub-second call followed by
+silence, and a persistence call inside the window, on fixtures and constructed
+logs; a live run has not yet produced a journal
 Guarantee: SIM-P39: A turn is `hang` iff its wall duration exceeds 5 minutes
 with no call record from the agent's component in that window, or a completed
 model call is followed by no persistence or tool execution within the bound; the
@@ -1034,11 +1039,17 @@ windows and assert the `hang` label matches the definition in both directions.
 Fault/timing angle: the observed Pi hang had a completed model call.
 Required faults and enabling state: a turn with a completed call and no
 follow-up.
-Confidence: low -
-[evidence](evidence/sim-p39-hang-is-derived-from-call-silence.md). PROPOSED:
-reconstructed from the condensed index in spec #1007; no implementation exists
-to verify against, and a default tier run reaches it.
-Existing check: none
+Confidence: medium -
+[evidence](evidence/sim-p39-hang-is-derived-from-call-silence.md). M5 (#1030)
+implements the oracle in `f4` (`src/oracle/oracles.ts`) over the recorded
+journal, call records, and tool runs; it reads the turn after the fact rather
+than labelling it `failed(hang)` as it ends, and a tool start within a second
+of the call's end counts as progress however long the tool runs. A default
+tier run reaches it; none has run yet.
+Existing check: `src/oracle/oracles.test.ts` (oracle fixtures, oracle edge
+cases) covers the deadline wording of both hosts, the completed call with no
+follow-up, the sub-second call, the persistence call, and the recorded tool
+start; status unaudited
 Impact: The intermittent Pi hang goes undetected or a slow turn is mislabelled.
 Open questions: None.
 

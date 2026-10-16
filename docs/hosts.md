@@ -46,8 +46,10 @@ there before each restart.
 interposer environment, restarts it with SIGKILL against the same store, and
 stops it with SIGTERM so its store stays on disk. It appends the daemon's
 stdout and stderr to the arm's `daemon.log` before each restart and at stop,
-each line once, read through the v1 stack's `diagnostics` view; the v1 stack
-keeps the last 256 KiB of each stream, so a longer stretch keeps its tail.
+each line once: stderr whole from the log file the v1 stack writes each chunk
+to and truncates at each host start, stdout from the stack's `diagnostics`
+view, which keeps the last 256 KiB. The run's resource sampler takes a sample
+once a restarted daemon is up.
 
 Each `session_start` launches one host process in the session's workspace
 through the sandbox launcher, and each `session_end` closes it. The sandbox runs the host under
@@ -71,8 +73,10 @@ afterwards), because the agent can write that config and the harness process
 runs outside the sandbox. The workspace path itself must be a real directory
 under the arm root, an existing ancestor of the diff's path must resolve
 inside it before any directory is created, and a `.git` that is a file or
-symlink, any symlink under `.git`, or an `objects/info/alternates` file stops
-the run before git writes anything.
+symlink, any entry under `.git` that is not a regular file or directory, a
+missing `.git/config`, or an `objects/info/alternates` file stops the run
+before git writes anything; every workspace git run is bounded by the turn
+deadline.
 
 Pi runs in RPC mode with `--session-id sim-<session>`, its agent directory,
 settings, and model list under the arm root, and the Eidnara extension from

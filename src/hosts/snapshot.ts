@@ -8,12 +8,13 @@ import {
     realpathSync,
     renameSync,
     rmSync,
-    truncateSync,
     writeFileSync,
 } from "node:fs";
 import { basename, join, relative, sep } from "node:path";
-import { GitTimeout, git, gitEnv } from "../git";
+import { GitBound, git, gitEnv } from "../git";
 import type { Artefact, CallView, Command, Snapshot } from "../grade/artefacts";
+import { sha256Hex } from "../prereg/canonical";
+import { dropCutLine as dropCutJsonlLine } from "../run/journal";
 
 interface RecorderState {
     session: string | null;
@@ -27,9 +28,14 @@ interface RecorderState {
     commands: Command[];
     /** Per project, the paths the source repository tracks although its ignore rules match them. */
     forced?: Record<string, string[]>;
+    /** Per project, the blob ids of the source's `.gitignore` files and the digest of `.git/info/exclude`. */
+    ignores?: Record<string, { files: Record<string, string>; exclude: string | null }>;
 }
 
 const EMPTY: RecorderState = { session: null, ended: null, starts: {}, last: {}, commands: [] };
+
+/** Entries a workspace walk visits at most; a wider forest fails the probe turn. */
+const WORKSPACE_ENTRY_CAP = 200_000;
 
 export class SnapshotRecorder {
     private readonly gitDir: string;
@@ -40,7 +46,7 @@ export class SnapshotRecorder {
         private readonly armDir: string,
         private readonly arm: string,
         private readonly callsFor: (session: string) => CallView[],
-        /** Bound on each git run against a workspace; a run past it throws `GitTimeout`. */
+        /** Bound on each git run against a workspace; a run past it throws `GitBound`. */
         private readonly gitTimeoutMs?: number,
     ) {
         mkdirSync(armDir, { recursive: true });
@@ -54,26 +60,24 @@ export class SnapshotRecorder {
     }
 
     /**
-     * The run lease makes this recorder the only writer of its repository, so an
-     * `<project>.index.lock` found at construction is one a killed git left behind.
+     * The run lease makes this recorder the only writer of its repository. A git child the
+     * killed harness left running may still hold an `<project>.index.lock`; it runs at most
+     * the recorder's bound, so a lock that outlives that bound after construction is stale and
+     * is removed.
      */
     private dropIndexLocks(): void {
         if (!existsSync(this.gitDir)) return;
-        for (const name of readdirSync(this.gitDir)) {
-            if (name.endsWith(".index.lock")) rmSync(join(this.gitDir, name), { force: true });
+        const locks = readdirSync(this.gitDir).filter((name) => name.endsWith(".index.lock"));
+        if (locks.length === 0) return;
+        const deadline = Date.now() + (this.gitTimeoutMs ?? 0);
+        while (Date.now() < deadline && locks.some((name) => existsSync(join(this.gitDir, name)))) {
+            Bun.sleepSync(50);
         }
+        for (const name of locks) rmSync(join(this.gitDir, name), { force: true });
     }
 
-    /**
-     * `dropCutLine` truncates `snapshots.jsonl` to its newline-terminated prefix: a line cut by
-     * a kill mid-append is discarded and the next record starts at a line boundary.
-     */
     private dropCutLine(): void {
-        const path = join(this.armDir, "snapshots.jsonl");
-        if (!existsSync(path)) return;
-        const text = readFileSync(path, "utf8");
-        const complete = text.slice(0, text.lastIndexOf("\n") + 1);
-        if (complete.length < text.length) truncateSync(path, Buffer.byteLength(complete));
+        dropCutJsonlLine(join(this.armDir, "snapshots.jsonl"));
     }
 
     /**
@@ -94,7 +98,7 @@ export class SnapshotRecorder {
         try {
             return git(work ?? this.armDir, args, scope, this.gitTimeoutMs);
         } catch (caught) {
-            if (caught instanceof GitTimeout && scope.GIT_INDEX_FILE) {
+            if (caught instanceof GitBound && scope.GIT_INDEX_FILE) {
                 rmSync(`${scope.GIT_INDEX_FILE}.lock`, { force: true });
             }
             throw caught;
@@ -133,12 +137,26 @@ export class SnapshotRecorder {
      * either way.
      */
     embedded(dir: string): string[] {
+        this.requireRealDir(dir);
         const found: string[] = [];
-        for (const entry of readdirSync(dir, { recursive: true, withFileTypes: true })) {
-            if (entry.name !== ".git" || entry.parentPath === dir) continue;
-            const inside = relative(dir, entry.parentPath).split(sep);
-            if (inside.includes(".git")) continue;
-            found.push(inside.join("/"));
+        const deadline = Date.now() + (this.gitTimeoutMs ?? Number.POSITIVE_INFINITY);
+        let seen = 0;
+        const pending = [dir];
+        for (let at = pending.shift(); at !== undefined; at = pending.shift()) {
+            for (const entry of readdirSync(at, { withFileTypes: true })) {
+                if (++seen > WORKSPACE_ENTRY_CAP || Date.now() > deadline) {
+                    const why =
+                        seen > WORKSPACE_ENTRY_CAP
+                            ? `more than ${WORKSPACE_ENTRY_CAP} entries`
+                            : "timed out";
+                    throw new GitBound(`workspace walk of ${dir}: ${why}`);
+                }
+                if (entry.name === ".git") {
+                    if (at !== dir) found.push(relative(dir, at).split(sep).join("/"));
+                    continue;
+                }
+                if (entry.isDirectory()) pending.push(join(at, entry.name));
+            }
         }
         if (found.length === 0) return [];
         const ignored = spawnSync("git", ["check-ignore", "-z", "--stdin"], {
@@ -146,7 +164,11 @@ export class SnapshotRecorder {
             env: gitEnv({ GIT_DIR: this.gitDir, GIT_WORK_TREE: dir }),
             encoding: "utf8",
             input: found.map((path) => `${path}\0`).join(""),
+            ...(this.gitTimeoutMs ? { timeout: this.gitTimeoutMs, killSignal: "SIGKILL" } : {}),
         });
+        if ((ignored.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT") {
+            throw new GitBound(`git check-ignore: timed out after ${this.gitTimeoutMs} ms`);
+        }
         const skipped = new Set(ignored.stdout.split("\0").filter(Boolean));
         return found.filter((path) => !skipped.has(path)).sort();
     }
@@ -161,8 +183,48 @@ export class SnapshotRecorder {
         this.save();
     }
 
-    tree(dir: string): string {
-        const nested = this.embedded(dir);
+    /**
+     * Records the project's baseline ignore rules: the blob id of every `.gitignore` the source
+     * tracks and the digest of the clone's `.git/info/exclude`.
+     */
+    trackIgnoreRules(project: string, files: Record<string, string>, exclude: string | null): void {
+        this.state.ignores = { ...this.state.ignores, [project]: { files, exclude } };
+        this.save();
+    }
+
+    /**
+     * The ignore rules in `dir` that differ from the project's baseline, after `tree` has
+     * indexed the workspace: a `.gitignore` the agent added, changed, or removed, or an edited
+     * `.git/info/exclude`. A rule added in a turn would hide that turn's files from the diff.
+     */
+    ignoreChanges(dir: string, project: string): string[] {
+        const baseline = this.state.ignores?.[project];
+        if (!baseline) return [];
+        const listed = this.git(["ls-files", "-s", "-z", "--", ".gitignore", "**/.gitignore"], dir);
+        const now: Record<string, string> = {};
+        for (const row of listed.split("\0").filter(Boolean)) {
+            const [meta, path] = row.split("\t") as [string, string];
+            now[path] = meta.split(" ")[1] as string;
+        }
+        const changes: string[] = [];
+        for (const path of new Set([
+            ...Object.keys(baseline.files),
+            ...Object.keys(now),
+        ]).values()) {
+            const was = baseline.files[path];
+            const is = now[path];
+            if (was === is) continue;
+            changes.push(
+                `${path} (${was === undefined ? "added" : is === undefined ? "removed" : "changed"})`,
+            );
+        }
+        const exclude = join(dir, ".git", "info", "exclude");
+        const digest = existsSync(exclude) ? sha256Hex(readFileSync(exclude, "utf8")) : null;
+        if (digest !== baseline.exclude) changes.push(".git/info/exclude (changed)");
+        return changes.sort();
+    }
+
+    tree(dir: string, nested = this.embedded(dir)): string {
         const excluded = nested.map((path) => `:(exclude)${path}`);
         this.git(["add", "--all", "--", ".", ...excluded], dir);
         const root = realpathSync(dir);
@@ -218,7 +280,7 @@ export class SnapshotRecorder {
         try {
             return this.tree(dir);
         } catch (caught) {
-            if (!(caught instanceof GitTimeout)) throw caught;
+            if (!(caught instanceof GitBound)) throw caught;
             console.error(`snapshot: ${caught.message}`);
             return null;
         }
@@ -239,6 +301,7 @@ export class SnapshotRecorder {
         before: string,
         turnTools: Command[],
         failed: boolean,
+        after = this.tree(dir),
     ): string {
         const id = `${this.arm}:${e.probe}:${e.id}`;
         const commands = [...this.state.commands];
@@ -247,7 +310,7 @@ export class SnapshotRecorder {
                 id: `${id}:diff`,
                 class: "diff",
                 role: "turn",
-                patch: this.diff(before, this.tree(dir)),
+                patch: this.diff(before, after),
             },
             { id: `${id}:turn-commands`, class: "command-log", role: "turn", commands: turnTools },
             { id: `${id}:session-commands`, class: "command-log", role: "session", commands },

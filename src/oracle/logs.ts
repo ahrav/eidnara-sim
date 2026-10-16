@@ -70,5 +70,13 @@ export function loadRun(dir: string, prereg: Preregistration): RunLogs {
             ? (JSON.parse(readFileSync(join(dir, arm, "store-check.json"), "utf8")) as StoreCheck)
             : undefined,
     }));
+    for (const arm of arms) {
+        if (arm.arm === "host") continue;
+        if (!arm.resources.some((s) => typeof s.rss === "number")) {
+            throw new Error(
+                `arm ${arm.arm} has no daemon RSS samples in ${arm.arm}/resources.jsonl`,
+            );
+        }
+    }
     return { dir, tier: manifest.tier, base_wall_ms: manifest.base_wall_ms, prereg, kinds, arms };
 }

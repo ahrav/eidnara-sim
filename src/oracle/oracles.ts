@@ -59,9 +59,10 @@ function f1(arm: ArmLogs): Activation[] {
         evidence: errorOf(c).slice(0, 200),
         component: c.component,
     }));
+    const agentAt = new Set(calls.filter((c) => c.component === "agent").map((c) => c.at));
     const turns = arm.journal
         .filter((e) => e.kind === "EndTurn" && OVERFLOW.test(String(e.outcome)))
-        .filter((e) => !calls.some((c) => c.at === e.event))
+        .filter((e) => !agentAt.has(String(e.event)))
         .map((e) => ({
             oracle: "F1" as const,
             arm: arm.arm,
@@ -85,16 +86,29 @@ function f4(arm: ArmLogs, quietMs: number): Activation[] {
             continue;
         }
         const tools = arm.tools.filter((t) => t.turn === turn).map((t) => t.scenario_ms);
-        for (const c of calls.filter((x) => x.status === 200)) {
-            const done = c.scenario_ms + (c.wall_ms - c.started_wall_ms);
-            const others = turnCalls.filter((x) => x !== c).map((x) => x.scenario_ms);
-            const activity = [...others, ...tools, e.scenario_ms];
+        const quietAfter = (done: number, activity: number[]): number => {
             const next = Math.min(
                 ...activity.filter((ms) => ms >= done - CLOCK_SLACK_MS),
                 Number.POSITIVE_INFINITY,
             );
-            if (next - done > quietMs) {
-                const evidence = `call ${c.seq} completed, then ${Math.round((next - done) / 1000)} s with no tool run, call, or turn end`;
+            return next - done;
+        };
+        const silence = "with no tool run, call, or turn end";
+        const began = arm.journal.find((b) => b.kind === "BeginTurn" && b.event === e.event);
+        if (began) {
+            const all = [...turnCalls.map((c) => c.scenario_ms), ...tools, e.scenario_ms];
+            const quiet = quietAfter(began.scenario_ms, all);
+            if (quiet > quietMs) {
+                const evidence = `turn began, then ${Math.round(quiet / 1000)} s ${silence}`;
+                out.push({ oracle: "F4", arm: arm.arm, at: turn, evidence });
+            }
+        }
+        for (const c of calls.filter((x) => x.status === 200)) {
+            const done = c.scenario_ms + (c.wall_ms - c.started_wall_ms);
+            const others = turnCalls.filter((x) => x !== c).map((x) => x.scenario_ms);
+            const quiet = quietAfter(done, [...others, ...tools, e.scenario_ms]);
+            if (quiet > quietMs) {
+                const evidence = `call ${c.seq} completed, then ${Math.round(quiet / 1000)} s ${silence}`;
                 out.push({ oracle: "F4", arm: arm.arm, at: turn, evidence });
             }
         }

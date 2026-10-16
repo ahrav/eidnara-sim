@@ -100,6 +100,17 @@ export function releaseLease(dir: string): void {
 }
 
 /**
+ * `dropCutLine` truncates a JSONL file to its newline-terminated prefix: a line cut by a kill
+ * mid-append is discarded and the next record starts at a line boundary.
+ */
+export function dropCutLine(path: string): void {
+    if (!existsSync(path)) return;
+    const text = readFileSync(path, "utf8");
+    const complete = text.slice(0, text.lastIndexOf("\n") + 1);
+    if (complete.length < text.length) truncateSync(path, Buffer.byteLength(complete));
+}
+
+/**
  * Every line but the last must parse; a cut last line, which a kill mid-write leaves, is
  * dropped. `bytes` is the length of the complete prefix.
  */

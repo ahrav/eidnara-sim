@@ -18,7 +18,7 @@ import { loadConfig } from "../config/config";
 import type { CallView } from "../grade/artefacts";
 import { gradeItem } from "../grade/probes";
 import { diffPaths } from "../grade/text";
-import type { ScenarioEvent } from "../run/scheduler";
+import { HarnessFailure, type ScenarioEvent } from "../run/scheduler";
 import { type FaultType, SEAMS } from "../scenario/faults";
 import { loadPrereg } from "../scenario/inputs";
 import type { DaemonStack, HostContext, PromptResult, SimHost } from "./arms";
@@ -304,6 +304,24 @@ describe("HostDriver lifecycle", () => {
         ).toBe("");
     });
 
+    test("apply_diff reports a dangling symlink, a missing workspace, and a missing repo config as harness failures", async () => {
+        const { driver } = fixture("host", { p: gitRepo() });
+        await driver.reset();
+        const ws = driver.workspace("p");
+        symlinkSync(join(tmp(), "absent"), join(ws, "sub"));
+        await expect(
+            driver.event(ev("apply_diff", { path: "sub/a.txt", content: "A" })),
+        ).rejects.toThrow(HarnessFailure);
+        rmSync(join(ws, ".git", "config"));
+        await expect(
+            driver.event(ev("apply_diff", { path: "src/a.txt", content: "A" })),
+        ).rejects.toThrow(HarnessFailure);
+        rmSync(ws, { recursive: true });
+        await expect(
+            driver.event(ev("apply_diff", { path: "src/a.txt", content: "A" })),
+        ).rejects.toThrow(HarnessFailure);
+    });
+
     test("apply_diff proceeds over a scratch index lock a killed git left behind", async () => {
         const { driver, armDir } = fixture("host", { p: gitRepo() });
         await driver.reset();
@@ -441,8 +459,11 @@ describe("HostDriver faults", () => {
         });
     });
 
-    test("a daemon fault restarts through the stack and reports both pids", async () => {
+    test("a daemon fault restarts through the stack, reports both pids, and tells the restart hook", async () => {
         const { driver } = fixture("eidnara");
+        const seen: number[] = [];
+        (driver as unknown as { o: DriverOptions }).o.onDaemonRestart = () =>
+            void seen.push(driver.daemonPid() ?? -1);
         driver.daemon = fakeDaemon(10) as unknown as DaemonStack;
         expect(await driver.fault(episode("daemon_restart"))).toEqual({
             signal: "SIGKILL",
@@ -451,6 +472,7 @@ describe("HostDriver faults", () => {
             restarted_by: "harness",
             store: { integrity: "missing", segments: 0, overlaps: [], ranges: [] },
         });
+        expect(seen).toEqual([11]);
     });
 
     test("the store a daemon kill leaves is inspected before the replacement starts", async () => {
@@ -715,6 +737,35 @@ describe("probe snapshots", () => {
         expect(recorder.tree(repo)).toMatch(/^[0-9a-f]{40}$/);
     });
 
+    test("a probe turn that changes the ignore rules ends failed, naming the rule file", async () => {
+        const { driver, hosts } = fixture("host", { p: gitRepo() });
+        const fresh = new HostDriver((driver as unknown as { o: DriverOptions }).o);
+        await fresh.reset();
+        const host = hosts.at(-1) as FakeHost;
+        const ws = fresh.workspace("p");
+        await fresh.event(ev("session_start", { session: "s-0" }));
+        host.onPrompt = () => {
+            writeFileSync(join(ws, "cache.rs"), "static STORE: Mutex<u8>;\n");
+            writeFileSync(join(ws, ".gitignore"), "cache.rs\n");
+        };
+        const hidden = await fresh.event(
+            ev("user_turn", { id: "e-1", session: "s-0", text: "go", probe: "q-1" }),
+        );
+        expect(hidden.failed).toBe("ignore rules changed: .gitignore (added)");
+        host.onPrompt = () => appendFileSync(join(ws, ".git", "info", "exclude"), "cache.rs\n");
+        const excluded = await fresh.event(
+            ev("user_turn", { id: "e-2", session: "s-0", text: "go", probe: "q-2" }),
+        );
+        expect(excluded.failed).toContain(".git/info/exclude (changed)");
+        host.onPrompt = () => writeFileSync(join(ws, "plain.rs"), "fn ok() {}\n");
+        rmSync(join(ws, ".gitignore"));
+        const stillChanged = await fresh.event(
+            ev("user_turn", { id: "e-3", session: "s-0", text: "go", probe: "q-3" }),
+        );
+        expect(stillChanged.failed).toContain(".git/info/exclude (changed)");
+        expect(stillChanged.failed).not.toContain(".gitignore");
+    });
+
     test("a probe turn that leaves an embedded repository in the workspace ends failed, naming it", async () => {
         const { driver, hosts } = fixture("host", { p: gitRepo() });
         const fresh = new HostDriver((driver as unknown as { o: DriverOptions }).o);
@@ -943,15 +994,25 @@ function captured(armDir: string): Record<string, { patch?: string }> {
     return Object.fromEntries(snap.artefacts.map((a: { id: string }) => [a.id, a]));
 }
 
-test("a recorder rebuilt over a stale index lock removes it and indexes the workspace", () => {
+test("a recorder rebuilt over a stale index lock waits its bound for the holder, then removes it", async () => {
     const repo = gitRepo();
     const armDir = tmp();
     const first = new SnapshotRecorder(armDir, "eidnara", () => []);
     first.sessionStart("s-1", "p", repo);
-    writeFileSync(join(armDir, "snapshot.git", `${basename(repo)}.index.lock`), "");
-    const resumed = new SnapshotRecorder(armDir, "eidnara", () => []);
+    const lock = join(armDir, "snapshot.git", `${basename(repo)}.index.lock`);
+    writeFileSync(lock, "");
+    const holder = Bun.spawn(["sh", "-c", `sleep 0.2; rm -f '${lock}'`]);
+    const started = Date.now();
+    const resumed = new SnapshotRecorder(armDir, "eidnara", () => [], 5_000);
+    expect(Date.now() - started).toBeLessThan(4_000);
+    await holder.exited;
     writeFileSync(join(repo, "new.rs"), "fn x() {}\n");
     expect(resumed.tree(repo)).toMatch(/^[0-9a-f]{40}$/);
+    writeFileSync(lock, "");
+    const bounded = Date.now();
+    new SnapshotRecorder(armDir, "eidnara", () => [], 200);
+    expect(Date.now() - bounded).toBeGreaterThanOrEqual(200);
+    expect(existsSync(lock)).toBe(false);
 });
 
 test("a recorder rebuilt over a cut last snapshot line drops the cut and appends whole records", () => {
@@ -1006,10 +1067,39 @@ test("snapshot git refuses a workspace path that an agent replaced with a symlin
     mkdirSync(workspaces, { recursive: true });
     const outside = tmp();
     writeFileSync(join(outside, "credentials"), "aws_secret_access_key = leaked\n");
+    mkdirSync(join(outside, "vendor", ".git"), { recursive: true });
     symlinkSync(outside, join(workspaces, "p"));
     const recorder = new SnapshotRecorder(armDir, "eidnara", () => []);
+    expect(() => recorder.embedded(join(workspaces, "p"))).toThrow("symlink");
     expect(() => recorder.tree(join(workspaces, "p"))).toThrow("symlink");
     expect(existsSync(join(armDir, "snapshot.git"))).toBe(false);
+});
+
+test("the workspace walk is bounded by the recorder deadline", () => {
+    const repo = gitRepo();
+    const armDir = tmp();
+    for (let i = 0; i < 3_000; i++) {
+        mkdirSync(join(repo, "wide", `d${i}`, "deeper"), { recursive: true });
+        writeFileSync(join(repo, "wide", `d${i}`, "f.rs"), "");
+    }
+    const recorder = new SnapshotRecorder(armDir, "eidnara", () => [], 1);
+    expect(() => recorder.embedded(repo)).toThrow("timed out");
+    const roomy = new SnapshotRecorder(armDir, "eidnara", () => [], 10_000);
+    expect(roomy.embedded(repo)).toEqual([]);
+});
+
+test("the nested-repository check is bounded like the other snapshot git runs", () => {
+    const repo = gitRepo();
+    const armDir = tmp();
+    const recorder = new SnapshotRecorder(armDir, "eidnara", () => [], 300);
+    recorder.sessionStart("s-1", "p", repo);
+    mkdirSync(join(repo, "vendor"));
+    spawnSync("git", ["init", "-q"], { cwd: join(repo, "vendor") });
+    rmSync(join(repo, ".gitignore"), { force: true });
+    spawnSync("mkfifo", [join(repo, ".gitignore")]);
+    const started = Date.now();
+    expect(() => recorder.embedded(repo)).toThrow("timed out");
+    expect(Date.now() - started).toBeLessThan(5_000);
 });
 
 test("snapshot git runs no command and indexes no path that the workspace repo's config names", () => {
