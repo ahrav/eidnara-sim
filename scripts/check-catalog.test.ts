@@ -98,6 +98,18 @@ describe("catalog checker", () => {
         );
     });
 
+    test("refuses an index row whose link is malformed", () => {
+        const path = copy();
+        edit(
+            path,
+            "| SIM-P02 | [sim-p02-",
+            "| SIM-P99 | [sim-p99-extra](#sim-p99-other) | safety | `always` | test-only | M0 |\n| SIM-P02 | [sim-p02-",
+        );
+        expect(checkCatalog(path, METHOD, IDS)).toContain(
+            "catalog: index row malformed: | SIM-P99 | [sim-p99-extra](#sim-p99-other) | safety | `always` | test-only | M0 |",
+        );
+    });
+
     test("refuses a record without its evidence file and an id that is missing", () => {
         const path = copy();
         unlinkSync(join(dir, "evidence/sim-p05-scheduled-events-identical-across-arms.md"));

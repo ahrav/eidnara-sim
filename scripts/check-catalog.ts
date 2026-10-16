@@ -131,15 +131,26 @@ export function checkCatalog(
     const errors = records.flatMap((r) => checkRecord(r, spec, dir));
     const slugs = records.map((r) => r.slug);
     if (new Set(slugs).size !== slugs.length) errors.push("catalog: duplicate slug");
-    const rows = [...catalog.matchAll(/^\| ([A-Z0-9-]+) \| \[([a-z0-9-]+)\]\(#\2\) \|/gm)];
-    for (const m of rows) {
+    const index = catalog.slice(catalog.indexOf("\n## Index") + 1);
+    const table = index.slice(0, index.indexOf("\n## "));
+    const linked: string[] = [];
+    for (const row of table
+        .split("\n")
+        .filter((line) => line.startsWith("| "))
+        .slice(2)) {
+        const m = /^\| ([A-Z0-9-]+) \| \[([a-z0-9-]+)\]\(#\2\) \|/.exec(row);
+        if (!m) {
+            errors.push(`catalog: index row malformed: ${row}`);
+            continue;
+        }
         const id = m[1] ?? "";
         const slug = m[2] ?? "";
         if (!slug.startsWith(`${id.toLowerCase()}-`)) {
             errors.push(`catalog: index row ${id} links ${slug}`);
         }
+        linked.push(slug);
     }
-    if (rows.map((m) => m[2]).join("|") !== slugs.join("|"))
+    if (linked.join("|") !== slugs.join("|"))
         errors.push("catalog: index rows differ from records");
     for (const { prefix, count } of ids) {
         for (let n = 1; n <= count; n++) {
