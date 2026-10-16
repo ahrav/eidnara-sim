@@ -95,7 +95,7 @@ function fixture(
     extra: Partial<DriverOptions> = {},
 ) {
     const root = tmp();
-    const transcripts = join(root, "agent");
+    const transcripts = join(root, arm, "r", "home", "agent");
     const exits: Record<string, unknown>[] = [];
     const hosts: FakeHost[] = [];
     const o: DriverOptions = {
@@ -759,6 +759,58 @@ touch ${escaped}
             await driver.reset();
             await driver.reset();
             expect(spawnSync("findmnt", ["-n", "-M", driver.storeRoot]).status).toBe(0);
+        } finally {
+            await driver.stop().catch(() => undefined);
+        }
+    });
+
+    test("a finish on a fresh driver keeps the identities the killed harness recorded", async () => {
+        const { driver, armDir } = fixture("host", { p: gitRepo() });
+        await driver.reset();
+        await driver.stop();
+        const state = JSON.parse(readFileSync(join(armDir, "state.json"), "utf8"));
+        state.host = { pid: 4_000_000, start: "1" };
+        writeFileSync(join(armDir, "state.json"), JSON.stringify(state));
+        const fresh = new HostDriver((driver as unknown as { o: DriverOptions }).o);
+        fresh.daemon = {
+            ...fakeDaemon(null),
+            stop: async () => {
+                throw new Error("umount: target is busy");
+            },
+        } as unknown as DaemonStack;
+        await expect(fresh.finish()).rejects.toThrow("busy");
+        const after = JSON.parse(readFileSync(join(armDir, "state.json"), "utf8"));
+        expect(after.host).toEqual({ pid: 4_000_000, start: "1" });
+        expect(after.failed).toContain("busy");
+    });
+
+    test("a transcript store reached through a linked ancestor counts as missing", async () => {
+        const { driver, transcripts } = fixture("host");
+        await driver.reset();
+        const elsewhere = tmp();
+        mkdirSync(join(elsewhere, "sessions"));
+        mkdirSync(join(transcripts, ".."), { recursive: true });
+        rmSync(transcripts, { recursive: true, force: true });
+        symlinkSync(elsewhere, transcripts);
+        await expect(driver.event(ev("session_end"))).rejects.toThrow("transcript store missing");
+    });
+
+    test.skipIf(!sandbox)("a hook cannot reach the daemon store", async () => {
+        const daemonFactory = () =>
+            ({ ...fakeDaemon(null), start: async () => undefined }) as unknown as DaemonStack;
+        const { driver } = fixture("eidnara", { p: gitRepo() }, { daemonFactory });
+        try {
+            await driver.reset();
+            const ws = driver.workspace("p");
+            writeFileSync(
+                join(ws, ".git/hooks/post-commit"),
+                `#!/bin/sh\ntouch ${driver.storeRoot}/planted\n`,
+                {
+                    mode: 0o755,
+                },
+            );
+            await driver.event(ev("apply_diff", { path: "a.txt", content: "A" }));
+            expect(existsSync(join(driver.storeRoot, "planted"))).toBe(false);
         } finally {
             await driver.stop().catch(() => undefined);
         }

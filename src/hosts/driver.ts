@@ -11,7 +11,7 @@ import {
     statSync,
     writeFileSync,
 } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { launch } from "../run/launcher";
 import { processStart, running, stopOwnedTree } from "../run/procs";
 import { type ArmDriver, HarnessFailure, type ScenarioEvent } from "../run/scheduler";
@@ -124,6 +124,8 @@ export class HostDriver implements ArmDriver {
     private refilling = false;
     private gitRun: ArmState["git"] = null;
     private failed: string | null = null;
+    /** True once this process has reset or resumed the arm, so its in-memory state is the arm's. */
+    private live = false;
     private sessionProject: string | null = null;
     private transcriptsChecked = false;
 
@@ -194,7 +196,8 @@ export class HostDriver implements ArmDriver {
             env.GIT_AUTHOR_DATE = `@${Math.floor(dateMs / 1000)}`;
             env.GIT_COMMITTER_DATE = env.GIT_AUTHOR_DATE;
         }
-        const keep = [...new Set([...this.keep, this.o.armRoot])];
+        // Git needs the workspace under the arm root; the daemon's store stays masked from it.
+        const keep = [...new Set([...this.o.keep, this.o.armRoot])];
         // Git reads no scenario clock, so the clock directory stays out of its view; the hosts'
         // installs join the set, since a hook could otherwise poison a later session's host.
         const clock = dirname(this.o.offsetFile);
@@ -402,6 +405,7 @@ export class HostDriver implements ArmDriver {
     async reset(): Promise<void> {
         await this.reapStale();
         await this.stop();
+        this.live = true;
         this.model = 0;
         this.transcriptsChecked = false;
         this.ballastShape = null;
@@ -428,6 +432,7 @@ export class HostDriver implements ArmDriver {
             throw new HarnessFailure(`resume of arm ${this.o.arm}: ${this.stateFile} is gone`);
         }
         this.model = state.model;
+        this.live = true;
         const checked = join(this.armDir, "transcripts.json");
         if (existsSync(checked)) {
             const missing = JSON.parse(readFileSync(checked, "utf8")).missing as string[];
@@ -637,9 +642,18 @@ export class HostDriver implements ArmDriver {
     private checkTranscripts(host: SimHost): void {
         const env = host.transcriptEnv();
         const paths = this.o.transcriptPaths.map((t) => expandTemplate(t, env));
-        // A link or a node of the wrong kind where the store should be is the host's placeholder,
-        // so the store counts as missing.
+        // A link anywhere below the arm root, or a node of the wrong kind where the store should
+        // be, is the host's placeholder, so the store counts as missing.
+        const root = realpathSync(this.o.armRoot);
         const present = (template: string, p: string) => {
+            const rel = relative(root, resolve(p));
+            if (rel.startsWith("..") || isAbsolute(rel)) return false;
+            let at = root;
+            for (const part of rel.split("/")) {
+                at = join(at, part);
+                if (lstatSync(at, { throwIfNoEntry: false })?.isSymbolicLink() !== false)
+                    return false;
+            }
             const stat = lstatSync(p, { throwIfNoEntry: false });
             if (stat === undefined) return false;
             return transcriptKind(template) === "file" ? stat.isFile() : stat.isDirectory();
@@ -762,7 +776,17 @@ export class HostDriver implements ArmDriver {
         } catch (caught) {
             this.failed = String(caught);
             try {
-                this.recordState();
+                // A driver that finishes before it ever reset or resumed holds none of the
+                // recorded identities; the failure joins the record on disk rather than replacing it.
+                const recorded = this.readState();
+                if (recorded && !this.live) {
+                    writeWhole(
+                        this.stateFile,
+                        JSON.stringify({ ...recorded, failed: this.failed }),
+                    );
+                } else {
+                    this.recordState();
+                }
             } catch {
                 // The failure itself is what surfaces; a record that cannot be written changes nothing.
             }

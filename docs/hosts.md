@@ -58,7 +58,9 @@ workspace, and, on an Eidnara arm, starts a fresh daemon through the v1
 arm's last event, before `EndArm`: it closes the host, stops the daemon with
 SIGTERM so its store stays on disk, and unmounts the store; a host or daemon
 whose teardown fails stays held with its recorded identity, so the failure's
-state names it for the next reap; the daemon's
+state names it for the next reap, and a driver that finishes before it ever
+reset or resumed adds the failure to the record on disk, leaving the
+identities the killed harness wrote in place; the daemon's
 output reaches `<arm>/daemon.log` as it is written.
 
 `DaemonStack` starts the daemon through the v1 `HermeticHostStack` with the
@@ -131,7 +133,8 @@ resolves outside the workspace through `..` or a symlink stops the run before
 any directory is created. The file is written whole and renamed into place,
 so a hard link the agent left at the path keeps its other name's content, and
 the `git add` and `git commit` run inside the arm's sandbox under the turn
-deadline, with the hosts' read-only paths (toolchains, the interposer, the
+deadline, with the arm root kept and the daemon's store masked, with the
+hosts' read-only paths (toolchains, the interposer, the
 build clone, the Pi, Node, and OpenCode installs) read-only and a fresh
 environment, and only against a `.git` that is the workspace's own directory, so a hook,
 filter, or config the agent planted in the repository acts with the host's
@@ -285,8 +288,8 @@ stop before the next `reset` or `resume` proceeds.
 After an arm's first `session_end`, the driver expands the preflight's
 transcript-store paths for the host version with the host's own variables
 (`$PI_CODING_AGENT_DIR`, `$XDG_DATA_HOME`) and writes the result to
-`<arm>/transcripts.json`. A missing path stops the run (OQ-7); a link, or a
-node of the other kind (`TRANSCRIPT_STORES` names `opencode.db` as the one
+`<arm>/transcripts.json`. A missing path stops the run (OQ-7); a link at the
+store or at any ancestor below the arm root, or a node of the other kind (`TRANSCRIPT_STORES` names `opencode.db` as the one
 file, the rest are directories), left where the store should be counts as
 missing.
 

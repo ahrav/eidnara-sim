@@ -151,10 +151,12 @@ export async function stopOwnedTree(
     // root already gone leaves the verdict to the descendants seen.
     if (rootStart === undefined || !alive(root)) return settled();
     // The launcher is root-owned until its sandbox drops privileges, so what is left of a pinned
-    // launch is killed through the same passwordless sudo the launcher runs under.
-    const privileged = treeProcesses(rootPid)
-        .map((pid) => ({ pid, start: processStart(pid) }))
-        .filter(alive);
+    // launch is killed through the same passwordless sudo the launcher runs under. The walk is
+    // taken only while the pinned root still holds its pid, and discarded when that changes
+    // during the walk, so a pid reused in between is never signalled.
+    const walked = treeProcesses(rootPid).map((pid) => ({ pid, start: processStart(pid) }));
+    if (!alive(root)) return settled();
+    const privileged = walked.filter(alive);
     if (privileged.length === 0) return settled();
     Bun.spawnSync([
         "sudo",
