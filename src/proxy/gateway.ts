@@ -185,7 +185,11 @@ export class Gateway {
         return () => {
             if (once.done || typeof release !== "function") return;
             once.done = true;
-            (release as () => void)();
+            try {
+                (release as () => void)();
+            } catch (caught) {
+                this.failures.push(caught as Error);
+            }
         };
     }
 
@@ -375,7 +379,11 @@ export class Gateway {
         } finally {
             this.inFlight--;
             release();
-            after.ended?.();
+            try {
+                after.ended?.();
+            } catch (caught) {
+                this.failures.push(caught as Error);
+            }
         }
     }
 

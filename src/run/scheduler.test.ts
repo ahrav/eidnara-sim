@@ -1229,6 +1229,62 @@ test("a mid-fold kill observed in the arm's last turn is observed before finish 
     expect(kinds.indexOf("FaultObserved")).toBeLessThan(kinds.indexOf("EndArm"));
 });
 
+test("a mid-fold kill observed during the arm's shutdown completes before EndArm", async () => {
+    const j = new Journal(join(dir(), "j.jsonl"));
+    let scheduler: Scheduler | null = null;
+    const faults = [
+        episode("k", "daemon_sigkill_mid_fold", {
+            kind: "first_summarizer_call",
+            session: "s-0000",
+        }),
+    ];
+    const log: string[] = [];
+    const driver: ArmDriver = {
+        ...fakeDriver(log),
+        fault: async (f) => {
+            await Bun.sleep(80);
+            log.push(`fault:${f.id}`);
+            return { pid_before: 1, pid_after: 2 };
+        },
+        finish: async () => {
+            scheduler?.observe("history_summarizer", driver);
+        },
+    };
+    scheduler = new Scheduler({
+        events: fixtureEvents(1).filter((e) => e.kind !== "session_end"),
+        faults,
+        journal: j,
+        settleMs: 0,
+        jobPollMs: 5,
+        order: ["a"],
+        drivers: { a: driver },
+    });
+    await scheduler.run();
+    const kinds = j.entries.map((e) => e.kind);
+    expect(kinds.indexOf("FaultObserved")).toBeGreaterThan(-1);
+    expect(kinds.indexOf("FaultObserved")).toBeLessThan(kinds.indexOf("EndArm"));
+    expect(j.entries[kinds.indexOf("FaultObserved")]?.arm).toBe("a");
+});
+
+test("an EndJob append that fails still clears the busy set", async () => {
+    const j = new Journal(join(dir(), "j.jsonl"));
+    const scheduler = new Scheduler({
+        events: fixtureEvents(1),
+        faults: [],
+        journal: j,
+        settleMs: 0,
+        order: ["a"],
+        drivers: { a: fakeDriver([]) },
+    });
+    const run = scheduler.run();
+    while (!scheduler.clock) await Bun.sleep(1);
+    scheduler.jobStart("j");
+    j.close();
+    expect(() => scheduler.jobEnd("j")).toThrow();
+    expect(scheduler.clock?.busyIds()).toEqual([]);
+    await run.catch(() => undefined);
+});
+
 test("a RegisterJob append that fails leaves no job in the busy set", async () => {
     const j = new Journal(join(dir(), "j.jsonl"));
     const scheduler = new Scheduler({

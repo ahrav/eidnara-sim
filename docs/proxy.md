@@ -107,7 +107,8 @@ it, and the record's `proxy_retries` is 0.
 For each episode and arm, `FaultInjector.report(arm)` returns whether it was armed there, the
 `seq` of every injected record, the `seq` of the first later agent call that
 started within the window after each injection (host-observed; a faulted
-retry under a persistent or burst episode counts), and whether the proxy
+retry under a persistent or burst episode counts; a pending injection waits
+for such a call however late it completes), and whether the proxy
 retried. An episode is `fired` only with both an injected record
 and a host-observed call (SIM-P31); otherwise it is `untriggered`, and
 `excludedFromFaultMetrics` reports that the run leaves fault metrics

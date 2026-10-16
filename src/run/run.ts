@@ -119,7 +119,13 @@ export function requirePlainArtifacts(out: string, arms: readonly string[]): voi
         "interception",
         "toolbin",
         "hostbin",
-        ...arms.flatMap((arm) => [arm, join(arm, "clock"), join("hostbin", arm)]),
+        ...arms.flatMap((arm) => [
+            arm,
+            join(arm, "clock"),
+            join(arm, "r"),
+            join(arm, "s"),
+            join("hostbin", arm),
+        ]),
     ];
     const files = arms.flatMap((arm) => [
         join("hostbin", arm, "opencode"),
@@ -203,7 +209,10 @@ export function treeIdentity(dir: string): { commit: string; worktree: string } 
 
 const PROJECT_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
-/** Project ids are plain path segments, event ids are unique, and event projects are declared. */
+/**
+ * Project ids are plain path segments; events have unique string ids, a known kind, finite
+ * non-decreasing `scenario_ms`, a session, an index when they are turns, and declared projects.
+ */
 export function requireDeclaredProjects(scenario: Scenario): void {
     const ids = new Set<string>();
     for (const p of scenario.projects as { id?: unknown }[]) {
@@ -215,18 +224,31 @@ export function requireDeclaredProjects(scenario: Scenario): void {
         ids.add(p.id);
     }
     const seen = new Set<string>();
-    for (const e of scenario.events as { id: unknown; project?: unknown }[]) {
+    let last = 0;
+    for (const e of scenario.events as Record<string, unknown>[]) {
         if (typeof e.id !== "string" || seen.has(e.id)) {
             throw new HarnessFailure(`event id ${JSON.stringify(e.id)} is missing or repeated`);
         }
         seen.add(e.id);
+        const bad = (why: string) => new HarnessFailure(`event ${e.id} ${why}`);
+        if (!EVENT_KINDS.has(e.kind as string))
+            throw bad(`has unknown kind ${JSON.stringify(e.kind)}`);
+        const ms = e.scenario_ms;
+        if (typeof ms !== "number" || !Number.isFinite(ms) || ms < last) {
+            throw bad(`has scenario_ms ${JSON.stringify(ms)}, below ${last} or not a number`);
+        }
+        last = ms;
+        if (typeof e.session !== "string" || e.session === "") throw bad("names no session");
+        if (e.kind === "user_turn" && (!Number.isInteger(e.index) || (e.index as number) < 0)) {
+            throw bad(`has index ${JSON.stringify(e.index)}, not a non-negative integer`);
+        }
         if (e.project !== undefined && (typeof e.project !== "string" || !ids.has(e.project))) {
-            throw new HarnessFailure(
-                `event ${e.id} names undeclared project ${JSON.stringify(e.project)}`,
-            );
+            throw bad(`names undeclared project ${JSON.stringify(e.project)}`);
         }
     }
 }
+
+const EVENT_KINDS = new Set(["session_start", "user_turn", "apply_diff", "session_end"]);
 
 /** `scenario.json` is accepted only when its body still hashes to its `scenario_hash`. */
 export async function loadScenario(o: Pick<RunOptions, "config" | "out" | "seed" | "tier">) {
@@ -300,6 +322,8 @@ function episodeProblems(value: unknown): string[] {
         problems.push("trigger missing");
     } else if (SESSION_START_ONLY.has(e.type as string) && trigger.kind !== "session_start") {
         problems.push(`${e.type} fires at a session_start trigger only`);
+    } else if (e.type === "daemon_sigkill_mid_fold" && trigger.kind !== "first_summarizer_call") {
+        problems.push("daemon_sigkill_mid_fold fires at a first_summarizer_call trigger only");
     }
     const params = e.params as Record<string, unknown> | null;
     if (typeof params !== "object" || params === null || Array.isArray(params)) {
@@ -628,11 +652,11 @@ async function runArms(
     cleanup.push(() => clearTimeout(budget));
     const journal = new Journal(join(o.out, "journal.jsonl"));
     cleanup.push(() => journal.close());
-    const compiled = await loadScenario(o);
-    const { manifest, checks } = await loadManifest(o, compiled);
     if (journal.entries.some((e) => e.kind === "EndRun")) {
         throw new HarnessFailure(`${o.out} holds a completed run; its journal ends with EndRun`);
     }
+    const compiled = await tracked(() => loadScenario(o));
+    const { manifest, checks } = await tracked(() => loadManifest(o, compiled));
     journal.append({
         kind: "Preflight",
         arm: null,

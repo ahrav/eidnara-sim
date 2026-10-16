@@ -93,14 +93,18 @@ export class FaultInjector {
         return null;
     }
 
+    /**
+     * An injection is witnessed by the first later agent call that started inside the window.
+     * Records arrive in completion order, so a pending injection stays until such a call settles.
+     */
     observe(record: CallRecord, call: number): void {
         for (const p of this.pending.filter((x) => x.arm === record.arm && call > x.call)) {
             const inWindow = record.started_wall_ms <= p.at + this.windowMs;
             const sameCaller = record.component === TARGET;
             if (sameCaller && inWindow) {
                 (this.witnesses.get(p.key) as Witness).host_observed_seq.push(record.seq);
+                this.pending.splice(this.pending.indexOf(p), 1);
             }
-            if (!inWindow || sameCaller) this.pending.splice(this.pending.indexOf(p), 1);
         }
         if (record.fault_ref === null) return;
         const w = this.witness(record.arm, record.fault_ref);

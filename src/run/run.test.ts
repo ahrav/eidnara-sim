@@ -147,14 +147,42 @@ describe("run inputs", () => {
         const repeated = {
             ...base,
             events: [
-                { id: "e-000001", kind: "session_start" },
-                { id: "e-000001", kind: "user_turn" },
+                { id: "e-000001", kind: "session_start", scenario_ms: 0, session: "s" },
+                { id: "e-000001", kind: "session_end", scenario_ms: 0, session: "s" },
             ],
         };
         expect(() => requireDeclaredProjects(repeated as never)).toThrow(/is missing or repeated/);
+        const shapes = [
+            [
+                { id: "e-1", kind: "user-turn", scenario_ms: 0, session: "s" },
+                /unknown kind "user-turn"/,
+            ],
+            [{ id: "e-1", kind: "session_start", scenario_ms: "0", session: "s" }, /not a number/],
+            [{ id: "e-1", kind: "session_start", scenario_ms: 0 }, /names no session/],
+            [{ id: "e-1", kind: "user_turn", scenario_ms: 0, session: "s" }, /index undefined/],
+            [
+                [
+                    { id: "e-1", kind: "session_start", scenario_ms: 5, session: "s" },
+                    { id: "e-2", kind: "session_end", scenario_ms: 4, session: "s" },
+                ],
+                /below 5/,
+            ],
+        ] as const;
+        for (const [events, message] of shapes) {
+            const bad = { ...base, events: Array.isArray(events) ? events : [events] };
+            expect(() => requireDeclaredProjects(bad as never)).toThrow(message);
+        }
         const undeclared = {
             ...base,
-            events: [{ id: "e-000001", kind: "apply_diff", project: "elsewhere" }],
+            events: [
+                {
+                    id: "e-000001",
+                    kind: "apply_diff",
+                    scenario_ms: 0,
+                    session: "s",
+                    project: "elsewhere",
+                },
+            ],
         };
         expect(() => requireDeclaredProjects(undeclared as never)).toThrow(
             /event e-000001 names undeclared project "elsewhere"/,
@@ -290,6 +318,13 @@ describe("run inputs", () => {
         expect(() => faultOverride([episode, episode], scenario)).toThrow(/duplicate id f/);
         const sleepOnTurn = { ...episode, type: "laptop_sleep", seam: SEAMS.laptop_sleep };
         expect(() => faultOverride([sleepOnTurn], scenario)).toThrow(/session_start trigger only/);
+        const killOnStart = {
+            ...episode,
+            type: "daemon_sigkill_mid_fold",
+            seam: SEAMS.daemon_sigkill_mid_fold,
+            trigger: { kind: "session_start", session: "s-0000" },
+        };
+        expect(() => faultOverride([killOnStart], scenario)).toThrow(/first_summarizer_call/);
         const switchOnTurn = { ...episode, type: "model_switch", seam: SEAMS.model_switch };
         expect(() => faultOverride([switchOnTurn], scenario)).toThrow(
             /model_switch fires at a session_start trigger only/,

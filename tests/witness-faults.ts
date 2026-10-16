@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { join, resolve } from "node:path";
 import { loadConfig } from "../src/config/config";
 import { checkJournal, type Schedule } from "../src/run/journal-check";
-import { pinnedBin } from "../src/run/run";
+import { pinnedBin, treeIdentity } from "../src/run/run";
 import type { Scenario } from "../src/scenario/compile";
 import { type FaultEpisode, type FaultType, SEAMS, type Trigger } from "../src/scenario/faults";
 import { loadPrereg } from "../src/scenario/inputs";
@@ -198,6 +198,11 @@ function schedule(dir: string): Schedule {
 }
 
 function summarize(dir: string) {
+    const manifest = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8")) as {
+        order?: string[];
+        sim_commit?: string;
+        sim_worktree?: string;
+    };
     const journal = lines(join(dir, "journal.jsonl"), true);
     const calls = lines(join(dir, "calls.jsonl"), true);
     const perArm = (arm: string, kind: string) =>
@@ -207,6 +212,10 @@ function summarize(dir: string) {
     ] as string[];
     return {
         ended: journal.at(-1)?.kind,
+        end_arms: Object.fromEntries(
+            (manifest.order ?? []).map((arm) => [arm, perArm(arm, "EndArm").length]),
+        ),
+        identity: { sim_commit: manifest.sim_commit, sim_worktree: manifest.sim_worktree },
         preflight: {
             first: journal[0]?.kind === "Preflight",
             before_start:
@@ -270,6 +279,7 @@ const summary = {
     resume: existsSync(dirs.resume) ? summarize(dirs.resume) : null,
 };
 writeFileSync(join(out, "witness.json"), `${JSON.stringify(summary, null, 2)}\n`);
+const current = treeIdentity(ROOT);
 console.log(JSON.stringify(summary, null, 2));
 
 type Run = { code: number } | undefined;
@@ -291,7 +301,13 @@ const invariantsClean = (name: "scheduled" | "rogue" | "resume") => {
         v.missing_events,
         v.out_of_order_events,
     ];
-    return s.ended === "EndRun" && s.call_seq_unique && violations.every((x) => x.length === 0);
+    const armsEnded = Object.values(s.end_arms).every((n) => n === 1);
+    return (
+        s.ended === "EndRun" &&
+        armsEnded &&
+        s.call_seq_unique &&
+        violations.every((x) => x.length === 0)
+    );
 };
 for (const name of ["scheduled", "rogue"]) {
     const r = outcome[name] as { timed_out?: boolean } | undefined;
@@ -377,6 +393,14 @@ const mechanismEvidence = (name: string, a: ArmSummary, expected: FaultEpisode[]
     }
 };
 const deterministic = FAULTS.filter((f) => f.trigger.kind !== "first_summarizer_call");
+for (const name of ["scheduled", "rogue", "resume"] as const) {
+    const s = summary[name];
+    if (!s) continue;
+    check(
+        s.identity.sim_commit === current.commit && s.identity.sim_worktree === current.worktree,
+        `${name}: run directory was made by this harness revision and working tree`,
+    );
+}
 if (run("scheduled")) check(run("scheduled")?.code === 0, "scheduled: exit 0");
 if (summary.scheduled) {
     check(invariantsClean("scheduled"), "scheduled: EndRun, unique seq, clean invariants");

@@ -35,15 +35,14 @@ by resolved path (an output directory above the checkout would derive an arm
 root inside it), a schedule with a fault type the host driver has no
 mechanism for (`host_upgrade`, `two_hosts_one_daemon`, so a full XL run is
 refused up front), a `--models` list that repeats an entry, and a
-`model_switch` schedule with fewer than two models. A directory whose journal
-already ends in `EndRun` is a completed run and is refused, so the sealed
-journal gains no entry. Before taking the lease, every artifact the run appends to or
+`model_switch` schedule with fewer than two models. A `daemon_sigkill_mid_fold` needs a
+`first_summarizer_call` trigger. Before taking the lease, every artifact the run appends to or
 replaces (`journal.jsonl`, `calls.jsonl`, the manifest, the scenario, the
 fault and preflight files, this process's staging names for the lease, the
 scenario, and the manifest, and each arm's `resources.jsonl`, clock offset,
 and `state.json`, plus this process's staging names for the clock offset and
 `state.json`) must be absent or a regular file with a single link (the arm,
-clock, `interception`, `toolbin`, and `hostbin` directories must be
+clock, `r`, `s`, `interception`, `toolbin`, and `hostbin` directories must be
 directories; the OpenCode wrapper and its staging name under `hostbin/<arm>`
 are checked the same way); a symlink, a hard link, or another
 file type there is refused. Every staged write (scenario, manifest, clock
@@ -58,7 +57,8 @@ toolchain wrappers are created exclusively after removing any planted name.
    with 130 or 143. After a signal, every driver call refuses with
    `HarnessFailure`, so the scheduler starts nothing the teardown has already
    passed; the teardown itself waits up to thirty seconds for every driver
-   call in flight (a reset, resume, event, fault, or finish, including a mid-fold
+   call in flight (scenario compilation and preflight, or a reset, resume,
+   event, fault, or finish, including a mid-fold
    fault overlapping its turn) before it stops the arm, so a daemon or host
    whose start is still pending is stopped rather than orphaned. Later
    signals wait for the teardown. The tier's `tier_wall_budget_ms` starts a
@@ -72,8 +72,11 @@ toolchain wrappers are created exclusively after removing any planted name.
    first invocation. Every invocation recomputes the SHA-256 of the file's
    body and refuses a `scenario.json` whose `scenario_hash` differs, one
    compiled for another tier or seed, one whose project ids are not plain
-   names, one with a repeated event id, or one whose events name an
-   undeclared project.
+   names, one with a repeated event id, an unknown event kind, a non-numeric
+   or decreasing `scenario_ms`, a missing session, a turn without an index,
+   or one whose events name an undeclared project. A directory whose
+   journal already ends in `EndRun` is refused before the scenario is read or
+   preflight runs, so a sealed run's artifacts stay untouched.
 3. Run `preflight` (`docs/time.md`). On the first invocation, write
    `manifest.json` with the tier, seed, host, arm order, event count, context
    limit, models, fault override, scenario hash, pre-registration hash,
@@ -107,14 +110,16 @@ toolchain wrappers are created exclusively after removing any planted name.
 5. Run the scheduler over the arms. On resume, each started arm first reaps
    the processes its state file records, then resumes through its driver.
    An arm ends only after its busy set drains twice: after its last event,
-   and again after the driver's shutdown, which can still register a job.
+   and again after the driver's shutdown, which can still register a job or
+   trigger a mid-fold kill that the arm then awaits.
 6. At the end, or after a failure or signal, stop each arm's sampler and
    driver, stop the proxy, append this invocation's proxy-fault witness
    report to `faults.jsonl` (a completed run appends it before `EndRun`, so
    a sealed journal always has its witness line; teardown appends it only
    when that did not happen), close the journal, and release the lease. A
-   request's arrival hook that fails to register its job is recorded as a
-   handler failure and fails the run at the next verification. Each
+   request's arrival hook, completion hook, or release that fails to journal
+   its job is recorded as a handler failure and fails the run at the next
+   verification; the busy set still clears. Each
    step runs even when an earlier one fails, and the first failure is
    rethrown after the last step, so the command exits nonzero. Stopping the
    proxy aborts in-flight handlers and waits up to ten seconds for them to
@@ -209,8 +214,11 @@ sleep, agent calls on both configured models, and no duplicate `Event` entry
 required); the scheduled run must hold the clock with at least one job while
 no turn is open (SIM-P13), and every finished run's journal must open with a
 `Preflight` entry, before `StartRun` or `ResumeRun`, whose probed binaries
-all intercepted. These checks run on every summarized directory, with or
-without a cached launch outcome.
+all intercepted and hold exactly one `EndArm` per arm the manifest names.
+Every summarized directory must have been written by the current harness
+revision and working tree (`sim_commit`, `sim_worktree`), so a rerun of one
+case cannot certify stale evidence from another. These checks run on every
+summarized directory, with or without a cached launch outcome.
 
 Runs on 2026-10-16 against eidnara `bb866266c` (`witness-8`; `resume` ran
 again after the store image grew to 2 GiB):

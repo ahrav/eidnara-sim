@@ -475,6 +475,35 @@ describe("witnesses", () => {
         expect(resumed.take("agent", 12, "eidnara")).toBeNull();
     });
 
+    test("a later-started call that completes first does not expire an earlier eligible retry", () => {
+        const fault: ProxyFault = {
+            id: "f",
+            type: "provider_5xx",
+            strategy: "single",
+            params: { count: 1 },
+        };
+        const injector = new FaultInjector([fault], new Rng(7), 5_000);
+        injector.arm("f", "eidnara");
+        const base = { ...RECORD, arm: "eidnara" };
+        expect(injector.take("agent", 0, "eidnara")?.id).toBe("f");
+        const at = Date.now();
+        injector.observe({ ...base, seq: 0, wall_ms: at, fault_ref: "f", started_wall_ms: at }, 0);
+        const slowRetry = { ...base, seq: 2, wall_ms: at + 9_000, started_wall_ms: at + 1_000 };
+        const laterBackground = {
+            ...base,
+            seq: 1,
+            wall_ms: at + 8_000,
+            component: "memory_capture" as const,
+            started_wall_ms: at + 7_000,
+        };
+        injector.observe(laterBackground, 2);
+        injector.observe(slowRetry, 1);
+        expect(injector.report("eidnara")[0]).toMatchObject({
+            status: "fired",
+            host_observed_seq: [2],
+        });
+    });
+
     test("a burst that already made every injection is not injected again after resume", async () => {
         const fault: ProxyFault = {
             id: "b",

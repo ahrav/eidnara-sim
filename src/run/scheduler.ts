@@ -167,6 +167,7 @@ export class Scheduler {
             await this.idle();
         });
         await driver.finish?.();
+        await this.pendingKill;
         await this.idle();
     }
 
@@ -353,10 +354,14 @@ export class Scheduler {
         this.clock?.begin(`job:${id}`);
     }
 
+    /** The busy set clears whether or not the `EndJob` append succeeds; the failure still throws. */
     jobEnd(id: string): void {
-        this.jobStarted.delete(id);
-        this.log({ kind: "EndJob", job: id });
-        this.clock?.end(`job:${id}`);
+        try {
+            this.log({ kind: "EndJob", job: id });
+        } finally {
+            this.jobStarted.delete(id);
+            this.clock?.end(`job:${id}`);
+        }
     }
 
     observe(component: string, driver: ArmDriver): void {
