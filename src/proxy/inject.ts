@@ -133,10 +133,27 @@ const usage = {
     usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
     metrics: { latencyMs: 1 },
 };
+export interface ToolSpec {
+    name: string;
+    inputSchema?: { json?: unknown };
+}
+
 type Ev = readonly [string, unknown];
 const text = (t: string): Ev => ["contentBlockDelta", { contentBlockIndex: 0, delta: { text: t } }];
 const stop = (reason: string): Ev => ["messageStop", { stopReason: reason }];
 const blockStop: Ev = ["contentBlockStop", { contentBlockIndex: 0 }];
+
+export function wrongToolInput(tool: ToolSpec | undefined): Record<string, unknown> {
+    const schema = tool?.inputSchema?.json as
+        | { properties?: Record<string, { type?: string }>; required?: string[] }
+        | undefined;
+    const input: Record<string, unknown> = {};
+    for (const name of schema?.required ?? []) {
+        const declared = schema?.properties?.[name]?.type;
+        if (declared) input[name] = declared === "string" ? 0 : "not a value of the declared type";
+    }
+    return Object.keys(input).length > 0 ? input : { unexpected_argument: "{not json" };
+}
 
 function faultEvents(type: FaultType, tool: string | undefined): [Ev[], string | null] {
     const start: Ev = ["messageStart", { role: "assistant" }];
@@ -166,7 +183,7 @@ export async function writeFault(
     params: Record<string, number>,
     streaming: boolean,
     sink: Sink,
-    tool: string | undefined,
+    tool: ToolSpec | undefined,
 ): Promise<FaultOutcome> {
     const error = (code: number, errorType: string): FaultOutcome => {
         sink.status(code, { "content-type": "application/json", "x-amzn-errortype": errorType });
@@ -181,7 +198,7 @@ export async function writeFault(
         sink.destroy();
         return { status: 0, finish_reason: null, error: "timeout (injected)" };
     }
-    const [events, finish] = faultEvents(type, tool);
+    const [events, finish] = faultEvents(type, tool?.name);
     const cut = finish === "stream_cut";
     if (!cut) events.push(["metadata", usage]);
     if (streaming) {
@@ -193,9 +210,9 @@ export async function writeFault(
             return t === "contentBlockDelta" && delta?.text ? [{ text: delta.text }] : [];
         });
         if (type === "schema_wrong_tool_call") {
-            const input = { unexpected_argument: "{not json" };
+            const input = wrongToolInput(tool);
             content.push({
-                toolUse: { toolUseId: "tooluse_injected", name: tool ?? "bash", input },
+                toolUse: { toolUseId: "tooluse_injected", name: tool?.name ?? "bash", input },
             });
         }
         const message = { role: "assistant", content };

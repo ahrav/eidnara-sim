@@ -5,8 +5,10 @@ Scope: the v2 live-slice harness in this tree, specified by
 follow `docs/properties/METHOD.md`. The spec names its full catalog at
 `research/sim-design/property-catalog-sim-v2.md` (2026-10-12 revision); that
 file is unavailable, so these records are reconstructed from the condensed
-index in the spec body. Every record is PROPOSED: `Exercised: not yet` and
-`Confidence: low`, because no harness surface exists to verify against.
+index in the spec body. Every record is PROPOSED with `Confidence: low`. A
+record whose surface has landed says `Exercised: partial` and names the tests
+that cover it; the rest say `Exercised: not yet` because no harness surface
+exists to verify against. No run has exercised any record.
 
 Stable ids: `SIM-P01` to `SIM-P77` carry the spec's proposed records, and
 `SIM-L01` to `SIM-L03` carry the liveness bounds OQ-6 asked for and M0
@@ -474,10 +476,11 @@ value consistently.
 Required faults and enabling state: proxy traffic during and around an idle
 jump.
 Confidence: low -
-[evidence](evidence/sim-p15-proxy-record-carries-both-times.md). PROPOSED:
-reconstructed from the condensed index in spec #1007; no implementation exists
-to verify against, and a default tier run reaches it.
-Existing check: none
+[evidence](evidence/sim-p15-proxy-record-carries-both-times.md). The M3 proxy
+(#1027) implements it and unit tests cover it; no run has exercised it.
+Existing check: `src/proxy/gateway.test.ts`: `a record's scenario_ms is the
+clock at receipt and wall_ms never decreases`, `scenario_ms is the clock at
+receipt, before the upstream answers`
 Impact: Latency and age cannot be reconstructed for a call.
 Open questions: None.
 
@@ -756,10 +759,12 @@ Fault/timing angle: a client disconnect mid-stream must still yield one record.
 Required faults and enabling state: a run with a refused request and a client
 disconnect.
 Confidence: low -
-[evidence](evidence/sim-p27-every-request-yields-one-record.md). PROPOSED:
-reconstructed from the condensed index in spec #1007; no implementation exists
-to verify against, and a default tier run reaches it.
-Existing check: none
+[evidence](evidence/sim-p27-every-request-yields-one-record.md). The M3 proxy
+(#1027) implements it and unit tests cover it; no run has exercised it.
+Existing check: `src/proxy/gateway.test.ts`: `an unknown route and a malformed
+body are recorded as rejected`, `an upstream stream that throws before its first
+event still yields one record`, `an HTTP/1.1 upload the client abandons yields
+one status-0 record`
 Impact: Cost and fault evidence silently drop calls.
 Open questions: None.
 
@@ -778,10 +783,11 @@ Fault/timing angle: none.
 Required faults and enabling state: traffic from every component, plus one
 unrecognised request shape.
 Confidence: low -
-[evidence](evidence/sim-p28-component-classification-is-total.md). PROPOSED:
-reconstructed from the condensed index in spec #1007; no implementation exists
-to verify against, and a default tier run reaches it.
-Existing check: none
+[evidence](evidence/sim-p28-component-classification-is-total.md). The M3 proxy
+(#1027) implements it and unit tests cover it; no run has exercised it.
+Existing check: `src/proxy/gateway.test.ts`: `harness components assert their
+tag; host calls are inferred`, `the writer refuses a record missing any required
+field`
 Impact: Cost by component does not sum to the total.
 Open questions: None.
 
@@ -798,10 +804,12 @@ Check: `always` - assert each forwarded record has `finish_reason` or
 `stream_cut`; a record with neither hides a truncated response.
 Fault/timing angle: a stream cut mid-body has no provider finish reason.
 Required faults and enabling state: a truncated-stream fault.
-Confidence: low - [evidence](evidence/sim-p29-finish-reason-recorded.md).
-PROPOSED: reconstructed from the condensed index in spec #1007; no
-implementation exists to verify against, and a default tier run reaches it.
-Existing check: none
+Confidence: low - [evidence](evidence/sim-p29-finish-reason-recorded.md). The M3
+proxy (#1027) implements it and unit tests cover it; no run has exercised it.
+Existing check: `src/proxy/gateway.test.ts`: `a forwarded call records tags,
+finish_reason, tokens, both times, and proxy retries`, `a forwarded stream
+without messageStop is recorded as stream_cut`, `an answer without a stop reason
+is stream_cut on both routes`
 Impact: The fold-lag and truncation failure classes cannot be told apart.
 Open questions: None.
 
@@ -820,11 +828,10 @@ triggered instance; a forbidden state checked over every record, so
 Fault/timing angle: a fault decorator left armed after its window injects into
 later calls.
 Required faults and enabling state: a fault schedule with windows that close.
-Confidence: low - [evidence](evidence/sim-p30-no-unscheduled-fault.md).
-PROPOSED: reconstructed from the condensed index in spec #1007; no
-implementation exists to verify against, and reached only when the tier
-schedules faults or the counterfactual arm.
-Existing check: none
+Confidence: low - [evidence](evidence/sim-p30-no-unscheduled-fault.md). The M3
+proxy (#1027) implements it and unit tests cover it; no run has exercised it.
+Existing check: `src/proxy/gateway.test.ts`: `a fault never armed is
+untriggered`
 Impact: Faults the schedule did not plan corrupt both arms' metrics.
 Open questions: None.
 
@@ -846,11 +853,11 @@ host SDK must see them.
 Required faults and enabling state: each fault kind with its target component
 active.
 Confidence: low -
-[evidence](evidence/sim-p31-fault-counts-only-when-observed-at-target.md).
-PROPOSED: reconstructed from the condensed index in spec #1007; no
-implementation exists to verify against, and reached only when the tier
-schedules faults or the counterfactual arm.
-Existing check: none
+[evidence](evidence/sim-p31-fault-counts-only-when-observed-at-target.md). The
+M3 proxy (#1027) implements it and unit tests cover it; no run has exercised it.
+Existing check: `src/proxy/gateway.test.ts`: the `fault composition at the proxy
+sink` matrix, `a call from another component inside the window does not witness
+the fault`
 Impact: A fault that never reached its target is counted as survived.
 Open questions:
 - OQ-8: the evidence shape proving a SIGKILL landed inside an in-progress fold.
@@ -893,11 +900,11 @@ missed path is a situation, and only a real miss exercises SIM-P32.
 Fault/timing angle: none.
 Required faults and enabling state: a fault keyed on a component event that does
 not occur in its window.
-Confidence: low - [evidence](evidence/sim-p33-missed-fault-occurs.md). PROPOSED:
-reconstructed from the condensed index in spec #1007; no implementation exists
-to verify against, and reached only when the tier schedules faults or the
-counterfactual arm.
-Existing check: none
+Confidence: low - [evidence](evidence/sim-p33-missed-fault-occurs.md). The M3
+proxy (#1027) implements it and unit tests cover it; no run has exercised it.
+Existing check: `src/proxy/gateway.test.ts`: `an armed fault with no later host
+call is untriggered and excludes the run`, `a host call outside the window does
+not witness the fault`
 Impact: The exclusion path of SIM-P32 is never exercised.
 Open questions: None.
 
@@ -917,11 +924,10 @@ executes with a `triggered` outcome; `reachable` is per-kind location coverage.
 Fault/timing angle: SIGKILL must land inside an in-progress fold.
 Required faults and enabling state: the full fault catalogue scheduled across M,
 L, and XL.
-Confidence: low - [evidence](evidence/sim-p34-each-fault-kind-triggers.md).
-PROPOSED: reconstructed from the condensed index in spec #1007; no
-implementation exists to verify against, and reached only when the tier
-schedules faults or the counterfactual arm.
-Existing check: none
+Confidence: low - [evidence](evidence/sim-p34-each-fault-kind-triggers.md). The
+M3 proxy (#1027) implements it and unit tests cover it; no run has exercised it.
+Existing check: `src/proxy/gateway.test.ts`: the `fault composition at the proxy
+sink` matrix
 Impact: A fault kind's recovery path is never tested.
 Open questions:
 - OQ-8: see SIM-P31 for the mid-fold SIGKILL evidence shape.

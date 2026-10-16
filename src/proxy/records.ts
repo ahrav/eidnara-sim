@@ -73,7 +73,7 @@ export function recordProblems(value: Record<string, unknown>): string[] {
     return problems;
 }
 
-/** `wall_ms` is the write-time Unix timestamp in milliseconds, clamped to the preceding record's value. */
+/** `wall_ms` is the write-time Unix timestamp in milliseconds, clamped to the preceding record's value and to the record's own `started_wall_ms`. */
 export class RecordWriter {
     private seq = 0;
     private lastWall = 0;
@@ -82,7 +82,7 @@ export class RecordWriter {
     constructor(private readonly path: string | null) {}
 
     write(partial: Omit<CallRecord, "seq" | "wall_ms">): CallRecord {
-        const wall_ms = Math.max(this.lastWall, Date.now());
+        const wall_ms = Math.max(this.lastWall, partial.started_wall_ms, Date.now());
         const record = { ...partial, seq: this.seq, wall_ms };
         const problems = recordProblems(record);
         if (problems.length > 0) throw new Error(`call record refused: ${problems.join(", ")}`);

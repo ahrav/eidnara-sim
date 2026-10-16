@@ -349,7 +349,7 @@ export class Gateway {
             return accepted;
         };
         if (fault && fault.type !== "slow_stream") {
-            const tool = body.toolConfig?.tools?.[0]?.toolSpec?.name;
+            const tool = body.toolConfig?.tools?.[0]?.toolSpec;
             const outcome = await writeFault(
                 fault.type,
                 fault.params,

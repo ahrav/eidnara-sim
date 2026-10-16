@@ -16,7 +16,7 @@ import {
     type Upstream,
     wireBase64,
 } from "./gateway";
-import { excludedFromFaultMetrics, FaultInjector, type ProxyFault } from "./inject";
+import { excludedFromFaultMetrics, FaultInjector, type ProxyFault, wrongToolInput } from "./inject";
 import { type CallRecord, RecordWriter, recordProblems } from "./records";
 
 /** A slow_stream fault delays each event by SLOW_DELAY_MS; the host classifies a status-200 answer as slow when any gap is at least SLOW_SEEN_MS. */
@@ -73,6 +73,7 @@ interface HostResult {
     status: number;
     events: { type: string; member: Record<string, unknown> }[];
     gaps: number[];
+    ms: number;
     timedOut: boolean;
 }
 
@@ -82,7 +83,8 @@ async function hostCall(
     timeoutMs: number,
     header?: string,
 ): Promise<HostResult> {
-    const result: HostResult = { status: 0, events: [], gaps: [], timedOut: false };
+    const result: HostResult = { status: 0, events: [], gaps: [], ms: 0, timedOut: false };
+    const t0 = performance.now();
     try {
         const response = await fetch(`${url}/model/m/converse-stream`, {
             method: "POST",
@@ -114,9 +116,10 @@ async function hostCall(
                 result.events.push({ type, member: payload ? JSON.parse(payload) : {} });
             }
         }
-    } catch {
-        result.timedOut = true;
+    } catch (caught) {
+        result.timedOut = (caught as Error).name === "TimeoutError";
     }
+    result.ms = performance.now() - t0;
     return result;
 }
 
@@ -129,7 +132,7 @@ function hostSees(type: FaultType, r: HostResult): boolean {
         case "provider_5xx":
             return r.status >= 500;
         case "provider_timeout":
-            return r.timedOut;
+            return r.timedOut && r.ms >= HOST_TIMEOUT_MS(type) - 20;
         case "truncated_length":
             return stopReason === "max_tokens";
         case "truncated_no_length":
@@ -218,8 +221,8 @@ async function hostCallJson(url: string, body: unknown, timeoutMs: number): Prom
         } catch {
             result.json = null;
         }
-    } catch {
-        result.timedOut = true;
+    } catch (caught) {
+        result.timedOut = (caught as Error).name === "TimeoutError";
     }
     result.ms = performance.now() - t0;
     return result;
@@ -244,7 +247,7 @@ function hostSeesJson(type: FaultType, r: JsonResult): boolean {
         case "provider_5xx":
             return r.status >= 500;
         case "provider_timeout":
-            return r.timedOut;
+            return r.timedOut && r.ms >= HOST_TIMEOUT_MS(type) - 20;
         case "truncated_length":
             return r.json?.stopReason === "max_tokens";
         case "truncated_no_length":
@@ -400,6 +403,41 @@ describe("fault composition at the proxy sink", () => {
             ["agent", "f"],
         ]);
     });
+
+    test("the non-stream wrong tool call violates a typed required property, or adds an undeclared argument", async () => {
+        const schema = {
+            type: "object",
+            properties: { command: { type: "string" }, timeout: { type: "number" } },
+            required: ["command", "timeout"],
+            additionalProperties: true,
+        };
+        expect(wrongToolInput({ name: "bash", inputSchema: { json: schema } })).toEqual({
+            command: 0,
+            timeout: "not a value of the declared type",
+        });
+        expect(wrongToolInput({ name: "bash" })).toEqual({ unexpected_argument: "{not json" });
+        const tooled = {
+            ...AGENT_BODY,
+            toolConfig: { tools: [{ toolSpec: { name: "bash", inputSchema: { json: schema } } }] },
+        };
+        const fault = {
+            id: "w",
+            type: "schema_wrong_tool_call",
+            strategy: "single",
+            params: { count: 1 },
+        } as ProxyFault;
+        const { injector, url } = await start(fault);
+        injector.arm("w");
+        const r = await hostCallJson(url, tooled, 2_000);
+        const use = r.json?.output?.message?.content?.find((c) => c.toolUse)?.toolUse as
+            | { name: string; input: Record<string, unknown> }
+            | undefined;
+        expect(use).toEqual({
+            toolUseId: "tooluse_injected",
+            name: "bash",
+            input: { command: 0, timeout: "not a value of the declared type" },
+        } as never);
+    });
 });
 
 describe("witnesses", () => {
@@ -508,6 +546,10 @@ describe("call records", () => {
             error: null,
         } as const;
         expect(() => writer.write(full)).not.toThrow();
+        const future = Date.now() + 10_000;
+        expect(writer.write({ ...full, started_wall_ms: future }).wall_ms).toBeGreaterThanOrEqual(
+            future,
+        );
         for (const key of Object.keys(full)) {
             const { [key as keyof typeof full]: _gone, ...rest } = full;
             expect(() => writer.write(rest as never)).toThrow(/call record refused/);
@@ -910,8 +952,12 @@ describe("every request yields one record", () => {
             return byStart.map((r) => r.wall_ms - r.started_wall_ms);
         };
         const [first, second] = [await run(0), await run(1)];
-        expect(Math.abs((first[0] ?? 0) - (second[0] ?? 0))).toBeLessThan(80);
-        expect(Math.abs((first[1] ?? 0) - (second[1] ?? 0))).toBeLessThan(80);
+        const root = new Rng(42);
+        const expected = [0, 1].map(() => backoffMs(0, new Rng(root.nextU32())));
+        for (const run of [first, second]) {
+            expect(Math.abs((run[0] ?? 0) - (expected[0] ?? 0))).toBeLessThan(100);
+            expect(Math.abs((run[1] ?? 0) - (expected[1] ?? 0))).toBeLessThan(100);
+        }
     }, 30_000);
 
     test("stop() returns after in-flight handlers wrote their records", async () => {

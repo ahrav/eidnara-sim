@@ -34,7 +34,7 @@ rest. The writer refuses a record that lacks any field below.
 | `model`, `status`, `error` | Model id, the HTTP status the gateway sent (0 when it sent none, including when the client disconnected before the answer), and the error text or `null` |
 | `finish_reason` | The stream's `messageStop.stopReason` or the response's `stopReason`; `stream_cut` when the answer carried no stop reason, including a stream that ended or failed before both `messageStop` and `metadata` arrived; `null` when the call had no answer |
 | `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens` | Provider usage |
-| `started_wall_ms`, `wall_ms` | Receipt time, and write time clamped so it never decreases in `seq` order (SIM-P15) |
+| `started_wall_ms`, `wall_ms` | Receipt time, and write time clamped so it never decreases in `seq` order and never precedes the record's own receipt (SIM-P15) |
 | `scenario_ms` | The scheduler's clock at receipt (SIM-P15) |
 | `first_byte_ms` | Milliseconds from receipt to the first answer byte the transport accepted for the host, after any `slow_stream` delay and including an injected fault's answer, or `null` |
 | `proxy_retries` | Retries the proxy itself made upstream |
@@ -91,7 +91,7 @@ it, and the record's `proxy_retries` is 0.
 | `truncated_length` | A partial text block and `messageStop` with `stopReason: max_tokens` |
 | `truncated_no_length` | A partial text block, then the stream ends with no `messageStop` or metadata; on `converse`, the first half of the JSON body |
 | `empty_content` | `messageStop` with `end_turn` and no content block |
-| `schema_wrong_tool_call` | A `toolUse` block for the request's first tool whose input is not JSON; on `converse`, an input object with an argument the tool's schema lacks |
+| `schema_wrong_tool_call` | A `toolUse` block for the request's first tool whose input is not JSON; on `converse`, an input object that gives each typed required property of the tool's schema a value of another type, or one undeclared argument when the schema has none |
 | `slow_stream` | The provider's answer, with `delay_ms` (default 2 s) before each event; on `converse`, before the body. The record carries `fault_ref` only once a delay ran, so an upstream that fails before answering leaves the episode untriggered |
 
 ## Witnesses

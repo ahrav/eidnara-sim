@@ -3,7 +3,9 @@ import type { Component } from "./records";
 export interface ConverseBody {
     system?: Array<Record<string, unknown>>;
     messages?: Array<{ role: string; content: Array<Record<string, unknown>> }>;
-    toolConfig?: { tools?: Array<{ toolSpec?: { name: string } }> };
+    toolConfig?: {
+        tools?: Array<{ toolSpec?: { name: string; inputSchema?: { json?: unknown } } }>;
+    };
     [field: string]: unknown;
 }
 
