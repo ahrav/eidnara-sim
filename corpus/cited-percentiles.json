@@ -1,0 +1,35 @@
+{
+    "schema": "sim-corpus-cited/v1",
+    "source": "Spec ahrav/eidnara#1007 and ticket #1025, citing the TraceLab evidence brief",
+    "tolerance_rule": "A measured percentile passes when |measured - cited| <= rel * cited, with rel = 0.4 for every check. The band was set after the fit was first measured, so it is a reporting tolerance rather than a pre-registered test. It spans the gap between each cited value and the TraceLab paper v2 value for the same percentile (field v2): the widest such gap among checks with a pooled v2 value is 37%, idle p90 (900 s cited, 1,236 s in v2 Table 7). Paper v2 reports append percentiles per provider only (v2_by_provider).",
+    "rel": 0.4,
+    "checks": [
+        { "quantity": "requests_per_session", "q": 0.5, "cited": 1, "v2": 1 },
+        { "quantity": "requests_per_session", "q": 0.9, "cited": 16, "v2": 18 },
+        { "quantity": "requests_per_session", "q": 0.99, "cited": 161, "v2": 137 },
+        { "quantity": "idle_within_session_s", "q": 0.5, "cited": 86, "v2": 84 },
+        { "quantity": "idle_within_session_s", "q": 0.9, "cited": 900, "v2": 1236 },
+        { "quantity": "idle_within_session_s", "q": 0.99, "cited": 39600, "v2": 50040 },
+        {
+            "quantity": "append_tokens_per_step",
+            "q": 0.5,
+            "cited": 1000,
+            "v2_by_provider": { "claude": 857, "codex": 886 }
+        },
+        {
+            "quantity": "append_tokens_per_step",
+            "q": 0.9,
+            "cited": 4400,
+            "v2_by_provider": { "claude": 5342, "codex": 8310 },
+            "deviation": "Waived: the cited 4.4k sits outside the band. TraceLab paper v2 Table 8 reports append p90 of 5,342 for Claude and 8,310 for Codex; the pooled v0.0.2 trace measures between those two, so the cited value matches neither provider in the current release. The corpus keeps the measured distribution, and the M1 exit criterion holds for this percentile only through this waiver."
+        }
+    ],
+    "tail_checks": [
+        {
+            "quantity": "append_tokens_per_step",
+            "threshold": 10000,
+            "min_share": 0.01,
+            "reason": "The spec requires a >=10k append tail. This check requires at least 1% of steps to append 10k tokens or more; it checks the share of steps, not the paper v2 statement that such steps carry over 70% of append tokens."
+        }
+    ]
+}

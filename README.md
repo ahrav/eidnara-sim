@@ -14,9 +14,11 @@ milestone lands through one implementation ticket in that tracker.
 
 ```sh
 bun install
-bun run check            # typecheck, lint, test, pre-registration, catalog
+bun run check            # typecheck, lint, test, pre-registration, catalog, corpus
 bun run prereg:validate  # validate prereg/<tier>.json and print each digest
 bun run catalog:check    # check docs/properties/sim-v2 against METHOD.md
+bun run corpus:verify    # rebuild the corpus in place; fail on any change
+bun run corpus:repos     # clone repositories and twins, run their suites offline
 ```
 
 ## Layout
@@ -26,6 +28,7 @@ bun run catalog:check    # check docs/properties/sim-v2 against METHOD.md
 | `AGENTS.md`, `REVIEW.md` | agent and review guidance |
 | `docs/` | system documents (claim boundary, eval-core mapping), agent guidance, property catalog |
 | `prereg/` | frozen per-tier pre-registrations (`sim-prereg/v1`) |
+| `corpus/` | fitted distributions, tool-output samples, error codes, repositories (see `docs/corpus.md`) |
 | `sim.config.json` | paths to the eidnara checkout, plugin builds, daemon, hosts, and Bedrock profile; `SIM_CONFIG` overrides the file |
 | `scripts/` | repository checks |
 | `src/` | harness source |

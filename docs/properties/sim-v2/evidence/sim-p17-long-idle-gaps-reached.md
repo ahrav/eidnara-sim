@@ -17,6 +17,12 @@ time.
 No harness code, test, or run exists yet. The surface lands in M2
 (#1026).
 
+M1 (#1025) lands the idle tail. `corpus/distributions.json` holds the fitted
+`idle_within_session_s` table (TraceLab v0.0.2, n = 71,290 gaps, p99 about
+11.2 h). The SIM-P17 test in `src/corpus/corpus.test.ts` draws 10,000
+sessions and finds gaps above the cited p99 band floor and above 11 h. The
+scenario-level reachability check lands in M2.
+
 ## Failure scenario
 
 Resume-after-gap behaviour (P6) is never exercised.

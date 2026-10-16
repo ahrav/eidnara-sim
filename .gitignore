@@ -4,3 +4,4 @@ node_modules/
 /corpus/cache/
 /vendor/build/
 .DS_Store
+/corpus/repos/*/

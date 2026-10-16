@@ -16,6 +16,13 @@ A compiled scenario has at least three sessions in the p90 request-count regime.
 No harness code, test, or run exists yet. The surface lands in M2
 (#1026).
 
+M1 (#1025) lands the enabling state. `corpus/distributions.json` holds the
+fitted `requests_per_session` table (TraceLab v0.0.2, n = 8,058 sessions, p90
+= 16). `sampleSession` in `src/corpus/sampler.ts` takes a tail floor, and the
+SIM-P09 test in `src/corpus/corpus.test.ts` shows that a 0.9 floor yields only
+sessions at or above the fitted p90. The compile-time count of three such
+sessions per scenario lands in M2.
+
 ## Failure scenario
 
 Fold and compaction paths are never exercised and P13 and P14 have no items.

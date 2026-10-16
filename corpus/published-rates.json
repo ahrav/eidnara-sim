@@ -1,0 +1,41 @@
+{
+    "schema": "sim-corpus-rates/v1",
+    "source": "SWE-chat paper v2, arXiv:2604.20779v2, https://arxiv.org/html/2604.20779v2",
+    "note": "The SWE-chat tables are gated (see sources.json), so these rates come from the paper text. The paper reports the turn rates over Claude Code sessions and gives no exact denominator; it states 229,909 user prompts of which about 69% come from Claude Code.",
+    "rates": {
+        "pushback_per_turn": {
+            "value": 0.457,
+            "unit": "turn",
+            "n": null,
+            "status": "published",
+            "quote": "pushing back against agent outputs in 45.7% of turns"
+        },
+        "interrupt_per_turn": {
+            "value": 0.045,
+            "unit": "turn",
+            "n": null,
+            "status": "published",
+            "quote": "Users compensate by interrupting agents in 4.5% of turns"
+        },
+        "redirect_per_session": {
+            "value": null,
+            "by_mode": {
+                "vibe_coding": 0.046,
+                "other_modes": 0.08
+            },
+            "unit": "session (share of sessions with the mind-changer persona)",
+            "n": null,
+            "status": "published-by-mode",
+            "quote": "Mind changing is less common during vibe coding (4.6% vs. 8.0% in other modes)."
+        },
+        "abandon_per_session": {
+            "value": null,
+            "low": 0.1,
+            "high": 0.3,
+            "unit": "session",
+            "n": null,
+            "status": "bounded-not-measured",
+            "quote": "If the user abandons the agent's output entirely, session logs are not committed and thus not captured by our data. [...] for a=10%, 20%, and 30%"
+        }
+    }
+}

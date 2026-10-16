@@ -1,0 +1,25 @@
+{
+    "schema": "sim-corpus-manifest/v1",
+    "datasets": [
+        {
+            "id": "tracelab",
+            "revision": "7256bbf77e76d5cb83f4ddbd5ad31d8faee9dc7a",
+            "access": "public"
+        },
+        {
+            "id": "openhands",
+            "revision": "35455389ab51bf5e2306bfd436ef72d0f98bf882",
+            "access": "public"
+        },
+        {
+            "id": "swe-chat",
+            "revision": "202b071f18e03c79df5a7287565ce2ebc5ee7756",
+            "access": "gated"
+        }
+    ],
+    "files": {
+        "distributions.json": "042c8fa677e9dfe18feb4439866ba58c17b5b6efb91e2d3fdb5f2584b20c1f42",
+        "tool-outputs/samples.jsonl": "e57511ce9b0c631d9e76f412689c711139304f03aa1b4dd249e0cf3f88a46244",
+        "tool-outputs/error-codes.jsonl": "bf58ee78ab0e1274abd19d5c7cb6690577b4fdc03146f4ec453470fdfb0b0ae7"
+    }
+}
