@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { join } from "node:path";
-import { CACHE_DIR, cachePath, type Dataset, under } from "./sources";
+import { CACHE_DIR, cachePath, type Dataset, fetchDataset, under } from "./sources";
 
 const dataset: Dataset = {
     id: "d",
@@ -16,6 +16,15 @@ test("under resolves inside its root and rejects parent, absolute, and root-equa
     for (const path of ["../sib.rs", "/etc/passwd", ".", "a/../.."]) {
         expect(() => under("/root", path)).toThrow("escapes /root");
     }
+});
+
+test("fetchDataset skips a gated dataset and refuses an unknown access mode", async () => {
+    const logs: string[] = [];
+    await fetchDataset({ ...dataset, access: "gated" }, (line) => logs.push(line));
+    expect(logs).toEqual(["d: gated, skipped"]);
+    await expect(fetchDataset({ ...dataset, access: "publci" as never }, () => {})).rejects.toThrow(
+        'access "publci"',
+    );
 });
 
 test("cachePath nests files under the dataset revision and rejects paths that leave corpus/cache", () => {

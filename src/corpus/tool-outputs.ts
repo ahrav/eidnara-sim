@@ -84,10 +84,14 @@ function clip(body: string, keepTail: boolean): string {
 
 type Provenanced = Omit<Provenance, "id">;
 
+const FRAME = /^\s*File "/;
+
 function harvestCodes(lines: string[], base: Provenanced, codes: Map<string, ErrorCodeEntry>) {
     for (const [i, line] of lines.entries()) {
         const code = EXCEPTION.exec(line.trim());
         if (code?.[1] === undefined || codes.has(code[1]) || codes.size >= MAX_ERROR_CODES)
+            continue;
+        if (code[2] === undefined && !lines.slice(Math.max(0, i - 2), i).some((l) => FRAME.test(l)))
             continue;
         codes.set(code[1], {
             id: `err-${codes.size.toString().padStart(4, "0")}`,
@@ -124,10 +128,10 @@ export function extractFrom(rows: TrajectoryRow[], dataset: Dataset): Extraction
             const source_id = `${dataset.repo}@${dataset.revision}:${row.trajectory_id}#${index}`;
             const base = { repo: row.repo, license: dataset.license, source_id };
             const lines = m.content.split("\n").filter((l) => !FOOTER.test(l));
-            harvestCodes(lines, base, codes);
+            const tool = m.name ?? "";
+            if (tool === "execute_bash") harvestCodes(lines, base, codes);
 
             const body = lines.join("\n").trim();
-            const tool = m.name ?? "";
             const command = calls.get(m.tool_call_id ?? "") ?? "";
             const kind = classify(tool, command, body);
             if (kind === null || body.length < MIN_CHARS || taken.has(kind)) continue;

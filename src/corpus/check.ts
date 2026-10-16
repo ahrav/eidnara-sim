@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { sha256Hex } from "../prereg/canonical";
-import { quantile, tailShare } from "./cdf";
+import { cdfProblems, quantile, tailShare } from "./cdf";
 import {
     type CheckResult,
     compareCited,
@@ -19,6 +19,12 @@ const MIN_ERROR_CODES = 100;
 const KINDS = ["stack_trace", "test_run", "grep", "file_read"];
 const SHA = /^[0-9a-f]{40}$/;
 const REPO_LICENSES = new Set(["MIT", "Apache-2.0"]);
+const OUTPUTS = [
+    "distributions.json",
+    "tool-outputs/error-codes.jsonl",
+    "tool-outputs/samples.jsonl",
+];
+const CDF_KINDS = new Set(["discrete", "continuous"]);
 
 export interface CorpusReport {
     problems: string[];
@@ -30,7 +36,10 @@ export function checkCorpus(): CorpusReport {
     const need = (ok: boolean, problem: string) => ok || problems.push(problem);
     const read = (path: string) => readFileSync(join(CORPUS_DIR, path), "utf8");
     const manifest = JSON.parse(read("manifest.json"));
-    for (const [path, digest] of Object.entries(manifest.files as Record<string, string>)) {
+    const files = manifest.files as Record<string, string>;
+    const listed = Object.keys(files).sort().join(",");
+    need(listed === OUTPUTS.join(","), `manifest: files ${listed}, need ${OUTPUTS.join(",")}`);
+    for (const [path, digest] of Object.entries(files)) {
         const actual = sha256Hex(read(path));
         need(actual === digest, `${path}: sha256 ${actual}, manifest ${digest}`);
     }
@@ -51,7 +60,9 @@ export function checkCorpus(): CorpusReport {
     const dist = loadDistributions();
     for (const [name, q] of Object.entries(dist.quantities)) {
         need(typeof q.source === "string" && q.source !== "", `${name}: source missing`);
-        need(q.n > 0 && q.cdf.p.length === q.cdf.x.length, `${name}: n or cdf missing`);
+        need(q.n > 0, `${name}: n missing`);
+        need(CDF_KINDS.has(q.cdf.kind), `${name}: cdf kind ${q.cdf.kind}`);
+        problems.push(...cdfProblems(q.cdf).map((why) => `${name}: ${why}`));
     }
     const cited = loadCited();
     const percentiles = compareCited(cited, (name, q) => quantile(table(dist, name), q));

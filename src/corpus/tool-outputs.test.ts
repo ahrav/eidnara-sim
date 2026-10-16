@@ -119,6 +119,41 @@ describe("extractFrom", () => {
         expect(trace?.content).not.toContain("Traceback");
     });
 
+    test("harvests codes from command output only, and bare names only below a File frame", () => {
+        const listing = extractFrom(
+            [
+                {
+                    trajectory_id: "t3",
+                    repo: "o/r",
+                    trajectory: [
+                        call("c5", "str_replace_editor", { command: "view", path: "/a.py" }),
+                        result(
+                            "c5",
+                            "str_replace_editor",
+                            "Here's the result of running `cat -n` on /a.py:\nRaises\n------\nGMTCLibError: when the C API fails",
+                        ),
+                        call("c6", "execute_bash", { command: "python -c 'print(dir(m))'" }),
+                        result(
+                            "c6",
+                            "execute_bash",
+                            "Exception-related attributes:\n  HTTPException\n  NotFoundException",
+                        ),
+                        call("c7", "execute_bash", { command: "python t.py" }),
+                        result(
+                            "c7",
+                            "execute_bash",
+                            'Traceback (most recent call last):\n  File "t.py", line 1, in <module>\n    input()\nKeyboardInterrupt',
+                        ),
+                        call("c8", "execute_bash", { command: "python u.py" }),
+                        result("c8", "execute_bash", "some log line\nValueError: bad value"),
+                    ],
+                },
+            ],
+            dataset,
+        );
+        expect(listing.error_codes.map((e) => e.code)).toEqual(["KeyboardInterrupt", "ValueError"]);
+    });
+
     test("keeps each error code at its first occurrence", () => {
         expect(out.error_codes.map((e) => [e.code, e.source_id])).toEqual([
             ["ValueError", "org/ds@rev:t1#1"],

@@ -33,14 +33,14 @@ describe("sessionMetrics", () => {
         expect(m.idle).toEqual([0]);
     });
 
-    test("an overlapping earlier round yields no gap; the gap runs from the latest end", () => {
+    test("a request that starts before the latest end counts a zero gap; later gaps run from that end", () => {
         const m = sessionMetrics([
             round(0, true, 0, 9000),
             round(1, false, 1000, 2000),
             round(2, true, 5000, 6000),
             round(3, true, 12_000, 13_000),
         ]);
-        expect(m.idle).toEqual([3]);
+        expect(m.idle).toEqual([0, 3]);
     });
 
     test("orders rounds by start time, then index", () => {

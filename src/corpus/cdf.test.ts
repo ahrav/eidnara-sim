@@ -1,6 +1,30 @@
 import { describe, expect, test } from "bun:test";
 import { Rng } from "../rng";
-import { fitCdf, GRID, quantile, sample, tailShare } from "./cdf";
+import { cdfProblems, fitCdf, GRID, quantile, sample, tailShare } from "./cdf";
+
+describe("cdfProblems", () => {
+    test("fitted tables pass", () => {
+        expect(cdfProblems(fitCdf([1, 2, 2, 3], "discrete"))).toEqual([]);
+        expect(cdfProblems(fitCdf([5, 1, 3], "continuous"))).toEqual([]);
+    });
+    test("names decreasing, out-of-range, non-finite, and unequal tables", () => {
+        const bad = { kind: "continuous" as const, p: [0.5, 0.4], x: [100, -1] };
+        expect(cdfProblems(bad)).toEqual([
+            "p must increase strictly within [0, 1]",
+            "p must end at 1",
+            "x must not decrease",
+        ]);
+        expect(cdfProblems({ kind: "discrete", p: [1], x: [Number.NaN] })).toEqual([
+            "entries must be finite",
+        ]);
+        expect(cdfProblems({ kind: "discrete", p: [], x: [] })).toContain(
+            "p and x need equal nonzero length",
+        );
+        expect(cdfProblems({ kind: "discrete", p: [0.5, 1.5], x: [1, 2] })).toContain(
+            "p must increase strictly within [0, 1]",
+        );
+    });
+});
 
 describe("tailShare", () => {
     test("a continuous table interpolates the CDF at the threshold", () => {
