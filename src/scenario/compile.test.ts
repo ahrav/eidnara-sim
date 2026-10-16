@@ -1,5 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { appendFileSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync } from "node:fs";
+import {
+    appendFileSync,
+    copyFileSync,
+    mkdirSync,
+    mkdtempSync,
+    readFileSync,
+    writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { table } from "../corpus/distributions";
@@ -16,7 +23,7 @@ import {
     type Scenario,
     type Template,
 } from "./compile";
-import { CONSUMED_FILES, loadCompileInput, verifyCorpus } from "./inputs";
+import { CONSUMED_FILES, langOf, loadCompileInput, loadPrereg, verifyCorpus } from "./inputs";
 import { type Embedder, hashEmbedder } from "./similarity";
 
 const ROOT = join(import.meta.dir, "..", "..");
@@ -396,6 +403,29 @@ describe("fact bank checks", () => {
         expect(Object.keys(t?.check ?? {})).toEqual(["paths_must"]);
     });
 
+    test("the module-level Map rule matches typed, let, and WeakMap declarations", () => {
+        const t = templates("rejected").find((x) => x.id === "ts-no-module-map");
+        const re = new RegExp((t?.check as { must_not: string[] }).must_not[0] ?? "$^", "m");
+        for (const line of [
+            "const cache = new Map()",
+            "const cache = new Map<string, Handler>()",
+            "export const cache = new WeakMap<object, Handler>()",
+            "let cache: Map<string, Handler> = new Map()",
+        ])
+            expect({ line, hit: re.test(line) }).toEqual({ line, hit: true });
+        expect(re.test("const size = cache.size")).toBe(false);
+    });
+
+    test("the commit-tag rule requires the tag at the start of the message", () => {
+        const t = templates("session_rule").find((x) => x.id === "session-commit-tag");
+        const pattern = (t?.check as { commands_must: string[] }).commands_must[0] ?? "$^";
+        const re = new RegExp(pattern.replaceAll("{token}", "quiet_vole"));
+        expect(re.test("git commit -m '[quiet_vole] implement cap'")).toBe(true);
+        expect(re.test('git commit -am "[quiet_vole] implement cap"')).toBe(true);
+        expect(re.test("git commit --message='[quiet_vole] implement cap'")).toBe(true);
+        expect(re.test("git commit -m 'implement cap [quiet_vole]'")).toBe(false);
+    });
+
     test("every anchor forbids its value in the diff and in the final answer", () => {
         for (const t of templates("anchor")) {
             expect({ id: t.id, keys: Object.keys(t.check).sort() }).toEqual({
@@ -511,6 +541,21 @@ describe("between-session gaps", () => {
         expect(gaps.filter((g) => g <= 1).length).toBeLessThan(0.05 * gaps.length);
         const sorted = [...gaps].sort((a, b) => a - b);
         expect(sorted[Math.floor(sorted.length / 2)] ?? 0).toBeGreaterThan(1_000);
+    });
+});
+
+describe("input loading", () => {
+    test("a pre-registration whose tier differs from its filename is refused", () => {
+        const dir = mkdtempSync(join(tmpdir(), "sim-prereg-"));
+        const prereg = JSON.parse(readFileSync(join(ROOT, "prereg", "M.json"), "utf8"));
+        writeFileSync(join(dir, "S.json"), JSON.stringify(prereg));
+        expect(() => loadPrereg("S", dir)).toThrow(/prereg\/S\.json names tier M/);
+    });
+
+    test("a repository role outside the two known roles is refused", () => {
+        expect(langOf("rust-service")).toBe("rust");
+        expect(langOf("typescript-package")).toBe("typescript");
+        expect(() => langOf("python-service")).toThrow(/role python-service/);
     });
 });
 
