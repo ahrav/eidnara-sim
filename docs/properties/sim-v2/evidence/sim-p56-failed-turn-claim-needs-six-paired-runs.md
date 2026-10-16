@@ -17,6 +17,8 @@ six paired runs; below that the verdict is `insufficient-runs(k)`.
 No harness code, test, or run exists yet. The surface lands in M7
 (#1032).
 
+M7 (#1032) answers `insufficient-runs(k)` for a run-level gate below six paired runs; a test checks four runs, and six runs give a sign-test verdict.
+
 ## Failure scenario
 
 A run-level claim is made from one or two runs.
