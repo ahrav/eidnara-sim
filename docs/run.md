@@ -57,8 +57,9 @@ acknowledged entry survives a power loss, and flushes the truncation that
 rolls a failed append back (closing the journal when that flush fails), so a
 refused entry cannot reappear after a crash, and refuses to open while a
 `journal.jsonl.failed` marker sits beside the file the kernel opened
-(`poison` creates it exclusively at that pinned path, or writes through an
-existing marker only when that file is this user's regular single-link file,
+(`poison` creates it exclusively at that pinned path, or truncates and
+rewrites an existing marker only when that file is this user's regular
+single-link file,
 and flushes it and its directory entry when a record that must land, such as a fatal fault, its evidence, an
 exit, or a job transition, cannot be appended; the marker is read through a
 descriptor opened without following links or blocking and must be a regular
@@ -148,7 +149,11 @@ call through it is refused:
 5. Deliver the event to the driver, as a copy, so a driver that mutates it
    touches nothing the scheduler records. Its outcome must be an object whose
    `failed` is absent or a string other than `"ok"` (the success literal);
-   anything else fails the run before any terminal record. When a fault keyed
+   anything else, or a delivery that rejects, fails the run: a fatal
+   `ItemState` names the event (poisoning the run when that record cannot be
+   appended), in-flight work such as a pending kill still lands its evidence,
+   and a later process refuses the journal. An `EndTurn` that cannot be
+   appended poisons the run the same way. When a fault keyed
    to the turn fired, the scheduler quiesces again before `BeginTurn`, so a
    job the fault's callback started ends first. A user turn is bracketed by `BeginTurn`
    and `EndTurn` and holds the clock busy while it runs; its settle interval

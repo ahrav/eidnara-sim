@@ -565,6 +565,7 @@ export class Journal {
                     closeSync(fd);
                     throw new Error(`failure marker ${basename(marker)} is not this run's file`);
                 }
+                ftruncateSync(fd, 0);
             }
             try {
                 writeSync(fd, `${reason}\n`);

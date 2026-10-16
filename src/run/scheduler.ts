@@ -137,7 +137,9 @@ export class Scheduler {
         if (fatal) {
             const cause = fatal.fault
                 ? `fault ${fatal.fault} failed`
-                : "the daemon exited outside an outage window";
+                : fatal.event
+                  ? `event ${fatal.event} failed`
+                  : "the daemon exited outside an outage window";
             throw new HarnessFailure(`run failed: ${cause}`);
         }
         const finished = new Set(entries.filter((e) => e.kind === "EndArm").map((e) => e.arm));
@@ -831,15 +833,35 @@ export class Scheduler {
         for (const f of due) await this.fire(driver, f);
         if (due.length > 0) await this.quiesce();
         const deliver = async (): Promise<{ failed?: string }> => {
-            const got: unknown = await this.untilFatal(driver.event(structuredClone(e)));
-            const failed = (got as { failed?: unknown } | null)?.failed;
-            const wellFormed =
-                typeof got === "object" &&
-                got !== null &&
-                !Array.isArray(got) &&
-                (failed === undefined || (typeof failed === "string" && failed !== "ok"));
-            if (!wellFormed) {
-                throw new Error(`event ${e.id}: driver outcome is ${describe(got)}`);
+            let got: unknown;
+            try {
+                got = await this.untilFatal(driver.event(structuredClone(e)));
+                const failed = (got as { failed?: unknown } | null)?.failed;
+                const wellFormed =
+                    typeof got === "object" &&
+                    got !== null &&
+                    !Array.isArray(got) &&
+                    (failed === undefined || (typeof failed === "string" && failed !== "ok"));
+                if (!wellFormed) throw new Error(`driver outcome is ${describe(got)}`);
+            } catch (caught) {
+                if (caught === this.fatal) throw caught;
+                const error = caught instanceof Error ? caught.message : String(caught);
+                this.fatal ??= new HarnessFailure(`event ${e.id} failed: ${error}`);
+                try {
+                    this.log({
+                        kind: "ItemState",
+                        event: e.id,
+                        state: "failed",
+                        error,
+                        fatal: true,
+                    });
+                } catch (unwritten) {
+                    this.poison(
+                        `event ${e.id} failed and its record could not be journaled`,
+                        unwritten,
+                    );
+                }
+                throw caught;
             }
             return got as { failed?: string };
         };
@@ -855,7 +877,17 @@ export class Scheduler {
             }
             const state = outcome.failed === undefined ? "completed" : "failed";
             const item = e.probe ? { probe: e.probe, state } : {};
-            this.log({ kind: "EndTurn", event: e.id, outcome: outcome.failed ?? "ok", ...item });
+            try {
+                this.log({
+                    kind: "EndTurn",
+                    event: e.id,
+                    outcome: outcome.failed ?? "ok",
+                    ...item,
+                });
+            } catch (caught) {
+                this.poison(`turn ${e.id} ended but its record could not be journaled`, caught);
+                throw caught;
+            }
             await this.untilFatal(Bun.sleep(this.o.settleMs ?? 1_000));
         } else {
             outcome = await deliver();

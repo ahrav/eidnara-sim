@@ -19,8 +19,9 @@ surface landed in M4 (#1028).
 
 M4 (#1028) resumes each arm from its own cursor over the shared event list; the
 resume tests check that every arm's completed events equal the full event list
-in order. That is partial evidence: `tape_id` and divergence indices land with
-the tapes in M6, and no test compares them across a resume yet.
+in order. That observes event-list identity, which this record does not
+promise: the record stays unexercised until `tape_id` and divergence indices
+land with the tapes in M6 and a test compares them across a resume.
 
 ## Failure scenario
 

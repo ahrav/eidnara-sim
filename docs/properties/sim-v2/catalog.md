@@ -1658,7 +1658,8 @@ Fault/timing angle: resume rebuilds tape state from disk.
 Required faults and enabling state: an interrupt in a sibling arm.
 Confidence: low - [evidence](evidence/sim-p65-resume-preserves-pairing.md).
 PROPOSED: reconstructed from the condensed index in spec #1007; the M4 unit
-tests verify event-list identity, and a default tier run reaches it.
+tests observe event-list identity, which this record does not promise, and a
+default tier run reaches it.
 Existing check: none
 Impact: Pairing breaks silently after resume.
 Open questions: None.

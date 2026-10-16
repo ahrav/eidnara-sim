@@ -1287,27 +1287,43 @@ describe("Scheduler", () => {
             params: { count: 3 },
         };
         const injector = new FaultInjector([fault], new Rng(1), 1_000);
-        let attempt = 0;
         const taken: boolean[] = [];
         const driver = fakeDriver([], 0, (e) => {
-            if (e.kind === "user_turn" && e.index === 0) {
-                injector.take(TARGET, 0);
-                if (attempt++ === 0) throw new Error("turn died");
-            }
             if (e.kind === "user_turn" && e.index === 1)
                 taken.push(injector.take(TARGET, 1) !== null);
         });
-        const scheduler = new Scheduler({
+        const path = join(dir(), "j.jsonl");
+        const cut = new Journal(path);
+        cut.append({
+            kind: "StartRun",
+            arm: null,
+            scenario_ms: 0,
+            order: ["a"],
+            scenario: scenarioId(fixtureEvents(2), [fault]),
+        });
+        cut.append({ kind: "StartArm", arm: "a", scenario_ms: 0 });
+        cut.append({ kind: "Event", arm: "a", scenario_ms: 0, event: "e-000000", outcome: "ok" });
+        cut.append({
+            kind: "FaultFired",
+            arm: "a",
+            scenario_ms: 0,
+            fault: "p1",
+            type: "provider_429",
+            layer: "proxy-sink",
+        });
+        cut.append({ kind: "BeginTurn", arm: "a", scenario_ms: 0, event: "e-000001" });
+        cut.close();
+        injector.arm("p1");
+        injector.take(TARGET, 0);
+        await new Scheduler({
             events: fixtureEvents(2),
             faults: [fault],
-            journal: new Journal(join(dir(), "j.jsonl")),
+            journal: new Journal(path),
             settleMs: 0,
             order: ["a"],
             drivers: { a: driver },
             proxy: injector,
-        });
-        await expect(scheduler.run()).rejects.toThrow(/turn died/);
-        await scheduler.run();
+        }).run();
         expect(taken).toEqual([false]);
     });
 
@@ -3451,6 +3467,77 @@ describe("Scheduler", () => {
                 drivers: { a: fakeDriver([]) },
             }).run(),
         ).rejects.toThrow(/fault k passed its trigger unhandled/);
+    });
+
+    test("a turn whose delivery fails or whose EndTurn cannot be journaled leaves a run a later process refuses", async () => {
+        const events = fixtureEvents(1);
+        const rejecting = join(dir(), "j.jsonl");
+        const j = new Journal(rejecting);
+        await expect(
+            new Scheduler({
+                events,
+                faults: [],
+                journal: j,
+                settleMs: 0,
+                order: ["a"],
+                drivers: {
+                    a: {
+                        ...fakeDriver([]),
+                        event: async (e) => {
+                            if (e.kind === "user_turn") throw new Error("driver crashed");
+                            return {};
+                        },
+                    },
+                },
+            }).run(),
+        ).rejects.toThrow(/driver crashed/);
+        expect(j.entries.at(-1)).toMatchObject({
+            kind: "ItemState",
+            event: "e-000001",
+            state: "failed",
+            fatal: true,
+        });
+        await expect(
+            new Scheduler({
+                events,
+                faults: [],
+                journal: new Journal(rejecting),
+                settleMs: 0,
+                order: ["a"],
+                drivers: { a: fakeDriver([]) },
+            }).run(),
+        ).rejects.toThrow(/run failed: event e-000001 failed/);
+        const unwritable = join(dir(), "j.jsonl");
+        const inner = new Journal(unwritable);
+        const journal = new Proxy(inner, {
+            get(target, key, receiver) {
+                if (key === "append") {
+                    return (entry: Entry) => {
+                        if (entry.kind === "EndTurn") throw new Error("ENOSPC");
+                        return target.append(entry);
+                    };
+                }
+                return Reflect.get(target, key, receiver);
+            },
+        });
+        await expect(
+            new Scheduler({
+                events,
+                faults: [],
+                journal,
+                settleMs: 0,
+                order: ["a"],
+                drivers: { a: fakeDriver([]) },
+            }).run(),
+        ).rejects.toThrow(/ENOSPC/);
+        expect(() => new Journal(unwritable)).toThrow(
+            /turn e-000001 ended but its record could not be journaled/,
+        );
+        const d = dir();
+        const p = new Journal(join(d, "j.jsonl"));
+        writeFileSync(join(d, "j.jsonl.failed"), "a much longer earlier reason that must go\n");
+        p.poison("short");
+        expect(() => new Journal(join(d, "j.jsonl"))).toThrow(/run failed: short$/);
     });
 
     test("a FaultObserved without its FaultFired is refused on resume", async () => {
