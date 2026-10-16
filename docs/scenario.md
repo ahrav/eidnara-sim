@@ -5,7 +5,7 @@ scenario to `runs/scenarios/<tier>-<seed>.json`. The inputs are the seed, the
 tier's pre-registration in `prereg/<tier>.json`, the corpus under `corpus/`,
 and the generator version `sim-scenario/v2`. The same inputs produce the same
 bytes in any process, and a run reuses a cached `scenario.json` only when its
-generator version, pre-registration hash, and corpus manifest hash match the
+generator version, pre-registration hash, and corpus inputs hash match the
 current inputs. The compiler scores cue and probe pairs with
 `amazon.titan-embed-text-v2:0`, the model the pre-registration names, through
 the AWS profile in `sim.config.json`, and caches each vector in
@@ -21,7 +21,7 @@ The scenario file is canonical JSON with these sections:
 
 | Section | Contents |
 |---|---|
-| `manifest` | Seed, tier, generator and random-schema versions, the sha256 of `corpus/manifest.json` and of the pre-registration, the embedding model, the similarity thresholds, the gap scale factors, and the probe count per type |
+| `manifest` | Seed, tier, generator and random-schema versions, one sha256 over `corpus/manifest.json`, `corpus/fact-bank.json`, and `corpus/repos.json`, the sha256 of the pre-registration, the embedding model, the similarity thresholds, the gap scale factors, and the probe count per type |
 | `projects` | Each repository in `corpus/repos.json` and its twin |
 | `sessions` | Session id, project, start time, request count, the idle gap before the session, the minimum gap the compiler enforced, and whether the request count was forced into the p90 regime |
 | `facts` | Ledger facts with template, kind, project, conveyance manner, statement, and the cue texts that carry it |
@@ -155,15 +155,15 @@ thresholds (`bm25_max` 0.4, `cosine_max` 0.6):
 
 | Tier | Seed | `scenario_hash` | Largest BM25 ratio | Largest cosine |
 |---|---|---|---|---|
-| S | 101 | `4ea48a08` | 0.2125 | 0.5194 |
-| S | 102 | `0bd49245` | 0.2628 | 0.4867 |
-| M | 201 | `3a2de56e` | 0.2516 | 0.4992 |
-| M | 202 | `ee5f60c7` | 0.2551 | 0.4997 |
-| M | 203 | `66f95c31` | 0.2535 | 0.4843 |
-| L | 301 | `cde9974f` | 0.2558 | 0.5092 |
-| L | 302 | `7a51682e` | 0.2535 | 0.4957 |
-| L | 303 | `e0d2eeba` | 0.2514 | 0.5083 |
-| XL | 401 | `cd1360d9` | 0.2561 | 0.4962 |
+| S | 101 | `d703b057` | 0.2125 | 0.5194 |
+| S | 102 | `ba096f40` | 0.2628 | 0.4867 |
+| M | 201 | `9d10a6e7` | 0.2516 | 0.4992 |
+| M | 202 | `2584d9e9` | 0.2551 | 0.4997 |
+| M | 203 | `d1fb46e8` | 0.2535 | 0.4843 |
+| L | 301 | `efefa83a` | 0.2558 | 0.5092 |
+| L | 302 | `930435fa` | 0.2535 | 0.4957 |
+| L | 303 | `92e7c482` | 0.2514 | 0.5083 |
+| XL | 401 | `ec4e8a5c` | 0.2561 | 0.4962 |
 
 ## Known limits
 

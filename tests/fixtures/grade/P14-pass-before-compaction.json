@@ -40,7 +40,7 @@
               "seq": 4,
               "component": "user-sim",
               "turn": null,
-              "turn_index": 6,
+              "turn_index": 4,
               "scenario_ms": 450,
               "input_tokens": 10,
               "output_tokens": 10,

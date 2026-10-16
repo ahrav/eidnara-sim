@@ -12,6 +12,12 @@ import type { Embedder } from "./similarity";
 
 const read = (path: string) => readFileSync(join(CORPUS_DIR, path), "utf8");
 
+/** One digest over every corpus file the compiler reads, so a change to any of them recompiles. */
+export function corpusInputsSha256(): string {
+    const files = ["manifest.json", "fact-bank.json", "repos.json"];
+    return sha256Hex(files.map((f) => `${f}:${sha256Hex(read(f))}`).join("\n"));
+}
+
 export function loadPrereg(tier: Tier) {
     const path = join(CORPUS_DIR, "..", "prereg", `${tier}.json`);
     return parsePreregistration(JSON.parse(readFileSync(path, "utf8")));
@@ -42,7 +48,7 @@ export function loadCompileInput(
         errorCodes: parseJsonl(
             read("tool-outputs/error-codes.jsonl"),
         ) as CompileInput["errorCodes"],
-        corpusManifestSha256: sha256Hex(read("manifest.json")),
+        corpusInputsSha256: corpusInputsSha256(),
         embedder,
     };
 }

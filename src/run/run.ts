@@ -20,7 +20,7 @@ import { type Component, RecordWriter, readRecords } from "../proxy/records";
 import { Rng } from "../rng";
 import { compileScenario, type Scenario, scenarioInputMismatch } from "../scenario/compile";
 import { type FaultEpisode, SEAMS, validateFault } from "../scenario/faults";
-import { loadCompileInput, loadPrereg } from "../scenario/inputs";
+import { corpusInputsSha256, loadCompileInput, loadPrereg } from "../scenario/inputs";
 import { bedrockEmbedder } from "../scenario/similarity";
 import { writeAtomic } from "./atomic";
 import { Journal, releaseLease, takeLease } from "./journal";
@@ -237,7 +237,7 @@ export async function loadScenario(o: Pick<RunOptions, "config" | "out" | "seed"
     }
     const stale = scenarioInputMismatch(scenario, {
         preregistration_sha256: preregistrationHash(loadPrereg(o.tier)),
-        corpus_manifest_sha256: sha256Hex(readFileSync(join(ROOT, "corpus/manifest.json"), "utf8")),
+        corpus_inputs_sha256: corpusInputsSha256(),
     });
     if (stale) throw new HarnessFailure(stale);
     const { seed, tier } = scenario.manifest as { seed: number; tier: string };

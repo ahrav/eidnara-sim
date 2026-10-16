@@ -15,7 +15,7 @@ import { canonicalJson, sha256Hex } from "../prereg/canonical";
 import { preregistrationHash } from "../prereg/validate";
 import { GENERATOR_VERSION, type Scenario } from "../scenario/compile";
 import { type FaultEpisode, SEAMS } from "../scenario/faults";
-import { loadPrereg } from "../scenario/inputs";
+import { corpusInputsSha256, loadPrereg } from "../scenario/inputs";
 import type { Preflight } from "./preflight";
 import {
     corpusIdentity,
@@ -57,9 +57,7 @@ function scenarioBody(seed = 101, tier = "S") {
             tier,
             generator_version: GENERATOR_VERSION,
             preregistration_sha256: preregistrationHash(loadPrereg("S")),
-            corpus_manifest_sha256: sha256Hex(
-                readFileSync(join(ROOT, "corpus/manifest.json"), "utf8"),
-            ),
+            corpus_inputs_sha256: corpusInputsSha256(),
         },
         projects: [],
         sessions: [
@@ -272,7 +270,7 @@ describe("run inputs", () => {
     test("scenario.json compiled from other inputs than the pre-registration names is refused", async () => {
         for (const manifest of [
             { preregistration_sha256: "0".repeat(64) },
-            { corpus_manifest_sha256: "0".repeat(64) },
+            { corpus_inputs_sha256: "0".repeat(64) },
         ]) {
             const out = dir();
             const body = scenarioBody();

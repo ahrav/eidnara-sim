@@ -53,7 +53,7 @@ export interface GradeRecord extends Outcome {
 const READS = /^(cat|less|more|head|tail|sed|view|bat|grep|rg|read)\b/;
 const TESTS = /^(cargo test|(bun|npm|pnpm) (run )?test)\b/;
 const QUIET =
-    /^\s*(cargo (build|check|test)|bun install|(bun|npm|pnpm) (run )?test|git (status|log|diff)|ls|pwd)\b[^&|;`$()]*$/;
+    /^\s*(cargo (build|check|test)|bun install|(bun|npm|pnpm) (run )?test|git (status|log|diff)|ls|pwd)\b[^&|;`$()\n]*$/;
 const FOLDS = ["history_summarizer", "native_compaction"];
 const USER_SIM_LABELS = [
     "task",
@@ -144,8 +144,30 @@ function splitShell(command: string): { op: string; seg: string }[] {
         seg = "";
         op = next;
     };
+    let heredoc = "";
     for (let i = 0; i < command.length; i++) {
         const ch = command[i] as string;
+        if (heredoc) {
+            if (ch === "\n") {
+                const end = command.indexOf("\n", i + 1);
+                const line = command.slice(i + 1, end < 0 ? command.length : end).trim();
+                if (line === heredoc) {
+                    heredoc = "";
+                    i = end < 0 ? command.length : end;
+                    push("\n");
+                } else i = end < 0 ? command.length : end - 1;
+            }
+            continue;
+        }
+        if (!quote && command.startsWith("<<", i)) {
+            const m = /^<<-?\s*(['"]?)([A-Za-z_][\w-]*)\1/.exec(command.slice(i));
+            if (m) {
+                heredoc = m[2] as string;
+                seg += m[0];
+                i += m[0].length - 1;
+                continue;
+            }
+        }
         if (quote) {
             seg += ch;
             if (ch === quote) quote = "";
@@ -270,6 +292,13 @@ function p14(r: ArtefactReader, c: Check): Outcome {
     if (unknown) {
         const reason = `unknown user-sim label ${unknown.label}`;
         return { verdict: "excluded", reason, metrics: {} };
+    }
+    const turns = new Set<number>();
+    for (const x of userSim) {
+        if (turns.has(x.turn_index as number)) {
+            throw new GradeRefused(`two user-sim calls for turn ${x.turn_index} in one snapshot`);
+        }
+        turns.add(x.turn_index as number);
     }
     const from = c.window_from_turn ?? 0;
     const observed = userSim.filter((x) => x.seq > boundary && (x.turn_index ?? -1) >= from);
@@ -479,6 +508,10 @@ export class GradeLog {
     }
 
     append(record: GradeRecord): void {
+        const { item, arm } = record;
+        if (!isGradeRecord(record)) {
+            throw new GradeRefused(`grade ${item}/${arm} is not a grade record`);
+        }
         const expected = this.nextVersion(record.item, record.arm);
         if (record.version !== expected) {
             throw new GradeRefused(

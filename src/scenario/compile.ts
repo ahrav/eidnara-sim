@@ -46,7 +46,7 @@ export interface CompileInput {
     projects: Project[];
     pastes: { id: string; content: string }[];
     errorCodes: { id: string; code: string; context: string }[];
-    corpusManifestSha256: string;
+    corpusInputsSha256: string;
     embedder: Embedder;
 }
 
@@ -621,7 +621,7 @@ export async function compileScenario(input: CompileInput) {
             random_schema_version: 1,
             seed,
             tier: prereg.tier,
-            corpus_manifest_sha256: input.corpusManifestSha256,
+            corpus_inputs_sha256: input.corpusInputsSha256,
             preregistration_sha256: sha256Hex(canonicalJson(prereg)),
             embedding_model: input.embedder.model,
             cue_probe_similarity: thresholds,
@@ -645,7 +645,7 @@ export type Scenario = Awaited<ReturnType<typeof compileScenario>>;
 
 export interface ScenarioInputs {
     preregistration_sha256: string;
-    corpus_manifest_sha256: string;
+    corpus_inputs_sha256: string;
 }
 
 /** A cached scenario is reusable only when the current generator and the named inputs produced it. */
@@ -657,8 +657,8 @@ export function scenarioInputMismatch(scenario: Scenario, inputs: ScenarioInputs
     if (m.preregistration_sha256 !== inputs.preregistration_sha256) {
         return `scenario.json was compiled with pre-registration ${m.preregistration_sha256}, not ${inputs.preregistration_sha256}`;
     }
-    if (m.corpus_manifest_sha256 !== inputs.corpus_manifest_sha256) {
-        return `scenario.json was compiled from corpus ${m.corpus_manifest_sha256}, not ${inputs.corpus_manifest_sha256}`;
+    if (m.corpus_inputs_sha256 !== inputs.corpus_inputs_sha256) {
+        return `scenario.json was compiled from corpus ${m.corpus_inputs_sha256}, not ${inputs.corpus_inputs_sha256}`;
     }
     return null;
 }

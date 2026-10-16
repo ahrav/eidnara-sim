@@ -234,14 +234,12 @@ export class ArtefactReader {
 
     turnCalls(): CallView[] {
         const turn = this.snapshot.turn;
-        return this.calls().filter(
-            (c) => c.component === "agent" && c.turn === turn && completed(c),
-        );
+        return this.calls().filter((c) => c.component === "agent" && c.turn === turn);
     }
 
     private completedResponses(): string[] {
         const texts = this.turnCalls().flatMap((c) =>
-            c.response_text === undefined ? [] : [c.response_text],
+            completed(c) && c.response_text !== undefined ? [c.response_text] : [],
         );
         if (texts.length === 0) {
             throw new GradeRefused(
