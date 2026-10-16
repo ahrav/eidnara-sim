@@ -12,10 +12,14 @@ The plugins, native addon, daemon, and host fixture come from one commit.
 checkout, checks out its `HEAD`, and builds every artefact inside the clone,
 so the source checkout itself stays read-only; it refuses a clone path that
 is the checkout or lies beneath it, and reuses an existing clone only when
-its `.sim-build-source` names the same checkout. `.sim-build-commit` holds
+its `.sim-build-source` names the same checkout. It holds `<clone>.lock`
+with `flock` for the whole build, so a second build of the same clone is
+refused. `.sim-build-commit` holds
 the built commit from the end of one successful build until the next build
-starts, and preflight requires it to match the clone's `HEAD`, so a partial
-or mixed tree stops the run. On a reused clone it force-checks
+starts, and preflight requires it to match the clone's `HEAD` and
+`daemon_binary` to be the clone's own
+`target/release/examples/direct_host_fixture`, so a partial or mixed tree,
+or a daemon from another commit, stops the run. On a reused clone it force-checks
 out the fetched commit and removes untracked files, so edits and stray files
 from an earlier build go while ignored outputs (`node_modules`, `target`, the
 plugin `dist` directories) stay for the incremental build. The clone is the
@@ -54,9 +58,12 @@ there before each restart.
 
 `DaemonStack` starts the daemon through the v1 `HermeticHostStack` with the
 interposer environment, restarts it with SIGKILL against the same store, and
-stops it with SIGTERM so its store stays on disk. It appends the daemon's
-output to the arm's `daemon.log` before each restart and before and after
-the stop, so a kill between the two loses only the shutdown lines; the v1
+stops it with SIGTERM so its store stays on disk; a daemon that outlives
+SIGTERM is killed with the stack's SIGKILL path and the stop still fails. It
+appends the daemon's output to the arm's `daemon.log` before each restart and
+before and after the stop, so a kill between the two loses only the shutdown
+lines, opening the log with `O_NOFOLLOW` so a symlink left there fails the
+append; the v1
 stack keeps the last 256 KiB of that output, so a longer stretch keeps its
 tail.
 
@@ -66,27 +73,39 @@ refuses it, or the OpenCode SDK setup or session listing fails after the
 launch, `openSession` closes the session it started before it throws. The
 control files the hosts write under the arm root (Pi's settings, model list,
 and Eidnara config; OpenCode's config, data, and cache directories; the
-daemon's runtime and store directories) go through real directories only
-and are created fresh and renamed into place, so a symlink an earlier
+daemon's runtime and store directories) go through real directories only,
+walked one component at a time so a symlinked ancestor is refused before
+anything is created below it, and are created fresh and renamed into place, so a symlink an earlier
 session left there is refused or replaced, never followed. OpenCode's config
 directory and the daemon's runtime directory are regenerated on every start,
 so they are removed first. The sandbox runs the host under
 root-owned `sudo` and `unshare`, so closing a host walks the launcher's
 process tree and signals every process the user owns, with SIGKILL after
-10 s; a process that survives SIGKILL stops the run. Each pid in that walk is
+10 s; a process that survives SIGKILL stops the run, and so does a launcher
+root that has not exited by then, since a launcher still in its privileged
+setup has no user-owned process to signal. The launcher root's start time is
+taken when it is spawned, so a root pid the kernel has since reused is left
+alone. Each pid in that walk is
 paired with its start time and checked against it before every signal, so a
 pid the kernel reuses during the grace period is left alone. The launcher's
 pid namespace ends with its init, so a child forked while the tree stops dies
 with the namespace. `prompt` sends one user turn with the turn deadline and
 returns the host's error, if any. Pi emits `agent_end` with `willRetry: true`
 before it retries a failed request itself, so a Pi turn ends only at an
-`agent_end` Pi will not retry. A prompt Pi refuses in preflight starts no
+`agent_end` Pi will not retry. After that end Pi may compact the session and
+continue the run, so a turn is settled only once `get_state` reports Pi
+neither streaming nor compacting and a 1 s window passes with no
+`agent_start` or `compaction_start`; its result is the last such `agent_end`.
+Both waits are bounded by the turn's remaining time (the state check gets at
+least 1 s), and a refused `get_state` counts as unsettled, so the turn goes
+through the abort and drain below. A prompt Pi refuses in preflight starts no
 turn, so its error is returned at once. After a Pi turn fails, the host
 aborts it and waits up to 30 s for its `agent_end`; a turn still running then
 stops the run, so a late end cannot finish the next turn. OpenCode turns race the deadline,
 abort the session (waiting at most 5 s for the abort call), and wait 30 s for
 the call to drain; a call still running then stops the run, and so does an
-abort call still pending after 30 s, since it would cancel the next turn. A
+abort call still pending after 30 s, since it would cancel the next turn,
+and so does an abort that fails or reports an error. A
 prompt request that fails before the server answers is aborted the same way,
 and an abort that fails stops the run, since the turn's completion cannot be
 established. A Pi `agent_end` seen before the prompt response fails settles
@@ -115,8 +134,12 @@ Each host process starts in the session's workspace, which the launcher
 enters after its privilege drop. Pi runs in RPC mode with `--session-id sim-<session>`, its agent directory,
 settings, and model list under the arm root, and the Eidnara extension from
 the build clone on Eidnara arms. OpenCode runs through the v1 `spawnOpencode`,
-with a wrapper script that launches the pinned binary through the sandbox
-launcher, and titles each session `sim-<session>`. The v1 runner executes the
+with a wrapper script that launches the pinned binary, resolved to its
+canonical path so the read-only install covers the file that runs, through the sandbox
+launcher, and titles each session `sim-<session>`. The v1 runner starts the
+wrapper as the harness's own child and the wrapper execs the launcher, so
+`closeSession` stops the one process serving the session's port whose parent
+is the harness. The v1 runner executes the
 wrapper on the host, outside the sandbox, so it lives at
 `<run>/hostbin/<arm>/opencode` beside the launcher: the sandbox masks the run
 root, and the arm root the agent can write holds nothing a later session
@@ -131,8 +154,10 @@ installs are read-only, so the agent reads and runs them while later
 sessions and arms run the same files; `touch` under `~/.cargo/bin` fails inside
 the sandbox with `Read-only file system`.
 
-The agent's build tools come from `config.toolchain`: its `bin` directories
-join the host's `PATH`, its `keep` paths (the cargo binaries, registry, and
+The agent's build tools come from `config.toolchain`: its `bin` directories,
+each under a `keep` path, come first on the host's `PATH`, followed by the
+system directories `/usr/local/bin:/usr/bin:/bin`, the same `PATH` the
+toolchain probe uses, its `keep` paths (the cargo binaries, registry, and
 git cache, rustup, and the bun binary and install cache) stay visible and
 read-only inside the sandbox (a mount nested inside a read-only path is
 remounted read-only too), and its `env` sets `CARGO_HOME`, `RUSTUP_HOME`,
@@ -158,7 +183,8 @@ distortion. Preflight writes the wrappers, then runs `cargo --version`,
 `"${RUSTC:-rustc}" -vV`, and `bun --version` under the interposer through the
 launcher, so the rustc check goes through the same wrapper cargo uses (or
 `rustc` on `PATH` when no wrapper is configured), and
-records the versions; a tool that fails or runs past 60 s has its tree
+records each version line, which must name the tool's version; a tool that
+fails, prints no version, or runs past 60 s has its tree
 stopped and stops the run.
 
 The daemon's store directory `<arm>/s` stays visible inside the sandbox on

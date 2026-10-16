@@ -3,7 +3,14 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSy
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "../config/config";
-import { TOOLCHAIN_PROBES, toolchainEnv, writeToolWrappers } from "./toolchain";
+import {
+    SYSTEM_PATH,
+    sandboxPath,
+    TOOLCHAIN_PROBES,
+    toolchainEnv,
+    versionLine,
+    writeToolWrappers,
+} from "./toolchain";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -50,4 +57,19 @@ test("the rustc probe falls back to PATH when no wrapper defines RUSTC", () => {
     expect(r.stderr.toString()).toBe("");
     expect(r.exitCode).toBe(0);
     expect(r.stdout.toString()).toBe("rustc 1.0.0\n");
+});
+
+test("the probe and the hosts see the configured tools and the system directories only", () => {
+    expect(SYSTEM_PATH).toBe("/usr/local/bin:/usr/bin:/bin");
+    expect(sandboxPath("/t/bin")).toBe("/t/bin:/usr/local/bin:/usr/bin:/bin");
+});
+
+test("a probe is accepted only with the tool's own version line", () => {
+    expect(versionLine("cargo", "cargo 1.99.0 (abc 2026-01-01)\n")).toBe(
+        "cargo 1.99.0 (abc 2026-01-01)",
+    );
+    expect(versionLine("rustc", "rustc 1.99.0 (abc)\nbinary: rustc\n")).toBe("rustc 1.99.0 (abc)");
+    expect(versionLine("bun", "1.3.14\n")).toBe("1.3.14");
+    expect(() => versionLine("cargo", "")).toThrow("toolchain: cargo printed no version");
+    expect(() => versionLine("bun", "hello\n")).toThrow("toolchain: bun printed no version");
 });

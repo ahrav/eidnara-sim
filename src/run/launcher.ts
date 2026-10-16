@@ -13,7 +13,8 @@ const UNSHARE_ARGS = [
     "private",
 ];
 const PLAIN_PATH = /^\/[A-Za-z0-9._@+/-]*$/;
-const PLAIN_VALUE = /^[A-Za-z0-9._@+/:,=-]*$/;
+export const PLAIN_VALUE = /^[A-Za-z0-9._@+/:,=-]*$/;
+export const ENV_KEY = /^[A-Z_][A-Z0-9_]*$/;
 
 export const shellQuote = (arg: string) => `'${arg.replaceAll("'", "'\\''")}'`;
 
@@ -98,7 +99,7 @@ export function launch(
     cwd = "/",
 ): string[] {
     const pairs = Object.entries(env).map(([k, v]) => {
-        if (!/^[A-Z_][A-Z0-9_]*$/.test(k) || !PLAIN_VALUE.test(v)) {
+        if (!ENV_KEY.test(k) || !PLAIN_VALUE.test(v)) {
             throw new Error(`sandbox env ${k} must be a plain word`);
         }
         return `${k}=${v}`;

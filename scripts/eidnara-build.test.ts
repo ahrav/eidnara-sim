@@ -24,8 +24,9 @@ function git(cwd: string, ...args: string[]): string {
     return r.stdout.toString().trim();
 }
 
-function build(src: string, dst: string, stubs: string) {
+function build(src: string, dst: string, stubs: string, cwd?: string) {
     return Bun.spawnSync(["bash", SCRIPT, src, dst], {
+        cwd,
         env: { ...process.env, PATH: `${stubs}:${process.env.PATH ?? ""}` },
         stdout: "pipe",
         stderr: "pipe",
@@ -106,4 +107,43 @@ test("a successful build records its commit, and a failed one leaves no record",
     writeFileSync(join(stubs, "cargo"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
     expect(build(src, dst, stubs).exitCode).not.toBe(0);
     expect(existsSync(join(dst, ".sim-build-commit"))).toBe(false);
+});
+
+test("a relative clone path records the build in the clone", () => {
+    const { stubs, src, root } = fixture();
+    const r = build(src, "rel-clone", stubs, root);
+    expect(r.stderr.toString()).toBe("");
+    expect(r.exitCode).toBe(0);
+    expect(readFileSync(join(root, "rel-clone/.sim-build-commit"), "utf8").trim()).toBe(
+        git(src, "rev-parse", "HEAD"),
+    );
+});
+
+test("a relative checkout path is fetched from the checkout, not from inside the clone", () => {
+    const { stubs, src, root } = fixture();
+    const r = build("src", join(root, "abs-clone"), stubs, root);
+    expect(r.stderr.toString()).toBe("");
+    expect(r.exitCode).toBe(0);
+    expect(readFileSync(join(root, "abs-clone/.sim-build-commit"), "utf8").trim()).toBe(
+        git(src, "rev-parse", "HEAD"),
+    );
+});
+
+test("a second build of the same clone is refused while the first holds it", async () => {
+    const { stubs, src, dst } = fixture();
+    expect(build(src, dst, stubs).exitCode).toBe(0);
+    const holder = Bun.spawn(["flock", `${dst}.lock`, "sleep", "5"], {
+        stdio: ["ignore", "ignore", "ignore"],
+    });
+    try {
+        await Bun.sleep(200);
+        const r = build(src, dst, stubs);
+        expect(r.exitCode).not.toBe(0);
+        expect(r.stderr.toString()).toContain("another build holds");
+        expect(readFileSync(join(dst, ".sim-build-commit"), "utf8").trim()).toBe(
+            git(src, "rev-parse", "HEAD"),
+        );
+    } finally {
+        holder.kill("SIGKILL");
+    }
 });

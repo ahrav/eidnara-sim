@@ -13,6 +13,14 @@ case "$dst_real/" in
         exit 64
         ;;
 esac
+dst=$dst_real
+src=$src_real
+# One build per clone at a time, held from the record's removal to its publication.
+exec 9>"$dst_real.lock"
+if ! flock -n 9; then
+    echo "eidnara-build: another build holds $dst_real.lock" >&2
+    exit 75
+fi
 # .sim-build-source names the checkout this clone was made from, so the forced
 # checkout and clean below only ever touch a clone this script created.
 if [ -d "$dst/.git" ]; then

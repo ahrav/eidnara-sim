@@ -1,7 +1,8 @@
 import { readFileSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
+import { ENV_KEY, PLAIN_VALUE } from "../run/launcher";
 
-export const CONFIG_SCHEMA = "sim-config/v1";
+export const CONFIG_SCHEMA = "sim-config/v2";
 
 /** Paths the runtime reads; `scripts/eidnara-build.sh` is the one writer of the build clone. */
 export interface SimConfig {
@@ -53,6 +54,14 @@ export function parseConfig(value: unknown): SimConfig {
             throw new ConfigError(`config.toolchain.${field}: expected absolute paths`);
         }
     }
+    const keep = toolchain?.keep as string[];
+    for (const dir of toolchain?.bin as string[]) {
+        if (!keep.some((k) => dir === k || dir.startsWith(k.endsWith("/") ? k : `${k}/`))) {
+            throw new ConfigError(
+                `config.toolchain.bin: ${dir} is not under a toolchain.keep path`,
+            );
+        }
+    }
     const tools = toolchain?.wall_clock_tools;
     if (!Array.isArray(tools) || !tools.every((t) => typeof t === "string" && /^[\w-]+$/.test(t))) {
         throw new ConfigError("config.toolchain.wall_clock_tools: expected command names");
@@ -62,9 +71,10 @@ export function parseConfig(value: unknown): SimConfig {
         throw new ConfigError("config.toolchain.env: missing");
     }
     for (const [key, value] of Object.entries(env)) {
-        if (typeof value !== "string" || ["PATH", "HOME", "LD_PRELOAD"].includes(key)) {
+        const word = typeof value === "string" && ENV_KEY.test(key) && PLAIN_VALUE.test(value);
+        if (!word || ["PATH", "HOME", "LD_PRELOAD"].includes(key)) {
             throw new ConfigError(
-                `config.toolchain.env.${key}: expected a string for a tool variable`,
+                `config.toolchain.env.${key}: expected a plain word the sandbox launcher can pass`,
             );
         }
     }
