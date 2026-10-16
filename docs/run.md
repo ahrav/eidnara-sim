@@ -8,8 +8,9 @@ both.
 Leases are files `lease.<n>.json`, and the highest number names the holder.
 `takeLease(dir)` resolves the directory path once and works on the resolved
 path, so a symlink repointed mid-way touches nothing else; it flushes the
-staged lease before linking it and the directory after, so the acknowledged
-lease survives a storage crash; it reads the highest lease: one held by a live process, or by any
+staged lease before linking it and the directory after, as `releaseLease`
+does around its rename, so an acknowledged lease or release survives a
+storage crash; it reads the highest lease: one held by a live process, or by any
 process on another machine, refuses the call. The machine is `/etc/machine-id`
 (`hostname:<name>` where that file is absent), so machines or containers that
 share a hostname on one directory stay distinct; a lease carries the kernel
@@ -54,8 +55,9 @@ acknowledged entry survives a power loss, and flushes the truncation that
 rolls a failed append back (closing the journal when that flush fails), so a
 refused entry cannot reappear after a crash, and refuses to open while a
 `journal.jsonl.failed` marker sits beside the file the kernel opened
-(`poison` writes it at that pinned path and flushes it and its directory
-entry when a record that must land, such as a fatal fault, its evidence, an
+(`poison` creates it exclusively at that pinned path, or writes through an
+existing marker only when that file is this user's regular single-link file,
+and flushes it and its directory entry when a record that must land, such as a fatal fault, its evidence, an
 exit, or a job transition, cannot be appended; the marker is read through a
 descriptor opened without following links or blocking and must be a regular
 single-link file of at most 4 KiB, so a marker of any other shape is itself a
@@ -170,7 +172,9 @@ failed append of either is fatal and poisons the run, so a caller that
 swallows the throw cannot leave a live job unregistered or the clock busy
 forever), `observe`, and `daemonExited` (its detail must be an object), and every call checks that its arm is still the one running,
 so a callback a finished arm left behind is refused instead of writing under
-the next arm. `observe("history_summarizer")` fires the session's mid-fold
+the next arm. An arm that ends without `EndArm` disarms every proxy fault on
+its way out, so a late call cannot take an experiment fault after the arm
+aborted. `observe("history_summarizer")` fires the session's mid-fold
 SIGKILL on the first observed summarizer call. `daemonExited` inside an outage
 window is journaled as expected and closes the window (a failed append of
 that record is fatal, so a watcher that swallows the throw cannot let the run

@@ -144,6 +144,7 @@ export class Scheduler {
             this.arm = arm;
             this.clock = new Clock(mine.at(-1)?.scenario_ms ?? 0, this.o.journal);
             const driver = this.o.drivers[arm] as ArmDriver;
+            let ended = false;
             try {
                 this.session = this.openSession(mine);
                 for (const e of mine) {
@@ -182,6 +183,7 @@ export class Scheduler {
                     await this.pendingKill?.catch(() => undefined);
                 }
                 this.log({ kind: "EndArm" });
+                ended = true;
             } finally {
                 this.generation++;
                 this.pendingKill = null;
@@ -189,6 +191,11 @@ export class Scheduler {
                 this.session = null;
                 this.arm = null;
                 this.clock = null;
+                if (!ended) {
+                    for (const f of this.o.faults) {
+                        if (f.seam.layer === PROXY_LAYER) this.o.proxy?.disarm(f.id);
+                    }
+                }
             }
         }
         if (this.fatal) throw this.fatal;

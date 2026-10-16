@@ -1946,7 +1946,7 @@ describe("Scheduler", () => {
                 proxy,
             }).run(),
         ).rejects.toThrow("ENOSPC");
-        expect(calls).toEqual(["arm p1", "disarm p1"]);
+        expect(calls).toEqual(["arm p1", "disarm p1", "disarm p1"]);
     });
 
     test("a journal over the size bound is refused before it is read", () => {
@@ -3297,6 +3297,50 @@ describe("Scheduler", () => {
         rmSync(join(d, "j.jsonl.failed"));
         writeFileSync(join(d, "j.jsonl.failed"), "x".repeat(5_000));
         expect(() => new Journal(target)).toThrow(/is not a small regular file/);
+    });
+
+    test("an arm that aborts disarms every proxy fault, and poison refuses to write through a foreign marker inode", async () => {
+        const calls: string[] = [];
+        const proxy = {
+            arm: (id: string) => void calls.push(`arm ${id}`),
+            disarm: (id: string) => void calls.push(`disarm ${id}`),
+            reset: () => undefined,
+        };
+        const slow = episode(
+            "slow",
+            "slow_stream",
+            { kind: "user_turn", session: "s-0000", n: 1 },
+            "persistent",
+        );
+        await expect(
+            new Scheduler({
+                events: fixtureEvents(2),
+                faults: [slow],
+                journal: new Journal(join(dir(), "j.jsonl")),
+                settleMs: 0,
+                order: ["a"],
+                drivers: {
+                    a: {
+                        ...fakeDriver([]),
+                        event: async (e) => {
+                            if (e.kind === "user_turn" && e.index === 1)
+                                throw new Error("driver gave up");
+                            return {};
+                        },
+                    },
+                },
+                proxy,
+            }).run(),
+        ).rejects.toThrow(/driver gave up/);
+        expect(calls).toEqual(["arm slow", "disarm slow"]);
+        const d = dir();
+        const path = join(d, "j.jsonl");
+        const j = new Journal(path);
+        const other = join(d, "unrelated.txt");
+        writeFileSync(other, "keep me");
+        linkSync(other, `${path}.failed`);
+        expect(() => j.poison("boom")).toThrow(/is not this run's file/);
+        expect(readFileSync(other, "utf8")).toBe("keep me");
     });
 
     test("a FaultObserved without its FaultFired is refused on resume", async () => {

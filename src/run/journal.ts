@@ -396,7 +396,9 @@ export function releaseLease(runDir: string, lease: Lease): void {
     if (!held || held.released || !sameLease(held, lease)) return;
     const staged = join(dir, `lease.${randomUUID()}.tmp`);
     writeFileSync(staged, JSON.stringify({ ...held, released: true }), { flag: "wx" });
+    flushFile(staged);
     renameSync(staged, path);
+    syncDirectory(dir);
 }
 
 /**
@@ -546,11 +548,20 @@ export class Journal {
     poison(reason: string): void {
         const marker = `${this.realPath}.failed`;
         try {
-            const fd = openSync(
-                marker,
-                constants.O_WRONLY | constants.O_CREAT | constants.O_NOFOLLOW,
-                0o644,
-            );
+            const { O_CREAT, O_EXCL, O_NOFOLLOW, O_WRONLY } = constants;
+            let fd: number;
+            try {
+                fd = openSync(marker, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o644);
+            } catch (caught) {
+                if ((caught as NodeJS.ErrnoException).code !== "EEXIST") throw caught;
+                fd = openSync(marker, O_WRONLY | O_NOFOLLOW);
+                const st = fstatSync(fd);
+                const own = st.isFile() && st.nlink === 1 && st.uid === process.getuid?.();
+                if (!own) {
+                    closeSync(fd);
+                    throw new Error(`failure marker ${basename(marker)} is not this run's file`);
+                }
+            }
             try {
                 writeSync(fd, `${reason}\n`);
                 fsyncSync(fd);
