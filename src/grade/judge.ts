@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { canonicalJson } from "../prereg/canonical";
 import { COMPONENT_HEADER } from "../proxy/classify";
 import type { Rng } from "../rng";
+import type { ProbeItem } from "../scenario/compile";
 import { ArtefactReader, assertArtefactsOnly, GradeRefused, type Snapshot } from "./artefacts";
 import type { GradeRecord, Rules } from "./probes";
 
@@ -423,8 +424,7 @@ export function p7Pair(item: string, a: Snapshot, b: Snapshot): P7Inputs | null 
 }
 
 export interface P7Context {
-    item: string;
-    reference: string;
+    probe: ProbeItem;
     snapshots: { a: Snapshot; b: Snapshot };
     later_attempts: { a: number; b: number };
     calibration: CalibrationSet | null;
@@ -436,18 +436,23 @@ export interface P7Context {
 export function gradeP7(j: Judgment, c: P7Context, rules: Rules, version = 1): GradeRecord[] {
     if (typeof j !== "object" || j === null) throw new GradeRefused("judgment is not a record");
     if (!isIdentity(j.judge)) throw new GradeRefused(`judgment for ${j.pair} names no judge`);
-    if (j.pair !== c.item) {
-        throw new GradeRefused(`judgment for ${j.pair} cannot grade item ${c.item}`);
+    const item = c.probe.id;
+    const reason = (c.probe.check as { judge?: unknown } | null)?.judge;
+    if (c.probe.type !== "P7" || typeof reason !== "string" || reason.trim() === "") {
+        throw new GradeRefused(`item ${item} is not a P7 probe with a reference reason`);
     }
-    const built = p7Pair(c.item, c.snapshots.a, c.snapshots.b);
-    if (!built) throw new GradeRefused(`P7 item ${c.item}: a probe turn failed; nothing to grade`);
+    if (j.pair !== item) {
+        throw new GradeRefused(`judgment for ${j.pair} cannot grade item ${item}`);
+    }
+    const built = p7Pair(item, c.snapshots.a, c.snapshots.b);
+    if (!built) throw new GradeRefused(`P7 item ${item}: a probe turn failed; nothing to grade`);
     if (!isPair(j.answers, "string") || !isPair(j.lengths, "number")) {
         throw new GradeRefused(`judgment for ${j.pair} carries malformed answer evidence`);
     }
     if (j.answers.a !== built.answers.a || j.answers.b !== built.answers.b) {
         throw new GradeRefused(`judgment for ${j.pair} was made on other answers`);
     }
-    if (j.reference !== c.reference) {
+    if (j.reference !== referenceDigest(reason)) {
         throw new GradeRefused(`judgment for ${j.pair} was made against another reference`);
     }
     if (canonicalJson(recallFrom(j.orders)) !== canonicalJson(j.recall)) {
@@ -529,7 +534,7 @@ export function gradeP7(j: Judgment, c: P7Context, rules: Rules, version = 1): G
     };
     return (["a", "b"] as const).map((side) => {
         const common = {
-            item: c.item,
+            item,
             arm: built.arms[side],
             probe_type: "P7",
             version,

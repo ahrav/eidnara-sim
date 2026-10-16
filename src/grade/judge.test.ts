@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Rng } from "../rng";
+import type { ProbeItem } from "../scenario/compile";
 import { loadPrereg } from "../scenario/inputs";
 import { type CallView, GradeRefused, type Snapshot } from "./artefacts";
 import {
@@ -104,14 +105,23 @@ const crossJudged = (set: CalibrationSet) => ({
     calibration_digest: calibrationDigest(set, rules) as string,
 });
 
+const probeOf = (id: string, judge: string): ProbeItem => ({
+    id,
+    type: "P7",
+    fact: null,
+    project: "mini-redis",
+    session: "s-1",
+    text: null,
+    check: { judge },
+});
+
 const context = (
     item: string,
     pair: Pair,
     reference: string,
     extra: Partial<Parameters<typeof gradeP7>[1]> = {},
 ) => ({
-    item,
-    reference: referenceDigest(reference),
+    probe: probeOf(item, reference),
     snapshots: {
         a: snapshotOf("snap-eidnara", "eidnara", pair.a, item),
         b: snapshotOf("snap-host", "host", pair.b, item),
@@ -847,6 +857,24 @@ describe("P7 judge path", () => {
         const marks = calibration();
         marks.labels["\u0300\u0301"] = "a";
         expect(() => calibrationDigest(marks, rules)).toThrow("blank");
+    });
+
+    test("the reference comes from the compiled probe, which must be a P7 item with a reason", async () => {
+        const f = load("P7-pass");
+        const judgment = await judgePair(
+            scripted(f.judge_verdicts),
+            f.pair,
+            f.probe.check.judge,
+            [],
+        );
+        const ctx = context(f.probe.id, f.pair, f.probe.check.judge);
+        expect(() =>
+            gradeP7(judgment, { ...ctx, probe: { ...ctx.probe, type: "P8" } }, rules),
+        ).toThrow("not a P7 probe");
+        expect(() =>
+            gradeP7(judgment, { ...ctx, probe: { ...ctx.probe, check: {} } }, rules),
+        ).toThrow("not a P7 probe");
+        expect(gradeP7(judgment, ctx, rules)).toHaveLength(2);
     });
 
     test("the human-check sample is ten percent of P7 items, rounded up, from a seeded draw", () => {

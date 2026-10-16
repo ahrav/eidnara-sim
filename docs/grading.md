@@ -125,13 +125,15 @@ cannot call, and the divergences are listed below.
 4. The judgment records each answer's length after normalisation, and
    `longer_recalled_alone` records whether the longer answer was the one
    recalled alone, for the verbosity audit.
-5. `gradeP7` takes the judgment and the two snapshots, rebuilds the pair
-   from them (so the arms, snapshot ids, artefact inputs, answer digests,
-   and lengths it records all come from the snapshots that produced the
-   judged answers), and writes one grade per arm, each with its arm's
-   later-attempt count, for the item, the exact answers, and the reference
-   reason the judgment names (the judgment carries the answers' and the
-   reference's digests), and only when the judgment's
+5. `gradeP7` takes the judgment, the compiled P7 probe, and the two
+   snapshots, rebuilds the pair from the snapshots (so the arms, snapshot
+   ids, artefact inputs, answer digests, and lengths it records all come
+   from the snapshots that produced the judged answers) and the reference
+   digest from the probe's `check.judge`, and writes one grade per arm,
+   each with its arm's later-attempt count, for the item, the exact
+   answers, and the reference reason the judgment names (the judgment
+   carries the answers' and the reference's digests), and only when the
+   judgment's
    recall is the one its two order verdicts imply, each of which must be one
    of the four verdict words, and its answer lengths and
    `longer_recalled_alone` are the ones the pair and that recall imply. Each grade carries the judge model,
