@@ -174,7 +174,7 @@ export const unifiedDiff = (v: unknown): boolean => {
             inHunk = true;
             fileBody = true;
         } else if (FILE_META.test(line)) {
-            if (!hunkComplete()) return false;
+            if (!hunkComplete() || pendingNew || inHunk) return false;
             inHunk = false;
             fileBody = true;
             if (line.startsWith("GIT binary patch")) inBinary = true;

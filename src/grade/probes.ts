@@ -295,9 +295,9 @@ const GREP_OPERAND_OPTIONS =
  * A read segment's file operands. For grep and rg the pattern is the first non-option word unless
  * an option supplies it (`-e`, `--regexp`, `-f`, `--file`), in which case every positional word is a file.
  */
-const operands = (segment: string): string => {
+const operands = (segment: string): string[] => {
     const words = unredirectedWords(shellWords(segment));
-    if (!/^(grep|rg|sed)$/.test(words[0] as string)) return words.join(" ");
+    if (!/^(grep|rg|sed)$/.test(words[0] as string)) return words.slice(1);
     const scriptOptions =
         words[0] === "sed" ? /^(-e|-f|--expression|--file)$/ : /^(-e|-f|--regexp|--file)$/;
     const attached =
@@ -314,7 +314,7 @@ const operands = (segment: string): string => {
         else if (!w.startsWith("-")) files.push(w);
     }
     if (!supplied) files.shift();
-    return [words[0], ...files].join(" ");
+    return files;
 };
 /**
  * Shell words with output redirections removed (operator and target) and input redirections
@@ -346,10 +346,8 @@ const startsWithAll = (seg: string, sources: string[]) =>
         const re = pattern(src);
         return new RegExp(re.source, re.flags.replace("m", "")).test(seg);
     });
-const namesPath = (segment: string, path: string) =>
-    new RegExp(`(^|[\\s'"=])(\\./)?${path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}($|[\\s'"])`).test(
-        segment,
-    );
+const namesPath = (words: string[], path: string) =>
+    words.some((w) => w === path || w === `./${path}` || w.replace(/^[A-Za-z_]\w*=/, "") === path);
 const ranTests = (x: Command) => executed(x).some((s) => TESTS.test(s));
 
 function foldsIn(r: ArtefactReader, turns?: [number, number]): CallView[] {
@@ -541,6 +539,10 @@ function graderFor(probe: ProbeItem): Grader {
         if (!optional(shape)(check[key])) {
             throw new GradeRefused(`${probe.type} item ${probe.id} has a malformed check.${key}`);
         }
+    }
+    const unknown = Object.keys(check).find((k) => !(k in CHECK_FIELDS));
+    if (unknown) {
+        throw new GradeRefused(`${probe.type} item ${probe.id} has an unknown check.${unknown}`);
     }
     return grader;
 }

@@ -274,9 +274,9 @@ export class ArtefactReader {
         return this.calls().filter((c) => c.component === "agent" && c.turn === turn);
     }
 
-    private completedResponses(): string[] {
-        const done = this.turnCalls().filter(completed);
-        const last = done.at(-1);
+    /** The final completed agent response of the turn. */
+    answer(): string {
+        const last = this.turnCalls().filter(completed).at(-1);
         if (!last) {
             throw new GradeRefused(
                 `snapshot ${this.snapshot.id} has no completed agent response for turn ${this.snapshot.turn}`,
@@ -287,10 +287,6 @@ export class ArtefactReader {
                 `snapshot ${this.snapshot.id}: the final completed agent call (seq ${last.seq}) has no response text`,
             );
         }
-        return done.flatMap((c) => (c.response_text === undefined ? [] : [c.response_text]));
-    }
-
-    answer(): string {
-        return this.completedResponses().at(-1) as string;
+        return last.response_text;
     }
 }

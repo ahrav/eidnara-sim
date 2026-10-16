@@ -1168,6 +1168,44 @@ describe("grading harness", () => {
         expect(() => gradeItem(f.probe, [snap], rules)).toThrow("no response text");
     });
 
+    test("file metadata between paired headers or after a hunk is refused", () => {
+        const f = fixture("P2-pass");
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        const diff = snap.artefacts.find((a) => a.class === "diff");
+        if (diff?.class !== "diff") throw new Error("fixture lacks diff");
+        for (const bad of [
+            "diff --git a/x b/x\n--- a/x\nindex 1..2 100644\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n",
+            "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\nnew mode 100755\n",
+        ]) {
+            diff.patch = bad;
+            expect(() => gradeItem(f.probe, [snap], rules)).toThrow("patch");
+        }
+    });
+
+    test("read operands are compared word by word", () => {
+        const f = fixture("P6-pass");
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        const prior = snap.artefacts.find((a) => a.class === "diff" && a.role === "prior-session");
+        if (prior?.class !== "diff") throw new Error("fixture lacks prior diff");
+        prior.patch =
+            'diff --git "a/src/my file.rs" "b/src/my file.rs"\n--- "a/src/my file.rs"\n+++ "b/src/my file.rs"\n@@ -1 +1 @@\n-a\n+b\ndiff --git a/src/my b/src/my\n--- a/src/my\n+++ b/src/my\n@@ -1 +1 @@\n-a\n+b\n';
+        const log = snap.artefacts.find((a) => a.class === "command-log" && a.role === "turn");
+        if (log?.class !== "command-log") throw new Error("fixture lacks command-log");
+        log.commands.push({ command: "cat src/my file.rs", exit: 1, scenario_ms: 10 });
+        expect(gradeItem(f.probe, [snap], rules)?.metrics["P6.reread_files"]).toBe(1);
+        log.commands.pop();
+        log.commands.push({ command: 'cat "src/my file.rs"', exit: 0, scenario_ms: 20 });
+        expect(gradeItem(f.probe, [snap], rules)?.metrics["P6.reread_files"]).toBe(1);
+    });
+
+    test("an unknown check key is refused", () => {
+        const f = fixture("P13-pass");
+        const check = f.probe.check as Record<string, unknown>;
+        expect(() =>
+            gradeItem({ ...f.probe, check: { ...check, command_must: ["x"] } }, f.snapshots, rules),
+        ).toThrow("check.command_must");
+    });
+
     test("a check pattern that is empty after its prefix or fails to compile is refused", () => {
         const f = fixture("P1-fail");
         for (const bad of ["(?i)", "["]) {
