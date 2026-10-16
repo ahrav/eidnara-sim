@@ -120,10 +120,12 @@ check is a reason of its own. `two_hosts_one_daemon` has no mechanism yet
 two clients reading one proposal.
 
 The recorded `witness-8` eidnara arm reaches a clean turn after each of its
-four faults: the restart and plugin reload at the first later turn, and the
-model switch and full store at the second, because the turn on the full
-store published a fail-open pass. That run predates the store check, so
-its restart is unrecovered for want of one.
+five faults: the laptop sleep, the restart, and the plugin reload at the
+first later turn, and the model switch and full store at the second, because
+the turn on the full store published a fail-open pass. The sleep's row comes
+from its `FaultFired` and clock jump, since that run predates the sleep's
+`FaultObserved` entry; the run also predates the store check, so its restart
+is unrecovered for want of one.
 
 In the live `recovery-3` run (S seed 101, Pi, eidnara arm, a 30000-token
 context limit so that sessions fold), the daemon took a SIGKILL during the

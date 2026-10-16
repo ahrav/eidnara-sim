@@ -507,6 +507,33 @@ describe("resume of a journaled sleep jump", () => {
     });
 });
 
+describe("fault schedule validity", () => {
+    test("duplicate fault ids and non-positive sleep durations are refused before the run starts", () => {
+        const j = new Journal(join(dir(), "j.jsonl"));
+        const base = {
+            events: fixtureEvents(1),
+            journal: j,
+            settleMs: 0,
+            order: ["a"],
+            drivers: { a: fakeDriver([]) },
+        };
+        const twice = episode("dup", "daemon_restart", {
+            kind: "session_start",
+            session: "s-0000",
+        });
+        expect(() => new Scheduler({ ...base, faults: [twice, { ...twice }] })).toThrow(
+            "fault id dup is scheduled twice",
+        );
+        const still = {
+            ...episode("f-sleep", "laptop_sleep", { kind: "session_start", session: "s-0000" }),
+            params: { duration_ms: 0 },
+        };
+        expect(() => new Scheduler({ ...base, faults: [still] })).toThrow(
+            "laptop_sleep f-sleep needs a positive duration_ms",
+        );
+    });
+});
+
 describe("two sleeps on one event", () => {
     test("each scheduled sleep jumps the clock by its own duration before it is observed", async () => {
         const j = new Journal(join(dir(), "j.jsonl"));

@@ -73,7 +73,16 @@ export class Scheduler {
     private readonly fired = new Set<string>();
     private pendingKill: Promise<unknown> | null = null;
 
-    constructor(private readonly o: SchedulerOptions) {}
+    constructor(private readonly o: SchedulerOptions) {
+        const seen = new Set<string>();
+        for (const f of o.faults) {
+            if (seen.has(f.id)) throw new Error(`fault id ${f.id} is scheduled twice`);
+            seen.add(f.id);
+            if (f.type === "laptop_sleep" && !((f.params.duration_ms ?? 0) > 0)) {
+                throw new Error(`laptop_sleep ${f.id} needs a positive duration_ms`);
+            }
+        }
+    }
 
     private log(entry: { kind: EntryKind; [field: string]: unknown }): Entry {
         return this.o.journal.append({

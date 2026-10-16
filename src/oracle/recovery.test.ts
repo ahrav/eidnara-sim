@@ -99,6 +99,33 @@ describe("recovery oracles", () => {
         ]);
     });
 
+    test("every overflow wording the F1 oracle knows dirties a turn", () => {
+        seq = 0;
+        const journal = [
+            entry("FaultObserved", 0, { fault: "f", type: "plugin_reload", evidence: {} }),
+            entry("BeginTurn", 10, { event: "e-1" }),
+            entry("EndTurn", 20, { event: "e-1", outcome: "ok" }),
+        ];
+        const call = (error: string) =>
+            ({
+                turn: "e-1",
+                status: 500,
+                error,
+                started_wall_ms: 12,
+                wall_ms: 14,
+                scenario_ms: 12,
+            }) as unknown as ArmLogs["calls"][number];
+        for (const error of [
+            "too many total text bytes",
+            "input length exceeds the model's maximum context length",
+        ]) {
+            const a = arm(journal);
+            a.calls = [call(error)];
+            const [r] = recoveries(run([a]));
+            expect([error, r?.reasons]).toEqual([error, ["e-1: overflow"]]);
+        }
+    });
+
     test("a failed pass's warning and its decision record count as one publication", () => {
         seq = 0;
         const journal = [

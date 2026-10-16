@@ -1,11 +1,15 @@
 import { spawnSync } from "node:child_process";
 import {
+    closeSync,
     copyFileSync,
     existsSync,
+    fstatSync,
     lstatSync,
     mkdirSync,
+    openSync,
     readdirSync,
     readFileSync,
+    readSync,
     realpathSync,
     renameSync,
     rmSync,
@@ -566,7 +570,21 @@ export class HostDriver implements ArmDriver {
     /** Whether the plugin log, past `mark`, records a pass the daemon served. */
     private passedSince(mark: number): boolean {
         if (!existsSync(this.pluginLog)) return false;
-        return SERVED_PASS.test(readFileSync(this.pluginLog).subarray(mark).toString("utf8"));
+        // Only the suffix past the mark is read, so a long-lived obligation stays cheap to check.
+        const fd = openSync(this.pluginLog, "r");
+        try {
+            const length = Math.max(0, fstatSync(fd).size - mark);
+            const suffix = Buffer.alloc(length);
+            let read = 0;
+            while (read < length) {
+                const n = readSync(fd, suffix, read, length - read, mark + read);
+                if (n === 0) break;
+                read += n;
+            }
+            return SERVED_PASS.test(suffix.subarray(0, read).toString("utf8"));
+        } finally {
+            closeSync(fd);
+        }
     }
 
     private mountStore(fresh: boolean): void {

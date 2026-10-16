@@ -2,6 +2,7 @@ import type { StoreCheck } from "../hosts/storecheck";
 import type { Entry } from "../run/journal";
 import { INFRA_FAULTS } from "../scenario/faults";
 import type { ArmLogs, RunLogs } from "./logs";
+import { OVERFLOW } from "./oracles";
 
 const INFRA = new Set<string>([...INFRA_FAULTS, "host_upgrade", "two_hosts_one_daemon"]);
 const RESTARTS = new Set(["daemon_sigkill_mid_fold", "daemon_restart"]);
@@ -12,7 +13,6 @@ const RESTARTS = new Set(["daemon_sigkill_mid_fold", "daemon_restart"]);
  */
 const FAIL_OPEN_RECORD = /decision=error/;
 const FAIL_OPEN_WARNING = /serving the input unchanged/;
-const OVERFLOW = /prompt is too long|ContextOverflow|input is too long/i;
 
 export interface Recovery {
     arm: string;
