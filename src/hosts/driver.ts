@@ -8,7 +8,7 @@ import {
     rmSync,
     writeFileSync,
 } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { git, gitEnv } from "../git";
 import type { CallView } from "../grade/artefacts";
 import { processStart, running, stopOwnedTree } from "../run/procs";
@@ -276,11 +276,59 @@ export class HostDriver implements ArmDriver {
             throw new HarnessFailure(`apply_diff path ${String(e.path)} leaves ${dir}`);
         }
         writeFileSync(path, String(e.content));
-        git(dir, ["add", "--", path]);
-        const staged = ["diff", "--cached", "--quiet", "--", path];
-        if (spawnSync("git", staged, { cwd: dir, env: gitEnv() }).status === 0) return;
+        const blob = this.workspaceGit(dir, ["hash-object", "-w", "--no-filters", "--", path]);
+        const entry = `100644,${blob},${relative(dir, path)}`;
+        const head = this.workspaceGit(dir, ["rev-parse", "--verify", "HEAD"]);
+        const scratch = { GIT_INDEX_FILE: join(this.armDir, "apply-diff.index") };
+        this.workspaceGit(dir, ["read-tree", head], scratch);
+        this.workspaceGit(dir, ["update-index", "--add", "--cacheinfo", entry], scratch);
+        const tree = this.workspaceGit(dir, ["write-tree"], scratch);
+        rmSync(scratch.GIT_INDEX_FILE, { force: true });
+        this.workspaceGit(dir, ["update-index", "--add", "--cacheinfo", entry]);
+        if (tree === this.workspaceGit(dir, ["rev-parse", `${head}^{tree}`])) return;
         const message = `Add ${String(e.path)}`;
-        git(dir, ["commit", "--quiet", "--no-verify", "-m", message, "--", path], IDENTITY);
+        const commit = this.workspaceGit(
+            dir,
+            ["commit-tree", tree, "-p", head, "-m", message],
+            IDENTITY,
+        );
+        this.workspaceGit(dir, ["update-ref", "HEAD", commit, head]);
+    }
+
+    /** Workspace git operations override agent-controlled execution settings to constrain which programs git can invoke. */
+    private workspaceGit(dir: string, args: string[], extra: Record<string, string> = {}): string {
+        const gitDir = join(dir, ".git");
+        if (!lstatSync(gitDir, { throwIfNoEntry: false })?.isDirectory()) {
+            throw new HarnessFailure(`${gitDir} is not a directory`);
+        }
+        const scope = { GIT_DIR: gitDir, GIT_WORK_TREE: dir, ...extra };
+        const off = [
+            `core.hooksPath=${join(this.armDir, "no-hooks")}`,
+            "core.fsmonitor=false",
+            "commit.gpgsign=false",
+            ...this.filterDrivers(dir, scope).flatMap((name) => [
+                `filter.${name}.clean=`,
+                `filter.${name}.smudge=`,
+                `filter.${name}.process=`,
+                `filter.${name}.required=false`,
+            ]),
+        ];
+        return git(dir, [...off.flatMap((setting) => ["-c", setting]), ...args], scope).trim();
+    }
+
+    /** Index refreshes can execute configured filter drivers, so `workspaceGit` overrides their commands. */
+    private filterDrivers(dir: string, scope: Record<string, string>): string[] {
+        const listed = spawnSync(
+            "git",
+            ["config", "-z", "--name-only", "--get-regexp", "^filter\\."],
+            { cwd: dir, env: gitEnv(scope), encoding: "utf8" },
+        );
+        if (listed.status !== 0) return [];
+        const names = listed.stdout
+            .split("\0")
+            .map((key) => /^filter\.(.+)\.[^.]+$/.exec(key)?.[1])
+            .filter((name): name is string => name !== undefined);
+        return [...new Set(names)];
     }
 
     private checkTranscripts(host: SimHost): void {

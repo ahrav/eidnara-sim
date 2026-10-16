@@ -121,6 +121,31 @@ function snapshot(dir: string, arm: string, s: Snapshot, journaled = true): void
 const p5 = fixture("P5-pass");
 const snap = p5.snapshots[0] as Snapshot;
 
+const p7snapshot = (item: string): Snapshot => ({
+    id: "x",
+    item,
+    arm: "x",
+    turn: "e-1",
+    turn_outcome: "ok",
+    artefacts: [
+        {
+            id: "calls",
+            class: "proxy-call",
+            calls: [
+                {
+                    seq: 1,
+                    component: "agent",
+                    turn: "e-1",
+                    scenario_ms: 0,
+                    input_tokens: 1,
+                    output_tokens: 1,
+                    response_text: "because",
+                },
+            ],
+        },
+    ],
+});
+
 describe("grade-run", () => {
     test("grades a journaled snapshot and keys skipped items by arm and reason", async () => {
         const dir = run({ probes: [p5.probe] });
@@ -130,13 +155,26 @@ describe("grade-run", () => {
         expect(summary.skipped).toEqual({ host: { "no journaled snapshot": 1 } });
     });
 
-    test("later attempts after the journaled first snapshot are counted, not dropped", async () => {
+    test("the journaled first attempt is graded; the arm's later snapshots of the item are counted", async () => {
+        const failing = { ...(fixture("P5-fail").snapshots[0] as Snapshot), item: snap.item };
         const dir = run({ probes: [p5.probe] });
+        snapshot(dir, "eidnara", { ...failing, turn: "e-1-interrupted" }, false);
         snapshot(dir, "eidnara", snap);
-        snapshot(dir, "eidnara", { ...snap, turn: "e-1-retry" }, false);
-        await gradeRun(dir, null);
+        snapshot(dir, "eidnara", { ...failing, turn: "e-1-retry" }, false);
+        snapshot(dir, "eidnara", { ...failing, turn: "e-1-retry-2" }, false);
+        const summary = await gradeRun(dir, null);
+        expect(summary.verdicts).toEqual({ "eidnara/P5": { pass: 1 } });
         const [grade] = readFileSync(join(dir, "grades.jsonl"), "utf8").trim().split("\n");
-        expect(JSON.parse(grade as string).later_attempts_logged).toBe(1);
+        expect(JSON.parse(grade as string).later_attempts_logged).toBe(2);
+    });
+
+    test("a P7 pair without a completed host side is charged to the host arm", async () => {
+        const p7 = fixture("P7-pass");
+        const dir = run({ probes: [p7.probe] });
+        snapshot(dir, "eidnara", { ...p7snapshot(p7.probe.id), turn_outcome: "ok" });
+        snapshot(dir, "host", { ...p7snapshot(p7.probe.id), turn_outcome: "failed" });
+        const summary = await gradeRun(dir, null);
+        expect(summary.skipped).toEqual({ host: { "P7 probe turn failed": 1 } });
     });
 
     test("probes whose turn lies past the run's event prefix are reported as outside the run", async () => {
@@ -188,23 +226,7 @@ describe("grade-run", () => {
 
     test("the judge firewall is checked against every model the manifest records", async () => {
         const p7 = fixture("P7-pass");
-        const call = {
-            seq: 1,
-            component: "agent",
-            turn: "e-1",
-            scenario_ms: 0,
-            input_tokens: 1,
-            output_tokens: 1,
-            response_text: "because",
-        };
-        const p7snap: Snapshot = {
-            id: "x",
-            item: p7.probe.id,
-            arm: "x",
-            turn: "e-1",
-            turn_outcome: "ok",
-            artefacts: [{ id: "calls", class: "proxy-call", calls: [call] }],
-        };
+        const p7snap = p7snapshot(p7.probe.id);
         const dir = run({
             probes: [p7.probe],
             models: ["global.anthropic.claude-opus-5-5", "global.openai.gpt-5.6-luna"],

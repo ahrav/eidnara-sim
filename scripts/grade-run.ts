@@ -1,8 +1,15 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { loadConfig, type SimConfig } from "../src/config/config";
-import type { Snapshot } from "../src/grade/artefacts";
-import { gradeP7, judgePair, p7Pair, proxyJudge, referenceDigest } from "../src/grade/judge";
+import { GradeRefused, type Snapshot } from "../src/grade/artefacts";
+import {
+    BlindingRefused,
+    gradeP7,
+    judgePair,
+    p7Pair,
+    proxyJudge,
+    referenceDigest,
+} from "../src/grade/judge";
 import {
     deltaMem,
     GradeLog,
@@ -92,13 +99,13 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
         for (const line of readFileSync(path, "utf8").split("\n").filter(Boolean)) {
             const s = JSON.parse(line) as Snapshot;
             const key = `${arm}/${s.item}`;
-            const rows = snapshots.get(key) ?? [];
-            snapshots.set(key, journaled.has(s.id) ? [s, ...rows] : [...rows, s]);
+            snapshots.set(key, [...(snapshots.get(key) ?? []), s]);
         }
     }
     const attempts = (arm: string, item: string): Snapshot[] | undefined => {
-        const rows = snapshots.get(`${arm}/${item}`);
-        return rows?.[0] && journaled.has(rows[0].id) ? rows : undefined;
+        const rows = snapshots.get(`${arm}/${item}`) ?? [];
+        const first = rows.findIndex((s) => journaled.has(s.id));
+        return first === -1 ? undefined : rows.slice(first);
     };
     const ran = new Set(
         scenario.events
@@ -150,15 +157,18 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
                 skip(arm, outside);
                 return [];
             }
-            const mine = attempts(arm, probe.id) ?? [];
-            const host = attempts("host", probe.id) ?? [];
-            const [a, b] = [mine[0], host[0]];
-            if (!a || !b || a.turn_outcome !== "ok" || b.turn_outcome !== "ok") {
-                skip(arm, "P7 without two completed snapshots");
-                return [];
+            const sides = { [arm]: attempts(arm, probe.id), host: attempts("host", probe.id) };
+            let paired = true;
+            for (const [side, rows] of Object.entries(sides)) {
+                if (!rows) skip(side, "no journaled snapshot");
+                else if (rows[0]?.turn_outcome !== "ok") skip(side, "P7 probe turn failed");
+                else continue;
+                paired = false;
             }
+            const [mine, host] = [sides[arm], sides.host];
+            if (!paired || !mine?.[0] || !host?.[0]) return [];
             const later_attempts = { a: mine.length - 1, b: host.length - 1 };
-            return [{ probe, arm, a, b, later_attempts }];
+            return [{ probe, arm, a: mine[0], b: host[0], later_attempts }];
         }),
     );
     if (pairs.length > 0) {
@@ -185,7 +195,7 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
                 try {
                     const built = p7Pair(probe.id, a, b);
                     if (!built) {
-                        skip(arm, "probe turn failed");
+                        for (const side of [arm, "host"]) skip(side, "P7 probe turn failed");
                         continue;
                     }
                     const { pair, answers, lengths, snapshots: ids, arms: sides, inputs } = built;
@@ -205,7 +215,12 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
                     };
                     for (const g of gradeP7(judgment, context, rules)) append(g);
                 } catch (caught) {
-                    judgeErrors++;
+                    const refused =
+                        caught instanceof GradeRefused || caught instanceof BlindingRefused;
+                    if (!refused) judgeErrors++;
+                    for (const side of [arm, "host"]) {
+                        skip(side, refused ? "P7 refused" : "P7 judge call failed");
+                    }
                     console.error(`${probe.id} (${arm}): ${String(caught)}`);
                 }
             }

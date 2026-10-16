@@ -204,6 +204,35 @@ describe("HostDriver lifecycle", () => {
         await expect(driver.event(through)).rejects.toThrow("leaves");
     });
 
+    test("apply_diff runs no hook, filter, or monitor that the workspace repo's config names", async () => {
+        const { driver } = fixture("host", { p: gitRepo() });
+        await driver.reset();
+        const ws = driver.workspace("p");
+        const outside = tmp();
+        const ran = join(outside, "ran");
+        const hook = join(outside, "hook.sh");
+        writeFileSync(hook, `#!/bin/sh\ntouch ${ran}\ncat\n`, { mode: 0o755 });
+        const hooks = join(outside, "hooks");
+        mkdirSync(hooks);
+        for (const name of ["post-commit", "prepare-commit-msg", "reference-transaction"]) {
+            writeFileSync(join(hooks, name), `#!/bin/sh\ntouch ${ran}\n`, { mode: 0o755 });
+        }
+        const set = (key: string, value: string) =>
+            spawnSync("git", ["config", key, value], { cwd: ws });
+        set("core.hooksPath", hooks);
+        set("core.fsmonitor", hook);
+        set("filter.evil.clean", hook);
+        set("filter.evil.required", "true");
+        writeFileSync(join(ws, ".gitattributes"), "* filter=evil\n");
+        await driver.event(ev("apply_diff", { path: "src/a.txt", content: "A" }));
+        expect(existsSync(ran)).toBe(false);
+        const shown = spawnSync("git", ["show", "HEAD:src/a.txt"], { cwd: ws });
+        expect(shown.stdout.toString()).toBe("A");
+        expect(
+            spawnSync("git", ["log", "--format=%s", "-1"], { cwd: ws }).stdout.toString().trim(),
+        ).toBe("Add src/a.txt");
+    });
+
     test("a resumed arm reopens the session the next event belongs to", async () => {
         const { driver, hosts } = fixture("host", { p: gitRepo() });
         await driver.reset();
