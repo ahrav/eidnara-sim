@@ -563,6 +563,8 @@ describe("fact bank checks", () => {
         const pattern = (t?.check as { commands_must: string[] }).commands_must[0] ?? "$^";
         const re = new RegExp(pattern.replaceAll("{token}", "quiet_vole"));
         expect(re.test('git commit -m"[quiet_vole] implement cap"')).toBe(true);
+        expect(re.test("git commit -m[quiet_vole]")).toBe(true);
+        expect(re.test("git commit -mwrong -m[quiet_vole]")).toBe(false);
         expect(re.test('git commit -m "wrong" -m"[quiet_vole] later"')).toBe(false);
     });
 

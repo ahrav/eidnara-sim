@@ -69,6 +69,11 @@ export const hashEmbedder: Embedder = {
  * offline when `cachePath` contains vectors for every requested text.
  */
 const DIMENSIONS = 256;
+const wellFormed = (v: unknown): v is number[] =>
+    Array.isArray(v) &&
+    v.length === DIMENSIONS &&
+    v.every((x) => typeof x === "number" && Number.isFinite(x)) &&
+    v.some((x) => x !== 0);
 
 export function bedrockEmbedder(profile: string, region: string, cachePath: string): Embedder {
     const model = EMBEDDING_MODELS[0];
@@ -84,7 +89,7 @@ export function bedrockEmbedder(profile: string, region: string, cachePath: stri
             } catch {
                 throw new Error(`embedding cache ${cachePath} holds a malformed line`);
             }
-            cache.set(entry.key, entry.vector);
+            if (wellFormed(entry.vector)) cache.set(entry.key, entry.vector);
         }
     }
     return {
@@ -115,17 +120,16 @@ export function bedrockEmbedder(profile: string, region: string, cachePath: stri
                     } finally {
                         rmSync(outFile, { force: true });
                     }
-                    vector = response.embedding.map((x) => Math.round(x * 1e6) / 1e6);
-                    const norm = Math.sqrt(vector.reduce((sum, x) => sum + x * x, 0));
-                    if (
-                        vector.length !== DIMENSIONS ||
-                        !vector.every(Number.isFinite) ||
-                        !(norm > 0)
-                    ) {
+                    const rounded: unknown = response.embedding.map(
+                        (x) => Math.round(x * 1e6) / 1e6,
+                    );
+                    if (!wellFormed(rounded)) {
+                        const count = Array.isArray(rounded) ? rounded.length : 0;
                         throw new Error(
-                            `embed: ${model} returned ${vector.length} components for a ${DIMENSIONS}-dimension model with norm ${norm}`,
+                            `embed: ${model} returned ${count} components for a ${DIMENSIONS}-dimension model; each must be finite and the vector non-zero`,
                         );
                     }
+                    vector = rounded;
                     cache.set(key, vector);
                     appendFileSync(cachePath, `${JSON.stringify({ key, vector })}\n`);
                 }

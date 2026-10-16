@@ -58,8 +58,15 @@ export function bankProblems(bank: unknown): string[] {
         }
         for (const [kind, templates] of Object.entries(kinds)) {
             if (kind === "filler") {
-                if (!isStringList(templates))
-                    problems.push(`fact-bank ${lang}/filler: expected a list of strings`);
+                const ok =
+                    isStringList(templates) &&
+                    templates.length > 0 &&
+                    templates.every((t) => t.trim() !== "");
+                if (!ok) {
+                    problems.push(
+                        `fact-bank ${lang}/filler: expected a non-empty list of non-blank strings`,
+                    );
+                }
                 continue;
             }
             if (!KINDS.includes(kind)) {

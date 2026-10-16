@@ -53,6 +53,27 @@ describe("bedrockEmbedder", () => {
         expect(readFileSync(cache, "utf8")).toBe(`${vector}\n`);
     });
 
+    test("a malformed cached vector is ignored and fetched again", () => {
+        const dir = mkdtempSync(join(tmpdir(), "sim-embed-"));
+        const fake = join(dir, "aws");
+        const good = JSON.stringify({ embedding: Array(256).fill(0.0625) });
+        writeFileSync(fake, `#!/bin/sh\nfor a; do out=$a; done\necho '${good}' > "$out"\nexit 0\n`);
+        chmodSync(fake, 0o755);
+        const cache = join(dir, "embeddings.jsonl");
+        const script = `
+            import { sha256Hex } from "${join(import.meta.dir, "..", "prereg", "canonical.ts")}";
+            import { bedrockEmbedder } from "${join(import.meta.dir, "similarity.ts")}";
+            const key = sha256Hex("amazon.titan-embed-text-v2:0\\ntext");
+            require("node:fs").writeFileSync("${cache}", JSON.stringify({ key, vector: [1, 0] }) + "\\n");
+            const [v] = await bedrockEmbedder("p", "r", "${cache}").embed(["text"]);
+            console.log(v.length);
+        `;
+        const r = Bun.spawnSync(["bun", "-e", script], {
+            env: { ...process.env, PATH: `${dir}:${process.env.PATH}` },
+        });
+        expect(r.stdout.toString().trim()).toBe("256");
+    });
+
     test("a failed CLI call leaves no temporary file beside the cache", () => {
         const dir = mkdtempSync(join(tmpdir(), "sim-embed-"));
         const fake = join(dir, "aws");

@@ -88,9 +88,11 @@ describe("committed corpus", () => {
         delete broken.rust.plan[0].probe;
         broken.any.lookup[0].check.musts = ["x"];
         broken.typescript.filler = "not a list";
+        broken.rust.filler = [];
         expect(bankProblems(broken)).toEqual([
             "fact-bank rust/plan[0] rs-plan-field: probe missing",
-            "fact-bank typescript/filler: expected a list of strings",
+            "fact-bank rust/filler: expected a non-empty list of non-blank strings",
+            "fact-bank typescript/filler: expected a non-empty list of non-blank strings",
             "fact-bank any/lookup[0] lookup-staging-alias: check key musts is not a check kind",
         ]);
     });
