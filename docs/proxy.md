@@ -120,7 +120,9 @@ A multi-call episode whose restored injections already reach its
 count is not injected again. `FaultInjector.restore(records)` rebuilds both sequences from the call
 records an earlier invocation of the same run persisted, replayed in
 request-start order, so a resumed run
-reports a fault that fired before a hard kill, and arming an episode after
+reports a fault that fired before a hard kill (its `armed` bit also comes
+from the journal's `FaultFired` entries, so an armed episode whose target
+never called the proxy still reports `armed: true`), and arming an episode after
 `restore` continues a burst or intermittent window from the injections
 already made; an intermittent window's unsuccessful attempts and its RNG
 position are not persisted, so a resumed window grants its remaining

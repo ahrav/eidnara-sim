@@ -254,6 +254,15 @@ function summarize(dir: string) {
                                 .map((c) => c.model),
                         ),
                     ],
+                    agent_models_by_session: calls
+                        .filter((c) => c.arm === arm && c.component === "agent")
+                        .reduce<Record<string, string[]>>((acc, c) => {
+                            const key = String(c.session);
+                            const seen = acc[key] ?? [];
+                            if (!seen.includes(String(c.model))) seen.push(String(c.model));
+                            acc[key] = seen;
+                            return acc;
+                        }, {}),
                 },
             ]),
         ),
@@ -318,6 +327,7 @@ type ArmSummary = {
     fired: unknown[];
     observed: { fault: unknown; evidence: unknown }[];
     turns: unknown[];
+    agent_models_by_session: Record<string, string[]>;
     models: unknown[];
     duplicate_events: number;
 };
@@ -331,10 +341,12 @@ const armEvidence = (
     const s = summary[name];
     if (!s) return check(false, `${name}: no summary`);
     const observable = expected.filter((f) => f.type !== "laptop_sleep").map((f) => f.id);
-    const sleeps = expected.filter((f) => f.type === "laptop_sleep").length;
+    const sleepIds = expected.filter((f) => f.type === "laptop_sleep").map((f) => f.id);
+    const tagged = s.invariants.sleep_jump_faults.map((j) => `${j.arm}/${j.fault}`);
+    const wanted = arms.flatMap((arm) => sleepIds.map((id) => `${arm}/${id}`));
     check(
-        s.invariants.sleep_jumps === sleeps * arms.length,
-        `${name}: one fault-tagged sleep jump per arm and sleep (${sleeps * arms.length})`,
+        [...tagged].sort().join() === [...wanted].sort().join(),
+        `${name}: exactly one fault-tagged jump per arm and sleep episode (${wanted.join(", ")})`,
     );
     check(s.invariants.next_event_jumps > 0, `${name}: at least one ordinary event jump checked`);
     const intercepted = s.preflight.intercepted;
@@ -343,8 +355,8 @@ const armEvidence = (
         `${name}: journal opens with a Preflight entry before StartRun or ResumeRun`,
     );
     check(
-        intercepted.length > 0 && intercepted.every((t) => t.endsWith(":true")),
-        `${name}: every probed binary intercepted (${intercepted.join(", ")})`,
+        [...intercepted].sort().join() === "daemon:true,node:true,opencode:true",
+        `${name}: node, opencode, and daemon each probed and intercepted (${intercepted.join(", ")})`,
     );
     for (const arm of arms) {
         const a = s.arms[arm] as ArmSummary | undefined;
@@ -392,6 +404,20 @@ const mechanismEvidence = (name: string, a: ArmSummary, expected: FaultEpisode[]
                     e.pid_before !== e.pid_after &&
                     e.restarted_by === "harness",
                 `${name}/eidnara: ${f.id} restarted the daemon (new pid, restarted_by harness)`,
+            );
+        }
+        if (f.type === "model_switch") {
+            const [first, second] = models.split(",");
+            const switched = f.trigger.session;
+            const sessions = Object.entries(a.agent_models_by_session);
+            const before = sessions.filter(([sid]) => sid < switched);
+            const after = sessions.filter(([sid]) => sid >= switched);
+            check(
+                before.length > 0 &&
+                    before.every(([, m]) => m.length === 1 && m[0] === first) &&
+                    after.length > 0 &&
+                    after.every(([, m]) => m.length === 1 && m[0] === second),
+                `${name}/eidnara: sessions before ${switched} used ${first}, sessions from it on used ${second}`,
             );
         }
         if (f.type === "store_full") {

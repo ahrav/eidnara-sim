@@ -100,8 +100,8 @@ toolchain wrappers are created exclusively after removing any planted name.
    `sim-run-manifest/v1`, and refuses when any option it states differs from
    the manifest, when the manifest's arm order is not a non-empty subsequence
    of the seed's pre-registered arm order, when a resumed journal breaks the
-   run's state machine (an arm entry before `StartRun` or `StartArm`, after
-   `EndArm`, or an item closed twice), when any of those digests changed, when an
+   run's state machine (a `ResumeRun` or arm entry before `StartRun`, an arm
+   entry before `StartArm` or after `EndArm`, or an item closed twice), when any of those digests changed, when an
    interception result, probed path, or toolchain version
    changed, or when the selected host's version or transcript paths changed,
    and appends its preflight result to `preflight.jsonl`; on resume the
@@ -184,14 +184,14 @@ event times and reports, per arm:
 |---|---|
 | `decreasing_scenario_ms` | entries whose `scenario_ms` falls below the arm's previous entry (SIM-P11) |
 | `advance_while_busy` | `AdvanceClock` entries while a turn or job is open, counting an interrupted turn and a job ended on resume as closed (SIM-P12) |
-| `off_schedule_jumps` | jumps, event or sleep, that land anywhere but the earliest unrun scheduled time at or after `from_ms` (SIM-P14, SIM-P18); a sleep is the jump onto its session's first event, so its size is the remaining gap, not the nominal `duration_ms` |
+| `off_schedule_jumps` | jumps, event or sleep, that do not advance, cross an unrun event at or after their origin, or land anywhere but the earliest unrun scheduled time after it (SIM-P14, SIM-P18); a sleep is the jump onto its session's first event, so its size is the remaining gap, not the nominal `duration_ms` |
 | `events_inside_sleep` | sleep jumps that pass an unrun scheduled event (SIM-P18) |
 | `repeated_sleeps` | a second sleep jump for the same fault in one arm |
 | `missing_events` | scheduled events an arm never journaled as `Event` although it reached `EndArm` |
 | `out_of_order_events` | `Event` entries unknown to the schedule or breaking its order |
 | `jump_origin_mismatch` | `AdvanceClock` entries whose `from_ms` differs from the arm's preceding `scenario_ms`; crossing checks use the observed value |
 | `jobs_held_after_turn` | jobs that held the clock while no turn was open, whether registered after the turn or registered inside it and outliving it, once per job at its `RegisterJob` seq (SIM-P13) |
-| `next_event_jumps`, `sleep_jumps` | how many jumps of each kind the check covered |
+| `next_event_jumps`, `sleep_jumps`, `sleep_jump_faults` | how many jumps of each kind the check covered, and each sleep jump's arm and fault id |
 
 ## Live witness
 
@@ -227,15 +227,16 @@ witness, while polling during a run tolerates an unterminated final line.
 The scheduled and resume runs must also show their evidence per arm: every
 deterministic fault of the set fired, every fault with a mechanism observed
 (on `eidnara`, the restart with a new daemon pid and `restarted_by: harness`,
-the full store with `avail_kb: 0`), one fault-tagged sleep jump per arm and
-sleep, agent calls on both configured models, and no duplicate `Event` entry
+the full store with `avail_kb: 0`, and the model switch's boundary: sessions
+before its trigger used the first model, sessions from it on the second),
+exactly one jump tagged with each sleep episode's id per arm, agent calls on both configured models, and no duplicate `Event` entry
 (the mid-fold kills fire only when a summarizer call happens, so they are not
 required), every completed turn `ok` (so a store filled by `store_full`
 still served the turns after it) and, on `eidnara`, the daemon's log naming
 the full store; the scheduled run must hold the clock with at least one job while
 no turn is open (SIM-P13), and every finished run's journal must open with a
-`Preflight` entry, before `StartRun` or `ResumeRun`, whose probed binaries
-all intercepted, hold exactly one `EndArm` per arm the manifest names, and
+`Preflight` entry, before `StartRun` or `ResumeRun`, whose probes are exactly
+`node`, `opencode`, and `daemon`, all intercepted, hold exactly one `EndArm` per arm the manifest names, and
 include at least one ordinary event jump. All three case directories must be
 present.
 Every summarized directory must have been written by the current harness

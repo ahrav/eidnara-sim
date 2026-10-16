@@ -66,6 +66,11 @@ export class FaultInjector {
         w.armed = true;
     }
 
+    /** Records that an earlier invocation armed the episode for `arm`, without arming it now. */
+    armedBefore(id: string, arm: string): void {
+        if (this.faults.some((f) => f.id === id)) this.witness(arm, id).armed = true;
+    }
+
     disarm(id: string, arm: string): void {
         this.armed.delete(`${arm}/${id}`);
     }

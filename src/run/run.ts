@@ -201,9 +201,13 @@ export function requireJournalShape(entries: readonly Entry[]): void {
     const ended = new Set<string>();
     for (const e of entries) {
         if (e.kind === "Preflight") continue;
-        if (e.kind === "StartRun" || e.kind === "ResumeRun") {
-            if (e.kind === "StartRun" && started) throw bad(e, "repeats StartRun");
+        if (e.kind === "StartRun") {
+            if (started) throw bad(e, "repeats StartRun");
             started = true;
+            continue;
+        }
+        if (e.kind === "ResumeRun") {
+            if (!started) throw bad(e, "precedes StartRun");
             continue;
         }
         if (!started) throw bad(e, "precedes StartRun");
@@ -833,6 +837,11 @@ async function runArms(
     const injector = new FaultInjector(proxyFaults, new Rng((seed ^ 0x5bd1e995) >>> 0), 120_000);
     const callsPath = join(o.out, "calls.jsonl");
     injector.restore(readRecords(callsPath));
+    for (const e of journal.entries) {
+        if (e.kind === "FaultFired" && e.layer === "proxy-sink" && typeof e.arm === "string") {
+            injector.armedBefore(String(e.fault), e.arm);
+        }
+    }
     /** This invocation's witness report, appended once: before `EndRun`, or at teardown otherwise. */
     const witnessed = { done: false };
     const writeWitnesses = () => {
