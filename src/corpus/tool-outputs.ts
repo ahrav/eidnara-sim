@@ -58,7 +58,7 @@ export function classify(tool: string, command: string, content: string): Sample
     }
     if (content.includes(TRACEBACK)) return "stack_trace";
     if (tool !== "execute_bash" || SHELL_ERROR.test(content)) return null;
-    const bare = command.replace(QUOTED, '""').replace(COMMENT, "$1");
+    const bare = command.replace(QUOTED, '""').replace(COMMENT, "$1").replace(FALLBACK, "");
     const runner = bare.split(SEPARATOR).find((segment) => RUNNER.test(segment));
     if (runner !== undefined) return NO_RUN.test(runner) ? null : "test_run";
     if (SEARCH.test(bare)) return "grep";
@@ -112,7 +112,8 @@ const FRAME = /^\s*File "/;
 const DOC_SECTION = /^\s*(?:Raises|Warns|Returns|Yields|Args|Arguments|Parameters)\s*:?\s*$/;
 const RUNNER =
     /(^|(?<!\\)&&|(?<!\\);|(?<!\\)\|)\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*(?:python3?\s+-m\s+)?(?:pytest|py\.test|tox|nox|unittest)\b/;
-const SEPARATOR = /(?<!\\)(?:&&|;|\|)/;
+const SEPARATOR = /(?<!\\)(?:\|\||&&|;|\|)/;
+const FALLBACK = /(?<!\\)\|\|[^&;|]*/g;
 const QUOTED = /"(?:\\.|[^"\\])*"|'[^']*'/g;
 const NO_RUN = /(^|\s)(--help|-h|--version|--co|--collect-only|--fixtures|--markers)(\s|$)/;
 const SHELL_ERROR = /^(?:bash|sh): (?:line \d+: )?(?:syntax error|.*: command not found)/m;
@@ -128,6 +129,15 @@ export function exceptionLine(line: string): { code: string; message: string } |
     return { code: code[1], message: (code[2] ?? "").slice(0, 300) };
 }
 
+function inDocSection(lines: string[], index: number): boolean {
+    let inside = false;
+    for (const line of lines.slice(0, index)) {
+        if (DOC_SECTION.test(line)) inside = true;
+        else if (FRAME.test(line) || (line.trim() !== "" && !/^\s/.test(line))) inside = false;
+    }
+    return inside;
+}
+
 function harvestCodes(lines: string[], base: Provenanced, codes: Map<string, ErrorCodeEntry>) {
     for (const [i, line] of lines.entries()) {
         const code = EXCEPTION.exec(line.trim());
@@ -135,8 +145,7 @@ function harvestCodes(lines: string[], base: Provenanced, codes: Map<string, Err
             continue;
         if (code[2] === undefined && !lines.slice(Math.max(0, i - 2), i).some((l) => FRAME.test(l)))
             continue;
-        const above = lines.slice(Math.max(0, i - 4), i);
-        if (above.some((l) => DOC_SECTION.test(l)) && !above.some((l) => FRAME.test(l))) continue;
+        if (inDocSection(lines, i)) continue;
         codes.set(code[1], {
             id: `err-${codes.size.toString().padStart(4, "0")}`,
             code: code[1],

@@ -117,6 +117,13 @@ describe("classify and commandOf", () => {
             classify("execute_bash", "printf long-output # ; pytest tests", "long-output"),
         ).toBeNull();
         expect(
+            classify("execute_bash", "printf a-long-successful-message || pytest tests", "a-long"),
+        ).toBeNull();
+        expect(classify("execute_bash", "ls || rg foo", "a b c")).toBeNull();
+        expect(classify("execute_bash", "pytest tests || echo failed", "1 passed")).toBe(
+            "test_run",
+        );
+        expect(
             classify(
                 "execute_bash",
                 "echo setup done; pytest",

@@ -155,8 +155,12 @@ export function checkCorpus(): CorpusReport {
             consistent,
             `samples ${e.id}: kind ${e.kind} does not follow from tool, command, and content`,
         );
+        const fullClip =
+            e.kind === "stack_trace"
+                ? content.length <= CONTENT_CAP
+                : content.length === CONTENT_CAP;
         const sized = e.truncated
-            ? content.length <= CONTENT_CAP && (e.chars ?? 0) > CONTENT_CAP
+            ? fullClip && Number.isSafeInteger(e.chars) && (e.chars ?? 0) > CONTENT_CAP
             : content.length === e.chars && content.length <= CONTENT_CAP;
         need(
             content.trim() !== "" && sized,

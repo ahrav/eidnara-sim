@@ -170,11 +170,20 @@ export function buildTwin(baseDir: string, twinDir: string, twin: TwinSpec): str
     rmSync(twinDir, { recursive: true, force: true });
     git(CORPUS_DIR, "clone", "-q", "--no-hardlinks", baseDir, twinDir);
     for (const rename of twin.renames) {
+        let changed = 0;
         for (const path of new Bun.Glob(rename.glob).scanSync({ cwd: twinDir })) {
             const file = under(twinDir, path);
             const text = readFileSync(file, "utf8");
             const next = text.replace(new RegExp(rename.pattern, "g"), rename.replace);
-            if (next !== text) writeFileSync(file, next);
+            if (next !== text) {
+                writeFileSync(file, next);
+                changed++;
+            }
+        }
+        if (changed === 0) {
+            throw new Error(
+                `twin ${twin.id}: rename ${rename.pattern} on ${rename.glob} changed no file`,
+            );
         }
     }
     cpSync(join(TWINS_DIR, twin.id), twinDir, { recursive: true });
