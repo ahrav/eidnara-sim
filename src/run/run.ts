@@ -413,16 +413,26 @@ async function runArms(
             ...scenario.probes.map((p) => p.id),
         ],
     });
-    const deletions = new Map(
-        scenario.cf_deletions.map((c) => [
-            c.before_event,
-            {
-                probe: c.probe,
-                fact: c.fact,
-                statement: scenario.facts.find((f) => f.id === c.fact)?.statement ?? "",
-            },
-        ]),
+    const startOf = new Map(
+        scenario.events
+            .filter((e) => e.kind === "session_start")
+            .map((e) => [String(e.session), e.id]),
     );
+    const sessionOf = new Map(scenario.events.map((e) => [e.id, String(e.session)]));
+    const deletions = new Map<string, { probe: string; fact: string; statement: string }[]>();
+    for (const c of scenario.cf_deletions ?? []) {
+        const before = String(c.before_event);
+        const at = startOf.get(sessionOf.get(before) ?? "") ?? before;
+        const fact = String(c.fact);
+        const statement = scenario.facts.find((f) => f.id === fact)?.statement ?? "";
+        deletions.set(at, [...(deletions.get(at) ?? []), { probe: c.probe, fact, statement }]);
+    }
+    const statements = scenario.facts.map((f) => f.statement);
+    if (o.arms?.some((a) => armBase(a) === "eidnara-cf") && !Bun.which("python3")) {
+        throw new HarnessFailure(
+            "the eidnara-cf arm deletes through python3, which is not on PATH",
+        );
+    }
     const userTurns = (arm: string, session?: string) =>
         journal.entries.filter(
             (e) =>
@@ -516,14 +526,9 @@ async function runArms(
                     if (e.kind !== "user_turn") return await driver.event(e);
                     const turn = scripted.find((t) => t.id === e.id);
                     if (!turn) throw new HarnessFailure(`${e.id}: no scripted user turn`);
-                    const cf = deletions.get(e.id);
-                    const counterfactual =
-                        cf && armBase(arm) === "eidnara-cf"
-                            ? { probe: cf.probe, fact: cf.fact, ...driver.deleteFact(cf.statement) }
-                            : undefined;
                     const d = await userSim.deliver(arm, turn, lastAgent(arm, e.session));
                     const user = { session: e.session, label: d.label, delivered: d.delivered };
-                    if (!d.delivered) return { user, counterfactual };
+                    if (!d.delivered) return { user };
                     const out = await driver.event({
                         ...e,
                         text: d.text,
@@ -535,10 +540,22 @@ async function runArms(
                     return {
                         ...out,
                         user: { ...user, ...out.user, label, ...scheduled },
-                        ...(counterfactual ? { counterfactual } : {}),
                     };
                 } finally {
                     scope.turn = null;
+                }
+            },
+            prepare: async (e, log, done) => {
+                guard();
+                if (armBase(arm) !== "eidnara-cf") return;
+                for (const c of deletions.get(e.id) ?? []) {
+                    if (done(c.probe)) continue;
+                    const others = statements.filter((x) => x !== c.statement);
+                    log({
+                        probe: c.probe,
+                        fact: c.fact,
+                        ...(await driver.deleteFact(c.statement, others)),
+                    });
                 }
             },
             fault: (f) => {

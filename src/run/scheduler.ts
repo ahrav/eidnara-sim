@@ -20,8 +20,6 @@ export interface TurnOutcome {
     stores?: { fault: string; store: StoreCheck }[];
     /** The user turn the user-sim sent or skipped, journaled as `UserTurn`. */
     user?: Record<string, unknown>;
-    /** A counterfactual arm's memory deletion before the turn, journaled ahead of `EndTurn`. */
-    counterfactual?: Record<string, unknown>;
 }
 
 export interface ArmDriver {
@@ -33,6 +31,16 @@ export interface ArmDriver {
     resume?(open: ScenarioEvent | null): Promise<void>;
     event(e: ScenarioEvent): Promise<TurnOutcome>;
     fault(f: FaultEpisode): Promise<Record<string, unknown>>;
+    /**
+     * Runs the counterfactual deletions due before `e`, passing each to `log` as it returns,
+     * which journals it before the next one starts; `done(probe)` holds for a deletion already
+     * journaled at `e`, which a resumed arm skips.
+     */
+    prepare?(
+        e: ScenarioEvent,
+        log: (deletion: Record<string, unknown>) => void,
+        done: (probe: string) => boolean,
+    ): Promise<void>;
     /** Stops everything the arm runs, after its last event and before `EndArm`. */
     finish?(): Promise<void>;
 }
@@ -231,6 +239,19 @@ export class Scheduler {
         clock.advanceTo(e.scenario_ms, arm, { next_event: e.id });
         this.session = e.session;
         for (const f of faults) await this.fire(driver, f);
+        const done = (probe: string) =>
+            this.o.journal.entries.some(
+                (x) =>
+                    x.kind === "CounterfactualDeletion" &&
+                    x.arm === this.arm &&
+                    x.event === e.id &&
+                    x.probe === probe,
+            );
+        await driver.prepare?.(
+            e,
+            (d) => this.log({ kind: "CounterfactualDeletion", event: e.id, ...d }),
+            done,
+        );
         if (e.kind === "user_turn") {
             const turn = `turn:${e.id}`;
             this.log({ kind: "BeginTurn", event: e.id, probe: e.probe ?? null });
@@ -240,13 +261,6 @@ export class Scheduler {
                 outcome = await driver.event(e);
             } finally {
                 clock.end(turn);
-            }
-            if (outcome.counterfactual) {
-                this.log({
-                    kind: "CounterfactualDeletion",
-                    event: e.id,
-                    ...outcome.counterfactual,
-                });
             }
             const state = outcome.failed ? "failed" : "completed";
             const item = e.probe ? { probe: e.probe, state } : {};

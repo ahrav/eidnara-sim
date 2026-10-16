@@ -7,8 +7,8 @@ import { oracleReport } from "../oracle/oracles";
 import { recoveries } from "../oracle/recovery";
 import type { Preregistration } from "../prereg/schema";
 import type { Scenario } from "../scenario/compile";
-import { betaQuantile } from "../stats/dist";
 import { evaluateTier, falsificationSet } from "../stats/gate";
+import { clopperPearson } from "../stats/tests";
 import { continuity, runConditions } from "./conditions";
 import { costPanel } from "./cost";
 import { falsificationPairs } from "./falsify";
@@ -109,59 +109,91 @@ export function tierReport(
 }
 
 export interface Counterfactual {
+    attempted: number;
+    verified: number;
     items: number;
     memory_passes: number;
     flips: number;
     attribution_rate: number | null;
     interval: [number, number] | null;
-    deletions: { probe: string; deleted: number; remaining: number }[];
+    placebo: { memory_passes: number; flips: number; rate: number | null };
+    deletions: {
+        run: string;
+        probe: string;
+        deleted: number;
+        remaining: number;
+        skipped?: string;
+    }[];
 }
 
+const CF_TYPES = ["P1", "P3", "P5"];
+
 /**
- * The counterfactual arm's attribution rate: of the sampled P1, P3, and P5 items the memory arm
- * passed, the share that fail once the counterfactual arm deletes the fact's memory, with a
- * Clopper-Pearson interval.
+ * The counterfactual arm's attribution rate: of the sampled P1, P3, and P5 items whose deletion
+ * the arm verified (notes deleted, none matching left) and the memory arm passed, the share that
+ * fail with the fact's memory deleted, with a Clopper-Pearson interval. The placebo rate is the
+ * same flip share over the unsampled P1, P3, and P5 items, where nothing was deleted. Deletions
+ * accumulate over a run, so a later item's flip may follow an earlier deletion too.
  */
 export function counterfactual(
     runs: GradedRun[],
     memory = "eidnara",
     cf = "eidnara-cf",
 ): Counterfactual | null {
-    if (!runs.some((g) => g.run.arms.some((a) => a.arm === cf))) return null;
-    const pairs = runs.flatMap((g) => {
-        const verdict = (arm: string, item: string) =>
-            g.grades.find((r) => r.arm === arm && r.item === item)?.verdict;
-        return (g.scenario.cf_deletions ?? []).map((d) => ({
-            m: verdict(memory, d.probe),
-            c: verdict(cf, d.probe),
-        }));
-    });
-    const graded = pairs.filter((p) => p.m && p.c && p.m !== "excluded" && p.c !== "excluded");
-    const passes = graded.filter((p) => p.m === "pass");
-    const flips = passes.filter((p) => p.c === "fail").length;
-    const n = passes.length;
-    const interval: [number, number] | null =
-        n === 0
-            ? null
-            : [
-                  flips === 0 ? 0 : betaQuantile(0.025, flips, n - flips + 1),
-                  flips === n ? 1 : betaQuantile(0.975, flips + 1, n - flips),
-              ];
-    const deletions = runs.flatMap((g) =>
+    const both = runs.filter((g) => [memory, cf].every((a) => g.run.arms.some((x) => x.arm === a)));
+    if (both.length === 0) return null;
+    const deletions = both.flatMap((g) =>
         (g.run.arms.find((a) => a.arm === cf)?.journal ?? [])
             .filter((e) => e.kind === "CounterfactualDeletion")
             .map((e) => ({
+                run: g.run.dir,
                 probe: String(e.probe),
                 deleted: ((e.deleted as number[] | undefined) ?? []).length,
                 remaining: Number(e.remaining ?? 0),
+                ...(e.skipped ? { skipped: String(e.skipped) } : {}),
             })),
     );
+    const verified = new Set(
+        deletions
+            .filter((d) => !d.skipped && d.deleted > 0 && d.remaining === 0)
+            .map((d) => `${d.run}/${d.probe}`),
+    );
+    const flipsOver = (items: (g: GradedRun) => string[]) => {
+        const pairs = both.flatMap((g) => {
+            const verdict = (arm: string, item: string) =>
+                g.grades.find((r) => r.arm === arm && r.item === item)?.verdict;
+            return items(g).map((item) => ({ m: verdict(memory, item), c: verdict(cf, item) }));
+        });
+        const graded = pairs.filter((p) => p.m && p.c && p.m !== "excluded" && p.c !== "excluded");
+        const passes = graded.filter((p) => p.m === "pass");
+        return {
+            items: graded.length,
+            n: passes.length,
+            flips: passes.filter((p) => p.c === "fail").length,
+        };
+    };
+    const sampled = (g: GradedRun) => new Set((g.scenario.cf_deletions ?? []).map((d) => d.probe));
+    const target = flipsOver((g) =>
+        [...sampled(g)].filter((p) => verified.has(`${g.run.dir}/${p}`)),
+    );
+    const placebo = flipsOver((g) =>
+        g.scenario.probes
+            .filter((p) => CF_TYPES.includes(p.type) && !sampled(g).has(p.id))
+            .map((p) => p.id),
+    );
     return {
-        items: graded.length,
-        memory_passes: n,
-        flips,
-        attribution_rate: n ? flips / n : null,
-        interval,
+        attempted: deletions.length,
+        verified: verified.size,
+        items: target.items,
+        memory_passes: target.n,
+        flips: target.flips,
+        attribution_rate: target.n ? target.flips / target.n : null,
+        interval: target.n ? clopperPearson(target.flips, target.n) : null,
+        placebo: {
+            memory_passes: placebo.n,
+            flips: placebo.flips,
+            rate: placebo.n ? placebo.flips / placebo.n : null,
+        },
         deletions,
     };
 }

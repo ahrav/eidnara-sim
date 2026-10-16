@@ -268,6 +268,20 @@ function panels(r: TierReport): string[] {
     ];
 }
 
+function counterfactualText(c: Counterfactual): string {
+    const deletion = (d: Counterfactual["deletions"][number]) =>
+        d.skipped
+            ? `${d.probe} skipped (${d.skipped})`
+            : `${d.probe} deleted ${d.deleted}, ${d.remaining} left`;
+    return [
+        `${c.verified} of ${c.attempted} attempted deletions verified.`,
+        `Of ${c.memory_passes} verified items the memory arm passed, ${c.flips} fail with the fact's memory deleted:`,
+        `attribution ${fmt(c.attribution_rate)} [${fmt(c.interval?.[0])}, ${fmt(c.interval?.[1])}].`,
+        `Placebo: ${c.placebo.flips} of ${c.placebo.memory_passes} unsampled passes flip (${fmt(c.placebo.rate)}).`,
+        `Deletions: ${c.deletions.map(deletion).join("; ") || "none"}.`,
+    ].join(" ");
+}
+
 export function renderTier(r: TierReport): string {
     const count = (status: string) => r.witness.filter((w) => w.status === status).length;
     const lines = [
@@ -283,7 +297,7 @@ export function renderTier(r: TierReport): string {
         "",
         r.counterfactual === null
             ? "No counterfactual arm in these runs."
-            : `Of ${r.counterfactual.memory_passes} sampled items the memory arm passed, ${r.counterfactual.flips} fail with the fact's memory deleted: attribution ${fmt(r.counterfactual.attribution_rate)} [${fmt(r.counterfactual.interval?.[0])}, ${fmt(r.counterfactual.interval?.[1])}]. Deletions: ${r.counterfactual.deletions.map((d) => `${d.probe} deleted ${d.deleted}, ${d.remaining} left`).join("; ") || "none"}.`,
+            : counterfactualText(r.counterfactual),
         "",
         "## Property witness",
         "",

@@ -365,11 +365,17 @@ export class HostDriver implements ArmDriver {
         if (this.storeMount) rmSync(join(this.storeMount, "ballast"), { force: true });
     }
 
-    deleteFact(statement: string): Deletion | { skipped: string } {
+    async deleteFact(
+        statement: string,
+        others: readonly string[] = [],
+    ): Promise<Deletion | { skipped: string }> {
         if (!this.daemon) return { skipped: "arm runs no daemon" };
-        return existsSync(this.storeDb)
-            ? deleteFactNotes(this.storeDb, statement)
-            : { skipped: "no store yet" };
+        if (!existsSync(this.storeDb)) return { skipped: "no store yet" };
+        try {
+            return await deleteFactNotes(this.storeDb, statement, others);
+        } catch (caught) {
+            return { skipped: `deletion failed: ${String(caught).slice(0, 300)}` };
+        }
     }
 
     get storeDb(): string {

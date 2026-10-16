@@ -474,6 +474,44 @@ describe("resume of fired faults", () => {
     });
 });
 
+describe("counterfactual preparation", () => {
+    test("each deletion is journaled before the next starts and before the turn", async () => {
+        const path = join(dir(), "j.jsonl");
+        const events = fixtureEvents(1);
+        const start = events.find((e) => e.kind === "session_start") as ScenarioEvent;
+        const journal = new Journal(path);
+        const seen: string[] = [];
+        const driver: ArmDriver = {
+            ...fakeDriver([]),
+            prepare: async (e, log, done) => {
+                if (e.id !== start.id) return;
+                for (const probe of ["q-1", "q-2"]) {
+                    if (done(probe)) continue;
+                    seen.push(probe);
+                    log({ probe, deleted: [1] });
+                    if (probe === "q-1") {
+                        const logged = journal.entries.filter(
+                            (x) => x.kind === "CounterfactualDeletion",
+                        );
+                        expect(logged.map((x) => x.probe)).toEqual(["q-1"]);
+                    }
+                }
+            },
+        };
+        await new Scheduler({
+            events,
+            faults: [],
+            journal,
+            settleMs: 0,
+            order: ["a"],
+            drivers: { a: driver },
+        }).run();
+        const kinds = journal.entries.map((x) => x.kind);
+        expect(kinds.indexOf("CounterfactualDeletion")).toBeLessThan(kinds.indexOf("BeginTurn"));
+        expect(seen).toEqual(["q-1", "q-2"]);
+    });
+});
+
 describe("driver lifecycle hooks", () => {
     test("a resumed arm gets the open session, its open jobs end, and finish precedes EndArm", async () => {
         const path = join(dir(), "j.jsonl");

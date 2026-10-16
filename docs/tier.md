@@ -33,7 +33,9 @@ A scheduled fault whose trigger session lies past the prefix moves into
 it (`compressFaults`): the faults keep their order and spread evenly over
 the prefix's sessions, each onto the first session from its place that
 has enough user turns for a turn-triggered fault, or that is in the p90
-regime (else the longest session) for a summarizer-triggered one. The
+regime (else the longest session) for a summarizer-triggered one; a
+session-start fault never lands on the prefix's first session, as the
+compiler never schedules one there. The
 moved schedule goes to `<run>/faults.json` and the run's `--faults`, so
 the manifest records it; a fault no prefix session can host keeps its
 trigger and stays untriggered.
@@ -84,35 +86,64 @@ where a shell would expand it.
 
 ## M and L profiles
 
-Beside its paired runs, a tier runs the profiles its pre-registration
-calls for, each reported apart under `<dir>/<profile>/`:
+After its paired runs finish, a tier runs the profiles its pre-registration
+calls for, all of one profile in parallel and each reported apart under
+`<dir>/<profile>/`, so a profile's load never overlaps the paired runs.
+Every profile run takes the first seed's paired-run prefix, so it covers
+the paired runs' items. `tier-result.json` gives each profile's start skew
+from its runs' first journal entries:
 
 | Tier | Profile | Runs |
 |---|---|---|
 | M | `side-haiku` | Per host, the first seed's `host` and `eidnara` arms with Eidnara's summarizer and researcher calls on Haiku 5.5 (`--side-model`), the model factor against the paired runs' Opus |
 | M | `usersim-luna` | One Pi run of the first seed's `host` and `eidnara` arms with `gpt-5.6-luna` as the user-sim (`--user-sim-model`) |
-| L | `concurrent` | Per host, each arm of the first seed alone in its own run (`<dir>/L-301-<host>-concurrent/<arm>`), all started together on the paired runs' prefix; `tier-result.json` records the start skew |
+| L | `concurrent` | Per host, each arm of the first seed alone in its own run (`<dir>/L-301-<host>-concurrent/<arm>`), all started together |
 
 M's six paired runs (three seeds on two hosts) each carry `host~aa` and
 `eidnara~aa`, which gives six repeats of each A/A pair.
 
 L starts only after `<dir>/L-resizing.json` records its paired items per
-probe type. `--resize-from <M tier dir>` computes it from the graded M
-runs with the pre-registered rule (`src/run/resize.ts`): per probe type,
+probe type. `--resize-from <M tier dir>` computes it from the M tier's
+paired runs, the `main` group of its `tier-plan.json`, and refuses while
+any of them is ungraded, so the profiles' changed models never enter it.
+It applies the pre-registered rule (`src/run/resize.ts`) to each
+superiority and noninferiority item metric:
 the discordance M observed, the ledger-fact design effect from M's
 intraclass correlation, and the n that reaches the family's L effect at
-its power, with Holm's first step for the harm metrics; L's count is the
+its power, with Holm's first step over the harm family's metrics; L's count is the
 largest n, and a type M never saw discordant keeps the planning count.
 The L scenarios are compiled with that count.
 
 ## Counterfactual arm
 
-L's `eidnara-cf` arm runs like `eidnara` except before each turn the
-scenario's `cf_deletions` names: there it deletes from the live store
-every memory note that carries the sampled P1, P3, or P5 fact (a note
-sharing a four-word run with the fact's statement, or holding one of its
-distinctive values) with the note's deliveries, reads back how many such
-notes remain, and journals both as `CounterfactualDeletion`. The report's
-counterfactual panel gives the attribution rate: of the sampled items the
-`eidnara` arm passed, the share the counterfactual arm fails, with a
-Clopper-Pearson interval.
+L's `eidnara-cf` arm runs like `eidnara`, except at the `session_start` of
+each session that holds a probe the scenario's `cf_deletions` samples (P1,
+P3, or P5), before the host opens. There it deletes from the live store
+every memory note that carries the probe's fact, with the note's
+deliveries and evaluation claims, and journals the deleted ids and a
+verification read as `CounterfactualDeletion` before the next deletion
+starts and before the session's first event; a resumed arm skips each
+deletion already journaled.
+
+A note carries the fact when it shares a four-word run with the fact's
+statement that no other fact's statement holds, or names one of the
+fact's distinctive values (a bracketed token, or one of four or more
+characters with a digit or underscore, that no other statement holds) as
+a whole word. The verification
+read counts the notes left that match by three-word runs or values. The
+delete runs through `python3`'s `sqlite3`, which registers the store's
+caller-scope functions so its ownership triggers admit a delete inside
+the note's own project and report no facade authority drain, so the
+authority triggers stay inactive for the delete; a failed delete is
+journaled as skipped. A run with an `eidnara-cf` arm stops at start when
+`python3` is not on `PATH`.
+
+The report's counterfactual panel counts a sampled item only when its own
+run's deletion is verified: notes deleted and none left by the verification
+read. The attribution rate is the share of those items the `eidnara` arm
+passed that the counterfactual arm fails, with a Clopper-Pearson
+interval, beside a placebo rate: the same flip share over the unsampled
+P1, P3, and P5 items, where nothing was deleted. Deletions accumulate
+over a run, so a later item's flip can follow an earlier deletion as
+well. Memory the store keeps outside notes, such as user memories or
+history summaries, stays in place.

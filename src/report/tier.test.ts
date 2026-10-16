@@ -10,7 +10,7 @@ import type { Scenario } from "../scenario/compile";
 import { loadPrereg } from "../scenario/inputs";
 import type { GradedRun } from "./observe";
 import { renderTier } from "./render";
-import { tierReport } from "./tier";
+import { counterfactual, tierReport } from "./tier";
 
 const prereg = loadPrereg("S");
 const boundary = readFileSync(join(import.meta.dir, "../../docs/claim-boundary.md"), "utf8");
@@ -223,5 +223,74 @@ describe("tier report", () => {
             (z) => z.check === "gateway_4xx_rate_without_faults",
         );
         expect([fourxx?.zero_effect, fourxx?.difference]).toEqual([false, 0.5]);
+    });
+});
+
+describe("counterfactual attribution", () => {
+    const arm = (name: string, journal: object[] = []) =>
+        ({ arm: name, journal, calls: [], resources: [], tools: [] }) as unknown as ArmLogs;
+    const grade = (a: string, item: string, verdict: string) =>
+        ({ arm: a, item, verdict }) as unknown as GradeRecord;
+    const deletion = (probe: string, extra: object) => ({
+        kind: "CounterfactualDeletion",
+        probe,
+        ...extra,
+    });
+    const g = {
+        run: {
+            dir: "/r",
+            arms: [
+                arm("eidnara"),
+                arm("eidnara-cf", [
+                    deletion("q-1", { deleted: [4], remaining: 0 }),
+                    deletion("q-2", { deleted: [], remaining: 0 }),
+                    deletion("q-3", { skipped: "no store yet" }),
+                    deletion("q-4", { deleted: [5], remaining: 0 }),
+                ]),
+            ],
+        },
+        scenario: {
+            cf_deletions: ["q-1", "q-2", "q-3", "q-4"].map((probe) => ({ probe })),
+            probes: ["q-1", "q-2", "q-3", "q-4", "q-5", "q-6"].map((id) => ({ id, type: "P1" })),
+        },
+        grades: [
+            ...["q-1", "q-2", "q-3", "q-4", "q-5", "q-6"].map((i) => grade("eidnara", i, "pass")),
+            grade("eidnara-cf", "q-1", "fail"),
+            grade("eidnara-cf", "q-2", "fail"),
+            grade("eidnara-cf", "q-3", "fail"),
+            grade("eidnara-cf", "q-4", "pass"),
+            grade("eidnara-cf", "q-5", "fail"),
+            grade("eidnara-cf", "q-6", "pass"),
+        ],
+    } as unknown as GradedRun;
+
+    test("only verified deletions count, beside the placebo flip rate on unsampled items", () => {
+        expect(counterfactual([g])).toMatchObject({
+            attempted: 4,
+            verified: 2,
+            memory_passes: 2,
+            flips: 1,
+            attribution_rate: 0.5,
+            placebo: { memory_passes: 2, flips: 1, rate: 0.5 },
+        });
+    });
+
+    test("a deletion verified in one run leaves the same probe unverified in another", () => {
+        const failed = deletion("q-1", { skipped: "deletion failed" });
+        const other = {
+            ...g,
+            run: { ...g.run, dir: "/r2", arms: [arm("eidnara"), arm("eidnara-cf", [failed])] },
+        } as unknown as GradedRun;
+        expect(counterfactual([g, other])).toMatchObject({
+            attempted: 5,
+            verified: 2,
+            memory_passes: 2,
+            flips: 1,
+        });
+    });
+
+    test("runs that hold the counterfactual arm without the memory arm give no panel", () => {
+        const alone = { ...g, run: { ...g.run, arms: [g.run.arms[1]] } } as unknown as GradedRun;
+        expect(counterfactual([alone])).toBeNull();
     });
 });

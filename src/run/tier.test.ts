@@ -44,7 +44,7 @@ describe("tier plan", () => {
         expect(one[0]?.arms).toEqual(xl.arms.order_by_seed[0] ?? xl.arms.run);
     });
 
-    test("faults past the prefix move into it, by order, onto a session that can host them", () => {
+    test("faults past the prefix move into it, by order, onto a session that can host them, never a session start onto the first session", () => {
         const events = [
             ...["s-1", "s-2", "s-3"].flatMap((session, k) => [
                 { id: `${session}-start`, kind: "session_start", session },
@@ -76,7 +76,7 @@ describe("tier plan", () => {
         expect(moved).toEqual(["s-2", "s-2", "s-far", "s-3"]);
         expect(compressFaults(s, 5).map((f) => f.trigger.session)).toEqual([
             "s-far",
-            "s-1",
+            "s-far",
             "s-far",
             "s-1",
         ]);

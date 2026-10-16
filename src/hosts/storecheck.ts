@@ -90,48 +90,86 @@ export interface Deletion {
     remaining: number;
 }
 
-const runsOf = (text: string, size = 4) => {
-    const words = text.toLowerCase().match(/[\w[\]-]+/g) ?? [];
+const words = (text: string) => text.toLowerCase().match(/[\w[\]-]+/g) ?? [];
+const runsOf = (text: string, size: number) => {
+    const w = words(text).map((t) => t.replace(/[[\]]/g, ""));
     return new Set(
-        words
-            .slice(0, Math.max(0, words.length - size + 1))
-            .map((_, i) => words.slice(i, i + size).join(" ")),
+        w.slice(0, Math.max(0, w.length - size + 1)).map((_, i) => w.slice(i, i + size).join(" ")),
     );
 };
+const literal = (t: string) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /**
- * Deletes the memory notes that carry a ledger fact from a live store, and reads back how many
- * matching notes remain. A note carries the fact when it shares a four-word run with the fact's
- * statement or holds one of its distinctive values (a token with a digit, an underscore, or a
- * bracket, such as a codename).
+ * Notes carry a fact when they share a run of `size` words with its statement that no other
+ * fact's statement holds, or name one of its distinctive values (a bracketed token, or one of
+ * four or more characters with a digit or underscore, that no other statement holds) as a
+ * whole word.
  */
-export function deleteFactNotes(path: string, statement: string): Deletion {
-    const db = new Database(path);
+export function factMatcher(statement: string, others: readonly string[], size: number) {
+    const shared = new Set(others.flatMap((o) => [...runsOf(o, size)]));
+    const sharedWords = new Set(others.flatMap(words));
+    const runs = [...runsOf(statement, size)].filter((r) => !shared.has(r));
+    const values = words(statement)
+        .filter((t) => /^\[.+\]$/.test(t) || (t.length >= 4 && /[\d_]/.test(t)))
+        .filter((t) => !sharedWords.has(t))
+        .map((t) => new RegExp(`(^|[^\\w-])${literal(t.replace(/[[\]]/g, ""))}($|[^\\w-])`));
+    return (content: string) => {
+        const text = content.toLowerCase().replace(/[[\]]/g, "");
+        const own = runsOf(content, size);
+        return runs.some((r) => own.has(r)) || values.some((v) => v.test(text));
+    };
+}
+
+const DELETE = `
+import json, sqlite3, sys
+db, ids = sys.argv[1], json.loads(sys.argv[2])
+scope = {"project": None}
+c = sqlite3.connect(db, timeout=10)
+c.create_function("note_caller_project", 0, lambda: scope["project"])
+c.create_function("facade_authority_domain", 0, lambda: "")
+c.create_function("facade_authority_route", 0, lambda: "")
+tables = {r[0] for r in c.execute("select name from sqlite_master where type='table'")}
+with c:
+    for i in ids:
+        row = c.execute("select project_path from notes where id = ?", (i,)).fetchone()
+        if row is None:
+            continue
+        scope["project"] = row[0]
+        for t in ("note_deliveries", "note_eval_claims"):
+            if t in tables:
+                c.execute(f"delete from {t} where note_id = ?", (i,))
+        c.execute("delete from notes where id = ?", (i,))
+`;
+
+const readNotes = (path: string) => {
+    const db = new Database(path, { readonly: true });
     try {
-        db.run("pragma busy_timeout = 10000");
-        const fact = runsOf(statement);
-        const values = (statement.toLowerCase().match(/[\w[\]-]+/g) ?? []).filter(
-            (t) => t.length >= 4 && /[\d_[\]]/.test(t),
-        );
-        const carries = (content: string) =>
-            [...runsOf(content)].some((r) => fact.has(r)) ||
-            values.some((v) => content.toLowerCase().includes(v));
-        const notes = db.query("select id, content from notes").all() as {
-            id: number;
-            content: string;
-        }[];
-        const hits = notes.filter((n) => carries(n.content));
-        const ids = hits.map((n) => n.id);
-        db.transaction(() => {
-            for (const id of ids) {
-                db.run("delete from note_deliveries where note_id = ?", [id]);
-                db.run("delete from notes where id = ?", [id]);
-            }
-        })();
-        const left = db.query("select id, content from notes").all() as typeof notes;
-        const remaining = left.filter((n) => carries(n.content)).length;
-        return { deleted: ids, remaining };
+        return db.query("select id, content from notes").all() as { id: number; content: string }[];
     } finally {
         db.close();
     }
+};
+
+/**
+ * Deletes the notes that carry a ledger fact from a live store, through a connection that
+ * supplies the store's caller-scope functions so its ownership triggers admit the delete, then
+ * reads back how many notes still match the fact by three-word runs or values.
+ */
+export async function deleteFactNotes(
+    path: string,
+    statement: string,
+    others: readonly string[] = [],
+): Promise<Deletion> {
+    const carries = factMatcher(statement, others, 4);
+    const ids = readNotes(path)
+        .filter((n) => carries(n.content))
+        .map((n) => n.id);
+    if (ids.length > 0) {
+        const p = Bun.spawn(["python3", "-c", DELETE, path, JSON.stringify(ids)], {
+            stderr: "pipe",
+        });
+        if ((await p.exited) !== 0) throw new Error(await new Response(p.stderr).text());
+    }
+    const verify = factMatcher(statement, others, 3);
+    return { deleted: ids, remaining: readNotes(path).filter((n) => verify(n.content)).length };
 }

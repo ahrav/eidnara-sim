@@ -3,7 +3,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { deleteFactNotes } from "../hosts/storecheck";
+import { deleteFactNotes, factMatcher } from "../hosts/storecheck";
 import type { Scenario } from "../scenario/compile";
 import { loadPrereg } from "../scenario/inputs";
 import type { ItemPair, TierInput } from "../stats/gate";
@@ -121,24 +121,66 @@ describe("tier profiles", () => {
     });
 });
 
+const STORE = `
+create table notes (id integer primary key, project_path text not null, content text);
+create table note_deliveries (delivery_id integer, note_id integer);
+create table changefeed (op text, row integer);
+CREATE TRIGGER notes_ownership_delete
+        BEFORE DELETE ON notes
+        WHEN note_caller_project() IS NOT OLD.project_path
+        BEGIN
+            SELECT RAISE(ABORT, 'note ownership delete is outside the row project');
+        END;
+CREATE TRIGGER notes_facade_authority_delete
+        BEFORE DELETE ON notes
+        WHEN facade_authority_domain() = 'notes' AND facade_authority_route() = 'x'
+        BEGIN
+            SELECT RAISE(ABORT, 'facade');
+        END;
+CREATE TRIGGER notes_feed_delete AFTER DELETE ON notes BEGIN
+        INSERT INTO changefeed VALUES ('tombstone', OLD.id);
+        END;
+`;
+
+function store(notes: [number, string, string][]): string {
+    const path = join(mkdtempSync(join(tmpdir(), "sim-cf-")), "store.db");
+    const db = new Database(path);
+    db.exec(STORE);
+    for (const n of notes) db.run("insert into notes values (?, ?, ?)", n);
+    db.run("insert into note_deliveries values (10, 1), (11, 2)");
+    db.close();
+    return path;
+}
+
 describe("counterfactual deletion", () => {
-    test("notes sharing a four-word run with the fact are deleted with their deliveries, and none remain", () => {
-        const path = join(mkdtempSync(join(tmpdir(), "sim-cf-")), "store.db");
-        const db = new Database(path);
-        db.run("create table notes (id integer primary key, content text)");
-        db.run("create table note_deliveries (delivery_id integer, note_id integer)");
-        db.run(
-            "insert into notes values (1, 'User rule: every commit message must start with [ember_magpie].'), (2, 'Prefer tabs.')",
-        );
-        db.run("insert into note_deliveries values (10, 1), (11, 2)");
-        db.close();
-        const r = deleteFactNotes(
+    test("a delete through the store's ownership triggers removes the fact's notes in each project", async () => {
+        const path = store([
+            [1, "/p/a", "User rule: every commit message must start with [ember_magpie]."],
+            [2, "/p/a", "Prefer tabs."],
+            [3, "/p/b", "Codename is ember_magpie."],
+            [4, "/p/b", "Deploy target is port 18080 on staging."],
+        ]);
+        const r = await deleteFactNotes(
             path,
-            "for the rest of this session, every commit message starts with [ember_magpie]",
+            "for the rest of this session, the release codename is [ember_magpie] and the api listens on 8080",
+            ["for the rest of this session, use pnpm"],
         );
-        expect(r).toEqual({ deleted: [1], remaining: 0 });
+        expect(r).toEqual({ deleted: [1, 3], remaining: 0 });
         const after = new Database(path);
+        expect(after.query("select id from notes").all()).toEqual([{ id: 2 }, { id: 4 }]);
         expect(after.query("select note_id from note_deliveries").all()).toEqual([{ note_id: 2 }]);
+        expect(after.query("select row from changefeed").all()).toEqual([{ row: 1 }, { row: 3 }]);
         after.close();
+    });
+
+    test("a four-word run unique to the fact deletes; one shared with another fact, or three words, does not", () => {
+        const fact = "the next step is adding a lark_count field to the cache";
+        const carries = factMatcher(fact, ["the next step is adding a ember_count field"], 4);
+        expect(carries("we keep adding a lark_count column")).toBe(true);
+        expect(carries("Plan: a lark_count field to the cache layer")).toBe(true);
+        expect(carries("the next step is adding retries")).toBe(false);
+        const plain = factMatcher("page size for the listing view is fifty", [], 4);
+        expect(plain("the listing view is fifty rows")).toBe(true);
+        expect(plain("the listing view has paging")).toBe(false);
     });
 });

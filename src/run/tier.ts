@@ -36,6 +36,17 @@ export function capEvents(
     return best;
 }
 
+/** The seed's pre-registered arm order plus an A/A control for each same-arm pair in it. */
+function seedArms(prereg: Preregistration, i: number): string[] {
+    const order = prereg.arms.order_by_seed[i] ?? prereg.arms.run;
+    const controls = (prereg.aa_controls?.pairs ?? [])
+        .filter(([arm, twin]) => arm === twin)
+        .map(([arm]) => arm as string)
+        .filter((arm) => order.includes(arm as never))
+        .map((arm) => `${arm}~aa`);
+    return [...order, ...controls];
+}
+
 /** Every pre-registered host and seed of a tier, each with its arms and A/A controls. */
 export function tierPlan(
     prereg: Preregistration,
@@ -46,13 +57,7 @@ export function tierPlan(
 ): TierJob[] {
     return hosts.flatMap((host) =>
         prereg.seeds.map((seed, i) => {
-            const order = prereg.arms.order_by_seed[i] ?? prereg.arms.run;
-            const controls = (prereg.aa_controls?.pairs ?? [])
-                .filter(([arm, twin]) => arm === twin)
-                .map(([arm]) => arm as string)
-                .filter((arm) => order.includes(arm as never))
-                .map((arm) => `${arm}~aa`);
-            const arms = [...order, ...controls];
+            const arms = seedArms(prereg, i);
             const scenario = scenarios.get(seed) as Scenario;
             const cap = capEvents(
                 scenario,
@@ -70,7 +75,8 @@ export function tierPlan(
  * The tier's extra profiles. M adds a model-factor run per host with Eidnara's side calls on
  * the user-sim's Haiku model, and one Pi run with the judge's `gpt-5.6-luna` as the user-sim.
  * L adds the concurrent-arms load-stress profile: each arm of the first seed in its own run,
- * all started together.
+ * all started together. Every profile run takes the first seed's paired-run prefix, so it
+ * covers the same items as the paired runs it is set beside.
  */
 export function profileJobs(
     prereg: Preregistration,
@@ -82,21 +88,14 @@ export function profileJobs(
     const seed = prereg.seeds[0] as number;
     const scenario = scenarios.get(seed) as Scenario;
     const budget = prereg.liveness_bounds.tier_wall_budget_ms;
+    const cap = capEvents(scenario, seedArms(prereg, 0).length, budget, turnMs);
     const job = (
         host: "pi" | "opencode",
         group: string,
         arms: string[],
         extra: string[],
         dir: string,
-    ) => ({
-        host,
-        seed,
-        arms,
-        ...capEvents(scenario, arms.length, budget, turnMs),
-        dir,
-        group,
-        extra,
-    });
+    ) => ({ host, seed, arms, ...cap, dir, group, extra });
     const base = (host: string) => `${out}/${prereg.tier}-${seed}-${host}`;
     if (prereg.tier === "M") {
         const pair = ["host", prereg.arms.default];
@@ -110,26 +109,23 @@ export function profileJobs(
                     `${base(h)}-side-haiku`,
                 ),
             ),
-            ...hosts
-                .filter((h) => h === "pi")
-                .map((h) =>
-                    job(
-                        h,
-                        "usersim-luna",
-                        pair,
-                        ["--user-sim-model", prereg.grading.judge.model],
-                        `${base(h)}-usersim-luna`,
-                    ),
-                ),
+            ...(hosts.includes("pi")
+                ? [
+                      job(
+                          "pi",
+                          "usersim-luna",
+                          pair,
+                          ["--user-sim-model", prereg.grading.judge.model],
+                          `${base("pi")}-usersim-luna`,
+                      ),
+                  ]
+                : []),
         ];
     }
     if (prereg.load_stress?.arms_concurrent) {
         const order = prereg.arms.order_by_seed[0] ?? prereg.arms.run;
         return hosts.flatMap((h) =>
-            order.map((arm) => ({
-                ...job(h, "concurrent", [arm], [], `${base(h)}-concurrent/${arm}`),
-                ...capEvents(scenario, order.length, budget, turnMs),
-            })),
+            order.map((arm) => job(h, "concurrent", [arm], [], `${base(h)}-concurrent/${arm}`)),
         );
     }
     return [];
@@ -164,6 +160,7 @@ export function compressFaults(scenario: Scenario, events: number): FaultEpisode
         if (sessions.includes(f.trigger.session)) return f;
         const n = f.trigger.kind === "user_turn" ? (f.trigger.n ?? 1) : 0;
         const fits = (s: string) =>
+            (f.trigger.kind !== "session_start" || s !== sessions[0]) &&
             (turns.get(s) ?? 0) >= Math.max(1, n) &&
             (f.trigger.kind !== "first_summarizer_call" || p90.has(s));
         const start = Math.floor(((i + 1) * sessions.length) / (scenario.faults.length + 1));
