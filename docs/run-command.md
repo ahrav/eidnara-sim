@@ -240,7 +240,7 @@ still served the turns after it) and, on `eidnara`, the daemon's log naming
 the full store; the scheduled run must hold the clock with at least one job while
 no turn is open (SIM-P13), and every finished run's journal must open with a
 `Preflight` entry, before `StartRun` or `ResumeRun`, whose probes are exactly
-`node`, `opencode`, and `daemon`, all intercepted, hold exactly one `EndArm` per arm the manifest names, and
+`pi`, `opencode`, and `daemon`, all intercepted, hold exactly one `EndArm` per arm the manifest names, and
 include at least one ordinary event jump. All three case directories must be
 present.
 Every summarized directory must have been written by the current harness

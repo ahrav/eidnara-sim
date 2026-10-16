@@ -1270,6 +1270,27 @@ test("a mid-fold kill observed in the arm's last turn is observed before finish 
     expect(kinds.indexOf("FaultObserved")).toBeLessThan(kinds.indexOf("EndArm"));
 });
 
+test("a daemon exit reported at finish after the last turn's outage closed is unexpected", async () => {
+    const j = new Journal(join(dir(), "j.jsonl"));
+    let scheduler: Scheduler | null = null;
+    const faults = [episode("r", "daemon_restart", { kind: "session_start", session: "s-0000" })];
+    const driver: ArmDriver = {
+        ...fakeDriver([]),
+        finish: async () => {
+            scheduler?.daemonExited({ after: "last event" });
+        },
+    };
+    scheduler = new Scheduler({
+        events: fixtureEvents(1),
+        faults,
+        journal: j,
+        settleMs: 0,
+        order: ["a"],
+        drivers: { a: driver },
+    });
+    await expect(scheduler.run()).rejects.toThrow(/outside a scheduled outage window/);
+});
+
 test("a mid-fold kill observed during the arm's shutdown completes before EndArm", async () => {
     const j = new Journal(join(dir(), "j.jsonl"));
     let scheduler: Scheduler | null = null;

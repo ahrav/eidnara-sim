@@ -176,10 +176,12 @@ export class Scheduler {
             }
             for (const e of pending) await this.step(driver, e);
             await this.pendingKill;
+            this.outage = null;
             await this.idle();
         });
         await driver.finish?.();
         await this.pendingKill;
+        this.outage = null;
         await this.idle();
     }
 

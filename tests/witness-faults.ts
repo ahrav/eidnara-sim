@@ -355,8 +355,8 @@ const armEvidence = (
         `${name}: journal opens with a Preflight entry before StartRun or ResumeRun`,
     );
     check(
-        [...intercepted].sort().join() === "daemon:true,node:true,opencode:true",
-        `${name}: node, opencode, and daemon each probed and intercepted (${intercepted.join(", ")})`,
+        [...intercepted].sort().join() === "daemon:true,opencode:true,pi:true",
+        `${name}: pi, opencode, and daemon each probed and intercepted (${intercepted.join(", ")})`,
     );
     for (const arm of arms) {
         const a = s.arms[arm] as ArmSummary | undefined;

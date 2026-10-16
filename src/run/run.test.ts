@@ -136,6 +136,12 @@ describe("run inputs", () => {
         linkSync(join(out, `lease.${process.pid}.tmp`), join(root, "twin"));
         expect(() => requirePlainArtifacts(out, ["host", "eidnara"])).toThrow(/has 2 links/);
         rmSync(join(root, "twin"));
+        rmSync(join(out, `lease.${process.pid}.tmp`));
+        symlinkSync(join(root, "elsewhere.jsonl"), join(out, "lease.0.json"));
+        expect(() => requirePlainArtifacts(out, ["host", "eidnara"])).toThrow(
+            /lease.0.json is a symlink/,
+        );
+        rmSync(join(out, "lease.0.json"));
         mkdirSync(join(out, "eidnara", "state.json"));
         expect(() => requirePlainArtifacts(out, ["host", "eidnara"])).toThrow(
             /state.json is not a regular file/,

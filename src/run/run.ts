@@ -100,7 +100,6 @@ const realExisting = (path: string): string => {
 const within = (path: string, dir: string) => path === dir || path.startsWith(`${dir}/`);
 
 const ARTIFACTS = [
-    "lease.json",
     `lease.${process.pid}.tmp`,
     "journal.jsonl",
     "scenario.json",
@@ -141,7 +140,10 @@ export function requirePlainArtifacts(out: string, arms: readonly string[]): voi
         join(arm, "state.json"),
         join(arm, `state.json.${process.pid}`),
     ]);
-    for (const rel of [...dirs, ...ARTIFACTS, ...files]) {
+    const leases = existsSync(out)
+        ? readdirSync(out).filter((name) => /^lease\.\d+\.json$/.test(name))
+        : [];
+    for (const rel of [...dirs, ...ARTIFACTS, ...leases, ...files]) {
         const path = join(out, rel);
         const stat = lstatSync(path, { throwIfNoEntry: false });
         if (!stat) continue;
