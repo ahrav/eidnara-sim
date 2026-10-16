@@ -259,6 +259,19 @@ export function checkCorpus(): CorpusReport {
         dist.quantities.idle_within_session_s?.n === totalRequests - (sessions - emptySessions),
         `idle_within_session_s: n must be one gap per request after each session's first`,
     );
+    const stepsTable = table(dist, "tool_steps_per_request");
+    const stepsN = dist.quantities.tool_steps_per_request?.n ?? 0;
+    let totalSteps = 0;
+    let lastStep = 0;
+    for (const [i, p] of stepsTable.p.entries()) {
+        const k = Math.round(p * stepsN);
+        totalSteps += (stepsTable.x[i] ?? 0) * (k - lastStep);
+        lastStep = k;
+    }
+    need(
+        (dist.quantities.append_tokens_per_step?.n ?? 0) <= totalSteps,
+        `append_tokens_per_step: n exceeds the ${totalSteps} modelled steps`,
+    );
     const cited = loadCited();
     const citedKeys = cited.checks
         .map((c) => `${c.quantity}@${c.q}`)

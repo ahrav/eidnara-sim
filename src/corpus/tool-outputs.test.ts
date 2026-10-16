@@ -106,6 +106,12 @@ describe("classify and commandOf", () => {
         expect(classify("execute_bash", "python -m pytest --version", "pytest 8.0")).toBeNull();
         expect(classify("execute_bash", "pytest --collect-only -q tests", "t.py::a")).toBeNull();
         expect(classify("execute_bash", "pytest --co tests", "t.py::a")).toBeNull();
+        expect(classify("execute_bash", "python --version && pytest tests", "1 passed")).toBe(
+            "test_run",
+        );
+        expect(classify("execute_bash", "pytest tests && python tool.py --help", "ok")).toBe(
+            "test_run",
+        );
         expect(classify("execute_bash", "pytest tests/test_h.py", "ok")).toBe("test_run");
     });
     test("commandOf reads command and path, and falls back to the raw text", () => {

@@ -59,7 +59,8 @@ export function classify(tool: string, command: string, content: string): Sample
     if (content.includes(TRACEBACK)) return "stack_trace";
     if (tool !== "execute_bash" || SHELL_ERROR.test(content)) return null;
     const bare = command.replace(QUOTED, '""');
-    if (RUNNER.test(bare)) return NO_RUN.test(command) ? null : "test_run";
+    const runner = bare.split(/&&|;|\|/).find((segment) => RUNNER.test(segment));
+    if (runner !== undefined) return NO_RUN.test(runner) ? null : "test_run";
     if (SEARCH.test(bare)) return "grep";
     if (/^\s*(cat|head|tail|sed -n)\b/.test(command)) return "file_read";
     return null;
