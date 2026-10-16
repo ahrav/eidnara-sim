@@ -21,7 +21,9 @@ M5 (#1030) sums input, output, cache-read, and cache-write tokens per
 component and per arm in `ledger` (`src/oracle/oracles.ts`), leaving out the
 harness's own user-sim, judge, and refused calls; the per-arm total is the
 per-component sum. `src/oracle/oracles.test.ts` ("token ledger") asserts the
-four fields, the exclusion, and the sum on constructed calls. No tier run has
+four fields, the exclusion, and the sum on constructed `agent`,
+`memory_capture`, `title`, `user-sim`, `judge`, and `rejected` calls; the
+other components take the same path and are not constructed. No tier run has
 exercised it yet.
 
 ## Failure scenario

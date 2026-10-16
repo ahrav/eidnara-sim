@@ -1006,8 +1006,10 @@ Type: safety
 Reachability: default-production
 Status: active
 Exercised: partial - `src/oracle/oracles.test.ts` ("token ledger") constructs
-calls across every component with all four token fields; pricing and the
-price table version land with M7 (#1032)
+`agent`, `memory_capture`, and `title` calls plus the three harness
+components, each with all four token fields; the other components share the
+same code path but are not constructed; pricing and the price table version
+land with M7 (#1032)
 Guarantee: SIM-P38: Per-arm total tokens equal the sum of per-component tokens,
 and per-component cost uses the journaled price table version.
 Check: `always` - assert per-arm token totals equal the per-component sum and
@@ -1045,13 +1047,15 @@ Confidence: medium -
 [evidence](evidence/sim-p39-hang-is-derived-from-call-silence.md). M5 (#1030)
 implements the oracle in `f4` (`src/oracle/oracles.ts`) over the recorded
 journal, call records, and tool runs; it reads the turn after the fact rather
-than labelling it `failed(hang)` as it ends, and a tool start within a second
-of the call's end counts as progress however long the tool runs. A default
-tier run reaches it; none has run yet.
+than labelling it `failed(hang)` as it ends, a deadline turn counts only with
+no agent call or a five-minute gap in its activity, and in a completed turn a
+tool start within a second of the call's end counts as progress however long
+the tool runs. A default tier run reaches it; none has run yet.
 Existing check: `src/oracle/oracles.test.ts` (oracle fixtures, oracle edge
-cases) covers the deadline wording of both hosts, the completed call with no
-follow-up, the sub-second call, the persistence call, and the recorded tool
-start; status unaudited
+cases, round four) covers the deadline wording of both hosts, a deadline turn
+active throughout and one with a silent window, the completed call with no
+follow-up, the turn-start silence, the sub-second call, the persistence call,
+and the recorded tool start; status unaudited
 Impact: The intermittent Pi hang goes undetected or a slow turn is mislabelled.
 Open questions: None.
 

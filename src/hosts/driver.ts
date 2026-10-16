@@ -55,8 +55,11 @@ export interface DriverOptions extends Omit<HostContext, "root" | "model"> {
     settle?: () => Promise<void>;
     hostFactory?: (ctx: HostContext) => SimHost;
     onDaemonExit: (detail: Record<string, unknown>) => void;
-    /** Called once the daemon a fault restarted is up, before it handles more work. */
-    onDaemonRestart?: () => void;
+    /**
+     * Called when a daemon process is up (at reset, resume, and after a fault's restart) and
+     * before a fault takes one down, so each daemon lifetime has a first and a last sample.
+     */
+    sampleDaemon?: () => void;
 }
 
 const IDENTITY = {
@@ -200,6 +203,7 @@ export class HostDriver implements ArmDriver {
             });
             await this.daemon.start();
             this.recordState();
+            this.o.sampleDaemon?.();
         }
         this.host = this.newHost();
         this.recordState();
@@ -510,6 +514,7 @@ export class HostDriver implements ArmDriver {
         fault: string,
     ): Promise<Record<string, unknown>> {
         const before = daemon.pid();
+        this.o.sampleDaemon?.();
         await daemon.crash();
         const store = checkStore(this.storeDb);
         // Marked before the start, so a pass the replacement serves while its start settles counts.
@@ -517,7 +522,7 @@ export class HostDriver implements ArmDriver {
         await daemon.restart();
         this.storeFaults[fault] = mark;
         this.recordState();
-        this.o.onDaemonRestart?.();
+        this.o.sampleDaemon?.();
         return {
             signal: "SIGKILL",
             pid_before: before,

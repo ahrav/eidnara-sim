@@ -79,38 +79,54 @@ function f4(arm: ArmLogs, quietMs: number): Activation[] {
         const turn = String(e.event);
         const turnCalls = arm.calls.filter((c) => c.turn === turn);
         const calls = turnCalls.filter((c) => c.component === "agent");
+        const tools = arm.tools.filter((t) => t.turn === turn).map((t) => t.scenario_ms);
+        const began = arm.journal.find((b) => b.kind === "BeginTurn" && b.event === e.event);
         if (DEADLINE.test(String(e.outcome))) {
-            const what =
-                calls.length === 0 ? "with no model call" : `after ${calls.length} model calls`;
-            out.push({ oracle: "F4", arm: arm.arm, at: turn, evidence: `turn deadline ${what}` });
+            const points = [
+                ...(began ? [began.scenario_ms] : []),
+                ...turnCalls.flatMap((c) => [
+                    c.scenario_ms,
+                    c.scenario_ms + (c.wall_ms - c.started_wall_ms),
+                ]),
+                ...tools,
+                e.scenario_ms,
+            ].sort((a, b) => a - b);
+            const gap = Math.max(0, ...points.slice(1).map((ms, i) => ms - (points[i] as number)));
+            if (calls.length === 0 || gap > quietMs) {
+                const what =
+                    calls.length === 0 ? "with no model call" : `after ${calls.length} model calls`;
+                const silent = gap > quietMs ? `, ${Math.round(gap / 1000)} s silent` : "";
+                const evidence = `turn deadline ${what}${silent}`;
+                out.push({ oracle: "F4", arm: arm.arm, at: turn, evidence });
+            }
             continue;
         }
-        const tools = arm.tools.filter((t) => t.turn === turn).map((t) => t.scenario_ms);
-        const quietAfter = (done: number, activity: number[]): number => {
+        const windows: string[] = [];
+        /** Proxy records and the turn end are on the harness clock; only a tool start gets the slack. */
+        const quietAfter = (done: number, recorded: number[]): number => {
             const next = Math.min(
-                ...activity.filter((ms) => ms >= done - CLOCK_SLACK_MS),
+                ...recorded.filter((ms) => ms >= done),
+                ...tools.filter((ms) => ms >= done - CLOCK_SLACK_MS),
                 Number.POSITIVE_INFINITY,
             );
             return next - done;
         };
         const silence = "with no tool run, call, or turn end";
-        const began = arm.journal.find((b) => b.kind === "BeginTurn" && b.event === e.event);
         if (began) {
-            const all = [...turnCalls.map((c) => c.scenario_ms), ...tools, e.scenario_ms];
-            const quiet = quietAfter(began.scenario_ms, all);
-            if (quiet > quietMs) {
-                const evidence = `turn began, then ${Math.round(quiet / 1000)} s ${silence}`;
-                out.push({ oracle: "F4", arm: arm.arm, at: turn, evidence });
-            }
+            const starts = turnCalls.map((c) => c.scenario_ms);
+            const quiet = quietAfter(began.scenario_ms, [...starts, e.scenario_ms]);
+            if (quiet > quietMs) windows.push(`turn began, then ${Math.round(quiet / 1000)} s`);
         }
-        for (const c of calls.filter((x) => x.status === 200)) {
+        for (const c of calls) {
             const done = c.scenario_ms + (c.wall_ms - c.started_wall_ms);
             const others = turnCalls.filter((x) => x !== c).map((x) => x.scenario_ms);
-            const quiet = quietAfter(done, [...others, ...tools, e.scenario_ms]);
-            if (quiet > quietMs) {
-                const evidence = `call ${c.seq} completed, then ${Math.round(quiet / 1000)} s ${silence}`;
-                out.push({ oracle: "F4", arm: arm.arm, at: turn, evidence });
-            }
+            const quiet = quietAfter(done, [...others, e.scenario_ms]);
+            if (quiet > quietMs)
+                windows.push(`call ${c.seq} completed, then ${Math.round(quiet / 1000)} s`);
+        }
+        if (windows.length > 0) {
+            const evidence = `${windows.join("; ")} ${silence}`;
+            out.push({ oracle: "F4", arm: arm.arm, at: turn, evidence });
         }
     }
     return out;

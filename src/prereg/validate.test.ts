@@ -79,8 +79,12 @@ describe("pre-registration validator", () => {
             "grading.p13_reduction_ratio: min must be below max",
             "grading.p11_false_positive_weight: must be positive",
             "grading.judge.human_sample_percent: at most 100",
-            "oracles.cost_ratio_max: must be positive",
+            "oracles.cost_ratio_max: must be positive and finite",
         ]);
+        prereg.oracles.cost_ratio_max = `1${"0".repeat(400)}`;
+        expect(validatePreregistration(prereg)).toContain(
+            "oracles.cost_ratio_max: must be positive and finite",
+        );
     });
 
     test("refuses a missing family by name", () => {

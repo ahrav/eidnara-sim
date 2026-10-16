@@ -46,10 +46,13 @@ there before each restart.
 interposer environment, restarts it with SIGKILL against the same store, and
 stops it with SIGTERM so its store stays on disk. It appends the daemon's
 stdout and stderr to the arm's `daemon.log` before each restart and at stop,
-each line once: stderr whole from the log file the v1 stack writes each chunk
-to and truncates at each host start, stdout from the stack's `diagnostics`
-view, which keeps the last 256 KiB. The run's resource sampler takes a sample
-once a restarted daemon is up.
+each line once: stderr copied a megabyte at a time from the log file the v1
+stack writes each chunk to and truncates at each host start, stdout from the
+stack's `diagnostics` view, which keeps the last 256 KiB. The saved log file
+is removed once copied, and `daemon.log.source` names the live lifetime's
+file, so a `start` after a harness kill saves the dead lifetime's stderr
+first. The run's resource sampler takes a sample when each daemon process is
+up and before a fault takes one down.
 
 Each `session_start` launches one host process in the session's workspace
 through the sandbox launcher, and each `session_end` closes it. The sandbox runs the host under

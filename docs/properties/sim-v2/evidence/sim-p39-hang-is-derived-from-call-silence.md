@@ -21,20 +21,23 @@ with M5.
 
 M5 (#1030) derives a hang from the call records, journal, and tool runs in `f4`
 (`src/oracle/oracles.ts`): a turn at its deadline (OpenCode's `turn deadline`
-or Pi's `Timed out after ... ms`), or a completed agent call followed by five
-minutes (pre-registration revision 5, `oracles.hang_quiet_ms`) with no tool
-start, other same-turn call, or turn end. The oracle reads the journaled
-turn after the fact rather than labelling the turn `failed(hang)` as it ends,
-and it counts a tool that starts within a second of the call's end as progress
-however long the tool runs, so a tool that waits forever surfaces at the
-deadline; the property's biconditional is checked against the recorded
-evidence, not enforced by the runner. A resumed run restarts its clock at the
-last journal entry, so a turn the harness kill cut has no measurable quiet
-time and is journaled `failed(interrupted)` instead. The recorded OpenCode
-turn that waited on its question tool fires it (`F4-bad.json`); the recorded
-Pi turn with tool runs does not (`F4-good.json`); `src/oracle/oracles.test.ts`
-constructs a sub-second call followed by silence and a persistence call inside
-the window. No tier run has exercised it yet.
+or Pi's `Timed out after ... ms`) with no agent call or with a gap above five
+minutes (pre-registration revision 5, `oracles.hang_quiet_ms`) in its recorded
+activity; a turn that began and saw nothing for five minutes; or a completed
+agent call followed by five minutes with no tool start, other same-turn call,
+or turn end. The oracle reads the journaled turn after the fact rather than
+labelling the turn `failed(hang)` as it ends. In a turn that completed, a tool
+that starts within a second of the call's end counts as progress however long
+the tool runs; in a turn that hit the deadline, the silence after that tool
+start counts, so a tool that waited on until the deadline is a hang and a turn
+active to its deadline is a long turn. The property's biconditional is checked
+against the recorded evidence, not enforced by the runner. A resumed run
+restarts its clock at the last journal entry, so a turn the harness kill cut
+has no measurable quiet time and is journaled `failed(interrupted)` instead.
+The recorded OpenCode turn that waited on its question tool fires it
+(`F4-bad.json`); the recorded Pi turn with tool runs does not (`F4-good.json`);
+`src/oracle/oracles.test.ts` constructs a sub-second call followed by silence
+and a persistence call inside the window. No tier run has exercised it yet.
 
 ## Failure scenario
 

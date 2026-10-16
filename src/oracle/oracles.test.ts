@@ -89,7 +89,7 @@ describe("oracle report", () => {
         writeFileSync(join(dir, "scenario.json"), JSON.stringify({ ...scenario, scenario_hash }));
         writeFileSync(
             join(dir, "calls.jsonl"),
-            line({ arm: "eidnara", seq: 0 }) + line({ arm: "host", seq: 1 }),
+            line(call({ arm: "eidnara", seq: 0 })) + line(call({ arm: "host", seq: 1 })),
         );
         const journal = [
             { kind: "StartRun", arm: null, order },
@@ -439,5 +439,238 @@ describe("oracle round three", () => {
         expect(() => loadRun(dir, prereg)).toThrow("arm eidnara has no daemon RSS samples");
         writeFileSync(join(dir, "eidnara", "resources.jsonl"), line({ scenario_ms: 0, rss: 100 }));
         expect(loadRun(dir, prereg).arms.map((a) => a.arm)).toEqual(order);
+    });
+});
+
+describe("oracle round four", () => {
+    const beginTurn = (arm: string, event: string, scenario_ms: number) => ({
+        kind: "BeginTurn" as const,
+        arm,
+        event,
+        seq: 0,
+        wall_ms: 0,
+        scenario_ms,
+    });
+
+    test("a deadline turn is a hang only with a silent window; one active to the deadline is not", () => {
+        const deadline = "turn deadline 900000 ms";
+        const every = (step: number) =>
+            Array.from({ length: Math.floor(900_000 / step) }, (_, i) =>
+                call({
+                    seq: i,
+                    arm: "host",
+                    scenario_ms: i * step,
+                    started_wall_ms: 0,
+                    wall_ms: 1_000,
+                }),
+            );
+        const active = runWith(
+            armOf("host", {
+                calls: every(120_000),
+                journal: [beginTurn("host", "e-1", 0), endTurn("host", "e-1", 900_000, deadline)],
+            }),
+        );
+        expect(oracle(active, "F4")).toEqual([]);
+        const stalled = runWith(
+            armOf("host", {
+                calls: every(400_000),
+                journal: [beginTurn("host", "e-1", 0), endTurn("host", "e-1", 900_000, deadline)],
+            }),
+        );
+        expect(oracle(stalled, "F4").map((a) => a.evidence)).toEqual([
+            "turn deadline after 2 model calls, 499 s silent",
+        ]);
+    });
+
+    test("a call record that fails the proxy's record contract refuses the run", () => {
+        const dir = mkdtempSync(join(tmpdir(), "sim-oracle-"));
+        const line = (o: unknown) => `${JSON.stringify(o)}\n`;
+        const order = ["eidnara"];
+        const scenario = { events: [{ id: "e-1", kind: "user_turn" }] };
+        const scenario_hash = scenarioHash(scenario);
+        const manifest = { tier: "S", order, events: 1, scenario_hash };
+        writeFileSync(join(dir, "manifest.json"), JSON.stringify(manifest));
+        writeFileSync(join(dir, "scenario.json"), JSON.stringify({ ...scenario, scenario_hash }));
+        const journal = [
+            { kind: "StartRun", arm: null, order },
+            { kind: "Event", arm: "eidnara", event: "e-1" },
+            { kind: "EndArm", arm: "eidnara" },
+            { kind: "EndRun", arm: null },
+        ];
+        writeFileSync(join(dir, "journal.jsonl"), journal.map(line).join(""));
+        mkdirSync(join(dir, "eidnara"));
+        writeFileSync(join(dir, "eidnara", "resources.jsonl"), line({ scenario_ms: 0, rss: 100 }));
+        const { output_tokens: _dropped, ...damaged } = call({ seq: 7 });
+        writeFileSync(join(dir, "calls.jsonl"), line(damaged));
+        expect(() => loadRun(dir, prereg)).toThrow("call 7: output_tokens missing");
+        writeFileSync(join(dir, "calls.jsonl"), line(call({ seq: 7 })));
+        expect(loadRun(dir, prereg).arms[0]?.calls).toHaveLength(1);
+    });
+});
+
+describe("oracle round five", () => {
+    test("F4 reads a same-turn call as follow-up only when it starts at or after the evaluated call's end", () => {
+        const overlapped = runWith(
+            armOf("eidnara", {
+                calls: [
+                    call({ seq: 0, scenario_ms: 10_000, started_wall_ms: 0, wall_ms: 2_000 }),
+                    call({ seq: 1, component: "memory_capture", scenario_ms: 11_500 }),
+                ],
+                journal: [endTurn("eidnara", "e-1", 12_000 + 600_000)],
+            }),
+        );
+        expect(oracle(overlapped, "F4").map((a) => a.evidence)).toEqual([
+            "call 0 completed, then 600 s with no tool run, call, or turn end",
+        ]);
+    });
+
+    test("F4 measures the silence after a failed agent call too", () => {
+        const failed = runWith(
+            armOf("eidnara", {
+                calls: [
+                    call({
+                        seq: 0,
+                        status: 400,
+                        error: "bad request",
+                        scenario_ms: 10_000,
+                        started_wall_ms: 0,
+                        wall_ms: 200,
+                    }),
+                ],
+                journal: [endTurn("eidnara", "e-1", 10_200 + 600_000)],
+            }),
+        );
+        expect(oracle(failed, "F4").map((a) => a.evidence)).toEqual([
+            "call 0 completed, then 600 s with no tool run, call, or turn end",
+        ]);
+    });
+
+    test("a malformed newline-terminated line in an evidence file refuses the run", () => {
+        const dir = mkdtempSync(join(tmpdir(), "sim-oracle-"));
+        const line = (o: unknown) => `${JSON.stringify(o)}\n`;
+        const order = ["eidnara"];
+        const scenario = { events: [{ id: "e-1", kind: "user_turn" }] };
+        const scenario_hash = scenarioHash(scenario);
+        const manifest = { tier: "S", order, events: 1, scenario_hash };
+        writeFileSync(join(dir, "manifest.json"), JSON.stringify(manifest));
+        writeFileSync(join(dir, "scenario.json"), JSON.stringify({ ...scenario, scenario_hash }));
+        const journal = [
+            { kind: "StartRun", arm: null, order },
+            { kind: "Event", arm: "eidnara", event: "e-1" },
+            { kind: "EndArm", arm: "eidnara" },
+            { kind: "EndRun", arm: null },
+        ];
+        writeFileSync(join(dir, "journal.jsonl"), journal.map(line).join(""));
+        mkdirSync(join(dir, "eidnara"));
+        const good = line({ scenario_ms: 0, rss: 100 });
+        writeFileSync(
+            join(dir, "eidnara", "resources.jsonl"),
+            `${good}{"scenario_ms": 1, "rss":\n`,
+        );
+        expect(() => loadRun(dir, prereg)).toThrow(/resources\.jsonl: line 2/);
+        writeFileSync(join(dir, "eidnara", "resources.jsonl"), good);
+        expect(loadRun(dir, prereg).arms[0]?.resources).toHaveLength(1);
+    });
+});
+
+function completeDir(order: string[]): { dir: string; line: (o: unknown) => string } {
+    const dir = mkdtempSync(join(tmpdir(), "sim-oracle-"));
+    const line = (o: unknown) => `${JSON.stringify(o)}\n`;
+    const scenario = { events: [{ id: "e-1", kind: "user_turn" }] };
+    const scenario_hash = scenarioHash(scenario);
+    const manifest = { tier: "S", order, events: 1, scenario_hash };
+    writeFileSync(join(dir, "manifest.json"), JSON.stringify(manifest));
+    writeFileSync(join(dir, "scenario.json"), JSON.stringify({ ...scenario, scenario_hash }));
+    const journal = [
+        { kind: "StartRun", arm: null, order },
+        ...order.flatMap((arm) => [
+            { kind: "Event", arm, event: "e-1" },
+            { kind: "EndArm", arm },
+        ]),
+        { kind: "EndRun", arm: null },
+    ];
+    writeFileSync(join(dir, "journal.jsonl"), journal.map(line).join(""));
+    for (const arm of order) {
+        if (arm === "host" || arm.startsWith("..")) continue;
+        mkdirSync(join(dir, arm));
+        writeFileSync(
+            join(dir, arm, "resources.jsonl"),
+            line({ scenario_ms: 0, rss: 100, pid: 1 }),
+        );
+    }
+    return { dir, line };
+}
+
+describe("oracle round six", () => {
+    test("F4 is one activation per turn, its evidence naming every silent window", () => {
+        const twice = runWith(
+            armOf("host", {
+                calls: [
+                    call({
+                        seq: 0,
+                        arm: "host",
+                        scenario_ms: 0,
+                        started_wall_ms: 0,
+                        wall_ms: 1_000,
+                    }),
+                    call({
+                        seq: 1,
+                        arm: "host",
+                        scenario_ms: 400_000,
+                        started_wall_ms: 0,
+                        wall_ms: 1_000,
+                    }),
+                ],
+                journal: [endTurn("host", "e-1", 800_000)],
+            }),
+        );
+        const acts = oracle(twice, "F4");
+        expect(acts).toHaveLength(1);
+        expect(acts[0]?.evidence).toContain("call 0 completed, then 399 s");
+        expect(acts[0]?.evidence).toContain("call 1 completed, then 399 s");
+    });
+
+    test("a resource sample without a numeric scenario time, or a tool run without its fields, refuses the run", () => {
+        const { dir, line } = completeDir(["eidnara"]);
+        writeFileSync(join(dir, "eidnara", "resources.jsonl"), line({ rss: 100, pid: 1 }));
+        expect(() => loadRun(dir, prereg)).toThrow(/resources\.jsonl: line 1: scenario_ms/);
+        writeFileSync(
+            join(dir, "eidnara", "resources.jsonl"),
+            line({ scenario_ms: 0, rss: "big", pid: 1 }),
+        );
+        expect(() => loadRun(dir, prereg)).toThrow(/resources\.jsonl: line 1: rss/);
+        writeFileSync(
+            join(dir, "eidnara", "resources.jsonl"),
+            line({ scenario_ms: 0, rss: 100, pid: 1 }),
+        );
+        writeFileSync(
+            join(dir, "eidnara", "tools.jsonl"),
+            line({ turn: "e-1", command: "ls", exit: 0 }),
+        );
+        expect(() => loadRun(dir, prereg)).toThrow(/tools\.jsonl: line 1: scenario_ms/);
+        writeFileSync(
+            join(dir, "eidnara", "tools.jsonl"),
+            line({ turn: "e-1", command: "ls", exit: 0, scenario_ms: 1 }),
+        );
+        expect(loadRun(dir, prereg).arms[0]?.tools).toHaveLength(1);
+    });
+
+    test("a call naming an arm outside the manifest, or repeating a sequence number, refuses the run", () => {
+        const { dir, line } = completeDir(["eidnara"]);
+        writeFileSync(join(dir, "calls.jsonl"), line(call({ seq: 0, arm: "eidnara-typo" })));
+        expect(() => loadRun(dir, prereg)).toThrow(
+            "call 0: arm eidnara-typo is not in the manifest",
+        );
+        writeFileSync(join(dir, "calls.jsonl"), line(call({ seq: 3 })) + line(call({ seq: 3 })));
+        expect(() => loadRun(dir, prereg)).toThrow("call 3: sequence number repeated");
+        writeFileSync(join(dir, "calls.jsonl"), line(call({ seq: 3 })) + line(call({ seq: 4 })));
+        expect(loadRun(dir, prereg).arms[0]?.calls).toHaveLength(2);
+    });
+
+    test("a manifest arm outside the pre-registered arm names refuses the run before any path is built", () => {
+        const { dir } = completeDir(["../outside"]);
+        expect(() => loadRun(dir, prereg)).toThrow(
+            "manifest arm ../outside is not a pre-registered arm",
+        );
     });
 });

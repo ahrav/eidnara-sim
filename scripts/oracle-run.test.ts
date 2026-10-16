@@ -35,15 +35,24 @@ function completeRun(root: string, tier: string, prereg_sha256: string): string 
     const overflow = {
         seq: 0,
         arm: "eidnara",
+        session: "s-1",
         turn: "e-1",
         component: "agent",
+        componentSource: "inferred",
+        model: "m",
         status: 400,
-        error: "ValidationException: prompt is too long",
+        finish_reason: null,
         input_tokens: 5,
         output_tokens: 0,
         cache_read_tokens: 0,
         cache_write_tokens: 0,
+        started_wall_ms: 0,
+        wall_ms: 100,
         scenario_ms: 0,
+        first_byte_ms: null,
+        proxy_retries: 0,
+        fault_ref: null,
+        error: "ValidationException: prompt is too long",
     };
     writeFileSync(join(dir, "calls.jsonl"), line(overflow));
     mkdirSync(join(dir, "eidnara"));
