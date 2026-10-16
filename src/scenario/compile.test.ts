@@ -760,6 +760,8 @@ describe("fault schedule", () => {
             seam: undefined,
         } as unknown as FaultEpisode;
         expect(() => validateFault(unknownType, sessions)).toThrow(/seam entry missing or altered/);
+        const inherited = { ...good, type: "__proto__", seam: {} } as unknown as FaultEpisode;
+        expect(() => validateFault(inherited, sessions)).toThrow(/seam entry missing or altered/);
         const copied = JSON.parse(JSON.stringify(good)) as FaultEpisode;
         expect(() => validateFault(copied, sessions)).not.toThrow();
     });

@@ -157,8 +157,12 @@ is a scenario-local schedule: fault type, strategy, compiler-chosen trigger,
 parameters, and the seam-table entry for the proxy sink, scheduler, or clock
 layer the harness injects through. eval-core's `FaultEpisode` is the Suite C
 record `(trigger, scope, action, heal)` over the daemon's own store seams,
-whose `FaultAction` is a closed set of in-process hooks, so the two share a
-name and no fields. The harness seams have no eval-core counterpart; the
+whose `FaultAction` is a closed set of in-process hooks. The two share the
+type name and a `trigger` field name; the scenario trigger is a compiler-owned
+event (session start, Nth user turn, first summarizer call of a session) and
+eval-core's is a drive step, so a conversion translates or rejects the shape,
+and the remaining fields have no counterpart. The harness seams have no
+eval-core counterpart; the
 runner (M4) journals each scenario episode with its trigger event, both
 times, and fired and observed evidence (SIM-P31), and the report (M7) reads
 that journal. An eval-core counterpart would need a `FaultAction` family for

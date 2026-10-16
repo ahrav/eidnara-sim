@@ -170,8 +170,10 @@ daemon. Each type gets one episode.
 | Clock, laptop sleep | The start of the session after the widest idle gap, among sessions that start without a hand-applied diff | single, with `duration_ms` equal to that gap, so the jump holds no events (SIM-P18) |
 | Scheduler, every other type | The start of a session after the first | single; the store-full fault is persistent for that one session (`sessions: 1`) |
 
-The scenario fixes when each episode fires and with which strategy. The
-run manifest (spec #1007, decision tape) carries the values an episode acts
+The scenario fixes each episode's trigger condition and strategy; the
+realized firing time of the mid-fold SIGKILL (an observed call) and of an
+intermittent episode's calls comes from the run. The run manifest (spec
+#1007, decision tape) carries the values an episode acts
 with that depend on the run rather than the seed: the second host binary a
 host upgrade installs, the second model a model switch selects, and the
 seeded fault-jitter stream whose draws decide which of an intermittent
@@ -183,9 +185,9 @@ values are shared across arms.
 When the tier runs the `eidnara-cf` arm (L), the compiler shuffles the P1,
 P3, and P5 probes with its own seeded stream and takes the first 20%, rounded.
 Each deletion names the probe, its fact, and the event the deletion precedes.
-The `eidnara-cf` arm carries every deletion of the scenario, so after its
-first deletion the arm's context differs from `eidnara`'s for more than one
-fact. How M9 attributes outcomes to single deletions (SIM-P72) is an open
+The `eidnara-cf` arm carries every deletion of the scenario, so once a second
+deletion has fired the arm's context differs from `eidnara`'s for more than
+one fact. How M9 attributes outcomes to single deletions (SIM-P72) is an open
 question for that milestone.
 
 ## Pre-registered seeds

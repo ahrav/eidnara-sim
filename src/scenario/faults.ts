@@ -123,7 +123,7 @@ export function validateFault(episode: FaultEpisode, sessions: Map<string, numbe
     if (trigger.kind === "user_turn" && !(Number.isInteger(n) && n >= 1 && n <= requests)) {
         throw new Error(`${episode.id}: user turn ${n} outside the session's ${requests} turns`);
     }
-    const seam = SEAMS[episode.type] as Seam | undefined;
+    const seam = Object.hasOwn(SEAMS, episode.type) ? SEAMS[episode.type] : undefined;
     if (!seam || canonicalJson(seam) !== canonicalJson(episode.seam)) {
         throw new Error(`${episode.id}: seam entry missing or altered`);
     }
