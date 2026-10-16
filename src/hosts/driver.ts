@@ -265,12 +265,14 @@ export class HostDriver implements ArmDriver {
             const project = this.project(e);
             host.drainTools();
             this.snapshots.sessionEnd(e.session, project, this.workspace(project));
+            // The session's background passes have settled by now, so a check they earned runs here.
+            const stores = this.owedStores();
             await host.closeSession();
             this.clearStoreFill();
             this.sessionProject = null;
             this.recordState();
             if (!this.transcriptsChecked) this.checkTranscripts(host);
-            return {};
+            return stores ? { stores } : {};
         }
         if (e.kind === "apply_diff") {
             this.applyDiff(e);
@@ -295,14 +297,8 @@ export class HostDriver implements ArmDriver {
         const outcome: TurnOutcome = {};
         if (result.error) outcome.failed = result.error;
         await this.restarting;
-        const passed = Object.entries(this.storeFaults).filter(([, mark]) =>
-            this.passedSince(mark),
-        );
-        if (passed.length > 0 && this.daemon) {
-            const store = checkStore(this.storeDb);
-            outcome.stores = passed.map(([fault]) => ({ fault, store }));
-            for (const [fault] of passed) delete this.storeFaults[fault];
-        }
+        const stores = this.owedStores();
+        if (stores) outcome.stores = stores;
         if (e.probe && before === null) {
             const reason = "snapshot: git timed out before the turn";
             outcome.failed = outcome.failed ? `${outcome.failed} | ${reason}` : reason;
@@ -478,6 +474,17 @@ export class HostDriver implements ArmDriver {
         };
     }
 
+    /** The store checks whose restart the plugin log now shows a served pass after, if any. */
+    private owedStores(): TurnOutcome["stores"] {
+        const passed = Object.entries(this.storeFaults).filter(([, mark]) =>
+            this.passedSince(mark),
+        );
+        if (passed.length === 0 || !this.daemon) return undefined;
+        const store = checkStore(this.storeDb);
+        for (const [fault] of passed) delete this.storeFaults[fault];
+        return passed.map(([fault]) => ({ fault, store }));
+    }
+
     private get pluginLog(): string {
         return join(this.o.armRoot, "eidnara.log");
     }
@@ -523,8 +530,11 @@ export class HostDriver implements ArmDriver {
         return join(this.dataDir, "eidnara", "context", "store.db");
     }
 
-    async finish(): Promise<void> {
+    /** Settles the store checks the arm still owes, then stops everything it runs. */
+    async finish(): Promise<TurnOutcome> {
+        const stores = this.owedStores();
         await this.stop(true);
+        return stores ? { stores } : {};
     }
 
     async stop(checkFinalStore = false): Promise<void> {

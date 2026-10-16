@@ -568,6 +568,26 @@ describe("HostDriver faults", () => {
         expect(outcome.stores?.map((s) => s.fault)).toEqual(["f-daemon_restart"]);
     });
 
+    test("a pass a background call serves after the last turn is checked at session end or finish", async () => {
+        const { driver, transcripts } = fixture("host", { p: gitRepo() });
+        mkdirSync(join(transcripts, "sessions"), { recursive: true });
+        await driver.reset();
+        driver.daemon = fakeDaemon(10) as unknown as DaemonStack;
+        await driver.event(ev("session_start"));
+        await driver.fault(episode("daemon_restart"));
+        const turn = await driver.event(ev("user_turn", { id: "e-1", text: "go" }));
+        expect(turn.stores).toBeUndefined();
+        pluginLog(driver, PASS);
+        const end = await driver.event(ev("session_end", { id: "e-2" }));
+        expect(end.stores?.map((s) => s.fault)).toEqual(["f-daemon_restart"]);
+        await driver.event(ev("session_start", { id: "e-3", session: "s-0001" }));
+        await driver.fault(episode("daemon_sigkill_mid_fold"));
+        await driver.event(ev("user_turn", { id: "e-4", text: "go", session: "s-0001" }));
+        pluginLog(driver, PASS);
+        const last = await driver.finish();
+        expect(last.stores?.map((s) => s.fault)).toEqual(["f-daemon_sigkill_mid_fold"]);
+    });
+
     test("the store check waits for the first pass the replacement daemon serves", async () => {
         const { driver } = fixture("eidnara");
         driver.daemon = fakeDaemon(10) as unknown as DaemonStack;

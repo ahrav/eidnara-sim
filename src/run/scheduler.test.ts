@@ -492,6 +492,35 @@ describe("resume of a journaled sleep jump", () => {
     });
 });
 
+describe("store checks outside turns", () => {
+    test("store checks a session end or finish settles are journaled with their event", async () => {
+        const j = new Journal(join(dir(), "j.jsonl"));
+        const store = { integrity: "ok", segments: 0, overlaps: [], ranges: [] };
+        const driver: ArmDriver = {
+            reset: async () => undefined,
+            event: async (e) =>
+                e.kind === "session_end" ? { stores: [{ fault: "r-1", store }] } : {},
+            fault: async () => ({}),
+            finish: async () => ({ stores: [{ fault: "r-2", store }] }),
+        };
+        await new Scheduler({
+            events: fixtureEvents(1),
+            faults: [],
+            journal: j,
+            settleMs: 0,
+            order: ["a"],
+            drivers: { a: driver },
+        }).run();
+        const checks = j.entries.filter((e) => e.kind === "StoreChecked");
+        expect(checks.map((e) => [e.fault, e.event])).toEqual([
+            ["r-1", "e-999999"],
+            ["r-2", null],
+        ]);
+        const kinds = j.entries.map((e) => e.kind);
+        expect(kinds.lastIndexOf("StoreChecked")).toBeLessThan(kinds.indexOf("EndArm"));
+    });
+});
+
 describe("driver lifecycle hooks", () => {
     test("a resumed arm gets the open session, its open jobs end, and finish precedes EndArm", async () => {
         const path = join(dir(), "j.jsonl");
@@ -535,6 +564,7 @@ describe("driver lifecycle hooks", () => {
             finish: async () => {
                 calls.push("finish");
                 finishedAt = second.entries.length;
+                return undefined;
             },
         };
         await new Scheduler({

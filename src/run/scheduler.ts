@@ -29,8 +29,11 @@ export interface ArmDriver {
     resume?(open: ScenarioEvent | null): Promise<void>;
     event(e: ScenarioEvent): Promise<TurnOutcome>;
     fault(f: FaultEpisode): Promise<Record<string, unknown>>;
-    /** Stops everything the arm runs, after its last event and before `EndArm`. */
-    finish?(): Promise<void>;
+    /**
+     * Stops everything the arm runs, after its last event and before `EndArm`; store checks it
+     * still owed are journaled.
+     */
+    finish?(): Promise<TurnOutcome | undefined>;
 }
 
 export interface ProxyControl {
@@ -115,7 +118,9 @@ export class Scheduler {
             for (const e of pending) await this.step(driver, e);
             await this.idle();
             await this.pendingKill;
-            await driver.finish?.();
+            const last = await driver.finish?.();
+            for (const s of last?.stores ?? [])
+                this.log({ kind: "StoreChecked", event: null, ...s });
             this.log({ kind: "EndArm" });
         }
         this.arm = null;
@@ -291,7 +296,9 @@ export class Scheduler {
                 this.log({ kind: "StoreChecked", event: e.id, ...s });
             await Bun.sleep(this.o.settleMs ?? 1_000);
         } else {
-            await driver.event(e);
+            const outcome = await driver.event(e);
+            for (const s of outcome.stores ?? [])
+                this.log({ kind: "StoreChecked", event: e.id, ...s });
         }
         if (e.kind === "session_end") {
             for (const f of this.o.faults) {

@@ -33,6 +33,7 @@ entries of different arms are not ordered by scenario time.
 | `FaultFired`, `FaultObserved` | A scheduled fault fires, and the driver returns its evidence |
 | `ItemState` | On resume, an in-flight turn or a scheduler fault without evidence is `failed(interrupted)`; the daemon exits |
 | `Event` | A scheduled event is complete, with its outcome |
+| `StoreChecked` | A store check a daemon restart owed is settled; carries the fault id, the check, and the turn or session end that settled it, or `event: null` at finish (`docs/oracles.md`) |
 
 ## Clock
 

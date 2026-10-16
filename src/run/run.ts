@@ -405,7 +405,7 @@ async function runArms(
             },
             finish: async () => {
                 sampler.stop();
-                await driver.finish();
+                return driver.finish();
             },
         };
     }
