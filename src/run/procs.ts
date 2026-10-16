@@ -9,6 +9,16 @@ function statFields(pid: number): string[] | null {
     }
 }
 
+/** A kernel without `CONFIG_PROC_CHILDREN` has no `children` files; the parent field of every `stat` is the fallback. */
+export function childrenByParent(pid: number): number[] {
+    const out: number[] = [];
+    for (const entry of readdirSync("/proc")) {
+        if (!/^\d+$/.test(entry)) continue;
+        if (statFields(Number(entry))?.[1] === String(pid)) out.push(Number(entry));
+    }
+    return out;
+}
+
 function childrenOf(pid: number): number[] {
     let tasks: string[];
     try {
@@ -16,9 +26,11 @@ function childrenOf(pid: number): number[] {
     } catch {
         return [];
     }
-    return tasks.flatMap((tid) => {
+    let listedAny = false;
+    const found = tasks.flatMap((tid) => {
         try {
             const listed = readFileSync(`/proc/${pid}/task/${tid}/children`, "utf8");
+            listedAny = true;
             return listed
                 .split(" ")
                 .filter((c) => c.trim() !== "")
@@ -27,6 +39,7 @@ function childrenOf(pid: number): number[] {
             return [];
         }
     });
+    return listedAny ? found : childrenByParent(pid);
 }
 
 function ownedBy(pid: number, uid: number | undefined): boolean {
@@ -103,9 +116,14 @@ export async function stopOwnedTree(
     // Descendants keep being discovered while the root lives: a root-owned launcher still in
     // its privileged setup starts the user-owned command later, and that command is the target.
     const seen = new Map<number, Target>();
+    // Discovery walks the root only while the pinned identity still holds the pid, so a pid the
+    // kernel reused after the launcher exited is never adopted; the descendants already seen
+    // still receive the signal.
     const sweep = (name: NodeJS.Signals) => {
-        for (const pid of ownedProcesses(rootPid)) {
-            if (!seen.has(pid)) seen.set(pid, { pid, start: processStart(pid) });
+        if (alive(root)) {
+            for (const pid of ownedProcesses(rootPid)) {
+                if (!seen.has(pid)) seen.set(pid, { pid, start: processStart(pid) });
+            }
         }
         signal([...seen.values()], name);
     };

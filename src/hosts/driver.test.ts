@@ -961,6 +961,14 @@ touch ${escaped}
         expect(log.stdout.trim()).toBe("init");
     });
 
+    test("a transcript store of the wrong kind counts as missing", async () => {
+        const { driver, transcripts } = fixture("host");
+        await driver.reset();
+        mkdirSync(transcripts, { recursive: true });
+        writeFileSync(join(transcripts, "sessions"), "a file where the directory should be");
+        await expect(driver.event(ev("session_end"))).rejects.toThrow("transcript store missing");
+    });
+
     test("a transcript store left as a link counts as missing", async () => {
         const { driver, transcripts } = fixture("host");
         await driver.reset();

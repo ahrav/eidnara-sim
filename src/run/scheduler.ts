@@ -180,6 +180,7 @@ export class Scheduler {
             await this.idle();
         });
         await driver.finish?.();
+        // A job the shutdown itself started holds the clock too; it ends before the arm does.
         await this.pendingKill;
         this.outage = null;
         await this.idle();

@@ -1092,6 +1092,31 @@ describe("driver lifecycle hooks", () => {
         expect(calls.slice(0, 3)).toEqual(["reap", "arm slow", "resume"]);
     });
 
+    test("a job that starts while the driver finishes ends before EndArm", async () => {
+        const j = new Journal(join(dir(), "j.jsonl"));
+        let scheduler: Scheduler | null = null;
+        const driver: ArmDriver = {
+            ...fakeDriver([]),
+            finish: async () => {
+                scheduler?.jobStart("late-capture");
+                setTimeout(() => scheduler?.jobEnd("late-capture"), 150);
+            },
+        };
+        scheduler = new Scheduler({
+            events: fixtureEvents(1),
+            faults: [],
+            journal: j,
+            settleMs: 0,
+            order: ["a"],
+            drivers: { a: driver },
+        });
+        await scheduler.run();
+        const kinds = j.entries.map((e) => `${e.kind}:${e.arm}`);
+        expect(kinds.indexOf("EndJob:a")).toBeGreaterThan(-1);
+        expect(kinds.indexOf("EndJob:a")).toBeLessThan(kinds.indexOf("EndArm:a"));
+        expect(j.entries.filter((e) => e.kind === "EndJob" && e.arm === null)).toHaveLength(0);
+    });
+
     test("an arm whose every event is journaled is finished on resume without starting anything", async () => {
         const path = join(dir(), "j.jsonl");
         const j = new Journal(path);
