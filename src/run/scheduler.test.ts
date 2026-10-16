@@ -1673,6 +1673,17 @@ describe("Scheduler", () => {
             drivers: { a: driver },
         }).run();
         expect(j.entries.filter((e) => e.kind === "FaultFired")).toEqual([]);
+        expect(j.entries.filter((e) => e.fault === "k").map((e) => [e.kind, e.state])).toEqual([
+            ["ItemState", "missed"],
+        ]);
+        await new Scheduler({
+            events,
+            faults: [kill],
+            journal: new Journal(j.path),
+            settleMs: 0,
+            order: ["a"],
+            drivers: { a: fakeDriver([]) },
+        }).run();
     });
 
     test("a completed journal with a reversed turn lifecycle, or arm entries before StartRun, is refused", async () => {
@@ -1983,7 +1994,7 @@ describe("Scheduler", () => {
         rmSync(link);
         symlinkSync(other, link);
         expect(() => new Journal(join(link, "j.jsonl"), lease.within)).toThrow(
-            /opened outside its run directory/,
+            /would open outside its run directory/,
         );
         releaseLease(leased, lease);
     });
@@ -2017,9 +2028,9 @@ describe("Scheduler", () => {
         rmSync(link);
         symlinkSync(other, link);
         expect(() => new Journal(join(link, "j.jsonl"), identity)).toThrow(
-            /opened outside its run directory/,
+            /would open outside its run directory/,
         );
-        expect(existsSync(join(other, "j.jsonl"))).toBe(true);
+        expect(existsSync(join(other, "j.jsonl"))).toBe(false);
         expect(() => new Journal(join(other, "j.jsonl"), directoryIdentity(other))).not.toThrow();
     });
 
@@ -2191,7 +2202,7 @@ describe("Scheduler", () => {
         ).rejects.toThrow(/fault z passed its trigger unhandled/);
         await expect(
             open([{ kind: "ItemState", fault: "r", state: "missed" }], ["a"], true, sleepy),
-        ).rejects.toThrow(/missed r away from its sleep/);
+        ).rejects.toThrow(/missed r away from its place/);
         await expect(
             open(
                 [{ kind: "AdvanceClock", fault: "r", from_ms: -1, busy: [] }],
@@ -2415,7 +2426,7 @@ describe("Scheduler", () => {
                 [nap],
                 later,
             ),
-        ).rejects.toThrow(/missed z away from its sleep/);
+        ).rejects.toThrow(/missed z away from its place/);
         await expect(open([ev(e0), ...turn("failed"), ev(e1, "ok")])).rejects.toThrow(
             /Event for e-000001 contradicts its EndTurn outcome/,
         );
@@ -3341,6 +3352,105 @@ describe("Scheduler", () => {
         linkSync(other, `${path}.failed`);
         expect(() => j.poison("boom")).toThrow(/is not this run's file/);
         expect(readFileSync(other, "utf8")).toBe("keep me");
+    });
+
+    test("fault evidence and exit details are judged by their serialized shape, and a session that never calls the summarizer records its kill as missed", async () => {
+        const events = fixtureEvents(1);
+        const restart = episode("r", "daemon_restart", {
+            kind: "session_start",
+            session: "s-0000",
+        });
+        const j = new Journal(join(dir(), "j.jsonl"));
+        await expect(
+            new Scheduler({
+                events,
+                faults: [restart],
+                journal: j,
+                settleMs: 0,
+                order: ["a"],
+                drivers: {
+                    a: {
+                        ...fakeDriver([]),
+                        fault: async () => ({ toJSON: () => "not-object" }) as never,
+                    },
+                },
+            }).run(),
+        ).rejects.toThrow(/fault evidence is string/);
+        expect(j.entries.map((e) => e.kind)).not.toContain("FaultObserved");
+        let handle: ArmHandle | null = null;
+        let refused: unknown = null;
+        const k = new Journal(join(dir(), "j.jsonl"));
+        await new Scheduler({
+            events,
+            faults: [restart],
+            journal: k,
+            settleMs: 0,
+            order: ["a"],
+            drivers: {
+                a: {
+                    ...fakeDriver([]),
+                    bind: (h) => {
+                        handle = h;
+                    },
+                    fault: async () => {
+                        try {
+                            handle?.daemonExited({ toJSON: () => [1] } as never);
+                        } catch (caught) {
+                            refused = caught;
+                        }
+                        handle?.daemonExited({ signal: "SIGTERM" });
+                        return { restarted_by: "harness" };
+                    },
+                },
+            },
+        }).run();
+        expect(String(refused)).toMatch(/daemon exit detail is an array/);
+        const kill = episode("k", "daemon_sigkill_mid_fold", {
+            kind: "first_summarizer_call",
+            session: "s-0000",
+        });
+        const quiet = join(dir(), "j.jsonl");
+        const q = new Journal(quiet);
+        q.append({
+            kind: "StartRun",
+            arm: null,
+            scenario_ms: 0,
+            order: ["a"],
+            scenario: scenarioId(events, [kill]),
+        });
+        q.append({ kind: "StartArm", arm: "a", scenario_ms: 0 });
+        q.append({ kind: "Event", arm: "a", scenario_ms: 0, event: "e-000000", outcome: "ok" });
+        q.append({ kind: "BeginTurn", arm: "a", scenario_ms: 0, event: "e-000001" });
+        q.append({ kind: "EndTurn", arm: "a", scenario_ms: 0, event: "e-000001", outcome: "ok" });
+        q.append({ kind: "Event", arm: "a", scenario_ms: 0, event: "e-000001", outcome: "ok" });
+        q.append({
+            kind: "AdvanceClock",
+            arm: "a",
+            scenario_ms: 60_000,
+            from_ms: 0,
+            next_event: "e-999999",
+            busy: [],
+        });
+        q.append({
+            kind: "Event",
+            arm: "a",
+            scenario_ms: 60_000,
+            event: "e-999999",
+            outcome: "ok",
+        });
+        q.append({ kind: "EndArm", arm: "a", scenario_ms: 60_000 });
+        q.append({ kind: "EndRun", arm: null, scenario_ms: 0 });
+        q.close();
+        await expect(
+            new Scheduler({
+                events,
+                faults: [kill],
+                journal: new Journal(quiet),
+                settleMs: 0,
+                order: ["a"],
+                drivers: { a: fakeDriver([]) },
+            }).run(),
+        ).rejects.toThrow(/fault k passed its trigger unhandled/);
     });
 
     test("a FaultObserved without its FaultFired is refused on resume", async () => {
@@ -4274,6 +4384,13 @@ describe("resume of fired faults", () => {
             "disarm begun",
         ]);
         expect(resumed.entries.filter((e) => e.kind === "FaultFired")).toHaveLength(4);
+        expect(resumed.entries).toContainEqual(
+            expect.objectContaining({
+                kind: "ItemState",
+                fault: "begun",
+                state: "failed(interrupted)",
+            }),
+        );
         const cut = join(dir(), "j.jsonl");
         const k = new Journal(cut);
         k.append({ kind: "StartRun", arm: null, scenario_ms: 0, ...start });

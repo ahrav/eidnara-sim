@@ -60,6 +60,25 @@ export interface SchedulerOptions {
 const PROXY_LAYER = "proxy-sink";
 const OUTAGE = new Set(["daemon_sigkill_mid_fold", "daemon_restart", "host_upgrade"]);
 
+/**
+ * The plain object a driver's record becomes on disk: `v` serialized to JSON and read back,
+ * which must still be a non-array object, so the journaled shape and the in-memory one agree.
+ */
+function plainObject(v: unknown, what: string): Record<string, unknown> {
+    let back: unknown;
+    try {
+        const json = JSON.stringify(v);
+        back = json === undefined ? undefined : JSON.parse(json);
+    } catch (caught) {
+        const error = caught instanceof Error ? caught.message : String(caught);
+        throw new Error(`${what} cannot be serialized: ${error}`);
+    }
+    if (typeof back !== "object" || back === null || Array.isArray(back)) {
+        throw new Error(`${what} is ${describe(back)}`);
+    }
+    return back as Record<string, unknown>;
+}
+
 /** Names a driver's malformed result in an error message. */
 function describe(v: unknown): string {
     if (v === null) return "null";
@@ -352,7 +371,7 @@ export class Scheduler {
                         );
                     }
                     done++;
-                    for (const f of scheduled) {
+                    for (const f of this.o.faults) {
                         if (done > this.triggerCursor(f)[1] && !fired.has(f.id)) {
                             throw fail(`fault ${f.id} passed its trigger unhandled`, e);
                         }
@@ -524,11 +543,14 @@ export class Scheduler {
                     }
                     if (e.state === "missed") {
                         const { f, range } = cursorOf(e.fault);
-                        const stray = f.type !== "laptop_sleep" || done !== range[0];
+                        const summarizer = f.trigger.kind === "first_summarizer_call";
+                        const place = summarizer ? range[1] : range[0];
+                        const stray = (f.type !== "laptop_sleep" && !summarizer) || done !== place;
                         if (stray || fired.has(f.id) || jumped.has(f.id)) {
-                            throw fail(`missed ${f.id} away from its sleep`, e);
+                            throw fail(`missed ${f.id} away from its place`, e);
                         }
                         fired.add(f.id);
+                        marked.add(f.id);
                         return;
                     }
                     if (e.state === "failed(interrupted)" && e.event !== undefined) {
@@ -704,8 +726,11 @@ export class Scheduler {
             const target = this.o.events.find(
                 (e) => t.kind === "user_turn" && e.session === t.session && e.index === t.n - 1,
             );
-            if (f.strategy === "persistent" || (target && !begun.has(target.id)))
+            if (f.strategy === "persistent" || (target && !begun.has(target.id))) {
                 this.o.proxy?.arm(f.id);
+            } else if (!marked.has(f.id)) {
+                this.log({ kind: "ItemState", fault: f.id, state: "failed(interrupted)" });
+            }
         }
         for (const e of kinds("BeginTurn").filter(
             (x) => !ended.has(x.event) && !done.has(x.event),
@@ -749,10 +774,7 @@ export class Scheduler {
         let evidence: Record<string, unknown>;
         try {
             const got: unknown = await this.untilFatal(driver.fault(structuredClone(f)));
-            if (typeof got !== "object" || got === null || Array.isArray(got)) {
-                throw new Error(`fault evidence is ${describe(got)}`);
-            }
-            evidence = got as Record<string, unknown>;
+            evidence = plainObject(got, "fault evidence");
         } catch (caught) {
             const error = caught instanceof Error ? caught.message : String(caught);
             this.fatal ??= new HarnessFailure(`fault ${f.id} failed: ${error}`);
@@ -843,6 +865,16 @@ export class Scheduler {
                 if (f.trigger.session === e.session && f.seam.layer === PROXY_LAYER)
                     this.o.proxy?.disarm(f.id);
             }
+            await this.pendingKill;
+            for (const f of this.o.faults) {
+                const unfired = !this.fired.has(`${this.arm}/${f.id}`);
+                if (f.trigger.kind !== "first_summarizer_call" || f.trigger.session !== e.session)
+                    continue;
+                if (unfired) {
+                    this.log({ kind: "ItemState", fault: f.id, state: "missed" });
+                    this.fired.add(`${this.arm}/${f.id}`);
+                }
+            }
             this.session = null;
         }
         await this.pendingKill;
@@ -905,11 +937,9 @@ export class Scheduler {
                 kill.catch(() => undefined);
                 this.pendingKill = kill;
             },
-            daemonExited: (detail) => {
+            daemonExited: (raw) => {
                 live();
-                if (typeof detail !== "object" || detail === null || Array.isArray(detail)) {
-                    throw new Error(`daemon exit detail is ${describe(detail)}`);
-                }
+                const detail = plainObject(raw, "daemon exit detail");
                 const expected = this.outage !== null;
                 this.outage = null;
                 if (!expected) {

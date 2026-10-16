@@ -467,6 +467,10 @@ export class Journal {
         within: DirIdentity = directoryIdentity(dirname(resolve(path))),
     ) {
         const { O_APPEND, O_CREAT, O_NOFOLLOW, O_RDWR } = constants;
+        const target = directoryIdentity(dirname(resolve(path)));
+        if (target.dev !== within.dev || target.ino !== within.ino) {
+            throw new Error(`journal ${basename(path)} would open outside its run directory`);
+        }
         this.fd = openSync(path, O_RDWR | O_APPEND | O_CREAT | O_NOFOLLOW, 0o644);
         let read: Entry[] & { bytes?: number };
         try {

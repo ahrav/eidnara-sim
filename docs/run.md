@@ -41,7 +41,9 @@ free whichever machine released it.
 
 ## Journal
 
-`Journal` opens its file without following symlinks, requires a regular
+`Journal` checks that the directory its path names is the one `takeLease`
+fixed before the creating open, so a repointed path creates nothing
+elsewhere, opens its file without following symlinks, requires a regular
 file with one link owned by the harness user, checks through
 `/proc/self/fd` that the file the kernel opened lives in the directory
 `takeLease` fixed (`lease.within`, the device and inode read before the lease
@@ -138,7 +140,10 @@ call through it is refused:
    at the Nth user turn of their session, and `FaultFired` is journaled after
    the proxy accepted the arming; a failed append disarms the episode before
    the error propagates. Scheduler faults call the driver's
-   `fault` and journal its evidence. The mid-fold SIGKILL, the daemon restart,
+   `fault` and journal its evidence, which must serialize to a JSON object
+   (the journaled form is what is checked, so a `toJSON` that yields anything
+   else fails the fault and the run); a daemon exit's detail is held to the
+   same shape. The mid-fold SIGKILL, the daemon restart,
    and the host upgrade open an outage window first.
 5. Deliver the event to the driver, as a copy, so a driver that mutates it
    touches nothing the scheduler records. Its outcome must be an object whose
@@ -153,7 +158,9 @@ call through it is refused:
 6. At a session end, disarm every provider fault of the session, so one that
    its turn left unexhausted reaches no later session or arm.
 7. Wait for a mid-fold kill fired during the event, then journal `Event` for
-   the event.
+   the event. At a `session_end`, a summarizer-call fault of that session that
+   never fired is journaled `ItemState missed` first, so every configured
+   fault leaves a record.
 
 Each arm's driver receives an `ArmHandle` through `bind` once the arm has
 started and its recovery entries are on disk: on a fresh arm after `reset`
@@ -230,8 +237,11 @@ turn or job is open carries a reading at or past it and moves it; only an
 away from its trigger's place in the event sequence (a session-start or
 user-turn trigger fires while its event is next due, a summarizer-call
 trigger while its session is open), a sleep's `FaultFired` without its tagged
-jump, a missed sleep after its jump, a missed sleep or fault-tagged jump for
-anything but a laptop sleep at its place, or a daemon exit marked expected
+jump, a missed sleep after its jump, a missed record for anything but a
+laptop sleep at its place or a summarizer-call fault at its session's end, a
+fault-tagged jump for anything but a laptop sleep at its place, an `Event`
+that passes a trigger (a session's end, for a summarizer-call fault) whose
+fault neither fired nor was missed, or a daemon exit marked expected
 outside a replayed outage window, is refused as corrupt, complete or not,
 before `ResumeRun` or any recovery entry is written; otherwise a journal with `EndRun` is complete
 and the run returns at once, after checking that `StartRun` names this arm
@@ -242,8 +252,11 @@ from the ones `StartRun` recorded, journals `ResumeRun`, and, for each arm
 without `EndArm`:
 
 - journals the recovery entries in replay order: open jobs closed, fired
-  faults counted and the unobserved ones marked interrupted, then the
-  interrupted turn's marker and `Event`;
+  faults counted and the unobserved ones marked interrupted (a `single`,
+  `burst`, or `intermittent` proxy fault whose turn had begun is interrupted
+  too, since the calls it consumed are unknown; a `persistent` one, or one
+  whose turn had not begun, is armed again), then the interrupted turn's
+  marker and `Event`;
 - waits one settle interval so a job an answered turn started can still
   register, waits for any kill that interval fired, and refuses the run if a
   fatal exit landed meanwhile; then journals `Event` for each turn with
