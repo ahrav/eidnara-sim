@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { GradeRecord } from "../grade/probes";
 import { armBase } from "../hosts/arms";
 import type { ArmLogs } from "../oracle/logs";
+import { clopperPearson } from "../stats/tests";
 import type { GradedRun } from "./observe";
 
 /** The v1 harness measured cross-session recall of 0 to 3% for host and 99 to 100% for Eidnara. */
@@ -225,6 +226,56 @@ export function renderConditions(conditions: RunConditions[], recall: Continuity
                 pct(c.pass, c.n),
                 c.pass_with_transcript_read,
                 c.v1 ? `${c.v1[0] * 100}% to ${c.v1[1] * 100}%` : "-",
+            ]),
+        ),
+        "",
+    ];
+}
+
+export interface RecallDrift {
+    host: string;
+    arm: string;
+    probe: "P8" | "P9";
+    rate: number | null;
+    reference: [number, number] | null;
+    drift: boolean | null;
+}
+
+/**
+ * Each host, arm, and probe's pass rate against the reference tier's 95% Clopper-Pearson
+ * interval for the same row; a rate outside it is drift, and a row either side lacks is null.
+ */
+export function recallDrift(current: Continuity[], reference: Continuity[]): RecallDrift[] {
+    return current.map((c) => {
+        const r = reference.find(
+            (x) => x.host === c.host && x.arm === c.arm && x.probe === c.probe,
+        );
+        const rate = c.n ? c.pass / c.n : null;
+        const interval = r?.n ? clopperPearson(r.pass, r.n) : null;
+        const drift =
+            rate === null || interval === null ? null : rate < interval[0] || rate > interval[1];
+        return { host: c.host, arm: c.arm, probe: c.probe, rate, reference: interval, drift };
+    });
+}
+
+export function renderDrift(rows: RecallDrift[] | null, source: string | null): string[] {
+    if (rows === null) return [];
+    const f = (x: number | null | undefined) =>
+        x === null || x === undefined ? "-" : x.toFixed(2);
+    return [
+        "## Recall against the reference tier",
+        "",
+        `Reference: ${source ?? "-"}.`,
+        "",
+        ...head(["host", "arm", "probe", "rate", "reference interval", "drift"]),
+        ...rows.map((d) =>
+            row([
+                d.host,
+                d.arm,
+                d.probe,
+                f(d.rate),
+                d.reference ? `[${f(d.reference[0])}, ${f(d.reference[1])}]` : "-",
+                d.drift === null ? "-" : d.drift ? "drift" : "within",
             ]),
         ),
         "",

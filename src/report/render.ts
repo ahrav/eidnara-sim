@@ -3,7 +3,13 @@ import type { OracleCount } from "../oracle/oracles";
 import type { Recovery } from "../oracle/recovery";
 import type { Preregistration } from "../prereg/schema";
 import type { TierVerdict, ZeroEffect } from "../stats/gate";
-import { type Continuity, type RunConditions, renderConditions } from "./conditions";
+import {
+    type Continuity,
+    type RecallDrift,
+    type RunConditions,
+    renderConditions,
+    renderDrift,
+} from "./conditions";
 import { type CostPanel, PRICE_TABLE, V1_PRICE } from "./cost";
 import type { Intrusiveness } from "./intrusive";
 import type { SoakVerdict } from "./soak";
@@ -31,6 +37,8 @@ export interface TierReport {
     witness: PropertyWitness[];
     conditions: RunConditions[];
     continuity: Continuity[];
+    drift: RecallDrift[] | null;
+    drift_source: string | null;
     counterfactual: Counterfactual | null;
     soak_by_month: (SoakVerdict & { month: number })[];
 }
@@ -309,6 +317,7 @@ export function renderTier(r: TierReport): string {
         `Runs: ${r.runs.join(", ")}. Arms: ${r.arms.join(", ")}.`,
         "",
         ...renderConditions(r.conditions, r.continuity),
+        ...renderDrift(r.drift, r.drift_source),
         ...accuracy(r),
         ...gates(r),
         ...panels(r),

@@ -162,7 +162,13 @@ command exits 1 naming any paired run without a restart.
 A run stopped by the scheduled restart logs no `EndTurn` for the turn the
 stop cut, so the resumed run marks that turn `failed(interrupted)`.
 
-When an arm's samples span more than 30 days of scenario time, the report
-adds a within-month RSS soak verdict per month of scenario time: each
+The XL report adds a within-month RSS soak verdict per month of scenario
+time for each daemon arm, the last month partial: each
 month's slope, bound, and return-to-baseline use that month's samples and
 sessions alone, and the whole-span soak verdict stays the gate's input.
+
+`scripts/report.ts --recall-reference <dir>/continuity-L.json` adds a recall
+drift table to the XL report: each host, arm, and probe's P8 or P9 pass
+rate against the L tier's 95% Clopper-Pearson interval for the same row,
+`drift` when outside it. Every report writes its continuity rows to
+`continuity-<tier>.json` beside `report-<tier>.json` for this use.

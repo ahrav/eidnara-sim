@@ -91,8 +91,8 @@ const MONTH_MS = 30 * 24 * 3_600_000;
 
 /**
  * One within-month soak verdict per 30 days of scenario time, each over that month's samples
- * and sessions alone, so its baseline and bound restart each month; a span of one month or less
- * gives none.
+ * and sessions alone, so its baseline and bound restart each month; the last month may be
+ * partial.
  */
 export function soakByMonth(
     run: RunLogs,
@@ -100,7 +100,7 @@ export function soakByMonth(
     resource: Resource,
 ): (SoakVerdict & { month: number })[] {
     const last = Math.max(0, ...arm.resources.map((s) => s.scenario_ms));
-    if (last <= MONTH_MS) return [];
+    if (arm.resources.length === 0) return [];
     return Array.from({ length: Math.floor(last / MONTH_MS) + 1 }, (_, month) => {
         const inMonth = (ms: number) => ms >= month * MONTH_MS && ms < (month + 1) * MONTH_MS;
         const slice: ArmLogs = {

@@ -9,7 +9,7 @@ import type { Preregistration } from "../prereg/schema";
 import type { Scenario } from "../scenario/compile";
 import { evaluateTier, falsificationSet } from "../stats/gate";
 import { clopperPearson } from "../stats/tests";
-import { continuity, runConditions } from "./conditions";
+import { type Continuity, continuity, recallDrift, runConditions } from "./conditions";
 import { costPanel } from "./cost";
 import { falsificationPairs } from "./falsify";
 import { intrusiveness } from "./intrusive";
@@ -39,6 +39,7 @@ export function tierReport(
     runs: GradedRun[],
     claimBoundary: string,
     catalog = "",
+    reference?: { source: string; continuity: Continuity[] },
 ): TierReport {
     const arms = [...new Set(runs.flatMap((g) => g.run.arms.map((a) => a.arm)))];
     const control = arms.find((a) => a.includes("~"));
@@ -104,8 +105,10 @@ export function tierReport(
         witness: propertyWitness(catalog, runs),
         conditions: runs.map(runConditions),
         continuity: continuity(runs),
+        drift: reference ? recallDrift(continuity(runs), reference.continuity) : null,
+        drift_source: reference?.source ?? null,
         soak_by_month: perArm
-            .filter(({ arm }) => armBase(arm.arm) !== "host")
+            .filter(({ arm }) => prereg.tier === "XL" && armBase(arm.arm) !== "host")
             .flatMap(({ g, arm }) => soakByMonth(g.run, arm, "rss")),
         counterfactual: counterfactual(runs),
     };

@@ -7,7 +7,13 @@ import type { GradeRecord } from "../grade/probes";
 import type { ArmLogs } from "../oracle/logs";
 import type { Entry } from "../run/journal";
 import type { Scenario } from "../scenario/compile";
-import { continuity, renderConditions, runConditions } from "./conditions";
+import {
+    continuity,
+    recallDrift,
+    renderConditions,
+    renderDrift,
+    runConditions,
+} from "./conditions";
 import type { GradedRun } from "./observe";
 
 const BASE = 1_792_000_000_000;
@@ -132,5 +138,30 @@ describe("run conditions", () => {
                 v1: [0.99, 1],
             },
         ]);
+    });
+});
+
+describe("recall drift", () => {
+    const row = (arm: string, n: number, pass: number) => ({
+        host: "pi",
+        arm,
+        probe: "P8" as const,
+        n,
+        pass,
+        pass_with_transcript_read: 0,
+        v1: null,
+    });
+    test("a rate outside the reference tier's interval is drift, inside it is within", () => {
+        const reference = [row("eidnara", 40, 38), row("host", 40, 1)];
+        const drift = recallDrift(
+            [row("eidnara", 20, 10), row("host", 20, 1), row("x", 3, 1)],
+            reference,
+        );
+        expect(drift.map((d) => [d.arm, d.drift])).toEqual([
+            ["eidnara", true],
+            ["host", false],
+            ["x", null],
+        ]);
+        expect(renderDrift(drift, "L").join("\n")).toContain("| pi | eidnara | P8 | 0.50 |");
     });
 });

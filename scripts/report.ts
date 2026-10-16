@@ -6,13 +6,28 @@ import { loadGraded, tierReport } from "../src/report/tier";
 import { loadPrereg } from "../src/scenario/inputs";
 
 const args = process.argv.slice(2);
-const at = args.indexOf("--out");
-const out = at < 0 ? null : resolve(args[at + 1] ?? ".");
-const dirs = args.filter((_, i) => at < 0 || (i !== at && i !== at + 1)).map((d) => resolve(d));
+const flag = (name: string) => {
+    const i = args.indexOf(`--${name}`);
+    return i < 0 ? null : resolve(args[i + 1] ?? ".");
+};
+const out = flag("out");
+const refPath = flag("recall-reference");
+const flagged = new Set(
+    ["--out", "--recall-reference"].flatMap((f) => {
+        const i = args.indexOf(f);
+        return i < 0 ? [] : [i, i + 1];
+    }),
+);
+const dirs = args.filter((_, i) => !flagged.has(i)).map((d) => resolve(d));
 if (dirs.length === 0 || dirs.some((d) => !existsSync(join(d, "manifest.json")))) {
-    console.error("usage: bun scripts/report.ts <run dir>... [--out <dir>]");
+    console.error(
+        "usage: bun scripts/report.ts <run dir>... [--out <dir>] [--recall-reference <continuity json>]",
+    );
     process.exit(2);
 }
+const reference = refPath
+    ? { source: refPath, continuity: JSON.parse(readFileSync(refPath, "utf8")) }
+    : undefined;
 const boundary = readFileSync(join(import.meta.dir, "../docs/claim-boundary.md"), "utf8");
 const catalog = readFileSync(join(import.meta.dir, "../docs/properties/sim-v2/catalog.md"), "utf8");
 const byTier = new Map<Tier, string[]>();
@@ -27,6 +42,7 @@ for (const [tier, list] of byTier) {
         list.map((d) => loadGraded(d, prereg)),
         boundary,
         catalog,
+        reference,
     );
     const text = renderTier(report);
     if (out) {
@@ -35,6 +51,10 @@ for (const [tier, list] of byTier) {
         writeFileSync(
             join(out, `report-${tier}.json`),
             `${JSON.stringify(report.verdict, null, 2)}\n`,
+        );
+        writeFileSync(
+            join(out, `continuity-${tier}.json`),
+            `${JSON.stringify(report.continuity, null, 2)}\n`,
         );
     } else console.log(text);
 }

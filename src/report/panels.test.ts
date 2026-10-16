@@ -299,7 +299,7 @@ describe("soak by month", () => {
             [1, "no leak", 30, 30],
             [2, "leak", 30, 30],
         ]);
-        const short = arm({ journal, resources: resources.slice(0, 30) });
-        expect(soakByMonth(run([], "", kinds), short, "rss")).toEqual([]);
+        const short = arm({ journal, resources: resources.slice(0, 20) });
+        expect(soakByMonth(run([], "", kinds), short, "rss").map((m) => m.samples)).toEqual([20]);
     });
 });
