@@ -75,11 +75,15 @@ export class FaultInjector {
         for (const [key, a] of this.armed) {
             if (a.arm !== arm) continue;
             const { strategy, params } = a.fault;
-            a.calls++;
             const limit =
                 strategy === "persistent"
                     ? Number.POSITIVE_INFINITY
                     : (params.count ?? params.calls ?? 1);
+            if (a.calls >= limit) {
+                this.armed.delete(key);
+                continue;
+            }
+            a.calls++;
             if (a.calls >= limit) this.armed.delete(key);
             if (strategy !== "intermittent" || this.rng.next() < (params.probability ?? 1)) {
                 this.pending.push({ key, arm, at: Date.now(), call });

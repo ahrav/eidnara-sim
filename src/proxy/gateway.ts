@@ -104,7 +104,10 @@ export interface GatewayOptions {
      * rejected, so the hold it represents hands over to the classified call without a gap.
      */
     arrival?: () => unknown;
-    /** A returned function runs once the call's record is written, or once the write failed. */
+    /**
+     * A returned function runs once the call's record is written, or once the write failed. A
+     * hook that throws is recorded in `failures`; the call itself is still served.
+     */
     observe?: (event: CallStarted) => unknown;
     requestDeadlineMs?: number;
     /** How long `stop` waits for aborted in-flight handlers to finish writing their records. */
@@ -431,8 +434,12 @@ export class Gateway {
         if (stripped) done.stripped = stripped;
         progress(done);
         const event = { kind: "call_started", component: tag.component, wall_ms: Date.now() };
-        const ended = this.options.observe?.(event as CallStarted);
-        if (typeof ended === "function") onEnd(ended as () => void);
+        try {
+            const ended = this.options.observe?.(event as CallStarted);
+            if (typeof ended === "function") onEnd(ended as () => void);
+        } catch (caught) {
+            this.failures.push(caught as Error);
+        }
         release();
         const fault = this.options.injector.take(tag.component, call, arm);
         if (fault) done.fault_ref = fault.id;

@@ -440,7 +440,13 @@ describe("run inputs", () => {
         };
         const o: RunOptions = { config, tier: "S", seed: 101, host: "pi", out };
         const { manifest } = await loadManifest(o, scenario, checks);
-        expect(Object.keys(manifest.binaries).sort()).toEqual(["daemon", "opencode", "pi"]);
+        expect(Object.keys(manifest.binaries).sort()).toEqual([
+            "daemon",
+            "faketime",
+            "opencode",
+            "opencode_sdk",
+            "pi",
+        ]);
         const swapped = { ...config, daemon_binary: join(out, "daemon") };
         writeFileSync(swapped.daemon_binary, "daemon 2");
         await expect(loadManifest({ ...o, config: swapped }, scenario, checks)).rejects.toThrow(

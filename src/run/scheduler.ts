@@ -345,10 +345,11 @@ export class Scheduler {
         this.log({ kind: "Event", event: e.id, outcome: outcome.failed ?? "ok" });
     }
 
+    /** The journal entry lands first, so a failed append leaves the busy set untouched. */
     jobStart(id: string): void {
+        this.log({ kind: "RegisterJob", job: id });
         this.jobStarted.set(id, performance.now());
         this.clock?.begin(`job:${id}`);
-        this.log({ kind: "RegisterJob", job: id });
     }
 
     jobEnd(id: string): void {

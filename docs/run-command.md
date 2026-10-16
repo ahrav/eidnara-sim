@@ -25,7 +25,7 @@ an empty model name is refused. The run refuses a seed outside the pre-registrat
 outside the seed's order, a non-positive count, a `--faults` file that is not
 an array of complete episodes (known type and strategy, numeric params with
 probabilities in [0, 1], positive integer counts, and non-negative
-durations, a seam, unique ids, and a `session_start` trigger for the
+durations and timeouts, a seam, unique ids, and a `session_start` trigger for the
 between-session faults `laptop_sleep`, `daemon_restart`, `plugin_reload`,
 `model_switch`, and `store_full`) valid against the compiled scenario
 (`validateFault`); the compiled scenario's own faults pass the same checks
@@ -43,7 +43,9 @@ fault and preflight files, this process's staging names for the lease, the
 scenario, and the manifest, and each arm's `resources.jsonl`, clock offset,
 and `state.json`, plus this process's staging names for the clock offset and
 `state.json`) must be absent or a regular file with a single link (the arm,
-clock, `interception`, and `toolbin` directories must be directories); a symlink, a hard link, or another
+clock, `interception`, `toolbin`, and `hostbin` directories must be
+directories; the OpenCode wrapper and its staging name under `hostbin/<arm>`
+are checked the same way); a symlink, a hard link, or another
 file type there is refused. Every staged write (scenario, manifest, clock
 offset, `state.json`, the sandbox launcher) creates its staging file
 exclusively without following a link, then renames it into place, and the
@@ -79,8 +81,9 @@ toolchain wrappers are created exclusively after removing any planted name.
    working-tree digest (a digest covers tracked edits and untracked
    unignored files), the commit and working-tree digest of every corpus
    checkout the scenario's projects clone from, the SHA-256 of the daemon,
-   OpenCode, and Pi executables, the Bedrock region and profile name, base
-   wall time, and preflight result. The working-tree digest hashes an
+   OpenCode, and Pi executables, the libfaketime interposer, and the OpenCode
+   SDK module the host stack imports (`absent` when not installed), the
+   Bedrock region and profile name, base wall time, and preflight result. The working-tree digest hashes an
    untracked symlink's target text.
    A later invocation refuses a manifest whose `schema` is not
    `sim-run-manifest/v1`, and refuses when any option it states differs from
@@ -128,10 +131,12 @@ process the arm launches reads `base_wall_ms + scenario_ms`. Every request
 registers a `request-<n>` job from its first byte, released once the call is
 classified or the upload is abandoned, so an upload that outlives its turn or
 straddles the settle period holds the clock until the classified call takes
-over. The proxy's `observe` event for a background component (history
-summarizer, memory capture, memory classifier, context researcher, title,
-native compaction) registers a job, and the completion of that same call ends
-it, whether its record was written or refused. The resource sampler takes a baseline sample when an arm starts, one at the
+over. The proxy's `observe` event for every classified call registers a job named
+after its component, and the completion of that same call ends it, whether
+its record was written or refused, so a call that outlives its turn (for
+example, a provider timeout longer than the turn deadline) holds the clock
+until its record is final. A `RegisterJob` append that fails leaves the busy
+set untouched and is recorded as a handler failure. The resource sampler takes a baseline sample when an arm starts, one at the
 end of every user turn and another two seconds later while a `settle-cpu`
 job holds the clock, so daemon work that follows a turn is measured before
 the clock may jump, and one per pre-registered interval, and

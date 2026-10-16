@@ -475,6 +475,44 @@ describe("witnesses", () => {
         expect(resumed.take("agent", 12, "eidnara")).toBeNull();
     });
 
+    test("a burst that already made every injection is not injected again after resume", async () => {
+        const fault: ProxyFault = {
+            id: "b",
+            type: "provider_5xx",
+            strategy: "burst",
+            params: { count: 2 },
+        };
+        const { injector, records, url } = await start(fault);
+        injector.arm("b", "eidnara");
+        await hostCall(url, AGENT_BODY, 1_000);
+        await hostCall(url, AGENT_BODY, 1_000);
+        expect(records.records.map((r) => r.fault_ref)).toEqual(["b", "b"]);
+        const resumed = new FaultInjector([fault], new Rng(7), 5_000);
+        resumed.restore(records.records);
+        resumed.arm("b", "eidnara");
+        expect(resumed.take("agent", 10, "eidnara")).toBeNull();
+    });
+
+    test("an observe hook that throws becomes a gateway failure and the call still completes", async () => {
+        const records = new RecordWriter(null);
+        const gateway = new Gateway({
+            upstream: scriptedUpstream(),
+            records,
+            injector: new FaultInjector([], new Rng(1), 1_000),
+            rng: new Rng(1),
+            clock: { scenarioMs: () => 0 },
+            scope: () => ({ arm: "a", session: null, turn: null }),
+            observe: () => {
+                throw new Error("RegisterJob append failed");
+            },
+        });
+        await gateway.start();
+        gateways.push(gateway);
+        expect((await hostCall(gateway.urls[0] as string, AGENT_BODY, 2_000)).status).toBe(200);
+        expect(records.records[0]).toMatchObject({ status: 200, error: null });
+        expect(gateway.failures.map((f) => f.message)).toEqual(["RegisterJob append failed"]);
+    });
+
     test("stop reports handlers that outlive the drain timeout as a failure", async () => {
         const stuck: Upstream = {
             converse: () => new Promise(() => undefined),

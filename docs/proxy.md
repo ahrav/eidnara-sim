@@ -115,7 +115,8 @@ and a host-observed call (SIM-P31); otherwise it is `untriggered`, and
 fault for the arm it is running, `take` injects only faults armed for the
 calling arm, and an observation counts only for the arm that made the call,
 so one arm's injection and retry cannot stand in for another arm's.
-`FaultInjector.restore(records)` rebuilds both sequences from the call
+A multi-call episode whose restored injections already reach its
+count is not injected again. `FaultInjector.restore(records)` rebuilds both sequences from the call
 records an earlier invocation of the same run persisted, so a resumed run
 reports a fault that fired before a hard kill, and arming an episode after
 `restore` continues a burst or intermittent window from the injections

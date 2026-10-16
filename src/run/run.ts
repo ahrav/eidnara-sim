@@ -17,7 +17,7 @@ import type { Tier } from "../prereg/schema";
 import { preregistrationHash } from "../prereg/validate";
 import { bedrockUpstream, Gateway } from "../proxy/gateway";
 import { FaultInjector } from "../proxy/inject";
-import { type Component, RecordWriter, readRecords } from "../proxy/records";
+import { RecordWriter, readRecords } from "../proxy/records";
 import { Rng } from "../rng";
 import { compileScenario, type Scenario } from "../scenario/compile";
 import { type FaultEpisode, SEAMS, validateFault } from "../scenario/faults";
@@ -29,7 +29,7 @@ import { plainPath } from "./launcher";
 import { type Preflight, piCli, preflight } from "./preflight";
 import { ResourceSampler } from "./sampler";
 import { type ArmDriver, HarnessFailure, type ScenarioEvent, Scheduler } from "./scheduler";
-import { writeOffset } from "./timeinject";
+import { FAKETIME_LIB, writeOffset } from "./timeinject";
 
 export interface RunOptions {
     config: SimConfig;
@@ -74,15 +74,6 @@ export interface Manifest {
     preflight: Preflight;
 }
 
-const BACKGROUND = new Set<Component>([
-    "history_summarizer",
-    "memory_capture",
-    "memory_classifier",
-    "context_researcher",
-    "title",
-    "native_compaction",
-]);
-
 const ROOT = resolve(import.meta.dir, "../..");
 
 export function pinnedBin(config: SimConfig): string {
@@ -124,8 +115,15 @@ const ARTIFACTS = [
  * symlink planted in an accepted output directory cannot redirect a write elsewhere.
  */
 export function requirePlainArtifacts(out: string, arms: readonly string[]): void {
-    const dirs = ["interception", "toolbin", ...arms.flatMap((arm) => [arm, join(arm, "clock")])];
+    const dirs = [
+        "interception",
+        "toolbin",
+        "hostbin",
+        ...arms.flatMap((arm) => [arm, join(arm, "clock"), join("hostbin", arm)]),
+    ];
     const files = arms.flatMap((arm) => [
+        join("hostbin", arm, "opencode"),
+        join("hostbin", arm, `opencode.${process.pid}`),
         join(arm, "resources.jsonl"),
         join(arm, "clock", "offset"),
         join(arm, "clock", `offset.${process.pid}`),
@@ -269,7 +267,7 @@ const SESSION_START_ONLY = new Set([
     "store_full",
 ]);
 const COUNTS = ["count", "calls", "sessions"];
-const DURATIONS = ["duration_ms", "delay_ms"];
+const DURATIONS = ["duration_ms", "delay_ms", "timeout_ms"];
 
 /** Range rules per parameter: probabilities in [0, 1], counts positive integers, durations >= 0. */
 function paramProblems(params: Record<string, unknown>): string[] {
@@ -355,6 +353,9 @@ function armOrder(o: RunOptions): ArmName[] {
 
 const sameJson = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 
+/** The OpenCode SDK module the host stack imports from the Eidnara checkout (`src/hosts/arms.ts`). */
+const OPENCODE_SDK = "packages/e2e-tests/node_modules/@opencode-ai/sdk/dist/index.js";
+
 const simIdentity = () => {
     const { commit, worktree } = treeIdentity(ROOT);
     return { sim_commit: commit, sim_worktree: worktree };
@@ -373,17 +374,24 @@ export function corpusIdentity(
     return Object.fromEntries(projects.map((id) => [id, treeIdentity(join(reposDir, id))]));
 }
 
+/**
+ * Runtime artifacts the hosts load, hashed by content. The interposer and the OpenCode SDK are
+ * `absent` when not yet built or not installed; preflight builds the interposer before this runs.
+ */
 function binaryDigests(config: SimConfig): Record<string, string> {
     const files = {
         daemon: config.daemon_binary,
         opencode: config.opencode_binary,
         pi: piCli(config),
+        faketime: FAKETIME_LIB,
+        opencode_sdk: join(config.eidnara_checkout, OPENCODE_SDK),
     };
     return Object.fromEntries(
-        Object.entries(files).map(([name, path]) => [
-            name,
-            createHash("sha256").update(readFileSync(path)).digest("hex"),
-        ]),
+        Object.entries(files).map(([name, path]) => {
+            const optional = name === "opencode_sdk" || name === "faketime";
+            if (optional && !existsSync(path)) return [name, "absent"];
+            return [name, createHash("sha256").update(readFileSync(path)).digest("hex")];
+        }),
     );
 }
 
@@ -688,7 +696,6 @@ async function runArms(
         observe: (e) => {
             const driver = drivers[scope.arm as ArmName];
             if (driver) scheduler.observe(e.component, driver);
-            if (!BACKGROUND.has(e.component)) return;
             const id = `${e.component}-${jobSeq++}`;
             scheduler.jobStart(id);
             return () => scheduler.jobEnd(id);
