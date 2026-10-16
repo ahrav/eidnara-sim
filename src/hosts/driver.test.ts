@@ -426,7 +426,7 @@ touch ${escaped}
 
     test("a resume refuses a daemon runtime or data directory the host replaced with a symlink", async () => {
         const daemonFactory = () =>
-            ({ ...fakeDaemon(10), start: async () => undefined }) as unknown as DaemonStack;
+            ({ ...fakeDaemon(null), start: async () => undefined }) as unknown as DaemonStack;
         const { driver, root } = fixture("eidnara", {}, { daemonFactory });
         await driver.reset();
         const runtime = join(root, "eidnara", "r", "runtime");
@@ -513,7 +513,7 @@ touch ${escaped}
         const models: string[] = [];
         const daemonFactory = (ctx: { model: string }) =>
             ({
-                ...fakeDaemon(10),
+                ...fakeDaemon(null),
                 start: async () => void models.push(ctx.model),
             }) as unknown as DaemonStack;
         const { driver } = fixture("eidnara", {}, { daemonFactory });
@@ -723,7 +723,7 @@ describe("HostDriver faults", () => {
     test.skipIf(!sudo)("a ballast left after its fault ended is removed on resume", async () => {
         const daemonFactory = (ctx: { dataDir: string }) =>
             ({
-                ...fakeDaemon(10),
+                ...fakeDaemon(null),
                 start: async () => void mkdirSync(ctx.dataDir, { recursive: true }),
             }) as unknown as DaemonStack;
         const { driver, armDir } = fixture("eidnara", {}, { loopStore: true, daemonFactory });
@@ -745,7 +745,7 @@ describe("HostDriver faults", () => {
     test.skipIf(!sudo)("a ballast that vanished before the kill stops the resume", async () => {
         const daemonFactory = (ctx: { dataDir: string }) =>
             ({
-                ...fakeDaemon(10),
+                ...fakeDaemon(null),
                 start: async () => void mkdirSync(ctx.dataDir, { recursive: true }),
             }) as unknown as DaemonStack;
         const { driver } = fixture("eidnara", {}, { loopStore: true, daemonFactory });
