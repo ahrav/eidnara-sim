@@ -367,7 +367,11 @@ export class Gateway {
             if (done.first_byte_ms != null) return;
             done.first_byte_ms = performance.now() - started;
             const event = { kind: "call_started", component: tag.component, wall_ms: Date.now() };
-            this.options.observe?.(event as CallStarted);
+            try {
+                this.options.observe?.(event as CallStarted);
+            } catch (caught) {
+                this.failures.push(caught as Error);
+            }
         };
         const answer = (code: number, headers: Record<string, string>): boolean => {
             const accepted = sink.status(code, headers);

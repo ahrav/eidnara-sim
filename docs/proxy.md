@@ -12,7 +12,10 @@ mid-stream reaches the host as an event stream message: a modeled exception
 framed as `exception`, any other throw as an `error` with its code and
 message, so the host's SDK raises the same failure. `Gateway.stop()`
 closes every connection and waits up to five seconds for in-flight requests,
-counted from the moment their headers arrive, to write their records. Each call draws its backoff jitter from its own
+counted from the moment their headers arrive, to write their records; the
+run then calls `RecordWriter.close()` to release the journal descriptor. A
+throw from the `observe` callback lands in `Gateway.failures` and leaves the
+answer untouched. Each call draws its backoff jitter from its own
 generator seeded from the run's `rng` at receipt, so concurrent calls keep one
 seed to one backoff sequence.
 
@@ -43,7 +46,7 @@ rest. The writer refuses a record that lacks any field below.
 | `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens` | Provider usage |
 | `started_wall_ms`, `wall_ms` | Receipt time, and write time clamped so it never decreases in `seq` order and never precedes the record's own receipt (SIM-P15) |
 | `scenario_ms` | The scheduler's clock at receipt (SIM-P15) |
-| `first_byte_ms` | Milliseconds from receipt to the first answer byte the transport accepted for the host, after any `slow_stream` delay and including an injected fault's answer, or `null` |
+| `first_byte_ms` | Milliseconds from receipt to the first answer byte the transport accepted for the host, after any `slow_stream` delay and including an injected fault's answer; `null` for a rejected request and when the host left first |
 | `proxy_retries` | Retries the proxy itself made upstream |
 | `fault_ref` | The injected fault episode, or `null` |
 

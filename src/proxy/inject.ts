@@ -153,14 +153,29 @@ const blockStop: Ev = ["contentBlockStop", { contentBlockIndex: 0 }];
 /** A type-violating object for a schema with typed required properties, or a bare string a `type: object` schema rejects. */
 export type WrongToolInput = Record<string, unknown> | string;
 
+/** Candidate values, one per JSON type, so a required property can take a value outside its declared types. */
+const OFF_TYPE: [string, unknown][] = [
+    ["number", 0],
+    ["string", "not a value of the declared type"],
+    ["boolean", true],
+    ["null", null],
+    ["array", []],
+    ["object", {}],
+];
+
 export function wrongToolInput(tool: ToolSpec | undefined): WrongToolInput {
     const schema = tool?.inputSchema?.json as
-        | { properties?: Record<string, { type?: string }>; required?: string[] }
+        | { properties?: Record<string, { type?: string | string[] }>; required?: string[] }
         | undefined;
     const input: Record<string, unknown> = {};
     for (const name of schema?.required ?? []) {
         const declared = schema?.properties?.[name]?.type;
-        if (declared) input[name] = declared === "string" ? 0 : "not a value of the declared type";
+        if (!declared) continue;
+        const allowed = new Set(Array.isArray(declared) ? declared : [declared]);
+        if (allowed.has("number")) allowed.add("integer");
+        if (allowed.has("integer")) allowed.add("number");
+        const off = OFF_TYPE.find(([t]) => !allowed.has(t));
+        if (off) input[name] = off[1];
     }
     return Object.keys(input).length > 0 ? input : "{not json";
 }

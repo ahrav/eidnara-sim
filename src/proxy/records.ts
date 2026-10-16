@@ -1,4 +1,12 @@
-import { constants, fstatSync, ftruncateSync, openSync, realpathSync, writeSync } from "node:fs";
+import {
+    closeSync,
+    constants,
+    fstatSync,
+    ftruncateSync,
+    openSync,
+    realpathSync,
+    writeSync,
+} from "node:fs";
 import { dirname, resolve } from "node:path";
 
 export const COMPONENTS = [
@@ -101,14 +109,24 @@ export class RecordWriter {
     private lastWall = 0;
     private bytes = 0;
     private uncertain: Error | null = null;
-    private readonly fd: number | null;
+    private fd: number | null;
+    private closed = false;
     readonly records: CallRecord[] = [];
 
     constructor(path: string | null) {
         this.fd = path === null ? null : openJournal(path);
     }
 
+    /** Releases the journal descriptor; later writes throw. Calling it again has no effect. */
+    close(): void {
+        if (this.closed) return;
+        this.closed = true;
+        if (this.fd !== null) closeSync(this.fd);
+        this.fd = null;
+    }
+
     write(partial: Omit<CallRecord, "seq" | "wall_ms">): CallRecord {
+        if (this.closed) throw new Error("journal refused: the writer is closed");
         if (this.uncertain) {
             throw new Error(
                 `journal refused: an earlier append left it uncertain (${this.uncertain.message})`,

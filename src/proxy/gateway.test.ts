@@ -310,9 +310,14 @@ describe("fault composition at the proxy sink", () => {
                         else seen.push(hostSees(type, await hostCall(url, AGENT_BODY, timeoutMs)));
                     }
                     if (strategy === "persistent") injector.disarm("fault-000");
-                    await hostCall(url, AGENT_BODY, timeoutMs);
+                    const after = await hostCall(url, AGENT_BODY, timeoutMs);
                     while (gateway.inFlight > 0) await Bun.sleep(10);
+                    expect(hostSees(type, after)).toBe(false);
                     expect(records.records).toHaveLength(13);
+                    const last = [...records.records].sort(
+                        (x, y) => x.started_wall_ms - y.started_wall_ms || x.seq - y.seq,
+                    )[12];
+                    expect(last?.fault_ref).toBeNull();
                     const injected = records.records.filter((r) => r.fault_ref === "fault-000");
                     const expected =
                         strategy === "single"
@@ -431,6 +436,15 @@ describe("fault composition at the proxy sink", () => {
             timeout: "not a value of the declared type",
         });
         expect(wrongToolInput({ name: "bash" })).toBe("{not json");
+        const union = {
+            type: "object",
+            properties: { v: { type: ["string", "number"] }, w: { type: ["boolean", "null"] } },
+            required: ["v", "w"],
+        };
+        expect(wrongToolInput({ name: "t", inputSchema: { json: union } })).toEqual({
+            v: true,
+            w: 0,
+        });
         const permissive = { type: "object", additionalProperties: true };
         expect(wrongToolInput({ name: "t", inputSchema: { json: permissive } })).toBe("{not json");
         const tooled = {
@@ -632,6 +646,9 @@ describe("call records", () => {
         expect(recordProblems({ ...full, seq: 0, wall_ms: 1, componentSource: "guessed" })).toEqual(
             ["componentSource missing"],
         );
+        expect(recordProblems({ ...full, seq: 0, wall_ms: 1, component: "nope" })).toEqual([
+            "component missing",
+        ]);
     });
 });
 
@@ -1186,6 +1203,31 @@ describe("every request yields one record", () => {
         expect([gateway.inFlight, gateway.failures]).toEqual([0, []]);
     });
 
+    test("an observe() that throws leaves the answer intact and lands in failures", async () => {
+        const records = new RecordWriter(null);
+        const gateway = new Gateway({
+            upstream: scriptedUpstream(),
+            records,
+            injector: new FaultInjector([], new Rng(1), 1_000),
+            rng: new Rng(1),
+            clock: { scenarioMs: () => 0 },
+            scope: () => ({ arm: "a", session: null, turn: null }),
+            observe: () => {
+                throw new Error("scheduler hook failed");
+            },
+        });
+        await gateway.start();
+        gateways.push(gateway);
+        const r = await hostCallJson(gateway.urls[0] as string, AGENT_BODY, 1_500);
+        expect([r.status, r.json?.stopReason]).toEqual([200, "end_turn"]);
+        expect(records.records[0]).toMatchObject({
+            status: 200,
+            finish_reason: "end_turn",
+            error: null,
+        });
+        expect(gateway.failures.map((e) => e.message)).toEqual(["scheduler hook failed"]);
+    });
+
     test("a method other than POST and a body over the limit are rejected with one record each", async () => {
         const { gateway, records, url } = await start(null);
         const put = await fetch(`${url}/model/m/converse`, {
@@ -1232,6 +1274,9 @@ describe("every request yields one record", () => {
         const writer = new RecordWriter(`${dir}/records.jsonl`);
         const record = writer.write(partial);
         expect(readFileSync(`${dir}/records.jsonl`, "utf8")).toBe(`${JSON.stringify(record)}\n`);
+        writer.close();
+        writer.close();
+        expect(() => writer.write(partial)).toThrow(/closed/);
         expect(() => new RecordWriter(`${dir}/records.jsonl`)).toThrow(/journal refused/);
         writeFileSync(`${dir}/target.txt`, "");
         symlinkSync("target.txt", `${dir}/linked.jsonl`);
