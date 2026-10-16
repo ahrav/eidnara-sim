@@ -5,9 +5,10 @@ import type { Preregistration } from "../prereg/schema";
 import type { CallRecord } from "../proxy/records";
 import { type Entry, readJournal, requireComplete } from "../run/journal";
 import type { Sample as ResourceSample } from "../run/sampler";
-import type { Scenario } from "../scenario/compile";
+import { type Scenario, scenarioHash } from "../scenario/compile";
 
-export type Sample = Pick<ResourceSample, "scenario_ms" | "rss">;
+/** `pid` tells daemon lifetimes apart; a record without one is read as a single lifetime. */
+export type Sample = Pick<ResourceSample, "scenario_ms" | "rss"> & { pid?: number | null };
 
 export interface ArmLogs {
     arm: string;
@@ -41,6 +42,12 @@ const lines = (path: string) =>
 export function loadRun(dir: string, prereg: Preregistration): RunLogs {
     const manifest = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8"));
     const scenario = JSON.parse(readFileSync(join(dir, "scenario.json"), "utf8")) as Scenario;
+    const digest = scenarioHash(scenario);
+    if (digest !== manifest.scenario_hash) {
+        throw new Error(
+            `scenario_hash ${digest} differs from the manifest's ${manifest.scenario_hash}`,
+        );
+    }
     const kinds = new Map(scenario.events.map((e) => [String(e.id), String(e.kind)]));
     const calls = jsonl<CallRecord>(join(dir, "calls.jsonl"));
     const journal = readJournal(join(dir, "journal.jsonl"));

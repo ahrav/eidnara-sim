@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { scenarioHash } from "../scenario/compile";
 import { loadPrereg } from "../scenario/inputs";
 import { type ArmLogs, loadRun, type RunLogs } from "./logs";
 import { ORACLES, oracleReport, rssFit, runOracles } from "./oracles";
@@ -80,11 +81,11 @@ describe("oracle report", () => {
         const dir = mkdtempSync(join(tmpdir(), "sim-oracle-"));
         const line = (o: unknown) => `${JSON.stringify(o)}\n`;
         const order = ["host", "eidnara"];
-        writeFileSync(join(dir, "manifest.json"), JSON.stringify({ tier: "S", order, events: 1 }));
-        writeFileSync(
-            join(dir, "scenario.json"),
-            JSON.stringify({ events: [{ id: "e-1", kind: "session_end" }] }),
-        );
+        const scenario = { events: [{ id: "e-1", kind: "session_end" }] };
+        const scenario_hash = scenarioHash(scenario);
+        const manifest = { tier: "S", order, events: 1, scenario_hash };
+        writeFileSync(join(dir, "manifest.json"), JSON.stringify(manifest));
+        writeFileSync(join(dir, "scenario.json"), JSON.stringify({ ...scenario, scenario_hash }));
         writeFileSync(
             join(dir, "calls.jsonl"),
             line({ arm: "eidnara", seq: 0 }) + line({ arm: "host", seq: 1 }),
@@ -247,12 +248,11 @@ describe("oracle edge cases", () => {
     test("a run whose journal lacks an arm's EndArm or the EndRun is refused", () => {
         const dir = mkdtempSync(join(tmpdir(), "sim-oracle-"));
         const line = (o: unknown) => `${JSON.stringify(o)}\n`;
-        const manifest = { tier: "S", order: ["host"], events: 1 };
+        const scenario = { events: [{ id: "e-1", kind: "session_end" }] };
+        const scenario_hash = scenarioHash(scenario);
+        const manifest = { tier: "S", order: ["host"], events: 1, scenario_hash };
         writeFileSync(join(dir, "manifest.json"), JSON.stringify(manifest));
-        writeFileSync(
-            join(dir, "scenario.json"),
-            JSON.stringify({ events: [{ id: "e-1", kind: "session_end" }] }),
-        );
+        writeFileSync(join(dir, "scenario.json"), JSON.stringify({ ...scenario, scenario_hash }));
         const entries: Record<string, unknown>[] = [
             { kind: "StartRun", arm: null, order: ["host"], seq: 0 },
             { kind: "StartArm", arm: "host", seq: 1 },
@@ -268,5 +268,70 @@ describe("oracle edge cases", () => {
         entries.push({ kind: "EndRun", arm: null, seq: 4 });
         writeFileSync(join(dir, "journal.jsonl"), entries.map(line).join(""));
         expect(loadRun(dir, prereg).arms.map((a) => a.arm)).toEqual(["host"]);
+    });
+});
+
+describe("oracle evidence integrity", () => {
+    test("a scenario whose digest differs from the manifest's is refused", () => {
+        const dir = mkdtempSync(join(tmpdir(), "sim-oracle-"));
+        const line = (o: unknown) => `${JSON.stringify(o)}\n`;
+        const events = [{ id: "e-1", kind: "user_turn" }];
+        const scenario_hash = scenarioHash({ events });
+        const manifest = { tier: "S", order: ["host"], events: 1, scenario_hash };
+        writeFileSync(join(dir, "manifest.json"), JSON.stringify(manifest));
+        const journal = [
+            { kind: "StartRun", arm: null, order: ["host"] },
+            { kind: "Event", arm: "host", event: "e-1" },
+            { kind: "EndArm", arm: "host" },
+            { kind: "EndRun", arm: null },
+        ];
+        writeFileSync(join(dir, "journal.jsonl"), journal.map(line).join(""));
+        writeFileSync(join(dir, "scenario.json"), JSON.stringify({ events, scenario_hash }));
+        expect(loadRun(dir, prereg).kinds.get("e-1")).toBe("user_turn");
+        const edited = [{ id: "e-1", kind: "session_end" }];
+        writeFileSync(
+            join(dir, "scenario.json"),
+            JSON.stringify({ events: edited, scenario_hash }),
+        );
+        expect(() => loadRun(dir, prereg)).toThrow("scenario_hash");
+    });
+
+    test("F5 evaluates each daemon lifetime on its own, so restarts hide no leak", () => {
+        const c = Number(prereg.leak_bound.c_bytes_per_session);
+        const ends = [1, 2, 3, 4, 5, 6].map((i) => ({
+            kind: "Event" as const,
+            arm: "eidnara",
+            event: `end-${i}`,
+            seq: i,
+            wall_ms: 0,
+            scenario_ms: i * 1000 + 500,
+        }));
+        const kinds = new Map(ends.map((e) => [e.event, "session_end"]));
+        const leak = 3 * c;
+        const resources = [1, 2, 3, 4, 5, 6].map((i) => ({
+            scenario_ms: i * 1000 + 900,
+            pid: i <= 3 ? 100 : 200,
+            rss: 100 * c + ((i - 1) % 3) * leak,
+        }));
+        const run: RunLogs = {
+            dir: "",
+            tier: "S",
+            prereg,
+            kinds,
+            arms: [armOf("eidnara", { journal: ends, resources })],
+        };
+        const acts = oracle(run, "F5");
+        expect(acts.map((a) => a.at)).toEqual(["daemon 100", "daemon 200"]);
+        expect(acts.every((a) => a.evidence.includes("B/session"))).toBe(true);
+        const unsegmented = {
+            ...run,
+            arms: [
+                armOf("eidnara", {
+                    journal: ends,
+                    resources: resources.map((r) => ({ ...r, pid: 100 })),
+                }),
+            ],
+        };
+        expect(oracle(unsegmented, "F5")).toEqual([]);
     });
 });

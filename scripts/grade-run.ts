@@ -18,14 +18,13 @@ import {
     gradeItem,
     verdictCounts,
 } from "../src/grade/probes";
-import { canonicalJson, sha256Hex } from "../src/prereg/canonical";
 import { preregistrationHash } from "../src/prereg/validate";
 import { bedrockUpstream, Gateway } from "../src/proxy/gateway";
 import { FaultInjector } from "../src/proxy/inject";
 import { RecordWriter } from "../src/proxy/records";
 import { Rng } from "../src/rng";
 import { readJournal, releaseLease, requireComplete, takeLease } from "../src/run/journal";
-import type { Scenario } from "../src/scenario/compile";
+import { type Scenario, scenarioHash } from "../src/scenario/compile";
 import { loadPrereg } from "../src/scenario/inputs";
 
 export interface Summary {
@@ -56,10 +55,9 @@ export async function gradeRun(dir: string, config: SimConfig | null): Promise<S
 async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
     const manifest = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8"));
     const scenario = JSON.parse(readFileSync(join(dir, "scenario.json"), "utf8")) as Scenario;
-    const { scenario_hash: _recorded, ...body } = scenario;
     const digests = {
         prereg_sha256: preregistrationHash(loadPrereg(manifest.tier)),
-        scenario_hash: sha256Hex(canonicalJson(body)),
+        scenario_hash: scenarioHash(scenario),
     };
     const changed = Object.entries(digests).filter(([k, v]) => manifest[k] !== v);
     if (changed.length > 0) {

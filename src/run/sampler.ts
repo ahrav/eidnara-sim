@@ -98,9 +98,12 @@ export class ResourceSampler {
         this.timer = setInterval(() => this.sample(), this.o.intervalMs);
     }
 
+    /** A running sampler takes a final sample before its timer goes, so the last interval's growth is on record. */
     stop(): void {
-        if (this.timer) clearInterval(this.timer);
+        if (!this.timer) return;
+        clearInterval(this.timer);
         this.timer = null;
+        this.sample();
         if (this.busy) this.o.onBusy(false);
         this.busy = false;
     }

@@ -1,5 +1,5 @@
 import type { CallRecord } from "../proxy/records";
-import type { ArmLogs, RunLogs } from "./logs";
+import type { ArmLogs, RunLogs, Sample } from "./logs";
 
 export const ORACLES = ["F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9"] as const;
 export type OracleId = (typeof ORACLES)[number];
@@ -116,28 +116,46 @@ export function rssFit(points: { x: number; y: number }[]): { slope: number; r2:
     return { slope, r2: sst === 0 ? 0 : 1 - ssr / sst };
 }
 
+/** Consecutive samples from one daemon process; a restart starts a new lifetime with its own RSS(0). */
+function lifetimes(samples: Sample[]): Sample[][] {
+    const out: Sample[][] = [];
+    for (const s of samples) {
+        const last = out.at(-1);
+        if (last && last[0]?.pid === s.pid) last.push(s);
+        else out.push([s]);
+    }
+    return out;
+}
+
 function f5(arm: ArmLogs, run: RunLogs): Activation[] {
     const { c_bytes_per_session: c, r2_threshold } = run.prereg.leak_bound;
     const ends = arm.journal
         .filter((e) => e.kind === "Event" && run.kinds.get(String(e.event)) === "session_end")
         .map((e) => e.scenario_ms);
     const samples = arm.resources.filter((s) => typeof s.rss === "number");
-    const first = samples[0]?.rss;
-    if (first == null) return [];
-    const points = samples.map((s) => ({
-        x: ends.filter((ms) => ms <= s.scenario_ms).length,
-        y: s.rss as number,
-    }));
     const out: Activation[] = [];
-    const over = points.find((p) => p.y >= 2 * first + p.x * c);
-    if (over) {
-        const evidence = `RSS ${over.y} after ${over.x} sessions exceeds 2 x ${first} + sessions x ${c}`;
-        out.push({ oracle: "F5", arm: arm.arm, at: `session ${over.x}`, evidence });
-    }
-    const fit = rssFit(points);
-    if (fit && fit.r2 >= Number(r2_threshold) && fit.slope > c) {
-        const evidence = `RSS slope ${Math.round(fit.slope)} B/session (r2 ${fit.r2.toFixed(2)}) exceeds ${c}`;
-        out.push({ oracle: "F5", arm: arm.arm, at: "run", evidence });
+    const lives = lifetimes(samples);
+    for (const life of lives) {
+        const first = life[0] as Sample;
+        const scope = lives.length > 1 ? `daemon ${first.pid}` : "run";
+        const sessionsAt = (ms: number) => ends.filter((end) => end <= ms).length;
+        const offset = sessionsAt(first.scenario_ms);
+        const points = life.map((s) => ({
+            x: sessionsAt(s.scenario_ms) - offset,
+            y: s.rss as number,
+        }));
+        const base = first.rss as number;
+        const over = points.find((p) => p.y >= 2 * base + p.x * c);
+        if (over) {
+            const at = `session ${over.x + offset}`;
+            const evidence = `RSS ${over.y} after ${over.x} sessions exceeds 2 x ${base} + sessions x ${c}`;
+            out.push({ oracle: "F5", arm: arm.arm, at, evidence });
+        }
+        const fit = rssFit(points);
+        if (fit && fit.r2 >= Number(r2_threshold) && fit.slope > c) {
+            const evidence = `RSS slope ${Math.round(fit.slope)} B/session (r2 ${fit.r2.toFixed(2)}) exceeds ${c}`;
+            out.push({ oracle: "F5", arm: arm.arm, at: scope, evidence });
+        }
     }
     return out;
 }
