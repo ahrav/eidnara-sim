@@ -4,8 +4,8 @@ export interface JournalReport {
     entries: number;
     next_event_jumps: number;
     sleep_jumps: number;
-    /** Each fault-tagged jump's arm and fault id, in journal order. */
-    sleep_jump_faults: { arm: string; fault: string }[];
+    /** Each fault-tagged jump's arm, fault id, and landing time, in journal order. */
+    sleep_jump_faults: { arm: string; fault: string; to_ms: number }[];
     decreasing_scenario_ms: number[];
     advance_while_busy: number[];
     off_schedule_jumps: number[];
@@ -113,7 +113,7 @@ export function checkJournal(entries: Entry[], schedule: Schedule): JournalRepor
             continue;
         }
         report.sleep_jumps++;
-        report.sleep_jump_faults.push({ arm, fault: String(e.fault) });
+        report.sleep_jump_faults.push({ arm, fault: String(e.fault), to_ms: ms });
         if (crossed) report.events_inside_sleep.push(seq);
         const sleep = `${arm}/${String(e.fault)}`;
         if (slept.has(sleep)) report.repeated_sleeps.push(seq);

@@ -3,7 +3,8 @@ import { join, resolve } from "node:path";
 import { loadConfig } from "../src/config/config";
 import { canonicalJson, sha256Hex } from "../src/prereg/canonical";
 import { checkJournal, type Schedule } from "../src/run/journal-check";
-import { manifestIdentity, pinnedBin, runIdentity } from "../src/run/run";
+import { processStart } from "../src/run/procs";
+import { manifestIdentity, pinnedBin, requireJournalShape, runIdentity } from "../src/run/run";
 import type { Scenario } from "../src/scenario/compile";
 import { type FaultEpisode, type FaultType, SEAMS, type Trigger } from "../src/scenario/faults";
 import { loadPrereg } from "../src/scenario/inputs";
@@ -156,14 +157,18 @@ if (only.includes("rogue")) {
     await waitFor(child, begun(dirs.rogue, "e-000004"));
     const state = JSON.parse(readFileSync(join(dirs.rogue, "eidnara/state.json"), "utf8"));
     const pid: unknown = state?.daemon?.pid;
-    if (typeof pid === "number" && Number.isInteger(pid) && pid > 1) {
+    const start: unknown = state?.daemon?.start;
+    const same = typeof pid === "number" && processStart(pid) === start;
+    if (typeof pid === "number" && Number.isInteger(pid) && pid > 1 && same) {
         try {
             process.kill(pid, "SIGKILL");
         } catch (caught) {
             outcome.rogue_kill_error = String(caught);
         }
     } else {
-        outcome.rogue_kill_error = `state.json names no daemon pid: ${JSON.stringify(pid)}`;
+        outcome.rogue_kill_error = same
+            ? `state.json names no daemon pid: ${JSON.stringify(pid)}`
+            : `daemon pid ${JSON.stringify(pid)} no longer has start ${JSON.stringify(start)}`;
     }
     outcome.rogue = await finished(child);
 }
@@ -221,6 +226,7 @@ function summarize(dir: string) {
     };
     const scenario = JSON.parse(readFileSync(join(dir, "scenario.json"), "utf8")) as Scenario;
     const { scenario_hash: _hash, ...scenarioBody } = scenario;
+    const manifestEvents = (manifest as { events?: number }).events ?? scenario.events.length;
     const journal = lines(join(dir, "journal.jsonl"), true);
     const calls = lines(join(dir, "calls.jsonl"), true);
     const perArm = (arm: string, kind: string) =>
@@ -234,6 +240,11 @@ function summarize(dir: string) {
             scenario.events
                 .filter((e) => e.kind === "session_start")
                 .map((e) => [String(e.session), String(e.id)]),
+        ),
+        session_start_ms: Object.fromEntries(
+            scenario.events
+                .filter((e) => e.kind === "session_start")
+                .map((e) => [String(e.session), Number(e.scenario_ms)]),
         ),
         bindings: {
             scenario_hash: sha256Hex(canonicalJson(scenarioBody)) === scenario.scenario_hash,
@@ -253,10 +264,34 @@ function summarize(dir: string) {
             before_start:
                 journal.findIndex((e) => e.kind === "Preflight") <
                 journal.findIndex((e) => e.kind === "StartRun" || e.kind === "ResumeRun"),
+            each_start: journal
+                .map((e, i) => [e, i] as const)
+                .filter(([e]) => e.kind === "StartRun" || e.kind === "ResumeRun")
+                .every(([, i]) => journal[i - 1]?.kind === "Preflight"),
             intercepted: (
                 (journal[0]?.time_injection as { name: string; intercepted: boolean }[]) ?? []
             ).map((t) => `${t.name}:${t.intercepted}`),
+            every_intercepted: journal
+                .filter((e) => e.kind === "Preflight")
+                .every((e) =>
+                    ((e.time_injection as { intercepted: boolean }[]) ?? []).every(
+                        (t) => t.intercepted === true,
+                    ),
+                ),
         },
+        journal_shape: (() => {
+            try {
+                requireJournalShape(
+                    journal as never,
+                    scenario.events
+                        .slice(0, manifestEvents)
+                        .map((e) => ({ id: String(e.id), kind: String(e.kind) })),
+                );
+                return journal.every((e, i) => e.seq === i) ? "ok" : "seq gap";
+            } catch (caught) {
+                return (caught as Error).message;
+            }
+        })(),
         arms: Object.fromEntries(
             arms.map((arm) => [
                 arm,
@@ -388,6 +423,22 @@ const armEvidence = (
     check(
         [...tagged].sort().join() === [...wanted].sort().join(),
         `${name}: exactly one fault-tagged jump per arm and sleep episode (${wanted.join(", ")})`,
+    );
+    for (const j of s.invariants.sleep_jump_faults) {
+        const f = expected.find((x) => x.id === j.fault);
+        const landing = f ? s.session_start_ms[f.trigger.session] : undefined;
+        check(
+            landing !== undefined && j.to_ms === landing,
+            `${name}/${j.arm}: sleep jump ${j.fault} landed on its session's first event (${landing})`,
+        );
+    }
+    check(
+        s.preflight.each_start && s.preflight.every_intercepted,
+        `${name}: every StartRun or ResumeRun follows its own all-intercepted Preflight entry`,
+    );
+    check(
+        s.journal_shape === "ok",
+        `${name}: journal passes the resume shape check (${s.journal_shape})`,
     );
     check(s.invariants.next_event_jumps > 0, `${name}: at least one ordinary event jump checked`);
     const intercepted = s.preflight.intercepted;

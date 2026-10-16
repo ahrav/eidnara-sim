@@ -30,7 +30,7 @@ describe("checkJournal", () => {
             entries: 10,
             next_event_jumps: 1,
             sleep_jumps: 1,
-            sleep_jump_faults: [{ arm: "a", fault: "sleep" }],
+            sleep_jump_faults: [{ arm: "a", fault: "sleep", to_ms: 500 }],
             decreasing_scenario_ms: [],
             advance_while_busy: [],
             off_schedule_jumps: [],

@@ -69,7 +69,9 @@ export const SEAMS = {
     model_switch: scheduler(BETWEEN, "host uses the new model", "call record model id"),
     laptop_sleep: {
         layer: "clock",
-        legal_outcomes: ["one event-free clock jump of the scheduled duration (SIM-P18)"],
+        legal_outcomes: [
+            "one event-free clock jump across the idle gap onto the session's first event (SIM-P18)",
+        ],
         in_flight_fate: "none: fires while idle",
         surviving_state: "all processes kept",
         oracle: "AdvanceClock entry with busy_set empty",

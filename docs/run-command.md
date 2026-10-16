@@ -58,7 +58,11 @@ process's staging names for the clock offset and `state.json`) must be absent or
 clock, `r`, `s`, `interception`, `toolbin`, and `hostbin` directories must be
 directories; the OpenCode wrapper and its staging name under `hostbin/<arm>`
 are checked the same way); a symlink, a hard link, or another
-file type there is refused. Every staged write (scenario, manifest, clock
+file type there is refused. A run whose journal is still empty refuses an
+output directory that already holds call, fault, or preflight evidence or an
+arm's payload (`r`, `s`, `store.img`, `daemon.log`, `transcripts.json`,
+`resources.jsonl`, `state.json`), since a fresh run would extend or delete
+them. Every staged write (scenario, manifest, clock
 offset, `state.json`, the sandbox launcher) creates its staging file
 exclusively without following a link, then renames it into place, and the
 toolchain wrappers are created exclusively after removing any planted name.
@@ -112,7 +116,8 @@ toolchain wrappers are created exclusively after removing any planted name.
    of the seed's pre-registered arm order, when a resumed journal breaks the
    run's state machine (a `ResumeRun` or arm entry before `StartRun`, an arm
    entry before `StartArm` or after `EndArm`, an `EndTurn` or `EndJob` with
-   no open item, an `Event` that is not the arm's next scheduled event, or an
+   no open item, an `Event` that is not the arm's next scheduled event, a
+   user turn's `Event` without its `EndTurn` or interruption marker, or an
    `EndArm` with an item open or events of the prefix still unrun), when any of those digests changed, when an
    interception result, probed path, or toolchain version
    changed, or when the selected host's version or transcript paths changed,
@@ -247,7 +252,11 @@ line. Every case needs its launch outcome in `outcome.json`; each cached
 `scenario.json` must still hash to its `scenario_hash` and each `manifest.json`
 must match the digest its journal's first `Preflight` entry bound; each
 session-start fault must have fired exactly once, right before its session's
-first event.
+first event; each sleep jump must land on its session's first event; every
+`StartRun` or `ResumeRun` must follow its own all-intercepted `Preflight`
+entry; and the journal must pass the resume shape check with contiguous
+`seq`. The rogue witness signals the daemon only while its recorded pid still
+carries the recorded start time.
 The scheduled and resume runs must also show their evidence per arm: every
 deterministic fault of the set fired, every fault with a mechanism observed
 (on `eidnara`, the restart with a new daemon pid and `restarted_by: harness`,

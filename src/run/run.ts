@@ -215,9 +215,11 @@ export function requireOutsideIdentity(out: string, root = ROOT): void {
  */
 export function requireJournalShape(
     entries: readonly Entry[],
-    scheduled?: readonly string[],
+    scheduled?: readonly { id: string; kind: string }[],
 ): void {
-    const position = new Map((scheduled ?? []).map((id, i) => [id, i]));
+    const turns = new Set((scheduled ?? []).filter((e) => e.kind === "user_turn").map((e) => e.id));
+    const closedTurns = new Set<string>();
+    const position = new Map((scheduled ?? []).map((e, i) => [e.id, i]));
     const cursor = new Map<string, number>();
     const bad = (e: Entry, why: string) =>
         new HarnessFailure(`journal entry ${e.seq} (${e.kind}) ${why}`);
@@ -261,11 +263,19 @@ export function requireJournalShape(
             const item = e.kind === "EndTurn" ? `turn/${String(e.event)}` : `job/${String(e.job)}`;
             if (!open.delete(`${e.arm}/${item}`)) throw bad(e, `closes ${item}, which is not open`);
         }
+        if (e.kind === "EndTurn") closedTurns.add(`${e.arm}/${String(e.event)}`);
+        if (e.kind === "ItemState" && e.state === "failed(interrupted)" && e.event !== undefined) {
+            closedTurns.add(`${e.arm}/${String(e.event)}`);
+        }
         if (e.kind === "Event" && scheduled) {
-            const at = position.get(String(e.event));
+            const id = String(e.event);
+            const at = position.get(id);
             const next = cursor.get(e.arm) ?? 0;
-            if (at === undefined) throw bad(e, `names unscheduled event ${String(e.event)}`);
-            if (at !== next) throw bad(e, `is not the next scheduled event (${String(e.event)})`);
+            if (at === undefined) throw bad(e, `names unscheduled event ${id}`);
+            if (at !== next) throw bad(e, `is not the next scheduled event (${id})`);
+            if (turns.has(id) && !closedTurns.has(`${e.arm}/${id}`)) {
+                throw bad(e, `completes turn ${id} without an EndTurn or interruption`);
+            }
             cursor.set(e.arm, at + 1);
         }
     }
@@ -277,17 +287,26 @@ export function manifestIdentity(manifest: Manifest): string {
     return sha256Hex(canonicalJson(fields));
 }
 
-/** A run with no journal yet owns no arm payload; an existing `<arm>/r` or `<arm>/s` is refused. */
+/** A run with no journal yet owns no evidence or arm payload; any such existing file is refused. */
 export function requireFreshArmRoots(out: string, arms: readonly string[]): void {
-    for (const arm of arms) {
-        for (const sub of ["r", "s"]) {
-            const path = join(out, arm, sub);
-            if (existsSync(path)) {
-                throw new HarnessFailure(
-                    `${path} exists but ${out} has no journal; a fresh run would delete it`,
-                );
-            }
-        }
+    const evidence = ["calls.jsonl", "faults.jsonl", "preflight.jsonl"];
+    const perArm = [
+        "r",
+        "s",
+        "store.img",
+        "daemon.log",
+        "transcripts.json",
+        "resources.jsonl",
+        "state.json",
+    ];
+    const present = [
+        ...evidence.map((f) => join(out, f)),
+        ...arms.flatMap((arm) => perArm.map((f) => join(out, arm, f))),
+    ].filter((path) => existsSync(path));
+    if (present.length > 0) {
+        throw new HarnessFailure(
+            `${present[0]} exists but ${out} has no journal; a fresh run would delete or extend it`,
+        );
     }
 }
 
@@ -979,7 +998,9 @@ async function runArms(
     const { manifest, checks } = await tracked(() => loadManifest(o, compiled));
     requireJournalShape(
         journal.entries,
-        compiled.events.slice(0, manifest.events).map((e) => String(e.id)),
+        compiled.events
+            .slice(0, manifest.events)
+            .map((e) => ({ id: String(e.id), kind: String(e.kind) })),
     );
     const bound = journal.entries.find((e) => e.kind === "Preflight")?.manifest_sha256;
     const manifestDigest = manifestIdentity(manifest);

@@ -381,9 +381,25 @@ describe("run inputs", () => {
             /closes job\/j, which is not open/,
         );
         expect(() => requireJournalShape([e("ResumeRun", null)])).toThrow(/precedes StartRun/);
-        const ids = ["e-1", "e-2"];
+        const ids = [
+            { id: "e-1", kind: "session_start" },
+            { id: "e-2", kind: "user_turn" },
+        ];
+        const turn = [e("BeginTurn", "a", { event: "e-2" }), e("EndTurn", "a", { event: "e-2" })];
         const ev = (id: string) => e("Event", "a", { event: id });
-        expect(() => requireJournalShape([...start, ev("e-1"), ev("e-2")], ids)).not.toThrow();
+        expect(() =>
+            requireJournalShape([...start, ev("e-1"), ...turn, ev("e-2")], ids),
+        ).not.toThrow();
+        expect(() => requireJournalShape([...start, ev("e-1"), ev("e-2")], ids)).toThrow(
+            /completes turn e-2 without an EndTurn or interruption/,
+        );
+        const interrupted = [
+            e("BeginTurn", "a", { event: "e-2" }),
+            e("ItemState", "a", { event: "e-2", state: "failed(interrupted)" }),
+        ];
+        expect(() =>
+            requireJournalShape([...start, ev("e-1"), ...interrupted, ev("e-2")], ids),
+        ).not.toThrow();
         expect(() => requireJournalShape([...start, ev("e-9")], ids)).toThrow(
             /unscheduled event e-9/,
         );
