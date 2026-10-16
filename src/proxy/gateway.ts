@@ -180,7 +180,11 @@ export class Gateway {
                         res.writeHead(code, headers);
                         return true;
                     },
-                    write: (chunk) => res.write(chunk),
+                    write: (chunk) => {
+                        if (res.destroyed) return false;
+                        res.write(chunk);
+                        return true;
+                    },
                     end: () => res.end(),
                     destroy: () => res.destroy(),
                     signal: gone.signal,
@@ -209,7 +213,11 @@ export class Gateway {
                         stream.respond({ ":status": code, ...h });
                         return true;
                     },
-                    write: (chunk) => live() && stream.write(chunk),
+                    write: (chunk) => {
+                        if (!live()) return false;
+                        stream.write(chunk);
+                        return true;
+                    },
                     end: () => live() && stream.end(),
                     destroy: () => stream.destroy(),
                     signal: gone.signal,
@@ -218,7 +226,15 @@ export class Gateway {
         });
         this.servers = [h1, h2];
         for (const server of this.servers) {
-            await new Promise<void>((done) => server.listen(0, "127.0.0.1", () => done()));
+            try {
+                await new Promise<void>((done, reject) => {
+                    server.once("error", reject);
+                    server.listen(0, "127.0.0.1", () => done());
+                });
+            } catch (caught) {
+                await this.stop(0);
+                throw caught;
+            }
             this.urls.push(`http://127.0.0.1:${(server.address() as AddressInfo).port}`);
         }
     }
@@ -398,7 +414,6 @@ export class Gateway {
                     for (const [type, member] of Object.entries(event)) {
                         if (member === undefined) continue;
                         await delay();
-                        if (accepted) firstByte();
                         const m = member as { usage?: Usage; stopReason?: string };
                         if (type === "metadata") {
                             sawMetadata = true;
@@ -408,10 +423,11 @@ export class Gateway {
                             sawStop = true;
                             done.finish_reason = m.stopReason;
                         }
-                        if (type.endsWith("Exception")) {
-                            done.error = type;
-                            sink.write(encodeException(type, member));
-                        } else sink.write(encodeEvent(type, member));
+                        const frame = type.endsWith("Exception")
+                            ? encodeException(type, member)
+                            : encodeEvent(type, member);
+                        if (type.endsWith("Exception")) done.error = type;
+                        if (accepted && sink.write(frame)) firstByte();
                     }
                 }
                 if (!sawStop || !sawMetadata) {
@@ -439,11 +455,10 @@ export class Gateway {
                 sink.write(Buffer.from(JSON.stringify({ message: text })));
             } else if (streaming) {
                 if (!sawStop || !sawMetadata) done.finish_reason = "stream_cut";
-                sink.write(
-                    errorType.endsWith("Exception")
-                        ? encodeException(errorType, { message: text })
-                        : encodeError(errorType, text),
-                );
+                const frame = errorType.endsWith("Exception")
+                    ? encodeException(errorType, { message: text })
+                    : encodeError(errorType, text);
+                if (sink.write(frame)) firstByte();
             }
         }
         return {

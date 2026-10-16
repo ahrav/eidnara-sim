@@ -19,7 +19,10 @@ seed to one backoff sequence.
 ## Call records
 
 `RecordWriter` appends one record per request to a JSONL file and keeps them
-in memory; a record enters memory only after its line reached the file.
+in memory; a record enters memory only after its line reached the file. A
+failed append is truncated back to the bytes that reached the file, and when
+that truncation fails too the writer refuses every later record, so the
+journal never carries a partial line followed by a whole one.
 Requests the gateway rejects (an unknown route, a method other than `POST`, a
 body that is not a JSON object, a body over 32 MiB, a malformed path, an
 upload the client abandoned) and requests whose handling throws still get a

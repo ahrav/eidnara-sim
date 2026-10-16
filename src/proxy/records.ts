@@ -1,4 +1,4 @@
-import { appendFileSync } from "node:fs";
+import { appendFileSync, truncateSync } from "node:fs";
 
 export const COMPONENTS = [
     "agent",
@@ -77,19 +77,41 @@ export function recordProblems(value: Record<string, unknown>): string[] {
 export class RecordWriter {
     private seq = 0;
     private lastWall = 0;
+    private bytes = 0;
+    private uncertain: Error | null = null;
     readonly records: CallRecord[] = [];
 
     constructor(private readonly path: string | null) {}
 
     write(partial: Omit<CallRecord, "seq" | "wall_ms">): CallRecord {
+        if (this.uncertain) {
+            throw new Error(
+                `journal refused: an earlier append left it uncertain (${this.uncertain.message})`,
+            );
+        }
         const wall_ms = Math.max(this.lastWall, partial.started_wall_ms, Date.now());
         const record = { ...partial, seq: this.seq, wall_ms };
         const problems = recordProblems(record);
         if (problems.length > 0) throw new Error(`call record refused: ${problems.join(", ")}`);
-        if (this.path) appendFileSync(this.path, `${JSON.stringify(record)}\n`);
+        if (this.path) this.append(this.path, `${JSON.stringify(record)}\n`);
         this.seq++;
         this.lastWall = wall_ms;
         this.records.push(record);
         return record;
+    }
+
+    /** On append failure, RecordWriter attempts to truncate the file to its successfully appended byte count; if truncation fails, subsequent write calls throw. */
+    private append(path: string, line: string): void {
+        try {
+            appendFileSync(path, line);
+            this.bytes += Buffer.byteLength(line);
+        } catch (caught) {
+            try {
+                truncateSync(path, this.bytes);
+            } catch {
+                this.uncertain = caught as Error;
+            }
+            throw caught;
+        }
     }
 }

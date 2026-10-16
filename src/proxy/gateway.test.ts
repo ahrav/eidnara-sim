@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { mkdirSync, rmSync } from "node:fs";
 import { connect } from "node:http2";
 import { connect as tcp } from "node:net";
 import { BedrockRuntimeClient } from "@aws-sdk/client-bedrock-runtime";
@@ -6,7 +7,7 @@ import { decodeMessages } from "../../tests/eventstream-decode";
 import { Rng } from "../rng";
 import type { FaultType } from "../scenario/faults";
 import { classify } from "./classify";
-import { encodeEvent } from "./eventstream";
+import { crc32, encodeEvent, encodeMessage } from "./eventstream";
 import {
     backoffMs,
     bedrockUpstream,
@@ -687,6 +688,13 @@ describe("classification", () => {
         expect(m?.headers[":event-type"]).toBe("messageStop");
     });
 
+    test("the checksum and framing match published vectors", () => {
+        expect(crc32(Buffer.from("123456789"))).toBe(0xcbf43926);
+        expect(encodeMessage({}, new Uint8Array()).toString("hex")).toBe(
+            "000000100000000005c248eb7d98c8ff",
+        );
+    });
+
     test("an agent request whose text mentions <new_messages> stays agent", () => {
         const text = "the summarizer wraps turns in <new_messages>";
         const body = { ...AGENT_BODY, messages: [{ role: "user", content: [{ text }] }] };
@@ -1018,6 +1026,13 @@ describe("every request yields one record", () => {
         } as const;
         expect(() => writer.write(partial)).toThrow();
         expect(writer.records).toHaveLength(0);
+        const dir = "runs/zz-records-uncertain";
+        rmSync(dir, { recursive: true, force: true });
+        const uncertain = new RecordWriter(`${dir}/records.jsonl`);
+        expect(() => uncertain.write(partial)).toThrow();
+        mkdirSync(dir, { recursive: true });
+        expect(() => uncertain.write(partial)).toThrow(/journal refused/);
+        rmSync(dir, { recursive: true, force: true });
     });
 
     test("first_byte_ms under slow_stream follows the delay", async () => {
@@ -1078,7 +1093,7 @@ describe("every request yields one record", () => {
                 return { events };
             },
         };
-        const { gateway, records, url } = await start(null, broken);
+        const { gateway, records, started, url } = await start(null, broken);
         const seen = await hostCall(url, AGENT_BODY, 2_000);
         await hostCall(url, AGENT_BODY, 2_000);
         expect([seen.status, seen.timedOut, seen.events]).toEqual([
@@ -1090,7 +1105,29 @@ describe("every request yields one record", () => {
             [200, "stream_cut", "ModelStreamErrorException: boom"],
             [200, "stream_cut", "ModelStreamErrorException: boom"],
         ]);
+        expect(records.records.map((r) => typeof r.first_byte_ms)).toEqual(["number", "number"]);
+        expect(started.map((e) => e.component)).toEqual(["agent", "agent"]);
         expect(gateway.inFlight).toBe(0);
+    });
+
+    test("a client that leaves during the slow_stream delay gets no first byte", async () => {
+        const fault = {
+            id: "s",
+            type: "slow_stream",
+            strategy: "single",
+            params: { count: 1, delay_ms: 400 },
+        } as ProxyFault;
+        const { gateway, records, started, injector } = await start(fault);
+        injector.arm("s");
+        const session = connect(gateway.urls[1] as string);
+        const req = session.request({ ":method": "POST", ":path": "/model/m/converse-stream" });
+        req.on("error", () => undefined);
+        req.end(JSON.stringify(AGENT_BODY));
+        await Bun.sleep(100);
+        session.destroy();
+        while (gateway.inFlight > 0) await Bun.sleep(10);
+        expect(records.records.map((r) => [r.fault_ref, r.first_byte_ms])).toEqual([["s", null]]);
+        expect(started).toEqual([]);
     });
 
     test("malformed paths and bodies are rejected; odd but parseable bodies are forwarded", async () => {
