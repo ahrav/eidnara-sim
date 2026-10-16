@@ -1,8 +1,9 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { loadConfig } from "../src/config/config";
+import { canonicalJson, sha256Hex } from "../src/prereg/canonical";
 import { checkJournal, type Schedule } from "../src/run/journal-check";
-import { pinnedBin, runIdentity } from "../src/run/run";
+import { manifestIdentity, pinnedBin, runIdentity } from "../src/run/run";
 import type { Scenario } from "../src/scenario/compile";
 import { type FaultEpisode, type FaultType, SEAMS, type Trigger } from "../src/scenario/faults";
 import { loadPrereg } from "../src/scenario/inputs";
@@ -49,6 +50,9 @@ function lines(path: string, strict = false): Record<string, unknown>[] {
     if (!existsSync(path)) return [];
     const text = readFileSync(path, "utf8");
     const complete = text.slice(0, text.lastIndexOf("\n") + 1);
+    if (strict && complete.length !== text.length) {
+        throw new Error(`${path} ends in an unterminated line`);
+    }
     const rows = complete.split("\n").filter((l) => l !== "");
     return rows.flatMap((l, i) => {
         try {
@@ -214,6 +218,8 @@ function summarize(dir: string) {
         sim_commit?: string;
         sim_worktree?: string;
     };
+    const scenario = JSON.parse(readFileSync(join(dir, "scenario.json"), "utf8")) as Scenario;
+    const { scenario_hash: _hash, ...scenarioBody } = scenario;
     const journal = lines(join(dir, "journal.jsonl"), true);
     const calls = lines(join(dir, "calls.jsonl"), true);
     const perArm = (arm: string, kind: string) =>
@@ -223,15 +229,24 @@ function summarize(dir: string) {
     ] as string[];
     return {
         ended: journal.at(-1)?.kind,
+        session_starts: Object.fromEntries(
+            scenario.events
+                .filter((e) => e.kind === "session_start")
+                .map((e) => [String(e.session), String(e.id)]),
+        ),
+        bindings: {
+            scenario_hash: sha256Hex(canonicalJson(scenarioBody)) === scenario.scenario_hash,
+            manifest_bound:
+                journal.find((e) => e.kind === "Preflight")?.manifest_sha256 ===
+                manifestIdentity(manifest as never),
+        },
         end_arms: Object.fromEntries(
             (manifest.order ?? []).map((arm) => [arm, perArm(arm, "EndArm").length]),
         ),
         identity: Object.fromEntries(
             IDENTITY_FIELDS.map((k) => [k, (manifest as Record<string, unknown>)[k]]),
         ),
-        projects: (
-            JSON.parse(readFileSync(join(dir, "scenario.json"), "utf8")) as Scenario
-        ).projects.map((p) => p.id),
+        projects: scenario.projects.map((p) => p.id),
         preflight: {
             first: journal[0]?.kind === "Preflight",
             before_start:
@@ -246,6 +261,15 @@ function summarize(dir: string) {
                 arm,
                 {
                     fired: perArm(arm, "FaultFired").map((e) => e.fault),
+                    fired_before: Object.fromEntries(
+                        perArm(arm, "FaultFired").map((e) => {
+                            const at = journal.indexOf(e);
+                            const next = journal
+                                .slice(at)
+                                .find((x) => x.arm === arm && x.kind === "Event");
+                            return [String(e.fault), next?.event ?? null];
+                        }),
+                    ),
                     observed: perArm(arm, "FaultObserved").map((e) => ({
                         fault: e.fault,
                         evidence: e.evidence,
@@ -340,6 +364,7 @@ for (const name of ["scheduled", "rogue"]) {
 }
 type ArmSummary = {
     fired: unknown[];
+    fired_before: Record<string, unknown>;
     observed: { fault: unknown; evidence: unknown }[];
     turns: unknown[];
     agent_models_by_session: Record<string, string[]>;
@@ -385,6 +410,14 @@ const armEvidence = (
             expected.every((f) => fired.has(f.id)),
             `${name}/${arm}: fired ${expected.map((f) => f.id).join(", ")}`,
         );
+        for (const f of expected.filter((x) => x.trigger.kind === "session_start")) {
+            const count = a.fired.filter((id) => id === f.id).length;
+            const boundary = s.session_starts[f.trigger.session];
+            check(
+                count === 1 && a.fired_before[f.id] === boundary,
+                `${name}/${arm}: ${f.id} fired once, right before ${boundary ?? "its session start"}`,
+            );
+        }
         check(
             observable.every((id) => observed.has(id)),
             `${name}/${arm}: observed ${observable.join(", ")}`,
@@ -451,6 +484,16 @@ const mechanismEvidence = (name: string, arm: string, a: ArmSummary, expected: F
 const deterministic = FAULTS.filter((f) => f.trigger.kind !== "first_summarizer_call");
 for (const name of ["scheduled", "rogue", "resume"] as const) {
     check(summary[name] !== null, `${name}: run directory present (every case is required)`);
+    check(
+        outcome[name] !== undefined,
+        `${name}: launch outcome recorded in outcome.json (every case's exit is required)`,
+    );
+    const b = summary[name]?.bindings;
+    check(b?.scenario_hash === true, `${name}: scenario.json still hashes to its scenario_hash`);
+    check(
+        b?.manifest_bound === true,
+        `${name}: manifest.json matches the digest its journal bound`,
+    );
 }
 for (const name of ["scheduled", "rogue", "resume"] as const) {
     const s = summary[name];

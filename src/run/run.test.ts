@@ -12,8 +12,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SimConfig } from "../config/config";
 import { canonicalJson, sha256Hex } from "../prereg/canonical";
+import { Rng } from "../rng";
 import type { Scenario } from "../scenario/compile";
-import { type FaultEpisode, SEAMS } from "../scenario/faults";
+import { type FaultEpisode, SEAMS, scheduleFaults } from "../scenario/faults";
 import type { Entry } from "./journal";
 import type { Preflight } from "./preflight";
 import {
@@ -50,6 +51,12 @@ const config = {
     pi_install: piInstall,
     agent_model: "m",
     bedrock: { aws_profile: "", region: "" },
+    toolchain: {
+        bin: [bins],
+        keep: [] as string[],
+        env: {} as Record<string, string>,
+        wall_clock_tools: ["daemon"],
+    },
 } as SimConfig;
 
 function scenarioBody(seed = 101, tier = "S") {
@@ -281,6 +288,33 @@ describe("run inputs", () => {
         expect(() => requireOutsideIdentity(dir())).not.toThrow();
     });
 
+    test("the compiler's own fault schedules pass the override validation", () => {
+        const sessions = [
+            { id: "s-0000", requests: 3, forced_p90: true, gap_before_ms: 0 },
+            { id: "s-0001", requests: 3, forced_p90: false, gap_before_ms: 3_600_000 },
+            { id: "s-0002", requests: 2, forced_p90: true, gap_before_ms: 7_200_000 },
+        ];
+        const events = [
+            { id: "e-000000", kind: "session_start", scenario_ms: 0, session: "s-0000" },
+            { id: "e-000001", kind: "session_end", scenario_ms: 60_000, session: "s-0000" },
+            { id: "e-000002", kind: "session_start", scenario_ms: 3_660_000, session: "s-0001" },
+            { id: "e-000003", kind: "session_end", scenario_ms: 3_720_000, session: "s-0001" },
+            { id: "e-000004", kind: "session_start", scenario_ms: 10_920_000, session: "s-0002" },
+        ];
+        for (const tier of ["S", "M", "L", "XL"]) {
+            for (let seed = 1; seed <= 20; seed++) {
+                const faults = scheduleFaults(tier, sessions, new Rng(seed));
+                const scenario = {
+                    ...scenarioBody(),
+                    sessions,
+                    events,
+                    faults,
+                } as unknown as Scenario;
+                expect(() => faultOverride(faults, scenario)).not.toThrow();
+            }
+        }
+    });
+
     test("a resumed journal must follow the run's state machine", () => {
         const e = (kind: Entry["kind"], arm: string | null, extra: Record<string, unknown> = {}) =>
             ({ kind, arm, scenario_ms: 0, seq: 0, wall_ms: 0, ...extra }) as Entry;
@@ -438,7 +472,7 @@ describe("run inputs", () => {
         );
         const singleWithCount = { ...episode, params: { count: 3 } };
         expect(() => faultOverride([singleWithCount], scenario)).toThrow(
-            /count does not apply to the single strategy/,
+            /single fires once; count 3 belongs to a burst/,
         );
         const burstNoCount = { ...episode, strategy: "burst" };
         expect(() => faultOverride([burstNoCount], scenario)).toThrow(/burst needs count/);
@@ -633,6 +667,8 @@ describe("run inputs", () => {
             "pi",
             "pi_install",
         ]);
+        expect(manifest.toolchain.tools.daemon).toMatch(/^[0-9a-f]{64}$/);
+        expect(manifest.toolchain.tools.cargo).toBe("absent");
         const swapped = { ...config, daemon_binary: join(out, "daemon") };
         writeFileSync(swapped.daemon_binary, "daemon 2");
         await expect(loadManifest({ ...o, config: swapped }, scenario, checks)).rejects.toThrow(
