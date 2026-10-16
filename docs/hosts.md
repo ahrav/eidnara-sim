@@ -119,7 +119,10 @@ executes with the user's privileges. Both reach Bedrock only through the
 proxy, with placeholder AWS credentials.
 
 The launcher binds kept paths read-write and read-only paths read-only, and
-refuses a writable kept path under a read-only one. The arm's own
+refuses a writable kept path under a read-only one and any path that equals
+or contains a masked root (`/tmp`, the user's home), so narrow paths such as
+`~/.cargo` stay visible while the home itself stays hidden. Configured paths
+must be normalized, since the launcher refuses others. The arm's own
 directories are read-write. The toolchain paths, the tool
 wrappers, the interposer build, the eidnara build clone, and the Node and Pi
 installs are read-only, so the agent reads and runs them while later
@@ -129,7 +132,7 @@ the sandbox with `Read-only file system`.
 The agent's build tools come from `config.toolchain`: its `bin` directories,
 each under a `keep` path, come first on the host's `PATH`, followed by the
 system directories `/usr/local/bin:/usr/bin:/bin`, the same `PATH` the
-toolchain probe uses, its `keep` paths (the cargo binaries, registry, and
+toolchain probe and both hosts use, its `keep` paths (the cargo binaries, registry, and
 git cache, rustup, and the bun binary and install cache) stay visible and
 read-only inside the sandbox (a mount nested inside a read-only path is
 remounted read-only too), and its `env` sets `CARGO_HOME`, `RUSTUP_HOME`,

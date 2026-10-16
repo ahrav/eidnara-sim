@@ -43,6 +43,9 @@ export function parseConfig(value: unknown): SimConfig {
             throw new ConfigError(`config.${field}: missing`);
         }
         if (!isAbsolute(path)) throw new ConfigError(`config.${field}: not an absolute path`);
+        if (resolve(path) !== path) {
+            throw new ConfigError(`config.${field}: not a normalized absolute path`);
+        }
     }
     if (typeof v.agent_model !== "string" || v.agent_model === "") {
         throw new ConfigError("config.agent_model: missing");
@@ -52,6 +55,9 @@ export function parseConfig(value: unknown): SimConfig {
         const paths = toolchain?.[field];
         if (!Array.isArray(paths) || !paths.every((x) => typeof x === "string" && isAbsolute(x))) {
             throw new ConfigError(`config.toolchain.${field}: expected absolute paths`);
+        }
+        if (!paths.every((x) => resolve(x) === x)) {
+            throw new ConfigError(`config.toolchain.${field}: expected normalized absolute paths`);
         }
     }
     const keep = toolchain?.keep as string[];

@@ -66,3 +66,14 @@ test("every toolchain bin directory must be kept read-only", () => {
         "config.toolchain.bin: /opt/tools/bin is not under a toolchain.keep path",
     );
 });
+
+test("configured paths must be normalized, since the sandbox launcher refuses others", () => {
+    const base = loadConfig() as any;
+    expect(() => parseConfig({ ...base, eidnara_checkout: `${base.eidnara_checkout}/` })).toThrow(
+        "config.eidnara_checkout: not a normalized absolute path",
+    );
+    const toolchain = { ...base.toolchain, keep: [...base.toolchain.keep, "/opt/x/../y"] };
+    expect(() => parseConfig({ ...base, toolchain })).toThrow(
+        "config.toolchain.keep: expected normalized absolute paths",
+    );
+});

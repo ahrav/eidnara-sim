@@ -77,7 +77,8 @@ export class PiRpcProcess {
     );
     writeFileSync(
         join(e2e, "src/opencode-runner/spawn.ts"),
-        `export async function spawnOpencode() {
+        `export async function spawnOpencode(opts: any) {
+    globalThis.__simSpawnOpts = opts;
     const child = Bun.spawn(["/bin/sh", "-c", "sleep 300; exit 0", "sh", "serve", "${PORT}"]);
     return { url: "http://127.0.0.1:${PORT}", port: ${PORT}, kill: async () => child.kill() };
 }
@@ -732,4 +733,25 @@ test("the protected OpenCode install is the canonical binary's, not the symlink'
     });
     expect(install.binary).toBe(join(real, "opencode.exe"));
     expect(install.root).toBe(join(run, "real/node_modules"));
+});
+
+test("OpenCode gets the hosts' sandbox PATH, not the harness's ambient one", async () => {
+    const run = runDir();
+    const checkout = fakeV1(run);
+    const ctx = { ...context(run), host: "opencode" as const };
+    const host = new OpencodeSimHost({
+        ...ctx,
+        config: { ...ctx.config, eidnara_checkout: checkout },
+    });
+    const ambient = process.env.PATH;
+    process.env.PATH = `/sim-ambient-marker:${ambient}`;
+    try {
+        await host.openSession(run, "s1", null).catch(() => undefined);
+    } finally {
+        process.env.PATH = ambient;
+        for (const pid of serving()) process.kill(pid, "SIGKILL");
+    }
+    const path = (globalThis as Untyped).__simSpawnOpts.extraEnv.PATH as string;
+    expect(path.includes("/sim-ambient-marker")).toBe(false);
+    expect(path.endsWith(":/usr/local/bin:/usr/bin:/bin")).toBe(true);
 });

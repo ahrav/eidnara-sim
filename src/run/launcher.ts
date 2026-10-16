@@ -102,6 +102,12 @@ export function launch(
         return `${k}=${v}`;
     });
     const ro = readOnly.map(plainPath);
+    // Binding a masked root, or a directory above one, would put the masked tree back in view.
+    const masked = ["/tmp", realpathSync(homedir())];
+    for (const path of [...keep, ...ro]) {
+        const hidden = masked.find((m) => within(m, path));
+        if (hidden) throw new Error(`sandbox path ${path} would restore masked ${hidden}`);
+    }
     // A read-only bind over a parent takes its writable children with it, so the two sets stay disjoint.
     for (const path of keep) {
         const parent = ro.find((dir) => !ro.includes(path) && within(path, dir));

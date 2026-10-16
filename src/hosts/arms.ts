@@ -520,7 +520,7 @@ export class OpencodeSimHost extends SimHost {
                 HOME: this.home,
                 XDG_STATE_HOME: join(this.home, "state"),
                 EIDNARA_LOG_PATH: join(this.ctx.root, "eidnara.log"),
-                PATH: `${hostbin}:${this.toolchain.path}:${process.env.PATH ?? ""}`,
+                PATH: `${hostbin}:${sandboxPath(this.toolchain.path)}`,
             },
         });
         const launchedPid = this.hostPid();
