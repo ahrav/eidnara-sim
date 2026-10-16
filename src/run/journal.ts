@@ -91,6 +91,7 @@ function isLease(v: unknown): v is Lease {
     const l = v as Record<string, unknown>;
     return (
         Number.isSafeInteger(l.pid) &&
+        (l.pid as number) > 0 &&
         typeof l.host === "string" &&
         optional(l.boot, "string") &&
         optional(l.ns, "string") &&
@@ -273,7 +274,9 @@ export function takeLease(dir: string): Lease {
         } catch {
             continue;
         } finally {
-            rmSync(staged);
+            try {
+                rmSync(staged);
+            } catch {}
         }
         for (const n of numbers) {
             try {

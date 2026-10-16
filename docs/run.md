@@ -81,8 +81,8 @@ last journaled `scenario_ms`.
 `Scheduler` runs the arms in the given order, one at a time, over one event
 list. A scheduler whose scenario holds provider faults requires proxy
 control at construction, so a journaled `FaultFired` always armed the proxy.
-For each arm, it resets the driver and the proxy's fault state
-(`ProxyControl.reset`: `FaultInjector` clears armed and pending faults, empties
+For each arm, it resets the driver (on a fresh arm) and, on every entry
+including a resume, the proxy's fault state (`ProxyControl.reset`: `FaultInjector` clears armed and pending faults, empties
 its witnesses, and returns its generator to its seed, so every arm draws one
 fault mask and `report()` describes the current arm), then walks the events, and
 before `EndArm` waits for a pending kill and for the busy set to empty, then
@@ -128,14 +128,16 @@ replacement daemon is unexpected; outside one, it journals a fatal `ItemState`,
 throws `HarnessFailure`, and fails the run at once: a driver call in flight is
 raced against it, an idle wait on a job that never ends is ended by it, and
 `EndRun` is refused, whether or not the caller swallowed the throw. A scheduler fault whose driver call rejects
-journals a fatal `ItemState` and fails the run.
+journals a fatal `ItemState` and fails the run at once, ending any turn still
+in flight.
 
 ## Resume
 
 A restarted harness opens the same journal. A journal holding a fatal
 `ItemState` (a daemon exit outside an outage window, or a scheduler fault the
 driver could not carry out), before or after `EndRun`, is a failed run and is
-refused with `HarnessFailure`; otherwise a journal with `EndRun` is complete
+refused with `HarnessFailure`; an arm with `EndArm` before every scheduled
+event completed is refused as corrupt; otherwise a journal with `EndRun` is complete
 and the run returns at once, after checking that `StartRun` names this arm
 order and scenario and that every arm has `StartArm`, `EndArm`, and an `Event`
 for every scheduled event. Otherwise the harness checks that every
@@ -144,12 +146,14 @@ from the ones `StartRun` recorded, journals `ResumeRun`, and, for each arm
 without `EndArm`:
 
 - journals `Event` for a turn with `EndTurn` but no `Event`, so the answered
-  turn is never delivered again;
+  turn is never delivered again, then waits one settle interval so a job that
+  turn started can still register before the clock moves;
 - journals `ItemState failed(interrupted)` and `Event` for a `BeginTurn`
   with no `EndTurn`, and `EndJob failed(interrupted)` for each `RegisterJob`
   beyond its id's `EndJob` count;
 - marks every fired fault, and every laptop sleep journaled `missed`, as
-  handled, arms again a persistent provider fault
+  handled, journals `FaultFired` for a fault-tagged `AdvanceClock` that lacks
+  it, arms again a persistent provider fault
   whose session has not ended and a one-shot provider fault whose turn has not
   begun, and journals `ItemState failed(interrupted)` for a scheduler fault
   with no `FaultObserved`. A `single`, `burst`, or `intermittent` fault whose

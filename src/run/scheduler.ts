@@ -126,7 +126,12 @@ export class Scheduler {
         }
         for (const arm of this.o.order) {
             const mine = entries.filter((e) => e.arm === arm);
-            if (mine.some((e) => e.kind === "EndArm")) continue;
+            if (mine.some((e) => e.kind === "EndArm")) {
+                if (!this.completed(entries, arm)) {
+                    throw new Error(`journal: arm ${arm} has EndArm before its events completed`);
+                }
+                continue;
+            }
             this.arm = arm;
             this.clock = new Clock(mine.at(-1)?.scenario_ms ?? 0, this.o.journal);
             const driver = this.o.drivers[arm] as ArmDriver;
@@ -134,10 +139,10 @@ export class Scheduler {
                 driver.bind(this.handle(++this.generation, driver));
                 if (!mine.some((e) => e.kind === "StartArm")) {
                     await driver.reset();
-                    this.o.proxy?.reset();
                     this.log({ kind: "StartArm" });
                 }
-                this.resume(mine);
+                this.o.proxy?.reset();
+                if (this.resume(mine)) await Bun.sleep(this.o.settleMs ?? 1_000);
                 const done = new Set(
                     this.o.journal.entries
                         .filter((e) => e.arm === arm && e.kind === "Event")
@@ -204,14 +209,16 @@ export class Scheduler {
     }
 
     /** Existing Event and failed(interrupted) entries make recovery writes idempotent across resumes. */
-    private resume(mine: Entry[]): void {
+    /** Returns whether an answered turn was closed, which earns one settle interval for its jobs. */
+    private resume(mine: Entry[]): boolean {
         const kinds = (k: string) => mine.filter((e) => e.kind === k);
         const done = new Set(kinds("Event").map((e) => e.event));
         const ended = new Set(kinds("EndTurn").map((e) => e.event));
         const begun = new Set(kinds("BeginTurn").map((e) => e.event));
         const interrupted = kinds("ItemState").filter((e) => e.state === "failed(interrupted)");
         const marked = new Set(interrupted.map((e) => e.event ?? e.fault));
-        for (const e of kinds("EndTurn").filter((x) => !done.has(x.event))) {
+        const answered = kinds("EndTurn").filter((x) => !done.has(x.event));
+        for (const e of answered) {
             this.log({ kind: "Event", event: e.event, outcome: e.outcome });
         }
         for (const e of kinds("BeginTurn").filter(
@@ -237,6 +244,21 @@ export class Scheduler {
                 this.fired.add(`${this.arm}/${e.fault}`);
             }
         }
+        const firedIds = new Set(kinds("FaultFired").map((e) => e.fault));
+        for (const jump of kinds("AdvanceClock")) {
+            if (typeof jump.fault === "string" && !firedIds.has(jump.fault)) {
+                const f = this.o.faults.find((x) => x.id === jump.fault);
+                if (f) {
+                    this.log({
+                        kind: "FaultFired",
+                        fault: f.id,
+                        type: f.type,
+                        layer: f.seam.layer,
+                    });
+                    this.fired.add(`${this.arm}/${f.id}`);
+                }
+            }
+        }
         const observed = new Set(kinds("FaultObserved").map((e) => e.fault));
         for (const fired of kinds("FaultFired")) {
             const f = this.o.faults.find((x) => x.id === fired.fault);
@@ -259,6 +281,7 @@ export class Scheduler {
             if (f.strategy === "persistent" || (target && !begun.has(target.id)))
                 this.o.proxy?.arm(f.id);
         }
+        return answered.length > 0;
     }
 
     private async idle(): Promise<void> {
@@ -290,6 +313,8 @@ export class Scheduler {
         } catch (caught) {
             const error = caught instanceof Error ? caught.message : String(caught);
             this.log({ kind: "ItemState", fault: f.id, state: "failed", error, fatal: true });
+            this.fatal ??= new HarnessFailure(`fault ${f.id} failed: ${error}`);
+            this.fail?.(this.fatal);
             throw caught;
         }
         this.log({ kind: "FaultObserved", fault: f.id, type: f.type, evidence });
