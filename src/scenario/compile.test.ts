@@ -219,6 +219,44 @@ describe("compiled S scenario", async () => {
         }
     });
 
+    test("P14 items in one session take disjoint windows inside its last third", () => {
+        const bySession = new Map<string, { from: number; to: number }[]>();
+        for (const p of s.probes.filter((x) => x.type === "P14")) {
+            const c = p.check as { window_from_turn: number; window_to_turn: number };
+            const list = bySession.get(p.session) ?? [];
+            list.push({ from: c.window_from_turn, to: c.window_to_turn });
+            bySession.set(p.session, list);
+        }
+        for (const [session, windows] of bySession) {
+            const turns = s.sessions.find((x) => x.id === session)?.requests ?? 0;
+            windows.sort((a, b) => a.from - b.from);
+            expect(windows[0]?.from).toBe(Math.floor((2 * turns) / 3));
+            expect(windows.at(-1)?.to).toBe(turns);
+            for (const [i, w] of windows.entries()) {
+                expect(w.to - w.from).toBeGreaterThanOrEqual(10);
+                if (i > 0) expect(w.from).toBe(windows[i - 1]?.to ?? -1);
+            }
+        }
+    });
+
+    test("a reversed fact forbids its superseded value beside the final one", () => {
+        const reversed = s.facts.filter((f) => f.manner === "stated_then_reversed");
+        expect(reversed.length).toBeGreaterThan(0);
+        for (const f of reversed) {
+            for (const p of s.probes.filter((x) => x.fact === f.id && x.text)) {
+                const c = p.check as { must?: string[]; must_not?: string[] };
+                const harm = p.type === "P2" || p.type === "P11" || p.type === "P10";
+                if (!harm && !c.must_not?.length) continue;
+                const forbidden = c.must_not ?? [];
+                expect({ probe: p.type, count: forbidden.length }).toEqual({
+                    probe: p.type,
+                    count: forbidden.length >= 2 ? forbidden.length : 2,
+                });
+                expect(new Set(forbidden).size).toBe(forbidden.length);
+            }
+        }
+    });
+
     test("SIM-P08: every cue/probe pair is journaled below both thresholds", () => {
         const expected = s.probes
             .filter((p) => p.text)

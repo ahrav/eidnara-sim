@@ -2,6 +2,19 @@ import { describe, expect, test } from "bun:test";
 import { chmodSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { bm25Ratio, cosine } from "./similarity";
+
+describe("similarity scores", () => {
+    test("cosine and bm25Ratio return full precision for the threshold gate", () => {
+        const b = [0.60004, Math.sqrt(1 - 0.60004 ** 2)];
+        expect(cosine([1, 0], b)).toBeGreaterThan(0.6);
+        expect(bm25Ratio("alpha beta", "alpha beta gamma", ["alpha beta gamma", "delta"])).not.toBe(
+            Math.round(
+                bm25Ratio("alpha beta", "alpha beta gamma", ["alpha beta gamma", "delta"]) * 1e4,
+            ) / 1e4,
+        );
+    });
+});
 
 describe("bedrockEmbedder", () => {
     test("a failed CLI call leaves no temporary file beside the cache", () => {
