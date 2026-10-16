@@ -48,7 +48,7 @@ would fill more than 80% of the span; the P13 turn ranges of the forced p90
 sessions then join the session time, and between-session gaps fill the rest,
 each at least one millisecond. `manifest.within_session_gap_scale` and
 `manifest.between_session_gap_scale` record both factors. For the
-pre-registered seeds, within-session gaps scale to between 8% and 36% and
+pre-registered seeds, within-session gaps scale to between 8% and 37% and
 between-session gaps to between 0.4% and 1.3%.
 
 Every session keeps its sampled gap after the previous session ends. A session
@@ -163,15 +163,15 @@ thresholds (`bm25_max` 0.4, `cosine_max` 0.6):
 
 | Tier | Seed | `scenario_hash` | Largest BM25 ratio | Largest cosine |
 |---|---|---|---|---|
-| S | 101 | `6a3074ae` | 0.2111 | 0.5194 |
-| S | 102 | `d7afb8e1` | 0.256 | 0.4867 |
-| M | 201 | `f03e3d21` | 0.2516 | 0.4992 |
-| M | 202 | `be4d64b5` | 0.2532 | 0.4997 |
-| M | 203 | `be4abc2e` | 0.2508 | 0.4843 |
-| L | 301 | `dad935ef` | 0.2555 | 0.5092 |
-| L | 302 | `d8e63970` | 0.2523 | 0.4957 |
-| L | 303 | `4fb33119` | 0.2514 | 0.5083 |
-| XL | 401 | `4d348832` | 0.251 | 0.4962 |
+| S | 101 | `eee444d7` | 0.2147 | 0.5194 |
+| S | 102 | `b9c7d473` | 0.2503 | 0.4867 |
+| M | 201 | `d0dd302a` | 0.2502 | 0.4992 |
+| M | 202 | `f9f0e4ac` | 0.2516 | 0.4997 |
+| M | 203 | `0590e08d` | 0.2496 | 0.4843 |
+| L | 301 | `325d2270` | 0.2606 | 0.5092 |
+| L | 302 | `f2b399d7` | 0.2573 | 0.4957 |
+| L | 303 | `0faa11a1` | 0.2511 | 0.5083 |
+| XL | 401 | `bf092109` | 0.2558 | 0.4962 |
 
 ## Known limits
 
