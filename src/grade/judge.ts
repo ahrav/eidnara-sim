@@ -20,11 +20,7 @@ export const ARM_TOKENS = [
 const INVISIBLE = /[\u00ad\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u206f\ufeff]/g;
 
 export function foldWords(text: string): string {
-    const ascii = text
-        .normalize("NFD")
-        .replace(/\p{M}/gu, "")
-        .replace(INVISIBLE, "")
-        .replace(/[\uff01-\uff5e]/g, (c) => String.fromCharCode((c.codePointAt(0) ?? 0) - 0xfee0));
+    const ascii = text.normalize("NFKD").replace(/\p{M}/gu, "").replace(INVISIBLE, "");
     return ` ${ascii
         .toLowerCase()
         .replace(/[^\p{L}\p{N}]+/gu, " ")
@@ -53,7 +49,7 @@ export interface BlindedPrompt {
 
 export function normalise(text: string): string {
     return text
-        .replace(/^[ \t]*```[^\s`]*[ \t]*$/gm, "")
+        .replace(/^[ \t]*```[^`\n]*$/gm, "")
         .replace(/^#{1,6}\s+/gm, "")
         .replace(/^\s*[-*+]\s+/gm, "")
         .replace(/\*\*|__|`/g, "")

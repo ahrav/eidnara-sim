@@ -468,6 +468,24 @@ describe("P7 judge path", () => {
         expect(() => gradeP7(judgment, context(f.probe.id, other), rules)).toThrow(GradeRefused);
     });
 
+    test("compatibility spellings of an arm name are folded before blinding", () => {
+        const base = { id: "p", a: "fine", b: "fine" };
+        for (const leak of [
+            "\u{1d556}\u{1d55a}\u{1d555}\u{1d55f}\u{1d552}\u{1d563}\u{1d552}",
+            "ⓔⓘⓓⓝⓐⓡⓐ",
+            "ｅｉｄｎａｒａ",
+        ]) {
+            expect(() => blind({ ...base, b: leak }, "a_then_b", "r", [])).toThrow("names an arm");
+        }
+    });
+
+    test("a fence opener with spaced metadata is dropped whole", () => {
+        expect(normalise('```ts title="allocation dominated"\nconst x = 1;\n```')).toBe(
+            "const x = 1;",
+        );
+        expect(normalise("   ``` rust ignore\nfn f() {}\n```")).toBe("fn f() {}");
+    });
+
     test("the human-check sample is ten percent of P7 items, rounded up, from a seeded draw", () => {
         const items = Array.from({ length: 24 }, (_, i) => `q-${i}`);
         const a = humanCheckSample(items, rules, new Rng(9));

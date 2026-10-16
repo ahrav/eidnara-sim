@@ -86,8 +86,10 @@ cannot call, and the divergences are listed below.
    and the host arm's as `b`, and refuses either answer, or the reference
    reason, when it carries a
    canary or names an arm. Names are matched as whole words after folding
-   case, full width, and separators and dropping invisible characters and
-   every combining mark after canonical decomposition (eval-core drops the
+   case and separators, applying compatibility decomposition (NFKD, which
+   also folds full-width, circled, and mathematical letters), and dropping
+   invisible characters and
+   every combining mark (eval-core drops the
    combining diacritics block only); an invisible character is tried both
    as nothing and as a word separator, so `eid\u200bnara` and `arm\u200ba`
    both match, the normalised text is checked as well as the raw text, so
@@ -96,7 +98,9 @@ cannot call, and the divergences are listed below.
    match. The
    arm names are eval-core's six plus `eidnara`, `host arm`, and
    `memory arm`. Doubled emphasis marks (`**`, `__`), backticks, heading
-   marks, bullet marks, and code fence lines are stripped and whitespace
+   marks, bullet marks, and code fence lines (a line that starts with three
+   backticks and holds no further backtick, whatever its info string) are
+   stripped and whitespace
    collapsed before the judge sees either answer; backticks inside a line
    are removed and the text between them stays.
 3. `judgePair` shows the pair in both orders, under the rubric and the
