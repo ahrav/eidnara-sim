@@ -121,7 +121,9 @@ call through it is refused:
 
 Each arm's driver receives an `ArmHandle` through `bind` at the arm's start,
 before `reset`, with the session the journal left open already restored so a
-late summarizer observation from it still fires its kill. The handle carries `jobStart`, `jobEnd`, `observe`, and
+late summarizer observation from it still fires its kill, and with an outage
+window whose fault fired but was never observed still open, so the delayed
+scheduled exit reads as expected. The handle carries `jobStart`, `jobEnd`, `observe`, and
 `daemonExited`, and every call checks that its arm is still the one running,
 so a callback a finished arm left behind is refused instead of writing under
 the next arm. `observe("history_summarizer")` fires the session's mid-fold
@@ -140,7 +142,8 @@ A restarted harness opens the same journal. A journal holding a fatal
 `ItemState` (a daemon exit outside an outage window, or a scheduler fault the
 driver could not carry out), before or after `EndRun`, is a failed run and is
 refused with `HarnessFailure`; an arm with `EndArm` before every scheduled
-event completed is refused as corrupt; otherwise a journal with `EndRun` is complete
+event completed, or an `EndTurn` without its `BeginTurn`, is refused as
+corrupt; otherwise a journal with `EndRun` is complete
 and the run returns at once, after checking that `StartRun` names this arm
 order and scenario and that every arm has `StartArm`, `EndArm`, and an `Event`
 for every scheduled event. Otherwise the harness checks that every

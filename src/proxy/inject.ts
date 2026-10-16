@@ -96,8 +96,12 @@ export class FaultInjector {
         this.armed.delete(id);
     }
 
-    take(component: Component, call: number): ProxyFault | null {
-        if (component !== TARGET) return null;
+    /**
+     * `startedMono` is the call's receipt on the monotonic clock; a call received before the
+     * last reset belongs to the previous arm and takes nothing from this one.
+     */
+    take(component: Component, call: number, startedMono = performance.now()): ProxyFault | null {
+        if (component !== TARGET || startedMono < this.resetAt) return null;
         for (const [id, a] of this.armed) {
             const { strategy, params } = a.fault;
             a.calls++;

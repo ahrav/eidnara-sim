@@ -1382,6 +1382,91 @@ describe("Scheduler", () => {
         await run;
     });
 
+    test("an EndTurn without its BeginTurn is refused on resume, and a duplicate EndTurn recovers one Event", async () => {
+        const make = (lines: Partial<Entry>[]) => {
+            const path = join(dir(), "j.jsonl");
+            const j = new Journal(path);
+            j.append({
+                kind: "StartRun",
+                arm: null,
+                scenario_ms: 0,
+                order: ["a"],
+                scenario: scenarioId(fixtureEvents(2), []),
+            });
+            j.append({ kind: "StartArm", arm: "a", scenario_ms: 0 });
+            j.append({ kind: "Event", arm: "a", scenario_ms: 0, event: "e-000000", outcome: "ok" });
+            for (const l of lines) j.append({ arm: "a", scenario_ms: 0, ...l } as never);
+            j.close();
+            return new Scheduler({
+                events: fixtureEvents(2),
+                faults: [],
+                journal: new Journal(path),
+                settleMs: 0,
+                order: ["a"],
+                drivers: { a: fakeDriver([]) },
+            });
+        };
+        await expect(
+            make([{ kind: "EndTurn", event: "e-000001", outcome: "ok" }]).run(),
+        ).rejects.toThrow(/has no BeginTurn/);
+        const dup = make([
+            { kind: "BeginTurn", event: "e-000001" },
+            { kind: "EndTurn", event: "e-000001", outcome: "ok" },
+            { kind: "EndTurn", event: "e-000001", outcome: "ok" },
+        ]);
+        await dup.run();
+    });
+
+    test("a resume keeps an unobserved outage window open so the delayed scheduled exit is expected", async () => {
+        const path = join(dir(), "j.jsonl");
+        const restart = episode("r", "daemon_restart", {
+            kind: "session_start",
+            session: "s-0000",
+        });
+        const j = new Journal(path);
+        j.append({
+            kind: "StartRun",
+            arm: null,
+            scenario_ms: 0,
+            order: ["a"],
+            scenario: scenarioId(fixtureEvents(1), [restart]),
+        });
+        j.append({ kind: "StartArm", arm: "a", scenario_ms: 0 });
+        j.append({
+            kind: "FaultFired",
+            arm: "a",
+            scenario_ms: 0,
+            fault: "r",
+            type: "daemon_restart",
+            layer: "scheduler",
+        });
+        j.close();
+        const inner = fakeDriver([]);
+        let exit: unknown = "none";
+        const driver: ArmDriver = {
+            ...inner,
+            bind: (h) => {
+                inner.bind(h);
+                try {
+                    h.daemonExited({ signal: "SIGTERM" });
+                    exit = "expected";
+                } catch (caught) {
+                    exit = caught;
+                }
+            },
+        };
+        const resumed = new Journal(path);
+        await new Scheduler({
+            events: fixtureEvents(1),
+            faults: [restart],
+            journal: resumed,
+            settleMs: 0,
+            order: ["a"],
+            drivers: { a: driver },
+        }).run();
+        expect(exit).toBe("expected");
+    });
+
     test("a journal with EndRun whose arm has orphan markers and no events is refused", async () => {
         const path = join(dir(), "j.jsonl");
         const j = new Journal(path);

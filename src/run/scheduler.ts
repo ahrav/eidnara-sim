@@ -137,6 +137,7 @@ export class Scheduler {
             const driver = this.o.drivers[arm] as ArmDriver;
             try {
                 this.session = this.openSession(mine);
+                this.outage = this.openOutage(mine);
                 driver.bind(this.handle(++this.generation, driver));
                 if (!mine.some((e) => e.kind === "StartArm")) {
                     await this.untilFatal(driver.reset());
@@ -214,6 +215,21 @@ export class Scheduler {
     }
 
     /** Existing Event and failed(interrupted) entries make recovery writes idempotent across resumes. */
+    /** An outage fault fired but not yet observed when the journal stopped keeps its window open. */
+    private openOutage(mine: Entry[]): string | null {
+        const observed = new Set(
+            mine.filter((e) => e.kind === "FaultObserved").map((e) => e.fault),
+        );
+        const open = mine.find(
+            (e) =>
+                e.kind === "FaultFired" &&
+                typeof e.fault === "string" &&
+                !observed.has(e.fault) &&
+                OUTAGE.has(this.o.faults.find((f) => f.id === e.fault)?.type ?? ""),
+        );
+        return typeof open?.fault === "string" ? open.fault : null;
+    }
+
     /**
      * The session the journal left open: the one of the last delivered or begun event, unless
      * its `session_end` already has an `Event`.
@@ -240,7 +256,17 @@ export class Scheduler {
         const begun = new Set(kinds("BeginTurn").map((e) => e.event));
         const interrupted = kinds("ItemState").filter((e) => e.state === "failed(interrupted)");
         const marked = new Set(interrupted.map((e) => e.event ?? e.fault));
-        const answered = kinds("EndTurn").filter((x) => !done.has(x.event));
+        const seen = new Set<unknown>();
+        const answered = kinds("EndTurn").filter((x) => {
+            if (!begun.has(x.event)) {
+                throw new Error(
+                    `journal: EndTurn for ${x.event} in arm ${this.arm} has no BeginTurn`,
+                );
+            }
+            if (done.has(x.event) || seen.has(x.event)) return false;
+            seen.add(x.event);
+            return true;
+        });
         for (const e of kinds("BeginTurn").filter(
             (x) => !ended.has(x.event) && !done.has(x.event),
         )) {
@@ -432,14 +458,14 @@ export class Scheduler {
                 live();
                 const expected = this.outage !== null;
                 this.outage = null;
-                this.log({ kind: "ItemState", daemon_exit: detail, expected, fatal: !expected });
                 if (!expected) {
                     this.fatal ??= new HarnessFailure(
                         "daemon exited outside a scheduled outage window",
                     );
                     this.fail?.(this.fatal);
-                    throw this.fatal;
                 }
+                this.log({ kind: "ItemState", daemon_exit: detail, expected, fatal: !expected });
+                if (this.fatal && !expected) throw this.fatal;
             },
         };
     }

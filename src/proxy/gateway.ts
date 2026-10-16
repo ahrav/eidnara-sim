@@ -292,7 +292,7 @@ export class Gateway {
         try {
             scope = this.options.scope();
             scenario_ms = this.options.clock.scenarioMs();
-            done = await this.serve(request, sink, call, (d) => {
+            done = await this.serve(request, sink, call, startedMono, (d) => {
                 done = d;
             });
         } catch (caught) {
@@ -326,6 +326,7 @@ export class Gateway {
         request: Request,
         sink: Sink & { sent: () => number },
         call: number,
+        startedMono: number,
         progress: (d: Done) => void,
     ): Promise<Done> {
         const { path, method, header, expect, body: upload } = request;
@@ -375,7 +376,7 @@ export class Gateway {
         const tag = classify(body, header);
         const done: Done = { ...tag, model, status: 200 };
         progress(done);
-        const fault = this.options.injector.take(tag.component, call);
+        const fault = this.options.injector.take(tag.component, call, startedMono);
         const rng = new Rng(this.options.rng.nextU32());
         const firstByte = () => {
             if (done.first_byte_ms != null) return;

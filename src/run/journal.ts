@@ -394,6 +394,9 @@ export class Journal {
                 ftruncateSync(fd, this.length);
             } catch {
                 this.fd = -1;
+                try {
+                    closeSync(fd);
+                } catch {}
             }
             throw caught;
         }
