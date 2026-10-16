@@ -203,7 +203,7 @@ const SNAPSHOT: Record<string, Field> = {
     artefacts: Array.isArray,
 };
 
-/** Refuses a snapshot whose shape or artefacts fall outside the grade-input contract. */
+/** Refuses a snapshot whose shape or artefacts fall outside the grade-input contract, or that carries two artefacts of one class and role. */
 export function assertArtefactsOnly(snapshot: Snapshot): void {
     const top = badField(SNAPSHOT, snapshot, "snapshot");
     if (top) throw new GradeRefused(`${top} is missing or malformed`);
@@ -232,6 +232,14 @@ export function assertArtefactsOnly(snapshot: Snapshot): void {
                 ? foreignCall(snapshot, a.calls as CallView[], `artefacts[${i}].calls`)
                 : null);
         if (bad) throw new GradeRefused(`snapshot ${snapshot.id}: ${bad} is missing or malformed`);
+    }
+    const seen = new Set<string>();
+    for (const a of snapshot.artefacts) {
+        const key = "role" in a && typeof a.role === "string" ? `${a.role} ${a.class}` : a.class;
+        if (seen.has(key)) {
+            throw new GradeRefused(`snapshot ${snapshot.id} has two ${key} artefacts`);
+        }
+        seen.add(key);
     }
 }
 

@@ -66,10 +66,18 @@ function gitPath(token: string): string {
         .replace(/^[ab]\//, "");
 }
 
-const HUNK_HEADER = /^@@ -\d+(,\d+)? \+\d+(,\d+)? @@/;
+const HUNK_HEADER = /^@@ -(\d+)(,\d+)? \+(\d+)(,\d+)? @@/;
 const FILE_META =
     /^(index |old mode |new mode |deleted file mode |new file mode |similarity index |dissimilarity index |rename from |rename to |copy from |copy to |Binary files |GIT binary patch|literal |delta )/;
 const GIT_LABEL = /^diff --git ("a\/(?:[^"\\]|\\.)*"|a\/\S+) ("b\/(?:[^"\\]|\\.)*"|b\/.+)$/;
+/** The two paths of a `diff --git` label: quoted, or unquoted and equal (a path with spaces splits at its middle), or whitespace-separated. */
+function labelPaths(line: string): [string, string] | null {
+    const rest = line.slice("diff --git ".length);
+    const same = /^a\/(.+) b\/\1$/.exec(rest);
+    if (same) return [same[1] as string, same[1] as string];
+    const named = GIT_LABEL.exec(line);
+    return named ? [gitPath(named[1] as string), gitPath(named[2] as string)] : null;
+}
 
 /** A `---`/`+++` header's path: the token before any tab-separated timestamp, decoded, or null for `/dev/null`. */
 function headerPath(rest: string): string | null {
@@ -105,6 +113,9 @@ function scanDiff(patch: string): Scan {
     let operative: string | null = null;
     let deleted = false;
     let hunks = 0;
+    /** Where the previous hunk ended in each file, so hunks advance through it. */
+    let oldEnd = 0;
+    let newEnd = 0;
     const meta = new Set<string>();
     /** Binary payload progress: blocks closed so far and whether a `literal`/`delta` block is open. */
     let binaryBlocks = 0;
@@ -132,6 +143,8 @@ function scanDiff(patch: string): Scan {
         operative = null;
         deleted = false;
         hunks = 0;
+        oldEnd = 0;
+        newEnd = 0;
         meta.clear();
         binaryBlocks = 0;
         binaryOpen = false;
@@ -172,14 +185,14 @@ function scanDiff(patch: string): Scan {
         if (line.startsWith("\\")) continue;
         if (line.startsWith("diff --git ")) {
             if (!fileBody() || pendingNew) fail();
-            const named = GIT_LABEL.exec(line);
+            const named = labelPaths(line);
             if (!named) {
                 fail();
                 break;
             }
             close();
-            paths.push(gitPath(named[1] as string), gitPath(named[2] as string));
-            label = gitPath(named[2] as string);
+            paths.push(named[0], named[1]);
+            label = named[1];
             opened = true;
             headersDone = false;
         } else if (line.startsWith("--- ")) {
@@ -206,8 +219,16 @@ function scanDiff(patch: string): Scan {
         } else if (HUNK_HEADER.test(line)) {
             if (!opened || pendingNew || !headersDone) fail();
             const m = HUNK_HEADER.exec(line) as RegExpExecArray;
-            oldLeft = m[1] === undefined ? 1 : Number(m[1].slice(1));
-            newLeft = m[2] === undefined ? 1 : Number(m[2].slice(1));
+            const oldStart = Number(m[1]);
+            const newStart = Number(m[3]);
+            oldLeft = m[2] === undefined ? 1 : Number(m[2].slice(1));
+            newLeft = m[4] === undefined ? 1 : Number(m[4].slice(1));
+            if (oldLeft === 0 && newLeft === 0) fail();
+            const oldFrom = oldLeft === 0 ? oldStart + 1 : oldStart;
+            const newFrom = newLeft === 0 ? newStart + 1 : newStart;
+            if (oldFrom < oldEnd || newFrom < newEnd) fail();
+            oldEnd = oldFrom + oldLeft;
+            newEnd = newFrom + newLeft;
             hunks++;
         } else if (FILE_META.test(line)) {
             if (pendingNew || headersDone || label === null) fail();

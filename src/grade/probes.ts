@@ -5,6 +5,7 @@ import {
     ftruncateSync,
     openSync,
     readFileSync,
+    rmSync,
     writeSync,
 } from "node:fs";
 import type { Preregistration } from "../prereg/schema";
@@ -141,10 +142,12 @@ function binary(type: string, pass: boolean, extra: Outcome["metrics"] = {}, rea
     return outcome;
 }
 
+/** The reachable shell segments of the turn's commands with the heredoc bodies they consume, one per line. */
 const commandText = (r: ArtefactReader) =>
     r
         .commands()
-        .map((c) => c.command)
+        .flatMap(executedParts)
+        .map((p) => (p.body ? `${p.seg}\n${p.body.replace(/\n$/, "")}` : p.seg))
         .join("\n");
 /** Changed paths join the added lines so a check pattern can match a file name. */
 const changed = (r: ArtefactReader) => {
@@ -164,26 +167,35 @@ const work = (r: ArtefactReader) => `${changed(r)}\n${commandText(r)}`;
  * or braced group, a word-initial comment, and a heredoc body stay out of the operator scan, so
  * only top-level commands become segments.
  */
-function splitShell(command: string): { op: string; seg: string }[] {
-    const out: { op: string; seg: string }[] = [];
+interface Segment {
+    op: string;
+    seg: string;
+    /** Heredoc bodies the segment's commands consume, kept apart from the command words. */
+    body: string;
+}
+function splitShell(command: string): Segment[] {
+    const out: Segment[] = [];
     let quote = "";
     let depth = 0;
     let seg = "";
     let op = ";";
     const pending: { delim: string; stripTabs: boolean }[] = [];
     const push = (next: string) => {
-        out.push({ op, seg: seg.trim() });
+        out.push({ op, seg: seg.trim(), body: "" });
         seg = "";
         op = next;
     };
+    /** Consumes heredoc bodies after a newline, attaching their lines to the segment that opened them. */
     const skipBodies = (from: number): number => {
         let i = from;
+        const owner = out.at(-1);
         while (pending.length > 0 && i < command.length) {
             const end = command.indexOf("\n", i);
             const raw = command.slice(i, end < 0 ? command.length : end);
             const head = pending[0] as { delim: string; stripTabs: boolean };
             const line = head.stripTabs ? raw.replace(/^\t+/, "") : raw;
             if (line === head.delim) pending.shift();
+            else if (owner) owner.body += `${raw}\n`;
             i = end < 0 ? command.length : end + 1;
         }
         return i;
@@ -234,17 +246,17 @@ function splitShell(command: string): { op: string; seg: string }[] {
             if (pending.length > 0) i = skipBodies(i + 1) - 1;
         } else seg += ch;
     }
-    out.push({ op, seg: seg.trim() });
+    out.push({ op, seg: seg.trim(), body: "" });
     return out.filter((x) => x.seg.length > 0);
 }
 
 /** The exit code belongs to the last list of a command, so only an `&&` segment there is established by it. */
-const executed = (x: Command): string[] => {
+const executedParts = (x: Command): Segment[] => {
     const parts = splitShell(x.command);
     let guard = ";";
     const guarded = parts.map((p) => {
         guard = p.op === "|" ? guard : p.op;
-        return { seg: p.seg, op: guard };
+        return { ...p, op: guard };
     });
     const lastList = guarded.reduce((n, p, i) => (/^[;&\n]$/.test(p.op) ? i : n), 0);
     const mixed = guarded.slice(lastList).some((p) => p.op === "||");
@@ -266,9 +278,9 @@ const executed = (x: Command): string[] => {
         .slice(0, reached)
         .filter(
             (p, i) => p.op !== "||" && (p.op !== "&&" || (x.exit === 0 && i >= lastList && !mixed)),
-        )
-        .map((p) => unprefixed(p.seg));
+        );
 };
+const executed = (x: Command): string[] => executedParts(x).map((p) => unprefixed(p.seg));
 /** Shell words of a segment, with quotes grouping and removed. */
 const shellWords = (segment: string): string[] => {
     const words: string[] = [];
@@ -307,7 +319,9 @@ const VALUE_OPTIONS: Record<string, RegExp> = {
  * an option supplies it (`-e`, `--regexp`, `-f`, `--file`), in which case every positional word is a file.
  */
 const operands = (segment: string): string[] => {
-    const words = unredirectedWords(shellWords(segment));
+    const raw = shellWords(segment);
+    if (raw[0] === "read") return inputTargets(raw);
+    const words = unredirectedWords(raw);
     if (!/^(grep|rg|sed)$/.test(words[0] as string)) return words.slice(1);
     const scriptOptions =
         words[0] === "sed" ? /^(-e|-f|--expression|--file)$/ : /^(-e|-f|--regexp|--file)$/;
@@ -327,16 +341,32 @@ const operands = (segment: string): string[] => {
     if (!supplied) files.shift();
     return files;
 };
+/** Redirection operators split from the word they are attached to. */
+const splitRedirections = (raw: string[]): string[] =>
+    raw.flatMap((w) => {
+        const at = w.search(/(?<=[^<>&])\d*&?[<>]/);
+        return at > 0 ? [w.slice(0, at), w.slice(at)] : [w];
+    });
+/** The targets of `<` input redirections, which the shell opens for the command; the `read` builtin's words are variable names. */
+const inputTargets = (raw: string[]): string[] => {
+    const words = splitRedirections(raw);
+    const out: string[] = [];
+    for (let i = 0; i < words.length; i++) {
+        const w = words[i] as string;
+        if (/^\d*<<<?-?$/.test(w)) i++;
+        else if (/^\d*<<<?-?./.test(w)) continue;
+        else if (/^\d*<$/.test(w)) out.push(words[++i] ?? "");
+        else if (/^\d*<./.test(w)) out.push(w.replace(/^\d*</, ""));
+    }
+    return out.filter((w) => w.length > 0);
+};
 /**
  * Shell words with output redirections removed (operator and target), heredoc and here-string
  * operators removed with their delimiter or value, and `<` input redirections reduced to their
  * target, which the command reads.
  */
 const unredirectedWords = (raw: string[]): string[] => {
-    const words = raw.flatMap((w) => {
-        const at = w.search(/(?<=[^<>&])\d*&?[<>]/);
-        return at > 0 ? [w.slice(0, at), w.slice(at)] : [w];
-    });
+    const words = splitRedirections(raw);
     const out: string[] = [];
     for (let i = 0; i < words.length; i++) {
         const w = words[i] as string;
@@ -636,6 +666,8 @@ export function gradeItem(
 }
 
 const VERDICTS: Verdict[] = ["pass", "fail", "excluded"];
+const LOCK_WAIT_MS = 2000;
+const LOCK_POLL_MS = 10;
 
 function isGradeRecord(value: unknown): value is GradeRecord {
     if (typeof value !== "object" || value === null) return false;
@@ -842,11 +874,48 @@ export class GradeLog {
         return mine.length === 0 ? 1 : Math.max(...mine.map((g) => g.version)) + 1;
     }
 
+    /**
+     * Runs `fn` while holding the log's lock file (`<path>.lock`, created exclusively), so one
+     * writer at a time reads, validates, truncates, and writes. A lock still held after the wait
+     * is refused rather than broken; a writer that died leaves its lock file for the operator.
+     */
+    private locked<T>(fn: () => T): T {
+        const lock = `${this.path}.lock`;
+        const deadline = Date.now() + LOCK_WAIT_MS;
+        let fd: number;
+        for (;;) {
+            try {
+                fd = openSync(lock, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL);
+                break;
+            } catch (e) {
+                if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+                if (Date.now() >= deadline) {
+                    throw new GradeRefused(
+                        `grade log ${this.path} is locked by another writer (${lock})`,
+                    );
+                }
+                Bun.sleepSync(LOCK_POLL_MS);
+            }
+        }
+        try {
+            writeSync(fd, `${process.pid}\n`);
+            return fn();
+        } finally {
+            closeSync(fd);
+            rmSync(lock, { force: true });
+        }
+    }
+
     append(record: GradeRecord): void {
         const { item, arm } = record;
         if (!isGradeRecord(record)) {
             throw new GradeRefused(`grade ${item}/${arm} is not a grade record`);
         }
+        this.locked(() => this.appendLocked(record));
+    }
+
+    private appendLocked(record: GradeRecord): void {
+        const { item, arm } = record;
         const mine = this.all().filter((g) => g.item === item && g.arm === arm);
         const expected = mine.length === 0 ? 1 : Math.max(...mine.map((g) => g.version)) + 1;
         if (record.version !== expected) {

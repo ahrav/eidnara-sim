@@ -1,9 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import {
     appendFileSync,
+    existsSync,
     mkdtempSync,
     readdirSync,
     readFileSync,
+    rmSync,
     symlinkSync,
     truncateSync,
     writeFileSync,
@@ -1415,6 +1417,84 @@ describe("grading harness", () => {
             log.append(grade(name));
         }
         expect(log.all()).toHaveLength(6);
+    });
+
+    test("a Git label with spaces is read with its headers, and hunks advance with lines", () => {
+        const f = fixture("P1-pass");
+        const probe = { ...f.probe, check: { must: ["^src/a b\\.ts$"] } };
+        const run = (patch: string) => {
+            const snap = structuredClone(f.snapshots[0]) as Snapshot;
+            const diff = snap.artefacts.find((a) => a.class === "diff" && a.role === "turn");
+            if (diff?.class !== "diff") throw new Error("fixture lacks diff");
+            diff.patch = patch;
+            return () =>
+                gradeItem(probe, [snap], rules) as NonNullable<ReturnType<typeof gradeItem>>;
+        };
+        expect(
+            run(
+                "diff --git a/src/a b.ts b/src/a b.ts\n--- a/src/a b.ts\t\n+++ b/src/a b.ts\t\n@@ -1 +1 @@\n-a\n+b\n",
+            )().verdict,
+        ).toBe("pass");
+        expect(run("--- a/x\n+++ b/x\n@@ -1,0 +1,0 @@\n")).toThrow("patch");
+        expect(run("--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n@@ -1 +1 @@\n-a\n+c\n")).toThrow(
+            "patch",
+        );
+        expect(run("--- a/x\n+++ b/x\n@@ -3 +3 @@\n-a\n+b\n@@ -1 +1 @@\n-a\n+c\n")).toThrow(
+            "patch",
+        );
+        expect(
+            run("--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n@@ -5,2 +5,3 @@\n c\n+d\n e\n")(),
+        ).toBeDefined();
+    });
+
+    test("the read builtin reads its redirection target only", () => {
+        const f = fixture("P6-pass");
+        const run = (cmd: string) => {
+            const snap = structuredClone(f.snapshots[0]) as Snapshot;
+            const log = snap.artefacts.find((a) => a.class === "command-log" && a.role === "turn");
+            if (log?.class !== "command-log") throw new Error("fixture lacks command-log");
+            log.commands.push({ command: cmd, exit: 0, scenario_ms: 10 });
+            return gradeItem(f.probe, [snap], rules)?.metrics["P6.reread_files"];
+        };
+        expect(run("read src/connection.rs < /dev/null")).toBe(0);
+        expect(run("read line < src/connection.rs")).toBe(1);
+    });
+
+    test("a snapshot with two artefacts of one role is refused before grader selection", () => {
+        const f = fixture("P8-pass");
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        const diff = fixture("P2-pass").snapshots[0]?.artefacts.find((a) => a.class === "diff");
+        if (diff?.class !== "diff") throw new Error("fixture lacks diff");
+        snap.artefacts.push({ ...diff, id: "d-1" }, { ...diff, id: "d-2" });
+        expect(() => gradeItem(f.probe, [snap], rules)).toThrow("two turn diff artefacts");
+        const calls = snap.artefacts.find((a) => a.class === "proxy-call");
+        if (calls?.class !== "proxy-call") throw new Error("fixture lacks proxy-call");
+        snap.artefacts.splice(-2, 2);
+        snap.artefacts.push({ ...calls, id: `${calls.id}-again` });
+        expect(() => gradeItem(f.probe, [snap], rules)).toThrow("two proxy-call artefacts");
+    });
+
+    test("an append holds the grade log's lock and a held lock is refused", () => {
+        const path = join(mkdtempSync(join(tmpdir(), "sim-grades-")), "grades.jsonl");
+        const log = new GradeLog(path);
+        writeFileSync(`${path}.lock`, "held");
+        expect(() => log.append(grade("P2-pass"))).toThrow("locked");
+        rmSync(`${path}.lock`);
+        log.append(grade("P2-pass"));
+        expect(existsSync(`${path}.lock`)).toBe(false);
+        expect(log.all()).toHaveLength(1);
+    });
+
+    test("command evidence comes from reachable segments", () => {
+        const f = fixture("P5-pass");
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        const log = snap.artefacts.find((a) => a.class === "command-log" && a.role === "turn");
+        if (log?.class !== "command-log") throw new Error("fixture lacks command-log");
+        log.commands.push({ command: "false && echo lazy_static", exit: 1, scenario_ms: 10 });
+        log.commands.push({ command: "exit 0; echo lazy_static", exit: 0, scenario_ms: 11 });
+        expect(gradeItem(f.probe, [snap], rules)?.verdict).toBe("pass");
+        log.commands.push({ command: "echo lazy_static", exit: 0, scenario_ms: 12 });
+        expect(gradeItem(f.probe, [snap], rules)?.verdict).toBe("fail");
     });
 
     test("a check pattern that is empty after its prefix or fails to compile is refused", () => {
