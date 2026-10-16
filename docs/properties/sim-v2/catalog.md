@@ -5,8 +5,10 @@ Scope: the v2 live-slice harness in this tree, specified by
 follow `docs/properties/METHOD.md`. The spec names its full catalog at
 `research/sim-design/property-catalog-sim-v2.md` (2026-10-12 revision); that
 file is unavailable, so these records are reconstructed from the condensed
-index in the spec body. Every record is PROPOSED: `Exercised: not yet` and
-`Confidence: low`, because no harness surface exists to verify against.
+index in the spec body. Every record is PROPOSED. All but one read
+`Exercised: not yet` and `Confidence: low`, because no harness surface existed
+to verify against when they were written; SIM-P48 reads `partial` and
+`medium` from a recorded M5 run.
 
 Stable ids: `SIM-P01` to `SIM-P77` carry the spec's proposed records, and
 `SIM-L01` to `SIM-L03` carry the liveness bounds OQ-6 asked for and M0

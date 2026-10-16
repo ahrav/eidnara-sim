@@ -375,6 +375,18 @@ describe("HostDriver lifecycle", () => {
         expect(hosts.at(-1)?.opened).toEqual([]);
     });
 
+    test("the state file is replaced whole, with no staged copy left behind", async () => {
+        const { driver, armDir } = fixture("host", { p: gitRepo() });
+        await driver.reset();
+        writeFileSync(join(armDir, "state.json"), '{"model": 1, "daemon": null, "ho');
+        await driver.fault(episode("model_switch"));
+        const state = JSON.parse(readFileSync(join(armDir, "state.json"), "utf8"));
+        expect(state.model).toBe(1);
+        expect(readdirSync(armDir).filter((f) => f.startsWith("state.json"))).toEqual([
+            "state.json",
+        ]);
+    });
+
     test("resume stops the processes the killed harness recorded and restores the model", async () => {
         const { driver, armDir } = fixture("host", { p: gitRepo() });
         await driver.reset();

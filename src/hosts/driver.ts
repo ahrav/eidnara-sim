@@ -176,7 +176,10 @@ export class HostDriver implements ArmDriver {
             store_faults: this.storeFaults,
         };
         mkdirSync(this.armDir, { recursive: true });
-        writeFileSync(this.stateFile, JSON.stringify(state));
+        // Staged and renamed, so a kill mid-write leaves the previous state, never a torn file.
+        const staged = `${this.stateFile}.${process.pid}`;
+        writeFileSync(staged, JSON.stringify(state));
+        renameSync(staged, this.stateFile);
     }
 
     private readState(): ArmState | null {

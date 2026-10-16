@@ -140,7 +140,7 @@ const key = (r: StoreCheck["ranges"][number]) => r.join("/");
 /**
  * The wire contract's post-crash rule: the first pass after a crash folds from the surviving
  * history and removes nothing further, so each segment the kill left, inspected before the
- * replacement daemon starts, is still there after the arm's next turn.
+ * replacement daemon starts, is still there, bounds and contents, after that pass.
  */
 function storeReasons(checks: Checks): string[] {
     const reasons: string[] = [];
@@ -154,6 +154,10 @@ function storeReasons(checks: Checks): string[] {
         }
     }
     const after = checks.after_crash?.ranges ?? [];
+    const compared = [...after, ...(checks.post_crash_pass?.ranges ?? [])];
+    // Checks recorded before ranges carried digests compare bounds only, which cannot certify
+    // the rule, so they withhold recovery while still reporting what they can.
+    if (compared.some((r) => r.length < 5)) reasons.push("store ranges lack content digests");
     const kept = new Set((checks.post_crash_pass?.ranges ?? []).map(key));
     const lost = checks.post_crash_pass ? after.filter((r) => !kept.has(key(r))) : [];
     if (lost.length > 0) {

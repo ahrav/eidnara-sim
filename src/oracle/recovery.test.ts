@@ -76,7 +76,7 @@ describe("recovery oracles", () => {
         expect(restart?.reasons).toEqual(recorded.expect_reasons["w-restart"]);
     });
 
-    test("the recorded mid-fold SIGKILLs recover, the first after the fail-open in the turn it cut", () => {
+    test("the recorded mid-fold SIGKILLs reach a clean turn, the first after the fail-open in the turn it cut, and their digest-free store checks withhold recovery", () => {
         const got = recoveries(run(sigkills.arms, sigkills.base_wall_ms));
         const byFault = Object.fromEntries(
             got.map((r) => [r.fault, [r.turns_to_first_clean, r.recovered]]),
@@ -84,6 +84,8 @@ describe("recovery oracles", () => {
         expect(byFault).toEqual(sigkills.expect);
         const passed = { after_crash: "ok", post_crash_pass: "ok", final: "ok" };
         expect(got.map((r) => r.store)).toEqual([passed, passed, passed]);
+        // Recorded before the store check digested segment contents: bounds compare, contents cannot.
+        for (const r of got) expect(r.reasons).toEqual(["store ranges lack content digests"]);
         const lost = structuredClone(sigkills.arms);
         const arm0 = lost[0] as ArmLogs;
         for (const e of arm0.journal.filter((x) => x.kind === "StoreChecked")) {
@@ -92,6 +94,7 @@ describe("recovery oracles", () => {
         const broken = recoveries(run(lost, sigkills.base_wall_ms));
         expect(broken.map((r) => r.recovered)).toEqual([false, false, false]);
         expect(broken[0]?.reasons).toEqual([
+            "store ranges lack content digests",
             "post-crash pass removed or changed segments sim-s-0003/1/1/4",
         ]);
     });

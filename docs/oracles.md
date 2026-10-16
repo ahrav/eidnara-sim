@@ -81,7 +81,8 @@ replacement served (`served_from=transform`), so that turn's passes include
 the first pass after the crash, or else at the session's end or the arm's
 finish once the session's background passes have settled, and journals that
 check as `StoreChecked` with the fault's id (`event` names the turn or
-session end, or is null at finish), one entry per restart it settles; and
+session end, or is null at finish), one entry per restart it settles, written
+before the turn's `EndTurn`; and
 `finish` checks the final store after the daemon
 stops and writes it to `<arm>/store-check.json`. Each check runs SQLite's
 `integrity_check`, lists every history segment, and looks for segments of
@@ -95,7 +96,11 @@ The wire contract's post-crash rule (`docs/host-wire-protocol.md` in
 eidnara, the revert paragraph of the transform section) is that the next
 pass after a crash folds from the surviving history and removes nothing
 further. The oracle checks it as: each segment the crash check listed is
-still present, unchanged, at the post-crash check. A host compaction in the
+still present at the post-crash check with the same bounds and the same
+digest of its message ids, title, and content, so a segment refolded within
+the same bounds reads as changed. A check recorded before ranges carried
+digests compares bounds only, which cannot certify the rule; the oracle names
+that as a reason and withholds `recovered`. A host compaction in the
 same turn can also remove segments under the contract's compaction rule;
 the reason names the segments, so a maintainer can tell the two apart from
 the turn's calls. `recovered` needs all three checks present, each with
