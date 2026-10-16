@@ -62,6 +62,23 @@ export function loadRepos(): RepoSpec[] {
                 `repos.json: ${repo.id}: license_file must be a relative path in the clone`,
             );
         }
+        if (!Array.isArray(repo.twin.renames)) {
+            throw new Error(`repos.json: ${repo.twin.id}: renames must be an array`);
+        }
+        for (const rename of repo.twin.renames) {
+            const fields = [rename.glob, rename.pattern, rename.replace];
+            if (!fields.every((f) => typeof f === "string") || rename.glob === "") {
+                throw new Error(
+                    `repos.json: ${repo.twin.id}: rename needs glob, pattern, and replace`,
+                );
+            }
+            try {
+                new RegExp(rename.pattern, "g");
+            } catch (error) {
+                const why = (error as Error).message;
+                throw new Error(`repos.json: ${repo.twin.id}: pattern ${rename.pattern}: ${why}`);
+            }
+        }
         for (const [field, cmd] of [
             ["prepare", repo.prepare],
             ["test", repo.test],

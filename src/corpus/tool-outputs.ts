@@ -145,7 +145,7 @@ export function extractFrom(rows: TrajectoryRow[], dataset: Dataset): Extraction
             const lines = m.content.split("\n").filter((l) => !FOOTER.test(l));
             const tool = m.name ?? "";
             const exit = EXIT.exec(m.content)?.[1];
-            const failed = m.content.includes(TRACEBACK) || (exit !== undefined && exit !== "0");
+            const failed = exit !== undefined && (exit !== "0" || m.content.includes(TRACEBACK));
             if (tool === "execute_bash" && failed) harvestCodes(lines, base, codes);
 
             const body = lines.join("\n").trim();
