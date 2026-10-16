@@ -4,7 +4,6 @@ import type { ProbeItem } from "../scenario/compile";
 import {
     ArtefactReader,
     assertArtefactsOnly,
-    bool,
     type CallView,
     type Command,
     completed,
@@ -94,7 +93,7 @@ const CHECK_FIELDS: Record<keyof Check, Field> = {
     commands_must: patternList,
     answer: text,
     answer_must_not: (v: unknown) => compiles(v) || patternList(v),
-    abstain: bool,
+    abstain: (v: unknown) => v === true,
     scope: oneOf(["in", "out"]),
     window_from_turn: (v: unknown) => Number.isInteger(v) && (v as number) >= 0,
     turns: (v: unknown) =>
@@ -205,7 +204,8 @@ function splitShell(command: string): { op: string; seg: string }[] {
         } else if (command.startsWith("<<", i)) {
             const m = /^<<(-?)\s*(['"]?)([^\s'"<>|&;()]+)\2/.exec(command.slice(i));
             if (m) {
-                pending.push({ delim: m[3] as string, stripTabs: m[1] === "-" });
+                const delim = (m[3] as string).replace(/\\(.)/g, "$1");
+                pending.push({ delim, stripTabs: m[1] === "-" });
                 seg += m[0];
                 i += m[0].length - 1;
             } else seg += ch;
@@ -242,6 +242,9 @@ const executed = (x: Command): string[] => {
         )
         .map((p) => unprefixed(p.seg));
 };
+/** grep and rg options whose value is the next word, so that word is neither pattern nor file. */
+const GREP_OPERAND_OPTIONS =
+    /^(-[ABCmdDgtTEjM]|--(max-count|after-context|before-context|context|include|exclude|exclude-dir|glob|iglob|type|type-not|max-depth|threads|color|colour|devices|directories|label|encoding|pre|sort|sortr))$/;
 /**
  * A read segment's file operands. For grep and rg the pattern is the first non-option word unless
  * an option supplies it (`-e`, `--regexp`, `-f`, `--file`), in which case every positional word is a file.
@@ -257,6 +260,7 @@ const operands = (segment: string): string => {
             supplied = true;
             i++;
         } else if (/^(-e.|-f.|--regexp=|--file=)/.test(w)) supplied = true;
+        else if (GREP_OPERAND_OPTIONS.test(w)) i++;
         else if (!w.startsWith("-")) files.push(w);
     }
     if (!supplied) files.shift();
@@ -312,7 +316,11 @@ function p6(r: ArtefactReader, c: Check): Outcome {
     const reread = prior.filter((p) =>
         commands.some((x) => executed(x).some((s) => READS.test(s) && namesPath(operands(s), p))),
     );
-    const tokens = r.turnCalls().reduce((n, x) => n + x.input_tokens + x.output_tokens, 0);
+    const turnCalls = r.turnCalls();
+    if (turnCalls.length === 0) {
+        throw new GradeRefused("P6 snapshot has no agent call for its turn to sum tokens over");
+    }
+    const tokens = turnCalls.reduce((n, x) => n + x.input_tokens + x.output_tokens, 0);
     return binary("P6", matchesAll(work(r), c.must ?? []), {
         "P6.reread_files": reread.length,
         "P6.ran_tests": commands.some(ranTests),
@@ -474,6 +482,9 @@ export function gradeItem(
 ): GradeRecord | null {
     const first = snapshots[0];
     if (!first) throw new GradeRefused(`item ${probe.id} has no snapshot`);
+    const bad = snapshots.findIndex((s) => typeof s !== "object" || s === null);
+    if (bad >= 0)
+        throw new GradeRefused(`item ${probe.id}: snapshots[${bad}] is missing or malformed`);
     if (snapshots.some((s) => s.item !== probe.id || s.arm !== first.arm)) {
         throw new GradeRefused(`snapshots for ${probe.id} mix items or arms`);
     }

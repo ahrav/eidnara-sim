@@ -724,6 +724,58 @@ describe("grading harness", () => {
         expect(() => gradeItem(f.probe, [snap], rules)).toThrow("calls[0].arm");
     });
 
+    test("a backslash-quoted heredoc delimiter is matched after quote removal", () => {
+        const f = fixture("P6-pass");
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        const log = snap.artefacts.find((a) => a.class === "command-log" && a.role === "turn");
+        if (log?.class !== "command-log") throw new Error("fixture lacks command-log");
+        log.commands.push({
+            command: "cat <<\\EOF\ntext\nEOF\ncargo test",
+            exit: 0,
+            scenario_ms: 10,
+        });
+        expect(gradeItem(f.probe, [snap], rules)?.metrics["P6.ran_tests"]).toBe(true);
+    });
+
+    test("a grep option with its own operand does not shift the pattern position", () => {
+        const f = fixture("P6-pass");
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        const log = snap.artefacts.find((a) => a.class === "command-log" && a.role === "turn");
+        if (log?.class !== "command-log") throw new Error("fixture lacks command-log");
+        log.commands.push({
+            command: "grep -m 1 src/connection.rs /dev/null",
+            exit: 1,
+            scenario_ms: 10,
+        });
+        expect(gradeItem(f.probe, [snap], rules)?.metrics["P6.reread_files"]).toBe(0);
+        log.commands.push({ command: "grep -A 2 fn src/connection.rs", exit: 0, scenario_ms: 20 });
+        expect(gradeItem(f.probe, [snap], rules)?.metrics["P6.reread_files"]).toBe(1);
+    });
+
+    test("P6 refuses a turn with no agent call to sum tokens over", () => {
+        const f = fixture("P6-pass");
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        const calls = snap.artefacts.find((a) => a.class === "proxy-call");
+        if (calls?.class !== "proxy-call") throw new Error("fixture lacks proxy-call");
+        calls.calls = calls.calls.filter((c) => c.component !== "agent");
+        expect(() => gradeItem(f.probe, [snap], rules)).toThrow("no agent call");
+    });
+
+    test("a null later snapshot is refused as malformed evidence", () => {
+        const f = fixture("P8-pass");
+        const first = f.snapshots[0] as Snapshot;
+        expect(() => gradeItem(f.probe, [first, null as unknown as Snapshot], rules)).toThrow(
+            GradeRefused,
+        );
+    });
+
+    test("a P9 check requires abstain to be true", () => {
+        const f = fixture("P9-pass");
+        expect(() =>
+            gradeItem({ ...f.probe, check: { abstain: false } }, f.snapshots, rules),
+        ).toThrow("check.abstain");
+    });
+
     test("a check pattern that is empty after its prefix or fails to compile is refused", () => {
         const f = fixture("P1-fail");
         for (const bad of ["(?i)", "["]) {
