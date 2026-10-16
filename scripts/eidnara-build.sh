@@ -9,7 +9,10 @@ if [ ! -d "$dst/.git" ]; then
     git clone --quiet --no-hardlinks "$src" "$dst"
 fi
 git -C "$dst" fetch --quiet "$src" HEAD
-git -C "$dst" checkout --quiet --detach FETCH_HEAD
+# The clone is the harness's own build tree: edits and stray files from an earlier build go,
+# while ignored outputs (node_modules, target, dist) stay for the incremental build.
+git -C "$dst" checkout --quiet --force --detach FETCH_HEAD
+git -C "$dst" clean --quiet --force -d
 cd "$dst"
 bun install --frozen-lockfile
 (cd packages/shm-native && bun run build)

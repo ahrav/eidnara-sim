@@ -52,33 +52,43 @@ export function processStart(pid: number): string | null {
     return statFields(pid)?.[19] ?? null;
 }
 
-export function running(pid: number): boolean {
+/** With `start`, a pid now owned by a process with another start time counts as gone. */
+export function running(pid: number, start?: string): boolean {
     const fields = statFields(pid);
-    return fields !== null && fields[0] !== "Z";
+    if (fields === null || fields[0] === "Z") return false;
+    return start === undefined || fields[19] === start;
 }
 
-async function stopped(pids: number[], timeoutMs: number): Promise<boolean> {
+interface Target {
+    pid: number;
+    start: string | null;
+}
+
+const alive = (t: Target) => t.start !== null && running(t.pid, t.start);
+
+async function stopped(targets: Target[], timeoutMs: number): Promise<boolean> {
     const deadline = Date.now() + timeoutMs;
-    while (pids.some(running)) {
+    while (targets.some(alive)) {
         if (Date.now() >= deadline) return false;
         await Bun.sleep(50);
     }
     return true;
 }
 
-function signal(pids: number[], name: NodeJS.Signals): void {
-    for (const pid of pids) {
+// Each pid is checked against its start time right before the signal, so a pid the kernel
+// reused for another process during the grace period is left alone.
+function signal(targets: Target[], name: NodeJS.Signals): void {
+    for (const t of targets.filter(alive)) {
         try {
-            process.kill(pid, name);
+            process.kill(t.pid, name);
         } catch {}
     }
 }
 
 export async function stopOwnedTree(rootPid: number, graceMs: number): Promise<boolean> {
-    const targets = ownedProcesses(rootPid);
+    const targets = ownedProcesses(rootPid).map((pid) => ({ pid, start: processStart(pid) }));
     signal(targets, "SIGTERM");
     if (await stopped(targets, graceMs)) return true;
-    const left = targets.filter(running);
-    signal(left, "SIGKILL");
-    return stopped(left, 2_000);
+    signal(targets, "SIGKILL");
+    return stopped(targets, 2_000);
 }
