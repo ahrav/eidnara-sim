@@ -17,6 +17,7 @@ import { loadConfig } from "../config/config";
 import type { CallView } from "../grade/artefacts";
 import { gradeItem } from "../grade/probes";
 import { diffPaths } from "../grade/text";
+import { readJournal } from "../run/journal";
 import { HarnessFailure, type ScenarioEvent } from "../run/scheduler";
 import { type FaultType, SEAMS } from "../scenario/faults";
 import { loadPrereg } from "../scenario/inputs";
@@ -755,6 +756,18 @@ describe("probe snapshots", () => {
         );
         expect(captured(armDir)["host:q-1:e-4:prior-diff"]?.patch).toContain("+fn earlier()");
     });
+});
+
+test("a recorder rebuilt after a harness kill drops a tools.jsonl line the kill cut", () => {
+    const armDir = tmp();
+    const path = join(armDir, "tools.jsonl");
+    writeFileSync(
+        path,
+        `${JSON.stringify({ turn: "e-1", command: "ls", exit: 0, scenario_ms: 1 })}\n{"turn": "e-2", "comm`,
+    );
+    const resumed = new SnapshotRecorder(armDir, "eidnara", () => []);
+    resumed.addTools([{ command: "cargo build", exit: 0, scenario_ms: 3 }], "e-2");
+    expect(readJournal(path).map((e) => e.command)).toEqual(["ls", "cargo build"]);
 });
 
 test("a recorder rebuilt after a harness kill keeps the open session's start tree and commands", () => {

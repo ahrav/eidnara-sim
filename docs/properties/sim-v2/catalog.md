@@ -1043,13 +1043,15 @@ Confidence: medium -
 [evidence](evidence/sim-p39-hang-is-derived-from-call-silence.md). M5 (#1030)
 implements the oracle in `f4` (`src/oracle/oracles.ts`) over the recorded
 journal, call records, and tool runs; it reads the turn after the fact rather
-than labelling it `failed(hang)` as it ends, and a tool start within a second
-of the call's end counts as progress however long the tool runs. A default
-tier run reaches it; none has run yet.
+than labelling it `failed(hang)` as it ends, a deadline turn counts only with
+no agent call or a five-minute gap in its activity, and in a completed turn a
+tool start within a second of the call's end counts as progress however long
+the tool runs. A default tier run reaches it; none has run yet.
 Existing check: `src/oracle/oracles.test.ts` (oracle fixtures, oracle edge
-cases) covers the deadline wording of both hosts, the completed call with no
-follow-up, the sub-second call, the persistence call, and the recorded tool
-start; status unaudited
+cases, round four) covers the deadline wording of both hosts, a deadline turn
+active throughout and one with a silent window, the completed call with no
+follow-up, the turn-start silence, the sub-second call, the persistence call,
+and the recorded tool start; status unaudited
 Impact: The intermittent Pi hang goes undetected or a slow turn is mislabelled.
 Open questions: None.
 

@@ -78,6 +78,7 @@ export class SnapshotRecorder {
 
     private dropCutLine(): void {
         dropCutJsonlLine(join(this.armDir, "snapshots.jsonl"));
+        dropCutJsonlLine(join(this.armDir, "tools.jsonl"));
     }
 
     /**
