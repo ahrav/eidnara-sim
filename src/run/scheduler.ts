@@ -137,6 +137,16 @@ export class Scheduler {
             this.log({ kind: "EndJob", job: e.job, interrupted: true });
         }
         const observed = new Set(kinds("FaultObserved").map((e) => e.fault));
+        const firedIds = new Set(kinds("FaultFired").map((e) => e.fault));
+        // A sleep's jump is journaled before its FaultFired; a jump without one has fired.
+        for (const jump of kinds("AdvanceClock").filter((e) => e.fault !== undefined)) {
+            const f = this.o.faults.find((x) => x.id === jump.fault);
+            if (!f || firedIds.has(f.id)) continue;
+            this.fired.add(`${this.arm}/${f.id}`);
+            this.log({ kind: "FaultFired", fault: f.id, type: f.type, layer: f.seam.layer });
+            const evidence = { clock_advanced_ms: jump.scenario_ms - Number(jump.from_ms) };
+            this.log({ kind: "FaultObserved", fault: f.id, type: f.type, evidence });
+        }
         for (const fired of kinds("FaultFired")) {
             const f = this.o.faults.find((x) => x.id === fired.fault);
             this.fired.add(`${this.arm}/${fired.fault}`);

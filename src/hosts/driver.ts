@@ -6,6 +6,7 @@ import {
     readFileSync,
     realpathSync,
     rmSync,
+    statSync,
     writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -26,8 +27,8 @@ interface ArmState {
     model: number;
     daemon: { pid: number; start: string | null } | null;
     host: { pid: number; start: string | null } | null;
-    /** Daemon restarts whose store check the journal may still lack. */
-    store_faults: string[];
+    /** Daemon restarts whose store check the journal may still lack, each with its plugin-log mark. */
+    store_faults: Record<string, number>;
 }
 
 export interface DriverOptions extends Omit<HostContext, "root" | "model"> {
@@ -71,6 +72,9 @@ export function expandTemplate(template: string, env: Record<string, string>): s
     });
 }
 
+/** A transform pass the daemon answered, as the plugin logs it. */
+const SERVED_PASS = /rust pass: .*served_from=transform/;
+
 const SUPPORTED = new Set([
     "daemon_sigkill_mid_fold",
     "daemon_restart",
@@ -88,9 +92,14 @@ export class HostDriver implements ArmDriver {
     private transcriptsChecked = false;
 
     private readonly snapshots: SnapshotRecorder;
-    /** Daemon restarts that the end of the current or next turn owes a store check. */
-    private storeFaults: string[] = [];
-    /** A daemon restart in progress; the turn it interrupts ends after it. */
+    /**
+     * Daemon restarts owed a store check, each with the plugin log's length when its replacement
+     * daemon was up. The check runs at the end of the first turn whose log, past that mark, shows a
+     * pass the replacement served (`served_from=transform`): the wire contract's first pass after
+     * the crash.
+     */
+    private storeFaults: Record<string, number> = {};
+    /** A daemon restart in progress; the turn it interrupts ends after it and fails with it. */
     private restarting: Promise<unknown> = Promise.resolve();
 
     constructor(private readonly o: DriverOptions) {
@@ -196,7 +205,7 @@ export class HostDriver implements ArmDriver {
     async resume(open: ScenarioEvent | null): Promise<void> {
         const state = this.readState();
         this.model = state?.model ?? 0;
-        this.storeFaults = state?.store_faults ?? [];
+        this.storeFaults = state?.store_faults ?? {};
         const checked = join(this.armDir, "transcripts.json");
         this.transcriptsChecked =
             existsSync(checked) && JSON.parse(readFileSync(checked, "utf8")).missing.length === 0;
@@ -260,10 +269,13 @@ export class HostDriver implements ArmDriver {
         const outcome: TurnOutcome = {};
         if (result.error) outcome.failed = result.error;
         await this.restarting;
-        if (this.storeFaults.length > 0 && this.daemon) {
+        const passed = Object.entries(this.storeFaults).filter(([, mark]) =>
+            this.passedSince(mark),
+        );
+        if (passed.length > 0 && this.daemon) {
             const store = checkStore(this.storeDb);
-            outcome.stores = this.storeFaults.map((fault) => ({ fault, store }));
-            this.storeFaults = [];
+            outcome.stores = passed.map(([fault]) => ({ fault, store }));
+            for (const [fault] of passed) delete this.storeFaults[fault];
         }
         if (e.probe) {
             const probe = { probe: e.probe, session: e.session, id: e.id };
@@ -320,7 +332,8 @@ export class HostDriver implements ArmDriver {
         if (f.type === "daemon_sigkill_mid_fold" || f.type === "daemon_restart") {
             if (!this.daemon) return { skipped: "arm runs no daemon" };
             const restart = this.restartDaemon(this.daemon, f.id);
-            this.restarting = restart.catch(() => undefined);
+            restart.catch(() => undefined);
+            this.restarting = restart;
             return restart;
         }
         if (f.type === "store_full") return this.fillStore();
@@ -344,7 +357,7 @@ export class HostDriver implements ArmDriver {
         await daemon.crash();
         const store = checkStore(this.storeDb);
         await daemon.restart();
-        this.storeFaults.push(fault);
+        this.storeFaults[fault] = this.pluginLogLength();
         this.recordState();
         return {
             signal: "SIGKILL",
@@ -353,6 +366,20 @@ export class HostDriver implements ArmDriver {
             restarted_by: "harness",
             store,
         };
+    }
+
+    private get pluginLog(): string {
+        return join(this.o.armRoot, "eidnara.log");
+    }
+
+    private pluginLogLength(): number {
+        return existsSync(this.pluginLog) ? statSync(this.pluginLog).size : 0;
+    }
+
+    /** Whether the plugin log, past `mark`, records a pass the daemon served. */
+    private passedSince(mark: number): boolean {
+        if (!existsSync(this.pluginLog)) return false;
+        return SERVED_PASS.test(readFileSync(this.pluginLog).subarray(mark).toString("utf8"));
     }
 
     private mountStore(fresh: boolean): void {

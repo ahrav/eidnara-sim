@@ -2,6 +2,7 @@ import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import {
+    appendFileSync,
     existsSync,
     mkdirSync,
     mkdtempSync,
@@ -111,6 +112,15 @@ function fakeDaemon(pid: number | null) {
         connectionFile: "/run/conn",
     };
     return d;
+}
+
+const PASS =
+    "[2026-10-16T12:00:00.000Z] [eidnara][s-1] rust pass: decision=SOFT+ reason=none served_from=transform in=3 out=3";
+/** Appends one line to the arm's plugin log, as the host's plugin would. */
+function pluginLog(driver: HostDriver, line: string): void {
+    const path = join((driver as unknown as { o: DriverOptions }).o.armRoot, "eidnara.log");
+    mkdirSync(dirname(path), { recursive: true });
+    appendFileSync(path, `${line}\n`);
 }
 
 const episode = (type: FaultType) => ({
@@ -339,7 +349,7 @@ describe("HostDriver faults", () => {
         expect((evidence.store as StoreCheck).ranges).toEqual([["s", 1, 0, 9]]);
     });
 
-    test("the turn a mid-fold kill interrupts waits for the restart and carries its store check", async () => {
+    test("a mid-fold kill's turn carries the store check once the replacement served a pass", async () => {
         const { driver } = fixture("eidnara");
         const daemon = fakeDaemon(10);
         daemon.restart = async () => {
@@ -347,11 +357,34 @@ describe("HostDriver faults", () => {
             daemon.current = 11;
         };
         driver.daemon = daemon as unknown as DaemonStack;
-        driver.host = new FakeHost({} as HostContext, "/x") as unknown as SimHost;
+        const host = new FakeHost({} as HostContext, "/x");
+        driver.host = host as unknown as SimHost;
         const kill = driver.fault(episode("daemon_sigkill_mid_fold"));
+        host.prompt = async () => {
+            await kill;
+            pluginLog(driver, PASS);
+            return {};
+        };
         const outcome = await driver.event(ev("user_turn", { id: "e-1", text: "go" }));
         expect(outcome.stores?.map((s) => s.fault)).toEqual(["f-daemon_sigkill_mid_fold"]);
         expect((await kill).pid_after).toBe(11);
+    });
+
+    test("a restart that fails during the interrupted turn fails that turn", async () => {
+        const { driver } = fixture("eidnara");
+        const daemon = fakeDaemon(10);
+        daemon.restart = async () => {
+            await Bun.sleep(50);
+            throw new Error("fixture did not start");
+        };
+        driver.daemon = daemon as unknown as DaemonStack;
+        driver.host = new FakeHost({} as HostContext, "/x") as unknown as SimHost;
+        const kill = driver.fault(episode("daemon_sigkill_mid_fold"));
+        kill.catch(() => undefined);
+        await expect(driver.event(ev("user_turn", { id: "e-1", text: "go" }))).rejects.toThrow(
+            "fixture did not start",
+        );
+        await expect(kill).rejects.toThrow("fixture did not start");
     });
 
     test("a store check owed by a daemon restart survives a harness restart", async () => {
@@ -360,16 +393,17 @@ describe("HostDriver faults", () => {
         driver.daemon = fakeDaemon(10) as unknown as DaemonStack;
         await driver.fault(episode("daemon_restart"));
         const state = JSON.parse(readFileSync(join(armDir, "state.json"), "utf8"));
-        expect(state.store_faults).toEqual(["f-daemon_restart"]);
+        expect(Object.keys(state.store_faults)).toEqual(["f-daemon_restart"]);
         const fresh = new HostDriver((driver as unknown as { o: DriverOptions }).o);
         await fresh.resume(null);
         fresh.daemon = fakeDaemon(12) as unknown as DaemonStack;
+        pluginLog(fresh, PASS);
         const outcome = await fresh.event(ev("user_turn", { id: "e-1", text: "go", project: "p" }));
         expect(outcome.stores?.map((s) => s.fault)).toEqual(["f-daemon_restart"]);
         const recorded = () => JSON.parse(readFileSync(join(armDir, "state.json"), "utf8"));
-        expect(recorded().store_faults).toEqual(["f-daemon_restart"]);
+        expect(Object.keys(recorded().store_faults)).toEqual(["f-daemon_restart"]);
         await fresh.event(ev("user_turn", { id: "e-2", text: "go", project: "p" }));
-        expect(recorded().store_faults).toEqual([]);
+        expect(recorded().store_faults).toEqual({});
     });
 
     test("the turn ending after daemon restarts carries a store check for each of them", async () => {
@@ -378,6 +412,7 @@ describe("HostDriver faults", () => {
         driver.host = new FakeHost({} as HostContext, "/x") as unknown as SimHost;
         await driver.fault(episode("daemon_restart"));
         await driver.fault(episode("daemon_sigkill_mid_fold"));
+        pluginLog(driver, PASS);
         const first = await driver.event(ev("user_turn", { id: "e-1", text: "go" }));
         const second = await driver.event(ev("user_turn", { id: "e-2", text: "go" }));
         const store = { integrity: "missing", segments: 0, overlaps: [], ranges: [] };
@@ -386,6 +421,31 @@ describe("HostDriver faults", () => {
             { fault: "f-daemon_sigkill_mid_fold", store },
         ]);
         expect(second.stores).toBeUndefined();
+    });
+
+    test("the store check waits for the first pass the replacement daemon serves", async () => {
+        const { driver } = fixture("eidnara");
+        driver.daemon = fakeDaemon(10) as unknown as DaemonStack;
+        driver.host = new FakeHost({} as HostContext, "/x") as unknown as SimHost;
+        pluginLog(driver, PASS);
+        await driver.fault(episode("daemon_restart"));
+        pluginLog(
+            driver,
+            "[2026-10-16T12:00:01.000Z] [eidnara][s-1] rust pass: decision=error reason=none served_from=raw",
+        );
+        const raw = await driver.event(ev("user_turn", { id: "e-1", text: "go" }));
+        expect(raw.stores).toBeUndefined();
+        pluginLog(
+            driver,
+            "[2026-10-16T12:00:02.000Z] [eidnara][s-1] rust pass: decision=declined:invocation_budget reason=none served_from=raw",
+        );
+        const declined = await driver.event(ev("user_turn", { id: "e-2", text: "go" }));
+        expect(declined.stores).toBeUndefined();
+        pluginLog(driver, PASS);
+        const folded = await driver.event(ev("user_turn", { id: "e-3", text: "go" }));
+        expect(folded.stores?.map((s) => s.fault)).toEqual(["f-daemon_restart"]);
+        const after = await driver.event(ev("user_turn", { id: "e-4", text: "go" }));
+        expect(after.stores).toBeUndefined();
     });
 
     test("finish stops the daemon and writes the final store check", async () => {

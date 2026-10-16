@@ -84,16 +84,18 @@ function turnsAfter(arm: ArmLogs, fault: Entry, tl: Timeline): Turn[] {
     const begins = new Map<string, Entry>();
     const turns: Turn[] = [];
     for (const e of arm.journal) {
-        if (e.kind === "BeginTurn") begins.set(String(e.event), e);
+        if (e.kind === "BeginTurn") {
+            begins.set(String(e.event), e);
+            // The previous turn's window closes here, whether or not this turn ends.
+            const last = turns.at(-1);
+            if (last && last.next === Number.POSITIVE_INFINITY) last.next = tl.at(e);
+        }
         const begin = begins.get(String(e.event));
         if (e.seq > fault.seq && e.kind === "EndTurn" && begin) {
             const from = begin.seq < fault.seq ? tl.at(fault) : tl.at(begin);
             turns.push({ event: String(e.event), from, end: e, next: Number.POSITIVE_INFINITY });
         }
     }
-    turns.forEach((t, i) => {
-        t.next = turns[i + 1]?.from ?? Number.POSITIVE_INFINITY;
-    });
     return turns;
 }
 

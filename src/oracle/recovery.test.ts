@@ -250,6 +250,23 @@ describe("recovery anchors", () => {
     });
 });
 
+describe("recovery windows", () => {
+    test("a clean turn's window closes when the next turn begins, even if that turn never ends", () => {
+        seq = 0;
+        const journal = [
+            entry("FaultObserved", 0, { fault: "f", type: "plugin_reload", evidence: {} }),
+            entry("BeginTurn", 10, { event: "e-1" }),
+            entry("EndTurn", 20, { event: "e-1", outcome: "ok" }),
+            entry("BeginTurn", 30, { event: "e-2" }),
+        ];
+        const log = [
+            `${stamp(35)} [eidnara][s-1] rust pass: decision=error reason=none served_from=raw`,
+        ];
+        const [r] = recoveries(run([arm(journal, log)]));
+        expect([r?.recovered, r?.turns_to_first_clean, r?.reasons]).toEqual([true, 1, []]);
+    });
+});
+
 describe("plugin log attribution", () => {
     const wall = (ms: number, extra: Record<string, unknown>) => ({ ...extra, wall_ms: ms });
 

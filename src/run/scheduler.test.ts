@@ -446,6 +446,52 @@ describe("resume of fired faults", () => {
     });
 });
 
+describe("resume of a journaled sleep jump", () => {
+    test("a sleep whose jump is journaled but whose firing is not resumes as fired, once", async () => {
+        const path = join(dir(), "j.jsonl");
+        const j = new Journal(path);
+        const duration = 3_600_000;
+        j.append({ kind: "StartRun", arm: null, scenario_ms: 0 });
+        j.append({ kind: "StartArm", arm: "a", scenario_ms: 0 });
+        j.append({
+            kind: "AdvanceClock",
+            arm: "a",
+            scenario_ms: duration,
+            from_ms: 0,
+            busy: [],
+            fault: "f-sleep",
+        });
+        j.close();
+        const sleep = {
+            ...episode("f-sleep", "laptop_sleep", { kind: "session_start", session: "s-0000" }),
+            params: { duration_ms: duration },
+        };
+        const resumed = new Journal(path);
+        await new Scheduler({
+            events: fixtureEvents(1),
+            faults: [sleep],
+            journal: resumed,
+            settleMs: 0,
+            order: ["a"],
+            drivers: { a: fakeDriver([]) },
+        }).run();
+        const jumps = resumed.entries.filter(
+            (e) => e.kind === "AdvanceClock" && e.fault === "f-sleep",
+        );
+        expect(jumps).toHaveLength(1);
+        const fired = resumed.entries.filter(
+            (e) => e.kind === "FaultFired" && e.fault === "f-sleep",
+        );
+        const observed = resumed.entries.filter(
+            (e) => e.kind === "FaultObserved" && e.fault === "f-sleep",
+        );
+        expect([fired.length, observed.length]).toEqual([1, 1]);
+        expect(observed[0]?.evidence).toEqual({ clock_advanced_ms: duration });
+        const last = resumed.entries.at(-1) as Entry;
+        expect(last.scenario_ms).toBeLessThan(2 * duration);
+    });
+});
+
 describe("driver lifecycle hooks", () => {
     test("a resumed arm gets the open session, its open jobs end, and finish precedes EndArm", async () => {
         const path = join(dir(), "j.jsonl");

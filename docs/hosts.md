@@ -116,7 +116,8 @@ store sits under the user's home.
 ## Resume
 
 The driver keeps `<arm>/state.json` current with the model index, the
-daemon restarts whose `StoreChecked` entry the journal may still lack, and the
+daemon restarts whose `StoreChecked` entry the journal may still lack (each
+with its plugin-log mark), and the
 pid and start time of the daemon and of the host while a session is open.
 A new harness process calls `resume(open)` on an arm that has `StartArm` and
 no `EndArm`. The driver restores the model index and the owed store checks,
@@ -148,7 +149,7 @@ store between the two.
 
 | Fault | Mechanism | Evidence |
 |---|---|---|
-| `daemon_sigkill_mid_fold` | The session's first observed history-summarizer call fires it; SIGKILL and restart | `pid_before`, `pid_after`, `restarted_by: harness`, and the store check between the SIGKILL and the replacement's start (`docs/oracles.md`); the end of the turn in progress at the restart, or else the next turn, journals a second check as `StoreChecked` |
+| `daemon_sigkill_mid_fold` | The session's first observed history-summarizer call fires it; SIGKILL and restart | `pid_before`, `pid_after`, `restarted_by: harness`, and the store check between the SIGKILL and the replacement's start (`docs/oracles.md`); the end of the first turn whose plugin log shows a pass the replacement served (`served_from=transform` past the log's length at the restart) journals a second check as `StoreChecked` |
 | `daemon_restart` | At `session_start`, SIGKILL and restart | As above |
 | `store_full` | When the scenario schedules `store_full`, each Eidnara arm's store lives on a sparse 2 GiB ext4 loop mount (`nosuid,nodev,noexec`) at `<arm>/s`, room for the daemon to materialize its harness closures twice, with its image outside the sandbox's kept paths; the fault fills it, and `session_end` removes the ballast | `avail_kb: 0`; any other value stops the run |
 | `plugin_reload` | The host process and its plugin start afresh at every `session_start` | The reload note |
