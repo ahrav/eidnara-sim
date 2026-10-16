@@ -120,21 +120,37 @@ type Usage = Record<string, number>;
 type Done = Partial<CallRecord> &
     Pick<CallRecord, "component" | "componentSource" | "model" | "status">;
 
-function collectBody(source: Readable): { chunks: Buffer[]; received: number } {
-    const body = { chunks: [] as Buffer[], received: 0 };
+interface Body {
+    chunks: Buffer[];
+    received: number;
+    ended: boolean;
+}
+
+function collectBody(source: Readable, onDone: (body: Body) => void): void {
+    const body: Body = { chunks: [], received: 0, ended: false };
+    let finished = false;
+    const finish = () => {
+        if (finished) return;
+        finished = true;
+        onDone(body);
+    };
     source.on("data", (c: Buffer) => {
         body.received += c.length;
         if (body.received <= MAX_BODY) body.chunks.push(c);
     });
-    return body;
+    source.on("end", () => {
+        body.ended = true;
+        finish();
+    });
+    source.on("close", finish);
+    source.on("error", () => undefined);
 }
 
 interface Request {
     path: string;
     method: string;
     header: string | undefined;
-    raw: Buffer;
-    received: number;
+    body: Body;
 }
 
 export class Gateway {
@@ -149,16 +165,14 @@ export class Gateway {
 
     async start(): Promise<void> {
         const h1 = createHttp1Server((req, res) => {
-            const body = collectBody(req);
             const gone = new AbortController();
             res.on("close", () => !res.writableFinished && gone.abort());
-            req.on("end", () => {
+            collectBody(req, (body) => {
                 const request: Request = {
                     path: req.url ?? "",
                     method: req.method ?? "",
                     header: req.headers[COMPONENT_HEADER] as string | undefined,
-                    raw: Buffer.concat(body.chunks),
-                    received: body.received,
+                    body,
                 };
                 this.handle(request, {
                     status: (code, headers) => {
@@ -179,18 +193,15 @@ export class Gateway {
             session.on("close", () => this.sessions.delete(session));
         });
         h2.on("stream", (stream, headers) => {
-            const body = collectBody(stream);
             const gone = new AbortController();
             stream.on("close", () => !stream.writableFinished && gone.abort());
-            stream.on("error", () => undefined);
-            stream.on("end", () => {
+            collectBody(stream, (body) => {
                 const live = () => !stream.destroyed;
                 const request: Request = {
                     path: String(headers[":path"] ?? ""),
                     method: String(headers[":method"] ?? ""),
                     header: headers[COMPONENT_HEADER] as string | undefined,
-                    raw: Buffer.concat(body.chunks),
-                    received: body.received,
+                    body,
                 };
                 this.handle(request, {
                     status: (code, h) => {
@@ -278,7 +289,8 @@ export class Gateway {
         call: number,
         progress: (d: Done) => void,
     ): Promise<Done> {
-        const { path, method, header, raw, received } = request;
+        const { path, method, header, body: upload } = request;
+        const received = upload.received;
         const started = performance.now();
         const route = ROUTE.exec(path.split("?", 1)[0] ?? "");
         const parse = <T>(f: () => T): T | undefined => {
@@ -293,11 +305,14 @@ export class Gateway {
             ? [404, `unknown operation ${path}`]
             : method !== "POST"
               ? [405, `${method} is not POST`]
-              : received > MAX_BODY
-                ? [413, `body of ${received} bytes over the limit`]
-                : model === undefined
-                  ? [400, "malformed model id"]
-                  : null;
+              : !upload.ended
+                ? [400, `the client left after ${received} bytes of the body`]
+                : received > MAX_BODY
+                  ? [413, `body of ${received} bytes over the limit`]
+                  : model === undefined
+                    ? [400, "malformed model id"]
+                    : null;
+        const raw = Buffer.concat(upload.chunks);
         const body = early ? null : parse(() => JSON.parse(raw.toString("utf8")) as ConverseBody);
         const problem =
             early ??
@@ -306,7 +321,7 @@ export class Gateway {
                 : null);
         if (!route || !body || model === undefined || problem) {
             const [status, error] = problem as [number, string];
-            sink.status(status, { "content-type": "application/json" });
+            if (upload.ended) sink.status(status, { "content-type": "application/json" });
             return {
                 component: "rejected",
                 componentSource: "inferred",
@@ -321,20 +336,29 @@ export class Gateway {
         progress(done);
         const fault = this.options.injector.take(tag.component, call);
         if (fault) done.fault_ref = fault.id;
-        if (fault && fault.type !== "slow_stream") {
-            const tool = body.toolConfig?.tools?.[0]?.toolSpec?.name;
-            return {
-                ...done,
-                ...(await writeFault(fault.type, fault.params, streaming, sink, tool)),
-            };
-        }
-        const usage: Usage = {};
         const firstByte = () => {
             if (done.first_byte_ms != null) return;
             done.first_byte_ms = performance.now() - started;
             const event = { kind: "call_started", component: tag.component, wall_ms: Date.now() };
             this.options.observe?.(event as CallStarted);
         };
+        const answer = (code: number, headers: Record<string, string>): boolean => {
+            const accepted = sink.status(code, headers);
+            if (accepted) firstByte();
+            return accepted;
+        };
+        if (fault && fault.type !== "slow_stream") {
+            const tool = body.toolConfig?.tools?.[0]?.toolSpec?.name;
+            const outcome = await writeFault(
+                fault.type,
+                fault.params,
+                streaming,
+                { ...sink, status: answer },
+                tool,
+            );
+            return { ...done, ...outcome };
+        }
+        const usage: Usage = {};
         const delay = () =>
             fault ? sleep(fault.params.delay_ms ?? 2_000, sink.signal) : undefined;
         let retries = 0;
@@ -353,26 +377,32 @@ export class Gateway {
             );
             if ("json" in response) {
                 await delay();
-                firstByte();
                 Object.assign(usage, response.json.usage ?? {});
-                done.finish_reason = (response.json.stopReason as string | undefined) ?? null;
-                sink.status(200, { "content-type": "application/json" });
+                const reason = response.json.stopReason as string | undefined;
+                if (reason) done.finish_reason = reason;
+                else {
+                    done.finish_reason = "stream_cut";
+                    done.error ??= "the response carried no stopReason";
+                }
+                answer(200, { "content-type": "application/json" });
                 sink.write(Buffer.from(wireJson(response.json)));
             } else {
-                sink.status(200, { "content-type": "application/vnd.amazon.eventstream" });
+                const accepted = sink.status(200, {
+                    "content-type": "application/vnd.amazon.eventstream",
+                });
                 for await (const event of response.events) {
                     for (const [type, member] of Object.entries(event)) {
                         if (member === undefined) continue;
                         await delay();
-                        firstByte();
+                        if (accepted) firstByte();
                         const m = member as { usage?: Usage; stopReason?: string };
                         if (type === "metadata") {
                             sawMetadata = true;
                             Object.assign(usage, m.usage ?? {});
                         }
-                        if (type === "messageStop") {
+                        if (type === "messageStop" && m.stopReason) {
                             sawStop = true;
-                            done.finish_reason = m.stopReason ?? null;
+                            done.finish_reason = m.stopReason;
                         }
                         if (type.endsWith("Exception")) {
                             done.error = type;
@@ -384,7 +414,7 @@ export class Gateway {
                     done.finish_reason = "stream_cut";
                     done.error ??= sink.signal.aborted
                         ? "client disconnected before the stream ended"
-                        : "the stream ended before messageStop and metadata";
+                        : "the stream ended without both a stop reason and metadata";
                 }
             }
         } catch (caught) {

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { connect } from "node:http2";
+import { connect as tcp } from "node:net";
 import { BedrockRuntimeClient } from "@aws-sdk/client-bedrock-runtime";
 import { decodeMessages } from "../../tests/eventstream-decode";
 import { Rng } from "../rng";
@@ -742,7 +743,7 @@ describe("every request yields one record", () => {
         expect(outcome).toBe("stopped");
     }, 10_000);
 
-    test("an HTTP/2 client that disconnects before the answer records status 0", async () => {
+    test("an HTTP/2 client that disconnects before the answer records status 0 and no first byte", async () => {
         let release: () => void = () => undefined;
         const held: Upstream = {
             async converse(m, b, s, signal) {
@@ -752,7 +753,7 @@ describe("every request yields one record", () => {
                 return scriptedUpstream().converse(m, b, s, signal);
             },
         };
-        const { gateway, records } = await start(null, held);
+        const { gateway, records, started } = await start(null, held);
         const session = connect(gateway.urls[1] as string);
         const req = session.request({ ":method": "POST", ":path": "/model/m/converse" });
         req.on("error", () => undefined);
@@ -762,7 +763,56 @@ describe("every request yields one record", () => {
         await Bun.sleep(50);
         release();
         while (gateway.inFlight > 0) await Bun.sleep(5);
-        expect(records.records.map((r) => [r.component, r.status])).toEqual([["agent", 0]]);
+        expect(records.records.map((r) => [r.component, r.status, r.first_byte_ms])).toEqual([
+            ["agent", 0, null],
+        ]);
+        expect(started).toEqual([]);
+    });
+
+    test("an HTTP/1.1 upload the client abandons yields one status-0 record", async () => {
+        const { gateway, records, url } = await start(null);
+        const body = JSON.stringify(AGENT_BODY);
+        const sock = tcp(Number(new URL(url).port), "127.0.0.1");
+        await new Promise<void>((r) => sock.on("connect", () => r()));
+        const head = `POST /model/m/converse HTTP/1.1\r\nHost: x\r\nContent-Length: ${body.length + 50}\r\n\r\n`;
+        sock.write(`${head}${body.slice(0, 20)}`);
+        await Bun.sleep(50);
+        sock.destroy();
+        while (records.records.length === 0) await Bun.sleep(5);
+        expect(records.records.map((r) => [r.component, r.status, r.error])).toEqual([
+            ["rejected", 0, "the client left after 20 bytes of the body"],
+        ]);
+        expect([gateway.inFlight, gateway.failures]).toEqual([0, []]);
+    });
+
+    test("an injected fault records its first byte and emits call_started", async () => {
+        const fault = { id: "f", type: "provider_429", strategy: "single", params: { count: 1 } };
+        const { records, injector, started, url } = await start(fault as ProxyFault);
+        injector.arm("f");
+        expect((await hostCallJson(url, AGENT_BODY, 2_000)).status).toBe(429);
+        expect(typeof records.records[0]?.first_byte_ms).toBe("number");
+        expect(started.map((e) => e.component)).toEqual(["agent"]);
+    });
+
+    test("an answer without a stop reason is stream_cut on both routes", async () => {
+        const noStop: Upstream = {
+            async converse(_m, _b, streaming) {
+                if (!streaming) return { json: { output: {}, usage: {} } };
+                async function* events() {
+                    yield { messageStart: { role: "assistant" } };
+                    yield { messageStop: {} };
+                    yield { metadata: { usage: {} } };
+                }
+                return { events: events() };
+            },
+        };
+        const { records, url } = await start(null, noStop);
+        expect((await hostCallJson(url, AGENT_BODY, 2_000)).status).toBe(200);
+        expect((await hostCall(url, AGENT_BODY, 2_000)).status).toBe(200);
+        expect(records.records.map((r) => [r.finish_reason, r.error])).toEqual([
+            ["stream_cut", "the response carried no stopReason"],
+            ["stream_cut", "the stream ended without both a stop reason and metadata"],
+        ]);
     });
 
     test("stop() returns after in-flight handlers wrote their records", async () => {
