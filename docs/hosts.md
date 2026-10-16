@@ -45,9 +45,14 @@ there before each restart.
 `DaemonStack` starts the daemon through the v1 `HermeticHostStack` with the
 interposer environment, restarts it with SIGKILL against the same store, and
 stops it with SIGTERM so its store stays on disk. It appends the daemon's
-output to the arm's `daemon.log` before each restart and at stop; the v1
-stack keeps the last 256 KiB of that output, so a longer stretch keeps its
-tail.
+stdout and stderr to the arm's `daemon.log` before each restart and at stop,
+each line once: stderr copied a megabyte at a time from the log file the v1
+stack writes each chunk to and truncates at each host start, stdout from the
+stack's `diagnostics` view, which keeps the last 256 KiB. The saved log file
+is removed once copied, and `daemon.log.source` names the live lifetime's
+file, so a `start` after a harness kill saves the dead lifetime's stderr
+first. The run's resource sampler takes a sample when each daemon process is
+up and before a fault takes one down.
 
 Each `session_start` launches one host process in the session's workspace
 through the sandbox launcher, and each `session_end` closes it. The sandbox runs the host under
@@ -61,7 +66,20 @@ the abort call), and wait 30 s for the call to drain; a call still running
 then stops the run. An `apply_diff` event writes its file inside the
 workspace and commits that path alone, so the agent's own uncommitted edits
 stay uncommitted; content already committed adds no commit, and a path that
-resolves outside the workspace through `..` or a symlink stops the run.
+resolves outside the workspace through `..` or a symlink stops the run. The
+commit is built with plumbing (`hash-object --no-filters`, a scratch index
+whose entry keeps the file's executable bit, `commit-tree`, `update-ref`) and every workspace git run pins `GIT_DIR` and
+`GIT_WORK_TREE`, points `core.hooksPath` at an absent directory, turns
+`core.fsmonitor` and `commit.gpgsign` off, and runs with the repository's
+config swapped for the clone's baseline (the agent's config returns
+afterwards), because the agent can write that config and the harness process
+runs outside the sandbox. The workspace path itself must be a real directory
+under the arm root, an existing ancestor of the diff's path must resolve
+inside it before any directory is created, and a `.git` that is a file or
+symlink, any entry under `.git` that is not a regular file or directory, a
+missing `.git/config`, or an `objects/info/alternates` file stops the run
+before git writes anything; every workspace git run is bounded by the turn
+deadline.
 
 Pi runs in RPC mode with `--session-id sim-<session>`, its agent directory,
 settings, and model list under the arm root, and the Eidnara extension from
@@ -115,10 +133,13 @@ store sits under the user's home.
 
 ## Resume
 
-The driver keeps `<arm>/state.json` current with the model index and the
+The driver keeps `<arm>/state.json` current with the model index, the
+daemon restarts whose `StoreChecked` entry the journal may still lack (each
+with its plugin-log mark), and the
 pid and start time of the daemon and of the host while a session is open.
 A new harness process calls `resume(open)` on an arm that has `StartArm` and
-no `EndArm`. The driver restores the model index, stops each recorded process
+no `EndArm`. The driver restores the model index and the owed store checks,
+stops each recorded process
 whose start time still matches, unmounts a store left mounted, mounts the
 existing store image, starts the daemon against the existing store, and, when
 the next event is inside a session, opens that session again. Pi reopens the
@@ -140,12 +161,13 @@ transcript-store paths for the host version with the host's own variables
 
 The scheduler opens an outage window before a daemon fault and closes it at
 the next event. The harness owns every daemon restart, through the hermetic
-host stack's `restartHost`, which sends SIGKILL and starts the fixture
-against the same store (OQ-10).
+host stack's `crashHost`, which sends SIGKILL, and `restartHost`, which
+starts the fixture against the same store (OQ-10); the driver inspects the
+store between the two.
 
 | Fault | Mechanism | Evidence |
 |---|---|---|
-| `daemon_sigkill_mid_fold` | The session's first observed history-summarizer call fires it; SIGKILL and restart | `pid_before`, `pid_after`, `restarted_by: harness`, and the store check right after the restart (`docs/oracles.md`); the end of the turn in progress at the restart, or else the next turn, journals a second check as `StoreChecked` |
+| `daemon_sigkill_mid_fold` | The session's first observed history-summarizer call fires it; SIGKILL and restart | `pid_before`, `pid_after`, `restarted_by: harness`, and the store check between the SIGKILL and the replacement's start (`docs/oracles.md`); the first turn boundary, session end, or finish at which the plugin log shows a pass the replacement served (`served_from=transform` past the log's length at the restart), or a later daemon fault before it kills the daemon, journals a second check as `StoreChecked` |
 | `daemon_restart` | At `session_start`, SIGKILL and restart | As above |
 | `store_full` | When the scenario schedules `store_full`, each Eidnara arm's store lives on a sparse 2 GiB ext4 loop mount (`nosuid,nodev,noexec`) at `<arm>/s`, room for the daemon to materialize its harness closures twice, with its image outside the sandbox's kept paths; the fault fills it, and `session_end` removes the ballast | `avail_kb: 0`; any other value stops the run |
 | `plugin_reload` | The host process and its plugin start afresh at every `session_start` | The reload note |

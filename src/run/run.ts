@@ -265,6 +265,7 @@ function callsOf(
                 input_tokens: r.input_tokens,
                 output_tokens: r.output_tokens,
                 ...(r.response_text ? { response_text: r.response_text } : {}),
+                ...(r.response_text_truncated ? { response_text_truncated: true } : {}),
             };
         });
 }
@@ -429,6 +430,7 @@ async function runArms(
             transcriptPaths: hostRow.transcript_paths,
             loopStore,
             onDaemonExit: (detail) => scheduler.daemonExited(detail),
+            sampleDaemon: () => sampler.observe(),
             callsFor: (session) => [
                 ...callsOf(join(o.out, "calls.jsonl"), arm, session, turnIndex).filter(
                     (c) => c.component !== "user-sim",
@@ -444,6 +446,7 @@ async function runArms(
                     label: String(e.label),
                 })),
             ],
+            settle: () => scheduler.quiesceJobs(),
             now,
         });
         let cpuJob: string | null = null;
@@ -514,7 +517,7 @@ async function runArms(
             },
             finish: async () => {
                 sampler.stop();
-                await driver.finish();
+                return driver.finish();
             },
         };
     }

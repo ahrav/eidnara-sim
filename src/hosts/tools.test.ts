@@ -9,6 +9,19 @@ test("a tool run reads as its bash command, or as the tool and its target path",
     expect(toolCommand("eidnara_search", { query: "cap" })).toBe('eidnara_search {"query":"cap"}');
 });
 
+test("a structured write or edit keeps the content it wrote under its target path", () => {
+    expect(
+        toolCommand("write", { path: "src/cache.ts", content: "const cache = new Map();\n" }),
+    ).toBe("write src/cache.ts\nconst cache = new Map();\n");
+    const edits = [{ oldText: "let a", newText: "static A: Mutex<u8>" }];
+    expect(toolCommand("edit", { path: "src/x.rs", edits })).toBe(
+        `edit src/x.rs\n${JSON.stringify(edits)}`,
+    );
+    expect(toolCommand("read", { path: "src/db.rs", offset: 10, limit: 20 })).toBe(
+        "read src/db.rs",
+    );
+});
+
 test("an OpenCode turn logs only its own messages' tools, timed in OpenCode's clock from the turn's first message", async () => {
     const fakeNow = 9_000_000_000;
     const old = {
@@ -47,6 +60,60 @@ test("an OpenCode turn logs only its own messages' tools, timed in OpenCode's cl
             abort: async () => ({}),
         },
     };
+    const reported: unknown[] = [];
+    const host = new OpencodeSimHost({
+        ...({} as HostContext),
+        config: loadConfig(),
+        root: "/x",
+        launcher: "/x/sandbox.sh",
+        now: () => 100,
+        onTool: (run) => void reported.push(run),
+    });
+    Object.assign(host as unknown as Record<string, unknown>, {
+        client,
+        sid: "s",
+        oc: { stderr: () => "" },
+    });
+    expect(await host.prompt("go", 5_000)).toEqual({});
+    expect(reported).toEqual([{ command: "cargo test", exit: 1, scenario_ms: 2_100 }]);
+    expect(host.drainTools()).toEqual([{ command: "cargo test", exit: 1, scenario_ms: 2_100 }]);
+});
+
+function failingTurn(mode: "result-error" | "rejected" | "deadline", listing = true) {
+    const fakeNow = 9_000_000_000;
+    const tool = (command: string, status: string, start: number) => ({
+        type: "tool",
+        tool: "bash",
+        state: { input: { command }, status, time: { start } },
+    });
+    const fresh = {
+        info: { id: "m2", time: { created: fakeNow } },
+        parts: [
+            tool("cargo build", "error", fakeNow + 1_000),
+            tool("cargo test", "running", fakeNow + 3_000),
+        ],
+    };
+    let listed = 0;
+    let release: (value: unknown) => void = () => undefined;
+    const client = {
+        session: {
+            messages: async () => {
+                if (listed++ > 0 && !listing) throw new Error("serve gone");
+                return { data: listed === 1 ? [] : [fresh] };
+            },
+            prompt: () => {
+                if (mode === "result-error") return Promise.resolve({ error: { name: "Bad" } });
+                if (mode === "rejected") return Promise.reject(new Error("socket closed"));
+                return new Promise((resolve) => {
+                    release = resolve;
+                });
+            },
+            abort: async () => {
+                release({ data: { info: {} } });
+                return {};
+            },
+        },
+    };
     const host = new OpencodeSimHost({
         ...({} as HostContext),
         config: loadConfig(),
@@ -59,8 +126,114 @@ test("an OpenCode turn logs only its own messages' tools, timed in OpenCode's cl
         sid: "s",
         oc: { stderr: () => "" },
     });
-    expect(await host.prompt("go", 5_000)).toEqual({});
-    expect(host.drainTools()).toEqual([{ command: "cargo test", exit: 1, scenario_ms: 2_100 }]);
+    return host;
+}
+
+for (const mode of ["result-error", "rejected", "deadline"] as const) {
+    test(`an OpenCode turn that ends ${mode} still logs its tool runs, unfinished ones with a null exit`, async () => {
+        const host = failingTurn(mode);
+        expect((await host.prompt("go", 50)).error).toBeString();
+        expect(host.drainTools()).toEqual([
+            { command: "cargo build", exit: 1, scenario_ms: 1_100 },
+            { command: "cargo test", exit: null, scenario_ms: 3_100 },
+        ]);
+    });
+}
+
+test("a failed OpenCode turn whose messages cannot be listed keeps its error and names the gap", async () => {
+    const result = await failingTurn("rejected", false).prompt("go", 50);
+    expect(result.error).toContain("socket closed");
+    expect(result.error).toContain("tool capture: Error: serve gone");
+});
+
+test("a message listing that returns an error instead of data is a capture failure, not an empty turn", async () => {
+    let listed = 0;
+    const client = {
+        session: {
+            messages: async () =>
+                listed++ === 0
+                    ? { data: [] }
+                    : { error: { name: "Unauthorized" }, data: undefined },
+            prompt: async () => ({ data: { info: {} } }),
+            abort: async () => ({}),
+        },
+    };
+    const host = new OpencodeSimHost({
+        ...({} as HostContext),
+        config: loadConfig(),
+        root: "/x",
+        launcher: "/x/sandbox.sh",
+        now: () => 100,
+    });
+    Object.assign(host as unknown as Record<string, unknown>, {
+        client,
+        sid: "s",
+        oc: { stderr: () => "" },
+    });
+    const result = await host.prompt("go", 5_000);
+    expect(result.error).toContain("tool capture");
+    expect(result.error).toContain("Unauthorized");
+    expect(host.drainTools()).toEqual([]);
+});
+
+test("a message listing that stalls past the turn deadline fails the turn as a capture gap", async () => {
+    let listed = 0;
+    const client = {
+        session: {
+            messages: () =>
+                listed++ === 0 ? Promise.resolve({ data: [] }) : new Promise(() => undefined),
+            prompt: async () => ({ data: { info: {} } }),
+            abort: async () => ({}),
+        },
+    };
+    const host = new OpencodeSimHost({
+        ...({} as HostContext),
+        config: loadConfig(),
+        root: "/x",
+        launcher: "/x/sandbox.sh",
+        now: () => 100,
+    });
+    Object.assign(host as unknown as Record<string, unknown>, {
+        client,
+        sid: "s",
+        oc: { stderr: () => "" },
+    });
+    const started = Date.now();
+    const result = await host.prompt("go", 1_200);
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(result.error).toContain("session.messages timed out");
+});
+
+test("a Pi tool run is timed from its start event, and an unfinished one keeps its start time", () => {
+    let now = 10;
+    const host = new PiSimHost({
+        ...({} as HostContext),
+        config: loadConfig(),
+        root: "/x",
+        launcher: "/x/sandbox.sh",
+        now: () => now,
+    });
+    const event = (e: Record<string, unknown>) =>
+        (host as unknown as { toolEvent: (e: unknown) => void }).toolEvent(e);
+    event({
+        type: "tool_execution_start",
+        toolCallId: "t1",
+        toolName: "bash",
+        args: { command: "cargo test" },
+    });
+    event({
+        type: "tool_execution_start",
+        toolCallId: "t2",
+        toolName: "bash",
+        args: { command: "sleep 9" },
+    });
+    now = 50;
+    event({ type: "tool_execution_end", toolCallId: "t1", isError: false });
+    now = 70;
+    expect(host.drainTools()).toEqual([
+        { command: "cargo test", exit: 0, scenario_ms: 10 },
+        { command: "sleep 9", exit: null, scenario_ms: 10 },
+    ]);
 });
 
 function opencodeHost(client: Record<string, unknown>): OpencodeSimHost {

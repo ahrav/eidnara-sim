@@ -59,7 +59,7 @@ timestamps, durations, pids, temp paths, run ids). `<run>/tape.jsonl`
 records every reply, replayed ones included; `--tapes` adds earlier runs'
 tapes to replay from, and each must exist with its `pairing.jsonl` beside
 it. A reply whose key is on the tape is replayed with no model call. The
-proxy record keeps the first 32,768 characters of a reply; a cut reply is
+proxy record keeps the first 262,144 characters of a reply; a cut reply is
 keyed by the digest of its whole text as well, so replies that differ only
 past the cut never pair, and its label and persona prompt read the recorded
 tail. A cut last line in either log, left by a kill mid-append, is dropped on

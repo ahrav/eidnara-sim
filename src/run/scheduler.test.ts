@@ -474,6 +474,129 @@ describe("resume of fired faults", () => {
     });
 });
 
+describe("resume of a journaled sleep jump", () => {
+    test("a sleep whose jump is journaled but whose firing is not resumes as fired, once", async () => {
+        const path = join(dir(), "j.jsonl");
+        const j = new Journal(path);
+        const duration = 3_600_000;
+        j.append({ kind: "StartRun", arm: null, scenario_ms: 0 });
+        j.append({ kind: "StartArm", arm: "a", scenario_ms: 0 });
+        j.append({
+            kind: "AdvanceClock",
+            arm: "a",
+            scenario_ms: duration,
+            from_ms: 0,
+            busy: [],
+            fault: "f-sleep",
+        });
+        j.close();
+        const sleep = {
+            ...episode("f-sleep", "laptop_sleep", { kind: "session_start", session: "s-0000" }),
+            params: { duration_ms: duration },
+        };
+        const resumed = new Journal(path);
+        await new Scheduler({
+            events: fixtureEvents(1),
+            faults: [sleep],
+            journal: resumed,
+            settleMs: 0,
+            order: ["a"],
+            drivers: { a: fakeDriver([]) },
+        }).run();
+        const jumps = resumed.entries.filter(
+            (e) => e.kind === "AdvanceClock" && e.fault === "f-sleep",
+        );
+        expect(jumps).toHaveLength(1);
+        const fired = resumed.entries.filter(
+            (e) => e.kind === "FaultFired" && e.fault === "f-sleep",
+        );
+        const observed = resumed.entries.filter(
+            (e) => e.kind === "FaultObserved" && e.fault === "f-sleep",
+        );
+        expect([fired.length, observed.length]).toEqual([1, 1]);
+        expect(observed[0]?.evidence).toEqual({ clock_advanced_ms: duration });
+        const last = resumed.entries.at(-1) as Entry;
+        expect(last.scenario_ms).toBeLessThan(2 * duration);
+    });
+});
+
+describe("two sleeps on one event", () => {
+    test("each scheduled sleep jumps the clock by its own duration before it is observed", async () => {
+        const j = new Journal(join(dir(), "j.jsonl"));
+        const sleeps = [3_600_000, 7_200_000].map((duration_ms, i) => ({
+            ...episode(`f-sleep-${i}`, "laptop_sleep", {
+                kind: "session_start",
+                session: "s-0000",
+            }),
+            params: { duration_ms },
+        }));
+        await new Scheduler({
+            events: fixtureEvents(1),
+            faults: sleeps,
+            journal: j,
+            settleMs: 0,
+            order: ["a"],
+            drivers: { a: fakeDriver([]) },
+        }).run();
+        const jumps = j.entries.filter((e) => e.kind === "AdvanceClock" && e.fault !== undefined);
+        expect(jumps.map((e) => [e.fault, e.scenario_ms - Number(e.from_ms)])).toEqual([
+            ["f-sleep-0", 3_600_000],
+            ["f-sleep-1", 7_200_000],
+        ]);
+        const observed = j.entries.filter((e) => e.kind === "FaultObserved");
+        expect(observed.map((e) => e.evidence)).toEqual([
+            { clock_advanced_ms: 3_600_000 },
+            { clock_advanced_ms: 7_200_000 },
+        ]);
+        expect((j.entries.at(-1) as Entry).scenario_ms).toBeGreaterThanOrEqual(10_800_000);
+    });
+});
+
+describe("store checks outside turns", () => {
+    test("store checks a session end or finish settles are journaled with their event", async () => {
+        const j = new Journal(join(dir(), "j.jsonl"));
+        const store = { integrity: "ok", segments: 0, overlaps: [], ranges: [] };
+        const driver: ArmDriver = {
+            reset: async () => undefined,
+            event: async (e) => {
+                if (e.kind === "session_end") return { stores: [{ fault: "r-1", store }] };
+                if (e.kind === "user_turn") return { stores: [{ fault: "r-0", store }] };
+                return {};
+            },
+            fault: async () => ({ pid_after: 2, stores: [{ fault: "r-9", store }] }),
+            finish: async () => ({ stores: [{ fault: "r-2", store }] }),
+        };
+        await new Scheduler({
+            events: fixtureEvents(1),
+            faults: [
+                episode("restart", "daemon_restart", { kind: "session_start", session: "s-0000" }),
+            ],
+            journal: j,
+            settleMs: 0,
+            order: ["a"],
+            drivers: { a: driver },
+        }).run();
+        const checks = j.entries.filter((e) => e.kind === "StoreChecked");
+        expect(checks.map((e) => [e.fault, e.event])).toEqual([
+            ["r-9", null],
+            ["r-0", "e-000001"],
+            ["r-1", "e-999999"],
+            ["r-2", null],
+        ]);
+        // A check a fault settles precedes its FaultObserved, whose evidence carries no stores.
+        const observed = j.entries.find((e) => e.kind === "FaultObserved");
+        expect(observed?.evidence).toEqual({ pid_after: 2 });
+        expect(j.entries.indexOf(checks[0] as Entry)).toBeLessThan(
+            j.entries.indexOf(observed as Entry),
+        );
+        const kinds = j.entries.map((e) => e.kind);
+        // A turn's check precedes its EndTurn, so a kill between the two replays the turn with
+        // the check already on record, and the arm's last check precedes EndArm.
+        expect(kinds.indexOf("StoreChecked")).toBeLessThan(kinds.indexOf("EndTurn"));
+        expect(kinds.lastIndexOf("StoreChecked")).toBeLessThan(kinds.indexOf("EndArm"));
+    });
+});
+
 describe("driver lifecycle hooks", () => {
     test("a resumed arm gets the open session, its open jobs end, and finish precedes EndArm", async () => {
         const path = join(dir(), "j.jsonl");
@@ -517,6 +640,7 @@ describe("driver lifecycle hooks", () => {
             finish: async () => {
                 calls.push("finish");
                 finishedAt = second.entries.length;
+                return undefined;
             },
         };
         await new Scheduler({
@@ -616,4 +740,82 @@ test("a probe turn's snapshot is journaled once per item and arm, after its EndT
     const snaps = j.entries.filter((e) => e.kind === "SnapshotArtefacts");
     expect(snaps.map((e) => e.snapshot)).toEqual(["a:q-1:e-000001"]);
     expect(kinds.indexOf("SnapshotArtefacts")).toBe(kinds.indexOf("EndTurn") + 1);
+});
+
+test("a harness killed between a probe's EndTurn and its SnapshotArtefacts journals the snapshot on resume", async () => {
+    const path = join(dir(), "j.jsonl");
+    const events = fixtureEvents(1).map((e) =>
+        e.kind === "user_turn" ? { ...e, probe: "q-1" } : e,
+    );
+    const driver: ArmDriver = {
+        reset: async () => undefined,
+        event: async (e) => (e.kind === "user_turn" ? { snapshot: `a:q-1:${e.id}` } : {}),
+        fault: async () => ({}),
+    };
+    const first = new Journal(path);
+    await new Scheduler({
+        events,
+        faults: [],
+        journal: first,
+        settleMs: 0,
+        order: ["a"],
+        drivers: { a: driver },
+    }).run();
+    first.close();
+    const whole = readJournal(path);
+    const cut = whole.findIndex((e) => e.kind === "SnapshotArtefacts");
+    writeFileSync(
+        path,
+        whole
+            .slice(0, cut)
+            .map((e) => `${JSON.stringify(e)}\n`)
+            .join(""),
+    );
+
+    const second = new Journal(path);
+    await new Scheduler({
+        events,
+        faults: [],
+        journal: second,
+        settleMs: 0,
+        order: ["a"],
+        drivers: { a: driver },
+    }).run();
+    const snaps = second.entries.filter((e) => e.kind === "SnapshotArtefacts");
+    expect(snaps.map((e) => [e.item, e.snapshot])).toEqual([["q-1", "a:q-1:e-000001"]]);
+    const kinds = second.entries.map((e) => `${e.kind}:${e.event ?? e.item ?? ""}`);
+    expect(kinds.indexOf("SnapshotArtefacts:q-1")).toBeLessThan(kinds.indexOf("Event:e-000001"));
+});
+
+test("quiescing jobs waits for background jobs while the turn itself stays open", async () => {
+    const j = new Journal(join(dir(), "j.jsonl"));
+    let scheduler: Scheduler | null = null;
+    let settled = false;
+    const driver: ArmDriver = {
+        reset: async () => undefined,
+        event: async (e) => {
+            if (e.kind !== "user_turn") return {};
+            setTimeout(() => scheduler?.jobStart("history_summarizer-0"), 20);
+            setTimeout(() => scheduler?.jobEnd("history_summarizer-0"), 90);
+            await scheduler?.quiesceJobs();
+            settled = true;
+            return {};
+        },
+        fault: async () => ({}),
+    };
+    scheduler = new Scheduler({
+        events: fixtureEvents(1),
+        faults: [],
+        journal: j,
+        settleMs: 50,
+        jobPollMs: 5,
+        order: ["a"],
+        drivers: { a: driver },
+    });
+    await scheduler.run();
+    expect(settled).toBe(true);
+    const kinds = j.entries.map((e) => `${e.kind}:${e.job ?? e.event ?? ""}`);
+    expect(kinds.indexOf("EndJob:history_summarizer-0")).toBeLessThan(
+        kinds.indexOf("EndTurn:e-000001"),
+    );
 });

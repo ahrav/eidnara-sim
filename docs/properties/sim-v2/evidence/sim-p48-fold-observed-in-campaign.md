@@ -13,15 +13,14 @@ v2 harness before any harness code existed.
 
 A fold or host compaction occurs at least once per campaign.
 
-No harness code, test, or run exists yet. The surface lands in M5
-(#1029).
-
-M5 (#1030) observed folds in the live S runs `recovery-2` and `recovery-3`
-(seed 101, Pi, eidnara arm) at a 30000-token context limit: each made
-`history_summarizer` calls in sessions `s-0004` and `s-0005`, and the final
-store holds their history segments (`<arm>/store-check.json`). The default
-context limit gave no fold in the earlier S smoke runs, so a tier run reaches
-this property only once sessions grow past the fold threshold.
+M5 (#1030) observed folds in the live S run `recovery-3` (seed 101, Pi,
+eidnara arm) at a 30000-token context limit, recorded as
+`tests/fixtures/recovery/recovery-3-eidnara.json`: its call records hold five
+`history_summarizer` calls across sessions `s-0003` to `s-0005`, and the
+final store (`<arm>/store-check.json`, the fixture's `finalStore`) holds
+history segments for `sim-s-0003` and `sim-s-0005`. Whether a run at the
+default context limit folds is unresolved: no retained artifact records both
+an S run and its default limit. No check counts folds yet.
 
 ## Failure scenario
 

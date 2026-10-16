@@ -5,8 +5,10 @@ Scope: the v2 live-slice harness in this tree, specified by
 follow `docs/properties/METHOD.md`. The spec names its full catalog at
 `research/sim-design/property-catalog-sim-v2.md` (2026-10-12 revision); that
 file is unavailable, so these records are reconstructed from the condensed
-index in the spec body. Every record is PROPOSED: `Exercised: not yet` and
-`Confidence: low`, because no harness surface exists to verify against.
+index in the spec body. Every record is PROPOSED. All but one read
+`Exercised: not yet` and `Confidence: low`, because no harness surface existed
+to verify against when they were written; SIM-P48 reads `partial` and
+`medium` from a recorded M5 run.
 
 Stable ids: `SIM-P01` to `SIM-P77` carry the spec's proposed records, and
 `SIM-L01` to `SIM-L03` carry the liveness bounds OQ-6 asked for and M0
@@ -1003,18 +1005,23 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M7 (#1032); nothing constructs
-it yet
+Exercised: partial - `src/oracle/oracles.test.ts` ("token ledger") constructs
+`agent`, `memory_capture`, and `title` calls plus the three harness
+components, each with all four token fields; the other components share the
+same code path but are not constructed; pricing and the price table version
+land with M7 (#1032)
 Guarantee: SIM-P38: Per-arm total tokens equal the sum of per-component tokens,
 and per-component cost uses the journaled price table version.
 Check: `always` - assert per-arm token totals equal the per-component sum and
 each cost cites the journaled price table version.
 Fault/timing angle: none.
 Required faults and enabling state: a run with every component active.
-Confidence: low - [evidence](evidence/sim-p38-cost-conserves-by-component.md).
-PROPOSED: reconstructed from the condensed index in spec #1007; no
-implementation exists to verify against, and a default tier run reaches it.
-Existing check: none
+Confidence: medium - [evidence](evidence/sim-p38-cost-conserves-by-component.md).
+M5 (#1030) implements the token half in `ledger` (`src/oracle/oracles.ts`);
+the price table half has no implementation yet.
+Existing check: `src/oracle/oracles.test.ts` (token ledger) covers the four
+token fields per component, the harness-call exclusion, and the per-arm sum;
+status unaudited
 Impact: Cost ratios are computed on tokens that do not add up.
 Open questions: None.
 
@@ -1023,8 +1030,10 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M5 (#1029); nothing constructs
-it yet
+Exercised: partial - `src/oracle/oracles.test.ts` constructs the deadline
+turns, a completed call with no follow-up, a sub-second call followed by
+silence, and a persistence call inside the window, on fixtures and constructed
+logs; a live run has not yet produced a journal
 Guarantee: SIM-P39: A turn is `hang` iff its wall duration exceeds 5 minutes
 with no call record from the agent's component in that window, or a completed
 model call is followed by no persistence or tool execution within the bound; the
@@ -1034,11 +1043,19 @@ windows and assert the `hang` label matches the definition in both directions.
 Fault/timing angle: the observed Pi hang had a completed model call.
 Required faults and enabling state: a turn with a completed call and no
 follow-up.
-Confidence: low -
-[evidence](evidence/sim-p39-hang-is-derived-from-call-silence.md). PROPOSED:
-reconstructed from the condensed index in spec #1007; no implementation exists
-to verify against, and a default tier run reaches it.
-Existing check: none
+Confidence: medium -
+[evidence](evidence/sim-p39-hang-is-derived-from-call-silence.md). M5 (#1030)
+implements the oracle in `f4` (`src/oracle/oracles.ts`) over the recorded
+journal, call records, and tool runs; it reads the turn after the fact rather
+than labelling it `failed(hang)` as it ends, a deadline turn counts only with
+no agent call or a five-minute gap in its activity, and in a completed turn a
+tool start within a second of the call's end counts as progress however long
+the tool runs. A default tier run reaches it; none has run yet.
+Existing check: `src/oracle/oracles.test.ts` (oracle fixtures, oracle edge
+cases, round four) covers the deadline wording of both hosts, a deadline turn
+active throughout and one with a silent window, the completed call with no
+follow-up, the turn-start silence, the sub-second call, the persistence call,
+and the recorded tool start; status unaudited
 Impact: The intermittent Pi hang goes undetected or a slow turn is mislabelled.
 Open questions: None.
 
@@ -1115,8 +1132,9 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M5 (#1029); nothing constructs
-it yet
+Exercised: partial - `src/grade/judge.test.ts` constructs the family refusal,
+the blinding refusals, both orders, and the digests on each P7 grade; a live
+run has not yet produced a journal
 Guarantee: SIM-P43: Every judge call has `component = judge`, a model family
 that differs from the agent model, no arm label in the prompt, both position
 orders per item, and the calibration digest recorded.
@@ -1125,10 +1143,13 @@ difference, blinding, both orders, and calibration digest; every condition must
 hold for every P7 item.
 Fault/timing angle: none.
 Required faults and enabling state: P7 items with a calibration set.
-Confidence: low - [evidence](evidence/sim-p43-judge-hygiene-on-p7-only.md).
-PROPOSED: reconstructed from the condensed index in spec #1007; no
-implementation exists to verify against, and a default tier run reaches it.
-Existing check: none
+Confidence: medium - [evidence](evidence/sim-p43-judge-hygiene-on-p7-only.md).
+M5 (#1029) implements the judge path in `src/grade/judge.ts`; unit tests cover
+each condition on fixtures, and no tier run has exercised it yet.
+Existing check: `src/grade/judge.test.ts` (P7 judge path, proxy judge) covers
+the component header on each call, the family refusal, blinding, both orders
+in one judgment, and the digests on each grade; the journal that binds each
+judge call to its item, order, and calibration digest lands with the runner; status unaudited
 Impact: The P7 judge identifies arms or prefers its own family.
 Open questions: None.
 
@@ -1137,8 +1158,8 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M5 (#1029); nothing constructs
-it yet
+Exercised: partial - `src/grade/judge.test.ts` constructs the seeded 10% draw
+and its reproducibility; journaling before the tier verdict lands with M7
 Guarantee: SIM-P44: A 10% sample of P7 items per tier is journaled as
 `human_check_pending` before the tier verdict, and the verdict names the sample.
 Check: `always` - assert the sample size is at least 10% of P7 items rounded up
@@ -1146,9 +1167,10 @@ and the entries precede the verdict.
 Fault/timing angle: none.
 Required faults and enabling state: a tier with P7 items.
 Confidence: low - [evidence](evidence/sim-p44-p7-human-check-sample.md).
-PROPOSED: reconstructed from the condensed index in spec #1007; no
-implementation exists to verify against, and a default tier run reaches it.
-Existing check: none
+M5 (#1029) implements `humanCheckSample` in `src/grade/judge.ts` with a unit
+test; the journal entry and the verdict naming the sample land with M7.
+Existing check: `src/grade/judge.test.ts` (human-check sample) covers the count
+and the seeded reproducibility; status unaudited
 Impact: Judge calibration drifts with no human anchor.
 Open questions: None.
 
@@ -1225,19 +1247,25 @@ Open questions: None.
 Type: reachability
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M5 (#1029); nothing constructs
-it yet
+Exercised: partial - the live S run `recovery-3` at a 30000-token context
+limit produced folds (`tests/fixtures/recovery/recovery-3-eidnara.json`); no
+retained run records the default limit, and no check counts them
 Guarantee: SIM-P48: A fold or host compaction occurs at least once per campaign.
 Check: `sometimes` - observe at least one fold or compaction event; without one
 P13 and SIM-P47 are vacuous.
 Fault/timing angle: none.
-Required faults and enabling state: forced p90 sessions.
-Confidence: low - [evidence](evidence/sim-p48-fold-observed-in-campaign.md).
-PROPOSED: reconstructed from the condensed index in spec #1007; no
-implementation exists to verify against, and a default tier run reaches it.
+Required faults and enabling state: sessions past the fold threshold, by forced
+p90 sessions or a lowered context limit.
+Confidence: medium - [evidence](evidence/sim-p48-fold-observed-in-campaign.md).
+Verified from the recorded fixture's `history_summarizer` call records and
+final store.
+PROPOSED: reconstructed from the condensed index in spec #1007; one live S run
+has since reached it at a lowered context limit.
 Existing check: none
 Impact: Fold fidelity is never measured.
-Open questions: None.
+Open questions:
+- Does a run at the default context limit fold? No retained artifact records
+  one; unresolved, needs a default-limit S run.
 
 ### sim-p49-p1-control-instance-paired
 

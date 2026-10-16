@@ -1,12 +1,18 @@
 import { Database } from "bun:sqlite";
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 
 export interface StoreCheck {
+    /** SQLite's `integrity_check` result, followed by any segment whose own bounds are inverted. */
     integrity: string;
     segments: number;
     overlaps: { session: string; first: number; second: number }[];
-    /** Each segment as `[session, sequence, start_message, end_message]`. */
-    ranges: [string, number, number, number][];
+    /**
+     * Each segment as `[session, sequence, start_message, end_message, digest]`, the digest over
+     * its message ids, title, and content, so a segment rewritten within the same bounds reads
+     * as changed.
+     */
+    ranges: [string, number, number, number, string][];
 }
 
 interface Segment {
@@ -14,6 +20,18 @@ interface Segment {
     sequence: number;
     start_message: number;
     end_message: number;
+    start_message_id: string;
+    end_message_id: string;
+    title: string;
+    content: string;
+}
+
+function digest(g: Segment): string {
+    const hash = createHash("sha256");
+    for (const part of [g.start_message_id, g.end_message_id, g.title, g.content]) {
+        hash.update(part).update("\0");
+    }
+    return hash.digest("hex").slice(0, 16);
 }
 
 export function checkStore(path: string): StoreCheck {
@@ -30,12 +48,19 @@ function inspect(path: string): StoreCheck {
     const db = new Database(path, { readonly: true });
     try {
         const rows = db.query("pragma integrity_check").all() as { integrity_check: string }[];
-        const integrity = rows.map((r) => r.integrity_check).join("; ");
+        const checks = rows.map((r) => r.integrity_check);
         const segments = db
             .query(
-                "select session_id, sequence, start_message, end_message from history_segments order by session_id, start_message",
+                "select session_id, sequence, start_message, end_message, start_message_id, end_message_id, title, content from history_segments order by session_id, start_message, end_message, sequence",
             )
             .all() as Segment[];
+        // The schema has no constraint on the bounds, so an inverted range passes the pragma.
+        for (const g of segments) {
+            if (g.start_message > g.end_message) {
+                checks.push(`inverted range ${g.session_id}/${g.sequence}`);
+            }
+        }
+        const integrity = checks.join("; ");
         const overlaps: StoreCheck["overlaps"] = [];
         let reach: Segment | null = null;
         for (const next of segments) {
@@ -54,6 +79,7 @@ function inspect(path: string): StoreCheck {
             g.sequence,
             g.start_message,
             g.end_message,
+            digest(g),
         ]);
         return { integrity, segments: segments.length, overlaps, ranges };
     } finally {

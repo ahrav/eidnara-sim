@@ -1,5 +1,6 @@
 import { appendFileSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { dropCutLine } from "./journal";
 
 const TICKS_PER_SECOND = 100;
 const PAGE_BYTES = 4096;
@@ -91,13 +92,26 @@ export class ResourceSampler {
         return s;
     }
 
+    /** The first sample is taken at once, so RSS(0) precedes any session's work; a line a kill cut goes first. */
     start(): void {
-        this.timer ??= setInterval(() => this.sample(), this.o.intervalMs);
+        if (this.timer) return;
+        dropCutLine(this.o.path);
+        this.sample();
+        this.timer = setInterval(() => this.sample(), this.o.intervalMs);
     }
 
+    /** Takes a sample now: the first one when sampling has yet to start, an extra one otherwise. */
+    observe(): void {
+        if (this.timer) this.sample();
+        else this.start();
+    }
+
+    /** A running sampler takes a final sample before its timer goes, so the last interval's growth is on record. */
     stop(): void {
-        if (this.timer) clearInterval(this.timer);
+        if (!this.timer) return;
+        clearInterval(this.timer);
         this.timer = null;
+        this.sample();
         if (this.busy) this.o.onBusy(false);
         this.busy = false;
     }

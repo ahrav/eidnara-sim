@@ -21,7 +21,7 @@ No harness code, test, or run exists yet. The surface lands in M6
 M6 (#1031) replays a reply from the tape when its key (seed, event, label,
 normalised digest) matches, with no model call; tests replay a one-arm and a
 two-arm run against their recorded outputs with zero live calls. A reply the
-proxy record cut at 32,768 characters is keyed by the digest of the whole text
+proxy record cut at 262,144 characters is keyed by the digest of the whole text
 as well, so two replies that differ only past the cut never pair.
 
 ## Failure scenario
