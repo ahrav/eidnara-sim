@@ -19,6 +19,8 @@ export interface Command {
     command: string;
     exit: number | null;
     scenario_ms: number;
+    /** The host's id for the run, when it reported a start before the end. */
+    call?: string;
 }
 
 export interface CommandLog {

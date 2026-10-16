@@ -372,8 +372,11 @@ async function runArms(
             onBusy,
         });
         cleanup.push(async () => {
-            sampler.stop();
-            await driver.stop();
+            try {
+                sampler.stop();
+            } finally {
+                await driver.stop();
+            }
         });
         drivers[arm] = {
             reset: async () => {
@@ -405,8 +408,16 @@ async function runArms(
                 return driver.fault(f);
             },
             finish: async () => {
-                sampler.stop();
-                return driver.finish();
+                // The sampler's stop can fail the run; the arm still finishes and its checks land.
+                let stopped: unknown = null;
+                try {
+                    sampler.stop();
+                } catch (caught) {
+                    stopped = caught;
+                }
+                const last = await driver.finish();
+                if (stopped) throw stopped;
+                return last;
             },
         };
     }

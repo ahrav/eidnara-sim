@@ -14,7 +14,7 @@ import { basename, join, relative, sep } from "node:path";
 import { GitBound, git, gitEnv } from "../git";
 import type { Artefact, CallView, Command, Snapshot } from "../grade/artefacts";
 import { sha256Hex } from "../prereg/canonical";
-import { dropCutLine as dropCutJsonlLine } from "../run/journal";
+import { keepCompleteLines } from "../run/journal";
 
 interface RecorderState {
     session: string | null;
@@ -77,8 +77,8 @@ export class SnapshotRecorder {
     }
 
     private dropCutLine(): void {
-        dropCutJsonlLine(join(this.armDir, "snapshots.jsonl"));
-        dropCutJsonlLine(join(this.armDir, "tools.jsonl"));
+        keepCompleteLines(join(this.armDir, "snapshots.jsonl"));
+        keepCompleteLines(join(this.armDir, "tools.jsonl"));
     }
 
     /**
@@ -287,11 +287,19 @@ export class SnapshotRecorder {
         }
     }
 
+    /**
+     * Adds tool runs: each is appended to `tools.jsonl` with the turn it belongs to, and a run
+     * whose `call` id matches an earlier record replaces that record in the session's commands.
+     */
     addTools(tools: Command[], turn: string | null): void {
         if (tools.length === 0) return;
         const lines = tools.map((t) => `${JSON.stringify({ turn, ...t })}\n`).join("");
         appendFileSync(join(this.armDir, "tools.jsonl"), lines);
-        this.state.commands.push(...tools);
+        for (const run of tools) {
+            const at = run.call ? this.state.commands.findIndex((c) => c.call === run.call) : -1;
+            if (at === -1) this.state.commands.push(run);
+            else this.state.commands[at] = run;
+        }
         this.save();
     }
 

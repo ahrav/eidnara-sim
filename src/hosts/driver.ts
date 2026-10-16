@@ -322,7 +322,13 @@ export class HostDriver implements ArmDriver {
         if (owedBefore) outcome.stores = owedBefore;
         this.turn = e.id;
         const result = await host.prompt(String(e.text), this.o.turnDeadlineMs);
-        if (this.daemon && this.daemonPid() === null) this.o.onDaemonExit({ after: e.id });
+        let reported = false;
+        const checkDaemon = () => {
+            if (reported || !this.daemon || this.daemonPid() !== null) return;
+            reported = true;
+            this.o.onDaemonExit({ after: e.id });
+        };
+        checkDaemon();
         const tools = host.drainTools();
         this.turn = null;
         if (result.error) outcome.failed = result.error;
@@ -361,6 +367,7 @@ export class HostDriver implements ArmDriver {
                 const reason = `snapshot: ${caught.message}`;
                 outcome.failed = outcome.failed ? `${outcome.failed} | ${reason}` : reason;
             }
+            checkDaemon();
         }
         // After the turn and, for a probe, its settled background jobs: the check this turn earned.
         await this.restarting;

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readJournal } from "./journal";
@@ -62,4 +62,21 @@ test("start drops a sample line a kill cut, so the resumed file stays readable",
     sampler.stop();
     const entries = readJournal(path);
     expect(entries.map((e) => e.scenario_ms)).toEqual([1, 7, 7]);
+});
+
+test("a final sample that cannot be written fails stop, so the run does not end as complete evidence", () => {
+    const dir = mkdtempSync(join(tmpdir(), "sim-sampler-"));
+    const path = join(dir, "resources.jsonl");
+    const sampler = new ResourceSampler({
+        path,
+        intervalMs: 60_000,
+        busyFraction: 0.5,
+        pid: () => process.pid,
+        storeDir: dir,
+        scenarioMs: () => 7,
+        onBusy: () => {},
+    });
+    sampler.start();
+    rmSync(dir, { recursive: true, force: true });
+    expect(() => sampler.stop()).toThrow();
 });

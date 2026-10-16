@@ -1,6 +1,6 @@
 import { appendFileSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { dropCutLine } from "./journal";
+import { keepCompleteLines } from "./journal";
 
 const TICKS_PER_SECOND = 100;
 const PAGE_BYTES = 4096;
@@ -95,7 +95,7 @@ export class ResourceSampler {
     /** The first sample is taken at once, so RSS(0) precedes any session's work; a line a kill cut goes first. */
     start(): void {
         if (this.timer) return;
-        dropCutLine(this.o.path);
+        keepCompleteLines(this.o.path);
         this.sample();
         this.timer = setInterval(() => this.sample(), this.o.intervalMs);
     }
@@ -106,13 +106,18 @@ export class ResourceSampler {
         else this.start();
     }
 
-    /** A running sampler takes a final sample before its timer goes, so the last interval's growth is on record. */
+    /**
+     * A running sampler takes a final sample before its timer goes, so the last interval's
+     * growth is on record. A final sample that cannot be written throws after the timer and
+     * busy state are cleared; the caller shuts the arm down in a `finally` and the error
+     * keeps the run from ending as complete evidence.
+     */
     stop(): void {
         if (!this.timer) return;
         clearInterval(this.timer);
         this.timer = null;
-        this.sample();
         if (this.busy) this.o.onBusy(false);
         this.busy = false;
+        this.sample();
     }
 }
