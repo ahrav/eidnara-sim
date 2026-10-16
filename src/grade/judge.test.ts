@@ -42,9 +42,11 @@ const load = (name: string) =>
         expect: { a: string; b: string };
     };
 
-const agentCall = (response_text: string): CallView => {
+const agentCall = (response_text: string, arm = "eidnara", session = "s-1"): CallView => {
     const view = {
         seq: 1,
+        arm,
+        session,
         component: "agent",
         turn: "e-1",
         scenario_ms: 0,
@@ -71,7 +73,9 @@ const snapshotOf = (
         session: "s-1",
         turn: "e-1",
         turn_outcome: outcome,
-        artefacts: [{ id: `${id}:calls`, class: "proxy-call" as const, calls: [agentCall(text)] }],
+        artefacts: [
+            { id: `${id}:calls`, class: "proxy-call" as const, calls: [agentCall(text, arm)] },
+        ],
     };
     return view;
 };
