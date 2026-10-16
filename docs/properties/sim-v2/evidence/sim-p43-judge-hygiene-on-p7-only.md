@@ -18,6 +18,8 @@ calibration digest recorded.
 No harness code, test, or run exists yet. The surface lands in M5
 (#1029).
 
+M5 (#1029) sends judge calls through the proxy as component `judge`, refuses a judge from the agent model's family, refuses an answer that names an arm, judges both orders, and records the prompt, rubric, and calibration digests on each P7 grade; tests cover each refusal, and a live run on 2026-10-16 graded the P7 fixtures through the gateway with `global.openai.gpt-5.6-luna` (`sim-runs/judge-smoke/`).
+
 ## Failure scenario
 
 The P7 judge identifies arms or prefers its own family.

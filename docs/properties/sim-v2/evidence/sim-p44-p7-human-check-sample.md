@@ -17,6 +17,8 @@ the tier verdict, and the verdict names the sample.
 No harness code, test, or run exists yet. The surface lands in M5
 (#1029).
 
+M5 (#1029) draws a seeded 10% sample of P7 items, rounded up, for `human_check_pending`; a test checks the count and its reproducibility. Journaling the sample before the tier verdict lands with the report (M7).
+
 ## Failure scenario
 
 Judge calibration drifts with no human anchor.
