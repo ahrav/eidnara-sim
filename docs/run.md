@@ -18,8 +18,8 @@ that a later process reuses still reads as a dead holder. A lease is read throug
 a descriptor that follows no symlink and must name a small regular file; a
 lease that cannot be read or does not parse to a lease refuses the directory,
 since a lease is linked into place whole and a damaged one is corruption, never
-a holder to take over. `releaseLease` releases only a lease whose pid, machine,
-boot, namespace, and start ticks are all this process's. A lease whose process on this host has
+a holder to take over. `releaseLease(dir, lease)` releases only the acquisition `takeLease` returned,
+compared on every identifying field including its start time. A lease whose process on this host has
 exited is taken over by writing a uniquely named temporary file with the process id, host, start time, and start ticks
 and linking it to `lease.<n+1>.json`. Exactly one of several racing resumers can create that
 name; the others read the winner's live lease on their next attempt and are
@@ -41,7 +41,8 @@ before the entry counts as appended. On open, it truncates the
 file to its complete prefix, dropping only a last line that a kill cut
 mid-write before its newline, and refuses a journal whose newline-terminated
 line does not parse. `append`
-refuses an entry whose `scenario_ms` is below the same arm's previous entry.
+refuses an entry whose `scenario_ms` is not finite or is below the same arm's
+previous entry.
 Scenario time is monotone per arm: each arm starts its own clock at 0, so
 entries of different arms are not ordered by scenario time.
 
@@ -76,7 +77,9 @@ last journaled `scenario_ms`.
 list. A scheduler whose scenario holds provider faults requires proxy
 control at construction, so a journaled `FaultFired` always armed the proxy.
 For each arm, it resets the driver and the proxy's fault state
-(`ProxyControl.reset`, when the proxy offers it), then walks the events, and
+(`ProxyControl.reset`: `FaultInjector` clears armed and pending faults, empties
+its witnesses, and returns its generator to its seed, so every arm draws one
+fault mask and `report()` describes the current arm), then walks the events, and
 before `EndArm` waits for a pending kill and for the busy set to empty, then
 closes any outage window and the current session. A turn that rejects still
 waits for a pending kill's evidence before the error propagates. After
@@ -113,8 +116,9 @@ so a callback a finished arm left behind is refused instead of writing under
 the next arm. `observe("history_summarizer")` fires the session's mid-fold
 SIGKILL on the first observed summarizer call. `daemonExited` inside an outage
 window is journaled as expected; outside one, it journals a fatal `ItemState`,
-throws `HarnessFailure`, and fails the run at its next wait or before `EndRun`
-whether or not the caller swallowed the throw. A scheduler fault whose driver call rejects
+throws `HarnessFailure`, and fails the run at its next wait, including an idle
+wait on a job that never ends, or before `EndRun`, whether or not the caller
+swallowed the throw. A scheduler fault whose driver call rejects
 journals a fatal `ItemState` and fails the run.
 
 ## Resume
@@ -122,8 +126,9 @@ journals a fatal `ItemState` and fails the run.
 A restarted harness opens the same journal. A journal holding a fatal
 `ItemState` (a daemon exit outside an outage window, or a scheduler fault the
 driver could not carry out), before or after `EndRun`, is a failed run and is
-refused with `HarnessFailure`; otherwise a
-journal with `EndRun` is complete and the run returns at once. Otherwise the harness checks that every
+refused with `HarnessFailure`; otherwise a journal with `EndRun` is complete
+and the run returns at once, after checking that `StartRun` names this arm
+order and scenario and that every arm has its `EndArm`. Otherwise the harness checks that every
 unfinished arm has a driver, refuses an arm order or scenario hash different
 from the ones `StartRun` recorded, journals `ResumeRun`, and, for each arm
 without `EndArm`:

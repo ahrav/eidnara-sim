@@ -35,8 +35,8 @@ export interface ArmHandle {
 export interface ProxyControl {
     arm(id: string): void;
     disarm(id: string): void;
-    /** Called at each arm's start, after the driver's reset, so arms see one fault schedule. */
-    reset?(): void;
+    /** Called at each arm's start, after the driver's reset, so every arm sees one fault schedule. */
+    reset(): void;
 }
 
 export class HarnessFailure extends Error {}
@@ -93,17 +93,10 @@ export class Scheduler {
                 : "the daemon exited outside an outage window";
             throw new HarnessFailure(`run failed: ${cause}`);
         }
-        if (entries.some((e) => e.kind === "EndRun")) return;
         const finished = new Set(entries.filter((e) => e.kind === "EndArm").map((e) => e.arm));
-        for (const arm of this.o.order) {
-            if (!finished.has(arm) && !this.o.drivers[arm])
-                throw new Error(`no driver for arm ${arm}`);
-        }
         const scenario = scenarioId(this.o.events, this.o.faults);
         const start = entries.find((e) => e.kind === "StartRun");
-        if (!start) {
-            this.log({ kind: "StartRun", order: this.o.order, scenario });
-        } else {
+        if (start) {
             if (JSON.stringify(start.order) !== JSON.stringify(this.o.order)) {
                 throw new Error(
                     `scheduler: run was started with arm order ${JSON.stringify(start.order)}`,
@@ -112,6 +105,21 @@ export class Scheduler {
             if (start.scenario !== scenario) {
                 throw new Error(`scheduler: run was started with scenario ${start.scenario}`);
             }
+        }
+        if (entries.some((e) => e.kind === "EndRun")) {
+            const open = this.o.order.filter((arm) => !finished.has(arm));
+            if (!start || open.length > 0) {
+                throw new Error(`journal: EndRun with unfinished arms ${JSON.stringify(open)}`);
+            }
+            return;
+        }
+        for (const arm of this.o.order) {
+            if (!finished.has(arm) && !this.o.drivers[arm])
+                throw new Error(`no driver for arm ${arm}`);
+        }
+        if (!start) {
+            this.log({ kind: "StartRun", order: this.o.order, scenario });
+        } else {
             this.log({ kind: "ResumeRun", order: this.o.order, scenario });
         }
         for (const arm of this.o.order) {
@@ -124,7 +132,7 @@ export class Scheduler {
                 driver.bind(this.handle(++this.generation, driver));
                 if (!mine.some((e) => e.kind === "StartArm")) {
                     await driver.reset();
-                    this.o.proxy?.reset?.();
+                    this.o.proxy?.reset();
                     this.log({ kind: "StartArm" });
                 }
                 this.resume(mine);
@@ -224,7 +232,10 @@ export class Scheduler {
     }
 
     private async idle(): Promise<void> {
-        while ((this.clock?.busyIds().length ?? 0) > 0) await Bun.sleep(this.o.jobPollMs ?? 50);
+        while ((this.clock?.busyIds().length ?? 0) > 0) {
+            if (this.fatal) throw this.fatal;
+            await Bun.sleep(this.o.jobPollMs ?? 50);
+        }
     }
 
     private faultsAt(e: ScenarioEvent): FaultEpisode[] {

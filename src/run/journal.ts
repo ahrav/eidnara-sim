@@ -72,7 +72,7 @@ function shaped(e: Entry): boolean {
     );
 }
 
-interface Lease {
+export interface Lease {
     pid: number;
     host: string;
     boot?: string;
@@ -199,13 +199,15 @@ function ownIdentity(): Lease {
     };
 }
 
-function sameProcess(a: Lease, b: Lease): boolean {
+/** Two lease records name one acquisition when every identifying field agrees. */
+function sameLease(a: Lease, b: Lease): boolean {
     return (
         a.pid === b.pid &&
         a.host === b.host &&
         a.boot === b.boot &&
         a.ns === b.ns &&
-        a.started_ticks === b.started_ticks
+        a.started_ticks === b.started_ticks &&
+        a.started_wall_ms === b.started_wall_ms
     );
 }
 
@@ -271,12 +273,11 @@ export function takeLease(dir: string): Lease {
  * Marks this process's lease released in place, by an atomic rename over the same number, so
  * the directory keeps its highest generation and later takers all target the next one.
  */
-export function releaseLease(dir: string): void {
-    const mine = ownIdentity();
+export function releaseLease(dir: string, lease: Lease): void {
     for (const n of leaseNumbers(dir)) {
         const path = join(dir, `lease.${n}.json`);
         const held = readLease(path);
-        if (!held || held.released || !sameProcess(held, mine)) continue;
+        if (!held || held.released || !sameLease(held, lease)) continue;
         const staged = join(dir, `lease.${randomUUID()}.tmp`);
         writeFileSync(staged, JSON.stringify({ ...held, released: true }), { flag: "wx" });
         renameSync(staged, path);
@@ -343,6 +344,9 @@ export class Journal {
     }
 
     append(entry: NewEntry): Entry {
+        if (!Number.isFinite(entry.scenario_ms)) {
+            throw new Error(`journal: scenario_ms ${entry.scenario_ms} is not finite`);
+        }
         const last = this.last.get(entry.arm);
         if (last !== undefined && entry.scenario_ms < last) {
             throw new Error(`journal: scenario_ms ${entry.scenario_ms} precedes ${last}`);

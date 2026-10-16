@@ -223,13 +223,14 @@ describe("Journal and lease", () => {
 
     test("one live process holds the lease; a dead holder's lease is taken over", () => {
         const d = dir();
-        takeLease(d);
+        const first = takeLease(d);
         expect(() => takeLease(d)).toThrow(/is leased by pid/);
-        releaseLease(d);
+        releaseLease(d, first);
         const dead = Bun.spawnSync(["true"]).pid;
         writeTopLease(d, JSON.stringify({ pid: dead, host: leaseHost(), started_wall_ms: 0 }));
-        expect(takeLease(d).pid).toBe(process.pid);
-        releaseLease(d);
+        const second = takeLease(d);
+        expect(second.pid).toBe(process.pid);
+        releaseLease(d, second);
         writeTopLease(d, "");
         expect(() => takeLease(d)).toThrow(/malformed/);
         writeTopLease(d, JSON.stringify({ pid: dead, host: "elsewhere", started_wall_ms: 0 }));
@@ -242,7 +243,7 @@ describe("Journal and lease", () => {
         try {
             const mine = takeLease(d);
             expect(typeof mine.started_ticks).toBe("number");
-            releaseLease(d);
+            releaseLease(d, mine);
             writeFileSync(
                 join(d, "lease.0.json"),
                 JSON.stringify({
@@ -252,8 +253,9 @@ describe("Journal and lease", () => {
                     started_ticks: (mine.started_ticks as number) - 1,
                 }),
             );
-            expect(takeLease(d).pid).toBe(process.pid);
-            releaseLease(d);
+            const retaken = takeLease(d);
+            expect(retaken.pid).toBe(process.pid);
+            releaseLease(d, retaken);
         } finally {
             other.kill();
         }
@@ -284,27 +286,28 @@ describe("Journal and lease", () => {
 
     test("a released lease keeps its generation, so later takers link a higher number", () => {
         const d = dir();
-        takeLease(d);
-        releaseLease(d);
+        const first = takeLease(d);
+        releaseLease(d, first);
         const left = readdirSync(d).filter((n) => /^lease\.\d+\.json$/.test(n));
         expect(left).toEqual(["lease.0.json"]);
         expect(JSON.parse(readFileSync(join(d, "lease.0.json"), "utf8")).released).toBe(true);
-        takeLease(d);
+        const second = takeLease(d);
         expect(readdirSync(d).filter((n) => /^lease\.\d+\.json$/.test(n))).toEqual([
             "lease.1.json",
         ]);
-        releaseLease(d);
+        releaseLease(d, second);
     });
 
     test("a lease this machine left before a reboot is taken over; one from another machine is refused", () => {
         const d = dir();
         const mine = takeLease(d);
-        releaseLease(d);
+        releaseLease(d, mine);
         expect(typeof mine.boot).toBe("string");
         const stale = { ...mine, boot: "an-earlier-boot", released: undefined };
         writeFileSync(join(d, "lease.0.json"), JSON.stringify(stale));
-        expect(takeLease(d).pid).toBe(process.pid);
-        releaseLease(d);
+        const retaken = takeLease(d);
+        expect(retaken.pid).toBe(process.pid);
+        releaseLease(d, retaken);
         writeFileSync(
             join(d, "lease.1.json"),
             JSON.stringify({
@@ -323,14 +326,44 @@ describe("Journal and lease", () => {
             join(d, "lease.0.json"),
             JSON.stringify({ pid: 1, host: "another-machine", started_wall_ms: 0, released: true }),
         );
-        expect(takeLease(d).pid).toBe(process.pid);
-        releaseLease(d);
+        const taken = takeLease(d);
+        expect(taken.pid).toBe(process.pid);
+        releaseLease(d, taken);
+    });
+
+    test("a journal with EndRun but an unfinished arm is refused as corrupt", async () => {
+        const path = join(dir(), "j.jsonl");
+        const j = new Journal(path);
+        const start = { order: ["a", "b"], scenario: scenarioId(fixtureEvents(1), []) };
+        j.append({ kind: "StartRun", arm: null, scenario_ms: 0, ...start });
+        j.append({ kind: "StartArm", arm: "a", scenario_ms: 0 });
+        j.append({ kind: "EndArm", arm: "a", scenario_ms: 0 });
+        j.append({ kind: "EndRun", arm: null, scenario_ms: 0 });
+        j.close();
+        await expect(
+            new Scheduler({
+                events: fixtureEvents(1),
+                faults: [],
+                journal: new Journal(path),
+                settleMs: 0,
+                order: ["a", "b"],
+                drivers: { a: fakeDriver([]), b: fakeDriver([]) },
+            }).run(),
+        ).rejects.toThrow(/EndRun with unfinished arms/);
+    });
+
+    test("append refuses a non-finite scenario time", () => {
+        const j = new Journal(join(dir(), "j.jsonl"));
+        expect(() => j.append({ kind: "StartRun", arm: null, scenario_ms: Infinity })).toThrow(
+            /not finite/,
+        );
+        expect(j.entries).toHaveLength(0);
     });
 
     test("a dead lease from another pid namespace on this machine is refused, since its pid cannot be probed here", () => {
         const d = dir();
         const mine = takeLease(d);
-        releaseLease(d);
+        releaseLease(d, mine);
         expect(typeof mine.ns).toBe("string");
         const dead = Bun.spawnSync(["true"]).pid;
         writeFileSync(
@@ -433,20 +466,15 @@ describe("Journal and lease", () => {
         expect(readFileSync(target, "utf8")).toBe("precious bytes with no newline");
     });
 
-    test("releaseLease leaves a lease that names this pid from another incarnation", () => {
+    test("releaseLease releases only the acquisition it is given", () => {
         const d = dir();
         const mine = takeLease(d);
-        releaseLease(d);
-        writeFileSync(
-            join(d, "lease.0.json"),
-            JSON.stringify({
-                ...mine,
-                started_ticks: (mine.started_ticks ?? 0) + 1,
-                released: undefined,
-            }),
-        );
-        releaseLease(d);
+        releaseLease(d, { ...mine, started_wall_ms: mine.started_wall_ms + 1 });
         expect(JSON.parse(readFileSync(join(d, "lease.0.json"), "utf8")).released).toBeUndefined();
+        releaseLease(d, { ...mine, started_ticks: (mine.started_ticks ?? 0) + 1 });
+        expect(JSON.parse(readFileSync(join(d, "lease.0.json"), "utf8")).released).toBeUndefined();
+        releaseLease(d, mine);
+        expect(JSON.parse(readFileSync(join(d, "lease.0.json"), "utf8")).released).toBe(true);
     });
 
     test("releaseLease leaves a lease held by the same pid on another host", () => {
@@ -455,7 +483,7 @@ describe("Journal and lease", () => {
             join(d, "lease.0.json"),
             JSON.stringify({ pid: process.pid, host: "elsewhere", started_wall_ms: 0 }),
         );
-        releaseLease(d);
+        releaseLease(d, { pid: process.pid, host: leaseHost(), started_wall_ms: 0 });
         expect(existsSync(join(d, "lease.0.json"))).toBe(true);
     });
 
@@ -636,6 +664,7 @@ describe("Scheduler", () => {
                 throw new Error("proxy is down");
             },
             disarm: () => undefined,
+            reset: () => undefined,
         };
         await expect(
             new Scheduler({
@@ -649,6 +678,37 @@ describe("Scheduler", () => {
             }).run(),
         ).rejects.toThrow(/proxy is down/);
         expect(j.entries.filter((e) => e.kind === "FaultFired")).toEqual([]);
+    });
+
+    test("each arm draws the same intermittent fault mask from a reset injector", async () => {
+        const fault = {
+            ...episode("p1", "provider_429", { kind: "user_turn", session: "s-0000", n: 1 }),
+            strategy: "intermittent" as const,
+            params: { probability: 0.5, calls: 10 },
+        };
+        const injector = new FaultInjector([fault], new Rng(3), 1_000);
+        const masks: Record<string, boolean[]> = { a: [], b: [] };
+        const driver = (arm: string) =>
+            fakeDriver([], 0, (e) => {
+                if (e.kind === "user_turn") {
+                    for (let call = 0; call < 6; call++) {
+                        masks[arm]?.push(injector.take(TARGET, call) !== null);
+                    }
+                }
+            });
+        await new Scheduler({
+            events: fixtureEvents(1),
+            faults: [fault],
+            journal: new Journal(join(dir(), "j.jsonl")),
+            settleMs: 0,
+            order: ["a", "b"],
+            drivers: { a: driver("a"), b: driver("b") },
+            proxy: injector,
+        }).run();
+        expect(masks.a).toHaveLength(6);
+        expect(masks.a).toContain(true);
+        expect(masks.b).toEqual(masks.a);
+        expect(injector.report().every((w) => w.injected_seq.length === 0)).toBe(true);
     });
 
     test("every proxy fault of a session is disarmed at its end, exhausted or not", async () => {
@@ -694,6 +754,7 @@ describe("Scheduler", () => {
         const proxy = {
             arm: (id: string) => void calls.push(`arm ${id}`),
             disarm: (id: string) => void calls.push(`disarm ${id}`),
+            reset: () => undefined,
         };
         const faults = [
             episode("p1", "provider_429", { kind: "user_turn", session: "s-0000", n: 2 }),
@@ -762,6 +823,31 @@ describe("Scheduler", () => {
         expect(j.entries[observed]?.arm).toBe("a");
         expect(() => handle?.daemonExited({ signal: "SIGKILL" })).toThrow(/arm has ended/);
     });
+
+    test("an unexpected daemon exit ends an idle wait on a job that never finishes", async () => {
+        const j = new Journal(join(dir(), "j.jsonl"));
+        const driver = fakeDriver([], 0, (e) => {
+            if (e.kind === "user_turn" && e.index === 0) {
+                driver.arm().jobStart("stuck");
+                setTimeout(() => {
+                    try {
+                        driver.arm().daemonExited({ signal: "SIGKILL" });
+                    } catch {}
+                }, 30);
+            }
+        });
+        await expect(
+            new Scheduler({
+                events: fixtureEvents(2),
+                faults: [],
+                journal: j,
+                settleMs: 0,
+                jobPollMs: 5,
+                order: ["a"],
+                drivers: { a: driver },
+            }).run(),
+        ).rejects.toThrow(HarnessFailure);
+    }, 3_000);
 
     test("an unexpected daemon exit fails the run even when the driver swallows the throw, and the journal stays failed", async () => {
         const j = new Journal(join(dir(), "j.jsonl"));
@@ -1092,7 +1178,10 @@ describe("Scheduler", () => {
             drivers: { a: fakeDriver([]) },
         };
         expect(() => new Scheduler(o)).toThrow(/proxy/);
-        new Scheduler({ ...o, proxy: { arm: () => undefined, disarm: () => undefined } });
+        new Scheduler({
+            ...o,
+            proxy: { arm: () => undefined, disarm: () => undefined, reset: () => undefined },
+        });
     });
 
     test("a finished run is left alone, and a resume with a different arm order is refused", async () => {
@@ -1463,6 +1552,7 @@ describe("resume of fired faults", () => {
         const proxy = {
             arm: (id: string) => void calls.push(`arm ${id}`),
             disarm: (id: string) => void calls.push(`disarm ${id}`),
+            reset: () => undefined,
         };
         const resumed = new Journal(path);
         await new Scheduler({

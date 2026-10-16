@@ -31,7 +31,7 @@ if (import.meta.main) {
     const dir = process.argv[2] as string;
     const turnMs = Number(process.argv[3] ?? 150);
     const issueMs = Number(process.argv[5] ?? 0);
-    takeLease(dir);
+    const lease = takeLease(dir);
     const journal = new Journal(join(dir, "journal.jsonl"));
     const driver = (arm: string): ArmDriver => ({
         bind: () => undefined,
@@ -56,5 +56,5 @@ if (import.meta.main) {
     });
     await scheduler.run();
     journal.close();
-    releaseLease(dir);
+    releaseLease(dir, lease);
 }

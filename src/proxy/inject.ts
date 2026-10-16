@@ -29,13 +29,27 @@ export class FaultInjector {
     private readonly armed = new Map<string, Armed>();
     private readonly witnesses = new Map<string, Witness>();
     private readonly pending: { fault: string; at: number; call: number }[] = [];
+    private readonly seed: Uint32Array;
 
     constructor(
         private readonly faults: ProxyFault[],
         private readonly rng: Rng,
         private readonly windowMs: number,
     ) {
-        for (const f of faults) {
+        this.seed = rng.state();
+        this.reset();
+    }
+
+    /**
+     * Returns the injector to its constructed state: nothing armed or pending, witnesses empty,
+     * and the generator back at its seed, so every arm draws the same sequence. The scheduler
+     * calls it at each arm's start; `report()` therefore describes the current arm only.
+     */
+    reset(): void {
+        this.armed.clear();
+        this.pending.length = 0;
+        this.rng.restore(this.seed);
+        for (const f of this.faults) {
             this.witnesses.set(f.id, {
                 fault: f.id,
                 type: f.type,

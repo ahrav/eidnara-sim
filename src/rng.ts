@@ -30,6 +30,15 @@ export class Rng {
         return result;
     }
 
+    /** The generator's state, for returning it to this point with `restore`. */
+    state(): Uint32Array {
+        return Uint32Array.from(this.s);
+    }
+
+    restore(state: Uint32Array): void {
+        this.s = Uint32Array.from(state);
+    }
+
     /** next() returns a uniform value in [0, 1) with 32 bits of resolution. */
     next(): number {
         return this.nextU32() / 4294967296;
