@@ -391,7 +391,8 @@ Type: safety
 Reachability: default-production
 Status: active
 Exercised: partial - unit tests in src/run/scheduler.test.ts rebuild the busy
-set from the journal and assert it is empty at every `AdvanceClock`; no campaign
+set from the journal, assert it is empty at every `AdvanceClock`, and bound
+every `scenario_ms` change by the wall time that passed while busy; no campaign
 run yet
 Guarantee: SIM-P12: Every `AdvanceClock` entry is preceded by `busy_set` empty
 at the same sequence, and no `scenario_ms` change appears between a `BeginTurn`
@@ -407,8 +408,10 @@ job that outlives the turn.
 Confidence: low - [evidence](evidence/sim-p12-clock-advances-only-when-idle.md).
 PROPOSED: reconstructed from the condensed index in spec #1007; the M4 unit
 tests verify the record, and a default tier run reaches it.
-Existing check: src/run/scheduler.test.ts `invariants()` - busy set rebuilt from
-turn and job entries, empty at every `AdvanceClock`
+Existing check: src/run/scheduler.test.ts `invariants()` and `wallRate()` - busy
+set rebuilt from turn and job entries, empty at every `AdvanceClock`; while idle
+`scenario_ms` holds except across `AdvanceClock`, and while busy it advances by
+at most the elapsed `wall_ms`
 Impact: A fold or capture job sees a simulated gap mid-execution and its timing
 metrics are invalid.
 Open questions:
@@ -1516,7 +1519,8 @@ Type: safety
 Reachability: default-production
 Status: active
 Exercised: partial - lease unit tests, including eight processes resuming a dead
-lease at once; no campaign run yet
+lease at once and two harness processes started on one run directory; no
+campaign run yet
 Guarantee: SIM-P60: A run directory holds one exclusive claim, and a second
 `StartRun` or `ResumeRun` on the same directory is refused before any write.
 Check: `always` - attempt a second start on a claimed directory and assert
@@ -1527,7 +1531,9 @@ Confidence: low - [evidence](evidence/sim-p60-journal-has-one-writer.md).
 PROPOSED: reconstructed from the condensed index in spec #1007; the M4 unit
 tests verify the record, and a default tier run reaches it.
 Existing check: src/run/scheduler.test.ts - live and foreign-host holders
-refused, dead and unreadable leases taken over, one winner among racing resumers
+refused, dead and unreadable leases taken over, one winner among racing
+resumers, and the second of two harness processes on one directory refused
+with the journal holding one `StartRun` and no `ResumeRun`
 Impact: Two writers interleave sequence numbers and corrupt the journal.
 Open questions: None.
 

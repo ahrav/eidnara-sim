@@ -120,6 +120,7 @@ export class Scheduler {
             this.log({ kind: "EndArm" });
         }
         this.arm = null;
+        this.clock = null;
         this.log({ kind: "EndRun" });
     }
 
@@ -261,8 +262,8 @@ export class Scheduler {
     }
 
     jobEnd(id: string): void {
-        this.log({ kind: "EndJob", job: id });
         this.clock?.end(`job:${id}`);
+        this.log({ kind: "EndJob", job: id });
     }
 
     observe(component: string, driver: ArmDriver): void {

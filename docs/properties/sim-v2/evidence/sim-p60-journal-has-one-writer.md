@@ -22,7 +22,9 @@ the journal; a takeover links the next number, which exactly one racing
 resumer can create. Tests check that a live holder and a holder on another
 host are refused, that a dead or unreadable lease is taken over, and that
 eight processes resuming a dead lease at once produce one holder and seven
-refusals.
+refusals. Two fixture harnesses started on one fresh run directory leave one
+run complete and the other refused with `is leased by pid`, with one `StartRun`
+and no `ResumeRun` in the journal.
 
 ## Failure scenario
 

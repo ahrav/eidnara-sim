@@ -21,8 +21,9 @@ surface landed in M4 (#1028).
 M4 (#1028) runs scenario time at wall speed while any turn or job is busy and
 jumps it only through `Clock.advanceTo`, which refuses while any turn or job is
 busy, so no jump lands inside a busy interval. The tests rebuild the busy set from the
-journal's turn and job entries and check that it is empty at every
-`AdvanceClock`.
+journal's turn and job entries, check that it is empty at every
+`AdvanceClock`, and check that `scenario_ms` holds while the set is empty and
+grows by at most the elapsed `wall_ms` while it is busy.
 
 ## Failure scenario
 

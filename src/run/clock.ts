@@ -35,7 +35,8 @@ export class Clock {
     }
 
     end(id: string): void {
-        if (!this.busy.delete(id) || this.busy.size > 0) return;
+        if (!this.busy.delete(id)) throw new Error(`clock: ${id} is not busy`);
+        if (this.busy.size > 0) return;
         this.now();
         this.anchor = null;
     }

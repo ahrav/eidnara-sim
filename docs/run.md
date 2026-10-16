@@ -32,7 +32,7 @@ entries of different arms are not ordered by scenario time.
 
 | Kind | Written when |
 |---|---|
-| `StartRun`, `ResumeRun`, `EndRun` | The run starts (with the arm order and a hash of the events and faults), a restarted harness takes it up (with the same), and it ends |
+| `StartRun`, `ResumeRun`, `EndRun` | The run starts (with the arm order and a hash of the events and faults), a restarted harness takes it up (with the same), and it ends; these carry `arm` null and `scenario_ms` 0 |
 | `StartArm`, `EndArm` | An arm starts, after its driver's reset, and finishes |
 | `AdvanceClock` | The clock jumps; carries `from_ms`, an empty `busy` list, and the next event id or the laptop-sleep fault |
 | `BeginTurn` | A user turn is delivered |
@@ -45,7 +45,8 @@ entries of different arms are not ordered by scenario time.
 ## Clock
 
 `Clock` keeps scenario time and a busy set of turns and background jobs; an
-id that is already busy is refused, so two jobs never share one marker.
+id that is already busy is refused, so two jobs never share one marker, and an
+end for an id that is not busy is refused before anything is journaled.
 While anything is busy, scenario time runs at wall speed, measured on the
 monotonic clock (`performance.now()`), so a system clock step never reaches
 scenario time; while nothing is busy, it holds. Scenario time only ratchets

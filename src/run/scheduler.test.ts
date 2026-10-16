@@ -78,6 +78,35 @@ function invariants(entries: Entry[]): void {
     expect(entries.map((e) => e.seq)).toEqual(entries.map((_, i) => i));
 }
 
+/**
+ * Between two consecutive entries of one arm, scenario time holds while the busy set is empty
+ * (an `AdvanceClock` is the one exception) and advances by at most the wall time that passed
+ * while it is busy, so a change to `scenario_ms` on any entry has a wall-clock cause.
+ */
+function wallRate(entries: Entry[], slackMs = 5): void {
+    const busy = new Set<unknown>();
+    const prev = new Map<string | null, Entry>();
+    for (const e of entries) {
+        const p = prev.get(e.arm);
+        if (p) {
+            const dScenario = e.scenario_ms - p.scenario_ms;
+            const dWall = e.wall_ms - p.wall_ms;
+            if (busy.size === 0) {
+                if (e.kind !== "AdvanceClock") expect(dScenario).toBe(0);
+            } else {
+                expect(dScenario).toBeLessThanOrEqual(dWall + slackMs);
+            }
+        }
+        prev.set(e.arm, e);
+        if (e.kind === "BeginTurn") busy.add(`t${e.arm}${e.event}`);
+        if (e.kind === "EndTurn") busy.delete(`t${e.arm}${e.event}`);
+        if (e.kind === "RegisterJob") busy.add(`j${e.arm}${e.job}`);
+        if (e.kind === "EndJob") busy.delete(`j${e.arm}${e.job}`);
+        if (e.kind === "ItemState" && e.state === "failed(interrupted)")
+            busy.delete(`t${e.arm}${e.event}`);
+    }
+}
+
 describe("Clock", () => {
     test("busy time comes from a monotonic source, so a wall-clock step does not reach scenario time", () => {
         const clock = new Clock(0, new Journal(join(dir(), "j.jsonl")));
@@ -103,6 +132,7 @@ describe("Clock", () => {
         expect(() => clock.advanceTo(10_000, "a")).toThrow(/advance while busy/);
         clock.begin("job");
         expect(() => clock.begin("job")).toThrow(/already busy/);
+        expect(() => clock.end("nobody")).toThrow(/not busy/);
         clock.end("turn");
         wall += 200;
         expect(clock.now()).toBe(500);
@@ -274,6 +304,7 @@ describe("Scheduler", () => {
             },
         }).run();
         invariants(j.entries);
+        wallRate(j.entries);
         expect(logs.eidnara?.[0]).toBe("reset");
         expect(logs.host).toEqual(logs.eidnara);
         expect(j.entries.filter((e) => e.kind === "StartArm").map((e) => e.arm)).toEqual([
@@ -312,6 +343,7 @@ describe("Scheduler", () => {
         });
         await scheduler.run();
         invariants(j.entries);
+        wallRate(j.entries);
         const kinds = j.entries.map((e) => e.kind);
         const reg = kinds.indexOf("RegisterJob");
         const end = kinds.indexOf("EndJob");
@@ -649,6 +681,26 @@ describe("Scheduler", () => {
         expect(j.entries.filter((e) => e.kind === "EndJob")).toHaveLength(2);
     });
 
+    test("a job end without a matching start is refused before it is journaled", async () => {
+        const j = new Journal(join(dir(), "j.jsonl"));
+        let scheduler: Scheduler | null = null;
+        const driver = fakeDriver([], 0, (e) => {
+            if (e.kind === "user_turn") {
+                expect(() => scheduler?.jobEnd("ghost")).toThrow(/not busy/);
+            }
+        });
+        scheduler = new Scheduler({
+            events: fixtureEvents(1),
+            faults: [],
+            journal: j,
+            settleMs: 0,
+            order: ["a"],
+            drivers: { a: driver },
+        });
+        await scheduler.run();
+        expect(j.entries.filter((e) => e.kind === "EndJob")).toEqual([]);
+    });
+
     test("a job registered during the last event is drained before EndArm", async () => {
         const j = new Journal(join(dir(), "j.jsonl"));
         let scheduler: Scheduler | null = null;
@@ -733,6 +785,7 @@ describe("resume", () => {
         expect(await second.exited).toBe(0);
         const after = readJournal(journalPath);
         invariants(after);
+        wallRate(after);
         expect(after.slice(0, before.length)).toEqual(before);
         const rawAfter = readFileSync(journalPath);
         expect(rawAfter.subarray(0, rawBefore.length).equals(rawBefore)).toBe(true);
@@ -756,6 +809,30 @@ describe("resume", () => {
         expect(resumed[1]?.scenario_ms).toBe(last.scenario_ms);
         return { before, resumed: resumed.slice(1), last };
     };
+    test("a second harness started on a live run directory is refused before it writes", async () => {
+        const d = dir();
+        const spawn = () =>
+            Bun.spawn(["bun", "tests/run-fixture.ts", d, "100", "0"], {
+                cwd: ROOT,
+                stdout: "ignore",
+                stderr: "pipe",
+            });
+        const a = spawn();
+        const b = spawn();
+        const [codeA, codeB] = await Promise.all([a.exited, b.exited]);
+        const errs = await Promise.all([
+            new Response(a.stderr).text(),
+            new Response(b.stderr).text(),
+        ]);
+        expect([codeA, codeB].filter((c) => c === 0)).toHaveLength(1);
+        expect(errs.join("\n")).toMatch(/is leased by pid/);
+        const after = readJournal(join(d, "journal.jsonl"));
+        invariants(after);
+        expect(after.filter((e) => e.kind === "StartRun")).toHaveLength(1);
+        expect(after.filter((e) => e.kind === "ResumeRun")).toHaveLength(0);
+        expect(after.at(-1)?.kind).toBe("EndRun");
+    }, 60_000);
+
     const inFlight = (entries: Entry[], bills: string[]) => {
         const last = entries.at(-1);
         return last?.kind === "BeginTurn" && bills.at(-1) === `${last.arm} ${last.event}`;
