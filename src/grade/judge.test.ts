@@ -123,10 +123,9 @@ const context = (
 ) => ({
     probe: probeOf(item, reference),
     snapshots: {
-        a: snapshotOf("snap-eidnara", "eidnara", pair.a, item),
-        b: snapshotOf("snap-host", "host", pair.b, item),
+        a: [snapshotOf("snap-eidnara", "eidnara", pair.a, item)],
+        b: [snapshotOf("snap-host", "host", pair.b, item)],
     },
-    later_attempts: { a: 0, b: 0 },
     calibration: null,
     permutation: { trials: 20, correct: 11, judge: judgeIdentity(rules.judge.model) },
     cross_judge: null,
@@ -398,12 +397,38 @@ describe("P7 judge path", () => {
             f.probe.check.judge,
             [],
         );
+        const retry = (n: number) =>
+            snapshotOf(`snap-eidnara-${n}`, "eidnara", "later", f.probe.id);
         const grades = gradeP7(
             judgment,
-            context(f.probe.id, f.pair, f.probe.check.judge, { later_attempts: { a: 2, b: 0 } }),
+            context(f.probe.id, f.pair, f.probe.check.judge, {
+                snapshots: {
+                    a: [
+                        snapshotOf("snap-eidnara", "eidnara", f.pair.a, f.probe.id),
+                        retry(2),
+                        retry(3),
+                    ],
+                    b: [snapshotOf("snap-host", "host", f.pair.b, f.probe.id)],
+                },
+            }),
             rules,
         );
         expect(grades.map((g) => g.later_attempts_logged)).toEqual([2, 0]);
+        expect(grades[0]?.snapshot).toBe("snap-eidnara");
+        const mixed = context(f.probe.id, f.pair, f.probe.check.judge, {
+            snapshots: {
+                a: [
+                    snapshotOf("snap-eidnara", "eidnara", f.pair.a, f.probe.id),
+                    snapshotOf("x", "host", "later", f.probe.id),
+                ],
+                b: [snapshotOf("snap-host", "host", f.pair.b, f.probe.id)],
+            },
+        });
+        expect(() => gradeP7(judgment, mixed, rules)).toThrow("mix items or arms");
+        const empty = context(f.probe.id, f.pair, f.probe.check.judge, {
+            snapshots: { a: [], b: [snapshotOf("snap-host", "host", f.pair.b, f.probe.id)] },
+        });
+        expect(() => gradeP7(judgment, empty, rules)).toThrow("has no snapshot");
     });
 
     test("a judgment from a judge other than the pre-registered one stays out of gates", async () => {
@@ -818,8 +843,8 @@ describe("P7 judge path", () => {
         );
         const ctx = context(f.probe.id, f.pair, f.probe.check.judge, {
             snapshots: {
-                a: snapshotOf("snap-kl", "eidnara-kl", f.pair.a, f.probe.id),
-                b: snapshotOf("snap-host-2", "host", f.pair.b, f.probe.id),
+                a: [snapshotOf("snap-kl", "eidnara-kl", f.pair.a, f.probe.id)],
+                b: [snapshotOf("snap-host-2", "host", f.pair.b, f.probe.id)],
             },
         });
         const grades = gradeP7(judgment, ctx, rules);
@@ -830,8 +855,8 @@ describe("P7 judge path", () => {
         expect(grades[0]?.inputs).toEqual(["snap-host-2:calls", "snap-kl:calls"]);
         const swapped = context(f.probe.id, f.pair, f.probe.check.judge, {
             snapshots: {
-                a: snapshotOf("snap-x", "eidnara", f.pair.b, f.probe.id),
-                b: snapshotOf("snap-y", "host", f.pair.a, f.probe.id),
+                a: [snapshotOf("snap-x", "eidnara", f.pair.b, f.probe.id)],
+                b: [snapshotOf("snap-y", "host", f.pair.a, f.probe.id)],
             },
         });
         expect(() => gradeP7(judgment, swapped, rules)).toThrow("other answers");

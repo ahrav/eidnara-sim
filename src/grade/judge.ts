@@ -425,8 +425,8 @@ export function p7Pair(item: string, a: Snapshot, b: Snapshot): P7Inputs | null 
 
 export interface P7Context {
     probe: ProbeItem;
-    snapshots: { a: Snapshot; b: Snapshot };
-    later_attempts: { a: number; b: number };
+    /** Each arm's snapshots in attempt order; the first is graded and the rest are counted. */
+    snapshots: { a: Snapshot[]; b: Snapshot[] };
     calibration: CalibrationSet | null;
     permutation: { trials: number; correct: number; judge: JudgeIdentity } | null;
     /** `cross_judge` binds the pre-registered cross-judge identity to the calibration set through `calibration_digest`. */
@@ -444,7 +444,18 @@ export function gradeP7(j: Judgment, c: P7Context, rules: Rules, version = 1): G
     if (j.pair !== item) {
         throw new GradeRefused(`judgment for ${j.pair} cannot grade item ${item}`);
     }
-    const built = p7Pair(item, c.snapshots.a, c.snapshots.b);
+    const first = (side: "a" | "b"): Snapshot => {
+        const list = c.snapshots[side];
+        if (!Array.isArray(list) || list.length === 0) {
+            throw new GradeRefused(`P7 item ${item}: side ${side} has no snapshot`);
+        }
+        const head = list[0] as Snapshot;
+        if (list.some((s) => s.item !== head.item || s.arm !== head.arm)) {
+            throw new GradeRefused(`snapshots for ${item} side ${side} mix items or arms`);
+        }
+        return head;
+    };
+    const built = p7Pair(item, first("a"), first("b"));
     if (!built) throw new GradeRefused(`P7 item ${item}: a probe turn failed; nothing to grade`);
     if (!isPair(j.answers, "string") || !isPair(j.lengths, "number")) {
         throw new GradeRefused(`judgment for ${j.pair} carries malformed answer evidence`);
@@ -540,7 +551,7 @@ export function gradeP7(j: Judgment, c: P7Context, rules: Rules, version = 1): G
             version,
             snapshot: built.snapshots[side],
             inputs: built.inputs,
-            later_attempts_logged: c.later_attempts[side],
+            later_attempts_logged: c.snapshots[side].length - 1,
         };
         if (j.recall === "Inconsistent") {
             return { ...common, verdict: "excluded", reason: "Inconsistent", metrics };
