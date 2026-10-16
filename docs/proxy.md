@@ -10,17 +10,19 @@ sends to Bedrock through the AWS SDK with the profile and region from
 
 ## Call records
 
-`RecordWriter` appends one record per request, including requests the
-gateway rejects, to a JSONL file and keeps them in memory. It refuses a record
-that lacks any field below.
+`RecordWriter` appends one record per request to a JSONL file and keeps them
+in memory. Requests the gateway rejects (an unknown route, a body that is not
+a JSON object, a body over 32 MiB, a malformed path) and requests whose
+handling throws still get a record. The writer refuses a record that lacks
+any field below.
 
 | Field | Contents |
 |---|---|
 | `seq` | Write order |
 | `arm`, `session`, `turn` | The scheduler's scope at receipt |
 | `component`, `componentSource` | The calling component and whether the caller `asserted` it or the proxy `inferred` it |
-| `model`, `status`, `error` | Model id, HTTP status the host saw, and the error text or `null` |
-| `finish_reason` | The stream's `messageStop.stopReason` or the response's `stopReason`, or `null` when the answer had none |
+| `model`, `status`, `error` | Model id, the HTTP status the gateway sent (0 when it sent none), and the error text or `null` |
+| `finish_reason` | The stream's `messageStop.stopReason` or the response's `stopReason`; `stream_cut` when a stream ended without `messageStop` and `metadata`; `null` when the call had no answer |
 | `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens` | Provider usage |
 | `started_wall_ms`, `wall_ms` | Receipt time, and write time clamped so it never decreases in `seq` order (SIM-P15) |
 | `scenario_ms` | The scheduler's clock at receipt (SIM-P15) |
@@ -31,7 +33,10 @@ that lacks any field below.
 ## Component tags
 
 A harness caller (the user simulator or the judge) asserts its component with
-the `x-sim-component` header. Every other call is inferred from the request
+the `x-sim-component` header. The gateway trusts the header from any local
+caller; the hosts under test send no such header, and the listener binds to
+127.0.0.1 with no authentication, so any local process can spend the
+configured AWS profile. Every other call is inferred from the request
 body, with the v1 A/B harness rules: the title generator, Eidnara's memory
 capture, memory classifier, context researcher, and history summarizer
 prompts, a tool-free summarization prompt as native compaction, a request
@@ -72,19 +77,20 @@ it, and the record's `proxy_retries` is 0.
 |---|---|
 | `provider_429` | HTTP 429, `ThrottlingException` |
 | `provider_5xx` | HTTP 503, `ServiceUnavailableException` |
-| `provider_timeout` | No bytes for `timeout_ms` (default 120 s), then the connection closes |
+| `provider_timeout` | No bytes for `timeout_ms` (default 120 s), then the connection closes. Bun's HTTP/1.1 server reports no client abort, so the gateway holds the connection for the full `timeout_ms` even after the host gives up |
 | `truncated_length` | A partial text block and `messageStop` with `stopReason: max_tokens` |
-| `truncated_no_length` | A partial text block, then the stream ends with no `messageStop` or metadata |
+| `truncated_no_length` | A partial text block, then the stream ends with no `messageStop` or metadata; on `converse`, the first half of the JSON body |
 | `empty_content` | `messageStop` with `end_turn` and no content block |
-| `schema_wrong_tool_call` | A `toolUse` block for the request's first tool whose input is not JSON |
-| `slow_stream` | The provider's answer, with `delay_ms` (default 2 s) before each event |
+| `schema_wrong_tool_call` | A `toolUse` block for the request's first tool whose input is not JSON; on `converse`, an input object with an argument the tool's schema lacks |
+| `slow_stream` | The provider's answer, with `delay_ms` (default 2 s) before each event; on `converse`, before the body |
 
 ## Witnesses
 
 For each episode, `FaultInjector.report()` returns whether it was armed, the
-`seq` of every injected record, the `seq` of the first agent call that
-started within the window after each injection (host-observed), and whether
-the proxy retried. An episode is `fired` only with both an injected record
+`seq` of every injected record, the `seq` of the first later agent call that
+started within the window after each injection (host-observed; a faulted
+retry under a persistent or burst episode counts), and whether the proxy
+retried. An episode is `fired` only with both an injected record
 and a host-observed call (SIM-P31); otherwise it is `untriggered`, and
 `excludedFromFaultMetrics` reports that the run leaves fault metrics
 (SIM-P32).
@@ -92,8 +98,8 @@ and a host-observed call (SIM-P31); otherwise it is `untriggered`, and
 ## Tests
 
 `src/proxy/gateway.test.ts` runs every provider fault type under every
-strategy against a scripted upstream and a host stand-in that issues one
-call at a time with its own timeout. Each case checks that the host saw the
+strategy on both routes against a scripted upstream and a host stand-in that
+issues one call at a time with its own timeout. Each case checks that the host saw the
 fault, that every injected record has `proxy_retries` 0, and that the host's
 next call started within the window. The tests also cover records, tags,
 rejected requests, untriggered witnesses, and the seeded backoff sequence.

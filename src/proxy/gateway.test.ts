@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { decodeMessages } from "../../tests/eventstream-decode";
 import { Rng } from "../rng";
 import type { FaultType } from "../scenario/faults";
 import { classify } from "./classify";
-import { decodeMessages, encodeEvent } from "./eventstream";
+import { encodeEvent } from "./eventstream";
 import { backoffMs, type CallStarted, Gateway, sendWithRetry, type Upstream } from "./gateway";
 import { excludedFromFaultMetrics, FaultInjector, type ProxyFault } from "./inject";
 import { type CallRecord, RecordWriter, recordProblems } from "./records";
@@ -71,6 +72,7 @@ async function hostCall(
             body: JSON.stringify(body),
             headers: header ? { "x-sim-component": header } : {},
             signal: AbortSignal.timeout(timeoutMs),
+            keepalive: false,
         });
         result.status = response.status;
         const reader = response.body?.getReader();
@@ -177,45 +179,161 @@ async function start(
     return { gateway, records, injector, started, url: gateway.urls[0] as string };
 }
 
+async function hostCallJson(url: string, body: unknown, timeoutMs: number): Promise<JsonResult> {
+    const result: JsonResult = { status: 0, json: null, text: "", ms: 0, timedOut: false };
+    const t0 = performance.now();
+    try {
+        const response = await fetch(`${url}/model/m/converse`, {
+            method: "POST",
+            body: JSON.stringify(body),
+            signal: AbortSignal.timeout(timeoutMs),
+            keepalive: false,
+        });
+        result.status = response.status;
+        result.text = await response.text();
+        try {
+            result.json = JSON.parse(result.text);
+        } catch {
+            result.json = null;
+        }
+    } catch {
+        result.timedOut = true;
+    }
+    result.ms = performance.now() - t0;
+    return result;
+}
+
+interface JsonResult {
+    status: number;
+    json: {
+        stopReason?: string;
+        output?: { message?: { content?: Record<string, unknown>[] } };
+    } | null;
+    text: string;
+    ms: number;
+    timedOut: boolean;
+}
+
+function hostSeesJson(type: FaultType, r: JsonResult): boolean {
+    const content = r.json?.output?.message?.content ?? [];
+    switch (type) {
+        case "provider_429":
+            return r.status === 429;
+        case "provider_5xx":
+            return r.status >= 500;
+        case "provider_timeout":
+            return r.timedOut;
+        case "truncated_length":
+            return r.json?.stopReason === "max_tokens";
+        case "truncated_no_length":
+            return r.status === 200 && r.json === null && r.text.length > 0;
+        case "empty_content":
+            return r.json?.stopReason === "end_turn" && content.length === 0;
+        case "schema_wrong_tool_call": {
+            const use = content.find((c) => c.toolUse)?.toolUse as
+                | { input?: Record<string, unknown> }
+                | undefined;
+            return use?.input !== undefined && "unexpected_argument" in use.input;
+        }
+        case "slow_stream":
+            return r.status === 200 && r.ms >= 45;
+        default:
+            return false;
+    }
+}
+
+const INTERMITTENT_SEQUENCE = (() => {
+    const rng = new Rng(7);
+    return Array.from({ length: 10 }, () => rng.next() < 0.3);
+})();
+
 describe("fault composition at the proxy sink", () => {
-    for (const type of PROVIDER_TYPES) {
-        for (const [strategy, base] of Object.entries(STRATEGIES)) {
-            test(`${type} / ${strategy}: the host sees the fault, the proxy did not retry, and the host's next call lands in the window`, async () => {
-                const params = { ...base, timeout_ms: 2_000, delay_ms: 50 } as Record<
-                    string,
-                    number
-                >;
-                const fault = { id: "fault-000", type, strategy, params } as ProxyFault;
-                const { gateway, records, injector, url } = await start(fault);
-                injector.arm("fault-000");
-                const seen: boolean[] = [];
-                for (let call = 0; call < 12; call++) {
-                    const r = await hostCall(url, AGENT_BODY, 300);
-                    seen.push(hostSees(type, r));
-                }
-                if (strategy === "persistent") injector.disarm("fault-000");
-                await hostCall(url, AGENT_BODY, 300);
-                while (gateway.inFlight > 0) await Bun.sleep(10);
-                const injected = records.records.filter((r) => r.fault_ref === "fault-000");
-                expect(injected.length).toBeGreaterThan(0);
-                expect(seen.filter(Boolean).length).toBe(injected.length);
-                for (const r of injected) expect(r.proxy_retries).toBe(0);
-                const expectedCount =
-                    strategy === "single" ? 1 : strategy === "burst" ? 3 : undefined;
-                if (expectedCount !== undefined) expect(injected.length).toBe(expectedCount);
-                if (strategy === "persistent") expect(injected.length).toBe(12);
-                const [w] = injector.report();
-                expect(w?.status).toBe("fired");
-                expect(w?.proxy_retried).toBe(false);
-                const firstInjected = injected[0] as CallRecord;
-                const next = records.records.find((r) => r.seq === w?.host_observed_seq[0]);
-                expect(
-                    (next?.started_wall_ms ?? Infinity) - firstInjected.wall_ms,
-                ).toBeLessThanOrEqual(5_000);
-                expect(next?.fault_ref).not.toBe("fault-000");
-            }, 60_000);
+    for (const route of ["converse-stream", "converse"] as const) {
+        for (const type of PROVIDER_TYPES) {
+            for (const [strategy, base] of Object.entries(STRATEGIES)) {
+                test(`${route} ${type} / ${strategy}: the host sees the fault, the proxy did not retry, and the host's next call lands in the window`, async () => {
+                    const params = { ...base, timeout_ms: 2_000, delay_ms: 50 } as Record<
+                        string,
+                        number
+                    >;
+                    const fault = { id: "fault-000", type, strategy, params } as ProxyFault;
+                    const { gateway, records, injector, url } = await start(fault);
+                    injector.arm("fault-000");
+                    const seen: boolean[] = [];
+                    for (let call = 0; call < 12; call++) {
+                        if (route === "converse")
+                            seen.push(hostSeesJson(type, await hostCallJson(url, AGENT_BODY, 300)));
+                        else seen.push(hostSees(type, await hostCall(url, AGENT_BODY, 300)));
+                    }
+                    if (strategy === "persistent") injector.disarm("fault-000");
+                    await hostCall(url, AGENT_BODY, 300);
+                    while (gateway.inFlight > 0) await Bun.sleep(10);
+                    expect(records.records).toHaveLength(13);
+                    const injected = records.records.filter((r) => r.fault_ref === "fault-000");
+                    const expected =
+                        strategy === "single"
+                            ? [true, ...Array(11).fill(false)]
+                            : strategy === "burst"
+                              ? [true, true, true, ...Array(9).fill(false)]
+                              : strategy === "persistent"
+                                ? Array(12).fill(true)
+                                : [...INTERMITTENT_SEQUENCE, false, false];
+                    expect(seen).toEqual(expected);
+                    const byStart = [...records.records].sort(
+                        (x, y) => x.started_wall_ms - y.started_wall_ms || x.seq - y.seq,
+                    );
+                    const hits = byStart.slice(0, 12).map((r) => r.fault_ref === "fault-000");
+                    expect(hits).toEqual(expected);
+                    for (const r of injected) expect(r.proxy_retries).toBe(0);
+                    const report = injector.report();
+                    expect(report[0]?.status).toBe("fired");
+                    expect(report[0]?.proxy_retried).toBe(false);
+                    expect(excludedFromFaultMetrics(report)).toBe(false);
+                    const firstAt = hits.indexOf(true);
+                    const first = byStart[firstAt] as CallRecord;
+                    const next = records.records.find(
+                        (r) => r.seq === report[0]?.host_observed_seq[0],
+                    );
+                    expect(next?.seq).not.toBe(first.seq);
+                    expect(next?.component).toBe("agent");
+                    expect((next?.started_wall_ms ?? -1) >= first.started_wall_ms).toBe(true);
+                    expect(
+                        (next?.started_wall_ms ?? Infinity) - first.started_wall_ms,
+                    ).toBeLessThanOrEqual(5_000);
+                }, 60_000);
+            }
         }
     }
+
+    test("a persistent fault armed past the window is fired by its own faulted retries", async () => {
+        const fault = {
+            id: "p",
+            type: "provider_429",
+            strategy: "persistent",
+            params: {},
+        } as ProxyFault;
+        const { injector, url } = await start(fault, scriptedUpstream(), 100);
+        injector.arm("p");
+        for (let i = 0; i < 3; i++) await hostCall(url, AGENT_BODY, 1_000);
+        await Bun.sleep(150);
+        await hostCall(url, AGENT_BODY, 1_000);
+        expect(injector.report()[0]?.status).toBe("fired");
+    });
+
+    test("slow_stream over an upstream that throttles first records the proxy's retry", async () => {
+        const fault = {
+            id: "s",
+            type: "slow_stream",
+            strategy: "single",
+            params: { count: 1, delay_ms: 10 },
+        } as ProxyFault;
+        const { injector, records, url } = await start(fault, scriptedUpstream(1));
+        injector.arm("s");
+        await hostCall(url, AGENT_BODY, 20_000);
+        await hostCall(url, AGENT_BODY, 20_000);
+        expect(records.records[0]?.proxy_retries).toBe(1);
+        expect(injector.report()[0]?.proxy_retried).toBe(true);
+    }, 30_000);
 
     test("a fault applies only to the agent component", async () => {
         const { records, injector, url } = await start({
@@ -263,6 +381,19 @@ describe("witnesses", () => {
             injected_seq: [],
             status: "untriggered",
         });
+    });
+
+    test("a call from another component inside the window does not witness the fault", async () => {
+        const { injector, url } = await start({
+            id: "f",
+            type: "provider_429",
+            strategy: "single",
+            params: { count: 1 },
+        });
+        injector.arm("f");
+        await hostCall(url, AGENT_BODY, 1_000);
+        await hostCall(url, SUMMARIZER_BODY, 1_000);
+        expect(injector.report()[0]?.status).toBe("untriggered");
     });
 
     test("a host call outside the window does not witness the fault", async () => {
@@ -382,6 +513,18 @@ describe("classification", () => {
         expect(classify(SUMMARIZER_BODY, undefined).component).toBe("history_summarizer");
         const title = { system: [{ text: "You are a title generator." }], messages: [] };
         expect(classify(title, undefined).component).toBe("title");
+        const user = (system: string, text: string) => ({
+            system: [{ text: system }],
+            messages: [{ role: "user", content: [{ text }] }],
+        });
+        const cases: [ReturnType<typeof user>, string][] = [
+            [user("Extract durable project memory.", '{"existing_memories":[]}'), "memory_capture"],
+            [user("You are a memory classifier.", "<pool>x</pool>"), "memory_classifier"],
+            [user("You are ContextResearcher.", "find it"), "context_researcher"],
+            [user("You are a context summarization assistant.", "go"), "native_compaction"],
+        ];
+        for (const [body, component] of cases)
+            expect(classify(body, undefined).component).toBe(component as never);
         expect(classify({ messages: [] }, undefined).component).toBe("other");
     });
 
@@ -402,6 +545,92 @@ describe("every request yields one record", () => {
             ["rejected", 404],
             ["rejected", 400],
         ]);
+    });
+
+    test("scenario_ms is the clock at receipt, before the upstream answers", async () => {
+        let clock = 100;
+        const slow: Upstream = {
+            async converse(m, b, streaming, signal) {
+                clock = 900;
+                return scriptedUpstream().converse(m, b, streaming, signal);
+            },
+        };
+        const records = new RecordWriter(null);
+        const gateway = new Gateway({
+            upstream: slow,
+            records,
+            injector: new FaultInjector([], new Rng(1), 1_000),
+            rng: new Rng(1),
+            clock: { scenarioMs: () => clock },
+            scope: () => ({ arm: "a", session: null, turn: null }),
+        });
+        await gateway.start();
+        gateways.push(gateway);
+        await hostCall(gateway.urls[0] as string, AGENT_BODY, 2_000);
+        expect(records.records[0]?.scenario_ms).toBe(100);
+    });
+
+    test("a forwarded stream without messageStop is recorded as stream_cut", async () => {
+        const cut: Upstream = {
+            async converse() {
+                async function* events() {
+                    yield { messageStart: { role: "assistant" } };
+                    yield { contentBlockDelta: { contentBlockIndex: 0, delta: { text: "par" } } };
+                }
+                return { events: events() };
+            },
+        };
+        const { records, url } = await start(null, cut);
+        expect((await hostCall(url, AGENT_BODY, 2_000)).status).toBe(200);
+        expect(records.records[0]).toMatchObject({ status: 200, finish_reason: "stream_cut" });
+    });
+
+    test("an upstream stream that throws before its first event still yields one record", async () => {
+        const broken: Upstream = {
+            async converse() {
+                const boom = Object.assign(new Error("boom"), {
+                    name: "ModelStreamErrorException",
+                });
+                const events: AsyncIterable<Record<string, unknown>> = {
+                    [Symbol.asyncIterator]: () => ({ next: () => Promise.reject(boom) }),
+                };
+                return { events };
+            },
+        };
+        const { gateway, records, url } = await start(null, broken);
+        const seen = await hostCall(url, AGENT_BODY, 2_000);
+        await hostCall(url, AGENT_BODY, 2_000);
+        expect([seen.status, seen.timedOut, seen.events]).toEqual([200, false, []]);
+        expect(records.records.map((r) => [r.status, r.finish_reason, r.error])).toEqual([
+            [200, "stream_cut", "ModelStreamErrorException: boom"],
+            [200, "stream_cut", "ModelStreamErrorException: boom"],
+        ]);
+        expect(gateway.inFlight).toBe(0);
+    });
+
+    test("malformed paths and bodies are rejected; odd but parseable bodies are forwarded", async () => {
+        const { gateway, records, url } = await start(null);
+        const cases: [string, string, number, string][] = [
+            ["/model/%E0/converse", "{}", 400, "rejected"],
+            ["/model/m/converse", "7", 400, "rejected"],
+            ["/model/m/converse", '{"messages":5}', 200, "other"],
+            ["/model/m/converse", '{"system":[null]}', 200, "other"],
+            ["/model/m/converse", '{"messages":[null]}', 200, "other"],
+        ];
+        for (const [path, body, status] of cases) {
+            const r = await fetch(`${url}${path}`, {
+                method: "POST",
+                body,
+                signal: AbortSignal.timeout(2_000),
+            });
+            expect(r.status).toBe(status);
+        }
+        expect(records.records.map((r): [number, string] => [r.status, r.component])).toEqual(
+            cases.map(([, , st, c]): [number, string] => [st, c]),
+        );
+        expect(records.records[0]?.error).toBe("malformed model id");
+        expect(gateway.inFlight).toBe(0);
+        expect(gateway.failures).toEqual([]);
     });
 
     test("a record's scenario_ms is the clock at receipt and wall_ms never decreases", async () => {

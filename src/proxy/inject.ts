@@ -12,6 +12,9 @@ export interface Witness {
     injected_seq: number[];
     host_observed_seq: number[];
     proxy_retried: boolean;
+}
+
+export interface WitnessReport extends Witness {
     status: "fired" | "untriggered";
 }
 
@@ -25,7 +28,7 @@ export const TARGET: Component = "agent";
 export class FaultInjector {
     private readonly armed = new Map<string, Armed>();
     private readonly witnesses = new Map<string, Witness>();
-    private readonly pending: { fault: string; at: number }[] = [];
+    private readonly pending: { fault: string; at: number; call: number }[] = [];
 
     constructor(
         private readonly faults: ProxyFault[],
@@ -40,7 +43,6 @@ export class FaultInjector {
                 injected_seq: [],
                 host_observed_seq: [],
                 proxy_retried: false,
-                status: "untriggered",
             });
         }
     }
@@ -56,7 +58,7 @@ export class FaultInjector {
         this.armed.delete(id);
     }
 
-    take(component: Component): ProxyFault | null {
+    take(component: Component, call: number): ProxyFault | null {
         if (component !== TARGET) return null;
         for (const [id, a] of this.armed) {
             const { strategy, params } = a.fault;
@@ -67,18 +69,17 @@ export class FaultInjector {
                     : (params.count ?? params.calls ?? 1);
             if (a.calls >= limit) this.armed.delete(id);
             if (strategy !== "intermittent" || this.rng.next() < (params.probability ?? 1)) {
-                this.pending.push({ fault: id, at: Date.now() });
+                this.pending.push({ fault: id, at: Date.now(), call });
                 return a.fault;
             }
         }
         return null;
     }
 
-    observe(record: CallRecord): void {
-        const later = this.pending.filter((p) => record.started_wall_ms > p.at);
-        for (const p of later) {
+    observe(record: CallRecord, call: number): void {
+        for (const p of this.pending.filter((x) => call > x.call)) {
             const inWindow = record.started_wall_ms <= p.at + this.windowMs;
-            const sameCaller = record.component === TARGET && record.fault_ref !== p.fault;
+            const sameCaller = record.component === TARGET;
             if (sameCaller && inWindow) {
                 (this.witnesses.get(p.fault) as Witness).host_observed_seq.push(record.seq);
             }
@@ -90,7 +91,7 @@ export class FaultInjector {
         if (record.proxy_retries > 0) w.proxy_retried = true;
     }
 
-    report(): Witness[] {
+    report(): WitnessReport[] {
         return [...this.witnesses.values()].map((w) => {
             const fired = w.injected_seq.length > 0 && w.host_observed_seq.length > 0;
             return { ...w, status: fired ? "fired" : "untriggered" };
@@ -98,7 +99,7 @@ export class FaultInjector {
     }
 }
 
-export function excludedFromFaultMetrics(witnesses: Witness[]): boolean {
+export function excludedFromFaultMetrics(witnesses: WitnessReport[]): boolean {
     return witnesses.some((w) => w.status === "untriggered");
 }
 
@@ -118,11 +119,14 @@ export interface FaultOutcome {
 
 export const sleep = (ms: number, signal: AbortSignal) =>
     new Promise<void>((resolve) => {
-        const timer = setTimeout(resolve, ms);
-        signal.addEventListener("abort", () => {
+        if (signal.aborted) return resolve();
+        const wake = () => {
             clearTimeout(timer);
+            signal.removeEventListener("abort", wake);
             resolve();
-        });
+        };
+        const timer = setTimeout(wake, ms);
+        signal.addEventListener("abort", wake, { once: true });
     });
 
 const EVENTSTREAM = { "content-type": "application/vnd.amazon.eventstream" };
@@ -140,7 +144,8 @@ function faultEvents(type: FaultType, tool: string | undefined): [Ev[], string |
     if (type === "truncated_length") {
         return [[start, text("The change is partly"), blockStop, stop("max_tokens")], "max_tokens"];
     }
-    if (type === "truncated_no_length") return [[start, text("The change is partly")], null];
+    if (type === "truncated_no_length")
+        return [[start, text("The change is partly")], "stream_cut"];
     if (type === "empty_content") return [[start, stop("end_turn")], "end_turn"];
     if (type === "schema_wrong_tool_call") {
         const use = { toolUse: { toolUseId: "tooluse_injected", name: tool ?? "bash" } };
@@ -175,27 +180,30 @@ export async function writeFault(
     if (type === "provider_timeout") {
         await sleep(params.timeout_ms ?? 120_000, sink.signal);
         sink.destroy();
-        return { status: 504, finish_reason: null, error: "timeout (injected)" };
+        return { status: 0, finish_reason: null, error: "timeout (injected)" };
     }
     const [events, finish] = faultEvents(type, tool);
-    if (finish !== null) events.push(["metadata", usage]);
+    const cut = finish === "stream_cut";
+    if (!cut) events.push(["metadata", usage]);
     if (streaming) {
         sink.status(200, EVENTSTREAM);
         for (const [t, member] of events) sink.write(encodeEvent(t, member));
     } else {
-        const content = events.flatMap(([t, m]) =>
-            t === "contentBlockDelta" ? [(m as { delta: object }).delta] : [],
-        );
+        const content: unknown[] = events.flatMap(([t, m]) => {
+            const delta = (m as { delta?: { text?: string } }).delta;
+            return t === "contentBlockDelta" && delta?.text ? [{ text: delta.text }] : [];
+        });
+        if (type === "schema_wrong_tool_call") {
+            const input = { unexpected_argument: "{not json" };
+            content.push({
+                toolUse: { toolUseId: "tooluse_injected", name: tool ?? "bash", input },
+            });
+        }
         const message = { role: "assistant", content };
         const json = JSON.stringify({ output: { message }, stopReason: finish, ...usage });
         sink.status(200, { "content-type": "application/json" });
-        sink.write(Buffer.from(finish === null ? json.slice(0, json.length / 2) : json));
+        sink.write(Buffer.from(cut ? json.slice(0, json.length / 2) : json));
     }
     sink.end();
-    const cut = finish === null;
-    return {
-        status: cut ? 502 : 200,
-        finish_reason: finish,
-        error: cut ? "stream cut (injected)" : null,
-    };
+    return { status: 200, finish_reason: finish, error: cut ? "stream cut (injected)" : null };
 }
