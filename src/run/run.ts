@@ -58,6 +58,8 @@ export interface Manifest {
     eidnara_commit: string;
     /** The eidnara-sim revision that started the run; a resume must run the same one. */
     sim_commit: string;
+    /** Digest of the eidnara-sim working tree's uncommitted content at the start (`treeIdentity`). */
+    sim_worktree: string;
     /** SHA-256 of the daemon, OpenCode, and Pi executables; a resume must present the same. */
     binaries: Record<string, string>;
     fault_override: FaultEpisode[] | null;
@@ -145,10 +147,32 @@ function writeAtomic(path: string, text: string): void {
     renameSync(`${path}.${process.pid}`, path);
 }
 
+function git(dir: string, args: string[]): string {
+    const r = Bun.spawnSync(["git", "-C", dir, ...args], { stdout: "pipe", stderr: "pipe" });
+    if (r.exitCode !== 0) throw new Error(`git ${args.join(" ")} in ${dir} failed`);
+    return r.stdout.toString();
+}
+
 function gitHead(dir: string): string {
-    const r = Bun.spawnSync(["git", "-C", dir, "rev-parse", "HEAD"], { stdout: "pipe" });
-    if (r.exitCode !== 0) throw new Error(`git rev-parse HEAD in ${dir} failed`);
-    return r.stdout.toString().trim();
+    return git(dir, ["rev-parse", "HEAD"]).trim();
+}
+
+/**
+ * The commit a working tree is at plus a digest of its uncommitted content: tracked changes as
+ * `git diff HEAD --binary`, and each untracked, unignored file's path and content.
+ */
+export function treeIdentity(dir: string): { commit: string; worktree: string } {
+    const hash = createHash("sha256").update(git(dir, ["diff", "HEAD", "--binary"]));
+    const untracked = git(dir, ["ls-files", "--others", "--exclude-standard", "-z"])
+        .split("\0")
+        .filter((f) => f !== "")
+        .sort();
+    for (const file of untracked) {
+        hash.update(`\0${file}\0`);
+        const stat = lstatSync(join(dir, file), { throwIfNoEntry: false });
+        if (stat?.isFile()) hash.update(readFileSync(join(dir, file)));
+    }
+    return { commit: gitHead(dir), worktree: hash.digest("hex") };
 }
 
 /** `scenario.json` is accepted only when its body still hashes to its `scenario_hash`. */
@@ -239,6 +263,11 @@ function armOrder(o: RunOptions): ArmName[] {
 
 const sameJson = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 
+const simIdentity = () => {
+    const { commit, worktree } = treeIdentity(ROOT);
+    return { sim_commit: commit, sim_worktree: worktree };
+};
+
 function binaryDigests(config: SimConfig): Record<string, string> {
     const files = {
         daemon: config.daemon_binary,
@@ -264,7 +293,10 @@ export function requireMechanisms(faults: FaultEpisode[], models: string[]): voi
             `scheduled fault types without a mechanism: ${missing.join(", ")}`,
         );
     }
-    if (faults.some((f) => f.type === "model_switch") && new Set(models).size < 2) {
+    if (new Set(models).size !== models.length) {
+        throw new HarnessFailure(`--models repeats an entry: ${models.join(",")}`);
+    }
+    if (faults.some((f) => f.type === "model_switch") && models.length < 2) {
         throw new HarnessFailure("a model_switch fault needs two distinct --models");
     }
 }
@@ -292,7 +324,7 @@ export async function loadManifest(
         scenario_hash: scenario.scenario_hash,
         prereg_sha256: preregistrationHash(loadPrereg(o.tier)),
         eidnara_commit: gitHead(o.config.eidnara_checkout),
-        sim_commit: gitHead(ROOT),
+        ...simIdentity(),
         binaries: binaryDigests(o.config),
     };
     if (existsSync(path)) {
@@ -349,8 +381,8 @@ export async function loadManifest(
 
 interface Stop {
     reason: string | null;
-    /** The driver call in flight, which a signal teardown waits for up to `SIGNAL_GRACE_MS`. */
-    active: Promise<unknown> | null;
+    /** Every driver call in flight; a signal teardown waits for them up to `SIGNAL_GRACE_MS`. */
+    active: Set<Promise<unknown>>;
 }
 
 const SIGNAL_GRACE_MS = 30_000;
@@ -382,11 +414,11 @@ export async function runTier(o: RunOptions): Promise<void> {
         done ??= runSteps(cleanup.splice(0));
         return done;
     };
-    const stop: Stop = { reason: null, active: null };
+    const stop: Stop = { reason: null, active: new Set() };
     const onSignal = (signal: NodeJS.Signals) => {
         if (done) return;
         stop.reason ??= `signal ${signal}`;
-        const settled = stop.active?.catch(() => undefined) ?? Promise.resolve();
+        const settled = Promise.allSettled([...stop.active]);
         void Promise.race([settled, Bun.sleep(SIGNAL_GRACE_MS)])
             .then(() => teardown())
             .catch(() => undefined)
@@ -418,15 +450,17 @@ async function runArms(
     const guard = () => {
         if (stop.reason) throw new HarnessFailure(`run stopping: ${stop.reason}`);
     };
-    /** Each driver call runs after the stop check and is recorded as the active call. */
+    /** Each driver call runs between two stop checks and is recorded while in flight. */
     const tracked = async <T>(call: () => Promise<T>): Promise<T> => {
         guard();
         const active = call();
-        stop.active = active;
+        stop.active.add(active);
         try {
-            return await active;
+            const result = await active;
+            guard();
+            return result;
         } finally {
-            if (stop.active === active) stop.active = null;
+            stop.active.delete(active);
         }
     };
     let samplerFailure: unknown = null;
@@ -442,6 +476,9 @@ async function runArms(
     cleanup.push(() => journal.close());
     const compiled = await loadScenario(o);
     const { manifest, checks } = await loadManifest(o, compiled);
+    if (journal.entries.some((e) => e.kind === "EndRun")) {
+        throw new HarnessFailure(`${o.out} holds a completed run; its journal ends with EndRun`);
+    }
     journal.append({
         kind: "Preflight",
         arm: null,
@@ -469,6 +506,10 @@ async function runArms(
         proxy: injector,
         idleLimitMs: prereg.liveness_bounds.job_deadline_ms,
         onClock: (arm, ms) => writeOffset(offsetFile(arm), manifest.base_wall_ms, ms),
+        verify: () => {
+            handlersFailed();
+            if (samplerFailure !== null) throw samplerFailure;
+        },
     });
     const now = () => scheduler.clock?.now() ?? 0;
     const scope = { arm: "", session: null as string | null, turn: null as string | null };
@@ -559,10 +600,8 @@ async function runArms(
                 stop.reason ??= `sampler failed: ${(caught as Error).message}`;
             },
         });
-        cleanup.push(async () => {
-            sampler.stop();
-            await driver.stop();
-        });
+        cleanup.push(() => driver.stop());
+        cleanup.push(() => sampler.stop());
         drivers[arm] = {
             reset: () =>
                 tracked(async () => {
@@ -591,8 +630,14 @@ async function runArms(
                 }),
             fault: (f) => tracked(() => driver.fault(f)),
             finish: async () => {
-                sampler.stop();
-                await driver.finish();
+                try {
+                    if (driver.daemon && driver.daemonPid() === null) {
+                        scheduler.daemonExited({ after: "last event" });
+                    }
+                    sampler.stop();
+                } finally {
+                    await driver.finish();
+                }
             },
         };
     }

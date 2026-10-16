@@ -477,6 +477,24 @@ describe("ResourceSampler", () => {
         expect(lines[0].store_bytes).toBeGreaterThan(0);
     });
 
+    test("a cut final sample is dropped when the sampler reopens its file", () => {
+        const path = join(mkdtempSync(join(tmpdir(), "samp-")), "resources.jsonl");
+        writeFileSync(path, '{"wall_ms":1}\n{"wall_ms":2,"sce');
+        const sampler = new ResourceSampler({
+            path,
+            intervalMs: 60_000,
+            busyFraction: 0.2,
+            pid: () => process.pid,
+            storeDir: import.meta.dir,
+            scenarioMs: () => 0,
+            onBusy: () => undefined,
+        });
+        sampler.sample();
+        const lines = readFileSync(path, "utf8").trim().split("\n");
+        expect(lines).toHaveLength(2);
+        expect(() => lines.map((l) => JSON.parse(l))).not.toThrow();
+    });
+
     test("an interval sample that fails reports through onError and stops the timer", async () => {
         const dir = mkdtempSync(join(tmpdir(), "samp-"));
         const errors: string[] = [];

@@ -53,6 +53,8 @@ export interface SchedulerOptions {
     idleLimitMs?: number;
     settleMs?: number;
     onClock?: (arm: string, scenarioMs: number) => void;
+    /** Runs before `EndArm` and before `EndRun`; a throw leaves the entry unwritten. */
+    verify?: (point: "EndArm" | "EndRun") => void | Promise<void>;
 }
 
 const PROXY_LAYER = "proxy-sink";
@@ -129,9 +131,11 @@ export class Scheduler {
             this.pendingKill = null;
             this.outage = null;
             this.session = null;
+            await this.o.verify?.("EndArm");
             this.log({ kind: "EndArm" });
         }
         this.arm = null;
+        await this.o.verify?.("EndRun");
         this.log({ kind: "EndRun" });
     }
 
@@ -209,7 +213,7 @@ export class Scheduler {
             const target = this.o.events.find(
                 (e) => e.kind === "user_turn" && e.session === t.session && e.index === index,
             );
-            if (f.strategy === "persistent" || (target && !begun.has(target.id)))
+            if (f.strategy !== "single" || (target && !begun.has(target.id)))
                 this.o.proxy?.arm(f.id, this.arm as string);
         }
     }
@@ -224,12 +228,13 @@ export class Scheduler {
         return start;
     }
 
-    /** The busy set may hold the clock for `idleLimitMs` of wall time from its oldest `RegisterJob`. */
+    /** Each live job may hold the clock for `idleLimitMs` of wall time from its own `RegisterJob`. */
     private async idle(): Promise<void> {
         const limitMs = this.o.idleLimitMs ?? Number.POSITIVE_INFINITY;
         const entered = Date.now();
         while ((this.clock?.busyIds().length ?? 0) > 0) {
-            const oldest = Math.min(entered, ...this.jobStarted.values());
+            const live = [...this.jobStarted.values()];
+            const oldest = live.length > 0 ? Math.min(...live) : entered;
             if (Date.now() > oldest + limitMs) {
                 const busy = this.clock?.busyIds().join(", ");
                 throw new HarnessFailure(

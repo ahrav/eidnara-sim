@@ -41,17 +41,23 @@ const FAULTS = [
     ),
 ];
 
-function lines(path: string): Record<string, unknown>[] {
+/**
+ * JSONL rows. While a run is live, only an unterminated final fragment is tolerated; a final
+ * artifact (`strict`) must parse on every complete line, so a corrupt row fails the witness.
+ */
+function lines(path: string, strict = false): Record<string, unknown>[] {
     if (!existsSync(path)) return [];
-    return readFileSync(path, "utf8")
-        .split("\n")
-        .flatMap((l) => {
-            try {
-                return [JSON.parse(l) as Record<string, unknown>];
-            } catch {
-                return [];
-            }
-        });
+    const text = readFileSync(path, "utf8");
+    const complete = text.slice(0, text.lastIndexOf("\n") + 1);
+    const rows = complete.split("\n").filter((l) => l !== "");
+    return rows.flatMap((l, i) => {
+        try {
+            return [JSON.parse(l) as Record<string, unknown>];
+        } catch {
+            if (strict) throw new Error(`${path} line ${i + 1} is corrupt`);
+            return [];
+        }
+    });
 }
 
 const RESUME_FAULTS = [
@@ -187,8 +193,8 @@ function schedule(dir: string): Schedule {
 }
 
 function summarize(dir: string) {
-    const journal = lines(join(dir, "journal.jsonl"));
-    const calls = lines(join(dir, "calls.jsonl"));
+    const journal = lines(join(dir, "journal.jsonl"), true);
+    const calls = lines(join(dir, "calls.jsonl"), true);
     const perArm = (arm: string, kind: string) =>
         journal.filter((e) => e.arm === arm && e.kind === kind);
     const arms = [
@@ -225,7 +231,7 @@ function summarize(dir: string) {
                 },
             ]),
         ),
-        call_seq_unique: new Set(calls.map((c) => c.seq)).size === calls.length,
+        call_seq_unique: calls.every((c, i) => c.seq === i),
         agent_calls_by_turn: calls.reduce<Record<string, number>>((acc, c) => {
             if (c.component === "agent")
                 acc[`${c.arm}/${c.turn}`] = (acc[`${c.arm}/${c.turn}`] ?? 0) + 1;
@@ -264,6 +270,7 @@ const invariantsClean = (name: "scheduled" | "rogue" | "resume") => {
         v.advance_while_busy,
         v.off_schedule_jumps,
         v.events_inside_sleep,
+        v.repeated_sleeps,
     ];
     return s.ended === "EndRun" && s.call_seq_unique && violations.every((x) => x.length === 0);
 };

@@ -450,6 +450,59 @@ describe("witnesses", () => {
         expect(injector.report("eidnara")[0]?.status).toBe("untriggered");
     });
 
+    test("arming after restore continues a burst from the injections already made", async () => {
+        const fault: ProxyFault = {
+            id: "b",
+            type: "provider_5xx",
+            strategy: "burst",
+            params: { count: 3 },
+        };
+        const { injector, records, url } = await start(fault);
+        injector.arm("b", "eidnara");
+        await hostCall(url, AGENT_BODY, 1_000);
+        const resumed = new FaultInjector([fault], new Rng(7), 5_000);
+        resumed.restore(records.records);
+        resumed.arm("b", "eidnara");
+        expect(resumed.take("agent", 10, "eidnara")?.id).toBe("b");
+        expect(resumed.take("agent", 11, "eidnara")?.id).toBe("b");
+        expect(resumed.take("agent", 12, "eidnara")).toBeNull();
+    });
+
+    test("stop reports handlers that outlive the drain timeout as a failure", async () => {
+        const stuck: Upstream = {
+            converse: () => new Promise(() => undefined),
+        };
+        const records = new RecordWriter(null);
+        const started: CallStarted[] = [];
+        const gateway = new Gateway({
+            upstream: stuck,
+            records,
+            injector: new FaultInjector([], new Rng(1), 1_000),
+            rng: new Rng(1),
+            clock: { scenarioMs: () => 0 },
+            scope: () => ({ arm: "a", session: null, turn: null }),
+            observe: (e) => started.push(e),
+            drainMs: 100,
+        });
+        await gateway.start();
+        const call = hostCall(gateway.urls[0] as string, AGENT_BODY, 2_000);
+        while (started.length === 0) await Bun.sleep(5);
+        await gateway.stop();
+        expect(gateway.failures.map((f) => f.message)).toEqual([
+            "1 proxy handler(s) still active 100 ms after stop",
+        ]);
+        await call;
+    });
+
+    test("a body over the limit is refused as it uploads, with one 413 record", async () => {
+        const { records, url } = await start(null);
+        const big = Buffer.alloc(33 * 1024 * 1024, 0x20);
+        const r = await fetch(`${url}/model/m/converse`, { method: "POST", body: big });
+        expect(r.status).toBe(413);
+        expect(records.records.map((x) => [x.component, x.status])).toEqual([["rejected", 413]]);
+        expect(records.records[0]?.error).toMatch(/34603008 bytes over the limit/);
+    });
+
     test("a fault never armed is untriggered", async () => {
         const { injector, url } = await start({
             id: "f",

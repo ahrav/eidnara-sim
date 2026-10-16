@@ -16,6 +16,7 @@ import {
     requireOutsideCheckout,
     requirePlainArtifacts,
     runSteps,
+    treeIdentity,
 } from "./run";
 
 const ROOT = join(import.meta.dir, "..", "..");
@@ -110,6 +111,44 @@ describe("run inputs", () => {
         expect(() => requirePlainArtifacts(out, ["host", "eidnara"])).toThrow(
             /resources.jsonl is a symlink/,
         );
+        rmSync(join(out, "eidnara", "resources.jsonl"));
+        symlinkSync(join(root, "elsewhere-dir"), join(out, "host"));
+        expect(() => requirePlainArtifacts(out, ["host", "eidnara"])).toThrow(/host is a symlink/);
+    });
+
+    test("the harness identity covers the commit, tracked edits, and untracked files", () => {
+        const repo = dir();
+        const run = (...args: string[]) => {
+            const r = Bun.spawnSync(["git", "-C", repo, ...args], {
+                stdout: "pipe",
+                stderr: "pipe",
+            });
+            if (r.exitCode !== 0) throw new Error(r.stderr.toString());
+        };
+        run("init", "-q");
+        run("config", "user.email", "t@example.com");
+        run("config", "user.name", "t");
+        writeFileSync(join(repo, "a.txt"), "one\n");
+        run("add", "a.txt");
+        run("commit", "-q", "-m", "one");
+        const clean = treeIdentity(repo);
+        expect(clean.commit).toMatch(/^[0-9a-f]{40}$/);
+        expect(treeIdentity(repo)).toEqual(clean);
+        writeFileSync(join(repo, "a.txt"), "two\n");
+        const edited = treeIdentity(repo);
+        expect(edited.commit).toBe(clean.commit);
+        expect(edited.worktree).not.toBe(clean.worktree);
+        writeFileSync(join(repo, "a.txt"), "one\n");
+        writeFileSync(join(repo, "b.txt"), "new\n");
+        const added = treeIdentity(repo);
+        expect(added.worktree).not.toBe(clean.worktree);
+        writeFileSync(join(repo, "b.txt"), "changed\n");
+        expect(treeIdentity(repo).worktree).not.toBe(added.worktree);
+        writeFileSync(join(repo, ".gitignore"), "b.txt\n");
+        rmSync(join(repo, "b.txt"));
+        run("add", ".gitignore");
+        run("commit", "-q", "-m", "ignore");
+        expect(treeIdentity(repo).worktree).toBe(clean.worktree);
     });
 
     test("a schedule needs a mechanism for every fault and two models for a model switch", () => {
@@ -126,7 +165,10 @@ describe("run inputs", () => {
         expect(() => requireMechanisms([at("model_switch")], ["m"])).toThrow(
             /two distinct --models/,
         );
-        expect(() => requireMechanisms([at("model_switch")], ["m", "m"])).toThrow(/two distinct/);
+        expect(() => requireMechanisms([at("model_switch")], ["m", "m"])).toThrow(/repeats/);
+        expect(() => requireMechanisms([at("provider_429")], ["a", "a", "b"])).toThrow(
+            /--models repeats an entry: a,a,b/,
+        );
         expect(() => requireMechanisms([at("host_upgrade"), at("provider_429")], ["m"])).toThrow(
             /without a mechanism: host_upgrade/,
         );

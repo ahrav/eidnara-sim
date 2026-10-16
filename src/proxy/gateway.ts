@@ -112,6 +112,21 @@ export interface GatewayOptions {
 
 const ROUTE = /^\/model\/([^/]+)\/(converse-stream|converse)$/;
 const MAX_BODY = 32 * 1024 * 1024;
+
+/** Buffers a request body up to `MAX_BODY`; bytes past the limit are counted and dropped. */
+class Body {
+    private readonly chunks: Buffer[] = [];
+    total = 0;
+
+    push(chunk: Buffer): void {
+        this.total += chunk.length;
+        if (this.total <= MAX_BODY) this.chunks.push(chunk);
+    }
+
+    bytes(): Buffer {
+        return Buffer.concat(this.chunks);
+    }
+}
 type Usage = Record<string, number>;
 type Done = Partial<CallRecord> &
     Pick<CallRecord, "component" | "componentSource" | "model" | "status">;
@@ -171,18 +186,18 @@ export class Gateway {
 
     async start(): Promise<void> {
         const h1 = createHttp1Server((req, res) => {
-            const chunks: Buffer[] = [];
+            const body = new Body();
             const gone = new AbortController();
             const release = this.arrive();
             res.on("close", () => !res.writableFinished && gone.abort());
-            req.on("data", (c: Buffer) => chunks.push(c));
+            req.on("data", (c: Buffer) => body.push(c));
             req.on("end", () => {
                 const header = req.headers[COMPONENT_HEADER] as string | undefined;
                 this.track(
                     this.handle(
                         req.url ?? "",
                         header,
-                        Buffer.concat(chunks),
+                        body,
                         {
                             status: (code, headers) => res.writeHead(code, headers),
                             write: (chunk) => res.write(chunk),
@@ -202,11 +217,11 @@ export class Gateway {
             session.on("close", () => this.sessions.delete(session));
         });
         h2.on("stream", (stream, headers) => {
-            const chunks: Buffer[] = [];
+            const body = new Body();
             const gone = new AbortController();
             const release = this.arrive();
             stream.on("close", () => !stream.writableFinished && gone.abort());
-            stream.on("data", (c: Buffer) => chunks.push(c));
+            stream.on("data", (c: Buffer) => body.push(c));
             stream.on("error", () => undefined);
             stream.on("end", () => {
                 const live = () => !stream.destroyed;
@@ -215,7 +230,7 @@ export class Gateway {
                     this.handle(
                         String(headers[":path"] ?? ""),
                         header,
-                        Buffer.concat(chunks),
+                        body,
                         {
                             status: (code, h) => {
                                 if (live() && !stream.headersSent)
@@ -248,19 +263,26 @@ export class Gateway {
             this.servers.map((s) => new Promise<void>((done) => s.close(() => done()))),
         );
         if (this.active.size === 0) return;
-        await new Promise<void>((done) => {
-            const timer = setTimeout(done, this.options.drainMs ?? 10_000);
+        const drainMs = this.options.drainMs ?? 10_000;
+        const drained = await new Promise<boolean>((done) => {
+            const timer = setTimeout(() => done(false), drainMs);
             Promise.all(this.active.keys()).then(() => {
                 clearTimeout(timer);
-                done();
+                done(true);
             });
         });
+        if (!drained) {
+            const n = this.active.size;
+            this.failures.push(
+                new Error(`${n} proxy handler(s) still active ${drainMs} ms after stop`),
+            );
+        }
     }
 
     private async handle(
         path: string,
         header: string | undefined,
-        raw: Buffer,
+        body: Body,
         outer: Sink,
         release: () => void,
     ) {
@@ -300,7 +322,7 @@ export class Gateway {
             done = await this.serve(
                 path,
                 header,
-                raw,
+                body,
                 sink,
                 call,
                 (d) => {
@@ -329,7 +351,7 @@ export class Gateway {
     private async serve(
         path: string,
         header: string | undefined,
-        raw: Buffer,
+        received: Body,
         sink: Sink & { sent: () => number },
         call: number,
         progress: (d: Done) => void,
@@ -337,6 +359,7 @@ export class Gateway {
         release: () => void,
     ): Promise<Done> {
         const started = performance.now();
+        const raw = received.bytes();
         const route = ROUTE.exec(path.split("?", 1)[0] ?? "");
         const parse = <T>(f: () => T): T | undefined => {
             try {
@@ -354,8 +377,8 @@ export class Gateway {
         const model = parse(() => decodeURIComponent(route?.[1] ?? ""));
         const problem = !route
             ? [404, `unknown operation ${path}`]
-            : raw.length > MAX_BODY
-              ? [413, `body of ${raw.length} bytes over the limit`]
+            : received.total > MAX_BODY
+              ? [413, `body of ${received.total} bytes over the limit`]
               : model === undefined
                 ? [400, "malformed model id"]
                 : !body || typeof body !== "object"

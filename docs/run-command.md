@@ -28,8 +28,10 @@ an `--out` directory that overlaps the Eidnara checkout in either direction
 by resolved path (an output directory above the checkout would derive an arm
 root inside it), a schedule with a fault type the host driver has no
 mechanism for (`host_upgrade`, `two_hosts_one_daemon`, so a full XL run is
-refused up front), and a `model_switch` schedule with fewer than two distinct
-models. Before taking the lease, every artifact the run appends to or
+refused up front), a `--models` list that repeats an entry, and a
+`model_switch` schedule with fewer than two models. A directory whose journal
+already ends in `EndRun` is a completed run and is refused, so the sealed
+journal gains no entry. Before taking the lease, every artifact the run appends to or
 replaces (`journal.jsonl`, `calls.jsonl`, the manifest, the scenario, the
 fault and preflight files, and each arm's `resources.jsonl`, clock offset,
 and `state.json`) must be a regular file or absent; a symlink there is
@@ -41,13 +43,14 @@ refused.
    as a normal end, which runs once however many paths reach it, and exit
    with 130 or 143. After a signal, every driver call refuses with
    `HarnessFailure`, so the scheduler starts nothing the teardown has already
-   passed; the teardown itself waits up to thirty seconds for the driver call
-   in flight (a reset, resume, event, or fault) before it stops the arm, so a
-   daemon or host whose start is still pending is stopped rather than
-   orphaned. Later signals wait for the teardown. The tier's
-   `tier_wall_budget_ms` starts a timer at the same point; once it fires,
-   every driver call refuses the same way, so the run stops at the next
-   event and fails.
+   passed; the teardown itself waits up to thirty seconds for every driver
+   call in flight (a reset, resume, event, or fault, including a mid-fold
+   fault overlapping its turn) before it stops the arm, so a daemon or host
+   whose start is still pending is stopped rather than orphaned. Later
+   signals wait for the teardown. The tier's `tier_wall_budget_ms` starts a
+   timer at the same point; once it fires, every driver call refuses the
+   same way, and a call that was in flight when it fired fails on return,
+   so the run stops before `EndArm` and fails.
 2. Open the journal, and compile the scenario into `scenario.json` on the
    first invocation. Every invocation recomputes the SHA-256 of the file's
    body and refuses a `scenario.json` whose `scenario_hash` differs, or one
@@ -55,13 +58,15 @@ refused.
 3. Run `preflight` (`docs/time.md`). On the first invocation, write
    `manifest.json` with the tier, seed, host, arm order, event count, context
    limit, models, fault override, scenario hash, pre-registration hash,
-   eidnara commit, eidnara-sim commit, the SHA-256 of the daemon, OpenCode,
-   and Pi executables, base wall time, and preflight result.
+   eidnara commit, eidnara-sim commit, a digest of the eidnara-sim working
+   tree's uncommitted content (tracked edits and untracked files), the
+   SHA-256 of the daemon, OpenCode, and Pi executables, base wall time, and
+   preflight result.
    A later invocation refuses when any option it states differs from the
    manifest, when the manifest's arm order names an arm outside the tier's
    pre-registered arms, when the scenario hash, pre-registration hash,
-   eidnara commit, eidnara-sim commit, or an executable digest changed, when
-   an interception result
+   eidnara commit, eidnara-sim commit, working-tree digest, or an executable
+   digest changed, when an interception result
    changed, or when the selected host's version or transcript paths changed,
    and appends its preflight result to `preflight.jsonl`. Every invocation
    then journals a `Preflight` entry with its interception results and host
@@ -82,9 +87,13 @@ refused.
    step runs even when an earlier one fails, and the first failure is
    rethrown after the last step, so the command exits nonzero. Stopping the
    proxy aborts in-flight handlers and waits up to ten seconds for them to
-   write their call records. A handler failure recorded during the run (for
-   example, a refused call record) fails the run after the scheduler ends
-   and again at teardown.
+   write their call records; a handler still active after that is recorded
+   as a failure. The scheduler asks the run to verify before it writes
+   `EndArm` and before `EndRun`: a handler failure (for example, a refused
+   call record) or a sampler failure leaves the entry unwritten and fails
+   the run, and the same check runs again at teardown. Before an arm
+   finishes, a daemon that has exited outside a scheduled outage is reported
+   through the scheduler and fails the run.
 
 The scheduler's `onClock` hook writes each arm's offset file, so every
 process the arm launches reads `base_wall_ms + scenario_ms`. A request that
@@ -99,8 +108,9 @@ registers `daemon-cpu-<arm>` while the daemon's CPU fraction is above the
 pre-registered threshold, with one job id per busy period. Both hold the
 clock (SIM-P13, OQ-2). Job ids continue from the journal's count, so a
 resumed run issues new ones. A job that holds the clock longer than the
-pre-registered `job_deadline_ms` (20 minutes at S) after its `RegisterJob`
-stops the run with the held ids (SIM-L02). A periodic sample that fails
+pre-registered `job_deadline_ms` (20 minutes at S) after its own
+`RegisterJob` stops the run with the held ids (SIM-L02). The sampler drops
+an unterminated final sample when it reopens `resources.jsonl` on resume. A periodic sample that fails
 (for example, a full disk under `resources.jsonl`) stops the sampler and the
 run the same way a signal does, so the teardown runs.
 
@@ -144,8 +154,10 @@ when a check fails:
 `scheduled` exits 0, `rogue` exits nonzero with the daemon-exit refusal,
 `resume` is killed with 137 while `e-000007` has `BeginTurn` and no
 `EndTurn`, then exits 0 with no turn rebilled, and every finished run ends
-in `EndRun` with unique call `seq` values and no journal invariant
-violation.
+in `EndRun` with contiguous call `seq` values from 0 and no journal
+invariant violation (including a repeated sleep jump). The summary parses
+final journals and call records strictly; a corrupt complete line fails the
+witness, while polling during a run tolerates an unterminated final line.
 
 Runs on 2026-10-16 against eidnara `bb866266c` (`witness-8`; `resume` ran
 again after the store image grew to 2 GiB):
