@@ -389,6 +389,61 @@ describe("grading harness", () => {
         expect(() => log.all()).toThrow("line 1 is not a grade record");
     });
 
+    test("an artefact without a nonempty string id is refused", () => {
+        const f = fixture("P2-pass");
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        delete (snap.artefacts[0] as { id?: string }).id;
+        expect(() => gradeItem(f.probe, [snap], rules)).toThrow("artefact without an id");
+    });
+
+    test("P6 recognises a ./-prefixed spelling of a prior-session path", () => {
+        const f = fixture("P6-pass");
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        const log = snap.artefacts.find((a) => a.class === "command-log" && a.role === "turn");
+        if (log?.class !== "command-log") throw new Error("fixture lacks command-log");
+        log.commands.push({ command: "cat ./src/connection.rs", exit: 0, scenario_ms: 10 });
+        expect(gradeItem(f.probe, [snap], rules)?.metrics["P6.reread_files"]).toBe(1);
+    });
+
+    test("an added source line that begins with two plus signs is graded content, and headers are not", () => {
+        const f = fixture("P2-pass");
+        const probe = { ...f.probe, check: { must_not: ["^\\+\\+counter;"] } };
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        const diff = snap.artefacts.find((a) => a.class === "diff");
+        if (diff?.class !== "diff") throw new Error("fixture lacks diff");
+        diff.patch =
+            "diff --git a/src/x.ts b/src/x.ts\n--- a/src/x.ts\n+++ b/src/x.ts\n@@ -1,0 +1,1 @@\n+++counter;\n";
+        const g = gradeItem(probe, [snap], rules) as GradeRecord;
+        expect([g.verdict, g.metrics["P2.harm"]]).toEqual(["fail", true]);
+        const header = { ...f.probe, check: { must_not: ["^b/src/x\\.ts$", "^\\+\\+ b/"] } };
+        expect(gradeItem(header, [snap], rules)?.verdict).toBe("pass");
+    });
+
+    test("two grade records with one item, arm, and version are refused on read", () => {
+        const path = join(mkdtempSync(join(tmpdir(), "sim-grades-")), "grades.jsonl");
+        const log = new GradeLog(path);
+        const g = grade("P2-pass");
+        appendFileSync(
+            path,
+            `${JSON.stringify(g)}\n${JSON.stringify({ ...g, verdict: "fail" })}\n`,
+        );
+        expect(() => log.all()).toThrow("line 2 repeats version 1");
+    });
+
+    test("P6 counts a test run only when a shell segment starts with the test command", () => {
+        const f = fixture("P6-pass");
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        const log = snap.artefacts.find((a) => a.class === "command-log" && a.role === "turn");
+        if (log?.class !== "command-log") throw new Error("fixture lacks command-log");
+        log.commands.push(
+            { command: 'echo "cargo test"', exit: 0, scenario_ms: 10 },
+            { command: "rg 'bun test' package.json", exit: 0, scenario_ms: 20 },
+        );
+        expect(gradeItem(f.probe, [snap], rules)?.metrics["P6.ran_tests"]).toBe(false);
+        log.commands.push({ command: "cd crate && cargo test --lib", exit: 0, scenario_ms: 30 });
+        expect(gradeItem(f.probe, [snap], rules)?.metrics["P6.ran_tests"]).toBe(true);
+    });
+
     test("an answer grader refuses a turn with no completed agent response", () => {
         const f = fixture("P10-pass");
         const snap = structuredClone(f.snapshots[0]) as Snapshot;

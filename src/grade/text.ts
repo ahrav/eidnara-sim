@@ -25,17 +25,27 @@ export function pattern(source: string): RegExp {
     return source.startsWith("(?i)") ? new RegExp(source.slice(4), "im") : new RegExp(source, "m");
 }
 
+/** Hunk lines and header lines of a unified diff, told apart by position: a header precedes its first `@@`. */
+function parseDiff(patch: string): { added: string[]; paths: string[] } {
+    const added: string[] = [];
+    const paths: string[] = [];
+    let inHunk = false;
+    for (const line of patch.split("\n")) {
+        if (line.startsWith("diff --git ")) inHunk = false;
+        else if (line.startsWith("@@")) inHunk = true;
+        else if (inHunk) {
+            if (line.startsWith("+")) added.push(line.slice(1));
+        } else if (line.startsWith("+++ b/")) paths.push(line.slice("+++ b/".length));
+    }
+    return { added, paths: [...new Set(paths)] };
+}
+
 export function addedLines(patch: string): string {
-    return patch
-        .split("\n")
-        .filter((l) => l.startsWith("+") && !l.startsWith("+++"))
-        .map((l) => l.slice(1))
-        .join("\n");
+    return parseDiff(patch).added.join("\n");
 }
 
 export function diffPaths(patch: string): string[] {
-    const paths = [...patch.matchAll(/^\+\+\+ b\/(.+)$/gm)].map((m) => m[1] as string);
-    return [...new Set(paths)];
+    return parseDiff(patch).paths;
 }
 
 export const matchesAny = (text: string, sources: string[]) =>

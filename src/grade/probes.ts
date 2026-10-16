@@ -43,7 +43,7 @@ export interface GradeRecord extends Outcome {
 }
 
 const READS = /\b(cat|less|more|head|tail|sed|view|bat|grep|rg)\b|^read /;
-const TESTS = /\b(cargo test|(bun|npm|pnpm) (run )?test)\b/;
+const TESTS = /^(cargo test|(bun|npm|pnpm) (run )?test)\b/;
 const QUIET =
     /^\s*(cargo (build|check|test)|bun install|(bun|npm|pnpm) (run )?test|git (status|log|diff)|ls|pwd)\b[^&|;`$()]*$/;
 const FOLDS = ["history_summarizer", "native_compaction"];
@@ -98,9 +98,10 @@ const work = (r: ArtefactReader) => `${changed(r)}\n${commandText(r)}`;
 /** P6 requires the read and the prior-session path to occur in the same shell segment. */
 const segments = (command: string) => command.split(/[;&|\n]+/).map((s) => s.trim());
 const namesPath = (segment: string, path: string) =>
-    new RegExp(`(^|[\\s'"=])${path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}($|[\\s'"])`).test(
+    new RegExp(`(^|[\\s'"=])(\\./)?${path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}($|[\\s'"])`).test(
         segment,
     );
+const ranTests = (command: string) => segments(command).some((s) => TESTS.test(s));
 
 function foldsIn(r: ArtefactReader, turns?: [number, number]): CallView[] {
     const folds = r.calls().filter((c) => FOLDS.includes(c.component) && completed(c));
@@ -137,7 +138,7 @@ function p6(r: ArtefactReader, c: Check): Outcome {
     const tokens = r.turnCalls().reduce((n, x) => n + x.input_tokens + x.output_tokens, 0);
     return binary("P6", matchesAll(work(r), c.must ?? []), {
         "P6.reread_files": reread.length,
-        "P6.ran_tests": commands.some((x) => TESTS.test(x.command)),
+        "P6.ran_tests": commands.some((x) => ranTests(x.command)),
         "P6.rediscovery_tokens": tokens,
     });
 }
@@ -350,6 +351,7 @@ export class GradeLog {
 
     all(): GradeRecord[] {
         const lines = this.complete().split("\n").filter(Boolean);
+        const seen = new Set<string>();
         return lines.map((l, i) => {
             let parsed: unknown;
             try {
@@ -362,6 +364,13 @@ export class GradeLog {
                     `grade log ${this.path}: line ${i + 1} is not a grade record`,
                 );
             }
+            const key = `${parsed.item}/${parsed.arm}/${parsed.version}`;
+            if (seen.has(key)) {
+                throw new GradeRefused(
+                    `grade log ${this.path}: line ${i + 1} repeats version ${parsed.version} of ${parsed.item}/${parsed.arm}`,
+                );
+            }
+            seen.add(key);
             return parsed;
         });
     }

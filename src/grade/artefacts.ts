@@ -80,7 +80,10 @@ export class GradeRefused extends Error {}
 export const completed = (c: CallView) => c.status >= 200 && c.status < 300 && c.error === null;
 
 export function assertArtefactsOnly(snapshot: Snapshot): void {
-    for (const a of snapshot.artefacts as Array<{ id: string; class: string }>) {
+    for (const a of snapshot.artefacts as Array<{ id?: unknown; class: string }>) {
+        if (typeof a.id !== "string" || a.id.length === 0) {
+            throw new GradeRefused(`snapshot ${snapshot.id} has an artefact without an id`);
+        }
         if (!(ARTEFACT_CLASSES as readonly string[]).includes(a.class)) {
             throw new GradeRefused(`artefact ${a.id} of class ${a.class} is not a grade input`);
         }
