@@ -5,8 +5,10 @@ Scope: the v2 live-slice harness in this tree, specified by
 follow `docs/properties/METHOD.md`. The spec names its full catalog at
 `research/sim-design/property-catalog-sim-v2.md` (2026-10-12 revision); that
 file is unavailable, so these records are reconstructed from the condensed
-index in the spec body. Every record is PROPOSED: `Exercised: not yet` and
-`Confidence: low`, because no harness surface exists to verify against.
+index in the spec body. Every record is PROPOSED at `Confidence: low`. Three
+records (`SIM-P52`, `SIM-P53`, `SIM-P56`) are `Exercised: partial` through the
+M0 validator and report check in `src/prereg/`; every other record is
+`Exercised: not yet`, because no harness surface exists to verify against.
 
 Stable ids: `SIM-P01` to `SIM-P77` carry the spec's proposed records, and
 `SIM-L01` to `SIM-L03` carry the liveness bounds OQ-6 asked for and M0
@@ -548,8 +550,7 @@ Required faults and enabling state: a scheduled laptop-sleep fault.
 Confidence: low -
 [evidence](evidence/sim-p18-sleep-fault-is-event-free-jump.md). PROPOSED:
 reconstructed from the condensed index in spec #1007; no implementation exists
-to verify against, and reached only when the tier schedules faults or the
-counterfactual arm.
+to verify against, and reached only when the tier schedules a sleep fault.
 Existing check: none
 Impact: The sleep fault tests a different condition than the one scheduled.
 Open questions: None.
@@ -823,7 +824,7 @@ Required faults and enabling state: a fault schedule with windows that close.
 Confidence: low - [evidence](evidence/sim-p30-no-unscheduled-fault.md).
 PROPOSED: reconstructed from the condensed index in spec #1007; no
 implementation exists to verify against, and reached only when the tier
-schedules faults or the counterfactual arm.
+schedules faults.
 Existing check: none
 Impact: Faults the schedule did not plan corrupt both arms' metrics.
 Open questions: None.
@@ -849,7 +850,7 @@ Confidence: low -
 [evidence](evidence/sim-p31-fault-counts-only-when-observed-at-target.md).
 PROPOSED: reconstructed from the condensed index in spec #1007; no
 implementation exists to verify against, and reached only when the tier
-schedules faults or the counterfactual arm.
+schedules faults.
 Existing check: none
 Impact: A fault that never reached its target is counted as survived.
 Open questions:
@@ -875,7 +876,7 @@ Confidence: low -
 [evidence](evidence/sim-p32-missed-fault-excludes-run-from-fault-metrics.md).
 PROPOSED: reconstructed from the condensed index in spec #1007; no
 implementation exists to verify against, and reached only when the tier
-schedules faults or the counterfactual arm.
+schedules faults.
 Existing check: none
 Impact: Recovery is reported for faults that never happened.
 Open questions: None.
@@ -895,8 +896,7 @@ Required faults and enabling state: a fault keyed on a component event that does
 not occur in its window.
 Confidence: low - [evidence](evidence/sim-p33-missed-fault-occurs.md). PROPOSED:
 reconstructed from the condensed index in spec #1007; no implementation exists
-to verify against, and reached only when the tier schedules faults or the
-counterfactual arm.
+to verify against, and reached only when the tier schedules faults.
 Existing check: none
 Impact: The exclusion path of SIM-P32 is never exercised.
 Open questions: None.
@@ -920,7 +920,7 @@ L, and XL.
 Confidence: low - [evidence](evidence/sim-p34-each-fault-kind-triggers.md).
 PROPOSED: reconstructed from the condensed index in spec #1007; no
 implementation exists to verify against, and reached only when the tier
-schedules faults or the counterfactual arm.
+schedules faults.
 Existing check: none
 Impact: A fault kind's recovery path is never tested.
 Open questions:
@@ -1308,8 +1308,9 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M0 (#1024); nothing constructs
-it yet
+Exercised: partial - `src/prereg/validate.test.ts` constructs reports that
+`checkReport` refuses for a missing family, another hash, or a verdict without
+`n` and MDE; the verdict emitter and the `StartRun` journal land in M7 (#1032)
 Guarantee: SIM-P52: A verdict records MDE, n, and the pre-registration hash
 journaled at `StartRun`, and the hash matches the pre-registration file.
 Check: `always` - for each verdict, assert MDE and n are present and the hash
@@ -1319,8 +1320,8 @@ Fault/timing angle: none.
 Required faults and enabling state: a tier report and its pre-registration file.
 Confidence: low -
 [evidence](evidence/sim-p52-gate-carries-preregistered-mde.md). PROPOSED:
-reconstructed from the condensed index in spec #1007; no implementation exists
-to verify against, and a default tier run reaches it.
+reconstructed from the condensed index in spec #1007; only the report check
+exists to verify against, and a default tier run reaches it.
 Existing check: `src/prereg/validate.test.ts`, report check: a report missing a
 family, under another pre-registration hash, or with a verdict the family's
 claim does not allow is refused by name; status unaudited
@@ -1332,8 +1333,9 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M0 (#1024); nothing constructs
-it yet
+Exercised: partial - `src/prereg/validate.test.ts` constructs a report carrying
+the token `parity`, which `checkReport` refuses; the report emitter lands in M7
+(#1032)
 Guarantee: SIM-P53: The verdict vocabulary is better, worse,
 no-difference-above-X-pp-detectable-at-n, failed-gate(metric, items),
 inconclusive, insufficient-runs, and descriptive, and the string `parity` is
@@ -1343,8 +1345,8 @@ scanned over the whole report, so `always(!X)`.
 Fault/timing angle: none.
 Required faults and enabling state: any tier report.
 Confidence: low - [evidence](evidence/sim-p53-parity-never-emitted.md).
-PROPOSED: reconstructed from the condensed index in spec #1007; no
-implementation exists to verify against, and a default tier run reaches it.
+PROPOSED: reconstructed from the condensed index in spec #1007; only the report
+check exists to verify against, and a default tier run reaches it.
 Existing check: `src/prereg/validate.test.ts`, report check: the token `parity`
 anywhere in a report, in any case, is refused; status unaudited
 Impact: A null at small n is read as equivalence.
@@ -1402,8 +1404,10 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M7 (#1032); nothing constructs
-it yet
+Exercised: partial - `src/prereg/validate.test.ts` constructs a run-level gate
+below six paired runs, which the validator refuses, and a report verdict below
+the family's floor, which `checkReport` refuses unless it reads
+`insufficient-runs`; the verdict emitter lands in M7 (#1032)
 Guarantee: SIM-P56: A dependability verdict on failed turns or hangs is emitted
 only with at least six paired runs; below that the verdict is
 `insufficient-runs(k)`.
@@ -1416,8 +1420,9 @@ Fault/timing angle: none.
 Required faults and enabling state: a tier with fewer than six paired runs.
 Confidence: low -
 [evidence](evidence/sim-p56-failed-turn-claim-needs-six-paired-runs.md).
-PROPOSED: reconstructed from the condensed index in spec #1007; no
-implementation exists to verify against, and a default tier run reaches it.
+PROPOSED: reconstructed from the condensed index in spec #1007; only the
+validator and report check exist to verify against, and a default tier run
+reaches it.
 Existing check: `src/prereg/validate.test.ts`: the validator refuses a run-level
 gate with a paired interval below six paired runs, and the report check refuses
 any verdict but `insufficient-runs` below the family's floor; status unaudited
@@ -1474,7 +1479,13 @@ PROPOSED: reconstructed from the condensed index in spec #1007; no
 implementation exists to verify against, and a default tier run reaches it.
 Existing check: none
 Impact: Harm is reported in the wrong direction or not at all.
-Open questions: None.
+Open questions:
+- The comparator's sign. The spec index (#1007, SIM-P58) writes `eidnara <
+  host`; the M0 pre-registration's harm CUSUM alarms on the paired difference
+  `eidnara minus host` over the same five metrics, so there a positive value is
+  harm. The two agree only if each harm metric scores higher when memory does
+  better. Which convention the harm metrics use is a design decision (needs
+  human input); the record keeps the spec's wording until it is made.
 
 ### sim-p59-internal-string-scan-on-user-visible-only
 
@@ -1707,8 +1718,7 @@ Required faults and enabling state: an L run with the `eidnara-cf` arm.
 Confidence: low -
 [evidence](evidence/sim-p69-cf-deletion-recorded-with-identity.md). PROPOSED:
 reconstructed from the condensed index in spec #1007; no implementation exists
-to verify against, and reached only when the tier schedules faults or the
-counterfactual arm.
+to verify against, and reached only when the tier runs the counterfactual arm.
 Existing check: none
 Impact: Attribution cannot name the deleted object.
 Open questions:
@@ -1731,8 +1741,8 @@ Fault/timing angle: the store may reject or defer the deletion.
 Required faults and enabling state: a deletion against a live daemon.
 Confidence: low - [evidence](evidence/sim-p70-cf-deletion-verified.md).
 PROPOSED: reconstructed from the condensed index in spec #1007; no
-implementation exists to verify against, and reached only when the tier
-schedules faults or the counterfactual arm.
+implementation exists to verify against, and reached only when the tier runs the
+counterfactual arm.
 Existing check: none
 Impact: A flip is attributed to a deletion that did not happen.
 Open questions: None.
@@ -1753,8 +1763,8 @@ Required faults and enabling state: an L run with both arms.
 Confidence: low -
 [evidence](evidence/sim-p71-cf-arm-paired-to-eidnara-until-deletion.md).
 PROPOSED: reconstructed from the condensed index in spec #1007; no
-implementation exists to verify against, and reached only when the tier
-schedules faults or the counterfactual arm.
+implementation exists to verify against, and reached only when the tier runs the
+counterfactual arm.
 Existing check: none
 Impact: The counterfactual differs from the treatment for reasons other than the
 deletion.
@@ -1777,8 +1787,7 @@ Required faults and enabling state: targets with one and with several deletions.
 Confidence: low -
 [evidence](evidence/sim-p72-cf-attribution-is-single-object.md). PROPOSED:
 reconstructed from the condensed index in spec #1007; no implementation exists
-to verify against, and reached only when the tier schedules faults or the
-counterfactual arm.
+to verify against, and reached only when the tier runs the counterfactual arm.
 Existing check: none
 Impact: A flip is attributed to the wrong object.
 Open questions: None.
@@ -1799,8 +1808,8 @@ Fault/timing angle: none.
 Required faults and enabling state: an L scenario compile.
 Confidence: low - [evidence](evidence/sim-p73-cf-sample-is-preregistered.md).
 PROPOSED: reconstructed from the condensed index in spec #1007; no
-implementation exists to verify against, and reached only when the tier
-schedules faults or the counterfactual arm.
+implementation exists to verify against, and reached only when the tier runs the
+counterfactual arm.
 Existing check: none
 Impact: The counterfactual sample is chosen after seeing outcomes.
 Open questions: None.
@@ -1820,8 +1829,7 @@ Fault/timing angle: none.
 Required faults and enabling state: an L run with sampled P1 items.
 Confidence: low - [evidence](evidence/sim-p74-cf-flip-occurs.md). PROPOSED:
 reconstructed from the condensed index in spec #1007; no implementation exists
-to verify against, and reached only when the tier schedules faults or the
-counterfactual arm.
+to verify against, and reached only when the tier runs the counterfactual arm.
 Existing check: none
 Impact: Memory attribution is never demonstrated.
 Open questions: None.
@@ -1887,8 +1895,7 @@ Required faults and enabling state: two host clients attached to one daemon.
 Confidence: low -
 [evidence](evidence/sim-p77-two-hosts-one-store-attributed.md). PROPOSED:
 reconstructed from the condensed index in spec #1007; no implementation exists
-to verify against, and reached only when the tier schedules faults or the
-counterfactual arm.
+to verify against, and reached only when two host clients attach to one daemon.
 Existing check: none
 Impact: Effects of one client are attributed to the other.
 Open questions:

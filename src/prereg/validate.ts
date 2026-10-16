@@ -182,7 +182,7 @@ function checkShape(
     }
     for (const [field, check] of Object.entries(shape)) {
         const at = path === "" ? field : `${path}.${field}`;
-        if (!(field in value)) errors.push(`${at}: missing`);
+        if (!Object.hasOwn(value, field)) errors.push(`${at}: missing`);
         else if (typeof check === "function") {
             const error = check(value[field]);
             if (error) errors.push(`${at}: ${error}`);
@@ -197,7 +197,7 @@ function checkShape(
         } else checkShape(value[field], check, at, errors);
     }
     for (const field of Object.keys(value)) {
-        if (!(field in shape) && !extra.includes(field)) {
+        if (!Object.hasOwn(shape, field) && !extra.includes(field)) {
             errors.push(`${path === "" ? field : `${path}.${field}`}: unknown field`);
         }
     }
@@ -275,11 +275,14 @@ export function validatePreregistration(value: unknown): string[] {
     checkShape(value, PREREG_SHAPE, "", errors, Object.keys(TIER_SECTIONS));
     for (const [field, { tiers, shape }] of Object.entries(TIER_SECTIONS)) {
         const required = tiers.includes(value.tier as string);
-        if (required && !(field in value)) errors.push(`${field}: missing`);
+        if (required && !Object.hasOwn(value, field)) errors.push(`${field}: missing`);
         else if (required) checkShape(value[field], shape, field, errors);
-        else if (field in value) errors.push(`${field}: allowed only at tier ${tiers.join(", ")}`);
+        else if (Object.hasOwn(value, field)) {
+            errors.push(`${field}: allowed only at tier ${tiers.join(", ")}`);
+        }
     }
     if (errors.length > 0) return errors;
+    // SAFETY: This cast requires value to satisfy every Preregistration invariant.
     const p = value as unknown as Preregistration;
     checkFamilies(p, errors);
     checkArms(p, errors);

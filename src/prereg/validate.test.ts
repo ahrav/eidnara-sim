@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { checkReport, type TierReport } from "./report";
+import { CLAIM_BOUNDARY, checkReport, type TierReport } from "./report";
 import { needsPairedRuns, type Preregistration, REQUIRED_FAMILIES, TIERS } from "./schema";
 import { parsePreregistration, preregistrationHash, validatePreregistration } from "./validate";
 
@@ -108,6 +108,15 @@ describe("pre-registration validator", () => {
         expect(errors).toContain("families[probe-P4].alpah: unknown field");
     });
 
+    test("refuses an unknown field whose name is an Object.prototype key", () => {
+        const prereg = load("M") as any;
+        prereg.toString = 1;
+        prereg.families[3].constructor = "x";
+        const errors = validatePreregistration(prereg);
+        expect(errors).toContain("toString: unknown field");
+        expect(errors).toContain("families[probe-P4].constructor: unknown field");
+    });
+
     test("refuses a claim, direction, and interval that contradict each other", () => {
         const prereg = load("M") as any;
         const fam = (id: string) => prereg.families.find((f: any) => f.id === id);
@@ -169,6 +178,7 @@ describe("pre-registration validator", () => {
 function acceptedReport(prereg: Preregistration): TierReport {
     return {
         tier: prereg.tier,
+        claim_boundary: CLAIM_BOUNDARY,
         prereg_hash: preregistrationHash(prereg),
         families: prereg.families.map((f) => ({
             family: f.id,
@@ -199,6 +209,14 @@ describe("report check against the pre-registration", () => {
         const r = acceptedReport(s);
         r.prereg_hash = preregistrationHash(m);
         expect(checkReport(r, s)).toEqual(["prereg_hash: does not match the pre-registration"]);
+    });
+
+    test("refuses a report without the claim-boundary version", () => {
+        const { claim_boundary: _, ...r } = acceptedReport(s);
+        expect(checkReport(r, s)).toEqual(['claim_boundary: expected "sim-claim-boundary/v1"']);
+        expect(checkReport({ ...r, claim_boundary: "sim-claim-boundary/v2" }, s)).toEqual([
+            'claim_boundary: expected "sim-claim-boundary/v1"',
+        ]);
     });
 
     test("refuses a family that was not pre-registered and a repeated family", () => {

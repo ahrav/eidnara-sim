@@ -42,7 +42,7 @@ counterpart holds part of the value; the note names the rest), `extension`
 | `arms` | `Manifest.arm_rates` keys | partial | eval-core pairs exactly `aged` and `fresh`; three or four arms need `eval-manifest/v10` with named arms. |
 | `arms.default` | none | extension | D1's declared default arm has no counterpart; `eval-manifest/v10`. |
 | `arms.run` | `Manifest.arm_rates` keys | partial | See `arms`. |
-| `arms.order_by_seed` | `Manifest.sample_order` | partial | eval-core records an execution order over samples; the arm order per seed (a Latin square over the run arms, so first position is balanced) needs `eval-manifest/v10` run identity. |
+| `arms.order_by_seed` | `Manifest.sample_order` | partial | eval-core records an execution order over samples; the arm order per seed needs `eval-manifest/v10` run identity. The order is a Latin square at M; S, L, and XL have fewer seeds than arms, so their orders are partial rotations (`eidnara` is never first at S, `eidnara-cf` is never first at L, and XL has one seed). |
 | `hosts` | `LiveSettings.providers` | partial | Providers are model profiles; the host binary is a run identity component. `eval-live-settings/v2` would add host binaries. |
 | `seeds` | `run_identity` root seed; `ClusterKey.world_seed` | mapped | One root seed per paired run. |
 | `scenario` | `component_versions.generator` | partial | The generator version is in the identity; scenario sizes are generator inputs with no field. `eval-manifest/v10`. |

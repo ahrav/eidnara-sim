@@ -2,6 +2,8 @@ import { isCanonicalDecimal } from "./canonical";
 import { type Family, needsPairedRuns, type Preregistration } from "./schema";
 import { preregistrationHash } from "./validate";
 
+export const CLAIM_BOUNDARY = "sim-claim-boundary/v1";
+
 /**
  * The verdict vocabulary: SIM-P53's four kinds, `inconclusive` from #1032, SIM-P56's
  * `insufficient-runs`, and `descriptive` for a family the pre-registration does not gate.
@@ -28,6 +30,7 @@ export interface FamilyVerdict {
 
 export interface TierReport {
     tier: string;
+    claim_boundary: typeof CLAIM_BOUNDARY;
     prereg_hash: string;
     families: FamilyVerdict[];
 }
@@ -63,8 +66,9 @@ function checkVerdict(f: FamilyVerdict, family: Family, errors: string[]): void 
 
 /**
  * Refusals for a tier report checked against the pre-registration it claims: another tier or
- * hash, a pre-registered family the report lacks, repeats, or adds, a verdict the family's claim
- * does not allow, a verdict without `n` and MDE, and the token `parity` anywhere in the report.
+ * hash, a claim-boundary version other than `sim-claim-boundary/v1`, a pre-registered family the
+ * report lacks, repeats, or adds, a verdict the family's claim does not allow, a verdict without
+ * `n` and MDE, and the token `parity` anywhere in the report.
  */
 export function checkReport(report: unknown, prereg: Preregistration): string[] {
     const r = report as Partial<TierReport> | null;
@@ -72,6 +76,9 @@ export function checkReport(report: unknown, prereg: Preregistration): string[] 
     const errors: string[] = [];
     if (r.tier !== prereg.tier)
         errors.push(`tier: report ${r.tier}, pre-registration ${prereg.tier}`);
+    if (r.claim_boundary !== CLAIM_BOUNDARY) {
+        errors.push(`claim_boundary: expected ${JSON.stringify(CLAIM_BOUNDARY)}`);
+    }
     if (r.prereg_hash !== preregistrationHash(prereg)) {
         errors.push("prereg_hash: does not match the pre-registration");
     }

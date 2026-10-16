@@ -26,9 +26,9 @@ const PATH_FIELDS = [
 
 export class ConfigError extends Error {}
 
-/** The default config file at the sim tree root, overridable by `SIM_CONFIG`. */
+/** The default config file at the sim tree root, overridable by a non-empty `SIM_CONFIG`. */
 export function defaultConfigPath(): string {
-    return process.env.SIM_CONFIG ?? resolve(import.meta.dir, "../../sim.config.json");
+    return process.env.SIM_CONFIG || resolve(import.meta.dir, "../../sim.config.json");
 }
 
 /** Parses and shape-checks a config value; every path must be absolute. */

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { ConfigError, loadConfig, parseConfig } from "./config";
+import { ConfigError, defaultConfigPath, loadConfig, parseConfig } from "./config";
 
 test("the committed config parses and names every path absolutely", () => {
     const config = loadConfig();
@@ -17,4 +17,15 @@ test("a missing or relative path is refused by field name", () => {
     expect(() => parseConfig({ ...base, bedrock: { region: "us-west-2" } })).toThrow(
         "config.bedrock.aws_profile: missing",
     );
+});
+
+test("an empty SIM_CONFIG falls back to the committed file", () => {
+    const saved = process.env.SIM_CONFIG;
+    process.env.SIM_CONFIG = "";
+    try {
+        expect(defaultConfigPath().endsWith("/sim.config.json")).toBe(true);
+    } finally {
+        if (saved === undefined) delete process.env.SIM_CONFIG;
+        else process.env.SIM_CONFIG = saved;
+    }
 });

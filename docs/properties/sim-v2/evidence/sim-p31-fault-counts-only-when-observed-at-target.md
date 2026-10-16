@@ -38,4 +38,4 @@ Each fault kind with its target component active.
   Candidate: a summarizer call record in flight at the kill wall time.
   Unresolved, needs the daemon's fold-start signal (needs human input).
 - Missing evidence: a harness run that exercises the record.
-- Conclusion: unresolved, needs a harness run
+- Conclusion: needs human input

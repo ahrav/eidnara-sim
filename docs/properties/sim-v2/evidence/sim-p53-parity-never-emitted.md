@@ -16,8 +16,9 @@ no-difference-above-X-pp-detectable-at-n, failed-gate(metric, items),
 inconclusive, insufficient-runs, and descriptive, and the string `parity` is
 absent from every report.
 
-No harness code, test, or run exists yet. The surface lands in M0
-(#1024).
+`src/prereg/validate.test.ts` constructs a report carrying the token `parity`,
+which `checkReport` (`src/prereg/report.ts`) refuses. The report emitter lands
+in M7 (#1032); no run exists yet.
 
 ## Failure scenario
 
@@ -41,4 +42,4 @@ Any tier report.
   gate. Whether the spec index should list them is a design decision (needs
   human input).
 - Missing evidence: a harness run that exercises the record.
-- Conclusion: unresolved, needs a harness run
+- Conclusion: needs human input

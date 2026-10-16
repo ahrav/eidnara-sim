@@ -21,17 +21,18 @@ tier exhausts its wall budget without a verdict.
 
 ## Timing windows and dependencies
 
-The bound starts at `BeginTurn` or `RegisterJob` in wall time.
+The bound runs from `RegisterJob` to `EndJob` in wall time.
 
 ## What a test must construct
 
-A fault-free window after load, then a poll of open turns and jobs against the
-bound.
+A fault-free window after the last turn of a session, then a poll of registered
+jobs against the bound.
 
 ## Investigation log
 
 ### Q: Is the starting value tight enough?
 - Sources examined: spec #1007 OQ-6; the v1 baseline runs.
-- Findings: the v1 Pi hang held a turn far past 15 minutes.
+- Findings: the v1 Pi hang held a turn far past 15 minutes; this tree holds no
+  background job duration to compare against the 20 minute bound.
 - Missing evidence: an S run with the v2 scheduler.
 - Conclusion: unresolved, needs the S run

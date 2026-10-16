@@ -21,17 +21,20 @@ tier exhausts its wall budget without a verdict.
 
 ## Timing windows and dependencies
 
-The bound starts at `BeginTurn` or `RegisterJob` in wall time.
+The bound runs from `StartRun` to the last arm's done marker in wall time, per
+tier.
 
 ## What a test must construct
 
-A fault-free window after load, then a poll of open turns and jobs against the
-bound.
+A complete tier run, then a comparison of its elapsed wall time against the
+tier's `tier_wall_budget_ms`.
 
 ## Investigation log
 
 ### Q: Is the starting value tight enough?
-- Sources examined: spec #1007 OQ-6; the v1 baseline runs.
-- Findings: the v1 Pi hang held a turn far past 15 minutes.
+- Sources examined: spec #1007 OQ-6 and its wall-clock range of 1 hour to 4 days
+  per tier; the v1 baseline runs.
+- Findings: the four budgets sit inside the spec's range; the v1 Pi hang held a
+  turn far past 15 minutes, a large share of the 2 hour S budget.
 - Missing evidence: an S run with the v2 scheduler.
 - Conclusion: unresolved, needs the S run

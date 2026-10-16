@@ -40,4 +40,4 @@ A turn followed by a fold or memory-capture job that outlives the turn.
   ticket resolves it as daemon CPU time above a pre-registered threshold; the
   threshold value is unresolved, needs the M4 sampler data.
 - Missing evidence: a harness run that exercises the record.
-- Conclusion: resolved with answer
+- Conclusion: unresolved, needs the M4 sampler data
