@@ -15,8 +15,8 @@ import { QUANTITIES } from "./fit";
 import { loadRepos, REPOS_DIR } from "./repos";
 import { CORPUS_DIR, loadSources } from "./sources";
 
-const MIN_SAMPLES = 500;
-const MIN_ERROR_CODES = 100;
+const SAMPLES_PER_KIND = 150;
+const ERROR_CODES = 200;
 const KINDS = ["stack_trace", "test_run", "grep", "file_read"];
 const SHA = /^[0-9a-f]{40}$/;
 const REPO_LICENSES = new Set(["MIT", "Apache-2.0"]);
@@ -37,14 +37,12 @@ export function checkCorpus(): CorpusReport {
     const need = (ok: boolean, problem: string) => ok || problems.push(problem);
     const read = (path: string) => readFileSync(join(CORPUS_DIR, path), "utf8");
     const manifest = JSON.parse(read("manifest.json"));
+    need(manifest.schema === "sim-corpus-manifest/v1", `manifest: schema ${manifest.schema}`);
     const files = manifest.files as Record<string, string>;
     const listed = Object.keys(files).sort().join(",");
     need(listed === OUTPUTS.join(","), `manifest: files ${listed}, need ${OUTPUTS.join(",")}`);
-    const configured = loadSources().map((d) => ({
-        id: d.id,
-        revision: d.revision,
-        access: d.access,
-    }));
+    const sources = loadSources();
+    const configured = sources.map((d) => ({ id: d.id, revision: d.revision, access: d.access }));
     need(
         JSON.stringify(manifest.datasets) === JSON.stringify(configured),
         "manifest: datasets differ from sources.json",
@@ -56,17 +54,39 @@ export function checkCorpus(): CorpusReport {
 
     const samples = parseJsonl(read("tool-outputs/samples.jsonl"));
     const codes = parseJsonl(read("tool-outputs/error-codes.jsonl"));
-    need(samples.length >= MIN_SAMPLES, `samples: ${samples.length} < ${MIN_SAMPLES}`);
-    need(codes.length >= MIN_ERROR_CODES, `error codes: ${codes.length} < ${MIN_ERROR_CODES}`);
+    need(codes.length === ERROR_CODES, `error codes: ${codes.length}, need ${ERROR_CODES}`);
     problems.push(
         ...entryProblems(samples, "samples", SAMPLE_FIELDS),
         ...entryProblems(codes, "error_codes", ERROR_CODE_FIELDS),
     );
-    const kinds = new Set(samples.map((s) => (s as { kind?: string }).kind));
+    const byKind = new Map<string, number>();
+    for (const s of samples) {
+        const kind = String((s as { kind?: string }).kind);
+        byKind.set(kind, (byKind.get(kind) ?? 0) + 1);
+    }
     need(
-        KINDS.every((k) => kinds.has(k)),
-        `samples: kinds ${[...kinds].join(",")}`,
+        [...byKind.keys()].every((k) => KINDS.includes(k)),
+        `samples: kinds ${[...byKind.keys()]}`,
     );
+    for (const kind of KINDS) {
+        const n = byKind.get(kind) ?? 0;
+        need(n === SAMPLES_PER_KIND, `samples: ${kind} has ${n}, need ${SAMPLES_PER_KIND}`);
+    }
+    for (const [label, entries] of [
+        ["samples", samples],
+        ["error_codes", codes],
+    ] as const) {
+        for (const entry of entries) {
+            const e = entry as { id?: string; source_id?: string; license?: string };
+            const dataset = sources.find((d) =>
+                e.source_id?.startsWith(`${d.repo}@${d.revision}:`),
+            );
+            need(
+                dataset !== undefined && dataset.license === e.license,
+                `${label} ${e.id}: license ${e.license} for source ${e.source_id}`,
+            );
+        }
+    }
     const named = codes.filter((c) => (c as { code?: string }).code?.trim());
     need(named.length === codes.length, "error codes: an entry has an empty code");
 
