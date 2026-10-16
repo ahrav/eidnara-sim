@@ -37,6 +37,13 @@ export function encodeMessage(headers: Record<string, string>, payload: Uint8Arr
     return message;
 }
 
+/** Serializes bytes as the base64 string the Converse wire format carries for blob fields. */
+export function wireJson(value: unknown): string {
+    return JSON.stringify(value, (_key, v) =>
+        v instanceof Uint8Array ? Buffer.from(v).toString("base64") : v,
+    );
+}
+
 /** One `converse-stream` event: its `:event-type` and the JSON member it carries. */
 export function encodeEvent(eventType: string, member: unknown): Buffer {
     return encodeMessage(
@@ -45,6 +52,17 @@ export function encodeEvent(eventType: string, member: unknown): Buffer {
             ":content-type": "application/json",
             ":message-type": "event",
         },
-        Buffer.from(JSON.stringify(member), "utf8"),
+        Buffer.from(wireJson(member), "utf8"),
+    );
+}
+
+export function encodeException(exceptionType: string, member: unknown): Buffer {
+    return encodeMessage(
+        {
+            ":exception-type": exceptionType,
+            ":content-type": "application/json",
+            ":message-type": "exception",
+        },
+        Buffer.from(wireJson(member), "utf8"),
     );
 }

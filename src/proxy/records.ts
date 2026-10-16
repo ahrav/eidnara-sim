@@ -83,13 +83,13 @@ export class RecordWriter {
 
     write(partial: Omit<CallRecord, "seq" | "wall_ms">): CallRecord {
         const wall_ms = Math.max(this.lastWall, Date.now());
-        const record = { ...partial, seq: this.seq, wall_ms } as CallRecord;
-        const problems = recordProblems(record as unknown as Record<string, unknown>);
+        const record = { ...partial, seq: this.seq, wall_ms };
+        const problems = recordProblems(record);
         if (problems.length > 0) throw new Error(`call record refused: ${problems.join(", ")}`);
+        if (this.path) appendFileSync(this.path, `${JSON.stringify(record)}\n`);
         this.seq++;
         this.lastWall = wall_ms;
         this.records.push(record);
-        if (this.path) appendFileSync(this.path, `${JSON.stringify(record)}\n`);
         return record;
     }
 }

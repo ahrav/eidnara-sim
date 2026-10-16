@@ -1,11 +1,20 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { connect } from "node:http2";
+import { BedrockRuntimeClient } from "@aws-sdk/client-bedrock-runtime";
 import { decodeMessages } from "../../tests/eventstream-decode";
 import { Rng } from "../rng";
 import type { FaultType } from "../scenario/faults";
 import { classify } from "./classify";
 import { encodeEvent } from "./eventstream";
-import { backoffMs, type CallStarted, Gateway, sendWithRetry, type Upstream } from "./gateway";
+import {
+    backoffMs,
+    bedrockUpstream,
+    type CallStarted,
+    Gateway,
+    sendWithRetry,
+    type Upstream,
+    wireBase64,
+} from "./gateway";
 import { excludedFromFaultMetrics, FaultInjector, type ProxyFault } from "./inject";
 import { type CallRecord, RecordWriter, recordProblems } from "./records";
 
@@ -95,7 +104,7 @@ async function hostCall(
         }
         if (response.status === 200) {
             for (const m of decodeMessages(buffer)) {
-                const type = m.headers[":event-type"] ?? "";
+                const type = m.headers[":event-type"] ?? m.headers[":exception-type"] ?? "";
                 result.events.push({ type, member: JSON.parse(m.payload.toString("utf8")) });
             }
         }
@@ -533,6 +542,68 @@ describe("upstream retry", () => {
         expect(r.status).toBe(200);
         expect(g.records.records[0]?.proxy_retries).toBe(1);
     }, 20_000);
+
+    test("a retry wait cut by the client's abort sends nothing more and counts no retry", async () => {
+        const ctl = new AbortController();
+        let sends = 0;
+        const retries: number[] = [];
+        const attempt = sendWithRetry(
+            async () => {
+                sends++;
+                throw Object.assign(new Error("slow down"), { $metadata: { httpStatusCode: 429 } });
+            },
+            {
+                rng: new Rng(1),
+                deadlineAt: Date.now() + 60_000,
+                signal: ctl.signal,
+                onRetry: (d) => retries.push(d),
+                wait: async () => ctl.abort(),
+            },
+        );
+        await expect(attempt).rejects.toThrow("slow down");
+        expect([sends, retries]).toEqual([1, []]);
+    });
+
+    test("bedrockUpstream sends a wire-format blob string unchanged and a decoded blob back as base64", async () => {
+        const client = new BedrockRuntimeClient({
+            region: "us-east-1",
+            credentials: { accessKeyId: "a", secretAccessKey: "b" },
+            base64Encoder: wireBase64,
+        });
+        client.middlewareStack.add(
+            (_next) => async (args) => {
+                const body = (args.request as { body: string }).body;
+                throw Object.assign(new Error("captured"), { body });
+            },
+            { step: "finalizeRequest" },
+        );
+        const png = Buffer.from("not really a png").toString("base64");
+        const body = {
+            messages: [
+                { role: "user", content: [{ image: { format: "png", source: { bytes: png } } }] },
+            ],
+        };
+        const up = bedrockUpstream("us-east-1", "p", client);
+        const sent = await up
+            .converse("m", body, false, new AbortController().signal)
+            .then(() => "")
+            .catch((e: { body: string }) => e.body);
+        expect(JSON.parse(sent).messages[0].content[0].image.source.bytes).toBe(png);
+        expect(wireBase64(new Uint8Array([1, 2, 3]))).toBe("AQID");
+        const decoded: Upstream = {
+            async converse() {
+                const content = [
+                    { reasoningContent: { redactedContent: new Uint8Array([1, 2, 3]) } },
+                ];
+                return { json: { output: { message: { content } }, stopReason: "end_turn" } };
+            },
+        };
+        const { url } = await start(null, decoded);
+        const r = await hostCallJson(url, AGENT_BODY, 2_000);
+        expect(r.json?.output?.message?.content?.[0]?.reasoningContent).toEqual({
+            redactedContent: "AQID",
+        });
+    });
 });
 
 describe("classification", () => {
@@ -566,6 +637,13 @@ describe("classification", () => {
     test("encodeEvent output decodes back", () => {
         const [m] = decodeMessages(encodeEvent("messageStop", { stopReason: "end_turn" }));
         expect(m?.headers[":event-type"]).toBe("messageStop");
+    });
+
+    test("an agent request whose text mentions <new_messages> stays agent", () => {
+        const text = "the summarizer wraps turns in <new_messages>";
+        const body = { ...AGENT_BODY, messages: [{ role: "user", content: [{ text }] }] };
+        expect(classify(body, undefined).component).toBe("agent");
+        expect(classify(SUMMARIZER_BODY, undefined).component).toBe("history_summarizer");
     });
 });
 
@@ -664,6 +742,135 @@ describe("every request yields one record", () => {
         expect(outcome).toBe("stopped");
     }, 10_000);
 
+    test("an HTTP/2 client that disconnects before the answer records status 0", async () => {
+        let release: () => void = () => undefined;
+        const held: Upstream = {
+            async converse(m, b, s, signal) {
+                await new Promise<void>((r) => {
+                    release = r;
+                });
+                return scriptedUpstream().converse(m, b, s, signal);
+            },
+        };
+        const { gateway, records } = await start(null, held);
+        const session = connect(gateway.urls[1] as string);
+        const req = session.request({ ":method": "POST", ":path": "/model/m/converse" });
+        req.on("error", () => undefined);
+        req.end(JSON.stringify(AGENT_BODY));
+        await Bun.sleep(50);
+        session.destroy();
+        await Bun.sleep(50);
+        release();
+        while (gateway.inFlight > 0) await Bun.sleep(5);
+        expect(records.records.map((r) => [r.component, r.status])).toEqual([["agent", 0]]);
+    });
+
+    test("stop() returns after in-flight handlers wrote their records", async () => {
+        const slow: Upstream = {
+            async converse(m, b, s, signal) {
+                await Bun.sleep(150);
+                return scriptedUpstream().converse(m, b, s, signal);
+            },
+        };
+        const { gateway, records, url } = await start(null, slow);
+        gateways = gateways.filter((g) => g !== gateway);
+        const call = hostCallJson(url, AGENT_BODY, 2_000);
+        await Bun.sleep(30);
+        await gateway.stop();
+        expect(records.records).toHaveLength(1);
+        await call;
+    });
+
+    test("a method other than POST and a body over the limit are rejected with one record each", async () => {
+        const { gateway, records, url } = await start(null);
+        const put = await fetch(`${url}/model/m/converse`, {
+            method: "PUT",
+            body: JSON.stringify(AGENT_BODY),
+        });
+        const big = await fetch(`${url}/model/m/converse`, {
+            method: "POST",
+            body: Buffer.alloc(32 * 1024 * 1024 + 1, 0x20),
+        });
+        expect([put.status, big.status]).toEqual([405, 413]);
+        expect(records.records.map((r) => [r.component, r.status, r.error])).toEqual([
+            ["rejected", 405, "PUT is not POST"],
+            ["rejected", 413, `body of ${32 * 1024 * 1024 + 1} bytes over the limit`],
+        ]);
+        expect(gateway.failures).toEqual([]);
+    }, 20_000);
+
+    test("the writer keeps no record whose append failed", () => {
+        const writer = new RecordWriter("/nonexistent-dir-for-sim-test/records.jsonl");
+        const partial = {
+            arm: "a",
+            session: null,
+            turn: null,
+            component: "agent",
+            componentSource: "inferred",
+            model: "m",
+            status: 200,
+            finish_reason: null,
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            started_wall_ms: 1,
+            scenario_ms: 0,
+            first_byte_ms: null,
+            proxy_retries: 0,
+            fault_ref: null,
+            error: null,
+        } as const;
+        expect(() => writer.write(partial)).toThrow();
+        expect(writer.records).toHaveLength(0);
+    });
+
+    test("first_byte_ms under slow_stream follows the delay", async () => {
+        const fault = {
+            id: "s",
+            type: "slow_stream",
+            strategy: "single",
+            params: { count: 1, delay_ms: 100 },
+        } as ProxyFault;
+        const { records, injector, started, url } = await start(fault);
+        injector.arm("s");
+        await hostCallJson(url, AGENT_BODY, 2_000);
+        const [record] = records.records;
+        expect(record?.first_byte_ms ?? 0).toBeGreaterThanOrEqual(100);
+        expect((started[0]?.wall_ms ?? 0) - (record?.started_wall_ms ?? 0)).toBeGreaterThanOrEqual(
+            100,
+        );
+    });
+
+    test("a stream that fails after messageStop, or repeats messageStop without metadata, is stream_cut", async () => {
+        const failing: Upstream = {
+            async converse() {
+                async function* events() {
+                    yield { messageStart: { role: "assistant" } };
+                    yield { messageStop: { stopReason: "end_turn" } };
+                    throw Object.assign(new Error("boom"), { name: "ModelStreamErrorException" });
+                }
+                return { events: events() };
+            },
+        };
+        const repeating: Upstream = {
+            async converse() {
+                async function* events() {
+                    yield { messageStart: { role: "assistant" } };
+                    yield { messageStop: { stopReason: "end_turn" } };
+                    yield { messageStop: { stopReason: "end_turn" } };
+                }
+                return { events: events() };
+            },
+        };
+        for (const upstream of [failing, repeating]) {
+            const { records, url } = await start(null, upstream);
+            const seen = await hostCall(url, AGENT_BODY, 2_000);
+            expect(seen.status).toBe(200);
+            expect(records.records[0]).toMatchObject({ status: 200, finish_reason: "stream_cut" });
+        }
+    });
+
     test("an upstream stream that throws before its first event still yields one record", async () => {
         const broken: Upstream = {
             async converse() {
@@ -679,7 +886,11 @@ describe("every request yields one record", () => {
         const { gateway, records, url } = await start(null, broken);
         const seen = await hostCall(url, AGENT_BODY, 2_000);
         await hostCall(url, AGENT_BODY, 2_000);
-        expect([seen.status, seen.timedOut, seen.events]).toEqual([200, false, []]);
+        expect([seen.status, seen.timedOut, seen.events]).toEqual([
+            200,
+            false,
+            [{ type: "ModelStreamErrorException", member: { message: "boom" } }],
+        ]);
         expect(records.records.map((r) => [r.status, r.finish_reason, r.error])).toEqual([
             [200, "stream_cut", "ModelStreamErrorException: boom"],
             [200, "stream_cut", "ModelStreamErrorException: boom"],

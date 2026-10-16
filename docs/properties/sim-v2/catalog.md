@@ -462,8 +462,8 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M3 (#1027); nothing constructs
-it yet
+Exercised: partial - `src/proxy/gateway.test.ts` checks `scenario_ms` at receipt
+and non-decreasing `wall_ms` on concurrent calls; no run constructs it yet
 Guarantee: SIM-P15: Every call record has `scenario_ms` equal to the clock at
 receipt and a `wall_ms`, and `wall_ms` is non-decreasing in sequence order.
 Check: `always` - for each call record, compare `scenario_ms` to the journaled
@@ -745,8 +745,8 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M3 (#1027); nothing constructs
-it yet
+Exercised: partial - `src/proxy/gateway.test.ts` checks one record for rejected,
+forwarded, and throwing requests; no run constructs it yet
 Guarantee: SIM-P27: Proxy requests received equal call records journaled per
 arm, including refused requests recorded as `rejected`.
 Check: `always` - compare the proxy's received-request counter to journaled call
@@ -768,8 +768,8 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M3 (#1027); nothing constructs
-it yet
+Exercised: partial - `src/proxy/gateway.test.ts` checks asserted and inferred
+tags and the writer's refusal of an unknown component; no run constructs it yet
 Guarantee: SIM-P28: Every record has exactly one component in the fixed set, and
 unknown shapes map to `other`, never dropped.
 Check: `always` - assert every call record carries exactly one component from
@@ -790,8 +790,8 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M3 (#1027); nothing constructs
-it yet
+Exercised: partial - `src/proxy/gateway.test.ts` checks `end_turn` on a forwarded
+call and `stream_cut` on a cut stream; no run constructs it yet
 Guarantee: SIM-P29: Every forwarded record carries the provider `finish_reason`
 or an explicit `stream_cut` marker.
 Check: `always` - assert each forwarded record has `finish_reason` or
@@ -810,8 +810,8 @@ Open questions: None.
 Type: safety
 Reachability: explicit-config-only
 Status: active
-Exercised: not yet - the harness surface lands in M3 (#1027); nothing constructs
-it yet
+Exercised: partial - `src/proxy/gateway.test.ts` checks an unarmed episode
+injects nothing; no run constructs it yet
 Guarantee: SIM-P30: Every record with `fault_ref` set names a fault instance in
 state `armed` or `triggered` at that sequence.
 Check: `always(!X)` - X is a record whose `fault_ref` names no armed or
@@ -833,8 +833,8 @@ Open questions: None.
 Type: safety
 Reachability: explicit-config-only
 Status: active
-Exercised: not yet - the harness surface lands in M3 (#1027); nothing constructs
-it yet
+Exercised: partial - `src/proxy/gateway.test.ts` checks `fired` requires an
+injected record and an in-window agent call; no run constructs it yet
 Guarantee: SIM-P31: A fault instance is `triggered` only with evidence: for
 provider faults, a call record from the target component carrying `fault_ref`;
 for infrastructure faults, the observing oracle's record from the target
@@ -885,8 +885,8 @@ Open questions: None.
 Type: reachability
 Reachability: explicit-config-only
 Status: active
-Exercised: not yet - the harness surface lands in M3 (#1027); nothing constructs
-it yet
+Exercised: partial - `src/proxy/gateway.test.ts` checks `untriggered` with no
+later call and with a call outside the window; no run constructs it yet
 Guarantee: SIM-P33: A scheduled fault ends `missed` at least once per campaign.
 Check: `sometimes` - observe at least one `missed` instance in the campaign; the
 missed path is a situation, and only a real miss exercises SIM-P32.
@@ -906,8 +906,8 @@ Open questions: None.
 Type: reachability
 Reachability: explicit-config-only
 Status: active
-Exercised: not yet - the harness surface lands in M3 (#1027); nothing constructs
-it yet
+Exercised: partial - `src/proxy/gateway.test.ts` triggers each fault type under
+each strategy on both routes; no run constructs it yet
 Guarantee: SIM-P34: Each fault kind triggers at least once: 429, 5xx, timeout,
 `finish_reason=length`, silent cut, empty content, schema-wrong tool call, slow
 stream, SIGKILL mid-fold, restart between sessions, ENOSPC, plugin reload, host

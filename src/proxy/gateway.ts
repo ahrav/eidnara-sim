@@ -1,6 +1,11 @@
 import { createServer as createHttp1Server, type Server } from "node:http";
-import { createServer as createHttp2Server, type Http2Server } from "node:http2";
+import {
+    createServer as createHttp2Server,
+    type Http2Server,
+    type ServerHttp2Session,
+} from "node:http2";
 import type { AddressInfo } from "node:net";
+import type { Readable } from "node:stream";
 import {
     BedrockRuntimeClient,
     ConverseCommand,
@@ -9,7 +14,7 @@ import {
 import { defaultProvider } from "@aws-sdk/credential-provider-node";
 import type { Rng } from "../rng";
 import { COMPONENT_HEADER, type ConverseBody, classify } from "./classify";
-import { encodeEvent } from "./eventstream";
+import { encodeEvent, encodeException, wireJson } from "./eventstream";
 import { type FaultInjector, type Sink, sleep, writeFault } from "./inject";
 import type { CallRecord, Component, RecordWriter } from "./records";
 
@@ -26,9 +31,20 @@ export interface Upstream {
     ): Promise<UpstreamResponse>;
 }
 
-export function bedrockUpstream(region: string, profile: string): Upstream {
-    const credentials = defaultProvider({ profile });
-    const client = new BedrockRuntimeClient({ region, maxAttempts: 1, credentials });
+/** The wire body carries blobs as base64 strings; the SDK's default encoder would base64 them a second time. */
+export const wireBase64 = (value: string | Uint8Array): string =>
+    typeof value === "string" ? value : Buffer.from(value).toString("base64");
+
+export function bedrockUpstream(
+    region: string,
+    profile: string,
+    client = new BedrockRuntimeClient({
+        region,
+        maxAttempts: 1,
+        credentials: defaultProvider({ profile }),
+        base64Encoder: wireBase64,
+    }),
+): Upstream {
     return {
         async converse(modelId, body, streaming, abortSignal) {
             const input = { ...body, modelId } as never;
@@ -68,8 +84,9 @@ export async function sendWithRetry<T>(
             if (opts.signal.aborted || !RETRYABLE.has(meta?.httpStatusCode ?? 0)) throw caught;
             const delay = backoffMs(attempt, opts.rng);
             if (Date.now() + delay >= opts.deadlineAt) throw caught;
-            opts.onRetry(delay);
             await (opts.wait ?? sleep)(delay, opts.signal);
+            if (opts.signal.aborted) throw caught;
+            opts.onRetry(delay);
         }
     }
 }
@@ -103,8 +120,26 @@ type Usage = Record<string, number>;
 type Done = Partial<CallRecord> &
     Pick<CallRecord, "component" | "componentSource" | "model" | "status">;
 
+function collectBody(source: Readable): { chunks: Buffer[]; received: number } {
+    const body = { chunks: [] as Buffer[], received: 0 };
+    source.on("data", (c: Buffer) => {
+        body.received += c.length;
+        if (body.received <= MAX_BODY) body.chunks.push(c);
+    });
+    return body;
+}
+
+interface Request {
+    path: string;
+    method: string;
+    header: string | undefined;
+    raw: Buffer;
+    received: number;
+}
+
 export class Gateway {
     private servers: (Server | Http2Server)[] = [];
+    private readonly sessions = new Set<ServerHttp2Session>();
     inFlight = 0;
     readonly failures: Error[] = [];
     private calls = 0;
@@ -114,14 +149,23 @@ export class Gateway {
 
     async start(): Promise<void> {
         const h1 = createHttp1Server((req, res) => {
-            const chunks: Buffer[] = [];
+            const body = collectBody(req);
             const gone = new AbortController();
             res.on("close", () => !res.writableFinished && gone.abort());
-            req.on("data", (c: Buffer) => chunks.push(c));
             req.on("end", () => {
-                const header = req.headers[COMPONENT_HEADER] as string | undefined;
-                this.handle(req.url ?? "", header, Buffer.concat(chunks), {
-                    status: (code, headers) => res.writeHead(code, headers),
+                const request: Request = {
+                    path: req.url ?? "",
+                    method: req.method ?? "",
+                    header: req.headers[COMPONENT_HEADER] as string | undefined,
+                    raw: Buffer.concat(body.chunks),
+                    received: body.received,
+                };
+                this.handle(request, {
+                    status: (code, headers) => {
+                        if (res.destroyed) return false;
+                        res.writeHead(code, headers);
+                        return true;
+                    },
                     write: (chunk) => res.write(chunk),
                     end: () => res.end(),
                     destroy: () => res.destroy(),
@@ -130,19 +174,29 @@ export class Gateway {
             });
         });
         const h2 = createHttp2Server();
+        h2.on("session", (session) => {
+            this.sessions.add(session);
+            session.on("close", () => this.sessions.delete(session));
+        });
         h2.on("stream", (stream, headers) => {
-            const chunks: Buffer[] = [];
+            const body = collectBody(stream);
             const gone = new AbortController();
             stream.on("close", () => !stream.writableFinished && gone.abort());
-            stream.on("data", (c: Buffer) => chunks.push(c));
             stream.on("error", () => undefined);
             stream.on("end", () => {
                 const live = () => !stream.destroyed;
-                const header = headers[COMPONENT_HEADER] as string | undefined;
-                this.handle(String(headers[":path"] ?? ""), header, Buffer.concat(chunks), {
+                const request: Request = {
+                    path: String(headers[":path"] ?? ""),
+                    method: String(headers[":method"] ?? ""),
+                    header: headers[COMPONENT_HEADER] as string | undefined,
+                    raw: Buffer.concat(body.chunks),
+                    received: body.received,
+                };
+                this.handle(request, {
                     status: (code, h) => {
-                        if (live() && !stream.headersSent)
-                            stream.respond({ ":status": code, ...h });
+                        if (!live() || stream.headersSent) return false;
+                        stream.respond({ ":status": code, ...h });
+                        return true;
                     },
                     write: (chunk) => live() && stream.write(chunk),
                     end: () => live() && stream.end(),
@@ -158,20 +212,24 @@ export class Gateway {
         }
     }
 
-    async stop(): Promise<void> {
+    async stop(graceMs = 5_000): Promise<void> {
         (this.servers[0] as Server | undefined)?.closeAllConnections();
+        for (const session of this.sessions) session.destroy();
         await Promise.all(
             this.servers.map((s) => new Promise<void>((done) => s.close(() => done()))),
         );
+        const deadline = Date.now() + graceMs;
+        while (this.inFlight > 0 && Date.now() < deadline) await Bun.sleep(10);
     }
 
-    private async handle(path: string, header: string | undefined, raw: Buffer, outer: Sink) {
+    private async handle(request: Request, outer: Sink) {
         let sent = 0;
         const sink: Sink & { sent: () => number } = {
             ...outer,
             status: (code, headers) => {
-                if (sent === 0) outer.status(code, headers);
-                sent ||= code;
+                const delivered = sent === 0 && outer.status(code, headers);
+                if (delivered) sent = code;
+                return delivered;
             },
             sent: () => sent,
         };
@@ -198,7 +256,7 @@ export class Gateway {
             status: 500,
         };
         try {
-            done = await this.serve(path, header, raw, sink, call, (d) => {
+            done = await this.serve(request, sink, call, (d) => {
                 done = d;
             });
         } catch (caught) {
@@ -215,13 +273,12 @@ export class Gateway {
     }
 
     private async serve(
-        path: string,
-        header: string | undefined,
-        raw: Buffer,
+        request: Request,
         sink: Sink & { sent: () => number },
         call: number,
         progress: (d: Done) => void,
     ): Promise<Done> {
+        const { path, method, header, raw, received } = request;
         const started = performance.now();
         const route = ROUTE.exec(path.split("?", 1)[0] ?? "");
         const parse = <T>(f: () => T): T | undefined => {
@@ -231,18 +288,22 @@ export class Gateway {
                 return undefined;
             }
         };
-        const parsed = route && raw.length <= MAX_BODY;
-        const body = parsed ? parse(() => JSON.parse(raw.toString("utf8")) as ConverseBody) : null;
         const model = parse(() => decodeURIComponent(route?.[1] ?? ""));
-        const problem = !route
+        const early = !route
             ? [404, `unknown operation ${path}`]
-            : raw.length > MAX_BODY
-              ? [413, `body of ${raw.length} bytes over the limit`]
-              : model === undefined
-                ? [400, "malformed model id"]
-                : !body || typeof body !== "object" || Array.isArray(body)
-                  ? [400, `malformed body (${raw.length} bytes)`]
+            : method !== "POST"
+              ? [405, `${method} is not POST`]
+              : received > MAX_BODY
+                ? [413, `body of ${received} bytes over the limit`]
+                : model === undefined
+                  ? [400, "malformed model id"]
                   : null;
+        const body = early ? null : parse(() => JSON.parse(raw.toString("utf8")) as ConverseBody);
+        const problem =
+            early ??
+            (!body || typeof body !== "object" || Array.isArray(body)
+                ? [400, `malformed body (${received} bytes)`]
+                : null);
         if (!route || !body || model === undefined || problem) {
             const [status, error] = problem as [number, string];
             sink.status(status, { "content-type": "application/json" });
@@ -277,6 +338,8 @@ export class Gateway {
         const delay = () =>
             fault ? sleep(fault.params.delay_ms ?? 2_000, sink.signal) : undefined;
         let retries = 0;
+        let sawStop = false;
+        let sawMetadata = false;
         try {
             const deadlineAt = Date.now() + (this.options.requestDeadlineMs ?? 900_000);
             const response = await sendWithRetry(
@@ -289,29 +352,35 @@ export class Gateway {
                 },
             );
             if ("json" in response) {
-                firstByte();
                 await delay();
+                firstByte();
                 Object.assign(usage, response.json.usage ?? {});
                 done.finish_reason = (response.json.stopReason as string | undefined) ?? null;
                 sink.status(200, { "content-type": "application/json" });
-                sink.write(Buffer.from(JSON.stringify(response.json)));
+                sink.write(Buffer.from(wireJson(response.json)));
             } else {
                 sink.status(200, { "content-type": "application/vnd.amazon.eventstream" });
-                let complete = 0;
                 for await (const event of response.events) {
                     for (const [type, member] of Object.entries(event)) {
                         if (member === undefined) continue;
-                        firstByte();
                         await delay();
+                        firstByte();
                         const m = member as { usage?: Usage; stopReason?: string };
-                        if (type === "metadata") Object.assign(usage, m.usage ?? {});
-                        if (type === "messageStop") done.finish_reason = m.stopReason ?? null;
-                        if (type === "messageStop" || type === "metadata") complete++;
-                        if (type.endsWith("Exception")) done.error = type;
-                        sink.write(encodeEvent(type, member));
+                        if (type === "metadata") {
+                            sawMetadata = true;
+                            Object.assign(usage, m.usage ?? {});
+                        }
+                        if (type === "messageStop") {
+                            sawStop = true;
+                            done.finish_reason = m.stopReason ?? null;
+                        }
+                        if (type.endsWith("Exception")) {
+                            done.error = type;
+                            sink.write(encodeException(type, member));
+                        } else sink.write(encodeEvent(type, member));
                     }
                 }
-                if (complete < 2) {
+                if (!sawStop || !sawMetadata) {
                     done.finish_reason = "stream_cut";
                     done.error ??= sink.signal.aborted
                         ? "client disconnected before the stream ended"
@@ -326,14 +395,18 @@ export class Gateway {
             };
             done.status = failure.$metadata?.httpStatusCode ?? 500;
             done.error = `${failure.name}: ${failure.message}`;
+            const errorType = failure.name ?? "InternalServerException";
+            const message = { message: failure.message ?? "error" };
             if (sink.sent() === 0) {
-                const errorType = failure.name ?? "InternalServerException";
                 sink.status(done.status, {
                     "content-type": "application/json",
                     "x-amzn-errortype": errorType,
                 });
-                sink.write(Buffer.from(JSON.stringify({ message: failure.message ?? "error" })));
-            } else if (!done.finish_reason) done.finish_reason = "stream_cut";
+                sink.write(Buffer.from(JSON.stringify(message)));
+            } else if (streaming) {
+                if (!sawStop || !sawMetadata) done.finish_reason = "stream_cut";
+                sink.write(encodeException(errorType, message));
+            }
         }
         return {
             ...done,

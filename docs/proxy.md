@@ -6,27 +6,34 @@ HTTP/2 server (`Gateway.urls`), forwards `POST /model/<id>/converse` and
 `POST /model/<id>/converse-stream` to an `Upstream`, records each call, and
 injects scheduled provider faults at the response edge. `bedrockUpstream`
 sends to Bedrock through the AWS SDK with the profile and region from
-`sim.config.json`.
+`sim.config.json`; blob fields (image and document bytes) pass through as the
+base64 strings the wire format carries in both directions, and a modeled
+stream error from Bedrock reaches the host as an exception-framed event stream
+message, so the host's SDK raises it as the same exception. `Gateway.stop()`
+closes every connection and waits up to five seconds for in-flight handlers to
+write their records.
 
 ## Call records
 
 `RecordWriter` appends one record per request to a JSONL file and keeps them
-in memory. Requests the gateway rejects (an unknown route, a body that is not
-a JSON object, a body over 32 MiB, a malformed path) and requests whose
-handling throws still get a record. The writer refuses a record that lacks
-any field below.
+in memory; a record enters memory only after its line reached the file.
+Requests the gateway rejects (an unknown route, a method other than `POST`, a
+body that is not a JSON object, a body over 32 MiB, a malformed path) and
+requests whose handling throws still get a record. The gateway retains at
+most 32 MiB of a request body and counts the rest. The writer refuses a record
+that lacks any field below.
 
 | Field | Contents |
 |---|---|
 | `seq` | Write order |
 | `arm`, `session`, `turn` | The scheduler's scope at receipt |
 | `component`, `componentSource` | The calling component and whether the caller `asserted` it or the proxy `inferred` it |
-| `model`, `status`, `error` | Model id, the HTTP status the gateway sent (0 when it sent none), and the error text or `null` |
-| `finish_reason` | The stream's `messageStop.stopReason` or the response's `stopReason`; `stream_cut` when a stream ended without `messageStop` and `metadata`; `null` when the call had no answer |
+| `model`, `status`, `error` | Model id, the HTTP status the gateway sent (0 when it sent none, including when the client disconnected before the answer), and the error text or `null` |
+| `finish_reason` | The stream's `messageStop.stopReason` or the response's `stopReason`; `stream_cut` when a stream ended or failed before both `messageStop` and `metadata` arrived; `null` when the call had no answer |
 | `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens` | Provider usage |
 | `started_wall_ms`, `wall_ms` | Receipt time, and write time clamped so it never decreases in `seq` order (SIM-P15) |
 | `scenario_ms` | The scheduler's clock at receipt (SIM-P15) |
-| `first_byte_ms` | Milliseconds from receipt to the first answer byte, or `null` |
+| `first_byte_ms` | Milliseconds from receipt to the first answer byte the host can see, after any `slow_stream` delay, or `null` |
 | `proxy_retries` | Retries the proxy itself made upstream |
 | `fault_ref` | The injected fault episode, or `null` |
 

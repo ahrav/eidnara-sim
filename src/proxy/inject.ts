@@ -102,7 +102,8 @@ export function excludedFromFaultMetrics(witnesses: WitnessReport[]): boolean {
 }
 
 export interface Sink {
-    status(code: number, headers: Record<string, string>): void;
+    /** The return value indicates whether the transport accepted the status. */
+    status(code: number, headers: Record<string, string>): boolean;
     write(chunk: Buffer): void;
     end(): void;
     destroy(): void;
