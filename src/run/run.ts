@@ -17,7 +17,7 @@ import { bedrockUpstream, Gateway } from "../proxy/gateway";
 import { FaultInjector } from "../proxy/inject";
 import { type CallRecord, type Component, RecordWriter } from "../proxy/records";
 import { Rng } from "../rng";
-import { compileScenario, type Scenario } from "../scenario/compile";
+import { compileScenario, type Scenario, scenarioGeneratorMismatch } from "../scenario/compile";
 import type { FaultEpisode } from "../scenario/faults";
 import { loadCompileInput, loadPrereg } from "../scenario/inputs";
 import { bedrockEmbedder } from "../scenario/similarity";
@@ -103,6 +103,8 @@ async function loadScenario(o: RunOptions): Promise<Scenario> {
         writeAtomic(path, `${canonicalJson(compiled)}\n`);
     }
     const scenario = JSON.parse(readFileSync(path, "utf8")) as Scenario;
+    const stale = scenarioGeneratorMismatch(scenario);
+    if (stale) throw new HarnessFailure(stale);
     const { seed, tier } = scenario.manifest as { seed: number; tier: string };
     if (seed !== o.seed || tier !== o.tier) {
         throw new HarnessFailure(

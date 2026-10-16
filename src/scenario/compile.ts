@@ -7,7 +7,7 @@ import { scheduleFaults, validateFault } from "./faults";
 import { bm25Ratio, cosine, type Embedder } from "./similarity";
 import { Tokens } from "./tokens";
 
-export const GENERATOR_VERSION = "sim-scenario/v1";
+export const GENERATOR_VERSION = "sim-scenario/v2";
 
 export const MANNER_WEIGHTS = {
     correction: 0.35,
@@ -454,7 +454,10 @@ export async function compileScenario(input: CompileInput) {
             addProbe("P2", project.id, outText, mustNot, fromConveyed);
             addProbe("P11", twinOf(project.id), probeText, mustNot, later(twinOf(project.id)));
         } else if (host) {
-            const ranged = { ...(check as Record<string, unknown>), turns: [turnLo, turnHi] };
+            const ranged = {
+                ...(check as Record<string, unknown>),
+                turns: [conveyed.index + 1, turnHi],
+            };
             addProbe("P13", project.id, probeText, ranged, [host], () =>
                 range(turnHi - third, turnHi),
             );
@@ -638,3 +641,10 @@ export async function compileScenario(input: CompileInput) {
 }
 
 export type Scenario = Awaited<ReturnType<typeof compileScenario>>;
+
+/** A cached scenario is reusable only when the current generator produced it. */
+export function scenarioGeneratorMismatch(scenario: Scenario): string | null {
+    const version = scenario.manifest.generator_version;
+    if (version === GENERATOR_VERSION) return null;
+    return `scenario.json is from generator ${version}, not ${GENERATOR_VERSION}`;
+}

@@ -14,6 +14,7 @@ import {
     mannerQuota,
     markerHits,
     type Scenario,
+    scenarioGeneratorMismatch,
     type Template,
 } from "./compile";
 import { type FaultEpisode, SEAMS, validateFault } from "./faults";
@@ -70,7 +71,7 @@ describe("SIM-P01: deterministic compile across processes", () => {
             expect(body.manifest).toMatchObject({
                 seed,
                 tier,
-                generator_version: "sim-scenario/v1",
+                generator_version: "sim-scenario/v2",
             });
         }, 60_000);
     }
@@ -152,6 +153,22 @@ describe("compiled S scenario", async () => {
             expect(probe.session).toBe(cue.session);
             expect(probe.index - cue.index).toBeGreaterThanOrEqual(10);
         }
+    });
+
+    test("a P13 item's fold range opens after its cue turn", () => {
+        for (const p of s.probes.filter((x) => x.type === "P13")) {
+            const cue = all.find((t) => t.fact === p.fact && t.role === "conveyance") as TurnEvent;
+            const probe = all.find((t) => t.probe === p.id) as TurnEvent;
+            const [lo, hi] = (p.check as { turns: [number, number] }).turns;
+            expect(lo).toBeGreaterThan(cue.index);
+            expect(hi).toBeGreaterThan(probe.index);
+        }
+    });
+
+    test("a scenario from an earlier generator is refused for reuse", () => {
+        expect(scenarioGeneratorMismatch(s)).toBeNull();
+        const stale = { ...s, manifest: { ...s.manifest, generator_version: "sim-scenario/v1" } };
+        expect(scenarioGeneratorMismatch(stale as Scenario)).toContain("sim-scenario/v1");
     });
 
     test("no two live facts of one template and project share a probe window", () => {

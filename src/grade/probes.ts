@@ -42,7 +42,7 @@ export interface GradeRecord extends Outcome {
 }
 
 const READS = /\b(cat|less|more|head|tail|sed|view|bat|grep|rg)\b|^read /;
-const TESTS = /\b(cargo test|bun test|npm test|pnpm test)\b/;
+const TESTS = /\b(cargo test|(bun|npm|pnpm) (run )?test)\b/;
 const QUIET =
     /^\s*(cargo (build|check|test)|bun (test|install)|git (status|log|diff)|ls|pwd)\b[^&|;`$()]*$/;
 const FOLDS = ["history_summarizer", "native_compaction"];
@@ -176,7 +176,7 @@ function p14(r: ArtefactReader, c: Check): Outcome {
         return { verdict: "excluded", reason: "no compaction in the session", metrics: {} };
     }
     const boundary = Math.min(...folds.map((x) => x.scenario_ms));
-    const userSim = r.calls().filter((x) => x.component === "user-sim");
+    const userSim = r.calls().filter((x) => x.component === "user-sim" && completed(x));
     if (userSim.length === 0 || userSim.some((x) => !x.label || x.turn_index === undefined)) {
         return { verdict: "excluded", reason: "no labelled user-sim turns", metrics: {} };
     }
@@ -220,10 +220,15 @@ const GRADERS: Record<string, Grader> = {
     P5: (r, c) =>
         binary("P5", !matchesAny(work(r), c.must_not ?? []), {}, "reused the rejected approach"),
     P6: p6,
-    P8: (r, c) =>
-        binary("P8", carries(r.answer(), c.answer ?? "\u0000"), {}, "answer lacks the value"),
-    P9: (r, _c, _rules, p) =>
-        binary("P9", abstains(r.answer(), p.text ?? ""), {}, "answered instead of abstaining"),
+    P8: (r, c) => {
+        const hit = carries(r.answer(), c.answer ?? "\u0000");
+        return binary("P8", hit, { "P8.cross_session_pass_rate": hit }, "answer lacks the value");
+    },
+    P9: (r, _c, _rules, p) => {
+        const hit = abstains(r.answer(), p.text ?? "");
+        const extra = { "P9.cross_session_pass_rate": hit };
+        return binary("P9", hit, extra, "answered instead of abstaining");
+    },
     P10: (r, c) => {
         const anchors = (c.must_not ?? []).map((s) => (s.startsWith("(?i)") ? s : `(?i)${s}`));
         const leaked = matchesAny(`${changed(r)}\n${r.answer()}`, anchors);
@@ -271,8 +276,8 @@ export function gradeItem(
         throw new GradeRefused(`snapshots for ${probe.id} mix items or arms`);
     }
     assertArtefactsOnly(first);
-    const grader = graderFor(probe);
     if (first.turn_outcome === "failed") return null;
+    const grader = graderFor(probe);
     const reader = new ArtefactReader(first);
     const outcome = grader(reader, (probe.check ?? {}) as Check, rules, probe);
     const paired = probe.type === "P1-control" || probe.type === "P1";
@@ -289,6 +294,15 @@ export function gradeItem(
         ...(paired ? { pair: probe.fact as string } : {}),
         ...outcome,
     };
+}
+
+function newest(grades: GradeRecord[]): GradeRecord[] {
+    const byKey = new Map<string, GradeRecord>();
+    for (const g of grades) {
+        const key = `${g.item}/${g.arm}`;
+        if ((byKey.get(key)?.version ?? 0) < g.version) byKey.set(key, g);
+    }
+    return [...byKey.values()];
 }
 
 export class GradeLog {
@@ -313,12 +327,7 @@ export class GradeLog {
     }
 
     latest(): GradeRecord[] {
-        const newest = new Map<string, GradeRecord>();
-        for (const g of this.all()) {
-            const key = `${g.item}/${g.arm}`;
-            if ((newest.get(key)?.version ?? 0) < g.version) newest.set(key, g);
-        }
-        return [...newest.values()];
+        return newest(this.all());
     }
 
     nextVersion(item: string, arm: string): number {
@@ -345,7 +354,7 @@ export function deltaMem(
 ): { delta: number; n: number } | null {
     const graded = (a: string) =>
         new Map(
-            grades
+            newest(grades)
                 .filter((g) => g.probe_type === "P3" && g.arm === a && g.verdict !== "excluded")
                 .map((g) => [g.item, g.verdict === "pass"]),
         );

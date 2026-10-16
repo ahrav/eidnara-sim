@@ -14,8 +14,6 @@ export function carries(text: string, token: string): boolean {
 }
 
 export function abstains(answer: string, subject: string): boolean {
-    const lead = answer.trim().split("\n", 1)[0] ?? "";
-    if (/^\W*UNKNOWN\W*$/i.test(lead)) return true;
     const rest = subject
         .split(/\s+/)
         .filter((word) => word.length > 0)

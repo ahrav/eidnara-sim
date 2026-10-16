@@ -3,7 +3,7 @@
 `bun scripts/compile-scenario.ts --tier <S|M|L|XL> --seed <n>` compiles one
 scenario to `runs/scenarios/<tier>-<seed>.json`. The inputs are the seed, the
 tier's pre-registration in `prereg/<tier>.json`, the corpus under `corpus/`,
-and the generator version `sim-scenario/v1`. The same inputs produce the same
+and the generator version `sim-scenario/v2`. The same inputs produce the same
 bytes in any process. The compiler scores cue and probe pairs with
 `amazon.titan-embed-text-v2:0`, the model the pre-registration names, through
 the AWS profile in `sim.config.json`, and caches each vector in
@@ -82,7 +82,7 @@ the earlier one and supersedes it.
 | P10 | anchor | Later, unrelated task; the value must not appear |
 | P11 | the P1 fact | A session of the twin project after the conveyance; the check forbids the convention |
 | P12 | tool error | A real error from `corpus/tool-outputs/error-codes.jsonl`; the check requires the exception name |
-| P13 | session rule | Conveyed in the first third of a turn range in a forced p90 session and probed in its last third; each P13 item has its own range of at least 30 turns, so at least 11 turns separate cue and probe, and `check.turns` gives the range's first and past-the-end turn indices |
+| P13 | session rule | Conveyed in the first third of a turn range in a forced p90 session and probed in its last third; each P13 item has its own range of at least 30 turns, so at least 11 turns separate cue and probe, and `check.turns` gives the turn after the cue and the range's past-the-end turn index, so only folds after the cue count |
 | P14 | none | The last third of a forced p90 session, measured from user-sim labels |
 
 Conveyance manners follow the fixed weights 35/20/15/10/10/10 for correction,
@@ -153,15 +153,15 @@ thresholds (`bm25_max` 0.4, `cosine_max` 0.6):
 
 | Tier | Seed | `scenario_hash` | Largest BM25 ratio | Largest cosine |
 |---|---|---|---|---|
-| S | 101 | `506187e9` | 0.2125 | 0.5194 |
-| S | 102 | `996105a9` | 0.2628 | 0.4867 |
-| M | 201 | `730e095a` | 0.2516 | 0.4992 |
-| M | 202 | `1c69f30a` | 0.2551 | 0.4997 |
-| M | 203 | `168bcaee` | 0.2535 | 0.4843 |
-| L | 301 | `a918038b` | 0.2558 | 0.5092 |
-| L | 302 | `72634e0f` | 0.2535 | 0.4957 |
-| L | 303 | `44ae0f2a` | 0.2514 | 0.5083 |
-| XL | 401 | `7332320b` | 0.2561 | 0.4962 |
+| S | 101 | `feda75a7` | 0.2125 | 0.5194 |
+| S | 102 | `bfb1aaf4` | 0.2628 | 0.4867 |
+| M | 201 | `dd22a730` | 0.2516 | 0.4992 |
+| M | 202 | `e26c1c34` | 0.2551 | 0.4997 |
+| M | 203 | `a36798ed` | 0.2535 | 0.4843 |
+| L | 301 | `db90b13d` | 0.2558 | 0.5092 |
+| L | 302 | `379f8057` | 0.2535 | 0.4957 |
+| L | 303 | `322498d3` | 0.2514 | 0.5083 |
+| XL | 401 | `db0d8665` | 0.2561 | 0.4962 |
 
 ## Known limits
 

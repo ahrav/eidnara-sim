@@ -238,6 +238,63 @@ describe("grading harness", () => {
         expect(log.all().map((x) => x.version)).toEqual([1, 2]);
     });
 
+    test("P9 applies the guess checks after a leading UNKNOWN line", () => {
+        const f = fixture("P9-pass");
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        const calls = snap.artefacts.find((a) => a.class === "proxy-call");
+        if (calls?.class !== "proxy-call") throw new Error("fixture lacks proxy-call");
+        (calls.calls[0] as { response_text: string }).response_text =
+            "UNKNOWN\nProbably Alice owns it.";
+        expect(gradeItem(f.probe, [snap], rules)?.verdict).toBe("fail");
+    });
+
+    test("P14 counts only completed user-sim calls", () => {
+        const f = fixture("P14-fail");
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        const calls = snap.artefacts.find((a) => a.class === "proxy-call");
+        if (calls?.class !== "proxy-call") throw new Error("fixture lacks proxy-call");
+        for (const c of calls.calls) {
+            if (c.component === "user-sim") Object.assign(c, { status: 503, error: "upstream" });
+        }
+        expect(gradeItem(f.probe, [snap], rules)?.verdict).toBe("excluded");
+    });
+
+    test("P6 recognises a package-script test command", () => {
+        const f = fixture("P6-pass");
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        const log = snap.artefacts.find((a) => a.class === "command-log" && a.role === "turn");
+        if (log?.class !== "command-log") throw new Error("fixture lacks command-log");
+        log.commands.push({ command: "bun run test", exit: 0, scenario_ms: 50 });
+        const g = gradeItem(f.probe, [snap], rules) as GradeRecord;
+        expect(g.metrics["P6.ran_tests"]).toBe(true);
+    });
+
+    test("every pre-registered probe family metric is emitted by its grader", () => {
+        const emitted = new Set(
+            fixtures
+                .map(([, f]) => gradeItem(f.probe, f.snapshots, rules))
+                .flatMap((g) => (g && g.verdict !== "excluded" ? Object.keys(g.metrics) : [])),
+        );
+        const registered = loadPrereg("S")
+            .families.filter((fam) => /^probe-P(?!7$)\d+$/.test(fam.id))
+            .flatMap((fam) => fam.metrics);
+        expect(registered.length).toBeGreaterThan(10);
+        expect(registered.filter((m) => !emitted.has(m))).toEqual([]);
+    });
+
+    test("delta-mem reads the newest version of each item and arm before filtering", () => {
+        const pass = grade("P3-pass");
+        const host = { ...pass, arm: "host" };
+        const excluded = { ...pass, version: 2, verdict: "excluded" as const };
+        expect(deltaMem([pass, excluded, host])).toBeNull();
+    });
+
+    test("a failed turn yields no grade before any grader is selected", () => {
+        const f = fixture("P8-pass");
+        const failed = { ...(f.snapshots[0] as Snapshot), turn_outcome: "failed" as const };
+        expect(gradeItem({ ...f.probe, type: "P7" }, [failed], rules)).toBeNull();
+    });
+
     test("grade versions for one item and arm strictly increase; an out-of-order version is refused", () => {
         const log = new GradeLog(join(mkdtempSync(join(tmpdir(), "sim-grades-")), "grades.jsonl"));
         const g = grade("P2-pass");

@@ -293,11 +293,24 @@ function checkGrading(p: Preregistration, errors: string[]): void {
     if (Number(g.p13_reduction_ratio.min) >= Number(g.p13_reduction_ratio.max)) {
         errors.push("grading.p13_reduction_ratio: min must be below max");
     }
-    if (Number(g.p11_false_positive_weight) <= 0) {
+    const weight = Number(g.p11_false_positive_weight);
+    if (!Number.isFinite(weight)) {
+        errors.push("grading.p11_false_positive_weight: must be a finite number");
+    } else if (weight <= 0) {
         errors.push("grading.p11_false_positive_weight: must be positive");
     }
-    for (const field of ["human_sample_percent", "arm_identification_ceiling_percent"] as const) {
-        if (g.judge[field] > 100) errors.push(`grading.judge.${field}: at most 100`);
+    const judge = g.judge;
+    if (judge.calibration_min_pairs < 20) {
+        errors.push("grading.judge.calibration_min_pairs: at least 20");
+    }
+    if (judge.human_sample_percent < 10) {
+        errors.push("grading.judge.human_sample_percent: at least 10");
+    }
+    if (judge.human_sample_percent > 100) {
+        errors.push("grading.judge.human_sample_percent: at most 100");
+    }
+    if (judge.arm_identification_ceiling_percent > 60) {
+        errors.push("grading.judge.arm_identification_ceiling_percent: at most 60");
     }
 }
 
@@ -313,6 +326,7 @@ export function validatePreregistration(value: unknown): string[] {
         else if (field in value) errors.push(`${field}: allowed only at tier ${tiers.join(", ")}`);
     }
     if (errors.length > 0) return errors;
+    // SAFETY: checkShape accepted every field of PREREG_SHAPE and the tier sections above.
     const p = value as unknown as Preregistration;
     checkFamilies(p, errors);
     checkArms(p, errors);
