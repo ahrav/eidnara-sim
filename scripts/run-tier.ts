@@ -8,7 +8,10 @@ const USAGE = `usage: --tier S --seed 101 --out <run dir> [--host pi|opencode] [
     [--events N] [--faults <episodes.json>] [--context-limit N] [--models a,b]`;
 const arg = (name: string) => {
     const i = process.argv.indexOf(`--${name}`);
-    return i < 0 ? undefined : process.argv[i + 1];
+    if (i < 0) return undefined;
+    const value = process.argv[i + 1];
+    if (value === undefined || value.startsWith("--")) fail(`--${name} needs a value`);
+    return value;
 };
 const count = (name: string) => {
     const raw = arg(name);
@@ -21,6 +24,22 @@ function fail(message: string): never {
     console.error(`${message}\n${USAGE}`);
     process.exit(2);
 }
+const KNOWN = [
+    "tier",
+    "seed",
+    "out",
+    "host",
+    "arms",
+    "events",
+    "faults",
+    "context-limit",
+    "models",
+];
+const unknown = process.argv
+    .slice(2)
+    .filter((a, i, all) => a.startsWith("--") || !all[i - 1]?.startsWith("--"))
+    .filter((a) => !a.startsWith("--") || !KNOWN.includes(a.slice(2)));
+if (unknown.length > 0) fail(`unknown arguments: ${unknown.join(" ")}`);
 const tier = arg("tier") as Tier;
 const seed = Number(arg("seed"));
 const out = arg("out");

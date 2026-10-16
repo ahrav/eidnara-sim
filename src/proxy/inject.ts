@@ -75,11 +75,15 @@ export class FaultInjector {
         for (const [key, a] of this.armed) {
             if (a.arm !== arm) continue;
             const { strategy, params } = a.fault;
-            a.calls++;
             const limit =
                 strategy === "persistent"
                     ? Number.POSITIVE_INFINITY
                     : (params.count ?? params.calls ?? 1);
+            if (a.calls >= limit) {
+                this.armed.delete(key);
+                continue;
+            }
+            a.calls++;
             if (a.calls >= limit) this.armed.delete(key);
             if (strategy !== "intermittent" || this.rng.next() < (params.probability ?? 1)) {
                 this.pending.push({ key, arm, at: Date.now(), call });
@@ -89,14 +93,18 @@ export class FaultInjector {
         return null;
     }
 
+    /**
+     * An injection is witnessed by the first later agent call that started inside the window.
+     * Records arrive in completion order, so a pending injection stays until such a call settles.
+     */
     observe(record: CallRecord, call: number): void {
         for (const p of this.pending.filter((x) => x.arm === record.arm && call > x.call)) {
             const inWindow = record.started_wall_ms <= p.at + this.windowMs;
             const sameCaller = record.component === TARGET;
             if (sameCaller && inWindow) {
                 (this.witnesses.get(p.key) as Witness).host_observed_seq.push(record.seq);
+                this.pending.splice(this.pending.indexOf(p), 1);
             }
-            if (!inWindow || sameCaller) this.pending.splice(this.pending.indexOf(p), 1);
         }
         if (record.fault_ref === null) return;
         const w = this.witness(record.arm, record.fault_ref);
@@ -115,11 +123,15 @@ export class FaultInjector {
 
     /**
      * `restore` rebuilds `injected_seq` and `host_observed_seq` from the call records an earlier
-     * invocation of the same run persisted. Observations are matched within those records only;
+     * invocation of the same run persisted, replayed in request-start order so a delayed injected
+     * call precedes the retries it caused. Observations are matched within those records only;
      * the live pending list starts empty.
      */
     restore(prior: CallRecord[]): void {
-        prior.forEach((record, call) => {
+        const byStart = [...prior].sort(
+            (a, b) => a.started_wall_ms - b.started_wall_ms || a.seq - b.seq,
+        );
+        byStart.forEach((record, call) => {
             const known =
                 record.fault_ref !== null && this.faults.some((f) => f.id === record.fault_ref);
             if (known) {

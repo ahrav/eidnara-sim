@@ -107,7 +107,8 @@ it, and the record's `proxy_retries` is 0.
 For each episode and arm, `FaultInjector.report(arm)` returns whether it was armed there, the
 `seq` of every injected record, the `seq` of the first later agent call that
 started within the window after each injection (host-observed; a faulted
-retry under a persistent or burst episode counts), and whether the proxy
+retry under a persistent or burst episode counts; a pending injection waits
+for such a call however late it completes), and whether the proxy
 retried. An episode is `fired` only with both an injected record
 and a host-observed call (SIM-P31); otherwise it is `untriggered`, and
 `excludedFromFaultMetrics` reports that the run leaves fault metrics
@@ -115,8 +116,10 @@ and a host-observed call (SIM-P31); otherwise it is `untriggered`, and
 fault for the arm it is running, `take` injects only faults armed for the
 calling arm, and an observation counts only for the arm that made the call,
 so one arm's injection and retry cannot stand in for another arm's.
-`FaultInjector.restore(records)` rebuilds both sequences from the call
-records an earlier invocation of the same run persisted, so a resumed run
+A multi-call episode whose restored injections already reach its
+count is not injected again. `FaultInjector.restore(records)` rebuilds both sequences from the call
+records an earlier invocation of the same run persisted, replayed in
+request-start order, so a resumed run
 reports a fault that fired before a hard kill, and arming an episode after
 `restore` continues a burst or intermittent window from the injections
 already made; an intermittent window's unsuccessful attempts and its RNG
@@ -131,8 +134,9 @@ Request bodies are buffered up to 32 MiB; bytes past the limit are counted
 and dropped, and the request is answered 413 with one record. The
 `arrival` hook sees each request at its first byte and may return a function
 that runs once the call is classified or rejected, or once the client
-abandons the upload; the run holds the clock with it for every request. The `observe` hook sees each classified call as it
-starts and may return a function, which the gateway calls once that call's
+abandons the upload; the run holds the clock with it for every request. The run's scope (arm, session, turn) is read at the
+request's first byte and kept for the call's record. The `observe` hook sees
+each classified call as it starts and may return a function, which the gateway calls once that call's
 record is written or its write failed; the run uses it to end the background
 job the call registered.
 

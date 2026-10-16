@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { join, resolve } from "node:path";
 import { loadConfig } from "../src/config/config";
 import { checkJournal, type Schedule } from "../src/run/journal-check";
-import { pinnedBin } from "../src/run/run";
+import { pinnedBin, treeIdentity } from "../src/run/run";
 import type { Scenario } from "../src/scenario/compile";
 import { type FaultEpisode, type FaultType, SEAMS, type Trigger } from "../src/scenario/faults";
 import { loadPrereg } from "../src/scenario/inputs";
@@ -198,6 +198,11 @@ function schedule(dir: string): Schedule {
 }
 
 function summarize(dir: string) {
+    const manifest = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8")) as {
+        order?: string[];
+        sim_commit?: string;
+        sim_worktree?: string;
+    };
     const journal = lines(join(dir, "journal.jsonl"), true);
     const calls = lines(join(dir, "calls.jsonl"), true);
     const perArm = (arm: string, kind: string) =>
@@ -207,6 +212,19 @@ function summarize(dir: string) {
     ] as string[];
     return {
         ended: journal.at(-1)?.kind,
+        end_arms: Object.fromEntries(
+            (manifest.order ?? []).map((arm) => [arm, perArm(arm, "EndArm").length]),
+        ),
+        identity: { sim_commit: manifest.sim_commit, sim_worktree: manifest.sim_worktree },
+        preflight: {
+            first: journal[0]?.kind === "Preflight",
+            before_start:
+                journal.findIndex((e) => e.kind === "Preflight") <
+                journal.findIndex((e) => e.kind === "StartRun" || e.kind === "ResumeRun"),
+            intercepted: (
+                (journal[0]?.time_injection as { name: string; intercepted: boolean }[]) ?? []
+            ).map((t) => `${t.name}:${t.intercepted}`),
+        },
         arms: Object.fromEntries(
             arms.map((arm) => [
                 arm,
@@ -220,6 +238,9 @@ function summarize(dir: string) {
                     interrupted: perArm(arm, "ItemState").filter(
                         (e) => e.state === "failed(interrupted)",
                     ),
+                    interrupted_events: perArm(arm, "Event")
+                        .filter((e) => e.outcome === "failed(interrupted)")
+                        .map((e) => e.event),
                     daemon_exits: perArm(arm, "ItemState").filter(
                         (e) => e.daemon_exit !== undefined,
                     ),
@@ -258,6 +279,7 @@ const summary = {
     resume: existsSync(dirs.resume) ? summarize(dirs.resume) : null,
 };
 writeFileSync(join(out, "witness.json"), `${JSON.stringify(summary, null, 2)}\n`);
+const current = treeIdentity(ROOT);
 console.log(JSON.stringify(summary, null, 2));
 
 type Run = { code: number } | undefined;
@@ -277,8 +299,16 @@ const invariantsClean = (name: "scheduled" | "rogue" | "resume") => {
         v.events_inside_sleep,
         v.repeated_sleeps,
         v.missing_events,
+        v.out_of_order_events,
+        v.jump_origin_mismatch,
     ];
-    return s.ended === "EndRun" && s.call_seq_unique && violations.every((x) => x.length === 0);
+    const armsEnded = Object.values(s.end_arms).every((n) => n === 1);
+    return (
+        s.ended === "EndRun" &&
+        armsEnded &&
+        s.call_seq_unique &&
+        violations.every((x) => x.length === 0)
+    );
 };
 for (const name of ["scheduled", "rogue"]) {
     const r = outcome[name] as { timed_out?: boolean } | undefined;
@@ -286,7 +316,7 @@ for (const name of ["scheduled", "rogue"]) {
 }
 type ArmSummary = {
     fired: unknown[];
-    observed: { fault: unknown }[];
+    observed: { fault: unknown; evidence: unknown }[];
     models: unknown[];
     duplicate_events: number;
 };
@@ -300,6 +330,21 @@ const armEvidence = (
     const s = summary[name];
     if (!s) return check(false, `${name}: no summary`);
     const observable = expected.filter((f) => f.type !== "laptop_sleep").map((f) => f.id);
+    const sleeps = expected.filter((f) => f.type === "laptop_sleep").length;
+    check(
+        s.invariants.sleep_jumps === sleeps * arms.length,
+        `${name}: one fault-tagged sleep jump per arm and sleep (${sleeps * arms.length})`,
+    );
+    check(s.invariants.next_event_jumps > 0, `${name}: at least one ordinary event jump checked`);
+    const intercepted = s.preflight.intercepted;
+    check(
+        s.preflight.first && s.preflight.before_start,
+        `${name}: journal opens with a Preflight entry before StartRun or ResumeRun`,
+    );
+    check(
+        intercepted.length > 0 && intercepted.every((t) => t.endsWith(":true")),
+        `${name}: every probed binary intercepted (${intercepted.join(", ")})`,
+    );
     for (const arm of arms) {
         const a = s.arms[arm] as ArmSummary | undefined;
         if (!a) {
@@ -323,12 +368,51 @@ const armEvidence = (
             );
         }
         check(a.duplicate_events === 0, `${name}/${arm}: no duplicate Event entry`);
+        if (arm === "eidnara") mechanismEvidence(name, a, expected);
+    }
+};
+
+/** The Eidnara arm's restart and full-store episodes carry the evidence their mechanism produces. */
+const mechanismEvidence = (name: string, a: ArmSummary, expected: FaultEpisode[]) => {
+    const evidence = new Map(
+        a.observed.map((o) => [o.fault, o.evidence as Record<string, unknown>]),
+    );
+    for (const f of expected) {
+        const e = evidence.get(f.id);
+        if (!e) continue;
+        if (f.type === "daemon_restart") {
+            check(
+                typeof e.pid_before === "number" &&
+                    typeof e.pid_after === "number" &&
+                    e.pid_before !== e.pid_after &&
+                    e.restarted_by === "harness",
+                `${name}/eidnara: ${f.id} restarted the daemon (new pid, restarted_by harness)`,
+            );
+        }
+        if (f.type === "store_full") {
+            check(e.avail_kb === 0, `${name}/eidnara: ${f.id} filled the store (avail_kb 0)`);
+        }
     }
 };
 const deterministic = FAULTS.filter((f) => f.trigger.kind !== "first_summarizer_call");
-if (run("scheduled")) {
-    check(run("scheduled")?.code === 0, "scheduled: exit 0");
+for (const name of ["scheduled", "rogue", "resume"] as const) {
+    check(summary[name] !== null, `${name}: run directory present (every case is required)`);
+}
+for (const name of ["scheduled", "rogue", "resume"] as const) {
+    const s = summary[name];
+    if (!s) continue;
+    check(
+        s.identity.sim_commit === current.commit && s.identity.sim_worktree === current.worktree,
+        `${name}: run directory was made by this harness revision and working tree`,
+    );
+}
+if (run("scheduled")) check(run("scheduled")?.code === 0, "scheduled: exit 0");
+if (summary.scheduled) {
     check(invariantsClean("scheduled"), "scheduled: EndRun, unique seq, clean invariants");
+    check(
+        summary.scheduled.invariants.jobs_held_after_turn.length > 0,
+        "scheduled: at least one background or CPU job held the clock with no turn open (SIM-P13)",
+    );
     armEvidence("scheduled", ["host", "eidnara"], deterministic, true);
 }
 if (summary.rogue) {
@@ -350,8 +434,21 @@ if (outcome.resume) {
         "resume: second run within the run limit",
     );
     check(resume.rebilled.length === 0, "resume: no turn rebilled");
+}
+if (summary.resume) {
     check(invariantsClean("resume"), "resume: EndRun, unique seq, clean invariants");
     armEvidence("resume", ["eidnara"], RESUME_FAULTS, true);
+    const arm = summary.resume?.arms.eidnara as
+        | { interrupted: { event?: unknown }[]; interrupted_events: unknown[] }
+        | undefined;
+    check(
+        arm?.interrupted.map((e) => e.event).join() === "e-000007",
+        "resume/eidnara: exactly one ItemState failed(interrupted), for e-000007",
+    );
+    check(
+        arm?.interrupted_events.join() === "e-000007",
+        "resume/eidnara: exactly one Event failed(interrupted), for e-000007",
+    );
 }
 if (failures.length > 0) {
     console.error(`witness failed:\n  ${failures.join("\n  ")}`);

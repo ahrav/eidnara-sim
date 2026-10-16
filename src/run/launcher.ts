@@ -1,6 +1,7 @@
-import { realpathSync, renameSync, writeFileSync } from "node:fs";
+import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+import { writeAtomic } from "./atomic";
 
 // `--kill-child` sends SIGKILL to namespace PID 1 when the unshare parent dies.
 const UNSHARE_ARGS = [
@@ -12,8 +13,9 @@ const UNSHARE_ARGS = [
     "--propagation",
     "private",
 ];
-const PLAIN_PATH = /^\/[A-Za-z0-9._@+/-]*$/;
-const PLAIN_VALUE = /^[A-Za-z0-9._@+/:,=-]*$/;
+export const PLAIN_PATH = /^\/[A-Za-z0-9._@+/-]*$/;
+export const PLAIN_VALUE = /^[A-Za-z0-9._@+/:,=-]*$/;
+export const ENV_KEY = /^[A-Z_][A-Z0-9_]*$/;
 
 export const shellQuote = (arg: string) => `'${arg.replaceAll("'", "'\\''")}'`;
 
@@ -82,9 +84,7 @@ exit 0' sh "$@"
 export function writeLauncher(runRoot: string): string {
     const root = realpathSync(runRoot);
     const path = join(root, "sandbox.sh");
-    const staged = `${path}.${process.pid}`;
-    writeFileSync(staged, script(maskedPaths(root)), { mode: 0o755 });
-    renameSync(staged, path);
+    writeAtomic(path, script(maskedPaths(root)), 0o755);
     return path;
 }
 
@@ -98,12 +98,18 @@ export function launch(
     cwd = "/",
 ): string[] {
     const pairs = Object.entries(env).map(([k, v]) => {
-        if (!/^[A-Z_][A-Z0-9_]*$/.test(k) || !PLAIN_VALUE.test(v)) {
+        if (!ENV_KEY.test(k) || !PLAIN_VALUE.test(v)) {
             throw new Error(`sandbox env ${k} must be a plain word`);
         }
         return `${k}=${v}`;
     });
     const ro = readOnly.map(plainPath);
+    // Binding a masked root, or a directory above one, would put the masked tree back in view.
+    const masked = ["/tmp", realpathSync(homedir())];
+    for (const path of [...keep, ...ro]) {
+        const hidden = masked.find((m) => within(m, path));
+        if (hidden) throw new Error(`sandbox path ${path} would restore masked ${hidden}`);
+    }
     // A read-only bind over a parent takes its writable children with it, so the two sets stay disjoint.
     for (const path of keep) {
         const parent = ro.find((dir) => !ro.includes(path) && within(path, dir));

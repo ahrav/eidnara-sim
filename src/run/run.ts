@@ -5,6 +5,7 @@ import {
     lstatSync,
     mkdirSync,
     readFileSync,
+    readlinkSync,
     realpathSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -16,10 +17,10 @@ import type { Tier } from "../prereg/schema";
 import { preregistrationHash } from "../prereg/validate";
 import { bedrockUpstream, Gateway } from "../proxy/gateway";
 import { FaultInjector } from "../proxy/inject";
-import { type Component, RecordWriter, readRecords } from "../proxy/records";
+import { RecordWriter, readRecords } from "../proxy/records";
 import { Rng } from "../rng";
 import { compileScenario, type Scenario, scenarioInputMismatch } from "../scenario/compile";
-import { type FaultEpisode, SEAMS, validateFault } from "../scenario/faults";
+import { type FaultEpisode, type FaultType, SEAMS, validateFault } from "../scenario/faults";
 import { corpusInputsSha256, loadCompileInput, loadPrereg } from "../scenario/inputs";
 import { bedrockEmbedder } from "../scenario/similarity";
 import { writeAtomic } from "./atomic";
@@ -28,7 +29,7 @@ import { plainPath } from "./launcher";
 import { type Preflight, piCli, preflight } from "./preflight";
 import { ResourceSampler } from "./sampler";
 import { type ArmDriver, HarnessFailure, type ScenarioEvent, Scheduler } from "./scheduler";
-import { writeOffset } from "./timeinject";
+import { FAKETIME_LIB, writeOffset } from "./timeinject";
 
 export interface RunOptions {
     config: SimConfig;
@@ -59,6 +60,8 @@ export interface Manifest {
     eidnara_worktree: string;
     /** Commit and uncommitted-content digest of each corpus checkout the scenario's projects use. */
     corpus: Record<string, { commit: string; worktree: string }>;
+    /** The Bedrock region and profile name the proxy forwards to; a resume must present the same. */
+    bedrock: { region: string; aws_profile: string };
     /** The eidnara-sim revision that started the run; a resume must run the same one. */
     sim_commit: string;
     /** Digest of the eidnara-sim working tree's uncommitted content at the start (`treeIdentity`). */
@@ -70,15 +73,6 @@ export interface Manifest {
     base_wall_ms: number;
     preflight: Preflight;
 }
-
-const BACKGROUND = new Set<Component>([
-    "history_summarizer",
-    "memory_capture",
-    "memory_classifier",
-    "context_researcher",
-    "title",
-    "native_compaction",
-]);
 
 const ROOT = resolve(import.meta.dir, "../..");
 
@@ -121,9 +115,25 @@ const ARTIFACTS = [
  * symlink planted in an accepted output directory cannot redirect a write elsewhere.
  */
 export function requirePlainArtifacts(out: string, arms: readonly string[]): void {
-    const dirs = arms.flatMap((arm) => [arm, join(arm, "clock")]);
+    const dirs = [
+        "interception",
+        "toolbin",
+        "hostbin",
+        ...arms.flatMap((arm) => [
+            arm,
+            join(arm, "clock"),
+            join(arm, "r"),
+            join(arm, "s"),
+            join("hostbin", arm),
+        ]),
+    ];
     const files = arms.flatMap((arm) => [
+        join("hostbin", arm, "opencode"),
+        join("hostbin", arm, `opencode.${process.pid}`),
         join(arm, "resources.jsonl"),
+        join(arm, "daemon.log"),
+        join(arm, "store.img"),
+        join(arm, "transcripts.json"),
         join(arm, "clock", "offset"),
         join(arm, "clock", `offset.${process.pid}`),
         join(arm, "state.json"),
@@ -158,6 +168,25 @@ export function requireOutsideCheckout(out: string, checkout: string): void {
     }
 }
 
+/**
+ * Output inside this checkout must be ignored by git, and output may not touch a corpus
+ * checkout, since both trees are part of the run identity.
+ */
+export function requireOutsideIdentity(out: string, root = ROOT): void {
+    const target = realExisting(resolve(out));
+    const real = realExisting(root);
+    const repos = join(real, "corpus/repos");
+    if (within(target, repos) || within(repos, target)) {
+        throw new HarnessFailure(`--out ${out} overlaps the corpus checkouts under ${repos}`);
+    }
+    if (within(target, real)) {
+        const r = Bun.spawnSync(["git", "-C", real, "check-ignore", "-q", target]);
+        if (r.exitCode !== 0) {
+            throw new HarnessFailure(`--out ${out} is inside this checkout and not ignored by git`);
+        }
+    }
+}
+
 /** A run artifact that fails to parse names itself in the failure. */
 function readJsonFile<T>(path: string): T {
     try {
@@ -188,16 +217,24 @@ export function treeIdentity(dir: string): { commit: string; worktree: string } 
         .filter((f) => f !== "")
         .sort();
     for (const file of untracked) {
-        hash.update(`\0${file}\0`);
         const stat = lstatSync(join(dir, file), { throwIfNoEntry: false });
-        if (stat?.isFile()) hash.update(readFileSync(join(dir, file)));
+        const content = stat?.isFile()
+            ? readFileSync(join(dir, file))
+            : stat?.isSymbolicLink()
+              ? Buffer.from(`->${readlinkSync(join(dir, file))}`)
+              : Buffer.from(stat ? `?${stat.mode}` : "");
+        const name = Buffer.from(file);
+        hash.update(`${name.length}:`).update(name).update(`${content.length}:`).update(content);
     }
     return { commit: gitHead(dir), worktree: hash.digest("hex") };
 }
 
 const PROJECT_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
-/** Every project id is a plain path segment, and every event's project is a declared id. */
+/**
+ * Project ids are plain path segments; events have unique string ids, a known kind, finite
+ * non-decreasing `scenario_ms`, a session, an index when they are turns, and declared projects.
+ */
 export function requireDeclaredProjects(scenario: Scenario): void {
     const ids = new Set<string>();
     for (const p of scenario.projects as { id?: unknown }[]) {
@@ -208,14 +245,32 @@ export function requireDeclaredProjects(scenario: Scenario): void {
         }
         ids.add(p.id);
     }
-    for (const e of scenario.events as { id: string; project?: unknown }[]) {
+    const seen = new Set<string>();
+    let last = 0;
+    for (const e of scenario.events as Record<string, unknown>[]) {
+        if (typeof e.id !== "string" || seen.has(e.id)) {
+            throw new HarnessFailure(`event id ${JSON.stringify(e.id)} is missing or repeated`);
+        }
+        seen.add(e.id);
+        const bad = (why: string) => new HarnessFailure(`event ${e.id} ${why}`);
+        if (!EVENT_KINDS.has(e.kind as string))
+            throw bad(`has unknown kind ${JSON.stringify(e.kind)}`);
+        const ms = e.scenario_ms;
+        if (typeof ms !== "number" || !Number.isFinite(ms) || ms < last) {
+            throw bad(`has scenario_ms ${JSON.stringify(ms)}, below ${last} or not a number`);
+        }
+        last = ms;
+        if (typeof e.session !== "string" || e.session === "") throw bad("names no session");
+        if (e.kind === "user_turn" && (!Number.isInteger(e.index) || (e.index as number) < 0)) {
+            throw bad(`has index ${JSON.stringify(e.index)}, not a non-negative integer`);
+        }
         if (e.project !== undefined && (typeof e.project !== "string" || !ids.has(e.project))) {
-            throw new HarnessFailure(
-                `event ${e.id} names undeclared project ${JSON.stringify(e.project)}`,
-            );
+            throw bad(`names undeclared project ${JSON.stringify(e.project)}`);
         }
     }
 }
+
+const EVENT_KINDS = new Set(["session_start", "user_turn", "apply_diff", "session_end"]);
 
 /** `scenario.json` is accepted only when its body still hashes to its `scenario_hash`. */
 export async function loadScenario(o: Pick<RunOptions, "config" | "out" | "seed" | "tier">) {
@@ -247,12 +302,46 @@ export async function loadScenario(o: Pick<RunOptions, "config" | "out" | "seed"
         );
     }
     requireDeclaredProjects(scenario);
+    validateEpisodes(scenario.faults, scenario, "scenario.json");
     return scenario;
 }
 
 const STRATEGIES = new Set(["single", "burst", "intermittent", "persistent"]);
+/** Faults that run between sessions, so their trigger is the session's start (`HostDriver.fault`). */
+const SESSION_START_ONLY = new Set([
+    "laptop_sleep",
+    "daemon_restart",
+    "plugin_reload",
+    "model_switch",
+    "store_full",
+]);
 const COUNTS = ["count", "calls", "sessions"];
-const DURATIONS = ["duration_ms", "delay_ms"];
+const DURATIONS = ["duration_ms", "delay_ms", "timeout_ms"];
+
+/**
+ * Strategy rules per mechanism: a scheduler-layer fault fires once (`single`; `store_full` is
+ * `persistent` for its sessions), and a proxy `burst` needs `count`, an `intermittent` needs
+ * `probability` and `calls`.
+ */
+function strategyProblems(
+    type: FaultType,
+    strategy: string,
+    params: Record<string, unknown>,
+): string[] {
+    const problems: string[] = [];
+    if (SEAMS[type].layer !== "proxy-sink") {
+        const expected = type === "store_full" ? "persistent" : "single";
+        if (strategy !== expected) problems.push(`${type} uses the ${expected} strategy`);
+        return problems;
+    }
+    if (strategy === "burst" && typeof params.count !== "number")
+        problems.push("burst needs count");
+    if (strategy === "intermittent") {
+        if (typeof params.probability !== "number") problems.push("intermittent needs probability");
+        if (typeof params.calls !== "number") problems.push("intermittent needs calls");
+    }
+    return problems;
+}
 
 /** Range rules per parameter: probabilities in [0, 1], counts positive integers, durations >= 0. */
 function paramProblems(params: Record<string, unknown>): string[] {
@@ -276,11 +365,17 @@ function episodeProblems(value: unknown): string[] {
     const e = value as Record<string, unknown>;
     const problems: string[] = [];
     if (typeof e.id !== "string" || e.id === "") problems.push("id missing");
-    if (typeof e.type !== "string" || !(e.type in SEAMS)) problems.push(`type ${e.type} unknown`);
+    if (typeof e.type !== "string" || !Object.hasOwn(SEAMS, e.type)) {
+        problems.push(`type ${e.type} unknown`);
+    }
     if (!STRATEGIES.has(e.strategy as string)) problems.push(`strategy ${e.strategy} unknown`);
     const trigger = e.trigger as Record<string, unknown> | null;
     if (typeof trigger !== "object" || trigger === null || typeof trigger.kind !== "string") {
         problems.push("trigger missing");
+    } else if (SESSION_START_ONLY.has(e.type as string) && trigger.kind !== "session_start") {
+        problems.push(`${e.type} fires at a session_start trigger only`);
+    } else if (e.type === "daemon_sigkill_mid_fold" && trigger.kind !== "first_summarizer_call") {
+        problems.push("daemon_sigkill_mid_fold fires at a first_summarizer_call trigger only");
     }
     const params = e.params as Record<string, unknown> | null;
     if (typeof params !== "object" || params === null || Array.isArray(params)) {
@@ -289,30 +384,40 @@ function episodeProblems(value: unknown): string[] {
         problems.push("params must be finite numbers");
     }
     if (typeof e.seam !== "object" || e.seam === null) problems.push("seam missing");
-    if (typeof params === "object" && params !== null) problems.push(...paramProblems(params));
+    if (typeof params === "object" && params !== null) {
+        problems.push(...paramProblems(params));
+        if (typeof e.type === "string" && Object.hasOwn(SEAMS, e.type)) {
+            problems.push(...strategyProblems(e.type as FaultType, e.strategy as string, params));
+        }
+    }
     return problems;
 }
 
 /** A `--faults` override is an array of complete episodes, each valid against the compiled scenario. */
 export function faultOverride(raw: unknown, scenario: Scenario): FaultEpisode[] {
     if (!Array.isArray(raw)) throw new HarnessFailure("--faults must hold an array of episodes");
+    validateEpisodes(raw, scenario, "--faults");
+    return raw as FaultEpisode[];
+}
+
+/** Every episode is complete, unique by id, and valid against the scenario's sessions. */
+function validateEpisodes(raw: unknown[], scenario: Scenario, source: string): void {
     const turns = new Map(scenario.sessions.map((x) => [x.id, x.requests]));
     const ids = new Set<string>();
     raw.forEach((value, i) => {
         const problems = episodeProblems(value);
         if (problems.length > 0) {
-            throw new HarnessFailure(`--faults episode ${i} is malformed: ${problems.join(", ")}`);
+            throw new HarnessFailure(`${source} episode ${i} is malformed: ${problems.join(", ")}`);
         }
         const episode = value as FaultEpisode;
-        if (ids.has(episode.id)) throw new HarnessFailure(`--faults: duplicate id ${episode.id}`);
+        if (ids.has(episode.id)) throw new HarnessFailure(`${source}: duplicate id ${episode.id}`);
         ids.add(episode.id);
         try {
             validateFault(episode, turns);
         } catch (caught) {
-            throw new HarnessFailure(`--faults: ${(caught as Error).message}`);
+            throw new HarnessFailure(`${source}: ${(caught as Error).message}`);
         }
     });
-    return raw as FaultEpisode[];
 }
 
 function armOrder(o: RunOptions): ArmName[] {
@@ -328,6 +433,9 @@ function armOrder(o: RunOptions): ArmName[] {
 }
 
 const sameJson = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+
+/** The OpenCode SDK module the host stack imports from the Eidnara checkout (`src/hosts/arms.ts`). */
+const OPENCODE_SDK = "packages/e2e-tests/node_modules/@opencode-ai/sdk/dist/index.js";
 
 const simIdentity = () => {
     const { commit, worktree } = treeIdentity(ROOT);
@@ -347,17 +455,25 @@ export function corpusIdentity(
     return Object.fromEntries(projects.map((id) => [id, treeIdentity(join(reposDir, id))]));
 }
 
+/**
+ * Runtime artifacts the hosts load, hashed by content. The interposer and the OpenCode SDK are
+ * `absent` when not yet built or not installed; preflight builds the interposer before this runs.
+ */
 function binaryDigests(config: SimConfig): Record<string, string> {
     const files = {
         daemon: config.daemon_binary,
         opencode: config.opencode_binary,
         pi: piCli(config),
+        faketime: FAKETIME_LIB,
+        node: realpathSync(Bun.which("node") ?? "node"),
+        opencode_sdk: join(config.eidnara_checkout, OPENCODE_SDK),
     };
     return Object.fromEntries(
-        Object.entries(files).map(([name, path]) => [
-            name,
-            createHash("sha256").update(readFileSync(path)).digest("hex"),
-        ]),
+        Object.entries(files).map(([name, path]) => {
+            const optional = name === "opencode_sdk" || name === "faketime";
+            if (optional && !existsSync(path)) return [name, "absent"];
+            return [name, createHash("sha256").update(readFileSync(path)).digest("hex")];
+        }),
     );
 }
 
@@ -371,6 +487,9 @@ export function requireMechanisms(faults: FaultEpisode[], models: string[]): voi
         throw new HarnessFailure(
             `scheduled fault types without a mechanism: ${missing.join(", ")}`,
         );
+    }
+    if (models.some((m) => typeof m !== "string" || m.trim() === "")) {
+        throw new HarnessFailure(`--models holds an empty entry: ${JSON.stringify(models)}`);
     }
     if (new Set(models).size !== models.length) {
         throw new HarnessFailure(`--models repeats an entry: ${models.join(",")}`);
@@ -405,6 +524,7 @@ export async function loadManifest(
         ...simIdentity(),
         binaries: binaryDigests(o.config),
         corpus: corpusIdentity(scenario.projects.map((p) => p.id)),
+        bedrock: { region: o.config.bedrock.region, aws_profile: o.config.bedrock.aws_profile },
     };
     if (existsSync(path)) {
         const manifest = readJsonFile<Manifest>(path);
@@ -413,12 +533,16 @@ export async function loadManifest(
                 `manifest.json schema ${manifest?.schema} is not sim-run-manifest/v1`,
             );
         }
-        const known = new Set<string>(loadPrereg(o.tier).arms.run);
-        const foreign = (Array.isArray(manifest.order) ? manifest.order : []).filter(
-            (a) => typeof a !== "string" || !known.has(a),
-        );
-        if (!Array.isArray(manifest.order) || foreign.length > 0) {
-            throw new HarnessFailure(`manifest.json names arms outside the ${o.tier} order`);
+        const known = loadPrereg(o.tier).arms.run as readonly string[];
+        const order = Array.isArray(manifest.order) ? manifest.order : [];
+        const positions = order.map((a) => known.indexOf(a));
+        const subsequence =
+            order.length > 0 &&
+            positions.every((p, i) => p >= 0 && (i === 0 || p > (positions[i - 1] as number)));
+        if (!subsequence) {
+            throw new HarnessFailure(
+                `manifest.json order ${JSON.stringify(order)} is not a non-empty subsequence of the ${o.tier} arms`,
+            );
         }
         const given: Record<string, boolean> = {
             order: o.arms !== undefined,
@@ -441,9 +565,13 @@ export async function loadManifest(
             const names = changed.map(([k]) => k).join(", ");
             throw new HarnessFailure(`inputs changed since the run started: ${names}`);
         }
-        const intercepted = (p: Preflight) => p.time_injection.map((t) => [t.name, t.intercepted]);
+        const intercepted = (p: Preflight) =>
+            p.time_injection.map((t) => [t.name, t.path, t.intercepted, t.wall_clock_only]);
         if (!sameJson(intercepted(manifest.preflight), intercepted(checks))) {
             throw new HarnessFailure("time interception changed since the run started");
+        }
+        if (!sameJson(manifest.preflight.toolchain, checks.toolchain)) {
+            throw new HarnessFailure("the toolchain changed since the run started");
         }
         const hostRow = (p: Preflight) => p.hosts.find((h) => h.host === o.host);
         if (!sameJson(hostRow(manifest.preflight), hostRow(checks))) {
@@ -492,6 +620,7 @@ export async function runSteps(steps: Array<() => Promise<void> | void>): Promis
 export async function runTier(o: RunOptions): Promise<void> {
     plainPath(o.out);
     requireOutsideCheckout(o.out, o.config.eidnara_checkout);
+    requireOutsideIdentity(o.out);
     requirePinnedPath(o.config);
     mkdirSync(o.out, { recursive: true });
     requirePlainArtifacts(o.out, loadPrereg(o.tier).arms.run);
@@ -556,20 +685,31 @@ async function runArms(
      * After a turn, a hold job keeps the clock while the sampler measures the daemon's CPU over
      * `POST_TURN_SAMPLE_MS`; a busy reading registers the daemon-cpu job before the hold ends.
      */
+    const holds = new Map<ReturnType<typeof setTimeout>, () => void>();
     const holdForCpu = (sampler: ResourceSampler, arm: string) => {
         sampler.sample();
         const hold = `settle-cpu-${arm}-${jobSeq++}`;
         scheduler.jobStart(hold);
-        setTimeout(() => {
+        const end = () => {
+            try {
+                scheduler.jobEnd(hold);
+            } catch (caught) {
+                samplerFailure ??= caught;
+                stop.reason ??= `post-turn hold failed: ${(caught as Error).message}`;
+            }
+        };
+        const timer = setTimeout(() => {
+            holds.delete(timer);
             try {
                 sampler.sample();
             } catch (caught) {
                 samplerFailure ??= caught;
                 stop.reason ??= `sampler failed: ${(caught as Error).message}`;
             } finally {
-                scheduler.jobEnd(hold);
+                end();
             }
         }, POST_TURN_SAMPLE_MS);
+        holds.set(timer, end);
     };
     const { config, seed } = o;
     const prereg = loadPrereg(o.tier);
@@ -581,11 +721,18 @@ async function runArms(
     cleanup.push(() => clearTimeout(budget));
     const journal = new Journal(join(o.out, "journal.jsonl"));
     cleanup.push(() => journal.close());
-    const compiled = await loadScenario(o);
-    const { manifest, checks } = await loadManifest(o, compiled);
+    cleanup.push(() => {
+        for (const [timer, end] of holds) {
+            clearTimeout(timer);
+            end();
+        }
+        holds.clear();
+    });
     if (journal.entries.some((e) => e.kind === "EndRun")) {
         throw new HarnessFailure(`${o.out} holds a completed run; its journal ends with EndRun`);
     }
+    const compiled = await tracked(() => loadScenario(o));
+    const { manifest, checks } = await tracked(() => loadManifest(o, compiled));
     journal.append({
         kind: "Preflight",
         arm: null,
@@ -594,7 +741,9 @@ async function runArms(
         hosts: checks.hosts,
     });
     const scenario = { ...compiled, faults: manifest.fault_override ?? compiled.faults };
-    const events = scenario.events.slice(0, manifest.events) as unknown as ScenarioEvent[];
+    const events: ScenarioEvent[] = scenario.events
+        .slice(0, manifest.events)
+        .map((e) => ({ ...e, id: String(e.id), session: String(e.session) }) as ScenarioEvent);
     const hostRow = manifest.preflight.hosts.find((h) => h.host === o.host);
     if (!hostRow) throw new Error(`preflight lists no ${o.host} host`);
 
@@ -621,6 +770,7 @@ async function runArms(
         proxy: injector,
         idleLimitMs: prereg.liveness_bounds.job_deadline_ms,
         onClock: (arm, ms) => writeOffset(offsetFile(arm), manifest.base_wall_ms, ms),
+        stopped: () => stop.reason,
         verify: (point) => {
             handlersFailed();
             if (samplerFailure !== null) throw samplerFailure;
@@ -646,7 +796,6 @@ async function runArms(
         observe: (e) => {
             const driver = drivers[scope.arm as ArmName];
             if (driver) scheduler.observe(e.component, driver);
-            if (!BACKGROUND.has(e.component)) return;
             const id = `${e.component}-${jobSeq++}`;
             scheduler.jobStart(id);
             return () => scheduler.jobEnd(id);
@@ -744,6 +893,7 @@ async function runArms(
                     }
                 }),
             fault: (f) => tracked(() => driver.fault(f)),
+            reap: () => tracked(() => driver.reap()),
             finish: () =>
                 tracked(async () => {
                     try {

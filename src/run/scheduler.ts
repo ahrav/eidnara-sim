@@ -57,6 +57,8 @@ export interface SchedulerOptions {
     onClock?: (arm: string, scenarioMs: number) => void;
     /** Runs before `EndArm` and before `EndRun`; a throw leaves the entry unwritten. */
     verify?: (point: "EndArm" | "EndRun") => void | Promise<void>;
+    /** A reason to stop; the idle wait and each step check it and fail with `HarnessFailure`. */
+    stopped?: () => string | null;
 }
 
 const PROXY_LAYER = "proxy-sink";
@@ -145,7 +147,11 @@ export class Scheduler {
         this.log({ kind: "EndRun" });
     }
 
-    /** Resume continues a failed arm whose journal ends before `EndArm`. */
+    /**
+     * Resume continues a failed arm whose journal ends before `EndArm`. The arm finishes only
+     * after the busy set drains twice: once after its last event, and once after the driver's
+     * shutdown, which can still register a job.
+     */
     private async runArm(
         driver: ArmDriver,
         started: boolean,
@@ -161,6 +167,8 @@ export class Scheduler {
             await this.idle();
         });
         await driver.finish?.();
+        await this.pendingKill;
+        await this.idle();
     }
 
     /** A failure waits for a mid-fold restart in flight, finishes the driver, and surfaces as itself. */
@@ -226,8 +234,9 @@ export class Scheduler {
         }
     }
 
+    /** A replayed `session_end` closes nothing the killed harness still had open, so no host reopens for it. */
     private openSession(next: ScenarioEvent | undefined, done: Set<string>): ScenarioEvent | null {
-        if (!next || next.kind === "session_start") return null;
+        if (!next || next.kind === "session_start" || next.kind === "session_end") return null;
         const start = this.o.events.find(
             (e) => e.kind === "session_start" && e.session === next.session,
         );
@@ -244,6 +253,7 @@ export class Scheduler {
         const limitMs = this.o.idleLimitMs ?? Number.POSITIVE_INFINITY;
         const entered = performance.now();
         while ((this.clock?.busyIds().length ?? 0) > 0) {
+            this.checkStop();
             const live = [...this.jobStarted.values()];
             const oldest = live.length > 0 ? Math.min(...live) : entered;
             if (performance.now() > oldest + limitMs) {
@@ -292,9 +302,15 @@ export class Scheduler {
         );
     }
 
+    private checkStop(): void {
+        const reason = this.o.stopped?.();
+        if (reason) throw new HarnessFailure(`run stopping: ${reason}`);
+    }
+
     private async step(driver: ArmDriver, e: ScenarioEvent): Promise<void> {
         await this.pendingKill;
         await this.idle();
+        this.checkStop();
         this.outage = null;
         const clock = this.clock as Clock;
         const sleep = this.sleepBefore(e);
@@ -331,16 +347,21 @@ export class Scheduler {
         this.log({ kind: "Event", event: e.id, outcome: outcome.failed ?? "ok" });
     }
 
+    /** The journal entry lands first, so a failed append leaves the busy set untouched. */
     jobStart(id: string): void {
+        this.log({ kind: "RegisterJob", job: id });
         this.jobStarted.set(id, performance.now());
         this.clock?.begin(`job:${id}`);
-        this.log({ kind: "RegisterJob", job: id });
     }
 
+    /** The busy set clears whether or not the `EndJob` append succeeds; the failure still throws. */
     jobEnd(id: string): void {
-        this.jobStarted.delete(id);
-        this.log({ kind: "EndJob", job: id });
-        this.clock?.end(`job:${id}`);
+        try {
+            this.log({ kind: "EndJob", job: id });
+        } finally {
+            this.jobStarted.delete(id);
+            this.clock?.end(`job:${id}`);
+        }
     }
 
     observe(component: string, driver: ArmDriver): void {

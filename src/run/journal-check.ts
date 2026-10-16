@@ -11,6 +11,10 @@ export interface JournalReport {
     repeated_sleeps: number[];
     /** Scheduled events an arm never journaled as `Event` although it reached `EndArm`. */
     missing_events: { arm: string; event: string }[];
+    /** `Event` entries whose id is unknown to the schedule or out of its order, at their seq. */
+    out_of_order_events: { arm: string; event: string; seq: number }[];
+    /** `AdvanceClock` entries whose `from_ms` differs from the arm's preceding `scenario_ms`. */
+    jump_origin_mismatch: number[];
     /** Jobs that held the clock with no turn open, at their `RegisterJob` seq (SIM-P13 coverage). */
     jobs_held_after_turn: { job: string; seq: number }[];
 }
@@ -31,8 +35,13 @@ export function checkJournal(entries: Entry[], schedule: Schedule): JournalRepor
         events_inside_sleep: [],
         repeated_sleeps: [],
         missing_events: [],
+        out_of_order_events: [],
+        jump_origin_mismatch: [],
         jobs_held_after_turn: [],
     };
+    const order = [...schedule.events.keys()];
+    const position = new Map(order.map((id, i) => [id, i]));
+    const cursor = new Map<string, number>();
     const last = new Map<string, number>();
     const open = new Map<string, Set<string>>();
     const ran = new Map<string, Set<string>>();
@@ -53,7 +62,8 @@ export function checkJournal(entries: Entry[], schedule: Schedule): JournalRepor
         const arm = e.arm ?? "";
         const seq = Number(e.seq);
         const ms = Number(e.scenario_ms);
-        if (ms < (last.get(arm) ?? 0)) report.decreasing_scenario_ms.push(seq);
+        const previous = last.get(arm) ?? 0;
+        if (ms < previous) report.decreasing_scenario_ms.push(seq);
         last.set(arm, ms);
         const busy = open.get(arm) ?? new Set<string>();
         open.set(arm, busy);
@@ -65,7 +75,15 @@ export function checkJournal(entries: Entry[], schedule: Schedule): JournalRepor
             busy.delete(turn);
             holding(arm, busy);
         }
-        if (e.kind === "Event") done.add(String(e.event));
+        if (e.kind === "Event") {
+            const id = String(e.event);
+            done.add(id);
+            const at = position.get(id);
+            const next = cursor.get(arm) ?? 0;
+            if (at === undefined || at < next)
+                report.out_of_order_events.push({ arm, event: id, seq });
+            if (at !== undefined && at >= next) cursor.set(arm, at + 1);
+        }
         if (e.kind === "EndArm") {
             for (const id of schedule.events.keys()) {
                 if (!done.has(id)) report.missing_events.push({ arm, event: id });
@@ -80,7 +98,8 @@ export function checkJournal(entries: Entry[], schedule: Schedule): JournalRepor
         if (e.kind === "EndJob") busy.delete(`job:${String(e.job)}`);
         if (e.kind !== "AdvanceClock") continue;
         if (busy.size > 0) report.advance_while_busy.push(seq);
-        const from = Number(e.from_ms);
+        if (Number(e.from_ms) !== previous) report.jump_origin_mismatch.push(seq);
+        const from = previous;
         const pending = [...schedule.events].filter(([id]) => !done.has(id)).map(([, t]) => t);
         const later = pending.filter((t) => t >= from);
         if (later.length === 0 || Math.min(...later) !== ms) report.off_schedule_jumps.push(seq);

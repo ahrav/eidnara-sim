@@ -26,6 +26,7 @@ import {
     requireDeclaredProjects,
     requireMechanisms,
     requireOutsideCheckout,
+    requireOutsideIdentity,
     requirePlainArtifacts,
     runSteps,
     treeIdentity,
@@ -46,6 +47,7 @@ const config = {
     daemon_binary: join(bins, "daemon"),
     opencode_binary: join(bins, "opencode"),
     pi_install: piInstall,
+    agent_model: "m",
     bedrock: { aws_profile: "", region: "" },
 } as SimConfig;
 
@@ -151,9 +153,45 @@ describe("run inputs", () => {
         expect(() => requireDeclaredProjects(base)).not.toThrow();
         const traversal = { ...base, projects: [{ id: "../eidnara" }] };
         expect(() => requireDeclaredProjects(traversal as never)).toThrow(/not a plain name/);
+        const repeated = {
+            ...base,
+            events: [
+                { id: "e-000001", kind: "session_start", scenario_ms: 0, session: "s" },
+                { id: "e-000001", kind: "session_end", scenario_ms: 0, session: "s" },
+            ],
+        };
+        expect(() => requireDeclaredProjects(repeated as never)).toThrow(/is missing or repeated/);
+        const shapes = [
+            [
+                { id: "e-1", kind: "user-turn", scenario_ms: 0, session: "s" },
+                /unknown kind "user-turn"/,
+            ],
+            [{ id: "e-1", kind: "session_start", scenario_ms: "0", session: "s" }, /not a number/],
+            [{ id: "e-1", kind: "session_start", scenario_ms: 0 }, /names no session/],
+            [{ id: "e-1", kind: "user_turn", scenario_ms: 0, session: "s" }, /index undefined/],
+            [
+                [
+                    { id: "e-1", kind: "session_start", scenario_ms: 5, session: "s" },
+                    { id: "e-2", kind: "session_end", scenario_ms: 4, session: "s" },
+                ],
+                /below 5/,
+            ],
+        ] as const;
+        for (const [events, message] of shapes) {
+            const bad = { ...base, events: Array.isArray(events) ? events : [events] };
+            expect(() => requireDeclaredProjects(bad as never)).toThrow(message);
+        }
         const undeclared = {
             ...base,
-            events: [{ id: "e-000001", kind: "apply_diff", project: "elsewhere" }],
+            events: [
+                {
+                    id: "e-000001",
+                    kind: "apply_diff",
+                    scenario_ms: 0,
+                    session: "s",
+                    project: "elsewhere",
+                },
+            ],
         };
         expect(() => requireDeclaredProjects(undeclared as never)).toThrow(
             /event e-000001 names undeclared project "elsewhere"/,
@@ -216,11 +254,26 @@ describe("run inputs", () => {
         expect(added.worktree).not.toBe(clean.worktree);
         writeFileSync(join(repo, "b.txt"), "changed\n");
         expect(treeIdentity(repo).worktree).not.toBe(added.worktree);
+        rmSync(join(repo, "b.txt"));
+        symlinkSync("a.txt", join(repo, "b.txt"));
+        const linked = treeIdentity(repo).worktree;
+        rmSync(join(repo, "b.txt"));
+        symlinkSync("missing", join(repo, "b.txt"));
+        expect(treeIdentity(repo).worktree).not.toBe(linked);
         writeFileSync(join(repo, ".gitignore"), "b.txt\n");
         rmSync(join(repo, "b.txt"));
         run("add", ".gitignore");
         run("commit", "-q", "-m", "ignore");
         expect(treeIdentity(repo).worktree).toBe(clean.worktree);
+    });
+
+    test("output inside this checkout must be ignored, and never inside a corpus checkout", () => {
+        expect(() => requireOutsideIdentity(join(ROOT, "runs/x"))).not.toThrow();
+        expect(() => requireOutsideIdentity(join(ROOT, "src/x"))).toThrow(/not ignored by git/);
+        expect(() => requireOutsideIdentity(join(ROOT, "corpus/repos/mini-redis/x"))).toThrow(
+            /overlaps the corpus checkouts/,
+        );
+        expect(() => requireOutsideIdentity(dir())).not.toThrow();
     });
 
     test("a schedule needs a mechanism for every fault and two models for a model switch", () => {
@@ -238,6 +291,7 @@ describe("run inputs", () => {
             /two distinct --models/,
         );
         expect(() => requireMechanisms([at("model_switch")], ["m", "m"])).toThrow(/repeats/);
+        expect(() => requireMechanisms([at("provider_429")], ["a", ""])).toThrow(/empty entry/);
         expect(() => requireMechanisms([at("provider_429")], ["a", "a", "b"])).toThrow(
             /--models repeats an entry: a,a,b/,
         );
@@ -286,11 +340,11 @@ describe("run inputs", () => {
         const scenario = writeScenario(dir(), scenarioBody());
         const episode: FaultEpisode = {
             id: "f",
-            type: "model_switch",
+            type: "provider_429",
             strategy: "single",
             trigger: { kind: "user_turn", session: "s-0000", n: 2 },
             params: {},
-            seam: SEAMS.model_switch,
+            seam: SEAMS.provider_429,
         };
         expect(faultOverride([episode], scenario)).toEqual([episode]);
         expect(() => faultOverride({}, scenario)).toThrow(/must hold an array/);
@@ -306,6 +360,38 @@ describe("run inputs", () => {
             /params must be finite numbers/,
         );
         expect(() => faultOverride([episode, episode], scenario)).toThrow(/duplicate id f/);
+        const sleepOnTurn = { ...episode, type: "laptop_sleep", seam: SEAMS.laptop_sleep };
+        expect(() => faultOverride([sleepOnTurn], scenario)).toThrow(/session_start trigger only/);
+        const killOnStart = {
+            ...episode,
+            type: "daemon_sigkill_mid_fold",
+            seam: SEAMS.daemon_sigkill_mid_fold,
+            trigger: { kind: "session_start", session: "s-0000" },
+        };
+        expect(() => faultOverride([killOnStart], scenario)).toThrow(/first_summarizer_call/);
+        const switchOnTurn = { ...episode, type: "model_switch", seam: SEAMS.model_switch };
+        expect(() => faultOverride([switchOnTurn], scenario)).toThrow(
+            /model_switch fires at a session_start trigger only/,
+        );
+        const burstNoCount = { ...episode, strategy: "burst" };
+        expect(() => faultOverride([burstNoCount], scenario)).toThrow(/burst needs count/);
+        const intermittentBare = { ...episode, strategy: "intermittent" };
+        expect(() => faultOverride([intermittentBare], scenario)).toThrow(
+            /intermittent needs probability, intermittent needs calls/,
+        );
+        const restartBurst = {
+            ...episode,
+            type: "daemon_restart",
+            seam: SEAMS.daemon_restart,
+            strategy: "burst",
+            trigger: { kind: "session_start", session: "s-0000" },
+            params: { count: 2 },
+        };
+        expect(() => faultOverride([restartBurst], scenario)).toThrow(
+            /daemon_restart uses the single strategy/,
+        );
+        const proto = { ...episode, type: "__proto__", seam: {} };
+        expect(() => faultOverride([proto], scenario)).toThrow(/type __proto__ unknown/);
         const ranges = {
             ...episode,
             params: { probability: 2, calls: -1, count: 0, delay_ms: -5 },
@@ -362,10 +448,12 @@ describe("run inputs", () => {
         await expect(loadManifest(o, scenario, checks)).rejects.toThrow(
             /inputs changed since the run started: sim_commit/,
         );
-        writeFileSync(path, JSON.stringify({ ...manifest, order: ["../../elsewhere"] }));
-        await expect(loadManifest(o, scenario, checks)).rejects.toThrow(
-            /names arms outside the S order/,
-        );
+        for (const order of [["../../elsewhere"], [], ["host", "host"], ["eidnara", "host"]]) {
+            writeFileSync(path, JSON.stringify({ ...manifest, order }));
+            await expect(loadManifest(o, scenario, checks)).rejects.toThrow(
+                /is not a non-empty subsequence of the S arms/,
+            );
+        }
     });
 
     test("a staging file that is a link is refused instead of followed", async () => {
@@ -450,7 +538,14 @@ describe("run inputs", () => {
         };
         const o: RunOptions = { config, tier: "S", seed: 101, host: "pi", out };
         const { manifest } = await loadManifest(o, scenario, checks);
-        expect(Object.keys(manifest.binaries).sort()).toEqual(["daemon", "opencode", "pi"]);
+        expect(Object.keys(manifest.binaries).sort()).toEqual([
+            "daemon",
+            "faketime",
+            "node",
+            "opencode",
+            "opencode_sdk",
+            "pi",
+        ]);
         const swapped = { ...config, daemon_binary: join(out, "daemon") };
         writeFileSync(swapped.daemon_binary, "daemon 2");
         await expect(loadManifest({ ...o, config: swapped }, scenario, checks)).rejects.toThrow(

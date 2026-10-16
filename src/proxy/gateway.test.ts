@@ -8,7 +8,14 @@ import { Rng } from "../rng";
 import type { FaultType } from "../scenario/faults";
 import { classify } from "./classify";
 import { encodeEvent } from "./eventstream";
-import { backoffMs, type CallStarted, Gateway, sendWithRetry, type Upstream } from "./gateway";
+import {
+    backoffMs,
+    type CallStarted,
+    Gateway,
+    type Scope,
+    sendWithRetry,
+    type Upstream,
+} from "./gateway";
 import { excludedFromFaultMetrics, FaultInjector, type ProxyFault } from "./inject";
 import { type CallRecord, RecordWriter, recordProblems } from "./records";
 
@@ -468,6 +475,169 @@ describe("witnesses", () => {
         expect(resumed.take("agent", 12, "eidnara")).toBeNull();
     });
 
+    test("a later-started call that completes first does not expire an earlier eligible retry", () => {
+        const fault: ProxyFault = {
+            id: "f",
+            type: "provider_5xx",
+            strategy: "single",
+            params: { count: 1 },
+        };
+        const injector = new FaultInjector([fault], new Rng(7), 5_000);
+        injector.arm("f", "eidnara");
+        const base = { ...RECORD, arm: "eidnara" };
+        expect(injector.take("agent", 0, "eidnara")?.id).toBe("f");
+        const at = Date.now();
+        injector.observe({ ...base, seq: 0, wall_ms: at, fault_ref: "f", started_wall_ms: at }, 0);
+        const slowRetry = { ...base, seq: 2, wall_ms: at + 9_000, started_wall_ms: at + 1_000 };
+        const laterBackground = {
+            ...base,
+            seq: 1,
+            wall_ms: at + 8_000,
+            component: "memory_capture" as const,
+            started_wall_ms: at + 7_000,
+        };
+        injector.observe(laterBackground, 2);
+        injector.observe(slowRetry, 1);
+        expect(injector.report("eidnara")[0]).toMatchObject({
+            status: "fired",
+            host_observed_seq: [2],
+        });
+    });
+
+    test("restore matches observations by request start, not by record order", () => {
+        const fault: ProxyFault = {
+            id: "f",
+            type: "provider_timeout",
+            strategy: "single",
+            params: { count: 1 },
+        };
+        const at = Date.now();
+        const base = { ...RECORD, arm: "eidnara" };
+        const retryFirst = { ...base, seq: 0, wall_ms: at + 2_000, started_wall_ms: at + 1_000 };
+        const injectedLater = {
+            ...base,
+            seq: 1,
+            wall_ms: at + 30_000,
+            started_wall_ms: at,
+            fault_ref: "f",
+        };
+        const resumed = new FaultInjector([fault], new Rng(7), 5_000);
+        resumed.restore([retryFirst, injectedLater]);
+        expect(resumed.report("eidnara")[0]).toMatchObject({
+            status: "fired",
+            injected_seq: [1],
+            host_observed_seq: [0],
+        });
+    });
+
+    test("a handler that settles after stop gave up on it writes nothing and is reported", async () => {
+        let finish: (() => void) | null = null;
+        const stuck: Upstream = {
+            converse: () =>
+                new Promise((resolve) => {
+                    finish = () => resolve({ json: { stopReason: "end_turn", usage: {} } });
+                }),
+        };
+        const records = new RecordWriter(null);
+        const ended: string[] = [];
+        const gateway = new Gateway({
+            upstream: stuck,
+            records,
+            injector: new FaultInjector([], new Rng(1), 1_000),
+            rng: new Rng(1),
+            clock: { scenarioMs: () => 0 },
+            scope: () => ({ arm: "a", session: null, turn: null }),
+            observe: () => () => ended.push("ended"),
+            drainMs: 50,
+        });
+        await gateway.start();
+        const call = hostCallJson(gateway.urls[0] as string, AGENT_BODY, 2_000);
+        while (!finish) await Bun.sleep(5);
+        await gateway.stop();
+        (finish as unknown as () => void)();
+        await call;
+        await Bun.sleep(50);
+        expect(records.records).toHaveLength(0);
+        expect(ended).toEqual([]);
+        expect(gateway.failures.map((f) => f.message)).toEqual([
+            "1 proxy handler(s) still active 50 ms after stop",
+            "a proxy handler settled after stop; its record was dropped",
+        ]);
+    });
+
+    test("a slow upload's record carries its first-byte time and call order", async () => {
+        const records = new RecordWriter(null);
+        const gateway = new Gateway({
+            upstream: scriptedUpstream(),
+            records,
+            injector: new FaultInjector([], new Rng(1), 1_000),
+            rng: new Rng(1),
+            clock: { scenarioMs: () => 0 },
+            scope: () => ({ arm: "a", session: null, turn: null }),
+        });
+        await gateway.start();
+        gateways.push(gateway);
+        const url = new URL(`${gateway.urls[0]}/model/m/converse-stream`);
+        const body = JSON.stringify(AGENT_BODY);
+        const req = request({
+            host: url.hostname,
+            port: url.port,
+            method: "POST",
+            path: url.pathname,
+            headers: { "content-length": String(Buffer.byteLength(body)) },
+        });
+        const done = new Promise<void>((resolve) =>
+            req.on("response", (res) => res.on("data", () => undefined).on("end", resolve)),
+        );
+        const before = Date.now();
+        req.write(body.slice(0, 10));
+        await Bun.sleep(300);
+        await hostCall(gateway.urls[0] as string, SUMMARIZER_BODY, 2_000);
+        req.end(body.slice(10));
+        await done;
+        const slow = records.records.find((r) => r.component === "agent");
+        expect((slow?.started_wall_ms ?? 0) - before).toBeLessThan(150);
+        expect(records.records.map((r) => r.component)).toEqual(["history_summarizer", "agent"]);
+    });
+
+    test("a burst that already made every injection is not injected again after resume", async () => {
+        const fault: ProxyFault = {
+            id: "b",
+            type: "provider_5xx",
+            strategy: "burst",
+            params: { count: 2 },
+        };
+        const { injector, records, url } = await start(fault);
+        injector.arm("b", "eidnara");
+        await hostCall(url, AGENT_BODY, 1_000);
+        await hostCall(url, AGENT_BODY, 1_000);
+        expect(records.records.map((r) => r.fault_ref)).toEqual(["b", "b"]);
+        const resumed = new FaultInjector([fault], new Rng(7), 5_000);
+        resumed.restore(records.records);
+        resumed.arm("b", "eidnara");
+        expect(resumed.take("agent", 10, "eidnara")).toBeNull();
+    });
+
+    test("an observe hook that throws becomes a gateway failure and the call still completes", async () => {
+        const records = new RecordWriter(null);
+        const gateway = new Gateway({
+            upstream: scriptedUpstream(),
+            records,
+            injector: new FaultInjector([], new Rng(1), 1_000),
+            rng: new Rng(1),
+            clock: { scenarioMs: () => 0 },
+            scope: () => ({ arm: "a", session: null, turn: null }),
+            observe: () => {
+                throw new Error("RegisterJob append failed");
+            },
+        });
+        await gateway.start();
+        gateways.push(gateway);
+        expect((await hostCall(gateway.urls[0] as string, AGENT_BODY, 2_000)).status).toBe(200);
+        expect(records.records[0]).toMatchObject({ status: 200, error: null });
+        expect(gateway.failures.map((f) => f.message)).toEqual(["RegisterJob append failed"]);
+    });
+
     test("stop reports handlers that outlive the drain timeout as a failure", async () => {
         const stuck: Upstream = {
             converse: () => new Promise(() => undefined),
@@ -606,6 +776,59 @@ describe("call records", () => {
         req.end(body.slice(10));
         await done;
         expect(log).toEqual(["arrived", "observed:history_summarizer", "released", "ended"]);
+    });
+
+    test("a call is attributed to the scope at its first byte, not at the end of its upload", async () => {
+        const scope: Scope = { arm: "a", session: "s-0001", turn: "e-000003" };
+        const records = new RecordWriter(null);
+        const gateway = new Gateway({
+            upstream: scriptedUpstream(),
+            records,
+            injector: new FaultInjector([], new Rng(1), 1_000),
+            rng: new Rng(1),
+            clock: { scenarioMs: () => 0 },
+            scope: () => ({ ...scope }),
+        });
+        await gateway.start();
+        gateways.push(gateway);
+        const url = new URL(`${gateway.urls[0]}/model/m/converse-stream`);
+        const body = JSON.stringify(SUMMARIZER_BODY);
+        const req = request({
+            host: url.hostname,
+            port: url.port,
+            method: "POST",
+            path: url.pathname,
+            headers: { "content-length": String(Buffer.byteLength(body)) },
+        });
+        const done = new Promise<void>((resolve) =>
+            req.on("response", (res) => res.on("data", () => undefined).on("end", resolve)),
+        );
+        req.write(body.slice(0, 10));
+        await Bun.sleep(100);
+        scope.turn = null;
+        req.end(body.slice(10));
+        await done;
+        expect(records.records[0]).toMatchObject({ turn: "e-000003", session: "s-0001" });
+    });
+
+    test("an arrival hook that throws becomes a gateway failure and the call still completes", async () => {
+        const records = new RecordWriter(null);
+        const gateway = new Gateway({
+            upstream: scriptedUpstream(),
+            records,
+            injector: new FaultInjector([], new Rng(1), 1_000),
+            rng: new Rng(1),
+            clock: { scenarioMs: () => 0 },
+            scope: () => ({ arm: "a", session: null, turn: null }),
+            arrival: () => {
+                throw new Error("RegisterJob append failed");
+            },
+        });
+        await gateway.start();
+        gateways.push(gateway);
+        expect((await hostCall(gateway.urls[0] as string, AGENT_BODY, 2_000)).status).toBe(200);
+        expect(records.records).toHaveLength(1);
+        expect(gateway.failures.map((f) => f.message)).toEqual(["RegisterJob append failed"]);
     });
 
     test("an upload the client abandons releases its arrival hold", async () => {

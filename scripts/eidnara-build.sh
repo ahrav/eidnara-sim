@@ -13,6 +13,19 @@ case "$dst_real/" in
         exit 64
         ;;
 esac
+dst=$dst_real
+src=$src_real
+# One build per clone at a time, held from the record's removal to its publication.
+lock="$dst_real.lock"
+if [ -L "$lock" ]; then
+    echo "eidnara-build: $lock is a symlink" >&2
+    exit 65
+fi
+exec 9>>"$lock"
+if ! flock -n 9; then
+    echo "eidnara-build: another build holds $dst_real.lock" >&2
+    exit 75
+fi
 # .sim-build-source names the checkout this clone was made from, so the forced
 # checkout and clean below only ever touch a clone this script created.
 if [ -d "$dst/.git" ]; then
@@ -21,8 +34,12 @@ if [ -d "$dst/.git" ]; then
         exit 65
     fi
 else
-    git clone --quiet --no-hardlinks "$src" "$dst"
-    printf '%s\n' "$src_real" > "$dst/.sim-build-source"
+    # The clone is made beside the destination and renamed into place once it carries its
+    # source record, so an interrupted clone leaves only the partial tree the next build removes.
+    rm -rf "$dst.partial"
+    git clone --quiet --no-hardlinks "$src" "$dst.partial"
+    printf '%s\n' "$src_real" > "$dst.partial/.sim-build-source"
+    mv -T "$dst.partial" "$dst"
 fi
 # .sim-build-commit exists only between a completed build and the next start,
 # so a clone without it holds a mixed or partial tree.

@@ -36,6 +36,8 @@ describe("checkJournal", () => {
             events_inside_sleep: [],
             repeated_sleeps: [],
             missing_events: [],
+            out_of_order_events: [],
+            jump_origin_mismatch: [],
             jobs_held_after_turn: [
                 { job: "j0", seq: 1 },
                 { job: "j1", seq: 5 },
@@ -109,6 +111,28 @@ describe("checkJournal", () => {
         at("EndArm", 900);
         const report = checkJournal(entries, schedule({ "e-1": 0, "e-2": 0, "e-3": 900 }));
         expect(report.missing_events).toEqual([{ arm: "a", event: "e-2" }]);
+    });
+
+    test("events journaled out of scheduled order, or unknown to the schedule, are reported", () => {
+        const { entries, at } = journal();
+        at("Event", 0, { event: "e-2" });
+        at("Event", 0, { event: "e-1" });
+        at("Event", 0, { event: "e-9" });
+        at("EndArm", 0);
+        const report = checkJournal(entries, schedule({ "e-1": 0, "e-2": 0 }));
+        expect(report.out_of_order_events).toEqual([
+            { arm: "a", event: "e-1", seq: 1 },
+            { arm: "a", event: "e-9", seq: 2 },
+        ]);
+    });
+
+    test("a jump whose claimed origin differs from the arm's previous time is reported", () => {
+        const { entries, at } = journal();
+        at("Event", 0, { event: "e-0" });
+        at("AdvanceClock", 500, { from_ms: 500, next_event: "e-2" });
+        const report = checkJournal(entries, schedule({ "e-0": 0, "e-1": 200, "e-2": 500 }));
+        expect(report.jump_origin_mismatch).toEqual([1]);
+        expect(report.off_schedule_jumps).toEqual([1]);
     });
 
     test("a jump past an earlier pending event is off schedule", () => {

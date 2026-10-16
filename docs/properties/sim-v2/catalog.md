@@ -389,8 +389,10 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M4 (#1028); nothing constructs
-it yet
+Exercised: yes - `src/run/scheduler.test.ts` (Clock refuses to advance while
+busy; every scheduler run asserts an empty busy set at each `AdvanceClock`)
+and the live witness (`tests/witness-faults.ts`, `checkJournal`
+`advance_while_busy`); see `evidence/sim-p12-clock-advances-only-when-idle.md`
 Guarantee: SIM-P12: Every `AdvanceClock` entry is preceded by `busy_set` empty
 at the same sequence, and no `scenario_ms` change appears between a `BeginTurn`
 or `RegisterJob` and the matching `EndTurn` or `EndJob`.
@@ -418,8 +420,9 @@ Open questions:
 Type: reachability
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M4 (#1028); nothing constructs
-it yet
+Exercised: yes - `src/run/scheduler.test.ts` (a job registered after a turn
+holds the clock) and the live witness (`checkJournal` `jobs_held_after_turn`,
+required non-empty); see `evidence/sim-p13-background-job-holds-clock.md`
 Guarantee: SIM-P13: A background job is in `busy_set` while no turn is in
 `busy_set`.
 Check: `sometimes` - observe at least one journal state where the busy set holds
@@ -441,8 +444,9 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M4 (#1028); nothing constructs
-it yet
+Exercised: yes - `src/run/scheduler.test.ts` (each jump lands on the next
+event) and the live witness (`checkJournal` `off_schedule_jumps`); see
+`evidence/sim-p14-idle-jump-lands-on-next-event.md`
 Guarantee: SIM-P14: After `AdvanceClock`, `scenario_ms` equals the earliest
 scheduled event time greater than the previous value.
 Check: `always` - for each `AdvanceClock`, assert the new `scenario_ms` equals
@@ -487,8 +491,10 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M4 (#1028); nothing constructs
-it yet
+Exercised: yes - `src/run/time.test.ts` (per-binary interception) and the run
+command's `Preflight` journal entry before `StartRun`, which the live witness
+requires with every binary intercepted; see
+`evidence/sim-p16-faketime-verified-per-binary-before-start.md`
 Guarantee: SIM-P16: `StartRun` is preceded by a journaled interception test per
 host binary (Pi, OpenCode, daemon) that read a faked time; a failure records the
 binary wall-clock-only or refuses the run.
@@ -537,8 +543,11 @@ Open questions: None.
 Type: safety
 Reachability: explicit-config-only
 Status: active
-Exercised: not yet - the harness surface lands in M4 (#1028); nothing constructs
-it yet
+Exercised: partial - `src/run/scheduler.test.ts` (one fault-tagged jump onto
+the session's first event with no event inside) and the live witness
+(`checkJournal` `events_inside_sleep`, `repeated_sleeps`, one tagged jump per
+arm and sleep); the 2026-10-16 witness run predates the current jump shape;
+see `evidence/sim-p18-sleep-fault-is-event-free-jump.md`
 Guarantee: SIM-P18: A laptop-sleep fault produces exactly one `AdvanceClock`,
 carrying the fault id, that spans the idle gap before its session with
 `busy_set` empty and no events inside the gap.
@@ -1549,8 +1558,9 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M4 (#1028); nothing constructs
-it yet
+Exercised: yes - `src/run/scheduler.test.ts` (resume reissues no completed
+event) and the live witness `resume` run (no turn rebilled, call `seq`
+contiguous); see `evidence/sim-p62-resume-does-not-reissue-completed-items.md`
 Guarantee: SIM-P62: After `ResumeRun`, no `BeginTurn` appears for an item
 already terminal, and no call record repeats a pre-interrupt `call_id`.
 Check: `always` - after resume, assert no `BeginTurn` for terminal items and no
@@ -1570,8 +1580,10 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M4 (#1028); nothing constructs
-it yet
+Exercised: yes - `src/run/scheduler.test.ts` (one `failed(interrupted)` marker
+and `Event` per interrupted turn, idempotent across a second resume) and the
+live witness `resume` run (exactly one of each for `e-000007`); see
+`evidence/sim-p63-in-flight-item-resolved-once-on-resume.md`
 Guarantee: SIM-P63: An item `issued` but not `attempted` at interrupt becomes
 exactly one of `failed(interrupted)` or `reissued(marker)`, and its
 pre-interrupt calls are billed once.
@@ -1595,8 +1607,9 @@ Open questions:
 Type: reachability
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M4 (#1028); nothing constructs
-it yet
+Exercised: yes - the live witness `resume` run kills the harness while
+`e-000007` has `BeginTurn` and no `EndTurn` (`mid_turn` required); see
+`evidence/sim-p64-interrupt-mid-turn-exercised.md`
 Guarantee: SIM-P64: A harness kill lands while an item is `issued` at least once
 per campaign.
 Check: `sometimes` - observe at least one interrupt with an issued item; only

@@ -84,6 +84,13 @@ export interface Scope {
     turn: string | null;
 }
 
+interface Arrival {
+    scope: Scope;
+    call: number;
+    wall: number;
+    mono: number;
+}
+
 export interface CallStarted {
     kind: "call_started";
     component: Component;
@@ -96,6 +103,7 @@ export interface GatewayOptions {
     injector: FaultInjector;
     rng: Rng;
     clock: { scenarioMs(): number };
+    /** Read when a request's first byte arrives; the call keeps that scope through its upload. */
     scope: () => Scope;
     /**
      * Sees every request as its first byte arrives, before the body is complete. A returned
@@ -103,7 +111,10 @@ export interface GatewayOptions {
      * rejected, so the hold it represents hands over to the classified call without a gap.
      */
     arrival?: () => unknown;
-    /** A returned function runs once the call's record is written, or once the write failed. */
+    /**
+     * A returned function runs once the call's record is written, or once the write failed. A
+     * hook that throws is recorded in `failures`; the call itself is still served.
+     */
     observe?: (event: CallStarted) => unknown;
     requestDeadlineMs?: number;
     /** How long `stop` waits for aborted in-flight handlers to finish writing their records. */
@@ -165,17 +176,39 @@ export class Gateway {
     readonly failures: Error[] = [];
     private readonly active = new Map<Promise<void>, AbortController>();
     private calls = 0;
+    /** Set once `stop` returns; a handler that settles afterwards persists nothing. */
+    private closed = false;
     readonly urls: string[] = [];
 
     constructor(private readonly options: GatewayOptions) {}
 
+    /** What a request is at its first byte: its scope, call order, and wall and monotonic start. */
+    private arrival(): Arrival {
+        return {
+            scope: this.options.scope(),
+            call: this.calls++,
+            wall: Date.now(),
+            mono: performance.now(),
+        };
+    }
+
+    /** A hook that throws is recorded as a failure; the request itself still runs. */
     private arrive(): () => void {
-        const release = this.options.arrival?.();
+        let release: unknown;
+        try {
+            release = this.options.arrival?.();
+        } catch (caught) {
+            this.failures.push(caught as Error);
+        }
         const once = { done: false };
         return () => {
             if (once.done || typeof release !== "function") return;
             once.done = true;
-            (release as () => void)();
+            try {
+                (release as () => void)();
+            } catch (caught) {
+                this.failures.push(caught as Error);
+            }
         };
     }
 
@@ -190,6 +223,7 @@ export class Gateway {
         const h1 = createHttp1Server((req, res) => {
             const body = new Body();
             const gone = new AbortController();
+            const arrived = this.arrival();
             const release = this.arrive();
             const abandoned = () => {
                 gone.abort();
@@ -215,6 +249,7 @@ export class Gateway {
                             signal: gone.signal,
                         },
                         release,
+                        arrived,
                     ),
                     gone,
                 );
@@ -228,6 +263,7 @@ export class Gateway {
         h2.on("stream", (stream, headers) => {
             const body = new Body();
             const gone = new AbortController();
+            const arrived = this.arrival();
             const release = this.arrive();
             const abandoned = () => {
                 gone.abort();
@@ -257,6 +293,7 @@ export class Gateway {
                             signal: gone.signal,
                         },
                         release,
+                        arrived,
                     ),
                     gone,
                 );
@@ -277,7 +314,10 @@ export class Gateway {
         await Promise.all(
             this.servers.map((s) => new Promise<void>((done) => s.close(() => done()))),
         );
-        if (this.active.size === 0) return;
+        if (this.active.size === 0) {
+            this.closed = true;
+            return;
+        }
         const drainMs = this.options.drainMs ?? 10_000;
         const drained = await new Promise<boolean>((done) => {
             const timer = setTimeout(() => done(false), drainMs);
@@ -292,6 +332,7 @@ export class Gateway {
                 new Error(`${n} proxy handler(s) still active ${drainMs} ms after stop`),
             );
         }
+        this.closed = true;
     }
 
     private async handle(
@@ -300,7 +341,9 @@ export class Gateway {
         body: Body,
         outer: Sink,
         release: () => void,
+        arrived: Arrival,
     ) {
+        const { scope } = arrived;
         let sent = 0;
         const sink: Sink & { sent: () => number } = {
             ...outer,
@@ -311,8 +354,8 @@ export class Gateway {
             sent: () => sent,
         };
         const base = {
-            ...this.options.scope(),
-            started_wall_ms: Date.now(),
+            ...scope,
+            started_wall_ms: arrived.wall,
             scenario_ms: this.options.clock.scenarioMs(),
             input_tokens: 0,
             output_tokens: 0,
@@ -325,7 +368,7 @@ export class Gateway {
             error: null,
         };
         this.inFlight++;
-        const call = this.calls++;
+        const call = arrived.call;
         let done: Done = {
             component: "rejected",
             componentSource: "inferred",
@@ -347,6 +390,8 @@ export class Gateway {
                     after.ended = end;
                 },
                 release,
+                scope.arm,
+                arrived.mono,
             );
         } catch (caught) {
             done = { ...done, error: `${(caught as Error).name}: ${(caught as Error).message}` };
@@ -354,12 +399,24 @@ export class Gateway {
         }
         sink.end();
         try {
+            if (this.closed) {
+                this.failures.push(
+                    new Error("a proxy handler settled after stop; its record was dropped"),
+                );
+                return;
+            }
             const record = this.options.records.write({ ...base, ...done, status: sent });
             this.options.injector.observe(record, call);
         } finally {
             this.inFlight--;
             release();
-            after.ended?.();
+            if (!this.closed) {
+                try {
+                    after.ended?.();
+                } catch (caught) {
+                    this.failures.push(caught as Error);
+                }
+            }
         }
     }
 
@@ -372,8 +429,9 @@ export class Gateway {
         progress: (d: Done) => void,
         onEnd: (end: () => void) => void,
         release: () => void,
+        arm: string,
+        started: number,
     ): Promise<Done> {
-        const started = performance.now();
         const raw = received.bytes();
         const route = ROUTE.exec(path.split("?", 1)[0] ?? "");
         const parse = <T>(f: () => T): T | undefined => {
@@ -417,10 +475,14 @@ export class Gateway {
         if (stripped) done.stripped = stripped;
         progress(done);
         const event = { kind: "call_started", component: tag.component, wall_ms: Date.now() };
-        const ended = this.options.observe?.(event as CallStarted);
-        if (typeof ended === "function") onEnd(ended as () => void);
+        try {
+            const ended = this.options.observe?.(event as CallStarted);
+            if (typeof ended === "function") onEnd(ended as () => void);
+        } catch (caught) {
+            this.failures.push(caught as Error);
+        }
         release();
-        const fault = this.options.injector.take(tag.component, call, this.options.scope().arm);
+        const fault = this.options.injector.take(tag.component, call, arm);
         if (fault) done.fault_ref = fault.id;
         if (fault && fault.type !== "slow_stream") {
             const tool = body.toolConfig?.tools?.[0]?.toolSpec?.name;

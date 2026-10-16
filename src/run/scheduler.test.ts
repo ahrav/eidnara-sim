@@ -984,6 +984,34 @@ describe("driver lifecycle hooks", () => {
         expect(endArm).toBe(finishedAt);
     });
 
+    test("a resume whose first pending event ends a session opens no host for it", async () => {
+        const path = join(dir(), "j.jsonl");
+        const j = new Journal(path);
+        const events = fixtureEvents(1);
+        const start = { order: ["a"], scenario: scenarioId(events, []) };
+        j.append({ kind: "StartRun", arm: null, scenario_ms: 0, ...start });
+        j.append({ kind: "StartArm", arm: "a", scenario_ms: 0 });
+        for (const e of events.filter((x) => x.kind !== "session_end")) {
+            j.append({ kind: "Event", arm: "a", scenario_ms: 0, event: e.id });
+        }
+        j.close();
+        const calls: string[] = [];
+        const driver: ArmDriver = {
+            ...fakeDriver(calls),
+            resume: async (open) => void calls.push(`resume:${open?.id ?? null}`),
+        };
+        await new Scheduler({
+            events,
+            faults: [],
+            journal: new Journal(path),
+            settleMs: 0,
+            order: ["a"],
+            drivers: { a: driver },
+        }).run();
+        expect(calls[0]).toBe("resume:null");
+        expect(calls[1]).toMatch(/^session_end:/);
+    });
+
     test("a killed harness's processes are reaped before the proxy is armed again", async () => {
         const path = join(dir(), "j.jsonl");
         const j = new Journal(path);
@@ -1199,6 +1227,137 @@ test("a mid-fold kill observed in the arm's last turn is observed before finish 
     expect(order).toEqual(["fault", "finish"]);
     const kinds = j.entries.map((e) => e.kind);
     expect(kinds.indexOf("FaultObserved")).toBeLessThan(kinds.indexOf("EndArm"));
+});
+
+test("a mid-fold kill observed during the arm's shutdown completes before EndArm", async () => {
+    const j = new Journal(join(dir(), "j.jsonl"));
+    let scheduler: Scheduler | null = null;
+    const faults = [
+        episode("k", "daemon_sigkill_mid_fold", {
+            kind: "first_summarizer_call",
+            session: "s-0000",
+        }),
+    ];
+    const log: string[] = [];
+    const driver: ArmDriver = {
+        ...fakeDriver(log),
+        fault: async (f) => {
+            await Bun.sleep(80);
+            log.push(`fault:${f.id}`);
+            return { pid_before: 1, pid_after: 2 };
+        },
+        finish: async () => {
+            scheduler?.observe("history_summarizer", driver);
+        },
+    };
+    scheduler = new Scheduler({
+        events: fixtureEvents(1).filter((e) => e.kind !== "session_end"),
+        faults,
+        journal: j,
+        settleMs: 0,
+        jobPollMs: 5,
+        order: ["a"],
+        drivers: { a: driver },
+    });
+    await scheduler.run();
+    const kinds = j.entries.map((e) => e.kind);
+    expect(kinds.indexOf("FaultObserved")).toBeGreaterThan(-1);
+    expect(kinds.indexOf("FaultObserved")).toBeLessThan(kinds.indexOf("EndArm"));
+    expect(j.entries[kinds.indexOf("FaultObserved")]?.arm).toBe("a");
+});
+
+test("an EndJob append that fails still clears the busy set", async () => {
+    const j = new Journal(join(dir(), "j.jsonl"));
+    const scheduler = new Scheduler({
+        events: fixtureEvents(1),
+        faults: [],
+        journal: j,
+        settleMs: 0,
+        order: ["a"],
+        drivers: { a: fakeDriver([]) },
+    });
+    const run = scheduler.run();
+    while (!scheduler.clock) await Bun.sleep(1);
+    scheduler.jobStart("j");
+    j.close();
+    expect(() => scheduler.jobEnd("j")).toThrow();
+    expect(scheduler.clock?.busyIds()).toEqual([]);
+    await run.catch(() => undefined);
+});
+
+test("a RegisterJob append that fails leaves no job in the busy set", async () => {
+    const j = new Journal(join(dir(), "j.jsonl"));
+    const scheduler = new Scheduler({
+        events: fixtureEvents(1),
+        faults: [],
+        journal: j,
+        settleMs: 0,
+        order: ["a"],
+        drivers: { a: fakeDriver([]) },
+    });
+    const run = scheduler.run();
+    while (!scheduler.clock) await Bun.sleep(1);
+    j.close();
+    expect(() => scheduler.jobStart("orphan")).toThrow();
+    expect(scheduler.clock?.busyIds()).toEqual([]);
+    await run.catch(() => undefined);
+});
+
+test("a job registered while the arm finishes is drained before EndArm", async () => {
+    const j = new Journal(join(dir(), "j.jsonl"));
+    let scheduler: Scheduler | null = null;
+    const driver: ArmDriver = {
+        ...fakeDriver([]),
+        finish: async () => {
+            scheduler?.jobStart("final-title");
+            setTimeout(() => scheduler?.jobEnd("final-title"), 80);
+        },
+    };
+    scheduler = new Scheduler({
+        events: fixtureEvents(1),
+        faults: [],
+        journal: j,
+        settleMs: 0,
+        jobPollMs: 5,
+        order: ["a"],
+        drivers: { a: driver },
+    });
+    await scheduler.run();
+    const kinds = j.entries.map((e) => e.kind);
+    expect(kinds.indexOf("EndJob")).toBeLessThan(kinds.indexOf("EndArm"));
+    expect(j.entries[kinds.indexOf("EndJob")]?.arm).toBe("a");
+});
+
+test("a stop reason raised while idling for a job ends the wait at once", async () => {
+    const j = new Journal(join(dir(), "j.jsonl"));
+    let scheduler: Scheduler | null = null;
+    const stop = { reason: null as string | null };
+    const driver: ArmDriver = {
+        reset: async () => undefined,
+        event: async (e) => {
+            if (e.kind !== "user_turn") return {};
+            scheduler?.jobStart("stuck");
+            setTimeout(() => {
+                stop.reason = "tier wall budget of 1 ms exhausted";
+            }, 50);
+            return {};
+        },
+        fault: async () => ({}),
+    };
+    scheduler = new Scheduler({
+        events: fixtureEvents(1),
+        faults: [],
+        journal: j,
+        settleMs: 0,
+        jobPollMs: 5,
+        idleLimitMs: 5_000,
+        order: ["a"],
+        drivers: { a: driver },
+        stopped: () => stop.reason,
+    });
+    const started = Date.now();
+    await expect(scheduler.run()).rejects.toThrow(/run stopping: tier wall budget/);
+    expect(Date.now() - started).toBeLessThan(2_000);
 });
 
 test("a job registered during another job's idle wait is measured from its own RegisterJob", async () => {
