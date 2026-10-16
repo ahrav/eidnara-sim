@@ -14,6 +14,7 @@ import { intrusiveness } from "./intrusive";
 import { type GradedRun, tierInput, userTexts } from "./observe";
 import type { TierReport } from "./render";
 import { soak } from "./soak";
+import { propertyWitness } from "./witness";
 
 export function loadGraded(dir: string, prereg: Preregistration): GradedRun {
     const grades = join(dir, "grades.jsonl");
@@ -35,6 +36,7 @@ export function tierReport(
     prereg: Preregistration,
     runs: GradedRun[],
     claimBoundary: string,
+    catalog = "",
 ): TierReport {
     const arms = [...new Set(runs.flatMap((g) => g.run.arms.map((a) => a.arm)))];
     const control = arms.find((a) => a.includes("~"));
@@ -97,5 +99,6 @@ export function tierReport(
         }),
         prereg,
         claim_boundary: claimBoundary,
+        witness: propertyWitness(catalog, runs),
     };
 }

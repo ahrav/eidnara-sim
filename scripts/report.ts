@@ -14,6 +14,7 @@ if (dirs.length === 0 || dirs.some((d) => !existsSync(join(d, "manifest.json")))
     process.exit(2);
 }
 const boundary = readFileSync(join(import.meta.dir, "../docs/claim-boundary.md"), "utf8");
+const catalog = readFileSync(join(import.meta.dir, "../docs/properties/sim-v2/catalog.md"), "utf8");
 const byTier = new Map<Tier, string[]>();
 for (const dir of dirs) {
     const tier = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8")).tier as Tier;
@@ -25,6 +26,7 @@ for (const [tier, list] of byTier) {
         prereg,
         list.map((d) => loadGraded(d, prereg)),
         boundary,
+        catalog,
     );
     const text = renderTier(report);
     if (out) {

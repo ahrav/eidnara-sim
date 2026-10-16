@@ -99,7 +99,9 @@ function gitHead(dir: string): string {
     return r.stdout.toString().trim();
 }
 
-async function loadScenario(o: RunOptions): Promise<Scenario> {
+export async function loadScenario(
+    o: Pick<RunOptions, "config" | "tier" | "seed" | "out">,
+): Promise<Scenario> {
     const path = join(o.out, "scenario.json");
     if (!existsSync(path)) {
         const { aws_profile, region } = o.config.bedrock;

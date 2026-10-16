@@ -6,6 +6,7 @@ import type { TierVerdict, ZeroEffect } from "../stats/gate";
 import { type CostPanel, PRICE_TABLE, V1_PRICE } from "./cost";
 import type { Intrusiveness } from "./intrusive";
 import type { SoakVerdict } from "./soak";
+import type { PropertyWitness } from "./witness";
 
 export interface TierReport {
     tier: string;
@@ -25,6 +26,7 @@ export interface TierReport {
     aa: unknown[];
     prereg: Preregistration;
     claim_boundary: string;
+    witness: PropertyWitness[];
 }
 
 const fmt = (x: number | null | undefined, digits = 2) =>
@@ -270,6 +272,19 @@ export function renderTier(r: TierReport): string {
         ...accuracy(r),
         ...gates(r),
         ...panels(r),
+        "## Property witness",
+        "",
+        `Violated: ${
+            r.witness
+                .filter((w) => w.status === "violated")
+                .map((w) => w.id)
+                .join(", ") || "none"
+        }. Unreached: ${r.witness.filter((w) => w.status === "unreached").length} of ${r.witness.length}.`,
+        "",
+        ...table(
+            ["record", "name", "status", "detail"],
+            r.witness.map((w) => [w.id, w.name, w.status, w.detail.replaceAll("|", "/")]),
+        ),
         "## Claim boundary",
         "",
         r.claim_boundary.trim(),
@@ -285,6 +300,7 @@ export function renderTier(r: TierReport): string {
     const own = text
         .replace(r.claim_boundary.trim(), "")
         .replace(JSON.stringify(r.prereg, null, 2), "");
-    if (/parity/i.test(own)) throw new Error("a report may not use the word parity");
+    const verdicts = own.replace(/sim-p53-parity-never-emitted/g, "");
+    if (/parity/i.test(verdicts)) throw new Error("a report may not use the word parity");
     return text;
 }

@@ -28,6 +28,7 @@ bun scripts/oracle-run.ts runs/S-101-pi                # failure-class oracles o
 bun scripts/pairing-check.ts runs/S-101-pi             # user-sim pairing, divergence, and rates (docs/user-sim.md)
 bun scripts/aa-report.ts runs/S-102-aa                 # A/A noise floor over a graded run (docs/user-sim.md)
 bun scripts/report.ts runs/S-101-pi runs/S-102-pi --out runs   # per-tier report and gate verdict (docs/report.md)
+bun scripts/tier.ts --tier S --out runs/tier-S          # a whole tier, capped to its wall budget (docs/tier.md)
 ```
 
 ## Layout
