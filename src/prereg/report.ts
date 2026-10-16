@@ -6,8 +6,9 @@ export const CLAIM_BOUNDARY = "sim-claim-boundary/v1";
 
 /**
  * The verdict vocabulary: SIM-P53's four kinds, `inconclusive` from #1032, SIM-P56's
- * `insufficient-runs`, `passed-gate` for a bound gate every run satisfied, and `descriptive` for
- * a family the pre-registration does not gate.
+ * `insufficient-runs`, `passed-gate` for a bound gate every run satisfied or a noninferiority or
+ * `at-most` gate whose interval stays inside its margin, and `descriptive` for a family the
+ * pre-registration does not gate.
  */
 export const VERDICT_KINDS = [
     "better",
@@ -22,6 +23,8 @@ export const VERDICT_KINDS = [
 
 /** A bound gate compares each run to a fixed value and makes no paired claim. */
 const BOUND_VERDICTS: readonly string[] = ["passed-gate", "failed-gate"];
+/** A one-sided paired gate: its pass is `passed-gate`, and it registers no superiority claim. */
+const MARGIN_DIRECTIONS: readonly string[] = ["noninferiority", "at-most"];
 
 /** `mde` is the minimum detectable effect at `n` in the family's margin scale. */
 export interface FamilyVerdict {
@@ -53,7 +56,15 @@ function checkVerdict(f: FamilyVerdict, family: Family, errors: string[]): void 
         errors.push(
             `${at}.verdict: a ${family.direction} gate compares each run to a bound and reports passed-gate or failed-gate`,
         );
-    } else if (!bound && f.verdict === "passed-gate") {
+    } else if (MARGIN_DIRECTIONS.includes(family.direction) && f.verdict === "better") {
+        errors.push(
+            `${at}.verdict: a ${family.direction} family claims at most its margin, never better`,
+        );
+    } else if (
+        !bound &&
+        !MARGIN_DIRECTIONS.includes(family.direction) &&
+        f.verdict === "passed-gate"
+    ) {
         errors.push(
             `${at}.verdict: a ${family.direction} family makes a paired claim, never passed-gate`,
         );

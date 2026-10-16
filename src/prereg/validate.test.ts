@@ -2,13 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { CLAIM_BOUNDARY, checkReport, type TierReport } from "./report";
-import {
-    BOUND_DIRECTIONS,
-    needsPairedRuns,
-    type Preregistration,
-    REQUIRED_FAMILIES,
-    TIERS,
-} from "./schema";
+import { needsPairedRuns, type Preregistration, REQUIRED_FAMILIES, TIERS } from "./schema";
 import { parsePreregistration, preregistrationHash, validatePreregistration } from "./validate";
 
 const PREREG_DIR = join(import.meta.dir, "../../prereg");
@@ -193,9 +187,9 @@ function acceptedReport(prereg: Preregistration): TierReport {
     const verdict = (f: Preregistration["families"][number]) =>
         f.claim === "descriptive"
             ? "descriptive"
-            : BOUND_DIRECTIONS.includes(f.direction)
-              ? "passed-gate"
-              : "better";
+            : f.direction === "superiority-two-sided"
+              ? "better"
+              : "passed-gate";
     return {
         tier: prereg.tier,
         claim_boundary: CLAIM_BOUNDARY,
@@ -274,7 +268,7 @@ describe("report check against the pre-registration", () => {
             "families[latency].verdict: insufficient-runs is the verdict exactly when n is below 6",
         ]);
         at(r, "dependability").verdict = "insufficient-runs";
-        at(r, "latency").verdict = "better";
+        at(r, "latency").verdict = "passed-gate";
         expect(checkReport(r, m)).toEqual([]);
     });
 
@@ -289,15 +283,17 @@ describe("report check against the pre-registration", () => {
         ]);
     });
 
-    test("a bound gate reports passed-gate or failed-gate; a paired family never passed-gate", () => {
+    test("passed-gate belongs to bound and margin gates; better to superiority alone", () => {
         const r = acceptedReport(m);
         at(r, "intrusiveness").verdict = "better";
         at(r, "resources").verdict = "no-difference-above-x-pp-detectable-at-n";
         at(r, "probe-P1").verdict = "passed-gate";
-        at(r, "dependability").verdict = "passed-gate";
+        at(r, "dependability").verdict = "better";
+        at(r, "harm").verdict = "better";
         expect(checkReport(r, m)).toEqual([
             "families[probe-P1].verdict: a superiority-two-sided family makes a paired claim, never passed-gate",
-            "families[dependability].verdict: a at-most family makes a paired claim, never passed-gate",
+            "families[harm].verdict: a noninferiority family claims at most its margin, never better",
+            "families[dependability].verdict: a at-most family claims at most its margin, never better",
             "families[resources].verdict: a threshold gate compares each run to a bound and reports passed-gate or failed-gate",
             "families[intrusiveness].verdict: a zero-tolerance gate compares each run to a bound and reports passed-gate or failed-gate",
         ]);
@@ -309,6 +305,7 @@ describe("report check against the pre-registration", () => {
         at(r, "resources").verdict = "passed-gate";
         at(r, "probe-P1").verdict = "better";
         at(r, "dependability").verdict = "worse";
+        at(r, "harm").verdict = "passed-gate";
         expect(checkReport(r, m)).toEqual([]);
     });
 

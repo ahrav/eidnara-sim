@@ -40,7 +40,7 @@ counterpart holds part of the value; the note names the rest), `extension`
 | `revision` | `FrozenFamily` digest | partial | A revision bump changes the digest; eval-core has no revision counter. |
 | `frozen` | `FrozenFamily::freeze` | partial | eval-core freezes by digest at `StartRun`; this flag records intent and the journaled hash is the authority. |
 | `arms` | `Manifest.arm_rates` keys | partial | eval-core pairs exactly `aged` and `fresh`; three or four arms need `eval-manifest/v10` with named arms. |
-| `arms.default` | none | extension | D1's declared default arm has no counterpart; `eval-manifest/v10`. |
+| `arms.default` | none | extension | D1's declared default arm has no counterpart; `eval-manifest/v10`. Every gate contrasts this arm against `host`; `eidnara-kl` and `eidnara-cf` are comparison arms with no registered gate contrast. |
 | `arms.run` | `Manifest.arm_rates` keys | partial | See `arms`. |
 | `arms.order_by_seed` | `Manifest.sample_order` | partial | eval-core records an execution order over samples; the arm order per seed needs `eval-manifest/v10` run identity. The order is a Latin square at M; S, L, and XL have fewer seeds than arms, so their orders are partial rotations (`eidnara` is never first at S, `eidnara-cf` is never first at L, and XL has one seed). |
 | `hosts` | `LiveSettings.providers` | partial | Providers are model profiles; the host binary is a run identity component. `eval-live-settings/v2` would add host binaries. |
@@ -84,7 +84,7 @@ counterpart holds part of the value; the note names the rest), `extension`
 | `scoring.p11_false_positive_weight` | none | extension | The P11 harm score counts a false positive at twice a hit (SIM-P50); the weight is fixed here so the pre-registration hash binds it. |
 | `families` | `AnalysisFamily.endpoints`, `families` | partial | eval-core endpoints are exactly `quality_loss`, `harm`, `floor`. v2's twenty families need `eval-analysis-family/v3` with a declared endpoint set. The projection takes `eidnara` as eval-core's `aged` arm and `host` as `fresh`: the harm family maps to `quality_loss = (b - c) / n`, the paired difference by which `eidnara` does worse, against `noninferiority_margin`; the S P8/P9 threshold maps to `floor`. eval-core's `harm = b / n` is a one-sided rate, not a difference, so no v2 family supplies `harm_bound`; P1 superiority has no gate counterpart, since eval-core gates are noninferiority only. |
 | `families[].id` | `AnalysisFamily.families` entry | partial | eval-core families are task families; v2 ids are metric families. |
-| `families[].metrics` | `endpoints` | partial | See `families`. |
+| `families[].metrics` | `endpoints` | partial | See `families`. A gate family passes when every metric passes at the family's `alpha` under its `multiplicity`; one failing metric fails the gate and is named in the verdict (`failed-gate`). |
 | `families[].outcome` | `ArmResult` | partial | `binary` maps to pass and fail; `graded`, `count`, and `slope` need `eval-analysis-family/v3`. |
 | `families[].treatment_unit` | none | extension | The arm is applied per run; eval-core has no treatment-unit field. |
 | `families[].analysis_unit` | `ClusterKey` granularity | partial | `item` maps to one pair; `run` needs `eval-analysis-family/v3`. |

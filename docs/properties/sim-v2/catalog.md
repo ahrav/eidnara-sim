@@ -1363,9 +1363,10 @@ Impact: A null at small n is read as equivalence.
 Open questions:
 - The verdict vocabulary adds four kinds to the spec index's four:
   `inconclusive` from the M7 statistics ticket (#1032), `insufficient-runs` from
-  SIM-P56, `passed-gate` for a bound gate every run satisfied, and `descriptive`
-  for a family the pre-registration does not gate. Whether the spec index should
-  list them is a design decision (needs human input).
+  SIM-P56, `passed-gate` for a bound gate every run satisfied or a margin gate
+  whose interval stays inside its margin, and `descriptive` for a family the
+  pre-registration does not gate. Whether the spec index should list them is a
+  design decision (needs human input).
 
 ### sim-p54-pairing-by-item-identity
 
@@ -1490,12 +1491,14 @@ implementation exists to verify against, and a default tier run reaches it.
 Existing check: none
 Impact: Harm is reported in the wrong direction or not at all.
 Open questions:
-- The comparator's sign. The spec index (#1007, SIM-P58) writes `eidnara <
-  host`; the M0 pre-registration's harm CUSUM alarms on the paired difference
-  `eidnara minus host` over the same five metrics, so there a positive value is
-  harm. The two agree only if each harm metric scores higher when memory does
-  better. Which convention the harm metrics use is a design decision (needs
-  human input); the record keeps the spec's wording until it is made.
+- The comparator's sign. The frozen pre-registration fixes the convention: the
+  harm metrics are rates (SIM-P46 names them "harm rates"), the harm CUSUM
+  alarms when the paired difference `eidnara minus host` grows, and the harm
+  gate is noninferiority against a 10 pp margin, so a higher value is worse and
+  harm is `eidnara > host`. The spec index (#1007, SIM-P58) writes `eidnara <
+  host`, which reads correctly only for a metric that scores higher when memory
+  does better. The record keeps the spec's wording (METHOD rule 3); the spec
+  text needs a correction in the eidnara tracker (needs human input).
 
 ### sim-p59-internal-string-scan-on-user-visible-only
 

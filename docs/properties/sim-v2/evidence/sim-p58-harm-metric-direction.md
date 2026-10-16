@@ -36,10 +36,12 @@ Harm family results.
   `stopping_rule.cusum[0]` (kind `harm`, statistic `eidnara minus host`); spec
   #1007 statistics section (harm metrics as noninferiority with a 10 pp margin
   on host minus eidnara).
-- Findings: the spec index flags harm when `eidnara < host`; the pre-registered
-  harm CUSUM alarms when `eidnara minus host` grows, so there a positive
-  difference is harm. Both hold only if a harm metric scores higher when memory
-  does better; the metric definitions land in M7 (#1032).
-- Missing evidence: the M7 metric definitions naming each harm metric's
-  direction.
+- Findings: the pre-registration fixes the convention before any run: the harm
+  metrics are rates (SIM-P46), the harm CUSUM alarms when `eidnara minus host`
+  grows, and the harm gate is noninferiority against a 10 pp margin, so a
+  higher value is worse and harm is `eidnara > host`. The spec index writes
+  `eidnara < host`, which reads correctly only for a metric that scores higher
+  when memory does better.
+- Missing evidence: a correction of the spec index text, which lives in the
+  eidnara tracker and is outside this tree.
 - Conclusion: needs human input
