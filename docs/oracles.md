@@ -1,7 +1,9 @@
 # Failure-class oracles
 
 `src/oracle/` reads a run directory and reports each time a known failure
-class fired. `loadRun` gathers, per arm, the call records, journal entries,
+class fired. `loadRun` admits a complete run only, through the journal
+check grading uses (`requireComplete`, SIM-P67): every scheduled event
+ended once per arm, an `EndArm` per arm, and an `EndRun`. It gathers, per arm, the call records, journal entries,
 plugin log (`<arm>/r/eidnara.log`), daemon log (`<arm>/daemon.log`),
 resource samples, and tool runs (`<arm>/tools.jsonl`, one line per tool run
 with its turn). `runOracles` returns every activation with its arm, where it
@@ -12,12 +14,12 @@ happened, and the evidence.
 | F1 fold-lag overflow | An HTTP 4xx call whose error says the prompt exceeds the context (`prompt is too long`, `ContextOverflow`, `input is too long`), or a failed turn whose outcome says so |
 | F2 array-shape 400 | An HTTP 4xx call whose error names a message-array shape fault: roles that fail to alternate, an assistant prefill, a final assistant message, modified thinking blocks, or empty or non-list content |
 | F3 raw-history fallback | A plugin `rust pass` line with `served_from=raw`, one per transform pass that served its input unchanged; the warning the plugin logs before a failed pass is not counted again; a pass the daemon declined by policy (`declined:invocation_budget`) also serves raw and counts |
-| F4 hang | A turn that hit its deadline (OpenCode's `turn deadline` or Pi's `Timed out after ... ms`), with or without agent calls, or an agent call that completed and was followed by no tool start, call, or turn end within `oracles.hang_quiet_ms` (five minutes, SIM-P39); a tool that starts within a second of the call's end counts as progress however long it runs, so a tool that waits forever surfaces at the deadline |
+| F4 hang | A turn that hit its deadline (OpenCode's `turn deadline` or Pi's `Timed out after ... ms`), with or without agent calls, or an agent call that completed and was followed by no tool start, other same-turn call (a persistence call counts), or turn end within `oracles.hang_quiet_ms` (five minutes, SIM-P39); a tool that starts within a second of the call's end counts as progress however long it runs, so a tool that waits forever surfaces at the deadline |
 | F5 RSS growth | A daemon RSS sample at or above `2 x RSS(0) + sessions x leak_bound.c_bytes_per_session`, or an RSS-per-session slope above that bound with a fit at or above `leak_bound.r2_threshold` |
-| F6 cost | An arm whose total tokens exceed `oracles.cost_ratio_max` (1.5) times the host arm's, or that makes more title calls than the host arm; until the report prices tokens (M7) this is a token ratio |
-| F7 visible internal text | An agent response carrying plugin markup or diagnostics: history-segment tags, `eidnara` tags, context-researcher augmentation, `[eidnara]` log prefixes, or pass fields such as `row_version` and `served_from` |
+| F6 cost | An arm whose total tokens exceed `oracles.cost_ratio_max` (1.5) times the host arm's, or that makes more title calls than the host arm: one activation per arm and run, its evidence naming each exceeded bound; until the report prices tokens (M7) this is a token ratio |
+| F7 visible internal text | An agent response carrying plugin markup or diagnostics: history-segment tags, `eidnara` tags, context-researcher augmentation, `[eidnara]` log prefixes, or pass fields such as `row_version` and `served_from`; read from the recorded response text, the first 32,768 characters |
 | F8 invalid memory-capture array | A plugin or daemon log line where the daemon refused capture output (`memory capture output rejected`, or the refusal reason: schema mismatch, unsupported version, size or decision bounds, an unclosed code fence, missing or unknown source ids) |
-| F9 compaction ownership gap | An arm with host compaction off (`eidnara`, `eidnara-cf`) that overflowed (F1) and made no native-compaction call |
+| F9 compaction ownership gap | An arm with host compaction off (`eidnara`, `eidnara-cf`) whose agent conversation overflowed (an agent-component or turn-level F1) and that made no native-compaction call |
 
 A token count is input, output, cache-read, and cache-write tokens. `ledger`
 sums them per component, leaving out the harness's own user-sim, judge, and
@@ -30,7 +32,7 @@ F1 and F2, `transform` for F3, `memory_capture` for F8), and `uncovered: true` w
 `scripts/oracle-run.ts <run dir>...` writes each run's activations, ledgers,
 and the pre-registration digest it used to `<run>/oracles.json`, warns when
 that digest differs from the one the run's manifest recorded, and prints the
-report.
+report. A run directory named more than once, by any path, counts once.
 
 F1 misses an overflow the plugin hid by serving a raw history that still fit
 the window; F3 counts those passes.

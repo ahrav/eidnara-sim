@@ -45,9 +45,9 @@ there before each restart.
 `DaemonStack` starts the daemon through the v1 `HermeticHostStack` with the
 interposer environment, restarts it with SIGKILL against the same store, and
 stops it with SIGTERM so its store stays on disk. It appends the daemon's
-output to the arm's `daemon.log` before each restart and at stop; the v1
-stack keeps the last 256 KiB of that output, so a longer stretch keeps its
-tail.
+stdout and stderr to the arm's `daemon.log` before each restart and at stop,
+each line once, read through the v1 stack's `diagnostics` view; the v1 stack
+keeps the last 256 KiB of each stream, so a longer stretch keeps its tail.
 
 Each `session_start` launches one host process in the session's workspace
 through the sandbox launcher, and each `session_end` closes it. The sandbox runs the host under

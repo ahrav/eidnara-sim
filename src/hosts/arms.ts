@@ -102,6 +102,8 @@ export interface DaemonContext {
 
 export class DaemonStack {
     private stack: Untyped = null;
+    /** The v1 hermetic-host module the stack came from. */
+    private hh: Untyped = null;
     connectionFile = "";
 
     constructor(private readonly ctx: DaemonContext) {}
@@ -114,6 +116,7 @@ export class DaemonStack {
         const { config } = this.ctx;
         const hr = await v1(config, "packages/e2e-tests/src/bedrock-peer/harness-runtime.ts");
         const hh = await v1(config, "packages/e2e-tests/src/rust-runner/hermetic-host.ts");
+        this.hh = hh;
         const sources = hr.detectHarnessRuntimeSources();
         if (!sources.ok) throw new Error(`harness runtime sources: ${sources.reason}`);
         const runtimeDir = join(this.ctx.root, "runtime");
@@ -144,8 +147,16 @@ export class DaemonStack {
         this.connectionFile = this.stack.connectionFile;
     }
 
+    /**
+     * Appends the daemon's stdout and stderr since the last host start. The v1 stack's
+     * `hostLog` concatenates its stderr buffer with the log file that buffer was also
+     * written to, so each stderr line appears twice there; the `diagnostics` view gives the
+     * two streams once.
+     */
     private saveLog(): void {
-        if (this.stack) appendFileSync(this.ctx.logFile, this.stack.hostLog());
+        if (!this.stack) return;
+        const { stdout, stderr } = this.hh.__hermeticHostTest.diagnostics(this.stack);
+        appendFileSync(this.ctx.logFile, `${stdout}${stderr}`);
     }
 
     async restart(): Promise<void> {

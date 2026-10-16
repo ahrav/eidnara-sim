@@ -3,7 +3,7 @@ import { join } from "node:path";
 import type { Command } from "../grade/artefacts";
 import type { Preregistration } from "../prereg/schema";
 import type { CallRecord } from "../proxy/records";
-import { type Entry, readJournal } from "../run/journal";
+import { type Entry, readJournal, requireComplete } from "../run/journal";
 import type { Sample as ResourceSample } from "../run/sampler";
 import type { Scenario } from "../scenario/compile";
 
@@ -44,6 +44,8 @@ export function loadRun(dir: string, prereg: Preregistration): RunLogs {
     const kinds = new Map(scenario.events.map((e) => [String(e.id), String(e.kind)]));
     const calls = jsonl<CallRecord>(join(dir, "calls.jsonl"));
     const journal = readJournal(join(dir, "journal.jsonl"));
+    const scheduled = scenario.events.slice(0, manifest.events).map((e) => String(e.id));
+    requireComplete(journal, manifest.order as string[], scheduled);
     const arms = (manifest.order as string[]).map((arm) => ({
         arm,
         calls: calls.filter((c) => c.arm === arm),

@@ -91,8 +91,11 @@ export class ResourceSampler {
         return s;
     }
 
+    /** The first sample is taken at once, so RSS(0) precedes any session's work. */
     start(): void {
-        this.timer ??= setInterval(() => this.sample(), this.o.intervalMs);
+        if (this.timer) return;
+        this.sample();
+        this.timer = setInterval(() => this.sample(), this.o.intervalMs);
     }
 
     stop(): void {

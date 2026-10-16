@@ -46,8 +46,9 @@ const TOKENS = (c: CallRecord) =>
 const errorOf = (c: CallRecord) => `${c.status} ${c.error ?? ""}`;
 const at = (c: CallRecord) => c.turn ?? `call ${c.seq}`;
 
+/** F1 and F2 classify request refusals: HTTP 4xx. A 5xx carrying the same text is an infrastructure failure. */
 function failedCalls(arm: ArmLogs, pattern: (text: string) => boolean): CallRecord[] {
-    return arm.calls.filter((c) => c.status >= 400 && pattern(errorOf(c)));
+    return arm.calls.filter((c) => c.status >= 400 && c.status < 500 && pattern(errorOf(c)));
 }
 
 function f1(arm: ArmLogs): Activation[] {
@@ -75,20 +76,19 @@ function f4(arm: ArmLogs, quietMs: number): Activation[] {
     for (const e of arm.journal) {
         if (e.kind !== "EndTurn") continue;
         const turn = String(e.event);
-        const calls = arm.calls.filter((c) => c.turn === turn && c.component === "agent");
+        const turnCalls = arm.calls.filter((c) => c.turn === turn);
+        const calls = turnCalls.filter((c) => c.component === "agent");
         if (DEADLINE.test(String(e.outcome))) {
             const what =
                 calls.length === 0 ? "with no model call" : `after ${calls.length} model calls`;
             out.push({ oracle: "F4", arm: arm.arm, at: turn, evidence: `turn deadline ${what}` });
             continue;
         }
-        const activity = [
-            ...calls.map((c) => c.scenario_ms),
-            ...arm.tools.filter((t) => t.turn === turn).map((t) => t.scenario_ms),
-            e.scenario_ms,
-        ];
+        const tools = arm.tools.filter((t) => t.turn === turn).map((t) => t.scenario_ms);
         for (const c of calls.filter((x) => x.status === 200)) {
             const done = c.scenario_ms + (c.wall_ms - c.started_wall_ms);
+            const others = turnCalls.filter((x) => x !== c).map((x) => x.scenario_ms);
+            const activity = [...others, ...tools, e.scenario_ms];
             const next = Math.min(
                 ...activity.filter((ms) => ms >= done - CLOCK_SLACK_MS),
                 Number.POSITIVE_INFINITY,
@@ -161,17 +161,17 @@ function f6(arm: ArmLogs, run: RunLogs): Activation[] {
     const host = run.arms.find((a) => a.arm === "host");
     if (!host || arm.arm === "host") return [];
     const [mine, base] = [ledger(arm), ledger(host)];
-    const out: Activation[] = [];
+    const evidence: string[] = [];
     const limit = Number(run.prereg.oracles.cost_ratio_max);
     if (base.total > 0 && mine.total / base.total > limit) {
-        const evidence = `${mine.total} tokens vs host ${base.total} (${(mine.total / base.total).toFixed(2)}x > ${limit}x)`;
-        out.push({ oracle: "F6", arm: arm.arm, at: "run", evidence });
+        const ratio = (mine.total / base.total).toFixed(2);
+        evidence.push(`${mine.total} tokens vs host ${base.total} (${ratio}x > ${limit}x)`);
     }
     if (mine.title_calls > base.title_calls) {
-        const evidence = `${mine.title_calls} title calls vs host ${base.title_calls}`;
-        out.push({ oracle: "F6", arm: arm.arm, at: "run", evidence });
+        evidence.push(`${mine.title_calls} title calls vs host ${base.title_calls}`);
     }
-    return out;
+    if (evidence.length === 0) return [];
+    return [{ oracle: "F6", arm: arm.arm, at: "run", evidence: evidence.join("; ") }];
 }
 
 function f7(arm: ArmLogs): Activation[] {
@@ -207,16 +207,17 @@ export function runOracles(run: RunLogs): Activation[] {
     const quiet = run.prereg.oracles.hang_quiet_ms;
     return run.arms.flatMap((arm) => {
         const overflow = f1(arm);
+        const agentOverflow = overflow.filter((a) => (a.component ?? "agent") === "agent");
         const f9 =
             NO_HOST_COMPACTION.has(arm.arm) &&
-            overflow.length > 0 &&
+            agentOverflow.length > 0 &&
             !arm.calls.some((c) => c.component === "native_compaction")
                 ? [
                       {
                           oracle: "F9" as const,
                           arm: arm.arm,
                           at: "run",
-                          evidence: `${overflow.length} overflows with no host compaction`,
+                          evidence: `${agentOverflow.length} agent overflows with no host compaction`,
                       },
                   ]
                 : [];

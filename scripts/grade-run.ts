@@ -24,7 +24,7 @@ import { bedrockUpstream, Gateway } from "../src/proxy/gateway";
 import { FaultInjector } from "../src/proxy/inject";
 import { RecordWriter } from "../src/proxy/records";
 import { Rng } from "../src/rng";
-import { type Entry, readJournal, releaseLease, takeLease } from "../src/run/journal";
+import { readJournal, releaseLease, requireComplete, takeLease } from "../src/run/journal";
 import type { Scenario } from "../src/scenario/compile";
 import { loadPrereg } from "../src/scenario/inputs";
 
@@ -50,34 +50,6 @@ export async function gradeRun(dir: string, config: SimConfig | null): Promise<S
         return await grade(dir, config);
     } finally {
         releaseLease(dir);
-    }
-}
-
-function requireComplete(entries: Entry[], arms: string[], scheduled: string[]): void {
-    const started = entries.find((e) => e.kind === "StartRun");
-    const journaled = Array.isArray(started?.order) ? started.order : null;
-    const malformed = arms.some((a) => typeof a !== "string") || new Set(arms).size !== arms.length;
-    if (malformed || !journaled || JSON.stringify(journaled) !== JSON.stringify(arms)) {
-        throw new Error(
-            `manifest order ${JSON.stringify(arms)} differs from the journaled order ${JSON.stringify(journaled)}`,
-        );
-    }
-    for (const arm of arms) {
-        const mine = entries.filter((e) => e.arm === arm);
-        const ended = mine.filter((e) => e.kind === "Event").map((e) => String(e.event));
-        const closed = mine.some((e) => e.kind === "EndArm");
-        const once = new Set(ended);
-        const missing = scheduled.filter((id) => !once.has(id));
-        const stray = ended.filter((id, i) => !scheduled.includes(id) || ended.indexOf(id) !== i);
-        if (!closed || missing.length > 0 || stray.length > 0) {
-            const marker = closed ? "EndArm present" : "no EndArm";
-            const count = `${scheduled.length - missing.length} of ${scheduled.length} events ended`;
-            const extra = stray.length > 0 ? `, unexpected or repeated: ${stray.join(", ")}` : "";
-            throw new Error(`arm ${arm} is incomplete: ${count}, ${marker}${extra}`);
-        }
-    }
-    if (!entries.some((e) => e.kind === "EndRun")) {
-        throw new Error("run is incomplete: the journal has no EndRun");
     }
 }
 
