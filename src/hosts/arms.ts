@@ -13,7 +13,7 @@ import {
     writeFileSync,
     writeSync,
 } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import type { SimConfig } from "../config/config";
 import { withDeadline } from "../run/deadline";
 import { launch, plainPath, shellQuote } from "../run/launcher";
@@ -133,7 +133,13 @@ export class DaemonStack {
         // The runtime is regenerated on every start, so whatever an earlier session left there goes first.
         rmSync(join(this.ctx.root, "runtime"), { recursive: true, force: true });
         const runtimeDir = realDir(this.ctx.root, "runtime");
-        realDir(dirname(this.ctx.dataDir), basename(this.ctx.dataDir));
+        // The store sits beside the arm root, so its walk starts at the arm directory both share.
+        const armDir = dirname(this.ctx.root);
+        const store = relative(armDir, this.ctx.dataDir);
+        if (store.startsWith("..") || isAbsolute(store)) {
+            throw new Error(`daemon store ${this.ctx.dataDir} lies outside ${armDir}`);
+        }
+        realDir(armDir, store);
         const harnessRuntime = hr.writeHarnessRuntime({
             dir: runtimeDir,
             sources: sources.sources,
@@ -173,7 +179,7 @@ export class DaemonStack {
         try {
             const fd = openSync(this.ctx.logFile, flags, 0o600);
             try {
-                writeSync(fd, new Uint8Array(chunk));
+                for (let at = 0; at < chunk.length; ) at += writeSync(fd, chunk, at);
             } finally {
                 closeSync(fd);
             }
@@ -216,9 +222,13 @@ function turnResult(outcome: Untyped): PromptResult {
     return last?.stopReason === "error" ? { error: String(last.errorMessage ?? "error") } : {};
 }
 
-function nodeRoot(): string {
-    return resolve(realpathSync(Bun.which("node") ?? "node"), "../..");
+/** The canonical node preflight probes; `root` is the install tree the sandbox keeps read-only. */
+export function nodeInstall(which: string): { exe: string; bin: string; root: string } {
+    const exe = realpathSync(which);
+    return { exe, bin: dirname(exe), root: resolve(exe, "../..") };
 }
+
+const hostNode = () => nodeInstall(Bun.which("node") ?? "node");
 
 export abstract class SimHost {
     readonly toolchain: { path: string; env: Record<string, string> };
@@ -321,10 +331,11 @@ export class PiSimHost extends SimHost {
         if (connection)
             args.push("--extension", join(config.eidnara_checkout, "packages/pi-plugin"));
         args.push("--model", modelRef(this.ctx.model));
+        const node = hostNode();
         const home = join(this.ctx.root, "home");
         const tools = this.toolchain;
         const env = {
-            PATH: `${join(nodeRoot(), "bin")}:${sandboxPath(tools.path)}`,
+            PATH: `${node.bin}:${sandboxPath(tools.path)}`,
             ...tools.env,
             ...DUMMY_AWS,
             HOME: home,
@@ -336,13 +347,12 @@ export class PiSimHost extends SimHost {
             PI_OFFLINE: "1",
             PI_SKIP_VERSION_CHECK: "1",
         };
-        const node = join(nodeRoot(), "bin/node");
-        const ro = [...this.readOnly, nodeRoot(), config.pi_install];
+        const ro = [...this.readOnly, node.root, config.pi_install];
         const argv = launch(
             this.ctx.launcher,
             this.ctx.keep,
             this.timeEnv,
-            [node, ...args],
+            [node.exe, ...args],
             ro,
             cwd,
         );
@@ -532,7 +542,7 @@ export class OpencodeSimHost extends SimHost {
                 HOME: this.home,
                 XDG_STATE_HOME: join(this.home, "state"),
                 EIDNARA_LOG_PATH: join(this.ctx.root, "eidnara.log"),
-                PATH: `${hostbin}:${this.toolchain.path}:${process.env.PATH ?? ""}`,
+                PATH: `${hostbin}:${sandboxPath(this.toolchain.path)}`,
             },
         });
         const launchedPid = this.hostPid();

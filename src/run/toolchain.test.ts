@@ -1,9 +1,18 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import {
+    mkdirSync,
+    mkdtempSync,
+    readFileSync,
+    realpathSync,
+    rmSync,
+    symlinkSync,
+    writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "../config/config";
 import {
+    checkToolchainBins,
     SYSTEM_PATH,
     sandboxPath,
     TOOLCHAIN_PROBES,
@@ -72,4 +81,28 @@ test("a probe is accepted only with the tool's own version line", () => {
     expect(versionLine("bun", "1.3.14\n")).toBe("1.3.14");
     expect(() => versionLine("cargo", "")).toThrow("toolchain: cargo printed no version");
     expect(() => versionLine("bun", "hello\n")).toThrow("toolchain: bun printed no version");
+});
+
+test("every generated wrapper is probed, rustdoc included", () => {
+    expect(TOOLCHAIN_PROBES.map(([tool]) => tool)).toEqual(["cargo", "rustc", "rustdoc", "bun"]);
+    expect(versionLine("rustdoc", "rustdoc 1.99.0 (abc)\n")).toBe("rustdoc 1.99.0 (abc)");
+});
+
+test("a toolchain bin reached through a symlink out of its keep path is refused", () => {
+    const dir = root();
+    const kept = join(dir, "cache");
+    const outside = join(dir, "outside/bin");
+    mkdirSync(kept);
+    mkdirSync(outside, { recursive: true });
+    symlinkSync(join(dir, "outside"), join(kept, "link"));
+    const base = loadConfig();
+    const config = (bin: string) => ({
+        ...base,
+        toolchain: { ...base.toolchain, bin: [bin], keep: [kept] },
+    });
+    expect(() => checkToolchainBins(config(join(kept, "link/bin")))).toThrow(
+        `toolchain bin ${join(kept, "link/bin")} resolves outside its keep paths`,
+    );
+    mkdirSync(join(kept, "bin"));
+    expect(() => checkToolchainBins(config(join(kept, "bin")))).not.toThrow();
 });

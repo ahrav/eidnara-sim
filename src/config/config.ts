@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
-import { ENV_KEY, PLAIN_VALUE } from "../run/launcher";
+import { ENV_KEY, PLAIN_PATH, PLAIN_VALUE } from "../run/launcher";
 
 export const CONFIG_SCHEMA = "sim-config/v2";
 
@@ -43,6 +43,14 @@ export function parseConfig(value: unknown): SimConfig {
             throw new ConfigError(`config.${field}: missing`);
         }
         if (!isAbsolute(path)) throw new ConfigError(`config.${field}: not an absolute path`);
+        if (resolve(path) !== path) {
+            throw new ConfigError(`config.${field}: not a normalized absolute path`);
+        }
+        if (!PLAIN_PATH.test(path)) {
+            throw new ConfigError(
+                `config.${field}: not a plain path the sandbox launcher can pass`,
+            );
+        }
     }
     if (typeof v.agent_model !== "string" || v.agent_model === "") {
         throw new ConfigError("config.agent_model: missing");
@@ -52,6 +60,14 @@ export function parseConfig(value: unknown): SimConfig {
         const paths = toolchain?.[field];
         if (!Array.isArray(paths) || !paths.every((x) => typeof x === "string" && isAbsolute(x))) {
             throw new ConfigError(`config.toolchain.${field}: expected absolute paths`);
+        }
+        if (!paths.every((x) => resolve(x) === x)) {
+            throw new ConfigError(`config.toolchain.${field}: expected normalized absolute paths`);
+        }
+        if (!paths.every((x) => PLAIN_PATH.test(x))) {
+            throw new ConfigError(
+                `config.toolchain.${field}: expected plain paths the sandbox launcher can pass`,
+            );
         }
     }
     const keep = toolchain?.keep as string[];

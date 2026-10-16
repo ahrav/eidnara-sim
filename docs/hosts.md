@@ -12,9 +12,10 @@ The plugins, native addon, daemon, and host fixture come from one commit.
 checkout, checks out its `HEAD`, and builds every artefact inside the clone,
 so the source checkout itself stays read-only; it refuses a clone path that
 is the checkout or lies beneath it, and reuses an existing clone only when
-its `.sim-build-source` names the same checkout. It holds `<clone>.lock`
-with `flock` for the whole build, so a second build of the same clone is
-refused. `.sim-build-commit` holds
+its `.sim-build-source` names the same checkout. It refuses a symlink at `<clone>.lock`, holds the lock with `flock` for the whole build, so a second build of the same clone is
+refused. A first clone is made at `<clone>.partial` and renamed into place
+once it carries its source record, so an interrupted clone leaves only the
+partial tree, which the next build removes. `.sim-build-commit` holds
 the built commit from the end of one successful build until the next build
 starts, and preflight requires it to match the clone's `HEAD` and
 `daemon_binary` to be the clone's own
@@ -148,7 +149,10 @@ executes with the user's privileges. Both reach Bedrock only through the
 proxy, with placeholder AWS credentials.
 
 The launcher binds kept paths read-write and read-only paths read-only, and
-refuses a writable kept path under a read-only one. The arm's own
+refuses a writable kept path under a read-only one and any path that equals
+or contains a masked root (`/tmp`, the user's home), so narrow paths such as
+`~/.cargo` stay visible while the home itself stays hidden. Configured paths
+must be normalized, since the launcher refuses others. The arm's own
 directories are read-write. The toolchain paths, the tool
 wrappers, the interposer build, the eidnara build clone, and the Node and Pi
 installs are read-only, so the agent reads and runs them while later
@@ -158,7 +162,7 @@ the sandbox with `Read-only file system`.
 The agent's build tools come from `config.toolchain`: its `bin` directories,
 each under a `keep` path, come first on the host's `PATH`, followed by the
 system directories `/usr/local/bin:/usr/bin:/bin`, the same `PATH` the
-toolchain probe uses, its `keep` paths (the cargo binaries, registry, and
+toolchain probe and both hosts use, its `keep` paths (the cargo binaries, registry, and
 git cache, rustup, and the bun binary and install cache) stay visible and
 read-only inside the sandbox (a mount nested inside a read-only path is
 remounted read-only too), and its `env` sets `CARGO_HOME`, `RUSTUP_HOME`,
@@ -181,10 +185,11 @@ in `<run>/toolbin` that drops the preload, and `RUSTC` and `RUSTDOC` point
 cargo at the wrappers, since rustup puts its own toolchain directory first on
 cargo's `PATH`. Those tools read wall-clock time, and preflight records that
 distortion. Preflight writes the wrappers, then runs `cargo --version`,
-`"${RUSTC:-rustc}" -vV`, and `bun --version` under the interposer through the
+`"${RUSTC:-rustc}" -vV`, `"${RUSTDOC:-rustdoc}" --version`, and `bun --version` under the interposer through the
 launcher, so the rustc check goes through the same wrapper cargo uses (or
 `rustc` on `PATH` when no wrapper is configured), and
-records each version line, which must name the tool's version; a tool that
+records each version line, which must name the tool's version (`rustdoc
+--version` runs too, through its wrapper); a tool that
 fails, prints no version, or runs past 60 s has its tree
 stopped and stops the run.
 

@@ -16,7 +16,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "../config/config";
 import { running } from "../run/procs";
-import { DaemonStack, type HostContext, OpencodeSimHost, opencodeInstall, PiSimHost } from "./arms";
+import {
+    DaemonStack,
+    type HostContext,
+    nodeInstall,
+    OpencodeSimHost,
+    opencodeInstall,
+    PiSimHost,
+} from "./arms";
 
 type Untyped = any;
 
@@ -77,7 +84,8 @@ export class PiRpcProcess {
     );
     writeFileSync(
         join(e2e, "src/opencode-runner/spawn.ts"),
-        `export async function spawnOpencode() {
+        `export async function spawnOpencode(opts: any) {
+    globalThis.__simSpawnOpts = opts;
     const child = Bun.spawn(["/bin/sh", "-c", "sleep 300; exit 0", "sh", "serve", "${PORT}"]);
     return { url: "http://127.0.0.1:${PORT}", port: ${PORT}, kill: async () => child.kill() };
 }
@@ -810,4 +818,58 @@ test("stopping the daemon stack terminates the daemon even when the log cannot b
     await Bun.sleep(20);
     await expect(stack.stop()).rejects.toThrow(/ENOENT/);
     expect(terminated).toBe(true);
+});
+
+test("OpenCode gets the hosts' sandbox PATH, not the harness's ambient one", async () => {
+    const run = runDir();
+    const checkout = fakeV1(run);
+    const ctx = { ...context(run), host: "opencode" as const };
+    const host = new OpencodeSimHost({
+        ...ctx,
+        config: { ...ctx.config, eidnara_checkout: checkout },
+    });
+    const ambient = process.env.PATH;
+    process.env.PATH = `/sim-ambient-marker:${ambient}`;
+    try {
+        await host.openSession(run, "s1", null).catch(() => undefined);
+    } finally {
+        process.env.PATH = ambient;
+        for (const pid of serving()) process.kill(pid, "SIGKILL");
+    }
+    const path = (globalThis as Untyped).__simSpawnOpts.extraEnv.PATH as string;
+    expect(path.includes("/sim-ambient-marker")).toBe(false);
+    expect(path.endsWith(":/usr/local/bin:/usr/bin:/bin")).toBe(true);
+});
+
+test("the daemon store is walked from the arm directory, so a symlinked ancestor is refused", async () => {
+    const run = runDir();
+    const checkout = fakeDaemonV1(run);
+    const root = join(run, "arm");
+    const elsewhere = join(run, "elsewhere");
+    mkdirSync(root);
+    mkdirSync(elsewhere);
+    symlinkSync(elsewhere, join(run, "daemon"));
+    const stack = new DaemonStack({
+        config: { ...loadConfig(), eidnara_checkout: checkout },
+        root,
+        dataDir: join(run, "daemon/store"),
+        logFile: join(run, "daemon.log"),
+        offsetFile: join(run, "offset"),
+        proxyHttp1: "",
+        proxyHttp2: "",
+        model: "m",
+    });
+    await expect(stack.start()).rejects.toThrow(/symlink/);
+    expect(existsSync(join(elsewhere, "store"))).toBe(false);
+});
+
+test("Pi launches the canonical node that preflight probed, whatever its install layout", () => {
+    const run = runDir();
+    mkdirSync(join(run, "opt/runtime"), { recursive: true });
+    writeFileSync(join(run, "opt/runtime/node"), "", { mode: 0o755 });
+    symlinkSync(join(run, "opt/runtime/node"), join(run, "node-link"));
+    const install = nodeInstall(join(run, "node-link"));
+    expect(install.exe).toBe(join(run, "opt/runtime/node"));
+    expect(install.bin).toBe(join(run, "opt/runtime"));
+    expect(install.root).toBe(join(run, "opt"));
 });
