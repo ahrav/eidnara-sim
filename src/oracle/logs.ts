@@ -72,6 +72,23 @@ function shaped<T>(path: string, fields: Record<string, FieldCheck>): T[] {
     return rows as unknown as T[];
 }
 
+interface Manifest {
+    order: string[];
+    events: number;
+    tier: string;
+    scenario_hash?: string;
+}
+
+/** Reads one JSON file as the record type its reader names, naming the file when the text does not parse. */
+function readJson<T>(path: string): T {
+    const text = readFileSync(path, "utf8");
+    try {
+        return JSON.parse(text) as T;
+    } catch {
+        throw new Error(`${path}: not valid JSON`);
+    }
+}
+
 const lines = (path: string) =>
     existsSync(path)
         ? readFileSync(path, "utf8")
@@ -79,9 +96,28 @@ const lines = (path: string) =>
               .filter((l) => l !== "")
         : [];
 
+/**
+ * Every scheduled user turn has one `EndTurn` per arm, the record F1 and F4 read; the one
+ * exception is a turn the resume path closed as `failed(interrupted)`, which has none.
+ */
+function requireTurnEnds(journal: Entry[], arms: string[], events: Scenario["events"]): void {
+    for (const arm of arms) {
+        const mine = journal.filter((e) => e.arm === arm);
+        for (const event of events) {
+            if (event.kind !== "user_turn") continue;
+            const id = String(event.id);
+            const ends = mine.filter((e) => e.kind === "EndTurn" && e.event === id).length;
+            const closed = mine.find((e) => e.kind === "Event" && e.event === id);
+            if (ends === 0 && String(closed?.outcome) === "failed(interrupted)") continue;
+            if (ends === 0) throw new Error(`arm ${arm}: turn ${id} has no EndTurn`);
+            if (ends > 1) throw new Error(`arm ${arm}: turn ${id} has ${ends} EndTurn entries`);
+        }
+    }
+}
+
 export function loadRun(dir: string, prereg: Preregistration): RunLogs {
-    const manifest = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8"));
-    const scenario = JSON.parse(readFileSync(join(dir, "scenario.json"), "utf8")) as Scenario;
+    const manifest = readJson<Manifest>(join(dir, "manifest.json"));
+    const scenario = readJson<Scenario>(join(dir, "scenario.json"));
     const digest = scenarioHash(scenario);
     if (digest !== manifest.scenario_hash) {
         throw new Error(
@@ -115,8 +151,15 @@ export function loadRun(dir: string, prereg: Preregistration): RunLogs {
             if (!ok(e[field])) throw new Error(`${journalPath}: line ${i + 1}: ${field} missing`);
         }
     });
-    const scheduled = scenario.events.slice(0, manifest.events).map((e) => String(e.id));
+    const count = manifest.events;
+    if (!Number.isInteger(count) || count < 1 || count > scenario.events.length) {
+        throw new Error(
+            `manifest events ${count} exceeds the scenario's ${scenario.events.length}`,
+        );
+    }
+    const scheduled = scenario.events.slice(0, count).map((e) => String(e.id));
     requireComplete(journal, order, scheduled);
+    requireTurnEnds(journal, order, scenario.events.slice(0, count));
     const arms = order.map((arm) => ({
         arm,
         calls: calls.filter((c) => c.arm === arm),

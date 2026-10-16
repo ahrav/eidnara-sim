@@ -5,8 +5,10 @@ class fired. `loadRun` admits a complete run only, through the journal
 check grading uses (`requireComplete`, SIM-P67): every scheduled event
 ended once per arm, an `EndArm` per arm, and an `EndRun`; a `scenario.json`
 whose digest differs from the manifest's `scenario_hash` is refused, and so
-is a manifest arm outside the pre-registered names, a daemon arm with no
-numeric RSS sample or no `daemon.log`, a call record that fails the proxy's
+is a manifest arm outside the pre-registered names, a manifest event count
+outside 1 to the scenario's length, a scheduled user turn without one
+`EndTurn` per arm (a turn the resume path closed as `failed(interrupted)`
+has none), a daemon arm with no numeric RSS sample or no `daemon.log`, a call record that fails the proxy's
 record contract (`recordProblems`), names an arm outside the manifest, or
 repeats a sequence number, a journal entry, resource sample, or tool run
 missing a field (an `EndTurn` needs its `outcome`), or an evidence file with
@@ -40,7 +42,9 @@ F1 and F2, `transform` for F3, `memory_capture` for F8), and `uncovered: true` w
 `scripts/oracle-run.ts <run dir>...` writes each run's activations, ledgers,
 and the pre-registration digest it used to `<run>/oracles.json`, warns when
 that digest differs from the one the run's manifest recorded, and prints the
-report. A run directory named more than once, by any path, counts once.
+report. A run directory named more than once, by any path, counts once;
+`oracles.json` is written through a rename, so a symlink at that name is
+replaced, never followed.
 
 F1 misses an overflow the plugin hid by serving a raw history that still fit
 the window; F3 counts those passes.

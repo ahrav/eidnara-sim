@@ -1,5 +1,12 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+    lstatSync,
+    mkdirSync,
+    mkdtempSync,
+    readFileSync,
+    symlinkSync,
+    writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { preregistrationHash } from "../src/prereg/validate";
@@ -27,7 +34,8 @@ function completeRun(root: string, tier: string, prereg_sha256: string): string 
     writeFileSync(join(dir, "scenario.json"), JSON.stringify({ ...scenario, scenario_hash }));
     const journal = [
         { kind: "StartRun", arm: null, order: ["eidnara"], scenario_ms: 0 },
-        { kind: "Event", arm: "eidnara", event: "e-1", scenario_ms: 0 },
+        { kind: "EndTurn", arm: "eidnara", event: "e-1", outcome: "ok", scenario_ms: 200 },
+        { kind: "Event", arm: "eidnara", event: "e-1", scenario_ms: 200 },
         { kind: "EndArm", arm: "eidnara", scenario_ms: 0 },
         { kind: "EndRun", arm: null, scenario_ms: 0 },
     ];
@@ -78,4 +86,17 @@ test("oracleRun refuses a run whose manifest names an unknown tier", () => {
     const root = mkdtempSync(join(tmpdir(), "sim-oracle-run-"));
     const dir = completeRun(root, "XXL", "x");
     expect(() => oracleRun([dir])).toThrow("unknown tier XXL");
+});
+
+test("oracles.json replaces a symlink left in the run directory instead of writing through it", () => {
+    const root = mkdtempSync(join(tmpdir(), "sim-oracle-run-"));
+    const digest = preregistrationHash(loadPrereg("S"));
+    const dir = completeRun(root, "S", digest);
+    const target = join(root, "elsewhere.json");
+    writeFileSync(target, "keep me\n");
+    symlinkSync(target, join(dir, "oracles.json"));
+    oracleRun([dir]);
+    expect(readFileSync(target, "utf8")).toBe("keep me\n");
+    expect(lstatSync(join(dir, "oracles.json")).isSymbolicLink()).toBe(false);
+    expect(JSON.parse(readFileSync(join(dir, "oracles.json"), "utf8")).prereg_sha256).toBe(digest);
 });

@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { loadRun } from "../src/oracle/logs";
 import { ledger, oracleReport, runOracles } from "../src/oracle/oracles";
@@ -11,6 +11,7 @@ export function runDirs(args: string[]): string[] {
     return [...new Set(args.map((d) => realpathSync(d)))];
 }
 
+/** Writes each run's `oracles.json` through a rename, so a symlink at that name is replaced, never followed. */
 export function oracleRun(dirs: string[]) {
     const runs = dirs.map((dir) => {
         const manifest = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8"));
@@ -26,7 +27,9 @@ export function oracleRun(dirs: string[]) {
         const run = loadRun(dir, prereg);
         const ledgers = Object.fromEntries(run.arms.map((a) => [a.arm, ledger(a)]));
         const result = { prereg_sha256, activations: runOracles(run), ledgers };
-        writeFileSync(join(dir, "oracles.json"), `${JSON.stringify(result, null, 2)}\n`);
+        const out = join(dir, "oracles.json");
+        writeFileSync(`${out}.tmp`, `${JSON.stringify(result, null, 2)}\n`);
+        renameSync(`${out}.tmp`, out);
         return run;
     });
     return oracleReport(runs);

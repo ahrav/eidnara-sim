@@ -80,3 +80,24 @@ test("a final sample that cannot be written fails stop, so the run does not end 
     rmSync(dir, { recursive: true, force: true });
     expect(() => sampler.stop()).toThrow();
 });
+
+test("the final sample reports no busy transition after stop has cleared the busy state", () => {
+    const dir = mkdtempSync(join(tmpdir(), "sim-sampler-"));
+    const path = join(dir, "resources.jsonl");
+    const busy: boolean[] = [];
+    const sampler = new ResourceSampler({
+        path,
+        intervalMs: 60_000,
+        busyFraction: -1,
+        pid: () => process.pid,
+        storeDir: dir,
+        scenarioMs: () => 7,
+        onBusy: (b) => void busy.push(b),
+    });
+    sampler.start();
+    const spin = Date.now() + 20;
+    while (Date.now() < spin) {}
+    sampler.stop();
+    expect(busy.at(-1) ?? false).toBe(false);
+    expect(readFileSync(path, "utf8").trim().split("\n")).toHaveLength(2);
+});
