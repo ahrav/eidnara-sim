@@ -29,9 +29,10 @@ export function pattern(source: string): RegExp {
 }
 
 /** Hunk lines and header lines of a unified diff, told apart by position: a header precedes its first `@@`. */
-function parseDiff(patch: string): { added: string[]; paths: string[] } {
+function parseDiff(patch: string): { added: string[]; paths: string[]; surviving: string[] } {
     const added: string[] = [];
     const paths: string[] = [];
+    const surviving: string[] = [];
     let inHunk = false;
     for (const line of patch.split("\n")) {
         if (line.startsWith("diff --git ")) {
@@ -41,17 +42,26 @@ function parseDiff(patch: string): { added: string[]; paths: string[] } {
         } else if (line.startsWith("@@")) inHunk = true;
         else if (inHunk) {
             if (line.startsWith("+")) added.push(line.slice(1));
-        } else if (line.startsWith("+++ b/")) paths.push(line.slice("+++ b/".length));
+        } else if (line.startsWith("+++ b/")) {
+            paths.push(line.slice("+++ b/".length));
+            surviving.push(line.slice("+++ b/".length));
+        }
     }
-    return { added, paths: [...new Set(paths)] };
+    return { added, paths: [...new Set(paths)], surviving: [...new Set(surviving)] };
 }
 
 export function addedLines(patch: string): string {
     return parseDiff(patch).added.join("\n");
 }
 
+/** Every path a diff names, old and new sides alike. */
 export function diffPaths(patch: string): string[] {
     return parseDiff(patch).paths;
+}
+
+/** Paths that exist after the diff: the `+++ b/` side of each file, so a deletion names none. */
+export function survivingPaths(patch: string): string[] {
+    return parseDiff(patch).surviving;
 }
 
 export const matchesAny = (text: string, sources: string[]) =>

@@ -86,6 +86,7 @@ export const str: Field = (v) => typeof v === "string";
 export const text: Field = (v) => typeof v === "string" && v.length > 0;
 export const num: Field = (v) => typeof v === "number" && Number.isFinite(v);
 const count: Field = (v) => Number.isInteger(v) && (v as number) >= 0;
+const nonNegative: Field = (v) => num(v) && (v as number) >= 0;
 export const bool: Field = (v) => typeof v === "boolean";
 export const optional =
     (f: Field): Field =>
@@ -131,7 +132,7 @@ const CALL: Record<string, Field> = {
     component: oneOf(COMPONENTS),
     turn: nullable(str),
     turn_index: optional(count),
-    scenario_ms: num,
+    scenario_ms: nonNegative,
     status: (v) => Number.isInteger(v),
     error: nullable(str),
     input_tokens: count,
@@ -139,7 +140,11 @@ const CALL: Record<string, Field> = {
     response_text: optional(str),
     label: optional(str),
 };
-const COMMAND: Record<string, Field> = { command: str, exit: nullable(num), scenario_ms: num };
+const COMMAND: Record<string, Field> = {
+    command: str,
+    exit: nullable(num),
+    scenario_ms: nonNegative,
+};
 
 /** The first call whose `seq` fails to exceed its predecessor's, as a path, or null. */
 const unordered = (calls: unknown, path: string): string | null => {

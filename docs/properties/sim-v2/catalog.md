@@ -1206,8 +1206,9 @@ Open questions:
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: partial - the M5 grading unit (#1029) exercises the grader on recorded
-fixtures in `src/grade/probes.test.ts`; run and report wiring lands in later units
+Exercised: partial - the M5 grading unit (#1029) exercises item-level P13 grading on
+recorded fixtures in `src/grade/probes.test.ts`; one record per fold and run wiring
+remain open
 Guarantee: SIM-P47: Every observed fold or host compaction event, a
 `history_summarizer` or `native_compaction` call followed by a context-size
 drop, yields one P13 record naming the event.
@@ -1218,7 +1219,7 @@ Required faults and enabling state: a p90 session.
 Confidence: low - [evidence](evidence/sim-p47-fold-event-yields-p13-record.md).
 PROPOSED: reconstructed from the condensed index in spec #1007; no
 implementation exists to verify against, and a default tier run reaches it.
-Existing check: `src/grade/probes.test.ts`, recorded fixtures: the P13 pass, fail, partial, and excluded-outside-range fixtures grade as recorded; status unaudited
+Existing check: `src/grade/probes.test.ts`, recorded fixtures: the P13 fixtures grade one record per item from the folds in its range and count them in `P13.folds`; one record per fold, naming the fold event, remains untested; status unaudited
 Impact: Fold fidelity is measured on a subset of folds.
 Open questions: None.
 

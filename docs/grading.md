@@ -24,8 +24,8 @@ artefact its grader reads (a missing diff or command log is refused, so it
 cannot pass a negative-match grader as empty evidence), an artefact without a
 unique nonempty id or with a payload outside its class's shape (a command
 without its text, a call with a non-numeric status, a component outside
-the proxy's set, a negative token count, or a sequence number that fails to
-increase), a snapshot listed twice, a snapshot without its own id or from another session than
+the proxy's set, a negative token count or scenario time, or a sequence number that fails
+to increase), a snapshot listed twice, a snapshot without its own id or from another session than
 the probe's, and an item whose check lacks a key its grader needs or holds a
 malformed value (a pattern that is empty after its `(?i)` prefix or fails to compile, an
 empty answer, a non-numeric window). It grades the first snapshot of an item and arm only
@@ -46,7 +46,8 @@ but lacks a grade record's fields (metrics of boolean, string, or finite
 number values with at least one key of the probe type unless excluded, a
 non-negative attempt count, at least one distinct input id, a `pair` on P1
 and P1-control records), or whose version is other than the
-successor of the item and arm's previous one, is refused by line number. A kill mid-append
+successor of the item and arm's previous one, or that changes the snapshot,
+probe type, or pair of an earlier version, is refused by line number. A kill mid-append
 leaves a cut final line; reads skip it and the next append overwrites it, so
 the complete earlier grades stay readable.
 
@@ -60,21 +61,22 @@ the complete earlier grades stay readable.
 | P3 | The added lines carry the authoritative value and no stale one | `P3.reliance` (`authoritative`, `stale`, `neither`), `P3.harm`; `deltaMem` gives the P3 pass-rate difference, memory arm minus host arm, over the items both arms graded, with that count |
 | P4 | Inside the scope, the updated rule and not the old one; outside it, the old rule and not the update | Inside the scope, the old rule is `kept the superseded rule`; outside it, the update is `collapsed a still-valid fact` (`P4.collapsed`, `P4.harm`); a missing expected rule is named too, and `check.scope` must be `in` or `out` |
 | P5 | Neither the added lines nor the turn's commands match the rejected approach | A command that only names the signature, such as a search for it, also fails the item; the check vocabulary has no read-only exemption |
-| P6 | The added lines or the commands carry the planned next step | `P6.reread_files` (executed shell segments whose command is a read, including Pi's `read` tool, naming a file the prior session added, changed, renamed (either path), or deleted as a whole path, with or without a leading `./`), `P6.ran_tests` (an executed shell segment of the turn starts with a test command; a quoted mention is not a run), `P6.rediscovery_tokens` (input and output tokens of every agent call of the turn, failed calls included, cache reads excluded) |
+| P6 | The added lines or the commands carry the planned next step | `P6.reread_files` (executed shell segments whose command is a read, including Pi's `read` tool, with a file operand naming a path the prior session added, changed, renamed (either path), or deleted, as a whole, with or without a leading `./`; a grep or rg pattern is not an operand), `P6.ran_tests` (an executed shell segment of the turn starts with a test command; a quoted mention is not a run), `P6.rediscovery_tokens` (input and output tokens of every agent call of the turn, failed calls included, cache reads excluded) |
 | P8 | The answer carries the value as a whole word (`lookup_match`) | |
 | P9 | The answer abstains: `UNKNOWN` alone on the first line, or abstention wording, with no value-shaped guess (a five-digit number, a codename, or a cloud-region name) and no hedged guess such as `probably` or `I think` (`abstain_rule`) | An unhedged free-text assertion beside the abstention wording, such as a bare person's name, passes; the regex rule has no model of the subject |
 | P10 | The added lines carry no `must_not` pattern and the final completed response carries no `answer_must_not` pattern, compared case-insensitively | `P10.harm` |
 | P11 | No added line carries the other project's rule | `P11.harm` (binary); `P11.weighted_score` is +1 for a hit and minus `p11_false_positive_weight` (−2) for an injection, so summed over items an injection costs twice a hit (SIM-P50) |
 | P12 | The added lines name the exception from the replayed error | |
-| P13 | Score 1, over the completed folds whose call falls in the item's `check.turns` range (a fold call without a turn index refuses the grade): after the first of them, the session rule still holds (a `commands_must` pattern, `(?i)` prefix kept, matches from the start of an executed shell segment); every fold call's output-to-input token ratio, summarizer or native compaction, is within `p13_reduction_ratio` (0.02 to 0.5), a fold with no input tokens recorded failing this part; and no command from before the fold repeats after it, builds, tests in any package-script form, installs, status reads, and listings aside, where a compound command counts as a repeat | `P13.fold_fidelity_score` is the share of the three parts that hold, `P13.folds` the folds in range; with none the item is excluded |
+| P13 | Score 1, over the completed folds whose call falls in the item's `check.turns` range (a fold call without a turn index refuses the grade): after the first of them, the session rule still holds (a `commands_must` pattern, `(?i)` prefix kept, matches from the start of an executed shell segment); every fold call's output-to-input token ratio, summarizer or native compaction, is within `p13_reduction_ratio` (0.02 to 0.5), a fold with no input tokens recorded failing this part; and no command from before the fold repeats after it, builds, tests and installs in any package-manager form, status reads, and listings aside, where a compound command counts as a repeat | `P13.fold_fidelity_score` is the share of the three parts that hold, `P13.folds` the folds in range; with none the item is excluded |
 | P14 | No completed user-sim `pushback` call sequenced after the first completed fold with a turn index at or after `window_from_turn` | `P14.post_compaction_correction_count`; an item is excluded with no compaction, when any completed user-sim call lacks its label or turn index, when a label is outside `task`, `pushback`, `interrupt`, `redirect`, `abandon`, `clarify`, `paste` (SIM-P25), or when no completed user-sim call falls after the fold inside the window; two completed user-sim calls for one turn index refuse the grade |
 
 A fold is a `history_summarizer` or `native_compaction` call with a 2xx
 status and no error; a failed attempt sets no compaction boundary.
 
-Check patterns match line by line against the diff's changed paths followed
-by its added lines, so `^` anchors each line and a pattern can name a file
-as well as its content. Added lines are the `+` lines inside hunks, told
+Check patterns match line by line against the diff's surviving paths (the
+new side of each file, so a deletion names none) followed by its added
+lines, so `^` anchors each line and a pattern can name a file as well as its
+content. Added lines are the `+` lines inside hunks, told
 apart from `+++` headers by position, so a source line that begins with `++`
 is graded content. Shell segments split on `;`, `&`, `|`, `&&`, `||`, and newlines outside quotes,
 parenthesised or braced groups, word-initial `#` comments, and heredoc bodies

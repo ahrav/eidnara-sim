@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ProbeItem } from "../scenario/compile";
 import { loadPrereg } from "../scenario/inputs";
-import { type CallView, GradeRefused, type Snapshot } from "./artefacts";
+import { type CallView, type Command, GradeRefused, type Snapshot } from "./artefacts";
 import { deltaMem, GradeLog, type GradeRecord, gradeItem } from "./probes";
 
 const DIR = join(import.meta.dir, "../../tests/fixtures/grade");
@@ -521,6 +521,79 @@ describe("grading harness", () => {
         symlinkSync(target, linked);
         expect(() => new GradeLog(linked).append(grade("P2-pass"))).toThrow("is a link");
         expect(readFileSync(target, "utf8")).toBe("");
+    });
+
+    test("scenario timestamps are non-negative", () => {
+        const f = fixture("P13-pass");
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        const calls = snap.artefacts.find((a) => a.class === "proxy-call");
+        if (calls?.class !== "proxy-call") throw new Error("fixture lacks proxy-call");
+        (calls.calls[0] as CallView).scenario_ms = -1;
+        expect(() => gradeItem(f.probe, [snap], rules)).toThrow("calls[0].scenario_ms");
+        const log = structuredClone(f.snapshots[0]) as Snapshot;
+        const cl = log.artefacts.find((a) => a.class === "command-log");
+        if (cl?.class !== "command-log") throw new Error("fixture lacks command-log");
+        (cl.commands[0] as Command).scenario_ms = -5;
+        expect(() => gradeItem(f.probe, [log], rules)).toThrow("commands[0].scenario_ms");
+    });
+
+    test("a here-string is a redirection, not a heredoc", () => {
+        const f = fixture("P6-pass");
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        const log = snap.artefacts.find((a) => a.class === "command-log" && a.role === "turn");
+        if (log?.class !== "command-log") throw new Error("fixture lacks command-log");
+        log.commands.push({ command: "cat <<<foo\ncargo test", exit: 0, scenario_ms: 10 });
+        expect(gradeItem(f.probe, [snap], rules)?.metrics["P6.ran_tests"]).toBe(true);
+    });
+
+    test("a regrade keeps the item's snapshot, probe type, and pair", () => {
+        const path = join(mkdtempSync(join(tmpdir(), "sim-grades-")), "grades.jsonl");
+        const log = new GradeLog(path);
+        const g = grade("P1-pass");
+        log.append(g);
+        expect(() => log.append({ ...g, version: 2, snapshot: "other-snapshot" })).toThrow(
+            "snapshot",
+        );
+        appendFileSync(path, `${JSON.stringify({ ...g, version: 2, pair: "f-9999" })}\n`);
+        expect(() => log.all()).toThrow("line 2 changes pair");
+    });
+
+    test("a positive diff check matches surviving paths only", () => {
+        const f = fixture("P1-pass");
+        const probe = { ...f.probe, check: { must: ["\\.drowsy-egret-12\\.test\\.ts"] } };
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        const diff = snap.artefacts.find((a) => a.class === "diff" && a.role === "turn");
+        if (diff?.class !== "diff") throw new Error("fixture lacks diff");
+        diff.patch =
+            "diff --git a/src/get.drowsy-egret-12.test.ts b/src/get.drowsy-egret-12.test.ts\ndeleted file mode 100644\n--- a/src/get.drowsy-egret-12.test.ts\n+++ /dev/null\n@@ -1,1 +0,0 @@\n-test('x', () => {});\n";
+        expect(gradeItem(probe, [snap], rules)?.verdict).toBe("fail");
+    });
+
+    test("a path in grep's pattern position is not a re-read", () => {
+        const f = fixture("P6-pass");
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        const log = snap.artefacts.find((a) => a.class === "command-log" && a.role === "turn");
+        if (log?.class !== "command-log") throw new Error("fixture lacks command-log");
+        log.commands.push({
+            command: "grep src/connection.rs /dev/null",
+            exit: 1,
+            scenario_ms: 10,
+        });
+        expect(gradeItem(f.probe, [snap], rules)?.metrics["P6.reread_files"]).toBe(0);
+        log.commands.push({ command: "grep -n fn src/connection.rs", exit: 0, scenario_ms: 20 });
+        expect(gradeItem(f.probe, [snap], rules)?.metrics["P6.reread_files"]).toBe(1);
+    });
+
+    test("a repeated package install is quiet", () => {
+        const f = fixture("P13-pass");
+        for (const cmd of ["npm install", "pnpm install", "npm ci", "bun i"]) {
+            const snap = structuredClone(f.snapshots[0]) as Snapshot;
+            const log = snap.artefacts.find((a) => a.class === "command-log");
+            if (log?.class !== "command-log") throw new Error("fixture lacks command-log");
+            log.commands.unshift({ command: cmd, exit: 0, scenario_ms: 100 });
+            log.commands.push({ command: cmd, exit: 0, scenario_ms: 900 });
+            expect(gradeItem(f.probe, [snap], rules)?.metrics["P13.repeated_action"]).toBe(false);
+        }
     });
 
     test("a check pattern that is empty after its prefix or fails to compile is refused", () => {

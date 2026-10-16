@@ -17,7 +17,16 @@ import {
     str,
     text,
 } from "./artefacts";
-import { abstains, addedLines, carries, diffPaths, matchesAll, matchesAny, pattern } from "./text";
+import {
+    abstains,
+    addedLines,
+    carries,
+    diffPaths,
+    matchesAll,
+    matchesAny,
+    pattern,
+    survivingPaths,
+} from "./text";
 
 export type Rules = Preregistration["grading"];
 export type Verdict = "pass" | "fail" | "excluded";
@@ -54,7 +63,7 @@ export interface GradeRecord extends Outcome {
 const READS = /^(cat|less|more|head|tail|sed|view|bat|grep|rg|read)\b/;
 const TESTS = /^(cargo test|(bun|npm|pnpm) (run )?test)\b/;
 const QUIET =
-    /^\s*(cargo (build|check|test)|bun install|(bun|npm|pnpm) (run )?test|git (status|log|diff)|ls|pwd)\b[^&|;`$()\n]*$/;
+    /^\s*(cargo (build|check|test)|(bun|npm|pnpm) (install|i|ci|(run )?test)|git (status|log|diff)|ls|pwd)\b[^&|;`$()\n]*$/;
 const FOLDS = ["history_summarizer", "native_compaction"];
 const USER_SIM_LABELS = [
     "task",
@@ -125,7 +134,7 @@ const commandText = (r: ArtefactReader) =>
 /** Changed paths join the added lines so a check pattern can match a file name. */
 const changed = (r: ArtefactReader) => {
     const patch = r.diff();
-    return `${diffPaths(patch).join("\n")}\n${addedLines(patch)}`;
+    return `${survivingPaths(patch).join("\n")}\n${addedLines(patch)}`;
 };
 const work = (r: ArtefactReader) => `${changed(r)}\n${commandText(r)}`;
 
@@ -186,6 +195,9 @@ function splitShell(command: string): { op: string; seg: string }[] {
         else if (ch === "#" && (seg.length === 0 || /[\s;&|(]$/.test(seg))) {
             const end = command.indexOf("\n", i);
             i = end < 0 ? command.length : end - 1;
+        } else if (command.startsWith("<<<", i)) {
+            seg += "<<<";
+            i += 2;
         } else if (command.startsWith("<<", i)) {
             const m = /^<<(-?)\s*(['"]?)([^\s'"<>|&;()]+)\2/.exec(command.slice(i));
             if (m) {
@@ -217,6 +229,13 @@ const executed = (x: Command): string[] => {
             (p, i) => p.op !== "||" && (p.op !== "&&" || (x.exit === 0 && i >= lastList && !mixed)),
         )
         .map((p) => p.seg);
+};
+/** A read segment's file operands: for grep and rg the first non-option word is the pattern, so it is dropped. */
+const operands = (segment: string): string => {
+    const words = segment.split(/\s+/);
+    if (!/^(grep|rg)$/.test(words[0] as string)) return segment;
+    const at = words.findIndex((w, i) => i > 0 && !w.startsWith("-"));
+    return at < 0 ? "" : [words[0], ...words.slice(at + 1)].join(" ");
 };
 const anchored = (p: string) => (p.startsWith("(?i)") ? `(?i)^${p.slice(4)}` : `^${p}`);
 const namesPath = (segment: string, path: string) =>
@@ -257,7 +276,7 @@ function p6(r: ArtefactReader, c: Check): Outcome {
     const prior = diffPaths(r.diff("prior-session"));
     const commands = r.commands();
     const reread = prior.filter((p) =>
-        commands.some((x) => executed(x).some((s) => READS.test(s) && namesPath(s, p))),
+        commands.some((x) => executed(x).some((s) => READS.test(s) && namesPath(operands(s), p))),
     );
     const tokens = r.turnCalls().reduce((n, x) => n + x.input_tokens + x.output_tokens, 0);
     return binary("P6", matchesAll(work(r), c.must ?? []), {
@@ -509,6 +528,14 @@ function isGradeRecord(value: unknown): value is GradeRecord {
     );
 }
 
+/** The field a regrade changed among those fixed for an item and arm, or null. */
+function identityChange(previous: GradeRecord, next: GradeRecord): string | null {
+    for (const field of ["snapshot", "probe_type", "pair"] as const) {
+        if (previous[field] !== next[field]) return field;
+    }
+    return null;
+}
+
 function newest(grades: GradeRecord[]): GradeRecord[] {
     const byKey = new Map<string, GradeRecord>();
     for (const g of grades) {
@@ -530,7 +557,7 @@ export class GradeLog {
 
     all(): GradeRecord[] {
         const lines = this.complete().split("\n").filter(Boolean);
-        const seen = new Map<string, number>();
+        const seen = new Map<string, GradeRecord>();
         return lines.map((l, i) => {
             let parsed: unknown;
             try {
@@ -544,13 +571,19 @@ export class GradeLog {
                 );
             }
             const key = `${parsed.item}/${parsed.arm}`;
-            const previous = seen.get(key) ?? 0;
-            if (parsed.version !== previous + 1) {
+            const previous = seen.get(key);
+            if (parsed.version !== (previous?.version ?? 0) + 1) {
                 throw new GradeRefused(
-                    `grade log ${this.path}: line ${i + 1} has version ${parsed.version} after version ${previous} of ${key}`,
+                    `grade log ${this.path}: line ${i + 1} has version ${parsed.version} after version ${previous?.version ?? 0} of ${key}`,
                 );
             }
-            seen.set(key, parsed.version);
+            const changedField = previous && identityChange(previous, parsed);
+            if (changedField) {
+                throw new GradeRefused(
+                    `grade log ${this.path}: line ${i + 1} changes ${changedField} of ${key}`,
+                );
+            }
+            seen.set(key, parsed);
             return parsed;
         });
     }
@@ -575,10 +608,16 @@ export class GradeLog {
         if (!isGradeRecord(record)) {
             throw new GradeRefused(`grade ${item}/${arm} is not a grade record`);
         }
-        const expected = this.nextVersion(record.item, record.arm);
+        const mine = this.all().filter((g) => g.item === item && g.arm === arm);
+        const expected = mine.length === 0 ? 1 : Math.max(...mine.map((g) => g.version)) + 1;
         if (record.version !== expected) {
+            throw new GradeRefused(`grade ${item}/${arm} v${record.version} expected v${expected}`);
+        }
+        const last = mine.at(-1);
+        const changedField = last && identityChange(last, record);
+        if (changedField) {
             throw new GradeRefused(
-                `grade ${record.item}/${record.arm} v${record.version} expected v${expected}`,
+                `grade ${item}/${arm} v${record.version} changes ${changedField}`,
             );
         }
         if (existsSync(this.path)) truncateSync(this.path, Buffer.byteLength(this.complete()));
