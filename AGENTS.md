@@ -19,7 +19,7 @@ Eidnara, specified by
   with the protocol version it would need.
 - Use `.github/workflows/ci.yml` as the source of truth for required checks.
   `bun run check` runs typecheck, lint, tests, the pre-registration
-  validator, and the catalog checker, in that order.
+  validator, the catalog checker, and the corpus checker, in that order.
 - Never append a comment-lint `allow(...)` override marker to a comment.
   `scripts/forbid-comment-markers.sh` rejects it in CI and in the tracked
   `.githooks/pre-commit` hook (installed by `bun install` through the
