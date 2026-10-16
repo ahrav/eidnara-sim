@@ -4,15 +4,18 @@ import {
     existsSync,
     mkdirSync,
     mkdtempSync,
+    readdirSync,
     readFileSync,
     rmSync,
     symlinkSync,
     writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { loadConfig } from "../config/config";
+import type { CallView } from "../grade/artefacts";
 import { gradeItem } from "../grade/probes";
+import { diffPaths } from "../grade/text";
 import type { ScenarioEvent } from "../run/scheduler";
 import { type FaultType, SEAMS } from "../scenario/faults";
 import { loadPrereg } from "../scenario/inputs";
@@ -61,7 +64,9 @@ class FakeHost {
     }
     tools: { command: string; exit: number | null; scenario_ms: number }[] = [];
     drainTools() {
-        return this.tools.splice(0);
+        const drained = this.tools.splice(0);
+        for (const run of drained) this.ctx.onTool?.(run);
+        return drained;
     }
 }
 
@@ -201,6 +206,132 @@ describe("HostDriver lifecycle", () => {
         await expect(driver.event(through)).rejects.toThrow("leaves");
     });
 
+    test("apply_diff runs no hook, filter, or monitor that the workspace repo's config names", async () => {
+        const { driver } = fixture("host", { p: gitRepo() });
+        await driver.reset();
+        const ws = driver.workspace("p");
+        const outside = tmp();
+        const ran = join(outside, "ran");
+        const hook = join(outside, "hook.sh");
+        writeFileSync(hook, `#!/bin/sh\ntouch ${ran}\ncat\n`, { mode: 0o755 });
+        const hooks = join(outside, "hooks");
+        mkdirSync(hooks);
+        for (const name of ["post-commit", "prepare-commit-msg", "reference-transaction"]) {
+            writeFileSync(join(hooks, name), `#!/bin/sh\ntouch ${ran}\n`, { mode: 0o755 });
+        }
+        const set = (key: string, value: string) =>
+            spawnSync("git", ["config", key, value], { cwd: ws });
+        set("core.hooksPath", hooks);
+        set("core.fsmonitor", hook);
+        set("filter.evil.clean", hook);
+        set("filter.evil.required", "true");
+        writeFileSync(join(ws, ".gitattributes"), "* filter=evil\n");
+        await driver.event(ev("apply_diff", { path: "src/a.txt", content: "A" }));
+        expect(existsSync(ran)).toBe(false);
+        const shown = spawnSync("git", ["show", "HEAD:src/a.txt"], { cwd: ws });
+        expect(shown.stdout.toString()).toBe("A");
+        expect(
+            spawnSync("git", ["log", "--format=%s", "-1"], { cwd: ws }).stdout.toString().trim(),
+        ).toBe("Add src/a.txt");
+    });
+
+    test("apply_diff runs plumbing under a pristine repo config and refuses alternates", async () => {
+        const { driver } = fixture("host", { p: gitRepo() });
+        await driver.reset();
+        const ws = driver.workspace("p");
+        const outside = tmp();
+        const ran = join(outside, "ran");
+        const hook = join(outside, "hook.sh");
+        writeFileSync(hook, `#!/bin/sh\ntouch ${ran}\ncat\n`, { mode: 0o755 });
+        const hooks = join(outside, "hooks");
+        mkdirSync(hooks);
+        writeFileSync(join(hooks, "post-index-change"), `#!/bin/sh\ntouch ${ran}\n`, {
+            mode: 0o755,
+        });
+        writeFileSync(join(outside, "more.gitconfig"), `[core]\n\thooksPath = ${hooks}\n`);
+        const config = join(ws, ".git", "config");
+        const before = readFileSync(config, "utf8");
+        writeFileSync(
+            config,
+            `${before}[filter "a=b"]\n\tclean = ${hook}\n\trequired = true\n[include]\n\tpath = ${join(outside, "more.gitconfig")}\n[user]\n\tname = agent\n`,
+        );
+        writeFileSync(join(ws, ".gitattributes"), "* filter=a=b\n");
+        await driver.event(ev("apply_diff", { path: "src/a.txt", content: "A" }));
+        expect(existsSync(ran)).toBe(false);
+        expect(spawnSync("git", ["show", "HEAD:src/a.txt"], { cwd: ws }).stdout.toString()).toBe(
+            "A",
+        );
+        expect(readFileSync(config, "utf8")).toContain("name = agent");
+        mkdirSync(join(ws, ".git", "objects", "info"), { recursive: true });
+        writeFileSync(join(ws, ".git", "objects", "info", "alternates"), `${outside}\n`);
+        const next = ev("apply_diff", { path: "src/b.txt", content: "B" });
+        await expect(driver.event(next)).rejects.toThrow("alternates");
+    });
+
+    test("apply_diff keeps the executable bit of the file it updates", async () => {
+        const source = gitRepo();
+        writeFileSync(join(source, "run.sh"), "#!/bin/sh\necho 1\n", { mode: 0o755 });
+        spawnSync("git", ["add", "run.sh"], { cwd: source });
+        spawnSync(
+            "git",
+            ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "add the script"],
+            {
+                cwd: source,
+                env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" },
+            },
+        );
+        const { driver } = fixture("host", { p: source });
+        await driver.reset();
+        const ws = driver.workspace("p");
+        await driver.event(ev("apply_diff", { path: "run.sh", content: "#!/bin/sh\necho 2\n" }));
+        const tree = spawnSync("git", ["ls-tree", "HEAD", "run.sh"], { cwd: ws }).stdout.toString();
+        expect(tree.startsWith("100755 ")).toBe(true);
+        expect(
+            spawnSync("git", ["status", "--porcelain"], { cwd: ws }).stdout.toString().trim(),
+        ).toBe("");
+    });
+
+    test("apply_diff proceeds over a scratch index lock a killed git left behind", async () => {
+        const { driver, armDir } = fixture("host", { p: gitRepo() });
+        await driver.reset();
+        writeFileSync(join(armDir, "apply-diff.index.lock"), "");
+        await driver.event(ev("apply_diff", { path: "src/a.txt", content: "A" }));
+        const ws = driver.workspace("p");
+        expect(spawnSync("git", ["show", "HEAD:src/a.txt"], { cwd: ws }).stdout.toString()).toBe(
+            "A",
+        );
+    });
+
+    test("apply_diff refuses a workspace replaced by a symlink and creates no directory through one", async () => {
+        const { driver } = fixture("host", { p: gitRepo() });
+        await driver.reset();
+        const ws = driver.workspace("p");
+        const outside = tmp();
+        symlinkSync(outside, join(ws, "vendor"));
+        const through = ev("apply_diff", { path: "vendor/deep/x.txt", content: "A" });
+        await expect(driver.event(through)).rejects.toThrow("leaves");
+        expect(readdirSync(outside)).toEqual([]);
+        const elsewhere = tmp();
+        spawnSync("git", ["init", "-q"], { cwd: elsewhere });
+        rmSync(ws, { recursive: true });
+        symlinkSync(elsewhere, ws);
+        const root = ev("apply_diff", { path: "src/a.txt", content: "A" });
+        await expect(driver.event(root)).rejects.toThrow("symlink");
+        expect(existsSync(join(elsewhere, "src"))).toBe(false);
+    });
+
+    test("apply_diff refuses a workspace whose .git internals are symlinks", async () => {
+        const { driver } = fixture("host", { p: gitRepo() });
+        await driver.reset();
+        const ws = driver.workspace("p");
+        const outside = tmp();
+        rmSync(join(ws, ".git", "objects"), { recursive: true });
+        symlinkSync(outside, join(ws, ".git", "objects"));
+        const diff = ev("apply_diff", { path: "src/a.txt", content: "A" });
+        await expect(driver.event(diff)).rejects.toThrow("symlink");
+        expect(readdirSync(outside)).toEqual([]);
+    });
+
     test("a resumed arm reopens the session the next event belongs to", async () => {
         const { driver, hosts } = fixture("host", { p: gitRepo() });
         await driver.reset();
@@ -329,6 +460,158 @@ describe("HostDriver faults", () => {
 });
 
 describe("probe snapshots", () => {
+    test("a tool run reported mid-turn is in the recorder's state before the turn returns", async () => {
+        const { driver, hosts, armDir } = fixture("host", { p: gitRepo() });
+        const fresh = new HostDriver((driver as unknown as { o: DriverOptions }).o);
+        await fresh.reset();
+        const host = hosts.at(-1) as FakeHost;
+        await fresh.event(ev("session_start", { session: "s-0" }));
+        const run = { command: "cargo build", exit: 0, scenario_ms: 3 };
+        host.onPrompt = () => {
+            host.ctx.onTool?.(run);
+            throw new Error("harness killed");
+        };
+        await expect(
+            fresh.event(ev("user_turn", { id: "e-1", session: "s-0", text: "go" })),
+        ).rejects.toThrow("harness killed");
+        const state = JSON.parse(readFileSync(join(armDir, "snapshot-state.json"), "utf8"));
+        expect(state.commands).toEqual([run]);
+    });
+
+    test("tools.jsonl attributes each run to the turn in progress, and to no turn at session end", async () => {
+        const { driver, hosts, armDir, transcripts } = fixture("host", { p: gitRepo() });
+        await driver.reset();
+        mkdirSync(join(transcripts, "sessions"), { recursive: true });
+        const host = hosts.at(-1) as FakeHost;
+        await driver.event(ev("session_start", { session: "s-0" }));
+        const mid = { command: "cargo build", exit: 0, scenario_ms: 3 };
+        const drained = { command: "cargo test", exit: null, scenario_ms: 5 };
+        host.onPrompt = () => {
+            host.ctx.onTool?.(mid);
+            host.tools.push(drained);
+        };
+        await driver.event(ev("user_turn", { id: "e-1", session: "s-0", text: "go" }));
+        host.onPrompt = () => {};
+        host.tools.push({ command: "ls", exit: null, scenario_ms: 9 });
+        await driver.event(ev("session_end", { session: "s-0" }));
+        const lines = readFileSync(join(armDir, "tools.jsonl"), "utf8")
+            .trim()
+            .split("\n")
+            .map((l) => JSON.parse(l));
+        expect(lines).toEqual([
+            { turn: "e-1", ...mid },
+            { turn: "e-1", ...drained },
+            { turn: null, command: "ls", exit: null, scenario_ms: 9 },
+        ]);
+    });
+
+    test("an embedded repository inside an already-indexed directory, or empty, is found; an ignored one is not", () => {
+        const repo = gitRepo();
+        mkdirSync(join(repo, "src"));
+        writeFileSync(join(repo, "src", "lib.rs"), "fn lib() {}\n");
+        writeFileSync(join(repo, ".gitignore"), "target/\n");
+        const armDir = tmp();
+        const recorder = new SnapshotRecorder(armDir, "eidnara", () => []);
+        recorder.sessionStart("s-1", "p", repo);
+        recorder.tree(repo);
+        spawnSync("git", ["init", "-q"], { cwd: join(repo, "src") });
+        mkdirSync(join(repo, "empty"));
+        spawnSync("git", ["init", "-q"], { cwd: join(repo, "empty") });
+        mkdirSync(join(repo, "target"));
+        spawnSync("git", ["init", "-q"], { cwd: join(repo, "target") });
+        expect(recorder.embedded(repo)).toEqual(["empty", "src"]);
+        expect(recorder.tree(repo)).toMatch(/^[0-9a-f]{40}$/);
+    });
+
+    test("a probe turn that leaves an embedded repository in the workspace ends failed, naming it", async () => {
+        const { driver, hosts } = fixture("host", { p: gitRepo() });
+        const fresh = new HostDriver((driver as unknown as { o: DriverOptions }).o);
+        await fresh.reset();
+        const host = hosts.at(-1) as FakeHost;
+        const ws = fresh.workspace("p");
+        await fresh.event(ev("session_start", { session: "s-0" }));
+        host.onPrompt = () => {
+            const vendor = join(ws, "vendor");
+            mkdirSync(vendor);
+            spawnSync("git", ["init", "-q"], { cwd: vendor });
+            writeFileSync(join(vendor, "cache.rs"), "static CACHE: Mutex<u8>\n");
+        };
+        const outcome = await fresh.event(
+            ev("user_turn", { id: "e-1", session: "s-0", text: "go", probe: "q-1" }),
+        );
+        expect(outcome.failed).toBe("embedded repository at vendor");
+        expect(outcome.snapshot).toBe("host:q-1:e-1");
+    });
+
+    test("the snapshot's proxy calls are read after the run has settled its background jobs", async () => {
+        const { driver, hosts } = fixture("host", { p: gitRepo() });
+        const calls: CallView[] = [];
+        const o = (driver as unknown as { o: DriverOptions }).o;
+        o.callsFor = () => [...calls];
+        o.settle = async () => {
+            await Bun.sleep(20);
+            calls.push({
+                seq: 0,
+                component: "history_summarizer",
+                turn: "e-1",
+                scenario_ms: 5,
+                input_tokens: 9,
+                output_tokens: 3,
+            });
+        };
+        const fresh = new HostDriver(o);
+        await fresh.reset();
+        hosts.at(-1);
+        await fresh.event(ev("session_start", { session: "s-0" }));
+        const outcome = await fresh.event(
+            ev("user_turn", { id: "e-1", session: "s-0", text: "go", probe: "q-1" }),
+        );
+        const armDir = dirname(o.armRoot);
+        const snap = JSON.parse(readFileSync(join(armDir, "snapshots.jsonl"), "utf8").trim());
+        const byId = Object.fromEntries(snap.artefacts.map((a: { id: string }) => [a.id, a]));
+        expect(outcome.snapshot).toBe("host:q-1:e-1");
+        expect(byId["host:q-1:e-1:calls"].calls.map((c: CallView) => c.component)).toEqual([
+            "history_summarizer",
+        ]);
+    });
+
+    test("a tracked-but-ignored path whose parent became a symlink is left out of the tree", () => {
+        const repo = gitRepo();
+        const armDir = tmp();
+        const recorder = new SnapshotRecorder(armDir, "eidnara", () => []);
+        recorder.trackIgnored(basename(repo), ["sub/limits.cfg"]);
+        const outside = tmp();
+        writeFileSync(join(outside, "limits.cfg"), "max = 9\n");
+        symlinkSync(outside, join(repo, "sub"));
+        recorder.sessionStart("s-1", "p", repo);
+        expect(recorder.tree(repo)).toMatch(/^[0-9a-f]{40}$/);
+    });
+
+    test("a change to a file the source tracks despite its ignore rules is in the snapshot diff", async () => {
+        const source = gitRepo();
+        const g = (...args: string[]) =>
+            spawnSync("git", args, {
+                cwd: source,
+                env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" },
+            });
+        writeFileSync(join(source, ".gitignore"), "*.cfg\n");
+        writeFileSync(join(source, "limits.cfg"), "max = 1\n");
+        g("add", ".gitignore");
+        g("add", "--force", "limits.cfg");
+        g("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "track the ignored config");
+        const { driver, hosts, armDir } = fixture("host", { p: source });
+        const fresh = new HostDriver((driver as unknown as { o: DriverOptions }).o);
+        await fresh.reset();
+        const host = hosts.at(-1) as FakeHost;
+        const ws = fresh.workspace("p");
+        await fresh.event(ev("session_start", { session: "s-0" }));
+        host.onPrompt = () => writeFileSync(join(ws, "limits.cfg"), "max = 2\n");
+        await fresh.event(
+            ev("user_turn", { id: "e-1", session: "s-0", text: "raise it", probe: "q-1" }),
+        );
+        expect(captured(armDir)["host:q-1:e-1:diff"]?.patch).toContain("+max = 2");
+    });
+
     test("a probe turn's snapshot carries its diff, commands, prior session, and calls, and grades", async () => {
         const { driver, hosts, armDir, transcripts } = fixture("host", { p: gitRepo() });
         mkdirSync(join(transcripts, "sessions"), { recursive: true });
@@ -396,6 +679,30 @@ describe("probe snapshots", () => {
         expect(grade?.verdict).toBe("pass");
         expect(grade?.inputs).toEqual(["host:q-1:e-9:diff"]);
     });
+
+    test("a session_end replayed on resume keeps that session's diff as the next one's prior session", async () => {
+        const { driver, hosts, armDir, transcripts } = fixture("host", { p: gitRepo() });
+        mkdirSync(join(transcripts, "sessions"), { recursive: true });
+        await driver.reset();
+        const ws = driver.workspace("p");
+        const start = ev("session_start", { id: "e-0", session: "s-0" });
+        await driver.event(start);
+        const host = hosts.at(-1) as FakeHost;
+        host.onPrompt = () => writeFileSync(join(ws, "earlier.rs"), "fn earlier() {}\n");
+        await driver.event(ev("user_turn", { id: "e-1", session: "s-0", text: "go" }));
+        host.failClose = true;
+        const end = ev("session_end", { id: "e-2", session: "s-0" });
+        await expect(driver.event(end)).rejects.toThrow("host survived");
+
+        const resumed = new HostDriver((driver as unknown as { o: DriverOptions }).o);
+        await resumed.resume(start);
+        await resumed.event(end);
+        await resumed.event(ev("session_start", { id: "e-3", session: "s-1" }));
+        await resumed.event(
+            ev("user_turn", { id: "e-4", session: "s-1", text: "next", probe: "q-1" }),
+        );
+        expect(captured(armDir)["host:q-1:e-4:prior-diff"]?.patch).toContain("+fn earlier()");
+    });
 });
 
 test("a recorder rebuilt after a harness kill keeps the open session's start tree and commands", () => {
@@ -420,7 +727,7 @@ test("a recorder rebuilt after a harness kill keeps the open session's start tre
     expect(id).toBe("eidnara:q:e-2");
     const session = snap.artefacts.find((a: { id: string }) => a.id.endsWith("session-commands"));
     expect(session.commands).toEqual([{ command: "cargo build", exit: 0, scenario_ms: 1 }]);
-    resumed.sessionEnd("p", repo);
+    resumed.sessionEnd("s-1", "p", repo);
     const later = new SnapshotRecorder(armDir, "eidnara", () => []);
     later.sessionStart("s-2", "p", repo);
     const next = later.capture(
@@ -436,4 +743,177 @@ test("a recorder rebuilt after a harness kill keeps the open session's start tre
         (a: { id: string }) => a.id === `${next}:prior-diff`,
     );
     expect(prior.patch).toContain("+fn x() {}");
+});
+
+function captured(armDir: string): Record<string, { patch?: string }> {
+    const lines = readFileSync(join(armDir, "snapshots.jsonl"), "utf8").trim().split("\n");
+    const snap = JSON.parse(lines.at(-1) as string);
+    return Object.fromEntries(snap.artefacts.map((a: { id: string }) => [a.id, a]));
+}
+
+test("a recorder rebuilt over a stale index lock removes it and indexes the workspace", () => {
+    const repo = gitRepo();
+    const armDir = tmp();
+    const first = new SnapshotRecorder(armDir, "eidnara", () => []);
+    first.sessionStart("s-1", "p", repo);
+    writeFileSync(join(armDir, "snapshot.git", `${basename(repo)}.index.lock`), "");
+    const resumed = new SnapshotRecorder(armDir, "eidnara", () => []);
+    writeFileSync(join(repo, "new.rs"), "fn x() {}\n");
+    expect(resumed.tree(repo)).toMatch(/^[0-9a-f]{40}$/);
+});
+
+test("a recorder rebuilt over a cut last snapshot line drops the cut and appends whole records", () => {
+    const repo = gitRepo();
+    const armDir = tmp();
+    const first = new SnapshotRecorder(armDir, "eidnara", () => []);
+    first.sessionStart("s-1", "p", repo);
+    first.capture(
+        { probe: "q", session: "s-1", id: "e-1" },
+        "p",
+        repo,
+        first.tree(repo),
+        [],
+        false,
+    );
+    const path = join(armDir, "snapshots.jsonl");
+    const whole = readFileSync(path, "utf8");
+    writeFileSync(path, `${whole}{"id":"eidnara:r:e-2","item":"r","arte`);
+    const resumed = new SnapshotRecorder(armDir, "eidnara", () => []);
+    resumed.sessionStart("s-1", "p", repo);
+    resumed.capture(
+        { probe: "r", session: "s-1", id: "e-2" },
+        "p",
+        repo,
+        resumed.tree(repo),
+        [],
+        false,
+    );
+    const lines = readFileSync(path, "utf8").trim().split("\n");
+    expect(lines.map((l) => JSON.parse(l).id)).toEqual(["eidnara:q:e-1", "eidnara:r:e-2"]);
+});
+
+test("a snapshot diff shows added lines of a file git would call binary", () => {
+    const repo = gitRepo();
+    const armDir = tmp();
+    const recorder = new SnapshotRecorder(armDir, "eidnara", () => []);
+    recorder.sessionStart("s-1", "p", repo);
+    const before = recorder.tree(repo);
+    writeFileSync(join(repo, ".gitattributes"), "*.ts -diff\n");
+    writeFileSync(join(repo, "rule.ts"), "const DROWSY_EGRET_MAX = 1;\n");
+    writeFileSync(join(repo, "blob.rs"), "static STORE: Mutex<u8>;\n\0padding\n");
+    recorder.capture({ probe: "q", session: "s-1", id: "e-1" }, "p", repo, before, [], false);
+    const patch = captured(armDir)["eidnara:q:e-1:diff"]?.patch ?? "";
+    expect(patch).toContain("+const DROWSY_EGRET_MAX = 1;");
+    expect(patch).toContain("+static STORE: Mutex<u8>;");
+    expect(patch).not.toContain("Binary files");
+});
+
+test("snapshot git refuses a workspace path that an agent replaced with a symlink", () => {
+    const armDir = tmp();
+    const workspaces = join(armDir, "r", "workspaces");
+    mkdirSync(workspaces, { recursive: true });
+    const outside = tmp();
+    writeFileSync(join(outside, "credentials"), "aws_secret_access_key = leaked\n");
+    symlinkSync(outside, join(workspaces, "p"));
+    const recorder = new SnapshotRecorder(armDir, "eidnara", () => []);
+    expect(() => recorder.tree(join(workspaces, "p"))).toThrow("symlink");
+    expect(existsSync(join(armDir, "snapshot.git"))).toBe(false);
+});
+
+test("snapshot git runs no command and indexes no path that the workspace repo's config names", () => {
+    const repo = gitRepo();
+    const outside = tmp();
+    const ran = join(outside, "ran");
+    const hook = join(outside, "hook.sh");
+    writeFileSync(hook, `#!/bin/sh\ntouch ${ran}\ncat\n`, { mode: 0o755 });
+    writeFileSync(join(outside, "secret"), "aws_secret_access_key = leaked\n");
+    const set = (key: string, value: string) =>
+        spawnSync("git", ["config", key, value], { cwd: repo });
+    set("filter.evil.clean", hook);
+    set("diff.external", hook);
+    set("diff.evil.textconv", hook);
+    writeFileSync(join(repo, ".gitattributes"), "* filter=evil diff=evil\n");
+    const armDir = tmp();
+    const recorder = new SnapshotRecorder(armDir, "eidnara", () => []);
+    recorder.sessionStart("s-1", "p", repo);
+    const before = recorder.tree(repo);
+    writeFileSync(join(repo, "new.rs"), "fn x() {}\n");
+    recorder.capture({ probe: "q", session: "s-1", id: "e-1" }, "p", repo, before, [], false);
+    expect(existsSync(ran)).toBe(false);
+    expect(captured(armDir)["eidnara:q:e-1:diff"]?.patch).toContain("+fn x() {}");
+
+    set("core.worktree", outside);
+    const moved = recorder.tree(repo);
+    writeFileSync(join(repo, "more.rs"), "fn y() {}\n");
+    recorder.capture({ probe: "r", session: "s-1", id: "e-2" }, "p", repo, moved, [], false);
+    const patch = captured(armDir)["eidnara:r:e-2:diff"]?.patch;
+    expect(patch).toContain("+fn y() {}");
+    expect(patch).not.toContain("leaked");
+    expect(existsSync(ran)).toBe(false);
+});
+
+test("snapshot patches keep their b/ paths under a system git config and inherited git variables", () => {
+    const repo = gitRepo();
+    const system = join(tmp(), "gitconfig");
+    writeFileSync(system, "[diff]\n\tnoprefix = true\n");
+    const saved = { system: process.env.GIT_CONFIG_SYSTEM, dir: process.env.GIT_DIR };
+    process.env.GIT_CONFIG_SYSTEM = system;
+    process.env.GIT_DIR = join(tmp(), "not-a-repo");
+    try {
+        const armDir = tmp();
+        const recorder = new SnapshotRecorder(armDir, "eidnara", () => []);
+        recorder.sessionStart("s-1", "p", repo);
+        const before = recorder.tree(repo);
+        writeFileSync(join(repo, "new.rs"), "fn x() {}\n");
+        recorder.capture({ probe: "q", session: "s-1", id: "e-1" }, "p", repo, before, [], false);
+        const patch = captured(armDir)["eidnara:q:e-1:diff"]?.patch ?? "";
+        expect(diffPaths(patch)).toEqual(["new.rs"]);
+    } finally {
+        for (const [key, value] of [
+            ["GIT_CONFIG_SYSTEM", saved.system],
+            ["GIT_DIR", saved.dir],
+        ] as const) {
+            if (value === undefined) delete process.env[key];
+            else process.env[key] = value;
+        }
+    }
+});
+
+test("snapshot git that outlives its bound fails the probe turn instead of hanging the harness", async () => {
+    const shim = tmp();
+    const real = spawnSync("sh", ["-c", "command -v git"]).stdout.toString().trim();
+    writeFileSync(
+        join(shim, "git"),
+        `#!/bin/sh\nif [ "$1" = "add" ]; then sleep 30; fi\nexec ${real} "$@"\n`,
+        { mode: 0o755 },
+    );
+    const { driver, hosts, transcripts } = fixture("host", { p: gitRepo() });
+    mkdirSync(join(transcripts, "sessions"), { recursive: true });
+    const o = { ...(driver as unknown as { o: DriverOptions }).o, turnDeadlineMs: 300 };
+    const fresh = new HostDriver(o);
+    await fresh.reset();
+    const host = hosts.at(-1) as FakeHost;
+    await fresh.event(ev("session_start", { session: "s-0" }));
+    const path = process.env.PATH;
+    process.env.PATH = `${shim}:${path}`;
+    try {
+        const started = Date.now();
+        const outcome = await fresh.event(
+            ev("user_turn", { id: "e-1", session: "s-0", text: "go", probe: "q-1" }),
+        );
+        expect(Date.now() - started).toBeLessThan(10_000);
+        expect(outcome.failed).toContain("timed out");
+        expect(outcome.snapshot).toBeUndefined();
+        expect(host.closed).toBe(0);
+        await fresh.event(ev("session_end", { session: "s-0" }));
+        expect(host.closed).toBe(1);
+    } finally {
+        process.env.PATH = path;
+    }
+    await fresh.event(ev("session_start", { session: "s-1" }));
+    const next = await fresh.event(
+        ev("user_turn", { id: "e-2", session: "s-1", text: "again", probe: "q-2" }),
+    );
+    expect(next.failed).toBeUndefined();
+    expect(next.snapshot).toBe("host:q-2:e-2");
 });

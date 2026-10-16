@@ -16,7 +16,7 @@ A snapshot holds the artefacts the harness captured at a probe turn's first
 | `command-log` | Each command the agent ran, with its exit code and scenario time: `turn` for the probe turn, `session` for every turn of its session so far |
 | `test-result` | A test command, its exit code, and its summary lines |
 | `workspace-state` | Selected workspace files by path |
-| `proxy-call` | Call records with component, turn, scenario time, token counts, and the response text the proxy relayed |
+| `proxy-call` | Call records with component, turn, scenario time, token counts, and the response text the proxy relayed  A call whose relayed text ran past the proxy's 262,144-character cap carries `response_text_truncated`, and a grader that reads that answer refuses the item|
 
 `gradeItem` refuses a snapshot with an artefact of any other class, such as
 an agent transcript or self-report (SIM-P40), and an item whose check lacks
@@ -29,34 +29,93 @@ artefact.
 
 `GradeLog` appends grades to one JSONL file. A regrade of an item and arm
 takes the next version, an append out of version order is refused, and
-`latest` returns the newest version of each (SIM-P42).
+`latest` returns the newest version of each (SIM-P42). A P7 grade's key
+also holds `against`, the arm it was judged against, so each pairing keeps
+its own versions.
 
 ## Capture
 
 The arm driver captures a snapshot at every probe turn
 (`src/hosts/snapshot.ts`), and the scheduler journals `SnapshotArtefacts`
 with the item and snapshot id once per item and arm, right after the turn's
-first `EndTurn` (SIM-P41). Snapshots append to `<arm>/snapshots.jsonl`; a
-snapshot id is `<arm>:<item>:<turn event>`, so each attempt has its own id.
+first `EndTurn` (SIM-P41). The `EndTurn` entry names the snapshot too, so a
+resume after a kill between the two entries journals the snapshot from it.
+Snapshots append to `<arm>/snapshots.jsonl`, and a recorder rebuilt after a
+kill drops a cut last line; a
+snapshot id is `<arm>:<item>:<turn event>`, so each attempt has its own id,
+and each snapshot names its session, which the P7 grader checks against the
+probe's.
+The driver takes the snapshot after the scheduler's background jobs (a
+summarizer or compaction call the turn started) have ended, so the
+`proxy-call` artefact holds those calls. Each recorder git run against a
+workspace is bounded by the turn deadline; a run past it fails the probe turn
+with `snapshot: git ... timed out` and the item has no snapshot; a run past the
+bound at a session boundary leaves that session without a start or end tree,
+so the next session carries no prior-session diff. The recorder removes the
+index lock a killed git leaves, after a timeout and when rebuilt after a
+kill. The driver waits the scheduler's settle window and then its background
+jobs before it takes a probe snapshot.
+The snapshot tree adds, with `--force`, the paths the project's source
+repository tracks although its ignore rules match them (the driver lists
+them from the source at reset), so a change to such a file is in the diff.
+The snapshot tree leaves out a git repository nested in the workspace (git
+would index it as a gitlink, hiding its files), and a probe turn that leaves
+one behind ends `failed` with `embedded repository at <path>`, so the item
+is excluded (SIM-P46) instead of graded on a diff that lacks that content.
+The recorder's git refuses a workspace path that is a symlink or lies behind
+one, and a tracked-but-ignored path whose parent became a symlink is left out
+of the tree. Nested repositories are found by their `.git` entries, with the
+ones the workspace's ignore rules match left alone. Snapshot diffs run with
+`--text`, so a NUL byte or a `-diff` attribute hides no added line.
 
 | Artefact | Source |
 |---|---|
-| `diff` (`turn`) | A git tree of the workspace, untracked files included, written to a separate index before the prompt and after it, and diffed |
+| `diff` (`turn`) | A git tree of the workspace's files that its `.gitignore` rules leave in, untracked files included, taken before the prompt and after it, and diffed |
 | `diff` (`prior-session`) | The same trees at the start and end of the project's previous session |
-| `command-log` | The host's tool runs, each a bash command or the tool name and its path, with a 0 or 1 error flag (null for a run that never finished) and the scenario time it started. Pi reports `tool_execution_start` and `tool_execution_end` events; OpenCode's tool parts come from the session messages the turn added, each timed from its start relative to the turn's first new message, both in OpenCode's own clock |
+| `command-log` | The host's tool runs, each a bash command or the tool name and its path followed by the text and structured arguments it was given (a `write`'s content, an `edit`'s edits), with a 0 or 1 error flag (null for a run that never finished) and the scenario time the run started. The recorder saves each run as the host logs it, so a harness kill mid-turn keeps the runs logged so far in the session log. Pi reports `tool_execution_start` and `tool_execution_end` events as they happen, and a run is timed from its start event; OpenCode's tool parts come from the session messages the turn added, read after the turn whatever its outcome, each timed from its start relative to the turn's first new message, both in OpenCode's own clock, with a pending or running part's exit null, so a turn OpenCode was running when the harness was killed leaves no tool runs |
 | `proxy-call` | The session's call records from `calls.jsonl`, each with the index of the user turn it belongs to (a background call takes the preceding turn's), and the response text the proxy records for agent, user-sim, and judge calls (the first 32,768 characters) |
 
 The recorder keeps each project's session-start tree, the last session's
-tree pair, and the open session's commands in `<arm>/snapshot-state.json`,
-so a resumed arm reopens its session with the same start tree and commands.
+tree pair, the last ended session, and the open session's commands in
+`<arm>/snapshot-state.json`, so a resumed arm reopens its session with the
+same start tree and commands, and a `session_start` and `session_end` that a
+resume replays for a session that already ended leave its trees as recorded.
+
+The trees live in a bare repository the recorder owns, `<arm>/snapshot.git`,
+with one index per workspace. The agent can write the workspace's `.git`, so
+the recorder's git runs with `GIT_DIR` on its own repository, `GIT_WORK_TREE`
+on the workspace, every inherited `GIT_*` variable dropped, and global and
+system config off (`src/git.ts`); no filter, fsmonitor, external diff,
+textconv, or `core.worktree` from the workspace's config applies. The
+persistent index lets a later tree rehash only the files whose stat data
+changed.
+
 The harness captures no `test-result` or `workspace-state` artefact yet;
 the graders read neither.
 
-`scripts/grade-run.ts <run dir>` grades every snapshot the journal names
+`scripts/grade-run.ts <run dir>` takes the run's lease, so one grader at a
+time allocates versions, refuses a run whose pre-registration or scenario no
+longer hashes to the digests in its manifest or whose journal lacks `EndRun`
+or an arm's `EndArm` and one terminal `Event` per scheduled event (SIM-P67),
+drops a cut last line of `grades.jsonl`, holds P7 grades until the judge
+gateway has stopped and reports no failed `judge-calls.jsonl` write, and
+grades every snapshot the
+journal names
 into `grades.jsonl` and judges each P7 item for each memory arm against the
-host arm, through a gateway it starts for the judge. It prints the verdict
-counts per arm and probe type, the skipped items by reason, the summed
-`P11.weighted_score` per arm, Δmem per memory arm, and the judge errors,
+host arm, through a gateway it starts for the judge. It checks the judge
+model's family against every model the manifest records before it appends
+the first grade, so a refused judge leaves the log untouched. A P7 pair
+whose answers are refused before the judge call (empty, or carrying an arm
+name) is skipped as refused; a judge call that fails or returns no verdict
+is a judge error. The journaled
+snapshot is an item's first attempt and the arm's later snapshots of that
+item are its later attempts. A probe whose turn lies past the run's event
+count is listed as outside the run. It prints the verdict
+counts per arm and probe type (a P7 row also names the arm judged against),
+the skipped items by arm and reason, the grade versions the summary
+aggregates, the summed
+`P11.weighted_score` per arm, Δmem per memory arm from this invocation's
+grades, and the judge errors,
 and exits 1 when a judge call failed. The scenario plants no canary
 strings, so it passes the judge none; blinding still refuses arm names. P14 items have no probe turn of their
 own and wait on the user simulator's labels (M6), so it lists them as
@@ -106,60 +165,132 @@ eval-core judge contract (`crates/eval-core/src/judge.rs`), which TypeScript
 cannot call, and the divergences are listed below.
 
 1. `p7Pair` builds the pair from the two arms' snapshots of one P7 item:
-   it refuses a snapshot with a non-grade artefact, reads each probe turn's
-   last agent answer from the `proxy-call` artefact, refuses an empty
-   answer, and returns the ids it read as the grades' inputs.
+   it refuses a snapshot of another item or one snapshot on both sides
+   (two runs of one arm, as in an A/A pair, are distinct snapshots),
+   refuses a snapshot with a non-grade artefact, returns null when either
+   probe turn ended `failed` (SIM-P46), reads each probe turn's last agent
+   answer from the `proxy-call` artefact, refuses an answer that is empty
+   after normalisation, and
+   returns the snapshot ids, arm names, and the artefact ids it read as the
+   grades' inputs.
 2. `blind` takes a pair of answers to one P7 item, the memory arm's as `a`
-   and the host arm's as `b`, and refuses either answer when it carries a
+   and the host arm's as `b`, and refuses either answer, or the reference
+   reason, when it carries a
    canary or names an arm. Names are matched as whole words after folding
-   case, full width, and separators and dropping invisible characters and
-   every combining mark after canonical decomposition (eval-core drops the
-   combining diacritics block only). The
+   case and separators, applying compatibility decomposition (NFKD, which
+   also folds full-width, circled, and mathematical letters), and dropping
+   invisible characters and
+   every combining mark (eval-core drops the
+   combining diacritics block only); an invisible character is tried both
+   as nothing and as a word separator, so `eid\u200bnara` and `arm\u200ba`
+   both match, the normalised text is checked as well as the raw text, so
+   `Ei**dnara` matches, and canaries and one-word arm names are also
+   matched with every separator removed, so `eid-nara` and `CAN-ARY-7f3`
+   match. Blinding covers the forms an agent's answer takes when it
+   mentions an arm through formatting, encoding, or spacing; it is a safety
+   net under the structural guarantee that no arm is told its label, and
+   adversarial obfuscation (entity references nested inside entity
+   references, letters of a multi-word label split by punctuation, and
+   confusable or mixed-script homoglyphs) is outside what it refuses. The
    arm names are eval-core's six plus `eidnara`, `host arm`, and
-   `memory arm`. Doubled emphasis marks (`**`, `__`), backticks, heading
-   marks, bullet marks, and code fence lines are stripped and whitespace
-   collapsed before the judge sees either answer.
+   `memory arm`. HTML comments and tags are dropped, the common and
+   numeric entities decoded (an entity outside the code-point range is
+   dropped, any other named entity becomes a space), markup the decoding
+   exposed is dropped again, invisible characters are dropped, Markdown
+   links and images, inline or reference-style, keep
+   their label and lose their destination, identifier, and definition line, doubled or tripled emphasis marks (`**`, `***`, `__`, `___`), backticks, heading
+   marks, bullet marks, and code fence lines (a line that starts with three
+   backticks and holds no further backtick, whatever its info string) are
+   stripped and whitespace
+   collapsed before the judge sees either answer; backticks inside a line
+   are removed and the text between them stays.
 3. `judgePair` shows the pair in both orders, under the rubric and the
-   item's reference reason, and reads one verdict per order: `first`,
+   item's reference reason (normalised like the answers), and reads one
+   verdict per order: `first`,
    `second`, `both`, or `neither`. eval-core's verdicts are `first`,
    `second`, and `tie`; recall needs `both` and `neither` to tell two
    recalls apart from none. Unswapped verdicts that disagree make the pair
    `Inconsistent`, which grades as excluded with that reason and is never
-   averaged. A reply that is not exactly one verdict word refuses the call.
+   averaged. A reply that is not exactly one verdict word, with trailing
+   `.` or `!` at most, refuses the call.
 4. The judgment records each answer's length after normalisation, and
    `longer_recalled_alone` records whether the longer answer was the one
    recalled alone, for the verbosity audit.
-5. `gradeP7` writes one grade per arm. Each grade carries the judge model,
+5. `gradeP7` takes the judgment, the compiled P7 probe, and each arm's
+   snapshots in attempt order, requires every snapshot to come from the
+   probe's session and, when the probe names its event, from that turn,
+   grades the first snapshot of each arm and
+   counts the rest as later attempts (as `gradeItem` does), rebuilds the
+   pair from those two snapshots (so the arms, snapshot ids, artefact
+   inputs, answer digests, and lengths it records all come from the
+   snapshots that produced the judged answers) and the reference digest
+   from the probe's `check.judge`, and writes one grade per arm naming the other arm in
+   `against`, for the
+   item, the exact
+   answers, and the reference reason the judgment names (the judgment
+   carries the answers' and the reference's digests), and only when the
+   judgment's
+   recall is the one its two order verdicts imply, each of which must be one
+   of the four verdict words, and its answer lengths and
+   `longer_recalled_alone` are the ones the pair and that recall imply. Each grade carries the judge model,
    the prompt and rubric digests, both order verdicts, both answer lengths
    and `longer_recalled_alone`, the calibration digest, and the permutation
    check's result and counts. It computes the digest and runs the check
    itself and records a refusal of either as `refused: <reason>`, so
-   `gate_eligible` is true only for a calibration set that validates and a
-   permutation check that passes.
-6. `permutationCheck` refuses arm identification above the pre-registered
-   60% ceiling, correct or inverted.
+   `gate_eligible` is true only when the judgment's judge identity, the
+   calibration set's judge identity, and the permutation evidence's judge
+   identity all equal the pre-registered judge's (`grading.judge.model`
+   with the current prompt and rubric digests), the recall is consistent,
+   the set validates, the permutation check passes, and a cross-judge record
+   carries the pre-registered cross-judge's identity
+   (`grading.judge.cross_judge`) and the set's digest (recorded as
+   `cross_judge: valid`; absent evidence reads `none`).
+6. `permutationCheck` refuses counts that are not safe whole numbers and arm
+   identification above the pre-registered 60% ceiling, correct or inverted,
+   compared in exact integer arithmetic.
 7. `calibrationDigest` validates a calibration set: at least 20 pairs, and a
    human sample of at least 10% rounded up and never below 20 pairs. Only a
    set that passes gets a digest; a blank pair id, a human label naming no
    pair or naming one twice, a label other than `a`, `b`, `both`, or
-   `neither`, and another schema are refused. The set holds the judge identity,
-   a label per pair, and the ids of the human-labelled pairs; eval-core's
-   `CalibrationSet` holds human labels alone and takes the human floor from
-   the campaign's `SamplingPlan`, which the sim does not have yet. The maintainer's 20 labelled anchor pairs
+   `neither`, labels that are not an object keyed by pair id, a human id
+   that is not a string, and another
+   schema are refused. The set holds the judge identity,
+   a label per pair, and the ids of the human-labelled pairs under the sim's
+   own schema literal, `sim-judge-calibration/v1`, which also prefixes the
+   digest; eval-core's
+   `CalibrationSet` (`eval-judge/v1`) holds human labels alone and takes the
+   human floor from the campaign's `SamplingPlan`, which the sim does not
+   have yet, and `docs/eval-core-mapping.md` names the fields `eval-judge/v2`
+   would carry. The maintainer's 20 labelled anchor pairs
    do not exist yet, so P7 grades carry `calibration_digest: none` and stay
    out of gates.
 8. `humanCheckSample` draws the 10% of P7 items, rounded up, to journal as
    `human_check_pending` (SIM-P44).
 
 `proxyJudge` sends each verdict request through the capture proxy with the
-`judge` component header. It refuses a judge model from the agent model's
-family (SIM-P43); the pre-registered judge is `global.openai.gpt-5.6-luna`.
-On 2026-10-16 the two P7 fixtures went through the gateway to that model
-(`sim-runs/judge-smoke/judge-calls.jsonl` holds the four `judge` call
-records and `judgments.json` the verdicts), and the real verdicts (`first`,
-then `second`, and the reverse) graded as the fixtures record.
+`judge` component header, bounded by a per-call deadline (900 s by default)
+covering the request and the body read, whose expiry is a judge refusal. A
+reply whose `stopReason` is not `end_turn` (a truncated or filtered
+generation) is a judge refusal before its text is read. It refuses a judge model from the agent model's
+family (SIM-P43), where the family is the provider segment of the model id
+(`provider.model` or `region.provider.model`), and a model id whose provider
+it does not know; an unreachable gateway, a reply that is not JSON, one that
+carries no text block, or one whose text blocks together are not one verdict
+word is a judge refusal. The
+pre-registered judge is `global.openai.gpt-5.6-luna`.
+On 2026-10-16 the two P7 fixtures went through the gateway to that model,
+and the real verdicts (`first`, then `second`, and the reverse) graded as
+the fixtures record. The run's records (`judge-calls.jsonl` with the four
+`judge` call records, `judgments.json` with the verdicts) are run data under
+`runs/judge-smoke/` on the host that ran it; run data is never committed, so
+this claim is checked against that host's records, and the fixtures' own
+verdicts are scripted.
 
-The judge identity is the model id with the prompt and rubric digests;
+The judge identity is the model id with the prompt and rubric digests; the
+prompt digest covers `PREPROCESSING_VERSION` (`sim-judge-preprocessing/v2`),
+which changes whenever normalisation, folding, or the arm tokens change what
+the judge sees, so judgments and calibration sets made under older
+preprocessing stop matching;
 eval-core's `JudgeIdentity` also names the provider and tokenizer profile,
 and digests a rubric document under `eval-judge-rubric/v1` where the sim
 digests the rubric text.
@@ -168,6 +299,10 @@ The pre-registered cross-judge (`grading.judge.cross_judge`, Haiku 5.5)
 re-judges the calibration set, so it waits on the maintainer's anchor pairs
 too. Its model shares the agent's family, which `proxyJudge` refuses for
 judging arm answers; calibration judging will need its own entry point.
+Until then `P7Context.cross_judge` is the record that entry point will
+produce (its identity and the digest of the set it labelled), gate
+eligibility requires it, and the agreement rule between the two judges'
+labels is still to be pre-registered.
 
 ## Fixtures
 

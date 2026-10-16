@@ -324,6 +324,23 @@ describe("fault composition at the proxy sink", () => {
         expect(injector.report()[0]?.status).toBe("fired");
     });
 
+    test("an injected truncated reply records the text the host saw", async () => {
+        const fault = {
+            id: "t",
+            type: "truncated_length",
+            strategy: "burst",
+            params: { count: 2 },
+        } as ProxyFault;
+        const { injector, records, url } = await start(fault);
+        injector.arm("t");
+        await hostCall(url, AGENT_BODY, 2_000);
+        await hostCallJson(url, AGENT_BODY, 2_000);
+        expect(records.records.map((r) => [r.fault_ref, r.response_text])).toEqual([
+            ["t", "The change is partly"],
+            ["t", "The change is partly"],
+        ]);
+    });
+
     test("slow_stream over an upstream that throttles first records the proxy's retry", async () => {
         const fault = {
             id: "s",
@@ -483,6 +500,62 @@ describe("call records", () => {
         const { records, url } = await start(null);
         await hostCallJson(url, AGENT_BODY, 2_000);
         expect(records.records[0]?.response_text).toBe("done");
+    });
+
+    test("a reply past the recorded-text cap is marked truncated", async () => {
+        const long: Upstream = {
+            async converse() {
+                const usage = { inputTokens: 1, outputTokens: 1 };
+                async function* events() {
+                    yield { messageStart: { role: "assistant" } };
+                    for (let i = 0; i < 70; i++) {
+                        const text = "x".repeat(4_096);
+                        yield { contentBlockDelta: { contentBlockIndex: 0, delta: { text } } };
+                    }
+                    yield { contentBlockStop: { contentBlockIndex: 0 } };
+                    yield { messageStop: { stopReason: "end_turn" } };
+                    yield { metadata: { usage, metrics: { latencyMs: 3 } } };
+                }
+                return { events: events() };
+            },
+        };
+        const { records, url } = await start(null, long);
+        await hostCall(url, AGENT_BODY, 5_000);
+        const record = records.records[0];
+        expect(record?.response_text_truncated).toBe(true);
+        expect((record?.response_text ?? "").length).toBe(262_144);
+    });
+
+    test("a streamed reply with two text blocks records the same text as its non-streaming form", async () => {
+        const usage = { inputTokens: 1, outputTokens: 1 };
+        const twoBlocks: Upstream = {
+            async converse(_m: string, _b: unknown, streaming: boolean) {
+                if (!streaming) {
+                    const message = {
+                        role: "assistant",
+                        content: [{ text: "foo" }, { text: "bar" }],
+                    };
+                    return { json: { output: { message }, stopReason: "end_turn", usage } };
+                }
+                async function* events() {
+                    yield { messageStart: { role: "assistant" } };
+                    yield { contentBlockDelta: { contentBlockIndex: 0, delta: { text: "fo" } } };
+                    yield { contentBlockDelta: { contentBlockIndex: 0, delta: { text: "o" } } };
+                    yield { contentBlockStop: { contentBlockIndex: 0 } };
+                    yield { contentBlockDelta: { contentBlockIndex: 1, delta: { text: "bar" } } };
+                    yield { contentBlockStop: { contentBlockIndex: 1 } };
+                    yield { messageStop: { stopReason: "end_turn" } };
+                    yield { metadata: { usage, metrics: { latencyMs: 3 } } };
+                }
+                return { events: events() };
+            },
+        };
+        const { records, url } = await start(null, twoBlocks);
+        await hostCallJson(url, AGENT_BODY, 2_000);
+        await hostCall(url, AGENT_BODY, 2_000);
+        const [plain, streamed] = records.records;
+        expect(plain?.response_text).toBe("foo\nbar");
+        expect(streamed?.response_text).toBe(plain?.response_text);
     });
 
     test("the writer refuses a record missing any required field", () => {

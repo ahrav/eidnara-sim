@@ -61,7 +61,18 @@ the abort call), and wait 30 s for the call to drain; a call still running
 then stops the run. An `apply_diff` event writes its file inside the
 workspace and commits that path alone, so the agent's own uncommitted edits
 stay uncommitted; content already committed adds no commit, and a path that
-resolves outside the workspace through `..` or a symlink stops the run.
+resolves outside the workspace through `..` or a symlink stops the run. The
+commit is built with plumbing (`hash-object --no-filters`, a scratch index
+whose entry keeps the file's executable bit, `commit-tree`, `update-ref`) and every workspace git run pins `GIT_DIR` and
+`GIT_WORK_TREE`, points `core.hooksPath` at an absent directory, turns
+`core.fsmonitor` and `commit.gpgsign` off, and runs with the repository's
+config swapped for the clone's baseline (the agent's config returns
+afterwards), because the agent can write that config and the harness process
+runs outside the sandbox. The workspace path itself must be a real directory
+under the arm root, an existing ancestor of the diff's path must resolve
+inside it before any directory is created, and a `.git` that is a file or
+symlink, any symlink under `.git`, or an `objects/info/alternates` file stops
+the run before git writes anything.
 
 Pi runs in RPC mode with `--session-id sim-<session>`, its agent directory,
 settings, and model list under the arm root, and the Eidnara extension from

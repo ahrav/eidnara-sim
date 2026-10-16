@@ -41,6 +41,8 @@ export interface HostContext {
     model: string;
     contextLimit: number;
     now?: () => number;
+    /** The host invokes `onTool` once per tool run as it records the run; `drainTools` invokes it for the runs it adds itself. */
+    onTool?: (run: ToolRun) => void;
 }
 
 export interface ToolRun {
@@ -49,12 +51,16 @@ export interface ToolRun {
     scenario_ms: number;
 }
 
+const TARGET_KEYS = ["path", "filePath", "pattern", "file_path"];
+
 export function toolCommand(tool: string, args: Record<string, unknown> | undefined): string {
     if (typeof args?.command === "string") return args.command;
-    const target = args?.path ?? args?.filePath ?? args?.pattern ?? args?.file_path;
-    return typeof target === "string"
-        ? `${tool} ${target}`
-        : `${tool} ${JSON.stringify(args ?? {})}`;
+    const key = TARGET_KEYS.find((k) => typeof args?.[k] === "string");
+    if (!key || !args) return `${tool} ${JSON.stringify(args ?? {})}`;
+    const body = Object.entries(args)
+        .filter(([k, v]) => k !== key && (typeof v === "string" || typeof v === "object"))
+        .map(([, v]) => (typeof v === "string" ? v : JSON.stringify(v)));
+    return [`${tool} ${args[key]}`, ...body].join("\n");
 }
 
 export interface PromptResult {
@@ -200,10 +206,12 @@ export abstract class SimHost {
     protected logTool(
         tool: string,
         args: Record<string, unknown> | undefined,
-        failed: boolean,
+        exit: number | null,
         scenario_ms = this.ctx.now?.() ?? 0,
     ) {
-        this.tools.push({ command: toolCommand(tool, args), exit: failed ? 1 : 0, scenario_ms });
+        const run = { command: toolCommand(tool, args), exit, scenario_ms };
+        this.tools.push(run);
+        this.ctx.onTool?.(run);
     }
 
     protected unfinished(): ToolRun[] {
@@ -211,7 +219,9 @@ export abstract class SimHost {
     }
 
     drainTools(): ToolRun[] {
-        return [...this.tools.splice(0), ...this.unfinished()];
+        const open = this.unfinished();
+        for (const run of open) this.ctx.onTool?.(run);
+        return [...this.tools.splice(0), ...open];
     }
 }
 
@@ -220,7 +230,7 @@ export class PiSimHost extends SimHost {
     readonly agentDir = join(this.ctx.root, "home/.pi/agent");
     private readonly started = new Map<
         string,
-        { tool: string; args: Record<string, unknown>; ms: number }
+        { tool: string; args: Record<string, unknown>; scenario_ms: number }
     >();
 
     protected override unfinished(): ToolRun[] {
@@ -229,8 +239,20 @@ export class PiSimHost extends SimHost {
         return open.map((t) => ({
             command: toolCommand(t.tool, t.args),
             exit: null,
-            scenario_ms: t.ms,
+            scenario_ms: t.scenario_ms,
         }));
+    }
+
+    /** A tool run is timed from its start event, the moment the action began. */
+    private toolEvent(e: Untyped): void {
+        if (e.type === "tool_execution_start") {
+            const scenario_ms = this.ctx.now?.() ?? 0;
+            this.started.set(e.toolCallId, { tool: e.toolName, args: e.args, scenario_ms });
+        }
+        if (e.type !== "tool_execution_end") return;
+        const run = this.started.get(e.toolCallId);
+        this.started.delete(e.toolCallId);
+        if (run) this.logTool(run.tool, run.args, e.isError === true ? 1 : 0, run.scenario_ms);
     }
 
     private writeConfigs(connectionFile: string | null): void {
@@ -308,18 +330,8 @@ export class PiSimHost extends SimHost {
         this.rpc = new rpcClient.PiRpcProcess(child, new rpcClient.PiRpcProtocol(), {
             stderrLimit: 20_000,
         });
-        const started = this.started;
-        started.clear();
-        this.rpc.onEvent((e: Untyped) => {
-            if (e.type === "tool_execution_start") {
-                const ms = this.ctx.now?.() ?? 0;
-                started.set(e.toolCallId, { tool: e.toolName, args: e.args, ms });
-            }
-            if (e.type !== "tool_execution_end") return;
-            const run = started.get(e.toolCallId);
-            started.delete(e.toolCallId);
-            if (run) this.logTool(run.tool, run.args, e.isError === true, run.ms);
-        });
+        this.started.clear();
+        this.rpc.onEvent((e: Untyped) => this.toolEvent(e));
         const ready = this.rpc.sendCommand("get_state", {}, { timeoutMs: 120_000 });
         await Promise.race([ready, spawnError]);
     }
@@ -380,6 +392,9 @@ const NON_INTERACTIVE = ["question", "plan_enter", "plan_exit"].map((permission)
     action: "deny",
     pattern: "*",
 }));
+
+/** A tool part's exit by its OpenCode status; a pending or running part has none. */
+const EXIT: Record<string, number> = { completed: 0, error: 1 };
 
 export class OpencodeSimHost extends SimHost {
     private oc: Untyped = null;
@@ -482,7 +497,10 @@ export class OpencodeSimHost extends SimHost {
 
     private async messages(): Promise<Array<{ info: Untyped; parts: Untyped[] }>> {
         const listed = await this.client.session.messages({ path: { id: this.sid } });
-        return (listed.data ?? []) as Array<{ info: Untyped; parts: Untyped[] }>;
+        if (listed.error || !listed.data) {
+            throw new Error(`session.messages failed: ${JSON.stringify(listed.error ?? null)}`);
+        }
+        return listed.data as Array<{ info: Untyped; parts: Untyped[] }>;
     }
 
     private async logTurnTools(seen: Set<string>, startScenario: number): Promise<void> {
@@ -492,14 +510,31 @@ export class OpencodeSimHost extends SimHost {
             for (const part of m.parts.filter((p) => p.type === "tool")) {
                 const at = Number(part.state?.time?.start ?? origin);
                 const ms = startScenario + (Number.isFinite(origin) ? Math.max(0, at - origin) : 0);
-                this.logTool(part.tool, part.state?.input, part.state?.status === "error", ms);
+                this.logTool(part.tool, part.state?.input, EXIT[part.state?.status] ?? null, ms);
             }
         }
     }
 
+    /**
+     * Runs one turn and then logs the tool parts of the messages it added, on every outcome:
+     * the next turn treats those messages as seen, so a turn that errored or hit its deadline
+     * logs its tools here or never. A failed turn whose listing also fails keeps its own
+     * error and names the capture gap.
+     */
     async prompt(text: string, timeoutMs: number): Promise<PromptResult> {
         const seen = new Set((await this.messages()).map((m) => String(m.info?.id)));
         const startScenario = this.ctx.now?.() ?? 0;
+        const outcome = await this.turn(text, timeoutMs);
+        try {
+            await this.logTurnTools(seen, startScenario);
+        } catch (caught) {
+            if (!outcome.error) throw caught;
+            return { error: `${outcome.error} | tool capture: ${String(caught)}`.slice(0, 2000) };
+        }
+        return outcome;
+    }
+
+    private async turn(text: string, timeoutMs: number): Promise<PromptResult> {
         const model = { providerID: "amazon-bedrock", modelID: this.ctx.model };
         const call = this.client.session.prompt({
             path: { id: this.sid },
@@ -515,17 +550,14 @@ export class OpencodeSimHost extends SimHost {
             await Promise.race([abort.catch(() => undefined), Bun.sleep(5_000)]);
             const drained = await Promise.race([settled, Bun.sleep(30_000).then(() => null)]);
             if (drained === null) throw new Error("OpenCode turn still running 30 s after abort");
-            await this.logTurnTools(seen, startScenario).catch(() => undefined);
             return { error: `turn deadline ${timeoutMs} ms` };
         }
         if ("caught" in first) {
-            await this.logTurnTools(seen, startScenario).catch(() => undefined);
             const tail = String(this.oc?.stderr?.() ?? "").slice(-600);
             return { error: `${String(first.caught)} | serve stderr: ${tail}`.slice(0, 2000) };
         }
         const { result } = first;
         if (result.error) return { error: JSON.stringify(result.error).slice(0, 2000) };
-        await this.logTurnTools(seen, startScenario);
         const info = result.data?.info;
         return info?.error ? { error: JSON.stringify(info.error).slice(0, 2000) } : {};
     }
