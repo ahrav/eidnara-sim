@@ -13,9 +13,11 @@ checkout, checks out its `HEAD`, and builds every artefact inside the clone,
 so the source checkout itself stays read-only; it refuses a clone path that
 is the checkout or lies beneath it, and reuses an existing clone only when
 its `.sim-build-source` names the same checkout. It refuses a symlink at `<clone>.lock`, holds the lock with `flock` for the whole build, so a second build of the same clone is
-refused. A first clone is made at `<clone>.partial` and renamed into place
-once it carries its source record, so an interrupted clone leaves only the
-partial tree, which the next build removes. `.sim-build-commit` holds
+refused. A first clone is made in a fresh `<clone>.partial.XXXXXX` directory that
+holds an owner record, and is renamed into place once it carries its source
+record; the next build removes only partial directories whose owner record
+names the same source. A source that tracks either
+record path is refused, and each record is unlinked before it is written. `.sim-build-commit` holds
 the built commit from the end of one successful build until the next build
 starts, and preflight requires it to match the clone's `HEAD` and
 `daemon_binary` to be the clone's own
@@ -62,10 +64,13 @@ stops it with SIGTERM so its store stays on disk; a daemon that outlives
 SIGTERM is killed with the stack's SIGKILL path and the stop still fails. It
 appends every chunk the daemon writes to the arm's `daemon.log` as it
 arrives, across restarts, so a kill at any point loses nothing already
-written; the log opens with `O_NOFOLLOW`, so a symlink left there fails the
-append and the first such failure surfaces at stop.
+written; the log opens with `O_NOFOLLOW` and `O_NONBLOCK` and must be a
+regular file, so a symlink or FIFO left there fails the append without
+blocking, and the first such failure surfaces at stop together with a failed
+SIGKILL fallback.
 
-Each `session_start` launches one host process in the session's workspace
+Each `session_start` launches one host process in the session's workspace,
+which must lie below a kept path since the launcher masks the run root,
 through the sandbox launcher, and each `session_end` closes it; when the readiness check fails or Pi
 refuses it, or the OpenCode SDK setup or session listing fails after the
 launch, `openSession` closes the session it started before it throws. The
@@ -83,7 +88,7 @@ process tree and signals every process the user owns, with SIGKILL after
 root that has not exited by then, since a launcher still in its privileged
 setup has no user-owned process to signal. The launcher root's start time is
 taken when it is spawned, so a root pid the kernel has since reused is left
-alone. Each pid in that walk is
+alone, and a launch whose start time could not be read is not signalled. Each pid in that walk is
 paired with its start time and checked against it before every signal, so a
 pid the kernel reuses during the grace period is left alone. The launcher's
 pid namespace ends with its init, so a child forked while the tree stops dies
@@ -93,7 +98,9 @@ before it retries a failed request itself, so a Pi turn ends only at an
 `agent_end` Pi will not retry. After that end Pi may compact the session and
 continue the run, so a turn is settled only once `get_state` reports Pi
 neither streaming nor compacting and a 1 s window passes with no
-`agent_start` or `compaction_start`; its result is the last such `agent_end`.
+`agent_start` or `compaction_start`, and no `compaction_end` with
+`willRetry: true` waits for its continuation's start; its result is the last
+such `agent_end`.
 Both waits are bounded by the turn's remaining time (the state check gets at
 least 1 s), and a refused `get_state` counts as unsettled, so the turn goes
 through the abort and drain below. A prompt Pi refuses in preflight starts no
@@ -103,7 +110,7 @@ stops the run, so a late end cannot finish the next turn. OpenCode turns race th
 abort the session (waiting at most 5 s for the abort call), and wait 30 s for
 the call to drain; a call still running then stops the run, and so does an
 abort call still pending after 30 s, since it would cancel the next turn,
-and so does an abort that fails or reports an error. A
+and so does an abort the server does not confirm with `true`. A
 prompt request that fails before the server answers is aborted the same way,
 and an abort that fails stops the run, since the turn's completion cannot be
 established. A Pi `agent_end` seen before the prompt response fails settles
@@ -150,11 +157,14 @@ executes with the user's privileges. Both reach Bedrock only through the
 proxy, with placeholder AWS credentials.
 
 The launcher binds kept paths read-write and read-only paths read-only, and
-refuses a writable kept path under a read-only one and any path that equals
-or contains a masked root (`/tmp`, the user's home), so narrow paths such as
+refuses a writable kept path under a read-only one, compared through
+canonical paths so a symlink alias cannot split them, and any path that
+equals or contains a masked root (`/tmp`, the user's home, the run root),
+directly or through a symlink, so narrow paths such as
 `~/.cargo` stay visible while the home itself stays hidden. Configured paths
 must be normalized, since the launcher refuses others. The arm's own
-directories are read-write. The toolchain paths, the tool
+directories are read-write; the scenario clock's directory is read-only
+inside the sandbox, since the scheduler writes it from outside. The toolchain paths, the tool
 wrappers, the interposer build, the eidnara build clone, and the Node and Pi
 installs are read-only, so the agent reads and runs them while later
 sessions and arms run the same files; `touch` under `~/.cargo/bin` fails inside
@@ -167,7 +177,8 @@ toolchain probe and both hosts use, its `keep` paths (the cargo binaries, regist
 git cache, rustup, and the bun binary and install cache) stay visible and
 read-only inside the sandbox (a mount nested inside a read-only path is
 remounted read-only too), and its `env` sets `CARGO_HOME`, `RUSTUP_HOME`,
-and `BUN_INSTALL_CACHE_DIR`. The hosts replace `HOME`, and Bun resolves its
+and `BUN_INSTALL_CACHE_DIR`, the only variables `toolchain.env` accepts, since
+a variable that selects an executable would bypass preflight. The hosts replace `HOME`, and Bun resolves its
 cache from `HOME` unless that variable names it, so the variable is what points
 `bun install` at the kept cache. The agent builds and tests against the
 dependencies already in those caches; fetching a dependency they lack fails
@@ -181,7 +192,8 @@ startup under libfaketime 0.9.10: in the first two-arm witness run
 (`witness-5`, 2026-10-16), the agent's `cargo test` sat in `rustc -vV` until
 Pi's 600 s tool timeout, and `LD_PRELOAD=libfaketime.so.1 rustc -vV` hangs
 outside the sandbox too. Each
-tool in `wall_clock_tools` (rustc, rustdoc) therefore runs through a wrapper
+tool in `wall_clock_tools` (rustc and rustdoc, the only accepted names)
+therefore runs through a wrapper
 in `<run>/toolbin` that drops the preload, and `RUSTC` and `RUSTDOC` point
 cargo at the wrappers, since rustup puts its own toolchain directory first on
 cargo's `PATH`. Those tools read wall-clock time, and preflight records that
@@ -217,7 +229,9 @@ that is a link (a sparse replacement, a punched hole, or a look-alike
 elsewhere all count), or on a recorded gap, since neither may heal.
 A new harness process calls `reap()` and then `resume(open)` on an arm that
 has `StartArm` and no `EndArm`; an arm whose every event is journaled is only
-reaped and finished. `reap` requires the state and stops each recorded process, host first,
+reaped and finished. `reap` requires the state, refuses an arm whose `finish`
+failed earlier (the state records the failure, so a resume cannot heal it),
+and stops each recorded process, host first,
 whose start time still matches, then unmounts a store left mounted; every
 step runs and the first failure surfaces afterwards (a process that outlives
 SIGTERM and SIGKILL stops the resume with `HarnessFailure`),
@@ -227,8 +241,10 @@ existing store image (a missing image or `state.json` stops the resume,
 since only `reset` formats one and the state names what to stop), starts the daemon against the existing store, and, when
 the next event is inside a session, opens that session again. Pi reopens the
 same session transcript by its session id, and OpenCode reuses the session
-with the same title. `reset` stops recorded processes and unmounts the store
-the same way before it deletes anything, so a harness killed during `reset`
+with the same title. `reset` stops recorded processes first (a clone in
+flight is recorded like an `apply_diff`'s git), since a daemon the killed
+harness left holds the data directory busy, then its own, and unmounts the
+store before it deletes anything, so a harness killed during `reset`
 leaves no recorded process running into the next attempt, and it removes the
 `daemon.log` and `transcripts.json` of an abandoned attempt. A daemon or an
 OpenCode server still starting when the harness dies has no pid on record
@@ -260,8 +276,11 @@ against the same store (OQ-10).
 
 `daemon_restart`, `plugin_reload`, and `model_switch` fire between sessions;
 one fired inside a
-session stops the run, and so does a fault type with no mechanism here
-(`host_upgrade`, `two_hosts_one_daemon`). A daemon that exits outside an
+session stops the run. A scheduler-layer fault type with no mechanism here
+(`host_upgrade`, `two_hosts_one_daemon`) stops the run before `StartRun`,
+through the driver's `supports`, so a resume cannot heal it; provider faults
+belong to the proxy and the sleep to the clock, so `supports` accepts them.
+A daemon that exits outside an
 outage window stops the run with `HarnessFailure`; the driver checks the
 daemon after every turn and at every `session_end`.
 
