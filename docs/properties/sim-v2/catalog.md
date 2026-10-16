@@ -407,7 +407,9 @@ job that outlives the turn.
 Confidence: low - [evidence](evidence/sim-p12-clock-advances-only-when-idle.md).
 PROPOSED: reconstructed from the condensed index in spec #1007; no
 implementation exists to verify against, and a default tier run reaches it.
-Existing check: none
+Existing check: `src/run/scheduler.test.ts` (`Clock` refuses `advanceTo` while
+busy; `invariants()` asserts an empty busy set at every `AdvanceClock`),
+`src/run/journal-check.ts` `advance_while_busy` (run by `tests/witness-faults.ts`)
 Impact: A fold or capture job sees a simulated gap mid-execution and its timing
 metrics are invalid.
 Open questions:
@@ -434,7 +436,9 @@ its triggering turn.
 Confidence: low - [evidence](evidence/sim-p13-background-job-holds-clock.md).
 PROPOSED: reconstructed from the condensed index in spec #1007; no
 implementation exists to verify against, and a default tier run reaches it.
-Existing check: none
+Existing check: `src/run/scheduler.test.ts` ("a background job registered after a
+turn ends holds the clock until it ends"), `src/run/journal-check.ts`
+`jobs_held_after_turn`, required non-empty by `tests/witness-faults.ts`
 Impact: The job-holds-clock branch is never exercised and SIM-P12's job half is
 untested.
 Open questions: None.
@@ -457,7 +461,9 @@ Required faults and enabling state: a scenario with idle gaps between events.
 Confidence: low - [evidence](evidence/sim-p14-idle-jump-lands-on-next-event.md).
 PROPOSED: reconstructed from the condensed index in spec #1007; no
 implementation exists to verify against, and a default tier run reaches it.
-Existing check: none
+Existing check: `src/run/scheduler.test.ts` (every jump lands on the next
+event), `src/run/journal-check.ts` `off_schedule_jumps` and
+`jump_origin_mismatch` (run by `tests/witness-faults.ts`)
 Impact: Events are skipped or issued late and the scenario differs from its
 compiled plan.
 Open questions: None.
@@ -509,7 +515,9 @@ Confidence: low -
 [evidence](evidence/sim-p16-faketime-verified-per-binary-before-start.md).
 PROPOSED: reconstructed from the condensed index in spec #1007; no
 implementation exists to verify against, and a default tier run reaches it.
-Existing check: none
+Existing check: `src/run/time.test.ts` (per-binary interception), the
+`Preflight` journal entry `src/run/run.ts` writes before `StartRun`, required
+by `tests/witness-faults.ts` with `pi`, `opencode`, and `daemon` intercepted
 Impact: A binary silently runs on wall time and every scenario-time claim about
 it is false.
 Open questions:
@@ -561,7 +569,9 @@ Confidence: low -
 reconstructed from the condensed index in spec #1007; no implementation exists
 to verify against, and reached only when the tier schedules faults or the
 counterfactual arm.
-Existing check: none
+Existing check: `src/run/scheduler.test.ts` ("a laptop sleep is one event-free
+jump"), `src/run/journal-check.ts` `events_inside_sleep`, `repeated_sleeps`,
+`sleep_jump_faults`, required per arm and sleep by `tests/witness-faults.ts`
 Impact: The sleep fault tests a different condition than the one scheduled.
 Open questions: None.
 
@@ -1582,7 +1592,9 @@ Confidence: low -
 [evidence](evidence/sim-p62-resume-does-not-reissue-completed-items.md).
 PROPOSED: reconstructed from the condensed index in spec #1007; no
 implementation exists to verify against, and a default tier run reaches it.
-Existing check: none
+Existing check: `src/run/scheduler.test.ts` (resume reissues no completed
+event), `tests/witness-faults.ts` `resume` (no turn rebilled, contiguous call
+`seq`); none for the repeated-`call_id` half
 Impact: Completed items are re-billed and double-counted.
 Open questions: None.
 
@@ -1606,7 +1618,9 @@ Confidence: low -
 [evidence](evidence/sim-p63-in-flight-item-resolved-once-on-resume.md).
 PROPOSED: reconstructed from the condensed index in spec #1007; no
 implementation exists to verify against, and a default tier run reaches it.
-Existing check: none
+Existing check: `src/run/scheduler.test.ts` ("a second resume does not repeat an
+earlier resume's recovery entries"), `tests/witness-faults.ts` `resume`
+(exactly one `ItemState failed(interrupted)` and one `Event` for `e-000007`)
 Impact: An interrupted item is counted twice or vanishes.
 Open questions:
 - OQ-1 is resolved in the M0 pre-registration: an in-flight item at interrupt is
@@ -1630,7 +1644,8 @@ Required faults and enabling state: a scheduled harness kill.
 Confidence: low - [evidence](evidence/sim-p64-interrupt-mid-turn-exercised.md).
 PROPOSED: reconstructed from the condensed index in spec #1007; no
 implementation exists to verify against, and a default tier run reaches it.
-Existing check: none
+Existing check: `tests/witness-faults.ts` `resume` (SIGKILL while `e-000007` has
+`BeginTurn` and no `EndTurn`, `mid_turn` required)
 Impact: The in-flight resolution path is never exercised.
 Open questions: None.
 

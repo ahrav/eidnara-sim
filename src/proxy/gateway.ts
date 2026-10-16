@@ -339,12 +339,13 @@ export class Gateway {
 
     /** `drainMs` bounds the wait for the aborted in-flight handlers to write their records. */
     async stop(): Promise<void> {
+        const closed = Promise.all(
+            this.servers.map((s) => new Promise<void>((done) => s.close(() => done()))),
+        );
         (this.servers[0] as Server | undefined)?.closeAllConnections();
         for (const session of this.sessions) session.destroy();
         for (const gone of this.active.values()) gone.abort();
-        await Promise.all(
-            this.servers.map((s) => new Promise<void>((done) => s.close(() => done()))),
-        );
+        await closed;
         if (this.active.size === 0) {
             this.closed = true;
             return;

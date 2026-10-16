@@ -43,7 +43,9 @@ refused up front), a `--models` list that repeats an entry, and a
 kill and one laptop sleep, a laptop sleep needs an idle gap before its
 session's start, a strategy accepts only its own limit parameters (`count`
 for `burst`; `probability` and `calls` for `intermittent`), and `store_full`
-supports `sessions: 1` only. `--out /` is refused.
+supports `sessions: 1` only; a proxy `single` may carry the compiler's
+`count: 1`; durations stay within the timer limit (2^31 - 1 ms). `--out /`
+is refused.
 `--out` may not overlap the Pi install either. An `--out` inside this checkout must be
 ignored by git (`runs/` is), and may not overlap a corpus checkout, since
 both trees are part of the run identity. Before taking the lease, every artifact the run appends to or
@@ -93,7 +95,9 @@ toolchain wrappers are created exclusively after removing any planted name.
    eidnara commit and working-tree digest, eidnara-sim commit and
    working-tree digest (a digest covers tracked edits and untracked
    unignored files), the commit and working-tree digest of every corpus
-   checkout the scenario's projects clone from, the SHA-256 of the daemon,
+   checkout the scenario's projects clone from, the configured toolchain
+   (bin, keep, env, wall-clock tools) with each named tool's content digest,
+   the SHA-256 of the daemon,
    OpenCode, and Pi executables, the whole Pi install tree (every file and
    link under `pi_install`, since Node resolves the CLI's dependencies
    there), the Node runtime Pi runs on, the libfaketime interposer, the
@@ -107,7 +111,8 @@ toolchain wrappers are created exclusively after removing any planted name.
    of the seed's pre-registered arm order, when a resumed journal breaks the
    run's state machine (a `ResumeRun` or arm entry before `StartRun`, an arm
    entry before `StartArm` or after `EndArm`, an `EndTurn` or `EndJob` with
-   no open item, or an `Event` that is not the arm's next scheduled event), when any of those digests changed, when an
+   no open item, an `Event` that is not the arm's next scheduled event, or an
+   `EndArm` with an item open or events of the prefix still unrun), when any of those digests changed, when an
    interception result, probed path, or toolchain version
    changed, or when the selected host's version or transcript paths changed,
    and appends its preflight result to `preflight.jsonl` (dropping an
@@ -234,8 +239,13 @@ failed(interrupted)` and one `Event failed(interrupted)`, both for
 `e-000007`, and every finished run ends
 in `EndRun` with contiguous call `seq` values from 0 and no journal
 invariant violation (including a repeated sleep jump). The summary parses
-final journals and call records strictly; a corrupt complete line fails the
-witness, while polling during a run tolerates an unterminated final line.
+final journals and call records strictly; a corrupt or unterminated final line
+fails the witness, while polling during a run tolerates an unterminated final
+line. Every case needs its launch outcome in `outcome.json`; each cached
+`scenario.json` must still hash to its `scenario_hash` and each `manifest.json`
+must match the digest its journal's first `Preflight` entry bound; each
+session-start fault must have fired exactly once, right before its session's
+first event.
 The scheduled and resume runs must also show their evidence per arm: every
 deterministic fault of the set fired, every fault with a mechanism observed
 (on `eidnara`, the restart with a new daemon pid and `restarted_by: harness`,

@@ -32,6 +32,7 @@ import { type Preflight, piCli, preflight } from "./preflight";
 import { ResourceSampler } from "./sampler";
 import { type ArmDriver, HarnessFailure, type ScenarioEvent, Scheduler } from "./scheduler";
 import { FAKETIME_LIB, writeOffset } from "./timeinject";
+import { TOOLCHAIN_PROBES } from "./toolchain";
 
 export interface RunOptions {
     config: SimConfig;
@@ -64,6 +65,8 @@ export interface Manifest {
     corpus: Record<string, { commit: string; worktree: string }>;
     /** The Bedrock region and profile name the proxy forwards to; a resume must present the same. */
     bedrock: { region: string; aws_profile: string };
+    /** The configured toolchain and each named tool's content digest. */
+    toolchain: { config: SimConfig["toolchain"]; tools: Record<string, string> };
     /** The eidnara-sim revision that started the run; a resume must run the same one. */
     sim_commit: string;
     /** Digest of the eidnara-sim working tree's uncommitted content at the start (`treeIdentity`). */
@@ -233,7 +236,17 @@ export function requireJournalShape(
             continue;
         }
         if (state !== "open") throw bad(e, state ? "follows EndArm" : "precedes StartArm");
-        if (e.kind === "EndArm") arms.set(e.arm, "ended");
+        if (e.kind === "EndArm") {
+            const openHere = [...open].filter((k) => k.startsWith(`${e.arm}/`));
+            if (openHere.length > 0) throw bad(e, `ends the arm with ${openHere[0]} open`);
+            if (scheduled && (cursor.get(e.arm) ?? 0) !== scheduled.length) {
+                throw bad(
+                    e,
+                    `ends the arm after ${cursor.get(e.arm) ?? 0} of ${scheduled.length} events`,
+                );
+            }
+            arms.set(e.arm, "ended");
+        }
         if (e.kind === "BeginTurn") open.add(`${e.arm}/turn/${String(e.event)}`);
         if (e.kind === "RegisterJob") open.add(`${e.arm}/job/${String(e.job)}`);
         if (e.kind === "EndTurn" || e.kind === "EndJob") {
@@ -404,11 +417,14 @@ const SESSION_START_ONLY = new Set([
 ]);
 const COUNTS = ["count", "calls", "sessions"];
 const DURATIONS = ["duration_ms", "delay_ms", "timeout_ms"];
+/** The largest delay a JavaScript timer honors; longer values fire at once. */
+const MAX_TIMER_MS = 2_147_483_647;
 
 /**
  * Strategy rules per mechanism: a scheduler-layer fault fires once (`single`; `store_full` is
- * `persistent` for its sessions), and a proxy `burst` needs `count`, an `intermittent` needs
- * `probability` and `calls`.
+ * `persistent` for its sessions); a proxy `single` may carry the compiler's canonical `count: 1`,
+ * a `burst` needs `count`, an `intermittent` needs `probability` and `calls`, and no strategy
+ * carries another strategy's limit.
  */
 function strategyProblems(
     type: FaultType,
@@ -422,7 +438,7 @@ function strategyProblems(
         return problems;
     }
     const allowed: Record<string, string[]> = {
-        single: [],
+        single: ["count"],
         burst: ["count"],
         intermittent: ["probability", "calls"],
         persistent: [],
@@ -431,6 +447,9 @@ function strategyProblems(
         if (key in params && !(allowed[strategy] ?? []).includes(key)) {
             problems.push(`${key} does not apply to the ${strategy} strategy`);
         }
+    }
+    if (strategy === "single" && "count" in params && params.count !== 1) {
+        problems.push(`single fires once; count ${params.count} belongs to a burst`);
     }
     if (strategy === "burst" && typeof params.count !== "number")
         problems.push("burst needs count");
@@ -452,6 +471,9 @@ function paramProblems(params: Record<string, unknown>): string[] {
             problems.push(`${k} ${v} is not a positive integer`);
         }
         if (DURATIONS.includes(k) && v < 0) problems.push(`${k} ${v} is negative`);
+        if (DURATIONS.includes(k) && v > MAX_TIMER_MS) {
+            problems.push(`${k} ${v} exceeds the ${MAX_TIMER_MS} ms timer limit`);
+        }
     }
     return problems;
 }
@@ -614,7 +636,27 @@ export function runIdentity(config: SimConfig, prereg: Preregistration, projects
         binaries: binaryDigests(config),
         corpus: corpusIdentity(projects),
         bedrock: { region: config.bedrock.region, aws_profile: config.bedrock.aws_profile },
+        toolchain: toolchainIdentity(config),
     };
+}
+
+/** The configured toolchain and the content of each tool it names, resolved as the sandbox will. */
+function toolchainIdentity(config: SimConfig): {
+    config: SimConfig["toolchain"];
+    tools: Record<string, string>;
+} {
+    const probed = TOOLCHAIN_PROBES.map(([tool]) => tool);
+    const names = [...new Set([...probed, ...config.toolchain.wall_clock_tools])];
+    const tools: Record<string, string> = {};
+    for (const tool of names) {
+        const path = config.toolchain.bin.map((dir) => join(dir, tool)).find((p) => existsSync(p));
+        tools[tool] = path
+            ? createHash("sha256")
+                  .update(readFileSync(realpathSync(path)))
+                  .digest("hex")
+            : "absent";
+    }
+    return { config: config.toolchain, tools };
 }
 
 const simIdentity = () => {
