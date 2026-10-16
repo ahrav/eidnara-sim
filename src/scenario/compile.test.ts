@@ -265,11 +265,36 @@ describe("compiled S scenario", async () => {
                 const harm = p.type === "P2" || p.type === "P11" || p.type === "P10";
                 if (!harm && !c.must_not?.length) continue;
                 const forbidden = c.must_not ?? [];
+                const need = harm ? 2 : 1;
                 expect({ probe: p.type, count: forbidden.length }).toEqual({
                     probe: p.type,
-                    count: forbidden.length >= 2 ? forbidden.length : 2,
+                    count: forbidden.length >= need ? forbidden.length : need,
                 });
                 expect(new Set(forbidden).size).toBe(forbidden.length);
+            }
+        }
+    });
+
+    test("a reversed fact forbids its superseded value in every channel its check uses", () => {
+        for (const f of s.facts.filter((x) => x.manner === "stated_then_reversed")) {
+            for (const p of s.probes.filter((x) => x.fact === f.id && x.text)) {
+                const c = p.check as Record<string, string[] | undefined>;
+                const positive = Object.keys(c).filter(
+                    (k) => k.endsWith("must") && f.kind !== "decision",
+                );
+                for (const key of positive) {
+                    expect({ probe: p.type, key, forbids: (c[`${key}_not`] ?? []).length }).toEqual(
+                        {
+                            probe: p.type,
+                            key,
+                            forbids:
+                                (c[`${key}_not`] ?? []).length > 0
+                                    ? (c[`${key}_not`] ?? []).length
+                                    : 1,
+                        },
+                    );
+                }
+                if (c.answer_must_not) expect(c.answer_must_not.length).toBe(2);
             }
         }
     });
@@ -436,6 +461,85 @@ describe("fact bank checks", () => {
         expect(re.test("git commit -m 'implement cap [quiet_vole]'")).toBe(false);
     });
 
+    test("every check pattern compiles as a JavaScript regular expression", () => {
+        const vars = {
+            token: "quiet_vole",
+            TOKEN: "QUIET_VOLE",
+            value: "12345",
+            value2: "54321",
+            codename: "brisk-otter-07",
+            code: "ValueError",
+            context: "x",
+            code_re: "ValueError",
+        };
+        const render = (t: string) =>
+            t.replace(/\{(\w+)\}/g, (_, k: string) => vars[k as keyof typeof vars] ?? "");
+        for (const kind of [
+            "constraint",
+            "decision",
+            "plan",
+            "rationale",
+            "rejected",
+            "scoped_update",
+            "lookup",
+            "never_settled",
+            "anchor",
+            "tool_error",
+            "session_rule",
+        ]) {
+            for (const t of templates(kind)) {
+                for (const c of [t.check, t.out_check ?? {}]) {
+                    for (const [key, v] of Object.entries(c)) {
+                        if (!key.endsWith("must") && !key.endsWith("must_not")) continue;
+                        for (const pattern of v as string[]) {
+                            expect({
+                                id: t.id,
+                                key,
+                                ok: (() => {
+                                    try {
+                                        new RegExp(render(pattern));
+                                        return true;
+                                    } catch {
+                                        return false;
+                                    }
+                                })(),
+                            }).toEqual({ id: t.id, key, ok: true });
+                        }
+                    }
+                }
+            }
+        }
+    });
+
+    test("the file-header rule grades the first line of each new file", () => {
+        const t = templates("session_rule").find((x) => x.id === "session-file-header");
+        expect(Object.keys(t?.check ?? {})).toEqual(["first_line_must"]);
+    });
+
+    test("the Proxy rule matches generic constructions", () => {
+        const t = templates("rejected").find((x) => x.id === "ts-no-proxy");
+        const re = new RegExp((t?.check as { must_not: string[] }).must_not[0] ?? "$^");
+        expect(re.test("return new Proxy<Context>(target, handler)")).toBe(true);
+        expect(re.test("return new Proxy (target, handler)")).toBe(true);
+    });
+
+    test("the commit-tag rule reads the first message option", () => {
+        const t = templates("session_rule").find((x) => x.id === "session-commit-tag");
+        const pattern = (t?.check as { commands_must: string[] }).commands_must[0] ?? "$^";
+        const re = new RegExp(pattern.replaceAll("{token}", "quiet_vole"));
+        expect(re.test('git commit -m "wrong" -m "[quiet_vole] later"')).toBe(false);
+        expect(re.test('git commit -m "[quiet_vole] first" -m "body"')).toBe(true);
+    });
+
+    test("the quote-style rule ignores apostrophes inside double-quoted strings", () => {
+        const t = templates("scoped_update").find((x) => x.id === "ts-scope-quotes");
+        const single = new RegExp((t?.check as { must_not: string[] }).must_not[0] ?? "$^");
+        const double = new RegExp((t?.out_check as { must_not: string[] }).must_not[0] ?? "$^");
+        expect(single.test(`throw new Error("can't process the client's frame")`)).toBe(false);
+        expect(single.test(`const reason = 'client frame'`)).toBe(true);
+        expect(double.test(`const reason = "client frame"`)).toBe(true);
+    });
+
     test("every anchor forbids its value in the diff and in the final answer", () => {
         for (const t of templates("anchor")) {
             expect({ id: t.id, keys: Object.keys(t.check).sort() }).toEqual({
@@ -484,6 +588,16 @@ describe("compile-time refusals", () => {
         await expect(compileScenario({ ...input, prereg })).rejects.toThrow(
             /forced_p90_sessions 50 exceeds/,
         );
+    });
+
+    test("an embedder whose vectors have no usable norm is refused", async () => {
+        const zero: Embedder = { model: "zero", embed: async (texts) => texts.map(() => [0, 0]) };
+        await expect(withInput(() => undefined, zero)).rejects.toThrow(/embedder zero returned/);
+        const huge: Embedder = {
+            model: "huge",
+            embed: async (texts) => texts.map((_, i) => (i % 2 ? [1e200, 1e200] : [1, 0])),
+        };
+        await expect(withInput(() => undefined, huge)).rejects.toThrow(/embedder huge returned/);
     });
 
     test("a seed outside the unsigned 32-bit range is refused", async () => {

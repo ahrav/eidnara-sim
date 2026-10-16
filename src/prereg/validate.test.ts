@@ -99,6 +99,21 @@ describe("pre-registration validator", () => {
         );
     });
 
+    test("refuses fewer than three forced p90 sessions", () => {
+        const prereg = load("S") as any;
+        prereg.scenario.forced_p90_sessions = 2;
+        expect(validatePreregistration(prereg)).toContain(
+            "scenario.forced_p90_sessions: expected an integer of at least 3",
+        );
+    });
+
+    test("accepts the boundary similarity ceilings 0 and 1", () => {
+        const prereg = load("S") as any;
+        prereg.scenario.cue_probe_similarity.bm25_max = "0";
+        prereg.scenario.cue_probe_similarity.cosine_max = "1";
+        expect(validatePreregistration(prereg)).toEqual([]);
+    });
+
     test("refuses a run-level statistical gate below six paired runs", () => {
         const prereg = load("M") as any;
         prereg.families.find((f: any) => f.id === "dependability").min_paired_runs = 5;

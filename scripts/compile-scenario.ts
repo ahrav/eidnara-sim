@@ -1,9 +1,12 @@
+import { randomBytes } from "node:crypto";
 import {
     lstatSync,
     mkdirSync,
     readlinkSync,
     realpathSync,
     renameSync,
+    rmSync,
+    statSync,
     writeFileSync,
 } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
@@ -64,12 +67,22 @@ if (canonical(out) === canonical(cache)) {
     console.error(`--out ${out} is the embedding cache path; choose another file name`);
     process.exit(2);
 }
+if (kind(cache) === "real" && statSync(cache).nlink > 1) {
+    console.error(
+        `${cache} is a hard link shared with another path; the cache must be its own file`,
+    );
+    process.exit(2);
+}
 mkdirSync(dirname(out), { recursive: true });
 const local = embedderArg === "local";
 const { aws_profile, region } = config.bedrock;
 const embedder = local ? hashEmbedder : bedrockEmbedder(aws_profile, region, cache);
 const scenario = await compileScenario(loadCompileInput(seed, tier as Tier, embedder, local));
-const partial = `${out}.tmp`;
-writeFileSync(partial, `${canonicalJson(scenario)}\n`, { flag: "wx" });
-renameSync(partial, out);
+const partial = `${out}.${randomBytes(6).toString("hex")}.tmp`;
+try {
+    writeFileSync(partial, `${canonicalJson(scenario)}\n`, { flag: "wx" });
+    renameSync(partial, out);
+} finally {
+    rmSync(partial, { force: true });
+}
 console.log(`${out} ${scenario.scenario_hash}`);

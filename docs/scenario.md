@@ -16,8 +16,10 @@ do not witness SIM-P08. The CLI accepts exactly `--tier`, `--seed`,
 `--embedder` value other than `local`, or a non-integer seed exits with the
 usage line. An `--out` path, or its sibling `embeddings.jsonl`, that resolves
 inside `eidnara_checkout` is refused before any directory is created, as is an
-`--out` that names the cache file itself. The scenario is written to
-`<out>.tmp`, created exclusively, then renamed into place.
+`--out` that names the cache file itself, and an `embeddings.jsonl` that is a
+hard link. The scenario is written to a random same-directory temporary name,
+created exclusively, then renamed into place; the embedder reserves its Bedrock
+response file the same way.
 
 ## Output
 
@@ -29,7 +31,7 @@ The scenario file is canonical JSON with these sections:
 | `projects` | Each repository in `corpus/repos.json` and its twin |
 | `sessions` | Session id, project, start time, request count, the idle gap before the session, the minimum gap the compiler enforced, and whether the request count was forced into the p90 regime |
 | `facts` | Ledger facts with template, kind, project, conveyance manner, statement, and the cue texts that carry it |
-| `probes` | Probe items P1 to P14 and the P1 controls with project, session, user text, the grading check, and the event that delivers it. Check keys: `must` and `must_not` regexes over the added lines of the agent's diff, `paths_must` and `paths_must_not` over the paths the diff adds or changes, `answer`, `answer_must_not`, `abstain`, and `judge` over the final assistant text, and `window_from_turn` and `window_to_turn` for P14 |
+| `probes` | Probe items P1 to P14 and the P1 controls with project, session, user text, the grading check, and the event that delivers it. Check keys: `must` and `must_not` regexes over the added lines of the agent's diff, `paths_must` and `paths_must_not` over the paths the diff adds or changes, `first_line_must` over the first line of every file the diff adds, `commands_must` over the command log, `answer`, `answer_must_not`, `abstain`, and `judge` over the final assistant text, and `window_from_turn` and `window_to_turn` for P14. Every `*_must` and `*_must_not` key holds a list of JavaScript regular expressions |
 | `similarity` | BM25 ratio and embedding cosine for every cue and probe pair, journaled to four decimals; the threshold gate compares the full-precision values |
 | `events` | `apply_diff`, `session_start`, `user_turn`, and `session_end` events in scenario time |
 | `faults` | Fault episodes with type, strategy, trigger, parameters, and seam-table entry |
@@ -111,8 +113,10 @@ take the tool-error wording. P13 facts, which convey and probe within one
 session, take neither the diff nor the reversal manner, and a template whose
 statement has no generated token takes no reversal, since its decoy would
 equal the statement. A reversed fact's checks forbid the decoy's rendering
-beside the final value, so applying or leaking the superseded value scores as
-harm. A fact whose remaining pool holds no permitted manner
+beside the final value: the decoy's `*_must_not` lists join every check, its
+`*_must` lists join the P2 and P11 forbids, and a `*_must` pattern whose
+placeholders were all swapped joins the fact's own `*_must_not`, so applying
+or leaking the superseded value scores as harm. A fact whose remaining pool holds no permitted manner
 takes a correction, so the realised mix sits a little off the weights; the
 100-seed test keeps it within 5 percentage points. A
 hand-applied diff is an `apply_diff` event before the session, adding a file
@@ -191,15 +195,15 @@ thresholds (`bm25_max` 0.4, `cosine_max` 0.6):
 
 | Tier | Seed | `scenario_hash` | Largest BM25 ratio | Largest cosine |
 |---|---|---|---|---|
-| S | 101 | `585bcc58` | 0.2162 | 0.5194 |
-| S | 102 | `35399b33` | 0.2527 | 0.4867 |
-| M | 201 | `9118e73b` | 0.2508 | 0.4992 |
-| M | 202 | `7dbced25` | 0.254 | 0.4997 |
-| M | 203 | `f575b6be` | 0.255 | 0.4843 |
-| L | 301 | `26ecb90f` | 0.2552 | 0.5092 |
-| L | 302 | `6910d32a` | 0.2557 | 0.4957 |
-| L | 303 | `ef2e9704` | 0.2596 | 0.5083 |
-| XL | 401 | `c1dbed36` | 0.2583 | 0.4962 |
+| S | 101 | `e4184a59` | 0.2162 | 0.5194 |
+| S | 102 | `ded0db75` | 0.2527 | 0.4867 |
+| M | 201 | `795032c1` | 0.2508 | 0.4992 |
+| M | 202 | `1fd1e206` | 0.254 | 0.4997 |
+| M | 203 | `9c7bc050` | 0.255 | 0.4843 |
+| L | 301 | `f236381b` | 0.2552 | 0.5092 |
+| L | 302 | `edf30c80` | 0.2557 | 0.4957 |
+| L | 303 | `e7b403d3` | 0.2596 | 0.5083 |
+| XL | 401 | `32209862` | 0.2583 | 0.4962 |
 
 ## Known limits
 

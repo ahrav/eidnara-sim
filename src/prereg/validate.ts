@@ -48,6 +48,16 @@ const unitRate: Check = (v) =>
     isCanonicalDecimal(v) && Number(v) > 0 && Number(v) < 1
         ? null
         : "expected a canonical decimal in (0, 1)";
+const unitClosed: Check = (v) =>
+    isCanonicalDecimal(v) && Number(v) >= 0 && Number(v) <= 1
+        ? null
+        : "expected a canonical decimal in [0, 1]";
+const intAtLeast =
+    (min: number): Check =>
+    (v) =>
+        Number.isSafeInteger(v) && (v as number) >= min
+            ? null
+            : `expected an integer of at least ${min}`;
 const text: Check = (v) =>
     typeof v === "string" && v.trim() !== "" ? null : "expected a non-blank string";
 const list =
@@ -106,10 +116,10 @@ const PREREG_SHAPE: Shape = {
     scenario: {
         simulated_days: posInt,
         sessions_per_project: posInt,
-        forced_p90_sessions: posInt,
+        forced_p90_sessions: intAtLeast(3),
         cue_probe_similarity: {
-            bm25_max: unitRate,
-            cosine_max: unitRate,
+            bm25_max: unitClosed,
+            cosine_max: unitClosed,
             embedding_model: oneOf(EMBEDDING_MODELS),
         },
     },
