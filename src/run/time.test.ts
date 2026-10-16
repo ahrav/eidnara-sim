@@ -477,6 +477,27 @@ describe("ResourceSampler", () => {
         expect(lines[0].store_bytes).toBeGreaterThan(0);
     });
 
+    test("a busy callback that throws inside an interval sample still reaches onError once", async () => {
+        const path = join(mkdtempSync(join(tmpdir(), "samp-")), "resources.jsonl");
+        const errors: string[] = [];
+        const sampler = new ResourceSampler({
+            path,
+            intervalMs: 20,
+            busyFraction: -1,
+            pid: () => process.pid,
+            storeDir: import.meta.dir,
+            scenarioMs: () => 0,
+            onBusy: () => {
+                throw new Error("journal closed");
+            },
+            onError: (caught) => void errors.push((caught as Error).message),
+        });
+        sampler.start();
+        await Bun.sleep(120);
+        expect(errors).toEqual(["journal closed"]);
+        expect(() => sampler.stop()).not.toThrow();
+    });
+
     test("a cut final sample is dropped when the sampler reopens its file", () => {
         const path = join(mkdtempSync(join(tmpdir(), "samp-")), "resources.jsonl");
         writeFileSync(path, '{"wall_ms":1}\n{"wall_ms":2,"sce');

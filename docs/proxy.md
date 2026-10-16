@@ -119,7 +119,9 @@ so one arm's injection and retry cannot stand in for another arm's.
 records an earlier invocation of the same run persisted, so a resumed run
 reports a fault that fired before a hard kill, and arming an episode after
 `restore` continues a burst or intermittent window from the injections
-already made.
+already made; an intermittent window's unsuccessful attempts and its RNG
+position are not persisted, so a resumed window grants its remaining
+attempts from the injections alone.
 
 `Gateway.stop()` closes every connection, aborts the in-flight handlers, and
 waits up to `drainMs` (ten seconds by default) for them to write their call

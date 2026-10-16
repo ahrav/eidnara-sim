@@ -22,8 +22,10 @@ sees (200,000 by default), and `--models` lists the models `model_switch`
 cycles through (`agent_model` by default). The manifest records every one of
 these values. The run refuses a seed outside the pre-registration, an arm
 outside the seed's order, a non-positive count, a `--faults` file that is not
-an array of complete episodes (known type and strategy, numeric params, a
-seam, unique ids) valid against the compiled scenario (`validateFault`),
+an array of complete episodes (known type and strategy, numeric params with
+probabilities in [0, 1], positive integer counts, and non-negative
+durations, a seam, unique ids) valid against the compiled scenario
+(`validateFault`),
 an `--out` directory that overlaps the Eidnara checkout in either direction
 by resolved path (an output directory above the checkout would derive an arm
 root inside it), a schedule with a fault type the host driver has no
@@ -35,9 +37,12 @@ journal gains no entry. Before taking the lease, every artifact the run appends 
 replaces (`journal.jsonl`, `calls.jsonl`, the manifest, the scenario, the
 fault and preflight files, this process's staging names for the lease, the
 scenario, and the manifest, and each arm's `resources.jsonl`, clock offset,
-and `state.json`) must be a regular file or absent; a symlink there is
-refused, and the scenario and manifest staging files are created
-exclusively without following a link.
+and `state.json`, plus this process's staging names for the clock offset and
+`state.json`) must be absent or a regular file with a single link (arm and
+clock directories must be directories); a symlink, a hard link, or another
+file type there is refused. Every staged write (scenario, manifest, clock
+offset, `state.json`) creates its staging file exclusively without following
+a link, then renames it into place.
 
 ## Run sequence
 
@@ -46,7 +51,7 @@ exclusively without following a link.
    with 130 or 143. After a signal, every driver call refuses with
    `HarnessFailure`, so the scheduler starts nothing the teardown has already
    passed; the teardown itself waits up to thirty seconds for every driver
-   call in flight (a reset, resume, event, or fault, including a mid-fold
+   call in flight (a reset, resume, event, fault, or finish, including a mid-fold
    fault overlapping its turn) before it stops the arm, so a daemon or host
    whose start is still pending is stopped rather than orphaned. Later
    signals wait for the teardown. The tier's `tier_wall_budget_ms` starts a
@@ -55,20 +60,22 @@ exclusively without following a link.
    so the run stops before `EndArm` and fails.
 2. Open the journal, and compile the scenario into `scenario.json` on the
    first invocation. Every invocation recomputes the SHA-256 of the file's
-   body and refuses a `scenario.json` whose `scenario_hash` differs, or one
-   compiled for another tier or seed.
+   body and refuses a `scenario.json` whose `scenario_hash` differs, one
+   compiled for another tier or seed, one whose project ids are not plain
+   names, or one whose events name an undeclared project.
 3. Run `preflight` (`docs/time.md`). On the first invocation, write
    `manifest.json` with the tier, seed, host, arm order, event count, context
    limit, models, fault override, scenario hash, pre-registration hash,
-   eidnara commit, eidnara-sim commit, a digest of the eidnara-sim working
-   tree's uncommitted content (tracked edits and untracked files), the
-   SHA-256 of the daemon, OpenCode, and Pi executables, base wall time, and
-   preflight result.
-   A later invocation refuses when any option it states differs from the
-   manifest, when the manifest's arm order names an arm outside the tier's
-   pre-registered arms, when the scenario hash, pre-registration hash,
-   eidnara commit, eidnara-sim commit, working-tree digest, or an executable
-   digest changed, when an interception result
+   eidnara commit and working-tree digest, eidnara-sim commit and
+   working-tree digest (a digest covers tracked edits and untracked
+   unignored files), the commit and working-tree digest of every corpus
+   checkout the scenario's projects clone from, the SHA-256 of the daemon,
+   OpenCode, and Pi executables, base wall time, and preflight result.
+   A later invocation refuses a manifest whose `schema` is not
+   `sim-run-manifest/v1`, and refuses when any option it states differs from
+   the manifest, when the manifest's arm order names an arm outside the
+   tier's pre-registered arms, when any of those digests changed, when an
+   interception result
    changed, or when the selected host's version or transcript paths changed,
    and appends its preflight result to `preflight.jsonl`; on resume the
    mechanism checks (fault types, models) run against the manifest's saved
@@ -109,15 +116,19 @@ straddles the settle period holds the clock until the classified call takes
 over. The proxy's `observe` event for a background component (history
 summarizer, memory capture, memory classifier, context researcher, title,
 native compaction) registers a job, and the completion of that same call ends
-it, whether its record was written or refused. The resource sampler takes a baseline sample when an arm starts,
-one at the end of every user turn, and one per pre-registered interval, and
+it, whether its record was written or refused. The resource sampler takes a baseline sample when an arm starts, one at the
+end of every user turn and another two seconds later while a `settle-cpu`
+job holds the clock, so daemon work that follows a turn is measured before
+the clock may jump, and one per pre-registered interval, and
 registers `daemon-cpu-<arm>` while the daemon's CPU fraction is above the
 pre-registered threshold, with one job id per busy period. Both hold the
 clock (SIM-P13, OQ-2). Job ids continue from the journal's count, so a
 resumed run issues new ones. A job that holds the clock longer than the
 pre-registered `job_deadline_ms` (20 minutes at S) after its own
-`RegisterJob` stops the run with the held ids (SIM-L02). The sampler drops
-an unterminated final sample when it reopens `resources.jsonl` on resume. A periodic sample that fails
+`RegisterJob`, measured on the monotonic clock, stops the run with the held
+ids (SIM-L02). The sampler drops an unterminated final sample when it
+reopens `resources.jsonl` on resume. Every host launch uses the launcher
+this invocation's preflight wrote and probed. A periodic sample that fails
 (for example, a full disk under `resources.jsonl`) stops the sampler and the
 run the same way a signal does, so the teardown runs.
 
@@ -133,6 +144,7 @@ event times and reports, per arm:
 | `off_schedule_jumps` | jumps, event or sleep, that land anywhere but the earliest unrun scheduled time at or after `from_ms` (SIM-P14, SIM-P18); a sleep is the jump onto its session's first event, so its size is the remaining gap, not the nominal `duration_ms` |
 | `events_inside_sleep` | sleep jumps that pass an unrun scheduled event (SIM-P18) |
 | `repeated_sleeps` | a second sleep jump for the same fault in one arm |
+| `missing_events` | scheduled events an arm never journaled as `Event` although it reached `EndArm` |
 | `jobs_held_after_turn` | jobs that held the clock while no turn was open, whether registered after the turn or registered inside it and outliving it, once per job at its `RegisterJob` seq (SIM-P13) |
 | `next_event_jumps`, `sleep_jumps` | how many jumps of each kind the check covered |
 

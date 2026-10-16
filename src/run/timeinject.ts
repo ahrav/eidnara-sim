@@ -9,6 +9,7 @@ import {
     writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { writeAtomic } from "./atomic";
 
 export const FAKETIME_VERSION = "0.9.10";
 export const FAKETIME_SHA256 = "729ad33b9c750a50d9c68e97b90499680a74afd1568d859c574c0fe56fe7947f";
@@ -70,9 +71,7 @@ export function faketimeEnv(file: string): Record<string, string> {
 export function writeOffset(file: string, baseMs: number, scenarioMs: number, wallMs = Date.now()) {
     const seconds = Math.round((baseMs + scenarioMs - wallMs) / 1000);
     mkdirSync(dirname(file), { recursive: true });
-    const staged = `${file}.${process.pid}`;
-    writeFileSync(staged, `${seconds >= 0 ? "+" : ""}${seconds}\n`);
-    renameSync(staged, file);
+    writeAtomic(file, `${seconds >= 0 ? "+" : ""}${seconds}\n`);
 }
 
 export function readOffsetSeconds(file: string): number {

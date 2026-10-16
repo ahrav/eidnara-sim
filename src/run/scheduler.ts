@@ -228,14 +228,17 @@ export class Scheduler {
         return start;
     }
 
-    /** Each live job may hold the clock for `idleLimitMs` of wall time from its own `RegisterJob`. */
+    /**
+     * Each live job may hold the clock for `idleLimitMs` of wall time from its own `RegisterJob`,
+     * measured on the monotonic clock so a wall-clock step does not move the deadline.
+     */
     private async idle(): Promise<void> {
         const limitMs = this.o.idleLimitMs ?? Number.POSITIVE_INFINITY;
-        const entered = Date.now();
+        const entered = performance.now();
         while ((this.clock?.busyIds().length ?? 0) > 0) {
             const live = [...this.jobStarted.values()];
             const oldest = live.length > 0 ? Math.min(...live) : entered;
-            if (Date.now() > oldest + limitMs) {
+            if (performance.now() > oldest + limitMs) {
                 const busy = this.clock?.busyIds().join(", ");
                 throw new HarnessFailure(
                     `busy set held the clock past ${this.o.idleLimitMs} ms: ${busy}`,
@@ -321,7 +324,7 @@ export class Scheduler {
     }
 
     jobStart(id: string): void {
-        this.jobStarted.set(id, Date.now());
+        this.jobStarted.set(id, performance.now());
         this.clock?.begin(`job:${id}`);
         this.log({ kind: "RegisterJob", job: id });
     }

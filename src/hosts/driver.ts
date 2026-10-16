@@ -5,11 +5,11 @@ import {
     mkdirSync,
     readFileSync,
     realpathSync,
-    renameSync,
     rmSync,
     writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { writeAtomic } from "../run/atomic";
 import { processStart, running, stopOwnedTree } from "../run/procs";
 import { type ArmDriver, HarnessFailure, type ScenarioEvent } from "../run/scheduler";
 import type { FaultEpisode } from "../scenario/faults";
@@ -62,10 +62,14 @@ const git = (cwd: string, args: string[], dateMs?: number) => {
 };
 
 /** The rename publishes a complete file, so a kill mid-write leaves the previous one. */
-function writeWhole(path: string, text: string): void {
-    const staged = `${path}.${process.pid}`;
-    writeFileSync(staged, text);
-    renameSync(staged, path);
+
+/** A control file that fails to parse names itself in the failure. */
+function readJson<T>(path: string): T {
+    try {
+        return JSON.parse(readFileSync(path, "utf8")) as T;
+    } catch (caught) {
+        throw new HarnessFailure(`${path} is not valid JSON: ${(caught as Error).message}`);
+    }
 }
 
 function run(argv: string[]): string {
@@ -156,12 +160,12 @@ export class HostDriver implements ArmDriver {
             host: proc(this.sessionProject === null ? null : (this.host?.hostPid() ?? null)),
         };
         mkdirSync(this.armDir, { recursive: true });
-        writeWhole(this.stateFile, JSON.stringify(state));
+        writeAtomic(this.stateFile, JSON.stringify(state));
     }
 
     private readState(): ArmState | null {
         if (!existsSync(this.stateFile)) return null;
-        return JSON.parse(readFileSync(this.stateFile, "utf8")) as ArmState;
+        return readJson<ArmState>(this.stateFile);
     }
 
     private get ballast(): string | null {
@@ -214,7 +218,7 @@ export class HostDriver implements ArmDriver {
         this.model = state.model;
         const checked = join(this.armDir, "transcripts.json");
         this.transcriptsChecked =
-            existsSync(checked) && JSON.parse(readFileSync(checked, "utf8")).missing.length === 0;
+            existsSync(checked) && readJson<{ missing: unknown[] }>(checked).missing.length === 0;
         await this.reapStale();
         await this.startArm(false);
         if (open) await this.event(open);
@@ -309,7 +313,7 @@ export class HostDriver implements ArmDriver {
         const paths = this.o.transcriptPaths.map((t) => expandTemplate(t, env));
         const missing = paths.filter((p) => !existsSync(p));
         const record = { checked_after: "first session_end", paths, missing };
-        writeWhole(join(this.armDir, "transcripts.json"), JSON.stringify(record));
+        writeAtomic(join(this.armDir, "transcripts.json"), JSON.stringify(record));
         if (missing.length > 0) throw new Error(`transcript store missing: ${missing.join(", ")}`);
         this.transcriptsChecked = true;
     }

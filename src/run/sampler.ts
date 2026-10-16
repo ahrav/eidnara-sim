@@ -131,7 +131,11 @@ export class ResourceSampler {
                 this.sample();
             } catch (caught) {
                 if (!this.o.onError) throw caught;
-                this.stop();
+                try {
+                    this.stop();
+                } catch {
+                    this.busy = false;
+                }
                 this.o.onError(caught);
             }
         }, this.o.intervalMs);
@@ -140,7 +144,8 @@ export class ResourceSampler {
     stop(): void {
         if (this.timer) clearInterval(this.timer);
         this.timer = null;
-        if (this.busy) this.o.onBusy(false);
+        const wasBusy = this.busy;
         this.busy = false;
+        if (wasBusy) this.o.onBusy(false);
     }
 }

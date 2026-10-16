@@ -187,9 +187,14 @@ if (only.includes("resume")) {
 }
 writeFileSync(join(out, "outcome.json"), `${JSON.stringify(outcome, null, 2)}\n`);
 
+/** The run's event prefix (`manifest.events`) with each event's scheduled time. */
 function schedule(dir: string): Schedule {
     const scenario = JSON.parse(readFileSync(join(dir, "scenario.json"), "utf8")) as Scenario;
-    return { events: new Map(scenario.events.map((e) => [String(e.id), Number(e.scenario_ms)])) };
+    const manifest = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8")) as {
+        events: number;
+    };
+    const events = scenario.events.slice(0, manifest.events);
+    return { events: new Map(events.map((e) => [String(e.id), Number(e.scenario_ms)])) };
 }
 
 function summarize(dir: string) {
@@ -271,6 +276,7 @@ const invariantsClean = (name: "scheduled" | "rogue" | "resume") => {
         v.off_schedule_jumps,
         v.events_inside_sleep,
         v.repeated_sleeps,
+        v.missing_events,
     ];
     return s.ended === "EndRun" && s.call_seq_unique && violations.every((x) => x.length === 0);
 };
