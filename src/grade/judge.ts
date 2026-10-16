@@ -69,7 +69,7 @@ export function normalise(text: string): string {
         .replace(/^\s*[-*+]\s+/gm, "")
         .replace(/^[ \t]*\[[^\]]+\]:[ \t]+\S.*$/gm, "")
         .replace(MARKUP, " ")
-        .replace(/&#x([0-9a-fA-F]+);/g, (_, hex: string) => codePoint(Number.parseInt(hex, 16)))
+        .replace(/&#[xX]([0-9a-fA-F]+);/g, (_, hex: string) => codePoint(Number.parseInt(hex, 16)))
         .replace(/&#(\d+);/g, (_, dec: string) => codePoint(Number(dec)))
         .replace(/&(amp|lt|gt|quot|apos|nbsp);/g, (_, name: string) => ENTITIES[name] ?? "")
         .replace(/&[A-Za-z][A-Za-z0-9]*;/g, " ")
@@ -458,6 +458,11 @@ export function gradeP7(j: Judgment, c: P7Context, rules: Rules, version = 1): G
             if (session !== c.probe.session) {
                 throw new GradeRefused(
                     `snapshot ${s.id} is from session ${String(session)}, not the probe's ${c.probe.session}`,
+                );
+            }
+            if (c.probe.event && s.turn !== c.probe.event) {
+                throw new GradeRefused(
+                    `snapshot ${s.id} is of turn ${s.turn}, not the probe's event ${c.probe.event}`,
                 );
             }
         }

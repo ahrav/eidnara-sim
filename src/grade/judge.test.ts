@@ -921,6 +921,30 @@ describe("P7 judge path", () => {
         ).toThrow("session s-9");
     });
 
+    test("uppercase hexadecimal entities decode before blinding", () => {
+        const base = { id: "p", a: "fine", b: "fine" };
+        expect(() => blind({ ...base, b: "Eid&#X6E;ara found it" }, "a_then_b", "r", [])).toThrow(
+            "names an arm",
+        );
+    });
+
+    test("a snapshot of another turn than the probe's event is refused", async () => {
+        const f = load("P7-pass");
+        const judgment = await judgePair(
+            scripted(f.judge_verdicts),
+            f.pair,
+            f.probe.check.judge,
+            [],
+        );
+        const ctx = context(f.probe.id, f.pair, f.probe.check.judge);
+        const pinned = { ...ctx, probe: { ...ctx.probe, event: "e-1" } };
+        expect(gradeP7(judgment, pinned, rules)).toHaveLength(2);
+        const other = { ...snapshotOf("snap-host", "host", f.pair.b, f.probe.id), turn: "e-2" };
+        expect(() =>
+            gradeP7(judgment, { ...pinned, snapshots: { ...ctx.snapshots, b: [other] } }, rules),
+        ).toThrow("not the probe's event e-1");
+    });
+
     test("the human-check sample is ten percent of P7 items, rounded up, from a seeded draw", () => {
         const items = Array.from({ length: 24 }, (_, i) => `q-${i}`);
         const a = humanCheckSample(items, rules, new Rng(9));
