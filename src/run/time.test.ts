@@ -200,4 +200,22 @@ describe("ResourceSampler", () => {
         expect(lines[0].rss).toBeGreaterThan(0);
         expect(lines[0].store_bytes).toBeGreaterThan(0);
     });
+
+    test("start takes the baseline sample at once, so the next sample yields a CPU fraction", async () => {
+        const path = join(mkdtempSync(join(tmpdir(), "samp-")), "resources.jsonl");
+        const sampler = new ResourceSampler({
+            path,
+            intervalMs: 60_000,
+            busyFraction: 0.2,
+            pid: () => process.pid,
+            storeDir: import.meta.dir,
+            scenarioMs: () => 0,
+            onBusy: () => undefined,
+        });
+        sampler.start();
+        expect(readFileSync(path, "utf8").trim().split("\n")).toHaveLength(1);
+        await Bun.sleep(20);
+        expect(sampler.sample().cpu_fraction).not.toBeNull();
+        sampler.stop();
+    });
 });

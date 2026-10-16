@@ -563,3 +563,30 @@ test("a busy set that outlives the idle limit stops the run with the held ids", 
     });
     await expect(scheduler.run()).rejects.toThrow("job:stuck");
 });
+
+test("the job deadline counts from RegisterJob, including time inside the turn", async () => {
+    const j = new Journal(join(dir(), "j.jsonl"));
+    let scheduler: Scheduler | null = null;
+    const driver: ArmDriver = {
+        reset: async () => undefined,
+        event: async (e) => {
+            if (e.kind !== "user_turn") return {};
+            scheduler?.jobStart("fold");
+            setTimeout(() => scheduler?.jobEnd("fold"), 260);
+            await Bun.sleep(200);
+            return {};
+        },
+        fault: async () => ({}),
+    };
+    scheduler = new Scheduler({
+        events: fixtureEvents(1),
+        faults: [],
+        journal: j,
+        settleMs: 0,
+        jobPollMs: 10,
+        idleLimitMs: 100,
+        order: ["a"],
+        drivers: { a: driver },
+    });
+    await expect(scheduler.run()).rejects.toThrow(/past 100 ms: job:fold/);
+});

@@ -1,5 +1,9 @@
 import { createServer as createHttp1Server, type Server } from "node:http";
-import { createServer as createHttp2Server, type Http2Server } from "node:http2";
+import {
+    createServer as createHttp2Server,
+    type Http2Server,
+    type ServerHttp2Session,
+} from "node:http2";
 import type { AddressInfo } from "node:net";
 import {
     BedrockRuntimeClient,
@@ -95,6 +99,8 @@ export interface GatewayOptions {
     scope: () => Scope;
     observe?: (event: CallStarted) => void;
     requestDeadlineMs?: number;
+    /** How long `stop` waits for aborted in-flight handlers to finish writing their records. */
+    drainMs?: number;
 }
 
 const ROUTE = /^\/model\/([^/]+)\/(converse-stream|converse)$/;
@@ -130,12 +136,21 @@ export function stripUnsupported(
 
 export class Gateway {
     private servers: (Server | Http2Server)[] = [];
+    private readonly sessions = new Set<ServerHttp2Session>();
     inFlight = 0;
     readonly failures: Error[] = [];
+    private readonly active = new Map<Promise<void>, AbortController>();
     private calls = 0;
     readonly urls: string[] = [];
 
     constructor(private readonly options: GatewayOptions) {}
+
+    private track(handled: Promise<void>, gone: AbortController): void {
+        const settled: Promise<void> = handled
+            .catch((caught) => void this.failures.push(caught as Error))
+            .finally(() => this.active.delete(settled));
+        this.active.set(settled, gone);
+    }
 
     async start(): Promise<void> {
         const h1 = createHttp1Server((req, res) => {
@@ -145,16 +160,23 @@ export class Gateway {
             req.on("data", (c: Buffer) => chunks.push(c));
             req.on("end", () => {
                 const header = req.headers[COMPONENT_HEADER] as string | undefined;
-                this.handle(req.url ?? "", header, Buffer.concat(chunks), {
-                    status: (code, headers) => res.writeHead(code, headers),
-                    write: (chunk) => res.write(chunk),
-                    end: () => res.end(),
-                    destroy: () => res.destroy(),
-                    signal: gone.signal,
-                }).catch((caught) => this.failures.push(caught as Error));
+                this.track(
+                    this.handle(req.url ?? "", header, Buffer.concat(chunks), {
+                        status: (code, headers) => res.writeHead(code, headers),
+                        write: (chunk) => res.write(chunk),
+                        end: () => res.end(),
+                        destroy: () => res.destroy(),
+                        signal: gone.signal,
+                    }),
+                    gone,
+                );
             });
         });
         const h2 = createHttp2Server();
+        h2.on("session", (session) => {
+            this.sessions.add(session);
+            session.on("close", () => this.sessions.delete(session));
+        });
         h2.on("stream", (stream, headers) => {
             const chunks: Buffer[] = [];
             const gone = new AbortController();
@@ -164,16 +186,19 @@ export class Gateway {
             stream.on("end", () => {
                 const live = () => !stream.destroyed;
                 const header = headers[COMPONENT_HEADER] as string | undefined;
-                this.handle(String(headers[":path"] ?? ""), header, Buffer.concat(chunks), {
-                    status: (code, h) => {
-                        if (live() && !stream.headersSent)
-                            stream.respond({ ":status": code, ...h });
-                    },
-                    write: (chunk) => live() && stream.write(chunk),
-                    end: () => live() && stream.end(),
-                    destroy: () => stream.destroy(),
-                    signal: gone.signal,
-                }).catch((caught) => this.failures.push(caught as Error));
+                this.track(
+                    this.handle(String(headers[":path"] ?? ""), header, Buffer.concat(chunks), {
+                        status: (code, h) => {
+                            if (live() && !stream.headersSent)
+                                stream.respond({ ":status": code, ...h });
+                        },
+                        write: (chunk) => live() && stream.write(chunk),
+                        end: () => live() && stream.end(),
+                        destroy: () => stream.destroy(),
+                        signal: gone.signal,
+                    }),
+                    gone,
+                );
             });
         });
         this.servers = [h1, h2];
@@ -183,11 +208,16 @@ export class Gateway {
         }
     }
 
+    /** `drainMs` bounds the wait for the aborted in-flight handlers to write their records. */
     async stop(): Promise<void> {
         (this.servers[0] as Server | undefined)?.closeAllConnections();
+        for (const session of this.sessions) session.destroy();
+        for (const gone of this.active.values()) gone.abort();
         await Promise.all(
             this.servers.map((s) => new Promise<void>((done) => s.close(() => done()))),
         );
+        const drained = Promise.all(this.active.keys());
+        await Promise.race([drained, Bun.sleep(this.options.drainMs ?? 10_000)]);
     }
 
     private async handle(path: string, header: string | undefined, raw: Buffer, outer: Sink) {
@@ -256,7 +286,12 @@ export class Gateway {
                 return undefined;
             }
         };
-        const body = parse(() => JSON.parse(raw.toString("utf8")) as ConverseBody);
+        let body: ConverseBody | undefined;
+        try {
+            body = JSON.parse(raw.toString("utf8")) as ConverseBody;
+        } catch {
+            body = undefined;
+        }
         const model = parse(() => decodeURIComponent(route?.[1] ?? ""));
         const problem = !route
             ? [404, `unknown operation ${path}`]

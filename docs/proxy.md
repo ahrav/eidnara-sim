@@ -111,7 +111,13 @@ retry under a persistent or burst episode counts), and whether the proxy
 retried. An episode is `fired` only with both an injected record
 and a host-observed call (SIM-P31); otherwise it is `untriggered`, and
 `excludedFromFaultMetrics` reports that the run leaves fault metrics
-(SIM-P32).
+(SIM-P32). `FaultInjector.restore(records)` rebuilds both sequences from the
+call records an earlier invocation of the same run persisted, so a resumed
+run reports a fault that fired before a hard kill.
+
+`Gateway.stop()` closes every connection, aborts the in-flight handlers, and
+waits up to `drainMs` (ten seconds by default) for them to write their call
+records; a handler failure is kept in `gateway.failures`.
 
 ## Tests
 
@@ -120,4 +126,5 @@ strategy on both routes against a scripted upstream and a host stand-in that
 issues one call at a time with its own timeout. Each case checks that the host saw the
 fault, that every injected record has `proxy_retries` 0, and that the host's
 next call started within the window. The tests also cover records, tags,
-rejected requests, untriggered witnesses, and the seeded backoff sequence.
+rejected requests, untriggered witnesses, witnesses restored from persisted
+records, the drain on `stop`, and the seeded backoff sequence.

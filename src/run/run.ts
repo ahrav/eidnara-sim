@@ -3,6 +3,7 @@ import {
     existsSync,
     mkdirSync,
     readFileSync,
+    realpathSync,
     renameSync,
     writeFileSync,
 } from "node:fs";
@@ -10,15 +11,15 @@ import { dirname, join, resolve } from "node:path";
 import type { SimConfig } from "../config/config";
 import type { ArmName } from "../hosts/arms";
 import { HostDriver } from "../hosts/driver";
-import { canonicalJson } from "../prereg/canonical";
+import { canonicalJson, sha256Hex } from "../prereg/canonical";
 import type { Tier } from "../prereg/schema";
 import { preregistrationHash } from "../prereg/validate";
 import { bedrockUpstream, Gateway } from "../proxy/gateway";
 import { FaultInjector } from "../proxy/inject";
-import { type CallRecord, type Component, RecordWriter } from "../proxy/records";
+import { type CallRecord, type Component, RecordWriter, readRecords } from "../proxy/records";
 import { Rng } from "../rng";
 import { compileScenario, type Scenario } from "../scenario/compile";
-import type { FaultEpisode } from "../scenario/faults";
+import { type FaultEpisode, validateFault } from "../scenario/faults";
 import { loadCompileInput, loadPrereg } from "../scenario/inputs";
 import { bedrockEmbedder } from "../scenario/similarity";
 import { Journal, releaseLease, takeLease } from "./journal";
@@ -36,12 +37,13 @@ export interface RunOptions {
     out: string;
     arms?: string[];
     events?: number;
-    faults?: FaultEpisode[];
+    /** Parsed `--faults` JSON, validated against the compiled scenario by `faultOverride`. */
+    faults?: unknown;
     contextLimit?: number;
     models?: string[];
 }
 
-interface Manifest {
+export interface Manifest {
     schema: "sim-run-manifest/v1";
     tier: Tier;
     seed: number;
@@ -82,6 +84,21 @@ export function requirePinnedPath(config: SimConfig): void {
     }
 }
 
+const realExisting = (path: string): string => {
+    let probe = path;
+    while (!existsSync(probe)) probe = dirname(probe);
+    return join(realpathSync(probe), path.slice(probe.length));
+};
+
+/** Run outputs stay outside the Eidnara checkout; arm resets delete output subtrees. */
+export function requireOutsideCheckout(out: string, checkout: string): void {
+    const dir = realExisting(resolve(checkout));
+    const target = realExisting(resolve(out));
+    if (target === dir || target.startsWith(`${dir}/`)) {
+        throw new HarnessFailure(`--out ${out} lies inside the Eidnara checkout ${checkout}`);
+    }
+}
+
 function writeAtomic(path: string, text: string): void {
     writeFileSync(`${path}.${process.pid}`, text);
     renameSync(`${path}.${process.pid}`, path);
@@ -93,7 +110,8 @@ function gitHead(dir: string): string {
     return r.stdout.toString().trim();
 }
 
-async function loadScenario(o: RunOptions): Promise<Scenario> {
+/** `scenario.json` is accepted only when its body still hashes to its `scenario_hash`. */
+export async function loadScenario(o: Pick<RunOptions, "config" | "out" | "seed" | "tier">) {
     const path = join(o.out, "scenario.json");
     if (!existsSync(path)) {
         const { aws_profile, region } = o.config.bedrock;
@@ -103,6 +121,12 @@ async function loadScenario(o: RunOptions): Promise<Scenario> {
         writeAtomic(path, `${canonicalJson(compiled)}\n`);
     }
     const scenario = JSON.parse(readFileSync(path, "utf8")) as Scenario;
+    const { scenario_hash, ...body } = scenario;
+    if (sha256Hex(canonicalJson(body)) !== scenario_hash) {
+        throw new HarnessFailure(
+            `scenario.json does not hash to its scenario_hash ${scenario_hash}`,
+        );
+    }
     const { seed, tier } = scenario.manifest as { seed: number; tier: string };
     if (seed !== o.seed || tier !== o.tier) {
         throw new HarnessFailure(
@@ -110,6 +134,23 @@ async function loadScenario(o: RunOptions): Promise<Scenario> {
         );
     }
     return scenario;
+}
+
+/** A `--faults` override is an array of episodes, each valid against the compiled scenario. */
+export function faultOverride(raw: unknown, scenario: Scenario): FaultEpisode[] {
+    if (!Array.isArray(raw)) throw new HarnessFailure("--faults must hold an array of episodes");
+    const turns = new Map(scenario.sessions.map((x) => [x.id, x.requests]));
+    for (const episode of raw as FaultEpisode[]) {
+        if (typeof episode?.id !== "string" || typeof episode.trigger !== "object") {
+            throw new HarnessFailure(`--faults episode ${JSON.stringify(episode)} is malformed`);
+        }
+        try {
+            validateFault(episode, turns);
+        } catch (caught) {
+            throw new HarnessFailure(`--faults: ${(caught as Error).message}`);
+        }
+    }
+    return raw as FaultEpisode[];
 }
 
 function armOrder(o: RunOptions): ArmName[] {
@@ -126,9 +167,13 @@ function armOrder(o: RunOptions): ArmName[] {
 
 const sameJson = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 
-async function loadManifest(o: RunOptions, scenario: Scenario): Promise<Manifest> {
+export async function loadManifest(
+    o: RunOptions,
+    scenario: Scenario,
+    checks?: Preflight,
+): Promise<Manifest> {
     const path = join(o.out, "manifest.json");
-    const checks = await preflight(o.config, o.out);
+    checks ??= await preflight(o.config, o.out);
     const wanted = {
         tier: o.tier,
         seed: o.seed,
@@ -137,7 +182,7 @@ async function loadManifest(o: RunOptions, scenario: Scenario): Promise<Manifest
         events: o.events ?? scenario.events.length,
         context_limit: o.contextLimit ?? 200_000,
         models: o.models ?? [o.config.agent_model],
-        fault_override: o.faults ?? null,
+        fault_override: o.faults === undefined ? null : faultOverride(o.faults, scenario),
     };
     if (existsSync(path)) {
         const manifest = JSON.parse(readFileSync(path, "utf8")) as Manifest;
@@ -171,6 +216,10 @@ async function loadManifest(o: RunOptions, scenario: Scenario): Promise<Manifest
         if (!sameJson(intercepted(manifest.preflight), intercepted(checks))) {
             throw new HarnessFailure("time interception changed since the run started");
         }
+        const hostRow = (p: Preflight) => p.hosts.find((h) => h.host === o.host);
+        if (!sameJson(hostRow(manifest.preflight), hostRow(checks))) {
+            throw new HarnessFailure(`the ${o.host} host changed since the run started`);
+        }
         appendFileSync(join(o.out, "preflight.jsonl"), `${JSON.stringify(checks)}\n`);
         return manifest;
     }
@@ -187,52 +236,78 @@ async function loadManifest(o: RunOptions, scenario: Scenario): Promise<Manifest
     return manifest;
 }
 
+interface Stop {
+    reason: string | null;
+}
+
+/** Runs every cleanup step in reverse order and rethrows the first failure. */
+export async function runSteps(steps: Array<() => Promise<void> | void>): Promise<void> {
+    let failure: unknown = null;
+    for (const step of steps.reverse()) {
+        try {
+            await step();
+        } catch (caught) {
+            console.error(caught);
+            failure ??= caught;
+        }
+    }
+    if (failure !== null) throw failure;
+}
+
 export async function runTier(o: RunOptions): Promise<void> {
     plainPath(o.out);
+    requireOutsideCheckout(o.out, o.config.eidnara_checkout);
     requirePinnedPath(o.config);
     mkdirSync(o.out, { recursive: true });
     takeLease(o.out);
     const cleanup: Array<() => Promise<void> | void> = [() => releaseLease(o.out)];
     let done: Promise<void> | null = null;
     const teardown = () => {
-        done ??= (async () => {
-            for (const step of cleanup.splice(0).reverse()) {
-                try {
-                    await step();
-                } catch (caught) {
-                    console.error(caught);
-                }
-            }
-        })();
+        done ??= runSteps(cleanup.splice(0));
         return done;
     };
-    const stop = { signal: null as NodeJS.Signals | null };
+    const stop: Stop = { reason: null };
     const onSignal = (signal: NodeJS.Signals) => {
-        if (stop.signal) return;
-        stop.signal = signal;
-        void teardown().finally(() => process.exit(signal === "SIGINT" ? 130 : 143));
+        if (done) return;
+        stop.reason ??= `signal ${signal}`;
+        void teardown()
+            .catch(() => undefined)
+            .finally(() => process.exit(signal === "SIGINT" ? 130 : 143));
     };
     process.on("SIGINT", onSignal);
     process.on("SIGTERM", onSignal);
+    let failure: unknown = null;
     try {
         await runArms(o, cleanup, stop);
-    } finally {
-        await teardown();
-        process.off("SIGINT", onSignal);
-        process.off("SIGTERM", onSignal);
+    } catch (caught) {
+        failure = caught;
     }
+    try {
+        await teardown();
+    } catch (caught) {
+        failure ??= caught;
+    }
+    process.off("SIGINT", onSignal);
+    process.off("SIGTERM", onSignal);
+    if (failure !== null) throw failure;
 }
 
 async function runArms(
     o: RunOptions,
     cleanup: Array<() => Promise<void> | void>,
-    stop: { signal: NodeJS.Signals | null },
+    stop: Stop,
 ): Promise<void> {
     const guard = () => {
-        if (stop.signal) throw new HarnessFailure(`run stopping on ${stop.signal}`);
+        if (stop.reason) throw new HarnessFailure(`run stopping: ${stop.reason}`);
     };
     const { config, seed } = o;
     const prereg = loadPrereg(o.tier);
+    const wallBudgetMs = prereg.liveness_bounds.tier_wall_budget_ms;
+    const budget = setTimeout(() => {
+        stop.reason ??= `tier wall budget of ${wallBudgetMs} ms exhausted`;
+    }, wallBudgetMs);
+    budget.unref();
+    cleanup.push(() => clearTimeout(budget));
     const journal = new Journal(join(o.out, "journal.jsonl"));
     cleanup.push(() => journal.close());
     const compiled = await loadScenario(o);
@@ -245,6 +320,8 @@ async function runArms(
     const drivers: Partial<Record<ArmName, ArmDriver>> = {};
     const proxyFaults = scenario.faults.filter((f) => f.seam.layer === "proxy-sink");
     const injector = new FaultInjector(proxyFaults, new Rng((seed ^ 0x5bd1e995) >>> 0), 120_000);
+    const callsPath = join(o.out, "calls.jsonl");
+    injector.restore(readRecords(callsPath));
     const offsetFile = (arm: string) => join(o.out, arm, "clock", "offset");
     const scheduler = new Scheduler({
         events,
@@ -270,7 +347,7 @@ async function runArms(
     }
     const gateway = new Gateway({
         upstream: bedrockUpstream(config.bedrock.region, config.bedrock.aws_profile),
-        records: new RunRecords(join(o.out, "calls.jsonl")),
+        records: new RunRecords(callsPath),
         injector,
         rng: new Rng((seed ^ 0x27d4eb2f) >>> 0),
         clock: { scenarioMs: now },
@@ -287,9 +364,16 @@ async function runArms(
         requestDeadlineMs: prereg.liveness_bounds.turn_deadline_ms,
     });
     await gateway.start();
+    const handlersFailed = () => {
+        const [first] = gateway.failures;
+        if (!first) return;
+        const n = gateway.failures.length;
+        throw new HarnessFailure(`${n} proxy handler failure(s); first: ${first.message}`);
+    };
     cleanup.push(async () => {
         await gateway.stop();
         appendFileSync(join(o.out, "faults.jsonl"), `${JSON.stringify(injector.report())}\n`);
+        handlersFailed();
     });
 
     const projects = Object.fromEntries(
@@ -363,6 +447,7 @@ async function runArms(
                     return await driver.event(e);
                 } finally {
                     scope.turn = null;
+                    if (e.kind === "user_turn") sampler.sample();
                 }
             },
             fault: (f) => {
@@ -376,4 +461,5 @@ async function runArms(
         };
     }
     await scheduler.run();
+    handlersFailed();
 }

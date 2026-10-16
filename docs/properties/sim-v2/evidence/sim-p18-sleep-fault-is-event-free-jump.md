@@ -14,9 +14,6 @@ v2 harness before any harness code existed.
 A laptop-sleep fault produces exactly one `AdvanceClock` of the scheduled
 duration with `busy_set` empty and no events inside the gap.
 
-No harness code, test, or run exists yet. The surface lands in M4
-(#1028).
-
 M4 (#1028) makes a scheduled laptop sleep one jump of the fault's
 `duration_ms`, journaled with the fault id; a test checks one such jump of
 exactly that size with no event inside it.

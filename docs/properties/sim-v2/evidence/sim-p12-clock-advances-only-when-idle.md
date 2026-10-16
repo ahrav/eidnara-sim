@@ -15,9 +15,6 @@ Every `AdvanceClock` entry is preceded by `busy_set` empty at the same sequence,
 and no `scenario_ms` change appears between a `BeginTurn` or `RegisterJob` and
 the matching `EndTurn` or `EndJob`.
 
-No harness code, test, or run exists yet. The surface lands in M4
-(#1028).
-
 M4 (#1028) advances scenario time only through `Clock.advanceTo`, which refuses
 while any turn or job is busy. The tests rebuild the busy set from the
 journal's turn and job entries and check that it is empty at every

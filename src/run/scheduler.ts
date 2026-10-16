@@ -55,6 +55,7 @@ export class Scheduler {
     private session: string | null = null;
     private outage: string | null = null;
     private readonly fired = new Set<string>();
+    private readonly jobStarted = new Map<string, number>();
     private pendingKill: Promise<unknown> | null = null;
 
     constructor(private readonly o: SchedulerOptions) {}
@@ -155,10 +156,13 @@ export class Scheduler {
         return start;
     }
 
+    /** The busy set may hold the clock for `idleLimitMs` of wall time from its oldest `RegisterJob`. */
     private async idle(): Promise<void> {
-        const limit = Date.now() + (this.o.idleLimitMs ?? Number.POSITIVE_INFINITY);
+        const limitMs = this.o.idleLimitMs ?? Number.POSITIVE_INFINITY;
+        const entered = Date.now();
         while ((this.clock?.busyIds().length ?? 0) > 0) {
-            if (Date.now() > limit) {
+            const oldest = Math.min(entered, ...this.jobStarted.values());
+            if (Date.now() > oldest + limitMs) {
                 const busy = this.clock?.busyIds().join(", ");
                 throw new HarnessFailure(
                     `busy set held the clock past ${this.o.idleLimitMs} ms: ${busy}`,
@@ -233,11 +237,13 @@ export class Scheduler {
     }
 
     jobStart(id: string): void {
+        this.jobStarted.set(id, Date.now());
         this.clock?.begin(`job:${id}`);
         this.log({ kind: "RegisterJob", job: id });
     }
 
     jobEnd(id: string): void {
+        this.jobStarted.delete(id);
         this.log({ kind: "EndJob", job: id });
         this.clock?.end(`job:${id}`);
     }

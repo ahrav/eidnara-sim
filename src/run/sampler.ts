@@ -91,8 +91,11 @@ export class ResourceSampler {
         return s;
     }
 
+    /** `start` takes a baseline sample, so the first interval sample yields a CPU fraction. */
     start(): void {
-        this.timer ??= setInterval(() => this.sample(), this.o.intervalMs);
+        if (this.timer) return;
+        this.sample();
+        this.timer = setInterval(() => this.sample(), this.o.intervalMs);
     }
 
     stop(): void {

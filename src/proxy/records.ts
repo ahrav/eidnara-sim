@@ -54,7 +54,8 @@ const NUMBERS = [
 ] as const;
 const NULLABLE = ["session", "turn", "finish_reason", "fault_ref", "error"] as const;
 
-export function recordProblems(value: Record<string, unknown>): string[] {
+export function recordProblems(input: Partial<CallRecord> | Record<string, unknown>): string[] {
+    const value: Record<string, unknown> = { ...input };
     const problems: string[] = [];
     for (const k of NUMBERS) if (!Number.isFinite(value[k])) problems.push(`${k} missing`);
     for (const k of NULLABLE) {
@@ -76,31 +77,41 @@ export function recordProblems(value: Record<string, unknown>): string[] {
 }
 
 /** `wall_ms` is the write-time Unix timestamp in milliseconds, clamped to the preceding record's value. */
+/**
+ * `readRecords` truncates an unterminated final line to recover from an interrupted write and
+ * rejects an unparseable complete line, so `RecordWriter` resumes only after a fully parsed file.
+ */
+export function readRecords(path: string): CallRecord[] {
+    if (!existsSync(path)) return [];
+    const text = readFileSync(path, "utf8");
+    const complete = text.slice(0, text.lastIndexOf("\n") + 1);
+    if (complete.length < text.length) truncateSync(path, Buffer.byteLength(complete));
+    const lines = complete.split("\n").filter((l) => l !== "");
+    return lines.map((line, i) => {
+        try {
+            return JSON.parse(line) as CallRecord;
+        } catch {
+            throw new Error(`${path} line ${i + 1} is corrupt`);
+        }
+    });
+}
+
 export class RecordWriter {
     private seq = 0;
     private lastWall = 0;
     readonly records: CallRecord[] = [];
 
     constructor(private readonly path: string | null) {
-        if (!path || !existsSync(path)) return;
-        const text = readFileSync(path, "utf8");
-        const complete = text.slice(0, text.lastIndexOf("\n") + 1);
-        if (complete.length < text.length) truncateSync(path, Buffer.byteLength(complete));
-        const lines = complete.split("\n").filter((l) => l !== "");
-        for (const line of lines.reverse()) {
-            try {
-                const last = JSON.parse(line) as CallRecord;
-                this.seq = last.seq + 1;
-                this.lastWall = last.wall_ms;
-                return;
-            } catch {}
-        }
+        const last = path ? readRecords(path).at(-1) : undefined;
+        if (last === undefined) return;
+        this.seq = last.seq + 1;
+        this.lastWall = last.wall_ms;
     }
 
     write(partial: Omit<CallRecord, "seq" | "wall_ms">): CallRecord {
         const wall_ms = Math.max(this.lastWall, Date.now());
         const record = { ...partial, seq: this.seq, wall_ms } as CallRecord;
-        const problems = recordProblems(record as unknown as Record<string, unknown>);
+        const problems = recordProblems(record);
         if (problems.length > 0) throw new Error(`call record refused: ${problems.join(", ")}`);
         this.seq++;
         this.lastWall = wall_ms;

@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { loadConfig } from "../src/config/config";
 import { checkJournal, type Schedule } from "../src/run/journal-check";
@@ -64,6 +64,7 @@ const FAULT_SETS: Record<string, FaultEpisode[]> = {
 };
 
 function launch(dir: string, args: string[]) {
+    mkdirSync(out, { recursive: true });
     const faults = `${dir}.faults.json`;
     writeFileSync(faults, JSON.stringify(FAULT_SETS[dir.split("/").at(-1) ?? ""] ?? []));
     const argv = ["bun", "scripts/run-tier.ts", "--tier", "S", "--seed", "101", "--out", dir];
@@ -71,8 +72,26 @@ function launch(dir: string, args: string[]) {
     return Bun.spawn(argv, { cwd: ROOT, env, stdout: "inherit", stderr: "pipe" });
 }
 
-async function waitFor(test: () => boolean): Promise<void> {
-    while (!test()) await Bun.sleep(500);
+const WAIT_MS = 20 * 60_000;
+
+/** Polls `test` until it holds; a child exit or the deadline ends the wait with a failure. */
+async function waitFor(child: ReturnType<typeof launch>, test: () => boolean): Promise<void> {
+    const deadline = Date.now() + WAIT_MS;
+    let exited = false;
+    void child.exited.then(() => {
+        exited = true;
+    });
+    while (!test()) {
+        if (exited) {
+            const { code, stderr } = await finished(child);
+            throw new Error(`run exited with ${code} before the awaited state:\n${stderr}`);
+        }
+        if (Date.now() > deadline) {
+            child.kill("SIGKILL");
+            throw new Error(`run reached no awaited state within ${WAIT_MS} ms`);
+        }
+        await Bun.sleep(200);
+    }
 }
 const begun = (dir: string, event: string) => () =>
     lines(join(dir, "journal.jsonl")).some((e) => e.kind === "BeginTurn" && e.event === event);
@@ -113,7 +132,7 @@ if (only.includes("scheduled")) {
 }
 if (only.includes("rogue")) {
     const child = launch(dirs.rogue, ["--arms", "eidnara", "--events", "6"]);
-    await waitFor(begun(dirs.rogue, "e-000004"));
+    await waitFor(child, begun(dirs.rogue, "e-000004"));
     const state = JSON.parse(readFileSync(join(dirs.rogue, "eidnara/state.json"), "utf8"));
     try {
         process.kill(state.daemon.pid, "SIGKILL");
@@ -125,14 +144,24 @@ if (only.includes("rogue")) {
 if (only.includes("resume")) {
     const args = ["--arms", "eidnara", "--events", "13", "--models", models];
     const first = launch(dirs.resume, args);
-    await waitFor(called(dirs.resume, "e-000007"));
+    await waitFor(first, called(dirs.resume, "e-000007"));
     first.kill("SIGKILL");
     const killed = await finished(first);
+    const journal = lines(join(dirs.resume, "journal.jsonl"));
+    const has = (kind: string) => journal.some((e) => e.kind === kind && e.event === "e-000007");
+    const mid_turn = has("BeginTurn") && !has("EndTurn");
     const before = callsByTurn(dirs.resume);
     const second = await finished(launch(dirs.resume, args));
     const after = callsByTurn(dirs.resume);
     const rebilled = Object.keys(before).filter((t) => t !== "null" && after[t] !== before[t]);
-    outcome.resume = { killed, second, calls_before: before, calls_after: after, rebilled };
+    outcome.resume = {
+        killed,
+        mid_turn,
+        second,
+        calls_before: before,
+        calls_after: after,
+        rebilled,
+    };
 }
 writeFileSync(join(out, "outcome.json"), `${JSON.stringify(outcome, null, 2)}\n`);
 
@@ -189,7 +218,7 @@ function summarize(dir: string) {
             return acc;
         }, {}),
         invariants: checkJournal(journal as never, schedule(dir)),
-        fail_open_on_full_store: existsSync(join(dir, "eidnara/r/eidnara.log"))
+        full_store_enospc_log_lines: existsSync(join(dir, "eidnara/r/eidnara.log"))
             ? readFileSync(join(dir, "eidnara/r/eidnara.log"), "utf8")
                   .split("\n")
                   .filter((l) => l.includes("disk is full")).length
@@ -205,3 +234,43 @@ const summary = {
 };
 writeFileSync(join(out, "witness.json"), `${JSON.stringify(summary, null, 2)}\n`);
 console.log(JSON.stringify(summary, null, 2));
+
+type Run = { code: number } | undefined;
+const failures: string[] = [];
+const check = (held: boolean, what: string) => {
+    if (!held) failures.push(what);
+};
+const run = (name: string) => outcome[name] as Run;
+const invariantsClean = (name: "scheduled" | "rogue" | "resume") => {
+    const s = summary[name];
+    if (!s) return false;
+    const v = s.invariants;
+    const violations = [
+        v.decreasing_scenario_ms,
+        v.advance_while_busy,
+        v.off_schedule_jumps,
+        v.events_inside_sleep,
+    ];
+    return s.ended === "EndRun" && s.call_seq_unique && violations.every((x) => x.length === 0);
+};
+if (run("scheduled")) {
+    check(run("scheduled")?.code === 0, "scheduled: exit 0");
+    check(invariantsClean("scheduled"), "scheduled: EndRun, unique seq, clean invariants");
+}
+if (run("rogue")) {
+    const rogue = outcome.rogue as { code: number; stderr: string };
+    check(rogue.code !== 0, "rogue: nonzero exit");
+    check(rogue.stderr.includes("outside a scheduled outage window"), "rogue: daemon exit refused");
+}
+if (outcome.resume) {
+    const resume = outcome.resume as { killed: Run; mid_turn: boolean; second: Run; rebilled: [] };
+    check(resume.killed?.code === 137, "resume: first run killed with 137");
+    check(resume.mid_turn, "resume: kill landed with e-000007 open");
+    check(resume.second?.code === 0, "resume: second run exit 0");
+    check(resume.rebilled.length === 0, "resume: no turn rebilled");
+    check(invariantsClean("resume"), "resume: EndRun, unique seq, clean invariants");
+}
+if (failures.length > 0) {
+    console.error(`witness failed:\n  ${failures.join("\n  ")}`);
+    process.exit(1);
+}

@@ -15,9 +15,6 @@ An item `issued` but not `attempted` at interrupt becomes exactly one of
 `failed(interrupted)` or `reissued(marker)`, and its pre-interrupt calls are
 billed once.
 
-No harness code, test, or run exists yet. The surface lands in M4
-(#1028).
-
 M4 (#1028) journals `ItemState failed(interrupted)` and `Event` once for a
 `BeginTurn` without `EndTurn` when a run resumes; the resume test checks both
 entries.

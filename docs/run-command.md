@@ -21,7 +21,9 @@ scenario's fault schedule, `--context-limit` sets the model window the host
 sees (200,000 by default), and `--models` lists the models `model_switch`
 cycles through (`agent_model` by default). The manifest records every one of
 these values. The run refuses a seed outside the pre-registration, an arm
-outside the seed's order, and a non-positive count.
+outside the seed's order, a non-positive count, a `--faults` file that is not
+an array of episodes valid against the compiled scenario (`validateFault`),
+and an `--out` directory inside the Eidnara checkout, by resolved path.
 
 ## Run sequence
 
@@ -29,38 +31,53 @@ outside the seed's order, and a non-positive count.
    as a normal end, which runs once however many paths reach it, and exit
    with 130 or 143. After a signal, every driver call refuses with
    `HarnessFailure`, so the scheduler starts nothing the teardown has already
-   passed, and later signals wait for the teardown.
+   passed, and later signals wait for the teardown. The tier's
+   `tier_wall_budget_ms` starts a timer at the same point; once it fires,
+   every driver call refuses the same way, so the run stops at the next
+   event and fails.
 2. Open the journal, and compile the scenario into `scenario.json` on the
-   first invocation. A later invocation refuses a `scenario.json` compiled
-   for another tier or seed.
+   first invocation. Every invocation recomputes the SHA-256 of the file's
+   body and refuses a `scenario.json` whose `scenario_hash` differs, or one
+   compiled for another tier or seed.
 3. Run `preflight` (`docs/time.md`). On the first invocation, write
    `manifest.json` with the tier, seed, host, arm order, event count, context
    limit, models, fault override, scenario hash, pre-registration hash,
    eidnara commit, base wall time, and preflight result. A later invocation
    refuses when any option it states differs from the manifest, when the
-   scenario hash, pre-registration hash, or eidnara commit changed, or when
-   an interception result changed, and appends its preflight result to
+   scenario hash, pre-registration hash, or eidnara commit changed, when
+   an interception result changed, or when the selected host's version or
+   transcript paths changed, and appends its preflight result to
    `preflight.jsonl`.
 4. Start the capture proxy; its records append to `calls.jsonl`, and a
-   reopened writer continues the sequence after the last complete record.
+   reopened writer continues the sequence after the last complete record. A
+   cut last line is dropped; a complete line that fails to parse refuses the
+   run. The fault injector replays the existing records, so a fault injected
+   and observed before a hard kill keeps its witness in the resumed run.
 5. Run the scheduler over the arms. On resume, each started arm resumes
    through its driver.
 6. At the end, or after a failure or signal, stop each arm's sampler and
    driver, stop the proxy, append this invocation's proxy-fault witness
    report to `faults.jsonl`, close the journal, and release the lease. Each
-   step runs even when an earlier one fails.
+   step runs even when an earlier one fails, and the first failure is
+   rethrown after the last step, so the command exits nonzero. Stopping the
+   proxy aborts in-flight handlers and waits up to ten seconds for them to
+   write their call records. A handler failure recorded during the run (for
+   example, a refused call record) fails the run after the scheduler ends
+   and again at teardown.
 
 The scheduler's `onClock` hook writes each arm's offset file, so every
 process the arm launches reads `base_wall_ms + scenario_ms`. The proxy's
 `observe` event for a background component (history summarizer, memory
 capture, memory classifier, context researcher, title, native compaction)
 registers a job, and that call's record ends it; jobs are matched per arm and
-component. The resource sampler registers `daemon-cpu-<arm>` while the
-daemon's CPU fraction is above the pre-registered threshold, with one job id
-per busy period. Both hold the clock (SIM-P13, OQ-2). Job ids continue from
-the journal's count, so a resumed run issues new ones. A busy set that holds
-the clock longer than the pre-registered `job_deadline_ms` (20 minutes at S)
-stops the run with the held ids.
+component. The resource sampler takes a baseline sample when an arm starts,
+one at the end of every user turn, and one per pre-registered interval, and
+registers `daemon-cpu-<arm>` while the daemon's CPU fraction is above the
+pre-registered threshold, with one job id per busy period. Both hold the
+clock (SIM-P13, OQ-2). Job ids continue from the journal's count, so a
+resumed run issues new ones. A job that holds the clock longer than the
+pre-registered `job_deadline_ms` (20 minutes at S) after its `RegisterJob`
+stops the run with the held ids (SIM-L02).
 
 ## Journal check
 
@@ -93,7 +110,14 @@ so folds happen within six sessions, and writes `witness.json`:
   the third session's turn has made its first model call, runs the same
   command again, and compares each turn's call count before and after.
 
-`--summarize` rebuilds `witness.json` from an existing directory.
+`--summarize` rebuilds `witness.json` from an existing directory. The
+script exits nonzero when a run it started exits unexpectedly or never
+reaches the awaited state within twenty minutes, or when a check fails:
+`scheduled` exits 0, `rogue` exits nonzero with the daemon-exit refusal,
+`resume` is killed with 137 while `e-000007` has `BeginTurn` and no
+`EndTurn`, then exits 0 with no turn rebilled, and every finished run ends
+in `EndRun` with unique call `seq` values and no journal invariant
+violation.
 
 Runs on 2026-10-16 against eidnara `bb866266c` (`witness-8`; `resume` ran
 again after the store image grew to 2 GiB):
@@ -102,7 +126,7 @@ again after the store image grew to 2 GiB):
 |---|---|
 | Run outcomes | `scheduled` exit 0; `rogue` exit 1 with `daemon exited outside a scheduled outage window` after `e-000004`; `resume` killed with 137, then exit 0 |
 | Faults | each arm fired the sleep and all five M4 scheduler faults; on `host`, the daemon and store faults recorded `skipped`; on `eidnara`, the restart recorded a new pid and `restarted_by: harness`, and the full store recorded `avail_kb: 0` |
-| Full store | 2 transform passes in `scheduled` and 35 in `resume` served their input unchanged with `database or disk is full` |
+| Full store | the Eidnara log holds `database or disk is full` 2 times in `scheduled` and 35 in `resume` (`full_store_enospc_log_lines`; the log line alone does not show what the transform returned) |
 | Turns | 11 of 11 `ok` on each arm of `scheduled` |
 | Models in agent calls | Opus 5.5, then Haiku 4.5 after the switch, on both arms |
 | Journal invariants | 7 event jumps and 2 sleep jumps checked: no decreasing `scenario_ms`, no jump while busy, no off-schedule jump, no event inside a sleep |
