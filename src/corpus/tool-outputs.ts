@@ -58,10 +58,9 @@ export function classify(tool: string, command: string, content: string): Sample
     }
     if (content.includes(TRACEBACK)) return "stack_trace";
     if (tool !== "execute_bash" || SHELL_ERROR.test(content)) return null;
-    if (RUNNER.test(command.replace(QUOTED, '""'))) {
-        return NO_RUN.test(command) ? null : "test_run";
-    }
-    if (/\b(grep|rg|ag)\b/.test(command)) return "grep";
+    const bare = command.replace(QUOTED, '""');
+    if (RUNNER.test(bare)) return NO_RUN.test(command) ? null : "test_run";
+    if (/\b(grep|rg|ag)\b/.test(bare)) return "grep";
     if (/^\s*(cat|head|tail|sed -n)\b/.test(command)) return "file_read";
     return null;
 }
@@ -173,8 +172,10 @@ export function extractFrom(rows: TrajectoryRow[], dataset: Dataset): Extraction
     return { samples, error_codes: [...codes.values()] };
 }
 
+export const OPENHANDS_FILE = "trajectories.parquet";
+
 export async function extractToolOutputs(dataset: Dataset): Promise<Extraction> {
-    const file = await asyncBufferFromFile(cachePath(dataset, "trajectories.parquet"));
+    const file = await asyncBufferFromFile(cachePath(dataset, OPENHANDS_FILE));
     const columns = ["trajectory_id", "repo", "trajectory"];
     const rows = await parquetReadObjects({ file, rowEnd: ROWS_SCANNED, columns, compressors });
     return extractFrom(rows as TrajectoryRow[], dataset);

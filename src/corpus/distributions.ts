@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { CdfTable } from "./cdf";
 import type { TraceLabFit } from "./fit";
-import { CORPUS_DIR } from "./sources";
+import { CORPUS_DIR, parseJson } from "./sources";
 
 export interface Distributions extends TraceLabFit {
     schema: string;
@@ -30,18 +30,24 @@ export interface CheckResult extends CitedCheck {
 }
 
 export function loadDistributions(): Distributions {
-    const raw = JSON.parse(readFileSync(join(CORPUS_DIR, "distributions.json"), "utf8"));
+    const raw = parseJson<Distributions>(
+        readFileSync(join(CORPUS_DIR, "distributions.json"), "utf8"),
+        "distributions.json",
+    );
     if (raw.schema !== "sim-corpus-distributions/v1") {
         throw new Error("distributions.json: unknown schema");
     }
-    return raw as Distributions;
+    return raw;
 }
 
 export function loadCited(): Cited {
-    const raw = JSON.parse(readFileSync(join(CORPUS_DIR, "cited-percentiles.json"), "utf8"));
+    const raw = parseJson<Cited & { schema?: string }>(
+        readFileSync(join(CORPUS_DIR, "cited-percentiles.json"), "utf8"),
+        "cited-percentiles.json",
+    );
     if (raw.schema !== "sim-corpus-cited/v1")
         throw new Error("cited-percentiles.json: unknown schema");
-    return raw as Cited;
+    return raw;
 }
 
 export function table(dist: Distributions, name: string): CdfTable {
@@ -63,7 +69,11 @@ export function compareCited(
     });
 }
 
+export function waived(check: CitedCheck): boolean {
+    return typeof check.deviation === "string" && check.deviation.trim() !== "";
+}
+
 /** An in-band check that still carries a deviation also fails, so stale deviation notes surface. */
 export function failedChecks(results: readonly CheckResult[]): CheckResult[] {
-    return results.filter((r) => r.within === (r.deviation !== undefined));
+    return results.filter((r) => r.within === waived(r));
 }

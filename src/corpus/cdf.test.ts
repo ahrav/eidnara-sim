@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { Rng } from "../rng";
-import { cdfProblems, fitCdf, GRID, quantile, sample, tailShare } from "./cdf";
+import { cdfProblems, countProblems, fitCdf, GRID, quantile, sample, tailShare } from "./cdf";
 
 describe("cdfProblems", () => {
     test("fitted tables pass", () => {
@@ -23,6 +23,21 @@ describe("cdfProblems", () => {
         expect(cdfProblems({ kind: "discrete", p: [0.5, 1.5], x: [1, 2] })).toContain(
             "p must increase strictly within [0, 1]",
         );
+    });
+});
+
+describe("countProblems", () => {
+    test("a fitted discrete table passes against its sample size", () => {
+        expect(countProblems(fitCdf([1, 2, 2, 3], "discrete"), 4)).toEqual([]);
+        expect(countProblems(fitCdf([3, 1, 1, 2, 1, 50], "discrete"), 6)).toEqual([]);
+    });
+    test("weights that are not cumulative counts over n fail", () => {
+        const t = { kind: "discrete" as const, p: [0.3, 1], x: [1, 2] };
+        expect(countProblems(t, 4)).toEqual(["p must be cumulative counts over n"]);
+        expect(countProblems(t, 0)).toEqual(["n must be a positive integer"]);
+        expect(countProblems({ kind: "discrete", p: [0.5], x: [1] }, 4)).toEqual([
+            "p must end at n / n",
+        ]);
     });
 });
 

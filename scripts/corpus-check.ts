@@ -1,14 +1,15 @@
 import { checkCorpus } from "../src/corpus/check";
+import { waived } from "../src/corpus/distributions";
 
 const { problems, percentiles } = checkCorpus();
 console.table(
-    percentiles.map(({ quantity, q, cited, measured, low, high, within, deviation }) => ({
-        quantity,
-        q,
-        cited,
-        measured,
-        band: `[${low.toFixed(0)}, ${high.toFixed(0)}]`,
-        status: within ? "within" : deviation ? "recorded deviation" : "OUT",
+    percentiles.map((check) => ({
+        quantity: check.quantity,
+        q: check.q,
+        cited: check.cited,
+        measured: check.measured,
+        band: `[${check.low.toFixed(0)}, ${check.high.toFixed(0)}]`,
+        status: check.within ? "within" : waived(check) ? "recorded deviation" : "OUT",
     })),
 );
 for (const problem of problems) console.log(`FAIL ${problem}`);

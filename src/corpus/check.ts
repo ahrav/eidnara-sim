@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { sha256Hex } from "../prereg/canonical";
-import { cdfProblems, GRID, quantile, tailShare } from "./cdf";
+import { cdfProblems, countProblems, GRID, quantile, tailShare } from "./cdf";
 import {
     type CheckResult,
     compareCited,
@@ -12,13 +12,14 @@ import {
 } from "./distributions";
 import { ERROR_CODE_FIELDS, entryProblems, parseJsonl, SAMPLE_FIELDS } from "./entries";
 import { bankProblems } from "./fact-bank";
-import { CATEGORY_NAMES, QUANTITIES, TABLES } from "./fit";
+import { CATEGORY_NAMES, KINDS, QUANTITIES, TABLES, TRACELAB_FILES } from "./fit";
 import { loadRepos, REPOS_DIR } from "./repos";
 import { CORPUS_DIR, loadSources, parseJson } from "./sources";
+import { OPENHANDS_FILE } from "./tool-outputs";
 
 const SAMPLES_PER_KIND = 150;
 const ERROR_CODES = 200;
-const KINDS = ["stack_trace", "test_run", "grep", "file_read"];
+const SAMPLE_KINDS = ["stack_trace", "test_run", "grep", "file_read"];
 const SHA = /^[0-9a-f]{40}$/;
 const REPO_LICENSES = new Set(["MIT", "Apache-2.0"]);
 const OUTPUTS = [
@@ -28,7 +29,11 @@ const OUTPUTS = [
     "tool-outputs/error-codes.jsonl",
     "tool-outputs/samples.jsonl",
 ];
-const CDF_KINDS = new Set(["discrete", "continuous"]);
+const BUILD_INPUTS: [string, readonly string[]][] = [
+    ["tracelab", TRACELAB_FILES],
+    ["openhands", [OPENHANDS_FILE]],
+];
+const CONTENT_CAP = 4000;
 const CITED_CHECKS = [
     "append_tokens_per_step@0.5",
     "append_tokens_per_step@0.9",
@@ -50,12 +55,24 @@ export function checkCorpus(): CorpusReport {
     const problems: string[] = [];
     const need = (ok: boolean, problem: string) => ok || problems.push(problem);
     const read = (path: string) => readFileSync(join(CORPUS_DIR, path), "utf8");
-    const manifest = parseJson(read("manifest.json"), "manifest.json");
+    const manifest = parseJson<{
+        schema?: string;
+        files: Record<string, string>;
+        datasets: unknown;
+    }>(read("manifest.json"), "manifest.json");
     need(manifest.schema === "sim-corpus-manifest/v1", `manifest: schema ${manifest.schema}`);
-    const files = manifest.files as Record<string, string>;
+    const files = manifest.files;
     const listed = Object.keys(files).sort().join(",");
     need(listed === OUTPUTS.join(","), `manifest: files ${listed}, need ${OUTPUTS.join(",")}`);
     const sources = loadSources();
+    for (const [id, paths] of BUILD_INPUTS) {
+        const dataset = sources.find((d) => d.id === id);
+        need(dataset?.access === "public", `sources.json: build input ${id} must be public`);
+        for (const path of paths) {
+            const listed = dataset?.files.some((f) => f.path === path) ?? false;
+            need(listed, `sources.json: ${id} must list ${path}`);
+        }
+    }
     const configured = sources.map((d) => ({ id: d.id, revision: d.revision, access: d.access }));
     need(
         JSON.stringify(manifest.datasets) === JSON.stringify(configured),
@@ -82,12 +99,28 @@ export function checkCorpus(): CorpusReport {
         byKind.set(kind, (byKind.get(kind) ?? 0) + 1);
     }
     need(
-        [...byKind.keys()].every((k) => KINDS.includes(k)),
+        [...byKind.keys()].every((k) => SAMPLE_KINDS.includes(k)),
         `samples: kinds ${[...byKind.keys()]}`,
     );
-    for (const kind of KINDS) {
+    for (const kind of SAMPLE_KINDS) {
         const n = byKind.get(kind) ?? 0;
         need(n === SAMPLES_PER_KIND, `samples: ${kind} has ${n}, need ${SAMPLES_PER_KIND}`);
+    }
+    const perTrajectory = samples.map((s) => {
+        const e = s as { kind?: string; source_id?: string };
+        return `${e.kind} ${e.source_id?.replace(/#\d+$/, "")}`;
+    });
+    need(new Set(perTrajectory).size === samples.length, "samples: a trajectory repeats a kind");
+    for (const s of samples) {
+        const e = s as { id?: string; content?: string; chars?: number; truncated?: boolean };
+        const content = e.content ?? "";
+        const sized = e.truncated
+            ? content.length <= CONTENT_CAP && (e.chars ?? 0) > CONTENT_CAP
+            : content.length === e.chars && content.length <= CONTENT_CAP;
+        need(
+            content.trim() !== "" && sized,
+            `samples ${e.id}: content, chars, and truncated disagree`,
+        );
     }
     for (const [label, entries] of [
         ["samples", samples],
@@ -99,7 +132,7 @@ export function checkCorpus(): CorpusReport {
                 e.source_id?.startsWith(`${d.repo}@${d.revision}:`),
             );
             need(
-                dataset !== undefined && dataset.license === e.license,
+                dataset?.id === "openhands" && dataset.license === e.license,
                 `${label} ${e.id}: license ${e.license} for source ${e.source_id}`,
             );
         }
@@ -119,7 +152,8 @@ export function checkCorpus(): CorpusReport {
         const table = TABLES[name as keyof typeof TABLES];
         need(q.source === `${origin}${table}`, `${name}: source ${q.source}`);
         need(q.n > 0, `${name}: n missing`);
-        need(CDF_KINDS.has(q.cdf.kind), `${name}: cdf kind ${q.cdf.kind}`);
+        const kind = KINDS[name as keyof typeof KINDS];
+        need(q.cdf.kind === kind, `${name}: cdf kind ${q.cdf.kind}, need ${kind}`);
         const floor = name === "tool_steps_per_request" ? 1 : 0;
         need(
             q.cdf.x.every((v) => v >= floor),
@@ -127,6 +161,7 @@ export function checkCorpus(): CorpusReport {
         );
         if (q.cdf.kind === "discrete") {
             need(q.cdf.x.every(Number.isSafeInteger), `${name}: discrete values must be integers`);
+            problems.push(...countProblems(q.cdf, q.n).map((why) => `${name}: ${why}`));
         } else {
             need(q.cdf.p.join(",") === GRID.join(","), `${name}: p must be the fit grid`);
         }
@@ -137,13 +172,21 @@ export function checkCorpus(): CorpusReport {
     need(mix?.n > 0, "tool_mix: n missing");
     const names = (mix?.categories ?? []).map((c) => c.category).sort();
     need(names.join(",") === CATEGORY_NAMES.join(","), `tool_mix: categories ${names}`);
-    const shareSum = (mix?.categories ?? []).reduce((sum, c) => sum + c.share, 0);
-    need(Math.abs(shareSum - 1) < 1e-5, `tool_mix: shares sum to ${shareSum}`);
+    const round6 = (v: number) => Math.round(v * 1e6) / 1e6;
+    let counted = 0;
     for (const c of mix?.categories ?? []) {
-        const unit = (v: number) => Number.isFinite(v) && v >= 0 && v <= 1;
-        need(unit(c.share) && unit(c.error_rate), `tool_mix: ${c.category} share or error_rate`);
+        const count = Math.round(c.share * mix.n);
+        const errors = Math.round(c.error_rate * count);
+        counted += count;
+        need(
+            count > 0 &&
+                round6(count / mix.n) === c.share &&
+                round6(errors / count) === c.error_rate,
+            `tool_mix: ${c.category} share or error_rate is not a count over n`,
+        );
         need(Array.isArray(c.tools), `tool_mix: ${c.category} tools`);
     }
+    need(counted === mix?.n, `tool_mix: category counts total ${counted}, n is ${mix?.n}`);
     const tools = (mix?.categories ?? []).flatMap((c) => c.tools);
     need(new Set(tools).size === tools.length, "tool_mix: a tool appears in two categories");
     const cited = loadCited();
