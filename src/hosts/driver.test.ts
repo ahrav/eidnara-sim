@@ -678,6 +678,48 @@ touch ${escaped}
         expect(existsSync(join(elsewhere, "index.lock"))).toBe(true);
     });
 
+    test.skipIf(!sudo)(
+        "reset reaps the recorded daemon before it unmounts the data directory it holds busy",
+        async () => {
+            const daemonFactory = () =>
+                ({ ...fakeDaemon(null), start: async () => undefined }) as unknown as DaemonStack;
+            const { driver, armDir } = fixture("eidnara", {}, { daemonFactory });
+            let fresh: HostDriver | null = null;
+            try {
+                await driver.reset();
+                const squatter = Bun.spawn(["sleep", "300"], { cwd: driver.dataDir });
+                const start = readFileSync(`/proc/${squatter.pid}/stat`, "utf8")
+                    .split(") ")[1]
+                    ?.split(" ")[19];
+                const state = JSON.parse(readFileSync(join(armDir, "state.json"), "utf8"));
+                state.daemon = { pid: squatter.pid, start };
+                writeFileSync(join(armDir, "state.json"), JSON.stringify(state));
+                fresh = new HostDriver((driver as unknown as { o: DriverOptions }).o);
+                await fresh.reset();
+                await squatter.exited;
+                expect(squatter.signalCode).toBe("SIGTERM");
+            } finally {
+                await fresh?.stop().catch(() => undefined);
+                await driver.stop().catch(() => undefined);
+            }
+        },
+    );
+
+    test("a finish that fails is recorded, so a resume cannot heal the arm", async () => {
+        const { driver, armDir } = fixture("eidnara");
+        driver.daemon = {
+            ...fakeDaemon(null),
+            stop: async () => {
+                throw new Error("daemon outlived SIGTERM");
+            },
+        } as unknown as DaemonStack;
+        await expect(driver.finish()).rejects.toThrow("outlived");
+        const state = JSON.parse(readFileSync(join(armDir, "state.json"), "utf8"));
+        expect(state.failed).toContain("outlived");
+        const fresh = new HostDriver((driver as unknown as { o: DriverOptions }).o);
+        await expect(fresh.reap()).rejects.toThrow("outlived");
+    });
+
     test("reset starts the fresh arm with no fault or git state carried over", async () => {
         const { driver, armDir } = fixture("host", { p: gitRepo() });
         const inner = driver as unknown as {

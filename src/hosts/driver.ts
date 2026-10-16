@@ -34,6 +34,8 @@ interface ArmState {
     refilling: boolean;
     /** The sandboxed git run of an apply_diff in flight, with the workspace it holds. */
     git: { pid: number; start: string | null; project: string } | null;
+    /** The message of a `finish` that failed; a resume refuses the arm while it stands. */
+    failed: string | null;
 }
 
 export interface DriverOptions extends Omit<HostContext, "root" | "model"> {
@@ -116,6 +118,7 @@ export class HostDriver implements ArmDriver {
     private ballastShape: ArmState["ballast"] = null;
     private refilling = false;
     private gitRun: ArmState["git"] = null;
+    private failed: string | null = null;
     private sessionProject: string | null = null;
     private transcriptsChecked = false;
 
@@ -299,6 +302,7 @@ export class HostDriver implements ArmDriver {
             ballast: this.ballastShape,
             refilling: this.refilling,
             git: this.gitRun,
+            failed: this.failed,
         };
         mkdirSync(this.armDir, { recursive: true });
         writeWhole(this.stateFile, JSON.stringify(state));
@@ -369,14 +373,16 @@ export class HostDriver implements ArmDriver {
         }
     }
 
+    /** Recorded processes go first: a daemon the killed harness left holds the data directory busy. */
     async reset(): Promise<void> {
+        await this.reapStale();
         await this.stop();
         this.model = 0;
         this.transcriptsChecked = false;
         this.ballastShape = null;
         this.refilling = false;
         this.gitRun = null;
-        await this.reapStale();
+        this.failed = null;
         for (const dir of [this.o.armRoot, this.storeRoot])
             rmSync(dir, { recursive: true, force: true });
         rmSync(this.image, { force: true });
@@ -410,10 +416,17 @@ export class HostDriver implements ArmDriver {
         if (open) await this.event(open);
     }
 
-    /** Stops what the killed harness recorded; a missing record is a lost arm, so the resume stops. */
+    /**
+     * Stops what the killed harness recorded; a missing record is a lost arm, and a recorded
+     * finish failure is final, so either stops the resume.
+     */
     async reap(): Promise<void> {
-        if (!this.readState()) {
+        const state = this.readState();
+        if (!state) {
             throw new HarnessFailure(`resume of arm ${this.o.arm}: ${this.stateFile} is gone`);
+        }
+        if (state.failed !== null && state.failed !== undefined) {
+            throw new HarnessFailure(`arm ${this.o.arm} failed to finish earlier: ${state.failed}`);
         }
         await this.reapStale();
     }
@@ -646,8 +659,19 @@ export class HostDriver implements ArmDriver {
         rmSync(ballast, { force: true });
     }
 
+    /** A failed finish is recorded, so a resume of an otherwise exhausted arm cannot heal it. */
     async finish(): Promise<void> {
-        await this.stop();
+        try {
+            await this.stop();
+        } catch (caught) {
+            this.failed = String(caught);
+            try {
+                this.recordState();
+            } catch {
+                // The failure itself is what surfaces; a record that cannot be written changes nothing.
+            }
+            throw caught;
+        }
     }
 
     async stop(): Promise<void> {
