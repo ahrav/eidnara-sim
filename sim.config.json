@@ -1,13 +1,35 @@
 {
-    "schema": "sim-config/v1",
-    "eidnara_checkout": "/local/home/ahrav/scratch/eidnara",
-    "opencode_plugin_dist": "/local/home/ahrav/scratch/eidnara/packages/opencode-plugin/dist",
-    "pi_plugin_dist": "/local/home/ahrav/scratch/eidnara/packages/pi-plugin/dist",
-    "daemon_binary": "/local/home/ahrav/scratch/eidnara/target/debug/eidnara-host",
+    "schema": "sim-config/v2",
+    "eidnara_checkout": "/local/home/ahrav/scratch/eidnara-build",
+    "daemon_binary": "/local/home/ahrav/scratch/eidnara-build/target/release/examples/direct_host_fixture",
     "pi_install": "/tmp/eidnara-e2e-pi-install-0.80.2",
-    "opencode_binary": "/local/home/ahrav/.local/share/mise/installs/node/24.18.0/lib/node_modules/opencode-ai/bin/opencode.exe",
+    "opencode_binary": "/local/home/ahrav/scratch/eidnara-evalrun-20260925/oc/node_modules/opencode-ai/bin/opencode.exe",
     "bedrock": {
         "aws_profile": "bw-bedrock",
         "region": "us-west-2"
+    },
+    "agent_model": "global.anthropic.claude-opus-5-5",
+    "toolchain": {
+        "bin": [
+            "/local/home/ahrav/.cargo/bin",
+            "/local/home/ahrav/.bun/bin"
+        ],
+        "keep": [
+            "/local/home/ahrav/.cargo/bin",
+            "/local/home/ahrav/.cargo/registry",
+            "/local/home/ahrav/.cargo/git",
+            "/local/home/ahrav/.rustup",
+            "/local/home/ahrav/.bun/bin",
+            "/local/home/ahrav/.bun/install/cache"
+        ],
+        "env": {
+            "CARGO_HOME": "/local/home/ahrav/.cargo",
+            "RUSTUP_HOME": "/local/home/ahrav/.rustup",
+            "BUN_INSTALL_CACHE_DIR": "/local/home/ahrav/.bun/install/cache"
+        },
+        "wall_clock_tools": [
+            "rustc",
+            "rustdoc"
+        ]
     }
 }

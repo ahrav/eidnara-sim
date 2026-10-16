@@ -19,12 +19,15 @@ GNU `timeout -s KILL`, which signals the launcher's whole process group;
 `unshare --fork` ignores `TERM` while it waits and namespace PID 1 has no
 `TERM` handler, so `KILL` to the group is what ends a hung probe.
 `launch(launcher, keep, env,
-command)` builds the argv: kept paths, then `--env` and `NAME=value` pairs,
-then `--` and the command. `env` sets those variables after `setpriv`,
-because the setuid `sudo` boundary strips `LD_PRELOAD`. Paths and values
-must be plain words, since the script splits them on spaces, and kept paths
-must be normalized absolute paths, since the script joins them onto the
-staging directory. `probes` resolves each configured binary to its canonical
+command, readOnly)` builds the argv: kept paths, then `--ro` and the
+read-only paths, then `--env` and `NAME=value` pairs, then `--` and the
+command. Read-only paths are kept too and remounted read-only after the
+rebind. `env` sets those variables after `setpriv`, because the setuid
+`sudo` boundary strips `LD_PRELOAD`. Paths and values must be plain words,
+since the script splits them on spaces, and kept paths must be normalized
+absolute paths, since the script joins them onto the staging directory. A
+read-only remount of a parent takes the kept paths below it with it, so
+`launch` refuses a writable kept path under a read-only one. `probes` resolves each configured binary to its canonical
 path, so the kept directory and the path the loader reports in its binding
 lines match.
 
@@ -63,16 +66,19 @@ its result in the run manifest.
 |---|---|---|
 | Pi (its Node runtime) | `node -e` prints `Date.now()` and a 100 ms timer | The clock is within 5 s of the jump and the timer fires in 90 ms to 1 s |
 | OpenCode (Bun-compiled) | `BUN_BE_BUN=1 opencode -e` with the same script | As for Pi |
-| Daemon | `LD_DEBUG=bindings eidnara-host build-profile` | The dynamic linker binds the daemon binary's own `clock_gettime` import to `libfaketime.so.1` |
+| Daemon | `LD_DEBUG=bindings direct_host_fixture --help` | The dynamic linker binds the daemon binary's own `clock_gettime` import to `libfaketime.so.1` |
 
 The Pi probe runs Pi's Node runtime, not the Pi CLI, so it shows that the
 runtime Pi runs on reads the interposed clock. A probe is intercepted only
-when it also exits 0 under the interposer; a binary that fails, or outlives
+when it also exits normally under the interposer: exit 0, or for the daemon
+fixture, which has no successful no-op invocation, its usage error (exit 1
+with the usage line on stderr); a binary that fails, or outlives
 the 30 s deadline, is recorded `wall_clock_only`, and the run proceeds with
 that limitation in its distortions. If neither Pi nor the daemon is
 intercepted, preflight throws (OQ-9 stop condition). In the live test on
-this host all three intercept; OQ-9's decision point is the first S run's
-`StartRun`, whose manifest records the interception test.
+this host all three intercept, for OpenCode 1.18.22 and 1.19.0; OQ-9's
+decision point is the first S run's `StartRun`, whose manifest records the
+interception test.
 
 The preflight result's `distortions` always records that monotonic clocks are
 real, so in-process idle timers see wall time; that provider-side time, cache
@@ -90,7 +96,7 @@ path exists after an arm's first session lands with the host drivers.
 | Host | Versions | Paths |
 |---|---|---|
 | Pi | 0.80.x | `$PI_CODING_AGENT_DIR/sessions` |
-| OpenCode | 1.19.x | `$XDG_DATA_HOME/opencode/opencode.db`, `$XDG_DATA_HOME/opencode/storage` |
+| OpenCode | 1.18.x, 1.19.x | `$XDG_DATA_HOME/opencode/opencode.db`, `$XDG_DATA_HOME/opencode/storage` |
 
 ## Resource sampler
 

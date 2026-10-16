@@ -1,0 +1,279 @@
+import { afterEach, expect, test } from "bun:test";
+import {
+    existsSync,
+    mkdirSync,
+    mkdtempSync,
+    readFileSync,
+    realpathSync,
+    renameSync,
+    rmSync,
+    symlinkSync,
+    writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+const SCRIPT = join(import.meta.dir, "eidnara-build.sh");
+
+const dirs: string[] = [];
+afterEach(() => {
+    for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+});
+
+function git(cwd: string, ...args: string[]): string {
+    const r = Bun.spawnSync(["git", "-C", cwd, ...args], { stdout: "pipe", stderr: "pipe" });
+    if (r.exitCode !== 0) throw new Error(r.stderr.toString());
+    return r.stdout.toString().trim();
+}
+
+function build(src: string, dst: string, stubs: string, cwd?: string) {
+    return Bun.spawnSync(["bash", SCRIPT, src, dst], {
+        cwd,
+        env: { ...process.env, PATH: `${stubs}:${process.env.PATH ?? ""}` },
+        stdout: "pipe",
+        stderr: "pipe",
+    });
+}
+
+function fixture() {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "sim-build-")));
+    dirs.push(root);
+    const stubs = join(root, "stubs");
+    mkdirSync(stubs);
+    for (const tool of ["bun", "cargo"])
+        writeFileSync(join(stubs, tool), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    const src = join(root, "src");
+    for (const pkg of ["shm-native", "pi-plugin", "opencode-plugin"]) {
+        mkdirSync(join(src, "packages", pkg), { recursive: true });
+        writeFileSync(join(src, "packages", pkg, "package.json"), "{}\n");
+    }
+    writeFileSync(join(src, "README"), "one\n");
+    git(src, "init", "--quiet");
+    git(src, "add", ".");
+    git(src, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "--quiet", "-m", "fixture");
+    return { root, stubs, src, dst: join(root, "clone") };
+}
+
+test("a reused build clone is reset to the fetched commit before building", () => {
+    const { stubs, src, dst } = fixture();
+    const first = build(src, dst, stubs);
+    expect(first.exitCode).toBe(0);
+    expect(first.stdout.toString().trim()).toBe(git(src, "rev-parse", "HEAD"));
+
+    writeFileSync(join(dst, "README"), "edited\n");
+    writeFileSync(join(dst, "stray.txt"), "left behind\n");
+    const second = build(src, dst, stubs);
+    expect(second.exitCode).toBe(0);
+    expect(readFileSync(join(dst, "README"), "utf8")).toBe("one\n");
+    expect(existsSync(join(dst, "stray.txt"))).toBe(false);
+});
+
+test("the build refuses a clone path that is the source checkout itself", () => {
+    const { stubs, src } = fixture();
+    writeFileSync(join(src, "README"), "edited\n");
+    const r = build(src, `${src}/`, stubs);
+    expect(r.exitCode).not.toBe(0);
+    expect(r.stderr.toString()).toContain("must be a separate directory");
+    expect(readFileSync(join(src, "README"), "utf8")).toBe("edited\n");
+});
+
+test("the build refuses a clone path beneath the source checkout", () => {
+    const { stubs, src } = fixture();
+    const r = build(src, join(src, "build-clone"), stubs);
+    expect(r.exitCode).not.toBe(0);
+    expect(r.stderr.toString()).toContain("must be a separate directory");
+    expect(existsSync(join(src, "build-clone"))).toBe(false);
+});
+
+test("the build refuses to reuse a repository it did not clone", () => {
+    const { stubs, src, root } = fixture();
+    const other = join(root, "other");
+    mkdirSync(other);
+    writeFileSync(join(other, "mine.txt"), "theirs\n");
+    git(other, "init", "--quiet");
+    git(other, "add", ".");
+    git(other, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "--quiet", "-m", "other");
+    const head = git(other, "rev-parse", "HEAD");
+    const r = build(src, other, stubs);
+    expect(r.exitCode).not.toBe(0);
+    expect(r.stderr.toString()).toContain("was not cloned by this script");
+    expect(git(other, "rev-parse", "HEAD")).toBe(head);
+    expect(readFileSync(join(other, "mine.txt"), "utf8")).toBe("theirs\n");
+});
+
+test("a successful build records its commit, and a failed one leaves no record", () => {
+    const { stubs, src, dst } = fixture();
+    expect(build(src, dst, stubs).exitCode).toBe(0);
+    const head = git(src, "rev-parse", "HEAD");
+    expect(readFileSync(join(dst, ".sim-build-commit"), "utf8").trim()).toBe(head);
+    writeFileSync(join(stubs, "cargo"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+    expect(build(src, dst, stubs).exitCode).not.toBe(0);
+    expect(existsSync(join(dst, ".sim-build-commit"))).toBe(false);
+});
+
+test("a relative clone path records the build in the clone", () => {
+    const { stubs, src, root } = fixture();
+    const r = build(src, "rel-clone", stubs, root);
+    expect(r.stderr.toString()).toBe("");
+    expect(r.exitCode).toBe(0);
+    expect(readFileSync(join(root, "rel-clone/.sim-build-commit"), "utf8").trim()).toBe(
+        git(src, "rev-parse", "HEAD"),
+    );
+});
+
+test("a relative checkout path is fetched from the checkout, not from inside the clone", () => {
+    const { stubs, src, root } = fixture();
+    const r = build("src", join(root, "abs-clone"), stubs, root);
+    expect(r.stderr.toString()).toBe("");
+    expect(r.exitCode).toBe(0);
+    expect(readFileSync(join(root, "abs-clone/.sim-build-commit"), "utf8").trim()).toBe(
+        git(src, "rev-parse", "HEAD"),
+    );
+});
+
+test("a second build of the same clone is refused while the first holds it", async () => {
+    const { stubs, src, dst } = fixture();
+    expect(build(src, dst, stubs).exitCode).toBe(0);
+    const holder = Bun.spawn(["flock", `${dst}.lock`, "sleep", "5"], {
+        stdio: ["ignore", "ignore", "ignore"],
+    });
+    try {
+        await Bun.sleep(200);
+        const r = build(src, dst, stubs);
+        expect(r.exitCode).not.toBe(0);
+        expect(r.stderr.toString()).toContain("another build holds");
+        expect(readFileSync(join(dst, ".sim-build-commit"), "utf8").trim()).toBe(
+            git(src, "rev-parse", "HEAD"),
+        );
+    } finally {
+        holder.kill("SIGKILL");
+    }
+});
+
+test("a build after an interrupted first clone starts over instead of refusing the clone", () => {
+    const { stubs, src, root, dst } = fixture();
+    const realGit = Bun.which("git") as string;
+    const failing = join(root, "failing-git");
+    mkdirSync(failing);
+    writeFileSync(
+        join(failing, "git"),
+        `#!/bin/sh\nif [ "$1" = clone ]; then "${realGit}" "$@"; exit 1; fi\nexec "${realGit}" "$@"\n`,
+        { mode: 0o755 },
+    );
+    expect(build(src, dst, `${failing}:${stubs}`).exitCode).not.toBe(0);
+    const retry = build(src, dst, stubs);
+    expect(retry.stderr.toString()).toBe("");
+    expect(retry.exitCode).toBe(0);
+    expect(readFileSync(join(dst, ".sim-build-commit"), "utf8").trim()).toBe(
+        git(src, "rev-parse", "HEAD"),
+    );
+});
+
+test("the build refuses a symlink at its lock path and leaves the link target alone", () => {
+    const { stubs, src, root, dst } = fixture();
+    writeFileSync(join(src, "README"), "edited\n");
+    symlinkSync(join(src, "README"), `${dst}.lock`);
+    const r = build(src, dst, stubs);
+    expect(r.exitCode).not.toBe(0);
+    expect(r.stderr.toString()).toContain("is a symlink");
+    expect(readFileSync(join(src, "README"), "utf8")).toBe("edited\n");
+    expect(root).toBeTruthy();
+});
+
+test("the build refuses a checkout at its own partial-clone path", () => {
+    const { stubs, src, root } = fixture();
+    const dst = join(root, "built");
+    renameSync(src, `${dst}.partial`);
+    const r = build(`${dst}.partial`, dst, stubs);
+    expect(r.exitCode).not.toBe(0);
+    expect(r.stderr.toString()).toContain("must be a separate directory");
+    expect(existsSync(join(`${dst}.partial`, "README"))).toBe(true);
+});
+
+test("a source that tracks a symlinked provenance record cannot redirect the record's write", () => {
+    const { stubs, src, root } = fixture();
+    writeFileSync(join(src, "precious"), "keep\n");
+    symlinkSync(join(src, "precious"), join(src, ".sim-build-source"));
+    git(src, "add", "precious", ".sim-build-source");
+    git(src, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "--quiet", "-m", "marker link");
+    const r = build(src, join(root, "linked-clone"), stubs);
+    expect(readFileSync(join(src, "precious"), "utf8")).toBe("keep\n");
+    expect(r.exitCode).not.toBe(0);
+    expect(r.stderr.toString()).toContain("tracks the reserved");
+});
+
+test("an unrelated directory at the partial-clone path is left alone", () => {
+    const { stubs, src, dst } = fixture();
+    mkdirSync(`${dst}.partial`);
+    writeFileSync(join(`${dst}.partial`, "mine"), "keep\n");
+    const r = build(src, dst, stubs);
+    expect(r.exitCode).toBe(0);
+    expect(readFileSync(join(`${dst}.partial`, "mine"), "utf8")).toBe("keep\n");
+});
+
+test("a FIFO at the build lock path is refused instead of blocking the build", () => {
+    const { stubs, src, dst } = fixture();
+    expect(Bun.spawnSync(["mkfifo", `${dst}.lock`]).exitCode).toBe(0);
+    const r = Bun.spawnSync(
+        ["timeout", "10", "bash", join(import.meta.dir, "eidnara-build.sh"), src, dst],
+        {
+            env: { ...process.env, PATH: `${stubs}:${process.env.PATH ?? ""}` },
+            stdout: "pipe",
+            stderr: "pipe",
+        },
+    );
+    expect(r.exitCode).not.toBe(124);
+    expect(r.exitCode).not.toBe(0);
+    expect(r.stderr.toString()).toContain("is not a regular file");
+});
+
+test("a reused clone whose Git directory is a link is refused before any Git command", () => {
+    const { stubs, src, root } = fixture();
+    const dst = join(root, "linked-git");
+    mkdirSync(dst);
+    symlinkSync(join(src, ".git"), join(dst, ".git"));
+    writeFileSync(join(dst, ".sim-build-source"), `${src}\n`);
+    const head = git(src, "rev-parse", "--abbrev-ref", "HEAD");
+    const r = build(src, dst, stubs);
+    expect(r.exitCode).not.toBe(0);
+    expect(r.stderr.toString()).toContain("is not a real directory");
+    expect(git(src, "rev-parse", "--abbrev-ref", "HEAD")).toBe(head);
+});
+
+test("a linked provenance record does not make an unrelated repository the build clone", () => {
+    const { stubs, src, root } = fixture();
+    const other = join(root, "other");
+    mkdirSync(other);
+    writeFileSync(join(other, "mine.txt"), "theirs\n");
+    git(other, "init", "--quiet");
+    git(other, "add", ".");
+    git(other, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "--quiet", "-m", "other");
+    const head = git(other, "rev-parse", "HEAD");
+    writeFileSync(join(root, "record"), `${src}\n`);
+    symlinkSync(join(root, "record"), join(other, ".sim-build-source"));
+    const r = build(src, other, stubs);
+    expect(r.exitCode).toBe(65);
+    expect(r.stderr.toString()).toContain("was not cloned by this script");
+    expect(git(other, "rev-parse", "HEAD")).toBe(head);
+    expect(readFileSync(join(other, "mine.txt"), "utf8")).toBe("theirs\n");
+});
+
+test("cargo writes its outputs into the clone whatever the operator's target directory is", () => {
+    const { stubs, src, dst, root } = fixture();
+    const argsFile = join(root, "cargo-args");
+    writeFileSync(join(stubs, "cargo"), `#!/bin/sh\nprintf '%s\\n' "$@" > ${argsFile}\nexit 0\n`, {
+        mode: 0o755,
+    });
+    const r = Bun.spawnSync(["bash", SCRIPT, src, dst], {
+        env: {
+            ...process.env,
+            PATH: `${stubs}:${process.env.PATH ?? ""}`,
+            CARGO_TARGET_DIR: join(root, "elsewhere"),
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+    });
+    expect(r.exitCode).toBe(0);
+    const args = readFileSync(argsFile, "utf8").split("\n");
+    expect(args[args.indexOf("--target-dir") + 1]).toBe(join(dst, "target"));
+});

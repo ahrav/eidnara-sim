@@ -1,19 +1,23 @@
 import { realpathSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 
 // `--kill-child` sends SIGKILL to namespace PID 1 when the unshare parent dies.
 const UNSHARE_ARGS = [
     "--mount",
     "--pid",
+    "--ipc",
     "--fork",
     "--kill-child",
     "--mount-proc",
     "--propagation",
     "private",
 ];
-const PLAIN_PATH = /^\/[A-Za-z0-9._@+/-]*$/;
-const PLAIN_VALUE = /^[A-Za-z0-9._@+/:,=-]*$/;
+export const PLAIN_PATH = /^\/[A-Za-z0-9._@+/-]*$/;
+export const PLAIN_VALUE = /^[A-Za-z0-9._@+/:,=-]*$/;
+export const ENV_KEY = /^[A-Z_][A-Z0-9_]*$/;
+
+export const shellQuote = (arg: string) => `'${arg.replaceAll("'", "'\\''")}'`;
 
 export function plainPath(path: string): string {
     if (!PLAIN_PATH.test(path)) {
@@ -42,6 +46,9 @@ export function maskedPaths(runRoot: string): string[] {
 // The setuid sudo boundary strips LD_PRELOAD, so the interposer reaches the host only
 // through variables set after setpriv. The staging tree and the interposer's own
 // shared-memory objects live in a private /dev/shm that ends with the namespace.
+// A read-only remount covers one mount, so each read-only path is remounted together
+// with every mount `--rbind` carried in below it; `findmnt -l` prints each target
+// unescaped on its own line.
 function script(hidden: readonly string[]): string {
     const mounts = hidden
         .map((dir) => `mount -t tmpfs -o mode=1777 tmpfs ${plainPath(dir)}`)
@@ -53,7 +60,10 @@ set -e
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
 cd /
 keep=""
-while [ "$1" != "--env" ]; do keep="$keep $1"; shift; done
+while [ "$1" != "--ro" ]; do keep="$keep $1"; shift; done
+shift
+ro=""
+while [ "$1" != "--env" ]; do ro="$ro $1"; keep="$keep $1"; shift; done
 shift
 envs=""
 while [ "$1" != "--" ]; do envs="$envs $1"; shift; done
@@ -64,6 +74,7 @@ for p in $keep; do mkdir -p "$st$p"; mount --rbind "$p" "$st$p"; done
 ${mounts}
 for p in $keep; do mkdir -p "$p"; mount --rbind "$st$p" "$p"; done
 for p in $keep; do umount -R "$st$p" || true; done
+for p in $ro; do findmnt -ln -o TARGET -R "$p" | while IFS= read -r m; do mount -o remount,bind,ro "$m"; done; done
 find "$st" -depth -type d -empty -delete || true
 setpriv ${ids} --init-groups --no-new-privs --inh-caps=-all --bounding-set=-all -- env --default-signal=INT,TERM PATH="$SIM_PATH" $envs "$@"
 exit 0' sh "$@"
@@ -84,14 +95,42 @@ export function launch(
     keep: readonly string[],
     env: Record<string, string>,
     command: readonly string[],
+    readOnly: readonly string[] = [],
 ): string[] {
     const pairs = Object.entries(env).map(([k, v]) => {
-        if (!/^[A-Z_][A-Z0-9_]*$/.test(k) || !PLAIN_VALUE.test(v)) {
+        if (!ENV_KEY.test(k) || !PLAIN_VALUE.test(v)) {
             throw new Error(`sandbox env ${k} must be a plain word`);
         }
         return `${k}=${v}`;
     });
-    return [launcher, ...keep.map(plainPath), "--env", ...pairs, "--", ...command];
+    const kept = keep.map(plainPath);
+    const ro = readOnly.map(plainPath);
+    // Binding a masked root, or a directory above one, would put the masked tree back in view.
+    // A path not created yet resolves through its nearest existing ancestor, since mkdir -p and
+    // the bind mounts follow that ancestor's symlinks.
+    const canonical = (path: string): string => {
+        try {
+            return realpathSync(path);
+        } catch {
+            const parent = dirname(path);
+            return parent === path ? path : join(canonical(parent), basename(path));
+        }
+    };
+    const masked = ["/tmp", realpathSync(homedir()), canonical(dirname(launcher))];
+    for (const path of [...kept, ...ro]) {
+        const hidden = masked.find((m) => within(m, path) || within(m, canonical(path)));
+        if (hidden) throw new Error(`sandbox path ${path} would restore masked ${hidden}`);
+    }
+    // A read-only bind over a parent takes its writable children with it, so the two sets stay disjoint.
+    const roReal = ro.map(canonical);
+    for (const path of kept) {
+        if (ro.includes(path)) continue;
+        const real = canonical(path);
+        const parent = ro.find((dir, i) => within(path, dir) || within(real, roReal[i] as string));
+        if (parent)
+            throw new Error(`sandbox path ${path} is kept writable under read-only ${parent}`);
+    }
+    return [launcher, ...kept, "--ro", ...ro, "--env", ...pairs, "--", ...command];
 }
 
 export function sandboxAvailable(): boolean {

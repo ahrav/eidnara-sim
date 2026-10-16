@@ -10,8 +10,8 @@ import {
     symlinkSync,
     writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { homedir, tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { loadConfig } from "../config/config";
 import { Clock } from "./clock";
 import {
@@ -57,9 +57,47 @@ describe("time injection", () => {
         expect(() => launch("/x/sandbox.sh", ["/a/./b"], {}, ["true"])).toThrow(/normalized/);
         expect(() => launch("/x/sandbox.sh", ["/a//b"], {}, ["true"])).toThrow(/normalized/);
         expect(() => launch("/x/sandbox.sh", [], { A: "x y" }, ["true"])).toThrow(/plain word/);
-        expect(launch("/x/sandbox.sh", ["/k"], { A: "1" }, ["true"])).toEqual([
+        expect(() => launch("/x/sandbox.sh", ["/a/b"], {}, ["true"], ["/a"])).toThrow(
+            "sandbox path /a/b is kept writable under read-only /a",
+        );
+        const home = realpathSync(homedir());
+        expect(() => launch("/x/sandbox.sh", [], {}, ["true"], [home])).toThrow(
+            `sandbox path ${home} would restore masked ${home}`,
+        );
+        expect(() => launch("/x/sandbox.sh", [], {}, ["true"], [dirname(home)])).toThrow(
+            /would restore masked/,
+        );
+        expect(() => launch("/x/sandbox.sh", ["/tmp"], {}, ["true"])).toThrow(
+            "sandbox path /tmp would restore masked /tmp",
+        );
+        const alias = join(realpathSync(mkdtempSync(join(tmpdir(), "sim-alias-"))), "home-link");
+        symlinkSync(home, alias);
+        expect(() => launch("/x/sandbox.sh", [], {}, ["true"], [alias])).toThrow(
+            `sandbox path ${alias} would restore masked ${home}`,
+        );
+        const run = realpathSync(mkdtempSync(join(tmpdir(), "sim-runroot-")));
+        const launcher = join(run, "sandbox.sh");
+        expect(() => launch(launcher, [run], {}, ["true"])).toThrow(
+            `sandbox path ${run} would restore masked ${run}`,
+        );
+        expect(launch(launcher, [join(run, "arm")], {}, ["true"])).toContain(join(run, "arm"));
+        const aliased = join(run, "alias");
+        mkdirSync(join(run, "tools"));
+        symlinkSync(join(run, "tools"), aliased);
+        expect(() => launch(launcher, [aliased], {}, ["true"], [join(run, "tools")])).toThrow(
+            /is kept writable under read-only/,
+        );
+        expect(() =>
+            launch(launcher, [join(aliased, "not-yet")], {}, ["true"], [join(run, "tools")]),
+        ).toThrow(/is kept writable under read-only/);
+        expect(launch("/x/sandbox.sh", [], {}, ["true"], [join(home, ".cargo")])).toContain(
+            join(home, ".cargo"),
+        );
+        expect(launch("/x/sandbox.sh", ["/k"], { A: "1" }, ["true"], ["/r"])).toEqual([
             "/x/sandbox.sh",
             "/k",
+            "--ro",
+            "/r",
             "--env",
             "A=1",
             "--",
