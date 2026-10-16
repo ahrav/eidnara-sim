@@ -158,8 +158,9 @@ from the ones `StartRun` recorded, journals `ResumeRun`, and, for each arm
 without `EndArm`:
 
 - waits one settle interval so a job an answered turn started can still
-  register, waits for any kill that interval fired, then journals `Event` for
-  each turn with `EndTurn` but no `Event`,
+  register, waits for any kill that interval fired, and refuses the run if a
+  fatal exit landed meanwhile; then journals `Event` for each turn with
+  `EndTurn` but no `Event`,
   so the answered turn is never delivered again and a kill inside the window
   repeats it;
 - journals `ItemState failed(interrupted)` and `Event` for a `BeginTurn`

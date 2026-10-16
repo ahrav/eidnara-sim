@@ -1353,6 +1353,10 @@ describe("Scheduler", () => {
                 inner.bind(h);
                 setTimeout(() => h.observe("history_summarizer"), 10);
             },
+            fault: async () => {
+                await Bun.sleep(80);
+                return { killed: true };
+            },
         };
         const resumed = new Journal(path);
         await new Scheduler({
@@ -1363,7 +1367,55 @@ describe("Scheduler", () => {
             order: ["a"],
             drivers: { a: driver },
         }).run();
-        expect(resumed.entries.map((e) => e.kind)).toContain("FaultFired");
+        const kinds = resumed.entries.map((e) => e.kind);
+        expect(kinds).toContain("FaultFired");
+        const recovered = kinds.indexOf("Event", kinds.indexOf("ResumeRun"));
+        expect(kinds.indexOf("FaultObserved")).toBeLessThan(recovered);
+    });
+
+    test("a fatal exit during the resume settle window refuses the run before any recovered Event", async () => {
+        const path = join(dir(), "j.jsonl");
+        const j = new Journal(path);
+        j.append({
+            kind: "StartRun",
+            arm: null,
+            scenario_ms: 0,
+            order: ["a"],
+            scenario: scenarioId(fixtureEvents(2), []),
+        });
+        j.append({ kind: "StartArm", arm: "a", scenario_ms: 0 });
+        j.append({ kind: "Event", arm: "a", scenario_ms: 0, event: "e-000000", outcome: "ok" });
+        j.append({ kind: "BeginTurn", arm: "a", scenario_ms: 0, event: "e-000001" });
+        j.append({ kind: "EndTurn", arm: "a", scenario_ms: 10, event: "e-000001", outcome: "ok" });
+        j.close();
+        const inner = fakeDriver([]);
+        const driver: ArmDriver = {
+            ...inner,
+            bind: (h) => {
+                inner.bind(h);
+                setTimeout(() => {
+                    try {
+                        h.daemonExited({ signal: "SIGSEGV" });
+                    } catch {}
+                }, 10);
+            },
+        };
+        const resumed = new Journal(path);
+        const started = performance.now();
+        await expect(
+            new Scheduler({
+                events: fixtureEvents(2),
+                faults: [],
+                journal: resumed,
+                settleMs: 2_000,
+                order: ["a"],
+                drivers: { a: driver },
+            }).run(),
+        ).rejects.toThrow(HarnessFailure);
+        expect(performance.now() - started).toBeLessThan(1_000);
+        expect(resumed.entries.filter((e) => e.kind === "Event").map((e) => e.event)).toEqual([
+            "e-000000",
+        ]);
     });
 
     test("a recovered turn's Event is journaled after its settle window, so a kill inside the window keeps the window", async () => {

@@ -137,24 +137,27 @@ export class Scheduler {
             try {
                 this.session = this.openSession(mine);
                 this.outage = this.openOutage(mine);
-                driver.bind(this.handle(++this.generation, driver));
-                if (!mine.some((e) => e.kind === "StartArm")) {
-                    await this.untilFatal(driver.reset());
-                    this.log({ kind: "StartArm" });
-                }
-                this.o.proxy?.reset();
-                const answered = this.resume(mine);
-                if (answered.length > 0) await Bun.sleep(this.o.settleMs ?? 1_000);
-                await this.pendingKill;
-                for (const e of answered) {
-                    this.log({ kind: "Event", event: e.event, outcome: e.outcome });
-                }
-                const done = new Set(
-                    this.o.journal.entries
-                        .filter((e) => e.arm === arm && e.kind === "Event")
-                        .map((e) => e.event as string),
-                );
                 try {
+                    driver.bind(this.handle(++this.generation, driver));
+                    if (!mine.some((e) => e.kind === "StartArm")) {
+                        await this.untilFatal(driver.reset());
+                        this.log({ kind: "StartArm" });
+                    }
+                    this.o.proxy?.reset();
+                    const answered = this.resume(mine);
+                    if (answered.length > 0) {
+                        await this.untilFatal(Bun.sleep(this.o.settleMs ?? 1_000));
+                    }
+                    await this.pendingKill;
+                    if (this.fatal) throw this.fatal;
+                    for (const e of answered) {
+                        this.log({ kind: "Event", event: e.event, outcome: e.outcome });
+                    }
+                    const done = new Set(
+                        this.o.journal.entries
+                            .filter((e) => e.arm === arm && e.kind === "Event")
+                            .map((e) => e.event as string),
+                    );
                     for (const e of this.o.events) {
                         if (!done.has(e.id)) await this.step(driver, e);
                     }
