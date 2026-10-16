@@ -81,6 +81,9 @@ export class Scheduler {
             );
             for (const e of this.o.events) if (!done.has(e.id)) await this.step(driver, e);
             await this.pendingKill;
+            this.pendingKill = null;
+            this.outage = null;
+            this.session = null;
             this.log({ kind: "EndArm" });
         }
         this.arm = null;

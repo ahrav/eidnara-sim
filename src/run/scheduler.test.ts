@@ -51,7 +51,8 @@ const episode = (
 function invariants(entries: Entry[]): void {
     const byArm = new Map<string | null, Entry[]>();
     for (const e of entries) byArm.set(e.arm, [...(byArm.get(e.arm) ?? []), e]);
-    for (const list of byArm.values()) {
+    for (const [arm, list] of byArm) {
+        if (arm !== null) expect(list[0]?.scenario_ms).toBe(0);
         for (let i = 1; i < list.length; i++) {
             expect((list[i] as Entry).scenario_ms).toBeGreaterThanOrEqual(
                 (list[i - 1] as Entry).scenario_ms,
@@ -62,8 +63,8 @@ function invariants(entries: Entry[]): void {
     for (const e of entries) {
         if (e.kind === "BeginTurn") busy.add(`t${e.arm}${e.event}`);
         if (e.kind === "EndTurn") busy.delete(`t${e.arm}${e.event}`);
-        if (e.kind === "RegisterJob") busy.add(`j${e.job}`);
-        if (e.kind === "EndJob") busy.delete(`j${e.job}`);
+        if (e.kind === "RegisterJob") busy.add(`j${e.arm}${e.job}`);
+        if (e.kind === "EndJob") busy.delete(`j${e.arm}${e.job}`);
         if (e.kind === "ItemState" && e.state === "failed(interrupted)")
             busy.delete(`t${e.arm}${e.event}`);
         if (e.kind === "AdvanceClock") expect([...busy]).toEqual([]);
@@ -90,17 +91,19 @@ describe("Clock", () => {
         wall += 1_000;
         expect(clock.now()).toBe(500);
         clock.begin("turn");
+        wall += 300;
+        expect(clock.now()).toBe(800);
         wall -= 100;
-        expect(clock.now()).toBe(500);
-        wall += 100;
+        expect(clock.now()).toBe(800);
+        wall += 150;
         clock.end("turn");
-        expect(clock.now()).toBe(500);
+        expect(clock.now()).toBe(850);
         clock.advanceTo(10_000, "a");
         expect(clock.now()).toBe(10_000);
         clock.advanceTo(9_000, "a");
         expect(clock.now()).toBe(10_000);
         expect(j.entries.map((e) => [e.kind, e.scenario_ms, e.from_ms])).toEqual([
-            ["AdvanceClock", 10_000, 500],
+            ["AdvanceClock", 10_000, 850],
         ]);
     });
 });
@@ -418,6 +421,47 @@ describe("Scheduler", () => {
         expect(() => scheduler?.daemonExited({ signal: "SIGKILL" })).toThrow(HarnessFailure);
     });
 
+    test("an outage window opened on an arm's final event is closed before the next arm resets", async () => {
+        const j = new Journal(join(dir(), "j.jsonl"));
+        let scheduler: Scheduler | null = null;
+        const kill = episode("k", "daemon_sigkill_mid_fold", {
+            kind: "first_summarizer_call",
+            session: "s-0000",
+        });
+        let resets = 0;
+        let secondReset: unknown = null;
+        const driver: ArmDriver = {
+            reset: async () => {
+                resets++;
+                if (resets === 2) {
+                    try {
+                        scheduler?.daemonExited({ signal: "SIGKILL" });
+                        secondReset = "accepted";
+                    } catch (caught) {
+                        secondReset = caught;
+                    }
+                }
+            },
+            event: async (e) => {
+                if (e.kind === "user_turn") scheduler?.observe("history_summarizer", driver);
+                return {};
+            },
+            fault: async () => ({ restarted_by: "harness" }),
+        };
+        scheduler = new Scheduler({
+            events: fixtureEvents(1).filter((e) => e.kind !== "session_end"),
+            faults: [kill],
+            journal: j,
+            settleMs: 0,
+            order: ["a", "b"],
+            drivers: { a: driver, b: driver },
+        });
+        await scheduler.run();
+        expect(secondReset).toBeInstanceOf(HarnessFailure);
+        const unexpected = j.entries.filter((e) => e.kind === "ItemState" && e.expected === false);
+        expect(unexpected.map((e) => e.arm)).toEqual(["b"]);
+    });
+
     test("a failed turn's Event carries the driver's outcome", async () => {
         const j = new Journal(join(dir(), "j.jsonl"));
         const driver: ArmDriver = {
@@ -527,7 +571,7 @@ describe("resume", () => {
 });
 
 describe("resume of fired faults", () => {
-    test("a persistent proxy fault fired before the kill is armed again; a scheduler fault without evidence is interrupted", async () => {
+    test("a persistent proxy fault fired before the kill is armed again, a one-shot one only if its turn has not begun; a scheduler fault without evidence is interrupted", async () => {
         const path = join(dir(), "j.jsonl");
         const j = new Journal(path);
         j.append({ kind: "StartRun", arm: null, scenario_ms: 0 });
@@ -535,6 +579,9 @@ describe("resume of fired faults", () => {
         j.append({ kind: "Event", arm: "a", scenario_ms: 0, event: "e-000000" });
         j.append({ kind: "FaultFired", arm: "a", scenario_ms: 0, fault: "slow" });
         j.append({ kind: "FaultFired", arm: "a", scenario_ms: 0, fault: "restart" });
+        j.append({ kind: "FaultFired", arm: "a", scenario_ms: 0, fault: "later" });
+        j.append({ kind: "FaultFired", arm: "a", scenario_ms: 0, fault: "begun" });
+        j.append({ kind: "BeginTurn", arm: "a", scenario_ms: 0, event: "e-000001" });
         j.close();
         const calls: string[] = [];
         const proxy = {
@@ -549,6 +596,8 @@ describe("resume of fired faults", () => {
                 "persistent",
             ),
             episode("restart", "daemon_restart", { kind: "session_start", session: "s-0000" }),
+            episode("later", "provider_429", { kind: "user_turn", session: "s-0000", n: 2 }),
+            episode("begun", "provider_5xx", { kind: "user_turn", session: "s-0000", n: 1 }),
         ];
         const resumed = new Journal(path);
         await new Scheduler({
@@ -560,7 +609,13 @@ describe("resume of fired faults", () => {
             drivers: { a: fakeDriver([]) },
             proxy,
         }).run();
-        expect(calls).toEqual(["arm slow", "disarm slow"]);
+        expect(calls).toEqual([
+            "arm slow",
+            "arm later",
+            "disarm slow",
+            "disarm later",
+            "disarm begun",
+        ]);
         expect(resumed.entries).toContainEqual(
             expect.objectContaining({
                 kind: "ItemState",
@@ -568,7 +623,7 @@ describe("resume of fired faults", () => {
                 state: "failed(interrupted)",
             }),
         );
-        expect(resumed.entries.filter((e) => e.kind === "FaultFired")).toHaveLength(2);
+        expect(resumed.entries.filter((e) => e.kind === "FaultFired")).toHaveLength(4);
     });
 
     test("a background job in flight at the kill is closed on resume before the clock moves", async () => {

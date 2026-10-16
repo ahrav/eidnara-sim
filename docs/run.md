@@ -42,15 +42,17 @@ entries of different arms are not ordered by scenario time.
 
 `Clock` keeps scenario time and a busy set of turns and background jobs.
 While anything is busy, scenario time runs at wall speed; while nothing is
-busy, it holds. A wall clock that steps backward while busy holds scenario
-time until it catches up. `advanceTo` jumps forward to a target time and
+busy, it holds. Scenario time only ratchets forward: a wall clock that steps
+backward while busy holds scenario time at the highest value already read
+until the wall clock passes it again. `advanceTo` jumps forward to a target time and
 refuses while anything is busy. Each arm's clock starts at 0, or, on resume, at the arm's
 last journaled `scenario_ms`.
 
 ## Scheduler
 
 `Scheduler` runs the arms in the given order, one at a time, over one event
-list. For each arm, it resets the driver, then walks the events:
+list. For each arm, it resets the driver, then walks the events, and closes
+any outage window, pending kill, and current session before `EndArm`:
 
 1. Wait one settle interval after each answered turn (`settleMs`, 1 s by
    default), so a background job the host starts after its answer registers

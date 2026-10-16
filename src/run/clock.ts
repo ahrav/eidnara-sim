@@ -16,7 +16,12 @@ export class Clock {
 
     now(): number {
         if (this.anchor === null) return this.scenario;
-        return this.scenario + Math.max(0, this.wall() - this.anchor);
+        const wall = this.wall();
+        if (wall > this.anchor) {
+            this.scenario += wall - this.anchor;
+            this.anchor = wall;
+        }
+        return this.scenario;
     }
 
     busyIds(): string[] {
@@ -30,7 +35,7 @@ export class Clock {
 
     end(id: string): void {
         if (!this.busy.delete(id) || this.busy.size > 0) return;
-        this.scenario = this.now();
+        this.now();
         this.anchor = null;
     }
 
