@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readdirSync, readFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ProbeItem } from "../scenario/compile";
@@ -125,8 +125,31 @@ describe("grading harness", () => {
         const g = grade("P2-pass");
         log.append(g);
         expect(() => log.append(g)).toThrow("expected v2");
-        log.append({ ...g, version: log.nextVersion(g.item, g.arm) });
+        log.append({ ...g, version: log.nextVersion(g) });
         expect(log.all().map((x) => x.version)).toEqual([1, 2]);
         expect(log.latest().map((x) => x.version)).toEqual([2]);
     });
+
+    test("a grade log reopened over a cut last line drops the cut and allocates the next version", () => {
+        const path = join(mkdtempSync(join(tmpdir(), "sim-grades-")), "grades.jsonl");
+        const g = grade("P2-pass");
+        new GradeLog(path).append(g);
+        appendFileSync(path, '{"item":"P2-a","arm":"eidnara","ver');
+        const reopened = new GradeLog(path);
+        expect(reopened.nextVersion(g)).toBe(2);
+        reopened.append({ ...g, version: 2 });
+        expect(reopened.all().map((x) => x.version)).toEqual([1, 2]);
+        expect(new GradeLog(path).all().map((x) => x.version)).toEqual([1, 2]);
+    });
+});
+
+test("an answer the proxy cut at its cap is refused rather than graded on its prefix", () => {
+    const f = fixture("P8-pass");
+    const snap = f.snapshots[0] as Snapshot;
+    const calls = snap.artefacts.find((a) => a.class === "proxy-call") as unknown as {
+        calls: Record<string, unknown>[];
+    };
+    const last = calls.calls.at(-1) as Record<string, unknown>;
+    last.response_text_truncated = true;
+    expect(() => gradeItem(f.probe, [snap], rules)).toThrow("truncated");
 });

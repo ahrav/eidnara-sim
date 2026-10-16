@@ -120,6 +120,39 @@ export function readJournal(path: string): Entry[] & { bytes?: number } {
     return entries;
 }
 
+/**
+ * `requireComplete` admits a run whose journal records every scheduled event ended once per
+ * arm, an `EndArm` per arm, and an `EndRun`, with the manifest's arm order matching the
+ * journaled `StartRun`. The error names the arm and its event counts (SIM-P67).
+ */
+export function requireComplete(entries: Entry[], arms: string[], scheduled: string[]): void {
+    const started = entries.find((e) => e.kind === "StartRun");
+    const journaled = Array.isArray(started?.order) ? started.order : null;
+    const malformed = arms.some((a) => typeof a !== "string") || new Set(arms).size !== arms.length;
+    if (malformed || !journaled || JSON.stringify(journaled) !== JSON.stringify(arms)) {
+        throw new Error(
+            `manifest order ${JSON.stringify(arms)} differs from the journaled order ${JSON.stringify(journaled)}`,
+        );
+    }
+    for (const arm of arms) {
+        const mine = entries.filter((e) => e.arm === arm);
+        const ended = mine.filter((e) => e.kind === "Event").map((e) => String(e.event));
+        const closed = mine.some((e) => e.kind === "EndArm");
+        const once = new Set(ended);
+        const missing = scheduled.filter((id) => !once.has(id));
+        const stray = ended.filter((id, i) => !scheduled.includes(id) || ended.indexOf(id) !== i);
+        if (!closed || missing.length > 0 || stray.length > 0) {
+            const marker = closed ? "EndArm present" : "no EndArm";
+            const count = `${scheduled.length - missing.length} of ${scheduled.length} events ended`;
+            const extra = stray.length > 0 ? `, unexpected or repeated: ${stray.join(", ")}` : "";
+            throw new Error(`arm ${arm} is incomplete: ${count}, ${marker}${extra}`);
+        }
+    }
+    if (!entries.some((e) => e.kind === "EndRun")) {
+        throw new Error("run is incomplete: the journal has no EndRun");
+    }
+}
+
 export class Journal {
     readonly entries: Entry[];
     private readonly last = new Map<string | null, number>();

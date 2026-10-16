@@ -635,3 +635,81 @@ test("a probe turn's snapshot is journaled once per item and arm, after its EndT
     expect(snaps.map((e) => e.snapshot)).toEqual(["a:q-1:e-000001"]);
     expect(kinds.indexOf("SnapshotArtefacts")).toBe(kinds.indexOf("EndTurn") + 1);
 });
+
+test("a harness killed between a probe's EndTurn and its SnapshotArtefacts journals the snapshot on resume", async () => {
+    const path = join(dir(), "j.jsonl");
+    const events = fixtureEvents(1).map((e) =>
+        e.kind === "user_turn" ? { ...e, probe: "q-1" } : e,
+    );
+    const driver: ArmDriver = {
+        reset: async () => undefined,
+        event: async (e) => (e.kind === "user_turn" ? { snapshot: `a:q-1:${e.id}` } : {}),
+        fault: async () => ({}),
+    };
+    const first = new Journal(path);
+    await new Scheduler({
+        events,
+        faults: [],
+        journal: first,
+        settleMs: 0,
+        order: ["a"],
+        drivers: { a: driver },
+    }).run();
+    first.close();
+    const whole = readJournal(path);
+    const cut = whole.findIndex((e) => e.kind === "SnapshotArtefacts");
+    writeFileSync(
+        path,
+        whole
+            .slice(0, cut)
+            .map((e) => `${JSON.stringify(e)}\n`)
+            .join(""),
+    );
+
+    const second = new Journal(path);
+    await new Scheduler({
+        events,
+        faults: [],
+        journal: second,
+        settleMs: 0,
+        order: ["a"],
+        drivers: { a: driver },
+    }).run();
+    const snaps = second.entries.filter((e) => e.kind === "SnapshotArtefacts");
+    expect(snaps.map((e) => [e.item, e.snapshot])).toEqual([["q-1", "a:q-1:e-000001"]]);
+    const kinds = second.entries.map((e) => `${e.kind}:${e.event ?? e.item ?? ""}`);
+    expect(kinds.indexOf("SnapshotArtefacts:q-1")).toBeLessThan(kinds.indexOf("Event:e-000001"));
+});
+
+test("quiescing jobs waits for background jobs while the turn itself stays open", async () => {
+    const j = new Journal(join(dir(), "j.jsonl"));
+    let scheduler: Scheduler | null = null;
+    let settled = false;
+    const driver: ArmDriver = {
+        reset: async () => undefined,
+        event: async (e) => {
+            if (e.kind !== "user_turn") return {};
+            setTimeout(() => scheduler?.jobStart("history_summarizer-0"), 20);
+            setTimeout(() => scheduler?.jobEnd("history_summarizer-0"), 90);
+            await scheduler?.quiesceJobs();
+            settled = true;
+            return {};
+        },
+        fault: async () => ({}),
+    };
+    scheduler = new Scheduler({
+        events: fixtureEvents(1),
+        faults: [],
+        journal: j,
+        settleMs: 50,
+        jobPollMs: 5,
+        order: ["a"],
+        drivers: { a: driver },
+    });
+    await scheduler.run();
+    expect(settled).toBe(true);
+    const kinds = j.entries.map((e) => `${e.kind}:${e.job ?? e.event ?? ""}`);
+    expect(kinds.indexOf("EndJob:history_summarizer-0")).toBeLessThan(
+        kinds.indexOf("EndTurn:e-000001"),
+    );
+});

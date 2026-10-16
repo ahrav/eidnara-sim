@@ -103,7 +103,7 @@ type Usage = Record<string, number>;
 type Done = Partial<CallRecord> &
     Pick<CallRecord, "component" | "componentSource" | "model" | "status">;
 
-const RESPONSE_TEXT_LIMIT = 32_768;
+const RESPONSE_TEXT_LIMIT = 262_144;
 const RELAYED_TEXT = new Set<string>(["agent", "user-sim", "judge"]);
 
 const CLAUDE_5_5 = /anthropic\.claude-(opus|sonnet|haiku)-5-5/;
@@ -293,10 +293,15 @@ export class Gateway {
         if (fault) done.fault_ref = fault.id;
         if (fault && fault.type !== "slow_stream") {
             const tool = body.toolConfig?.tools?.[0]?.toolSpec?.name;
-            return {
-                ...done,
-                ...(await writeFault(fault.type, fault.params, streaming, sink, tool)),
-            };
+            const { text, ...outcome } = await writeFault(
+                fault.type,
+                fault.params,
+                streaming,
+                sink,
+                tool,
+            );
+            const relayed = text && RELAYED_TEXT.has(done.component) ? { response_text: text } : {};
+            return { ...done, ...outcome, ...relayed };
         }
         const usage: Usage = {};
         const firstByte = () => {
@@ -333,6 +338,7 @@ export class Gateway {
             } else {
                 sink.status(200, { "content-type": "application/vnd.amazon.eventstream" });
                 let complete = 0;
+                let block: number | null = null;
                 for await (const event of response.events) {
                     for (const [type, member] of Object.entries(event)) {
                         if (member === undefined) continue;
@@ -341,9 +347,15 @@ export class Gateway {
                         const m = member as {
                             usage?: Usage;
                             stopReason?: string;
+                            contentBlockIndex?: number;
                             delta?: { text?: string };
                         };
-                        if (type === "contentBlockDelta" && m.delta?.text) text.push(m.delta.text);
+                        if (type === "contentBlockDelta" && m.delta?.text) {
+                            const index = m.contentBlockIndex ?? 0;
+                            if (block !== null && index !== block) text.push("\n");
+                            block = index;
+                            text.push(m.delta.text);
+                        }
                         if (type === "metadata") Object.assign(usage, m.usage ?? {});
                         if (type === "messageStop") done.finish_reason = m.stopReason ?? null;
                         if (type === "messageStop" || type === "metadata") complete++;
@@ -375,10 +387,14 @@ export class Gateway {
                 sink.write(Buffer.from(JSON.stringify({ message: failure.message ?? "error" })));
             } else if (!done.finish_reason) done.finish_reason = "stream_cut";
         }
-        const relayed = text.join("").slice(0, RESPONSE_TEXT_LIMIT);
+        const whole = text.join("");
+        const relayed = whole.slice(0, RESPONSE_TEXT_LIMIT);
+        const cut = whole.length > relayed.length ? { response_text_truncated: true as const } : {};
         return {
             ...done,
-            ...(relayed && RELAYED_TEXT.has(done.component) ? { response_text: relayed } : {}),
+            ...(relayed && RELAYED_TEXT.has(done.component)
+                ? { response_text: relayed, ...cut }
+                : {}),
             proxy_retries: retries,
             input_tokens: usage.inputTokens ?? 0,
             output_tokens: usage.outputTokens ?? 0,

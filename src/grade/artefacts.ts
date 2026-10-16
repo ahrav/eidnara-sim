@@ -52,6 +52,8 @@ export interface CallView {
     input_tokens: number;
     output_tokens: number;
     response_text?: string;
+    /** The proxy cut `response_text` at its cap; the answer is a prefix and is refused as grade input. */
+    response_text_truncated?: boolean;
     label?: string;
 }
 
@@ -67,6 +69,8 @@ export interface Snapshot {
     id: string;
     item: string;
     arm: string;
+    /** The scenario session the probe turn belongs to. */
+    session?: string;
     turn: string;
     turn_outcome: "ok" | "failed";
     artefacts: Artefact[];
@@ -113,6 +117,10 @@ export class ArtefactReader {
     }
 
     answer(): string {
-        return this.turnCalls().at(-1)?.response_text ?? "";
+        const last = this.turnCalls().at(-1);
+        if (last?.response_text_truncated) {
+            throw new GradeRefused(`call ${last.seq}: the proxy truncated the answer at its cap`);
+        }
+        return last?.response_text ?? "";
     }
 }

@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { scenarioHash } from "../scenario/compile";
 import { loadPrereg } from "../scenario/inputs";
 import { type ArmLogs, loadRun, type RunLogs } from "./logs";
 import { ORACLES, oracleReport, rssFit, runOracles } from "./oracles";
@@ -80,19 +81,26 @@ describe("oracle report", () => {
     test("a run directory loads into per-arm logs", () => {
         const dir = mkdtempSync(join(tmpdir(), "sim-oracle-"));
         const line = (o: unknown) => `${JSON.stringify(o)}\n`;
-        writeFileSync(
-            join(dir, "manifest.json"),
-            JSON.stringify({ tier: "S", order: ["host", "eidnara"] }),
-        );
-        writeFileSync(
-            join(dir, "scenario.json"),
-            JSON.stringify({ events: [{ id: "e-1", kind: "session_end" }] }),
-        );
+        const order = ["host", "eidnara"];
+        const scenario = { events: [{ id: "e-1", kind: "session_end" }] };
+        const scenario_hash = scenarioHash(scenario);
+        const manifest = { tier: "S", order, events: 1, scenario_hash };
+        writeFileSync(join(dir, "manifest.json"), JSON.stringify(manifest));
+        writeFileSync(join(dir, "scenario.json"), JSON.stringify({ ...scenario, scenario_hash }));
         writeFileSync(
             join(dir, "calls.jsonl"),
             line({ arm: "eidnara", seq: 0 }) + line({ arm: "host", seq: 1 }),
         );
-        writeFileSync(join(dir, "journal.jsonl"), line({ kind: "StartArm", arm: "host", seq: 0 }));
+        const journal = [
+            { kind: "StartRun", arm: null, order },
+            { kind: "StartArm", arm: "host" },
+            { kind: "Event", arm: "host", event: "e-1" },
+            { kind: "EndArm", arm: "host" },
+            { kind: "Event", arm: "eidnara", event: "e-1" },
+            { kind: "EndArm", arm: "eidnara" },
+            { kind: "EndRun", arm: null },
+        ];
+        writeFileSync(join(dir, "journal.jsonl"), journal.map(line).join(""));
         mkdirSync(join(dir, "eidnara", "r"), { recursive: true });
         writeFileSync(join(dir, "eidnara", "r", "eidnara.log"), "a\nb\n");
         writeFileSync(join(dir, "eidnara", "daemon.log"), "c\n");
@@ -104,6 +112,229 @@ describe("oracle report", () => {
             ["a", "b"],
             ["c"],
         ]);
-        expect(run.arms.find((a) => a.arm === "host")?.journal).toHaveLength(1);
+        expect(run.arms.find((a) => a.arm === "host")?.journal).toHaveLength(3);
+    });
+});
+
+type Call = ArmLogs["calls"][number];
+const call = (over: Partial<Call>): Call => ({
+    seq: 0,
+    arm: "eidnara",
+    session: "s-1",
+    turn: "e-1",
+    component: "agent",
+    componentSource: "inferred",
+    model: "m",
+    status: 200,
+    finish_reason: "end_turn",
+    input_tokens: 100,
+    output_tokens: 10,
+    cache_read_tokens: 0,
+    cache_write_tokens: 0,
+    started_wall_ms: 0,
+    wall_ms: 500,
+    scenario_ms: 0,
+    first_byte_ms: null,
+    proxy_retries: 0,
+    fault_ref: null,
+    error: null,
+    ...over,
+});
+const endTurn = (arm: string, event: string, scenario_ms: number, outcome = "ok") => ({
+    kind: "EndTurn" as const,
+    arm,
+    event,
+    outcome,
+    seq: 0,
+    wall_ms: 0,
+    scenario_ms,
+});
+const armOf = (arm: string, over: Partial<ArmLogs>): ArmLogs => ({
+    arm,
+    calls: [],
+    journal: [],
+    pluginLog: [],
+    daemonLog: [],
+    resources: [],
+    tools: [],
+    ...over,
+});
+const runWith = (...arms: ArmLogs[]): RunLogs => ({
+    dir: "",
+    tier: "S",
+    base_wall_ms: 0,
+    prereg,
+    kinds: new Map(),
+    arms,
+});
+const oracle = (run: RunLogs, id: string) => runOracles(run).filter((a) => a.oracle === id);
+
+describe("oracle edge cases", () => {
+    test("F4 fires on a sub-second call followed by silence until the turn end", () => {
+        const quiet = runWith(
+            armOf("host", {
+                calls: [
+                    call({ arm: "host", started_wall_ms: 0, wall_ms: 400, scenario_ms: 10_000 }),
+                ],
+                journal: [endTurn("host", "e-1", 10_000 + 400 + 600_000)],
+            }),
+        );
+        expect(oracle(quiet, "F4").map((a) => a.evidence)).toEqual([
+            "call 0 completed, then 600 s with no tool run, call, or turn end",
+        ]);
+    });
+
+    test("F4 counts a same-turn persistence call as follow-up activity", () => {
+        const persisted = runWith(
+            armOf("eidnara", {
+                calls: [
+                    call({ seq: 0, started_wall_ms: 0, wall_ms: 400, scenario_ms: 10_000 }),
+                    call({ seq: 1, component: "memory_capture", scenario_ms: 10_000 + 120_000 }),
+                ],
+                journal: [endTurn("eidnara", "e-1", 10_000 + 600_000)],
+            }),
+        );
+        expect(oracle(persisted, "F4")).toEqual([]);
+    });
+
+    test("F1 and F2 classify 4xx refusals only; a 5xx carrying the same text is infrastructure", () => {
+        const overflow = "ValidationException: prompt is too long: 300000 tokens > 200000 maximum";
+        const shape = "messages: roles must alternate between user and assistant";
+        const infra = runWith(
+            armOf("eidnara", {
+                calls: [
+                    call({ seq: 0, status: 502, error: overflow }),
+                    call({ seq: 1, status: 500, error: shape }),
+                    call({ seq: 2, status: 400, error: overflow }),
+                    call({ seq: 3, status: 400, error: shape }),
+                ],
+            }),
+        );
+        expect(oracle(infra, "F1").map((a) => a.evidence)).toEqual([`400 ${overflow}`]);
+        expect(oracle(infra, "F2").map((a) => a.evidence)).toEqual([`400 ${shape}`]);
+    });
+
+    test("F9 reads agent-conversation overflows; an auxiliary call's overflow is F1 alone", () => {
+        const overflow = "ValidationException: prompt is too long";
+        const aux = runWith(
+            armOf("eidnara", {
+                calls: [call({ component: "memory_capture", status: 400, error: overflow })],
+            }),
+        );
+        expect(oracle(aux, "F1")).toHaveLength(1);
+        expect(oracle(aux, "F9")).toEqual([]);
+        const agent = runWith(
+            armOf("eidnara", { calls: [call({ status: 400, error: overflow })] }),
+        );
+        expect(oracle(agent, "F9")).toHaveLength(1);
+        const turn = runWith(
+            armOf("eidnara", { journal: [endTurn("eidnara", "e-1", 0, overflow)] }),
+        );
+        expect(oracle(turn, "F9")).toHaveLength(1);
+    });
+
+    test("F6 is one activation per arm and run, with every exceeded bound as evidence", () => {
+        const host = armOf("host", { calls: [call({ arm: "host", input_tokens: 100 })] });
+        const costly = armOf("eidnara", {
+            calls: [
+                call({ seq: 0, input_tokens: 1000 }),
+                call({ seq: 1, component: "title", input_tokens: 10 }),
+            ],
+        });
+        const acts = oracle(runWith(host, costly), "F6");
+        expect(acts).toHaveLength(1);
+        expect(acts[0]?.evidence).toContain("tokens vs host");
+        expect(acts[0]?.evidence).toContain("title calls vs host");
+    });
+
+    test("a run whose journal lacks an arm's EndArm or the EndRun is refused", () => {
+        const dir = mkdtempSync(join(tmpdir(), "sim-oracle-"));
+        const line = (o: unknown) => `${JSON.stringify(o)}\n`;
+        const scenario = { events: [{ id: "e-1", kind: "session_end" }] };
+        const scenario_hash = scenarioHash(scenario);
+        const manifest = { tier: "S", order: ["host"], events: 1, scenario_hash };
+        writeFileSync(join(dir, "manifest.json"), JSON.stringify(manifest));
+        writeFileSync(join(dir, "scenario.json"), JSON.stringify({ ...scenario, scenario_hash }));
+        const entries: Record<string, unknown>[] = [
+            { kind: "StartRun", arm: null, order: ["host"], seq: 0 },
+            { kind: "StartArm", arm: "host", seq: 1 },
+        ];
+        writeFileSync(join(dir, "journal.jsonl"), entries.map(line).join(""));
+        expect(() => loadRun(dir, prereg)).toThrow(/arm host .*0 of 1 events/);
+        entries.push(
+            { kind: "Event", arm: "host", event: "e-1", seq: 2 },
+            { kind: "EndArm", arm: "host", seq: 3 },
+        );
+        writeFileSync(join(dir, "journal.jsonl"), entries.map(line).join(""));
+        expect(() => loadRun(dir, prereg)).toThrow("no EndRun");
+        entries.push({ kind: "EndRun", arm: null, seq: 4 });
+        writeFileSync(join(dir, "journal.jsonl"), entries.map(line).join(""));
+        expect(loadRun(dir, prereg).arms.map((a) => a.arm)).toEqual(["host"]);
+    });
+});
+
+describe("oracle evidence integrity", () => {
+    test("a scenario whose digest differs from the manifest's is refused", () => {
+        const dir = mkdtempSync(join(tmpdir(), "sim-oracle-"));
+        const line = (o: unknown) => `${JSON.stringify(o)}\n`;
+        const events = [{ id: "e-1", kind: "user_turn" }];
+        const scenario_hash = scenarioHash({ events });
+        const manifest = { tier: "S", order: ["host"], events: 1, scenario_hash };
+        writeFileSync(join(dir, "manifest.json"), JSON.stringify(manifest));
+        const journal = [
+            { kind: "StartRun", arm: null, order: ["host"] },
+            { kind: "Event", arm: "host", event: "e-1" },
+            { kind: "EndArm", arm: "host" },
+            { kind: "EndRun", arm: null },
+        ];
+        writeFileSync(join(dir, "journal.jsonl"), journal.map(line).join(""));
+        writeFileSync(join(dir, "scenario.json"), JSON.stringify({ events, scenario_hash }));
+        expect(loadRun(dir, prereg).kinds.get("e-1")).toBe("user_turn");
+        const edited = [{ id: "e-1", kind: "session_end" }];
+        writeFileSync(
+            join(dir, "scenario.json"),
+            JSON.stringify({ events: edited, scenario_hash }),
+        );
+        expect(() => loadRun(dir, prereg)).toThrow("scenario_hash");
+    });
+
+    test("F5 evaluates each daemon lifetime on its own, so restarts hide no leak", () => {
+        const c = Number(prereg.leak_bound.c_bytes_per_session);
+        const ends = [1, 2, 3, 4, 5, 6].map((i) => ({
+            kind: "Event" as const,
+            arm: "eidnara",
+            event: `end-${i}`,
+            seq: i,
+            wall_ms: 0,
+            scenario_ms: i * 1000 + 500,
+        }));
+        const kinds = new Map(ends.map((e) => [e.event, "session_end"]));
+        const leak = 3 * c;
+        const resources = [1, 2, 3, 4, 5, 6].map((i) => ({
+            scenario_ms: i * 1000 + 900,
+            pid: i <= 3 ? 100 : 200,
+            rss: 100 * c + ((i - 1) % 3) * leak,
+        }));
+        const run: RunLogs = {
+            dir: "",
+            tier: "S",
+            base_wall_ms: 0,
+            prereg,
+            kinds,
+            arms: [armOf("eidnara", { journal: ends, resources })],
+        };
+        const acts = oracle(run, "F5");
+        expect(acts.map((a) => a.at)).toEqual(["daemon 100", "daemon 200"]);
+        expect(acts.every((a) => a.evidence.includes("B/session"))).toBe(true);
+        const unsegmented = {
+            ...run,
+            arms: [
+                armOf("eidnara", {
+                    journal: ends,
+                    resources: resources.map((r) => ({ ...r, pid: 100 })),
+                }),
+            ],
+        };
+        expect(oracle(unsegmented, "F5")).toEqual([]);
     });
 });
