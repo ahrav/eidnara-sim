@@ -87,7 +87,7 @@ export type Field = (v: unknown) => boolean;
 export const str: Field = (v) => typeof v === "string";
 export const text: Field = (v) => typeof v === "string" && v.length > 0;
 export const num: Field = (v) => typeof v === "number" && Number.isFinite(v);
-const count: Field = (v) => Number.isInteger(v) && (v as number) >= 0;
+const count: Field = (v) => Number.isSafeInteger(v) && (v as number) >= 0;
 const nonNegative: Field = (v) => num(v) && (v as number) >= 0;
 export const optional =
     (f: Field): Field =>

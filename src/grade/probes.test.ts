@@ -776,6 +776,76 @@ describe("grading harness", () => {
         ).toThrow("check.abstain");
     });
 
+    test("shell edge cases: spaced heredoc delimiter, output redirection, line continuation", () => {
+        const f = fixture("P6-pass");
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        const log = snap.artefacts.find((a) => a.class === "command-log" && a.role === "turn");
+        if (log?.class !== "command-log") throw new Error("fixture lacks command-log");
+        log.commands.push(
+            { command: "cat <<'END MARK'\ncargo test\nEND MARK", exit: 0, scenario_ms: 10 },
+            { command: "head -n 1 /dev/null > src/connection.rs", exit: 0, scenario_ms: 20 },
+        );
+        let g = gradeItem(f.probe, [snap], rules) as GradeRecord;
+        expect([g.metrics["P6.ran_tests"], g.metrics["P6.reread_files"]]).toEqual([false, 0]);
+        log.commands.push(
+            { command: "cargo \\\ntest", exit: 0, scenario_ms: 30 },
+            { command: "cat < src/connection.rs", exit: 0, scenario_ms: 40 },
+        );
+        g = gradeItem(f.probe, [snap], rules) as GradeRecord;
+        expect([g.metrics["P6.ran_tests"], g.metrics["P6.reread_files"]]).toEqual([true, 1]);
+    });
+
+    test("a git-quoted path is decoded before matching", () => {
+        const f = fixture("P1-pass");
+        const probe = {
+            ...f.probe,
+            check: { must: ["^src/caf\u00e9\\.drowsy-egret-12\\.test\\.ts$"] },
+        };
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        const diff = snap.artefacts.find((a) => a.class === "diff" && a.role === "turn");
+        if (diff?.class !== "diff") throw new Error("fixture lacks diff");
+        diff.patch =
+            'diff --git "a/src/caf\\303\\251.drowsy-egret-12.test.ts" "b/src/caf\\303\\251.drowsy-egret-12.test.ts"\n--- /dev/null\n+++ "b/src/caf\\303\\251.drowsy-egret-12.test.ts"\n@@ -0,0 +1,1 @@\n+test(\'x\', () => {});\n';
+        expect(gradeItem(probe, [snap], rules)?.verdict).toBe("pass");
+    });
+
+    test("a persisted record has non-empty identities and a known probe type", () => {
+        const path = join(mkdtempSync(join(tmpdir(), "sim-grades-")), "grades.jsonl");
+        const log = new GradeLog(path);
+        const g = grade("P2-pass");
+        for (const bad of [
+            { ...g, item: "" },
+            { ...g, arm: "" },
+            { ...g, snapshot: "" },
+            { ...g, probe_type: "P99", metrics: { "P99.pass": true } },
+        ]) {
+            expect(() => log.append(bad as GradeRecord)).toThrow(GradeRefused);
+        }
+    });
+
+    test("a counter beyond the safe integer range is refused", () => {
+        const f = fixture("P6-pass");
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        const calls = snap.artefacts.find((a) => a.class === "proxy-call");
+        if (calls?.class !== "proxy-call") throw new Error("fixture lacks proxy-call");
+        (calls.calls[0] as CallView).input_tokens = Number.MAX_VALUE;
+        expect(() => gradeItem(f.probe, [snap], rules)).toThrow("calls[0].input_tokens");
+    });
+
+    test("the grade log is written through a no-follow descriptor", () => {
+        const dir = mkdtempSync(join(tmpdir(), "sim-grades-"));
+        const target = join(dir, "elsewhere.jsonl");
+        writeFileSync(target, "");
+        const linked = join(dir, "grades.jsonl");
+        symlinkSync(target, linked);
+        expect(() => new GradeLog(linked).append(grade("P2-pass"))).toThrow(GradeRefused);
+        expect(readFileSync(target, "utf8")).toBe("");
+        const plain = join(dir, "plain.jsonl");
+        const log = new GradeLog(plain);
+        log.append(grade("P2-pass"));
+        expect(log.all().length).toBe(1);
+    });
+
     test("a check pattern that is empty after its prefix or fails to compile is refused", () => {
         const f = fixture("P1-fail");
         for (const bad of ["(?i)", "["]) {

@@ -1,4 +1,13 @@
-import { appendFileSync, existsSync, lstatSync, readFileSync, truncateSync } from "node:fs";
+import {
+    closeSync,
+    constants,
+    existsSync,
+    fstatSync,
+    ftruncateSync,
+    openSync,
+    readFileSync,
+    writeSync,
+} from "node:fs";
 import type { Preregistration } from "../prereg/schema";
 import type { ProbeItem } from "../scenario/compile";
 import {
@@ -187,7 +196,8 @@ function splitShell(command: string): { op: string; seg: string }[] {
         if (ch === "'" || ch === '"') {
             quote = ch;
             seg += ch;
-        } else if (ch === "\\") seg += ch + (command[++i] ?? "");
+        } else if (ch === "\\" && command[i + 1] === "\n") i++;
+        else if (ch === "\\") seg += ch + (command[++i] ?? "");
         else if (ch === "(" || ch === "{") {
             depth++;
             seg += ch;
@@ -202,9 +212,11 @@ function splitShell(command: string): { op: string; seg: string }[] {
             seg += "<<<";
             i += 2;
         } else if (command.startsWith("<<", i)) {
-            const m = /^<<(-?)\s*(['"]?)([^\s'"<>|&;()]+)\2/.exec(command.slice(i));
+            const m = /^<<(-?)\s*(?:(['"])((?:(?!\2).)+)\2|([^\s'"<>|&;()]+))/.exec(
+                command.slice(i),
+            );
             if (m) {
-                const delim = (m[3] as string).replace(/\\(.)/g, "$1");
+                const delim = ((m[3] ?? m[4]) as string).replace(/\\(.)/g, "$1");
                 pending.push({ delim, stripTabs: m[1] === "-" });
                 seg += m[0];
                 i += m[0].length - 1;
@@ -250,8 +262,9 @@ const GREP_OPERAND_OPTIONS =
  * an option supplies it (`-e`, `--regexp`, `-f`, `--file`), in which case every positional word is a file.
  */
 const operands = (segment: string): string => {
-    const words = segment.split(/\s+/);
-    if (!/^(grep|rg)$/.test(words[0] as string)) return segment;
+    const unredirected = segment.replace(/(^|\s)\d*&?>>?\s*\S+/g, " ").trim();
+    const words = unredirected.split(/\s+/);
+    if (!/^(grep|rg)$/.test(words[0] as string)) return unredirected;
     const files: string[] = [];
     let supplied = false;
     for (let i = 1; i < words.length; i++) {
@@ -535,9 +548,9 @@ const VERDICTS: Verdict[] = ["pass", "fail", "excluded"];
 function isGradeRecord(value: unknown): value is GradeRecord {
     if (typeof value !== "object" || value === null) return false;
     const g = value as Record<string, unknown>;
-    const strings = ["item", "arm", "probe_type", "snapshot"].every(
-        (k) => typeof g[k] === "string",
-    );
+    const strings =
+        ["item", "arm", "snapshot"].every((k) => text(g[k])) && typeof g.probe_type === "string";
+    const known = g.probe_type === "P7" || (g.probe_type as string) in GRADERS;
     const version = typeof g.version === "number" && Number.isInteger(g.version) && g.version >= 1;
     const verdict = VERDICTS.includes(g.verdict as Verdict);
     const metricValue = (v: unknown) => typeof v === "boolean" || str(v) || num(v);
@@ -562,6 +575,7 @@ function isGradeRecord(value: unknown): value is GradeRecord {
     const optionals = optional(str)(g.reason);
     return (
         strings &&
+        known &&
         version &&
         verdict &&
         metrics &&
@@ -644,12 +658,6 @@ export class GradeLog {
 
     append(record: GradeRecord): void {
         const { item, arm } = record;
-        if (existsSync(this.path)) {
-            const stat = lstatSync(this.path);
-            if (!stat.isFile() || stat.nlink !== 1) {
-                throw new GradeRefused(`grade log ${this.path} is a link, not a regular file`);
-            }
-        }
         if (!isGradeRecord(record)) {
             throw new GradeRefused(`grade ${item}/${arm} is not a grade record`);
         }
@@ -665,8 +673,26 @@ export class GradeLog {
                 `grade ${item}/${arm} v${record.version} changes ${changedField}`,
             );
         }
-        if (existsSync(this.path)) truncateSync(this.path, Buffer.byteLength(this.complete()));
-        appendFileSync(this.path, `${JSON.stringify(record)}\n`);
+        const kept = Buffer.byteLength(this.complete());
+        let fd: number;
+        try {
+            fd = openSync(this.path, constants.O_WRONLY | constants.O_CREAT | constants.O_NOFOLLOW);
+        } catch (e) {
+            if ((e as NodeJS.ErrnoException).code === "ELOOP") {
+                throw new GradeRefused(`grade log ${this.path} is a link, not a regular file`);
+            }
+            throw e;
+        }
+        try {
+            const stat = fstatSync(fd);
+            if (!stat.isFile() || stat.nlink !== 1) {
+                throw new GradeRefused(`grade log ${this.path} is a link, not a regular file`);
+            }
+            ftruncateSync(fd, kept);
+            writeSync(fd, `${JSON.stringify(record)}\n`, kept);
+        } finally {
+            closeSync(fd);
+        }
     }
 }
 

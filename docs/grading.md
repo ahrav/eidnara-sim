@@ -41,13 +41,13 @@ role present twice in one snapshot is refused as ambiguous. The answer a P8, P9,
 of the probe turn in the `proxy-call` artefact; a turn with no completed
 response refuses the grade.
 
-`GradeLog` appends grades to one JSONL file, validating each record's shape before writing it. A regrade of an item and arm
+`GradeLog` appends grades to one JSONL file, validating each record's shape before writing it through a no-follow descriptor to a regular, single-link file. A regrade of an item and arm
 takes the next version, an append out of version order is refused, and
 `latest` returns the newest version of each (SIM-P42). A line that parses
-but lacks a grade record's fields (metrics of boolean, string, or finite
-number values with at least one key of the probe type unless excluded, a
-non-negative attempt count, at least one distinct input id, a `pair` on P1
-and P1-control records), or whose version is other than the
+but lacks a grade record's fields (non-empty item, arm, and snapshot ids, a known probe type, metrics of
+boolean, string, or finite number values with at least one key of the probe
+type unless excluded, a non-negative attempt count, at least one distinct
+input id, a `pair` on P1 and P1-control records), or whose version is other than the
 successor of the item and arm's previous one, or that changes the snapshot,
 probe type, or pair of an earlier version, is refused by line number. A kill mid-append
 leaves a cut final line; reads skip it and the next append overwrites it, so
@@ -63,7 +63,7 @@ the complete earlier grades stay readable.
 | P3 | The added lines carry the authoritative value and no stale one | `P3.reliance` (`authoritative`, `stale`, `neither`), `P3.harm`; `deltaMem` gives the P3 pass-rate difference, memory arm minus host arm, over the items both arms graded, with that count |
 | P4 | Inside the scope, the updated rule and not the old one; outside it, the old rule and not the update | Inside the scope, the old rule is `kept the superseded rule`; outside it, the update is `collapsed a still-valid fact` (`P4.collapsed`, `P4.harm`); a missing expected rule is named too, and `check.scope` must be `in` or `out` |
 | P5 | Neither the added lines nor the turn's commands match the rejected approach | A command that only names the signature, such as a search for it, also fails the item; the check vocabulary has no read-only exemption |
-| P6 | The added lines or the commands carry the planned next step | `P6.reread_files` (executed shell segments whose command is a read, including Pi's `read` tool, with a file operand naming a path the prior session added, changed, renamed (either path), or deleted, as a whole, with or without a leading `./`; a grep or rg pattern, positional or supplied by `-e`, `--regexp`, `-f`, or `--file`, is not an operand, and an option's own value such as `-m 1` is neither), `P6.rediscovery_tokens` requires at least one agent call of the turn, `P6.ran_tests` (an executed shell segment of the turn starts with a test command; a quoted mention is not a run), `P6.rediscovery_tokens` (input and output tokens of every agent call of the turn, failed calls included, cache reads excluded) |
+| P6 | The added lines or the commands carry the planned next step | `P6.reread_files` (executed shell segments whose command is a read, including Pi's `read` tool, with a file operand naming a path the prior session added, changed, renamed (either path), or deleted, as a whole, with or without a leading `./`; a grep or rg pattern, positional or supplied by `-e`, `--regexp`, `-f`, or `--file`, is not an operand, an option's own value such as `-m 1` is neither, and an output redirection target is written, not read), `P6.rediscovery_tokens` requires at least one agent call of the turn, `P6.ran_tests` (an executed shell segment of the turn starts with a test command; a quoted mention is not a run), `P6.rediscovery_tokens` (input and output tokens of every agent call of the turn, failed calls included, cache reads excluded) |
 | P8 | The answer carries the value as a whole word (`lookup_match`) | |
 | P9 | With `check.abstain` set to `true`, the answer abstains: `UNKNOWN` alone on the first line, or abstention wording, with no value-shaped guess (a five-digit number, a codename, or a cloud-region name) and no hedged guess such as `probably` or `I think` (`abstain_rule`) | An unhedged free-text assertion beside the abstention wording, such as a bare person's name, passes; the regex rule has no model of the subject |
 | P10 | The added lines carry no `must_not` pattern and the final completed response carries no `answer_must_not` pattern, compared case-insensitively | `P10.harm` |
@@ -81,10 +81,11 @@ none) followed by its added
 lines, so `^` anchors each line and a pattern can name a file as well as its
 content. Added lines are the `+` lines inside hunks, told
 apart from `+++` headers by position, so a source line that begins with `++`
-is graded content. Shell segments split on `;`, `&`, `|`, `&&`, `||`, and newlines outside quotes,
+is graded content; a Git-quoted header path is decoded before matching. Shell segments split on `;`, `&`, `|`, `&&`, `||`, and newlines outside quotes,
 parenthesised or braced groups, word-initial `#` comments, and heredoc bodies
-(every delimiter on a line is queued after shell quote removal; terminators
-match exactly, `<<-` strips leading tabs), so quoted, grouped, commented, and heredoc text stays out of
+(every delimiter on a line, quoted or bare, is queued after shell quote
+removal; terminators match exactly, `<<-` strips leading tabs; an unquoted
+backslash-newline joins lines), so quoted, grouped, commented, and heredoc text stays out of
 the executed commands; a segment counts as executed when it is unconditional,
 or follows `&&` in the command's last list when that list has no `||` and
 the command exited 0 (the exit code is that list's); every member of a

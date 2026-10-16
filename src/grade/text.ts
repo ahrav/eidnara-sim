@@ -29,6 +29,43 @@ export function pattern(source: string): RegExp {
 }
 
 /** Hunk lines and header lines of a unified diff, told apart by position: a header precedes its first `@@`. */
+/** A Git header path token with its `a/` or `b/` prefix removed and C-style quoting decoded. */
+function gitPath(token: string): string {
+    const quoted = token.startsWith('"') && token.endsWith('"');
+    const raw = quoted ? token.slice(1, -1) : token;
+    const bytes: number[] = [];
+    const escapes: Record<string, number> = {
+        n: 10,
+        t: 9,
+        r: 13,
+        '"': 34,
+        "\\": 92,
+        a: 7,
+        b: 8,
+        f: 12,
+        v: 11,
+    };
+    for (let i = 0; i < raw.length; i++) {
+        const ch = raw[i] as string;
+        if (!quoted || ch !== "\\") {
+            bytes.push(...Buffer.from(ch, "utf8"));
+            continue;
+        }
+        const next = raw[i + 1] as string;
+        const octal = /^[0-7]{3}/.exec(raw.slice(i + 1));
+        if (octal) {
+            bytes.push(Number.parseInt(octal[0], 8));
+            i += 3;
+        } else if (next in escapes) {
+            bytes.push(escapes[next] as number);
+            i++;
+        } else bytes.push(92);
+    }
+    return Buffer.from(bytes)
+        .toString("utf8")
+        .replace(/^[ab]\//, "");
+}
+
 function parseDiff(patch: string): { added: string[]; paths: string[]; surviving: string[] } {
     const added: string[] = [];
     const paths: string[] = [];
@@ -45,18 +82,22 @@ function parseDiff(patch: string): { added: string[]; paths: string[]; surviving
         if (line.startsWith("diff --git ")) {
             close();
             inHunk = false;
-            const named = /^diff --git a\/(.+) b\/(.+)$/.exec(line);
+            const named =
+                /^diff --git ("a\/(?:[^"\\]|\\.)*"|a\/\S+) ("b\/(?:[^"\\]|\\.)*"|b\/.+)$/.exec(
+                    line,
+                );
             if (named) {
-                paths.push(named[1] as string, named[2] as string);
-                current = named[2] as string;
+                paths.push(gitPath(named[1] as string), gitPath(named[2] as string));
+                current = gitPath(named[2] as string);
             }
         } else if (line.startsWith("@@")) inHunk = true;
         else if (inHunk) {
             if (line.startsWith("+")) added.push(line.slice(1));
         } else if (line.startsWith("+++ /dev/null")) deleted = true;
-        else if (line.startsWith("+++ b/")) {
-            paths.push(line.slice("+++ b/".length));
-            if (current === null) surviving.push(line.slice("+++ b/".length));
+        else if (line.startsWith("+++ b/") || line.startsWith('+++ "b/')) {
+            const path = gitPath(line.slice("+++ ".length));
+            paths.push(path);
+            if (current === null) surviving.push(path);
         }
     }
     close();
