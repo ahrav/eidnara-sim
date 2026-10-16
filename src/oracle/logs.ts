@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Command } from "../grade/artefacts";
-import type { Preregistration } from "../prereg/schema";
+import { ARMS, type Preregistration } from "../prereg/schema";
 import { type CallRecord, recordProblems } from "../proxy/records";
 import { type Entry, readJournal, requireComplete } from "../run/journal";
 import type { Sample as ResourceSample } from "../run/sampler";
@@ -45,6 +45,33 @@ function jsonl<T>(path: string): T[] {
     });
 }
 
+type FieldCheck = (v: unknown) => boolean;
+const num: FieldCheck = (v) => Number.isFinite(v);
+const numOrNull: FieldCheck = (v) => v === null || Number.isFinite(v);
+const str: FieldCheck = (v) => typeof v === "string";
+const strOrNull: FieldCheck = (v) => v === null || typeof v === "string";
+const SAMPLE_FIELDS: Record<string, FieldCheck> = { scenario_ms: num, rss: numOrNull };
+const TOOL_FIELDS: Record<string, FieldCheck> = {
+    turn: strOrNull,
+    command: str,
+    exit: numOrNull,
+    scenario_ms: num,
+};
+
+/** Reads a JSONL evidence file whose records must carry the named fields with the named shapes. */
+function shaped<T>(path: string, fields: Record<string, FieldCheck>): T[] {
+    const rows = jsonl<Record<string, unknown>>(path);
+    rows.forEach((row, i) => {
+        for (const [field, ok] of Object.entries(fields)) {
+            if (!ok(row[field])) throw new Error(`${path}: line ${i + 1}: ${field} missing`);
+        }
+        if ("pid" in row && !numOrNull(row.pid))
+            throw new Error(`${path}: line ${i + 1}: pid missing`);
+    });
+    // SAFETY: every row carries each field in `fields` with its checked shape, which is the record type `T` names.
+    return rows as unknown as T[];
+}
+
 const lines = (path: string) =>
     existsSync(path)
         ? readFileSync(path, "utf8")
@@ -62,22 +89,36 @@ export function loadRun(dir: string, prereg: Preregistration): RunLogs {
         );
     }
     const kinds = new Map(scenario.events.map((e) => [String(e.id), String(e.kind)]));
+    const order = manifest.order as string[];
+    for (const arm of order) {
+        if (!(ARMS as readonly string[]).includes(arm)) {
+            throw new Error(`manifest arm ${arm} is not a pre-registered arm`);
+        }
+    }
     const calls = jsonl<CallRecord>(join(dir, "calls.jsonl"));
+    const seen = new Set<number>();
     for (const c of calls) {
         const problems = recordProblems({ ...c });
         if (problems.length > 0) throw new Error(`call ${c.seq}: ${problems.join(", ")}`);
+        if (!order.includes(c.arm))
+            throw new Error(`call ${c.seq}: arm ${c.arm} is not in the manifest`);
+        if (seen.has(c.seq)) throw new Error(`call ${c.seq}: sequence number repeated`);
+        seen.add(c.seq);
     }
     const journal = readJournal(join(dir, "journal.jsonl"));
     const scheduled = scenario.events.slice(0, manifest.events).map((e) => String(e.id));
-    requireComplete(journal, manifest.order as string[], scheduled);
-    const arms = (manifest.order as string[]).map((arm) => ({
+    requireComplete(journal, order, scheduled);
+    const arms = order.map((arm) => ({
         arm,
         calls: calls.filter((c) => c.arm === arm),
         journal: journal.filter((e) => e.arm === arm),
         pluginLog: lines(join(dir, arm, "r", "eidnara.log")),
         daemonLog: lines(join(dir, arm, "daemon.log")),
-        resources: jsonl<Sample>(join(dir, arm, "resources.jsonl")),
-        tools: jsonl<Command & { turn: string | null }>(join(dir, arm, "tools.jsonl")),
+        resources: shaped<Sample>(join(dir, arm, "resources.jsonl"), SAMPLE_FIELDS),
+        tools: shaped<Command & { turn: string | null }>(
+            join(dir, arm, "tools.jsonl"),
+            TOOL_FIELDS,
+        ),
     }));
     for (const arm of arms) {
         if (arm.arm === "host") continue;

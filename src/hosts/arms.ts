@@ -9,6 +9,7 @@ import {
     readFileSync,
     readSync,
     realpathSync,
+    rmSync,
     writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -131,7 +132,31 @@ export class DaemonStack {
         return this.stack?.child?.pid ?? null;
     }
 
+    /** Names the file a `start` after a harness kill reads to find the dead lifetime's stderr log. */
+    private get logSourceFile(): string {
+        return `${this.ctx.logFile}.source`;
+    }
+
+    /** Records the live stack's stderr log path, so a later `recoverLog` finds it after a harness kill. */
+    noteLogSource(): void {
+        writeFileSync(this.logSourceFile, String(this.stack?.logPath ?? ""));
+    }
+
+    /**
+     * Saves the stderr log a killed lifetime left behind, then removes it. A clean `stop` or
+     * `restart` has already saved and removed its log, so this finds a file only after a kill.
+     */
+    recoverLog(): void {
+        if (!existsSync(this.logSourceFile)) return;
+        const source = readFileSync(this.logSourceFile, "utf8").trim();
+        rmSync(this.logSourceFile, { force: true });
+        if (source === "" || !existsSync(source)) return;
+        appendFileFrom(source, this.ctx.logFile);
+        rmSync(source, { force: true });
+    }
+
     async start(): Promise<void> {
+        this.recoverLog();
         const { config } = this.ctx;
         const hr = await v1(config, "packages/e2e-tests/src/bedrock-peer/harness-runtime.ts");
         const hh = await v1(config, "packages/e2e-tests/src/rust-runner/hermetic-host.ts");
@@ -164,6 +189,7 @@ export class DaemonStack {
             daemonEnv: faketimeEnv(this.ctx.offsetFile),
         });
         this.connectionFile = this.stack.connectionFile;
+        this.noteLogSource();
     }
 
     /**
@@ -178,12 +204,17 @@ export class DaemonStack {
         const { stdout } = this.hh.__hermeticHostTest.diagnostics(this.stack);
         appendFileSync(this.ctx.logFile, stdout);
         const logPath = String(this.stack.logPath ?? "");
-        if (existsSync(logPath)) appendFileFrom(logPath, this.ctx.logFile);
+        if (existsSync(logPath)) {
+            appendFileFrom(logPath, this.ctx.logFile);
+            rmSync(logPath, { force: true });
+        }
+        rmSync(this.logSourceFile, { force: true });
     }
 
     async restart(): Promise<void> {
         this.saveLog();
         await this.stack.restartHost();
+        this.noteLogSource();
     }
 
     async stop(): Promise<void> {

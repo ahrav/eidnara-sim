@@ -101,6 +101,7 @@ function f4(arm: ArmLogs, quietMs: number): Activation[] {
             }
             continue;
         }
+        const windows: string[] = [];
         /** Proxy records and the turn end are on the harness clock; only a tool start gets the slack. */
         const quietAfter = (done: number, recorded: number[]): number => {
             const next = Math.min(
@@ -114,19 +115,18 @@ function f4(arm: ArmLogs, quietMs: number): Activation[] {
         if (began) {
             const starts = turnCalls.map((c) => c.scenario_ms);
             const quiet = quietAfter(began.scenario_ms, [...starts, e.scenario_ms]);
-            if (quiet > quietMs) {
-                const evidence = `turn began, then ${Math.round(quiet / 1000)} s ${silence}`;
-                out.push({ oracle: "F4", arm: arm.arm, at: turn, evidence });
-            }
+            if (quiet > quietMs) windows.push(`turn began, then ${Math.round(quiet / 1000)} s`);
         }
         for (const c of calls) {
             const done = c.scenario_ms + (c.wall_ms - c.started_wall_ms);
             const others = turnCalls.filter((x) => x !== c).map((x) => x.scenario_ms);
             const quiet = quietAfter(done, [...others, e.scenario_ms]);
-            if (quiet > quietMs) {
-                const evidence = `call ${c.seq} completed, then ${Math.round(quiet / 1000)} s ${silence}`;
-                out.push({ oracle: "F4", arm: arm.arm, at: turn, evidence });
-            }
+            if (quiet > quietMs)
+                windows.push(`call ${c.seq} completed, then ${Math.round(quiet / 1000)} s`);
+        }
+        if (windows.length > 0) {
+            const evidence = `${windows.join("; ")} ${silence}`;
+            out.push({ oracle: "F4", arm: arm.arm, at: turn, evidence });
         }
     }
     return out;

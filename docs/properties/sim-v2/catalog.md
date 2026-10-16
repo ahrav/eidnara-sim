@@ -1004,8 +1004,10 @@ Type: safety
 Reachability: default-production
 Status: active
 Exercised: partial - `src/oracle/oracles.test.ts` ("token ledger") constructs
-calls across every component with all four token fields; pricing and the
-price table version land with M7 (#1032)
+`agent`, `memory_capture`, and `title` calls plus the three harness
+components, each with all four token fields; the other components share the
+same code path but are not constructed; pricing and the price table version
+land with M7 (#1032)
 Guarantee: SIM-P38: Per-arm total tokens equal the sum of per-component tokens,
 and per-component cost uses the journaled price table version.
 Check: `always` - assert per-arm token totals equal the per-component sum and
