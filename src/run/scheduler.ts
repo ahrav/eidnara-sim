@@ -140,6 +140,13 @@ export class Scheduler {
             try {
                 this.session = this.openSession(mine);
                 this.outage = this.openOutage(mine);
+                for (const e of mine) {
+                    const restored =
+                        e.kind === "FaultFired" || (e.kind === "ItemState" && e.state === "missed");
+                    if (restored && typeof e.fault === "string") {
+                        this.fired.add(`${arm}/${e.fault}`);
+                    }
+                }
                 try {
                     driver.bind(this.handle(++this.generation, driver));
                     if (!mine.some((e) => e.kind === "StartArm")) {
@@ -218,12 +225,20 @@ export class Scheduler {
         }
     }
 
-    /** An arm is complete when it started, ended, and journaled an `Event` for every event. */
+    /**
+     * An arm is complete when it started, then journaled an `Event` for every event, then ended:
+     * the `EndArm` is judged at its own position, so evidence recorded after it does not count.
+     */
     private completed(entries: Entry[], arm: string): boolean {
         const mine = entries.filter((e) => e.arm === arm);
-        const kinds = new Set(mine.map((e) => e.kind));
-        if (!kinds.has("StartArm") || !kinds.has("EndArm")) return false;
-        const done = new Set(mine.filter((e) => e.kind === "Event").map((e) => e.event));
+        const end = mine.findIndex((e) => e.kind === "EndArm");
+        if (end < 0 || !mine.slice(0, end).some((e) => e.kind === "StartArm")) return false;
+        const done = new Set(
+            mine
+                .slice(0, end)
+                .filter((e) => e.kind === "Event")
+                .map((e) => e.event),
+        );
         return this.o.events.every((e) => done.has(e.id));
     }
 
@@ -367,6 +382,7 @@ export class Scheduler {
             if (f.seam.layer !== PROXY_LAYER) {
                 if (!observed.has(f.id) && !marked.has(f.id) && f.type !== "laptop_sleep") {
                     this.log({ kind: "ItemState", fault: f.id, state: "failed(interrupted)" });
+                    if (this.outage === f.id) this.outage = null;
                 }
                 continue;
             }
@@ -402,7 +418,12 @@ export class Scheduler {
 
     private async fire(driver: ArmDriver, f: FaultEpisode): Promise<void> {
         if (f.seam.layer === PROXY_LAYER) this.o.proxy?.arm(f.id);
-        this.log({ kind: "FaultFired", fault: f.id, type: f.type, layer: f.seam.layer });
+        try {
+            this.log({ kind: "FaultFired", fault: f.id, type: f.type, layer: f.seam.layer });
+        } catch (caught) {
+            if (f.seam.layer === PROXY_LAYER) this.o.proxy?.disarm(f.id);
+            throw caught;
+        }
         this.fired.add(`${this.arm}/${f.id}`);
         if (f.seam.layer === PROXY_LAYER) return;
         if (f.type === "laptop_sleep") return;
@@ -464,7 +485,7 @@ export class Scheduler {
             const state = outcome.failed === undefined ? "completed" : "failed";
             const item = e.probe ? { probe: e.probe, state } : {};
             this.log({ kind: "EndTurn", event: e.id, outcome: outcome.failed ?? "ok", ...item });
-            await Bun.sleep(this.o.settleMs ?? 1_000);
+            await this.untilFatal(Bun.sleep(this.o.settleMs ?? 1_000));
         } else {
             outcome = await this.untilFatal(driver.event(e));
         }
@@ -476,6 +497,7 @@ export class Scheduler {
             this.session = null;
         }
         await this.pendingKill;
+        if (this.fatal) throw this.fatal;
         this.log({ kind: "Event", event: e.id, outcome: outcome.failed ?? "ok" });
     }
 

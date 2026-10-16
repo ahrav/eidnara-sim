@@ -14,7 +14,8 @@ boot id, so one left by an earlier boot of this machine reads as dead, while a
 boot mismatch under the hostname fallback is refused as another machine; it carries the
 holder's pid namespace, so a lease from another namespace on this machine, or
 one whose namespace is known on only one side, is refused rather than probed
-against unrelated local pids; and the holder is
+against unrelated local pids; every `lease.*.json` name outside the canonical
+`lease.<n>.json` spelling is corrupt; and the holder is
 identified by pid and by its kernel start time (`/proc/<pid>/stat`), so a pid
 that a later process reuses still reads as a dead holder; a holder whose
 identity cannot be read is treated as alive and refused. A lease is read through
@@ -110,11 +111,14 @@ call through it is refused:
    `ItemState missed`.
 4. Fire the faults keyed on the event. Provider faults are armed on the proxy
    at the Nth user turn of their session, and `FaultFired` is journaled after
-   the proxy accepted the arming. Scheduler faults call the driver's
+   the proxy accepted the arming; a failed append disarms the episode before
+   the error propagates. Scheduler faults call the driver's
    `fault` and journal its evidence. The mid-fold SIGKILL, the daemon restart,
    and the host upgrade open an outage window first.
 5. Deliver the event to the driver. A user turn is bracketed by `BeginTurn`
-   and `EndTurn` and holds the clock busy while it runs. An `apply_diff`
+   and `EndTurn` and holds the clock busy while it runs; its settle interval
+   is raced against the fatal channel, and a fatal exit inside it refuses the
+   run before the turn's `Event`. An `apply_diff`
    leaves the session closed; the following `session_start` opens it.
 6. At a session end, disarm every provider fault of the session, so one that
    its turn left unexhausted reaches no later session or arm.
@@ -143,7 +147,9 @@ in flight.
 ## Resume
 
 A restarted harness opens the same journal. A journal whose first entry is anything but `StartRun`, or that holds a
-second `StartRun`, is refused. A journal holding a fatal
+second `StartRun`, is refused. An arm is complete when its `EndArm` follows
+an `Event` for every scheduled event; evidence journaled after `EndArm` does
+not count. A journal holding a fatal
 `ItemState` (a daemon exit outside an outage window, or a scheduler fault the
 driver could not carry out), before or after `EndRun`, is a failed run and is
 refused with `HarnessFailure`; an arm with `EndArm` before every scheduled

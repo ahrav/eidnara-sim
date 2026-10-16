@@ -159,6 +159,11 @@ interface Request {
     body: Body;
     /** Receipt of the request's first bytes on the monotonic clock, before its body arrived. */
     receivedMono: number;
+    /**
+     * The arm, session, turn, and scenario time that owned the request at receipt, or the
+     * error reading them raised; `handle()` records that error against the request.
+     */
+    owner: { scope: Scope; scenario_ms: number } | { error: unknown };
 }
 
 export class Gateway {
@@ -175,6 +180,7 @@ export class Gateway {
         const onRequest = (req: IncomingMessage, res: ServerResponse) => {
             this.inFlight++;
             const receivedMono = performance.now();
+            const owner = this.received();
             const gone = new AbortController();
             res.on("close", () => !res.writableFinished && gone.abort());
             collectBody(req, (body) => {
@@ -185,6 +191,7 @@ export class Gateway {
                     expect: req.headers.expect,
                     body,
                     receivedMono,
+                    owner,
                 };
                 this.handle(request, {
                     status: (code, headers) => {
@@ -213,6 +220,7 @@ export class Gateway {
         h2.on("stream", (stream, headers) => {
             this.inFlight++;
             const receivedMono = performance.now();
+            const owner = this.received();
             const gone = new AbortController();
             stream.on("close", () => !stream.writableFinished && gone.abort());
             collectBody(stream, (body) => {
@@ -224,6 +232,7 @@ export class Gateway {
                     expect: undefined,
                     body,
                     receivedMono,
+                    owner,
                 };
                 this.handle(request, {
                     status: (code, h) => {
@@ -273,6 +282,15 @@ export class Gateway {
         while (this.inFlight > 0 && Date.now() < deadline) await Bun.sleep(10);
     }
 
+    /** The owning scope and scenario time, read when a request's first bytes arrive. */
+    private received(): Request["owner"] {
+        try {
+            return { scope: this.options.scope(), scenario_ms: this.options.clock.scenarioMs() };
+        } catch (error) {
+            return { error };
+        }
+    }
+
     private async handle(request: Request, outer: Sink) {
         let sent = 0;
         const sink: Sink & { sent: () => number } = {
@@ -296,8 +314,8 @@ export class Gateway {
         let scope: Scope = { arm: "", session: null, turn: null };
         let scenario_ms = 0;
         try {
-            scope = this.options.scope();
-            scenario_ms = this.options.clock.scenarioMs();
+            if ("error" in request.owner) throw request.owner.error;
+            ({ scope, scenario_ms } = request.owner);
             done = await this.serve(request, sink, call, startedMono, (d) => {
                 done = d;
             });

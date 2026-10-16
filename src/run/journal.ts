@@ -231,7 +231,7 @@ export function pidNamespace(): string | undefined {
 }
 
 const LEASE = /^lease\.(0|[1-9]\d*)\.json$/;
-const LEASE_LIKE = /^lease\.\d+\.json$/;
+const LEASE_LIKE = /^lease\..*\.json$/;
 
 /** The numbers of every lease file in `dir`, ascending. The highest names the holder. */
 function leaseNumbers(dir: string): number[] {

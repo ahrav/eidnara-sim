@@ -1714,6 +1714,225 @@ describe("Scheduler", () => {
         expect(() => takeLease(d)).toThrow(/is leased by pid/);
     });
 
+    test("an interrupted outage fault closes the live window a resume restored", async () => {
+        const path = join(dir(), "j.jsonl");
+        const restart = episode("r", "daemon_restart", {
+            kind: "session_start",
+            session: "s-0000",
+        });
+        const j = new Journal(path);
+        j.append({
+            kind: "StartRun",
+            arm: null,
+            scenario_ms: 0,
+            order: ["a"],
+            scenario: scenarioId(fixtureEvents(2), [restart]),
+        });
+        j.append({ kind: "StartArm", arm: "a", scenario_ms: 0 });
+        j.append({
+            kind: "FaultFired",
+            arm: "a",
+            scenario_ms: 0,
+            fault: "r",
+            type: "daemon_restart",
+            layer: "scheduler",
+        });
+        j.append({ kind: "Event", arm: "a", scenario_ms: 0, event: "e-000000", outcome: "ok" });
+        j.append({ kind: "BeginTurn", arm: "a", scenario_ms: 0, event: "e-000001" });
+        j.append({ kind: "EndTurn", arm: "a", scenario_ms: 10, event: "e-000001", outcome: "ok" });
+        j.close();
+        const inner = fakeDriver([]);
+        const driver: ArmDriver = {
+            ...inner,
+            bind: (h) => {
+                inner.bind(h);
+                setTimeout(() => {
+                    try {
+                        h.daemonExited({ signal: "SIGSEGV" });
+                    } catch {}
+                }, 10);
+            },
+        };
+        const resumed = new Journal(path);
+        await expect(
+            new Scheduler({
+                events: fixtureEvents(2),
+                faults: [restart],
+                journal: resumed,
+                settleMs: 50,
+                order: ["a"],
+                drivers: { a: driver },
+            }).run(),
+        ).rejects.toThrow(HarnessFailure);
+    });
+
+    test("a fatal exit inside a live turn's settle window refuses the run before its Event", async () => {
+        const j = new Journal(join(dir(), "j.jsonl"));
+        let handle: ArmHandle | null = null;
+        const driver: ArmDriver = {
+            ...fakeDriver([]),
+            bind: (h) => {
+                handle = h;
+            },
+            event: async (e) => {
+                if (e.kind === "user_turn") {
+                    setTimeout(() => {
+                        try {
+                            handle?.daemonExited({ signal: "SIGSEGV" });
+                        } catch {}
+                    }, 10);
+                }
+                return {};
+            },
+        };
+        const started = performance.now();
+        await expect(
+            new Scheduler({
+                events: fixtureEvents(2),
+                faults: [],
+                journal: j,
+                settleMs: 2_000,
+                order: ["a"],
+                drivers: { a: driver },
+            }).run(),
+        ).rejects.toThrow(HarnessFailure);
+        expect(performance.now() - started).toBeLessThan(1_000);
+        expect(j.entries.filter((e) => e.kind === "Event").map((e) => e.event)).toEqual([
+            "e-000000",
+        ]);
+    });
+
+    test("an arm whose EndArm precedes its events is refused, completed run or not", async () => {
+        const path = join(dir(), "j.jsonl");
+        const j = new Journal(path);
+        j.append({
+            kind: "StartRun",
+            arm: null,
+            scenario_ms: 0,
+            order: ["a"],
+            scenario: scenarioId(fixtureEvents(1), []),
+        });
+        j.append({ kind: "StartArm", arm: "a", scenario_ms: 0 });
+        j.append({ kind: "EndArm", arm: "a", scenario_ms: 0 });
+        for (const e of fixtureEvents(1)) {
+            j.append({ kind: "Event", arm: "a", scenario_ms: 0, event: e.id, outcome: "ok" });
+        }
+        j.append({ kind: "EndRun", arm: null, scenario_ms: 0 });
+        j.close();
+        await expect(
+            new Scheduler({
+                events: fixtureEvents(1),
+                faults: [],
+                journal: new Journal(path),
+                settleMs: 0,
+                order: ["a"],
+                drivers: { a: fakeDriver([]) },
+            }).run(),
+        ).rejects.toThrow(/EndArm before its events completed/);
+    });
+
+    test("a resume restores fired faults before binding, so a synchronous observation fires no second kill", async () => {
+        const path = join(dir(), "j.jsonl");
+        const kill = episode("k", "daemon_sigkill_mid_fold", {
+            kind: "first_summarizer_call",
+            session: "s-0000",
+        });
+        const j = new Journal(path);
+        j.append({
+            kind: "StartRun",
+            arm: null,
+            scenario_ms: 0,
+            order: ["a"],
+            scenario: scenarioId(fixtureEvents(2), [kill]),
+        });
+        j.append({ kind: "StartArm", arm: "a", scenario_ms: 0 });
+        j.append({ kind: "Event", arm: "a", scenario_ms: 0, event: "e-000000", outcome: "ok" });
+        j.append({
+            kind: "FaultFired",
+            arm: "a",
+            scenario_ms: 0,
+            fault: "k",
+            type: "daemon_sigkill_mid_fold",
+            layer: "scheduler",
+        });
+        j.append({
+            kind: "FaultObserved",
+            arm: "a",
+            scenario_ms: 0,
+            fault: "k",
+            type: "daemon_sigkill_mid_fold",
+            evidence: {},
+        });
+        j.close();
+        let faults = 0;
+        const inner = fakeDriver([]);
+        const driver: ArmDriver = {
+            ...inner,
+            bind: (h) => {
+                inner.bind(h);
+                h.observe("history_summarizer");
+            },
+            fault: async () => {
+                faults++;
+                return {};
+            },
+        };
+        const resumed = new Journal(path);
+        await new Scheduler({
+            events: fixtureEvents(2),
+            faults: [kill],
+            journal: resumed,
+            settleMs: 0,
+            order: ["a"],
+            drivers: { a: driver },
+        }).run();
+        expect(faults).toBe(0);
+        expect(resumed.entries.filter((e) => e.kind === "FaultFired")).toHaveLength(1);
+    });
+
+    test("a proxy fault is disarmed when its FaultFired cannot be journaled", async () => {
+        const calls: string[] = [];
+        const proxy = {
+            arm: (id: string) => void calls.push(`arm ${id}`),
+            disarm: (id: string) => void calls.push(`disarm ${id}`),
+            reset: () => undefined,
+        };
+        const inner = new Journal(join(dir(), "j.jsonl"));
+        const journal = new Proxy(inner, {
+            get(target, key, receiver) {
+                if (key === "append") {
+                    return (entry: Entry) => {
+                        if (entry.kind === "FaultFired") throw new Error("ENOSPC");
+                        return target.append(entry);
+                    };
+                }
+                return Reflect.get(target, key, receiver);
+            },
+        });
+        await expect(
+            new Scheduler({
+                events: fixtureEvents(2),
+                faults: [
+                    episode("p1", "provider_429", { kind: "user_turn", session: "s-0000", n: 1 }),
+                ],
+                journal,
+                settleMs: 0,
+                order: ["a"],
+                drivers: { a: fakeDriver([]) },
+                proxy,
+            }).run(),
+        ).rejects.toThrow("ENOSPC");
+        expect(calls).toEqual(["arm p1", "disarm p1"]);
+    });
+
+    test("a lease-shaped file with a noncanonical number is corrupt, whatever its spelling", () => {
+        for (const name of ["lease.-1.json", "lease.1e0.json", "lease.01.json"]) {
+            const d = dir();
+            writeFileSync(join(d, name), "{}");
+            expect(() => takeLease(d)).toThrow(/no canonical number/);
+        }
+    });
+
     test("a FaultObserved without its FaultFired is refused on resume", async () => {
         const path = join(dir(), "j.jsonl");
         const restart = episode("r", "daemon_restart", {

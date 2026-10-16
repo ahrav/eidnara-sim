@@ -121,11 +121,12 @@ export class FaultInjector {
 
     /**
      * `startedMono` is the call's receipt on the same monotonic clock `take()` and `reset()`
-     * stamp; a call received before the last reset belongs to the previous arm and is ignored.
+     * stamp; a call received before the last reset belongs to the previous arm and is ignored,
+     * and a call received before an injection cannot be the host's reaction to it.
      */
     observe(record: CallRecord, call: number, startedMono: number): void {
         if (startedMono < this.resetAt) return;
-        for (const p of this.pending.filter((x) => call > x.call)) {
+        for (const p of this.pending.filter((x) => call > x.call && startedMono >= x.at)) {
             if (record.component !== TARGET) continue;
             const inWindow = startedMono <= p.at + this.windowMs;
             if (inWindow)

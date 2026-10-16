@@ -497,6 +497,7 @@ describe("witnesses", () => {
         } as ProxyFault;
         const injector = new FaultInjector([fault], new Rng(1), 100);
         injector.arm("f");
+        Bun.sleepSync(30);
         const base = {
             arm: "a",
             session: null,
@@ -540,6 +541,18 @@ describe("witnesses", () => {
             fault_ref: null,
             started_wall_ms: 9e15,
         } as const;
+        const early = {
+            ...base,
+            seq: 3,
+            component: "agent",
+            fault_ref: null,
+            started_wall_ms: 0,
+        } as const;
+        injector.observe(early, 3, t0 - 10);
+        expect(injector.report()[0]).toMatchObject({
+            status: "untriggered",
+            host_observed_seq: [],
+        });
         injector.observe(inside, 2, t0 + 50);
         expect(injector.report()[0]).toMatchObject({ status: "fired", host_observed_seq: [2] });
         injector.observe(late, 1, t0 + 500);
@@ -1293,6 +1306,39 @@ describe("every request yields one record", () => {
         ]);
         expect(gateway.failures).toEqual([]);
     }, 20_000);
+
+    test("a record carries the scope that owned the request when its first bytes arrived", async () => {
+        let arm = "first";
+        const records = new RecordWriter(null);
+        const gateway = new Gateway({
+            upstream: scriptedUpstream(),
+            records,
+            injector: new FaultInjector([], new Rng(1), 1_000),
+            rng: new Rng(1),
+            clock: { scenarioMs: () => 0 },
+            scope: () => ({ arm, session: null, turn: null }),
+        });
+        await gateway.start();
+        gateways.push(gateway);
+        const body = JSON.stringify(AGENT_BODY);
+        const sock = tcp(Number(new URL(gateway.urls[0] as string).port), "127.0.0.1");
+        await new Promise<void>((r) => sock.on("connect", () => r()));
+        const reply = new Promise<string>((r) => {
+            let buf = "";
+            sock.on("data", (c) => {
+                buf += c.toString();
+            });
+            sock.on("close", () => r(buf));
+        });
+        const head = `POST /model/m/converse HTTP/1.1\r\nHost: x\r\nContent-Length: ${body.length}\r\nConnection: close\r\n\r\n`;
+        sock.write(`${head}${body.slice(0, 10)}`);
+        await Bun.sleep(50);
+        arm = "second";
+        sock.write(body.slice(10));
+        expect((await reply).startsWith("HTTP/1.1 200")).toBe(true);
+        while (records.records.length === 0) await Bun.sleep(5);
+        expect(records.records.map((r) => r.arm)).toEqual(["first"]);
+    });
 
     test("an unsupported Expect header yields a 417 and a rejected record", async () => {
         const { records, url } = await start(null);
