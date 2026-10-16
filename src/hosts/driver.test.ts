@@ -1251,6 +1251,24 @@ describe("HostDriver faults", () => {
         },
     );
 
+    test.skipIf(!sudo)("space freed during the episode stops the run at session_end", async () => {
+        const { driver, transcripts } = fixture("eidnara");
+        mkdirSync(join(transcripts, "sessions"), { recursive: true });
+        driver.daemon = fakeDaemon(10) as unknown as DaemonStack;
+        driver.host = new FakeHost({} as HostContext, transcripts) as unknown as SimHost;
+        const inner = driver as unknown as { mountStore(f: boolean): void };
+        inner.mountStore(true);
+        try {
+            const other = join(driver.storeRoot, "daemon-data");
+            spawnSync("fallocate", ["-l", "8M", other]);
+            await driver.fault(episode("store_full"));
+            rmSync(other);
+            await expect(driver.event(ev("session_end"))).rejects.toThrow("free");
+        } finally {
+            await driver.stop().catch(() => undefined);
+        }
+    });
+
     test.skipIf(!sudo)(
         "a ballast recreated sparse by the host stops the run at session_end",
         async () => {

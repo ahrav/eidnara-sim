@@ -69,7 +69,9 @@ stops it with SIGTERM so its store stays on disk; a daemon that outlives
 SIGTERM is killed with the stack's SIGKILL path and the stop still fails. It
 appends every chunk the daemon writes to the arm's `daemon.log` as it
 arrives, across restarts, so a kill at any point loses nothing already
-written; the log opens with `O_NOFOLLOW` and `O_NONBLOCK` and must be a
+written; the output the readiness wait captured before the log attached
+comes first, as the v1 stack buffered it (its stdout, then its stderr), and
+the live stream after it keeps the order of arrival; the log opens with `O_NOFOLLOW` and `O_NONBLOCK` and must be a
 regular file, so a symlink or FIFO left there fails the append without
 blocking, and the first such failure surfaces at stop together with a failed
 SIGKILL fallback.
@@ -304,7 +306,7 @@ against the same store (OQ-10).
 |---|---|---|
 | `daemon_sigkill_mid_fold` | The session's first observed history-summarizer call fires it; SIGKILL and restart | `pid_before`, `pid_after`, `restarted_by: harness` |
 | `daemon_restart` | At `session_start`, SIGKILL and restart | As above |
-| `store_full` | When the scenario schedules `store_full`, each Eidnara arm's store lives on a sparse 2 GiB ext4 loop mount (`nosuid,nodev,noexec`) at `<arm>/s`, room for the daemon to materialize its harness closures twice, with its image outside the sandbox's kept paths; the fault fills it with a `fallocate`d ballast topped up by `dd`, so the sparse image stays small, and `session_end` removes the ballast; a resume that finds the ballast removes it for the daemon's start and fills the store again, whether or not that start succeeds, and requires the store to report no free space afterwards; the store is writable to the host, so `session_end` requires the ballast to be the regular file it created with its length and blocks unchanged, and stops the run otherwise; the fault replaces whatever the host left at the ballast's name with a fresh regular file before allocating | `avail_kb: 0`; any other value stops the run |
+| `store_full` | When the scenario schedules `store_full`, each Eidnara arm's store lives on a sparse 2 GiB ext4 loop mount (`nosuid,nodev,noexec`) at `<arm>/s`, room for the daemon to materialize its harness closures twice, with its image outside the sandbox's kept paths; the fault fills it with a `fallocate`d ballast topped up by `dd`, so the sparse image stays small, and `session_end` removes the ballast; a resume that finds the ballast removes it for the daemon's start and fills the store again, whether or not that start succeeds, and requires the store to report no free space afterwards; the store is writable to the host, so `session_end` requires the ballast to be the regular file it created with its length and blocks unchanged and the store to still report no free space, and stops the run otherwise; the fault replaces whatever the host left at the ballast's name with a fresh regular file before allocating | `avail_kb: 0`; any other value stops the run |
 | `plugin_reload` | The host process and its plugin start afresh at every `session_start` | The reload note |
 | `model_switch` | Later sessions use the next configured model; the daemon keeps running with its summarizer model | The new model id |
 | `laptop_sleep` | One event-free clock jump (`docs/run.md`) | The `AdvanceClock` entry |

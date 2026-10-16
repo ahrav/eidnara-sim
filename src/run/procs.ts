@@ -131,9 +131,12 @@ export async function stopOwnedTree(
     // still receive the signal.
     const sweep = (name: NodeJS.Signals) => {
         if (alive(root)) {
-            for (const pid of ownedProcesses(rootPid)) {
-                if (!seen.has(pid)) seen.set(pid, { pid, start: processStart(pid) });
-            }
+            const walked = ownedProcesses(rootPid).map((pid) => ({
+                pid,
+                start: processStart(pid),
+            }));
+            // A walk during which the root changed hands belongs to another process and is dropped.
+            if (alive(root)) for (const t of walked) if (!seen.has(t.pid)) seen.set(t.pid, t);
         }
         signal([...seen.values()], name);
     };

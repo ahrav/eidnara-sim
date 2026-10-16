@@ -763,6 +763,9 @@ export class HostDriver implements ArmDriver {
         if (!ballast) return;
         if (this.ballastShape !== null) {
             this.requireBallast(this.ballastShape, "during the episode");
+            // Space freed beside the ballast would have let writes through, so the episode holds
+            // only while the store still reports none.
+            this.requireFull();
             this.ballastShape = null;
             this.recordState();
         }
