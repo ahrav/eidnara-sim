@@ -32,11 +32,13 @@ The scenario file is canonical JSON with these sections:
 |---|---|
 | `manifest` | Seed, tier, generator and random-schema versions, the sha256 of `corpus/manifest.json`, the embedding model, the similarity thresholds, the gap scale factors, and the probe count per type |
 | `projects` | Each repository in `corpus/repos.json` and its twin |
-| `sessions` | Session id, project, start time, request count, the minimum idle gap before the session, and whether the request count was forced into the p90 regime |
+| `sessions` | Session id, project, start time, request count, the idle gap before the session, the minimum gap the compiler enforced, and whether the request count was forced into the p90 regime |
 | `facts` | Ledger facts with template, kind, project, conveyance manner, statement, and the cue texts that carry it |
 | `probes` | Probe items P1 to P14 and the P1 controls with project, session, user text, the grading check, and the event that delivers it. Check keys: `must` and `must_not` regexes over the added lines of the agent's diff, `paths_must` and `paths_must_not` over the paths the diff adds or changes, `first_line_must` over the first line of every file the diff adds, `quote_style_must` (`double` or `single`) over the delimiter of every string literal in the added lines, `commands_must` and `commands_must_not` over the command log, an optional `scope` (a directory prefix) that limits the diff-channel keys to files under it, `answer`, `answer_must_not`, `abstain`, and `judge` over the final assistant text, and `window_from_turn` and `window_to_turn` for P14. Every `*_must` and `*_must_not` key holds a list of JavaScript regular expressions |
 | `similarity` | BM25 ratio and embedding cosine for every cue and probe pair, and for a decision fact's authoritative diff content against its probes, each record naming its cue by `cue_sha256`, journaled to four decimals; the threshold gate compares the full-precision values |
 | `events` | `apply_diff`, `session_start`, `user_turn`, and `session_end` events in scenario time |
+| `faults` | Fault episodes with type, strategy, trigger, parameters, and seam-table entry |
+| `cf_deletions` | Counterfactual deletions before 20% of the P1, P3, and P5 probes (L only) |
 | `scenario_hash` | sha256 of the canonical JSON of every other section |
 
 ## Sessions and time
@@ -146,7 +148,50 @@ The compiler throws, and writes nothing, when:
   the word probe, fact, template, or probe item ids, or grading words
   (SIM-P07);
 - a probe turn precedes any conveyance, update, or diff of its fact, or a P1
-  control follows the first conveyance of its fact (SIM-P06).
+  control follows the first conveyance of its fact (SIM-P06);
+- `validateFault`, which the compiler runs on every scheduled episode,
+  refuses a trigger other than a session start, the Nth user turn of a
+  session, or the first summarizer call of a session; a trigger that names an
+  unknown session or a turn the session lacks; and an episode whose seam entry
+  differs from the seam table (SIM-P05);
+- `scheduleFaults` finds fewer sessions with two or more turns than provider
+  episodes, no forced p90 session for the mid-fold SIGKILL, or no session
+  after the first that starts without a hand-applied diff for the sleep.
+
+## Faults
+
+`src/scenario/faults.ts` holds the seam table: layer, legal outcomes,
+in-flight fate, surviving state, and observing oracle for each fault type. S
+schedules one provider 429 episode; M schedules every provider fault; L adds
+the infrastructure faults; XL adds the host upgrade and two hosts on one
+daemon. Each type gets one episode.
+
+| Layer | Trigger | Strategy |
+|---|---|---|
+| Proxy sink (provider faults) | The Nth user turn of a session with at least two turns; each provider episode gets its own session | single (1 call), burst (3 calls), intermittent (probability 0.3 over 10 calls), or persistent (to the end of the session) |
+| Scheduler, mid-fold SIGKILL | The first observed summarizer call of a forced p90 session (OQ-8, schedule half) | single |
+| Clock, laptop sleep | The start of the session after the widest idle gap, among sessions that start without a hand-applied diff | single, with `duration_ms` equal to that gap, so the jump holds no events (SIM-P18) |
+| Scheduler, every other type | The start of a session after the first | single; the store-full fault is persistent for that one session (`sessions: 1`) |
+
+The scenario fixes each episode's trigger condition and strategy; the
+realized firing time of the mid-fold SIGKILL (an observed call) and of an
+intermittent episode's calls comes from the run. The run manifest (spec
+#1007, decision tape) carries the values an episode acts
+with that depend on the run rather than the seed: the second host binary a
+host upgrade installs, the second model a model switch selects, and the
+seeded fault-jitter stream whose draws decide which of an intermittent
+episode's calls fault. Both arms of a seed read the same manifest, so those
+values are shared across arms.
+
+## Counterfactual deletions
+
+When the tier runs the `eidnara-cf` arm (L), the compiler shuffles the P1,
+P3, and P5 probes with its own seeded stream and takes the first 20%, rounded.
+Each deletion names the probe, its fact, and the event the deletion precedes.
+The `eidnara-cf` arm carries every deletion of the scenario, so once a second
+deletion has fired the arm's context differs from `eidnara`'s for more than
+one fact. How M9 attributes outcomes to single deletions (SIM-P72) is an open
+question for that milestone.
 
 ## Pre-registered seeds
 
@@ -155,15 +200,15 @@ thresholds (`bm25_max` 0.4, `cosine_max` 0.6):
 
 | Tier | Seed | `scenario_hash` | Largest BM25 ratio | Largest cosine |
 |---|---|---|---|---|
-| S | 101 | `cc090dbb` | 0.263 | 0.5194 |
-| S | 102 | `4d13cb38` | 0.2647 | 0.4867 |
-| M | 201 | `adff2964` | 0.2543 | 0.4992 |
-| M | 202 | `930a2e1b` | 0.2532 | 0.4997 |
-| M | 203 | `ab66ded8` | 0.2548 | 0.4843 |
-| L | 301 | `81f28433` | 0.2648 | 0.5092 |
-| L | 302 | `e7e9e5c7` | 0.2555 | 0.4957 |
-| L | 303 | `02b29517` | 0.256 | 0.5083 |
-| XL | 401 | `d74adcfa` | 0.2574 | 0.4962 |
+| S | 101 | `6101c747` | 0.263 | 0.5194 |
+| S | 102 | `43767c60` | 0.2647 | 0.4867 |
+| M | 201 | `a38b8bdb` | 0.2543 | 0.4992 |
+| M | 202 | `0cc2cac8` | 0.2532 | 0.4997 |
+| M | 203 | `09954908` | 0.2548 | 0.4843 |
+| L | 301 | `9fb0af32` | 0.2648 | 0.5092 |
+| L | 302 | `932c57a0` | 0.2555 | 0.4957 |
+| L | 303 | `1ef68f7b` | 0.256 | 0.5083 |
+| XL | 401 | `961790c7` | 0.2574 | 0.4962 |
 
 ## Known limits
 
