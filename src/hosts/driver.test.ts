@@ -604,6 +604,36 @@ touch ${escaped}
         },
     );
 
+    test.skipIf(!sandbox)("a failed git run leaves a symlinked .git's target alone", async () => {
+        const { driver } = fixture("host", { p: gitRepo() });
+        await driver.reset();
+        const ws = driver.workspace("p");
+        const elsewhere = join(tmp(), "victim.git");
+        mkdirSync(elsewhere);
+        writeFileSync(join(elsewhere, "index.lock"), "");
+        rmSync(join(ws, ".git"), { recursive: true, force: true });
+        symlinkSync(elsewhere, join(ws, ".git"));
+        await expect(
+            driver.event(ev("apply_diff", { path: "a.txt", content: "A" })),
+        ).rejects.toThrow();
+        expect(existsSync(join(elsewhere, "index.lock"))).toBe(true);
+    });
+
+    test("reset starts the fresh arm with no fault or git state carried over", async () => {
+        const { driver, armDir } = fixture("host", { p: gitRepo() });
+        const inner = driver as unknown as {
+            ballastShape: unknown;
+            refilling: boolean;
+            gitRun: unknown;
+        };
+        inner.ballastShape = { bytes: 1, blocks: 1 };
+        inner.refilling = true;
+        inner.gitRun = { pid: 1, start: "1", project: "p" };
+        await driver.reset();
+        const state = JSON.parse(readFileSync(join(armDir, "state.json"), "utf8"));
+        expect(state).toMatchObject({ ballast: null, refilling: false, git: null });
+    });
+
     test.skipIf(!sandbox)("a hook cannot write into the configured checkout", async () => {
         const checkout = mkdtempSync("/var/tmp/sim-checkout-");
         dirs.push(checkout);
@@ -770,6 +800,32 @@ describe("HostDriver faults", () => {
             await driver.stop().catch(() => undefined);
         }
     });
+
+    test.skipIf(!sudo)(
+        "a ballast replaced by a link to a look-alike stops the run at session_end",
+        async () => {
+            const { driver, transcripts } = fixture("eidnara");
+            mkdirSync(join(transcripts, "sessions"), { recursive: true });
+            driver.daemon = fakeDaemon(10) as unknown as DaemonStack;
+            driver.host = new FakeHost({} as HostContext, transcripts) as unknown as SimHost;
+            const inner = driver as unknown as { mountStore(f: boolean): void };
+            inner.mountStore(true);
+            try {
+                await driver.fault(episode("store_full"));
+                const ballast = join(driver.storeRoot, "ballast");
+                const size = statSync(ballast).size;
+                const twinDir = mkdtempSync("/var/tmp/sim-twin-");
+                dirs.push(twinDir);
+                const twin = join(twinDir, "twin");
+                spawnSync("fallocate", ["-l", String(size), twin]);
+                rmSync(ballast);
+                symlinkSync(twin, ballast);
+                await expect(driver.event(ev("session_end"))).rejects.toThrow("ballast");
+            } finally {
+                await driver.stop().catch(() => undefined);
+            }
+        },
+    );
 
     test.skipIf(!sudo)(
         "a ballast recreated sparse by the host stops the run at session_end",

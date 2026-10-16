@@ -197,12 +197,14 @@ export class HostDriver implements ArmDriver {
         const keep = [...new Set([...this.keep, this.o.armRoot])];
         const checkout = this.o.config.eidnara_checkout;
         const ro = existsSync(checkout) ? [checkout] : [];
-        const argv = launch(this.o.launcher, keep, env, ["git", ...args], ro, dir);
+        // `timeout` runs inside the sandbox, so the recorded pid execs into the launcher's `sudo`
+        // and the reaper's walk starts at the root-owned process, as it does for a host.
         const seconds = String(Math.ceil(this.o.turnDeadlineMs / 1000));
-        const bounded = ["timeout", "-s", "KILL", seconds, ...argv];
+        const bounded = ["timeout", "-s", "KILL", seconds, "git", ...args];
+        const argv = launch(this.o.launcher, keep, env, bounded, ro, dir);
         // The shell waits for one line on stdin before it execs, so the run starts only once
         // its pid is on disk; a harness that dies first closes stdin and the shell exits.
-        const gated = ["/bin/sh", "-c", 'read _ && exec "$@"', "sh", ...bounded];
+        const gated = ["/bin/sh", "-c", 'read _ && exec "$@"', "sh", ...argv];
         const child = spawn(gated[0] as string, gated.slice(1), {
             env: { PATH: process.env.PATH ?? "" },
             stdio: ["pipe", "ignore", "pipe"],
@@ -221,7 +223,7 @@ export class HostDriver implements ArmDriver {
                 resolve(code ?? (signal === "SIGKILL" ? 137 : -1)),
             );
         });
-        if (status !== 0) rmSync(join(dir, ".git", "index.lock"), { force: true });
+        if (status !== 0) this.unlockGit(dir);
         this.gitRun = null;
         this.recordState();
         return { status, stderr: status === 137 ? `cut off after ${seconds} s` : stderr };
@@ -311,8 +313,8 @@ export class HostDriver implements ArmDriver {
 
     /** The ballast's length and allocated blocks both have to match; a sparse replacement or a punched hole fails. */
     private requireBallast(expected: ArmState["ballast"], when: string): void {
-        const stat = statSync(this.ballast ?? "", { throwIfNoEntry: false });
-        const shape = stat ? { bytes: stat.size, blocks: stat.blocks } : null;
+        const stat = lstatSync(this.ballast ?? "", { throwIfNoEntry: false });
+        const shape = stat?.isFile() ? { bytes: stat.size, blocks: stat.blocks } : null;
         if (
             !expected ||
             !shape ||
@@ -327,6 +329,9 @@ export class HostDriver implements ArmDriver {
         await this.stop();
         this.model = 0;
         this.transcriptsChecked = false;
+        this.ballastShape = null;
+        this.refilling = false;
+        this.gitRun = null;
         await this.reapStale();
         for (const dir of [this.o.armRoot, this.storeRoot])
             rmSync(dir, { recursive: true, force: true });
@@ -376,14 +381,19 @@ export class HostDriver implements ArmDriver {
         }
     }
 
+    /** Removes a stale `index.lock` when `.git` is a real directory; a link there is left alone. */
+    private unlockGit(dir: string): void {
+        const gitDir = join(dir, ".git");
+        if (lstatSync(gitDir, { throwIfNoEntry: false })?.isDirectory()) {
+            rmSync(join(gitDir, "index.lock"), { force: true });
+        }
+    }
+
     /** A git run cut off mid-way leaves `index.lock` behind; the replayed `apply_diff` needs it gone. */
     private async reapGit(state: ArmState): Promise<void> {
         if (!state.git) return;
         await this.stopRecorded(state.git);
-        const gitDir = join(this.workspaceDir(state.git.project), ".git");
-        if (lstatSync(gitDir, { throwIfNoEntry: false })?.isDirectory()) {
-            rmSync(join(gitDir, "index.lock"), { force: true });
-        }
+        this.unlockGit(this.workspaceDir(state.git.project));
         writeWhole(this.stateFile, JSON.stringify({ ...state, git: null }));
     }
 
