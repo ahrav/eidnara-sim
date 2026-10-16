@@ -145,7 +145,7 @@ describe("grading harness", () => {
 
 test("an answer the proxy cut at its cap is refused rather than graded on its prefix", () => {
     const f = fixture("P8-pass");
-    const snap = f.snapshots[0] as Snapshot;
+    const snap = structuredClone(f.snapshots[0]) as Snapshot;
     const calls = snap.artefacts.find((a) => a.class === "proxy-call") as unknown as {
         calls: Record<string, unknown>[];
     };

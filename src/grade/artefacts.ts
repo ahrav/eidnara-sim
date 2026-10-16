@@ -78,6 +78,9 @@ export interface Snapshot {
 
 export class GradeRefused extends Error {}
 
+/** A refusal that concerns one item's answer evidence; the grader excludes the item. */
+export class AnswerRefused extends GradeRefused {}
+
 export function assertArtefactsOnly(snapshot: Snapshot): void {
     for (const a of snapshot.artefacts as Array<{ id: string; class: string }>) {
         if (!(ARTEFACT_CLASSES as readonly string[]).includes(a.class)) {
@@ -119,7 +122,7 @@ export class ArtefactReader {
     answer(): string {
         const last = this.turnCalls().at(-1);
         if (last?.response_text_truncated) {
-            throw new GradeRefused(`call ${last.seq}: the proxy truncated the answer at its cap`);
+            throw new AnswerRefused(`call ${last.seq}: the proxy truncated the answer at its cap`);
         }
         return last?.response_text ?? "";
     }

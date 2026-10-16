@@ -54,14 +54,20 @@ export class SnapshotRecorder {
     }
 
     /**
-     * The run lease makes this recorder the only writer of its repository, so an
-     * `<project>.index.lock` found at construction is one a killed git left behind.
+     * The run lease makes this recorder the only writer of its repository. A git child the
+     * killed harness left running may still hold an `<project>.index.lock`; it runs at most
+     * the recorder's bound, so a lock that outlives that bound after construction is stale and
+     * is removed.
      */
     private dropIndexLocks(): void {
         if (!existsSync(this.gitDir)) return;
-        for (const name of readdirSync(this.gitDir)) {
-            if (name.endsWith(".index.lock")) rmSync(join(this.gitDir, name), { force: true });
+        const locks = readdirSync(this.gitDir).filter((name) => name.endsWith(".index.lock"));
+        if (locks.length === 0) return;
+        const deadline = Date.now() + (this.gitTimeoutMs ?? 0);
+        while (Date.now() < deadline && locks.some((name) => existsSync(join(this.gitDir, name)))) {
+            Bun.sleepSync(50);
         }
+        for (const name of locks) rmSync(join(this.gitDir, name), { force: true });
     }
 
     /**
@@ -132,6 +138,7 @@ export class SnapshotRecorder {
      * either way.
      */
     embedded(dir: string): string[] {
+        this.requireRealDir(dir);
         const found: string[] = [];
         for (const entry of readdirSync(dir, { recursive: true, withFileTypes: true })) {
             if (entry.name !== ".git" || entry.parentPath === dir) continue;
@@ -145,7 +152,11 @@ export class SnapshotRecorder {
             env: gitEnv({ GIT_DIR: this.gitDir, GIT_WORK_TREE: dir }),
             encoding: "utf8",
             input: found.map((path) => `${path}\0`).join(""),
+            ...(this.gitTimeoutMs ? { timeout: this.gitTimeoutMs, killSignal: "SIGKILL" } : {}),
         });
+        if ((ignored.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT") {
+            throw new GitTimeout(`git check-ignore: timed out after ${this.gitTimeoutMs} ms`);
+        }
         const skipped = new Set(ignored.stdout.split("\0").filter(Boolean));
         return found.filter((path) => !skipped.has(path)).sort();
     }

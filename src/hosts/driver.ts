@@ -300,6 +300,13 @@ export class HostDriver implements ArmDriver {
 
     private applyDiff(e: ScenarioEvent): void {
         const workspace = this.workspace(this.project(e));
+        const stat = lstatSync(workspace, { throwIfNoEntry: false });
+        if (stat?.isSymbolicLink()) {
+            throw new HarnessFailure(`workspace ${workspace} is a symlink or lies behind one`);
+        }
+        if (!stat?.isDirectory()) {
+            throw new HarnessFailure(`workspace ${workspace} is not a directory`);
+        }
         const expected = join(realpathSync(this.armDir), relative(this.armDir, workspace));
         if (realpathSync(workspace) !== expected) {
             throw new HarnessFailure(`workspace ${workspace} is a symlink or lies behind one`);
@@ -307,9 +314,15 @@ export class HostDriver implements ArmDriver {
         const dir = realpathSync(workspace);
         const path = resolve(dir, String(e.path));
         const inside = path.startsWith(`${dir}/`);
+        const present = (at: string) => lstatSync(at, { throwIfNoEntry: false }) !== undefined;
         let ancestor = dirname(path);
-        while (inside && ancestor !== dir && !existsSync(ancestor)) ancestor = dirname(ancestor);
-        const parent = inside ? realpathSync(ancestor) : "";
+        while (inside && ancestor !== dir && !present(ancestor)) ancestor = dirname(ancestor);
+        let parent = "";
+        try {
+            parent = inside ? realpathSync(ancestor) : "";
+        } catch {
+            parent = "";
+        }
         const contained = parent === dir || parent.startsWith(`${dir}/`);
         if (!inside || !contained || lstatSync(path, { throwIfNoEntry: false })?.isSymbolicLink()) {
             throw new HarnessFailure(`apply_diff path ${String(e.path)} leaves ${dir}`);
@@ -348,7 +361,8 @@ export class HostDriver implements ArmDriver {
             "core.fsmonitor=false",
             "commit.gpgsign=false",
         ];
-        return git(dir, [...off.flatMap((setting) => ["-c", setting]), ...args], scope).trim();
+        const argv = [...off.flatMap((setting) => ["-c", setting]), ...args];
+        return git(dir, argv, scope, this.o.turnDeadlineMs).trim();
     }
 
     /**
@@ -364,10 +378,12 @@ export class HostDriver implements ArmDriver {
             throw new HarnessFailure(`${gitDir} is not a directory`);
         }
         for (const entry of readdirSync(gitDir, { recursive: true, withFileTypes: true })) {
-            if (entry.isSymbolicLink()) {
-                const at = join(relative(dir, entry.parentPath), entry.name);
-                throw new HarnessFailure(`${at} is a symlink; git would write through it`);
-            }
+            if (entry.isFile() || entry.isDirectory()) continue;
+            const at = join(relative(dir, entry.parentPath), entry.name);
+            const kind = entry.isSymbolicLink()
+                ? "a symlink; git would write through it"
+                : "not a regular file";
+            throw new HarnessFailure(`${at} is ${kind}`);
         }
         if (existsSync(join(gitDir, "objects", "info", "alternates"))) {
             throw new HarnessFailure(".git/objects/info/alternates names another object store");
@@ -375,6 +391,9 @@ export class HostDriver implements ArmDriver {
         const config = join(gitDir, "config");
         const aside = join(gitDir, "config.sim-aside");
         if (existsSync(aside)) renameSync(aside, config);
+        if (!lstatSync(config, { throwIfNoEntry: false })?.isFile()) {
+            throw new HarnessFailure(`${relative(dir, config)} is not a file`);
+        }
         renameSync(config, aside);
         try {
             copyFileSync(join(this.armDir, `${project}.gitconfig`), config);
