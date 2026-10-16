@@ -434,6 +434,17 @@ describe("P7 judge path", () => {
         }
     });
 
+    test("the permutation check refuses counts beyond the safe-integer range", () => {
+        expect(() => permutationCheck(1e307, 1e307, rules)).toThrow(GradeRefused);
+        expect(() => permutationCheck(Number.MAX_SAFE_INTEGER + 2, 1, rules)).toThrow(GradeRefused);
+    });
+
+    test("a calibration pair id made of invisible characters is blank", () => {
+        const ghost = calibration();
+        ghost.labels["\u200b\u200b"] = "a";
+        expect(() => calibrationDigest(ghost, rules)).toThrow("blank");
+    });
+
     test("the human-check sample is ten percent of P7 items, rounded up, from a seeded draw", () => {
         const items = Array.from({ length: 24 }, (_, i) => `q-${i}`);
         const a = humanCheckSample(items, rules, new Rng(9));
@@ -488,5 +499,21 @@ describe("proxy judge", () => {
             "anthropic.x",
         );
         await expect(judge.verdict("prompt")).rejects.toThrow("judge call failed: 502");
+    });
+
+    test("a well-formed status with a malformed body is a judge refusal, not a crash", async () => {
+        const bodies = [
+            { output: { message: { content: { text: "first" } } } },
+            { output: { message: { content: [{ text: 7 }] } } },
+            "first",
+        ];
+        let i = 0;
+        server = Bun.serve({ port: 0, fetch: () => Response.json(bodies[i++ % bodies.length]) });
+        const judge = proxyJudge(
+            `http://127.0.0.1:${server.port}`,
+            rules.judge.model,
+            "anthropic.x",
+        );
+        for (const _ of bodies) await expect(judge.verdict("prompt")).rejects.toThrow(GradeRefused);
     });
 });

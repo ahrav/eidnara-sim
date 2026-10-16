@@ -119,7 +119,7 @@ cannot call, and the divergences are listed below.
    calibration set's judge identity both equal the pre-registered judge's
    (`grading.judge.model` with the current prompt and rubric digests), the
    set validates, and the permutation check passes.
-6. `permutationCheck` refuses counts that are not whole numbers and arm
+6. `permutationCheck` refuses counts that are not safe whole numbers and arm
    identification above the pre-registered 60% ceiling, correct or inverted.
 7. `calibrationDigest` validates a calibration set: at least 20 pairs, and a
    human sample of at least 10% rounded up and never below 20 pairs. Only a

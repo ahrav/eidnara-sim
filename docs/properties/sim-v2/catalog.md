@@ -1115,8 +1115,9 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M5 (#1029); nothing constructs
-it yet
+Exercised: partial - `src/grade/judge.test.ts` constructs the family refusal,
+the blinding refusals, both orders, and the digests on each P7 grade; a live
+run has not yet produced a journal
 Guarantee: SIM-P43: Every judge call has `component = judge`, a model family
 that differs from the agent model, no arm label in the prompt, both position
 orders per item, and the calibration digest recorded.
@@ -1125,10 +1126,12 @@ difference, blinding, both orders, and calibration digest; every condition must
 hold for every P7 item.
 Fault/timing angle: none.
 Required faults and enabling state: P7 items with a calibration set.
-Confidence: low - [evidence](evidence/sim-p43-judge-hygiene-on-p7-only.md).
-PROPOSED: reconstructed from the condensed index in spec #1007; no
-implementation exists to verify against, and a default tier run reaches it.
-Existing check: none
+Confidence: medium - [evidence](evidence/sim-p43-judge-hygiene-on-p7-only.md).
+M5 (#1029) implements the judge path in `src/grade/judge.ts`; unit tests cover
+each condition on fixtures, and no tier run has exercised it yet.
+Existing check: `src/grade/judge.test.ts` (P7 judge path, proxy judge) covers
+the component header, the family refusal, blinding, both orders, and the
+digests on each grade
 Impact: The P7 judge identifies arms or prefers its own family.
 Open questions: None.
 
@@ -1137,8 +1140,8 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M5 (#1029); nothing constructs
-it yet
+Exercised: partial - `src/grade/judge.test.ts` constructs the seeded 10% draw
+and its reproducibility; journaling before the tier verdict lands with M7
 Guarantee: SIM-P44: A 10% sample of P7 items per tier is journaled as
 `human_check_pending` before the tier verdict, and the verdict names the sample.
 Check: `always` - assert the sample size is at least 10% of P7 items rounded up
@@ -1146,9 +1149,10 @@ and the entries precede the verdict.
 Fault/timing angle: none.
 Required faults and enabling state: a tier with P7 items.
 Confidence: low - [evidence](evidence/sim-p44-p7-human-check-sample.md).
-PROPOSED: reconstructed from the condensed index in spec #1007; no
-implementation exists to verify against, and a default tier run reaches it.
-Existing check: none
+M5 (#1029) implements `humanCheckSample` in `src/grade/judge.ts` with a unit
+test; the journal entry and the verdict naming the sample land with M7.
+Existing check: `src/grade/judge.test.ts` (human-check sample) covers the count
+and the seeded reproducibility
 Impact: Judge calibration drifts with no human anchor.
 Open questions: None.
 

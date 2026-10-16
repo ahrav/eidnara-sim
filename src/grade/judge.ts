@@ -155,10 +155,14 @@ export function proxyJudge(gatewayUrl: string, model: string, agentModel: string
             );
             if (!response.ok) throw new GradeRefused(`judge call failed: ${response.status}`);
             const body = (await response.json()) as {
-                output?: { message?: { content?: Array<{ text?: string }> } };
+                output?: { message?: { content?: unknown } };
             };
-            const text = body.output?.message?.content?.find((b) => b.text !== undefined)?.text;
-            return parseVerdict(text ?? "");
+            const content = body?.output?.message?.content;
+            const text = Array.isArray(content)
+                ? (content as Array<{ text?: unknown }>).find((b) => b.text !== undefined)?.text
+                : undefined;
+            if (typeof text !== "string") throw new GradeRefused("judge reply carries no text");
+            return parseVerdict(text);
         },
     };
 }
@@ -212,7 +216,7 @@ export async function judgePair(
 }
 
 export function permutationCheck(trials: number, correct: number, rules: Rules): void {
-    if (!Number.isInteger(trials) || !Number.isInteger(correct) || correct < 0) {
+    if (!Number.isSafeInteger(trials) || !Number.isSafeInteger(correct) || correct < 0) {
         throw new GradeRefused(`permutation counts ${correct}/${trials} are not whole numbers`);
     }
     if (trials === 0) throw new GradeRefused("permutation check ran no trials");
@@ -251,7 +255,7 @@ export function calibrationDigest(set: CalibrationSet | null, rules: Rules): str
     if (set.human.length < floor || set.human.length > pairs) {
         throw new GradeRefused(`calibration has ${set.human.length} human labels; needs ${floor}`);
     }
-    if (Object.keys(set.labels).some((id) => id.trim() === "")) {
+    if (Object.keys(set.labels).some((id) => id.replace(INVISIBLE, "").trim() === "")) {
         throw new GradeRefused("a calibration pair id is blank");
     }
     if (new Set(set.human).size !== set.human.length) {
