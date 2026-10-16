@@ -98,6 +98,18 @@ export function releaseLease(dir: string): void {
 }
 
 /**
+ * Truncates a JSONL file to its newline-terminated prefix, which drops the line a kill
+ * mid-append left cut, and returns that prefix; a missing file reads as empty.
+ */
+export function keepCompleteLines(path: string): string {
+    if (!existsSync(path)) return "";
+    const text = readFileSync(path, "utf8");
+    const complete = text.slice(0, text.lastIndexOf("\n") + 1);
+    if (complete.length < text.length) truncateSync(path, Buffer.byteLength(complete));
+    return complete;
+}
+
+/**
  * Every line but the last must parse; a cut last line, which a kill mid-write leaves, is
  * dropped. `bytes` is the length of the complete prefix.
  */

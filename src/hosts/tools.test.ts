@@ -206,12 +206,14 @@ test("a message listing that stalls past the turn deadline fails the turn as a c
 
 test("a Pi tool run is timed from its start event, and an unfinished one keeps its start time", () => {
     let now = 10;
+    const reported: unknown[] = [];
     const host = new PiSimHost({
         ...({} as HostContext),
         config: loadConfig(),
         root: "/x",
         launcher: "/x/sandbox.sh",
         now: () => now,
+        onTool: (run) => void reported.push(run),
     });
     const event = (e: Record<string, unknown>) =>
         (host as unknown as { toolEvent: (e: unknown) => void }).toolEvent(e);
@@ -231,7 +233,13 @@ test("a Pi tool run is timed from its start event, and an unfinished one keeps i
     event({ type: "tool_execution_end", toolCallId: "t1", isError: false });
     now = 70;
     expect(host.drainTools()).toEqual([
-        { command: "cargo test", exit: 0, scenario_ms: 10 },
-        { command: "sleep 9", exit: null, scenario_ms: 10 },
+        { command: "cargo test", exit: 0, scenario_ms: 10, call: "t1" },
+        { command: "sleep 9", exit: null, scenario_ms: 10, call: "t2" },
+    ]);
+    expect(reported).toEqual([
+        { command: "cargo test", exit: null, scenario_ms: 10, call: "t1" },
+        { command: "sleep 9", exit: null, scenario_ms: 10, call: "t2" },
+        { command: "cargo test", exit: 0, scenario_ms: 10, call: "t1" },
+        { command: "sleep 9", exit: null, scenario_ms: 10, call: "t2" },
     ]);
 });

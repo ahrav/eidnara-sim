@@ -293,9 +293,14 @@ export class SnapshotRecorder {
         }
     }
 
+    /** Adds tool runs; a run whose `call` id matches an earlier record replaces that record. */
     addTools(tools: Command[]): void {
         if (tools.length === 0) return;
-        this.state.commands.push(...tools);
+        for (const run of tools) {
+            const at = run.call ? this.state.commands.findIndex((c) => c.call === run.call) : -1;
+            if (at === -1) this.state.commands.push(run);
+            else this.state.commands[at] = run;
+        }
         this.save();
     }
 

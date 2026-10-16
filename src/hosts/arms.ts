@@ -41,7 +41,11 @@ export interface HostContext {
     model: string;
     contextLimit: number;
     now?: () => number;
-    /** The host invokes `onTool` once per tool run as it records the run; `drainTools` invokes it for the runs it adds itself. */
+    /**
+     * The host invokes `onTool` as it records a run; `drainTools` invokes it for the runs it
+     * adds itself. A run with a `call` id may be reported at its start with a null exit and
+     * again at its end, and the later report replaces the earlier one.
+     */
     onTool?: (run: ToolRun) => void;
 }
 
@@ -49,6 +53,8 @@ export interface ToolRun {
     command: string;
     exit: number | null;
     scenario_ms: number;
+    /** The host's id for the run, when it reports a start before the end; a later report with the same id replaces the earlier one. */
+    call?: string;
 }
 
 const TARGET_KEYS = ["path", "filePath", "pattern", "file_path"];
@@ -208,8 +214,10 @@ export abstract class SimHost {
         args: Record<string, unknown> | undefined,
         exit: number | null,
         scenario_ms = this.ctx.now?.() ?? 0,
+        call?: string,
     ) {
-        const run = { command: toolCommand(tool, args), exit, scenario_ms };
+        const run: ToolRun = { command: toolCommand(tool, args), exit, scenario_ms };
+        if (call) run.call = call;
         this.tools.push(run);
         this.ctx.onTool?.(run);
     }
@@ -234,25 +242,34 @@ export class PiSimHost extends SimHost {
     >();
 
     protected override unfinished(): ToolRun[] {
-        const open = [...this.started.values()];
+        const open = [...this.started.entries()];
         this.started.clear();
-        return open.map((t) => ({
+        return open.map(([call, t]) => ({
             command: toolCommand(t.tool, t.args),
             exit: null,
             scenario_ms: t.scenario_ms,
+            call,
         }));
     }
 
-    /** A tool run is timed from its start event, the moment the action began. */
+    /**
+     * A tool run is timed from its start event, the moment the action began, and reported to
+     * the recorder at that moment with a null exit, so a kill before the end event leaves the
+     * run on record; the end event reports it again with its exit.
+     */
     private toolEvent(e: Untyped): void {
         if (e.type === "tool_execution_start") {
             const scenario_ms = this.ctx.now?.() ?? 0;
             this.started.set(e.toolCallId, { tool: e.toolName, args: e.args, scenario_ms });
+            const command = toolCommand(e.toolName, e.args);
+            this.ctx.onTool?.({ command, exit: null, scenario_ms, call: e.toolCallId });
         }
         if (e.type !== "tool_execution_end") return;
         const run = this.started.get(e.toolCallId);
         this.started.delete(e.toolCallId);
-        if (run) this.logTool(run.tool, run.args, e.isError === true ? 1 : 0, run.scenario_ms);
+        if (!run) return;
+        const exit = e.isError === true ? 1 : 0;
+        this.logTool(run.tool, run.args, exit, run.scenario_ms, e.toolCallId);
     }
 
     private writeConfigs(connectionFile: string | null): void {
