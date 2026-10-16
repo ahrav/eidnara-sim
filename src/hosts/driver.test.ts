@@ -562,6 +562,31 @@ describe("probe snapshots", () => {
         expect(stillChanged.failed).not.toContain(".gitignore");
     });
 
+    test("an exclude file that is a directory, symlink, or FIFO reads as a changed rule without blocking", () => {
+        const repo = gitRepo();
+        const armDir = tmp();
+        const recorder = new SnapshotRecorder(armDir, "eidnara", () => []);
+        const info = join(repo, ".git", "info");
+        mkdirSync(info, { recursive: true });
+        const exclude = join(info, "exclude");
+        rmSync(exclude, { force: true });
+        expect(recorder.excludeDigest(repo)).toBeNull();
+        mkdirSync(exclude);
+        expect(recorder.excludeDigest(repo)).toBe("unreadable");
+        rmSync(exclude, { recursive: true });
+        symlinkSync(join(tmp(), "secret"), exclude);
+        expect(recorder.excludeDigest(repo)).toBe("unreadable");
+        rmSync(exclude);
+        spawnSync("mkfifo", [exclude]);
+        const started = Date.now();
+        expect(recorder.excludeDigest(repo)).toBe("unreadable");
+        expect(Date.now() - started).toBeLessThan(1_000);
+        rmSync(exclude);
+        rmSync(info, { recursive: true });
+        symlinkSync(tmp(), info);
+        expect(recorder.excludeDigest(repo)).toBe("unreadable");
+    });
+
     test("a probe turn that leaves an embedded repository in the workspace ends failed, naming it", async () => {
         const { driver, hosts } = fixture("host", { p: gitRepo() });
         const fresh = new HostDriver((driver as unknown as { o: DriverOptions }).o);

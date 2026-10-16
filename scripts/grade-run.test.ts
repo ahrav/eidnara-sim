@@ -292,7 +292,17 @@ describe("grade-run", () => {
         await expect(gradeRun(dir, null)).rejects.toThrow("does not match its journal entry");
         writeFileSync(path, `${JSON.stringify({ ...row, artefacts: [] })}\n`);
         await expect(gradeRun(dir, null)).rejects.toThrow("has no artefacts");
+        const retry = { ...row, id: "retry", artefacts: [{ id: "t", class: "transcript" }] };
+        writeFileSync(path, `${JSON.stringify(row)}\n${JSON.stringify(retry)}\n`);
+        await expect(gradeRun(dir, null)).rejects.toThrow("is not a grade input");
         expect(() => readFileSync(join(dir, "grades.jsonl"))).toThrow();
+    });
+
+    test("a journal naming two first snapshots for one arm and item is refused", async () => {
+        const dir = run({ probes: [p5.probe] });
+        snapshot(dir, "eidnara", snap);
+        snapshot(dir, "eidnara", { ...snap, turn: "e-1-again" });
+        await expect(gradeRun(dir, null)).rejects.toThrow("more than one first snapshot");
     });
 
     test("a run directory leased by a live process is refused", async () => {

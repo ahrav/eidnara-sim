@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import {
     appendFileSync,
     existsSync,
+    lstatSync,
     mkdirSync,
     readdirSync,
     readFileSync,
@@ -225,10 +226,29 @@ export class SnapshotRecorder {
                 `${path} (${was === undefined ? "added" : is === undefined ? "removed" : "changed"})`,
             );
         }
-        const exclude = join(dir, ".git", "info", "exclude");
-        const digest = existsSync(exclude) ? sha256Hex(readFileSync(exclude, "utf8")) : null;
+        const digest = this.excludeDigest(dir);
         if (digest !== baseline.exclude) changes.push(".git/info/exclude (changed)");
         return changes.sort();
+    }
+
+    /**
+     * The digest of `.git/info/exclude` when `.git`, `.git/info`, and the file are each a real
+     * directory or regular file; a missing file reads as null, and any other shape (a symlink,
+     * a FIFO, a directory in the file's place) reads as a changed rule.
+     */
+    excludeDigest(dir: string): string | null {
+        const gitDir = join(dir, ".git");
+        const info = join(gitDir, "info");
+        const exclude = join(info, "exclude");
+        for (const at of [gitDir, info]) {
+            const stat = lstatSync(at, { throwIfNoEntry: false });
+            if (stat === undefined) return at === gitDir ? "unreadable" : null;
+            if (!stat.isDirectory()) return "unreadable";
+        }
+        const stat = lstatSync(exclude, { throwIfNoEntry: false });
+        if (stat === undefined) return null;
+        if (!stat.isFile()) return "unreadable";
+        return sha256Hex(readFileSync(exclude, "utf8"));
     }
 
     tree(dir: string, nested = this.embedded(dir)): string {

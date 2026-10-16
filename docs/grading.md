@@ -61,7 +61,9 @@ output cap fails the probe turn the same way. A probe turn that adds,
 changes, or removes a `.gitignore`, or edits `.git/info/exclude`, ends
 `failed` with `ignore rules changed: <paths>`, since a rule added in the turn
 would hide that turn's files from the diff; the baseline is the source's
-`.gitignore` blobs and the clone's `exclude` file, recorded at reset. The driver waits the scheduler's settle window and then its background
+`.gitignore` blobs and the clone's `exclude` file, recorded at reset; an
+`exclude` path that is a symlink, FIFO, or directory reads as a changed
+rule. The driver waits the scheduler's settle window and then its background
 jobs before it takes a probe snapshot, and checks the daemon is alive after
 the prompt and again after the snapshot, reporting an exit once with the
 turn's id.
@@ -107,8 +109,9 @@ the graders read neither.
 time allocates versions, refuses a run whose pre-registration or scenario no
 longer hashes to the digests in its manifest or whose journal lacks `EndRun`
 or an arm's `EndArm` and one terminal `Event` per scheduled event (SIM-P67),
-drops a cut last line of `grades.jsonl`, requires every journaled snapshot row to carry its journal entry's arm and
-item and at least one artefact, computes every grade before it
+drops a cut last line of `grades.jsonl`, requires one `SnapshotArtefacts` entry per arm and item, every snapshot row
+to name its directory's arm and carry grade-class artefacts only, and every
+journaled row to match its journal entry's arm and item, computes every grade before it
 appends any (an item whose answer the proxy truncated is skipped as `answer
 refused`; a structural artefact violation aborts with nothing appended),
 holds P7 grades until the judge gateway has stopped and reports no failed

@@ -114,8 +114,15 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
     const log = new GradeLog(join(dir, "grades.jsonl"));
 
     const named = new Map<string, { arm: string; item: string }>();
+    const firstOf = new Set<string>();
     for (const e of entries.filter((e) => e.kind === "SnapshotArtefacts")) {
-        named.set(String(e.snapshot), { arm: String(e.arm), item: String(e.item) });
+        const id = String(e.snapshot);
+        const key = `${String(e.arm)}/${String(e.item)}`;
+        if (named.has(id) || firstOf.has(key)) {
+            throw new Error(`journal names more than one first snapshot for ${key} (${id})`);
+        }
+        named.set(id, { arm: String(e.arm), item: String(e.item) });
+        firstOf.add(key);
     }
     const journaled = new Set(named.keys());
     const snapshots = new Map<string, Snapshot[]>();
@@ -124,14 +131,17 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
         if (!existsSync(path)) continue;
         for (const line of readFileSync(path, "utf8").split("\n").filter(Boolean)) {
             const s = JSON.parse(line) as Snapshot;
+            if (s.arm !== arm || !Array.isArray(s.artefacts) || s.artefacts.length === 0) {
+                throw new Error(
+                    `snapshot ${s.id} in ${arm}/snapshots.jsonl names arm ${s.arm} or has no artefacts`,
+                );
+            }
+            assertArtefactsOnly(s);
             const entry = named.get(s.id);
-            if (entry) {
-                const bound = s.arm === arm && entry.arm === arm && entry.item === s.item;
-                if (!bound || !Array.isArray(s.artefacts) || s.artefacts.length === 0) {
-                    throw new Error(
-                        `snapshot ${s.id} in ${arm}/snapshots.jsonl does not match its journal entry (${entry.arm}, ${entry.item}) or has no artefacts`,
-                    );
-                }
+            if (entry && (entry.arm !== arm || entry.item !== s.item)) {
+                throw new Error(
+                    `snapshot ${s.id} in ${arm}/snapshots.jsonl does not match its journal entry (${entry.arm}, ${entry.item})`,
+                );
             }
             const key = `${arm}/${s.item}`;
             snapshots.set(key, [...(snapshots.get(key) ?? []), s]);
@@ -187,7 +197,6 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
             }
             const [mine, host] = [sides[arm], sides.host];
             if (lost.size > 0 || !mine?.[0] || !host?.[0]) return [];
-            for (const side of [mine[0], host[0]]) assertArtefactsOnly(side);
             return [{ probe, arm, a: mine[0], b: host[0], rows: { a: mine, b: host } }];
         }),
     );

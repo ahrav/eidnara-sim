@@ -14,7 +14,6 @@ import {
 import { dirname, join, relative, resolve } from "node:path";
 import { GitBound, git } from "../git";
 import type { CallView } from "../grade/artefacts";
-import { sha256Hex } from "../prereg/canonical";
 import { processStart, running, stopOwnedTree } from "../run/procs";
 import { type ArmDriver, HarnessFailure, type ScenarioEvent } from "../run/scheduler";
 import type { FaultEpisode } from "../scenario/faults";
@@ -205,9 +204,7 @@ export class HostDriver implements ArmDriver {
                 const [meta, path] = row.split("\t") as [string, string];
                 rules[path] = meta.split(" ")[1] as string;
             }
-            const exclude = join(target, ".git", "info", "exclude");
-            const digest = existsSync(exclude) ? sha256Hex(readFileSync(exclude, "utf8")) : null;
-            this.snapshots.trackIgnoreRules(project, rules, digest);
+            this.snapshots.trackIgnoreRules(project, rules, this.snapshots.excludeDigest(target));
         }
         await this.startArm(true);
     }

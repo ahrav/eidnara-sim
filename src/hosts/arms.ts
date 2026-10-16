@@ -517,6 +517,7 @@ export class OpencodeSimHost extends SimHost {
         deadlineMs: number,
     ): Promise<Array<{ info: Untyped; parts: Untyped[] }>> {
         const call = this.client.session.messages({ path: { id: this.sid } });
+        call.catch(() => undefined);
         const listed = await Promise.race([call, Bun.sleep(deadlineMs).then(() => null)]);
         if (listed === null) throw new Error(`session.messages timed out after ${deadlineMs} ms`);
         if (listed.error || !listed.data) {
@@ -543,15 +544,12 @@ export class OpencodeSimHost extends SimHost {
     }
 
     /**
-     * Runs one turn and then logs the tool parts of the messages it added, on every outcome:
-     * the next turn treats those messages as seen, so a turn that errored or hit its deadline
-     * logs its tools here or never. A failed turn whose listing also fails keeps its own
-     * error and names the capture gap.
-     */
-    /**
-     * Runs one turn under `timeoutMs`, which also bounds the message listings before and
-     * after it. A listing that stalls before the turn fails the turn; one that stalls after it
-     * fails the turn as a capture gap, since its tool runs are then unknown.
+     * Runs one turn under `timeoutMs` and then logs the tool parts of the messages it added, on
+     * every outcome: the next turn treats those messages as seen, so a turn that errored or hit
+     * its deadline logs its tools here or never. The deadline also bounds the message listings
+     * before and after the turn: a listing that stalls before the turn fails the turn, and one
+     * that stalls after it fails the turn as a capture gap, since its tool runs are then
+     * unknown. A failed turn whose listing also fails keeps its own error and names the gap.
      */
     async prompt(text: string, timeoutMs: number): Promise<PromptResult> {
         const started = Date.now();
