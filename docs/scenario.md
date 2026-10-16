@@ -14,7 +14,8 @@ both `manifest.embedding_model` and `manifest.cue_probe_similarity`, so they
 do not witness SIM-P08. The CLI accepts exactly `--tier`, `--seed`,
 `--embedder`, and `--out`, each once with a value; any other token, an
 `--embedder` value other than `local`, or a non-integer seed exits with the
-usage line. An `--out` path, or its sibling `embeddings.jsonl`, that resolves
+usage line, and a Titan compile accepts only a seed the tier's pre-registration
+lists (`--embedder local` compiles any seed, which the tests use). An `--out` path, or its sibling `embeddings.jsonl`, that resolves
 inside `eidnara_checkout` is refused before any directory is created, as is an
 `--out` that names the cache file itself, and an `embeddings.jsonl` that is a
 hard link. The scenario is written to a random same-directory temporary name,

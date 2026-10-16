@@ -14,7 +14,7 @@ import { loadConfig } from "../src/config/config";
 import { canonicalJson } from "../src/prereg/canonical";
 import { TIERS, type Tier } from "../src/prereg/schema";
 import { compileScenario } from "../src/scenario/compile";
-import { loadCompileInput } from "../src/scenario/inputs";
+import { loadCompileInput, loadPrereg } from "../src/scenario/inputs";
 import { bedrockEmbedder, hashEmbedder } from "../src/scenario/similarity";
 
 const FLAGS = ["tier", "seed", "embedder", "out"];
@@ -67,14 +67,21 @@ if (canonical(out) === canonical(cache)) {
     console.error(`--out ${out} is the embedding cache path; choose another file name`);
     process.exit(2);
 }
-if (kind(cache) === "real" && statSync(cache).nlink > 1) {
+if (kind(cache) !== "missing" && statSync(cache).nlink > 1) {
     console.error(
         `${cache} is a hard link shared with another path; the cache must be its own file`,
     );
     process.exit(2);
 }
-mkdirSync(dirname(out), { recursive: true });
 const local = embedderArg === "local";
+const registered = loadPrereg(tier as Tier).seeds;
+if (!local && !registered.includes(seed)) {
+    console.error(
+        `seed ${seed} is not among tier ${tier}'s registered seeds ${registered.join(", ")}`,
+    );
+    process.exit(2);
+}
+mkdirSync(dirname(out), { recursive: true });
 const { aws_profile, region } = config.bedrock;
 const embedder = local ? hashEmbedder : bedrockEmbedder(aws_profile, region, cache);
 const scenario = await compileScenario(loadCompileInput(seed, tier as Tier, embedder, local));
