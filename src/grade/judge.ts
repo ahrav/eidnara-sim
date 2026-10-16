@@ -53,7 +53,7 @@ export interface BlindedPrompt {
 
 export function normalise(text: string): string {
     return text
-        .replace(/```[^\n]*\n?/g, "")
+        .replace(/^[ \t]*```[^\s`]*[ \t]*$/gm, "")
         .replace(/^#{1,6}\s+/gm, "")
         .replace(/^\s*[-*+]\s+/gm, "")
         .replace(/\*\*|__|`/g, "")
@@ -68,12 +68,12 @@ export function blind(
     canaries: string[],
 ): BlindedPrompt {
     for (const text of [pair.a, pair.b]) {
-        const folded = foldWords(text);
+        const folds = [text, text.replace(INVISIBLE, " ")].map(foldWords);
         const canary = canaries.find(
-            (c) => c !== "" && (text.includes(c) || folded.includes(foldWords(c))),
+            (c) => c !== "" && (text.includes(c) || folds.some((f) => f.includes(foldWords(c)))),
         );
         if (canary) throw new BlindingRefused(`pair ${pair.id} carries canary ${canary}`);
-        const token = ARM_TOKENS.find((t) => folded.includes(` ${t} `));
+        const token = ARM_TOKENS.find((t) => folds.some((f) => f.includes(` ${t} `)));
         if (token) throw new BlindingRefused(`pair ${pair.id} names an arm: ${token}`);
     }
     const [first, second] = order === "a_then_b" ? [pair.a, pair.b] : [pair.b, pair.a];
@@ -115,8 +115,11 @@ export function parseVerdict(text: string): RawVerdict {
     throw new GradeRefused(`judge reply ${JSON.stringify(text.slice(0, 80))} is not a verdict`);
 }
 
-const family = (model: string) =>
-    /(anthropic|openai|amazon|meta|mistral)/.exec(model)?.[1] ?? model;
+function family(model: string): string {
+    const found = /(anthropic|openai|amazon|meta|mistral)/.exec(model)?.[1];
+    if (!found) throw new GradeRefused(`model ${model} has no known family`);
+    return found;
+}
 
 export function proxyJudge(gatewayUrl: string, model: string, agentModel: string): JudgeClient {
     if (family(model) === family(agentModel)) {
@@ -195,6 +198,9 @@ export async function judgePair(
 }
 
 export function permutationCheck(trials: number, correct: number, rules: Rules): void {
+    if (!Number.isInteger(trials) || !Number.isInteger(correct) || correct < 0) {
+        throw new GradeRefused(`permutation counts ${correct}/${trials} are not whole numbers`);
+    }
     if (trials === 0) throw new GradeRefused("permutation check ran no trials");
     if (correct > trials)
         throw new GradeRefused("permutation check counts more correct than trials");
@@ -231,17 +237,29 @@ export function calibrationDigest(set: CalibrationSet | null, rules: Rules): str
     if (Object.values(set.labels).some((v) => !verdicts.includes(v))) {
         throw new GradeRefused("a calibration label is not a, b, both, or neither");
     }
-    if (set.human.some((id) => !(id in set.labels))) {
+    if (set.human.some((id) => !Object.hasOwn(set.labels, id))) {
         throw new GradeRefused("a human label names no calibration pair");
     }
     return sha(`eval-judge-calibration/v1\n${canonicalJson(set)}`);
 }
 
-export function p7Pair(item: string, a: Snapshot, b: Snapshot): { pair: Pair; inputs: string[] } {
+export interface P7Inputs {
+    pair: Pair;
+    snapshots: { a: string; b: string };
+    arms: { a: string; b: string };
+    inputs: string[];
+}
+
+export function p7Pair(item: string, a: Snapshot, b: Snapshot): P7Inputs | null {
+    if (a.item !== item || b.item !== item) {
+        throw new GradeRefused(`snapshots for ${item} mix items`);
+    }
+    if (a.arm === b.arm) throw new GradeRefused(`P7 item ${item}: both snapshots are one arm`);
     const readers = [a, b].map((snapshot) => {
         assertArtefactsOnly(snapshot);
         return new ArtefactReader(snapshot);
     });
+    if (a.turn_outcome === "failed" || b.turn_outcome === "failed") return null;
     const [ra, rb] = readers as [ArtefactReader, ArtefactReader];
     const pair = { id: item, a: ra.answer(), b: rb.answer() };
     for (const [side, text] of [
@@ -250,7 +268,12 @@ export function p7Pair(item: string, a: Snapshot, b: Snapshot): { pair: Pair; in
     ] as const) {
         if (text.trim() === "") throw new GradeRefused(`P7 item ${item}: answer ${side} is empty`);
     }
-    return { pair, inputs: [...ra.read, ...rb.read].sort() };
+    return {
+        pair,
+        snapshots: { a: a.id, b: b.id },
+        arms: { a: a.arm, b: b.arm },
+        inputs: [...ra.read, ...rb.read].sort(),
+    };
 }
 
 export interface P7Context {
@@ -258,6 +281,7 @@ export interface P7Context {
     snapshots: { a: string; b: string };
     arms: { a: string; b: string };
     inputs: string[];
+    later_attempts: { a: number; b: number };
     calibration: CalibrationSet | null;
     permutation: { trials: number; correct: number } | null;
 }
@@ -266,6 +290,11 @@ export function gradeP7(j: Judgment, c: P7Context, rules: Rules, version = 1): G
     let digest: string | null = null;
     let calibration = "none";
     try {
+        if (c.calibration && canonicalJson(c.calibration.judge) !== canonicalJson(j.judge)) {
+            throw new GradeRefused(
+                `calibration judge ${c.calibration.judge.model} differs from ${j.judge.model}`,
+            );
+        }
         digest = calibrationDigest(c.calibration, rules);
         if (digest) calibration = "valid";
     } catch (caught) {
@@ -305,7 +334,7 @@ export function gradeP7(j: Judgment, c: P7Context, rules: Rules, version = 1): G
             version,
             snapshot: c.snapshots[side],
             inputs: c.inputs,
-            later_attempts_logged: 0,
+            later_attempts_logged: c.later_attempts[side],
         };
         if (j.recall === "Inconsistent") {
             return { ...common, verdict: "excluded", reason: "Inconsistent", metrics };

@@ -75,19 +75,25 @@ eval-core judge contract (`crates/eval-core/src/judge.rs`), which TypeScript
 cannot call, and the divergences are listed below.
 
 1. `p7Pair` builds the pair from the two arms' snapshots of one P7 item:
-   it refuses a snapshot with a non-grade artefact, reads each probe turn's
-   last agent answer from the `proxy-call` artefact, refuses an empty
-   answer, and returns the ids it read as the grades' inputs.
+   it refuses a snapshot of another item or two snapshots of one arm,
+   refuses a snapshot with a non-grade artefact, returns null when either
+   probe turn ended `failed` (SIM-P46), reads each probe turn's last agent
+   answer from the `proxy-call` artefact, refuses an empty answer, and
+   returns the snapshot ids, arm names, and the artefact ids it read as the
+   grades' inputs.
 2. `blind` takes a pair of answers to one P7 item, the memory arm's as `a`
    and the host arm's as `b`, and refuses either answer when it carries a
    canary or names an arm. Names are matched as whole words after folding
    case, full width, and separators and dropping invisible characters and
    every combining mark after canonical decomposition (eval-core drops the
-   combining diacritics block only). The
+   combining diacritics block only); an invisible character is tried both
+   as nothing and as a word separator, so `eid\u200bnara` and `arm\u200ba`
+   both match. The
    arm names are eval-core's six plus `eidnara`, `host arm`, and
    `memory arm`. Doubled emphasis marks (`**`, `__`), backticks, heading
    marks, bullet marks, and code fence lines are stripped and whitespace
-   collapsed before the judge sees either answer.
+   collapsed before the judge sees either answer; backticks inside a line
+   are removed and the text between them stays.
 3. `judgePair` shows the pair in both orders, under the rubric and the
    item's reference reason, and reads one verdict per order: `first`,
    `second`, `both`, or `neither`. eval-core's verdicts are `first`,
@@ -98,15 +104,16 @@ cannot call, and the divergences are listed below.
 4. The judgment records each answer's length after normalisation, and
    `longer_recalled_alone` records whether the longer answer was the one
    recalled alone, for the verbosity audit.
-5. `gradeP7` writes one grade per arm. Each grade carries the judge model,
+5. `gradeP7` writes one grade per arm, each with its arm's later-attempt
+   count. Each grade carries the judge model,
    the prompt and rubric digests, both order verdicts, both answer lengths
    and `longer_recalled_alone`, the calibration digest, and the permutation
    check's result and counts. It computes the digest and runs the check
    itself and records a refusal of either as `refused: <reason>`, so
-   `gate_eligible` is true only for a calibration set that validates and a
-   permutation check that passes.
-6. `permutationCheck` refuses arm identification above the pre-registered
-   60% ceiling, correct or inverted.
+   `gate_eligible` is true only for a calibration set that validates under
+   the judgment's own judge identity and a permutation check that passes.
+6. `permutationCheck` refuses counts that are not whole numbers and arm
+   identification above the pre-registered 60% ceiling, correct or inverted.
 7. `calibrationDigest` validates a calibration set: at least 20 pairs, and a
    human sample of at least 10% rounded up and never below 20 pairs. Only a
    set that passes gets a digest; a blank pair id, a human label naming no
@@ -122,7 +129,8 @@ cannot call, and the divergences are listed below.
 
 `proxyJudge` sends each verdict request through the capture proxy with the
 `judge` component header. It refuses a judge model from the agent model's
-family (SIM-P43); the pre-registered judge is `global.openai.gpt-5.6-luna`.
+family (SIM-P43) and a model id whose family it cannot name; the
+pre-registered judge is `global.openai.gpt-5.6-luna`.
 On 2026-10-16 the two P7 fixtures went through the gateway to that model
 (`sim-runs/judge-smoke/judge-calls.jsonl` holds the four `judge` call
 records and `judgments.json` the verdicts), and the real verdicts (`first`,

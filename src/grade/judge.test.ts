@@ -62,6 +62,7 @@ const context = (item: string, extra: Partial<Parameters<typeof gradeP7>[1]> = {
     snapshots: { a: "snap-eidnara", b: "snap-host" },
     arms: { a: "eidnara", b: "host" },
     inputs: ["snap-eidnara:calls", "snap-host:calls"],
+    later_attempts: { a: 0, b: 0 },
     calibration: null,
     permutation: { trials: 20, correct: 11 },
     ...extra,
@@ -124,12 +125,8 @@ describe("P7 judge path", () => {
                 },
             ],
         });
-        const { pair, inputs } = p7Pair(
-            "q-1",
-            snap("eidnara", "because A"),
-            snap("host", "no idea"),
-        );
-        expect([pair.a, pair.b, inputs]).toEqual([
+        const built = p7Pair("q-1", snap("eidnara", "because A"), snap("host", "no idea"));
+        expect([built?.pair.a, built?.pair.b, built?.inputs]).toEqual([
             "because A",
             "no idea",
             ["eidnara:calls", "host:calls"],
@@ -227,6 +224,120 @@ describe("P7 judge path", () => {
         expect(() => calibrationDigest(blank, rules)).toThrow("blank");
     });
 
+    test("a calibration set from another judge identity is refused and keeps the grade out of gates", async () => {
+        const f = load("P7-pass");
+        const judgment = await judgePair(
+            scripted(f.judge_verdicts),
+            f.pair,
+            f.probe.check.judge,
+            [],
+        );
+        const foreign = {
+            ...calibration(),
+            judge: judgeIdentity("global.anthropic.claude-haiku-5-5"),
+        };
+        const [g] = gradeP7(judgment, context(f.probe.id, { calibration: foreign }), rules);
+        expect([g?.metrics.gate_eligible, g?.metrics.calibration_digest]).toEqual([false, "none"]);
+        expect(String(g?.metrics.calibration)).toContain("refused: calibration judge");
+        const stale = {
+            ...calibration(),
+            judge: { ...judgeIdentity(rules.judge.model), rubric_digest: "0" },
+        };
+        expect(
+            gradeP7(judgment, context(f.probe.id, { calibration: stale }), rules)[0]?.metrics
+                .gate_eligible,
+        ).toBe(false);
+    });
+
+    test("a human label names an own calibration pair, not an inherited property", () => {
+        const set = calibration(25, 19);
+        set.human.push("toString");
+        expect(() => calibrationDigest(set, rules)).toThrow("names no calibration pair");
+    });
+
+    test("the permutation check refuses counts that are not whole numbers", () => {
+        expect(() => permutationCheck(1.5, 0.75, rules)).toThrow(GradeRefused);
+        expect(() => permutationCheck(20, -1, rules)).toThrow(GradeRefused);
+        expect(() => permutationCheck(Number.NaN, 0, rules)).toThrow(GradeRefused);
+    });
+
+    test("an invisible mark used as a word separator still exposes an arm name", () => {
+        const base = { id: "p", a: "fine", b: "fine" };
+        for (const leak of [
+            "arm\u200ba",
+            "the fresh\u200barm answer",
+            "host\u00adarm",
+            "eid\u200bnara",
+        ]) {
+            expect(() => blind({ ...base, b: leak }, "a_then_b", "r", [])).toThrow("names an arm");
+        }
+    });
+
+    test("normalisation keeps content between inline triple backticks and drops fence lines", () => {
+        expect(normalise("The reason is ```allocation dominated p99```.")).toBe(
+            "The reason is allocation dominated p99.",
+        );
+        expect(normalise("```allocation dominated p99```")).toBe("allocation dominated p99");
+        expect(normalise("before\n```ts\nconst x = 1;\n```\nafter")).toBe(
+            "before const x = 1; after",
+        );
+    });
+
+    test("the pair takes its item, arms, and outcome from the snapshots", () => {
+        const snap = (
+            arm: string,
+            item = "q-1",
+            outcome: Snapshot["turn_outcome"] = "ok",
+        ): Snapshot => ({
+            id: `snap-${arm}`,
+            item,
+            arm,
+            turn: "e-1",
+            turn_outcome: outcome,
+            artefacts: [
+                {
+                    id: `${arm}:calls`,
+                    class: "proxy-call",
+                    calls: [
+                        {
+                            seq: 1,
+                            component: "agent",
+                            turn: "e-1",
+                            scenario_ms: 0,
+                            input_tokens: 1,
+                            output_tokens: 1,
+                            response_text: "because",
+                        },
+                    ],
+                },
+            ],
+        });
+        const built = p7Pair("q-1", snap("eidnara"), snap("host"));
+        expect([built?.snapshots, built?.arms]).toEqual([
+            { a: "snap-eidnara", b: "snap-host" },
+            { a: "eidnara", b: "host" },
+        ]);
+        expect(() => p7Pair("q-1", snap("eidnara", "q-2"), snap("host"))).toThrow("mix items");
+        expect(() => p7Pair("q-1", snap("eidnara"), snap("eidnara"))).toThrow("one arm");
+        expect(p7Pair("q-1", snap("eidnara"), snap("host", "q-1", "failed"))).toBeNull();
+    });
+
+    test("each P7 grade counts its own arm's later attempts", async () => {
+        const f = load("P7-pass");
+        const judgment = await judgePair(
+            scripted(f.judge_verdicts),
+            f.pair,
+            f.probe.check.judge,
+            [],
+        );
+        const grades = gradeP7(
+            judgment,
+            context(f.probe.id, { later_attempts: { a: 2, b: 0 } }),
+            rules,
+        );
+        expect(grades.map((g) => g.later_attempts_logged)).toEqual([2, 0]);
+    });
+
     test("the human-check sample is ten percent of P7 items, rounded up, from a seeded draw", () => {
         const items = Array.from({ length: 24 }, (_, i) => `q-${i}`);
         const a = humanCheckSample(items, rules, new Rng(9));
@@ -262,6 +373,9 @@ describe("proxy judge", () => {
                 "global.anthropic.claude-opus-5-5",
             ),
         ).toThrow(GradeRefused);
+        expect(() => proxyJudge(url, "global.cohere.command-a", "global.cohere.command-r")).toThrow(
+            "no known family",
+        );
         const judge = proxyJudge(url, rules.judge.model, "global.anthropic.claude-opus-5-5");
         expect(await judge.verdict("prompt")).toBe("second");
         expect(seen[0]?.path).toBe(`/model/${encodeURIComponent(rules.judge.model)}/converse`);
