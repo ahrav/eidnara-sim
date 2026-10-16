@@ -24,7 +24,7 @@ export interface Template {
     probe: string;
     out_probe?: string;
     update?: string;
-    example?: string;
+    example?: { path: string; content: string };
     authority?: { path: string; content: string };
     check: Record<string, unknown>;
     out_check?: Record<string, unknown>;
@@ -201,6 +201,11 @@ export async function compileScenario(input: CompileInput) {
             const own = plan.flatMap((q, i) => (q.id === p.id ? [i] : []));
             const quota =
                 Math.floor(s.forced_p90_sessions / bases.length) + (extra.has(p.id) ? 1 : 0);
+            if (quota > own.length) {
+                throw new Error(
+                    `forced_p90_sessions ${s.forced_p90_sessions} exceeds the ${own.length} sessions of ${p.id}`,
+                );
+            }
             return range(0, quota).map((k) => own[Math.floor(((k + 0.5) * own.length) / quota)]);
         }),
     );
@@ -372,10 +377,9 @@ export async function compileScenario(input: CompileInput) {
         let conveyed: Turn;
         if (manner === "hand_applied_diff") {
             const content = tpl.example
-                ? `${render(tpl.example, vars)}\n`
+                ? `${render(tpl.example.content, vars)}\n`
                 : `# Note\n\n${statement.charAt(0).toUpperCase()}${statement.slice(1)}.\n`;
-            const ext = project.lang === "rust" ? `_example.rs` : `-example.ts`;
-            const path = tpl.example ? `src/${word}${ext}` : `notes/${word}.md`;
+            const path = tpl.example ? render(tpl.example.path, vars) : `notes/${word}.md`;
             conveyed = cue(
                 "I pushed a small change to the repo. Look over the latest commit before we continue.",
                 content,

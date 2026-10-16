@@ -12,7 +12,8 @@ the AWS profile in `sim.config.json`, and caches each vector in
 model to match; the tests use it, and its scenarios name the stand-in model in
 both `manifest.embedding_model` and `manifest.cue_probe_similarity`, so they
 do not witness SIM-P08. Any other `--embedder` value, a non-integer seed, or a
-flag without a value exits with the usage line.
+flag without a value exits with the usage line, and an `--out` path inside
+`eidnara_checkout` is refused before any directory is created.
 
 ## Output
 
@@ -101,7 +102,11 @@ takes a correction, so the realised mix sits a little off the weights; the
 100-seed test keeps it within 5 percentage points. A
 hand-applied diff is an `apply_diff` event before the session, adding a file
 whose content implies the fact, followed by a user turn that points at the
-latest commit without stating the fact.
+latest commit without stating the fact. A constraint template whose scope is
+a directory names an example path inside that scope (`src/cmd/{token}.rs`,
+`src/adapter/{token}.ts`, `tests/{token}.rs`, `test/{codename}.{token}.test.ts`);
+every other template adds `notes/{token}.md`, a note that states the fact in
+its own words, so a diff cue always carries the fact's scope.
 
 Every request that carries no conveyance or probe is a filler task from the
 fact bank, or, with probability 0.1, a paste of a corpus tool-output sample.
@@ -111,6 +116,8 @@ fact bank, or, with probability 0.1, a paste of a corpus tool-output sample.
 The compiler throws, and writes nothing, when:
 
 - the seed is outside the unsigned 32-bit range of the random streams;
+- `forced_p90_sessions` asks a base repository for more forced sessions than
+  it has;
 - the embedder differs from `cue_probe_similarity.embedding_model`, or returns
   a vector count or shape that does not match the texts;
 - a cue and probe pair has a BM25 ratio above `bm25_max` or a cosine above

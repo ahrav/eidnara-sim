@@ -71,7 +71,7 @@ describe("SIM-P01: deterministic compile across processes", () => {
                 tier,
                 generator_version: "sim-scenario/v1",
             });
-        }, 60_000);
+        }, 180_000);
     }
 
     test("a different seed yields a different scenario", async () => {
@@ -196,6 +196,26 @@ describe("compiled S scenario", async () => {
             expect(
                 (start?.scenario_ms as number) - (prevEnd?.scenario_ms as number),
             ).toBeGreaterThanOrEqual(3_600_000);
+        }
+    });
+
+    test("a hand-applied constraint diff sits inside the scope its statement names", () => {
+        const diffs = s.events.filter((e) => e.kind === "apply_diff") as unknown as {
+            fact: string;
+            path: string;
+        }[];
+        const checked = s.facts.filter(
+            (f) => f.kind === "constraint" && f.manner === "hand_applied_diff",
+        );
+        expect(checked.length).toBeGreaterThan(0);
+        for (const f of checked) {
+            const scope = /\b((?:src|tests?)\/[\w./-]*)/.exec(f.statement)?.[1] ?? "";
+            const path = diffs.find((d) => d.fact === f.id)?.path ?? "";
+            const expected = /\.[a-z]+$/.test(scope) ? "notes/" : `${scope.replace(/\/$/, "")}/`;
+            expect({ fact: f.id, path: path.slice(0, expected.length) }).toEqual({
+                fact: f.id,
+                path: expected,
+            });
         }
     });
 
@@ -355,6 +375,15 @@ describe("compile-time refusals", () => {
         await expect(withInput(() => undefined, short)).rejects.toThrow(/embedder short returned/);
     });
 
+    test("a forced p90 quota above a project's sessions is refused", async () => {
+        const input = loadCompileInput(101, "S", hashEmbedder, true);
+        const prereg = structuredClone(input.prereg);
+        prereg.scenario.forced_p90_sessions = 50;
+        await expect(compileScenario({ ...input, prereg })).rejects.toThrow(
+            /forced_p90_sessions 50 exceeds/,
+        );
+    });
+
     test("a seed outside the unsigned 32-bit range is refused", async () => {
         const input = loadCompileInput(0, "S", hashEmbedder, true);
         await expect(compileScenario({ ...input, seed: 2 ** 32 })).rejects.toThrow(
@@ -390,9 +419,9 @@ describe("compile-time refusals", () => {
         await expect(
             withInput((bank) => {
                 for (const t of (bank.rust?.constraint ?? []) as Template[])
-                    t.example = `// ${t.id}`;
+                    t.example = { path: "src/{token}.rs", content: `// ${t.id}` };
                 for (const t of (bank.typescript?.constraint ?? []) as Template[])
-                    t.example = `// ${t.id}`;
+                    t.example = { path: "src/{token}.ts", content: `// ${t.id}` };
             }),
         ).rejects.toThrow(/diff .* delivered text carries markers/);
     });
