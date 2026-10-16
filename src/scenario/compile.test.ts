@@ -321,6 +321,20 @@ describe("compiled S scenario", async () => {
         }
     });
 
+    test("every similarity record names its cue by digest", () => {
+        const byProbe = new Map<string, Set<string>>();
+        for (const x of s.similarity as { probe: string; cue_sha256?: string }[]) {
+            expect(x.cue_sha256).toMatch(/^[0-9a-f]{64}$/);
+            const set = byProbe.get(x.probe) ?? new Set();
+            set.add(x.cue_sha256 ?? "");
+            byProbe.set(x.probe, set);
+        }
+        for (const [probe, cues] of byProbe) {
+            const n = (s.similarity as { probe: string }[]).filter((x) => x.probe === probe).length;
+            expect({ probe, distinct: cues.size }).toEqual({ probe, distinct: n });
+        }
+    });
+
     test("SIM-P08: an authoritative P3 diff is scored against its fact's probes", () => {
         const diffs = s.events.filter((e) => e.kind === "apply_diff") as unknown as {
             fact: string;
@@ -654,6 +668,10 @@ describe("fact bank checks", () => {
         expect(forbid.test("git -c commit.gpgSign=false commit -m 'untagged later'")).toBe(true);
         expect(forbid.test("git -P commit --allow-empty -m untagged")).toBe(true);
         expect(forbid.test("git --no-pager commit -m untagged")).toBe(true);
+        expect(forbid.test("git commit --allow-empty -F msg.txt")).toBe(true);
+        expect(forbid.test("git commit -C HEAD~1")).toBe(true);
+        expect(forbid.test("git commit --dry-run -F msg.txt")).toBe(false);
+        expect(forbid.test("git commit --amend -m '[quiet_vole] fixed'")).toBe(false);
         expect(re.test('git commit -m "[quiet_vole] cap" --dry-run')).toBe(false);
         expect(re.test("git commit --message=[quiet_vole] cap")).toBe(true);
         expect(re.test("git commit -mwrong -m[quiet_vole]")).toBe(false);
@@ -743,6 +761,28 @@ describe("fact bank checks", () => {
                 "tracing::event!(Level::TRACE, command = %name);",
             ),
         ).toBe(true);
+    });
+
+    test("decision values match on digit boundaries", () => {
+        for (const t of templates("decision")) {
+            const c = t.check as { must: string[]; must_not: string[] };
+            const stale = new RegExp((c.must_not[0] ?? "$^").replaceAll("{value}", "12345"));
+            const fresh = new RegExp(
+                (c.must[0] ?? "$^")
+                    .replaceAll("{value2}", "54321")
+                    .replaceAll("{TOKEN}", "QUIET_VOLE"),
+            );
+            expect({
+                id: t.id,
+                stale: stale.test("limit = 123456"),
+                fresh: fresh.test("limit = 543210"),
+            }).toEqual({ id: t.id, stale: false, fresh: false });
+            expect({
+                id: t.id,
+                stale: stale.test("limit = 12345;"),
+                fresh: fresh.test("limit = 54321;"),
+            }).toEqual({ id: t.id, stale: true, fresh: true });
+        }
     });
 
     test("the ticket anchor matches the exact number only", () => {

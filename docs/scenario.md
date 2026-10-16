@@ -33,7 +33,7 @@ The scenario file is canonical JSON with these sections:
 | `sessions` | Session id, project, start time, request count, the idle gap before the session, the minimum gap the compiler enforced, and whether the request count was forced into the p90 regime |
 | `facts` | Ledger facts with template, kind, project, conveyance manner, statement, and the cue texts that carry it |
 | `probes` | Probe items P1 to P14 and the P1 controls with project, session, user text, the grading check, and the event that delivers it. Check keys: `must` and `must_not` regexes over the added lines of the agent's diff, `paths_must` and `paths_must_not` over the paths the diff adds or changes, `first_line_must` over the first line of every file the diff adds, `quote_style_must` (`double` or `single`) over the delimiter of every string literal in the added lines, `commands_must` and `commands_must_not` over the command log, an optional `scope` (a directory prefix) that limits the diff-channel keys to files under it, `answer`, `answer_must_not`, `abstain`, and `judge` over the final assistant text, and `window_from_turn` and `window_to_turn` for P14. Every `*_must` and `*_must_not` key holds a list of JavaScript regular expressions |
-| `similarity` | BM25 ratio and embedding cosine for every cue and probe pair, and for a decision fact's authoritative diff content against its probes, journaled to four decimals; the threshold gate compares the full-precision values |
+| `similarity` | BM25 ratio and embedding cosine for every cue and probe pair, and for a decision fact's authoritative diff content against its probes, each record naming its cue by `cue_sha256`, journaled to four decimals; the threshold gate compares the full-precision values |
 | `events` | `apply_diff`, `session_start`, `user_turn`, and `session_end` events in scenario time |
 | `faults` | Fault episodes with type, strategy, trigger, parameters, and seam-table entry |
 | `cf_deletions` | Counterfactual deletions before 20% of the P1, P3, and P5 probes (L only) |
@@ -198,15 +198,15 @@ thresholds (`bm25_max` 0.4, `cosine_max` 0.6):
 
 | Tier | Seed | `scenario_hash` | Largest BM25 ratio | Largest cosine |
 |---|---|---|---|---|
-| S | 101 | `5b259bdb` | 0.2631 | 0.5194 |
-| S | 102 | `9b6e0ed7` | 0.2573 | 0.4867 |
-| M | 201 | `f6db84d6` | 0.2743 | 0.4992 |
-| M | 202 | `55879e1f` | 0.2783 | 0.4997 |
-| M | 203 | `0cef873a` | 0.2784 | 0.4843 |
-| L | 301 | `13e2911d` | 0.2729 | 0.5092 |
-| L | 302 | `da3a3579` | 0.259 | 0.4957 |
-| L | 303 | `f0f30632` | 0.2803 | 0.5083 |
-| XL | 401 | `fd2c0c15` | 0.2806 | 0.4962 |
+| S | 101 | `67ee8f9d` | 0.2701 | 0.5194 |
+| S | 102 | `ab6b44da` | 0.2658 | 0.4867 |
+| M | 201 | `00a1c85b` | 0.2609 | 0.4992 |
+| M | 202 | `893ae1c1` | 0.2602 | 0.4997 |
+| M | 203 | `19137726` | 0.2621 | 0.4843 |
+| L | 301 | `24fe7109` | 0.2641 | 0.5092 |
+| L | 302 | `8bca6983` | 0.2671 | 0.4957 |
+| L | 303 | `66440ebb` | 0.2655 | 0.5083 |
+| XL | 401 | `c2722d2c` | 0.2617 | 0.4962 |
 
 ## Known limits
 

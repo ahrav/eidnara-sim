@@ -563,7 +563,7 @@ export async function compileScenario(input: CompileInput) {
         }
     }
 
-    const allCues = facts.flatMap((f) => f.cues);
+    const allCues = [...facts.flatMap((f) => f.cues), ...diffs.map((d) => d.content)];
     const pairs = probes.flatMap((p) => {
         const fact = facts.find((f) => f.id === p.fact);
         const text = p.text;
@@ -593,6 +593,7 @@ export async function compileScenario(input: CompileInput) {
     const scored = pairs.map(({ probe, fact, cue, text }) => ({
         probe,
         fact,
+        cue_sha256: sha256Hex(cue),
         bm25: bm25Ratio(text, cue, allCues),
         cosine: cosine(vec.get(text) ?? [], vec.get(cue) ?? []),
     }));

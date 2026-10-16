@@ -221,6 +221,9 @@ export function bankProblems(bank: unknown): string[] {
                         if (placeholderProblem(text, kind)) {
                             problems.push(`${where}: ${field} names an unknown placeholder`);
                         }
+                        if (typeof part.path === "string" && part.path.trim() === "") {
+                            problems.push(`${where}: ${field} path is blank`);
+                        }
                     }
                 }
                 if (kind === "constraint") {

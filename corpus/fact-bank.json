@@ -82,10 +82,10 @@
                 },
                 "check": {
                     "must": [
-                        "{value2}|{TOKEN}_PAGE_SIZE"
+                        "(?<!\\d){value2}(?!\\d)|{TOKEN}_PAGE_SIZE"
                     ],
                     "must_not": [
-                        "{value}"
+                        "(?<!\\d){value}(?!\\d)"
                     ]
                 }
             },
@@ -99,10 +99,10 @@
                 },
                 "check": {
                     "must": [
-                        "{value2}|{TOKEN}_READ_BUFFER"
+                        "(?<!\\d){value2}(?!\\d)|{TOKEN}_READ_BUFFER"
                     ],
                     "must_not": [
-                        "{value}"
+                        "(?<!\\d){value}(?!\\d)"
                     ]
                 }
             }
@@ -282,10 +282,10 @@
                 },
                 "check": {
                     "must": [
-                        "{value2}|{TOKEN}_BODY_LIMIT"
+                        "(?<!\\d){value2}(?!\\d)|{TOKEN}_BODY_LIMIT"
                     ],
                     "must_not": [
-                        "{value}"
+                        "(?<!\\d){value}(?!\\d)"
                     ]
                 }
             },
@@ -299,10 +299,10 @@
                 },
                 "check": {
                     "must": [
-                        "{value2}|{TOKEN}_COOKIE_MAX_AGE"
+                        "(?<!\\d){value2}(?!\\d)|{TOKEN}_COOKIE_MAX_AGE"
                     ],
                     "must_not": [
-                        "{value}"
+                        "(?<!\\d){value}(?!\\d)"
                     ]
                 }
             }
@@ -496,7 +496,7 @@
                         "git(?:\\s+(?:-[cC]\\s+\\S+|-[pP]|--[\\w-]+(?:=\\S+)?))*\\s+commit\\b(?![^\\n]*--dry-run)(?:(?!\\s(?:-\\w*m|--message))[^\\n])*\\s(?:-\\w*m ?|--message[ =])[\"']?\\[{token}\\]"
                     ],
                     "commands_must_not": [
-                        "git(?:\\s+(?:-[cC]\\s+\\S+|-[pP]|--[\\w-]+(?:=\\S+)?))*\\s+commit\\b(?![^\\n]*--dry-run)(?:(?!\\s(?:-\\w*m|--message))[^\\n])*\\s(?:-\\w*m ?|--message[ =])(?!\\s*[\"']?\\[{token}\\])"
+                        "git(?:\\s+(?:-[cC]\\s+\\S+|-[pP]|--[\\w-]+(?:=\\S+)?))*\\s+commit\\b(?![^\\n]*--dry-run)(?!(?:(?!\\s(?:-\\w*m|--message))[^\\n])*\\s(?:-\\w*m ?|--message[ =])\\s*[\"']?\\[{token}\\])"
                     ]
                 }
             },
