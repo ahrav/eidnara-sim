@@ -169,12 +169,17 @@ describe("compiled S scenario", async () => {
         }
     });
 
-    test("P4 items cover inside and outside the update's scope in both languages", () => {
+    test("P4 items split evenly inside and outside the update's scope in both languages", () => {
         const p4 = s.probes.filter((p) => p.type === "P4");
-        const scopes = new Set(
-            p4.map((p) => `${p.project}/${(p.check as { must?: string[] }).must?.[0]}`),
-        );
+        const must = (p: (typeof p4)[number]) => (p.check as { must?: string[] }).must?.[0];
+        const scopes = new Set(p4.map((p) => `${p.project}/${must(p)}`));
         expect(scopes.size).toBeGreaterThanOrEqual(4);
+        const outs = p4.filter((p) => {
+            const tpl = input.bank[s.projects.find((x) => x.id === p.project)?.lang ?? ""];
+            const scoped = (tpl?.scoped_update ?? []) as Template[];
+            return scoped.some((t) => (t.out_check as { must?: string[] })?.must?.[0] === must(p));
+        });
+        expect(Math.abs(2 * outs.length - p4.length)).toBeLessThanOrEqual(1);
     });
 
     test("each P6 item opens a session that follows at least one hour of idle time", () => {
@@ -206,9 +211,19 @@ describe("compiled S scenario", async () => {
         }
     });
 
-    test("SIM-P07: no delivered user text carries a marker", () => {
+    test("SIM-P07: no delivered user text, diff path, or diff content carries a marker", () => {
         const keys = [...s.facts.flatMap((f) => [f.id, f.template]), ...s.probes.map((p) => p.id)];
-        for (const t of all)
+        const diffs = s.events.filter((e) => e.kind === "apply_diff") as unknown as {
+            id: string;
+            path: string;
+            content: string;
+        }[];
+        expect(diffs.length).toBeGreaterThan(0);
+        const delivered = [
+            ...all.map((t) => ({ id: t.id, text: t.text })),
+            ...diffs.map((d) => ({ id: d.id, text: `${d.path}\n${d.content}` })),
+        ];
+        for (const t of delivered)
             expect({ id: t.id, hits: markerHits(t.text, keys) }).toEqual({ id: t.id, hits: [] });
     });
 
@@ -339,5 +354,22 @@ describe("compile-time refusals", () => {
                 for (const t of lookups(bank)) t.probe = `${t.probe} (${t.id})`;
             }),
         ).rejects.toThrow(/delivered text carries markers lookup-/);
+    });
+});
+
+describe("between-session gaps", () => {
+    test("sessions keep their sampled gaps after placement extends earlier sessions", async () => {
+        const s = await compileScenario(inputS(101));
+        const end = new Map(
+            s.events
+                .filter((e) => e.kind === "session_end")
+                .map((e) => [e.session as string, e.scenario_ms as number]),
+        );
+        const gaps = s.sessions
+            .slice(1)
+            .map((x, i) => x.start_ms - (end.get(s.sessions[i]?.id ?? "") ?? 0));
+        expect(gaps.filter((g) => g <= 1).length).toBeLessThan(0.05 * gaps.length);
+        const sorted = [...gaps].sort((a, b) => a - b);
+        expect(sorted[Math.floor(sorted.length / 2)] ?? 0).toBeGreaterThan(1_000);
     });
 });

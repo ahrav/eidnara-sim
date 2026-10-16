@@ -11,7 +11,8 @@ the AWS profile in `sim.config.json`, and caches each vector in
 `--embedder local` swaps in a hashed bag of words and rewrites the threshold
 model to match; the tests use it, and its scenarios name the stand-in model in
 both `manifest.embedding_model` and `manifest.cue_probe_similarity`, so they
-do not witness SIM-P08.
+do not witness SIM-P08. Any other `--embedder` value, a non-integer seed, or a
+flag without a value exits with the usage line.
 
 ## Output
 
@@ -40,16 +41,18 @@ at least one request. Idle gaps within a session come from
 
 The sampled gaps run longer than the tier's `simulated_days`, so the compiler
 scales them to fit. Within-session gaps scale down only when the sessions alone
-would fill more than 80% of the span; between-session gaps then fill the rest.
-`manifest.within_session_gap_scale` and `manifest.between_session_gap_scale`
-record both factors. For the pre-registered seeds, within-session gaps scale
-to between 9% and 32% and between-session gaps to between 0.9% and 2.7%.
+would fill more than 80% of the span; the P13 turn ranges of the forced p90
+sessions then join the session time, and between-session gaps fill the rest,
+each at least one millisecond. `manifest.within_session_gap_scale` and
+`manifest.between_session_gap_scale` record both factors. For the
+pre-registered seeds, within-session gaps scale to between 9% and 32% and
+between-session gaps to between 0.9% and 2.5%.
 
-A session that opens with a P6 probe starts at least one hour after the
-previous session ends, and the compiler shifts later sessions to keep that
-gap. Turns added during placement shift later sessions the same way, so a
-scenario can run past `simulated_days`; the pre-registered seeds end within
-0.04 days of it.
+Every session keeps its sampled gap after the previous session ends. A session
+that opens with a P6 probe widens that gap to at least one hour, and turns
+added during placement lengthen their session, so both push every later
+session back by the same amount and a scenario runs past `simulated_days`; the
+pre-registered seeds end between 0.2 and 1.2 days past it.
 
 ## Facts, conveyance, and probes
 
@@ -112,7 +115,8 @@ The compiler throws, and writes nothing, when:
 - any user text or diff path or content matches the marker set: probe ids,
   the word probe, fact, template, or probe item ids, or grading words
   (SIM-P07);
-- a probe turn precedes any conveyance, update, or diff of its fact (SIM-P06).
+- a probe turn precedes any conveyance, update, or diff of its fact, or a P1
+  control follows the first conveyance of its fact (SIM-P06).
 
 ## Pre-registered seeds
 
@@ -121,15 +125,15 @@ thresholds (`bm25_max` 0.4, `cosine_max` 0.6):
 
 | Tier | Seed | `scenario_hash` | Largest BM25 ratio | Largest cosine |
 |---|---|---|---|---|
-| S | 101 | `20cd4c35` | 0.2125 | 0.5194 |
-| S | 102 | `f1a911f5` | 0.2628 | 0.4867 |
-| M | 201 | `a156470d` | 0.2516 | 0.4992 |
-| M | 202 | `8080b0b1` | 0.2551 | 0.4997 |
-| M | 203 | `c41ec309` | 0.2535 | 0.4843 |
-| L | 301 | `0cf7c49e` | 0.2558 | 0.5092 |
-| L | 302 | `a174678e` | 0.2535 | 0.4957 |
-| L | 303 | `60808da7` | 0.2514 | 0.5083 |
-| XL | 401 | `541899f4` | 0.2561 | 0.4962 |
+| S | 101 | `3aa29553` | 0.2125 | 0.5194 |
+| S | 102 | `3b4ee24a` | 0.2628 | 0.4867 |
+| M | 201 | `916d198b` | 0.2516 | 0.4992 |
+| M | 202 | `1d262c3d` | 0.2551 | 0.4997 |
+| M | 203 | `89d949cd` | 0.2535 | 0.4843 |
+| L | 301 | `fee2e455` | 0.2558 | 0.5092 |
+| L | 302 | `bd39ff39` | 0.2535 | 0.4957 |
+| L | 303 | `8b0f84d3` | 0.2514 | 0.5083 |
+| XL | 401 | `7331d07a` | 0.2561 | 0.4962 |
 
 ## Known limits
 
