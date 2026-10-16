@@ -39,7 +39,12 @@ root inside it), a schedule with a fault type the host driver has no
 mechanism for (`host_upgrade`, `two_hosts_one_daemon`, so a full XL run is
 refused up front), a `--models` list that repeats an entry, and a
 `model_switch` schedule with fewer than two models. A `daemon_sigkill_mid_fold` needs a
-`first_summarizer_call` trigger. An `--out` inside this checkout must be
+`first_summarizer_call` trigger, one session carries at most one mid-fold
+kill and one laptop sleep, a laptop sleep needs an idle gap before its
+session's start, a strategy accepts only its own limit parameters (`count`
+for `burst`; `probability` and `calls` for `intermittent`), and `store_full`
+supports `sessions: 1` only. `--out /` is refused.
+`--out` may not overlap the Pi install either. An `--out` inside this checkout must be
 ignored by git (`runs/` is), and may not overlap a corpus checkout, since
 both trees are part of the run identity. Before taking the lease, every artifact the run appends to or
 replaces (`journal.jsonl`, `calls.jsonl`, the manifest, the scenario, the
@@ -89,21 +94,28 @@ toolchain wrappers are created exclusively after removing any planted name.
    working-tree digest (a digest covers tracked edits and untracked
    unignored files), the commit and working-tree digest of every corpus
    checkout the scenario's projects clone from, the SHA-256 of the daemon,
-   OpenCode, and Pi executables, the whole installed Pi package directory and
-   the Pi install's lock file, the Node runtime Pi runs on, the libfaketime
-   interposer, and the OpenCode SDK module the host stack imports (`absent`
-   when not installed), the
+   OpenCode, and Pi executables, the whole Pi install tree (every file and
+   link under `pi_install`, since Node resolves the CLI's dependencies
+   there), the Node runtime Pi runs on, the libfaketime interposer, the
+   OpenCode SDK package directory the host stack imports and the e2e
+   workspace's lock file (`absent` when not installed), the
    Bedrock region and profile name, base wall time, and preflight result. The working-tree digest hashes an
    untracked symlink's target text.
    A later invocation refuses a manifest whose `schema` is not
-   `sim-run-manifest/v1`, and refuses when any option it states differs from
-   the manifest, when the manifest's arm order is not a non-empty subsequence
+   `sim-run-manifest/v1`, revalidates a saved fault override as on the first
+   run, and refuses when any option it states differs from the manifest, when the manifest's arm order is not a non-empty subsequence
    of the seed's pre-registered arm order, when a resumed journal breaks the
-   run's state machine (an arm entry before `StartRun` or `StartArm`, after
-   `EndArm`, or an item closed twice), when any of those digests changed, when an
+   run's state machine (a `ResumeRun` or arm entry before `StartRun`, an arm
+   entry before `StartArm` or after `EndArm`, an `EndTurn` or `EndJob` with
+   no open item, or an `Event` that is not the arm's next scheduled event), when any of those digests changed, when an
    interception result, probed path, or toolchain version
    changed, or when the selected host's version or transcript paths changed,
-   and appends its preflight result to `preflight.jsonl`; on resume the
+   and appends its preflight result to `preflight.jsonl` (dropping an
+   unterminated final line first). The `Preflight` journal entry carries a
+   digest of the manifest's execution fields (everything but the
+   per-invocation preflight); a resume whose manifest no longer matches the
+   digest the journal's first `Preflight` entry bound is refused, so inherited
+   options cannot change under a run's journaled identity. On resume the
    mechanism checks (fault types, models) run against the manifest's saved
    values, so omitted options inherit. Every invocation
    then journals a `Preflight` entry with its interception results and host
@@ -111,7 +123,8 @@ toolchain wrappers are created exclusively after removing any planted name.
 4. Start the capture proxy; its records append to `calls.jsonl`, and a
    reopened writer continues the sequence after the last complete record. A
    cut last line is dropped; a complete line that is not a record in
-   sequence refuses the run. The fault injector replays the existing
+   sequence refuses the run. The writer advances its sequence only after an
+   append succeeded, so a failed append leaves the file recoverable. The fault injector replays the existing
    records, so a fault injected and observed before a hard kill keeps its
    witness in the resumed run. Witnesses are kept per arm: the scheduler arms
    each proxy fault for the arm it is running, and `faults.jsonl` lists one
@@ -183,14 +196,14 @@ event times and reports, per arm:
 |---|---|
 | `decreasing_scenario_ms` | entries whose `scenario_ms` falls below the arm's previous entry (SIM-P11) |
 | `advance_while_busy` | `AdvanceClock` entries while a turn or job is open, counting an interrupted turn and a job ended on resume as closed (SIM-P12) |
-| `off_schedule_jumps` | jumps, event or sleep, that land anywhere but the earliest unrun scheduled time at or after `from_ms` (SIM-P14, SIM-P18); a sleep is the jump onto its session's first event, so its size is the remaining gap, not the nominal `duration_ms` |
+| `off_schedule_jumps` | jumps, event or sleep, that do not advance, cross an unrun event at or after their origin, or land anywhere but the earliest unrun scheduled time after it (SIM-P14, SIM-P18); a sleep is the jump onto its session's first event, so its size is the remaining gap, not the nominal `duration_ms` |
 | `events_inside_sleep` | sleep jumps that pass an unrun scheduled event (SIM-P18) |
 | `repeated_sleeps` | a second sleep jump for the same fault in one arm |
 | `missing_events` | scheduled events an arm never journaled as `Event` although it reached `EndArm` |
 | `out_of_order_events` | `Event` entries unknown to the schedule or breaking its order |
 | `jump_origin_mismatch` | `AdvanceClock` entries whose `from_ms` differs from the arm's preceding `scenario_ms`; crossing checks use the observed value |
 | `jobs_held_after_turn` | jobs that held the clock while no turn was open, whether registered after the turn or registered inside it and outliving it, once per job at its `RegisterJob` seq (SIM-P13) |
-| `next_event_jumps`, `sleep_jumps` | how many jumps of each kind the check covered |
+| `next_event_jumps`, `sleep_jumps`, `sleep_jump_faults` | how many jumps of each kind the check covered, and each sleep jump's arm and fault id |
 
 ## Live witness
 
@@ -226,18 +239,24 @@ witness, while polling during a run tolerates an unterminated final line.
 The scheduled and resume runs must also show their evidence per arm: every
 deterministic fault of the set fired, every fault with a mechanism observed
 (on `eidnara`, the restart with a new daemon pid and `restarted_by: harness`,
-the full store with `avail_kb: 0`), one fault-tagged sleep jump per arm and
-sleep, agent calls on both configured models, and no duplicate `Event` entry
+the full store with `avail_kb: 0`, and the model switch's boundary: sessions
+before its trigger used the first model, sessions from it on the second),
+exactly one jump tagged with each sleep episode's id per arm, agent calls on both configured models, and no duplicate `Event` entry
 (the mid-fold kills fire only when a summarizer call happens, so they are not
-required); the scheduled run must hold the clock with at least one job while
-no turn is open (SIM-P13), and every finished run's journal must open with a
-`Preflight` entry, before `StartRun` or `ResumeRun`, whose probed binaries
-all intercepted, hold exactly one `EndArm` per arm the manifest names, and
+required; `plugin_reload` has no startup record to inspect beyond the
+driver's evidence and the turns that follow), every completed turn `ok` (so a
+store filled by `store_full` still served the turns after it) and, on
+`eidnara`, the daemon's log naming the full store; the scheduled run must hold the clock with at least one background or
+daemon-cpu job while no turn is open (the synthetic `settle-cpu` and
+`request` holds do not count) (SIM-P13), and every finished run's journal must open with a
+`Preflight` entry, before `StartRun` or `ResumeRun`, whose probes are exactly
+`pi`, `opencode`, and `daemon`, all intercepted, hold exactly one `EndArm` per arm the manifest names, and
 include at least one ordinary event jump. All three case directories must be
 present.
-Every summarized directory must have been written by the current harness
-revision and working tree (`sim_commit`, `sim_worktree`), so a rerun of one
-case cannot certify stale evidence from another. These checks run on every
+Every summarized directory's manifest identity (pre-registration, Eidnara
+and harness commits and working trees, executables, corpus checkouts, Bedrock
+routing) must match the identity recomputed from the current environment, so
+a rerun of one case cannot certify stale evidence from another. These checks run on every
 summarized directory, with or without a cached launch outcome.
 
 Runs on 2026-10-16 against eidnara `bb866266c` (`witness-8`; `resume` ran

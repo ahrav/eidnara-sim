@@ -30,6 +30,7 @@ describe("checkJournal", () => {
             entries: 10,
             next_event_jumps: 1,
             sleep_jumps: 1,
+            sleep_jump_faults: [{ arm: "a", fault: "sleep" }],
             decreasing_scenario_ms: [],
             advance_while_busy: [],
             off_schedule_jumps: [],
@@ -124,6 +125,15 @@ describe("checkJournal", () => {
             { arm: "a", event: "e-1", seq: 1 },
             { arm: "a", event: "e-9", seq: 2 },
         ]);
+    });
+
+    test("a jump that does not advance is off schedule even between events at one time", () => {
+        const { entries, at } = journal();
+        at("Event", 500, { event: "e-1" });
+        at("AdvanceClock", 500, { from_ms: 500, next_event: "e-2" });
+        const report = checkJournal(entries, schedule({ "e-1": 500, "e-2": 500 }));
+        expect(report.off_schedule_jumps).toEqual([1]);
+        expect(report.jump_origin_mismatch).toEqual([]);
     });
 
     test("a jump whose claimed origin differs from the arm's previous time is reported", () => {

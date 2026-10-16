@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { appendFileSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -600,6 +600,47 @@ describe("witnesses", () => {
         expect(records.records.map((r) => r.component)).toEqual(["history_summarizer", "agent"]);
     });
 
+    test("a gateway continues arrival ordinals after the persisted ones", async () => {
+        const records = new RecordWriter(null);
+        const gateway = new Gateway({
+            upstream: scriptedUpstream(),
+            records,
+            injector: new FaultInjector([], new Rng(1), 1_000),
+            rng: new Rng(1),
+            clock: { scenarioMs: () => 0 },
+            scope: () => ({ arm: "a", session: null, turn: null }),
+            firstArrival: 7,
+        });
+        await gateway.start();
+        gateways.push(gateway);
+        await hostCall(gateway.urls[0] as string, AGENT_BODY, 2_000);
+        expect(records.records[0]?.arrival).toBe(7);
+        expect(recordProblems({ ...RECORD, seq: 0, wall_ms: 1, arrival: "0" })).toEqual([
+            "arrival invalid",
+        ]);
+    });
+
+    test("restore orders same-millisecond requests by their arrival ordinal, not their seq", () => {
+        const fault: ProxyFault = {
+            id: "f",
+            type: "provider_5xx",
+            strategy: "single",
+            params: { count: 1 },
+        };
+        const at = Date.now();
+        const base = { ...RECORD, arm: "eidnara", started_wall_ms: at };
+        const earlierButLater = { ...base, seq: 1, wall_ms: at + 50, arrival: 0 };
+        const injected = { ...base, seq: 0, wall_ms: at + 10, arrival: 1, fault_ref: "f" };
+        const retry = { ...base, seq: 2, wall_ms: at + 60, arrival: 2 };
+        const resumed = new FaultInjector([fault], new Rng(7), 5_000);
+        resumed.restore([injected, earlierButLater, retry]);
+        expect(resumed.report("eidnara")[0]).toMatchObject({
+            status: "fired",
+            injected_seq: [0],
+            host_observed_seq: [2],
+        });
+    });
+
     test("a burst that already made every injection is not injected again after resume", async () => {
         const fault: ProxyFault = {
             id: "b",
@@ -1009,6 +1050,16 @@ describe("call records", () => {
         const [l0, l1] = good.trim().split("\n") as [string, string];
         writeFileSync(path, `${l1}\n${l0}\n`);
         expect(() => new RecordWriter(path)).toThrow(/line 1 is corrupt: seq 1 at position 0/);
+    });
+
+    test("a failed append leaves the sequence where it was", () => {
+        const dir = mkdtempSync(join(tmpdir(), "sim-records-"));
+        const path = join(dir, "sub", "calls.jsonl");
+        const writer = new RecordWriter(path);
+        expect(() => writer.write(RECORD)).toThrow(/ENOENT/);
+        mkdirSync(join(dir, "sub"));
+        expect(writer.write(RECORD).seq).toBe(0);
+        expect(readFileSync(path, "utf8").trim().split("\n")).toHaveLength(1);
     });
 
     test("a corrupt complete last line refuses the writer instead of resuming before it", () => {

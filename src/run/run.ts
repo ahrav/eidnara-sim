@@ -4,6 +4,7 @@ import {
     existsSync,
     lstatSync,
     mkdirSync,
+    readdirSync,
     readFileSync,
     readlinkSync,
     realpathSync,
@@ -96,10 +97,10 @@ const realExisting = (path: string): string => {
     return join(realpathSync(probe), path.slice(probe.length));
 };
 
-const within = (path: string, dir: string) => path === dir || path.startsWith(`${dir}/`);
+const within = (path: string, dir: string) =>
+    dir === "/" || path === dir || path.startsWith(`${dir}/`);
 
 const ARTIFACTS = [
-    "lease.json",
     `lease.${process.pid}.tmp`,
     "journal.jsonl",
     "scenario.json",
@@ -140,7 +141,10 @@ export function requirePlainArtifacts(out: string, arms: readonly string[]): voi
         join(arm, "state.json"),
         join(arm, `state.json.${process.pid}`),
     ]);
-    for (const rel of [...dirs, ...ARTIFACTS, ...files]) {
+    const leases = existsSync(out)
+        ? readdirSync(out).filter((name) => /^lease\.\d+\.json$/.test(name))
+        : [];
+    for (const rel of [...dirs, ...ARTIFACTS, ...leases, ...files]) {
         const path = join(out, rel);
         const stat = lstatSync(path, { throwIfNoEntry: false });
         if (!stat) continue;
@@ -161,11 +165,15 @@ export function requirePlainArtifacts(out: string, arms: readonly string[]): voi
  * Run outputs and the Eidnara checkout stay disjoint, by resolved path: arm resets delete output
  * subtrees, and an output directory above the checkout would derive an arm root inside it.
  */
-export function requireOutsideCheckout(out: string, checkout: string): void {
+export function requireOutsideCheckout(
+    out: string,
+    checkout: string,
+    what = "the Eidnara checkout",
+): void {
     const dir = realExisting(resolve(checkout));
     const target = realExisting(resolve(out));
     if (within(target, dir) || within(dir, target)) {
-        throw new HarnessFailure(`--out ${out} overlaps the Eidnara checkout ${checkout}`);
+        throw new HarnessFailure(`--out ${out} overlaps ${what} ${checkout}`);
     }
 }
 
@@ -190,20 +198,30 @@ export function requireOutsideIdentity(out: string, root = ROOT): void {
 
 /**
  * A resumed journal's entries follow the run's state machine: `StartRun` precedes every arm
- * entry, each arm's entries sit between its `StartArm` and at most one `EndArm`, and a turn or job
- * closes at most once. A planted or reordered entry refuses the resume before it drives recovery.
+ * entry, each arm's entries sit between its `StartArm` and at most one `EndArm`, and an `EndTurn`
+ * or `EndJob` closes an item that is open. A planted or reordered entry refuses the resume before
+ * it drives recovery.
  */
-export function requireJournalShape(entries: readonly Entry[]): void {
+export function requireJournalShape(
+    entries: readonly Entry[],
+    scheduled?: readonly string[],
+): void {
+    const position = new Map((scheduled ?? []).map((id, i) => [id, i]));
+    const cursor = new Map<string, number>();
     const bad = (e: Entry, why: string) =>
         new HarnessFailure(`journal entry ${e.seq} (${e.kind}) ${why}`);
     let started = false;
     const arms = new Map<string, "open" | "ended">();
-    const ended = new Set<string>();
+    const open = new Set<string>();
     for (const e of entries) {
         if (e.kind === "Preflight") continue;
-        if (e.kind === "StartRun" || e.kind === "ResumeRun") {
-            if (e.kind === "StartRun" && started) throw bad(e, "repeats StartRun");
+        if (e.kind === "StartRun") {
+            if (started) throw bad(e, "repeats StartRun");
             started = true;
+            continue;
+        }
+        if (e.kind === "ResumeRun") {
+            if (!started) throw bad(e, "precedes StartRun");
             continue;
         }
         if (!started) throw bad(e, "precedes StartRun");
@@ -216,12 +234,26 @@ export function requireJournalShape(entries: readonly Entry[]): void {
         }
         if (state !== "open") throw bad(e, state ? "follows EndArm" : "precedes StartArm");
         if (e.kind === "EndArm") arms.set(e.arm, "ended");
+        if (e.kind === "BeginTurn") open.add(`${e.arm}/turn/${String(e.event)}`);
+        if (e.kind === "RegisterJob") open.add(`${e.arm}/job/${String(e.job)}`);
         if (e.kind === "EndTurn" || e.kind === "EndJob") {
-            const key = `${e.arm}/${e.kind}/${String(e.event ?? e.job)}`;
-            if (ended.has(key)) throw bad(e, "closes an item twice");
-            ended.add(key);
+            const item = e.kind === "EndTurn" ? `turn/${String(e.event)}` : `job/${String(e.job)}`;
+            if (!open.delete(`${e.arm}/${item}`)) throw bad(e, `closes ${item}, which is not open`);
+        }
+        if (e.kind === "Event" && scheduled) {
+            const at = position.get(String(e.event));
+            const next = cursor.get(e.arm) ?? 0;
+            if (at === undefined) throw bad(e, `names unscheduled event ${String(e.event)}`);
+            if (at !== next) throw bad(e, `is not the next scheduled event (${String(e.event)})`);
+            cursor.set(e.arm, at + 1);
         }
     }
+}
+
+/** The manifest's execution fields (everything but the per-invocation preflight), as one digest. */
+export function manifestIdentity(manifest: Manifest): string {
+    const { preflight: _preflight, ...fields } = manifest;
+    return sha256Hex(canonicalJson(fields));
 }
 
 /** A JSONL artifact's unterminated final line is a cut write; it is removed before appending. */
@@ -389,6 +421,17 @@ function strategyProblems(
         if (strategy !== expected) problems.push(`${type} uses the ${expected} strategy`);
         return problems;
     }
+    const allowed: Record<string, string[]> = {
+        single: [],
+        burst: ["count"],
+        intermittent: ["probability", "calls"],
+        persistent: [],
+    };
+    for (const key of ["count", "calls", "probability"]) {
+        if (key in params && !(allowed[strategy] ?? []).includes(key)) {
+            problems.push(`${key} does not apply to the ${strategy} strategy`);
+        }
+    }
     if (strategy === "burst" && typeof params.count !== "number")
         problems.push("burst needs count");
     if (strategy === "intermittent") {
@@ -459,6 +502,7 @@ export function faultOverride(raw: unknown, scenario: Scenario): FaultEpisode[] 
 function validateEpisodes(raw: unknown[], scenario: Scenario, source: string): void {
     const turns = new Map(scenario.sessions.map((x) => [x.id, x.requests]));
     const ids = new Set<string>();
+    const perSession = new Set<string>();
     raw.forEach((value, i) => {
         const problems = episodeProblems(value);
         if (problems.length > 0) {
@@ -467,6 +511,35 @@ function validateEpisodes(raw: unknown[], scenario: Scenario, source: string): v
         const episode = value as FaultEpisode;
         if (ids.has(episode.id)) throw new HarnessFailure(`${source}: duplicate id ${episode.id}`);
         ids.add(episode.id);
+        if (episode.type === "daemon_sigkill_mid_fold" || episode.type === "laptop_sleep") {
+            const key = `${episode.type}/${episode.trigger.session}`;
+            if (perSession.has(key)) {
+                throw new HarnessFailure(
+                    `${source}: two ${episode.type} episodes target session ${episode.trigger.session}`,
+                );
+            }
+            perSession.add(key);
+        }
+        if (episode.type === "laptop_sleep") {
+            const events = scenario.events.map((e) => ({
+                kind: String(e.kind),
+                session: String(e.session),
+                scenario_ms: Number(e.scenario_ms),
+            }));
+            const at = events.findIndex(
+                (e) => e.kind === "session_start" && e.session === episode.trigger.session,
+            );
+            const before = at > 0 ? (events[at - 1]?.scenario_ms ?? null) : null;
+            const gap = at >= 0 && before !== null && (events[at]?.scenario_ms ?? 0) > before;
+            if (!gap) {
+                throw new HarnessFailure(
+                    `${source}: laptop_sleep ${episode.id} targets session ${episode.trigger.session}, which has no idle gap before its start`,
+                );
+            }
+        }
+        if (episode.type === "store_full" && episode.params.sessions !== 1) {
+            throw new HarnessFailure(`${source}: store_full supports sessions: 1 only`);
+        }
         try {
             validateFault(episode, turns);
         } catch (caught) {
@@ -503,28 +576,46 @@ function eventCount(requested: number | undefined, compiled: number): number {
     return requested;
 }
 
-/** The lock file that pins the Pi install's dependency tree, whichever package manager wrote it. */
-function piLock(config: SimConfig): string {
-    const names = ["package-lock.json", "bun.lock", "bun.lockb", "pnpm-lock.yaml", "yarn.lock"];
-    return names.map((n) => join(config.pi_install, n)).find((p) => existsSync(p)) ?? "absent";
-}
-
 /** Every regular file under `dir`, hashed by length-framed relative path and content. */
 function directoryDigest(dir: string): string {
     const hash = createHash("sha256");
-    const files = [
-        ...new Bun.Glob("**/*").scanSync({ cwd: dir, dot: true, onlyFiles: true }),
-    ].sort();
-    for (const rel of files) {
+    const entries: string[] = [];
+    const walk = (rel: string) => {
+        for (const name of readdirSync(join(dir, rel)).sort()) {
+            const child = rel === "" ? name : `${rel}/${name}`;
+            const stat = lstatSync(join(dir, child));
+            if (stat.isDirectory()) walk(child);
+            else entries.push(child);
+        }
+    };
+    walk("");
+    for (const rel of entries) {
+        const stat = lstatSync(join(dir, rel));
+        const content = stat.isSymbolicLink()
+            ? Buffer.from(`->${readlinkSync(join(dir, rel))}`)
+            : stat.isFile()
+              ? readFileSync(join(dir, rel))
+              : Buffer.from(`?${stat.mode}`);
         const name = Buffer.from(rel);
-        const content = readFileSync(join(dir, rel));
         hash.update(`${name.length}:`).update(name).update(`${content.length}:`).update(content);
     }
     return hash.digest("hex");
 }
 
 /** The OpenCode SDK module the host stack imports from the Eidnara checkout (`src/hosts/arms.ts`). */
-const OPENCODE_SDK = "packages/e2e-tests/node_modules/@opencode-ai/sdk/dist/index.js";
+const OPENCODE_SDK = "packages/e2e-tests/node_modules/@opencode-ai/sdk";
+
+/** Every input the manifest pins besides the scenario hash, recomputed from the live environment. */
+export function runIdentity(config: SimConfig, prereg: Preregistration, projects: string[]) {
+    return {
+        prereg_sha256: preregistrationHash(prereg),
+        ...eidnaraIdentity(config.eidnara_checkout),
+        ...simIdentity(),
+        binaries: binaryDigests(config),
+        corpus: corpusIdentity(projects),
+        bedrock: { region: config.bedrock.region, aws_profile: config.bedrock.aws_profile },
+    };
+}
 
 const simIdentity = () => {
     const { commit, worktree } = treeIdentity(ROOT);
@@ -545,23 +636,24 @@ export function corpusIdentity(
 }
 
 /**
- * Runtime artifacts the hosts load, hashed by content. The interposer and the OpenCode SDK are
- * `absent` when not yet built or not installed; preflight builds the interposer before this runs.
+ * Runtime artifacts the hosts load, hashed by content; the Pi install is hashed as a whole tree,
+ * since Node resolves the CLI's dependencies anywhere under it. The interposer and the OpenCode
+ * SDK are `absent` when not yet built or not installed; preflight builds the interposer first.
  */
 function binaryDigests(config: SimConfig): Record<string, string> {
     const files = {
         daemon: config.daemon_binary,
         opencode: config.opencode_binary,
         pi: piCli(config),
-        pi_package: dirname(dirname(piCli(config))),
-        pi_lock: piLock(config),
+        pi_install: config.pi_install,
         faketime: FAKETIME_LIB,
         node: realpathSync(Bun.which("node") ?? "node"),
         opencode_sdk: join(config.eidnara_checkout, OPENCODE_SDK),
+        opencode_sdk_lock: join(config.eidnara_checkout, "packages/e2e-tests/bun.lock"),
     };
     return Object.fromEntries(
         Object.entries(files).map(([name, path]) => {
-            const optional = name === "opencode_sdk" || name === "faketime" || name === "pi_lock";
+            const optional = name.startsWith("opencode_sdk") || name === "faketime";
             if (optional && !existsSync(path)) return [name, "absent"];
             if (lstatSync(path).isDirectory()) return [name, directoryDigest(path)];
             return [name, createHash("sha256").update(readFileSync(path)).digest("hex")];
@@ -611,12 +703,11 @@ export async function loadManifest(
     };
     const digests = {
         scenario_hash: scenario.scenario_hash,
-        prereg_sha256: preregistrationHash(preregOf(o)),
-        ...eidnaraIdentity(o.config.eidnara_checkout),
-        ...simIdentity(),
-        binaries: binaryDigests(o.config),
-        corpus: corpusIdentity(scenario.projects.map((p) => p.id)),
-        bedrock: { region: o.config.bedrock.region, aws_profile: o.config.bedrock.aws_profile },
+        ...runIdentity(
+            o.config,
+            preregOf(o),
+            scenario.projects.map((p) => p.id),
+        ),
     };
     if (existsSync(path)) {
         const manifest = readJsonFile<Manifest>(path);
@@ -669,8 +760,16 @@ export async function loadManifest(
         if (!sameJson(hostRow(manifest.preflight), hostRow(checks))) {
             throw new HarnessFailure(`the ${o.host} host changed since the run started`);
         }
+        if (manifest.fault_override !== null) {
+            if (!Array.isArray(manifest.fault_override)) {
+                throw new HarnessFailure("manifest.json fault_override is not an array");
+            }
+            validateEpisodes(manifest.fault_override, scenario, "manifest.json fault_override");
+        }
         requireMechanisms(manifest.fault_override ?? scenario.faults, manifest.models);
-        appendFileSync(join(o.out, "preflight.jsonl"), `${JSON.stringify(checks)}\n`);
+        const preflightLog = join(o.out, "preflight.jsonl");
+        dropCutTail(preflightLog);
+        appendFileSync(preflightLog, `${JSON.stringify(checks)}\n`);
         return { manifest, checks };
     }
     requireMechanisms(wanted.fault_override ?? scenario.faults, wanted.models);
@@ -711,7 +810,9 @@ export async function runSteps(steps: Array<() => Promise<void> | void>): Promis
 
 export async function runTier(o: RunOptions): Promise<void> {
     plainPath(o.out);
+    if (resolve(o.out) === "/") throw new HarnessFailure("--out may not be the filesystem root");
     requireOutsideCheckout(o.out, o.config.eidnara_checkout);
+    requireOutsideCheckout(o.out, o.config.pi_install, "the Pi install");
     requireOutsideIdentity(o.out);
     requirePinnedPath(o.config);
     mkdirSync(o.out, { recursive: true });
@@ -826,12 +927,24 @@ async function runArms(
     requireJournalShape(journal.entries);
     const compiled = await tracked(() => loadScenario(o));
     const { manifest, checks } = await tracked(() => loadManifest(o, compiled));
+    requireJournalShape(
+        journal.entries,
+        compiled.events.slice(0, manifest.events).map((e) => String(e.id)),
+    );
+    const bound = journal.entries.find((e) => e.kind === "Preflight")?.manifest_sha256;
+    const manifestDigest = manifestIdentity(manifest);
+    if (typeof bound === "string" && bound !== manifestDigest) {
+        throw new HarnessFailure(
+            "manifest.json differs from the manifest this run's journal binds",
+        );
+    }
     journal.append({
         kind: "Preflight",
         arm: null,
         scenario_ms: 0,
         time_injection: checks.time_injection,
         hosts: checks.hosts,
+        manifest_sha256: manifestDigest,
     });
     const scenario = { ...compiled, faults: manifest.fault_override ?? compiled.faults };
     const events: ScenarioEvent[] = scenario.events
@@ -844,7 +957,13 @@ async function runArms(
     const proxyFaults = scenario.faults.filter((f) => f.seam.layer === "proxy-sink");
     const injector = new FaultInjector(proxyFaults, new Rng((seed ^ 0x5bd1e995) >>> 0), 120_000);
     const callsPath = join(o.out, "calls.jsonl");
-    injector.restore(readRecords(callsPath));
+    const priorCalls = readRecords(callsPath);
+    injector.restore(priorCalls);
+    for (const e of journal.entries) {
+        if (e.kind === "FaultFired" && e.layer === "proxy-sink" && typeof e.arm === "string") {
+            injector.armedBefore(String(e.fault), e.arm);
+        }
+    }
     /** This invocation's witness report, appended once: before `EndRun`, or at teardown otherwise. */
     const witnessed = { done: false };
     const writeWitnesses = () => {
@@ -896,6 +1015,7 @@ async function runArms(
             return () => scheduler.jobEnd(id);
         },
         requestDeadlineMs: prereg.liveness_bounds.turn_deadline_ms,
+        firstArrival: priorCalls.reduce((n, r) => Math.max(n, (r.arrival ?? r.seq) + 1), 0),
     });
     await gateway.start();
     const handlersFailed = () => {

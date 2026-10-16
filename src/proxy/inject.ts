@@ -66,6 +66,11 @@ export class FaultInjector {
         w.armed = true;
     }
 
+    /** Records that an earlier invocation armed the episode for `arm`, without arming it now. */
+    armedBefore(id: string, arm: string): void {
+        if (this.faults.some((f) => f.id === id)) this.witness(arm, id).armed = true;
+    }
+
     disarm(id: string, arm: string): void {
         this.armed.delete(`${arm}/${id}`);
     }
@@ -129,8 +134,9 @@ export class FaultInjector {
      * the live pending list starts empty.
      */
     restore(prior: CallRecord[]): void {
+        const order = (r: CallRecord) => r.arrival ?? r.seq;
         const byStart = [...prior].sort(
-            (a, b) => a.started_wall_ms - b.started_wall_ms || a.seq - b.seq,
+            (a, b) => a.started_wall_ms - b.started_wall_ms || order(a) - order(b),
         );
         byStart.forEach((record, call) => {
             const known =

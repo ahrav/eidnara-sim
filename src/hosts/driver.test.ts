@@ -17,6 +17,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "../config/config";
 import { sandboxAvailable, writeLauncher } from "../run/launcher";
+import { running } from "../run/procs";
 import type { ScenarioEvent } from "../run/scheduler";
 import { type FaultType, SEAMS } from "../scenario/faults";
 import type { DaemonStack, HostContext, PromptResult, SimHost } from "./arms";
@@ -42,7 +43,18 @@ const tmp = () => {
 
 const BASE_MS = Date.UTC(2031, 0, 1);
 const sandbox = sandboxAvailable();
-const sudo = spawnSync("sudo", ["-n", "true"]).status === 0;
+/** The mount tests need a real mount, which some containers deny even with a passwordless sudo. */
+const sudo = (() => {
+    if (spawnSync("sudo", ["-n", "true"]).status !== 0) return false;
+    const probe = mkdtempSync(join(tmpdir(), "sim-mount-probe-"));
+    try {
+        if (spawnSync("sudo", ["-n", "mount", "--bind", probe, probe]).status !== 0) return false;
+        spawnSync("sudo", ["-n", "umount", probe]);
+        return true;
+    } finally {
+        rmSync(probe, { recursive: true, force: true });
+    }
+})();
 
 class FakeHost {
     opened: string[] = [];
@@ -442,7 +454,7 @@ touch ${escaped}
             const { driver, root } = fixture("eidnara", {}, { daemonFactory });
             try {
                 await driver.reset();
-                const runtime = join(root, "eidnara", "r", "runtime");
+                const runtime = join(root, "eidnara", "runtime");
                 rmSync(runtime, { recursive: true, force: true });
                 symlinkSync(tmp(), runtime);
                 await expect(driver.fault(episode("daemon_restart"))).rejects.toThrow("leaves");
@@ -486,7 +498,7 @@ touch ${escaped}
             try {
                 await driver.reset();
                 await driver.stop();
-                const runtime = join(root, "eidnara", "r", "runtime");
+                const runtime = join(root, "eidnara", "runtime");
                 rmSync(runtime, { recursive: true, force: true });
                 symlinkSync(tmp(), runtime);
                 fresh = new HostDriver((driver as unknown as { o: DriverOptions }).o);
@@ -705,6 +717,53 @@ touch ${escaped}
         },
     );
 
+    test("a host that survives its close keeps its recorded identity for the next reap", async () => {
+        const { driver, hosts, armDir } = fixture("host", { p: gitRepo() });
+        await driver.reset();
+        const host = hosts.at(-1) as FakeHost;
+        host.pid = process.pid;
+        await driver.event(ev("session_start"));
+        host.failClose = true;
+        await expect(driver.finish()).rejects.toThrow("host survived");
+        const state = JSON.parse(readFileSync(join(armDir, "state.json"), "utf8"));
+        expect(state.host).toMatchObject({ pid: process.pid });
+        expect(state.failed).toContain("host survived");
+    });
+
+    test.skipIf(!sudo)(
+        "a link the host left at the arm root's runtime name does not block a restart",
+        async () => {
+            const daemonFactory = () =>
+                ({ ...fakeDaemon(null), start: async () => undefined }) as unknown as DaemonStack;
+            const { driver, root } = fixture("eidnara", {}, { daemonFactory });
+            try {
+                await driver.reset();
+                symlinkSync(tmp(), join(root, "eidnara", "r", "runtime"));
+                expect(await driver.fault(episode("daemon_restart"))).toMatchObject({
+                    restarted_by: "harness",
+                });
+            } finally {
+                await driver.stop().catch(() => undefined);
+            }
+        },
+    );
+
+    test.skipIf(!sudo)("a second reset of a loop-store arm succeeds", async () => {
+        const daemonFactory = (ctx: { dataDir: string }) =>
+            ({
+                ...fakeDaemon(null),
+                start: async () => void mkdirSync(ctx.dataDir, { recursive: true }),
+            }) as unknown as DaemonStack;
+        const { driver } = fixture("eidnara", {}, { loopStore: true, daemonFactory });
+        try {
+            await driver.reset();
+            await driver.reset();
+            expect(spawnSync("findmnt", ["-n", "-M", driver.storeRoot]).status).toBe(0);
+        } finally {
+            await driver.stop().catch(() => undefined);
+        }
+    });
+
     test("a finish that fails is recorded, so a resume cannot heal the arm", async () => {
         const { driver, armDir } = fixture("eidnara");
         driver.daemon = {
@@ -769,6 +828,171 @@ touch ${escaped}
         expect(driver.supports(episode("laptop_sleep"))).toBe(true);
         expect(driver.supports(episode("provider_429"))).toBe(true);
         expect(driver.supports(episode("slow_stream"))).toBe(true);
+    });
+
+    test.skipIf(!sandbox)("a filter cannot write into a configured toolchain path", async () => {
+        const tools = mkdtempSync("/var/tmp/sim-tools-");
+        dirs.push(tools);
+        const { driver } = fixture("host", { p: gitRepo() });
+        const o = (driver as unknown as { o: DriverOptions }).o;
+        o.config = { ...o.config, toolchain: { ...o.config.toolchain, keep: [tools] } };
+        await driver.reset();
+        const ws = driver.workspace("p");
+        writeFileSync(join(ws, ".gitattributes"), "* filter=poison\n");
+        spawnSync(
+            "git",
+            ["config", "filter.poison.clean", `sh -c 'touch ${tools}/poisoned; cat'`],
+            {
+                cwd: ws,
+            },
+        );
+        await driver.event(ev("apply_diff", { path: "a.txt", content: "A" }));
+        expect(existsSync(join(tools, "poisoned"))).toBe(false);
+    });
+
+    test("an apply_diff inside an open session is refused, since a host would be running", async () => {
+        const { driver } = fixture("host", { p: gitRepo() });
+        await driver.reset();
+        await driver.event(ev("session_start"));
+        const diff = ev("apply_diff", { path: "a.txt", content: "A" });
+        await expect(driver.event(diff)).rejects.toThrow("between sessions");
+    });
+
+    test("the reaper stops a daemon the killed harness started against this arm's store", async () => {
+        const { driver } = fixture("eidnara");
+        const orphan = Bun.spawn([
+            "sh",
+            "-c",
+            "sleep 300; true",
+            "sh",
+            "--state-root",
+            driver.dataDir,
+        ]);
+        await Bun.sleep(100);
+        const sleeper = Number(
+            spawnSync("pgrep", ["-P", String(orphan.pid)], { encoding: "utf8" }).stdout.trim(),
+        );
+        expect(sleeper).toBeGreaterThan(0);
+        mkdirSync(join(driver.storeRoot, ".."), { recursive: true });
+        writeFileSync(
+            join(driver.storeRoot, "..", "state.json"),
+            JSON.stringify({
+                model: 0,
+                daemon: null,
+                host: null,
+                ballast: null,
+                refilling: false,
+                git: null,
+                failed: null,
+            }),
+        );
+        await driver.reap();
+        await orphan.exited;
+        expect(orphan.signalCode).toBe("SIGTERM");
+        expect(running(sleeper)).toBe(false);
+    });
+
+    test("the reaper stops the OpenCode launch the wrapper recorded before the server answered", async () => {
+        const { driver, armDir } = fixture("host", { p: gitRepo() });
+        await driver.reset();
+        await driver.stop();
+        const orphan = Bun.spawn(["sleep", "300"]);
+        const start = readFileSync(`/proc/${orphan.pid}/stat`, "utf8")
+            .split(") ")[1]
+            ?.split(" ")[19];
+        writeFileSync(join(armDir, "opencode.launch"), `${orphan.pid} ${start}\n`);
+        const fresh = new HostDriver((driver as unknown as { o: DriverOptions }).o);
+        await fresh.reap();
+        await orphan.exited;
+        expect(orphan.signalCode).toBe("SIGTERM");
+    });
+
+    test.skipIf(!sandbox)("a hook cannot write into the Pi install", async () => {
+        const install = mkdtempSync("/var/tmp/sim-pi-install-");
+        dirs.push(install);
+        const { driver } = fixture("host", { p: gitRepo() });
+        const o = (driver as unknown as { o: DriverOptions }).o;
+        o.config = { ...o.config, pi_install: install };
+        await driver.reset();
+        const ws = driver.workspace("p");
+        writeFileSync(join(ws, ".git/hooks/post-commit"), `#!/bin/sh\ntouch ${install}/planted\n`, {
+            mode: 0o755,
+        });
+        await driver.event(ev("apply_diff", { path: "a.txt", content: "A" }));
+        expect(existsSync(join(install, "planted"))).toBe(false);
+    });
+
+    test.skipIf(!sandbox)(
+        "a git run cut off while committing leaves no ref lock behind",
+        async () => {
+            const { driver } = fixture("host", { p: gitRepo() });
+            await driver.reset();
+            const ws = driver.workspace("p");
+            writeFileSync(
+                join(ws, ".git/hooks/reference-transaction"),
+                "#!/bin/sh\nexec sleep 300\n",
+                {
+                    mode: 0o755,
+                },
+            );
+            writeFileSync(join(ws, ".git/HEAD.lock"), "");
+            await expect(
+                driver.event(ev("apply_diff", { path: "a.txt", content: "A" })),
+            ).rejects.toThrow(/git commit/);
+            expect(existsSync(join(ws, ".git/HEAD.lock"))).toBe(false);
+            expect(existsSync(join(ws, ".git/index.lock"))).toBe(false);
+        },
+    );
+
+    test("apply_diff refuses a workspace whose .git is a link to another repository", async () => {
+        const { driver } = fixture("host", { p: gitRepo() });
+        await driver.reset();
+        const ws = driver.workspace("p");
+        const other = gitRepo();
+        rmSync(join(ws, ".git"), { recursive: true, force: true });
+        symlinkSync(join(other, ".git"), join(ws, ".git"));
+        await expect(
+            driver.event(ev("apply_diff", { path: "a.txt", content: "A" })),
+        ).rejects.toThrow(/\.git/);
+        const log = spawnSync("git", ["log", "--format=%s", "-1"], {
+            cwd: other,
+            encoding: "utf8",
+        });
+        expect(log.stdout.trim()).toBe("init");
+    });
+
+    test("a transcript store of the wrong kind counts as missing", async () => {
+        const { driver, transcripts } = fixture("host");
+        await driver.reset();
+        mkdirSync(transcripts, { recursive: true });
+        writeFileSync(join(transcripts, "sessions"), "a file where the directory should be");
+        await expect(driver.event(ev("session_end"))).rejects.toThrow("transcript store missing");
+    });
+
+    test("a transcript store left as a link counts as missing", async () => {
+        const { driver, transcripts } = fixture("host");
+        await driver.reset();
+        mkdirSync(transcripts, { recursive: true });
+        symlinkSync(tmp(), join(transcripts, "sessions"));
+        await expect(driver.event(ev("session_end"))).rejects.toThrow("transcript store missing");
+    });
+
+    test("a recorded finish failure still reaps what the state names before it stops the resume", async () => {
+        const { driver, armDir } = fixture("host", { p: gitRepo() });
+        await driver.reset();
+        await driver.stop();
+        const orphan = Bun.spawn(["sleep", "300"]);
+        const start = readFileSync(`/proc/${orphan.pid}/stat`, "utf8")
+            .split(") ")[1]
+            ?.split(" ")[19];
+        const state = JSON.parse(readFileSync(join(armDir, "state.json"), "utf8"));
+        state.host = { pid: orphan.pid, start };
+        state.failed = "umount: target is busy";
+        writeFileSync(join(armDir, "state.json"), JSON.stringify(state));
+        const fresh = new HostDriver((driver as unknown as { o: DriverOptions }).o);
+        await expect(fresh.reap()).rejects.toThrow("target is busy");
+        await orphan.exited;
+        expect(orphan.signalCode).toBe("SIGTERM");
     });
 
     test.skipIf(!sandbox)("a hook cannot write into the configured checkout", async () => {

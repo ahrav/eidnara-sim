@@ -13,7 +13,8 @@ checkout, checks out its `HEAD`, and builds every artefact inside the clone,
 so the source checkout itself stays read-only; it refuses a clone path that
 is the checkout or lies beneath it, and reuses an existing clone only when
 its `.sim-build-source` names the same checkout. It refuses a symlink at `<clone>.lock`, holds the lock with `flock` for the whole build, so a second build of the same clone is
-refused. A first clone is made in a fresh `<clone>.partial.XXXXXX` directory that
+refused, and it reuses a clone only when its `.git` is a real directory
+inside the clone. A first clone is made in a fresh `<clone>.partial.XXXXXX` directory that
 holds an owner record, and is renamed into place once it carries its source
 record; the next build removes only partial directories whose owner record
 names the same source. A source that tracks either
@@ -55,7 +56,9 @@ deletes the arm root and store, clones each scenario repository into a
 workspace, and, on an Eidnara arm, starts a fresh daemon through the v1
 `HermeticHostStack` with the interposer environment. `finish` runs after the
 arm's last event, before `EndArm`: it closes the host, stops the daemon with
-SIGTERM so its store stays on disk, and unmounts the store; the daemon's
+SIGTERM so its store stays on disk, and unmounts the store; a host or daemon
+whose teardown fails stays held with its recorded identity, so the failure's
+state names it for the next reap; the daemon's
 output reaches `<arm>/daemon.log` as it is written.
 
 `DaemonStack` starts the daemon through the v1 `HermeticHostStack` with the
@@ -69,9 +72,12 @@ regular file, so a symlink or FIFO left there fails the append without
 blocking, and the first such failure surfaces at stop together with a failed
 SIGKILL fallback.
 
-Each `session_start` launches one host process in the session's workspace,
-which must lie below a kept path since the launcher masks the run root,
-through the sandbox launcher, and each `session_end` closes it; when the readiness check fails or Pi
+The sandbox has its own mount, pid, and System V IPC namespaces. `closeSession`
+keeps its host handle until the whole teardown succeeds, so a failed close
+can be retried. Each `session_start` launches one host process in the
+session's workspace, which must lie below a kept path since the launcher
+masks the run root, through the sandbox launcher, and each `session_end`
+closes it; when the readiness check fails or Pi
 refuses it, or the OpenCode SDK setup or session listing fails after the
 launch, `openSession` closes the session it started before it throws. The
 control files the hosts write under the arm root (Pi's settings, model list,
@@ -84,9 +90,10 @@ directory and the daemon's runtime directory are regenerated on every start,
 so they are removed first. The sandbox runs the host under
 root-owned `sudo` and `unshare`, so closing a host walks the launcher's
 process tree and signals every process the user owns, with SIGKILL after
-10 s; a process that survives SIGKILL stops the run, and so does a launcher
-root that has not exited by then, since a launcher still in its privileged
-setup has no user-owned process to signal. The launcher root's start time is
+10 s; what is left of a launch whose identity was pinned at spawn, including a
+launcher still root-owned in its privileged setup, is then killed through the
+passwordless `sudo` the launcher runs under, and a process that survives that
+stops the run. The launcher root's start time is
 taken when it is spawned, so a root pid the kernel has since reused is left
 alone, and a launch whose start time could not be read is not signalled. Each pid in that walk is
 paired with its start time and checked against it before every signal, so a
@@ -105,11 +112,13 @@ Both waits are bounded by the turn's remaining time (the state check gets at
 least 1 s), and a refused `get_state` counts as unsettled, so the turn goes
 through the abort and drain below. A prompt Pi refuses in preflight starts no
 turn, so its error is returned at once. After a Pi turn fails, the host
-aborts it and waits up to 30 s for its `agent_end`; a turn still running then
+aborts it and, alongside the abort, waits up to 30 s for its `agent_end`; a turn still running then
 stops the run, so a late end cannot finish the next turn. OpenCode turns race the deadline,
-abort the session (waiting at most 5 s for the abort call), and wait 30 s for
+abort the session (waiting at most 30 s for the abort call), and wait 30 s for
 the call to drain; a call still running then stops the run, and so does an
 abort call still pending after 30 s, since it would cancel the next turn,
+an OpenCode session setup (listing or creating the session) still pending
+after 120 s,
 and so does an abort the server does not confirm with `true`. A
 prompt request that fails before the server answers is aborted the same way,
 and an abort that fails stops the run, since the turn's completion cannot be
@@ -122,7 +131,9 @@ resolves outside the workspace through `..` or a symlink stops the run before
 any directory is created. The file is written whole and renamed into place,
 so a hard link the agent left at the path keeps its other name's content, and
 the `git add` and `git commit` run inside the arm's sandbox under the turn
-deadline, with the build clone read-only and a fresh environment, so a hook,
+deadline, with the hosts' read-only paths (toolchains, the interposer, the
+build clone, the Pi, Node, and OpenCode installs) read-only and a fresh
+environment, and only against a `.git` that is the workspace's own directory, so a hook,
 filter, or config the agent planted in the repository acts with the host's
 own view of the filesystem and sees none of the harness's variables, and a
 hook that hangs stops the run instead of the harness. The run's pid is in
@@ -131,14 +142,19 @@ until the record is written, then execs the launcher, so the recorded pid is
 the launcher's `sudo` and the deadline's `timeout` runs inside the sandbox),
 so a resume stops one the killed harness left behind and removes its
 `index.lock` before replaying the event; a run that fails removes its own
-`index.lock`, and both removals leave a `.git` that is a link alone. The commit's author and committer dates are the
+`index.lock`, `HEAD.lock`, `packed-refs.lock`, and any ref lock, and both
+removals leave a `.git` that is a link alone. The commit's author and committer dates are the
 event's scenario instant (`baseMs + scenario_ms`), so paired arms and a
 resumed delivery produce the same commit. Every session and `apply_diff`
 requires the workspace to resolve to the real `<arm>/r/workspaces/<project>`;
 a symlink the agent put at it or above it stops the run, since the harness
 and the launcher would follow it with their own privileges; the daemon's
 `runtime` and data directories get the same check before every daemon start
-and restart.
+and restart; the data directory is bound to itself, so it is a mount point
+the host cannot rename or replace while a restart writes under it, and the
+daemon's harness runtime lives at `<arm>/runtime`, beside the arm and outside
+every path the host can write, so a restart executes what the harness
+generated.
 
 Each host process starts in the session's workspace, which the launcher
 enters after its privilege drop. Pi runs in RPC mode with `--session-id sim-<session>`, its agent directory,
@@ -180,7 +196,10 @@ remounted read-only too), and its `env` sets `CARGO_HOME`, `RUSTUP_HOME`,
 and `BUN_INSTALL_CACHE_DIR`, the only variables `toolchain.env` accepts, since
 a variable that selects an executable would bypass preflight. The hosts replace `HOME`, and Bun resolves its
 cache from `HOME` unless that variable names it, so the variable is what points
-`bun install` at the kept cache. The agent builds and tests against the
+`bun install` at the kept cache. Preflight requires each of these paths to lie
+under a read-only keep path or under a masked root (the home or `/tmp`, which
+each sandbox sees as its own empty tmpfs), so no arm writes a tool home or
+cache another arm reads. The agent builds and tests against the
 dependencies already in those caches; fetching a dependency they lack fails
 against those caches. The sandbox keeps the host network namespace, since the
 hosts reach the proxy over loopback, so an agent that points a cache at its
@@ -217,8 +236,16 @@ store sits under the user's home.
 The driver keeps `<arm>/state.json` current with the model index and the
 pid and start time of the daemon and of the host while a session is open,
 replacing the file whole so a kill mid-write leaves the previous state. Pi's
-pid is recorded as soon as its process exists, before the readiness wait;
-OpenCode's once `spawnOpencode` returns, before the SDK setup. The state
+pid is recorded as soon as its process exists, before the readiness wait, and
+the launcher runs only once that record is written (the gating shell waits
+on a pipe the driver releases after the write);
+OpenCode's once `spawnOpencode` returns, before the SDK setup; the OpenCode
+wrapper also writes its own pid and start time to `<arm>/opencode.launch`
+(staged and renamed whole; a record it cannot write ends the wrapper before
+the launcher) before it execs the launcher, so a harness killed while the
+server starts leaves a record the next resume reaps. A daemon the fixture spawned before
+the harness died carries this arm's data directory as its `--state-root`, and
+the reaper finds and stops it by that argument. The state
 also carries the length and allocated blocks of an active `store_full`
 ballast (cleared before the file goes, so a kill in between leaves a leftover
 the resume removes), a `refilling` flag while a resume has removed the ballast
@@ -229,9 +256,10 @@ that is a link (a sparse replacement, a punched hole, or a look-alike
 elsewhere all count), or on a recorded gap, since neither may heal.
 A new harness process calls `reap()` and then `resume(open)` on an arm that
 has `StartArm` and no `EndArm`; an arm whose every event is journaled is only
-reaped and finished. `reap` requires the state, refuses an arm whose `finish`
-failed earlier (the state records the failure, so a resume cannot heal it),
-and stops each recorded process, host first,
+reaped and finished. `reap` requires the state, stops each recorded process, host first,
+and then refuses an arm whose `finish` failed earlier (the state records the
+failure, so a resume cannot heal it, while the reap still releases what it
+can),
 whose start time still matches, then unmounts a store left mounted; every
 step runs and the first failure surfaces afterwards (a process that outlives
 SIGTERM and SIGKILL stops the resume with `HarnessFailure`),
@@ -256,7 +284,10 @@ with the `umount` error.
 After an arm's first `session_end`, the driver expands the preflight's
 transcript-store paths for the host version with the host's own variables
 (`$PI_CODING_AGENT_DIR`, `$XDG_DATA_HOME`) and writes the result to
-`<arm>/transcripts.json`. A missing path stops the run (OQ-7).
+`<arm>/transcripts.json`. A missing path stops the run (OQ-7); a link, or a
+node of the other kind (`TRANSCRIPT_STORES` names `opencode.db` as the one
+file, the rest are directories), left where the store should be counts as
+missing.
 
 ## Infrastructure faults
 
@@ -274,9 +305,10 @@ against the same store (OQ-10).
 | `model_switch` | Later sessions use the next configured model; the daemon keeps running with its summarizer model | The new model id |
 | `laptop_sleep` | One event-free clock jump (`docs/run.md`) | The `AdvanceClock` entry |
 
-`daemon_restart`, `plugin_reload`, and `model_switch` fire between sessions;
-one fired inside a
-session stops the run. A scheduler-layer fault type with no mechanism here
+`daemon_restart`, `plugin_reload`, `model_switch`, `store_full`, and
+`apply_diff` fire between sessions, while the host is stopped, so the
+harness's writes (the ballast among them) meet no concurrent host process;
+one fired inside a session stops the run. A scheduler-layer fault type with no mechanism here
 (`host_upgrade`, `two_hosts_one_daemon`) stops the run before `StartRun`,
 through the driver's `supports`, so a resume cannot heal it; provider faults
 belong to the proxy and the sleep to the clock, so `supports` accepts them.

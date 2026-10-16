@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { launch, sandboxAvailable, writeLauncher } from "./launcher";
-import { ownedProcesses, processStart, running, stopOwnedTree } from "./procs";
+import { childrenByParent, ownedProcesses, processStart, running, stopOwnedTree } from "./procs";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -85,6 +85,51 @@ test("a process start time identifies one process across pid reuse", () => {
     expect(processStart(2 ** 22 + 7)).toBeNull();
 });
 
+test.skipIf(!sandboxAvailable())(
+    "stopping the launcher's tree during its privileged setup still ends the command it starts",
+    async () => {
+        const r = root();
+        const argv = launch(writeLauncher(r), [], {}, ["/bin/sh", "-c", "exec /bin/sleep 300"]);
+        const child = spawn(argv[0] as string, argv.slice(1), { stdio: "ignore" });
+        const pid = child.pid as number;
+        const stopping = stopOwnedTree(pid, 5_000);
+        expect(await stopping).toBe(true);
+        await Bun.sleep(200);
+        const sleepers = Bun.spawnSync(["pgrep", "-f", "^/bin/sleep 300$"])
+            .stdout.toString()
+            .trim();
+        expect(sleepers).toBe("");
+    },
+);
+
+test("a pinned root whose pid now belongs to another process is left alone, with nothing walked under it", async () => {
+    const child = spawn("/bin/sh", ["-c", "sleep 300; true"], { stdio: "ignore" });
+    const pid = child.pid as number;
+    await Bun.sleep(50);
+    const stopping = stopOwnedTree(pid, 500, "1");
+    expect(await stopping).toBe(true);
+    expect(running(pid)).toBe(true);
+    child.kill("SIGKILL");
+    for (const grandchild of childrenByParent(pid)) process.kill(grandchild, "SIGKILL");
+});
+
+test("descendants are found by parent pid when the task children files are unavailable", async () => {
+    const child = spawn("/bin/sh", ["-c", "sleep 300; true"], { stdio: "ignore" });
+    const pid = child.pid as number;
+    let grandchild: number | undefined;
+    for (let i = 0; i < 100 && grandchild === undefined; i++) {
+        await Bun.sleep(20);
+        grandchild = childrenByParent(pid)[0];
+    }
+    try {
+        expect(grandchild).toBeGreaterThan(0);
+        expect(ownedProcesses(pid)).toContain(grandchild as number);
+    } finally {
+        child.kill("SIGKILL");
+        if (grandchild) process.kill(grandchild, "SIGKILL");
+    }
+});
+
 test.skipIf(!sandboxAvailable())("a launch with a kept cwd starts the command there", () => {
     const r = root();
     const kept = realpathSync(mkdtempSync("/var/tmp/sim-kept-"));
@@ -133,13 +178,14 @@ test.skipIf(!canMount())("a mount nested inside a read-only path is read-only to
 });
 
 test.skipIf(!canMount())(
-    "a launcher still privileged at teardown makes the stop report failure",
+    "a launcher still privileged at teardown is killed through sudo",
     async () => {
         const child = spawn("sudo", ["-n", "sleep", "300"], { stdio: "ignore" });
         const pid = child.pid as number;
         await Bun.sleep(300);
         try {
-            expect(await stopOwnedTree(pid, 300)).toBe(false);
+            expect(await stopOwnedTree(pid, 300, processStart(pid) ?? undefined)).toBe(true);
+            expect(running(pid)).toBe(false);
         } finally {
             Bun.spawnSync(["sudo", "-n", "pkill", "-KILL", "-P", String(pid)]);
             Bun.spawnSync(["sudo", "-n", "kill", "-KILL", String(pid)]);
@@ -156,5 +202,36 @@ test("a root pid whose start time no longer matches its launch is left alone", a
         expect(running(pid)).toBe(true);
     } finally {
         child.kill("SIGKILL");
+    }
+});
+
+test.skipIf(!sandboxAvailable() || Bun.which("ipcmk") === null)(
+    "the sandbox has its own System V IPC namespace",
+    () => {
+        const made = Bun.spawnSync(["ipcmk", "-M", "4096"]).stdout.toString();
+        const id = made.match(/(\d+)/)?.[1] as string;
+        try {
+            const r = root();
+            const argv = launch(writeLauncher(r), [], {}, ["/bin/sh", "-c", `ipcs -m -i ${id}`]);
+            const result = Bun.spawnSync(argv, { stdout: "pipe", stderr: "pipe" });
+            expect(result.stderr.toString()).toContain(`id ${id} not found`);
+        } finally {
+            Bun.spawnSync(["ipcrm", "-m", id]);
+        }
+    },
+);
+
+test.skipIf(!canMount())("a nested mount whose path has a space is remounted read-only", () => {
+    const r = root();
+    const ro = join(r, "ro");
+    const sub = join(ro, "a b");
+    mkdirSync(sub, { recursive: true });
+    expect(Bun.spawnSync(["sudo", "-n", "mount", "-t", "tmpfs", "tmpfs", sub]).exitCode).toBe(0);
+    try {
+        const argv = launch(writeLauncher(r), [], {}, ["/bin/sh", "-c", `touch '${sub}/x'`], [ro]);
+        const result = Bun.spawnSync(argv, { stdout: "pipe", stderr: "pipe" });
+        expect(result.stderr.toString()).toContain("Read-only file system");
+    } finally {
+        Bun.spawnSync(["sudo", "-n", "umount", sub]);
     }
 });

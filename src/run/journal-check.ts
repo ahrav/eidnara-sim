@@ -4,6 +4,8 @@ export interface JournalReport {
     entries: number;
     next_event_jumps: number;
     sleep_jumps: number;
+    /** Each fault-tagged jump's arm and fault id, in journal order. */
+    sleep_jump_faults: { arm: string; fault: string }[];
     decreasing_scenario_ms: number[];
     advance_while_busy: number[];
     off_schedule_jumps: number[];
@@ -29,6 +31,7 @@ export function checkJournal(entries: Entry[], schedule: Schedule): JournalRepor
         entries: entries.length,
         next_event_jumps: 0,
         sleep_jumps: 0,
+        sleep_jump_faults: [],
         decreasing_scenario_ms: [],
         advance_while_busy: [],
         off_schedule_jumps: [],
@@ -101,14 +104,17 @@ export function checkJournal(entries: Entry[], schedule: Schedule): JournalRepor
         if (Number(e.from_ms) !== previous) report.jump_origin_mismatch.push(seq);
         const from = previous;
         const pending = [...schedule.events].filter(([id]) => !done.has(id)).map(([, t]) => t);
-        const later = pending.filter((t) => t >= from);
-        if (later.length === 0 || Math.min(...later) !== ms) report.off_schedule_jumps.push(seq);
+        const later = pending.filter((t) => t > from);
+        const crossed = pending.some((t) => t >= from && t < ms);
+        const lands = ms > from && later.length > 0 && Math.min(...later) === ms;
+        if (crossed || !lands) report.off_schedule_jumps.push(seq);
         if (e.fault === undefined) {
             report.next_event_jumps++;
             continue;
         }
         report.sleep_jumps++;
-        if (pending.some((t) => t >= from && t < ms)) report.events_inside_sleep.push(seq);
+        report.sleep_jump_faults.push({ arm, fault: String(e.fault) });
+        if (crossed) report.events_inside_sleep.push(seq);
         const sleep = `${arm}/${String(e.fault)}`;
         if (slept.has(sleep)) report.repeated_sleeps.push(seq);
         slept.add(sleep);

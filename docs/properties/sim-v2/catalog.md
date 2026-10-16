@@ -1567,9 +1567,11 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: yes - `src/run/scheduler.test.ts` (resume reissues no completed
+Exercised: partial - `src/run/scheduler.test.ts` (resume reissues no completed
 event) and the live witness `resume` run (no turn rebilled, call `seq`
-contiguous); see `evidence/sim-p62-resume-does-not-reissue-completed-items.md`
+contiguous) cover the reissue half; call records carry no `call_id`, so the
+repeated-`call_id` half is not yet representable; see
+`evidence/sim-p62-resume-does-not-reissue-completed-items.md`
 Guarantee: SIM-P62: After `ResumeRun`, no `BeginTurn` appears for an item
 already terminal, and no call record repeats a pre-interrupt `call_id`.
 Check: `always` - after resume, assert no `BeginTurn` for terminal items and no

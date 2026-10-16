@@ -23,6 +23,7 @@ import {
     faultOverride,
     loadManifest,
     loadScenario,
+    manifestIdentity,
     type RunOptions,
     requireDeclaredProjects,
     requireJournalShape,
@@ -68,7 +69,11 @@ function scenarioBody(seed = 101, tier = "S") {
             { id: "s-0000", requests: 2 },
             { id: "s-0001", requests: 1 },
         ],
-        events: [{ id: "e-000000", kind: "session_start", scenario_ms: 0, session: "s-0000" }],
+        events: [
+            { id: "e-000000", kind: "session_start", scenario_ms: 0, session: "s-0000" },
+            { id: "e-000001", kind: "session_end", scenario_ms: 5, session: "s-0000" },
+            { id: "e-000002", kind: "session_start", scenario_ms: 10, session: "s-0001" },
+        ],
         faults: [],
     };
 }
@@ -144,6 +149,12 @@ describe("run inputs", () => {
         linkSync(join(out, `lease.${process.pid}.tmp`), join(root, "twin"));
         expect(() => requirePlainArtifacts(out, ["host", "eidnara"])).toThrow(/has 2 links/);
         rmSync(join(root, "twin"));
+        rmSync(join(out, `lease.${process.pid}.tmp`));
+        symlinkSync(join(root, "elsewhere.jsonl"), join(out, "lease.0.json"));
+        expect(() => requirePlainArtifacts(out, ["host", "eidnara"])).toThrow(
+            /lease.0.json is a symlink/,
+        );
+        rmSync(join(out, "lease.0.json"));
         mkdirSync(join(out, "eidnara", "state.json"));
         expect(() => requirePlainArtifacts(out, ["host", "eidnara"])).toThrow(
             /state.json is not a regular file/,
@@ -298,10 +309,33 @@ describe("run inputs", () => {
         expect(() =>
             requireJournalShape([
                 ...start,
+                e("BeginTurn", "a", { event: "t" }),
                 e("EndTurn", "a", { event: "t" }),
                 e("EndTurn", "a", { event: "t" }),
             ]),
-        ).toThrow(/closes an item twice/);
+        ).toThrow(/closes turn\/t, which is not open/);
+        expect(() => requireJournalShape([...start, e("EndTurn", "a", { event: "t" })])).toThrow(
+            /closes turn\/t, which is not open/,
+        );
+        expect(() => requireJournalShape([...start, e("EndJob", "a", { job: "j" })])).toThrow(
+            /closes job\/j, which is not open/,
+        );
+        expect(() => requireJournalShape([e("ResumeRun", null)])).toThrow(/precedes StartRun/);
+        const ids = ["e-1", "e-2"];
+        const ev = (id: string) => e("Event", "a", { event: id });
+        expect(() => requireJournalShape([...start, ev("e-1"), ev("e-2")], ids)).not.toThrow();
+        expect(() => requireJournalShape([...start, ev("e-9")], ids)).toThrow(
+            /unscheduled event e-9/,
+        );
+        expect(() => requireJournalShape([...start, ev("e-2"), ev("e-1")], ids)).toThrow(
+            /is not the next scheduled event \(e-2\)/,
+        );
+        expect(() => requireJournalShape([...start, ev("e-1"), ev("e-1")], ids)).toThrow(
+            /is not the next scheduled event \(e-1\)/,
+        );
+        expect(() => requireJournalShape([...start, ev("e-2")], ids)).toThrow(
+            /is not the next scheduled event \(e-2\)/,
+        );
     });
 
     test("a schedule needs a mechanism for every fault and two models for a model switch", () => {
@@ -397,9 +431,48 @@ describe("run inputs", () => {
             trigger: { kind: "session_start", session: "s-0000" },
         };
         expect(() => faultOverride([killOnStart], scenario)).toThrow(/first_summarizer_call/);
+        const kill = (id: string) => ({
+            ...episode,
+            id,
+            type: "daemon_sigkill_mid_fold",
+            seam: SEAMS.daemon_sigkill_mid_fold,
+            trigger: { kind: "first_summarizer_call", session: "s-0000" },
+        });
+        expect(() => faultOverride([kill("k1"), kill("k2")], scenario)).toThrow(
+            /two daemon_sigkill_mid_fold episodes target session s-0000/,
+        );
+        const sleep = (id: string, session = "s-0001") => ({
+            ...episode,
+            id,
+            type: "laptop_sleep",
+            seam: SEAMS.laptop_sleep,
+            trigger: { kind: "session_start", session },
+        });
+        expect(() => faultOverride([sleep("z1"), sleep("z2")], scenario)).toThrow(
+            /two laptop_sleep episodes target session s-0001/,
+        );
+        expect(() => faultOverride([sleep("z0", "s-0000")], scenario)).toThrow(
+            /no idle gap before its start/,
+        );
+        expect(faultOverride([sleep("z1")], scenario)).toHaveLength(1);
+        const longFull = {
+            ...episode,
+            type: "store_full",
+            seam: SEAMS.store_full,
+            strategy: "persistent",
+            trigger: { kind: "session_start", session: "s-0000" },
+            params: { sessions: 2 },
+        };
+        expect(() => faultOverride([longFull], scenario)).toThrow(
+            /store_full supports sessions: 1 only/,
+        );
         const switchOnTurn = { ...episode, type: "model_switch", seam: SEAMS.model_switch };
         expect(() => faultOverride([switchOnTurn], scenario)).toThrow(
             /model_switch fires at a session_start trigger only/,
+        );
+        const singleWithCount = { ...episode, params: { count: 3 } };
+        expect(() => faultOverride([singleWithCount], scenario)).toThrow(
+            /count does not apply to the single strategy/,
         );
         const burstNoCount = { ...episode, strategy: "burst" };
         expect(() => faultOverride([burstNoCount], scenario)).toThrow(/burst needs count/);
@@ -445,7 +518,7 @@ describe("run inputs", () => {
         };
         const o: RunOptions = { config, tier: "S", seed: 101, host: "pi", out };
         await expect(loadManifest({ ...o, events: 9 }, scenario, checks)).rejects.toThrow(
-            /--events 9 exceeds the 1 compiled events/,
+            /--events 9 exceeds the 3 compiled events/,
         );
         const first = await loadManifest(o, scenario, checks);
         expect(first.manifest.preflight.hosts[0]?.version).toBe("0.80.2");
@@ -474,6 +547,13 @@ describe("run inputs", () => {
         const o: RunOptions = { config, tier: "S", seed: 101, host: "pi", out };
         const { manifest } = await loadManifest(o, scenario, checks);
         expect(manifest.sim_commit).toMatch(/^[0-9a-f]{40}$/);
+        expect(manifestIdentity(manifest)).toMatch(/^[0-9a-f]{64}$/);
+        expect(manifestIdentity({ ...manifest, preflight: checks })).toBe(
+            manifestIdentity(manifest),
+        );
+        expect(manifestIdentity({ ...manifest, models: ["x"] })).not.toBe(
+            manifestIdentity(manifest),
+        );
         const path = join(out, "manifest.json");
         writeFileSync(path, JSON.stringify({ ...manifest, sim_commit: "0".repeat(40) }));
         await expect(loadManifest(o, scenario, checks)).rejects.toThrow(
@@ -583,9 +663,9 @@ describe("run inputs", () => {
             "node",
             "opencode",
             "opencode_sdk",
+            "opencode_sdk_lock",
             "pi",
-            "pi_lock",
-            "pi_package",
+            "pi_install",
         ]);
         const swapped = { ...config, daemon_binary: join(out, "daemon") };
         writeFileSync(swapped.daemon_binary, "daemon 2");

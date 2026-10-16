@@ -1092,6 +1092,31 @@ describe("driver lifecycle hooks", () => {
         expect(calls.slice(0, 3)).toEqual(["reap", "arm slow", "resume"]);
     });
 
+    test("a job that starts while the driver finishes ends before EndArm", async () => {
+        const j = new Journal(join(dir(), "j.jsonl"));
+        let scheduler: Scheduler | null = null;
+        const driver: ArmDriver = {
+            ...fakeDriver([]),
+            finish: async () => {
+                scheduler?.jobStart("late-capture");
+                setTimeout(() => scheduler?.jobEnd("late-capture"), 150);
+            },
+        };
+        scheduler = new Scheduler({
+            events: fixtureEvents(1),
+            faults: [],
+            journal: j,
+            settleMs: 0,
+            order: ["a"],
+            drivers: { a: driver },
+        });
+        await scheduler.run();
+        const kinds = j.entries.map((e) => `${e.kind}:${e.arm}`);
+        expect(kinds.indexOf("EndJob:a")).toBeGreaterThan(-1);
+        expect(kinds.indexOf("EndJob:a")).toBeLessThan(kinds.indexOf("EndArm:a"));
+        expect(j.entries.filter((e) => e.kind === "EndJob" && e.arm === null)).toHaveLength(0);
+    });
+
     test("an arm whose every event is journaled is finished on resume without starting anything", async () => {
         const path = join(dir(), "j.jsonl");
         const j = new Journal(path);
@@ -1268,6 +1293,27 @@ test("a mid-fold kill observed in the arm's last turn is observed before finish 
     expect(order).toEqual(["fault", "finish"]);
     const kinds = j.entries.map((e) => e.kind);
     expect(kinds.indexOf("FaultObserved")).toBeLessThan(kinds.indexOf("EndArm"));
+});
+
+test("a daemon exit reported at finish after the last turn's outage closed is unexpected", async () => {
+    const j = new Journal(join(dir(), "j.jsonl"));
+    let scheduler: Scheduler | null = null;
+    const faults = [episode("r", "daemon_restart", { kind: "session_start", session: "s-0000" })];
+    const driver: ArmDriver = {
+        ...fakeDriver([]),
+        finish: async () => {
+            scheduler?.daemonExited({ after: "last event" });
+        },
+    };
+    scheduler = new Scheduler({
+        events: fixtureEvents(1),
+        faults,
+        journal: j,
+        settleMs: 0,
+        order: ["a"],
+        drivers: { a: driver },
+    });
+    await expect(scheduler.run()).rejects.toThrow(/outside a scheduled outage window/);
 });
 
 test("a mid-fold kill observed during the arm's shutdown completes before EndArm", async () => {

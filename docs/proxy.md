@@ -30,6 +30,7 @@ any field below.
 | `proxy_retries` | Retries the proxy itself made upstream |
 | `fault_ref` | The injected fault episode, or `null` |
 | `stripped` | Request fields the proxy removed, keyed by path; present only when it removed one |
+| `arrival` | The request's arrival ordinal within its proxy process, assigned at the first byte; a resume replays records by `started_wall_ms`, then by this ordinal |
 
 ## Component tags
 
@@ -120,11 +121,17 @@ A multi-call episode whose restored injections already reach its
 count is not injected again. `FaultInjector.restore(records)` rebuilds both sequences from the call
 records an earlier invocation of the same run persisted, replayed in
 request-start order, so a resumed run
-reports a fault that fired before a hard kill, and arming an episode after
+reports a fault that fired before a hard kill (its `armed` bit also comes
+from the journal's `FaultFired` entries, so an armed episode whose target
+never called the proxy still reports `armed: true`), and arming an episode after
 `restore` continues a burst or intermittent window from the injections
 already made; an intermittent window's unsuccessful attempts and its RNG
 position are not persisted, so a resumed window grants its remaining
 attempts from the injections alone.
+
+A call's record is written when its response ends; a harness killed while a
+response streams leaves no record for that attempt, and the resumed run
+marks the open turn interrupted rather than reissuing it.
 
 `Gateway.stop()` closes every connection, aborts the in-flight handlers, and
 waits up to `drainMs` (ten seconds by default) for them to write their call

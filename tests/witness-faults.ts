@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { join, resolve } from "node:path";
 import { loadConfig } from "../src/config/config";
 import { checkJournal, type Schedule } from "../src/run/journal-check";
-import { pinnedBin, treeIdentity } from "../src/run/run";
+import { pinnedBin, runIdentity } from "../src/run/run";
 import type { Scenario } from "../src/scenario/compile";
 import { type FaultEpisode, type FaultType, SEAMS, type Trigger } from "../src/scenario/faults";
 import { loadPrereg } from "../src/scenario/inputs";
@@ -197,6 +197,17 @@ function schedule(dir: string): Schedule {
     return { events: new Map(events.map((e) => [String(e.id), Number(e.scenario_ms)])) };
 }
 
+const IDENTITY_FIELDS = [
+    "prereg_sha256",
+    "eidnara_commit",
+    "eidnara_worktree",
+    "sim_commit",
+    "sim_worktree",
+    "binaries",
+    "corpus",
+    "bedrock",
+] as const;
+
 function summarize(dir: string) {
     const manifest = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8")) as {
         order?: string[];
@@ -215,7 +226,12 @@ function summarize(dir: string) {
         end_arms: Object.fromEntries(
             (manifest.order ?? []).map((arm) => [arm, perArm(arm, "EndArm").length]),
         ),
-        identity: { sim_commit: manifest.sim_commit, sim_worktree: manifest.sim_worktree },
+        identity: Object.fromEntries(
+            IDENTITY_FIELDS.map((k) => [k, (manifest as Record<string, unknown>)[k]]),
+        ),
+        projects: (
+            JSON.parse(readFileSync(join(dir, "scenario.json"), "utf8")) as Scenario
+        ).projects.map((p) => p.id),
         preflight: {
             first: journal[0]?.kind === "Preflight",
             before_start:
@@ -254,6 +270,15 @@ function summarize(dir: string) {
                                 .map((c) => c.model),
                         ),
                     ],
+                    agent_models_by_session: calls
+                        .filter((c) => c.arm === arm && c.component === "agent")
+                        .reduce<Record<string, string[]>>((acc, c) => {
+                            const key = String(c.session);
+                            const seen = acc[key] ?? [];
+                            if (!seen.includes(String(c.model))) seen.push(String(c.model));
+                            acc[key] = seen;
+                            return acc;
+                        }, {}),
                 },
             ]),
         ),
@@ -279,7 +304,6 @@ const summary = {
     resume: existsSync(dirs.resume) ? summarize(dirs.resume) : null,
 };
 writeFileSync(join(out, "witness.json"), `${JSON.stringify(summary, null, 2)}\n`);
-const current = treeIdentity(ROOT);
 console.log(JSON.stringify(summary, null, 2));
 
 type Run = { code: number } | undefined;
@@ -317,6 +341,8 @@ for (const name of ["scheduled", "rogue"]) {
 type ArmSummary = {
     fired: unknown[];
     observed: { fault: unknown; evidence: unknown }[];
+    turns: unknown[];
+    agent_models_by_session: Record<string, string[]>;
     models: unknown[];
     duplicate_events: number;
 };
@@ -330,10 +356,12 @@ const armEvidence = (
     const s = summary[name];
     if (!s) return check(false, `${name}: no summary`);
     const observable = expected.filter((f) => f.type !== "laptop_sleep").map((f) => f.id);
-    const sleeps = expected.filter((f) => f.type === "laptop_sleep").length;
+    const sleepIds = expected.filter((f) => f.type === "laptop_sleep").map((f) => f.id);
+    const tagged = s.invariants.sleep_jump_faults.map((j) => `${j.arm}/${j.fault}`);
+    const wanted = arms.flatMap((arm) => sleepIds.map((id) => `${arm}/${id}`));
     check(
-        s.invariants.sleep_jumps === sleeps * arms.length,
-        `${name}: one fault-tagged sleep jump per arm and sleep (${sleeps * arms.length})`,
+        [...tagged].sort().join() === [...wanted].sort().join(),
+        `${name}: exactly one fault-tagged jump per arm and sleep episode (${wanted.join(", ")})`,
     );
     check(s.invariants.next_event_jumps > 0, `${name}: at least one ordinary event jump checked`);
     const intercepted = s.preflight.intercepted;
@@ -342,8 +370,8 @@ const armEvidence = (
         `${name}: journal opens with a Preflight entry before StartRun or ResumeRun`,
     );
     check(
-        intercepted.length > 0 && intercepted.every((t) => t.endsWith(":true")),
-        `${name}: every probed binary intercepted (${intercepted.join(", ")})`,
+        [...intercepted].sort().join() === "daemon:true,opencode:true,pi:true",
+        `${name}: pi, opencode, and daemon each probed and intercepted (${intercepted.join(", ")})`,
     );
     for (const arm of arms) {
         const a = s.arms[arm] as ArmSummary | undefined;
@@ -368,19 +396,26 @@ const armEvidence = (
             );
         }
         check(a.duplicate_events === 0, `${name}/${arm}: no duplicate Event entry`);
-        if (arm === "eidnara") mechanismEvidence(name, a, expected);
+        check(
+            a.turns.length > 0 && a.turns.every((t) => String(t).endsWith(":ok")),
+            `${name}/${arm}: every completed turn ended ok, including those after the faults`,
+        );
+        mechanismEvidence(name, arm, a, expected);
     }
 };
 
-/** The Eidnara arm's restart and full-store episodes carry the evidence their mechanism produces. */
-const mechanismEvidence = (name: string, a: ArmSummary, expected: FaultEpisode[]) => {
+/**
+ * Each arm's model switch happened at its session boundary; on the Eidnara arm the restart and
+ * full-store episodes also carry the evidence their mechanism produces.
+ */
+const mechanismEvidence = (name: string, arm: string, a: ArmSummary, expected: FaultEpisode[]) => {
     const evidence = new Map(
         a.observed.map((o) => [o.fault, o.evidence as Record<string, unknown>]),
     );
     for (const f of expected) {
         const e = evidence.get(f.id);
         if (!e) continue;
-        if (f.type === "daemon_restart") {
+        if (f.type === "daemon_restart" && arm === "eidnara") {
             check(
                 typeof e.pid_before === "number" &&
                     typeof e.pid_after === "number" &&
@@ -389,8 +424,27 @@ const mechanismEvidence = (name: string, a: ArmSummary, expected: FaultEpisode[]
                 `${name}/eidnara: ${f.id} restarted the daemon (new pid, restarted_by harness)`,
             );
         }
-        if (f.type === "store_full") {
+        if (f.type === "model_switch") {
+            const [first, second] = models.split(",");
+            const switched = f.trigger.session;
+            const sessions = Object.entries(a.agent_models_by_session);
+            const before = sessions.filter(([sid]) => sid < switched);
+            const after = sessions.filter(([sid]) => sid >= switched);
+            check(
+                before.length > 0 &&
+                    before.every(([, m]) => m.length === 1 && m[0] === first) &&
+                    after.length > 0 &&
+                    after.every(([, m]) => m.length === 1 && m[0] === second),
+                `${name}/${arm}: sessions before ${switched} used ${first}, sessions from it on used ${second}`,
+            );
+        }
+        if (f.type === "store_full" && arm === "eidnara") {
             check(e.avail_kb === 0, `${name}/eidnara: ${f.id} filled the store (avail_kb 0)`);
+            const s = summary[name as "scheduled" | "resume"];
+            check(
+                (s?.full_store_enospc_log_lines ?? 0) > 0,
+                `${name}/eidnara: the daemon logged the full store (database or disk is full)`,
+            );
         }
     }
 };
@@ -401,17 +455,24 @@ for (const name of ["scheduled", "rogue", "resume"] as const) {
 for (const name of ["scheduled", "rogue", "resume"] as const) {
     const s = summary[name];
     if (!s) continue;
+    const live = runIdentity(config, loadPrereg("S"), s.projects) as Record<string, unknown>;
+    const stale = IDENTITY_FIELDS.filter(
+        (k) => JSON.stringify(s.identity[k]) !== JSON.stringify(live[k]),
+    );
     check(
-        s.identity.sim_commit === current.commit && s.identity.sim_worktree === current.worktree,
-        `${name}: run directory was made by this harness revision and working tree`,
+        stale.length === 0,
+        `${name}: run directory matches the current runtime identity (stale: ${stale.join(", ") || "none"})`,
     );
 }
 if (run("scheduled")) check(run("scheduled")?.code === 0, "scheduled: exit 0");
 if (summary.scheduled) {
     check(invariantsClean("scheduled"), "scheduled: EndRun, unique seq, clean invariants");
+    const real = summary.scheduled.invariants.jobs_held_after_turn.filter(
+        (j) => !j.job.startsWith("settle-cpu-") && !j.job.startsWith("request-"),
+    );
     check(
-        summary.scheduled.invariants.jobs_held_after_turn.length > 0,
-        "scheduled: at least one background or CPU job held the clock with no turn open (SIM-P13)",
+        real.length > 0,
+        "scheduled: a background or daemon-cpu job (not the synthetic settle hold) held the clock with no turn open (SIM-P13)",
     );
     armEvidence("scheduled", ["host", "eidnara"], deterministic, true);
 }
