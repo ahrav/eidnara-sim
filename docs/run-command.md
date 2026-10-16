@@ -146,7 +146,7 @@ toolchain wrappers are created exclusively after removing any planted name.
    unterminated final line first). The `Preflight` journal entry carries a
    digest of the manifest's execution fields (everything but the
    per-invocation preflight); a resume whose manifest no longer matches the
-   digest the journal's first `Preflight` entry bound is refused, so inherited
+   digest every `Preflight` entry of the journal bound is refused, so inherited
    options cannot change under a run's journaled identity. On resume the
    mechanism checks (fault types, models) run against the manifest's saved
    values, so omitted options inherit. Every invocation
@@ -276,7 +276,7 @@ line. Every case needs its launch outcome in `outcome.json`; each cached
 `scenario.json` must still hash to its `scenario_hash`, each `manifest.json`
 must name that hash, carry the case's prescribed tier, seed, arms, event
 count, context limit, models, and fault override, and match the digest its
-journal's first `Preflight` entry bound; the rogue journal must record exactly
+journal's every `Preflight` entry bound; the rogue journal must record exactly
 one unexpected daemon exit; each
 session-start fault must have fired exactly once, at the session's scheduled
 start time, right before its first event; each sleep jump must land on its session's first event; every

@@ -30,7 +30,7 @@ any field below.
 | `proxy_retries` | Retries the proxy itself made upstream |
 | `fault_ref` | The injected fault episode, or `null` |
 | `stripped` | Request fields the proxy removed, keyed by path; present only when it removed one |
-| `arrival` | The request's arrival ordinal within its proxy process, assigned at the first byte; a resume replays records by `started_wall_ms`, then by this ordinal |
+| `arrival` | The request's arrival ordinal within its proxy process, assigned at the first byte; a resume replays records by this ordinal, falling back to `started_wall_ms` then `seq` for records written before it existed |
 
 ## Component tags
 

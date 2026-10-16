@@ -251,8 +251,10 @@ function summarize(dir: string) {
             manifest_scenario:
                 (manifest as { scenario_hash?: string }).scenario_hash === scenario.scenario_hash,
             manifest_bound:
-                journal.find((e) => e.kind === "Preflight")?.manifest_sha256 ===
-                manifestIdentity(manifest as never),
+                journal.some((e) => e.kind === "Preflight") &&
+                journal
+                    .filter((e) => e.kind === "Preflight")
+                    .every((e) => e.manifest_sha256 === manifestIdentity(manifest as never)),
         },
         options: {
             tier: (manifest as { tier?: string }).tier,

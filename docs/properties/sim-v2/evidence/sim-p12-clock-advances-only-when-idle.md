@@ -12,8 +12,8 @@ v2 harness before any harness code existed.
 ## Evidence trail
 
 Every `AdvanceClock` entry is preceded by `busy_set` empty at the same sequence,
-and no `scenario_ms` change appears between a `BeginTurn` or `RegisterJob` and
-the matching `EndTurn` or `EndJob`.
+and between a `BeginTurn` or `RegisterJob` and the matching `EndTurn` or
+`EndJob` `scenario_ms` moves only at wall speed.
 
 M4 (#1028) advances scenario time only through `Clock.advanceTo`, which refuses
 while any turn or job is busy. The tests rebuild the busy set from the

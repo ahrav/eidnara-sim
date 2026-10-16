@@ -154,6 +154,7 @@ export function requirePlainArtifacts(out: string, arms: readonly string[]): voi
         join(arm, "clock", `offset.${process.pid}`),
         join(arm, "state.json"),
         join(arm, `state.json.${process.pid}`),
+        join(arm, "opencode.launch"),
     ]);
     const entries = existsSync(out) ? readdirSync(out) : [];
     for (const name of entries) {
@@ -368,11 +369,12 @@ export function requireFreshArmRoots(out: string, arms: readonly string[]): void
         "transcripts.json",
         "resources.jsonl",
         "state.json",
+        "opencode.launch",
     ];
     const present = [
         ...evidence.map((f) => join(out, f)),
         ...arms.flatMap((arm) => perArm.map((f) => join(out, arm, f))),
-    ].filter((path) => existsSync(path));
+    ].filter((path) => lstatSync(path, { throwIfNoEntry: false }) !== undefined);
     if (present.length > 0) {
         throw new HarnessFailure(
             `${present[0]} exists but ${out} has no journal; a fresh run would delete or extend it`,
@@ -711,7 +713,8 @@ function eventCount(requested: number | undefined, compiled: number): number {
  * Every regular file under `dir`, hashed by length-framed relative path and content. A symlink
  * whose target stays inside `dir` contributes its link text (the target is walked in place); one
  * that escapes contributes its link text and the digest of the target's content, so dependency
- * code linked in from elsewhere is bound too. `seen` breaks cycles through escaping links.
+ * code linked in from elsewhere is bound too. `seen` holds the active ancestor chain, so a cycle
+ * through escaping links ends while two links to one target both hash it.
  */
 function directoryDigest(dir: string, seen = new Set<string>()): string {
     const root = realpathSync(dir);
@@ -753,7 +756,7 @@ function linkTarget(link: string, root: string, seen: Set<string>): string {
     if (target === root || target.startsWith(`${root}/`)) return "";
     if (seen.has(target)) return "=cycle";
     const stat = statSync(target);
-    if (stat.isDirectory()) return `=${directoryDigest(target, seen)}`;
+    if (stat.isDirectory()) return `=${directoryDigest(target, new Set(seen))}`;
     if (stat.isFile()) return `=${createHash("sha256").update(readFileSync(target)).digest("hex")}`;
     return `=?${stat.mode}`;
 }
@@ -1132,9 +1135,11 @@ async function runArms(
         })),
         manifest.order,
     );
-    const bound = journal.entries.find((e) => e.kind === "Preflight")?.manifest_sha256;
+    const bound = journal.entries
+        .filter((e) => e.kind === "Preflight")
+        .map((e) => e.manifest_sha256);
     const manifestDigest = manifestIdentity(manifest);
-    if (typeof bound === "string" && bound !== manifestDigest) {
+    if (bound.some((digest) => digest !== manifestDigest)) {
         throw new HarnessFailure(
             "manifest.json differs from the manifest this run's journal binds",
         );
