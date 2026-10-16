@@ -5,6 +5,7 @@ import {
     CLAIMS,
     CLUSTER_KEYS,
     DIRECTIONS,
+    EMBEDDING_MODELS,
     type Family,
     HOSTS,
     INTERVAL_METHODS,
@@ -106,7 +107,11 @@ const PREREG_SHAPE: Shape = {
         simulated_days: posInt,
         sessions_per_project: posInt,
         forced_p90_sessions: posInt,
-        cue_probe_similarity: { bm25_max: unitRate, cosine_max: unitRate, embedding_model: text },
+        cue_probe_similarity: {
+            bm25_max: unitRate,
+            cosine_max: unitRate,
+            embedding_model: oneOf(EMBEDDING_MODELS),
+        },
     },
     stopping_rule: {
         kind: literal("fixed_n"),
@@ -299,6 +304,7 @@ export function validatePreregistration(value: unknown): string[] {
         else if (field in value) errors.push(`${field}: allowed only at tier ${tiers.join(", ")}`);
     }
     if (errors.length > 0) return errors;
+    // SAFETY: checkShape found no error, so value has every field PREREG_SHAPE requires with the declared type.
     const p = value as unknown as Preregistration;
     checkFamilies(p, errors);
     checkArms(p, errors);

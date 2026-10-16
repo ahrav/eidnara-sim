@@ -353,7 +353,7 @@
                 "probe": "Speed up repeated handler compilation.",
                 "check": {
                     "must_not": [
-                        "^(?:export\\s+)?const\\s+\\w+\\s*=\\s*new\\s+(?:Weak)?Map\\("
+                        "^(?:export\\s+)?(?:const|let|var)\\s+\\w+(?:\\s*:[^=]+)?\\s*=\\s*new\\s+(?:Weak)?Map(?:<[^(]*>)?\\s*\\("
                     ]
                 }
             },
@@ -497,14 +497,14 @@
                 "probe": "Commit what we have so far.",
                 "check": {
                     "commands_must": [
-                        "git commit[^\\n]*\\[{token}\\]"
+                        "git commit\\b[^\\n]*?(?:-\\w*m|--message)[ =][\"']\\[{token}\\]"
                     ]
                 }
             },
             {
                 "id": "session-file-header",
                 "statement": "until I say otherwise, new files you create open with a // {token} header line",
-                "probe": "Split the helpers we touched today into their own module.",
+                "probe": "Start a new module for the {codename} work with one exported placeholder function.",
                 "check": {
                     "must": [
                         "// {token}"

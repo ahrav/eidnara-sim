@@ -5,6 +5,9 @@
 
 export const PREREG_SCHEMA = "sim-prereg/v1";
 
+/** Embedding models the scenario compiler can construct for the cue/probe similarity gate. */
+export const EMBEDDING_MODELS = ["amazon.titan-embed-text-v2:0"] as const;
+
 export const TIERS = ["S", "M", "L", "XL"] as const;
 export type Tier = (typeof TIERS)[number];
 

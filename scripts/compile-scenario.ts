@@ -14,28 +14,26 @@ import { compileScenario } from "../src/scenario/compile";
 import { loadCompileInput } from "../src/scenario/inputs";
 import { bedrockEmbedder, hashEmbedder } from "../src/scenario/similarity";
 
-const arg = (name: string) => {
-    const i = process.argv.indexOf(`--${name}`);
-    const value = process.argv[i + 1];
-    if (i < 0) return undefined;
-    return value === undefined || value.startsWith("--") ? "" : value;
-};
-const [tier, seedArg, embedderArg, outArg] = [
-    arg("tier"),
-    arg("seed"),
-    arg("embedder"),
-    arg("out"),
-];
-const seed = Number(seedArg);
-if (
-    !TIERS.includes(tier as Tier) ||
-    !/^\d+$/.test(seedArg ?? "") ||
-    ![undefined, "local"].includes(embedderArg) ||
-    outArg === ""
-) {
-    console.error("usage: --tier S|M|L|XL --seed <int> [--embedder local] [--out path]");
+const FLAGS = ["tier", "seed", "embedder", "out"];
+const usage = (why: string) => {
+    console.error(`${why}\nusage: --tier S|M|L|XL --seed <int> [--embedder local] [--out path]`);
     process.exit(2);
+};
+const args = new Map<string, string>();
+const argv = process.argv.slice(2);
+for (let i = 0; i < argv.length; i += 2) {
+    const name = (argv[i] ?? "").replace(/^--/, "");
+    const value = argv[i + 1];
+    if (!FLAGS.includes(name) || argv[i] === name) usage(`unknown argument ${argv[i]}`);
+    if (args.has(name)) usage(`--${name} given twice`);
+    if (value === undefined || value.startsWith("--")) usage(`--${name} needs a value`);
+    args.set(name, value as string);
 }
+const [tier, seedArg, embedderArg, outArg] = FLAGS.map((f) => args.get(f));
+const seed = Number(seedArg);
+if (!TIERS.includes(tier as Tier)) usage(`--tier must be one of ${TIERS.join(", ")}`);
+if (!/^\d+$/.test(seedArg ?? "")) usage("--seed must be a non-negative integer");
+if (![undefined, "local"].includes(embedderArg)) usage("--embedder accepts only local");
 const out = outArg ?? join(import.meta.dir, "..", "runs", "scenarios", `${tier}-${seed}.json`);
 const config = loadConfig();
 const kind = (path: string) => {
@@ -62,12 +60,16 @@ for (const path of [out, cache]) {
         process.exit(2);
     }
 }
+if (canonical(out) === canonical(cache)) {
+    console.error(`--out ${out} is the embedding cache path; choose another file name`);
+    process.exit(2);
+}
 mkdirSync(dirname(out), { recursive: true });
 const local = embedderArg === "local";
 const { aws_profile, region } = config.bedrock;
 const embedder = local ? hashEmbedder : bedrockEmbedder(aws_profile, region, cache);
 const scenario = await compileScenario(loadCompileInput(seed, tier as Tier, embedder, local));
-const partial = `${out}.${process.pid}.tmp`;
-writeFileSync(partial, `${canonicalJson(scenario)}\n`);
+const partial = `${out}.tmp`;
+writeFileSync(partial, `${canonicalJson(scenario)}\n`, { flag: "wx" });
 renameSync(partial, out);
 console.log(`${out} ${scenario.scenario_hash}`);

@@ -90,7 +90,55 @@ describe("compile-scenario cache boundary", () => {
     });
 });
 
+describe("compile-scenario temporary file", () => {
+    test("a pre-created temporary-file symlink into the Eidnara checkout is never followed", () => {
+        const dir = mkdtempSync(join(tmpdir(), "sim-cli-"));
+        const checkout = join(dir, "eidnara");
+        mkdirSync(checkout);
+        const outDir = join(dir, "out");
+        mkdirSync(outDir);
+        const out = join(outDir, "s.json");
+        symlinkSync(join(checkout, "stolen.json"), `${out}.tmp`);
+        const config = JSON.parse(readFileSync(join(ROOT, "sim.config.json"), "utf8"));
+        const configPath = join(dir, "sim.config.json");
+        writeFileSync(configPath, JSON.stringify({ ...config, eidnara_checkout: checkout }));
+        const r = Bun.spawnSync(
+            [
+                "bun",
+                "scripts/compile-scenario.ts",
+                "--tier",
+                "S",
+                "--seed",
+                "101",
+                "--embedder",
+                "local",
+                "--out",
+                out,
+            ],
+            { cwd: ROOT, env: { ...process.env, SIM_CONFIG: configPath } },
+        );
+        expect(r.exitCode).not.toBe(0);
+        expect(readdirSync(checkout)).toEqual([]);
+    });
+});
+
 describe("compile-scenario arguments", () => {
+    test("an output that aliases the embedding cache is refused", () => {
+        const out = join(mkdtempSync(join(tmpdir(), "sim-cli-")), "embeddings.jsonl");
+        const r = run("--tier", "S", "--seed", "101", "--embedder", "local", "--out", out);
+        expect(r.exitCode).toBe(2);
+        expect(r.stderr.toString()).toContain("embedding cache");
+        expect(existsSync(out)).toBe(false);
+    });
+
+    test("an unknown flag is refused with the usage line", () => {
+        const out = join(mkdtempSync(join(tmpdir(), "sim-cli-")), "s.json");
+        const r = run("--tier", "S", "--seed", "101", "--embeder", "local", "--out", out);
+        expect(r.exitCode).toBe(2);
+        expect(r.stderr.toString()).toContain("usage:");
+        expect(existsSync(out)).toBe(false);
+    });
+
     const out = join(mkdtempSync(join(tmpdir(), "sim-cli-")), "s.json");
     test.each([
         ["an empty seed", ["--tier", "S", "--seed", "", "--embedder", "local", "--out", out]],

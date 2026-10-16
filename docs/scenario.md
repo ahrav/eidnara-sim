@@ -11,9 +11,13 @@ the AWS profile in `sim.config.json`, and caches each vector in
 `--embedder local` swaps in a hashed bag of words and rewrites the threshold
 model to match; the tests use it, and its scenarios name the stand-in model in
 both `manifest.embedding_model` and `manifest.cue_probe_similarity`, so they
-do not witness SIM-P08. Any other `--embedder` value, a non-integer seed, or a
-flag without a value exits with the usage line, and an `--out` path inside
-`eidnara_checkout` is refused before any directory is created.
+do not witness SIM-P08. The CLI accepts exactly `--tier`, `--seed`,
+`--embedder`, and `--out`, each once with a value; any other token, an
+`--embedder` value other than `local`, or a non-integer seed exits with the
+usage line. An `--out` path, or its sibling `embeddings.jsonl`, that resolves
+inside `eidnara_checkout` is refused before any directory is created, as is an
+`--out` that names the cache file itself. The scenario is written to
+`<out>.tmp`, created exclusively, then renamed into place.
 
 ## Output
 
@@ -187,15 +191,15 @@ thresholds (`bm25_max` 0.4, `cosine_max` 0.6):
 
 | Tier | Seed | `scenario_hash` | Largest BM25 ratio | Largest cosine |
 |---|---|---|---|---|
-| S | 101 | `418392ef` | 0.2137 | 0.5194 |
-| S | 102 | `e486fc64` | 0.2527 | 0.4867 |
-| M | 201 | `76d87774` | 0.2526 | 0.4992 |
-| M | 202 | `242d7183` | 0.2522 | 0.4997 |
-| M | 203 | `79e3d9f9` | 0.2498 | 0.4843 |
-| L | 301 | `a79953d3` | 0.2613 | 0.5092 |
-| L | 302 | `503fe692` | 0.258 | 0.4957 |
-| L | 303 | `811c3c35` | 0.2512 | 0.5083 |
-| XL | 401 | `d5cfccc0` | 0.2562 | 0.4962 |
+| S | 101 | `ef3668d8` | 0.2137 | 0.5194 |
+| S | 102 | `ef16da4d` | 0.2527 | 0.4867 |
+| M | 201 | `447ba664` | 0.2526 | 0.4992 |
+| M | 202 | `8559caed` | 0.2522 | 0.4997 |
+| M | 203 | `a1b823fd` | 0.2498 | 0.4843 |
+| L | 301 | `a1940299` | 0.2613 | 0.5092 |
+| L | 302 | `02fb4b15` | 0.258 | 0.4957 |
+| L | 303 | `2681ae7c` | 0.2512 | 0.5083 |
+| XL | 401 | `657bb300` | 0.2562 | 0.4962 |
 
 ## Known limits
 

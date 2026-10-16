@@ -1,5 +1,6 @@
 import { appendFileSync, existsSync, readFileSync, rmSync } from "node:fs";
 import { sha256Hex } from "../prereg/canonical";
+import { EMBEDDING_MODELS } from "../prereg/schema";
 
 export interface Embedder {
     model: string;
@@ -67,7 +68,7 @@ export const hashEmbedder: Embedder = {
  * offline when `cachePath` contains vectors for every requested text.
  */
 export function bedrockEmbedder(profile: string, region: string, cachePath: string): Embedder {
-    const model = "amazon.titan-embed-text-v2:0";
+    const model = EMBEDDING_MODELS[0];
     const cache = new Map<string, number[]>();
     if (existsSync(cachePath)) {
         for (const line of readFileSync(cachePath, "utf8").split("\n").filter(Boolean)) {

@@ -91,6 +91,14 @@ describe("pre-registration validator", () => {
         );
     });
 
+    test("refuses an embedding model the compiler cannot construct", () => {
+        const prereg = load("S") as any;
+        prereg.scenario.cue_probe_similarity.embedding_model = "amazon.titan-embed-text-v1";
+        expect(validatePreregistration(prereg)).toContain(
+            "scenario.cue_probe_similarity.embedding_model: expected one of amazon.titan-embed-text-v2:0",
+        );
+    });
+
     test("refuses a run-level statistical gate below six paired runs", () => {
         const prereg = load("M") as any;
         prereg.families.find((f: any) => f.id === "dependability").min_paired_runs = 5;
