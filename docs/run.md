@@ -84,8 +84,9 @@ restarting the daemon and for the busy set to empty, calls the driver's
 ends before the arm does), closes any outage window and the current session,
 and journals `EndArm`, so nothing an arm started runs into the next arm. When `reset`, the
 `StartArm` append, an event, or a fault throws, the scheduler waits for a
-mid-fold restart still in flight, calls `finish`, then fails with the original
-error; the arm's journal ends before `EndArm`, so a resume takes it up again.
+mid-fold restart still in flight, calls `finish`, waits for every job the
+finish itself started (a job the failed work left open is the resume's to
+close), then fails with the original error; the arm's journal ends before `EndArm`, so a resume takes it up again.
 
 `observe("history_summarizer", driver)` fires the session's mid-fold SIGKILL
 on the first observed summarizer call. `daemonExited` inside an outage window
@@ -111,9 +112,10 @@ without `EndArm`:
 - calls the driver's `reap` before any fault is armed again, so a host the
   killed harness left running cannot reach a re-armed proxy, then its
   `resume` with the `session_start` of the session the next event belongs to,
-  or null between sessions and when the next event is a `session_end`, so the
-  driver restarts what the killed process ran and reopens nothing a replayed
-  end would close; an arm with no event left is finished without a `resume`;
+  or null between sessions and when the next event is a `session_end`, and
+  with the ids of the scheduler faults fired without `FaultObserved`, so the
+  driver restarts what the killed process ran, reopens nothing a replayed
+  end would close, and clears a fault the journal records as interrupted; an arm with no event left is finished without a `resume`;
 - continues with the first event that has no `Event` entry, with the arm's
   clock restored.
 

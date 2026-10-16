@@ -11,12 +11,21 @@ function statFields(pid: number): string[] | null {
 
 /** A kernel without `CONFIG_PROC_CHILDREN` has no `children` files; the parent field of every `stat` is the fallback. */
 export function childrenByParent(pid: number): number[] {
-    const out: number[] = [];
+    return parentIndex().get(pid) ?? [];
+}
+
+/** One pass over `/proc` grouping every process under its parent, so a walk reads each process once. */
+function parentIndex(): Map<number, number[]> {
+    const index = new Map<number, number[]>();
     for (const entry of readdirSync("/proc")) {
         if (!/^\d+$/.test(entry)) continue;
-        if (statFields(Number(entry))?.[1] === String(pid)) out.push(Number(entry));
+        const ppid = statFields(Number(entry))?.[1];
+        if (ppid === undefined) continue;
+        const siblings = index.get(Number(ppid)) ?? [];
+        siblings.push(Number(entry));
+        index.set(Number(ppid), siblings);
     }
-    return out;
+    return index;
 }
 
 /** Reads one task's `children` file; null when the kernel offers none. Tests substitute a reader. */
@@ -30,7 +39,11 @@ const readChildren: ChildrenReader = (pid, tid) => {
     }
 };
 
-function childrenOf(pid: number, read: ChildrenReader): number[] {
+function childrenOf(
+    pid: number,
+    read: ChildrenReader,
+    fallback: () => Map<number, number[]>,
+): number[] {
     let tasks: string[];
     try {
         tasks = readdirSync(`/proc/${pid}/task`);
@@ -47,7 +60,16 @@ function childrenOf(pid: number, read: ChildrenReader): number[] {
             .filter((c) => c.trim() !== "")
             .map(Number);
     });
-    return listedAny ? found : childrenByParent(pid);
+    return listedAny ? found : (fallback().get(pid) ?? []);
+}
+
+/** Builds the parent index on first use, so a walk with `children` files reads `/proc` once at most. */
+function lazyIndex(): () => Map<number, number[]> {
+    let index: Map<number, number[]> | null = null;
+    return () => {
+        index ??= parentIndex();
+        return index;
+    };
 }
 
 function ownedBy(pid: number, uid: number | undefined): boolean {
@@ -62,9 +84,10 @@ export function ownedProcesses(rootPid: number, read: ChildrenReader = readChild
     const uid = process.getuid?.();
     const out: number[] = [];
     const queue = [rootPid];
+    const fallback = lazyIndex();
     for (let next = queue.shift(); next !== undefined; next = queue.shift()) {
         if (ownedBy(next, uid)) out.push(next);
-        queue.push(...childrenOf(next, read));
+        queue.push(...childrenOf(next, read, fallback));
     }
     return out;
 }
@@ -176,9 +199,10 @@ export async function stopOwnedTree(
 function treeProcesses(rootPid: number): number[] {
     const out: number[] = [];
     const queue = [rootPid];
+    const fallback = lazyIndex();
     for (let next = queue.shift(); next !== undefined; next = queue.shift()) {
         if (statFields(next) !== null) out.push(next);
-        queue.push(...childrenOf(next, readChildren));
+        queue.push(...childrenOf(next, readChildren, fallback));
     }
     return out;
 }

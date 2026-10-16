@@ -1092,6 +1092,33 @@ describe("driver lifecycle hooks", () => {
         expect(calls.slice(0, 3)).toEqual(["reap", "arm slow", "resume"]);
     });
 
+    test("a job that starts while a failing finish runs ends before run() rethrows", async () => {
+        const j = new Journal(join(dir(), "j.jsonl"));
+        let scheduler: Scheduler | null = null;
+        const driver: ArmDriver = {
+            ...fakeDriver([]),
+            event: async () => {
+                throw new Error("turn broke");
+            },
+            finish: async () => {
+                scheduler?.jobStart("late-capture");
+                setTimeout(() => scheduler?.jobEnd("late-capture"), 150);
+            },
+        };
+        scheduler = new Scheduler({
+            events: fixtureEvents(1),
+            faults: [],
+            journal: j,
+            settleMs: 0,
+            jobPollMs: 5,
+            order: ["a"],
+            drivers: { a: driver },
+        });
+        await expect(scheduler.run()).rejects.toThrow("turn broke");
+        const kinds = j.entries.map((e) => `${e.kind}:${e.arm}`);
+        expect(kinds).toContain("EndJob:a");
+    });
+
     test("a job that starts while the driver finishes ends before EndArm", async () => {
         const j = new Journal(join(dir(), "j.jsonl"));
         let scheduler: Scheduler | null = null;

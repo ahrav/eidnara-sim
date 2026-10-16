@@ -33,8 +33,8 @@ interface ArmState {
     model: number;
     daemon: { pid: number; start: string | null } | null;
     host: { pid: number; start: string | null } | null;
-    /** The store_full ballast while the fault is active: its length and the blocks it holds. */
-    ballast: { bytes: number; blocks: number } | null;
+    /** The store_full ballast while the fault is active: its length, the blocks it holds, and its fault. */
+    ballast: { bytes: number; blocks: number; fault?: string } | null;
     /** True while a resume has removed the ballast and has yet to fill the store again. */
     refilling: boolean;
     /** The sandboxed git run of an apply_diff in flight, with the workspace it holds. */
@@ -53,6 +53,8 @@ export interface DriverOptions extends Omit<HostContext, "root" | "model"> {
     /** Wall time of scenario time 0, the same value the clock offset targets. */
     baseMs: number;
     hostFactory?: (ctx: HostContext) => SimHost;
+    /** Reads a process's start identity; the default reads `/proc`. */
+    procStart?: (pid: number) => string | null;
     daemonFactory?: (ctx: DaemonContext) => DaemonStack;
     onDaemonExit: (detail: Record<string, unknown>) => void;
 }
@@ -124,6 +126,8 @@ export class HostDriver implements ArmDriver {
     private refilling = false;
     private gitRun: ArmState["git"] = null;
     private failed: string | null = null;
+    /** The identity the daemon's pid had when it started, so a later exit shows as one. */
+    private daemonId: { pid: number; start: string | null } | null = null;
     /** True once this process has reset or resumed the arm, so its in-memory state is the arm's. */
     private live = false;
     private sessionProject: string | null = null;
@@ -159,6 +163,20 @@ export class HostDriver implements ArmDriver {
         return this.daemon?.pid() ?? null;
     }
 
+    /** The daemon lives while the pid its stack holds still names the process that started there. */
+    private daemonAlive(): boolean {
+        const pid = this.daemonPid();
+        if (pid === null) return false;
+        const start = processStart(pid);
+        if (start === null) return false;
+        return this.daemonId?.pid !== pid || this.daemonId.start === start;
+    }
+
+    private noteDaemon(): void {
+        const pid = this.daemonPid();
+        this.daemonId = pid === null ? null : { pid, start: processStart(pid) };
+    }
+
     private requireHost(): SimHost {
         if (!this.host)
             throw new HarnessFailure(`arm ${this.o.arm} has no host; reset or resume first`);
@@ -191,13 +209,17 @@ export class HostDriver implements ArmDriver {
         args: string[],
         dateMs?: number,
     ): Promise<{ status: number; stderr: string }> {
-        const env: Record<string, string> = { ...GIT_ENV, HOME: join(this.o.armRoot, "home") };
+        // Git's home is harness-owned, beside the arm, so a hook writes nothing a host reads.
+        const home = join(this.armDir, "git-home");
+        mkdirSync(home, { recursive: true, mode: 0o700 });
+        const env: Record<string, string> = { ...GIT_ENV, HOME: home };
         if (dateMs !== undefined) {
             env.GIT_AUTHOR_DATE = `@${Math.floor(dateMs / 1000)}`;
             env.GIT_COMMITTER_DATE = env.GIT_AUTHOR_DATE;
         }
-        // Git needs the workspace under the arm root; the daemon's store stays masked from it.
-        const keep = [...new Set([...this.o.keep, this.o.armRoot])];
+        // Git sees the selected workspace and its own home; sibling workspaces, the host's home,
+        // and the daemon's store stay masked from repository-controlled hooks and filters.
+        const keep = [...new Set([...this.o.keep, dir, home])];
         // Git reads no scenario clock, so the clock directory stays out of its view; the hosts'
         // installs join the set, since a hook could otherwise poison a later session's host.
         const clock = dirname(this.o.offsetFile);
@@ -256,8 +278,14 @@ export class HostDriver implements ArmDriver {
             stdio: ["pipe", "ignore", "pipe"],
         });
         const pid = child.pid as number;
-        this.gitRun = { pid, start: processStart(pid), project };
+        const start = (this.o.procStart ?? processStart)(pid);
+        // The record names the process by pid and start; a start the kernel did not report
+        // leaves nothing the next reap could match, so the gated shell ends unreleased.
+        this.gitRun = start === null ? null : { pid, start, project };
         try {
+            if (start === null) {
+                throw new HarnessFailure(`git launch ${pid} for ${project} has no start identity`);
+            }
             this.recordState();
         } catch (caught) {
             this.gitRun = null;
@@ -338,7 +366,16 @@ export class HostDriver implements ArmDriver {
 
     private readState(): ArmState | null {
         if (!existsSync(this.stateFile)) return null;
-        return JSON.parse(readFileSync(this.stateFile, "utf8")) as ArmState;
+        return this.readRecord<ArmState>(this.stateFile);
+    }
+
+    /** A harness-owned record that fails to parse names itself, since the arm cannot continue on it. */
+    private readRecord<T>(path: string): T {
+        try {
+            return JSON.parse(readFileSync(path, "utf8")) as T;
+        } catch (caught) {
+            throw new HarnessFailure(`arm ${this.o.arm}: ${path} is unreadable: ${String(caught)}`);
+        }
     }
 
     private get ballast(): string | null {
@@ -370,6 +407,7 @@ export class HostDriver implements ArmDriver {
                     model: this.o.models[0] as string,
                 });
                 await this.daemon.start();
+                this.noteDaemon();
                 this.recordState();
             }
         } finally {
@@ -391,9 +429,11 @@ export class HostDriver implements ArmDriver {
     private requireBallast(expected: ArmState["ballast"], when: string): void {
         const stat = lstatSync(this.ballast ?? "", { throwIfNoEntry: false });
         const shape = stat?.isFile() ? { bytes: stat.size, blocks: stat.blocks } : null;
+        // A second name on the inode would keep the blocks allocated after the unlink.
         if (
             !expected ||
             !shape ||
+            stat?.nlink !== 1 ||
             shape.bytes !== expected.bytes ||
             shape.blocks !== expected.blocks
         ) {
@@ -426,7 +466,7 @@ export class HostDriver implements ArmDriver {
         await this.startArm(true);
     }
 
-    async resume(open: ScenarioEvent | null): Promise<void> {
+    async resume(open: ScenarioEvent | null, interrupted: readonly string[] = []): Promise<void> {
         const state = this.readState();
         if (!state) {
             throw new HarnessFailure(`resume of arm ${this.o.arm}: ${this.stateFile} is gone`);
@@ -435,14 +475,17 @@ export class HostDriver implements ArmDriver {
         this.live = true;
         const checked = join(this.armDir, "transcripts.json");
         if (existsSync(checked)) {
-            const missing = JSON.parse(readFileSync(checked, "utf8")).missing as string[];
+            const { missing } = this.readRecord<{ missing: string[] }>(checked);
             if (missing.length > 0) {
                 throw new HarnessFailure(`transcript store missing: ${missing.join(", ")}`);
             }
             this.transcriptsChecked = true;
         }
         await this.reapStale();
-        await this.startArm(false, state);
+        // A fault the journal never observed ended with the killed harness; its ballast goes with it.
+        const lost =
+            state.ballast?.fault !== undefined && interrupted.includes(state.ballast.fault);
+        await this.startArm(false, lost ? { ...state, ballast: null, refilling: false } : state);
         if (open) await this.event(open);
     }
 
@@ -600,7 +643,7 @@ export class HostDriver implements ArmDriver {
     }
 
     private checkDaemon(e: ScenarioEvent): void {
-        if (this.daemon && this.daemonPid() === null) this.o.onDaemonExit({ after: e.id });
+        if (this.daemon && !this.daemonAlive()) this.o.onDaemonExit({ after: e.id });
     }
 
     private project(e: ScenarioEvent): string {
@@ -676,6 +719,7 @@ export class HostDriver implements ArmDriver {
             const before = this.daemonPid();
             this.checkDaemonDirs();
             await this.daemon.restart();
+            this.noteDaemon();
             this.recordState();
             const after = this.daemonPid();
             return {
@@ -687,6 +731,7 @@ export class HostDriver implements ArmDriver {
         }
         if (f.type === "store_full") {
             const evidence = this.fillStore();
+            if (this.ballastShape) this.ballastShape = { ...this.ballastShape, fault: f.id };
             this.recordState();
             return evidence;
         }

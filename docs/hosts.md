@@ -135,8 +135,9 @@ resolves outside the workspace through `..` or a symlink stops the run before
 any directory is created. The file is written whole and renamed into place,
 so a hard link the agent left at the path keeps its other name's content, and
 the `git add` and `git commit` run inside the arm's sandbox under the turn
-deadline, with the arm root kept and the daemon's store masked, with the
-hosts' read-only paths (toolchains, the interposer, the
+deadline, with the selected workspace and a harness-owned git home
+(`<arm>/git-home`) kept and the sibling workspaces, the host's home, and
+the daemon's store masked, with the hosts' read-only paths (toolchains, the interposer, the
 build clone, the Pi, Node, and OpenCode installs) read-only and a fresh
 environment, and only against a `.git` that is the workspace's own directory, so a hook,
 filter, or config the agent planted in the repository acts with the host's
@@ -146,7 +147,9 @@ hook that hangs stops the run instead of the harness. The run's pid is in
 until the record is written, then execs the launcher, so the recorded pid is
 the launcher's `sudo` and the deadline's `timeout` runs inside the sandbox),
 so a resume stops one the killed harness left behind and removes its
-`index.lock` before replaying the event; a run that fails removes its own
+`index.lock` before replaying the event; a launch whose start time the
+kernel did not report is ended unreleased and stops the run, since the
+record names a process by pid and start; a run that fails removes its own
 `index.lock`, `HEAD.lock`, `packed-refs.lock`, and any ref lock, and both
 removals leave a `.git` that is a link alone. The commit's author and committer dates are the
 event's scenario instant (`baseMs + scenario_ms`), so paired arms and a
@@ -252,8 +255,10 @@ server starts leaves a record the next resume reaps. A daemon the fixture spawne
 the harness died carries this arm's data directory as its `--state-root`, and
 the reaper finds and stops it by that argument. The state
 also carries the length and allocated blocks of an active `store_full`
-ballast (cleared before the file goes, so a kill in between leaves a leftover
-the resume removes), a `refilling` flag while a resume has removed the ballast
+ballast with the fault's id (cleared before the file goes, so a kill in
+between leaves a leftover the resume removes, and a ballast whose fault the
+journal fired and never observed is removed on resume instead of refilled,
+since the run records that fault as interrupted), a `refilling` flag while a resume has removed the ballast
 and has yet to fill the store again, so a kill inside that window refills on
 the next attempt, and, through `transcripts.json`, a transcript-store gap
 already found; a resume stops on a ballast whose length or blocks changed, or
@@ -306,7 +311,7 @@ against the same store (OQ-10).
 |---|---|---|
 | `daemon_sigkill_mid_fold` | The session's first observed history-summarizer call fires it; SIGKILL and restart | `pid_before`, `pid_after`, `restarted_by: harness` |
 | `daemon_restart` | At `session_start`, SIGKILL and restart | As above |
-| `store_full` | When the scenario schedules `store_full`, each Eidnara arm's store lives on a sparse 2 GiB ext4 loop mount (`nosuid,nodev,noexec`) at `<arm>/s`, room for the daemon to materialize its harness closures twice, with its image outside the sandbox's kept paths; the fault fills it with a `fallocate`d ballast topped up by `dd`, so the sparse image stays small, and `session_end` removes the ballast; a resume that finds the ballast removes it for the daemon's start and fills the store again, whether or not that start succeeds, and requires the store to report no free space afterwards; the store is writable to the host, so `session_end` requires the ballast to be the regular file it created with its length and blocks unchanged and the store to still report no free space, and stops the run otherwise; the fault replaces whatever the host left at the ballast's name with a fresh regular file before allocating | `avail_kb: 0`; any other value stops the run |
+| `store_full` | When the scenario schedules `store_full`, each Eidnara arm's store lives on a sparse 2 GiB ext4 loop mount (`nosuid,nodev,noexec`) at `<arm>/s`, room for the daemon to materialize its harness closures twice, with its image outside the sandbox's kept paths; the fault fills it with a `fallocate`d ballast topped up by `dd`, so the sparse image stays small, and `session_end` removes the ballast; a resume that finds the ballast removes it for the daemon's start and fills the store again, whether or not that start succeeds, and requires the store to report no free space afterwards; the store is writable to the host, so `session_end` requires the ballast to be the regular file it created with its length and blocks unchanged, its only name (a second hard link would keep the blocks allocated after the unlink), and the store to still report no free space, and stops the run otherwise; the fault replaces whatever the host left at the ballast's name with a fresh regular file before allocating | `avail_kb: 0`; any other value stops the run |
 | `plugin_reload` | The host process and its plugin start afresh at every `session_start` | The reload note |
 | `model_switch` | Later sessions use the next configured model; the daemon keeps running with its summarizer model | The new model id |
 | `laptop_sleep` | One event-free clock jump (`docs/run.md`) | The `AdvanceClock` entry |

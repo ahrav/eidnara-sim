@@ -19,7 +19,8 @@ export interface ArmDriver {
      * Restores a started arm in a new harness process. `open` is the `session_start` of the
      * session the next event belongs to, or null between sessions.
      */
-    resume?(open: ScenarioEvent | null): Promise<void>;
+    /** `interrupted` names the faults the journal fired and never observed before the kill. */
+    resume?(open: ScenarioEvent | null, interrupted?: readonly string[]): Promise<void>;
     /** Stops what a killed harness left running, before any fault is armed again. */
     reap?(): Promise<void>;
     /** Whether the driver has a mechanism for the fault; a run refuses an unsupported one before it starts. */
@@ -64,6 +65,8 @@ export class Scheduler {
     private arm: string | null = null;
     private session: string | null = null;
     private outage: string | null = null;
+    /** Faults the journal fired and never observed on the arm being resumed. */
+    private interrupted: string[] = [];
     private readonly fired = new Set<string>();
     private pendingKill: Promise<unknown> | null = null;
 
@@ -158,7 +161,7 @@ export class Scheduler {
     ): Promise<void> {
         await this.orFinish(driver, async () => {
             if (started && pending.length > 0) {
-                await driver.resume?.(this.openSession(pending[0], done));
+                await driver.resume?.(this.openSession(pending[0], done), this.interrupted);
             }
             for (const e of pending) await this.step(driver, e);
             await this.pendingKill;
@@ -175,7 +178,11 @@ export class Scheduler {
             return await work();
         } catch (caught) {
             await this.pendingKill?.catch(() => undefined);
+            // A job the finish itself starts ends before the failure surfaces; one the failed
+            // work left open is the resume's to close, as it would be after a kill.
+            const open = new Set(this.clock?.busyIds() ?? []);
             await driver.finish?.().catch(() => undefined);
+            await this.idle((id) => !open.has(id));
             throw caught;
         }
     }
@@ -208,13 +215,17 @@ export class Scheduler {
             if (n > 0) this.log({ kind: "EndJob", job, outcome: "failed(interrupted)" });
         }
         const observed = new Set(kinds("FaultObserved").map((e) => e.fault));
+        this.interrupted = [];
         for (const fired of kinds("FaultFired")) {
             const f = this.o.faults.find((x) => x.id === fired.fault);
             this.fired.add(`${this.arm}/${fired.fault}`);
             if (!f) continue;
             if (f.seam.layer !== PROXY_LAYER) {
-                if (!observed.has(f.id) && !marked.has(f.id) && f.type !== "laptop_sleep") {
-                    this.log({ kind: "ItemState", fault: f.id, state: "failed(interrupted)" });
+                if (!observed.has(f.id) && f.type !== "laptop_sleep") {
+                    this.interrupted.push(f.id);
+                    if (!marked.has(f.id)) {
+                        this.log({ kind: "ItemState", fault: f.id, state: "failed(interrupted)" });
+                    }
                 }
                 continue;
             }
@@ -242,8 +253,8 @@ export class Scheduler {
         return start;
     }
 
-    private async idle(): Promise<void> {
-        while ((this.clock?.busyIds().length ?? 0) > 0) await Bun.sleep(this.o.jobPollMs ?? 50);
+    private async idle(counts: (id: string) => boolean = () => true): Promise<void> {
+        while ((this.clock?.busyIds() ?? []).some(counts)) await Bun.sleep(this.o.jobPollMs ?? 50);
     }
 
     private faultsAt(e: ScenarioEvent): FaultEpisode[] {
