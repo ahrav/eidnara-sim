@@ -127,7 +127,48 @@ describe("compile-scenario temporary file", () => {
     });
 });
 
+describe("compile-scenario cache identity", () => {
+    test("a cache symlink to a file hard-linked into the Eidnara checkout is refused", () => {
+        const dir = mkdtempSync(join(tmpdir(), "sim-cli-"));
+        const checkout = join(dir, "eidnara");
+        mkdirSync(checkout);
+        const outDir = join(dir, "out");
+        mkdirSync(outDir);
+        writeFileSync(join(dir, "shared.jsonl"), "");
+        linkSync(join(dir, "shared.jsonl"), join(checkout, "linked.jsonl"));
+        symlinkSync(join(dir, "shared.jsonl"), join(outDir, "embeddings.jsonl"));
+        const config = JSON.parse(readFileSync(join(ROOT, "sim.config.json"), "utf8"));
+        const configPath = join(dir, "sim.config.json");
+        writeFileSync(configPath, JSON.stringify({ ...config, eidnara_checkout: checkout }));
+        const r = Bun.spawnSync(
+            [
+                "bun",
+                "scripts/compile-scenario.ts",
+                "--tier",
+                "S",
+                "--seed",
+                "101",
+                "--embedder",
+                "local",
+                "--out",
+                join(outDir, "s.json"),
+            ],
+            { cwd: ROOT, env: { ...process.env, SIM_CONFIG: configPath } },
+        );
+        expect(r.exitCode).toBe(2);
+        expect(r.stderr.toString()).toContain("hard link");
+    });
+});
+
 describe("compile-scenario arguments", () => {
+    test("a seed outside the tier's registered seeds is refused for a Titan compile", () => {
+        const out = join(mkdtempSync(join(tmpdir(), "sim-cli-")), "s.json");
+        const r = run("--tier", "S", "--seed", "103", "--out", out);
+        expect(r.exitCode).toBe(2);
+        expect(r.stderr.toString()).toContain("registered seeds");
+        expect(existsSync(out)).toBe(false);
+    });
+
     test("an output that aliases the embedding cache is refused", () => {
         const out = join(mkdtempSync(join(tmpdir(), "sim-cli-")), "embeddings.jsonl");
         const r = run("--tier", "S", "--seed", "101", "--embedder", "local", "--out", out);

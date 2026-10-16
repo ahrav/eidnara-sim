@@ -14,7 +14,8 @@ both `manifest.embedding_model` and `manifest.cue_probe_similarity`, so they
 do not witness SIM-P08. The CLI accepts exactly `--tier`, `--seed`,
 `--embedder`, and `--out`, each once with a value; any other token, an
 `--embedder` value other than `local`, or a non-integer seed exits with the
-usage line. An `--out` path, or its sibling `embeddings.jsonl`, that resolves
+usage line, and a Titan compile accepts only a seed the tier's pre-registration
+lists (`--embedder local` compiles any seed, which the tests use). An `--out` path, or its sibling `embeddings.jsonl`, that resolves
 inside `eidnara_checkout` is refused before any directory is created, as is an
 `--out` that names the cache file itself, and an `embeddings.jsonl` that is a
 hard link. The scenario is written to a random same-directory temporary name,
@@ -91,7 +92,7 @@ the earlier one and supersedes it.
 | P1 control | the P1 fact | The same task as the P1 item, in the same window before the fact is conveyed |
 | P2 | the P1 fact | Later session of the same project, outside the scope; the check forbids the convention |
 | P3 | decision | A diff changes the authoritative value before a later session; the check requires the new value |
-| P4 | scoped update | A second conveyance narrows the rule to one module; items alternate inside and outside it |
+| P4 | scoped update | A second conveyance narrows the rule to one module; items alternate inside and outside it, with the alternation offset by seed parity so the pooled counts balance per language across seeds |
 | P5 | rejected approach | Later session; the check forbids the rejected approach |
 | P6 | plan | First turn of a later session, at least one hour after the previous session ends |
 | P7 | rationale | Later session; judge-graded against the reference reason |
@@ -197,15 +198,15 @@ thresholds (`bm25_max` 0.4, `cosine_max` 0.6):
 
 | Tier | Seed | `scenario_hash` | Largest BM25 ratio | Largest cosine |
 |---|---|---|---|---|
-| S | 101 | `6c2c61df` | 0.2162 | 0.5194 |
-| S | 102 | `e9f463f2` | 0.2527 | 0.4867 |
-| M | 201 | `047ee172` | 0.2508 | 0.4992 |
-| M | 202 | `f669e237` | 0.254 | 0.4997 |
-| M | 203 | `359ee7fe` | 0.255 | 0.4843 |
-| L | 301 | `f1fdc913` | 0.2552 | 0.5092 |
-| L | 302 | `7fe1acc5` | 0.2557 | 0.4957 |
-| L | 303 | `23f234c9` | 0.2596 | 0.5083 |
-| XL | 401 | `1a09076e` | 0.2583 | 0.4962 |
+| S | 101 | `70e8d4fb` | 0.2162 | 0.5194 |
+| S | 102 | `bd177a3a` | 0.2527 | 0.4867 |
+| M | 201 | `02542956` | 0.2508 | 0.4992 |
+| M | 202 | `7b888e89` | 0.254 | 0.4997 |
+| M | 203 | `3b2d59c4` | 0.255 | 0.4843 |
+| L | 301 | `58ac7801` | 0.2552 | 0.5092 |
+| L | 302 | `61b1a3c5` | 0.2557 | 0.4957 |
+| L | 303 | `b93aa0c5` | 0.2596 | 0.5083 |
+| XL | 401 | `91753571` | 0.2583 | 0.4962 |
 
 ## Known limits
 

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { chmodSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { bm25Ratio, cosine } from "./similarity";
@@ -50,6 +50,7 @@ describe("bedrockEmbedder", () => {
         `;
         const r = Bun.spawnSync(["bun", "-e", script]);
         expect(r.stdout.toString()).toContain("constructed");
+        expect(readFileSync(cache, "utf8")).toBe(`${vector}\n`);
     });
 
     test("a failed CLI call leaves no temporary file beside the cache", () => {

@@ -505,7 +505,7 @@ export async function compileScenario(input: CompileInput) {
                 range(turnHi - third, turnHi),
             );
         } else if (f.type === "P4") {
-            const out = (slot + (f.i % owners.length)) % 2 === 1;
+            const out = (slot + (f.i % owners.length) + (seed % 2)) % 2 === 1;
             const c = out ? renderDeep(tpl.out_check ?? tpl.check, vars) : check;
             addProbe("P4", project.id, out ? outText : probeText, c, fromConveyed);
         } else if (f.type === "P6") {

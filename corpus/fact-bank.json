@@ -29,7 +29,7 @@
                 },
                 "check": {
                     "must": [
-                        "\\[{token}\\]"
+                        "[\"']\\[{token}\\]"
                     ]
                 }
             },
@@ -228,7 +228,7 @@
                 "out_probe": "Reject a route path that holds a double slash when it is registered.",
                 "check": {
                     "must": [
-                        "\\[{token}\\]"
+                        "[\"'`]\\[{token}\\]"
                     ]
                 }
             },
@@ -265,7 +265,7 @@
                 "out_probe": "Warn when the websocket module receives a frame it does not recognise.",
                 "check": {
                     "must": [
-                        "\\({token}\\)"
+                        "[\"'`]\\({token}\\)"
                     ]
                 }
             }
@@ -491,7 +491,7 @@
                 "probe": "Commit what we have so far.",
                 "check": {
                     "commands_must": [
-                        "git commit\\b(?:(?!\\s(?:-\\w*m|--message)\\b)[^\\n])*\\s(?:-\\w*m|--message)[ =][\"']\\[{token}\\]"
+                        "git commit\\b(?:(?!\\s(?:-\\w*m|--message)\\b)[^\\n])*\\s(?:-\\w*m|--message)[ =]?[\"']\\[{token}\\]"
                     ]
                 }
             },

@@ -11,6 +11,7 @@ import {
     table,
 } from "./distributions";
 import { ERROR_CODE_FIELDS, entryProblems, parseJsonl, SAMPLE_FIELDS } from "./entries";
+import { bankProblems } from "./fact-bank";
 import { CATEGORY_NAMES, QUANTITIES, TABLES } from "./fit";
 import { loadRepos, REPOS_DIR } from "./repos";
 import { CORPUS_DIR, loadSources, parseJson } from "./sources";
@@ -65,6 +66,7 @@ export function checkCorpus(): CorpusReport {
         need(actual === digest, `${path}: sha256 ${actual}, manifest ${digest}`);
     }
 
+    problems.push(...bankProblems(parseJson(read("fact-bank.json"), "fact-bank.json")));
     const samples = parseJsonl(read("tool-outputs/samples.jsonl"));
     const codes = parseJsonl(read("tool-outputs/error-codes.jsonl"));
     need(codes.length === ERROR_CODES, `error codes: ${codes.length}, need ${ERROR_CODES}`);

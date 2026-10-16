@@ -12,6 +12,7 @@ import {
     loadDistributions,
     table,
 } from "./distributions";
+import { bankProblems } from "./fact-bank";
 import { type SampledSession, sampleSession } from "./sampler";
 import { CORPUS_DIR } from "./sources";
 
@@ -77,6 +78,20 @@ function dkw(n: number): number {
 describe("committed corpus", () => {
     test("checkCorpus finds no problems", () => {
         expect(checkCorpus().problems).toEqual([]);
+    });
+
+    test("the fact bank gate names a template without a probe and an unknown check key", () => {
+        const bank = JSON.parse(readFileSync(join(CORPUS_DIR, "fact-bank.json"), "utf8"));
+        expect(bankProblems(bank)).toEqual([]);
+        const broken = structuredClone(bank);
+        delete broken.rust.plan[0].probe;
+        broken.any.lookup[0].check.musts = ["x"];
+        broken.typescript.filler = "not a list";
+        expect(bankProblems(broken)).toEqual([
+            "fact-bank rust/plan[0] rs-plan-field: probe missing",
+            "fact-bank typescript/filler: expected a list of strings",
+            "fact-bank any/lookup[0] lookup-staging-alias: check key musts is not a check kind",
+        ]);
     });
 
     test("every quantity names its source and sample size", () => {

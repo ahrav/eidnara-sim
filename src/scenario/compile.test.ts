@@ -537,6 +537,45 @@ describe("fact bank checks", () => {
         expect(t?.out_check).toEqual({ quote_style_must: "single" });
     });
 
+    test("tag and prefix conventions require the tag at the start of the string", () => {
+        const re = (id: string) => {
+            const t = templates("constraint").find((x) => x.id === id);
+            return new RegExp(
+                ((t?.check as { must: string[] }).must[0] ?? "$^").replaceAll(
+                    "{token}",
+                    "quiet_vole",
+                ),
+            );
+        };
+        expect(
+            re("rs-cmd-error-tag").test('return Err("[quiet_vole] unknown subcommand".into());'),
+        ).toBe(true);
+        expect(re("rs-cmd-error-tag").test('return Err("failure [quiet_vole]".into());')).toBe(
+            false,
+        );
+        expect(
+            re("ts-error-tag").test("throw new Error('[quiet_vole] malformed expires attribute')"),
+        ).toBe(true);
+        expect(re("ts-error-tag").test("throw new Error(`[quiet_vole] malformed ${name}`)")).toBe(
+            true,
+        );
+        expect(re("ts-error-tag").test("throw new Error('malformed [quiet_vole]')")).toBe(false);
+        expect(
+            re("ts-warn-prefix").test("console.warn('(quiet_vole) duplicate route registered')"),
+        ).toBe(true);
+        expect(re("ts-warn-prefix").test("console.warn('duplicate route (quiet_vole)')")).toBe(
+            false,
+        );
+    });
+
+    test("the commit-tag rule accepts the attached short option form", () => {
+        const t = templates("session_rule").find((x) => x.id === "session-commit-tag");
+        const pattern = (t?.check as { commands_must: string[] }).commands_must[0] ?? "$^";
+        const re = new RegExp(pattern.replaceAll("{token}", "quiet_vole"));
+        expect(re.test('git commit -m"[quiet_vole] implement cap"')).toBe(true);
+        expect(re.test('git commit -m "wrong" -m"[quiet_vole] later"')).toBe(false);
+    });
+
     test("every anchor forbids its value in the diff and in the final answer", () => {
         for (const t of templates("anchor")) {
             expect({ id: t.id, keys: Object.keys(t.check).sort() }).toEqual({
@@ -677,6 +716,30 @@ describe("input loading", () => {
         expect(langOf("rust-service")).toBe("rust");
         expect(langOf("typescript-package")).toBe("typescript");
         expect(() => langOf("python-service")).toThrow(/role python-service/);
+    });
+});
+
+describe("P4 scope across seeds", () => {
+    test("the pooled in-scope and out-of-scope counts balance per language over the S seeds", async () => {
+        const counts = new Map<string, number>();
+        for (const seed of [101, 102]) {
+            const input = inputS(seed);
+            const s = await compileScenario(input);
+            for (const p of s.probes.filter((x) => x.type === "P4")) {
+                const lang = s.projects.find((x) => x.id === p.project)?.lang ?? "";
+                const [tpl] = (input.bank[lang]?.scoped_update ?? []) as Template[];
+                const out = JSON.stringify(p.check) === JSON.stringify(tpl?.out_check);
+                const key = `${lang}/${out ? "out" : "in"}`;
+                counts.set(key, (counts.get(key) ?? 0) + 1);
+            }
+        }
+        for (const lang of ["rust", "typescript"]) {
+            expect({ lang, in: counts.get(`${lang}/in`), out: counts.get(`${lang}/out`) }).toEqual({
+                lang,
+                in: counts.get(`${lang}/out`),
+                out: counts.get(`${lang}/out`),
+            });
+        }
     });
 });
 
