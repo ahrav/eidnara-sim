@@ -615,6 +615,9 @@ describe("report check against the pre-registration", () => {
         expect(errors).toContain("families[probe-P1].verdict: expected a verdict kind");
         const odd = JSON.parse('{"tier":{"toString":null,"valueOf":null},"families":[]}');
         expect(checkReport(odd, s)).toContain("tier: expected a tier name");
+        const m0 = acceptedReport(m) as any;
+        at(m0, "dependability").n = JSON.parse('{"toString":null,"valueOf":null}');
+        expect(checkReport(m0, m)).toContain("families[dependability].n: missing");
         expect(errors).toContain(
             `families[${s.families.length}]: expected a verdict object with a family`,
         );

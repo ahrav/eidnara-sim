@@ -123,7 +123,10 @@ export function checkRecord(record: Record, spec: FieldSpec[], catalogDir: strin
         const path = join(catalogDir, link);
         if (!existsSync(path)) errors.push(`${at}: ${link} missing`);
         else {
-            const evidence = readFileSync(path, "utf8").replace(/^```[\s\S]*?^```\s*$/gm, "");
+            const evidence = readFileSync(path, "utf8").replace(
+                /^(`{3,}|~{3,})[^\n]*\n[\s\S]*?^\1\s*$/gm,
+                "",
+            );
             if (!evidence.startsWith(`# ${at}\n`))
                 errors.push(`${at}: evidence title differs from slug`);
             for (const h of EVIDENCE_HEADINGS) {

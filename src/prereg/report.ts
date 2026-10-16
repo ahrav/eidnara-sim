@@ -90,17 +90,18 @@ function checkVerdict(
     const verdict = typeof f.verdict === "string" ? f.verdict : "";
     if (verdict === "") errors.push(`${at}.verdict: expected a verdict kind`);
     else if (!VERDICT_KINDS.includes(f.verdict)) errors.push(`${at}.verdict: ${verdict}`);
-    if (!Number.isSafeInteger(f.n) || f.n < 0) errors.push(`${at}.n: missing`);
-    else if (f.n === 0 && CLAIM_VERDICTS.includes(verdict)) {
+    const n = Number.isSafeInteger(f.n) && f.n >= 0 ? f.n : -1;
+    if (n < 0) errors.push(`${at}.n: missing`);
+    else if (n === 0 && CLAIM_VERDICTS.includes(verdict)) {
         errors.push(`${at}.n: a ${verdict} verdict rests on at least one observation`);
     } else if (
         family.analysis_unit === "item" &&
-        f.n > prereg.stopping_rule.paired_items_per_probe_type
+        n > prereg.stopping_rule.paired_items_per_probe_type
     ) {
         errors.push(
             `${at}.n: exceeds the ${prereg.stopping_rule.paired_items_per_probe_type} paired items the tier issues`,
         );
-    } else if (family.analysis_unit === "run" && f.n > prereg.seeds.length * prereg.hosts.length) {
+    } else if (family.analysis_unit === "run" && n > prereg.seeds.length * prereg.hosts.length) {
         errors.push(
             `${at}.n: exceeds the ${prereg.seeds.length * prereg.hosts.length} paired runs the tier produces`,
         );
@@ -140,7 +141,7 @@ function checkVerdict(
             `${at}.resolution_ratio: a null verdict carries its resolution ratio as a positive canonical decimal; other verdicts omit it`,
         );
     }
-    const belowFloor = needsPairedRuns(family) && f.n < family.min_paired_runs;
+    const belowFloor = needsPairedRuns(family) && n >= 0 && n < family.min_paired_runs;
     if (belowFloor !== (verdict === "insufficient-runs")) {
         errors.push(
             `${at}.verdict: insufficient-runs is the verdict exactly when n is below ${family.min_paired_runs}`,

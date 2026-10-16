@@ -188,7 +188,7 @@ describe("catalog checker", () => {
         );
         writeFileSync(
             join(dir, "evidence/sim-p05-scheduled-events-identical-across-arms.md"),
-            "# sim-p05-scheduled-events-identical-across-arms\n\n```\n## Discovery trigger\nx\n## Evidence trail\nx\n## Failure scenario\nx\n## Timing windows and dependencies\nx\n## What a test must construct\nx\n## Investigation log\nx\n```\n",
+            "# sim-p05-scheduled-events-identical-across-arms\n\n~~~md\n## Discovery trigger\nx\n## Evidence trail\nx\n## Failure scenario\nx\n## Timing windows and dependencies\nx\n## What a test must construct\nx\n## Investigation log\nx\n~~~\n",
         );
         const errors = checkCatalog(path, METHOD, IDS);
         expect(errors).toContain(
