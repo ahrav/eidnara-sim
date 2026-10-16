@@ -1290,7 +1290,13 @@ Existing check: `src/prereg/validate.test.ts`: the validator requires
 its removal or any other value by name; the score formula has no check; status
 unaudited
 Impact: Wrong-project injection is under-penalised.
-Open questions: None.
+Open questions:
+- The P11 score weights a false positive at twice a hit, so `P11.harm` is not a
+  0/1 outcome, while the harm family registers `outcome: binary` with the exact
+  McNemar/Newcombe interval over its five metrics. Whether `P11.harm` enters the
+  harm gate as the binary event "any false positive" with the weight applied
+  only to the descriptive score, or needs its own graded analysis, is a design
+  decision for M5 and M7 (needs human input).
 
 ## Metrics and gates
 

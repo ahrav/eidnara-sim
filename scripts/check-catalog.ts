@@ -124,7 +124,7 @@ export function checkRecord(record: Record, spec: FieldSpec[], catalogDir: strin
         if (!existsSync(path)) errors.push(`${at}: ${link} missing`);
         else {
             const evidence = readFileSync(path, "utf8").replace(
-                /^(`{3,}|~{3,})[^\n]*\n[\s\S]*?^\1\s*$/gm,
+                /^([`~])\1{2,}[^\n]*\n[\s\S]*?^\1{3,}\s*$/gm,
                 "",
             );
             if (!evidence.startsWith(`# ${at}\n`))
