@@ -114,6 +114,16 @@ describe("classify and commandOf", () => {
         );
         expect(classify("execute_bash", "pytest tests/test_h.py", "ok")).toBe("test_run");
         expect(
+            classify("execute_bash", "printf long-output # ; pytest tests", "long-output"),
+        ).toBeNull();
+        expect(
+            classify(
+                "execute_bash",
+                "echo setup done; pytest",
+                "setup done\nbash: line 1: pytest: command not found",
+            ),
+        ).toBeNull();
+        expect(
             classify("execute_bash", "echo \\; pytest followed by a long unquoted message", "x"),
         ).toBeNull();
     });

@@ -58,7 +58,7 @@ export function classify(tool: string, command: string, content: string): Sample
     }
     if (content.includes(TRACEBACK)) return "stack_trace";
     if (tool !== "execute_bash" || SHELL_ERROR.test(content)) return null;
-    const bare = command.replace(QUOTED, '""');
+    const bare = command.replace(QUOTED, '""').replace(COMMENT, "$1");
     const runner = bare.split(SEPARATOR).find((segment) => RUNNER.test(segment));
     if (runner !== undefined) return NO_RUN.test(runner) ? null : "test_run";
     if (SEARCH.test(bare)) return "grep";
@@ -109,16 +109,24 @@ function clip(body: string, kind: SampleKind): string {
 type Provenanced = Omit<Provenance, "id">;
 
 const FRAME = /^\s*File "/;
+const DOC_SECTION = /^\s*(?:Raises|Warns|Returns|Yields|Args|Arguments|Parameters)\s*:?\s*$/;
 const RUNNER =
     /(^|(?<!\\)&&|(?<!\\);|(?<!\\)\|)\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*(?:python3?\s+-m\s+)?(?:pytest|py\.test|tox|nox|unittest)\b/;
 const SEPARATOR = /(?<!\\)(?:&&|;|\|)/;
 const QUOTED = /"(?:\\.|[^"\\])*"|'[^']*'/g;
 const NO_RUN = /(^|\s)(--help|-h|--version|--co|--collect-only|--fixtures|--markers)(\s|$)/;
-const SHELL_ERROR = /^(?:bash|sh): (?:line \d+: )?(?:syntax error|.*: command not found)/;
+const SHELL_ERROR = /^(?:bash|sh): (?:line \d+: )?(?:syntax error|.*: command not found)/m;
+const COMMENT = /(^|\s)#.*$/gm;
 const TRACEBACK = "Traceback (most recent call last)";
 const TRACE_END = /^(?:E\s+)?\s*[\w.]*(?:Error|Exception|Failure|Exit|Interrupt|Warning)\b/;
 const SEARCH =
     /(^|(?<!\\)&&|(?<!\\);|(?<!\\)\|)\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*(?:sudo\s+|xargs\s+(?:-\S+\s+)*)?(?:grep|rg|ag)\b|(^|(?<!\\)&&|(?<!\\);|(?<!\\)\|)\s*find\b.*?-exec\s+(?:grep|rg|ag)\b/;
+
+export function exceptionLine(line: string): { code: string; message: string } | undefined {
+    const code = EXCEPTION.exec(line.trim());
+    if (code?.[1] === undefined) return undefined;
+    return { code: code[1], message: (code[2] ?? "").slice(0, 300) };
+}
 
 function harvestCodes(lines: string[], base: Provenanced, codes: Map<string, ErrorCodeEntry>) {
     for (const [i, line] of lines.entries()) {
@@ -127,10 +135,12 @@ function harvestCodes(lines: string[], base: Provenanced, codes: Map<string, Err
             continue;
         if (code[2] === undefined && !lines.slice(Math.max(0, i - 2), i).some((l) => FRAME.test(l)))
             continue;
+        const above = lines.slice(Math.max(0, i - 4), i);
+        if (above.some((l) => DOC_SECTION.test(l)) && !above.some((l) => FRAME.test(l))) continue;
         codes.set(code[1], {
             id: `err-${codes.size.toString().padStart(4, "0")}`,
             code: code[1],
-            message: (code[2] ?? "").slice(0, 300),
+            message: exceptionLine(line)?.message ?? "",
             context: lines.slice(Math.max(0, i - 8), i + 1).join("\n"),
             ...base,
         });

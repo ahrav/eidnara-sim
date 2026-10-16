@@ -15,7 +15,7 @@ import { ERROR_CODE_FIELDS, entryProblems, parseJsonl, SAMPLE_FIELDS } from "./e
 import { CATEGORIES, CATEGORY_NAMES, KINDS, QUANTITIES, TABLES, TRACELAB_FILES } from "./fit";
 import { loadRepos, REPOS_DIR } from "./repos";
 import { CORPUS_DIR, loadSources, parseJson } from "./sources";
-import { kindMatches, OPENHANDS_FILE } from "./tool-outputs";
+import { exceptionLine, kindMatches, OPENHANDS_FILE } from "./tool-outputs";
 
 const SAMPLES_PER_KIND = 150;
 const ERROR_CODES = 200;
@@ -97,10 +97,11 @@ export function checkCorpus(): CorpusReport {
     const codeNames = new Set(codes.map((c) => (c as { code?: string }).code?.trim()));
     need(codeNames.size === codes.length, "error codes: a name repeats");
     for (const c of codes) {
-        const e = c as { id?: string; code?: string; context?: string };
+        const e = c as { id?: string; code?: string; message?: string; context?: string };
+        const parsed = exceptionLine((e.context ?? "").split("\n").at(-1) ?? "");
         const anchored =
-            (e.context ?? "").trim() !== "" && (e.context ?? "").includes(e.code ?? "\u0000");
-        need(anchored, `error_codes ${e.id}: context must contain the code`);
+            parsed !== undefined && parsed.code === e.code && parsed.message === e.message;
+        need(anchored, `error_codes ${e.id}: context must end at the recorded code and message`);
     }
     problems.push(
         ...entryProblems(samples, "samples", SAMPLE_FIELDS),
@@ -124,6 +125,8 @@ export function checkCorpus(): CorpusReport {
         return `${e.kind} ${e.source_id?.replace(/#\d+$/, "")}`;
     });
     need(new Set(perTrajectory).size === samples.length, "samples: a trajectory repeats a kind");
+    const sourceIds = samples.map((s) => (s as { source_id?: string }).source_id);
+    need(new Set(sourceIds).size === samples.length, "samples: a source message repeats");
     for (const s of samples) {
         const e = s as {
             id?: string;
@@ -275,6 +278,14 @@ export function checkCorpus(): CorpusReport {
     need(
         (dist.quantities.tool_output_chars?.n ?? 0) <= (dist.tool_mix?.n ?? 0),
         "tool_output_chars: n exceeds the tool-call count",
+    );
+    need(
+        (dist.quantities.idle_between_sessions_s?.n ?? 0) < sessions,
+        "idle_between_sessions_s: n must be below the session count",
+    );
+    need(
+        table(dist, "idle_between_sessions_s").x.every((v) => v > 0),
+        "idle_between_sessions_s: gaps must be positive",
     );
     const cited = loadCited();
     const citedKeys = cited.checks
