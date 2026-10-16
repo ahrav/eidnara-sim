@@ -1,3 +1,4 @@
+import { COMPONENTS } from "../proxy/records";
 export const ARTEFACT_CLASSES = [
     "diff",
     "command-log",
@@ -70,6 +71,7 @@ export interface Snapshot {
     id: string;
     item: string;
     arm: string;
+    session: string;
     turn: string;
     turn_outcome: "ok" | "failed";
     artefacts: Artefact[];
@@ -79,11 +81,12 @@ export class GradeRefused extends Error {}
 
 export const completed = (c: CallView) => c.status >= 200 && c.status < 300 && c.error === null;
 
-type Field = (v: unknown) => boolean;
-const str: Field = (v) => typeof v === "string";
-const text: Field = (v) => typeof v === "string" && v.length > 0;
-const num: Field = (v) => typeof v === "number" && Number.isFinite(v);
-const optional =
+export type Field = (v: unknown) => boolean;
+export const str: Field = (v) => typeof v === "string";
+export const text: Field = (v) => typeof v === "string" && v.length > 0;
+export const num: Field = (v) => typeof v === "number" && Number.isFinite(v);
+export const bool: Field = (v) => typeof v === "boolean";
+export const optional =
     (f: Field): Field =>
     (v) =>
         v === undefined || f(v);
@@ -91,10 +94,11 @@ const nullable =
     (f: Field): Field =>
     (v) =>
         v === null || f(v);
-const oneOf =
+export const oneOf =
     (values: readonly string[]): Field =>
     (v) =>
         values.includes(v as string);
+export const textList: Field = (v) => Array.isArray(v) && v.length > 0 && v.every(text);
 const listOf = (shape: Record<string, Field>, path: string, v: unknown): string | null => {
     if (!Array.isArray(v)) return path;
     for (const [i, item] of v.entries()) {
@@ -109,7 +113,11 @@ const mapOf =
         typeof v === "object" && v !== null && Object.values(v).every(f);
 
 /** The first field of `value` that fails `shape`, as a dotted path, or null when every field holds. */
-function badField(shape: Record<string, Field>, value: unknown, path: string): string | null {
+export function badField(
+    shape: Record<string, Field>,
+    value: unknown,
+    path: string,
+): string | null {
     if (typeof value !== "object" || value === null) return path;
     const record = value as Record<string, unknown>;
     for (const [key, f] of Object.entries(shape)) {
@@ -120,7 +128,7 @@ function badField(shape: Record<string, Field>, value: unknown, path: string): s
 
 const CALL: Record<string, Field> = {
     seq: num,
-    component: text,
+    component: oneOf(COMPONENTS),
     turn: nullable(str),
     turn_index: optional(num),
     scenario_ms: num,
@@ -154,6 +162,7 @@ const SNAPSHOT: Record<string, Field> = {
     id: text,
     item: text,
     arm: text,
+    session: text,
     turn: text,
     turn_outcome: oneOf(["ok", "failed"]),
     artefacts: Array.isArray,
@@ -165,6 +174,7 @@ export function assertArtefactsOnly(snapshot: Snapshot): void {
     if (top) throw new GradeRefused(`${top} is missing or malformed`);
     const ids = new Set<string>();
     for (const [i, raw] of snapshot.artefacts.entries()) {
+        // SAFETY: the field checks below establish whether each artefact satisfies the Artefact contract.
         const a = raw as unknown as Record<string, unknown>;
         if (!text(a.id)) {
             throw new GradeRefused(`snapshot ${snapshot.id} has an artefact without an id`);

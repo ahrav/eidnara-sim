@@ -4,11 +4,19 @@ import type { ProbeItem } from "../scenario/compile";
 import {
     ArtefactReader,
     assertArtefactsOnly,
+    bool,
     type CallView,
     type Command,
     completed,
+    type Field,
     GradeRefused,
+    num,
+    oneOf,
+    optional,
     type Snapshot,
+    str,
+    text,
+    textList,
 } from "./artefacts";
 import { abstains, addedLines, carries, diffPaths, matchesAll, matchesAny } from "./text";
 
@@ -58,6 +66,17 @@ const USER_SIM_LABELS = [
     "paste",
 ];
 
+const CHECK_FIELDS: Record<keyof Check, Field> = {
+    must: textList,
+    must_not: textList,
+    commands_must: textList,
+    answer: text,
+    abstain: bool,
+    scope: oneOf(["in", "out"]),
+    window_from_turn: num,
+    turns: (v: unknown) => Array.isArray(v) && v.length === 2 && v.every(num),
+};
+
 const REQUIRED: Record<string, (keyof Check)[]> = {
     P1: ["must"],
     "P1-control": ["must"],
@@ -102,19 +121,43 @@ const work = (r: ArtefactReader) => `${changed(r)}\n${commandText(r)}`;
  * command exited 0. A `||` continuation is left out, because its execution cannot be read from
  * the exit code.
  */
-const executed = (x: Command): string[] => {
-    const parts = x.command.split(/(\|\||&&|[;|\n])/);
-    const ran: string[] = [];
-    for (let i = 0; i < parts.length; i += 2) {
-        const op = i === 0 ? ";" : (parts[i - 1] as string);
-        const seg = (parts[i] as string).trim();
-        if (seg.length === 0) continue;
-        if (op === "||") continue;
-        if (op === "&&" && x.exit !== 0) continue;
-        ran.push(seg);
+/** Operator-separated segments with the operator that led to each; quoted text is one segment. */
+function splitShell(command: string): { op: string; seg: string }[] {
+    const out: { op: string; seg: string }[] = [];
+    let quote = "";
+    let seg = "";
+    let op = ";";
+    const push = (next: string) => {
+        out.push({ op, seg: seg.trim() });
+        seg = "";
+        op = next;
+    };
+    for (let i = 0; i < command.length; i++) {
+        const ch = command[i] as string;
+        if (quote) {
+            seg += ch;
+            if (ch === quote) quote = "";
+            else if (ch === "\\" && quote === '"') seg += command[++i] ?? "";
+            continue;
+        }
+        if (ch === "'" || ch === '"') {
+            quote = ch;
+            seg += ch;
+        } else if (ch === "\\") seg += ch + (command[++i] ?? "");
+        else if (command.startsWith("&&", i) || command.startsWith("||", i)) {
+            push(command.slice(i, i + 2));
+            i++;
+        } else if (ch === ";" || ch === "|" || ch === "\n") push(ch);
+        else seg += ch;
     }
-    return ran;
-};
+    out.push({ op, seg: seg.trim() });
+    return out.filter((x) => x.seg.length > 0);
+}
+
+const executed = (x: Command): string[] =>
+    splitShell(x.command)
+        .filter((p) => p.op !== "||" && (p.op !== "&&" || x.exit === 0))
+        .map((p) => p.seg);
 const anchored = (p: string) => (p.startsWith("(?i)") ? `(?i)^${p.slice(4)}` : `^${p}`);
 const namesPath = (segment: string, path: string) =>
     new RegExp(`(^|[\\s'"=])(\\./)?${path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}($|[\\s'"])`).test(
@@ -279,19 +322,19 @@ function graderFor(probe: ProbeItem): Grader {
     const grader = GRADERS[probe.type];
     if (!grader) throw new GradeRefused(`no programmatic grader for ${probe.type}`);
     const check = (probe.check ?? {}) as Record<string, unknown>;
-    const rules = [check.must, check.commands_must].filter((v) => v !== undefined);
-    if (probe.type === "P13" && !rules.some((v) => Array.isArray(v) && v.length > 0)) {
+    if (probe.type === "P13" && check.must === undefined && check.commands_must === undefined) {
         throw new GradeRefused(
             `P13 item ${probe.id} has neither check.must nor check.commands_must`,
         );
     }
-    if (probe.type === "P4" && check.scope !== "in" && check.scope !== "out") {
-        throw new GradeRefused(`P4 item ${probe.id} has check.scope ${check.scope}, not in or out`);
-    }
     for (const key of REQUIRED[probe.type] ?? []) {
-        const value = check[key];
-        if (value === undefined || (Array.isArray(value) && value.length === 0)) {
+        if (check[key] === undefined) {
             throw new GradeRefused(`${probe.type} item ${probe.id} has no check.${key}`);
+        }
+    }
+    for (const [key, shape] of Object.entries(CHECK_FIELDS) as [keyof Check, Field][]) {
+        if (!optional(shape)(check[key])) {
+            throw new GradeRefused(`${probe.type} item ${probe.id} has a malformed check.${key}`);
         }
     }
     return grader;
@@ -316,6 +359,11 @@ export function gradeItem(
     if (probe.event && first.turn !== probe.event) {
         throw new GradeRefused(
             `snapshot ${first.id} is of turn ${first.turn}, not the probe's event ${probe.event}`,
+        );
+    }
+    if (first.session !== probe.session) {
+        throw new GradeRefused(
+            `snapshot ${first.id} is of session ${first.session}, not the probe's ${probe.session}`,
         );
     }
     const grader = graderFor(probe);
@@ -347,9 +395,17 @@ function isGradeRecord(value: unknown): value is GradeRecord {
     );
     const version = typeof g.version === "number" && Number.isInteger(g.version) && g.version >= 1;
     const verdict = VERDICTS.includes(g.verdict as Verdict);
-    const metrics = typeof g.metrics === "object" && g.metrics !== null;
-    const inputs = Array.isArray(g.inputs) && g.inputs.every((i) => typeof i === "string");
-    return strings && version && verdict && metrics && inputs;
+    const metricValue = (v: unknown) => typeof v === "boolean" || str(v) || num(v);
+    const metrics =
+        typeof g.metrics === "object" &&
+        g.metrics !== null &&
+        !Array.isArray(g.metrics) &&
+        Object.values(g.metrics).every(metricValue);
+    const inputs = Array.isArray(g.inputs) && g.inputs.every(str);
+    const attempts =
+        Number.isInteger(g.later_attempts_logged) && (g.later_attempts_logged as number) >= 0;
+    const optionals = optional(str)(g.pair) && optional(str)(g.reason);
+    return strings && version && verdict && metrics && inputs && attempts && optionals;
 }
 
 function newest(grades: GradeRecord[]): GradeRecord[] {

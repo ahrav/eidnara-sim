@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { appendFileSync, mkdtempSync, readdirSync, readFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, readdirSync, readFileSync, truncateSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ProbeItem } from "../scenario/compile";
@@ -408,6 +408,63 @@ describe("grading harness", () => {
         expect(() => gradeItem(p8.probe, [noId], rules)).toThrow(
             "snapshot.id is missing or malformed",
         );
+    });
+
+    test("a proxy call with a component outside the protocol's set is refused", () => {
+        const f = fixture("P14-fail");
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        const calls = snap.artefacts.find((a) => a.class === "proxy-call");
+        if (calls?.class !== "proxy-call") throw new Error("fixture lacks proxy-call");
+        const sim = calls.calls.find((c) => c.component === "user-sim") as CallView;
+        sim.component = "usersim";
+        expect(() => gradeItem(f.probe, [snap], rules)).toThrow("component");
+    });
+
+    test("a shell operator inside quotes does not split a segment", () => {
+        const f = fixture("P6-pass");
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        const log = snap.artefacts.find((a) => a.class === "command-log" && a.role === "turn");
+        if (log?.class !== "command-log") throw new Error("fixture lacks command-log");
+        log.commands.push(
+            { command: 'echo "nothing && cargo test"', exit: 0, scenario_ms: 10 },
+            { command: "echo 'a; cat src/connection.rs'", exit: 0, scenario_ms: 20 },
+        );
+        const g = gradeItem(f.probe, [snap], rules) as GradeRecord;
+        expect([g.metrics["P6.ran_tests"], g.metrics["P6.reread_files"]]).toEqual([false, 0]);
+    });
+
+    test("a grade record with malformed metrics or attempt count is refused", () => {
+        const path = join(mkdtempSync(join(tmpdir(), "sim-grades-")), "grades.jsonl");
+        const log = new GradeLog(path);
+        const g = grade("P2-pass");
+        const { later_attempts_logged: _n, ...noCount } = g;
+        for (const bad of [{ ...g, metrics: [] }, { ...g, metrics: { x: {} } }, noCount]) {
+            appendFileSync(path, `${JSON.stringify(bad)}\n`);
+            expect(() => log.all()).toThrow("is not a grade record");
+            appendFileSync(path, "");
+            truncateSync(path, 0);
+        }
+    });
+
+    test("a check with an empty pattern or answer is refused before grading", () => {
+        const p1 = fixture("P1-fail");
+        expect(() =>
+            gradeItem({ ...p1.probe, check: { must: [""] } }, p1.snapshots, rules),
+        ).toThrow("check.must");
+        const p8 = fixture("P8-fail");
+        expect(() =>
+            gradeItem({ ...p8.probe, check: { answer: "" } }, p8.snapshots, rules),
+        ).toThrow("check.answer");
+        const p14 = fixture("P14-pass");
+        expect(() =>
+            gradeItem({ ...p14.probe, check: { window_from_turn: "4" } }, p14.snapshots, rules),
+        ).toThrow("check.window_from_turn");
+    });
+
+    test("a snapshot from another session than the probe's is refused", () => {
+        const f = fixture("P14-pass");
+        const other = { ...(f.snapshots[0] as Snapshot), session: "s-9" };
+        expect(() => gradeItem(f.probe, [other], rules)).toThrow("session s-9");
     });
 
     test("a P13 command rule keeps its case-insensitive prefix when anchored", () => {

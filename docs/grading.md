@@ -23,9 +23,10 @@ an agent transcript or self-report (SIM-P40), a snapshot that lacks an
 artefact its grader reads (a missing diff or command log is refused, so it
 cannot pass a negative-match grader as empty evidence), an artefact without a
 unique nonempty id or with a payload outside its class's shape (a command
-without its text, a call with a non-numeric status), a snapshot without its
-own id, and an item whose check lacks a key its grader needs or lists it
-empty. It grades the first snapshot of an item and arm only
+without its text, a call with a non-numeric status or a component outside
+the proxy's set), a snapshot without its own id or from another session than
+the probe's, and an item whose check lacks a key its grader needs or holds a
+malformed value (an empty pattern, an empty answer, a non-numeric window). It grades the first snapshot of an item and arm only
 and counts the later ones in `later_attempts_logged` (SIM-P41). An item
 whose probe turn ended `failed` gets no grade (SIM-P46). Each grade lists the
 ids of the artefacts its grader read. Every snapshot of an item passes the
@@ -39,8 +40,9 @@ turn; a turn with no completed response refuses the grade.
 `GradeLog` appends grades to one JSONL file. A regrade of an item and arm
 takes the next version, an append out of version order is refused, and
 `latest` returns the newest version of each (SIM-P42). A line that parses
-but lacks a grade record's fields, or repeats an item and arm's version, is
-refused by line number. A kill mid-append
+but lacks a grade record's fields (metrics of boolean, string, or finite
+number values, a non-negative attempt count), or repeats an item and arm's
+version, is refused by line number. A kill mid-append
 leaves a cut final line; reads skip it and the next append overwrites it, so
 the complete earlier grades stay readable.
 
@@ -70,7 +72,8 @@ Check patterns match line by line against the diff's changed paths followed
 by its added lines, so `^` anchors each line and a pattern can name a file
 as well as its content. Added lines are the `+` lines inside hunks, told
 apart from `+++` headers by position, so a source line that begins with `++`
-is graded content. A shell segment counts as executed when it is unconditional,
+is graded content. Shell segments split on operators outside quotes, so quoted text
+stays one segment; a segment counts as executed when it is unconditional,
 or follows `&&` in a command that exited 0; a `||` continuation is left out
 because the exit code does not say whether it ran. The P13 fold boundary
 sits at the fold call's scenario millisecond: a command logged in that same millisecond counts as after the

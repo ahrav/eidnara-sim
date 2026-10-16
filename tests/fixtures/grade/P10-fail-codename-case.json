@@ -19,6 +19,7 @@
       "id": "s-P10-b-codename",
       "item": "P10-b-codename",
       "arm": "eidnara",
+      "session": "s-1",
       "turn": "e-1",
       "turn_outcome": "ok",
       "artefacts": [

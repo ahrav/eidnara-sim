@@ -19,6 +19,7 @@
       "id": "s-P11-a",
       "item": "P11-a",
       "arm": "eidnara",
+      "session": "s-1",
       "turn": "e-1",
       "turn_outcome": "ok",
       "artefacts": [

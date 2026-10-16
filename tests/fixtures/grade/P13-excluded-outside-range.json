@@ -23,6 +23,7 @@
       "id": "s-P13-d",
       "item": "P13-d",
       "arm": "eidnara",
+      "session": "s-1",
       "turn": "e-1",
       "turn_outcome": "ok",
       "artefacts": [
