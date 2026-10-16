@@ -87,6 +87,9 @@ class FakeHost {
     hostPid() {
         return this.pid;
     }
+    hostIdentity() {
+        return this.pid === null ? null : { pid: this.pid, start: processStart(this.pid) };
+    }
 }
 
 function fixture(
@@ -863,6 +866,41 @@ touch ${escaped}
             await driver.stop().catch(() => undefined);
         }
     });
+
+    test("a daemon gone when the host's prompt rejects is reported before the rejection surfaces", async () => {
+        const { driver, exits, transcripts } = fixture("eidnara");
+        const gone = spawnSync("true").pid as number;
+        const host = new FakeHost({} as HostContext, transcripts);
+        host.onPrompt = () => {
+            throw new Error("connection lost");
+        };
+        driver.host = host as unknown as SimHost;
+        driver.daemon = fakeDaemon(gone) as unknown as DaemonStack;
+        await expect(driver.event(ev("user_turn", { id: "e-7", text: "hi" }))).rejects.toThrow(
+            "connection lost",
+        );
+        expect(exits).toEqual([{ after: "e-7" }]);
+    });
+
+    test.skipIf(!sandbox)(
+        "a timeout planted in the workspace is never the one that runs git",
+        async () => {
+            const { driver } = fixture("host", { p: gitRepo() });
+            const path = process.env.PATH;
+            try {
+                await driver.reset();
+                const ws = driver.workspace("p");
+                writeFileSync(join(ws, "timeout"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+                process.env.PATH = `.:${path}`;
+                await driver.event(ev("apply_diff", { path: "a.txt", content: "A" }));
+                const log = spawnSync("git", ["-C", ws, "log", "--oneline"], { encoding: "utf8" });
+                expect(log.stdout.trim().split("\n")).toHaveLength(2);
+            } finally {
+                process.env.PATH = path;
+                await driver.stop().catch(() => undefined);
+            }
+        },
+    );
 
     test("a daemon whose process has exited is reported with the event id", async () => {
         const { driver, exits, transcripts } = fixture("eidnara");

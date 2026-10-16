@@ -81,7 +81,8 @@ For each arm, it resets the driver, then walks the events:
 After the arm's last event, the scheduler waits for a mid-fold SIGKILL still
 restarting the daemon and for the busy set to empty, calls the driver's
 `finish`, waits for the busy set again (a job the shutdown itself started
-ends before the arm does), closes any outage window and the current session,
+ends before the arm does, and before a failed finish surfaces), closes any
+outage window and the current session,
 and journals `EndArm`, so nothing an arm started runs into the next arm. When `reset`, the
 `StartArm` append, an event, or a fault throws, the scheduler waits for a
 mid-fold restart still in flight, calls `finish`, waits for every job the

@@ -361,6 +361,26 @@ test("a Pi session whose readiness check fails stops the launcher tree it spawne
     }
 });
 
+test("a Pi launch whose start identity cannot be read is killed before the gate opens", async () => {
+    const run = runDir();
+    const checkout = fakeV1(run);
+    const ctx = context(run);
+    const config = { ...ctx.config, eidnara_checkout: checkout, pi_install: checkout };
+    const host = new PiSimHost({ ...ctx, config, procStart: () => null });
+    const outcome = await host.openSession(join(run, "arm"), "s1", null).then(
+        () => "opened",
+        (e: unknown) => String(e),
+    );
+    const child = (globalThis as Untyped).__simPiChild;
+    try {
+        expect(outcome).toContain("start identity");
+        expect(await gone(child.pid)).toBe(true);
+    } finally {
+        child.kill("SIGKILL");
+        await host.closeSession().catch(() => undefined);
+    }
+});
+
 test("an OpenCode session whose SDK setup fails stops the server it spawned", async () => {
     const run = runDir();
     const checkout = fakeV1(run);

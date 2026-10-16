@@ -15,6 +15,7 @@ import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { launch } from "../run/launcher";
 import { processStart, running, stopOwnedTree } from "../run/procs";
 import { type ArmDriver, HarnessFailure, type ScenarioEvent } from "../run/scheduler";
+import { SYSTEM_PATH } from "../run/toolchain";
 import { transcriptKind } from "../run/transcripts";
 import type { FaultEpisode } from "../scenario/faults";
 import {
@@ -25,6 +26,7 @@ import {
     hostNode,
     makeHost,
     opencodeInstall,
+    type PromptResult,
     readOnlyPaths,
     type SimHost,
 } from "./arms";
@@ -55,8 +57,6 @@ export interface DriverOptions extends Omit<HostContext, "root" | "model"> {
     /** Wall time of scenario time 0, the same value the clock offset targets. */
     baseMs: number;
     hostFactory?: (ctx: HostContext) => SimHost;
-    /** Reads a process's start identity; the default reads `/proc`. */
-    procStart?: (pid: number) => string | null;
     daemonFactory?: (ctx: DaemonContext) => DaemonStack;
     onDaemonExit: (detail: Record<string, unknown>) => void;
 }
@@ -253,7 +253,9 @@ export class HostDriver implements ArmDriver {
         // A hook or filter runs inside this command, so the workspace's .git is checked on both
         // sides of it; one moved out of the workspace stops the run.
         this.requireOwnGitDir(dir);
-        const r = await this.recorded(project, argv, { PATH: process.env.PATH ?? "" });
+        // The sandbox resolves `timeout` and `git` on this path after it enters the workspace, so
+        // the system path alone is used; the ambient one may name the workspace itself.
+        const r = await this.recorded(project, argv, { PATH: SYSTEM_PATH });
         if (r.status !== 0) this.unlockGit(dir);
         this.requireOwnGitDir(dir);
         return { ...r, stderr: r.status === 137 ? `cut off after ${seconds} s` : r.stderr };
@@ -366,11 +368,17 @@ export class HostDriver implements ArmDriver {
         // is never recorded as the daemon.
         const daemonPid = this.daemonPid();
         const daemon = this.daemonId?.pid === daemonPid ? this.daemonId : proc(daemonPid);
+        // The host's identity is the one its launch captured; a launch the kernel reported no
+        // start for is unrecordable, and the host ends it on this failure.
+        const host = this.sessionProject === null ? null : (this.host?.hostIdentity() ?? null);
+        if (host && host.start === null) {
+            throw new HarnessFailure(`host launch ${host.pid} has no start identity`);
+        }
         const state: ArmState = {
             model: this.model,
             daemon,
             switched: this.switched,
-            host: proc(this.sessionProject === null ? null : (this.host?.hostPid() ?? null)),
+            host,
             ballast: this.ballastShape,
             refilling: this.refilling,
             git: this.gitRun,
@@ -664,7 +672,14 @@ export class HostDriver implements ArmDriver {
             await this.applyDiff(e);
             return {};
         }
-        const result = await host.prompt(String(e.text), this.o.turnDeadlineMs);
+        let result: PromptResult;
+        try {
+            result = await host.prompt(String(e.text), this.o.turnDeadlineMs);
+        } catch (caught) {
+            // A daemon gone during the turn is the cause of a lost connection; it is reported first.
+            this.checkDaemon(e);
+            throw caught;
+        }
         this.checkDaemon(e);
         return result.error ? { failed: result.error } : {};
     }
