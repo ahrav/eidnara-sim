@@ -39,6 +39,27 @@ export interface GradeRecord extends Outcome {
     inputs: string[];
     later_attempts_logged: number;
     pair?: string;
+    /**
+     * The arm a pairwise (P7) grade was judged against. One host answer is judged once per
+     * memory arm, so its grades are distinct records, one per opponent.
+     */
+    against?: string;
+}
+
+export type GradeKey = Pick<GradeRecord, "item" | "arm" | "against">;
+
+const keyOf = (g: GradeKey) => `${g.item}/${g.arm}/${g.against ?? ""}`;
+
+/** Verdict counts by arm and probe type, with a pairwise grade's opponent in its row name. */
+export function verdictCounts(grades: GradeRecord[]): Record<string, Record<string, number>> {
+    const counts: Record<string, Record<string, number>> = {};
+    for (const g of grades) {
+        const row = `${g.arm}/${g.probe_type}${g.against ? ` vs ${g.against}` : ""}`;
+        counts[row] ??= {};
+        const verdicts = counts[row] as Record<string, number>;
+        verdicts[g.verdict] = (verdicts[g.verdict] ?? 0) + 1;
+    }
+    return counts;
 }
 
 const READS = /\b(cat|less|more|head|tail|sed|view|bat|grep|rg)\b|^read /;
@@ -292,22 +313,24 @@ export class GradeLog {
     latest(): GradeRecord[] {
         const newest = new Map<string, GradeRecord>();
         for (const g of this.all()) {
-            const key = `${g.item}/${g.arm}`;
+            const key = keyOf(g);
             if ((newest.get(key)?.version ?? 0) < g.version) newest.set(key, g);
         }
         return [...newest.values()];
     }
 
-    nextVersion(item: string, arm: string): number {
-        const mine = this.all().filter((g) => g.item === item && g.arm === arm);
+    nextVersion(key: GradeKey): number {
+        const id = keyOf(key);
+        const mine = this.all().filter((g) => keyOf(g) === id);
         return mine.length === 0 ? 1 : Math.max(...mine.map((g) => g.version)) + 1;
     }
 
     append(record: GradeRecord): void {
-        const expected = this.nextVersion(record.item, record.arm);
+        const expected = this.nextVersion(record);
         if (record.version !== expected) {
+            const against = record.against ? ` vs ${record.against}` : "";
             throw new GradeRefused(
-                `grade ${record.item}/${record.arm} v${record.version} expected v${expected}`,
+                `grade ${record.item}/${record.arm}${against} v${record.version} expected v${expected}`,
             );
         }
         appendFileSync(this.path, `${JSON.stringify(record)}\n`);

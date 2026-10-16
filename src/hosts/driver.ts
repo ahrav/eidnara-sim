@@ -9,6 +9,7 @@ import {
     writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { git, gitEnv } from "../git";
 import type { CallView } from "../grade/artefacts";
 import { processStart, running, stopOwnedTree } from "../run/procs";
 import { type ArmDriver, HarnessFailure, type ScenarioEvent } from "../run/scheduler";
@@ -34,19 +35,11 @@ export interface DriverOptions extends Omit<HostContext, "root" | "model"> {
     onDaemonExit: (detail: Record<string, unknown>) => void;
 }
 
-const git = (cwd: string, ...args: string[]) => {
-    const env = {
-        ...process.env,
-        GIT_CONFIG_GLOBAL: "/dev/null",
-        GIT_CONFIG_NOSYSTEM: "1",
-        GIT_AUTHOR_NAME: "sim-user",
-        GIT_AUTHOR_EMAIL: "sim-user@users.noreply.github.com",
-        GIT_COMMITTER_NAME: "sim-user",
-        GIT_COMMITTER_EMAIL: "sim-user@users.noreply.github.com",
-    };
-    const r = spawnSync("git", args, { cwd, env, encoding: "utf8" });
-    if (r.status !== 0) throw new Error(`git ${args.join(" ")}: ${r.stderr}`);
-    return r.stdout.trim();
+const IDENTITY = {
+    GIT_AUTHOR_NAME: "sim-user",
+    GIT_AUTHOR_EMAIL: "sim-user@users.noreply.github.com",
+    GIT_COMMITTER_NAME: "sim-user",
+    GIT_COMMITTER_EMAIL: "sim-user@users.noreply.github.com",
 };
 
 function run(argv: string[]): string {
@@ -175,7 +168,7 @@ export class HostDriver implements ArmDriver {
         mkdirSync(join(this.o.armRoot, "workspaces"), { recursive: true });
         for (const [project, source] of Object.entries(this.o.projects)) {
             const target = this.workspace(project);
-            git(this.o.armRoot, "clone", "--quiet", "--no-hardlinks", source, target);
+            git(this.o.armRoot, ["clone", "--quiet", "--no-hardlinks", source, target]);
         }
         await this.startArm(true);
     }
@@ -220,7 +213,7 @@ export class HostDriver implements ArmDriver {
         if (e.kind === "session_end") {
             const project = this.project(e);
             this.snapshots.addTools(host.drainTools());
-            this.snapshots.sessionEnd(project, this.workspace(project));
+            this.snapshots.sessionEnd(e.session, project, this.workspace(project));
             await host.closeSession();
             this.clearStoreFill();
             this.sessionProject = null;
@@ -271,13 +264,11 @@ export class HostDriver implements ArmDriver {
             throw new HarnessFailure(`apply_diff path ${String(e.path)} leaves ${dir}`);
         }
         writeFileSync(path, String(e.content));
-        git(dir, "add", "--", path);
-        if (
-            spawnSync("git", ["diff", "--cached", "--quiet", "--", path], { cwd: dir }).status === 0
-        ) {
-            return;
-        }
-        git(dir, "commit", "--quiet", "--no-verify", "-m", `Add ${String(e.path)}`, "--", path);
+        git(dir, ["add", "--", path]);
+        const staged = ["diff", "--cached", "--quiet", "--", path];
+        if (spawnSync("git", staged, { cwd: dir, env: gitEnv() }).status === 0) return;
+        const message = `Add ${String(e.path)}`;
+        git(dir, ["commit", "--quiet", "--no-verify", "-m", message, "--", path], IDENTITY);
     }
 
     private checkTranscripts(host: SimHost): void {

@@ -125,7 +125,7 @@ describe("grading harness", () => {
         const g = grade("P2-pass");
         log.append(g);
         expect(() => log.append(g)).toThrow("expected v2");
-        log.append({ ...g, version: log.nextVersion(g.item, g.arm) });
+        log.append({ ...g, version: log.nextVersion(g) });
         expect(log.all().map((x) => x.version)).toEqual([1, 2]);
         expect(log.latest().map((x) => x.version)).toEqual([2]);
     });

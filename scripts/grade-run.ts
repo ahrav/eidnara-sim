@@ -3,7 +3,13 @@ import { join, resolve } from "node:path";
 import { loadConfig } from "../src/config/config";
 import type { Snapshot } from "../src/grade/artefacts";
 import { gradeP7, judgePair, p7Pair, proxyJudge } from "../src/grade/judge";
-import { deltaMem, GradeLog, type GradeRecord, gradeItem } from "../src/grade/probes";
+import {
+    deltaMem,
+    GradeLog,
+    type GradeRecord,
+    gradeItem,
+    verdictCounts,
+} from "../src/grade/probes";
 import { bedrockUpstream, Gateway } from "../src/proxy/gateway";
 import { FaultInjector } from "../src/proxy/inject";
 import { RecordWriter } from "../src/proxy/records";
@@ -47,7 +53,7 @@ const skip = (why: string) => {
     skipped[why] = (skipped[why] ?? 0) + 1;
 };
 const append = (g: GradeRecord) => {
-    const record = { ...g, version: log.nextVersion(g.item, g.arm) };
+    const record = { ...g, version: log.nextVersion(g) };
     log.append(record);
     graded.push(record);
 };
@@ -114,13 +120,6 @@ if (pairs.length > 0) {
     }
 }
 
-const summary: Record<string, Record<string, number>> = {};
-for (const g of graded) {
-    const key = `${g.arm}/${g.probe_type}`;
-    summary[key] ??= {};
-    const row = summary[key] as Record<string, number>;
-    row[g.verdict] = (row[g.verdict] ?? 0) + 1;
-}
 const p11 = Object.fromEntries(
     arms.map((arm) => {
         const mine = graded.filter((g) => g.arm === arm && g.probe_type === "P11");
@@ -131,7 +130,7 @@ const p11 = Object.fromEntries(
 const delta = memoryArms.map((arm) => ({ arm, delta_mem: deltaMem(log.latest(), arm) }));
 console.log(
     JSON.stringify(
-        { verdicts: summary, skipped, p11, p3: delta, judge_errors: judgeErrors },
+        { verdicts: verdictCounts(graded), skipped, p11, p3: delta, judge_errors: judgeErrors },
         null,
         2,
     ),

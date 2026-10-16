@@ -301,6 +301,7 @@ export function gradeP7(j: Judgment, c: P7Context, rules: Rules, version = 1): G
         const common = {
             item: c.item,
             arm: c.arms[side],
+            against: c.arms[side === "a" ? "b" : "a"],
             probe_type: "P7",
             version,
             snapshot: c.snapshots[side],

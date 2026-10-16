@@ -62,3 +62,70 @@ test("an OpenCode turn logs only its own messages' tools, timed in OpenCode's cl
     expect(await host.prompt("go", 5_000)).toEqual({});
     expect(host.drainTools()).toEqual([{ command: "cargo test", exit: 1, scenario_ms: 2_100 }]);
 });
+
+function failingTurn(mode: "result-error" | "rejected" | "deadline", listing = true) {
+    const fakeNow = 9_000_000_000;
+    const tool = (command: string, status: string, start: number) => ({
+        type: "tool",
+        tool: "bash",
+        state: { input: { command }, status, time: { start } },
+    });
+    const fresh = {
+        info: { id: "m2", time: { created: fakeNow } },
+        parts: [
+            tool("cargo build", "error", fakeNow + 1_000),
+            tool("cargo test", "running", fakeNow + 3_000),
+        ],
+    };
+    let listed = 0;
+    let release: (value: unknown) => void = () => undefined;
+    const client = {
+        session: {
+            messages: async () => {
+                if (listed++ > 0 && !listing) throw new Error("serve gone");
+                return { data: listed === 1 ? [] : [fresh] };
+            },
+            prompt: () => {
+                if (mode === "result-error") return Promise.resolve({ error: { name: "Bad" } });
+                if (mode === "rejected") return Promise.reject(new Error("socket closed"));
+                return new Promise((resolve) => {
+                    release = resolve;
+                });
+            },
+            abort: async () => {
+                release({ data: { info: {} } });
+                return {};
+            },
+        },
+    };
+    const host = new OpencodeSimHost({
+        ...({} as HostContext),
+        config: loadConfig(),
+        root: "/x",
+        launcher: "/x/sandbox.sh",
+        now: () => 100,
+    });
+    Object.assign(host as unknown as Record<string, unknown>, {
+        client,
+        sid: "s",
+        oc: { stderr: () => "" },
+    });
+    return host;
+}
+
+for (const mode of ["result-error", "rejected", "deadline"] as const) {
+    test(`an OpenCode turn that ends ${mode} still logs its tool runs, unfinished ones with a null exit`, async () => {
+        const host = failingTurn(mode);
+        expect((await host.prompt("go", 50)).error).toBeString();
+        expect(host.drainTools()).toEqual([
+            { command: "cargo build", exit: 1, scenario_ms: 1_100 },
+            { command: "cargo test", exit: null, scenario_ms: 3_100 },
+        ]);
+    });
+}
+
+test("a failed OpenCode turn whose messages cannot be listed keeps its error and names the gap", async () => {
+    const result = await failingTurn("rejected", false).prompt("go", 50);
+    expect(result.error).toContain("socket closed");
+    expect(result.error).toContain("tool capture: Error: serve gone");
+});

@@ -1,4 +1,3 @@
-import { spawnSync } from "node:child_process";
 import {
     appendFileSync,
     existsSync,
@@ -8,27 +7,26 @@ import {
     rmSync,
     writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
+import { git } from "../git";
 import type { Artefact, CallView, Command, Snapshot } from "../grade/artefacts";
-
-function git(dir: string, args: string[], index: string): string {
-    const env = { ...process.env, GIT_INDEX_FILE: index, GIT_CONFIG_GLOBAL: "/dev/null" };
-    const r = spawnSync("git", args, { cwd: dir, env, encoding: "utf8", maxBuffer: 64 << 20 });
-    if (r.status !== 0) throw new Error(`git ${args.join(" ")}: ${r.stderr}`);
-    return r.stdout;
-}
 
 interface RecorderState {
     session: string | null;
+    /**
+     * The last session whose end was recorded. A resume replays a `session_start` and
+     * `session_end` the journal has not closed; matching this id leaves both trees as recorded.
+     */
+    ended?: string | null;
     starts: Record<string, string>;
     last: Record<string, { from: string; to: string }>;
     commands: Command[];
 }
 
-const EMPTY: RecorderState = { session: null, starts: {}, last: {}, commands: [] };
+const EMPTY: RecorderState = { session: null, ended: null, starts: {}, last: {}, commands: [] };
 
 export class SnapshotRecorder {
-    private readonly index: string;
+    private readonly gitDir: string;
     private readonly stateFile: string;
     private state: RecorderState;
 
@@ -38,11 +36,28 @@ export class SnapshotRecorder {
         private readonly callsFor: (session: string) => CallView[],
     ) {
         mkdirSync(armDir, { recursive: true });
-        this.index = join(armDir, "snapshot.index");
+        this.gitDir = join(armDir, "snapshot.git");
         this.stateFile = join(armDir, "snapshot-state.json");
         this.state = existsSync(this.stateFile)
             ? (JSON.parse(readFileSync(this.stateFile, "utf8")) as RecorderState)
             : structuredClone(EMPTY);
+    }
+
+    /**
+     * Runs git against the recorder's own bare repository under the arm directory, outside
+     * the sandbox. The agent can write the workspace's `.git`, so its config (filters,
+     * fsmonitor, external diff, textconv, `core.worktree`) never applies: `GIT_DIR` names the
+     * recorder's repository and `GIT_WORK_TREE` the workspace. Each workspace keeps its own
+     * index there, so a later tree rehashes only the files whose stat data changed.
+     */
+    private git(args: string[], work?: string): string {
+        if (!existsSync(this.gitDir)) git(this.armDir, ["init", "--quiet", "--bare", this.gitDir]);
+        const scope: Record<string, string> = { GIT_DIR: this.gitDir };
+        if (work) {
+            scope.GIT_WORK_TREE = work;
+            scope.GIT_INDEX_FILE = join(this.gitDir, `${basename(work)}.index`);
+        }
+        return git(work ?? this.armDir, args, scope);
     }
 
     private save(): void {
@@ -53,32 +68,33 @@ export class SnapshotRecorder {
     clear(): void {
         this.state = structuredClone(EMPTY);
         rmSync(this.stateFile, { force: true });
+        rmSync(this.gitDir, { recursive: true, force: true });
         rmSync(join(this.armDir, "snapshots.jsonl"), { force: true });
     }
 
     tree(dir: string): string {
-        rmSync(this.index, { force: true });
-        git(dir, ["read-tree", "HEAD"], this.index);
-        git(dir, ["add", "-A"], this.index);
-        return git(dir, ["write-tree"], this.index).trim();
+        this.git(["add", "--all"], dir);
+        return this.git(["write-tree"], dir).trim();
     }
 
-    private diff(dir: string, from: string, to: string): string {
-        return git(dir, ["diff", "--no-color", from, to], this.index);
+    private diff(from: string, to: string): string {
+        return this.git(["diff", "--no-color", "--no-ext-diff", "--no-textconv", from, to]);
     }
 
     sessionStart(session: string, project: string, dir: string): void {
-        if (this.state.session === session) return;
+        if (this.state.session === session || this.state.ended === session) return;
         this.state.session = session;
         this.state.starts[project] = this.tree(dir);
         this.state.commands = [];
         this.save();
     }
 
-    sessionEnd(project: string, dir: string): void {
+    sessionEnd(session: string, project: string, dir: string): void {
+        if (this.state.ended === session) return;
         const from = this.state.starts[project];
         if (from) this.state.last[project] = { from, to: this.tree(dir) };
         this.state.session = null;
+        this.state.ended = session;
         this.save();
     }
 
@@ -103,7 +119,7 @@ export class SnapshotRecorder {
                 id: `${id}:diff`,
                 class: "diff",
                 role: "turn",
-                patch: this.diff(dir, before, this.tree(dir)),
+                patch: this.diff(before, this.tree(dir)),
             },
             { id: `${id}:turn-commands`, class: "command-log", role: "turn", commands: turnTools },
             { id: `${id}:session-commands`, class: "command-log", role: "session", commands },
@@ -111,7 +127,7 @@ export class SnapshotRecorder {
         ];
         const prior = this.state.last[project];
         if (prior) {
-            const patch = this.diff(dir, prior.from, prior.to);
+            const patch = this.diff(prior.from, prior.to);
             artefacts.push({ id: `${id}:prior-diff`, class: "diff", role: "prior-session", patch });
         }
         const snapshot: Snapshot = {

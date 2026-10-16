@@ -29,7 +29,9 @@ artefact.
 
 `GradeLog` appends grades to one JSONL file. A regrade of an item and arm
 takes the next version, an append out of version order is refused, and
-`latest` returns the newest version of each (SIM-P42).
+`latest` returns the newest version of each (SIM-P42). A P7 grade's key
+also holds `against`, the arm it was judged against, so each pairing keeps
+its own versions.
 
 ## Capture
 
@@ -41,21 +43,34 @@ snapshot id is `<arm>:<item>:<turn event>`, so each attempt has its own id.
 
 | Artefact | Source |
 |---|---|
-| `diff` (`turn`) | A git tree of the workspace, untracked files included, written to a separate index before the prompt and after it, and diffed |
+| `diff` (`turn`) | A git tree of the workspace's files that its `.gitignore` rules leave in, untracked files included, taken before the prompt and after it, and diffed |
 | `diff` (`prior-session`) | The same trees at the start and end of the project's previous session |
-| `command-log` | The host's tool runs, each a bash command or the tool name and its path, with a 0 or 1 error flag (null for a run that never finished) and its scenario time. Pi reports `tool_execution_start` and `tool_execution_end` events; OpenCode's tool parts come from the session messages the turn added, each timed from its start relative to the turn's first new message, both in OpenCode's own clock |
+| `command-log` | The host's tool runs, each a bash command or the tool name and its path, with a 0 or 1 error flag (null for a run that never finished) and its scenario time. Pi reports `tool_execution_start` and `tool_execution_end` events; OpenCode's tool parts come from the session messages the turn added, read after the turn whatever its outcome, each timed from its start relative to the turn's first new message, both in OpenCode's own clock, with a pending or running part's exit null |
 | `proxy-call` | The session's call records from `calls.jsonl`, each with the index of the user turn it belongs to (a background call takes the preceding turn's), and the response text the proxy records for agent, user-sim, and judge calls (the first 32,768 characters) |
 
 The recorder keeps each project's session-start tree, the last session's
-tree pair, and the open session's commands in `<arm>/snapshot-state.json`,
-so a resumed arm reopens its session with the same start tree and commands.
+tree pair, the last ended session, and the open session's commands in
+`<arm>/snapshot-state.json`, so a resumed arm reopens its session with the
+same start tree and commands, and a `session_start` and `session_end` that a
+resume replays for a session that already ended leave its trees as recorded.
+
+The trees live in a bare repository the recorder owns, `<arm>/snapshot.git`,
+with one index per workspace. The agent can write the workspace's `.git`, so
+the recorder's git runs with `GIT_DIR` on its own repository, `GIT_WORK_TREE`
+on the workspace, every inherited `GIT_*` variable dropped, and global and
+system config off (`src/git.ts`); no filter, fsmonitor, external diff,
+textconv, or `core.worktree` from the workspace's config applies. The
+persistent index lets a later tree rehash only the files whose stat data
+changed.
+
 The harness captures no `test-result` or `workspace-state` artefact yet;
 the graders read neither.
 
 `scripts/grade-run.ts <run dir>` grades every snapshot the journal names
 into `grades.jsonl` and judges each P7 item for each memory arm against the
 host arm, through a gateway it starts for the judge. It prints the verdict
-counts per arm and probe type, the skipped items by reason, the summed
+counts per arm and probe type (a P7 row also names the arm judged against),
+the skipped items by reason, the summed
 `P11.weighted_score` per arm, Δmem per memory arm, and the judge errors,
 and exits 1 when a judge call failed. The scenario plants no canary
 strings, so it passes the judge none; blinding still refuses arm names. P14 items have no probe turn of their
@@ -129,7 +144,8 @@ cannot call, and the divergences are listed below.
 4. The judgment records each answer's length after normalisation, and
    `longer_recalled_alone` records whether the longer answer was the one
    recalled alone, for the verbosity audit.
-5. `gradeP7` writes one grade per arm. Each grade carries the judge model,
+5. `gradeP7` writes one grade per arm, each naming the other arm in
+   `against`. Each grade carries the judge model,
    the prompt and rubric digests, both order verdicts, both answer lengths
    and `longer_recalled_alone`, the calibration digest, and the permutation
    check's result and counts. It computes the digest and runs the check

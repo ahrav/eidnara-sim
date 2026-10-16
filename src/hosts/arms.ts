@@ -200,10 +200,10 @@ export abstract class SimHost {
     protected logTool(
         tool: string,
         args: Record<string, unknown> | undefined,
-        failed: boolean,
+        exit: number | null,
         scenario_ms = this.ctx.now?.() ?? 0,
     ) {
-        this.tools.push({ command: toolCommand(tool, args), exit: failed ? 1 : 0, scenario_ms });
+        this.tools.push({ command: toolCommand(tool, args), exit, scenario_ms });
     }
 
     protected unfinished(): ToolRun[] {
@@ -314,7 +314,7 @@ export class PiSimHost extends SimHost {
             if (e.type !== "tool_execution_end") return;
             const run = started.get(e.toolCallId);
             started.delete(e.toolCallId);
-            if (run) this.logTool(run.tool, run.args, e.isError === true);
+            if (run) this.logTool(run.tool, run.args, e.isError === true ? 1 : 0);
         });
         const ready = this.rpc.sendCommand("get_state", {}, { timeoutMs: 120_000 });
         await Promise.race([ready, spawnError]);
@@ -376,6 +376,9 @@ const NON_INTERACTIVE = ["question", "plan_enter", "plan_exit"].map((permission)
     action: "deny",
     pattern: "*",
 }));
+
+/** A tool part's exit by its OpenCode status; a pending or running part has none. */
+const EXIT: Record<string, number> = { completed: 0, error: 1 };
 
 export class OpencodeSimHost extends SimHost {
     private oc: Untyped = null;
@@ -488,14 +491,31 @@ export class OpencodeSimHost extends SimHost {
             for (const part of m.parts.filter((p) => p.type === "tool")) {
                 const at = Number(part.state?.time?.start ?? origin);
                 const ms = startScenario + (Number.isFinite(origin) ? Math.max(0, at - origin) : 0);
-                this.logTool(part.tool, part.state?.input, part.state?.status === "error", ms);
+                this.logTool(part.tool, part.state?.input, EXIT[part.state?.status] ?? null, ms);
             }
         }
     }
 
+    /**
+     * Runs one turn and then logs the tool parts of the messages it added, on every outcome:
+     * the next turn treats those messages as seen, so a turn that errored or hit its deadline
+     * logs its tools here or never. A failed turn whose listing also fails keeps its own
+     * error and names the capture gap.
+     */
     async prompt(text: string, timeoutMs: number): Promise<PromptResult> {
         const seen = new Set((await this.messages()).map((m) => String(m.info?.id)));
         const startScenario = this.ctx.now?.() ?? 0;
+        const outcome = await this.turn(text, timeoutMs);
+        try {
+            await this.logTurnTools(seen, startScenario);
+        } catch (caught) {
+            if (!outcome.error) throw caught;
+            return { error: `${outcome.error} | tool capture: ${String(caught)}`.slice(0, 2000) };
+        }
+        return outcome;
+    }
+
+    private async turn(text: string, timeoutMs: number): Promise<PromptResult> {
         const model = { providerID: "amazon-bedrock", modelID: this.ctx.model };
         const call = this.client.session.prompt({
             path: { id: this.sid },
@@ -519,7 +539,6 @@ export class OpencodeSimHost extends SimHost {
         }
         const { result } = first;
         if (result.error) return { error: JSON.stringify(result.error).slice(0, 2000) };
-        await this.logTurnTools(seen, startScenario);
         const info = result.data?.info;
         return info?.error ? { error: JSON.stringify(info.error).slice(0, 2000) } : {};
     }

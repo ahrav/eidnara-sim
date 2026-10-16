@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { gitEnv } from "../git";
 import { CORPUS_DIR } from "./sources";
 
 export const REPOS_DIR = join(CORPUS_DIR, "repos");
@@ -37,16 +38,12 @@ export function loadRepos(): RepoSpec[] {
     return raw.repos as RepoSpec[];
 }
 
-const inherited = Object.fromEntries(
-    Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_")),
-);
-
 function run(cmd: string[], cwd: string, env: Record<string, string> = {}) {
     const [bin, ...args] = cmd;
     if (bin === undefined) throw new Error("run: empty command");
     const result = spawnSync(bin, args, {
         cwd,
-        env: { ...inherited, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", ...env },
+        env: gitEnv(env),
         encoding: "utf8",
         maxBuffer: 256 * 1024 * 1024,
     });

@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "../config/config";
 import { gradeItem } from "../grade/probes";
+import { diffPaths } from "../grade/text";
 import type { ScenarioEvent } from "../run/scheduler";
 import { type FaultType, SEAMS } from "../scenario/faults";
 import { loadPrereg } from "../scenario/inputs";
@@ -396,6 +397,30 @@ describe("probe snapshots", () => {
         expect(grade?.verdict).toBe("pass");
         expect(grade?.inputs).toEqual(["host:q-1:e-9:diff"]);
     });
+
+    test("a session_end replayed on resume keeps that session's diff as the next one's prior session", async () => {
+        const { driver, hosts, armDir, transcripts } = fixture("host", { p: gitRepo() });
+        mkdirSync(join(transcripts, "sessions"), { recursive: true });
+        await driver.reset();
+        const ws = driver.workspace("p");
+        const start = ev("session_start", { id: "e-0", session: "s-0" });
+        await driver.event(start);
+        const host = hosts.at(-1) as FakeHost;
+        host.onPrompt = () => writeFileSync(join(ws, "earlier.rs"), "fn earlier() {}\n");
+        await driver.event(ev("user_turn", { id: "e-1", session: "s-0", text: "go" }));
+        host.failClose = true;
+        const end = ev("session_end", { id: "e-2", session: "s-0" });
+        await expect(driver.event(end)).rejects.toThrow("host survived");
+
+        const resumed = new HostDriver((driver as unknown as { o: DriverOptions }).o);
+        await resumed.resume(start);
+        await resumed.event(end);
+        await resumed.event(ev("session_start", { id: "e-3", session: "s-1" }));
+        await resumed.event(
+            ev("user_turn", { id: "e-4", session: "s-1", text: "next", probe: "q-1" }),
+        );
+        expect(captured(armDir)["host:q-1:e-4:prior-diff"]?.patch).toContain("+fn earlier()");
+    });
 });
 
 test("a recorder rebuilt after a harness kill keeps the open session's start tree and commands", () => {
@@ -420,7 +445,7 @@ test("a recorder rebuilt after a harness kill keeps the open session's start tre
     expect(id).toBe("eidnara:q:e-2");
     const session = snap.artefacts.find((a: { id: string }) => a.id.endsWith("session-commands"));
     expect(session.commands).toEqual([{ command: "cargo build", exit: 0, scenario_ms: 1 }]);
-    resumed.sessionEnd("p", repo);
+    resumed.sessionEnd("s-1", "p", repo);
     const later = new SnapshotRecorder(armDir, "eidnara", () => []);
     later.sessionStart("s-2", "p", repo);
     const next = later.capture(
@@ -436,4 +461,69 @@ test("a recorder rebuilt after a harness kill keeps the open session's start tre
         (a: { id: string }) => a.id === `${next}:prior-diff`,
     );
     expect(prior.patch).toContain("+fn x() {}");
+});
+
+function captured(armDir: string): Record<string, { patch?: string }> {
+    const lines = readFileSync(join(armDir, "snapshots.jsonl"), "utf8").trim().split("\n");
+    const snap = JSON.parse(lines.at(-1) as string);
+    return Object.fromEntries(snap.artefacts.map((a: { id: string }) => [a.id, a]));
+}
+
+test("snapshot git runs no command and indexes no path that the workspace repo's config names", () => {
+    const repo = gitRepo();
+    const outside = tmp();
+    const ran = join(outside, "ran");
+    const hook = join(outside, "hook.sh");
+    writeFileSync(hook, `#!/bin/sh\ntouch ${ran}\ncat\n`, { mode: 0o755 });
+    writeFileSync(join(outside, "secret"), "aws_secret_access_key = leaked\n");
+    const set = (key: string, value: string) =>
+        spawnSync("git", ["config", key, value], { cwd: repo });
+    set("filter.evil.clean", hook);
+    set("diff.external", hook);
+    set("diff.evil.textconv", hook);
+    writeFileSync(join(repo, ".gitattributes"), "* filter=evil diff=evil\n");
+    const armDir = tmp();
+    const recorder = new SnapshotRecorder(armDir, "eidnara", () => []);
+    recorder.sessionStart("s-1", "p", repo);
+    const before = recorder.tree(repo);
+    writeFileSync(join(repo, "new.rs"), "fn x() {}\n");
+    recorder.capture({ probe: "q", session: "s-1", id: "e-1" }, "p", repo, before, [], false);
+    expect(existsSync(ran)).toBe(false);
+    expect(captured(armDir)["eidnara:q:e-1:diff"]?.patch).toContain("+fn x() {}");
+
+    set("core.worktree", outside);
+    const moved = recorder.tree(repo);
+    writeFileSync(join(repo, "more.rs"), "fn y() {}\n");
+    recorder.capture({ probe: "r", session: "s-1", id: "e-2" }, "p", repo, moved, [], false);
+    const patch = captured(armDir)["eidnara:r:e-2:diff"]?.patch;
+    expect(patch).toContain("+fn y() {}");
+    expect(patch).not.toContain("leaked");
+    expect(existsSync(ran)).toBe(false);
+});
+
+test("snapshot patches keep their b/ paths under a system git config and inherited git variables", () => {
+    const repo = gitRepo();
+    const system = join(tmp(), "gitconfig");
+    writeFileSync(system, "[diff]\n\tnoprefix = true\n");
+    const saved = { system: process.env.GIT_CONFIG_SYSTEM, dir: process.env.GIT_DIR };
+    process.env.GIT_CONFIG_SYSTEM = system;
+    process.env.GIT_DIR = join(tmp(), "not-a-repo");
+    try {
+        const armDir = tmp();
+        const recorder = new SnapshotRecorder(armDir, "eidnara", () => []);
+        recorder.sessionStart("s-1", "p", repo);
+        const before = recorder.tree(repo);
+        writeFileSync(join(repo, "new.rs"), "fn x() {}\n");
+        recorder.capture({ probe: "q", session: "s-1", id: "e-1" }, "p", repo, before, [], false);
+        const patch = captured(armDir)["eidnara:q:e-1:diff"]?.patch ?? "";
+        expect(diffPaths(patch)).toEqual(["new.rs"]);
+    } finally {
+        for (const [key, value] of [
+            ["GIT_CONFIG_SYSTEM", saved.system],
+            ["GIT_DIR", saved.dir],
+        ] as const) {
+            if (value === undefined) delete process.env[key];
+            else process.env[key] = value;
+        }
+    }
 });
