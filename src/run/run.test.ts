@@ -24,6 +24,7 @@ import {
     requireDeclaredProjects,
     requireMechanisms,
     requireOutsideCheckout,
+    requireOutsideIdentity,
     requirePlainArtifacts,
     runSteps,
     treeIdentity,
@@ -258,6 +259,15 @@ describe("run inputs", () => {
         expect(treeIdentity(repo).worktree).toBe(clean.worktree);
     });
 
+    test("output inside this checkout must be ignored, and never inside a corpus checkout", () => {
+        expect(() => requireOutsideIdentity(join(ROOT, "runs/x"))).not.toThrow();
+        expect(() => requireOutsideIdentity(join(ROOT, "src/x"))).toThrow(/not ignored by git/);
+        expect(() => requireOutsideIdentity(join(ROOT, "corpus/repos/mini-redis/x"))).toThrow(
+            /overlaps the corpus checkouts/,
+        );
+        expect(() => requireOutsideIdentity(dir())).not.toThrow();
+    });
+
     test("a schedule needs a mechanism for every fault and two models for a model switch", () => {
         const at = (type: FaultEpisode["type"]): FaultEpisode => ({
             id: `f-${type}`,
@@ -329,6 +339,23 @@ describe("run inputs", () => {
         expect(() => faultOverride([switchOnTurn], scenario)).toThrow(
             /model_switch fires at a session_start trigger only/,
         );
+        const burstNoCount = { ...episode, strategy: "burst" };
+        expect(() => faultOverride([burstNoCount], scenario)).toThrow(/burst needs count/);
+        const intermittentBare = { ...episode, strategy: "intermittent" };
+        expect(() => faultOverride([intermittentBare], scenario)).toThrow(
+            /intermittent needs probability, intermittent needs calls/,
+        );
+        const restartBurst = {
+            ...episode,
+            type: "daemon_restart",
+            seam: SEAMS.daemon_restart,
+            strategy: "burst",
+            trigger: { kind: "session_start", session: "s-0000" },
+            params: { count: 2 },
+        };
+        expect(() => faultOverride([restartBurst], scenario)).toThrow(
+            /daemon_restart uses the single strategy/,
+        );
         const proto = { ...episode, type: "__proto__", seam: {} };
         expect(() => faultOverride([proto], scenario)).toThrow(/type __proto__ unknown/);
         const ranges = {
@@ -387,10 +414,12 @@ describe("run inputs", () => {
         await expect(loadManifest(o, scenario, checks)).rejects.toThrow(
             /inputs changed since the run started: sim_commit/,
         );
-        writeFileSync(path, JSON.stringify({ ...manifest, order: ["../../elsewhere"] }));
-        await expect(loadManifest(o, scenario, checks)).rejects.toThrow(
-            /names arms outside the S order/,
-        );
+        for (const order of [["../../elsewhere"], [], ["host", "host"], ["eidnara", "host"]]) {
+            writeFileSync(path, JSON.stringify({ ...manifest, order }));
+            await expect(loadManifest(o, scenario, checks)).rejects.toThrow(
+                /is not a non-empty subsequence of the S arms/,
+            );
+        }
     });
 
     test("a staging file that is a link is refused instead of followed", async () => {
@@ -478,6 +507,7 @@ describe("run inputs", () => {
         expect(Object.keys(manifest.binaries).sort()).toEqual([
             "daemon",
             "faketime",
+            "node",
             "opencode",
             "opencode_sdk",
             "pi",

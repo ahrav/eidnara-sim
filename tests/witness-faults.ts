@@ -300,6 +300,7 @@ const invariantsClean = (name: "scheduled" | "rogue" | "resume") => {
         v.repeated_sleeps,
         v.missing_events,
         v.out_of_order_events,
+        v.jump_origin_mismatch,
     ];
     const armsEnded = Object.values(s.end_arms).every((n) => n === 1);
     return (
@@ -334,6 +335,7 @@ const armEvidence = (
         s.invariants.sleep_jumps === sleeps * arms.length,
         `${name}: one fault-tagged sleep jump per arm and sleep (${sleeps * arms.length})`,
     );
+    check(s.invariants.next_event_jumps > 0, `${name}: at least one ordinary event jump checked`);
     const intercepted = s.preflight.intercepted;
     check(
         s.preflight.first && s.preflight.before_start,
@@ -393,6 +395,9 @@ const mechanismEvidence = (name: string, a: ArmSummary, expected: FaultEpisode[]
     }
 };
 const deterministic = FAULTS.filter((f) => f.trigger.kind !== "first_summarizer_call");
+for (const name of ["scheduled", "rogue", "resume"] as const) {
+    check(summary[name] !== null, `${name}: run directory present (every case is required)`);
+}
 for (const name of ["scheduled", "rogue", "resume"] as const) {
     const s = summary[name];
     if (!s) continue;

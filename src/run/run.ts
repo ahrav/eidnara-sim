@@ -20,7 +20,7 @@ import { FaultInjector } from "../proxy/inject";
 import { RecordWriter, readRecords } from "../proxy/records";
 import { Rng } from "../rng";
 import { compileScenario, type Scenario } from "../scenario/compile";
-import { type FaultEpisode, SEAMS, validateFault } from "../scenario/faults";
+import { type FaultEpisode, type FaultType, SEAMS, validateFault } from "../scenario/faults";
 import { loadCompileInput, loadPrereg } from "../scenario/inputs";
 import { bedrockEmbedder } from "../scenario/similarity";
 import { writeAtomic } from "./atomic";
@@ -131,6 +131,9 @@ export function requirePlainArtifacts(out: string, arms: readonly string[]): voi
         join("hostbin", arm, "opencode"),
         join("hostbin", arm, `opencode.${process.pid}`),
         join(arm, "resources.jsonl"),
+        join(arm, "daemon.log"),
+        join(arm, "store.img"),
+        join(arm, "transcripts.json"),
         join(arm, "clock", "offset"),
         join(arm, "clock", `offset.${process.pid}`),
         join(arm, "state.json"),
@@ -162,6 +165,25 @@ export function requireOutsideCheckout(out: string, checkout: string): void {
     const target = realExisting(resolve(out));
     if (within(target, dir) || within(dir, target)) {
         throw new HarnessFailure(`--out ${out} overlaps the Eidnara checkout ${checkout}`);
+    }
+}
+
+/**
+ * Output inside this checkout must be ignored by git, and output may not touch a corpus
+ * checkout, since both trees are part of the run identity.
+ */
+export function requireOutsideIdentity(out: string, root = ROOT): void {
+    const target = realExisting(resolve(out));
+    const real = realExisting(root);
+    const repos = join(real, "corpus/repos");
+    if (within(target, repos) || within(repos, target)) {
+        throw new HarnessFailure(`--out ${out} overlaps the corpus checkouts under ${repos}`);
+    }
+    if (within(target, real)) {
+        const r = Bun.spawnSync(["git", "-C", real, "check-ignore", "-q", target]);
+        if (r.exitCode !== 0) {
+            throw new HarnessFailure(`--out ${out} is inside this checkout and not ignored by git`);
+        }
     }
 }
 
@@ -291,6 +313,31 @@ const SESSION_START_ONLY = new Set([
 const COUNTS = ["count", "calls", "sessions"];
 const DURATIONS = ["duration_ms", "delay_ms", "timeout_ms"];
 
+/**
+ * Strategy rules per mechanism: a scheduler-layer fault fires once (`single`; `store_full` is
+ * `persistent` for its sessions), and a proxy `burst` needs `count`, an `intermittent` needs
+ * `probability` and `calls`.
+ */
+function strategyProblems(
+    type: FaultType,
+    strategy: string,
+    params: Record<string, unknown>,
+): string[] {
+    const problems: string[] = [];
+    if (SEAMS[type].layer !== "proxy-sink") {
+        const expected = type === "store_full" ? "persistent" : "single";
+        if (strategy !== expected) problems.push(`${type} uses the ${expected} strategy`);
+        return problems;
+    }
+    if (strategy === "burst" && typeof params.count !== "number")
+        problems.push("burst needs count");
+    if (strategy === "intermittent") {
+        if (typeof params.probability !== "number") problems.push("intermittent needs probability");
+        if (typeof params.calls !== "number") problems.push("intermittent needs calls");
+    }
+    return problems;
+}
+
 /** Range rules per parameter: probabilities in [0, 1], counts positive integers, durations >= 0. */
 function paramProblems(params: Record<string, unknown>): string[] {
     const problems: string[] = [];
@@ -332,7 +379,12 @@ function episodeProblems(value: unknown): string[] {
         problems.push("params must be finite numbers");
     }
     if (typeof e.seam !== "object" || e.seam === null) problems.push("seam missing");
-    if (typeof params === "object" && params !== null) problems.push(...paramProblems(params));
+    if (typeof params === "object" && params !== null) {
+        problems.push(...paramProblems(params));
+        if (typeof e.type === "string" && Object.hasOwn(SEAMS, e.type)) {
+            problems.push(...strategyProblems(e.type as FaultType, e.strategy as string, params));
+        }
+    }
     return problems;
 }
 
@@ -408,6 +460,7 @@ function binaryDigests(config: SimConfig): Record<string, string> {
         opencode: config.opencode_binary,
         pi: piCli(config),
         faketime: FAKETIME_LIB,
+        node: realpathSync(Bun.which("node") ?? "node"),
         opencode_sdk: join(config.eidnara_checkout, OPENCODE_SDK),
     };
     return Object.fromEntries(
@@ -475,12 +528,16 @@ export async function loadManifest(
                 `manifest.json schema ${manifest?.schema} is not sim-run-manifest/v1`,
             );
         }
-        const known = new Set<string>(loadPrereg(o.tier).arms.run);
-        const foreign = (Array.isArray(manifest.order) ? manifest.order : []).filter(
-            (a) => typeof a !== "string" || !known.has(a),
-        );
-        if (!Array.isArray(manifest.order) || foreign.length > 0) {
-            throw new HarnessFailure(`manifest.json names arms outside the ${o.tier} order`);
+        const known = loadPrereg(o.tier).arms.run as readonly string[];
+        const order = Array.isArray(manifest.order) ? manifest.order : [];
+        const positions = order.map((a) => known.indexOf(a));
+        const subsequence =
+            order.length > 0 &&
+            positions.every((p, i) => p >= 0 && (i === 0 || p > (positions[i - 1] as number)));
+        if (!subsequence) {
+            throw new HarnessFailure(
+                `manifest.json order ${JSON.stringify(order)} is not a non-empty subsequence of the ${o.tier} arms`,
+            );
         }
         const given: Record<string, boolean> = {
             order: o.arms !== undefined,
@@ -558,6 +615,7 @@ export async function runSteps(steps: Array<() => Promise<void> | void>): Promis
 export async function runTier(o: RunOptions): Promise<void> {
     plainPath(o.out);
     requireOutsideCheckout(o.out, o.config.eidnara_checkout);
+    requireOutsideIdentity(o.out);
     requirePinnedPath(o.config);
     mkdirSync(o.out, { recursive: true });
     requirePlainArtifacts(o.out, loadPrereg(o.tier).arms.run);
@@ -622,25 +680,31 @@ async function runArms(
      * After a turn, a hold job keeps the clock while the sampler measures the daemon's CPU over
      * `POST_TURN_SAMPLE_MS`; a busy reading registers the daemon-cpu job before the hold ends.
      */
+    const holds = new Map<ReturnType<typeof setTimeout>, () => void>();
     const holdForCpu = (sampler: ResourceSampler, arm: string) => {
         sampler.sample();
         const hold = `settle-cpu-${arm}-${jobSeq++}`;
         scheduler.jobStart(hold);
-        setTimeout(() => {
+        const end = () => {
+            try {
+                scheduler.jobEnd(hold);
+            } catch (caught) {
+                samplerFailure ??= caught;
+                stop.reason ??= `post-turn hold failed: ${(caught as Error).message}`;
+            }
+        };
+        const timer = setTimeout(() => {
+            holds.delete(timer);
             try {
                 sampler.sample();
             } catch (caught) {
                 samplerFailure ??= caught;
                 stop.reason ??= `sampler failed: ${(caught as Error).message}`;
             } finally {
-                try {
-                    scheduler.jobEnd(hold);
-                } catch (caught) {
-                    samplerFailure ??= caught;
-                    stop.reason ??= `post-turn hold failed: ${(caught as Error).message}`;
-                }
+                end();
             }
         }, POST_TURN_SAMPLE_MS);
+        holds.set(timer, end);
     };
     const { config, seed } = o;
     const prereg = loadPrereg(o.tier);
@@ -652,6 +716,13 @@ async function runArms(
     cleanup.push(() => clearTimeout(budget));
     const journal = new Journal(join(o.out, "journal.jsonl"));
     cleanup.push(() => journal.close());
+    cleanup.push(() => {
+        for (const [timer, end] of holds) {
+            clearTimeout(timer);
+            end();
+        }
+        holds.clear();
+    });
     if (journal.entries.some((e) => e.kind === "EndRun")) {
         throw new HarnessFailure(`${o.out} holds a completed run; its journal ends with EndRun`);
     }

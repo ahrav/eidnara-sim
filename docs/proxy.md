@@ -118,7 +118,8 @@ calling arm, and an observation counts only for the arm that made the call,
 so one arm's injection and retry cannot stand in for another arm's.
 A multi-call episode whose restored injections already reach its
 count is not injected again. `FaultInjector.restore(records)` rebuilds both sequences from the call
-records an earlier invocation of the same run persisted, so a resumed run
+records an earlier invocation of the same run persisted, replayed in
+request-start order, so a resumed run
 reports a fault that fired before a hard kill, and arming an episode after
 `restore` continues a burst or intermittent window from the injections
 already made; an intermittent window's unsuccessful attempts and its RNG

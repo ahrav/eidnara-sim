@@ -24,8 +24,10 @@ these values. An argument outside this list, an option without a value, or
 an empty model name is refused. The run refuses a seed outside the pre-registration, an arm
 outside the seed's order, a non-positive count, a `--faults` file that is not
 an array of complete episodes (known type and strategy, numeric params with
-probabilities in [0, 1], positive integer counts, and non-negative
-durations and timeouts, a seam, unique ids, and a `session_start` trigger for the
+probabilities in [0, 1], positive integer counts, non-negative durations and
+timeouts, a `single` strategy for scheduler-layer faults (`persistent` for
+`store_full`), `count` for a `burst`, and `probability` and `calls` for an
+`intermittent`, a seam, unique ids, and a `session_start` trigger for the
 between-session faults `laptop_sleep`, `daemon_restart`, `plugin_reload`,
 `model_switch`, and `store_full`) valid against the compiled scenario
 (`validateFault`); the compiled scenario's own faults pass the same checks
@@ -36,12 +38,14 @@ root inside it), a schedule with a fault type the host driver has no
 mechanism for (`host_upgrade`, `two_hosts_one_daemon`, so a full XL run is
 refused up front), a `--models` list that repeats an entry, and a
 `model_switch` schedule with fewer than two models. A `daemon_sigkill_mid_fold` needs a
-`first_summarizer_call` trigger. Before taking the lease, every artifact the run appends to or
+`first_summarizer_call` trigger. An `--out` inside this checkout must be
+ignored by git (`runs/` is), and may not overlap a corpus checkout, since
+both trees are part of the run identity. Before taking the lease, every artifact the run appends to or
 replaces (`journal.jsonl`, `calls.jsonl`, the manifest, the scenario, the
 fault and preflight files, this process's staging names for the lease, the
 scenario, and the manifest, and each arm's `resources.jsonl`, clock offset,
-and `state.json`, plus this process's staging names for the clock offset and
-`state.json`) must be absent or a regular file with a single link (the arm,
+`state.json`, `daemon.log`, `store.img`, and `transcripts.json`, plus this
+process's staging names for the clock offset and `state.json`) must be absent or a regular file with a single link (the arm,
 clock, `r`, `s`, `interception`, `toolbin`, and `hostbin` directories must be
 directories; the OpenCode wrapper and its staging name under `hostbin/<arm>`
 are checked the same way); a symlink, a hard link, or another
@@ -84,14 +88,15 @@ toolchain wrappers are created exclusively after removing any planted name.
    working-tree digest (a digest covers tracked edits and untracked
    unignored files), the commit and working-tree digest of every corpus
    checkout the scenario's projects clone from, the SHA-256 of the daemon,
-   OpenCode, and Pi executables, the libfaketime interposer, and the OpenCode
-   SDK module the host stack imports (`absent` when not installed), the
+   OpenCode, and Pi executables, the Node runtime Pi runs on, the libfaketime
+   interposer, and the OpenCode SDK module the host stack imports (`absent`
+   when not installed), the
    Bedrock region and profile name, base wall time, and preflight result. The working-tree digest hashes an
    untracked symlink's target text.
    A later invocation refuses a manifest whose `schema` is not
    `sim-run-manifest/v1`, and refuses when any option it states differs from
-   the manifest, when the manifest's arm order names an arm outside the
-   tier's pre-registered arms, when any of those digests changed, when an
+   the manifest, when the manifest's arm order is not a non-empty subsequence
+   of the tier's pre-registered arms, when any of those digests changed, when an
    interception result, probed path, or toolchain version
    changed, or when the selected host's version or transcript paths changed,
    and appends its preflight result to `preflight.jsonl`; on resume the
@@ -119,7 +124,10 @@ toolchain wrappers are created exclusively after removing any planted name.
    when that did not happen), close the journal, and release the lease. A
    request's arrival hook, completion hook, or release that fails to journal
    its job is recorded as a handler failure and fails the run at the next
-   verification; the busy set still clears. Each
+   verification; the busy set still clears. A handler that settles after the
+   proxy's drain gave up on it writes no record and ends no job; it is
+   recorded as a failure instead. Each call's record carries the wall time of
+   its first byte and the call order of its arrival. Each
    step runs even when an earlier one fails, and the first failure is
    rethrown after the last step, so the command exits nonzero. Stopping the
    proxy aborts in-flight handlers and waits up to ten seconds for them to
@@ -146,7 +154,9 @@ end of every user turn and another two seconds later while a `settle-cpu`
 job holds the clock, so daemon work that follows a turn is measured before
 the clock may jump, and one per pre-registered interval, and
 registers `daemon-cpu-<arm>` while the daemon's CPU fraction is above the
-pre-registered threshold, with one job id per busy period. Both hold the
+pre-registered threshold, with one job id per busy period. The post-turn hold
+timers are owned by the run: teardown cancels any still pending and ends
+their holds before the journal closes. Both hold the
 clock (SIM-P13, OQ-2). Job ids continue from the journal's count, so a
 resumed run issues new ones. A job that holds the clock longer than the
 pre-registered `job_deadline_ms` (20 minutes at S) after its own
@@ -171,6 +181,7 @@ event times and reports, per arm:
 | `repeated_sleeps` | a second sleep jump for the same fault in one arm |
 | `missing_events` | scheduled events an arm never journaled as `Event` although it reached `EndArm` |
 | `out_of_order_events` | `Event` entries unknown to the schedule or breaking its order |
+| `jump_origin_mismatch` | `AdvanceClock` entries whose `from_ms` differs from the arm's preceding `scenario_ms`; crossing checks use the observed value |
 | `jobs_held_after_turn` | jobs that held the clock while no turn was open, whether registered after the turn or registered inside it and outliving it, once per job at its `RegisterJob` seq (SIM-P13) |
 | `next_event_jumps`, `sleep_jumps` | how many jumps of each kind the check covered |
 
@@ -214,7 +225,9 @@ sleep, agent calls on both configured models, and no duplicate `Event` entry
 required); the scheduled run must hold the clock with at least one job while
 no turn is open (SIM-P13), and every finished run's journal must open with a
 `Preflight` entry, before `StartRun` or `ResumeRun`, whose probed binaries
-all intercepted and hold exactly one `EndArm` per arm the manifest names.
+all intercepted, hold exactly one `EndArm` per arm the manifest names, and
+include at least one ordinary event jump. All three case directories must be
+present.
 Every summarized directory must have been written by the current harness
 revision and working tree (`sim_commit`, `sim_worktree`), so a rerun of one
 case cannot certify stale evidence from another. These checks run on every

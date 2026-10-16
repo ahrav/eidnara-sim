@@ -123,11 +123,15 @@ export class FaultInjector {
 
     /**
      * `restore` rebuilds `injected_seq` and `host_observed_seq` from the call records an earlier
-     * invocation of the same run persisted. Observations are matched within those records only;
+     * invocation of the same run persisted, replayed in request-start order so a delayed injected
+     * call precedes the retries it caused. Observations are matched within those records only;
      * the live pending list starts empty.
      */
     restore(prior: CallRecord[]): void {
-        prior.forEach((record, call) => {
+        const byStart = [...prior].sort(
+            (a, b) => a.started_wall_ms - b.started_wall_ms || a.seq - b.seq,
+        );
+        byStart.forEach((record, call) => {
             const known =
                 record.fault_ref !== null && this.faults.some((f) => f.id === record.fault_ref);
             if (known) {

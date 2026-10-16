@@ -504,6 +504,102 @@ describe("witnesses", () => {
         });
     });
 
+    test("restore matches observations by request start, not by record order", () => {
+        const fault: ProxyFault = {
+            id: "f",
+            type: "provider_timeout",
+            strategy: "single",
+            params: { count: 1 },
+        };
+        const at = Date.now();
+        const base = { ...RECORD, arm: "eidnara" };
+        const retryFirst = { ...base, seq: 0, wall_ms: at + 2_000, started_wall_ms: at + 1_000 };
+        const injectedLater = {
+            ...base,
+            seq: 1,
+            wall_ms: at + 30_000,
+            started_wall_ms: at,
+            fault_ref: "f",
+        };
+        const resumed = new FaultInjector([fault], new Rng(7), 5_000);
+        resumed.restore([retryFirst, injectedLater]);
+        expect(resumed.report("eidnara")[0]).toMatchObject({
+            status: "fired",
+            injected_seq: [1],
+            host_observed_seq: [0],
+        });
+    });
+
+    test("a handler that settles after stop gave up on it writes nothing and is reported", async () => {
+        let finish: (() => void) | null = null;
+        const stuck: Upstream = {
+            converse: () =>
+                new Promise((resolve) => {
+                    finish = () => resolve({ json: { stopReason: "end_turn", usage: {} } });
+                }),
+        };
+        const records = new RecordWriter(null);
+        const ended: string[] = [];
+        const gateway = new Gateway({
+            upstream: stuck,
+            records,
+            injector: new FaultInjector([], new Rng(1), 1_000),
+            rng: new Rng(1),
+            clock: { scenarioMs: () => 0 },
+            scope: () => ({ arm: "a", session: null, turn: null }),
+            observe: () => () => ended.push("ended"),
+            drainMs: 50,
+        });
+        await gateway.start();
+        const call = hostCallJson(gateway.urls[0] as string, AGENT_BODY, 2_000);
+        while (!finish) await Bun.sleep(5);
+        await gateway.stop();
+        (finish as unknown as () => void)();
+        await call;
+        await Bun.sleep(50);
+        expect(records.records).toHaveLength(0);
+        expect(ended).toEqual([]);
+        expect(gateway.failures.map((f) => f.message)).toEqual([
+            "1 proxy handler(s) still active 50 ms after stop",
+            "a proxy handler settled after stop; its record was dropped",
+        ]);
+    });
+
+    test("a slow upload's record carries its first-byte time and call order", async () => {
+        const records = new RecordWriter(null);
+        const gateway = new Gateway({
+            upstream: scriptedUpstream(),
+            records,
+            injector: new FaultInjector([], new Rng(1), 1_000),
+            rng: new Rng(1),
+            clock: { scenarioMs: () => 0 },
+            scope: () => ({ arm: "a", session: null, turn: null }),
+        });
+        await gateway.start();
+        gateways.push(gateway);
+        const url = new URL(`${gateway.urls[0]}/model/m/converse-stream`);
+        const body = JSON.stringify(AGENT_BODY);
+        const req = request({
+            host: url.hostname,
+            port: url.port,
+            method: "POST",
+            path: url.pathname,
+            headers: { "content-length": String(Buffer.byteLength(body)) },
+        });
+        const done = new Promise<void>((resolve) =>
+            req.on("response", (res) => res.on("data", () => undefined).on("end", resolve)),
+        );
+        const before = Date.now();
+        req.write(body.slice(0, 10));
+        await Bun.sleep(300);
+        await hostCall(gateway.urls[0] as string, SUMMARIZER_BODY, 2_000);
+        req.end(body.slice(10));
+        await done;
+        const slow = records.records.find((r) => r.component === "agent");
+        expect((slow?.started_wall_ms ?? 0) - before).toBeLessThan(150);
+        expect(records.records.map((r) => r.component)).toEqual(["history_summarizer", "agent"]);
+    });
+
     test("a burst that already made every injection is not injected again after resume", async () => {
         const fault: ProxyFault = {
             id: "b",
