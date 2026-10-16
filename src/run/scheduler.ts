@@ -118,6 +118,7 @@ export class Scheduler {
         for (const arm of this.o.order) {
             if (!finished.has(arm) && !this.o.drivers[arm])
                 throw new Error(`no driver for arm ${arm}`);
+            this.checkLifecycle(entries, arm);
         }
         if (!start) {
             this.log({ kind: "StartRun", order: this.o.order, scenario });
@@ -126,12 +127,7 @@ export class Scheduler {
         }
         for (const arm of this.o.order) {
             const mine = entries.filter((e) => e.arm === arm);
-            if (mine.some((e) => e.kind === "EndArm")) {
-                if (!this.completed(entries, arm)) {
-                    throw new Error(`journal: arm ${arm} has EndArm before its events completed`);
-                }
-                continue;
-            }
+            if (mine.some((e) => e.kind === "EndArm")) continue;
             this.arm = arm;
             this.clock = new Clock(mine.at(-1)?.scenario_ms ?? 0, this.o.journal);
             const driver = this.o.drivers[arm] as ArmDriver;
@@ -146,6 +142,7 @@ export class Scheduler {
                 this.o.proxy?.reset();
                 const answered = this.resume(mine);
                 if (answered.length > 0) await Bun.sleep(this.o.settleMs ?? 1_000);
+                await this.pendingKill;
                 for (const e of answered) {
                     this.log({ kind: "Event", event: e.event, outcome: e.outcome });
                 }
@@ -174,6 +171,42 @@ export class Scheduler {
         }
         if (this.fatal) throw this.fatal;
         this.log({ kind: "EndRun" });
+    }
+
+    /**
+     * Refuses an arm whose entries contradict the scheduler's lifecycle: `EndArm` before every
+     * event completed, a turn entry naming anything but a configured user turn, an `EndTurn`
+     * without its `BeginTurn`, or a `FaultObserved` without its `FaultFired`. Runs before any
+     * recovery entry is written, so a corrupt journal is refused unchanged.
+     */
+    private checkLifecycle(entries: Entry[], arm: string): void {
+        const mine = entries.filter((e) => e.arm === arm);
+        const kinds = (k: string) => mine.filter((e) => e.kind === k);
+        if (kinds("EndArm").length > 0 && !this.completed(entries, arm)) {
+            throw new Error(`journal: arm ${arm} has EndArm before its events completed`);
+        }
+        const turns = new Set(this.o.events.filter((e) => e.kind === "user_turn").map((e) => e.id));
+        for (const e of [...kinds("BeginTurn"), ...kinds("EndTurn")]) {
+            if (!turns.has(e.event as string)) {
+                throw new Error(
+                    `journal: ${e.kind} for ${e.event} in arm ${arm} is not a user turn`,
+                );
+            }
+        }
+        const begun = new Set(kinds("BeginTurn").map((e) => e.event));
+        for (const e of kinds("EndTurn")) {
+            if (!begun.has(e.event)) {
+                throw new Error(`journal: EndTurn for ${e.event} in arm ${arm} has no BeginTurn`);
+            }
+        }
+        const fired = new Set(kinds("FaultFired").map((e) => e.fault));
+        for (const e of kinds("FaultObserved")) {
+            if (!fired.has(e.fault)) {
+                throw new Error(
+                    `journal: FaultObserved for ${e.fault} in arm ${arm} has no FaultFired`,
+                );
+            }
+        }
     }
 
     /** An arm is complete when it started, ended, and journaled an `Event` for every event. */
@@ -210,7 +243,7 @@ export class Scheduler {
             kill = this.pendingKill;
             await kill;
             await this.idle();
-        } while (kill !== this.pendingKill);
+        } while (kill !== this.pendingKill || (this.clock?.busyIds().length ?? 0) > 0);
         if (this.fatal) throw this.fatal;
     }
 
@@ -244,7 +277,15 @@ export class Scheduler {
      * its `session_end` already has an `Event`.
      */
     private openSession(mine: Entry[]): string | null {
-        const last = [...mine].reverse().find((e) => e.kind === "Event" || e.kind === "BeginTurn");
+        const opened = new Set(
+            this.o.events.filter((e) => e.kind !== "apply_diff").map((e) => e.id),
+        );
+        const last = [...mine]
+            .reverse()
+            .find(
+                (e) =>
+                    (e.kind === "Event" || e.kind === "BeginTurn") && opened.has(e.event as string),
+            );
         const event = this.o.events.find((e) => e.id === last?.event);
         if (!event) return null;
         const end = this.o.events.find(
@@ -263,21 +304,6 @@ export class Scheduler {
         const done = new Set(kinds("Event").map((e) => e.event));
         const ended = new Set(kinds("EndTurn").map((e) => e.event));
         const begun = new Set(kinds("BeginTurn").map((e) => e.event));
-        const firedBefore = new Set(kinds("FaultFired").map((e) => e.fault));
-        for (const e of kinds("EndTurn")) {
-            if (!begun.has(e.event)) {
-                throw new Error(
-                    `journal: EndTurn for ${e.event} in arm ${this.arm} has no BeginTurn`,
-                );
-            }
-        }
-        for (const e of kinds("FaultObserved")) {
-            if (!firedBefore.has(e.fault)) {
-                throw new Error(
-                    `journal: FaultObserved for ${e.fault} in arm ${this.arm} has no FaultFired`,
-                );
-            }
-        }
         const interrupted = kinds("ItemState").filter((e) => e.state === "failed(interrupted)");
         const marked = new Set(interrupted.map((e) => e.event ?? e.fault));
         const seen = new Set<unknown>();
@@ -383,6 +409,7 @@ export class Scheduler {
             throw caught;
         }
         this.log({ kind: "FaultObserved", fault: f.id, type: f.type, evidence });
+        if (this.outage === f.id) this.outage = null;
     }
 
     /**
@@ -407,7 +434,7 @@ export class Scheduler {
         const arm = this.arm ?? "";
         const jumped = clock.now() < e.scenario_ms;
         clock.advanceTo(e.scenario_ms, arm, sleep ? { fault: sleep.id } : { next_event: e.id });
-        this.session = e.session;
+        if (e.kind !== "apply_diff") this.session = e.session;
         if (sleep && !jumped) {
             this.log({ kind: "ItemState", fault: sleep.id, state: "missed" });
             this.fired.add(`${this.arm}/${sleep.id}`);
@@ -462,8 +489,12 @@ export class Scheduler {
                 }
             },
             jobEnd: (id) => {
-                live().end(`job:${id}`);
+                const clock = live();
+                if (!clock.busyIds().includes(`job:${id}`)) {
+                    throw new Error(`clock: job:${id} is not busy`);
+                }
                 this.log({ kind: "EndJob", job: id });
+                clock.end(`job:${id}`);
             },
             observe: (component) => {
                 live();
