@@ -174,7 +174,9 @@ configured order or while another is open, a `StartArm` with a clock reading
 past zero, or arm evidence before its `StartArm`. An arm is complete when its
 `EndArm` follows an `Event` for every scheduled event with no job registration
 open, every sleep jump fired, and every fired scheduler fault observed or
-interrupted; evidence journaled after `EndArm` does not count. A journal holding a fatal
+interrupted; evidence journaled after `EndArm` does not count. The clock keeps
+the highest wall reading it has seen, so a wall source that steps backward
+across an idle gap never counts the rollback twice. A journal holding a fatal
 `ItemState` (a daemon exit outside an outage window, or a scheduler fault the
 driver could not carry out), before or after `EndRun`, is a failed run and is
 refused with `HarnessFailure`; an arm with `EndArm` before every scheduled
