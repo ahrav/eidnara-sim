@@ -51,7 +51,11 @@ export interface SchedulerOptions {
     /** The longest the busy set may hold the clock before the run stops. */
     idleLimitMs?: number;
     settleMs?: number;
-    onClock?: (arm: string, scenarioMs: number) => void;
+    /**
+     * Runs at each arm's start and at every clock jump. A returned number is the whole-second
+     * clock offset the arm's processes now read, journaled as `ClockOffset`.
+     */
+    onClock?: (arm: string, scenarioMs: number) => number | undefined;
 }
 
 const PROXY_LAYER = "proxy-sink";
@@ -85,7 +89,10 @@ export class Scheduler {
             if (mine.some((e) => e.kind === "EndArm")) continue;
             this.arm = arm;
             const start = mine.at(-1)?.scenario_ms ?? 0;
-            const onClock = (ms: number) => this.o.onClock?.(arm, ms);
+            const onClock = (ms: number) => {
+                const offset_s = this.o.onClock?.(arm, ms);
+                if (typeof offset_s === "number") this.log({ kind: "ClockOffset", offset_s });
+            };
             this.clock = new Clock(start, this.o.journal, Date.now, onClock);
             onClock(start);
             const driver = this.o.drivers[arm];

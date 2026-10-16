@@ -47,8 +47,15 @@ and has no fail-open publication in the plugin log (`serving the input
 unchanged`, `decision=error`) from its start until the next turn starts. A
 pass the daemon declined by policy, such as `declined:invocation_budget`,
 also serves raw history and counts toward F3, and leaves the turn clean.
-The plugin logs in the host's faked clock, so the window is `base_wall_ms`
-plus the turns' scenario times. A stalled
+The plugin stamps its log in the host's faked clock: wall time plus the
+whole-second offset the harness journaled as `ClockOffset` at the arm's start
+and each clock jump. The oracle maps a stamp back to wall time through each
+offset whose span contains the result and reads the turns' windows in the
+journal's `wall_ms`; when an offset shrank, a stamp can fall in two spans and
+counts in both turns. A journal without `ClockOffset` entries, recorded
+before the harness journaled offsets, is read as `base_wall_ms` plus
+scenario time, which the offset's rounding and the idle wall time since the
+last jump can skew. A stalled
 daemon gives a turn that looks clean to the agent, and its fail-open
 publication keeps the turn from counting.
 
@@ -61,8 +68,9 @@ A fault an arm skipped, such as a daemon fault on the `host` arm, has
 
 A daemon restart (`daemon_restart`, `daemon_sigkill_mid_fold`) also needs a
 sound store, which three checks of the store (`src/hosts/storecheck.ts`)
-judge. The arm driver checks the store right after the restart, which shows
-the state the crash left; at the end of the turn in progress at the
+judge. The arm driver checks the store after the SIGKILL and before the
+replacement daemon starts, which shows the state the crash left and keeps
+the replacement's startup out of the baseline; at the end of the turn in progress at the
 restart, or else the next turn, whose passes include the first pass after
 the crash, and journals that check as `StoreChecked` with the fault's id,
 one entry per restart that turn owes; and `finish` checks the final store after the daemon
@@ -77,7 +85,7 @@ to open reports `error: <reason>` as its integrity.
 The wire contract's post-crash rule (`docs/host-wire-protocol.md` in
 eidnara, the revert paragraph of the transform section) is that the next
 pass after a crash folds from the surviving history and removes nothing
-further. The oracle checks it as: each segment the restart check listed is
+further. The oracle checks it as: each segment the crash check listed is
 still present, unchanged, at the post-crash check. A host compaction in the
 same turn can also remove segments under the contract's compaction rule;
 the reason names the segments, so a maintainer can tell the two apart from

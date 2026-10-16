@@ -142,8 +142,15 @@ export class DaemonStack {
         if (this.stack) appendFileSync(this.ctx.logFile, this.stack.hostLog());
     }
 
-    async restart(): Promise<void> {
+    /** Kills the daemon by SIGKILL; the store stays as the kill left it until `restart`. */
+    async crash(): Promise<void> {
         this.saveLog();
+        await this.stack.crashHost();
+    }
+
+    /** Starts the replacement daemon, killing the current one first when it is still running. */
+    async restart(): Promise<void> {
+        if (this.pid() !== null) this.saveLog();
         await this.stack.restartHost();
     }
 

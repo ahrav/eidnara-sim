@@ -81,7 +81,7 @@ describe("recovery oracles", () => {
             got.map((r) => [r.fault, [r.turns_to_first_clean, r.recovered]]),
         );
         expect(byFault).toEqual(sigkills.expect);
-        const passed = { after_restart: "ok", post_crash_pass: "ok", final: "ok" };
+        const passed = { after_crash: "ok", post_crash_pass: "ok", final: "ok" };
         expect(got.map((r) => r.store)).toEqual([passed, passed, passed]);
         const lost = structuredClone(sigkills.arms);
         const arm0 = lost[0] as ArmLogs;
@@ -143,10 +143,10 @@ describe("recovery oracles", () => {
             run([arm(journal(ok, store("ok", 0, [SEGMENT, ["s", 2, 10, 19]])), [], ok)]),
         );
         expect(clean?.recovered).toBe(true);
-        expect(clean?.store).toEqual({ after_restart: "ok", post_crash_pass: "ok", final: "ok" });
+        expect(clean?.store).toEqual({ after_crash: "ok", post_crash_pass: "ok", final: "ok" });
         expect(verdict(store("*** corrupt"), ok, ok)).toEqual([
             false,
-            ["store integrity, after restart: *** corrupt"],
+            ["store integrity, after crash: *** corrupt"],
         ]);
         expect(verdict(ok, ok, store("error: file is not a database"))).toEqual([
             false,
@@ -160,7 +160,7 @@ describe("recovery oracles", () => {
             false,
             ["post-crash pass removed or changed segments s/1/0/9"],
         ]);
-        expect(verdict(undefined, ok, ok)).toEqual([false, ["store unchecked: after restart"]]);
+        expect(verdict(undefined, ok, ok)).toEqual([false, ["store unchecked: after crash"]]);
         expect(verdict(ok, undefined, ok)).toEqual([false, ["store unchecked: post crash pass"]]);
         expect(verdict(ok, ok, undefined)).toEqual([false, ["store unchecked: final"]]);
     });
@@ -219,5 +219,64 @@ describe("recovery oracles", () => {
         const junk = join(dirname(path), "junk.db");
         writeFileSync(junk, "not sqlite at all, padded past the header length of a database file");
         expect(checkStore(junk).integrity).toStartWith("error: ");
+    });
+});
+
+describe("recovery anchors", () => {
+    test("a mid-fold kill observed after the turn it cut ended still counts that turn", () => {
+        seq = 0;
+        const journal = [
+            entry("BeginTurn", 10, { event: "e-1" }),
+            entry("FaultFired", 12, { fault: "k", type: "daemon_sigkill_mid_fold" }),
+            entry("EndTurn", 20, { event: "e-1", outcome: "ok" }),
+            entry("FaultObserved", 25, {
+                fault: "k",
+                type: "daemon_sigkill_mid_fold",
+                evidence: { store: store("ok") },
+            }),
+            entry("StoreChecked", 25, { event: "e-1", fault: "k", store: store("ok") }),
+            entry("BeginTurn", 30, { event: "e-2" }),
+            entry("EndTurn", 40, { event: "e-2", outcome: "ok" }),
+        ];
+        const log = [
+            `${stamp(13)} [eidnara][s-1] rust pass: decision=error reason=none served_from=raw`,
+        ];
+        const [r] = recoveries(run([arm(journal, log, store("ok"))]));
+        expect([r?.recovered, r?.turns_to_first_clean]).toEqual([true, 2]);
+        expect(r?.reasons).toEqual([]);
+        const last = journal.slice(0, 5);
+        const [cut] = recoveries(run([arm(last, [], store("ok"))]));
+        expect([cut?.recovered, cut?.turns_to_first_clean, cut?.reasons]).toEqual([true, 1, []]);
+    });
+});
+
+describe("plugin log attribution", () => {
+    const wall = (ms: number, extra: Record<string, unknown>) => ({ ...extra, wall_ms: ms });
+
+    test("a fail-open stamped by the harness's rounded clock offset is read back through that offset", () => {
+        seq = 0;
+        const base = 1_000_000_000;
+        // Written when the wall clock read 600: (base - 600) / 1000 rounds down to base - 1000.
+        const offset = base - 1_000;
+        const journal = [
+            entry("ClockOffset", 0, wall(600, { offset_s: offset / 1000 })),
+            entry(
+                "FaultObserved",
+                0,
+                wall(620, { fault: "f", type: "plugin_reload", evidence: {} }),
+            ),
+            entry("BeginTurn", 0, wall(650, { event: "e-1" })),
+            entry("EndTurn", 9_000, wall(9_650, { event: "e-1", outcome: "ok" })),
+            entry("BeginTurn", 9_000, wall(10_650, { event: "e-2" })),
+            entry("EndTurn", 10_000, wall(11_650, { event: "e-2", outcome: "ok" })),
+        ];
+        // Published 50 ms into e-1 (wall 700): the plugin stamps it 300 ms before base + scenario.
+        const log = [
+            `${stamp(700 + offset)} [eidnara][s-1] rust pass: decision=error reason=none served_from=raw`,
+        ];
+        const [r] = recoveries(run([arm(journal, log)], base));
+        expect([r?.recovered, r?.turns_to_first_clean]).toEqual([true, 2]);
+        const [both] = recoveries(run([arm(journal.slice(0, 4), log)], base));
+        expect(both?.reasons).toEqual(["e-1: 1 fail-open publications"]);
     });
 });

@@ -23,21 +23,71 @@ export interface Recovery {
 
 interface Turn {
     event: string;
-    /** Scenario time the turn's log window opens: its start, or the fault inside it. */
+    /** Where the turn's log window opens on the arm's timeline: its start, or the fault inside it. */
     from: number;
     end: Entry;
     next: number;
 }
 
-/** The turns that end after the fault, starting with the one a mid-turn fault interrupted. */
-function turnsAfter(arm: ArmLogs, fault: Entry): Turn[] {
+/** One timeline for journal entries and plugin log stamps. */
+interface Timeline {
+    at(e: Entry): number;
+    /** The timeline positions a log line's stamp can denote; empty for an unstamped line. */
+    stamps(line: string): number[];
+}
+
+function logMs(line: string): number | null {
+    const stamp = /^\[(\d{4}-\d\d-\d\dT[\d:.]+Z)\]/.exec(line)?.[1];
+    return stamp ? Date.parse(stamp) : null;
+}
+
+/**
+ * Hosts and plugins stamp logs with wall time plus the whole-second offset the harness wrote at
+ * the arm's start and at each clock jump (`ClockOffset`), so a stamp maps back to wall time
+ * through each offset whose span contains the result. Two spans claim one stamp when an offset
+ * shrank; such a line counts in every turn it can belong to. A journal without `ClockOffset`
+ * entries is read on scenario time, taking stamps as `base_wall_ms + scenario_ms`.
+ */
+function timeline(arm: ArmLogs, base: number): Timeline {
+    const offsets = arm.journal.filter((e) => e.kind === "ClockOffset");
+    if (offsets.length === 0) {
+        const stamps = (line: string) => {
+            const ms = logMs(line);
+            return ms === null ? [] : [ms - base];
+        };
+        return { at: (e) => e.scenario_ms, stamps };
+    }
+    const spans = offsets.map((e, i) => ({
+        offset: Number(e.offset_s) * 1000,
+        from: e.wall_ms,
+        to: offsets[i + 1]?.wall_ms ?? Number.POSITIVE_INFINITY,
+    }));
+    const stamps = (line: string) => {
+        const ms = logMs(line);
+        if (ms === null) return [];
+        return spans
+            .map((s) => ms - s.offset)
+            .filter((t, i) => {
+                const span = spans[i] as (typeof spans)[number];
+                return t >= span.from && t < span.to;
+            });
+    };
+    return { at: (e) => e.wall_ms, stamps };
+}
+
+/**
+ * The turns that end after `fault`, starting with the one a mid-turn fault interrupted. Callers
+ * anchor at `FaultFired` when available because the interrupted turn can end before
+ * `FaultObserved` is journaled.
+ */
+function turnsAfter(arm: ArmLogs, fault: Entry, tl: Timeline): Turn[] {
     const begins = new Map<string, Entry>();
     const turns: Turn[] = [];
     for (const e of arm.journal) {
         if (e.kind === "BeginTurn") begins.set(String(e.event), e);
         const begin = begins.get(String(e.event));
         if (e.seq > fault.seq && e.kind === "EndTurn" && begin) {
-            const from = Math.max(begin.scenario_ms, begin.seq < fault.seq ? fault.scenario_ms : 0);
+            const from = begin.seq < fault.seq ? tl.at(fault) : tl.at(begin);
             turns.push({ event: String(e.event), from, end: e, next: Number.POSITIVE_INFINITY });
         }
     }
@@ -47,35 +97,28 @@ function turnsAfter(arm: ArmLogs, fault: Entry): Turn[] {
     return turns;
 }
 
-function logMs(line: string): number | null {
-    const stamp = /^\[(\d{4}-\d\d-\d\dT[\d:.]+Z)\]/.exec(line)?.[1];
-    return stamp ? Date.parse(stamp) : null;
-}
-
-export function dirtyReasons(arm: ArmLogs, turn: Turn, base: number): string[] {
+export function dirtyReasons(arm: ArmLogs, turn: Turn, tl: Timeline): string[] {
     const reasons: string[] = [];
     if (String(turn.end.outcome) !== "ok")
         reasons.push(`turn ended ${String(turn.end.outcome).slice(0, 80)}`);
     const calls = arm.calls.filter((c) => c.turn === turn.event);
     if (calls.some((c) => c.status >= 400 && c.status < 500)) reasons.push("gateway 4xx");
     if (calls.some((c) => OVERFLOW.test(c.error ?? ""))) reasons.push("overflow");
-    const [from, to] = [base + turn.from, base + turn.next];
-    const failOpen = arm.pluginLog.filter((l) => {
-        const ms = logMs(l);
-        return ms !== null && ms >= from && ms < to && FAIL_OPEN.test(l);
-    });
+    const failOpen = arm.pluginLog.filter(
+        (l) => FAIL_OPEN.test(l) && tl.stamps(l).some((t) => t >= turn.from && t < turn.next),
+    );
     if (failOpen.length > 0) reasons.push(`${failOpen.length} fail-open publications`);
     return reasons;
 }
 
-type Checks = Record<"after_restart" | "post_crash_pass" | "final", StoreCheck | undefined>;
+type Checks = Record<"after_crash" | "post_crash_pass" | "final", StoreCheck | undefined>;
 
 const key = (r: StoreCheck["ranges"][number]) => r.join("/");
 
 /**
  * The wire contract's post-crash rule: the first pass after a crash folds from the surviving
- * history and removes nothing further, so each segment the restart left is still there after
- * the arm's next turn.
+ * history and removes nothing further, so each segment the kill left, inspected before the
+ * replacement daemon starts, is still there after the arm's next turn.
  */
 function storeReasons(checks: Checks): string[] {
     const reasons: string[] = [];
@@ -88,7 +131,7 @@ function storeReasons(checks: Checks): string[] {
             reasons.push(`${check.overlaps.length} overlapping history segments, ${label}`);
         }
     }
-    const after = checks.after_restart?.ranges ?? [];
+    const after = checks.after_crash?.ranges ?? [];
     const kept = new Set((checks.post_crash_pass?.ranges ?? []).map(key));
     const lost = checks.post_crash_pass ? after.filter((r) => !kept.has(key(r))) : [];
     if (lost.length > 0) {
@@ -98,8 +141,9 @@ function storeReasons(checks: Checks): string[] {
 }
 
 export function recoveries(run: RunLogs): Recovery[] {
-    return run.arms.flatMap((arm) =>
-        arm.journal
+    return run.arms.flatMap((arm) => {
+        const tl = timeline(arm, run.base_wall_ms);
+        return arm.journal
             .filter((e) => e.kind === "FaultObserved" && INFRA.has(String(e.type)))
             .map((e): Recovery => {
                 const evidence = (e.evidence ?? {}) as { skipped?: unknown; store?: StoreCheck };
@@ -108,8 +152,10 @@ export function recoveries(run: RunLogs): Recovery[] {
                     const reasons = [`skipped: ${String(evidence.skipped)}`];
                     return { ...base, turns_to_first_clean: null, recovered: null, reasons };
                 }
-                const turns = turnsAfter(arm, e);
-                const dirty = turns.map((t) => dirtyReasons(arm, t, run.base_wall_ms));
+                const fired =
+                    arm.journal.find((x) => x.kind === "FaultFired" && x.fault === e.fault) ?? e;
+                const turns = turnsAfter(arm, fired, tl);
+                const dirty = turns.map((t) => dirtyReasons(arm, t, tl));
                 const index = dirty.findIndex((r) => r.length === 0);
                 const reasons =
                     index < 0
@@ -123,10 +169,10 @@ export function recoveries(run: RunLogs): Recovery[] {
                 };
                 if (!RESTARTS.has(base.type)) return { ...result, recovered: index >= 0 };
                 const pass = arm.journal.find(
-                    (x) => x.kind === "StoreChecked" && x.seq > e.seq && x.fault === base.fault,
+                    (x) => x.kind === "StoreChecked" && x.seq > fired.seq && x.fault === base.fault,
                 );
                 const checks: Checks = {
-                    after_restart: evidence.store,
+                    after_crash: evidence.store,
                     post_crash_pass: pass?.store as StoreCheck | undefined,
                     final: arm.finalStore,
                 };
@@ -141,6 +187,6 @@ export function recoveries(run: RunLogs): Recovery[] {
                     recovered: index >= 0 && store.length === 0,
                     store: summary,
                 };
-            }),
-    );
+            });
+    });
 }

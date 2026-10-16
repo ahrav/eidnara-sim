@@ -26,6 +26,8 @@ interface ArmState {
     model: number;
     daemon: { pid: number; start: string | null } | null;
     host: { pid: number; start: string | null } | null;
+    /** Daemon restarts whose store check the journal may still lack. */
+    store_faults: string[];
 }
 
 export interface DriverOptions extends Omit<HostContext, "root" | "model"> {
@@ -144,6 +146,7 @@ export class HostDriver implements ArmDriver {
             model: this.model,
             daemon: proc(this.daemonPid()),
             host: proc(this.sessionProject === null ? null : (this.host?.hostPid() ?? null)),
+            store_faults: this.storeFaults,
         };
         mkdirSync(this.armDir, { recursive: true });
         writeFileSync(this.stateFile, JSON.stringify(state));
@@ -189,7 +192,9 @@ export class HostDriver implements ArmDriver {
     }
 
     async resume(open: ScenarioEvent | null): Promise<void> {
-        this.model = this.readState()?.model ?? 0;
+        const state = this.readState();
+        this.model = state?.model ?? 0;
+        this.storeFaults = state?.store_faults ?? [];
         const checked = join(this.armDir, "transcripts.json");
         this.transcriptsChecked =
             existsSync(checked) && JSON.parse(readFileSync(checked, "utf8")).missing.length === 0;
@@ -221,6 +226,9 @@ export class HostDriver implements ArmDriver {
 
     async event(e: ScenarioEvent): Promise<TurnOutcome> {
         const host = this.requireHost();
+        // The scheduler journals the previous turn's store checks before it sends the next event,
+        // so the recorded obligations drop them here, not when the checks are returned.
+        this.recordState();
         if (e.kind === "session_start") {
             await this.openSession(e, host);
             return {};
@@ -309,16 +317,17 @@ export class HostDriver implements ArmDriver {
         if (f.type === "daemon_sigkill_mid_fold" || f.type === "daemon_restart") {
             if (!this.daemon) return { skipped: "arm runs no daemon" };
             const before = this.daemonPid();
+            await this.daemon.crash();
+            const store = checkStore(this.storeDb);
             await this.daemon.restart();
             this.storeFaults.push(f.id);
             this.recordState();
-            const after = this.daemonPid();
             return {
                 signal: "SIGKILL",
                 pid_before: before,
-                pid_after: after,
+                pid_after: this.daemonPid(),
                 restarted_by: "harness",
-                store: checkStore(this.storeDb),
+                store,
             };
         }
         if (f.type === "store_full") return this.fillStore();

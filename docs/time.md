@@ -27,7 +27,9 @@ git). `faketimeEnv(file)` preloads it with these settings:
 `writeOffset(file, baseMs, scenarioMs)` writes the whole-second offset that
 puts a process clock at `baseMs + scenarioMs` now. The scheduler's `onClock`
 hook receives each arm's starting time and every clock jump; the run command
-(`docs/run-command.md`) writes the offset from that hook. Between
+(`docs/run-command.md`) writes the offset from that hook and returns it, and
+the scheduler journals it as `ClockOffset`, so an oracle can map a process's
+log stamp back to wall time. Between
 jumps the offset holds, so host clocks run at wall pace while scenario time
 holds and lead it by the idle wall time since the last jump; the preflight
 distortions record this.

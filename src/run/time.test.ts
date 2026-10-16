@@ -158,8 +158,15 @@ describe("clock hook", () => {
             order: ["a"],
             drivers: { a: driver },
             settleMs: 0,
-            onClock: (arm, ms) => void calls.push([arm, ms]),
+            onClock: (arm, ms) => {
+                calls.push([arm, ms]);
+                return ms / 1000 + 7;
+            },
         }).run();
+        const offsets = j.entries.filter((e) => e.kind === "ClockOffset");
+        expect(offsets.map((e) => [e.scenario_ms, e.offset_s])).toEqual(
+            calls.map(([, ms]) => [ms, ms / 1000 + 7]),
+        );
         expect(calls[0]).toEqual(["a", 0]);
         expect(calls[1]).toEqual(["a", 5_000]);
         expect(calls.at(-1)?.[1] ?? 0).toBeGreaterThanOrEqual(9_000);

@@ -50,13 +50,22 @@ export function faketimeEnv(file: string): Record<string, string> {
     };
 }
 
-/** The offset targets `baseMs + scenarioMs` at wall time `wallMs`, with up to 500 ms of rounding error. */
-export function writeOffset(file: string, baseMs: number, scenarioMs: number, wallMs = Date.now()) {
+/**
+ * The offset targets `baseMs + scenarioMs` at wall time `wallMs`, with up to 500 ms of rounding
+ * error, and is returned in whole seconds so the journal can record what the processes read.
+ */
+export function writeOffset(
+    file: string,
+    baseMs: number,
+    scenarioMs: number,
+    wallMs = Date.now(),
+): number {
     const seconds = Math.round((baseMs + scenarioMs - wallMs) / 1000);
     mkdirSync(dirname(file), { recursive: true });
     const staged = `${file}.${process.pid}`;
     writeFileSync(staged, `${seconds >= 0 ? "+" : ""}${seconds}\n`);
     renameSync(staged, file);
+    return seconds;
 }
 
 export function readOffsetSeconds(file: string): number {

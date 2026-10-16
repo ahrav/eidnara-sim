@@ -20,6 +20,7 @@ import { loadPrereg } from "../scenario/inputs";
 import type { DaemonStack, HostContext, PromptResult, SimHost } from "./arms";
 import { type DriverOptions, expandTemplate, HostDriver } from "./driver";
 import { SnapshotRecorder } from "./snapshot";
+import type { StoreCheck } from "./storecheck";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -102,6 +103,7 @@ function fakeDaemon(pid: number | null) {
     const d = {
         current: pid,
         pid: () => d.current,
+        crash: async () => undefined,
         restart: async () => {
             d.current = (d.current ?? 0) + 1;
         },
@@ -308,6 +310,51 @@ describe("HostDriver faults", () => {
             restarted_by: "harness",
             store: { integrity: "missing", segments: 0, overlaps: [], ranges: [] },
         });
+    });
+
+    test("the store a daemon kill leaves is inspected before the replacement starts", async () => {
+        const { driver } = fixture("eidnara");
+        const daemon = fakeDaemon(10);
+        mkdirSync(dirname(driver.storeDb), { recursive: true });
+        const db = new Database(driver.storeDb);
+        db.run(
+            "create table history_segments (session_id text, sequence integer, start_message integer, end_message integer)",
+        );
+        db.run("insert into history_segments values ('s', 1, 0, 9)");
+        db.close();
+        const phases: string[] = [];
+        daemon.crash = async () => {
+            phases.push(`crash:${daemon.current}`);
+            daemon.current = null;
+        };
+        daemon.restart = async () => {
+            phases.push("start");
+            new Database(driver.storeDb).run("delete from history_segments");
+            daemon.current = 11;
+        };
+        driver.daemon = daemon as unknown as DaemonStack;
+        const evidence = await driver.fault(episode("daemon_sigkill_mid_fold"));
+        expect(phases).toEqual(["crash:10", "start"]);
+        expect(evidence.pid_after).toBe(11);
+        expect((evidence.store as StoreCheck).ranges).toEqual([["s", 1, 0, 9]]);
+    });
+
+    test("a store check owed by a daemon restart survives a harness restart", async () => {
+        const { driver, armDir } = fixture("host", { p: gitRepo() });
+        await driver.reset();
+        driver.daemon = fakeDaemon(10) as unknown as DaemonStack;
+        await driver.fault(episode("daemon_restart"));
+        const state = JSON.parse(readFileSync(join(armDir, "state.json"), "utf8"));
+        expect(state.store_faults).toEqual(["f-daemon_restart"]);
+        const fresh = new HostDriver((driver as unknown as { o: DriverOptions }).o);
+        await fresh.resume(null);
+        fresh.daemon = fakeDaemon(12) as unknown as DaemonStack;
+        const outcome = await fresh.event(ev("user_turn", { id: "e-1", text: "go", project: "p" }));
+        expect(outcome.stores?.map((s) => s.fault)).toEqual(["f-daemon_restart"]);
+        const recorded = () => JSON.parse(readFileSync(join(armDir, "state.json"), "utf8"));
+        expect(recorded().store_faults).toEqual(["f-daemon_restart"]);
+        await fresh.event(ev("user_turn", { id: "e-2", text: "go", project: "p" }));
+        expect(recorded().store_faults).toEqual([]);
     });
 
     test("the turn ending after daemon restarts carries a store check for each of them", async () => {
