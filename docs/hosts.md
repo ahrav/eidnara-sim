@@ -138,7 +138,8 @@ toolchain probe and both hosts use, its `keep` paths (the cargo binaries, regist
 git cache, rustup, and the bun binary and install cache) stay visible and
 read-only inside the sandbox (a mount nested inside a read-only path is
 remounted read-only too), and its `env` sets `CARGO_HOME`, `RUSTUP_HOME`,
-and `BUN_INSTALL_CACHE_DIR`. The hosts replace `HOME`, and Bun resolves its
+and `BUN_INSTALL_CACHE_DIR`, the only variables `toolchain.env` accepts, since
+a variable that selects an executable would bypass preflight. The hosts replace `HOME`, and Bun resolves its
 cache from `HOME` unless that variable names it, so the variable is what points
 `bun install` at the kept cache. The agent builds and tests against the
 dependencies already in those caches; fetching a dependency they lack fails

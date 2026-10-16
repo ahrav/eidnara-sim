@@ -26,6 +26,9 @@ const PATH_FIELDS = ["eidnara_checkout", "daemon_binary", "pi_install", "opencod
 
 export class ConfigError extends Error {}
 
+/** Variables that name tool homes and caches; a variable that selects an executable would bypass preflight. */
+const TOOLCHAIN_ENV = ["CARGO_HOME", "RUSTUP_HOME", "BUN_INSTALL_CACHE_DIR"];
+
 /** The default config file at the sim tree root, overridable by `SIM_CONFIG`. */
 export function defaultConfigPath(): string {
     return process.env.SIM_CONFIG ?? resolve(import.meta.dir, "../../sim.config.json");
@@ -91,6 +94,11 @@ export function parseConfig(value: unknown): SimConfig {
         if (!word || ["PATH", "HOME", "LD_PRELOAD"].includes(key)) {
             throw new ConfigError(
                 `config.toolchain.env.${key}: expected a plain word the sandbox launcher can pass`,
+            );
+        }
+        if (!TOOLCHAIN_ENV.includes(key)) {
+            throw new ConfigError(
+                `config.toolchain.env.${key}: not a supported toolchain variable (${TOOLCHAIN_ENV.join(", ")})`,
             );
         }
     }

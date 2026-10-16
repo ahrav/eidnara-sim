@@ -671,7 +671,9 @@ export class OpencodeSimHost extends SimHost {
 
 export function opencodeInstall(config: SimConfig): { binary: string; root: string } {
     const binary = plainPath(realpathSync(config.opencode_binary));
-    return { binary, root: dirname(dirname(dirname(binary))) };
+    // An npm install keeps its package tree read-only; a standalone binary keeps its own directory.
+    const npm = /\/node_modules\/opencode-ai\/bin\/[^/]+$/.test(binary);
+    return { binary, root: npm ? dirname(dirname(dirname(binary))) : dirname(binary) };
 }
 
 export function makeHost(ctx: HostContext): SimHost {

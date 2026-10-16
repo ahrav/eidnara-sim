@@ -818,3 +818,15 @@ test("the daemon log keeps what the daemon wrote while it shut down", async () =
     await stack.stop();
     expect(readFileSync(join(run, "daemon.log"), "utf8")).toBe("running\nshutting down\n");
 });
+
+test("a standalone OpenCode binary keeps its own directory read-only, not the filesystem root", () => {
+    const run = runDir();
+    mkdirSync(join(run, "opt"));
+    writeFileSync(join(run, "opt/opencode"), "", { mode: 0o755 });
+    const install = opencodeInstall({
+        ...loadConfig(),
+        opencode_binary: join(run, "opt/opencode"),
+    });
+    expect(install.binary).toBe(join(run, "opt/opencode"));
+    expect(install.root).toBe(join(run, "opt"));
+});

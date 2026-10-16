@@ -88,3 +88,15 @@ test("configured paths must use the sandbox launcher's plain-path grammar", () =
         "config.toolchain.keep: expected plain paths the sandbox launcher can pass",
     );
 });
+
+test("toolchain env accepts only the cache and home variables the hosts support", () => {
+    const base = loadConfig() as any;
+    const env = (extra: Record<string, unknown>) => ({
+        ...base,
+        toolchain: { ...base.toolchain, env: { ...base.toolchain.env, ...extra } },
+    });
+    expect(() => parseConfig(env({ RUSTC_WRAPPER: "/writable/wrapper" }))).toThrow(
+        "config.toolchain.env.RUSTC_WRAPPER: not a supported toolchain variable",
+    );
+    expect(() => parseConfig(env({ CARGO_HOME: "/c" }))).not.toThrow();
+});
