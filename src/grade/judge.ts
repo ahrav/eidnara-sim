@@ -197,7 +197,7 @@ export function proxyJudge(
     return {
         identity: judgeIdentity(model),
         async verdict(prompt) {
-            let body: { output?: { message?: { content?: unknown } } };
+            let body: { output?: { message?: { content?: unknown } }; stopReason?: unknown };
             try {
                 const response = await fetch(
                     `${gatewayUrl}/model/${encodeURIComponent(model)}/converse`,
@@ -224,6 +224,9 @@ export function proxyJudge(
                     throw new GradeRefused("judge reply is not JSON");
                 if (caught instanceof GradeRefused) throw caught;
                 throw new GradeRefused(`judge call failed: ${(caught as Error).message}`);
+            }
+            if (body?.stopReason !== "end_turn") {
+                throw new GradeRefused(`judge reply stopped for ${String(body?.stopReason)}`);
             }
             const content = body?.output?.message?.content;
             const texts = Array.isArray(content)
@@ -261,6 +264,9 @@ function unswap(order: Order, verdict: RawVerdict): Recall {
 }
 
 function recallFrom(orders: Record<Order, RawVerdict>): Recall | "Inconsistent" {
+    if (typeof orders !== "object" || orders === null) {
+        throw new GradeRefused("judgment carries no order verdicts");
+    }
     for (const order of ORDERS) {
         if (!VERDICTS.includes(orders[order])) {
             throw new GradeRefused(
@@ -416,6 +422,8 @@ export interface P7Context {
     later_attempts: { a: number; b: number };
     calibration: CalibrationSet | null;
     permutation: { trials: number; correct: number; judge: JudgeIdentity } | null;
+    /** `cross_judge` binds the pre-registered cross-judge identity to the calibration set through `calibration_digest`. */
+    cross_judge: { judge: JudgeIdentity; calibration_digest: string } | null;
 }
 
 export function gradeP7(j: Judgment, c: P7Context, rules: Rules, version = 1): GradeRecord[] {
@@ -440,14 +448,13 @@ export function gradeP7(j: Judgment, c: P7Context, rules: Rules, version = 1): G
             `judgment for ${j.pair} records a verbosity audit its recall denies`,
         );
     }
-    const expected = canonicalJson(judgeIdentity(rules.judge.model));
-    const requireJudge = (source: string, identity: JudgeIdentity) => {
+    const requireJudge = (source: string, identity: JudgeIdentity, model = rules.judge.model) => {
         if (!isIdentity(identity)) {
             throw new GradeRefused(`${source} judge identity is incomplete`);
         }
-        if (canonicalJson(identity) !== expected) {
+        if (canonicalJson(identity) !== canonicalJson(judgeIdentity(model))) {
             throw new GradeRefused(
-                `${source} judge ${identity.model} is not the pre-registered judge ${rules.judge.model}`,
+                `${source} judge ${identity.model} is not the pre-registered judge ${model}`,
             );
         }
     };
@@ -473,6 +480,18 @@ export function gradeP7(j: Judgment, c: P7Context, rules: Rules, version = 1): G
             permutation = `refused: ${(caught as Error).message}`;
         }
     }
+    let crossJudge = "none";
+    if (c.cross_judge) {
+        try {
+            requireJudge("cross-judge", c.cross_judge.judge, rules.judge.cross_judge);
+            if (digest === null || c.cross_judge.calibration_digest !== digest) {
+                throw new GradeRefused("cross-judge labelled another calibration set");
+            }
+            crossJudge = "valid";
+        } catch (caught) {
+            crossJudge = `refused: ${(caught as Error).message}`;
+        }
+    }
     const metrics: GradeRecord["metrics"] = {
         judge_model: j.judge.model,
         judge_prompt_digest: j.judge.prompt_digest,
@@ -483,7 +502,12 @@ export function gradeP7(j: Judgment, c: P7Context, rules: Rules, version = 1): G
         permutation_counts: c.permutation
             ? `${c.permutation.correct}/${c.permutation.trials}`
             : "none",
-        gate_eligible: digest !== null && permutation === "pass" && j.recall !== "Inconsistent",
+        cross_judge: crossJudge,
+        gate_eligible:
+            digest !== null &&
+            permutation === "pass" &&
+            crossJudge === "valid" &&
+            j.recall !== "Inconsistent",
         verdict_a_then_b: j.orders.a_then_b,
         verdict_b_then_a: j.orders.b_then_a,
         length_a: j.lengths.a,

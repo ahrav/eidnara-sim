@@ -130,9 +130,12 @@ cannot call, and the divergences are listed below.
    itself and records a refusal of either as `refused: <reason>`, so
    `gate_eligible` is true only when the judgment's judge identity, the
    calibration set's judge identity, and the permutation evidence's judge
-   identity all equal the pre-registered judge's, the recall is consistent,
-   (`grading.judge.model` with the current prompt and rubric digests), the
-   set validates, and the permutation check passes.
+   identity all equal the pre-registered judge's (`grading.judge.model`
+   with the current prompt and rubric digests), the recall is consistent,
+   the set validates, the permutation check passes, and a cross-judge record
+   carries the pre-registered cross-judge's identity
+   (`grading.judge.cross_judge`) and the set's digest (recorded as
+   `cross_judge: valid`; absent evidence reads `none`).
 6. `permutationCheck` refuses counts that are not safe whole numbers and arm
    identification above the pre-registered 60% ceiling, correct or inverted,
    compared in exact integer arithmetic.
@@ -157,7 +160,9 @@ cannot call, and the divergences are listed below.
 
 `proxyJudge` sends each verdict request through the capture proxy with the
 `judge` component header, bounded by a per-call deadline (900 s by default)
-covering the request and the body read, whose expiry is a judge refusal. It refuses a judge model from the agent model's
+covering the request and the body read, whose expiry is a judge refusal. A
+reply whose `stopReason` is not `end_turn` (a truncated or filtered
+generation) is a judge refusal before its text is read. It refuses a judge model from the agent model's
 family (SIM-P43), where the family is the provider segment of the model id
 (`provider.model` or `region.provider.model`), and a model id whose provider
 it does not know; an unreachable gateway, a reply that is not JSON, one that
@@ -183,6 +188,10 @@ The pre-registered cross-judge (`grading.judge.cross_judge`, Haiku 5.5)
 re-judges the calibration set, so it waits on the maintainer's anchor pairs
 too. Its model shares the agent's family, which `proxyJudge` refuses for
 judging arm answers; calibration judging will need its own entry point.
+Until then `P7Context.cross_judge` is the record that entry point will
+produce (its identity and the digest of the set it labelled), gate
+eligibility requires it, and the agreement rule between the two judges'
+labels is still to be pre-registered.
 
 ## Fixtures
 

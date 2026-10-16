@@ -98,6 +98,11 @@ const calibration = (pairs = 25, human = 20): CalibrationSet => {
     };
 };
 
+const crossJudged = (set: CalibrationSet) => ({
+    judge: judgeIdentity(rules.judge.cross_judge),
+    calibration_digest: calibrationDigest(set, rules) as string,
+});
+
 const context = (
     item: string,
     pair: Pair,
@@ -114,6 +119,7 @@ const context = (
     later_attempts: { a: 0, b: 0 },
     calibration: null,
     permutation: { trials: 20, correct: 11, judge: judgeIdentity(rules.judge.model) },
+    cross_judge: null,
     ...extra,
 });
 
@@ -177,12 +183,45 @@ describe("P7 judge path", () => {
             f.probe.check.judge,
             [],
         );
+        const set = calibration();
         const ok = gradeP7(
             judgment,
-            context(f.probe.id, f.pair, f.probe.check.judge, { calibration: calibration() }),
+            context(f.probe.id, f.pair, f.probe.check.judge, {
+                calibration: set,
+                cross_judge: crossJudged(set),
+            }),
             rules,
         );
         expect(ok[0]?.metrics.gate_eligible).toBe(true);
+        const unchecked = gradeP7(
+            judgment,
+            context(f.probe.id, f.pair, f.probe.check.judge, { calibration: set }),
+            rules,
+        )[0];
+        expect([unchecked?.metrics.cross_judge, unchecked?.metrics.gate_eligible]).toEqual([
+            "none",
+            false,
+        ]);
+        const otherJudge = gradeP7(
+            judgment,
+            context(f.probe.id, f.pair, f.probe.check.judge, {
+                calibration: set,
+                cross_judge: { ...crossJudged(set), judge: judgeIdentity(rules.judge.model) },
+            }),
+            rules,
+        )[0];
+        expect(String(otherJudge?.metrics.cross_judge)).toContain("refused: cross-judge judge");
+        const otherSet = gradeP7(
+            judgment,
+            context(f.probe.id, f.pair, f.probe.check.judge, {
+                calibration: set,
+                cross_judge: { ...crossJudged(set), calibration_digest: "0" },
+            }),
+            rules,
+        )[0];
+        expect(String(otherSet?.metrics.cross_judge)).toContain(
+            "refused: cross-judge labelled another",
+        );
         expect(ok[0]?.metrics.calibration_digest).toMatch(/^[0-9a-f]{64}$/);
         const identified = context(f.probe.id, f.pair, f.probe.check.judge, {
             calibration: calibration(),
@@ -653,17 +692,22 @@ describe("P7 judge path", () => {
             f.probe.check.judge,
             [],
         );
+        const set = calibration();
         const [g] = gradeP7(
             judgment,
-            context(f.probe.id, f.pair, f.probe.check.judge, { calibration: calibration() }),
+            context(f.probe.id, f.pair, f.probe.check.judge, {
+                calibration: set,
+                cross_judge: crossJudged(set),
+            }),
             rules,
         );
         expect([
             g?.verdict,
             g?.metrics.calibration,
             g?.metrics.permutation,
+            g?.metrics.cross_judge,
             g?.metrics.gate_eligible,
-        ]).toEqual(["excluded", "valid", "pass", false]);
+        ]).toEqual(["excluded", "valid", "pass", "valid", false]);
     });
 
     test("HTML comments and out-of-range entities are handled before blinding", () => {
@@ -685,6 +729,21 @@ describe("P7 judge path", () => {
         const ctx = context(f.probe.id, f.pair, f.probe.check.judge);
         for (const judge of [null, {}, { model: 1, prompt_digest: "x", rubric_digest: "y" }]) {
             const broken = { ...judgment, judge: judge as unknown as typeof judgment.judge };
+            expect(() => gradeP7(broken, ctx, rules)).toThrow(GradeRefused);
+        }
+    });
+
+    test("a judgment without an orders object is refused", async () => {
+        const f = load("P7-pass");
+        const judgment = await judgePair(
+            scripted(f.judge_verdicts),
+            f.pair,
+            f.probe.check.judge,
+            [],
+        );
+        const ctx = context(f.probe.id, f.pair, f.probe.check.judge);
+        for (const orders of [null, undefined, "first"]) {
+            const broken = { ...judgment, orders: orders as unknown as typeof judgment.orders };
             expect(() => gradeP7(broken, ctx, rules)).toThrow(GradeRefused);
         }
     });
@@ -713,7 +772,7 @@ describe("proxy judge", () => {
                     body: await req.json(),
                 });
                 const content = [{ reasoningContent: {} }, { text: "Second." }];
-                return Response.json({ output: { message: { content } } });
+                return Response.json({ output: { message: { content } }, stopReason: "end_turn" });
             },
         });
         const url = `http://127.0.0.1:${server.port}`;
@@ -786,10 +845,15 @@ describe("proxy judge", () => {
     test("invalid JSON, null blocks, and several text blocks are judge refusals or joined", async () => {
         const replies: Array<() => Response> = [
             () => new Response("not json", { status: 200 }),
-            () => Response.json({ output: { message: { content: [null, { text: "first" }] } } }),
+            () =>
+                Response.json({
+                    output: { message: { content: [null, { text: "first" }] } },
+                    stopReason: "end_turn",
+                }),
             () =>
                 Response.json({
                     output: { message: { content: [{ text: "first" }, { text: "second" }] } },
+                    stopReason: "end_turn",
                 }),
         ];
         let i = 0;
@@ -807,6 +871,22 @@ describe("proxy judge", () => {
     test("an unreachable gateway is a judge refusal", async () => {
         const judge = proxyJudge("http://127.0.0.1:1", rules.judge.model, "anthropic.x");
         await expect(judge.verdict("prompt")).rejects.toThrow(GradeRefused);
+    });
+
+    test("a truncated judge generation is refused before its text is parsed", async () => {
+        const bodies = [
+            { output: { message: { content: [{ text: "first" }] } }, stopReason: "max_tokens" },
+            { output: { message: { content: [{ text: "first" }] } } },
+        ];
+        let i = 0;
+        server = Bun.serve({ port: 0, fetch: () => Response.json(bodies[i++ % bodies.length]) });
+        const judge = proxyJudge(
+            `http://127.0.0.1:${server.port}`,
+            rules.judge.model,
+            "anthropic.x",
+        );
+        await expect(judge.verdict("prompt")).rejects.toThrow("stopped for max_tokens");
+        await expect(judge.verdict("prompt")).rejects.toThrow("stopped for");
     });
 
     test("a well-formed status with a malformed body is a judge refusal, not a crash", async () => {
