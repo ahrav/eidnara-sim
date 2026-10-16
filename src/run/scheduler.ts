@@ -233,8 +233,9 @@ export class Scheduler {
         }
     }
 
+    /** A replayed `session_end` closes nothing the killed harness still had open, so no host reopens for it. */
     private openSession(next: ScenarioEvent | undefined, done: Set<string>): ScenarioEvent | null {
-        if (!next || next.kind === "session_start") return null;
+        if (!next || next.kind === "session_start" || next.kind === "session_end") return null;
         const start = this.o.events.find(
             (e) => e.kind === "session_start" && e.session === next.session,
         );

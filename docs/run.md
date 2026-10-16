@@ -110,8 +110,9 @@ without `EndArm`:
 - calls the driver's `reap` before any fault is armed again, so a host the
   killed harness left running cannot reach a re-armed proxy, then its
   `resume` with the `session_start` of the session the next event belongs to,
-  or null between sessions, so the driver restarts what the killed process
-  ran; an arm with no event left is finished without a `resume`;
+  or null between sessions and when the next event is a `session_end`, so the
+  driver restarts what the killed process ran and reopens nothing a replayed
+  end would close; an arm with no event left is finished without a `resume`;
 - continues with the first event that has no `Event` entry, with the arm's
   clock restored.
 

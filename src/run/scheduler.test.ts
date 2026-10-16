@@ -984,6 +984,34 @@ describe("driver lifecycle hooks", () => {
         expect(endArm).toBe(finishedAt);
     });
 
+    test("a resume whose first pending event ends a session opens no host for it", async () => {
+        const path = join(dir(), "j.jsonl");
+        const j = new Journal(path);
+        const events = fixtureEvents(1);
+        const start = { order: ["a"], scenario: scenarioId(events, []) };
+        j.append({ kind: "StartRun", arm: null, scenario_ms: 0, ...start });
+        j.append({ kind: "StartArm", arm: "a", scenario_ms: 0 });
+        for (const e of events.filter((x) => x.kind !== "session_end")) {
+            j.append({ kind: "Event", arm: "a", scenario_ms: 0, event: e.id });
+        }
+        j.close();
+        const calls: string[] = [];
+        const driver: ArmDriver = {
+            ...fakeDriver(calls),
+            resume: async (open) => void calls.push(`resume:${open?.id ?? null}`),
+        };
+        await new Scheduler({
+            events,
+            faults: [],
+            journal: new Journal(path),
+            settleMs: 0,
+            order: ["a"],
+            drivers: { a: driver },
+        }).run();
+        expect(calls[0]).toBe("resume:null");
+        expect(calls[1]).toMatch(/^session_end:/);
+    });
+
     test("a killed harness's processes are reaped before the proxy is armed again", async () => {
         const path = join(dir(), "j.jsonl");
         const j = new Journal(path);

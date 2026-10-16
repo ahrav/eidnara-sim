@@ -36,3 +36,55 @@ test("a missing or relative path is refused by field name", () => {
     );
     expect(() => parseConfig(env({ CARGO_HOME: 1 }))).toThrow("config.toolchain.env.CARGO_HOME");
 });
+
+test("a config in the pre-toolchain sim-config/v1 shape is refused by its schema", () => {
+    const base = loadConfig() as any;
+    expect(base.schema).toBe("sim-config/v2");
+    expect(() => parseConfig({ ...base, schema: "sim-config/v1" })).toThrow(
+        "config.schema: expected sim-config/v2",
+    );
+});
+
+test("toolchain env entries must be words the sandbox launcher can pass", () => {
+    const base = loadConfig() as any;
+    const env = (extra: Record<string, unknown>) => ({
+        ...base,
+        toolchain: { ...base.toolchain, env: { ...base.toolchain.env, ...extra } },
+    });
+    expect(() => parseConfig(env({ "rust-flags": "x" }))).toThrow(
+        "config.toolchain.env.rust-flags",
+    );
+    expect(() => parseConfig(env({ RUSTFLAGS: "-C debuginfo=0" }))).toThrow(
+        "config.toolchain.env.RUSTFLAGS",
+    );
+});
+
+test("every toolchain bin directory must be kept read-only", () => {
+    const base = loadConfig() as any;
+    const toolchain = { ...base.toolchain, bin: [...base.toolchain.bin, "/opt/tools/bin"] };
+    expect(() => parseConfig({ ...base, toolchain })).toThrow(
+        "config.toolchain.bin: /opt/tools/bin is not under a toolchain.keep path",
+    );
+});
+
+test("configured paths must be normalized, since the sandbox launcher refuses others", () => {
+    const base = loadConfig() as any;
+    expect(() => parseConfig({ ...base, eidnara_checkout: `${base.eidnara_checkout}/` })).toThrow(
+        "config.eidnara_checkout: not a normalized absolute path",
+    );
+    const toolchain = { ...base.toolchain, keep: [...base.toolchain.keep, "/opt/x/../y"] };
+    expect(() => parseConfig({ ...base, toolchain })).toThrow(
+        "config.toolchain.keep: expected normalized absolute paths",
+    );
+});
+
+test("configured paths must use the sandbox launcher's plain-path grammar", () => {
+    const base = loadConfig() as any;
+    expect(() => parseConfig({ ...base, eidnara_checkout: "/srv/eidnara builds" })).toThrow(
+        "config.eidnara_checkout: not a plain path the sandbox launcher can pass",
+    );
+    const toolchain = { ...base.toolchain, keep: [...base.toolchain.keep, "/opt/a b"] };
+    expect(() => parseConfig({ ...base, toolchain })).toThrow(
+        "config.toolchain.keep: expected plain paths the sandbox launcher can pass",
+    );
+});

@@ -48,6 +48,11 @@ export function ownedProcesses(rootPid: number): number[] {
     return out;
 }
 
+export function parentPid(pid: number): number | null {
+    const ppid = statFields(pid)?.[1];
+    return ppid === undefined ? null : Number(ppid);
+}
+
 export function processStart(pid: number): string | null {
     return statFields(pid)?.[19] ?? null;
 }
@@ -85,10 +90,19 @@ function signal(targets: Target[], name: NodeJS.Signals): void {
     }
 }
 
-export async function stopOwnedTree(rootPid: number, graceMs: number): Promise<boolean> {
+// The launcher root stays root-owned while the sandbox is set up, so the stop succeeds only
+// once the root itself has exited too; a root still privileged then reports failure.
+// `rootStart`, captured when the launcher was spawned, rules out a root pid since reused.
+export async function stopOwnedTree(
+    rootPid: number,
+    graceMs: number,
+    rootStart?: string,
+): Promise<boolean> {
+    if (rootStart !== undefined && processStart(rootPid) !== rootStart) return true;
     const targets = ownedProcesses(rootPid).map((pid) => ({ pid, start: processStart(pid) }));
+    const all = [...targets, { pid: rootPid, start: processStart(rootPid) }];
     signal(targets, "SIGTERM");
-    if (await stopped(targets, graceMs)) return true;
+    if (await stopped(all, graceMs)) return true;
     signal(targets, "SIGKILL");
-    return stopped(targets, 2_000);
+    return stopped(all, 2_000);
 }

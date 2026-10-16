@@ -73,7 +73,9 @@ manifest, and refuses to resume when an interception result changes.
 
 The Pi probe runs Pi's Node runtime, not the Pi CLI, so it shows that the
 runtime Pi runs on reads the interposed clock. A probe is intercepted only
-when it also exits 0 under the interposer; a binary that fails, or outlives
+when it also exits normally under the interposer: exit 0, or for the daemon
+fixture, which has no successful no-op invocation, its usage error (exit 1
+with the usage line on stderr); a binary that fails, or outlives
 the 30 s deadline, is recorded `wall_clock_only`, and the run proceeds with
 that limitation in its distortions. If neither Pi nor the daemon is
 intercepted, preflight throws (OQ-9 stop condition). In the live test on

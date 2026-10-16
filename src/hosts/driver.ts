@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import {
     existsSync,
     lstatSync,
@@ -28,8 +28,12 @@ interface ArmState {
     model: number;
     daemon: { pid: number; start: string | null } | null;
     host: { pid: number; start: string | null } | null;
-    /** Size of the store_full ballast while the fault is active. */
-    ballast: number | null;
+    /** The store_full ballast while the fault is active: its length and the blocks it holds. */
+    ballast: { bytes: number; blocks: number } | null;
+    /** True while a resume has removed the ballast and has yet to fill the store again. */
+    refilling: boolean;
+    /** The sandboxed git run of an apply_diff in flight, with the workspace it holds. */
+    git: { pid: number; start: string | null; project: string } | null;
 }
 
 export interface DriverOptions extends Omit<HostContext, "root" | "model"> {
@@ -117,7 +121,9 @@ export class HostDriver implements ArmDriver {
     daemon: DaemonStack | null = null;
     private model = 0;
     private storeMount: string | null = null;
-    private ballastBytes: number | null = null;
+    private ballastShape: ArmState["ballast"] = null;
+    private refilling = false;
+    private gitRun: ArmState["git"] = null;
     private sessionProject: string | null = null;
     private transcriptsChecked = false;
 
@@ -177,24 +183,61 @@ export class HostDriver implements ArmDriver {
      * Git over an agent-written repository runs inside the arm's sandbox, so a hook, filter, or
      * config the agent planted acts with the host's own view of the filesystem.
      */
-    private git(dir: string, args: string[], dateMs?: number): { status: number; stderr: string } {
+    private async git(
+        project: string,
+        dir: string,
+        args: string[],
+        dateMs?: number,
+    ): Promise<{ status: number; stderr: string }> {
         const env: Record<string, string> = { ...GIT_ENV, HOME: join(this.o.armRoot, "home") };
         if (dateMs !== undefined) {
             env.GIT_AUTHOR_DATE = `@${Math.floor(dateMs / 1000)}`;
             env.GIT_COMMITTER_DATE = env.GIT_AUTHOR_DATE;
         }
         const keep = [...new Set([...this.keep, this.o.armRoot])];
-        const argv = launch(this.o.launcher, keep, env, ["git", ...args], [], dir);
+        const checkout = this.o.config.eidnara_checkout;
+        const ro = existsSync(checkout) ? [checkout] : [];
+        // `timeout` runs inside the sandbox, so the recorded pid execs into the launcher's `sudo`
+        // and the reaper's walk starts at the root-owned process, as it does for a host.
         const seconds = String(Math.ceil(this.o.turnDeadlineMs / 1000));
-        const bounded = ["timeout", "-s", "KILL", seconds, ...argv];
-        const r = spawnSync(bounded[0] as string, bounded.slice(1), { encoding: "utf8" });
-        const stderr = r.status === 137 ? `cut off after ${seconds} s` : r.stderr;
-        return { status: r.status ?? -1, stderr };
+        const bounded = ["timeout", "-s", "KILL", seconds, "git", ...args];
+        const argv = launch(this.o.launcher, keep, env, bounded, ro, dir);
+        // The shell waits for one line on stdin before it execs, so the run starts only once
+        // its pid is on disk; a harness that dies first closes stdin and the shell exits.
+        const gated = ["/bin/sh", "-c", 'read _ && exec "$@"', "sh", ...argv];
+        const child = spawn(gated[0] as string, gated.slice(1), {
+            env: { PATH: process.env.PATH ?? "" },
+            stdio: ["pipe", "ignore", "pipe"],
+        });
+        const pid = child.pid as number;
+        this.gitRun = { pid, start: processStart(pid), project };
+        this.recordState();
+        child.stdin?.end("\n");
+        let stderr = "";
+        child.stderr?.on("data", (chunk: Buffer) => {
+            stderr = `${stderr}${chunk}`.slice(-20_000);
+        });
+        const status = await new Promise<number>((resolve) => {
+            child.once("error", () => resolve(-1));
+            child.once("exit", (code, signal) =>
+                resolve(code ?? (signal === "SIGKILL" ? 137 : -1)),
+            );
+        });
+        if (status !== 0) this.unlockGit(dir);
+        this.gitRun = null;
+        this.recordState();
+        return { status, stderr: status === 137 ? `cut off after ${seconds} s` : stderr };
     }
 
-    private gitOk(dir: string, args: string[], dateMs?: number): void {
-        const r = this.git(dir, args, dateMs);
+    private async gitOk(project: string, dir: string, args: string[], dateMs?: number) {
+        const r = await this.git(project, dir, args, dateMs);
         if (r.status !== 0) throw new Error(`git ${args.join(" ")}: ${r.stderr}`);
+    }
+
+    /** The daemon's directories are host-writable, so every daemon start and restart rechecks them. */
+    private checkDaemonDirs(): void {
+        realChild(this.o.armRoot, "runtime", "daemon runtime");
+        realChild(this.storeRoot, "d", "daemon data");
     }
 
     /** The real workspace directory; a symlink the host planted at it or above it stops the run. */
@@ -210,7 +253,9 @@ export class HostDriver implements ArmDriver {
             model: this.model,
             daemon: proc(this.daemonPid()),
             host: proc(this.sessionProject === null ? null : (this.host?.hostPid() ?? null)),
-            ballast: this.ballastBytes,
+            ballast: this.ballastShape,
+            refilling: this.refilling,
+            git: this.gitRun,
         };
         mkdirSync(this.armDir, { recursive: true });
         writeWhole(this.stateFile, JSON.stringify(state));
@@ -225,23 +270,21 @@ export class HostDriver implements ArmDriver {
         return this.storeMount ? join(this.storeMount, "ballast") : null;
     }
 
-    private async startArm(fresh: boolean, expectBallast: number | null = null): Promise<void> {
+    private async startArm(fresh: boolean, state: ArmState | null = null): Promise<void> {
         mkdirSync(this.storeRoot, { recursive: true, mode: 0o700 });
         if (this.o.loopStore && eidnaraOn(this.o.arm)) this.mountStore(fresh);
-        const filled = expectBallast !== null;
+        const filled = state?.ballast != null;
+        if (filled && !state?.refilling)
+            this.requireBallast(state?.ballast ?? null, "before the kill");
         if (filled) {
-            const size = statSync(this.ballast ?? "", { throwIfNoEntry: false })?.size ?? null;
-            if (size !== expectBallast) {
-                throw new HarnessFailure(
-                    `store_full ballast ${this.ballast} changed before the kill`,
-                );
-            }
-            rmSync(this.ballast as string, { force: true });
+            this.ballastShape = state?.ballast ?? null;
+            this.refilling = true;
+            this.recordState();
         }
+        if (this.ballast) rmSync(this.ballast, { force: true });
         try {
             if (eidnaraOn(this.o.arm)) {
-                realChild(this.o.armRoot, "runtime", "daemon runtime");
-                realChild(this.storeRoot, "d", "daemon data");
+                this.checkDaemonDirs();
                 const make = this.o.daemonFactory ?? ((ctx: DaemonContext) => new DaemonStack(ctx));
                 this.daemon = make({
                     ...this.o,
@@ -259,14 +302,36 @@ export class HostDriver implements ArmDriver {
                 this.recordState();
             }
         }
+        if (filled) {
+            this.requireFull();
+            this.refilling = false;
+            this.recordState();
+        }
         this.host = this.newHost();
         this.recordState();
+    }
+
+    /** The ballast's length and allocated blocks both have to match; a sparse replacement or a punched hole fails. */
+    private requireBallast(expected: ArmState["ballast"], when: string): void {
+        const stat = lstatSync(this.ballast ?? "", { throwIfNoEntry: false });
+        const shape = stat?.isFile() ? { bytes: stat.size, blocks: stat.blocks } : null;
+        if (
+            !expected ||
+            !shape ||
+            shape.bytes !== expected.bytes ||
+            shape.blocks !== expected.blocks
+        ) {
+            throw new HarnessFailure(`store_full ballast ${this.ballast} changed ${when}`);
+        }
     }
 
     async reset(): Promise<void> {
         await this.stop();
         this.model = 0;
         this.transcriptsChecked = false;
+        this.ballastShape = null;
+        this.refilling = false;
+        this.gitRun = null;
         await this.reapStale();
         for (const dir of [this.o.armRoot, this.storeRoot])
             rmSync(dir, { recursive: true, force: true });
@@ -297,7 +362,7 @@ export class HostDriver implements ArmDriver {
             this.transcriptsChecked = true;
         }
         await this.reapStale();
-        await this.startArm(false, state.ballast ?? null);
+        await this.startArm(false, state);
         if (open) await this.event(open);
     }
 
@@ -309,18 +374,51 @@ export class HostDriver implements ArmDriver {
         await this.reapStale();
     }
 
+    private async stopRecorded(proc: { pid: number; start: string | null } | null | undefined) {
+        if (!proc || !running(proc.pid) || processStart(proc.pid) !== proc.start) return;
+        if (!(await stopOwnedTree(proc.pid, 5_000, proc.start ?? undefined))) {
+            throw new HarnessFailure(`recorded process ${proc.pid} survived SIGKILL`);
+        }
+    }
+
+    /** Removes a stale `index.lock` when `.git` is a real directory; a link there is left alone. */
+    private unlockGit(dir: string): void {
+        const gitDir = join(dir, ".git");
+        if (lstatSync(gitDir, { throwIfNoEntry: false })?.isDirectory()) {
+            rmSync(join(gitDir, "index.lock"), { force: true });
+        }
+    }
+
+    /** A git run cut off mid-way leaves `index.lock` behind; the replayed `apply_diff` needs it gone. */
+    private async reapGit(state: ArmState): Promise<void> {
+        if (!state.git) return;
+        await this.stopRecorded(state.git);
+        this.unlockGit(this.workspaceDir(state.git.project));
+        writeWhole(this.stateFile, JSON.stringify({ ...state, git: null }));
+    }
+
+    /** Every recorded teardown is attempted; the first failure surfaces once all have run. */
     private async reapStale(): Promise<void> {
         const state = this.readState();
-        for (const proc of [state?.host, state?.daemon]) {
-            if (proc && running(proc.pid) && processStart(proc.pid) === proc.start) {
-                if (!(await stopOwnedTree(proc.pid, 5_000))) {
-                    throw new HarnessFailure(`recorded process ${proc.pid} survived SIGKILL`);
+        let failure: unknown = null;
+        const steps: Array<() => Promise<void> | void> = [
+            () => (state ? this.reapGit(state) : undefined),
+            () => this.stopRecorded(state?.host),
+            () => this.stopRecorded(state?.daemon),
+            () => {
+                if (spawnSync("findmnt", ["-n", "-M", this.storeRoot]).status === 0) {
+                    run(["sudo", "-n", "umount", this.storeRoot]);
                 }
+            },
+        ];
+        for (const step of steps) {
+            try {
+                await step();
+            } catch (caught) {
+                failure ??= caught;
             }
         }
-        if (spawnSync("findmnt", ["-n", "-M", this.storeRoot]).status === 0) {
-            run(["sudo", "-n", "umount", this.storeRoot]);
-        }
+        if (failure) throw failure;
     }
 
     private async openSession(e: ScenarioEvent, host: SimHost): Promise<void> {
@@ -346,7 +444,7 @@ export class HostDriver implements ArmDriver {
             return {};
         }
         if (e.kind === "apply_diff") {
-            this.applyDiff(e);
+            await this.applyDiff(e);
             return {};
         }
         const result = await host.prompt(String(e.text), this.o.turnDeadlineMs);
@@ -364,8 +462,9 @@ export class HostDriver implements ArmDriver {
         return project;
     }
 
-    private applyDiff(e: ScenarioEvent): void {
-        const dir = this.workspaceDir(this.project(e));
+    private async applyDiff(e: ScenarioEvent): Promise<void> {
+        const project = this.project(e);
+        const dir = this.workspaceDir(project);
         const path = resolve(dir, String(e.path));
         const inside = (p: string) => {
             const real = realpathSync(p);
@@ -383,11 +482,13 @@ export class HostDriver implements ArmDriver {
             throw new HarnessFailure(`apply_diff path ${String(e.path)} leaves ${dir}`);
         }
         writeWhole(path, String(e.content));
-        this.gitOk(dir, ["add", "--", path]);
-        if (this.git(dir, ["diff", "--cached", "--quiet", "--", path]).status === 0) return;
+        await this.gitOk(project, dir, ["add", "--", path]);
+        const staged = await this.git(project, dir, ["diff", "--cached", "--quiet", "--", path]);
+        if (staged.status === 0) return;
         const message = `Add ${String(e.path)}`;
         const when = this.o.baseMs + e.scenario_ms;
-        this.gitOk(dir, ["commit", "--quiet", "--no-verify", "-m", message, "--", path], when);
+        const commit = ["commit", "--quiet", "--no-verify", "-m", message, "--", path];
+        await this.gitOk(project, dir, commit, when);
     }
 
     private checkTranscripts(host: SimHost): void {
@@ -409,6 +510,7 @@ export class HostDriver implements ArmDriver {
         if (f.type === "daemon_sigkill_mid_fold" || f.type === "daemon_restart") {
             if (!this.daemon) return { skipped: "arm runs no daemon" };
             const before = this.daemonPid();
+            this.checkDaemonDirs();
             await this.daemon.restart();
             this.recordState();
             const after = this.daemonPid();
@@ -469,32 +571,38 @@ export class HostDriver implements ArmDriver {
             "conv=notrunc",
         ];
         spawnSync("dd", tail);
-        this.ballastBytes = statSync(this.ballast).size;
+        const stat = statSync(this.ballast);
+        this.ballastShape = { bytes: stat.size, blocks: stat.blocks };
     }
 
     private fillStore(): Record<string, unknown> {
         if (!this.storeMount) return { skipped: "arm runs no loop-mounted store" };
         this.fill();
-        const df = run(["df", "--output=avail", this.storeMount]);
-        const avail = Number(df.trim().split("\n").at(-1));
-        if (avail !== 0) throw new HarnessFailure(`store_full left ${avail} KiB free`);
-        return { mount: this.storeMount, avail_kb: avail };
+        return { mount: this.storeMount, avail_kb: this.requireFull() };
     }
 
-    /** The ballast must still be whole at the episode's end, since the store is writable to the host. */
+    /** The fault holds only while the store reports no free space. */
+    private requireFull(): number {
+        const df = run(["df", "--output=avail", this.storeMount as string]);
+        const avail = Number(df.trim().split("\n").at(-1));
+        if (avail !== 0) throw new HarnessFailure(`store_full left ${avail} KiB free`);
+        return avail;
+    }
+
+    /**
+     * The ballast must still be whole at the episode's end, since the store is writable to the
+     * host. The state records the fault's end before the file goes, so a kill in between leaves a
+     * ballast the next resume removes as a leftover.
+     */
     private clearStoreFill(): void {
         const ballast = this.ballast;
         if (!ballast) return;
-        if (this.ballastBytes !== null) {
-            const size = statSync(ballast, { throwIfNoEntry: false })?.size ?? null;
-            if (size !== this.ballastBytes) {
-                throw new HarnessFailure(
-                    `store_full ballast ${ballast} changed during the episode`,
-                );
-            }
+        if (this.ballastShape !== null) {
+            this.requireBallast(this.ballastShape, "during the episode");
+            this.ballastShape = null;
+            this.recordState();
         }
         rmSync(ballast, { force: true });
-        this.ballastBytes = null;
     }
 
     async finish(): Promise<void> {

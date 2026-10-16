@@ -10,8 +10,8 @@ import {
     symlinkSync,
     writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { homedir, tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { loadConfig } from "../config/config";
 import { Clock } from "./clock";
 import {
@@ -60,6 +60,19 @@ describe("time injection", () => {
         expect(() => launch("/x/sandbox.sh", [], {}, ["true"], [], "/a b")).toThrow(/must match/);
         expect(() => launch("/x/sandbox.sh", ["/a/b"], {}, ["true"], ["/a"])).toThrow(
             "sandbox path /a/b is kept writable under read-only /a",
+        );
+        const home = realpathSync(homedir());
+        expect(() => launch("/x/sandbox.sh", [], {}, ["true"], [home])).toThrow(
+            `sandbox path ${home} would restore masked ${home}`,
+        );
+        expect(() => launch("/x/sandbox.sh", [], {}, ["true"], [dirname(home)])).toThrow(
+            /would restore masked/,
+        );
+        expect(() => launch("/x/sandbox.sh", ["/tmp"], {}, ["true"])).toThrow(
+            "sandbox path /tmp would restore masked /tmp",
+        );
+        expect(launch("/x/sandbox.sh", [], {}, ["true"], [join(home, ".cargo")])).toContain(
+            join(home, ".cargo"),
         );
         expect(launch("/x/sandbox.sh", ["/k"], { A: "1" }, ["true"], ["/r"])).toEqual([
             "/x/sandbox.sh",

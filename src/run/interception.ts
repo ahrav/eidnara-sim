@@ -10,6 +10,8 @@ export interface BinaryProbe {
     argv: string[];
     env?: Record<string, string>;
     mode: "prints-time" | "binds-clock";
+    /** The normal exit for this invocation; exit 0 when absent. */
+    expect?: { exit: number; stderr?: RegExp };
 }
 
 export interface Interception {
@@ -71,6 +73,9 @@ export function probes(paths: { node: string; opencode: string; daemon: string }
             argv: [daemon, "--help"],
             env: { LD_DEBUG: "bindings" },
             mode: "binds-clock",
+            // The fixture has no successful no-op invocation; its usage error runs main and
+            // returns normally, which shows the binary loaded and ran under the interposer.
+            expect: { exit: 1, stderr: /usage: direct_host_fixture/ },
         },
     ];
 }
@@ -130,8 +135,14 @@ export function interceptionTest(
             evidence = { ...evidence, binding: line?.trim() ?? null };
             intercepted = line !== undefined;
         }
-        // Interception requires a successful exit under the interposer as well as a read clock.
-        intercepted &&= r.exitCode === 0;
+        // Interception requires the probe's normal exit under the interposer as well as a read clock.
+        intercepted &&= exitedAsExpected(b, r.exitCode, r.stderr.toString());
         return { name: b.name, path: b.path, intercepted, wall_clock_only: !intercepted, evidence };
     });
+}
+
+/** A probe passes only when its binary ran to a normal exit under the interposer. */
+export function exitedAsExpected(b: BinaryProbe, code: number | null, stderr: string): boolean {
+    const want = b.expect ?? { exit: 0 };
+    return code === want.exit && (want.stderr === undefined || want.stderr.test(stderr));
 }
