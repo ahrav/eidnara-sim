@@ -63,6 +63,12 @@ describe("classify and commandOf", () => {
         ).toBe("test_run");
         expect(classify("execute_bash", "cd /w && pytest -x", "ok")).toBe("test_run");
     });
+    test("a runner name inside a quoted pattern is not a pipeline segment", () => {
+        const cmd =
+            'cd /w && find . -name "*.py" -exec grep -l "pytest\\|unittest" {} \\; | head -5';
+        expect(classify("execute_bash", cmd, "bash: syntax error")).toBe("grep");
+        expect(classify("execute_bash", 'echo "x | pytest"', "x | pytest")).toBeNull();
+    });
     test("a test runner's help text is no test run", () => {
         expect(
             classify("execute_bash", "python -m pytest --help | head -20", "usage: pytest"),
@@ -158,13 +164,68 @@ describe("extractFrom", () => {
                             'Traceback (most recent call last):\n  File "t.py", line 1, in <module>\n    input()\nKeyboardInterrupt',
                         ),
                         call("c8", "execute_bash", { command: "python u.py" }),
-                        result("c8", "execute_bash", "some log line\nValueError: bad value"),
+                        result(
+                            "c8",
+                            "execute_bash",
+                            "some log line\nValueError: bad value\n[Command finished with exit code 1]",
+                        ),
                     ],
                 },
             ],
             dataset,
         );
         expect(listing.error_codes.map((e) => e.code)).toEqual(["KeyboardInterrupt", "ValueError"]);
+    });
+
+    test("a long stack trace keeps its traceback when unrelated output follows it", () => {
+        const noisy = `${TRACE}\n${"pip install output\n".repeat(400)}`;
+        const out2 = extractFrom(
+            [
+                {
+                    trajectory_id: "t4",
+                    repo: "o/r",
+                    trajectory: [
+                        call("c9", "execute_bash", { command: "pip install x && python t.py" }),
+                        result("c9", "execute_bash", noisy),
+                    ],
+                },
+            ],
+            dataset,
+        );
+        const trace = out2.samples[0];
+        expect(trace?.kind).toBe("stack_trace");
+        expect(trace?.truncated).toBe(true);
+        expect(trace?.content.startsWith("Traceback (most recent call last)")).toBe(true);
+        expect(trace?.content).toContain("ValueError: bad input value");
+    });
+
+    test("harvests codes only from failed commands", () => {
+        const ok = extractFrom(
+            [
+                {
+                    trajectory_id: "t5",
+                    repo: "o/r",
+                    trajectory: [
+                        call("c10", "execute_bash", { command: "cat doc.py" }),
+                        result(
+                            "c10",
+                            "execute_bash",
+                            "    Raises:\n        ArgumentError: when parsing fails\n[Command finished with exit code 0]",
+                        ),
+                        call("c11", "execute_bash", { command: "python t.py" }),
+                        result(
+                            "c11",
+                            "execute_bash",
+                            "ArgumentError: bad\n[Command finished with exit code 1]",
+                        ),
+                    ],
+                },
+            ],
+            dataset,
+        );
+        expect(ok.error_codes.map((e) => [e.code, e.source_id])).toEqual([
+            ["ArgumentError", "org/ds@rev:t5#3"],
+        ]);
     });
 
     test("keeps each error code at its first occurrence", () => {

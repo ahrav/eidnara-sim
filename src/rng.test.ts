@@ -10,6 +10,17 @@ describe("Rng", () => {
         expect(seqA).toEqual(seqB);
     });
 
+    test("seeds beyond 32 bits yield distinct sequences and invalid seeds are refused", () => {
+        const draws = (seed: number) => {
+            const rng = new Rng(seed);
+            return Array.from({ length: 8 }, () => rng.nextU32());
+        };
+        expect(draws(4294967296)).not.toEqual(draws(0));
+        expect(draws(2 ** 53 - 1)).not.toEqual(draws(2 ** 32 - 1));
+        expect(() => new Rng(-1)).toThrow("non-negative safe integer");
+        expect(() => new Rng(1.5)).toThrow("non-negative safe integer");
+    });
+
     test("distinct seeds yield distinct sequences", () => {
         const a = new Rng(1);
         const b = new Rng(2);
