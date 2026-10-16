@@ -116,9 +116,14 @@ export async function stopOwnedTree(
     // Descendants keep being discovered while the root lives: a root-owned launcher still in
     // its privileged setup starts the user-owned command later, and that command is the target.
     const seen = new Map<number, Target>();
+    // Discovery walks the root only while the pinned identity still holds the pid, so a pid the
+    // kernel reused after the launcher exited is never adopted; the descendants already seen
+    // still receive the signal.
     const sweep = (name: NodeJS.Signals) => {
-        for (const pid of ownedProcesses(rootPid)) {
-            if (!seen.has(pid)) seen.set(pid, { pid, start: processStart(pid) });
+        if (alive(root)) {
+            for (const pid of ownedProcesses(rootPid)) {
+                if (!seen.has(pid)) seen.set(pid, { pid, start: processStart(pid) });
+            }
         }
         signal([...seen.values()], name);
     };

@@ -102,6 +102,17 @@ test.skipIf(!sandboxAvailable())(
     },
 );
 
+test("a pinned root whose pid now belongs to another process is left alone, with nothing walked under it", async () => {
+    const child = spawn("/bin/sh", ["-c", "sleep 300; true"], { stdio: "ignore" });
+    const pid = child.pid as number;
+    await Bun.sleep(50);
+    const stopping = stopOwnedTree(pid, 500, "1");
+    expect(await stopping).toBe(true);
+    expect(running(pid)).toBe(true);
+    child.kill("SIGKILL");
+    for (const grandchild of childrenByParent(pid)) process.kill(grandchild, "SIGKILL");
+});
+
 test("descendants are found by parent pid when the task children files are unavailable", async () => {
     const child = spawn("/bin/sh", ["-c", "sleep 300; true"], { stdio: "ignore" });
     const pid = child.pid as number;
