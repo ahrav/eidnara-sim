@@ -9,7 +9,7 @@ describe("bedrockEmbedder", () => {
         const fake = join(dir, "aws");
         writeFileSync(
             fake,
-            '#!/bin/sh\necho \'{"embedding":[1]}\' > "${@: -1}"\necho boom >&2\nexit 1\n',
+            '#!/bin/sh\nfor a; do out=$a; done\necho \'{"embedding":[1]}\' > "$out"\necho boom >&2\nexit 1\n',
         );
         chmodSync(fake, 0o755);
         const script = `
