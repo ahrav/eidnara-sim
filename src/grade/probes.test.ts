@@ -596,6 +596,44 @@ describe("grading harness", () => {
         }
     });
 
+    test("a guarded pipeline is skipped as a whole", () => {
+        const f = fixture("P6-pass");
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        const log = snap.artefacts.find((a) => a.class === "command-log" && a.role === "turn");
+        if (log?.class !== "command-log") throw new Error("fixture lacks command-log");
+        log.commands.push({ command: "false && echo x | cargo test", exit: 1, scenario_ms: 10 });
+        expect(gradeItem(f.probe, [snap], rules)?.metrics["P6.ran_tests"]).toBe(false);
+        log.commands.push({ command: "echo x | cargo test", exit: 0, scenario_ms: 20 });
+        expect(gradeItem(f.probe, [snap], rules)?.metrics["P6.ran_tests"]).toBe(true);
+    });
+
+    test("a grep pattern given by option leaves the file operand in place", () => {
+        const f = fixture("P6-pass");
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        const log = snap.artefacts.find((a) => a.class === "command-log" && a.role === "turn");
+        if (log?.class !== "command-log") throw new Error("fixture lacks command-log");
+        for (const cmd of [
+            "grep -efoo src/connection.rs",
+            "grep --regexp=foo src/connection.rs",
+            "grep -e foo src/connection.rs",
+            "rg -f patterns.txt src/connection.rs",
+        ]) {
+            log.commands.length = 1;
+            log.commands.push({ command: cmd, exit: 0, scenario_ms: 10 });
+            expect(gradeItem(f.probe, [snap], rules)?.metrics["P6.reread_files"]).toBe(1);
+        }
+    });
+
+    test("a P13 command rule matches at the start of the segment, not at an inner line", () => {
+        const f = fixture("P13-pass");
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        const log = snap.artefacts.find((a) => a.class === "command-log");
+        if (log?.class !== "command-log") throw new Error("fixture lacks command-log");
+        const commit = log.commands.find((c) => c.command.startsWith("git commit")) as Command;
+        commit.command = `printf 'note\n${commit.command}'`;
+        expect(gradeItem(f.probe, [snap], rules)?.metrics["P13.rule_kept"]).toBe(false);
+    });
+
     test("a check pattern that is empty after its prefix or fails to compile is refused", () => {
         const f = fixture("P1-fail");
         for (const bad of ["(?i)", "["]) {

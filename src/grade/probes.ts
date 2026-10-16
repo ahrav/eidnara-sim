@@ -222,22 +222,46 @@ function splitShell(command: string): { op: string; seg: string }[] {
 /** The exit code belongs to the last list of a command, so only an `&&` segment there is established by it. */
 const executed = (x: Command): string[] => {
     const parts = splitShell(x.command);
-    const lastList = parts.reduce((n, p, i) => (/^[;&\n]$/.test(p.op) ? i : n), 0);
-    const mixed = parts.slice(lastList).some((p) => p.op === "||");
-    return parts
+    let guard = ";";
+    const guarded = parts.map((p) => {
+        guard = p.op === "|" ? guard : p.op;
+        return { seg: p.seg, op: guard };
+    });
+    const lastList = guarded.reduce((n, p, i) => (/^[;&\n]$/.test(p.op) ? i : n), 0);
+    const mixed = guarded.slice(lastList).some((p) => p.op === "||");
+    return guarded
         .filter(
             (p, i) => p.op !== "||" && (p.op !== "&&" || (x.exit === 0 && i >= lastList && !mixed)),
         )
         .map((p) => p.seg);
 };
-/** A read segment's file operands: for grep and rg the first non-option word is the pattern, so it is dropped. */
+/**
+ * A read segment's file operands. For grep and rg the pattern is the first non-option word unless
+ * an option supplies it (`-e`, `--regexp`, `-f`, `--file`), in which case every positional word is a file.
+ */
 const operands = (segment: string): string => {
     const words = segment.split(/\s+/);
     if (!/^(grep|rg)$/.test(words[0] as string)) return segment;
-    const at = words.findIndex((w, i) => i > 0 && !w.startsWith("-"));
-    return at < 0 ? "" : [words[0], ...words.slice(at + 1)].join(" ");
+    const files: string[] = [];
+    let supplied = false;
+    for (let i = 1; i < words.length; i++) {
+        const w = words[i] as string;
+        if (/^(-e|-f|--regexp|--file)$/.test(w)) {
+            supplied = true;
+            i++;
+        } else if (/^(-e.|-f.|--regexp=|--file=)/.test(w)) supplied = true;
+        else if (!w.startsWith("-")) files.push(w);
+    }
+    if (!supplied) files.shift();
+    return [words[0], ...files].join(" ");
 };
 const anchored = (p: string) => (p.startsWith("(?i)") ? `(?i)^${p.slice(4)}` : `^${p}`);
+/** Match from the segment's first character; the `m` flag of `pattern` would let `^` match an inner line. */
+const startsWithAll = (seg: string, sources: string[]) =>
+    sources.every((src) => {
+        const re = pattern(src);
+        return new RegExp(re.source, re.flags.replace("m", "")).test(seg);
+    });
 const namesPath = (segment: string, path: string) =>
     new RegExp(`(^|[\\s'"=])(\\./)?${path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}($|[\\s'"])`).test(
         segment,
@@ -296,7 +320,7 @@ function p13(r: ArtefactReader, c: Check, rules: Rules): Outcome {
     const after = commands.filter((x) => x.scenario_ms >= boundary);
     const before = new Set(commands.filter((x) => x.scenario_ms < boundary).map((x) => x.command));
     const invoked = (patterns: string[]) => (x: Command) =>
-        executed(x).some((seg) => matchesAll(seg, patterns.map(anchored)));
+        executed(x).some((seg) => startsWithAll(seg, patterns.map(anchored)));
     const kept = c.commands_must
         ? after.some(invoked(c.commands_must))
         : matchesAll(changed(r), c.must ?? []);
