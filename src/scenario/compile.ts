@@ -3,6 +3,7 @@ import { type Distributions, table } from "../corpus/distributions";
 import { canonicalJson, sha256Hex } from "../prereg/canonical";
 import type { Preregistration } from "../prereg/schema";
 import { Rng } from "../rng";
+import { scheduleFaults, validateFault } from "./faults";
 import { bm25Ratio, cosine, type Embedder } from "./similarity";
 import { Tokens } from "./tokens";
 
@@ -592,6 +593,22 @@ export async function compileScenario(input: CompileInput) {
         }
     });
 
+    const summary = sessions.map(({ turn_ms, ...x }, i) => {
+        const prev = sessions[i - 1];
+        const gap_before_ms = prev ? x.start_ms - prev.start_ms - lastTurn(prev) : 0;
+        return { ...x, requests: turn_ms.length, gap_before_ms };
+    });
+    const faults = scheduleFaults(prereg.tier, summary, rngFor("faults"));
+    const turnCounts = new Map(summary.map((x) => [x.id, x.requests]));
+    for (const f of faults) validateFault(f, turnCounts);
+    const eligible = probes.filter((p) => ["P1", "P3", "P5"].includes(p.type));
+    const cf_deletions = prereg.arms.run.includes("eidnara-cf")
+        ? shuffle(eligible, rngFor("counterfactual"))
+              .slice(0, Math.round(0.2 * eligible.length))
+              .map((p) => ({ probe: p.id, fact: p.fact, before_event: p.event }))
+              .sort((a, b) => (a.probe < b.probe ? -1 : 1))
+        : [];
+
     const body = {
         schema: GENERATOR_VERSION,
         manifest: {
@@ -607,11 +624,13 @@ export async function compileScenario(input: CompileInput) {
             probes_per_type: perType,
         },
         projects: input.projects,
-        sessions: sessions.map(({ turn_ms, ...x }) => ({ ...x, requests: turn_ms.length })),
+        sessions: summary,
         facts,
         probes,
         similarity,
         events,
+        faults,
+        cf_deletions,
     };
     return { ...body, scenario_hash: sha256Hex(canonicalJson(body)) };
 }

@@ -16,6 +16,7 @@ import {
     type Scenario,
     type Template,
 } from "./compile";
+import { type FaultEpisode, SEAMS, validateFault } from "./faults";
 import { loadCompileInput } from "./inputs";
 import { type Embedder, hashEmbedder } from "./similarity";
 
@@ -340,4 +341,164 @@ describe("compile-time refusals", () => {
             }),
         ).rejects.toThrow(/delivered text carries markers lookup-/);
     });
+});
+
+const PROVIDER = [
+    "provider_429",
+    "provider_5xx",
+    "provider_timeout",
+    "truncated_length",
+    "truncated_no_length",
+    "empty_content",
+    "schema_wrong_tool_call",
+    "slow_stream",
+];
+const INFRA = [
+    "daemon_sigkill_mid_fold",
+    "daemon_restart",
+    "store_full",
+    "plugin_reload",
+    "model_switch",
+    "laptop_sleep",
+];
+const SPEC_FAULTS: Record<string, string[]> = {
+    S: ["provider_429"],
+    M: PROVIDER,
+    L: [...PROVIDER, ...INFRA],
+    XL: [...PROVIDER, ...INFRA, "host_upgrade", "two_hosts_one_daemon"],
+};
+const PARAMS: Record<string, Record<string, number>> = {
+    single: { count: 1 },
+    burst: { count: 3 },
+    intermittent: { probability: 0.3, calls: 10 },
+    persistent: {},
+};
+
+describe("fault schedule", () => {
+    const episode = (trigger: unknown): FaultEpisode =>
+        ({
+            id: "fault-x",
+            type: "provider_429",
+            strategy: "single",
+            trigger,
+            params: { count: 1 },
+            seam: SEAMS.provider_429,
+        }) as FaultEpisode;
+    const sessions = new Map([["s-0000", 4]]);
+
+    test("a fault keyed on an agent-produced count is refused", () => {
+        const agentCount = episode({ kind: "tool_call", session: "s-0000", n: 3 });
+        expect(() => validateFault(agentCount, sessions)).toThrow(/not a compiler-owned event/);
+    });
+
+    test("a fault past the last turn, on an unknown session, or with an altered seam is refused", () => {
+        const late = episode({ kind: "user_turn", session: "s-0000", n: 5 });
+        expect(() => validateFault(late, sessions)).toThrow(/outside the session's 4 turns/);
+        const zero = episode({ kind: "user_turn", session: "s-0000", n: 0 });
+        expect(() => validateFault(zero, sessions)).toThrow(/outside the session's 4 turns/);
+        const lost = episode({ kind: "session_start", session: "s-9999" });
+        expect(() => validateFault(lost, sessions)).toThrow(/unknown session/);
+        const good = episode({ kind: "session_start", session: "s-0000" });
+        const altered = { ...good, seam: { ...SEAMS.provider_429, oracle: "none" } };
+        expect(() => validateFault(altered, sessions)).toThrow(/seam entry missing or altered/);
+        const copied = JSON.parse(JSON.stringify(good)) as FaultEpisode;
+        expect(() => validateFault(copied, sessions)).not.toThrow();
+    });
+
+    test("every seam entry names its layer, outcomes, in-flight fate, surviving state, and oracle", () => {
+        expect(Object.keys(SEAMS).sort()).toEqual(
+            [...PROVIDER, ...INFRA, "host_upgrade", "two_hosts_one_daemon"].sort(),
+        );
+        for (const seam of Object.values(SEAMS)) {
+            expect(seam.legal_outcomes.length).toBeGreaterThan(0);
+            for (const field of [seam.in_flight_fate, seam.surviving_state, seam.oracle])
+                expect(field.length).toBeGreaterThan(5);
+        }
+        for (const t of PROVIDER) expect(SEAMS[t as keyof typeof SEAMS].layer).toBe("proxy-sink");
+    });
+
+    for (const tier of TIERS)
+        test(`tier ${tier} schedules the spec's fault types once each on compiler-owned events`, async () => {
+            const s = await compileScenario(loadCompileInput(1, tier, hashEmbedder, true));
+            expect(s.faults.map((f) => f.type as string)).toEqual(SPEC_FAULTS[tier] ?? []);
+            const sessions = new Map(s.sessions.map((x) => [x.id, x]));
+            const providerSessions = new Set<string>();
+            for (const f of s.faults) {
+                const session = sessions.get(f.trigger.session);
+                expect(session).toBeDefined();
+                if (PROVIDER.includes(f.type)) {
+                    expect(f.trigger.kind).toBe("user_turn");
+                    const n = f.trigger.kind === "user_turn" ? f.trigger.n : 0;
+                    expect(n >= 1 && n <= (session?.requests ?? 0)).toBe(true);
+                    expect(f.params).toEqual(PARAMS[f.strategy] ?? {});
+                    providerSessions.add(f.trigger.session);
+                } else if (f.type === "daemon_sigkill_mid_fold") {
+                    expect(f.trigger.kind).toBe("first_summarizer_call");
+                    expect(session?.forced_p90).toBe(true);
+                } else {
+                    expect(f.trigger.kind).toBe("session_start");
+                    expect(f.trigger.session).not.toBe(s.sessions[0]?.id);
+                }
+                if (f.type === "laptop_sleep")
+                    expect(f.params).toEqual({ duration_ms: session?.gap_before_ms ?? -1 });
+                if (f.type === "store_full")
+                    expect([f.strategy, f.params]).toEqual(["persistent", { sessions: 1 }]);
+            }
+            expect(providerSessions.size).toBe(
+                s.faults.filter((f) => PROVIDER.includes(f.type)).length,
+            );
+        }, 60_000);
+
+    test("the laptop sleep spans an event-free gap of its full duration", async () => {
+        const s = await compileScenario(loadCompileInput(301, "L", hashEmbedder, true));
+        const sleep = s.faults.find((f) => f.type === "laptop_sleep") as FaultEpisode;
+        const start = s.events.findIndex(
+            (e) => e.kind === "session_start" && e.session === sleep.trigger.session,
+        );
+        const before = s.events[start - 1] as unknown as { kind: string; scenario_ms: number };
+        expect(before.kind).toBe("session_end");
+        const at = s.events[start]?.scenario_ms as number;
+        expect(at - before.scenario_ms).toBe(sleep.params.duration_ms ?? -1);
+        expect(sleep.params.duration_ms ?? 0).toBeGreaterThan(0);
+    }, 60_000);
+
+    test("provider faults use every strategy across seeds", async () => {
+        const strategies = new Set<string>();
+        for (let seed = 0; seed < 6; seed++) {
+            const s = await compileScenario(loadCompileInput(seed, "M", hashEmbedder, true));
+            for (const f of s.faults) if (PROVIDER.includes(f.type)) strategies.add(f.strategy);
+        }
+        expect([...strategies].sort()).toEqual(["burst", "intermittent", "persistent", "single"]);
+    }, 60_000);
+});
+
+describe("counterfactual deletions", () => {
+    test("L deletes before a seeded 20% sample of distinct P1, P3, and P5 probes", async () => {
+        const [a, b] = await Promise.all(
+            [301, 302].map((seed) =>
+                compileScenario(loadCompileInput(seed, "L", hashEmbedder, true)),
+            ),
+        );
+        for (const l of [a, b]) {
+            const eligible = (l?.probes ?? []).filter((p) => ["P1", "P3", "P5"].includes(p.type));
+            const cf = l?.cf_deletions ?? [];
+            expect(cf).toHaveLength(Math.round(0.2 * eligible.length));
+            expect(new Set(cf.map((d) => d.probe)).size).toBe(cf.length);
+            expect(cf.map((d) => d.probe)).not.toEqual(
+                eligible.slice(0, cf.length).map((p) => p.id),
+            );
+            for (const d of cf) {
+                const probe = eligible.find((p) => p.id === d.probe);
+                expect(d.before_event as string).toBe(probe?.event as string);
+                expect(d.fact as string).toBe(probe?.fact as string);
+            }
+        }
+    }, 60_000);
+
+    test("tiers without the eidnara-cf arm schedule no deletions", async () => {
+        for (const tier of ["S", "M", "XL"] as const) {
+            const s = await compileScenario(loadCompileInput(2, tier, hashEmbedder, true));
+            expect(s.cf_deletions).toEqual([]);
+        }
+    }, 60_000);
 });

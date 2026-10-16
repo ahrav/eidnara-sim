@@ -21,11 +21,13 @@ The scenario file is canonical JSON with these sections:
 |---|---|
 | `manifest` | Seed, tier, generator and random-schema versions, the sha256 of `corpus/manifest.json`, the embedding model, the similarity thresholds, the gap scale factors, and the probe count per type |
 | `projects` | Each repository in `corpus/repos.json` and its twin |
-| `sessions` | Session id, project, start time, request count, the minimum idle gap before the session, and whether the request count was forced into the p90 regime |
+| `sessions` | Session id, project, start time, request count, the idle gap before the session, the minimum gap the compiler enforced, and whether the request count was forced into the p90 regime |
 | `facts` | Ledger facts with template, kind, project, conveyance manner, statement, and the cue texts that carry it |
 | `probes` | Probe items P1 to P14 and the P1 controls with project, session, user text, the grading check, and the event that delivers it |
 | `similarity` | BM25 ratio and embedding cosine for every cue and probe pair |
 | `events` | `apply_diff`, `session_start`, `user_turn`, and `session_end` events in scenario time |
+| `faults` | Fault episodes with type, strategy, trigger, parameters, and seam-table entry |
+| `cf_deletions` | Counterfactual deletions before 20% of the P1, P3, and P5 probes (L only) |
 | `scenario_hash` | sha256 of the canonical JSON of every other section |
 
 ## Sessions and time
@@ -112,7 +114,37 @@ The compiler throws, and writes nothing, when:
 - any user text or diff path or content matches the marker set: probe ids,
   the word probe, fact, template, or probe item ids, or grading words
   (SIM-P07);
-- a probe turn precedes any conveyance, update, or diff of its fact (SIM-P06).
+- a probe turn precedes any conveyance, update, or diff of its fact (SIM-P06);
+- `validateFault`, which the compiler runs on every scheduled episode,
+  refuses a trigger other than a session start, the Nth user turn of a
+  session, or the first summarizer call of a session; a trigger that names an
+  unknown session or a turn the session lacks; and an episode whose seam entry
+  differs from the seam table (SIM-P05).
+
+## Faults
+
+`src/scenario/faults.ts` holds the seam table: layer, legal outcomes,
+in-flight fate, surviving state, and observing oracle for each fault type. S
+schedules one provider 429 episode; M schedules every provider fault; L adds
+the infrastructure faults; XL adds the host upgrade and two hosts on one
+daemon. Each type gets one episode.
+
+| Layer | Trigger | Strategy |
+|---|---|---|
+| Proxy sink (provider faults) | The Nth user turn of a session with at least two turns; each provider episode gets its own session | single (1 call), burst (3 calls), intermittent (probability 0.3 over 10 calls), or persistent (to the end of the session) |
+| Scheduler, mid-fold SIGKILL | The first observed summarizer call of a forced p90 session (OQ-8, schedule half) | single |
+| Clock, laptop sleep | The start of the session after the widest idle gap | single, with `duration_ms` equal to that gap, so the jump holds no events (SIM-P18) |
+| Scheduler, every other type | The start of a session after the first | single; the store-full fault is persistent for that one session (`sessions: 1`) |
+
+## Counterfactual deletions
+
+When the tier runs the `eidnara-cf` arm (L), the compiler shuffles the P1,
+P3, and P5 probes with its own seeded stream and takes the first 20%, rounded.
+Each deletion names the probe, its fact, and the event the deletion precedes.
+The `eidnara-cf` arm carries every deletion of the scenario, so after its
+first deletion the arm's context differs from `eidnara`'s for more than one
+fact. How M9 attributes outcomes to single deletions (SIM-P72) is an open
+question for that milestone.
 
 ## Pre-registered seeds
 
@@ -121,15 +153,15 @@ thresholds (`bm25_max` 0.4, `cosine_max` 0.6):
 
 | Tier | Seed | `scenario_hash` | Largest BM25 ratio | Largest cosine |
 |---|---|---|---|---|
-| S | 101 | `20cd4c35` | 0.2125 | 0.5194 |
-| S | 102 | `f1a911f5` | 0.2628 | 0.4867 |
-| M | 201 | `a156470d` | 0.2516 | 0.4992 |
-| M | 202 | `8080b0b1` | 0.2551 | 0.4997 |
-| M | 203 | `c41ec309` | 0.2535 | 0.4843 |
-| L | 301 | `0cf7c49e` | 0.2558 | 0.5092 |
-| L | 302 | `a174678e` | 0.2535 | 0.4957 |
-| L | 303 | `60808da7` | 0.2514 | 0.5083 |
-| XL | 401 | `541899f4` | 0.2561 | 0.4962 |
+| S | 101 | `0f6f1315` | 0.2125 | 0.5194 |
+| S | 102 | `c934a700` | 0.2628 | 0.4867 |
+| M | 201 | `bf1633ad` | 0.2516 | 0.4992 |
+| M | 202 | `ae03ca00` | 0.2551 | 0.4997 |
+| M | 203 | `b2b7eae6` | 0.2535 | 0.4843 |
+| L | 301 | `23fb44dd` | 0.2558 | 0.5092 |
+| L | 302 | `583c6d6f` | 0.2535 | 0.4957 |
+| L | 303 | `417d577b` | 0.2514 | 0.5083 |
+| XL | 401 | `0d1475ba` | 0.2561 | 0.4962 |
 
 ## Known limits
 

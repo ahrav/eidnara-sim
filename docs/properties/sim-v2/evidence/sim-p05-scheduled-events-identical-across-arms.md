@@ -18,10 +18,13 @@ divergence.
 No harness code, test, or run exists yet. The surface lands in M2
 (#1026).
 
-M2 (#1026) compiles the event list into the scenario file once per seed, with
-no arm input, so every arm reads the same scheduled events. The fault and
-counterfactual deletion schedules join the same file in the second M2 unit, and
-the per-arm comparison lands with the scheduler in M4.
+M2 (#1026) compiles the event list, the fault schedule, and the counterfactual
+deletion schedule into the scenario file once per seed, with no arm input, so
+every arm reads the same schedule. Each fault keys on a compiler-owned event
+(session start, Nth user turn, first summarizer call of a session);
+`validateFault` refuses any other trigger, and a test shows the refusal. A test
+per tier checks that each scheduled fault keys on such an event and carries its
+seam entry. The per-arm comparison lands with the scheduler in M4.
 
 ## Failure scenario
 
