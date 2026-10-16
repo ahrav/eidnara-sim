@@ -105,6 +105,9 @@ export class PiRpcProcess {
 `,
     );
     writeFileSync(join(run, "sandbox.sh"), "#!/bin/sh\nexec sleep 300\n", { mode: 0o755 });
+    const cli = join(checkout, "node_modules/@earendil-works/pi-coding-agent/dist/cli.js");
+    mkdirSync(join(cli, ".."), { recursive: true });
+    writeFileSync(cli, "setInterval(() => {}, 1000);\n");
     return checkout;
 }
 

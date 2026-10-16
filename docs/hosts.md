@@ -14,7 +14,8 @@ is the checkout or lies beneath it, and reuses an existing clone only when
 its `.sim-build-source` names the same checkout. It refuses a symlink at `<clone>.lock`, holds the lock with `flock` for the whole build, so a second build of the same clone is
 refused. A first clone is made at `<clone>.partial` and renamed into place
 once it carries its source record, so an interrupted clone leaves only the
-partial tree, which the next build removes. `.sim-build-commit` holds
+partial tree, which the next build removes. A source that tracks either
+record path is refused, and each record is unlinked before it is written. `.sim-build-commit` holds
 the built commit from the end of one successful build until the next build
 starts, and preflight requires it to match the clone's `HEAD` and
 `daemon_binary` to be the clone's own
@@ -153,7 +154,8 @@ startup under libfaketime 0.9.10: in the first two-arm witness run
 (`witness-5`, 2026-10-16), the agent's `cargo test` sat in `rustc -vV` until
 Pi's 600 s tool timeout, and `LD_PRELOAD=libfaketime.so.1 rustc -vV` hangs
 outside the sandbox too. Each
-tool in `wall_clock_tools` (rustc, rustdoc) therefore runs through a wrapper
+tool in `wall_clock_tools` (rustc and rustdoc, the only accepted names)
+therefore runs through a wrapper
 in `<run>/toolbin` that drops the preload, and `RUSTC` and `RUSTDOC` point
 cargo at the wrappers, since rustup puts its own toolchain directory first on
 cargo's `PATH`. Those tools read wall-clock time, and preflight records that

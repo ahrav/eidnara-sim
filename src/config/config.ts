@@ -85,6 +85,14 @@ export function parseConfig(value: unknown): SimConfig {
     if (!Array.isArray(tools) || !tools.every((t) => typeof t === "string" && /^[\w-]+$/.test(t))) {
         throw new ConfigError("config.toolchain.wall_clock_tools: expected command names");
     }
+    // cargo is pointed only at rustc and rustdoc wrappers, and preflight probes both.
+    for (const tool of tools as string[]) {
+        if (!["rustc", "rustdoc"].includes(tool)) {
+            throw new ConfigError(
+                `config.toolchain.wall_clock_tools: ${tool} is not one of rustc, rustdoc`,
+            );
+        }
+    }
     const env = toolchain?.env;
     if (typeof env !== "object" || env === null || Array.isArray(env)) {
         throw new ConfigError("config.toolchain.env: missing");

@@ -32,6 +32,15 @@ if ! flock -n 9; then
     echo "eidnara-build: another build holds $dst_real.lock" >&2
     exit 75
 fi
+# The two records are the script's own files; a source that tracks either path could
+# make them symlinks, so such a source is refused and each record is unlinked before
+# it is written.
+refuse_reserved() {
+    if [ -n "$(git -C "$1" ls-files -- .sim-build-source .sim-build-commit)" ]; then
+        echo "eidnara-build: $src tracks the reserved .sim-build-source or .sim-build-commit" >&2
+        exit 65
+    fi
+}
 # .sim-build-source names the checkout this clone was made from, so the forced
 # checkout and clean below only ever touch a clone this script created.
 if [ -d "$dst/.git" ]; then
@@ -44,6 +53,8 @@ else
     # source record, so an interrupted clone leaves only the partial tree the next build removes.
     rm -rf "$dst.partial"
     git clone --quiet --no-hardlinks "$src" "$dst.partial"
+    refuse_reserved "$dst.partial"
+    rm -f "$dst.partial/.sim-build-source"
     printf '%s\n' "$src_real" > "$dst.partial/.sim-build-source"
     mv -T "$dst.partial" "$dst"
 fi
@@ -54,6 +65,7 @@ git -C "$dst" fetch --quiet "$src" HEAD
 # The clone is the harness's own build tree: edits and stray files from an earlier build go,
 # while ignored outputs (node_modules, target, dist) stay for the incremental build.
 git -C "$dst" checkout --quiet --force --detach FETCH_HEAD
+refuse_reserved "$dst"
 git -C "$dst" clean --quiet --force -d --exclude=.sim-build-source
 cd "$dst"
 bun install --frozen-lockfile
@@ -62,4 +74,5 @@ bun install --frozen-lockfile
 (cd packages/opencode-plugin && bun run build)
 cargo build --locked --release -p daemon --example direct_host_fixture --bin eidnara-host \
     --features direct-host-fixture
+rm -f "$dst/.sim-build-commit"
 git -C "$dst" rev-parse HEAD | tee "$dst/.sim-build-commit"

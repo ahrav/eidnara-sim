@@ -17,6 +17,7 @@ import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import type { SimConfig } from "../config/config";
 import { withDeadline } from "../run/deadline";
 import { launch, plainPath, shellQuote } from "../run/launcher";
+import { piCli } from "../run/preflight";
 import { parentPid, processStart, stopOwnedTree } from "../run/procs";
 import { FAKETIME_LIB, faketimeEnv } from "../run/timeinject";
 import { sandboxPath, toolbinDir, toolchainEnv } from "../run/toolchain";
@@ -312,10 +313,7 @@ export class PiSimHost extends SimHost {
         const { config } = this.ctx;
         const rpcClient = await v1(config, "packages/e2e-tests/src/pi-runner/rpc-client.ts");
         this.writeConfigs(connection);
-        const cli = join(
-            config.pi_install,
-            "node_modules/@earendil-works/pi-coding-agent/dist/cli.js",
-        );
+        const cli = piCli(config);
         const args = [cli, "--mode", "rpc", "--session-id", `sim-${session}`];
         args.push("--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes");
         if (connection)

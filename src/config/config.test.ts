@@ -100,3 +100,11 @@ test("toolchain env accepts only the cache and home variables the hosts support"
     );
     expect(() => parseConfig(env({ CARGO_HOME: "/c" }))).not.toThrow();
 });
+
+test("wall-clock tools are limited to the wrappers cargo is pointed at and preflight probes", () => {
+    const base = loadConfig() as any;
+    const toolchain = { ...base.toolchain, wall_clock_tools: ["rustc", "clang"] };
+    expect(() => parseConfig({ ...base, toolchain })).toThrow(
+        "config.toolchain.wall_clock_tools: clang is not one of rustc, rustdoc",
+    );
+});
