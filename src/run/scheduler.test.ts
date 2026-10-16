@@ -21,7 +21,6 @@ import {
     type Entry,
     Journal,
     leaseHost,
-    pidNamespace,
     readJournal,
     releaseLease,
     takeLease,
