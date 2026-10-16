@@ -7,6 +7,7 @@ import { GradeRefused, type Snapshot } from "./artefacts";
 import {
     BlindingRefused,
     blind,
+    CALIBRATION_SCHEMA,
     type CalibrationSet,
     calibrationDigest,
     gradeP7,
@@ -50,7 +51,7 @@ const calibration = (pairs = 25, human = 20): CalibrationSet => {
         Array.from({ length: pairs }, (_, i) => [`p${i}`, "a" as const]),
     );
     return {
-        schema: "eval-judge/v1",
+        schema: CALIBRATION_SCHEMA,
         judge: judgeIdentity(rules.judge.model),
         labels,
         human: Object.keys(labels).slice(0, human),
@@ -209,7 +210,7 @@ describe("P7 judge path", () => {
         expect(calibrationDigest(null, rules)).toBeNull();
         expect(() => calibrationDigest(calibration(25, 19), rules)).toThrow("needs 20");
         expect(() => calibrationDigest(calibration(19, 19), rules)).toThrow("19 pairs");
-        const other = { ...calibration(), schema: "eval-judge/v0" } as unknown as CalibrationSet;
+        const other = { ...calibration(), schema: "eval-judge/v1" } as unknown as CalibrationSet;
         expect(() => calibrationDigest(other, rules)).toThrow("calibration schema");
         expect(() =>
             calibrationDigest({ ...calibration(), human: ["nope", ...calibration().human] }, rules),
@@ -336,6 +337,39 @@ describe("P7 judge path", () => {
             rules,
         );
         expect(grades.map((g) => g.later_attempts_logged)).toEqual([2, 0]);
+    });
+
+    test("a judgment from a judge other than the pre-registered one stays out of gates", async () => {
+        const f = load("P7-pass");
+        const other = scripted(f.judge_verdicts);
+        other.identity = judgeIdentity("global.meta.llama-4-maverick");
+        const judgment = await judgePair(other, f.pair, f.probe.check.judge, []);
+        const matching = { ...calibration(), judge: other.identity };
+        const [g] = gradeP7(judgment, context(f.probe.id, { calibration: matching }), rules);
+        expect(g?.metrics.gate_eligible).toBe(false);
+        expect(String(g?.metrics.calibration)).toContain("refused: judgment judge");
+    });
+
+    test("calibration labels decoded as an array are refused", () => {
+        const arrayed = {
+            ...calibration(),
+            labels: Array.from({ length: 25 }, () => "a"),
+            human: Array.from({ length: 20 }, (_, i) => String(i)),
+        } as unknown as CalibrationSet;
+        expect(() => calibrationDigest(arrayed, rules)).toThrow(GradeRefused);
+    });
+
+    test("an arm name or canary split by emphasis marks is caught after normalisation", () => {
+        const base = { id: "p", a: "fine", b: "fine" };
+        expect(() => blind({ ...base, b: "Ei**dnara found it" }, "a_then_b", "r", [])).toThrow(
+            "names an arm",
+        );
+        expect(() => blind({ ...base, b: "the `host`**arm**" }, "a_then_b", "r", [])).toThrow(
+            "names an arm",
+        );
+        expect(() =>
+            blind({ ...base, a: "uses CAN**ARY-7f3 here" }, "a_then_b", "r", ["CANARY-7f3"]),
+        ).toThrow(BlindingRefused);
     });
 
     test("the human-check sample is ten percent of P7 items, rounded up, from a seeded draw", () => {

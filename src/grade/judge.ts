@@ -68,9 +68,13 @@ export function blind(
     canaries: string[],
 ): BlindedPrompt {
     for (const text of [pair.a, pair.b]) {
-        const folds = [text, text.replace(INVISIBLE, " ")].map(foldWords);
+        const variants = [text, normalise(text)].flatMap((t) => [t, t.replace(INVISIBLE, " ")]);
+        const folds = variants.map(foldWords);
         const canary = canaries.find(
-            (c) => c !== "" && (text.includes(c) || folds.some((f) => f.includes(foldWords(c)))),
+            (c) =>
+                c !== "" &&
+                (variants.some((v) => v.includes(c)) ||
+                    folds.some((f) => f.includes(foldWords(c)))),
         );
         if (canary) throw new BlindingRefused(`pair ${pair.id} carries canary ${canary}`);
         const token = ARM_TOKENS.find((t) => folds.some((f) => f.includes(` ${t} `)));
@@ -210,8 +214,10 @@ export function permutationCheck(trials: number, correct: number, rules: Rules):
     }
 }
 
+export const CALIBRATION_SCHEMA = "sim-judge-calibration/v1";
+
 export interface CalibrationSet {
-    schema: "eval-judge/v1";
+    schema: typeof CALIBRATION_SCHEMA;
     judge: JudgeIdentity;
     labels: Record<string, "a" | "b" | "both" | "neither">;
     human: string[];
@@ -219,10 +225,15 @@ export interface CalibrationSet {
 
 export function calibrationDigest(set: CalibrationSet | null, rules: Rules): string | null {
     if (!set) return null;
+    if (set.schema !== CALIBRATION_SCHEMA)
+        throw new GradeRefused(`calibration schema ${set.schema}`);
+    if (typeof set.labels !== "object" || set.labels === null || Array.isArray(set.labels)) {
+        throw new GradeRefused("calibration labels are not an object keyed by pair id");
+    }
+    if (!Array.isArray(set.human)) throw new GradeRefused("calibration human ids are not a list");
     const pairs = Object.keys(set.labels).length;
     const { calibration_min_pairs: min, human_sample_percent: percent } = rules.judge;
     const floor = Math.max(Math.ceil((pairs * percent) / 100), min);
-    if (set.schema !== "eval-judge/v1") throw new GradeRefused(`calibration schema ${set.schema}`);
     if (pairs < min) throw new GradeRefused(`calibration has ${pairs} pairs; needs ${min}`);
     if (set.human.length < floor || set.human.length > pairs) {
         throw new GradeRefused(`calibration has ${set.human.length} human labels; needs ${floor}`);
@@ -240,7 +251,7 @@ export function calibrationDigest(set: CalibrationSet | null, rules: Rules): str
     if (set.human.some((id) => !Object.hasOwn(set.labels, id))) {
         throw new GradeRefused("a human label names no calibration pair");
     }
-    return sha(`eval-judge-calibration/v1\n${canonicalJson(set)}`);
+    return sha(`${CALIBRATION_SCHEMA}\n${canonicalJson(set)}`);
 }
 
 export interface P7Inputs {
@@ -290,10 +301,18 @@ export function gradeP7(j: Judgment, c: P7Context, rules: Rules, version = 1): G
     let digest: string | null = null;
     let calibration = "none";
     try {
-        if (c.calibration && canonicalJson(c.calibration.judge) !== canonicalJson(j.judge)) {
-            throw new GradeRefused(
-                `calibration judge ${c.calibration.judge.model} differs from ${j.judge.model}`,
-            );
+        if (c.calibration) {
+            const expected = canonicalJson(judgeIdentity(rules.judge.model));
+            for (const [source, identity] of [
+                ["judgment", j.judge],
+                ["calibration", c.calibration.judge],
+            ] as const) {
+                if (canonicalJson(identity) !== expected) {
+                    throw new GradeRefused(
+                        `${source} judge ${identity.model} is not the pre-registered judge ${rules.judge.model}`,
+                    );
+                }
+            }
         }
         digest = calibrationDigest(c.calibration, rules);
         if (digest) calibration = "valid";

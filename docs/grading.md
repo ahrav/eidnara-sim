@@ -110,18 +110,25 @@ cannot call, and the divergences are listed below.
    and `longer_recalled_alone`, the calibration digest, and the permutation
    check's result and counts. It computes the digest and runs the check
    itself and records a refusal of either as `refused: <reason>`, so
-   `gate_eligible` is true only for a calibration set that validates under
-   the judgment's own judge identity and a permutation check that passes.
+   `gate_eligible` is true only when the judgment's judge identity and the
+   calibration set's judge identity both equal the pre-registered judge's
+   (`grading.judge.model` with the current prompt and rubric digests), the
+   set validates, and the permutation check passes.
 6. `permutationCheck` refuses counts that are not whole numbers and arm
    identification above the pre-registered 60% ceiling, correct or inverted.
 7. `calibrationDigest` validates a calibration set: at least 20 pairs, and a
    human sample of at least 10% rounded up and never below 20 pairs. Only a
    set that passes gets a digest; a blank pair id, a human label naming no
    pair or naming one twice, a label other than `a`, `b`, `both`, or
-   `neither`, and another schema are refused. The set holds the judge identity,
-   a label per pair, and the ids of the human-labelled pairs; eval-core's
-   `CalibrationSet` holds human labels alone and takes the human floor from
-   the campaign's `SamplingPlan`, which the sim does not have yet. The maintainer's 20 labelled anchor pairs
+   `neither`, labels that are not an object keyed by pair id, and another
+   schema are refused. The set holds the judge identity,
+   a label per pair, and the ids of the human-labelled pairs under the sim's
+   own schema literal, `sim-judge-calibration/v1`, which also prefixes the
+   digest; eval-core's
+   `CalibrationSet` (`eval-judge/v1`) holds human labels alone and takes the
+   human floor from the campaign's `SamplingPlan`, which the sim does not
+   have yet, and `docs/eval-core-mapping.md` names the fields `eval-judge/v2`
+   would carry. The maintainer's 20 labelled anchor pairs
    do not exist yet, so P7 grades carry `calibration_digest: none` and stay
    out of gates.
 8. `humanCheckSample` draws the 10% of P7 items, rounded up, to journal as
