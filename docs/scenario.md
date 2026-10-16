@@ -84,7 +84,7 @@ the earlier one and supersedes it.
 | P10 | anchor | Later, unrelated task; the value must not appear |
 | P11 | the P1 fact | A session of the twin project after the conveyance; the check forbids the convention |
 | P12 | tool error | A real error from `corpus/tool-outputs/error-codes.jsonl`; the check requires the exception name |
-| P13 | session rule | Conveyed in the first third of a turn range in a forced p90 session and probed in its last third; each P13 item has its own range of at least 30 turns, so at least 11 turns separate cue and probe, and `check.turns` gives the turn after the cue and the range's past-the-end turn index, so only folds after the cue count |
+| P13 | session rule | Conveyed in the first third of a turn range in a forced p90 session and probed in its last third; each P13 item has its own range of at least 30 turns, so at least 11 turns separate cue and probe, and `check.turns` gives the turn after the cue and the turn after the probe, so the range holds exactly the folds the probe turn's snapshot can carry |
 | P14 | none | The last third of a forced p90 session, measured from user-sim labels |
 
 Conveyance manners follow the fixed weights 35/20/15/10/10/10 for correction,
@@ -155,15 +155,15 @@ thresholds (`bm25_max` 0.4, `cosine_max` 0.6):
 
 | Tier | Seed | `scenario_hash` | Largest BM25 ratio | Largest cosine |
 |---|---|---|---|---|
-| S | 101 | `d703b057` | 0.2125 | 0.5194 |
-| S | 102 | `ba096f40` | 0.2628 | 0.4867 |
-| M | 201 | `9d10a6e7` | 0.2516 | 0.4992 |
-| M | 202 | `2584d9e9` | 0.2551 | 0.4997 |
-| M | 203 | `d1fb46e8` | 0.2535 | 0.4843 |
-| L | 301 | `efefa83a` | 0.2558 | 0.5092 |
-| L | 302 | `930435fa` | 0.2535 | 0.4957 |
-| L | 303 | `92e7c482` | 0.2514 | 0.5083 |
-| XL | 401 | `ec4e8a5c` | 0.2561 | 0.4962 |
+| S | 101 | `754baee2` | 0.2125 | 0.5194 |
+| S | 102 | `2ce34ca6` | 0.2628 | 0.4867 |
+| M | 201 | `970894b6` | 0.2516 | 0.4992 |
+| M | 202 | `0166034d` | 0.2551 | 0.4997 |
+| M | 203 | `2a930c40` | 0.2535 | 0.4843 |
+| L | 301 | `7314dfd1` | 0.2558 | 0.5092 |
+| L | 302 | `61cd75a7` | 0.2535 | 0.4957 |
+| L | 303 | `8e134b38` | 0.2514 | 0.5083 |
+| XL | 401 | `ef4c1c73` | 0.2561 | 0.4962 |
 
 ## Known limits
 

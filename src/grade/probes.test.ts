@@ -638,6 +638,30 @@ describe("grading harness", () => {
         expect(() => gradeItem(f.probe, [first, first], rules)).toThrow("snapshot s-P8-a twice");
     });
 
+    test("a P13 fold without a turn index refuses the grade", () => {
+        const f = fixture("P13-pass");
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        const calls = snap.artefacts.find((a) => a.class === "proxy-call");
+        if (calls?.class !== "proxy-call") throw new Error("fixture lacks proxy-call");
+        const fold = calls.calls.find((c) => c.component === "history_summarizer") as CallView;
+        calls.calls.push({
+            ...fold,
+            seq: fold.seq + 1,
+            turn_index: undefined,
+            output_tokens: 19000,
+        });
+        expect(() => gradeItem(f.probe, [snap], rules)).toThrow("fold call without a turn index");
+    });
+
+    test("a # inside a word is not a comment", () => {
+        const f = fixture("P6-pass");
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        const log = snap.artefacts.find((a) => a.class === "command-log" && a.role === "turn");
+        if (log?.class !== "command-log") throw new Error("fixture lacks command-log");
+        log.commands.push({ command: "echo foo#bar && cargo test", exit: 0, scenario_ms: 10 });
+        expect(gradeItem(f.probe, [snap], rules)?.metrics["P6.ran_tests"]).toBe(true);
+    });
+
     test("proxy calls must carry strictly increasing sequence numbers", () => {
         const f = fixture("P8-pass");
         const snap = structuredClone(f.snapshots[0]) as Snapshot;

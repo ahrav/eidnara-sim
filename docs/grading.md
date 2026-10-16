@@ -65,7 +65,7 @@ the complete earlier grades stay readable.
 | P10 | Neither the added lines nor the answer carry the anchor value, compared case-insensitively | `P10.harm` |
 | P11 | No added line carries the other project's rule | `P11.harm` (binary); `P11.weighted_score` is +1 for a hit and minus `p11_false_positive_weight` (−2) for an injection, so summed over items an injection costs twice a hit (SIM-P50) |
 | P12 | The added lines name the exception from the replayed error | |
-| P13 | Score 1, over the completed folds whose call falls in the item's `check.turns` range: after the first of them, the session rule still holds (a `commands_must` pattern, `(?i)` prefix kept, matches from the start of an executed shell segment); every fold call's output-to-input token ratio, summarizer or native compaction, is within `p13_reduction_ratio` (0.02 to 0.5), a fold with no input tokens recorded failing this part; and no command from before the fold repeats after it, builds, tests in any package-script form, installs, status reads, and listings aside, where a compound command counts as a repeat | `P13.fold_fidelity_score` is the share of the three parts that hold, `P13.folds` the folds in range; with none the item is excluded |
+| P13 | Score 1, over the completed folds whose call falls in the item's `check.turns` range (a fold call without a turn index refuses the grade): after the first of them, the session rule still holds (a `commands_must` pattern, `(?i)` prefix kept, matches from the start of an executed shell segment); every fold call's output-to-input token ratio, summarizer or native compaction, is within `p13_reduction_ratio` (0.02 to 0.5), a fold with no input tokens recorded failing this part; and no command from before the fold repeats after it, builds, tests in any package-script form, installs, status reads, and listings aside, where a compound command counts as a repeat | `P13.fold_fidelity_score` is the share of the three parts that hold, `P13.folds` the folds in range; with none the item is excluded |
 | P14 | No completed user-sim `pushback` call sequenced after the first completed fold with a turn index at or after `window_from_turn` | `P14.post_compaction_correction_count`; an item is excluded with no compaction, when any completed user-sim call lacks its label or turn index, when a label is outside `task`, `pushback`, `interrupt`, `redirect`, `abandon`, `clarify`, `paste` (SIM-P25), or when no completed user-sim call falls after the fold inside the window; two completed user-sim calls for one turn index refuse the grade |
 
 A fold is a `history_summarizer` or `native_compaction` call with a 2xx
@@ -75,7 +75,7 @@ Check patterns match line by line against the diff's changed paths followed
 by its added lines, so `^` anchors each line and a pattern can name a file
 as well as its content. Added lines are the `+` lines inside hunks, told
 apart from `+++` headers by position, so a source line that begins with `++`
-is graded content. Shell segments split on operators outside quotes, comments, and heredoc
+is graded content. Shell segments split on operators outside quotes, word-initial `#` comments, and heredoc
 bodies (terminators match exactly, `<<-` strips leading tabs), so quoted,
 commented, and heredoc text stays out of the executed commands; a segment counts as executed when it is unconditional,
 or follows `&&` in the command's last list when that list has no `||` and

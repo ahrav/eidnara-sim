@@ -161,7 +161,7 @@ describe("compiled S scenario", async () => {
             const probe = all.find((t) => t.probe === p.id) as TurnEvent;
             const [lo, hi] = (p.check as { turns: [number, number] }).turns;
             expect(lo).toBeGreaterThan(cue.index);
-            expect(hi).toBeGreaterThan(probe.index);
+            expect(hi).toBe(probe.index + 1);
         }
     });
 

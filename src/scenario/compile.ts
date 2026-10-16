@@ -454,13 +454,12 @@ export async function compileScenario(input: CompileInput) {
             addProbe("P2", project.id, outText, mustNot, fromConveyed);
             addProbe("P11", twinOf(project.id), probeText, mustNot, later(twinOf(project.id)));
         } else if (host) {
-            const ranged = {
-                ...(check as Record<string, unknown>),
-                turns: [conveyed.index + 1, turnHi],
-            };
-            addProbe("P13", project.id, probeText, ranged, [host], () =>
+            const turns: [number, number] = [conveyed.index + 1, turnHi];
+            const ranged = { ...(check as Record<string, unknown>), turns };
+            const placed = addProbe("P13", project.id, probeText, ranged, [host], () =>
                 range(turnHi - third, turnHi),
             );
+            turns[1] = placed.index + 1;
         } else if (f.type === "P4") {
             const out = slot % 2 === 1;
             const scoped = out ? renderDeep(tpl.out_check ?? tpl.check, vars) : check;

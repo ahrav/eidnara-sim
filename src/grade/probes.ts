@@ -161,7 +161,7 @@ function splitShell(command: string): { op: string; seg: string }[] {
             }
             continue;
         }
-        if (!quote && ch === "#" && /^|[\s;&|(]$/.test(seg.slice(-1))) {
+        if (!quote && ch === "#" && (seg.length === 0 || /[\s;&|(]$/.test(seg))) {
             const end = command.indexOf("\n", i);
             i = end < 0 ? command.length : end - 1;
             continue;
@@ -218,9 +218,11 @@ function foldsIn(r: ArtefactReader, turns?: [number, number]): CallView[] {
     const folds = r.calls().filter((c) => FOLDS.includes(c.component) && completed(c));
     if (!turns) return folds;
     const [lo, hi] = turns;
-    return folds.filter(
-        (c) => c.turn_index !== undefined && c.turn_index >= lo && c.turn_index < hi,
-    );
+    const unindexed = folds.find((c) => c.turn_index === undefined);
+    if (unindexed) {
+        throw new GradeRefused(`fold call without a turn index at seq ${unindexed.seq}`);
+    }
+    return folds.filter((c) => (c.turn_index as number) >= lo && (c.turn_index as number) < hi);
 }
 
 function p4(r: ArtefactReader, c: Check): Outcome {
