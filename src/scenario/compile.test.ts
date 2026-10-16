@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { appendFileSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { table } from "../corpus/distributions";
 import { canonicalJson, sha256Hex } from "../prereg/canonical";
 import { TIERS } from "../prereg/schema";
@@ -16,7 +16,7 @@ import {
     type Scenario,
     type Template,
 } from "./compile";
-import { loadCompileInput } from "./inputs";
+import { CONSUMED_FILES, loadCompileInput, verifyCorpus } from "./inputs";
 import { type Embedder, hashEmbedder } from "./similarity";
 
 const ROOT = join(import.meta.dir, "..", "..");
@@ -382,6 +382,30 @@ describe("corpus identity", () => {
     });
 });
 
+describe("fact bank checks", () => {
+    const bank = inputS(101).bank;
+    const templates = (kind: string) =>
+        Object.values(bank).flatMap((k) =>
+            (typeof k === "object" ? ((k[kind] ?? []) as (Template | string)[]) : []).filter(
+                (t): t is Template => typeof t === "object",
+            ),
+        );
+
+    test("a filename convention is graded on changed paths, not added lines", () => {
+        const t = templates("constraint").find((x) => x.id === "ts-test-name");
+        expect(Object.keys(t?.check ?? {})).toEqual(["paths_must"]);
+    });
+
+    test("every anchor forbids its value in the diff and in the final answer", () => {
+        for (const t of templates("anchor")) {
+            expect({ id: t.id, keys: Object.keys(t.check).sort() }).toEqual({
+                id: t.id,
+                keys: ["answer_must_not", "must_not"],
+            });
+        }
+    });
+});
+
 describe("compile-time refusals", () => {
     const withInput = (edit: (bank: Bank) => void, embedder: Embedder = hashEmbedder) => {
         const input = loadCompileInput(101, "S", embedder, true);
@@ -487,5 +511,18 @@ describe("between-session gaps", () => {
         expect(gaps.filter((g) => g <= 1).length).toBeLessThan(0.05 * gaps.length);
         const sorted = [...gaps].sort((a, b) => a - b);
         expect(sorted[Math.floor(sorted.length / 2)] ?? 0).toBeGreaterThan(1_000);
+    });
+});
+
+describe("corpus verification", () => {
+    test("a consumed corpus file whose bytes differ from the manifest digest is refused", () => {
+        const dir = mkdtempSync(join(tmpdir(), "sim-corpus-"));
+        for (const path of ["manifest.json", ...CONSUMED_FILES]) {
+            mkdirSync(join(dir, dirname(path)), { recursive: true });
+            copyFileSync(join(ROOT, "corpus", path), join(dir, path));
+        }
+        expect(() => verifyCorpus(dir)).not.toThrow();
+        appendFileSync(join(dir, "fact-bank.json"), "\n");
+        expect(() => verifyCorpus(dir)).toThrow(/corpus\/fact-bank\.json: sha256 .* differs/);
     });
 });
