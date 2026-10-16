@@ -304,7 +304,11 @@ describe("Journal and lease", () => {
         const mine = takeLease(d);
         releaseLease(d, mine);
         expect(typeof mine.boot).toBe("string");
-        const stale = { ...mine, boot: "an-earlier-boot", released: undefined };
+        const stale = {
+            ...mine,
+            boot: "00000000-0000-4000-8000-000000000000",
+            released: undefined,
+        };
         writeFileSync(join(d, "lease.0.json"), JSON.stringify(stale));
         const retaken = takeLease(d);
         expect(retaken.pid).toBe(process.pid);
@@ -519,6 +523,28 @@ describe("Journal and lease", () => {
         expect(j.entries).toHaveLength(1);
         j.close();
         expect(readFileSync(path).equals(good)).toBe(true);
+    });
+
+    test("a lease with a fractional start tick or a malformed boot id is malformed", () => {
+        const d = dir();
+        const base = { pid: process.pid, host: leaseHost(), started_wall_ms: 0 };
+        writeFileSync(join(d, "lease.0.json"), JSON.stringify({ ...base, started_ticks: 1.5 }));
+        expect(() => takeLease(d)).toThrow(/malformed/);
+        writeFileSync(join(d, "lease.0.json"), JSON.stringify({ ...base, boot: "" }));
+        expect(() => takeLease(d)).toThrow(/malformed/);
+    });
+
+    test("releaseLease ignores a damaged lower generation and releases the holder", () => {
+        const d = dir();
+        writeFileSync(join(d, "lease.0.json"), "garbage");
+        writeFileSync(
+            join(d, "lease.1.json"),
+            JSON.stringify({ pid: 1, host: "x", started_wall_ms: 0, released: true }),
+        );
+        const mine = takeLease(d);
+        writeFileSync(join(d, "lease.0.json"), "garbage");
+        releaseLease(d, mine);
+        expect(JSON.parse(readFileSync(join(d, "lease.2.json"), "utf8")).released).toBe(true);
     });
 
     test("a lease file whose number is outside the safe integer range refuses the directory", () => {
@@ -1284,6 +1310,76 @@ describe("Scheduler", () => {
         invariants(resumed.entries);
         const kinds = resumed.entries.map((e) => e.kind);
         expect(kinds.indexOf("RegisterJob")).toBeLessThan(kinds.indexOf("AdvanceClock"));
+    });
+
+    test("a resume restores the open session so a late summarizer observation still fires its kill", async () => {
+        const path = join(dir(), "j.jsonl");
+        const kill = episode("k", "daemon_sigkill_mid_fold", {
+            kind: "first_summarizer_call",
+            session: "s-0000",
+        });
+        const j = new Journal(path);
+        j.append({
+            kind: "StartRun",
+            arm: null,
+            scenario_ms: 0,
+            order: ["a"],
+            scenario: scenarioId(fixtureEvents(2), [kill]),
+        });
+        j.append({ kind: "StartArm", arm: "a", scenario_ms: 0 });
+        j.append({ kind: "Event", arm: "a", scenario_ms: 0, event: "e-000000", outcome: "ok" });
+        j.append({ kind: "BeginTurn", arm: "a", scenario_ms: 0, event: "e-000001" });
+        j.append({ kind: "EndTurn", arm: "a", scenario_ms: 10, event: "e-000001", outcome: "ok" });
+        j.close();
+        const inner = fakeDriver([]);
+        const driver: ArmDriver = {
+            ...inner,
+            bind: (h) => {
+                inner.bind(h);
+                setTimeout(() => h.observe("history_summarizer"), 10);
+            },
+        };
+        const resumed = new Journal(path);
+        await new Scheduler({
+            events: fixtureEvents(2),
+            faults: [kill],
+            journal: resumed,
+            settleMs: 50,
+            order: ["a"],
+            drivers: { a: driver },
+        }).run();
+        expect(resumed.entries.map((e) => e.kind)).toContain("FaultFired");
+    });
+
+    test("a recovered turn's Event is journaled after its settle window, so a kill inside the window keeps the window", async () => {
+        const path = join(dir(), "j.jsonl");
+        const j = new Journal(path);
+        j.append({
+            kind: "StartRun",
+            arm: null,
+            scenario_ms: 0,
+            order: ["a"],
+            scenario: scenarioId(fixtureEvents(2), []),
+        });
+        j.append({ kind: "StartArm", arm: "a", scenario_ms: 0 });
+        j.append({ kind: "Event", arm: "a", scenario_ms: 0, event: "e-000000", outcome: "ok" });
+        j.append({ kind: "BeginTurn", arm: "a", scenario_ms: 0, event: "e-000001" });
+        j.append({ kind: "EndTurn", arm: "a", scenario_ms: 10, event: "e-000001", outcome: "ok" });
+        j.close();
+        const resumed = new Journal(path);
+        const run = new Scheduler({
+            events: fixtureEvents(2),
+            faults: [],
+            journal: resumed,
+            settleMs: 200,
+            order: ["a"],
+            drivers: { a: fakeDriver([]) },
+        }).run();
+        await Bun.sleep(60);
+        expect(resumed.entries.filter((e) => e.kind === "Event").map((e) => e.event)).toEqual([
+            "e-000000",
+        ]);
+        await run;
     });
 
     test("a journal with EndRun whose arm has orphan markers and no events is refused", async () => {

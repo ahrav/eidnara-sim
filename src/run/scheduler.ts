@@ -136,13 +136,18 @@ export class Scheduler {
             this.clock = new Clock(mine.at(-1)?.scenario_ms ?? 0, this.o.journal);
             const driver = this.o.drivers[arm] as ArmDriver;
             try {
+                this.session = this.openSession(mine);
                 driver.bind(this.handle(++this.generation, driver));
                 if (!mine.some((e) => e.kind === "StartArm")) {
-                    await driver.reset();
+                    await this.untilFatal(driver.reset());
                     this.log({ kind: "StartArm" });
                 }
                 this.o.proxy?.reset();
-                if (this.resume(mine)) await Bun.sleep(this.o.settleMs ?? 1_000);
+                const answered = this.resume(mine);
+                if (answered.length > 0) await Bun.sleep(this.o.settleMs ?? 1_000);
+                for (const e of answered) {
+                    this.log({ kind: "Event", event: e.event, outcome: e.outcome });
+                }
                 const done = new Set(
                     this.o.journal.entries
                         .filter((e) => e.arm === arm && e.kind === "Event")
@@ -184,12 +189,12 @@ export class Scheduler {
      * recorded, so a call the dead daemon never answers cannot hold the run.
      */
     private untilFatal<T>(call: Promise<T>): Promise<T> {
+        call.catch(() => undefined);
         if (this.fatal) return Promise.reject(this.fatal);
         this.failed ??= new Promise<never>((_, reject) => {
             this.fail = reject;
         });
         this.failed.catch(() => undefined);
-        call.catch(() => undefined);
         return Promise.race([call, this.failed]);
     }
 
@@ -209,8 +214,26 @@ export class Scheduler {
     }
 
     /** Existing Event and failed(interrupted) entries make recovery writes idempotent across resumes. */
-    /** Returns whether an answered turn was closed, which earns one settle interval for its jobs. */
-    private resume(mine: Entry[]): boolean {
+    /**
+     * The session the journal left open: the one of the last delivered or begun event, unless
+     * its `session_end` already has an `Event`.
+     */
+    private openSession(mine: Entry[]): string | null {
+        const last = [...mine].reverse().find((e) => e.kind === "Event" || e.kind === "BeginTurn");
+        const event = this.o.events.find((e) => e.id === last?.event);
+        if (!event) return null;
+        const end = this.o.events.find(
+            (e) => e.kind === "session_end" && e.session === event.session,
+        );
+        const done = new Set(mine.filter((e) => e.kind === "Event").map((e) => e.event));
+        return end && done.has(end.id) ? null : event.session;
+    }
+
+    /**
+     * Returns the answered turns whose `Event` is still to be written; the caller settles first
+     * so a job such a turn started can register, then journals them.
+     */
+    private resume(mine: Entry[]): Entry[] {
         const kinds = (k: string) => mine.filter((e) => e.kind === k);
         const done = new Set(kinds("Event").map((e) => e.event));
         const ended = new Set(kinds("EndTurn").map((e) => e.event));
@@ -218,9 +241,6 @@ export class Scheduler {
         const interrupted = kinds("ItemState").filter((e) => e.state === "failed(interrupted)");
         const marked = new Set(interrupted.map((e) => e.event ?? e.fault));
         const answered = kinds("EndTurn").filter((x) => !done.has(x.event));
-        for (const e of answered) {
-            this.log({ kind: "Event", event: e.event, outcome: e.outcome });
-        }
         for (const e of kinds("BeginTurn").filter(
             (x) => !ended.has(x.event) && !done.has(x.event),
         )) {
@@ -281,7 +301,7 @@ export class Scheduler {
             if (f.strategy === "persistent" || (target && !begun.has(target.id)))
                 this.o.proxy?.arm(f.id);
         }
-        return answered.length > 0;
+        return answered;
     }
 
     private async idle(): Promise<void> {
@@ -309,7 +329,7 @@ export class Scheduler {
         if (OUTAGE.has(f.type)) this.outage = f.id;
         let evidence: Record<string, unknown>;
         try {
-            evidence = await driver.fault(f);
+            evidence = await this.untilFatal(driver.fault(f));
         } catch (caught) {
             const error = caught instanceof Error ? caught.message : String(caught);
             this.log({ kind: "ItemState", fault: f.id, state: "failed", error, fatal: true });

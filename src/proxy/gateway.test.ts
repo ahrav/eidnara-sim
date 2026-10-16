@@ -18,6 +18,7 @@ import {
     wireBase64,
 } from "./gateway";
 import {
+    episodeStream,
     excludedFromFaultMetrics,
     FaultInjector,
     type ProxyFault,
@@ -283,7 +284,7 @@ function hostSeesJson(type: FaultType, r: JsonResult): boolean {
 }
 
 const INTERMITTENT_SEQUENCE = (() => {
-    const rng = new Rng(7);
+    const rng = episodeStream(new Rng(7), "fault-000");
     return Array.from({ length: 10 }, () => rng.next() < 0.3);
 })();
 

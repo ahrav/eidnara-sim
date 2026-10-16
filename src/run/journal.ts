@@ -85,6 +85,8 @@ export interface Lease {
 }
 
 const optional = (v: unknown, type: string) => v === undefined || typeof v === type;
+const BOOT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const PID_NS = /^pid:\[\d+\]$/;
 
 function isLease(v: unknown): v is Lease {
     if (typeof v !== "object" || v === null) return false;
@@ -93,13 +95,11 @@ function isLease(v: unknown): v is Lease {
         Number.isSafeInteger(l.pid) &&
         (l.pid as number) > 0 &&
         typeof l.host === "string" &&
-        optional(l.boot, "string") &&
-        optional(l.ns, "string") &&
+        (l.boot === undefined || BOOT_ID.test(l.boot as string)) &&
+        (l.ns === undefined || PID_NS.test(l.ns as string)) &&
         Number.isFinite(l.started_wall_ms) &&
         (l.started_ticks === undefined ||
-            (typeof l.started_ticks === "number" &&
-                Number.isFinite(l.started_ticks) &&
-                l.started_ticks >= 0)) &&
+            (Number.isSafeInteger(l.started_ticks) && (l.started_ticks as number) >= 0)) &&
         optional(l.token, "string") &&
         optional(l.released, "boolean")
     );
@@ -293,14 +293,14 @@ export function takeLease(dir: string): Lease {
  * the directory keeps its highest generation and later takers all target the next one.
  */
 export function releaseLease(dir: string, lease: Lease): void {
-    for (const n of leaseNumbers(dir)) {
-        const path = join(dir, `lease.${n}.json`);
-        const held = readLease(path);
-        if (!held || held.released || !sameLease(held, lease)) continue;
-        const staged = join(dir, `lease.${randomUUID()}.tmp`);
-        writeFileSync(staged, JSON.stringify({ ...held, released: true }), { flag: "wx" });
-        renameSync(staged, path);
-    }
+    const top = leaseNumbers(dir).at(-1);
+    if (top === undefined) return;
+    const path = join(dir, `lease.${top}.json`);
+    const held = readLease(path);
+    if (!held || held.released || !sameLease(held, lease)) return;
+    const staged = join(dir, `lease.${randomUUID()}.tmp`);
+    writeFileSync(staged, JSON.stringify({ ...held, released: true }), { flag: "wx" });
+    renameSync(staged, path);
 }
 
 /**
@@ -349,6 +349,8 @@ export class Journal {
     readonly entries: Entry[];
     private readonly last = new Map<string | null, number>();
     private fd: number;
+    /** Bytes of complete lines on disk; a failed append truncates back to it. */
+    private length = 0;
 
     constructor(readonly path: string) {
         const { O_APPEND, O_CREAT, O_NOFOLLOW, O_RDWR } = constants;
@@ -366,6 +368,7 @@ export class Journal {
             throw caught;
         }
         this.entries = [...read];
+        this.length = read.bytes ?? 0;
         for (const e of this.entries) this.last.set(e.arm, e.scenario_ms);
     }
 
@@ -379,11 +382,22 @@ export class Journal {
         }
         const full = { ...entry, seq: this.entries.length, wall_ms: Date.now() } as Entry;
         const line = Buffer.from(`${JSON.stringify(full)}\n`);
-        for (let written = 0; written < line.length; ) {
-            const n = writeSync(this.open(), line, written);
-            if (n <= 0) throw new Error(`journal: short write at seq ${full.seq}`);
-            written += n;
+        const fd = this.open();
+        try {
+            for (let written = 0; written < line.length; ) {
+                const n = writeSync(fd, line, written);
+                if (n <= 0) throw new Error(`journal: short write at seq ${full.seq}`);
+                written += n;
+            }
+        } catch (caught) {
+            try {
+                ftruncateSync(fd, this.length);
+            } catch {
+                this.fd = -1;
+            }
+            throw caught;
         }
+        this.length += line.length;
         this.entries.push(full);
         this.last.set(entry.arm, entry.scenario_ms);
         return full;
