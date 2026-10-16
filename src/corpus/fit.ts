@@ -35,6 +35,16 @@ const CATEGORIES: Record<string, string[]> = {
 const TOOL_CATEGORY = new Map(
     Object.entries(CATEGORIES).flatMap(([category, tools]) => tools.map((t) => [t, category])),
 );
+export const CATEGORY_NAMES: readonly string[] = [...Object.keys(CATEGORIES), "other"].sort();
+
+export const TABLES = {
+    requests_per_session: "rounds",
+    tool_steps_per_request: "rounds+timing_events",
+    append_tokens_per_step: "rounds",
+    idle_within_session_s: "rounds+timing_events",
+    idle_between_sessions_s: "rounds+timing_events",
+    tool_output_chars: "tool_calls",
+} as const;
 
 const DEFINITIONS = {
     requests_per_session:
@@ -114,7 +124,7 @@ function push<K, V>(map: Map<K, V[]>, key: K, value: V): void {
 }
 
 export async function fitTraceLab(dataset: Dataset): Promise<TraceLabFit> {
-    const source = (table: string) => `${dataset.repo}@${dataset.revision}:${table}`;
+    const origin = `${dataset.repo}@${dataset.revision}:`;
     const columns = ["round_pk", "session_id", "user", "round_index", "first_input_event_type"];
     const roundRows = await readTable(dataset, "rounds", [...columns, "newly_append_tokens"]);
     const span = new Map<bigint, [number, number]>();
@@ -161,25 +171,22 @@ export async function fitTraceLab(dataset: Dataset): Promise<TraceLabFit> {
     const chars = toolRows.flatMap((t) =>
         t.result_chars === null ? [] : [Number(t.result_chars)],
     );
-    const timed = "rounds+timing_events";
-    const specs: [keyof typeof DEFINITIONS, string, string, number[], CdfTable["kind"]][] = [
-        ["requests_per_session", "requests", "rounds", [...requests.values()], "discrete"],
-        ["tool_steps_per_request", "steps", timed, steps, "discrete"],
-        ["append_tokens_per_step", "tokens", "rounds", append, "continuous"],
-        ["idle_within_session_s", "seconds", timed, idle, "continuous"],
-        ["idle_between_sessions_s", "seconds", timed, between, "continuous"],
-        ["tool_output_chars", "chars", "tool_calls", chars, "continuous"],
+    const specs: [keyof typeof DEFINITIONS, string, number[], CdfTable["kind"]][] = [
+        ["requests_per_session", "requests", [...requests.values()], "discrete"],
+        ["tool_steps_per_request", "steps", steps, "discrete"],
+        ["append_tokens_per_step", "tokens", append, "continuous"],
+        ["idle_within_session_s", "seconds", idle, "continuous"],
+        ["idle_between_sessions_s", "seconds", between, "continuous"],
+        ["tool_output_chars", "chars", chars, "continuous"],
     ];
-    const quantities = specs.map(([name, unit, table, values, kind]) => {
+    const quantities = specs.map(([name, unit, values, kind]) => {
         const cdf = fitCdf(values, kind);
-        return [
-            name,
-            { definition: DEFINITIONS[name], unit, source: source(table), n: values.length, cdf },
-        ];
+        const source = `${origin}${TABLES[name]}`;
+        return [name, { definition: DEFINITIONS[name], unit, source, n: values.length, cdf }];
     });
     return {
         quantities: Object.fromEntries(quantities),
-        tool_mix: toolMix(toolRows, source("tool_calls")),
+        tool_mix: toolMix(toolRows, `${origin}tool_calls`),
     };
 }
 

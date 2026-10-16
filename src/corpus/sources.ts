@@ -14,8 +14,16 @@ export interface Dataset {
     files: { path: string; sha256: string }[];
 }
 
+export function parseJson(text: string, file: string): Record<string, unknown> {
+    try {
+        return JSON.parse(text);
+    } catch (error) {
+        throw new Error(`${file}: invalid JSON: ${(error as Error).message}`);
+    }
+}
+
 export function loadSources(): Dataset[] {
-    const raw = JSON.parse(readFileSync(join(CORPUS_DIR, "sources.json"), "utf8"));
+    const raw = parseJson(readFileSync(join(CORPUS_DIR, "sources.json"), "utf8"), "sources.json");
     if (raw.schema !== "sim-corpus-sources/v1") throw new Error("sources.json: unknown schema");
     const datasets = raw.datasets as Dataset[];
     const ids = datasets.map((d) => d.id);
@@ -37,6 +45,9 @@ export function under(root: string, ...parts: string[]): string {
 }
 
 export function cachePath(dataset: Dataset, path: string): string {
+    if (!dataset.files.some((f) => f.path === path)) {
+        throw new Error(`sources.json: ${dataset.id} does not list ${path}`);
+    }
     return under(CACHE_DIR, dataset.id, dataset.revision, path);
 }
 
