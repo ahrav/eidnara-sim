@@ -1,0 +1,379 @@
+import {
+    appendFileSync,
+    existsSync,
+    mkdirSync,
+    readFileSync,
+    renameSync,
+    writeFileSync,
+} from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import type { SimConfig } from "../config/config";
+import type { ArmName } from "../hosts/arms";
+import { HostDriver } from "../hosts/driver";
+import { canonicalJson } from "../prereg/canonical";
+import type { Tier } from "../prereg/schema";
+import { preregistrationHash } from "../prereg/validate";
+import { bedrockUpstream, Gateway } from "../proxy/gateway";
+import { FaultInjector } from "../proxy/inject";
+import { type CallRecord, type Component, RecordWriter } from "../proxy/records";
+import { Rng } from "../rng";
+import { compileScenario, type Scenario } from "../scenario/compile";
+import type { FaultEpisode } from "../scenario/faults";
+import { loadCompileInput, loadPrereg } from "../scenario/inputs";
+import { bedrockEmbedder } from "../scenario/similarity";
+import { Journal, releaseLease, takeLease } from "./journal";
+import { plainPath } from "./launcher";
+import { type Preflight, preflight } from "./preflight";
+import { ResourceSampler } from "./sampler";
+import { type ArmDriver, HarnessFailure, type ScenarioEvent, Scheduler } from "./scheduler";
+import { writeOffset } from "./timeinject";
+
+export interface RunOptions {
+    config: SimConfig;
+    tier: Tier;
+    seed: number;
+    host: "pi" | "opencode";
+    out: string;
+    arms?: string[];
+    events?: number;
+    faults?: FaultEpisode[];
+    contextLimit?: number;
+    models?: string[];
+}
+
+interface Manifest {
+    schema: "sim-run-manifest/v1";
+    tier: Tier;
+    seed: number;
+    host: "pi" | "opencode";
+    order: ArmName[];
+    events: number;
+    context_limit: number;
+    models: string[];
+    scenario_hash: string;
+    eidnara_commit: string;
+    fault_override: FaultEpisode[] | null;
+    prereg_sha256: string;
+    base_wall_ms: number;
+    preflight: Preflight;
+}
+
+const BACKGROUND = new Set<Component>([
+    "history_summarizer",
+    "memory_capture",
+    "memory_classifier",
+    "context_researcher",
+    "title",
+    "native_compaction",
+]);
+
+const ROOT = resolve(import.meta.dir, "../..");
+
+export function pinnedBin(config: SimConfig): string {
+    return resolve(dirname(config.opencode_binary), "../../.bin");
+}
+
+export function requirePinnedPath(config: SimConfig): void {
+    const bin = pinnedBin(config);
+    if (!(process.env.PATH ?? "").split(":").includes(bin)) {
+        throw new HarnessFailure(
+            `PATH lacks the pinned OpenCode release; run with PATH=${bin}:$PATH`,
+        );
+    }
+}
+
+function writeAtomic(path: string, text: string): void {
+    writeFileSync(`${path}.${process.pid}`, text);
+    renameSync(`${path}.${process.pid}`, path);
+}
+
+function gitHead(dir: string): string {
+    const r = Bun.spawnSync(["git", "-C", dir, "rev-parse", "HEAD"], { stdout: "pipe" });
+    if (r.exitCode !== 0) throw new Error(`git rev-parse HEAD in ${dir} failed`);
+    return r.stdout.toString().trim();
+}
+
+async function loadScenario(o: RunOptions): Promise<Scenario> {
+    const path = join(o.out, "scenario.json");
+    if (!existsSync(path)) {
+        const { aws_profile, region } = o.config.bedrock;
+        const cache = join(ROOT, "runs/scenarios/embeddings.jsonl");
+        const embedder = bedrockEmbedder(aws_profile, region, cache);
+        const compiled = await compileScenario(loadCompileInput(o.seed, o.tier, embedder));
+        writeAtomic(path, `${canonicalJson(compiled)}\n`);
+    }
+    const scenario = JSON.parse(readFileSync(path, "utf8")) as Scenario;
+    const { seed, tier } = scenario.manifest as { seed: number; tier: string };
+    if (seed !== o.seed || tier !== o.tier) {
+        throw new HarnessFailure(
+            `scenario.json is ${tier} seed ${seed}, not ${o.tier} seed ${o.seed}`,
+        );
+    }
+    return scenario;
+}
+
+function armOrder(o: RunOptions): ArmName[] {
+    const prereg = loadPrereg(o.tier);
+    const index = prereg.seeds.indexOf(o.seed);
+    if (index < 0) throw new HarnessFailure(`seed ${o.seed} is not pre-registered for ${o.tier}`);
+    const order = prereg.arms.order_by_seed[index] ?? prereg.arms.run;
+    const unknown = (o.arms ?? []).filter((a) => !order.includes(a));
+    if (unknown.length > 0) throw new HarnessFailure(`arms not in the ${o.tier} order: ${unknown}`);
+    const kept = order.filter((a) => !o.arms || o.arms.includes(a)) as ArmName[];
+    if (kept.length === 0) throw new HarnessFailure("no arm to run");
+    return kept;
+}
+
+const sameJson = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+
+async function loadManifest(o: RunOptions, scenario: Scenario): Promise<Manifest> {
+    const path = join(o.out, "manifest.json");
+    const checks = await preflight(o.config, o.out);
+    const wanted = {
+        tier: o.tier,
+        seed: o.seed,
+        host: o.host,
+        order: armOrder(o),
+        events: o.events ?? scenario.events.length,
+        context_limit: o.contextLimit ?? 200_000,
+        models: o.models ?? [o.config.agent_model],
+        fault_override: o.faults ?? null,
+    };
+    if (existsSync(path)) {
+        const manifest = JSON.parse(readFileSync(path, "utf8")) as Manifest;
+        const given: Record<string, boolean> = {
+            order: o.arms !== undefined,
+            events: o.events !== undefined,
+            context_limit: o.contextLimit !== undefined,
+            models: o.models !== undefined,
+            fault_override: o.faults !== undefined,
+        };
+        const differs = Object.entries(wanted).filter(
+            ([k, v]) => given[k] !== false && !sameJson(manifest[k as keyof Manifest], v),
+        );
+        if (differs.length > 0) {
+            const names = differs.map(([k]) => k).join(", ");
+            throw new HarnessFailure(`resume options differ from the manifest: ${names}`);
+        }
+        const digests = {
+            scenario_hash: scenario.scenario_hash,
+            prereg_sha256: preregistrationHash(loadPrereg(o.tier)),
+            eidnara_commit: gitHead(o.config.eidnara_checkout),
+        };
+        const changed = Object.entries(digests).filter(
+            ([k, v]) => manifest[k as keyof Manifest] !== v,
+        );
+        if (changed.length > 0) {
+            const names = changed.map(([k]) => k).join(", ");
+            throw new HarnessFailure(`inputs changed since the run started: ${names}`);
+        }
+        const intercepted = (p: Preflight) => p.time_injection.map((t) => [t.name, t.intercepted]);
+        if (!sameJson(intercepted(manifest.preflight), intercepted(checks))) {
+            throw new HarnessFailure("time interception changed since the run started");
+        }
+        appendFileSync(join(o.out, "preflight.jsonl"), `${JSON.stringify(checks)}\n`);
+        return manifest;
+    }
+    const manifest: Manifest = {
+        schema: "sim-run-manifest/v1",
+        ...wanted,
+        scenario_hash: scenario.scenario_hash,
+        eidnara_commit: gitHead(o.config.eidnara_checkout),
+        prereg_sha256: preregistrationHash(loadPrereg(o.tier)),
+        base_wall_ms: Date.now(),
+        preflight: checks,
+    };
+    writeAtomic(path, `${JSON.stringify(manifest, null, 2)}\n`);
+    return manifest;
+}
+
+export async function runTier(o: RunOptions): Promise<void> {
+    plainPath(o.out);
+    requirePinnedPath(o.config);
+    mkdirSync(o.out, { recursive: true });
+    takeLease(o.out);
+    const cleanup: Array<() => Promise<void> | void> = [() => releaseLease(o.out)];
+    let done: Promise<void> | null = null;
+    const teardown = () => {
+        done ??= (async () => {
+            for (const step of cleanup.splice(0).reverse()) {
+                try {
+                    await step();
+                } catch (caught) {
+                    console.error(caught);
+                }
+            }
+        })();
+        return done;
+    };
+    const stop = { signal: null as NodeJS.Signals | null };
+    const onSignal = (signal: NodeJS.Signals) => {
+        if (stop.signal) return;
+        stop.signal = signal;
+        void teardown().finally(() => process.exit(signal === "SIGINT" ? 130 : 143));
+    };
+    process.on("SIGINT", onSignal);
+    process.on("SIGTERM", onSignal);
+    try {
+        await runArms(o, cleanup, stop);
+    } finally {
+        await teardown();
+        process.off("SIGINT", onSignal);
+        process.off("SIGTERM", onSignal);
+    }
+}
+
+async function runArms(
+    o: RunOptions,
+    cleanup: Array<() => Promise<void> | void>,
+    stop: { signal: NodeJS.Signals | null },
+): Promise<void> {
+    const guard = () => {
+        if (stop.signal) throw new HarnessFailure(`run stopping on ${stop.signal}`);
+    };
+    const { config, seed } = o;
+    const prereg = loadPrereg(o.tier);
+    const journal = new Journal(join(o.out, "journal.jsonl"));
+    cleanup.push(() => journal.close());
+    const compiled = await loadScenario(o);
+    const manifest = await loadManifest(o, compiled);
+    const scenario = { ...compiled, faults: manifest.fault_override ?? compiled.faults };
+    const events = scenario.events.slice(0, manifest.events) as unknown as ScenarioEvent[];
+    const hostRow = manifest.preflight.hosts.find((h) => h.host === o.host);
+    if (!hostRow) throw new Error(`preflight lists no ${o.host} host`);
+
+    const drivers: Partial<Record<ArmName, ArmDriver>> = {};
+    const proxyFaults = scenario.faults.filter((f) => f.seam.layer === "proxy-sink");
+    const injector = new FaultInjector(proxyFaults, new Rng((seed ^ 0x5bd1e995) >>> 0), 120_000);
+    const offsetFile = (arm: string) => join(o.out, arm, "clock", "offset");
+    const scheduler = new Scheduler({
+        events,
+        faults: scenario.faults,
+        journal,
+        order: manifest.order,
+        drivers: drivers as Record<string, ArmDriver>,
+        proxy: injector,
+        idleLimitMs: prereg.liveness_bounds.job_deadline_ms,
+        onClock: (arm, ms) => writeOffset(offsetFile(arm), manifest.base_wall_ms, ms),
+    });
+    const now = () => scheduler.clock?.now() ?? 0;
+    const scope = { arm: "", session: null as string | null, turn: null as string | null };
+    const jobs = new Map<string, string[]>();
+    let jobSeq = journal.entries.filter((e) => e.kind === "RegisterJob").length;
+    class RunRecords extends RecordWriter {
+        override write(partial: Omit<CallRecord, "seq" | "wall_ms">): CallRecord {
+            const record = super.write(partial);
+            const id = jobs.get(`${record.arm}/${record.component}`)?.shift();
+            if (id) scheduler.jobEnd(id);
+            return record;
+        }
+    }
+    const gateway = new Gateway({
+        upstream: bedrockUpstream(config.bedrock.region, config.bedrock.aws_profile),
+        records: new RunRecords(join(o.out, "calls.jsonl")),
+        injector,
+        rng: new Rng((seed ^ 0x27d4eb2f) >>> 0),
+        clock: { scenarioMs: now },
+        scope: () => ({ ...scope }),
+        observe: (e) => {
+            const driver = drivers[scope.arm as ArmName];
+            if (driver) scheduler.observe(e.component, driver);
+            if (!BACKGROUND.has(e.component)) return;
+            const id = `${e.component}-${jobSeq++}`;
+            const key = `${scope.arm}/${e.component}`;
+            jobs.set(key, [...(jobs.get(key) ?? []), id]);
+            scheduler.jobStart(id);
+        },
+        requestDeadlineMs: prereg.liveness_bounds.turn_deadline_ms,
+    });
+    await gateway.start();
+    cleanup.push(async () => {
+        await gateway.stop();
+        appendFileSync(join(o.out, "faults.jsonl"), `${JSON.stringify(injector.report())}\n`);
+    });
+
+    const projects = Object.fromEntries(
+        scenario.projects.map((p) => [p.id, join(ROOT, "corpus/repos", p.id)]),
+    );
+    const loopStore = scenario.faults.some((f) => f.type === "store_full");
+    for (const arm of manifest.order) {
+        const armRoot = join(o.out, arm, "r");
+        mkdirSync(dirname(offsetFile(arm)), { recursive: true });
+        const driver = new HostDriver({
+            config,
+            arm,
+            host: o.host,
+            armRoot,
+            launcher: manifest.preflight.launcher,
+            offsetFile: offsetFile(arm),
+            keep: [armRoot, dirname(offsetFile(arm))],
+            proxyHttp1: gateway.urls[0] as string,
+            proxyHttp2: gateway.urls[1] as string,
+            projects,
+            models: manifest.models,
+            contextLimit: manifest.context_limit,
+            turnDeadlineMs: prereg.liveness_bounds.turn_deadline_ms,
+            transcriptPaths: hostRow.transcript_paths,
+            loopStore,
+            onDaemonExit: (detail) => scheduler.daemonExited(detail),
+        });
+        let cpuJob: string | null = null;
+        const onBusy = (busy: boolean) => {
+            if (busy && cpuJob === null) {
+                cpuJob = `daemon-cpu-${arm}-${jobSeq++}`;
+                scheduler.jobStart(cpuJob);
+            } else if (!busy && cpuJob !== null) {
+                scheduler.jobEnd(cpuJob);
+                cpuJob = null;
+            }
+        };
+        const sampler = new ResourceSampler({
+            path: join(o.out, arm, "resources.jsonl"),
+            intervalMs: prereg.leak_bound.sample_interval_ms,
+            busyFraction: Number(prereg.liveness_bounds.daemon_busy_cpu_fraction),
+            pid: () => driver.daemonPid(),
+            storeDir: driver.dataDir,
+            scenarioMs: now,
+            onBusy,
+        });
+        cleanup.push(async () => {
+            sampler.stop();
+            await driver.stop();
+        });
+        drivers[arm] = {
+            reset: async () => {
+                guard();
+                scope.arm = arm;
+                await driver.reset();
+                sampler.start();
+            },
+            resume: async (open) => {
+                guard();
+                scope.arm = arm;
+                scope.session = open?.session ?? null;
+                await driver.resume(open);
+                sampler.start();
+            },
+            event: async (e) => {
+                guard();
+                scope.arm = arm;
+                scope.session = e.session;
+                scope.turn = e.kind === "user_turn" ? e.id : null;
+                try {
+                    return await driver.event(e);
+                } finally {
+                    scope.turn = null;
+                }
+            },
+            fault: (f) => {
+                guard();
+                return driver.fault(f);
+            },
+            finish: async () => {
+                sampler.stop();
+                await driver.finish();
+            },
+        };
+    }
+    await scheduler.run();
+}

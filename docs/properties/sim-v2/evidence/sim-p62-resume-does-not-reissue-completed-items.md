@@ -22,6 +22,12 @@ as complete on resume; resume tests kill mid-turn, after a turn's answer, and
 in the second arm, and check that each arm's events appear once and the billing
 log has no duplicate.
 
+The live witness (`tests/witness-faults.ts`, `docs/run-command.md`) on 2026-10-16
+sent SIGKILL to a live Pi run after the third session's turn made its first
+model call and ran the same command again: every turn recorded before the
+kill had the same call count afterwards, and the resumed run delivered only
+the events after the interrupted turn.
+
 ## Failure scenario
 
 Completed items are re-billed and double-counted.

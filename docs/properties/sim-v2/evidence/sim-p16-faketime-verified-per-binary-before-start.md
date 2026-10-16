@@ -23,8 +23,14 @@ runtime and the Bun-compiled OpenCode binary print a jumped clock and keep a
 100 ms timer, and the daemon binary's own `clock_gettime` import binds to the
 interposer. A binary that fails is recorded `wall_clock_only`. Tests run the
 real launcher, a binary that drops the interposer, and a binary whose own code
-leaves `clock_gettime` unbound. On this host all three intercept. The run
-command that calls `preflight` at `StartRun` lands with the host drivers.
+leaves `clock_gettime` unbound. On this host all three intercept.
+
+The run command (`docs/run-command.md`) calls `preflight` on every
+invocation before the scheduler journals its first entry, keeps the first
+result in the run manifest, and refuses to resume when an interception result
+changes. The daemon probe runs the `direct_host_fixture` the hermetic host
+stack launches. The live witness runs on 2026-10-16 recorded Pi's Node
+runtime, OpenCode 1.18.22, and the fixture as intercepted.
 
 ## Failure scenario
 

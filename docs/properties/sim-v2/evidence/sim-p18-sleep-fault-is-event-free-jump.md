@@ -21,6 +21,12 @@ M4 (#1028) makes a scheduled laptop sleep one jump of the fault's
 `duration_ms`, journaled with the fault id; a test checks one such jump of
 exactly that size with no event inside it.
 
+The live witness (`tests/witness-faults.ts`, `docs/run-command.md`) on 2026-10-16
+fired a two-minute laptop sleep at a session start on both arms, inside the
+idle gap before that session; each sleep jump measured its scheduled duration
+with no unrun event inside it, and the next jump landed on the session's
+scheduled start.
+
 ## Failure scenario
 
 The sleep fault tests a different condition than the one scheduled.

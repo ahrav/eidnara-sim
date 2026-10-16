@@ -40,6 +40,8 @@ export interface SchedulerOptions {
     drivers: Record<string, ArmDriver>;
     proxy?: ProxyControl;
     jobPollMs?: number;
+    /** The longest the busy set may hold the clock before the run stops. */
+    idleLimitMs?: number;
     settleMs?: number;
     onClock?: (arm: string, scenarioMs: number) => void;
 }
@@ -154,7 +156,16 @@ export class Scheduler {
     }
 
     private async idle(): Promise<void> {
-        while ((this.clock?.busyIds().length ?? 0) > 0) await Bun.sleep(this.o.jobPollMs ?? 50);
+        const limit = Date.now() + (this.o.idleLimitMs ?? Number.POSITIVE_INFINITY);
+        while ((this.clock?.busyIds().length ?? 0) > 0) {
+            if (Date.now() > limit) {
+                const busy = this.clock?.busyIds().join(", ");
+                throw new HarnessFailure(
+                    `busy set held the clock past ${this.o.idleLimitMs} ms: ${busy}`,
+                );
+            }
+            await Bun.sleep(this.o.jobPollMs ?? 50);
+        }
     }
 
     private faultsAt(e: ScenarioEvent): FaultEpisode[] {

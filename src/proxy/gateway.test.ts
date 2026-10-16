@@ -1,4 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { appendFileSync, mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { decodeMessages } from "../../tests/eventstream-decode";
 import { Rng } from "../rng";
 import type { FaultType } from "../scenario/faults";
@@ -64,10 +67,11 @@ async function hostCall(
     body: unknown,
     timeoutMs: number,
     header?: string,
+    model = "m",
 ): Promise<HostResult> {
     const result: HostResult = { status: 0, events: [], gaps: [], timedOut: false };
     try {
-        const response = await fetch(`${url}/model/m/converse-stream`, {
+        const response = await fetch(`${url}/model/${model}/converse-stream`, {
             method: "POST",
             body: JSON.stringify(body),
             headers: header ? { "x-sim-component": header } : {},
@@ -411,6 +415,41 @@ describe("witnesses", () => {
 });
 
 describe("call records", () => {
+    test("a writer reopening a record file continues its sequence after a cut last line", () => {
+        const path = join(mkdtempSync(join(tmpdir(), "sim-records-")), "calls.jsonl");
+        const first = new RecordWriter(path);
+        const base = {
+            arm: "a",
+            session: null,
+            turn: null,
+            component: "agent",
+            componentSource: "inferred",
+            model: "m",
+            status: 200,
+            finish_reason: "end_turn",
+            input_tokens: 1,
+            output_tokens: 1,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            started_wall_ms: 1,
+            scenario_ms: 0,
+            first_byte_ms: null,
+            proxy_retries: 0,
+            fault_ref: null,
+            error: null,
+        } as const;
+        first.write(base);
+        first.write(base);
+        appendFileSync(path, '{"seq":2,"cut');
+        const second = new RecordWriter(path);
+        expect(second.write(base).seq).toBe(2);
+        const seqs = readFileSync(path, "utf8")
+            .trim()
+            .split("\n")
+            .map((l) => JSON.parse(l).seq);
+        expect(seqs).toEqual([0, 1, 2]);
+    });
+
     test("a forwarded call records tags, finish_reason, tokens, both times, and proxy retries", async () => {
         const upstream = scriptedUpstream();
         const { records, started, url } = await start(null, upstream);
@@ -606,6 +645,68 @@ describe("every request yields one record", () => {
             [200, "stream_cut", "ModelStreamErrorException: boom"],
         ]);
         expect(gateway.inFlight).toBe(0);
+    });
+
+    test("a Claude 5.5 request loses temperature and enabled thinking, recorded; other models keep both", async () => {
+        const seen: unknown[] = [];
+        const upstream = scriptedUpstream();
+        const recording: Upstream = {
+            converse: (m, b, streaming, signal) => {
+                seen.push(structuredClone(b));
+                return upstream.converse(m, b, streaming, signal);
+            },
+        };
+        const { records, url } = await start(null, recording);
+        const opus = "global.anthropic.claude-opus-5-5";
+        const body = {
+            ...SUMMARIZER_BODY,
+            inferenceConfig: { temperature: 0, maxTokens: 64 },
+            additionalModelRequestFields: { thinking: { type: "enabled", budget_tokens: 1024 } },
+        };
+        await hostCall(url, body, 2_000, undefined, opus);
+        const agent = {
+            ...AGENT_BODY,
+            additionalModelRequestFields: { thinking: { type: "disabled" } },
+        };
+        await hostCall(url, agent, 2_000, undefined, opus);
+        await hostCall(url, body, 2_000, undefined, "us.anthropic.claude-haiku-4-5-20251001-v1:0");
+        const forwarded = seen as {
+            inferenceConfig?: unknown;
+            additionalModelRequestFields?: unknown;
+        }[];
+        expect(forwarded.map((b) => [b.inferenceConfig, b.additionalModelRequestFields])).toEqual([
+            [{ maxTokens: 64 }, {}],
+            [undefined, { thinking: { type: "disabled" } }],
+            [
+                { temperature: 0, maxTokens: 64 },
+                { thinking: { type: "enabled", budget_tokens: 1024 } },
+            ],
+        ]);
+        expect(records.records.map((r) => r.stripped)).toEqual([
+            {
+                "inferenceConfig.temperature": 0,
+                "additionalModelRequestFields.thinking": { type: "enabled", budget_tokens: 1024 },
+            },
+            undefined,
+            undefined,
+        ]);
+    });
+
+    test("a call upstream refuses is still observed when it is classified", async () => {
+        const refusing: Upstream = {
+            async converse() {
+                throw Object.assign(new Error("bad temperature"), {
+                    name: "ValidationException",
+                    $metadata: { httpStatusCode: 400 },
+                });
+            },
+        };
+        const { records, started, url } = await start(null, refusing);
+        await hostCall(url, SUMMARIZER_BODY, 2_000);
+        expect(records.records.map((r) => [r.component, r.status])).toEqual([
+            ["history_summarizer", 400],
+        ]);
+        expect(started.map((e) => e.component)).toEqual(["history_summarizer"]);
     });
 
     test("malformed paths and bodies are rejected; odd but parseable bodies are forwarded", async () => {

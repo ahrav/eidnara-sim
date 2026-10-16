@@ -1,4 +1,4 @@
-import { appendFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, truncateSync } from "node:fs";
 
 export const COMPONENTS = [
     "agent",
@@ -36,6 +36,8 @@ export interface CallRecord {
     proxy_retries: number;
     fault_ref: string | null;
     error: string | null;
+    /** Request fields the proxy removed before forwarding, keyed by field path. */
+    stripped?: Record<string, unknown>;
 }
 
 const NUMBERS = [
@@ -79,7 +81,21 @@ export class RecordWriter {
     private lastWall = 0;
     readonly records: CallRecord[] = [];
 
-    constructor(private readonly path: string | null) {}
+    constructor(private readonly path: string | null) {
+        if (!path || !existsSync(path)) return;
+        const text = readFileSync(path, "utf8");
+        const complete = text.slice(0, text.lastIndexOf("\n") + 1);
+        if (complete.length < text.length) truncateSync(path, Buffer.byteLength(complete));
+        const lines = complete.split("\n").filter((l) => l !== "");
+        for (const line of lines.reverse()) {
+            try {
+                const last = JSON.parse(line) as CallRecord;
+                this.seq = last.seq + 1;
+                this.lastWall = last.wall_ms;
+                return;
+            } catch {}
+        }
+    }
 
     write(partial: Omit<CallRecord, "seq" | "wall_ms">): CallRecord {
         const wall_ms = Math.max(this.lastWall, Date.now());

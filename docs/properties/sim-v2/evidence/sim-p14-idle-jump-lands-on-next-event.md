@@ -21,6 +21,10 @@ M4 (#1028) jumps the clock to the next event's scheduled time; a test checks
 that each `AdvanceClock` lands on the earliest scheduled event time after its
 `from_ms`.
 
+The live witness (`tests/witness-faults.ts`, `docs/run-command.md`) on 2026-10-16
+checked 7 event jumps over two arms; each landed on the earliest unrun
+scheduled event time after the jump's start.
+
 ## Failure scenario
 
 Events are skipped or issued late and the scenario differs from its compiled

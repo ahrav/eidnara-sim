@@ -2,8 +2,8 @@
 
 `src/hosts/` holds the arm drivers. `arms.ts` launches Pi or OpenCode and
 wraps the daemon stack, and `driver.ts` runs one arm's events and
-scheduler-layer faults. The run command that wires them to the proxy, clock,
-and scheduler lands next.
+scheduler-layer faults. `docs/run-command.md` describes the run command that
+wires them to the proxy, clock, and scheduler.
 
 ## Eidnara build
 

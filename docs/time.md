@@ -27,7 +27,7 @@ git). `faketimeEnv(file)` preloads it with these settings:
 `writeOffset(file, baseMs, scenarioMs)` writes the whole-second offset that
 puts a process clock at `baseMs + scenarioMs` now. The scheduler's `onClock`
 hook receives each arm's starting time and every clock jump; the run command
-that lands with the host drivers writes the offset from that hook. Between
+(`docs/run-command.md`) writes the offset from that hook. Between
 jumps the offset holds, so host clocks run at wall pace while scenario time
 holds and lead it by the idle wall time since the last jump; the preflight
 distortions record this.
@@ -36,8 +36,9 @@ distortions record this.
 
 `preflight(config, runRoot)` builds the interposer, writes the launcher, and
 runs each binary through the launcher with its clock 8 hours ahead. The run
-command that lands with the host drivers calls it at `StartRun` and records
-its result in the run manifest.
+command (`docs/run-command.md`) calls it on every invocation before the
+scheduler journals its first entry, records the first result in the run
+manifest, and refuses to resume when an interception result changes.
 
 
 

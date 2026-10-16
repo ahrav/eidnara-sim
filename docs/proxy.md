@@ -29,6 +29,7 @@ any field below.
 | `first_byte_ms` | Milliseconds from receipt to the first answer byte, or `null` |
 | `proxy_retries` | Retries the proxy itself made upstream |
 | `fault_ref` | The injected fault episode, or `null` |
+| `stripped` | Request fields the proxy removed, keyed by path; present only when it removed one |
 
 ## Component tags
 
@@ -44,9 +45,26 @@ offering the `bash` tool as the agent, and `other` for the rest. A request
 the gateway refuses is `rejected`.
 
 `GatewayOptions.observe` receives a `call_started` event with the component
-when a call's first answer byte arrives. The M4 scheduler uses the
+when the gateway classifies a call, before it forwards or faults the call, so
+a call that upstream refuses is observed too. The run uses the
 `history_summarizer` event to fire the mid-fold SIGKILL (OQ-8, observation
-half) and the `memory_capture` event for capture-timed faults.
+half) and every background component's event to register a job that holds
+the clock until the call's record is written.
+
+## Sampling fields
+
+Claude 5.5 models on Bedrock refuse two fields Eidnara's history summarizer
+sends. In the first live runs every summarizer call to Opus 5.5 failed with
+HTTP 400: ``temperature` may only be set to 1 when thinking is enabled`, and,
+with the temperature removed, `"thinking.type.enabled" is not supported for
+this model`. A direct `aws bedrock-runtime converse` call with
+`temperature: 0` returned ``temperature` is deprecated for this model` from
+both Haiku 5.5 and Opus 5.5. For a request whose model id names a Claude 5.5
+model, the gateway removes `inferenceConfig.temperature` and an
+`additionalModelRequestFields.thinking` of type `enabled` before forwarding
+and records the removed values in `stripped`, so the model samples with its
+defaults and each changed call is visible. Requests to every other model pass
+unchanged. The v1 A/B gateway removed the same `thinking` field.
 
 ## Upstream retry
 

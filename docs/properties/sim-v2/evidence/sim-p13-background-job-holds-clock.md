@@ -20,6 +20,11 @@ M4 (#1028) holds the clock while a background job registered after a turn's end
 runs; a test registers a job after `EndTurn` and checks that no `AdvanceClock`
 or `BeginTurn` appears before its `EndJob`.
 
+The live witness (`tests/witness-faults.ts`, `docs/run-command.md`) on 2026-10-16
+recorded six jobs registered with no turn or other job open (two native
+compactions and four memory captures), and no clock jump while any of them
+ran.
+
 ## Failure scenario
 
 The job-holds-clock branch is never exercised and SIM-P12's job half is

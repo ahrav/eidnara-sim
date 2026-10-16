@@ -19,6 +19,12 @@ No harness code, test, or run exists yet. The surface lands in M4
 M4 (#1028) exercises an interrupt mid-turn: a resume test kills the harness
 with SIGKILL while a turn is in flight and billed.
 
+The live witness (`tests/witness-faults.ts`, `docs/run-command.md`) on 2026-10-16
+exercised the interrupt mid-turn on a live Pi arm: the harness received
+SIGKILL after the turn's first model call, and the resumed run reopened the
+session, restored the switched model and the loop-mounted store, and
+completed the next two turns.
+
 ## Failure scenario
 
 The in-flight resolution path is never exercised.

@@ -103,6 +103,31 @@ type Usage = Record<string, number>;
 type Done = Partial<CallRecord> &
     Pick<CallRecord, "component" | "componentSource" | "model" | "status">;
 
+const CLAUDE_5_5 = /anthropic\.claude-(opus|sonnet|haiku)-5-5/;
+
+/**
+ * Removes the sampling fields Claude 5.5 models on Bedrock refuse: any `temperature`, and
+ * `thinking` of type `enabled`. Returns the removed values keyed by field path.
+ */
+export function stripUnsupported(
+    model: string,
+    body: ConverseBody,
+): Record<string, unknown> | undefined {
+    if (!CLAUDE_5_5.test(model)) return undefined;
+    const removed: Record<string, unknown> = {};
+    const inference = body.inferenceConfig as { temperature?: number } | undefined;
+    if (inference?.temperature !== undefined) {
+        removed["inferenceConfig.temperature"] = inference.temperature;
+        delete inference.temperature;
+    }
+    const extra = body.additionalModelRequestFields as { thinking?: { type?: string } } | undefined;
+    if (extra?.thinking?.type === "enabled") {
+        removed["additionalModelRequestFields.thinking"] = extra.thinking;
+        delete extra.thinking;
+    }
+    return Object.keys(removed).length > 0 ? removed : undefined;
+}
+
 export class Gateway {
     private servers: (Server | Http2Server)[] = [];
     inFlight = 0;
@@ -256,7 +281,11 @@ export class Gateway {
         const streaming = route[2] === "converse-stream";
         const tag = classify(body, header);
         const done: Done = { ...tag, model, status: 200 };
+        const stripped = stripUnsupported(model, body);
+        if (stripped) done.stripped = stripped;
         progress(done);
+        const event = { kind: "call_started", component: tag.component, wall_ms: Date.now() };
+        this.options.observe?.(event as CallStarted);
         const fault = this.options.injector.take(tag.component, call);
         if (fault) done.fault_ref = fault.id;
         if (fault && fault.type !== "slow_stream") {
@@ -270,8 +299,6 @@ export class Gateway {
         const firstByte = () => {
             if (done.first_byte_ms != null) return;
             done.first_byte_ms = performance.now() - started;
-            const event = { kind: "call_started", component: tag.component, wall_ms: Date.now() };
-            this.options.observe?.(event as CallStarted);
         };
         const delay = () =>
             fault ? sleep(fault.params.delay_ms ?? 2_000, sink.signal) : undefined;

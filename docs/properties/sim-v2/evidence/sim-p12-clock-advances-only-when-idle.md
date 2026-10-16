@@ -23,6 +23,12 @@ while any turn or job is busy. The tests rebuild the busy set from the
 journal's turn and job entries and check that it is empty at every
 `AdvanceClock`.
 
+The live witness (`tests/witness-faults.ts`, `docs/run-command.md`) on 2026-10-16
+journaled 167 entries over the `host` and `eidnara` arms on Pi; `checkJournal`
+found no `AdvanceClock` while a turn or job was open across 7 event jumps and
+2 sleep jumps, with jobs registered from proxy observations of background
+calls and from the daemon CPU sampler.
+
 ## Failure scenario
 
 A fold or capture job sees a simulated gap mid-execution and its timing metrics
