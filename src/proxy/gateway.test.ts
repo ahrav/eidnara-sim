@@ -3,6 +3,7 @@ import { appendFileSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { decodeMessages } from "../../tests/eventstream-decode";
+import { sha256Hex } from "../prereg/canonical";
 import { Rng } from "../rng";
 import type { FaultType } from "../scenario/faults";
 import { classify } from "./classify";
@@ -477,6 +478,27 @@ describe("call records", () => {
         expect(summary?.response_text).toBeUndefined();
         expect((userSim?.wall_ms ?? 0) >= (summary?.wall_ms ?? Infinity)).toBe(true);
         expect(started.map((e) => e.component)).toEqual(["history_summarizer", "user-sim"]);
+    });
+
+    test("a relayed text longer than the record limit keeps its whole-text digest and its tail", async () => {
+        const long = "y".repeat(40_000);
+        const upstream = {
+            calls: 0,
+            async converse() {
+                const message = { role: "assistant", content: [{ text: long }] };
+                return { json: { output: { message }, stopReason: "end_turn", usage: {} } };
+            },
+        } as unknown as Upstream;
+        const { records, url } = await start(null, upstream);
+        await hostCallJson(url, AGENT_BODY, 2_000);
+        const record = records.records[0];
+        expect(record?.response_text).toBe(long.slice(0, 32_768));
+        expect(record?.response_sha256).toBe(sha256Hex(long));
+        expect(record?.response_tail).toBe(long.slice(-6_000));
+        const { records: short, url: shortUrl } = await start(null);
+        await hostCallJson(shortUrl, AGENT_BODY, 2_000);
+        expect(short.records[0]?.response_sha256).toBe(sha256Hex("done"));
+        expect(short.records[0]?.response_tail).toBeUndefined();
     });
 
     test("a non-streaming agent call records the response text it relayed", async () => {

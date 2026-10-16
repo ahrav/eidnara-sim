@@ -40,6 +40,10 @@ export interface CallRecord {
     stripped?: Record<string, unknown>;
     /** The response text the proxy relayed for agent, user-sim, and judge calls, first 32,768 characters. */
     response_text?: string;
+    /** SHA-256 of the whole relayed text, present with `response_text`. */
+    response_sha256?: string;
+    /** The last 6,000 characters of the relayed text, present when `response_text` cut it. */
+    response_tail?: string;
 }
 
 const NUMBERS = [

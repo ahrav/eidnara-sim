@@ -241,13 +241,15 @@ export class Scheduler {
             }
             const state = outcome.failed ? "failed" : "completed";
             const item = e.probe ? { probe: e.probe, state } : {};
+            // The user record goes first: a resume reads a turn's EndTurn as the whole turn, so
+            // a kill after it must leave nothing of the turn unjournaled.
+            if (outcome.user) this.log({ kind: "UserTurn", event: e.id, ...outcome.user });
             this.log({ kind: "EndTurn", event: e.id, outcome: outcome.failed ?? "ok", ...item });
             if (e.probe && outcome.snapshot && !this.snapshotted(e.probe)) {
                 this.log({ kind: "SnapshotArtefacts", item: e.probe, snapshot: outcome.snapshot });
             }
             for (const s of outcome.stores ?? [])
                 this.log({ kind: "StoreChecked", event: e.id, ...s });
-            if (outcome.user) this.log({ kind: "UserTurn", event: e.id, ...outcome.user });
             await Bun.sleep(this.o.settleMs ?? 1_000);
         } else {
             await driver.event(e);

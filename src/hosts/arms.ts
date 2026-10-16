@@ -348,14 +348,13 @@ export class PiSimHost extends SimHost {
             }
             const cut = interruptMs === undefined ? null : Bun.sleep(interruptMs).then(() => null);
             const first = await Promise.race(cut ? [end, cut] : [end]);
-            if (first === null) {
-                await this.rpc.sendCommand("abort", {}, { timeoutMs: 60_000 });
-                await end;
-                return { interrupted: true };
-            }
-            const outcome = first;
+            if (first === null) await this.rpc.sendCommand("abort", {}, { timeoutMs: 60_000 });
+            // The interrupt is read off the agent's own last message: an abort that reached Pi
+            // after the agent had finished leaves a stop reason other than `aborted`.
+            const outcome = first ?? (await end);
             const messages = (outcome.messages ?? []) as Array<Record<string, Untyped>>;
             const last = messages.filter((m) => m.role === "assistant").at(-1);
+            if (last?.stopReason === "aborted") return { interrupted: true };
             return last?.stopReason === "error"
                 ? { error: String(last.errorMessage ?? "error") }
                 : {};
@@ -519,15 +518,26 @@ export class OpencodeSimHost extends SimHost {
             (caught: unknown) => ({ caught }),
         );
         const wait = Math.min(timeoutMs, interruptMs ?? timeoutMs);
-        const first = await Promise.race([settled, Bun.sleep(wait).then(() => null)]);
+        let first = await Promise.race([settled, Bun.sleep(wait).then(() => null)]);
         if (first === null) {
-            const abort = this.client.session.abort({ path: { id: this.sid } });
-            await Promise.race([abort.catch(() => undefined), Bun.sleep(5_000)]);
+            // `session.abort` answers true once it stopped a running prompt; a refusal, an error,
+            // or a stall leaves the turn to end as it would have, and it is reported as it ended.
+            const abort = this.client.session
+                .abort({ path: { id: this.sid } })
+                .then((r: Untyped) => r?.data === true && !r?.error)
+                .catch(() => false);
+            const aborted = await Promise.race([abort, Bun.sleep(5_000).then(() => false)]);
             const drained = await Promise.race([settled, Bun.sleep(30_000).then(() => null)]);
             if (drained === null) throw new Error("OpenCode turn still running 30 s after abort");
-            await this.logTurnTools(seen, startScenario).catch(() => undefined);
-            if (wait < timeoutMs) return { interrupted: true };
-            return { error: `turn deadline ${timeoutMs} ms` };
+            if (wait >= timeoutMs) {
+                await this.logTurnTools(seen, startScenario).catch(() => undefined);
+                return { error: `turn deadline ${timeoutMs} ms` };
+            }
+            if (aborted) {
+                await this.logTurnTools(seen, startScenario).catch(() => undefined);
+                return { interrupted: true };
+            }
+            first = drained;
         }
         if ("caught" in first) {
             await this.logTurnTools(seen, startScenario).catch(() => undefined);

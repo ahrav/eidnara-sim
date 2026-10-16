@@ -50,11 +50,15 @@ const report = {
     flagged: journal
         .filter((e) => e.kind === "UserSimRates" && (e.outside as string[]).length > 0)
         .map((e) => `${e.arm}: ${(e.outside as string[]).join(", ")}`),
+    missing_rates: (manifest.order as string[]).filter(
+        (arm) => journal.filter((e) => e.kind === "UserSimRates" && e.arm === arm).length !== 1,
+    ),
 };
 console.log(JSON.stringify(report, null, 2));
 const failed =
     report.mismatches_before_divergence.length +
     altered.length +
     unsent.length +
-    report.flagged.length;
+    report.flagged.length +
+    report.missing_rates.length;
 process.exit(failed > 0 ? 1 : 0);

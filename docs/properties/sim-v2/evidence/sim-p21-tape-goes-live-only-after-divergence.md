@@ -17,7 +17,10 @@ record with index at most `event_idx`.
 No harness code, test, or run exists yet. The surface lands in M6
 (#1031).
 
-M6 (#1031) keys an arm's replies by the arm only after its `divergedAt` record, so the first live reply of a sibling arm follows that record; a replay with one changed agent output records one divergence against the recorded run and makes live calls after it.
+M6 (#1031) keys an arm's replies by the arm only after its `divergedAt`
+record, so the first live reply of a sibling arm follows that record; a replay
+with one changed agent output records one divergence against the recorded run
+and makes live calls after it.
 
 ## Failure scenario
 

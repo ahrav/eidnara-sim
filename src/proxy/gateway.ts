@@ -7,6 +7,7 @@ import {
     ConverseStreamCommand,
 } from "@aws-sdk/client-bedrock-runtime";
 import { defaultProvider } from "@aws-sdk/credential-provider-node";
+import { sha256Hex } from "../prereg/canonical";
 import type { Rng } from "../rng";
 import { COMPONENT_HEADER, type ConverseBody, classify } from "./classify";
 import { encodeEvent } from "./eventstream";
@@ -104,6 +105,7 @@ type Done = Partial<CallRecord> &
     Pick<CallRecord, "component" | "componentSource" | "model" | "status">;
 
 const RESPONSE_TEXT_LIMIT = 32_768;
+const RESPONSE_TAIL_LIMIT = 6_000;
 const RELAYED_TEXT = new Set<string>(["agent", "user-sim", "judge"]);
 
 const CLAUDE_5_5 = /anthropic\.claude-(opus|sonnet|haiku)-5-5/;
@@ -375,10 +377,14 @@ export class Gateway {
                 sink.write(Buffer.from(JSON.stringify({ message: failure.message ?? "error" })));
             } else if (!done.finish_reason) done.finish_reason = "stream_cut";
         }
-        const relayed = text.join("").slice(0, RESPONSE_TEXT_LIMIT);
+        const whole = text.join("");
+        const relayed = whole.slice(0, RESPONSE_TEXT_LIMIT);
+        const recorded = relayed && RELAYED_TEXT.has(done.component);
+        const cut = whole.length > RESPONSE_TEXT_LIMIT;
         return {
             ...done,
-            ...(relayed && RELAYED_TEXT.has(done.component) ? { response_text: relayed } : {}),
+            ...(recorded ? { response_text: relayed, response_sha256: sha256Hex(whole) } : {}),
+            ...(recorded && cut ? { response_tail: whole.slice(-RESPONSE_TAIL_LIMIT) } : {}),
             proxy_retries: retries,
             input_tokens: usage.inputTokens ?? 0,
             output_tokens: usage.outputTokens ?? 0,

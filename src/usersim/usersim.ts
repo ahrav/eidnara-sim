@@ -1,6 +1,8 @@
-import { appendFileSync, existsSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, truncateSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { sha256Hex } from "../prereg/canonical";
 import { COMPONENT_HEADER } from "../proxy/classify";
+import { readJournal } from "../run/journal";
 import { HarnessFailure } from "../run/scheduler";
 import { markerHits } from "../scenario/compile";
 import type { Label, Plan } from "./plan";
@@ -38,7 +40,10 @@ const RULES: Record<string, [RegExp, string]> = {
         "<dur>",
     ],
     pids: [/\b(?:pid|PID)\b[:= ]\s*\d+/g, "<pid>"],
-    "temp-paths": [/\/(?:tmp|var\/tmp|var\/folders|private\/var)\/[^\s'"`)\]]+/g, "<tmp>"],
+    "temp-paths": [
+        /\/(?:tmp|var\/tmp|var\/folders|private\/var)\/[^\s'"`)\]]*[^\s'"`)\]?!.,:;]/g,
+        "<tmp>",
+    ],
     "run-ids": [/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, "<run>"],
 };
 
@@ -53,12 +58,34 @@ export function normaliser(rules: readonly string[]): (text: string) => string {
     return (text) => steps.reduce((t, [re, to]) => t.replace(re, to), text);
 }
 
-function jsonl<T>(path: string): T[] {
-    if (!existsSync(path)) return [];
-    return readFileSync(path, "utf8")
-        .split("\n")
-        .filter((l) => l !== "")
-        .map((l) => JSON.parse(l) as T);
+/**
+ * Reads a JSONL log the way the journal is read: a cut last line, which a kill mid-append
+ * leaves, is dropped, and a corrupt earlier line is refused. The run's own log is cut back to
+ * its complete prefix so the next append starts a whole line; a replay source must exist.
+ */
+function jsonl<T>(path: string, role: "own" | "source"): T[] {
+    if (role === "source") requireSource(path);
+    const read = readJournal(path);
+    if (role === "own" && existsSync(path)) truncateSync(path, read.bytes ?? 0);
+    return read as unknown as T[];
+}
+
+const pairingBeside = (tape: string) => join(dirname(tape), "pairing.jsonl");
+
+function requireSource(path: string): string {
+    if (!existsSync(path)) throw new HarnessFailure(`replay source ${path} does not exist`);
+    return path;
+}
+
+export function tapeDigests(tapes: readonly string[]): string[] {
+    return tapes.map((tape) =>
+        sha256Hex(
+            JSON.stringify([
+                readFileSync(requireSource(tape), "utf8"),
+                readFileSync(requireSource(pairingBeside(tape)), "utf8"),
+            ]),
+        ),
+    );
 }
 
 interface TapeEntry {
@@ -78,13 +105,19 @@ interface Taped {
 /** User-sim replies keyed by seed, event, label, and the normalised agent-output digest. */
 export class Tape {
     private readonly entries = new Map<string, Taped>();
+    /** Keys already on this run's own tape; a source hit is copied there once. */
+    private readonly own = new Set<string>();
 
     constructor(
         private readonly path: string,
         sources: readonly string[] = [],
     ) {
-        for (const p of [...sources, path]) {
-            for (const e of jsonl<TapeEntry>(p)) this.entries.set(e.key, e);
+        for (const p of sources) {
+            for (const e of jsonl<TapeEntry>(p, "source")) this.entries.set(e.key, e);
+        }
+        for (const e of jsonl<TapeEntry>(path, "own")) {
+            this.entries.set(e.key, e);
+            this.own.add(e.key);
         }
     }
 
@@ -93,7 +126,8 @@ export class Tape {
     }
 
     put(entry: TapeEntry): void {
-        if (this.entries.has(entry.key)) return;
+        if (this.own.has(entry.key)) return;
+        this.own.add(entry.key);
         this.entries.set(entry.key, entry);
         appendFileSync(this.path, `${JSON.stringify(entry)}\n`);
     }
@@ -128,11 +162,21 @@ export interface DivergenceRecord {
 
 export type PairingRecord = TurnRecord | DivergenceRecord;
 
-/** The pairing log; each record is on disk before the turn it describes is sent. */
+/**
+ * The pairing log; each record is on disk before the turn it describes is sent. Lookups go
+ * through indexes kept in step with `records`, since an XL arm appends tens of thousands of
+ * turns and each delivery reads the log several times.
+ */
 export class Pairing {
     readonly records: PairingRecord[];
 
-    private readonly recorded = new Map<string, string>();
+    /** Every digest the replay sources recorded for an arm's event. */
+    private readonly recorded = new Map<string, Set<string>>();
+    /** The earliest index at which a replay source saw the arm diverge in a session. */
+    private readonly recordedDivergence = new Map<string, number>();
+    private readonly turns = new Map<string, TurnRecord>();
+    private readonly lastTurn = new Map<string, TurnRecord>();
+    private readonly divergence = new Map<string, number>();
 
     /**
      * `reference(arm)` names the arm whose digests `arm` is compared with; `sources` are the
@@ -143,29 +187,52 @@ export class Pairing {
         readonly reference: (arm: string) => string,
         sources: readonly string[] = [],
     ) {
-        this.records = jsonl<PairingRecord>(path);
-        for (const r of sources.flatMap((p) => jsonl<PairingRecord>(p))) {
-            if (r.kind === "turn") this.recorded.set(`${r.arm}/${r.event}`, r.digest);
+        this.records = jsonl<PairingRecord>(path, "own");
+        for (const r of this.records) this.index(r);
+        for (const r of sources.flatMap((p) => jsonl<PairingRecord>(p, "source"))) {
+            if (r.kind === "turn") {
+                const key = `${r.arm}/${r.event}`;
+                this.recorded.set(key, (this.recorded.get(key) ?? new Set()).add(r.digest));
+            } else {
+                const key = `${r.arm}/${r.session}`;
+                const at = this.recordedDivergence.get(key);
+                if (at === undefined || r.index < at) this.recordedDivergence.set(key, r.index);
+            }
         }
     }
 
-    recordedDigest(arm: string, event: string): string | undefined {
-        return this.recorded.get(`${arm}/${event}`);
+    private index(r: PairingRecord): void {
+        if (r.kind === "turn") {
+            this.turns.set(`${r.arm}/${r.event}`, r);
+            const key = `${r.arm}/${r.session}`;
+            const prev = this.lastTurn.get(key);
+            if (!prev || r.index >= prev.index) this.lastTurn.set(key, r);
+        } else {
+            const key = `${r.arm}/${r.session}`;
+            const at = this.divergence.get(key);
+            if (at === undefined || r.index < at) this.divergence.set(key, r.index);
+        }
+    }
+
+    /** The digests the replay sources recorded for the arm's event; empty without a source. */
+    recordedDigests(arm: string, event: string): string[] {
+        return [...(this.recorded.get(`${arm}/${event}`) ?? [])];
     }
 
     append(record: PairingRecord): void {
         appendFileSync(this.path, `${JSON.stringify(record)}\n`);
         this.records.push(record);
+        this.index(record);
     }
 
     referenceDigest(arm: string, event: string): string | undefined {
-        const ref = this.reference(arm);
-        const r = this.records.find((x) => x.kind === "turn" && x.arm === ref && x.event === event);
-        return r?.kind === "turn" ? r.digest : undefined;
+        return this.turns.get(`${this.reference(arm)}/${event}`)?.digest;
     }
 
     /** The arm's latest record of the session before `index`, to continue its prefix hash. */
     last(arm: string, session: string, index: number): TurnRecord | undefined {
+        const latest = this.lastTurn.get(`${arm}/${session}`);
+        if (latest && latest.index < index) return latest;
         const mine = this.records.filter(
             (x): x is TurnRecord =>
                 x.kind === "turn" && x.arm === arm && x.session === session && x.index < index,
@@ -174,24 +241,24 @@ export class Pairing {
     }
 
     /**
-     * The arm whose taped replies `arm` reuses: itself once it has diverged in the session, the
-     * shared tape for the run's first arm, else its reference arm's owner.
+     * The arm whose taped replies `arm` reuses: itself once it has diverged in the session, in
+     * this run or in a replayed one, the shared tape for the run's first arm, else its reference
+     * arm's owner. A recorded divergence counts whichever source holds it, so an arm matching a
+     * source that had not diverged there may miss the shared entry and go live.
      */
     owner(arm: string, session: string, index: number): string {
-        if (this.diverged(arm, session, index)) return arm;
+        const recorded = this.recordedDivergence.get(`${arm}/${session}`);
+        if (this.diverged(arm, session, index) || (recorded !== undefined && recorded <= index)) {
+            return arm;
+        }
         const ref = this.reference(arm);
         return ref === arm ? "" : this.owner(ref, session, index);
     }
 
-    /** Whether the arm diverged in the session at or before `index`. */
+    /** Whether the arm diverged in the session at or before `index`, in this run. */
     diverged(arm: string, session: string, index = Number.POSITIVE_INFINITY): boolean {
-        return this.records.some(
-            (x) =>
-                x.kind === "divergedAt" &&
-                x.arm === arm &&
-                x.session === session &&
-                x.index <= index,
-        );
+        const at = this.divergence.get(`${arm}/${session}`);
+        return at !== undefined && at <= index;
     }
 }
 
@@ -201,6 +268,16 @@ export interface ScriptTurn {
     index: number;
     role: string;
     text: string;
+}
+
+/**
+ * The agent's last reply as the proxy recorded it: the bounded text, the digest of the whole
+ * text, and its last characters when the record cut it.
+ */
+export interface AgentReply {
+    text: string;
+    sha256?: string;
+    tail?: string;
 }
 
 export interface Delivery {
@@ -271,12 +348,19 @@ export interface UserSimOptions {
 export class UserSim {
     constructor(private readonly o: UserSimOptions) {}
 
-    async deliver(arm: string, t: ScriptTurn, lastAgent: string): Promise<Delivery> {
+    async deliver(arm: string, t: ScriptTurn, lastAgent: string | AgentReply): Promise<Delivery> {
         const { plan, pairing } = this.o;
-        const digest = sha256Hex(this.o.normalise(lastAgent));
+        const agent = typeof lastAgent === "string" ? { text: lastAgent } : lastAgent;
+        const whole = agent.sha256 ?? sha256Hex(agent.text);
+        // A cut record carries the whole text's digest, so two replies that differ only past
+        // the cut still get different digests.
+        const cut = whole !== sha256Hex(agent.text);
+        const normalised = this.o.normalise(agent.text);
+        const digest = sha256Hex(cut ? `${normalised}\n${whole}` : normalised);
+        const end = cut ? (agent.tail ?? agent.text) : agent.text;
         const prev = t.index === 0 ? undefined : pairing.last(arm, t.session, t.index);
         const chain = prev ? `${prev.prefix_sha256}\n${prev.text_sha256}` : "";
-        const prefix = sha256Hex(`${chain}\n${sha256Hex(lastAgent)}`);
+        const prefix = sha256Hex(`${chain}\n${whole}`);
         const base = { arm, session: t.session, event: t.id, index: t.index, digest };
         if (plan.skipped.has(t.id)) {
             const skip = { ...base, prefix_sha256: prefix, text_sha256: sha256Hex("") };
@@ -289,17 +373,18 @@ export class UserSim {
             });
             return { label: "abandon", text: "", delivered: false };
         }
-        const recorded = pairing.recordedDigest(arm, t.id);
+        const recorded = pairing.recordedDigests(arm, t.id);
         const reference =
             arm === pairing.reference(arm) ? undefined : pairing.referenceDigest(arm, t.id);
-        const against = recorded !== undefined && recorded !== digest ? "recorded" : "reference";
-        const other = against === "recorded" ? recorded : reference;
+        const against =
+            recorded.length > 0 && !recorded.includes(digest) ? "recorded" : "reference";
+        const other = against === "recorded" ? recorded[0] : reference;
         if (!pairing.diverged(arm, t.session) && other !== undefined && other !== digest) {
             pairing.append({ kind: "divergedAt", ...base, reference_digest: other, against });
         }
         let label = plan.labels.get(t.id) ?? "task";
-        if (label === "task" && t.role === "filler" && asksQuestion(lastAgent)) label = "clarify";
-        const reply = ASKS[label] ? await this.reply(arm, t, label, digest, lastAgent) : null;
+        if (label === "task" && t.role === "filler" && asksQuestion(end)) label = "clarify";
+        const reply = ASKS[label] ? await this.reply(arm, t, label, digest, end) : null;
         const text =
             reply === null
                 ? t.text
@@ -345,8 +430,9 @@ export class UserSim {
             const script = label === "abandon" || FACT_ROLES.has(t.role) ? null : t.text;
             const live = await this.o.llm(persona(label, script, lastAgent));
             got = { text: live.text.trim(), stop: live.stop };
-            this.o.tape.put({ key, event: t.id, label, digest, ...got });
         }
+        // A source hit is written to this run's tape too, so the run's tape holds every reply.
+        this.o.tape.put({ key, event: t.id, label, digest, ...got });
         const source: "tape" | "live" = taped === undefined ? "live" : "tape";
         const hits = markerHits(got.text, this.o.keys);
         const cut = got.stop === "max_tokens" ? ["max_tokens"] : [];

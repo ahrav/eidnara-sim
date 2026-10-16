@@ -143,7 +143,7 @@ describe("Journal and lease", () => {
 });
 
 describe("Scheduler", () => {
-    test("a turn's user record lands after its EndTurn, and each arm's rates before its EndArm", async () => {
+    test("a turn's user record lands before its EndTurn, and each arm's rates before its EndArm", async () => {
         const j = new Journal(join(dir(), "j.jsonl"));
         const driver: ArmDriver = {
             ...fakeDriver([]),
@@ -164,7 +164,7 @@ describe("Scheduler", () => {
         expect(users.length).toBeGreaterThan(0);
         for (const u of users) {
             const end = j.entries.find((e) => e.kind === "EndTurn" && e.event === u.event);
-            expect(end && end.seq < u.seq).toBe(true);
+            expect(end && u.seq < end.seq).toBe(true);
             expect(u.label).toBe("pushback");
         }
         expect(kinds.slice(-3)).toEqual(["UserSimRates", "EndArm", "EndRun"]);

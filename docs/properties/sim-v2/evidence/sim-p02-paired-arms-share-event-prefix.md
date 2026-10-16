@@ -17,7 +17,13 @@ delivered user text, pasted bytes, and fault parameters are byte-identical.
 No harness code, test, or run exists yet. The surface lands in M6
 (#1031).
 
-M6 (#1031) sends probe, paste, and task text as compiled and taped replies keyed by the normalised digest of the agent's last reply, so paired arms receive identical text until a digest differs. `pairingMismatches` and `scripts/pairing-check.ts` compare delivered-text hashes before the recorded divergence index. In the live `usersim-1` run (S seed 101, Pi, host and eidnara, 45 events) the check found no mismatch before divergence. Fault parameters come from the one compiled schedule both arms read.
+M6 (#1031) sends probe, paste, and task text as compiled and taped replies
+keyed by the normalised digest of the agent's last reply, so paired arms
+receive identical text until a digest differs. `pairingMismatches` and
+`scripts/pairing-check.ts` compare delivered-text hashes before the recorded
+divergence index. In the live `usersim-1` run (S seed 101, Pi, host and
+eidnara, 45 events) the check found no mismatch before divergence. Fault
+parameters come from the one compiled schedule both arms read.
 
 ## Failure scenario
 

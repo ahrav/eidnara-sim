@@ -42,8 +42,15 @@ function sample<T>(items: T[], n: number, rng: Rng): T[] {
  * Rounded quotas, capped by the eligible turns, bring the rates over a whole scenario close to
  * the pre-registered targets: abandon and redirect per session, then interrupt and pushback per
  * delivered turn. Probe turns are delivered as compiled and carry `task`; pastes carry `paste`.
+ * `pinned` turns, the ones a fault fires at, are always sent: an abandon skips only the trailing
+ * fillers after the last of them, so a fault armed for a turn meets that turn's agent call.
  */
-export function behaviourPlan(turns: PlanTurn[], prereg: Preregistration, seed: number): Plan {
+export function behaviourPlan(
+    turns: PlanTurn[],
+    prereg: Preregistration,
+    seed: number,
+    pinned: ReadonlySet<string> = new Set(),
+): Plan {
     const { rates, interrupt_after_ms: delay } = prereg.user_sim;
     const rng = new Rng((seed ^ 0x75736572) >>> 0);
     const labels = new Map<string, Label>();
@@ -55,7 +62,7 @@ export function behaviourPlan(turns: PlanTurn[], prereg: Preregistration, seed: 
 
     const trailing = (s: PlanTurn[]) => {
         let end = s.length;
-        while (end > 1 && s[end - 1]?.role === "filler") end--;
+        while (end > 1 && s[end - 1]?.role === "filler" && !pinned.has(s[end - 1]?.id ?? "")) end--;
         return s.slice(end);
     };
     const quota = (rate: UserSimRate, n: number) => Math.round(Number(rates[rate]) * n);
