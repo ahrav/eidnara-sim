@@ -11,12 +11,18 @@ export function crc32(bytes: Uint8Array): number {
 /** The header type tag of a UTF-8 string value. */
 const STRING_HEADER = 7;
 
+/** A string header value longer than the format's `uint16` length field is cut to 65,535 bytes; a header name longer than its `uint8` field is cut to 255. */
+function clamp(text: string, max: number): Buffer {
+    const bytes = Buffer.from(text, "utf8");
+    return bytes.length <= max ? bytes : bytes.subarray(0, max);
+}
+
 /** One event stream message whose headers are all strings. */
 export function encodeMessage(headers: Record<string, string>, payload: Uint8Array): Buffer {
     const encodedHeaders = Buffer.concat(
         Object.entries(headers).map(([name, value]) => {
-            const nameBytes = Buffer.from(name, "utf8");
-            const valueBytes = Buffer.from(value, "utf8");
+            const nameBytes = clamp(name, 255);
+            const valueBytes = clamp(value, 65_535);
             const header = Buffer.alloc(1 + nameBytes.length + 1 + 2 + valueBytes.length);
             let at = header.writeUInt8(nameBytes.length, 0);
             at += nameBytes.copy(header, at);

@@ -9,10 +9,13 @@ sends to Bedrock through the AWS SDK with the profile and region from
 `sim.config.json`; blob fields (image and document bytes) pass through as the
 base64 strings the wire format carries in both directions, and a failure
 mid-stream reaches the host as an event stream message: a modeled exception
-framed as `exception`, any other throw as an `error` with its code and
-message, so the host's SDK raises the same failure. `Gateway.stop()`
-closes every connection and waits up to five seconds for in-flight requests,
-counted from the moment their headers arrive, to write their records; the
+framed as `exception` with its own fields (for example `originalStatusCode`),
+any other throw as an `error` with its code and message, so the host's SDK
+raises the same failure. Header values are cut to the format's 65,535-byte
+limit. `Gateway.stop()`
+closes every connection, then stops both listeners, and waits up to five
+seconds in all for in-flight requests, counted from the moment their headers
+arrive, to write their records; the
 run then calls `RecordWriter.close()` to release the journal descriptor. A
 throw from the `observe` callback lands in `Gateway.failures` and leaves the
 answer untouched. Each call draws its backoff jitter from its own
@@ -23,16 +26,16 @@ seed to one backoff sequence.
 
 `RecordWriter` appends one record per request to a JSONL file and keeps them
 in memory. The journal is created exclusively at construction with
-`O_NOFOLLOW` after checking that its parent directory resolves without a
-link, so an existing path, a symlink in any component, or anything other than
-a fresh regular file is refused, and a record enters memory only after its
-line reached the file. A
+`O_NOFOLLOW` on the normalized path after checking that its parent directory
+resolves without a link, so an existing path, a symlink in any component, or
+anything other than a fresh regular file is refused, and a record enters
+memory only after its line reached the file. A
 failed append is truncated back to the bytes that reached the file, and when
 that truncation fails too the writer refuses every later record, so the
 journal never carries a partial line followed by a whole one.
-Requests the gateway rejects (an unknown route, a method other than `POST`, a
-body that is not a JSON object, a body over 32 MiB, a malformed path, an
-upload the client abandoned) and requests whose handling throws, including a
+Requests the gateway rejects (an unknown route, a method other than `POST`, an
+`Expect` header other than `100-continue`, a body that is not a JSON object, a
+body over 32 MiB, a malformed path, an upload the client abandoned) and requests whose handling throws, including a
 throw from the scheduler's `scope()` or clock callback, still get a record. The gateway retains at most 32 MiB of a request body and counts the
 rest. The writer refuses a record that lacks any field below.
 
@@ -117,7 +120,8 @@ timeout instead of the delayed answer.
 For each episode, `FaultInjector.report()` returns whether it was armed, the
 `seq` of every injected record, the `seq` of the first later agent call that
 started within the window after each injection (host-observed; a faulted
-retry under a persistent or burst episode counts), and whether the proxy
+retry under a persistent or burst episode counts; an agent call that starts
+after the window closes the injection's wait), and whether the proxy
 retried. An episode is `fired` only with both an injected record
 and a host-observed call (SIM-P31); otherwise it is `untriggered`, and
 `excludedFromFaultMetrics` reports that the run leaves fault metrics

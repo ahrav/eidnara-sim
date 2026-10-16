@@ -1,4 +1,9 @@
-import { createServer as createHttp1Server, type Server } from "node:http";
+import {
+    createServer as createHttp1Server,
+    type IncomingMessage,
+    type Server,
+    type ServerResponse,
+} from "node:http";
 import {
     createServer as createHttp2Server,
     type Http2Server,
@@ -150,6 +155,7 @@ interface Request {
     path: string;
     method: string;
     header: string | undefined;
+    expect: string | undefined;
     body: Body;
 }
 
@@ -164,7 +170,7 @@ export class Gateway {
     constructor(private readonly options: GatewayOptions) {}
 
     async start(): Promise<void> {
-        const h1 = createHttp1Server((req, res) => {
+        const onRequest = (req: IncomingMessage, res: ServerResponse) => {
             this.inFlight++;
             const gone = new AbortController();
             res.on("close", () => !res.writableFinished && gone.abort());
@@ -173,6 +179,7 @@ export class Gateway {
                     path: req.url ?? "",
                     method: req.method ?? "",
                     header: req.headers[COMPONENT_HEADER] as string | undefined,
+                    expect: req.headers.expect,
                     body,
                 };
                 this.handle(request, {
@@ -191,7 +198,9 @@ export class Gateway {
                     signal: gone.signal,
                 }).catch((caught) => this.failures.push(caught as Error));
             });
-        });
+        };
+        const h1 = createHttp1Server(onRequest);
+        h1.on("checkExpectation", onRequest);
         const h2 = createHttp2Server();
         h2.on("session", (session) => {
             this.sessions.add(session);
@@ -207,6 +216,7 @@ export class Gateway {
                     path: String(headers[":path"] ?? ""),
                     method: String(headers[":method"] ?? ""),
                     header: headers[COMPONENT_HEADER] as string | undefined,
+                    expect: undefined,
                     body,
                 };
                 this.handle(request, {
@@ -245,13 +255,15 @@ export class Gateway {
         }
     }
 
+    /** Connections are destroyed before `close()`: under Bun, `closeAllConnections()` after `close()` leaves them open. The close wait shares the grace bound. */
     async stop(graceMs = 5_000): Promise<void> {
+        const deadline = Date.now() + graceMs;
         (this.servers[0] as Server | undefined)?.closeAllConnections();
         for (const session of this.sessions) session.destroy();
-        await Promise.all(
+        const closed = Promise.all(
             this.servers.map((s) => new Promise<void>((done) => s.close(() => done()))),
         );
-        const deadline = Date.now() + graceMs;
+        await Promise.race([closed, Bun.sleep(Math.max(0, deadline - Date.now()))]);
         while (this.inFlight > 0 && Date.now() < deadline) await Bun.sleep(10);
     }
 
@@ -316,7 +328,7 @@ export class Gateway {
         call: number,
         progress: (d: Done) => void,
     ): Promise<Done> {
-        const { path, method, header, body: upload } = request;
+        const { path, method, header, expect, body: upload } = request;
         const received = upload.received;
         const started = performance.now();
         const route = ROUTE.exec(path.split("?", 1)[0] ?? "");
@@ -332,13 +344,15 @@ export class Gateway {
             ? [404, `unknown operation ${path}`]
             : method !== "POST"
               ? [405, `${method} is not POST`]
-              : !upload.ended
-                ? [400, `the client left after ${received} bytes of the body`]
-                : received > MAX_BODY
-                  ? [413, `body of ${received} bytes over the limit`]
-                  : model === undefined
-                    ? [400, "malformed model id"]
-                    : null;
+              : expect !== undefined && expect.toLowerCase() !== "100-continue"
+                ? [417, `unsupported Expect ${expect}`]
+                : !upload.ended
+                  ? [400, `the client left after ${received} bytes of the body`]
+                  : received > MAX_BODY
+                    ? [413, `body of ${received} bytes over the limit`]
+                    : model === undefined
+                      ? [400, "malformed model id"]
+                      : null;
         const raw = Buffer.concat(upload.chunks);
         const body = early ? null : parse(() => JSON.parse(raw.toString("utf8")) as ConverseBody);
         const problem =
@@ -465,6 +479,12 @@ export class Gateway {
             done.error = `${failure.name}: ${failure.message}`;
             const errorType = failure.name ?? "InternalServerException";
             const text = failure.message ?? "error";
+            const payload: Record<string, unknown> = { message: text };
+            for (const [key, value] of Object.entries(failure)) {
+                if (!key.startsWith("$") && !["name", "message", "stack"].includes(key)) {
+                    payload[key] = value;
+                }
+            }
             if (sink.sent() === 0) {
                 answer(done.status, {
                     "content-type": "application/json",
@@ -474,7 +494,7 @@ export class Gateway {
             } else if (streaming) {
                 if (!sawStop || !sawMetadata) done.finish_reason = "stream_cut";
                 const frame = errorType.endsWith("Exception")
-                    ? encodeException(errorType, { message: text })
+                    ? encodeException(errorType, payload)
                     : encodeError(errorType, text);
                 if (sink.write(frame)) firstByte();
             }

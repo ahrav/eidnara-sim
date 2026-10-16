@@ -83,8 +83,9 @@ export function recordProblems(value: Record<string, unknown>): string[] {
 }
 
 /** Creates the journal exclusively without following a symlink in any path component, so an existing path or a linked parent is refused. */
-function openJournal(path: string): number {
-    const parent = resolve(dirname(path));
+function openJournal(given: string): number {
+    const path = resolve(given);
+    const parent = dirname(path);
     let real: string;
     try {
         real = realpathSync(parent);

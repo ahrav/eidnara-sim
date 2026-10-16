@@ -80,9 +80,10 @@ export class FaultInjector {
     /** `startedMono` is the call's receipt on the same monotonic clock `take()` stamps. */
     observe(record: CallRecord, call: number, startedMono: number): void {
         for (const p of this.pending.filter((x) => call > x.call)) {
+            if (record.component !== TARGET) continue;
             const inWindow = startedMono <= p.at + this.windowMs;
-            if (record.component !== TARGET || !inWindow) continue;
-            (this.witnesses.get(p.fault) as Witness).host_observed_seq.push(record.seq);
+            if (inWindow)
+                (this.witnesses.get(p.fault) as Witness).host_observed_seq.push(record.seq);
             this.pending.splice(this.pending.indexOf(p), 1);
         }
         if (record.fault_ref === null) {

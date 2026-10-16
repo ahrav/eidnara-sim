@@ -7,7 +7,7 @@ import { decodeMessages } from "../../tests/eventstream-decode";
 import { Rng } from "../rng";
 import type { FaultType } from "../scenario/faults";
 import { classify } from "./classify";
-import { crc32, encodeEvent, encodeMessage, wireJson } from "./eventstream";
+import { crc32, encodeError, encodeEvent, encodeMessage, wireJson } from "./eventstream";
 import {
     backoffMs,
     bedrockUpstream,
@@ -532,8 +532,6 @@ describe("witnesses", () => {
             fault_ref: null,
             started_wall_ms: 0,
         } as const;
-        injector.observe(late, 1, t0 + 500);
-        expect(injector.report()[0]?.status).toBe("untriggered");
         const inside = {
             ...base,
             seq: 2,
@@ -543,6 +541,32 @@ describe("witnesses", () => {
         } as const;
         injector.observe(inside, 2, t0 + 50);
         expect(injector.report()[0]).toMatchObject({ status: "fired", host_observed_seq: [2] });
+        injector.observe(late, 1, t0 + 500);
+        expect(injector.report()[0]?.host_observed_seq).toEqual([2]);
+        const expired = new FaultInjector([fault], new Rng(1), 100);
+        expired.arm("f");
+        expired.take("agent", 0);
+        expired.observe({ ...injected, started_wall_ms: 0 }, 0, t0);
+        expired.observe(late, 1, t0 + 500);
+        expect(expired.report()[0]?.status).toBe("untriggered");
+        const persistent = new FaultInjector(
+            [{ ...fault, id: "p", strategy: "persistent" } as ProxyFault],
+            new Rng(1),
+            100,
+        );
+        persistent.arm("p");
+        for (let call = 0; call < 4; call++) {
+            persistent.take("agent", call);
+            const r = {
+                ...base,
+                seq: call,
+                component: "agent",
+                fault_ref: "p",
+                started_wall_ms: 0,
+            };
+            persistent.observe(r as never, call, t0 + call * 500);
+        }
+        expect((persistent as unknown as { pending: unknown[] }).pending).toHaveLength(1);
     });
 
     test("a fault never armed is untriggered", async () => {
@@ -805,6 +829,12 @@ describe("classification", () => {
         expect(encodeMessage({}, new Uint8Array()).toString("hex")).toBe(
             "000000100000000005c248eb7d98c8ff",
         );
+    });
+
+    test("header values longer than the format's length field are cut to 65,535 bytes", () => {
+        const [m] = decodeMessages(encodeError("x".repeat(70_000), "y".repeat(70_000)));
+        expect(Buffer.byteLength(m?.headers[":error-code"] ?? "")).toBe(65_535);
+        expect(Buffer.byteLength(m?.headers[":error-message"] ?? "")).toBe(65_535);
     });
 
     test("wireJson serializes a Buffer and a Uint8Array as base64 and keeps a Buffer-shaped document", () => {
@@ -1079,11 +1109,28 @@ describe("every request yields one record", () => {
             finish_reason: "stream_cut",
             error: "Error: boom",
         });
-        const modeled = await start(null, throwing("ModelStreamErrorException"));
+        const modeled = await start(null, {
+            async converse() {
+                async function* events() {
+                    yield { messageStart: { role: "assistant" } };
+                    throw Object.assign(new Error("boom"), {
+                        name: "ModelStreamErrorException",
+                        originalStatusCode: 424,
+                        originalMessage: "provider said no",
+                        $metadata: { httpStatusCode: 200 },
+                    });
+                }
+                return { events: events() };
+            },
+        });
         const m = await hostCall(modeled.url, AGENT_BODY, 2_000);
         expect(m.events.at(-1)).toEqual({
             type: "ModelStreamErrorException",
-            member: { message: "boom" },
+            member: {
+                message: "boom",
+                originalStatusCode: 424,
+                originalMessage: "provider said no",
+            },
         });
     });
 
@@ -1246,6 +1293,27 @@ describe("every request yields one record", () => {
         expect(gateway.failures).toEqual([]);
     }, 20_000);
 
+    test("an unsupported Expect header yields a 417 and a rejected record", async () => {
+        const { records, url } = await start(null);
+        const body = JSON.stringify(AGENT_BODY);
+        const sock = tcp(Number(new URL(url).port), "127.0.0.1");
+        await new Promise<void>((r) => sock.on("connect", () => r()));
+        const reply = new Promise<string>((r) => {
+            let buf = "";
+            sock.on("data", (c) => {
+                buf += c.toString();
+            });
+            sock.on("close", () => r(buf));
+        });
+        const head = `POST /model/m/converse HTTP/1.1\r\nHost: x\r\nExpect: nope\r\nContent-Length: ${body.length}\r\nConnection: close\r\n\r\n`;
+        sock.write(`${head}${body}`);
+        expect((await reply).startsWith("HTTP/1.1 417")).toBe(true);
+        while (records.records.length === 0) await Bun.sleep(5);
+        expect(records.records.map((r) => [r.component, r.status, r.error])).toEqual([
+            ["rejected", 417, "unsupported Expect nope"],
+        ]);
+    });
+
     test("the writer opens a fresh journal exclusively and refuses every other path", () => {
         const partial = {
             arm: "a",
@@ -1286,6 +1354,9 @@ describe("every request yields one record", () => {
         symlinkSync("real", `${dir}/link`);
         expect(() => new RecordWriter(`${dir}/link/records.jsonl`)).toThrow(/through a link/);
         expect(existsSync(`${dir}/real/records.jsonl`)).toBe(false);
+        new RecordWriter(`${dir}/link/../normalized.jsonl`).close();
+        expect(existsSync(`${dir}/normalized.jsonl`)).toBe(true);
+        expect(existsSync("runs/normalized.jsonl")).toBe(false);
         rmSync(dir, { recursive: true, force: true });
     });
 
