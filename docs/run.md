@@ -142,7 +142,8 @@ in flight.
 
 ## Resume
 
-A restarted harness opens the same journal. A journal with entries but no `StartRun` is refused. A journal holding a fatal
+A restarted harness opens the same journal. A journal whose first entry is anything but `StartRun`, or that holds a
+second `StartRun`, is refused. A journal holding a fatal
 `ItemState` (a daemon exit outside an outage window, or a scheduler fault the
 driver could not carry out), before or after `EndRun`, is a failed run and is
 refused with `HarnessFailure`; an arm with `EndArm` before every scheduled

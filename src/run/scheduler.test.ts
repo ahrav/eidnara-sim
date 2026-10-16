@@ -1688,7 +1688,18 @@ describe("Scheduler", () => {
         await expect(make(reversed).run()).rejects.toThrow(/has no BeginTurn/);
         const headless = join(dir(), "j.jsonl");
         base(headless, false).close();
-        await expect(make(headless).run()).rejects.toThrow(/precede StartRun/);
+        await expect(make(headless).run()).rejects.toThrow(/StartRun is not the first entry/);
+        const late = join(dir(), "j.jsonl");
+        const l = base(late, false);
+        l.append({
+            kind: "StartRun",
+            arm: null,
+            scenario_ms: 0,
+            order: ["a"],
+            scenario: scenarioId(fixtureEvents(1), []),
+        });
+        l.close();
+        await expect(make(late).run()).rejects.toThrow(/StartRun is not the first entry/);
     });
 
     test("a lease with a namespace this contender lacks, or vice versa, is treated as alive", () => {

@@ -97,7 +97,10 @@ export class Scheduler {
         }
         const finished = new Set(entries.filter((e) => e.kind === "EndArm").map((e) => e.arm));
         const scenario = scenarioId(this.o.events, this.o.faults);
-        const start = entries.find((e) => e.kind === "StartRun");
+        const start = entries[0]?.kind === "StartRun" ? entries[0] : undefined;
+        if (entries.some((e, i) => e.kind === "StartRun" && i > 0)) {
+            throw new Error("journal: StartRun is not the first entry");
+        }
         if (start) {
             if (JSON.stringify(start.order) !== JSON.stringify(this.o.order)) {
                 throw new Error(
@@ -109,7 +112,7 @@ export class Scheduler {
             }
         }
         if (!start && entries.length > 0) {
-            throw new Error("journal: entries precede StartRun");
+            throw new Error("journal: StartRun is not the first entry");
         }
         for (const arm of this.o.order) this.checkLifecycle(entries, arm);
         if (entries.some((e) => e.kind === "EndRun")) {
