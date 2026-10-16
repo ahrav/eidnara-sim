@@ -92,8 +92,8 @@ function isLease(v: unknown): v is Lease {
         typeof l.host === "string" &&
         optional(l.boot, "string") &&
         optional(l.ns, "string") &&
-        typeof l.started_wall_ms === "number" &&
-        optional(l.started_ticks, "number") &&
+        Number.isFinite(l.started_wall_ms) &&
+        (l.started_ticks === undefined || Number.isFinite(l.started_ticks)) &&
         optional(l.released, "boolean")
     );
 }
@@ -151,19 +151,62 @@ function holderAlive(held: Lease, mine: Lease): boolean {
     return ticks === null ? alive(held.pid) : ticks === held.started_ticks;
 }
 
+const LEASE_BYTES = 4096;
+
 /**
- * A lease that fails to parse is one a kill cut mid-write and reads as dead; one that parses to
- * the wrong shape is corruption and refuses the directory.
+ * Reads a lease through a descriptor opened without following symlinks, requiring a small regular
+ * file. A file that vanished between listing and reading is absent (`null`). Every other read
+ * error, and a file that does not parse to a lease, refuses the directory: a lease is linked
+ * into place whole, so a damaged one is corruption and never a holder to take over.
  */
 function readLease(path: string): Lease | null {
+    const { O_NOFOLLOW, O_NONBLOCK, O_RDONLY } = constants;
+    let fd: number;
+    try {
+        fd = openSync(path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK);
+    } catch (caught) {
+        if ((caught as { code?: string }).code === "ENOENT") return null;
+        throw new Error(`lease ${path} cannot be opened: ${(caught as Error).message}`);
+    }
+    let text: string;
+    try {
+        const st = fstatSync(fd);
+        if (!st.isFile()) throw new Error(`lease ${path} is not a regular file`);
+        if (st.size > LEASE_BYTES) throw new Error(`lease ${path} is ${st.size} bytes`);
+        text = readFileSync(fd, "utf8");
+    } finally {
+        closeSync(fd);
+    }
     let parsed: unknown;
     try {
-        parsed = JSON.parse(readFileSync(path, "utf8"));
+        parsed = JSON.parse(text);
     } catch {
-        return null;
+        throw new Error(`lease ${path} is malformed`);
     }
     if (!isLease(parsed)) throw new Error(`lease ${path} is malformed`);
     return parsed;
+}
+
+/** The fields that name this process's own lease, compared whole when releasing it. */
+function ownIdentity(): Lease {
+    return {
+        pid: process.pid,
+        host: leaseHost(),
+        boot: bootId(),
+        ns: pidNamespace(),
+        started_wall_ms: Date.now(),
+        started_ticks: startTicks(process.pid) ?? undefined,
+    };
+}
+
+function sameProcess(a: Lease, b: Lease): boolean {
+    return (
+        a.pid === b.pid &&
+        a.host === b.host &&
+        a.boot === b.boot &&
+        a.ns === b.ns &&
+        a.started_ticks === b.started_ticks
+    );
 }
 
 /** The pid namespace this process lives in; pids from another namespace cannot be probed here. */
@@ -199,17 +242,12 @@ function leaseNumbers(dir: string): number[] {
  * killed run resumes.
  */
 export function takeLease(dir: string): Lease {
-    const mine: Lease = {
-        pid: process.pid,
-        host: leaseHost(),
-        boot: bootId(),
-        ns: pidNamespace(),
-        started_wall_ms: Date.now(),
-        started_ticks: startTicks(process.pid) ?? undefined,
-    };
+    const mine = ownIdentity();
     for (let attempt = 0; attempt < 3; attempt++) {
         const numbers = leaseNumbers(dir);
         const top = numbers.at(-1);
+        if (top === Number.MAX_SAFE_INTEGER)
+            throw new Error(`lease numbers in ${dir} are exhausted`);
         const held = top === undefined ? null : readLease(join(dir, `lease.${top}.json`));
         if (held && !held.released && (held.host !== mine.host || holderAlive(held, mine))) {
             throw new Error(`run directory ${dir} is leased by pid ${held.pid} on ${held.host}`);
@@ -234,11 +272,11 @@ export function takeLease(dir: string): Lease {
  * the directory keeps its highest generation and later takers all target the next one.
  */
 export function releaseLease(dir: string): void {
-    const host = leaseHost();
+    const mine = ownIdentity();
     for (const n of leaseNumbers(dir)) {
         const path = join(dir, `lease.${n}.json`);
         const held = readLease(path);
-        if (held?.pid !== process.pid || held.host !== host) continue;
+        if (!held || held.released || !sameProcess(held, mine)) continue;
         const staged = join(dir, `lease.${randomUUID()}.tmp`);
         writeFileSync(staged, JSON.stringify({ ...held, released: true }), { flag: "wx" });
         renameSync(staged, path);
@@ -312,7 +350,7 @@ export class Journal {
         const full = { ...entry, seq: this.entries.length, wall_ms: Date.now() } as Entry;
         const line = Buffer.from(`${JSON.stringify(full)}\n`);
         for (let written = 0; written < line.length; ) {
-            const n = writeSync(this.fd, line, written);
+            const n = writeSync(this.open(), line, written);
             if (n <= 0) throw new Error(`journal: short write at seq ${full.seq}`);
             written += n;
         }
@@ -322,6 +360,13 @@ export class Journal {
     }
 
     close(): void {
-        closeSync(this.fd);
+        const fd = this.open();
+        this.fd = -1;
+        closeSync(fd);
+    }
+
+    private open(): number {
+        if (this.fd < 0) throw new Error(`journal ${this.path} is closed`);
+        return this.fd;
     }
 }

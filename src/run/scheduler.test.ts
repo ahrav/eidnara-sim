@@ -231,8 +231,7 @@ describe("Journal and lease", () => {
         expect(takeLease(d).pid).toBe(process.pid);
         releaseLease(d);
         writeTopLease(d, "");
-        expect(takeLease(d).pid).toBe(process.pid);
-        releaseLease(d);
+        expect(() => takeLease(d)).toThrow(/malformed/);
         writeTopLease(d, JSON.stringify({ pid: dead, host: "elsewhere", started_wall_ms: 0 }));
         expect(() => takeLease(d)).toThrow(/on elsewhere/);
     });
@@ -365,6 +364,41 @@ describe("Journal and lease", () => {
         expect(readFileSync(other, "utf8")).toBe("bytes with no newline");
     });
 
+    test("a closed journal refuses further appends", () => {
+        const j = new Journal(join(dir(), "j.jsonl"));
+        j.append({ kind: "StartRun", arm: null, scenario_ms: 0 });
+        j.close();
+        expect(() => j.append({ kind: "EndRun", arm: null, scenario_ms: 0 })).toThrow(/closed/);
+        expect(() => j.close()).toThrow(/closed/);
+    });
+
+    test("a lease at the last safe generation refuses the directory rather than rounding the next", () => {
+        const d = dir();
+        writeFileSync(
+            join(d, `lease.${Number.MAX_SAFE_INTEGER}.json`),
+            JSON.stringify({ pid: 1, host: "x", started_wall_ms: 0, released: true }),
+        );
+        expect(() => takeLease(d)).toThrow(/exhausted/);
+    });
+
+    test("a lease path that is a fifo is refused without blocking on a read", () => {
+        const d = dir();
+        const fifo = join(d, "lease.0.json");
+        expect(Bun.spawnSync(["mkfifo", fifo]).exitCode).toBe(0);
+        const child = Bun.spawnSync(
+            [
+                "bun",
+                "-e",
+                'import { takeLease } from "./src/run/journal"; takeLease(process.argv[1]);',
+                d,
+            ],
+            { cwd: ROOT, timeout: 5_000 },
+        );
+        expect(child.signalCode ?? null).toBeNull();
+        expect(child.exitCode).not.toBe(0);
+        expect(child.stderr.toString()).toMatch(/not a regular file/);
+    });
+
     test("a lease file whose number is outside the safe integer range refuses the directory", () => {
         const d = dir();
         writeFileSync(join(d, "lease.99999999999999999999.json"), "{}");
@@ -397,6 +431,22 @@ describe("Journal and lease", () => {
         symlinkSync(target, link);
         expect(() => new Journal(link)).toThrow();
         expect(readFileSync(target, "utf8")).toBe("precious bytes with no newline");
+    });
+
+    test("releaseLease leaves a lease that names this pid from another incarnation", () => {
+        const d = dir();
+        const mine = takeLease(d);
+        releaseLease(d);
+        writeFileSync(
+            join(d, "lease.0.json"),
+            JSON.stringify({
+                ...mine,
+                started_ticks: (mine.started_ticks ?? 0) + 1,
+                released: undefined,
+            }),
+        );
+        releaseLease(d);
+        expect(JSON.parse(readFileSync(join(d, "lease.0.json"), "utf8")).released).toBeUndefined();
     });
 
     test("releaseLease leaves a lease held by the same pid on another host", () => {
@@ -576,6 +626,31 @@ describe("Scheduler", () => {
         expect(started?.scenario_ms).toBe(8 * 3_600_000);
     });
 
+    test("a proxy fault whose arming fails is not journaled as fired", async () => {
+        const j = new Journal(join(dir(), "j.jsonl"));
+        const faults = [
+            episode("p1", "provider_429", { kind: "user_turn", session: "s-0000", n: 1 }),
+        ];
+        const proxy = {
+            arm: () => {
+                throw new Error("proxy is down");
+            },
+            disarm: () => undefined,
+        };
+        await expect(
+            new Scheduler({
+                events: fixtureEvents(1),
+                faults,
+                journal: j,
+                settleMs: 0,
+                order: ["a"],
+                drivers: { a: fakeDriver([]) },
+                proxy,
+            }).run(),
+        ).rejects.toThrow(/proxy is down/);
+        expect(j.entries.filter((e) => e.kind === "FaultFired")).toEqual([]);
+    });
+
     test("every proxy fault of a session is disarmed at its end, exhausted or not", async () => {
         const faults = [
             {
@@ -659,11 +734,6 @@ describe("Scheduler", () => {
             },
             reset: async () => undefined,
             event: async (e) => {
-                if (e.kind === "user_turn" && e.index === 0) {
-                    expect(() => handle?.daemonExited({ signal: "SIGKILL" })).toThrow(
-                        HarnessFailure,
-                    );
-                }
                 if (e.kind === "user_turn" && e.index === 2) handle?.observe("history_summarizer");
                 return {};
             },
@@ -690,20 +760,46 @@ describe("Scheduler", () => {
         expect(observed).toBeGreaterThan(-1);
         expect(observed).toBeLessThan(turnDone);
         expect(j.entries[observed]?.arm).toBe("a");
-        expect(kinds).toContainEqual(["ItemState", false]);
         expect(() => handle?.daemonExited({ signal: "SIGKILL" })).toThrow(/arm has ended/);
-        j.close();
-        const reopened = new Journal(j.path);
-        await expect(
+    });
+
+    test("an unexpected daemon exit fails the run even when the driver swallows the throw, and the journal stays failed", async () => {
+        const j = new Journal(join(dir(), "j.jsonl"));
+        let handle: ArmHandle | null = null;
+        let swallowed: unknown = null;
+        const driver: ArmDriver = {
+            ...fakeDriver([]),
+            bind: (h) => {
+                handle = h;
+            },
+            event: async (e) => {
+                if (e.kind === "user_turn" && e.index === 0) {
+                    try {
+                        handle?.daemonExited({ signal: "SIGKILL" });
+                    } catch (caught) {
+                        swallowed = caught;
+                    }
+                }
+                return {};
+            },
+        };
+        const make = (journal: Journal) =>
             new Scheduler({
-                events: fixtureEvents(3),
-                faults: [kill],
-                journal: reopened,
+                events: fixtureEvents(2),
+                faults: [],
+                journal,
                 settleMs: 0,
                 order: ["a"],
                 drivers: { a: driver },
-            }).run(),
-        ).rejects.toThrow(HarnessFailure);
+            });
+        await expect(make(j).run()).rejects.toThrow(HarnessFailure);
+        expect(swallowed).toBeInstanceOf(HarnessFailure);
+        expect(j.entries.map((e) => e.kind)).not.toContain("EndRun");
+        expect(j.entries).toContainEqual(
+            expect.objectContaining({ kind: "ItemState", fatal: true }),
+        );
+        j.close();
+        await expect(make(new Journal(j.path)).run()).rejects.toThrow(HarnessFailure);
     });
 
     test("a turn that rejects while a mid-fold kill is in flight waits for the kill's evidence", async () => {
@@ -968,7 +1064,7 @@ describe("Scheduler", () => {
             order: ["a", "b"],
             drivers: { a: driver, b: driver },
         });
-        await scheduler.run();
+        await expect(scheduler.run()).rejects.toThrow(HarnessFailure);
         expect(secondReset).toBeInstanceOf(HarnessFailure);
         const unexpected = j.entries.filter((e) => e.kind === "ItemState" && e.expected === false);
         expect(unexpected.map((e) => e.arm)).toEqual(["b"]);

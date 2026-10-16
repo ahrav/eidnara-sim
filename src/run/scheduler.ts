@@ -68,6 +68,7 @@ export class Scheduler {
     private readonly fired = new Set<string>();
     private pendingKill: Promise<unknown> | null = null;
     private generation = 0;
+    private fatal: HarnessFailure | null = null;
 
     constructor(private readonly o: SchedulerOptions) {
         if (!o.proxy && o.faults.some((f) => f.seam.layer === PROXY_LAYER)) {
@@ -150,6 +151,7 @@ export class Scheduler {
                 this.clock = null;
             }
         }
+        if (this.fatal) throw this.fatal;
         this.log({ kind: "EndRun" });
     }
 
@@ -165,6 +167,7 @@ export class Scheduler {
             await kill;
             await this.idle();
         } while (kill !== this.pendingKill);
+        if (this.fatal) throw this.fatal;
     }
 
     /** Existing Event and failed(interrupted) entries make recovery writes idempotent across resumes. */
@@ -235,11 +238,9 @@ export class Scheduler {
 
     private async fire(driver: ArmDriver, f: FaultEpisode): Promise<void> {
         this.fired.add(`${this.arm}/${f.id}`);
+        if (f.seam.layer === PROXY_LAYER) this.o.proxy?.arm(f.id);
         this.log({ kind: "FaultFired", fault: f.id, type: f.type, layer: f.seam.layer });
-        if (f.seam.layer === PROXY_LAYER) {
-            this.o.proxy?.arm(f.id);
-            return;
-        }
+        if (f.seam.layer === PROXY_LAYER) return;
         if (f.type === "laptop_sleep") return;
         if (OUTAGE.has(f.type)) this.outage = f.id;
         let evidence: Record<string, unknown>;
@@ -340,7 +341,10 @@ export class Scheduler {
                 const expected = this.outage !== null;
                 this.log({ kind: "ItemState", daemon_exit: detail, expected, fatal: !expected });
                 if (!expected) {
-                    throw new HarnessFailure("daemon exited outside a scheduled outage window");
+                    this.fatal ??= new HarnessFailure(
+                        "daemon exited outside a scheduled outage window",
+                    );
+                    throw this.fatal;
                 }
             },
         };

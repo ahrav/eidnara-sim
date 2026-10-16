@@ -11,8 +11,9 @@ v2 harness before any harness code existed.
 
 ## Evidence trail
 
-A laptop-sleep fault produces exactly one `AdvanceClock` of the scheduled
-duration with `busy_set` empty and no events inside the gap.
+A laptop-sleep fault produces exactly one `AdvanceClock`, carrying the fault
+id, that spans the idle gap before its session with `busy_set` empty and no
+events inside the gap.
 
 At the 2026-10-12 proposal no harness code, test, or run existed; the
 surface landed in M4 (#1028).

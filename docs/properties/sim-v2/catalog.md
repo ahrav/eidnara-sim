@@ -1533,7 +1533,7 @@ Confidence: low - [evidence](evidence/sim-p60-journal-has-one-writer.md).
 PROPOSED: reconstructed from the condensed index in spec #1007; the M4 unit
 tests verify the record, and a default tier run reaches it.
 Existing check: src/run/scheduler.test.ts - live and foreign-host holders
-refused, dead and unreadable leases taken over, one winner among racing
+refused, dead leases taken over and damaged ones refused, one winner among racing
 resumers, and the second of two harness processes on one directory refused
 with the journal holding one `StartRun` and no `ResumeRun`
 Impact: Two writers interleave sequence numbers and corrupt the journal.

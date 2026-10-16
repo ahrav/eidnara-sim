@@ -14,11 +14,13 @@ so one left by an earlier boot of this machine reads as dead; it carries the
 holder's pid namespace, so a lease from another namespace on this machine is
 refused rather than probed against unrelated local pids; and the holder is
 identified by pid and by its kernel start time (`/proc/<pid>/stat`), so a pid
-that a later process reuses still reads as a dead holder. A lease file that
-does not parse is one a kill cut and reads as dead; one that parses to the
-wrong shape is corruption and refuses the directory. A lease whose process on this host has
-exited, or that a kill left unreadable, is taken over by writing a uniquely
-named temporary file with the process id, host, start time, and start ticks
+that a later process reuses still reads as a dead holder. A lease is read through
+a descriptor that follows no symlink and must name a small regular file; a
+lease that cannot be read or does not parse to a lease refuses the directory,
+since a lease is linked into place whole and a damaged one is corruption, never
+a holder to take over. `releaseLease` releases only a lease whose pid, machine,
+boot, namespace, and start ticks are all this process's. A lease whose process on this host has
+exited is taken over by writing a uniquely named temporary file with the process id, host, start time, and start ticks
 and linking it to `lease.<n+1>.json`. Exactly one of several racing resumers can create that
 name; the others read the winner's live lease on their next attempt and are
 refused. The winner removes the lower-numbered files. `releaseLease` marks the calling
@@ -29,8 +31,8 @@ free whichever machine released it.
 ## Journal
 
 `Journal` opens its file without following symlinks, requires a regular
-file with one link owned by the harness user, and reads and truncates it
-through that one descriptor. On read it
+file with one link owned by the harness user, reads and truncates it
+through that one descriptor, and refuses every operation after `close`. On read it
 accepts a line only when it parses, carries the next `seq`, names a known
 `kind`, has `arm` and finite `scenario_ms` and `wall_ms`, and keeps its arm's
 `scenario_ms` non-decreasing. It appends one JSON line per entry with `seq` (0, 1, 2, ... in append
@@ -93,7 +95,8 @@ call through it is refused:
    sleep fires first; the compiler sizes the sleep to the gap before its
    session, so the jump spans the gap and lands on the session's first event.
 4. Fire the faults keyed on the event. Provider faults are armed on the proxy
-   at the Nth user turn of their session. Scheduler faults call the driver's
+   at the Nth user turn of their session, and `FaultFired` is journaled after
+   the proxy accepted the arming. Scheduler faults call the driver's
    `fault` and journal its evidence. The mid-fold SIGKILL, the daemon restart,
    and the host upgrade open an outage window first.
 5. Deliver the event to the driver. A user turn is bracketed by `BeginTurn`
@@ -109,8 +112,9 @@ before `reset`. The handle carries `jobStart`, `jobEnd`, `observe`, and
 so a callback a finished arm left behind is refused instead of writing under
 the next arm. `observe("history_summarizer")` fires the session's mid-fold
 SIGKILL on the first observed summarizer call. `daemonExited` inside an outage
-window is journaled as expected; outside one, it journals a fatal `ItemState`
-and throws `HarnessFailure`. A scheduler fault whose driver call rejects
+window is journaled as expected; outside one, it journals a fatal `ItemState`,
+throws `HarnessFailure`, and fails the run at its next wait or before `EndRun`
+whether or not the caller swallowed the throw. A scheduler fault whose driver call rejects
 journals a fatal `ItemState` and fails the run.
 
 ## Resume

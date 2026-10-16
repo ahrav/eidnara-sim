@@ -20,7 +20,8 @@ surface landed in M4 (#1028).
 M4 (#1028) links a numbered lease file into the run directory before opening
 the journal; a takeover links the next number, which exactly one racing
 resumer can create. Tests check that a live holder and a holder on another
-host are refused, that a dead or unreadable lease is taken over, and that
+host are refused, that a dead lease is taken over and a damaged one refuses
+the directory, and that
 eight processes resuming a dead lease at once produce one holder and seven
 refusals. A second fixture harness started once the first holds the lease and has
 journaled `StartRun` is refused with `is leased by pid`, and the journal ends
