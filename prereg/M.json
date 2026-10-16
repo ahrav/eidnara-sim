@@ -1,7 +1,7 @@
 {
     "schema": "sim-prereg/v1",
     "tier": "M",
-    "revision": 1,
+    "revision": 2,
     "frozen": true,
     "arms": {
         "default": "eidnara",
@@ -95,6 +95,9 @@
         "c_bytes_per_session": 8388608,
         "r2_threshold": "0.8",
         "sample_interval_ms": 10000
+    },
+    "scoring": {
+        "p11_false_positive_weight": "2"
     },
     "families": [
         {

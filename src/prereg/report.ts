@@ -1,22 +1,27 @@
 import { isCanonicalDecimal } from "./canonical";
-import { type Family, needsPairedRuns, type Preregistration } from "./schema";
+import { BOUND_DIRECTIONS, type Family, needsPairedRuns, type Preregistration } from "./schema";
 import { preregistrationHash } from "./validate";
 
 export const CLAIM_BOUNDARY = "sim-claim-boundary/v1";
 
 /**
  * The verdict vocabulary: SIM-P53's four kinds, `inconclusive` from #1032, SIM-P56's
- * `insufficient-runs`, and `descriptive` for a family the pre-registration does not gate.
+ * `insufficient-runs`, `passed-gate` for a bound gate every run satisfied, and `descriptive` for
+ * a family the pre-registration does not gate.
  */
 export const VERDICT_KINDS = [
     "better",
     "worse",
     "no-difference-above-x-pp-detectable-at-n",
     "inconclusive",
+    "passed-gate",
     "failed-gate",
     "insufficient-runs",
     "descriptive",
 ] as const;
+
+/** A bound gate compares each run to a fixed value and makes no paired claim. */
+const BOUND_VERDICTS: readonly string[] = ["passed-gate", "failed-gate"];
 
 /** `mde` is the minimum detectable effect at `n` in the family's margin scale. */
 export interface FamilyVerdict {
@@ -42,6 +47,16 @@ function checkVerdict(f: FamilyVerdict, family: Family, errors: string[]): void 
     if (!isCanonicalDecimal(f.mde)) errors.push(`${at}.mde: expected a canonical decimal string`);
     if ((family.claim === "descriptive") !== (f.verdict === "descriptive")) {
         errors.push(`${at}.verdict: a ${family.claim} family cannot report ${f.verdict}`);
+    }
+    const bound = BOUND_DIRECTIONS.includes(family.direction);
+    if (bound && !BOUND_VERDICTS.includes(f.verdict)) {
+        errors.push(
+            `${at}.verdict: a ${family.direction} gate compares each run to a bound and reports passed-gate or failed-gate`,
+        );
+    } else if (!bound && f.verdict === "passed-gate") {
+        errors.push(
+            `${at}.verdict: a ${family.direction} family makes a paired claim, never passed-gate`,
+        );
     }
     const belowFloor = needsPairedRuns(family) && f.n < family.min_paired_runs;
     if (belowFloor !== (f.verdict === "insufficient-runs")) {

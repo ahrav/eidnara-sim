@@ -5,10 +5,10 @@ Scope: the v2 live-slice harness in this tree, specified by
 follow `docs/properties/METHOD.md`. The spec names its full catalog at
 `research/sim-design/property-catalog-sim-v2.md` (2026-10-12 revision); that
 file is unavailable, so these records are reconstructed from the condensed
-index in the spec body. Every record is PROPOSED at `Confidence: low`. Three
-records (`SIM-P52`, `SIM-P53`, `SIM-P56`) are `Exercised: partial` through the
-M0 validator and report check in `src/prereg/`; every other record is
-`Exercised: not yet`, because no harness surface exists to verify against.
+index in the spec body. Every record is PROPOSED at `Confidence: low`. Four
+records (`SIM-P50`, `SIM-P52`, `SIM-P53`, `SIM-P56`) are `Exercised: partial`
+through the M0 validator and report check in `src/prereg/`; every other record
+is `Exercised: not yet`, because no harness surface exists to verify against.
 
 Stable ids: `SIM-P01` to `SIM-P77` carry the spec's proposed records, and
 `SIM-L01` to `SIM-L03` carry the liveness bounds OQ-6 asked for and M0
@@ -730,14 +730,19 @@ rate.
 Check: `always` - for the noise-floor pair, assert equal `scenario_hash` and arm
 config, different user-sim seeds, and a reported disagreement rate.
 Fault/timing angle: none.
-Required faults and enabling state: an A/A run per tier.
+Required faults and enabling state: an A/A run at S or M, the tiers whose
+pre-registration carries `aa_controls` (host/host and eidnara/eidnara; M repeats
+five times); L and XL register no A/A pairs and standardise their CUSUM on M's.
 Confidence: low -
 [evidence](evidence/sim-p26-user-sim-noise-floor-run-is-paired.md). PROPOSED:
 reconstructed from the condensed index in spec #1007; no implementation exists
-to verify against, and a default tier run reaches it.
+to verify against, and a default S or M run reaches it.
 Existing check: none
 Impact: The user-sim's own noise is read as a treatment effect.
-Open questions: None.
+Open questions:
+- The spec places A/A controls at S and M only, and L's harm CUSUM takes its
+  spread from M's pairs. Whether L needs its own noise-floor pair before its
+  gates are read is a design decision (needs human input).
 
 ## Capture proxy and faults
 
@@ -1264,8 +1269,9 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M5 (#1029); nothing constructs
-it yet
+Exercised: partial - `src/prereg/validate.test.ts` removes
+`scoring.p11_false_positive_weight` from each tier file and the validator
+refuses it by name; the P11 score formula lands in M5 (#1029)
 Guarantee: SIM-P50: The P11 harm score weights a false positive at twice a hit,
 and the weight is in the pre-registration record.
 Check: `always` - assert the P11 score formula uses the pre-registered weight of
@@ -1274,9 +1280,11 @@ Fault/timing angle: none.
 Required faults and enabling state: P11 items.
 Confidence: low -
 [evidence](evidence/sim-p50-p11-false-positive-weight-applied.md). PROPOSED:
-reconstructed from the condensed index in spec #1007; no implementation exists
+reconstructed from the condensed index in spec #1007; only the validator exists
 to verify against, and a default tier run reaches it.
-Existing check: none
+Existing check: `src/prereg/validate.test.ts`: every tier file carries
+`scoring.p11_false_positive_weight` (`"2"` in all four), and removing it is
+refused by name; the score formula has no check
 Impact: Wrong-project injection is under-penalised.
 Open questions: None.
 
@@ -1338,8 +1346,8 @@ the token `parity`, which `checkReport` refuses; the report emitter lands in M7
 (#1032)
 Guarantee: SIM-P53: The verdict vocabulary is better, worse,
 no-difference-above-X-pp-detectable-at-n, failed-gate(metric, items),
-inconclusive, insufficient-runs, and descriptive, and the string `parity` is
-absent from every report.
+inconclusive, insufficient-runs, passed-gate, and descriptive, and the string
+`parity` is absent from every report.
 Check: `always(!X)` - X is the token `parity` in any report; a forbidden state
 scanned over the whole report, so `always(!X)`.
 Fault/timing angle: none.
@@ -1351,11 +1359,11 @@ Existing check: `src/prereg/validate.test.ts`, report check: the token `parity`
 anywhere in a report, in any case, is refused; status unaudited
 Impact: A null at small n is read as equivalence.
 Open questions:
-- The verdict vocabulary adds three kinds to the spec index's four:
+- The verdict vocabulary adds four kinds to the spec index's four:
   `inconclusive` from the M7 statistics ticket (#1032), `insufficient-runs` from
-  SIM-P56, and `descriptive` for a family the pre-registration does not gate.
-  Whether the spec index should list them is a design decision (needs human
-  input).
+  SIM-P56, `passed-gate` for a bound gate every run satisfied, and `descriptive`
+  for a family the pre-registration does not gate. Whether the spec index should
+  list them is a design decision (needs human input).
 
 ### sim-p54-pairing-by-item-identity
 

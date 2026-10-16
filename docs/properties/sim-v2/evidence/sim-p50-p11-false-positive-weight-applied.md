@@ -14,8 +14,10 @@ v2 harness before any harness code existed.
 The P11 harm score weights a false positive at twice a hit, and the weight is in
 the pre-registration record.
 
-No harness code, test, or run exists yet. The surface lands in M5
-(#1029).
+Every tier file carries `scoring.p11_false_positive_weight: "2"`, and
+`src/prereg/validate.test.ts` shows the validator refuses its removal by name,
+so the pre-registration hash binds the weight. The P11 score formula lands in
+M5 (#1029); no run exists yet.
 
 ## Failure scenario
 

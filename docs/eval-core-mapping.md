@@ -80,6 +80,8 @@ counterpart holds part of the value; the note names the rest), `extension`
 | `leak_bound.c_bytes_per_session` | `envelope_bounds` | partial | `c` in `RSS(T) < 2 * RSS(0) + N_sessions * c` (SIM-P57). |
 | `leak_bound.r2_threshold` | none | extension | As `leak_bound`. |
 | `leak_bound.sample_interval_ms` | none | extension | 10 s sampler (SIM-P57). |
+| `scoring` | none | extension | eval-core grades are pass rates with no weighted score; `eval-analysis-family/v3` would add scoring parameters. |
+| `scoring.p11_false_positive_weight` | none | extension | The P11 harm score counts a false positive at twice a hit (SIM-P50); the weight is fixed here so the pre-registration hash binds it. |
 | `families` | `AnalysisFamily.endpoints`, `families` | partial | eval-core endpoints are exactly `quality_loss`, `harm`, `floor`. v2's twenty families need `eval-analysis-family/v3` with a declared endpoint set. The projection takes `eidnara` as eval-core's `aged` arm and `host` as `fresh`: the harm family maps to `quality_loss = (b - c) / n`, the paired difference by which `eidnara` does worse, against `noninferiority_margin`; the S P8/P9 threshold maps to `floor`. eval-core's `harm = b / n` is a one-sided rate, not a difference, so no v2 family supplies `harm_bound`; P1 superiority has no gate counterpart, since eval-core gates are noninferiority only. |
 | `families[].id` | `AnalysisFamily.families` entry | partial | eval-core families are task families; v2 ids are metric families. |
 | `families[].metrics` | `endpoints` | partial | See `families`. |

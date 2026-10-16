@@ -2,7 +2,13 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { CLAIM_BOUNDARY, checkReport, type TierReport } from "./report";
-import { needsPairedRuns, type Preregistration, REQUIRED_FAMILIES, TIERS } from "./schema";
+import {
+    BOUND_DIRECTIONS,
+    needsPairedRuns,
+    type Preregistration,
+    REQUIRED_FAMILIES,
+    TIERS,
+} from "./schema";
 import { parsePreregistration, preregistrationHash, validatePreregistration } from "./validate";
 
 const PREREG_DIR = join(import.meta.dir, "../../prereg");
@@ -174,15 +180,21 @@ describe("pre-registration validator", () => {
     });
 });
 
-/** A report every check accepts: each family carries a verdict its claim allows. */
+/** A report every check accepts: each family carries a verdict its claim and direction allow. */
 function acceptedReport(prereg: Preregistration): TierReport {
+    const verdict = (f: Preregistration["families"][number]) =>
+        f.claim === "descriptive"
+            ? "descriptive"
+            : BOUND_DIRECTIONS.includes(f.direction)
+              ? "passed-gate"
+              : "better";
     return {
         tier: prereg.tier,
         claim_boundary: CLAIM_BOUNDARY,
         prereg_hash: preregistrationHash(prereg),
         families: prereg.families.map((f) => ({
             family: f.id,
-            verdict: f.claim === "descriptive" ? "descriptive" : "better",
+            verdict: verdict(f),
             n: needsPairedRuns(f) ? f.min_paired_runs : 24,
             mde: "1",
         })),
@@ -264,8 +276,32 @@ describe("report check against the pre-registration", () => {
         expect(checkReport(r, s)).toEqual([]);
         at(r, "dependability").verdict = "insufficient-runs";
         expect(checkReport(r, s)).toEqual([
+            "families[dependability].verdict: a zero-tolerance gate compares each run to a bound and reports passed-gate or failed-gate",
             "families[dependability].verdict: insufficient-runs is the verdict exactly when n is below 2",
         ]);
+    });
+
+    test("a bound gate reports passed-gate or failed-gate; a paired family never passed-gate", () => {
+        const r = acceptedReport(m);
+        at(r, "intrusiveness").verdict = "better";
+        at(r, "resources").verdict = "no-difference-above-x-pp-detectable-at-n";
+        at(r, "probe-P1").verdict = "passed-gate";
+        at(r, "dependability").verdict = "passed-gate";
+        expect(checkReport(r, m)).toEqual([
+            "families[probe-P1].verdict: a superiority-two-sided family makes a paired claim, never passed-gate",
+            "families[dependability].verdict: a at-most family makes a paired claim, never passed-gate",
+            "families[resources].verdict: a threshold gate compares each run to a bound and reports passed-gate or failed-gate",
+            "families[intrusiveness].verdict: a zero-tolerance gate compares each run to a bound and reports passed-gate or failed-gate",
+        ]);
+        Object.assign(at(r, "intrusiveness"), {
+            verdict: "failed-gate",
+            failed_metric: m.families.find((f) => f.id === "intrusiveness")!.metrics[0],
+            failed_items: ["run-1"],
+        });
+        at(r, "resources").verdict = "passed-gate";
+        at(r, "probe-P1").verdict = "better";
+        at(r, "dependability").verdict = "worse";
+        expect(checkReport(r, m)).toEqual([]);
     });
 
     test("requires a failed gate to name one of its metrics and its failing items", () => {

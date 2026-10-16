@@ -90,6 +90,14 @@ describe("catalog checker", () => {
         );
     });
 
+    test("refuses an index row whose displayed id is not the slug's prefix", () => {
+        const path = copy();
+        edit(path, "| SIM-P01 | [sim-p01-", "| SIM-P77 | [sim-p01-");
+        expect(checkCatalog(path, METHOD, IDS)).toContain(
+            "catalog: index row SIM-P77 links sim-p01-scenario-compile-is-deterministic",
+        );
+    });
+
     test("refuses a record without its evidence file and an id that is missing", () => {
         const path = copy();
         unlinkSync(join(dir, "evidence/sim-p05-scheduled-events-identical-across-arms.md"));

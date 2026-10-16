@@ -130,6 +130,7 @@ const PREREG_SHAPE: Shape = {
     },
     bootstrap: { replicates: posInt, seed: nonNegInt },
     leak_bound: { c_bytes_per_session: posInt, r2_threshold: unitRate, sample_interval_ms: posInt },
+    scoring: { p11_false_positive_weight: decimal },
     families: new ArrayOf(FAMILY_SHAPE),
 };
 

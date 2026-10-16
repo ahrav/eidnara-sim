@@ -131,10 +131,15 @@ export function checkCatalog(
     const errors = records.flatMap((r) => checkRecord(r, spec, dir));
     const slugs = records.map((r) => r.slug);
     if (new Set(slugs).size !== slugs.length) errors.push("catalog: duplicate slug");
-    const indexed = [...catalog.matchAll(/^\| [A-Z0-9-]+ \| \[([a-z0-9-]+)\]\(#\1\) \|/gm)].map(
-        (m) => m[1],
-    );
-    if (indexed.join("|") !== slugs.join("|"))
+    const rows = [...catalog.matchAll(/^\| ([A-Z0-9-]+) \| \[([a-z0-9-]+)\]\(#\2\) \|/gm)];
+    for (const m of rows) {
+        const id = m[1] ?? "";
+        const slug = m[2] ?? "";
+        if (!slug.startsWith(`${id.toLowerCase()}-`)) {
+            errors.push(`catalog: index row ${id} links ${slug}`);
+        }
+    }
+    if (rows.map((m) => m[2]).join("|") !== slugs.join("|"))
         errors.push("catalog: index rows differ from records");
     for (const { prefix, count } of ids) {
         for (let n = 1; n <= count; n++) {

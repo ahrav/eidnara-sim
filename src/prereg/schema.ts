@@ -126,6 +126,8 @@ export interface Preregistration {
     };
     bootstrap: { replicates: number; seed: number };
     leak_bound: { c_bytes_per_session: number; r2_threshold: string; sample_interval_ms: number };
+    /** The P11 harm score counts a false positive `p11_false_positive_weight` times a hit (SIM-P50). */
+    scoring: { p11_false_positive_weight: string };
     families: Family[];
     /** S and M only: same-arm pairs under different labels, each run `repeats` times. */
     aa_controls?: { pairs: string[][]; repeats: number };
