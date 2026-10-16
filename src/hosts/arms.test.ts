@@ -391,3 +391,81 @@ test("a Pi control file that an agent replaced with a symlink is replaced, and i
     expect(readFileSync(target, "utf8")).toBe("keep\n");
     expect(lstatSync(join(host.agentDir, "settings.json")).isSymbolicLink()).toBe(false);
 });
+
+test("a Pi turn whose end was observed before the prompt response failed keeps that result", async () => {
+    const host = new PiSimHost(context(runDir()));
+    const final = { type: "agent_end", willRetry: false, messages: [{ role: "assistant" }] };
+    const rpc = fakeRpc({ promptFails: true, ends: [final] });
+    (host as Untyped).rpc = rpc;
+    expect(await host.prompt("hi", 1_000)).toEqual({});
+    expect(rpc.commands).toEqual(["prompt"]);
+});
+
+test("an OpenCode abort that stays pending past its deadline fails the session", async () => {
+    const host = new OpencodeSimHost({ ...context(runDir()), host: "opencode" });
+    (host as Untyped).sid = "s";
+    (host as Untyped).abortWaitMs = 200;
+    (host as Untyped).client = {
+        session: {
+            prompt: () => Bun.sleep(300).then(() => ({ data: { info: {} } })),
+            abort: () => new Promise(() => undefined),
+        },
+    };
+    await expect(host.prompt("hi", 50)).rejects.toThrow(/abort still pending/);
+});
+
+function fakeDaemonV1(run: string): string {
+    const checkout = join(run, "eidnara");
+    const e2e = join(checkout, "packages/e2e-tests/src");
+    mkdirSync(join(e2e, "bedrock-peer"), { recursive: true });
+    mkdirSync(join(e2e, "rust-runner"), { recursive: true });
+    writeFileSync(
+        join(e2e, "bedrock-peer/harness-runtime.ts"),
+        `import { writeFileSync } from "node:fs";
+export function detectHarnessRuntimeSources() { return { ok: true, sources: {} }; }
+export function writeHarnessRuntime(args: { dir: string }) {
+    writeFileSync(args.dir + "/runtime.json", "{}");
+    return { dir: args.dir };
+}
+`,
+    );
+    writeFileSync(
+        join(e2e, "rust-runner/hermetic-host.ts"),
+        `export class HermeticHostStack {
+    static async start() {
+        return { connectionFile: "c", child: { pid: 1 }, hostLog: () => "", terminateHost: async () => undefined, restartHost: async () => undefined };
+    }
+}
+`,
+    );
+    return checkout;
+}
+
+test("the daemon stack refuses a symlinked store directory and replaces a symlinked runtime", async () => {
+    const run = runDir();
+    const checkout = fakeDaemonV1(run);
+    const root = join(run, "arm");
+    const store = join(run, "s");
+    const elsewhere = join(run, "elsewhere");
+    for (const d of [root, store, elsewhere]) mkdirSync(d);
+    const stack = (dataDir: string) =>
+        new DaemonStack({
+            config: { ...loadConfig(), eidnara_checkout: checkout },
+            root,
+            dataDir,
+            logFile: join(run, "daemon.log"),
+            offsetFile: join(run, "offset"),
+            proxyHttp1: "",
+            proxyHttp2: "",
+            model: "m",
+        });
+    symlinkSync(elsewhere, join(store, "d"));
+    await expect(stack(join(store, "d")).start()).rejects.toThrow(/symlink/);
+    rmSync(join(store, "d"));
+    rmSync(join(root, "runtime"), { recursive: true, force: true });
+    symlinkSync(elsewhere, join(root, "runtime"));
+    await stack(join(store, "d")).start();
+    expect(existsSync(join(elsewhere, "runtime.json"))).toBe(false);
+    expect(lstatSync(join(root, "runtime")).isSymbolicLink()).toBe(false);
+    expect(existsSync(join(root, "runtime/runtime.json"))).toBe(true);
+});
