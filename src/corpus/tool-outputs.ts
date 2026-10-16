@@ -173,8 +173,10 @@ export function extractFrom(rows: TrajectoryRow[], dataset: Dataset): Extraction
     return { samples, error_codes: [...codes.values()] };
 }
 
+export const OPENHANDS_FILE = "trajectories.parquet";
+
 export async function extractToolOutputs(dataset: Dataset): Promise<Extraction> {
-    const file = await asyncBufferFromFile(cachePath(dataset, "trajectories.parquet"));
+    const file = await asyncBufferFromFile(cachePath(dataset, OPENHANDS_FILE));
     const columns = ["trajectory_id", "repo", "trajectory"];
     const rows = await parquetReadObjects({ file, rowEnd: ROWS_SCANNED, columns, compressors });
     return extractFrom(rows as TrajectoryRow[], dataset);

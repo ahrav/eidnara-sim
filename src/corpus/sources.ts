@@ -32,6 +32,9 @@ export function loadSources(): Dataset[] {
     const ids = datasets.map((d) => d.id);
     if (new Set(ids).size !== ids.length) throw new Error(`sources.json: duplicate id in ${ids}`);
     for (const d of datasets) {
+        if (d.access !== "public" && d.access !== "gated") {
+            throw new Error(`sources.json: ${d.id}: access ${JSON.stringify(d.access)}`);
+        }
         if (!/^[0-9a-f]{40}$/.test(d.revision)) {
             throw new Error(`sources.json: ${d.id}: revision is not a commit SHA`);
         }

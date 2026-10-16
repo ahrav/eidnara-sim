@@ -74,10 +74,12 @@ export const QUANTITIES: readonly string[] = Object.keys(DEFINITIONS).sort();
 
 type Row = Record<string, unknown>;
 
+const TRACELAB_TABLES = ["rounds", "timing_events", "tool_calls"] as const;
+const tablePath = (table: string) => `data/v0.0.2/${table}/train.parquet`;
+export const TRACELAB_FILES: readonly string[] = TRACELAB_TABLES.map(tablePath);
+
 async function readTable(dataset: Dataset, table: string, columns: string[]): Promise<Row[]> {
-    const file = await asyncBufferFromFile(
-        cachePath(dataset, `data/v0.0.2/${table}/train.parquet`),
-    );
+    const file = await asyncBufferFromFile(cachePath(dataset, tablePath(table)));
     return (await parquetReadObjects({ file, columns, compressors })) as Row[];
 }
 
