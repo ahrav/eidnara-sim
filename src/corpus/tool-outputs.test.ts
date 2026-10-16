@@ -63,10 +63,21 @@ describe("classify and commandOf", () => {
         ).toBe("test_run");
         expect(classify("execute_bash", "cd /w && pytest -x", "ok")).toBe("test_run");
     });
+    test("a shell parse failure or missing command is no sample of any kind", () => {
+        const err = "bash: syntax error near unexpected token `|'";
+        expect(classify("execute_bash", 'grep -l "a\\|b" .', err)).toBeNull();
+        expect(
+            classify("execute_bash", "pytest tests", "bash: pytest: command not found"),
+        ).toBeNull();
+        expect(
+            classify("execute_bash", "cat a.py", "bash: line 1: cat: command not found"),
+        ).toBeNull();
+        expect(classify("execute_bash", "grep -rn foo .", "a.py:1: foo")).toBe("grep");
+    });
     test("a runner name inside a quoted pattern is not a pipeline segment", () => {
         const cmd =
             'cd /w && find . -name "*.py" -exec grep -l "pytest\\|unittest" {} \\; | head -5';
-        expect(classify("execute_bash", cmd, "bash: syntax error")).toBe("grep");
+        expect(classify("execute_bash", cmd, "a.py:1: import pytest")).toBe("grep");
         expect(classify("execute_bash", 'echo "x | pytest"', "x | pytest")).toBeNull();
     });
     test("a test runner's help text is no test run", () => {

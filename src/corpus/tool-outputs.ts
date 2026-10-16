@@ -57,7 +57,7 @@ export function classify(tool: string, command: string, content: string): Sample
         return content.startsWith("Here's the result of running `cat -n`") ? "file_read" : null;
     }
     if (content.includes(TRACEBACK)) return "stack_trace";
-    if (tool !== "execute_bash") return null;
+    if (tool !== "execute_bash" || SHELL_ERROR.test(content)) return null;
     if (RUNNER.test(command.replace(QUOTED, '""'))) {
         return NO_RUN.test(command) ? null : "test_run";
     }
@@ -98,6 +98,7 @@ const RUNNER =
     /(^|&&|;|\|)\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*(?:python3?\s+-m\s+)?(?:pytest|py\.test|tox|nox|unittest)\b/;
 const QUOTED = /"(?:\\.|[^"\\])*"|'[^']*'/g;
 const NO_RUN = /(^|\s)(--help|-h|--version|--co|--collect-only|--fixtures|--markers)(\s|$)/;
+const SHELL_ERROR = /^(?:bash|sh): (?:line \d+: )?(?:syntax error|.*: command not found)/;
 const TRACEBACK = "Traceback (most recent call last)";
 const TRACE_END = /^(?:E\s+)?\s*[\w.]*(?:Error|Exception|Failure|Exit|Interrupt|Warning)\b/;
 

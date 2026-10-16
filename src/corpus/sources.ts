@@ -32,6 +32,11 @@ export function loadSources(): Dataset[] {
         if (!/^[0-9a-f]{40}$/.test(d.revision)) {
             throw new Error(`sources.json: ${d.id}: revision is not a commit SHA`);
         }
+        for (const f of d.files) {
+            if (!/^[0-9a-f]{64}$/.test(f.sha256)) {
+                throw new Error(`sources.json: ${d.id}/${f.path}: sha256 is not 64 hex digits`);
+            }
+        }
     }
     return datasets;
 }
