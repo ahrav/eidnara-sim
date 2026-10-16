@@ -107,7 +107,9 @@ function signal(targets: Target[], name: NodeJS.Signals): void {
     for (const t of targets.filter(alive)) {
         try {
             process.kill(t.pid, name);
-        } catch {}
+        } catch {
+            // A target that exits before the signal is already stopped.
+        }
     }
 }
 

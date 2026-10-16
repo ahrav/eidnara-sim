@@ -56,7 +56,7 @@ export function toolchainEnv(
 
 async function probe(argv: string[], path: string): Promise<{ ok: boolean; out: string }> {
     const child = Bun.spawn(argv, {
-        env: { ...process.env, PATH: sandboxPath(path) },
+        env: { PATH: sandboxPath(path) },
         stdout: "pipe",
         stderr: "pipe",
     });
@@ -146,9 +146,16 @@ export function checkToolchainHomes(config: SimConfig): void {
         }
     };
     const within = (path: string, dir: string) => path === dir || path.startsWith(`${dir}/`);
-    const safe = [...config.toolchain.keep.map(canonical), realpathSync(homedir()), "/tmp"];
+    const home = realpathSync(homedir());
+    const safe: Array<{ named: string; real: string }> = [
+        ...config.toolchain.keep.map((k) => ({ named: k, real: canonical(k) })),
+        { named: homedir(), real: home },
+        { named: home, real: home },
+        { named: "/tmp", real: "/tmp" },
+    ];
     for (const [key, value] of Object.entries(config.toolchain.env)) {
-        if (!safe.some((dir) => within(canonical(value), dir))) {
+        const real = canonical(value);
+        if (!safe.some((dir) => within(value, dir.named) && within(real, dir.real))) {
             throw new Error(
                 `toolchain.env.${key} ${value} is neither kept read-only nor private to the sandbox`,
             );

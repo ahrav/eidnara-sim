@@ -1313,3 +1313,44 @@ test("a control tree whose base is a symlink is refused before anything is creat
     expect(() => (host as Untyped).writeConfigs(null)).toThrow(/symlink/);
     expect(readdirSync(elsewhere)).toEqual([]);
 });
+
+test("a daemon root reached through a symlink is refused before anything beneath it is removed", async () => {
+    const run = runDir();
+    const checkout = fakeDaemonV1(run);
+    const elsewhere = join(run, "elsewhere");
+    mkdirSync(join(elsewhere, "runtime"), { recursive: true });
+    writeFileSync(join(elsewhere, "runtime/keep.txt"), "theirs\n");
+    symlinkSync(elsewhere, join(run, "arm-link"));
+    const stack = new DaemonStack({
+        config: { ...loadConfig(), eidnara_checkout: checkout },
+        root: join(run, "arm-link"),
+        dataDir: join(run, "store"),
+        logFile: join(run, "daemon.log"),
+        offsetFile: join(run, "offset"),
+        proxyHttp1: "",
+        proxyHttp2: "",
+        model: "m",
+    });
+    await expect(stack.start()).rejects.toThrow(/symlink/);
+    expect(readFileSync(join(elsewhere, "runtime/keep.txt"), "utf8")).toBe("theirs\n");
+});
+
+test("an OpenCode close whose launcher is confirmed gone clears its handles despite a stale kill failure", async () => {
+    const host = new OpencodeSimHost({ ...context(runDir()), host: "opencode" });
+    const oc = {
+        port: 1,
+        kill: async () => {
+            throw new Error("opencode serve did not exit after SIGKILL");
+        },
+    };
+    (host as Untyped).oc = oc;
+    (host as Untyped).launched = { pid: 4242, start: "1" };
+    (host as Untyped).stopTree = async () => true;
+    await host.closeSession();
+    expect((host as Untyped).oc).toBeNull();
+    (host as Untyped).oc = oc;
+    (host as Untyped).launched = { pid: 4242, start: null };
+    delete (host as Untyped).stopTree;
+    await expect(host.closeSession()).rejects.toThrow(/did not exit after SIGKILL/);
+    expect((host as Untyped).oc).toBe(oc);
+});

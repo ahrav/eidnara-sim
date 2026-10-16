@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
-import { ENV_KEY, PLAIN_PATH, PLAIN_VALUE } from "../run/launcher";
+import { ENV_KEY, PLAIN_PATH } from "../run/launcher";
 
 export const CONFIG_SCHEMA = "sim-config/v2";
 
@@ -101,8 +101,7 @@ export function parseConfig(value: unknown): SimConfig {
         if (!(required in env)) throw new ConfigError(`config.toolchain.env.${required}: missing`);
     }
     for (const [key, value] of Object.entries(env)) {
-        const word = typeof value === "string" && ENV_KEY.test(key) && PLAIN_VALUE.test(value);
-        if (!word || ["PATH", "HOME", "LD_PRELOAD"].includes(key)) {
+        if (!ENV_KEY.test(key) || ["PATH", "HOME", "LD_PRELOAD"].includes(key)) {
             throw new ConfigError(
                 `config.toolchain.env.${key}: expected a plain word the sandbox launcher can pass`,
             );
@@ -110,6 +109,16 @@ export function parseConfig(value: unknown): SimConfig {
         if (!TOOLCHAIN_ENV.includes(key)) {
             throw new ConfigError(
                 `config.toolchain.env.${key}: not a supported toolchain variable (${TOOLCHAIN_ENV.join(", ")})`,
+            );
+        }
+        if (
+            typeof value !== "string" ||
+            !isAbsolute(value) ||
+            resolve(value) !== value ||
+            !PLAIN_PATH.test(value)
+        ) {
+            throw new ConfigError(
+                `config.toolchain.env.${key}: expected a normalized absolute path the sandbox launcher can pass`,
             );
         }
     }

@@ -1,5 +1,5 @@
 import { mkdirSync, realpathSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { launch } from "./launcher";
 import { FAKETIME_LIB, faketimeEnv, writeOffset } from "./timeinject";
 
@@ -43,19 +43,24 @@ const JUMP_MS = 8 * 3_600_000;
 const PRINT_TIME =
     "const t=performance.now();setTimeout(()=>console.log(JSON.stringify({now:Date.now(),timer:performance.now()-t})),100)";
 
+export function nodeInstall(which: string): { exe: string; bin: string; root: string } {
+    const exe = realpathSync(which);
+    const bin = dirname(exe);
+    return { exe, bin, root: basename(bin) === "bin" ? dirname(bin) : bin };
+}
+
 export function probes(paths: { node: string; opencode: string; daemon: string }): BinaryProbe[] {
     // The kept directory and the path the loader reports in its binding lines are the
     // binary's canonical location, so a symlinked configured path resolves before use.
-    const node = realpathSync(paths.node);
+    const node = nodeInstall(paths.node);
     const opencode = realpathSync(paths.opencode);
     const daemon = realpathSync(paths.daemon);
-    const nodeRoot = resolve(node, "../..");
     return [
         {
             name: "pi",
-            path: node,
-            keep: [nodeRoot],
-            argv: [node, "-e", PRINT_TIME],
+            path: node.exe,
+            keep: [node.root],
+            argv: [node.exe, "-e", PRINT_TIME],
             mode: "prints-time",
         },
         {
