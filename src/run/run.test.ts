@@ -381,6 +381,21 @@ describe("run inputs", () => {
             /closes job\/j, which is not open/,
         );
         expect(() => requireJournalShape([e("ResumeRun", null)])).toThrow(/precedes StartRun/);
+        expect(() =>
+            requireJournalShape([...start, e("EndArm", "a"), e("EndRun", null)]),
+        ).not.toThrow();
+        expect(() => requireJournalShape([...start, e("EndRun", null)])).toThrow(
+            /EndRun with arm a unfinished/,
+        );
+        expect(() =>
+            requireJournalShape([
+                ...start,
+                e("BeginTurn", "a", { event: "t" }),
+                e("ItemState", "a", { event: "t", state: "failed(interrupted)" }),
+                e("Event", "a", { event: "t" }),
+                e("EndArm", "a"),
+            ]),
+        ).not.toThrow();
         const ids = [
             { id: "e-1", kind: "session_start" },
             { id: "e-2", kind: "user_turn" },
@@ -519,6 +534,15 @@ describe("run inputs", () => {
         const switchOnTurn = { ...episode, type: "model_switch", seam: SEAMS.model_switch };
         expect(() => faultOverride([switchOnTurn], scenario)).toThrow(
             /model_switch fires at a session_start trigger only/,
+        );
+        const wrongKnob = {
+            ...episode,
+            type: "provider_timeout",
+            seam: SEAMS.provider_timeout,
+            params: { delay_ms: 5 },
+        };
+        expect(() => faultOverride([wrongKnob], scenario)).toThrow(
+            /delay_ms does not apply to provider_timeout/,
         );
         const singleWithCount = { ...episode, params: { count: 3 } };
         expect(() => faultOverride([singleWithCount], scenario)).toThrow(

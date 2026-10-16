@@ -8,6 +8,8 @@ import {
     readFileSync,
     readlinkSync,
     realpathSync,
+    rmSync,
+    statSync,
     truncateSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -29,6 +31,7 @@ import { writeAtomic } from "./atomic";
 import { type Entry, Journal, releaseLease, takeLease } from "./journal";
 import { plainPath } from "./launcher";
 import { type Preflight, piCli, preflight } from "./preflight";
+import { running } from "./procs";
 import { ResourceSampler } from "./sampler";
 import { type ArmDriver, HarnessFailure, type ScenarioEvent, Scheduler } from "./scheduler";
 import { FAKETIME_LIB, writeOffset } from "./timeinject";
@@ -152,9 +155,14 @@ export function requirePlainArtifacts(out: string, arms: readonly string[]): voi
         join(arm, "state.json"),
         join(arm, `state.json.${process.pid}`),
     ]);
-    const leases = existsSync(out)
-        ? readdirSync(out).filter((name) => /^lease\.\d+\.json$/.test(name))
-        : [];
+    const entries = existsSync(out) ? readdirSync(out) : [];
+    for (const name of entries) {
+        const m = /^lease\.(\d+)\.tmp$/.exec(name);
+        if (m && Number(m[1]) !== process.pid && !running(Number(m[1]))) {
+            rmSync(join(out, name), { force: true });
+        }
+    }
+    const leases = entries.filter((name) => /^lease\.\d+\.json$/.test(name));
     for (const rel of [...dirs, ...ARTIFACTS, ...leases, ...files]) {
         const path = join(out, rel);
         const stat = lstatSync(path, { throwIfNoEntry: false });
@@ -238,6 +246,11 @@ export function requireJournalShape(
             continue;
         }
         if (!started) throw bad(e, "precedes StartRun");
+        if (e.kind === "EndRun") {
+            const unfinished = [...arms].find(([, st]) => st !== "ended");
+            if (unfinished) throw bad(e, `is an EndRun with arm ${unfinished[0]} unfinished`);
+            continue;
+        }
         if (e.arm === null) throw bad(e, "names no arm");
         const state = arms.get(e.arm);
         if (e.kind === "StartArm") {
@@ -265,6 +278,9 @@ export function requireJournalShape(
         }
         if (e.kind === "EndTurn") closedTurns.add(`${e.arm}/${String(e.event)}`);
         if (e.kind === "ItemState" && e.state === "failed(interrupted)" && e.event !== undefined) {
+            const turn = `${e.arm}/turn/${String(e.event)}`;
+            if (!open.delete(turn))
+                throw bad(e, `interrupts turn ${String(e.event)}, which is not open`);
             closedTurns.add(`${e.arm}/${String(e.event)}`);
         }
         if (e.kind === "Event" && scheduled) {
@@ -446,6 +462,14 @@ const DURATIONS = ["duration_ms", "delay_ms", "timeout_ms"];
 /** The largest delay a JavaScript timer honors; longer values fire at once. */
 const MAX_TIMER_MS = 2_147_483_647;
 
+/** The parameter each mechanism reads; every other key is refused as misleading. */
+const TYPE_PARAMS: Partial<Record<FaultType, string[]>> = {
+    provider_timeout: ["timeout_ms"],
+    slow_stream: ["delay_ms"],
+    laptop_sleep: ["duration_ms"],
+    store_full: ["sessions"],
+};
+
 /**
  * Strategy rules per mechanism: a scheduler-layer fault fires once (`single`; `store_full` is
  * `persistent` for its sessions); a proxy `single` may carry the compiler's canonical `count: 1`,
@@ -458,9 +482,13 @@ function strategyProblems(
     params: Record<string, unknown>,
 ): string[] {
     const problems: string[] = [];
+    const typed = TYPE_PARAMS[type] ?? [];
     if (SEAMS[type].layer !== "proxy-sink") {
         const expected = type === "store_full" ? "persistent" : "single";
         if (strategy !== expected) problems.push(`${type} uses the ${expected} strategy`);
+        for (const key of Object.keys(params)) {
+            if (!typed.includes(key)) problems.push(`${key} does not apply to ${type}`);
+        }
         return problems;
     }
     const allowed: Record<string, string[]> = {
@@ -469,9 +497,9 @@ function strategyProblems(
         intermittent: ["probability", "calls"],
         persistent: [],
     };
-    for (const key of ["count", "calls", "probability"]) {
-        if (key in params && !(allowed[strategy] ?? []).includes(key)) {
-            problems.push(`${key} does not apply to the ${strategy} strategy`);
+    for (const key of Object.keys(params)) {
+        if (!(allowed[strategy] ?? []).includes(key) && !typed.includes(key)) {
+            problems.push(`${key} does not apply to ${type} under the ${strategy} strategy`);
         }
     }
     if (strategy === "single" && "count" in params && params.count !== 1) {
@@ -723,7 +751,7 @@ function binaryDigests(config: SimConfig): Record<string, string> {
         Object.entries(files).map(([name, path]) => {
             const optional = name.startsWith("opencode_sdk") || name === "faketime";
             if (optional && !existsSync(path)) return [name, "absent"];
-            if (lstatSync(path).isDirectory()) return [name, directoryDigest(path)];
+            if (statSync(path).isDirectory()) return [name, directoryDigest(realpathSync(path))];
             return [name, createHash("sha256").update(readFileSync(path)).digest("hex")];
         }),
     );
@@ -758,7 +786,7 @@ export async function loadManifest(
     checks?: Preflight,
 ): Promise<{ manifest: Manifest; checks: Preflight }> {
     const path = join(o.out, "manifest.json");
-    checks ??= await preflight(o.config, o.out);
+    const probe = async () => checks ?? (await preflight(o.config, o.out));
     const wanted = {
         tier: o.tier,
         seed: o.seed,
@@ -816,6 +844,7 @@ export async function loadManifest(
             const names = changed.map(([k]) => k).join(", ");
             throw new HarnessFailure(`inputs changed since the run started: ${names}`);
         }
+        checks = await probe();
         const intercepted = (p: Preflight) =>
             p.time_injection.map((t) => [t.name, t.path, t.intercepted, t.wall_clock_only]);
         if (!sameJson(intercepted(manifest.preflight), intercepted(checks))) {
@@ -841,6 +870,7 @@ export async function loadManifest(
         return { manifest, checks };
     }
     requireMechanisms(wanted.fault_override ?? scenario.faults, wanted.models);
+    checks = await probe();
     const manifest: Manifest = {
         schema: "sim-run-manifest/v1",
         ...wanted,
@@ -1158,6 +1188,7 @@ async function runArms(
                     scope.arm = arm;
                     await driver.reset();
                     sampler.start();
+                    holdForCpu(sampler, arm);
                 }),
             resume: (open) =>
                 tracked(async () => {
@@ -1165,6 +1196,7 @@ async function runArms(
                     scope.session = open?.session ?? null;
                     await driver.resume(open);
                     sampler.start();
+                    holdForCpu(sampler, arm);
                 }),
             event: (e) =>
                 tracked(async () => {
