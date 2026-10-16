@@ -2,7 +2,16 @@ import { realpathSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
-const UNSHARE_ARGS = ["--mount", "--pid", "--fork", "--mount-proc", "--propagation", "private"];
+// `--kill-child` sends SIGKILL to namespace PID 1 when the unshare parent dies.
+const UNSHARE_ARGS = [
+    "--mount",
+    "--pid",
+    "--fork",
+    "--kill-child",
+    "--mount-proc",
+    "--propagation",
+    "private",
+];
 const PLAIN_PATH = /^\/[A-Za-z0-9._@+/-]*$/;
 const PLAIN_VALUE = /^[A-Za-z0-9._@+/:,=-]*$/;
 
@@ -41,6 +50,8 @@ function script(hidden: readonly string[]): string {
     return `#!/bin/sh
 SIM_PATH="$PATH" exec sudo -n --preserve-env unshare ${UNSHARE_ARGS.join(" ")} /bin/sh -c '
 set -e
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+cd /
 keep=""
 while [ "$1" != "--env" ]; do keep="$keep $1"; shift; done
 shift
@@ -54,8 +65,7 @@ ${mounts}
 for p in $keep; do mkdir -p "$p"; mount --rbind "$st$p" "$p"; done
 for p in $keep; do umount -R "$st$p" || true; done
 find "$st" -depth -type d -empty -delete || true
-export PATH="$SIM_PATH"
-setpriv ${ids} --init-groups --no-new-privs --inh-caps=-all --bounding-set=-all -- env --default-signal=INT,TERM $envs "$@"
+setpriv ${ids} --init-groups --no-new-privs --inh-caps=-all --bounding-set=-all -- env --default-signal=INT,TERM PATH="$SIM_PATH" $envs "$@"
 exit 0' sh "$@"
 `;
 }

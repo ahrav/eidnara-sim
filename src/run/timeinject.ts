@@ -1,5 +1,13 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import {
+    existsSync,
+    mkdirSync,
+    mkdtempSync,
+    readFileSync,
+    renameSync,
+    rmSync,
+    writeFileSync,
+} from "node:fs";
 import { dirname, join, resolve } from "node:path";
 
 export const FAKETIME_VERSION = "0.9.10";
@@ -12,6 +20,7 @@ export const FAKETIME_LIB = join(
     "libfaketime.so.1",
 );
 
+/** The rename atomically publishes a complete build at `FAKETIME_LIB`. */
 export async function buildFaketime(): Promise<string> {
     if (existsSync(FAKETIME_LIB)) return FAKETIME_LIB;
     mkdirSync(VENDOR, { recursive: true });
@@ -23,15 +32,22 @@ export async function buildFaketime(): Promise<string> {
     if (digest !== FAKETIME_SHA256) {
         throw new Error(`libfaketime tarball sha256 ${digest}, pinned ${FAKETIME_SHA256}`);
     }
-    const archive = join(VENDOR, `libfaketime-${FAKETIME_VERSION}.tar.gz`);
-    writeFileSync(archive, tarball);
-    const src = join(VENDOR, `libfaketime-${FAKETIME_VERSION}`, "src");
-    for (const argv of [
-        ["tar", "xzf", archive, "-C", VENDOR],
-        ["make", "-C", src, "libfaketime.so.1"],
-    ]) {
-        const r = Bun.spawnSync(argv, { stdout: "pipe", stderr: "pipe" });
-        if (r.exitCode !== 0) throw new Error(`${argv.join(" ")}: ${r.stderr.toString()}`);
+    const staging = mkdtempSync(join(VENDOR, "staging-"));
+    try {
+        const archive = join(staging, `libfaketime-${FAKETIME_VERSION}.tar.gz`);
+        writeFileSync(archive, tarball);
+        const src = join(staging, `libfaketime-${FAKETIME_VERSION}`, "src");
+        for (const argv of [
+            ["tar", "xzf", archive, "-C", staging],
+            ["make", "-C", src, "libfaketime.so.1"],
+        ]) {
+            const r = Bun.spawnSync(argv, { stdout: "pipe", stderr: "pipe" });
+            if (r.exitCode !== 0) throw new Error(`${argv.join(" ")}: ${r.stderr.toString()}`);
+        }
+        mkdirSync(dirname(FAKETIME_LIB), { recursive: true });
+        renameSync(join(src, "libfaketime.so.1"), FAKETIME_LIB);
+    } finally {
+        rmSync(staging, { recursive: true, force: true });
     }
     return FAKETIME_LIB;
 }

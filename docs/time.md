@@ -9,7 +9,16 @@ and the run root with tmpfs, binds the kept paths back in, and drops
 privilege with `setpriv` (same UID and GID, no new privileges, no
 capabilities). The staging tree for the kept paths and the interposer's
 shared-memory objects live in the private `/dev/shm`, so they end with the
-namespace on every exit path. `launch(launcher, keep, env,
+namespace on every exit path. The privileged part of the script runs with
+`PATH=/usr/sbin:/usr/bin:/sbin:/bin` from `/`, so root's tools come from
+system directories and the harness working directory stays hidden when it
+lies inside a masked tree; the caller's `PATH` reaches the command through
+`env` after the privilege drop, and the command starts in `/`. `unshare`
+runs with `--kill-child`, and the interception test wraps each launch in
+GNU `timeout -s KILL`, which signals the launcher's whole process group;
+`unshare --fork` ignores `TERM` while it waits and namespace PID 1 has no
+`TERM` handler, so `KILL` to the group is what ends a hung probe.
+`launch(launcher, keep, env,
 command)` builds the argv: kept paths, then `--env` and `NAME=value` pairs,
 then `--` and the command. `env` sets those variables after `setpriv`,
 because the setuid `sudo` boundary strips `LD_PRELOAD`. Paths and values
@@ -22,8 +31,10 @@ lines match.
 ## Interposer
 
 `buildFaketime()` downloads libfaketime 0.9.10, checks its sha256 against the
-pinned digest, and builds `libfaketime.so.1` under `vendor/build/` (ignored by
-git). `faketimeEnv(file)` preloads it with these settings:
+pinned digest, builds `libfaketime.so.1` in a staging directory under
+`vendor/build/` (ignored by git), and renames the finished library into
+place, so the published path holds only a complete build. `faketimeEnv(file)`
+preloads it with these settings:
 
 | Variable | Value | Effect |
 |---|---|---|
@@ -55,11 +66,13 @@ its result in the run manifest.
 | Daemon | `LD_DEBUG=bindings eidnara-host build-profile` | The dynamic linker binds the daemon binary's own `clock_gettime` import to `libfaketime.so.1` |
 
 The Pi probe runs Pi's Node runtime, not the Pi CLI, so it shows that the
-runtime Pi runs on reads the interposed clock. A binary that fails is recorded
-`wall_clock_only`, and the run proceeds with that limitation in its
-distortions. If neither Pi nor the daemon is
-intercepted, preflight throws (OQ-9 stop condition). On this host all three
-intercept, which resolves OQ-9 for OpenCode 1.19.0.
+runtime Pi runs on reads the interposed clock. A probe is intercepted only
+when it also exits 0 under the interposer; a binary that fails, or outlives
+the 30 s deadline, is recorded `wall_clock_only`, and the run proceeds with
+that limitation in its distortions. If neither Pi nor the daemon is
+intercepted, preflight throws (OQ-9 stop condition). In the live test on
+this host all three intercept; OQ-9's decision point is the first S run's
+`StartRun`, whose manifest records the interception test.
 
 The preflight result's `distortions` always records that monotonic clocks are
 real, so in-process idle timers see wall time; that provider-side time, cache
@@ -88,5 +101,11 @@ store's bytes. When the daemon's CPU fraction exceeds the pre-registered
 `liveness_bounds.daemon_busy_cpu_fraction` (0.05, added in pre-registration
 revision 3), the sampler reports busy through `onBusy`; the run command
 registers that as a background job that holds the clock until the fraction
-drops (OQ-2). A sample after a daemon restart, with a new PID, reports no
-fraction.
+drops (OQ-2). `start()` takes the baseline sample at once, so the first
+fraction is available one interval later. A sample with no fraction (a new
+PID after a daemon restart, an unreadable `/proc` entry, or the baseline)
+reports `cpu_fraction: null` and keeps the previous busy state, so a busy
+hold lasts until a same-PID interval measures idleness. RSS comes from
+`VmRSS` in `/proc/<pid>/status` and CPU time from `/proc/<pid>/stat` ticks
+divided by the host's `CLK_TCK`. `store_bytes` is `null` when the store
+directory itself is unreadable.

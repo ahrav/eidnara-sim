@@ -79,6 +79,7 @@ export function interceptionTest(
     launcher: string,
     workDir: string,
     binaries: BinaryProbe[],
+    timeoutSeconds = 30,
 ): Interception[] {
     const clockDir = join(workDir, "interception");
     mkdirSync(clockDir, { recursive: true });
@@ -88,13 +89,24 @@ export function interceptionTest(
         const keep = [dirname(dirname(FAKETIME_LIB)), clockDir, ...b.keep];
         const env = { ...faketimeEnv(offset), ...b.env };
         const wallBefore = Date.now();
-        const r = Bun.spawnSync(launch(launcher, keep, env, b.argv), {
-            stdout: "pipe",
-            stderr: "pipe",
-            timeout: 30_000,
-        });
+        // GNU timeout signals its own process group, so a KILL on expiry reaches sudo, the
+        // unshare parent (which ignores TERM while it waits), namespace PID 1, and the probe.
+        const r = Bun.spawnSync(
+            [
+                "timeout",
+                "-s",
+                "KILL",
+                String(timeoutSeconds),
+                ...launch(launcher, keep, env, b.argv),
+            ],
+            { stdout: "pipe", stderr: "pipe" },
+        );
         const wall = Date.now() - wallBefore;
-        let evidence: Record<string, unknown> = { exit: r.exitCode, wall_ms: wall };
+        let evidence: Record<string, unknown> = {
+            exit: r.exitCode,
+            signal: r.signalCode ?? null,
+            wall_ms: wall,
+        };
         let intercepted = false;
         if (b.mode === "prints-time") {
             try {
@@ -118,6 +130,8 @@ export function interceptionTest(
             evidence = { ...evidence, binding: line?.trim() ?? null };
             intercepted = line !== undefined;
         }
+        // Interception requires a successful exit under the interposer as well as a read clock.
+        intercepted &&= r.exitCode === 0;
         return { name: b.name, path: b.path, intercepted, wall_clock_only: !intercepted, evidence };
     });
 }
