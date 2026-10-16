@@ -6,7 +6,8 @@ both.
 ## Lease
 
 Leases are files `lease.<n>.json`, and the highest number names the holder.
-`takeLease(dir)` reads the highest lease: one held by a live process, or by any
+`takeLease(dir)` resolves the directory path once and works on the resolved
+path, so a symlink repointed mid-way touches nothing else; it reads the highest lease: one held by a live process, or by any
 process on another machine, refuses the call. The machine is `/etc/machine-id`
 (`hostname:<name>` where that file is absent), so machines or containers that
 share a hostname on one directory stay distinct; a lease carries the kernel
@@ -47,7 +48,9 @@ the lease and the open cannot route the journal elsewhere, refuses a file
 over `MAX_JOURNAL_BYTES` (256 MiB) before reading it and an append that would
 carry it over, flushes the directory when it creates the file and each
 appended line with `fdatasync` before the entry counts as appended, so an
-acknowledged entry survives a power loss, reads and truncates the file
+acknowledged entry survives a power loss, and flushes the truncation that
+rolls a failed append back (closing the journal when that flush fails), so a
+refused entry cannot reappear after a crash, reads and truncates the file
 through that one descriptor, and refuses every operation after `close`. On
 read it
 splits lines on raw newline bytes, so the complete prefix is measured in bytes,
@@ -184,8 +187,10 @@ outcome or misreporting its event's probe, a `FaultFired` or `FaultObserved`
 naming a type or layer other than its episode's, a `FaultObserved` without an
 evidence object, an `Event` that passes a
 session-start or user-turn trigger whose fault neither fired nor was missed,
-a `BeginTurn` for a turn other than the one due or repeated for one turn, a
-second `EndTurn` for a turn, an interruption marker that closes no open turn
+a `BeginTurn` for a turn other than the one due, repeated for one turn,
+timestamped before its schedule, or while a job is open, a second `EndTurn`
+for a turn, an `Event` while a fired scheduler fault is still unobserved and
+unmarked, an interruption marker that closes no open turn
 or unobserved fault, a `RegisterJob` for a job still open or an `EndJob` with
 no open `RegisterJob`, an `AdvanceClock` while a turn or job is open, landing
 anywhere but the event due, jumping nowhere, or starting behind the arm's

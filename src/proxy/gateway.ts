@@ -163,9 +163,10 @@ interface Request {
     receivedWall: number;
     /**
      * The arm, session, turn, and scenario time that owned the request at receipt, or the
-     * error reading them raised; `handle()` records that error against the request.
+     * error reading them raised with whatever was read first; `handle()` records that error
+     * against the request under that scope.
      */
-    owner: { scope: Scope; scenario_ms: number } | { error: unknown };
+    owner: { scope: Scope; scenario_ms: number } | { scope?: Scope; error: unknown };
 }
 
 export class Gateway {
@@ -290,11 +291,13 @@ export class Gateway {
 
     /** The owning scope and scenario time, read when a request's first bytes arrive. */
     private received(): Request["owner"] {
+        let scope: Scope | undefined;
         try {
             const { arm, session, turn } = this.options.scope();
-            return { scope: { arm, session, turn }, scenario_ms: this.options.clock.scenarioMs() };
+            scope = { arm, session, turn };
+            return { scope, scenario_ms: this.options.clock.scenarioMs() };
         } catch (error) {
-            return { error };
+            return { scope, error };
         }
     }
 
@@ -318,7 +321,7 @@ export class Gateway {
             model: "",
             status: 500,
         };
-        let scope: Scope = { arm: "", session: null, turn: null };
+        let scope: Scope = request.owner.scope ?? { arm: "", session: null, turn: null };
         let scenario_ms = 0;
         try {
             if ("error" in request.owner) throw request.owner.error;

@@ -12,6 +12,7 @@ import {
     readdirSync,
     readFileSync,
     readlinkSync,
+    realpathSync,
     renameSync,
     rmSync,
     statSync,
@@ -300,8 +301,9 @@ function leaseNumbers(dir: string): number[] {
  * lease.within)`, so the journal opens in the leased directory even when the path is a symlink
  * repointed in between.
  */
-export function takeLease(dir: string): Lease & { within: DirIdentity } {
+export function takeLease(runDir: string): Lease & { within: DirIdentity } {
     const mine = ownIdentity();
+    const dir = realpathSync(runDir);
     const within = directoryIdentity(dir);
     for (let attempt = 0; attempt < 3; attempt++) {
         const numbers = leaseNumbers(dir);
@@ -341,7 +343,8 @@ export function takeLease(dir: string): Lease & { within: DirIdentity } {
  * Marks this process's lease released in place, by an atomic rename over the same number, so
  * the directory keeps its highest generation and later takers all target the next one.
  */
-export function releaseLease(dir: string, lease: Lease): void {
+export function releaseLease(runDir: string, lease: Lease): void {
+    const dir = realpathSync(runDir);
     const top = leaseNumbers(dir).at(-1);
     if (top === undefined) return;
     const path = join(dir, `lease.${top}.json`);
@@ -465,6 +468,7 @@ export class Journal {
         } catch (caught) {
             try {
                 ftruncateSync(fd, this.length);
+                fdatasyncSync(fd);
             } catch {
                 this.fd = -1;
                 try {

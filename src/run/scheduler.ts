@@ -286,17 +286,6 @@ export class Scheduler {
                     if (pending !== undefined) {
                         throw fail(`arm ${open} has EndArm with sleep ${pending} unfired`, e);
                     }
-                    for (const id of fired) {
-                        const f = this.o.faults.find((x) => x.id === id) as FaultEpisode;
-                        const terminal = observed.has(id) || marked.has(id);
-                        if (
-                            f.seam.layer !== PROXY_LAYER &&
-                            f.type !== "laptop_sleep" &&
-                            !terminal
-                        ) {
-                            throw fail(`arm ${open} has EndArm with fault ${id} unresolved`, e);
-                        }
-                    }
                     open = null;
                     return;
                 }
@@ -313,6 +302,17 @@ export class Scheduler {
                     if (turns.has(due.id) && e.outcome !== outcomes.get(due.id)) {
                         throw fail(`Event for ${e.event} contradicts its EndTurn outcome`, e);
                     }
+                    const unresolved = [...fired].find((id) => {
+                        const f = this.o.faults.find((x) => x.id === id) as FaultEpisode;
+                        const scheduler = f.seam.layer !== PROXY_LAYER && f.type !== "laptop_sleep";
+                        return scheduler && !observed.has(id) && !marked.has(id);
+                    });
+                    if (unresolved !== undefined) {
+                        throw fail(
+                            `Event for ${e.event} while fault ${unresolved} is unresolved`,
+                            e,
+                        );
+                    }
                     done++;
                     for (const f of scheduled) {
                         if (done > this.triggerCursor(f)[1] && !fired.has(f.id)) {
@@ -326,8 +326,17 @@ export class Scheduler {
                     if (!turns.has(e.event as string)) {
                         throw fail(`BeginTurn for ${e.event} is not a user turn`, e);
                     }
-                    if (e.event !== due?.id) throw fail(`BeginTurn for ${e.event} is not due`, e);
+                    if (!due || e.event !== due.id) {
+                        throw fail(`BeginTurn for ${e.event} is not due`, e);
+                    }
                     if (begun.has(e.event)) throw fail(`BeginTurn for ${e.event} repeats`, e);
+                    if (e.scenario_ms < due.scenario_ms) {
+                        throw fail(`BeginTurn for ${e.event} precedes its schedule`, e);
+                    }
+                    const working = [...jobs].find(([, n]) => n > 0);
+                    if (working !== undefined) {
+                        throw fail(`BeginTurn for ${e.event} while job ${working[0]} is open`, e);
+                    }
                     begun.add(e.event);
                     outage = null;
                     return;
@@ -661,7 +670,11 @@ export class Scheduler {
         if (OUTAGE.has(f.type)) this.outage = f.id;
         let evidence: Record<string, unknown>;
         try {
-            evidence = await this.untilFatal(driver.fault(f));
+            const got: unknown = await this.untilFatal(driver.fault(f));
+            if (typeof got !== "object" || got === null || Array.isArray(got)) {
+                throw new Error(`fault evidence is ${got === null ? "null" : typeof got}`);
+            }
+            evidence = got as Record<string, unknown>;
         } catch (caught) {
             const error = caught instanceof Error ? caught.message : String(caught);
             this.fatal ??= new HarnessFailure(`fault ${f.id} failed: ${error}`);
