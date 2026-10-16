@@ -1,6 +1,6 @@
 {
     "schema": "sim-fact-bank/v1",
-    "note": "Fact templates for the scenario compiler. {TOKEN} and {token} are a generated word pair in upper and lower case, {value} and {value2} are distinct five-digit numbers, {codename} is an adjective-noun-NN codename, and {code} and {context} come from corpus/tool-outputs/error-codes.jsonl. A check's must and must_not regexes apply to the added lines of the agent's diff, paths_must and paths_must_not to the paths of the files the diff adds or changes, first_line_must to the first line of every file the diff adds, quote_style_must (double or single) to the delimiter of every string literal in the added lines, commands_must and commands_must_not to the command log, and answer, answer_must_not, abstain, and judge checks to the final assistant text of the agent call record the proxy captures.",
+    "note": "Fact templates for the scenario compiler. {TOKEN} and {token} are a generated word pair in upper and lower case, {value} and {value2} are distinct five-digit numbers, {codename} is an adjective-noun-NN codename, and {code} and {context} come from corpus/tool-outputs/error-codes.jsonl. A check's must and must_not regexes apply to the added lines of the agent's diff, paths_must and paths_must_not to the paths of the files the diff adds or changes, first_line_must to the first line of every file the diff adds, quote_style_must (double or single) to the delimiter of every string literal in the added lines, commands_must and commands_must_not to the command log, and an optional scope (a directory prefix ending in /) restricts a check's diff-channel keys to files under that prefix; and answer, answer_must_not, abstain, and judge checks to the final assistant text of the agent call record the proxy captures.",
     "rust": {
         "constraint": [
             {
@@ -77,7 +77,7 @@
                 "statement": "the page size for listing replies is {value}",
                 "probe": "Bound the reply when a client asks for many values at once, using the project's figure for chunking output.",
                 "authority": {
-                    "path": "src/{token}_limits.rs",
+                    "path": "src/limits/scan_page.rs",
                     "content": "// Page size for listing replies.\npub const {TOKEN}_PAGE_SIZE: usize = {value2};\n"
                 },
                 "check": {
@@ -94,7 +94,7 @@
                 "statement": "the connection read buffer starts at {value} bytes",
                 "probe": "Tune the initial per-socket capacity to the agreed figure.",
                 "authority": {
-                    "path": "src/{token}_buffers.rs",
+                    "path": "src/limits/conn_buffer.rs",
                     "content": "// Initial capacity of the per-connection read buffer.\npub const {TOKEN}_READ_BUFFER: usize = {value2};\n"
                 },
                 "check": {
@@ -179,6 +179,7 @@
                 "probe": "Record each command name as the parser in src/cmd reads it.",
                 "out_probe": "Log the bound address when the server starts listening.",
                 "check": {
+                    "scope": "src/cmd/",
                     "must": [
                         "trace!|event!\\(\\s*(?:tracing::)?Level::TRACE\\b"
                     ],
@@ -276,7 +277,7 @@
                 "statement": "the default body size limit is {value} bytes",
                 "probe": "Reject oversized uploads that arrive without a declared length, using the agreed ceiling.",
                 "authority": {
-                    "path": "src/{token}-limits.ts",
+                    "path": "src/limits/body.ts",
                     "content": "// Default request body size limit in bytes.\nexport const {TOKEN}_BODY_LIMIT = {value2}\n"
                 },
                 "check": {
@@ -293,7 +294,7 @@
                 "statement": "session cookies default to a max age of {value} seconds",
                 "probe": "When a login token is issued without an explicit lifetime, apply the figure we agreed.",
                 "authority": {
-                    "path": "src/{token}-cookies.ts",
+                    "path": "src/limits/cookie.ts",
                     "content": "// Default max age for session cookies, in seconds.\nexport const {TOKEN}_COOKIE_MAX_AGE = {value2}\n"
                 },
                 "check": {
@@ -376,6 +377,7 @@
                 "probe": "Add a close reason string when the websocket server rejects a frame.",
                 "out_probe": "Add an error message string when a route handler is missing.",
                 "check": {
+                    "scope": "src/ws/",
                     "quote_style_must": "double"
                 },
                 "out_check": {
@@ -491,10 +493,10 @@
                 "probe": "Commit what we have so far.",
                 "check": {
                     "commands_must": [
-                        "git(?:\\s+(?:-[cC]\\s+\\S+|--[\\w-]+(?:=\\S+)?))*\\s+commit\\b(?![^\\n]*--dry-run)(?:(?!\\s(?:-\\w*m|--message))[^\\n])*\\s(?:-\\w*m ?|--message[ =])[\"']?\\[{token}\\]"
+                        "git(?:\\s+(?:-[cC]\\s+\\S+|-[pP]|--[\\w-]+(?:=\\S+)?))*\\s+commit\\b(?![^\\n]*--dry-run)(?:(?!\\s(?:-\\w*m|--message))[^\\n])*\\s(?:-\\w*m ?|--message[ =])[\"']?\\[{token}\\]"
                     ],
                     "commands_must_not": [
-                        "git(?:\\s+(?:-[cC]\\s+\\S+|--[\\w-]+(?:=\\S+)?))*\\s+commit\\b(?![^\\n]*--dry-run)(?:(?!\\s(?:-\\w*m|--message))[^\\n])*\\s(?:-\\w*m ?|--message[ =])(?!\\s*[\"']?\\[{token}\\])"
+                        "git(?:\\s+(?:-[cC]\\s+\\S+|-[pP]|--[\\w-]+(?:=\\S+)?))*\\s+commit\\b(?![^\\n]*--dry-run)(?:(?!\\s(?:-\\w*m|--message))[^\\n])*\\s(?:-\\w*m ?|--message[ =])(?!\\s*[\"']?\\[{token}\\])"
                     ]
                 }
             },

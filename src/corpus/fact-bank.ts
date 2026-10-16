@@ -41,6 +41,7 @@ const QUOTE_STYLES = ["double", "single"];
 const ERROR_VARS = ["code", "code_re", "context"];
 /** The grading channel each fact kind must use; every other kind grades the diff or command log. */
 const REQUIRED_CHECK: Record<string, string> = {
+    decision: "must",
     lookup: "answer",
     rationale: "judge",
     never_settled: "abstain",
@@ -63,6 +64,8 @@ const ALLOWED_KEYS: Record<string, string[]> = {
     never_settled: ["abstain"],
     anchor: ["must_not", "answer_must_not"],
 };
+/** Check keys that take a string value beside the grading channels. */
+const SCOPE_KEY = "scope";
 const LIST_CHECKS = [
     "must",
     "must_not",
@@ -104,6 +107,12 @@ function checkProblems(where: string, check: unknown, kind: string): string[] {
     if (!isObject(check)) return [`${where}: check is not an object`];
     const problems: string[] = [];
     for (const [key, value] of Object.entries(check)) {
+        if (key === SCOPE_KEY) {
+            if (typeof value !== "string" || !/^[\w./-]+\/$/.test(value)) {
+                problems.push(`${where}: check key scope is not a directory prefix ending in /`);
+            }
+            continue;
+        }
         const known = [...LIST_CHECKS, ...SCALAR_CHECKS, ...FLAG_CHECKS, "quote_style_must"];
         if (known.includes(key) && !(ALLOWED_KEYS[kind] ?? DIFF_KEYS).includes(key)) {
             problems.push(`${where}: check key ${key} is not graded for ${kind} facts`);
@@ -131,7 +140,9 @@ function checkProblems(where: string, check: unknown, kind: string): string[] {
             if (value !== true) problems.push(`${where}: check key ${key} is not true`);
         } else problems.push(`${where}: check key ${key} is not a check kind`);
     }
-    if (Object.keys(check).length === 0) problems.push(`${where}: check is empty`);
+    if (Object.keys(check).filter((k) => k !== SCOPE_KEY).length === 0) {
+        problems.push(`${where}: check is empty`);
+    }
     const required = REQUIRED_CHECK[kind];
     if (required && !(required in check)) problems.push(`${where}: check needs ${required}`);
     return problems;
@@ -213,10 +224,10 @@ export function bankProblems(bank: unknown): string[] {
                     }
                 }
                 if (kind === "constraint") {
-                    const positive = ["must", "paths_must", "first_line_must", "quote_style_must"];
+                    const positive = ["must", "paths_must"];
                     const check = t.check;
                     if (!isObject(check) || !positive.some((k) => k in check)) {
-                        problems.push(`${where}: check needs a positive channel`);
+                        problems.push(`${where}: check needs must or paths_must`);
                     }
                 }
                 if (
@@ -231,7 +242,7 @@ export function bankProblems(bank: unknown): string[] {
                 }
                 if (kind === "scoped_update") {
                     for (const field of ["update", "out_probe"]) {
-                        if (typeof t[field] !== "string" || t[field] === "") {
+                        if (typeof t[field] !== "string" || t[field].trim() === "") {
                             problems.push(`${where}: ${field} missing`);
                         }
                     }
