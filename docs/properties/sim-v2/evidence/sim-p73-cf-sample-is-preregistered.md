@@ -14,9 +14,6 @@ v2 harness before any harness code existed.
 The 20% sample of P1, P3, and P5 items for the counterfactual arm is derived
 from the seed at compile and journaled before `StartRun`.
 
-No harness code, test, or run exists yet. The surface lands in M2
-(#1026).
-
 M2 (#1026) draws the sample at compile: `compileScenario` shuffles the P1, P3,
 and P5 probes with the seed's own `counterfactual` stream, takes the first 20%
 rounded, and writes each deletion's probe, fact, and preceding event to the

@@ -20,11 +20,17 @@ No harness code, test, or run exists yet. The surface lands in M2
 
 M2 (#1026) compiles the event list, the fault schedule, and the counterfactual
 deletion schedule into the scenario file once per seed, with no arm input, so
-every arm reads the same schedule. Each fault keys on a compiler-owned event
-(session start, Nth user turn, first summarizer call of a session);
-`validateFault` refuses any other trigger, and a test shows the refusal. A test
-per tier checks that each scheduled fault keys on such an event and carries its
-seam entry. The per-arm comparison lands with the scheduler in M4.
+every arm reads the same schedule. Each fault names a compiler-chosen position:
+a session start, the Nth user turn of a session, or, for the mid-fold SIGKILL,
+the first summarizer call the scheduler observes in a compiler-chosen forced
+p90 session. The spec (#1007, Implementation Decisions) keys that fault on an
+observed call so the kill lands inside a fold, so its firing turn can differ
+between arms after divergence; a pair where only one arm's kill fires belongs
+to the fault-asymmetric stratum (SIM-P31, SIM-P32), and this property covers
+the schedule the arms share, not that firing time. `validateFault` refuses any
+other trigger, and a test shows the refusal. A test per tier checks that each
+scheduled fault names such a position and carries its seam entry. The per-arm
+comparison lands with the scheduler in M4.
 
 ## Failure scenario
 
