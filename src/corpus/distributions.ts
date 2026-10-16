@@ -30,7 +30,11 @@ export interface CheckResult extends CitedCheck {
 }
 
 export function loadDistributions(): Distributions {
-    return JSON.parse(readFileSync(join(CORPUS_DIR, "distributions.json"), "utf8"));
+    const raw = JSON.parse(readFileSync(join(CORPUS_DIR, "distributions.json"), "utf8"));
+    if (raw.schema !== "sim-corpus-distributions/v1") {
+        throw new Error("distributions.json: unknown schema");
+    }
+    return raw as Distributions;
 }
 
 export function loadCited(): Cited {

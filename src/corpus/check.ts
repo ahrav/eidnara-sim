@@ -11,8 +11,9 @@ import {
     table,
 } from "./distributions";
 import { entryProblems, parseJsonl } from "./entries";
+import { QUANTITIES } from "./fit";
 import { loadRepos, REPOS_DIR } from "./repos";
-import { CORPUS_DIR } from "./sources";
+import { CORPUS_DIR, loadSources } from "./sources";
 
 const MIN_SAMPLES = 500;
 const MIN_ERROR_CODES = 100;
@@ -39,6 +40,15 @@ export function checkCorpus(): CorpusReport {
     const files = manifest.files as Record<string, string>;
     const listed = Object.keys(files).sort().join(",");
     need(listed === OUTPUTS.join(","), `manifest: files ${listed}, need ${OUTPUTS.join(",")}`);
+    const configured = loadSources().map((d) => ({
+        id: d.id,
+        revision: d.revision,
+        access: d.access,
+    }));
+    need(
+        JSON.stringify(manifest.datasets) === JSON.stringify(configured),
+        "manifest: datasets differ from sources.json",
+    );
     for (const [path, digest] of Object.entries(files)) {
         const actual = sha256Hex(read(path));
         need(actual === digest, `${path}: sha256 ${actual}, manifest ${digest}`);
@@ -58,6 +68,11 @@ export function checkCorpus(): CorpusReport {
     need(named.length === codes.length, "error codes: an entry has an empty code");
 
     const dist = loadDistributions();
+    const quantityNames = Object.keys(dist.quantities).sort().join(",");
+    need(
+        quantityNames === QUANTITIES.join(","),
+        `quantities: ${quantityNames}, need ${QUANTITIES.join(",")}`,
+    );
     for (const [name, q] of Object.entries(dist.quantities)) {
         need(typeof q.source === "string" && q.source !== "", `${name}: source missing`);
         need(q.n > 0, `${name}: n missing`);

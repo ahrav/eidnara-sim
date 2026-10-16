@@ -51,6 +51,8 @@ const DEFINITIONS = {
         "result_chars per tool call: characters of the tool result returned to the model.",
 };
 
+export const QUANTITIES: readonly string[] = Object.keys(DEFINITIONS).sort();
+
 type Row = Record<string, unknown>;
 
 async function readTable(dataset: Dataset, table: string, columns: string[]): Promise<Row[]> {

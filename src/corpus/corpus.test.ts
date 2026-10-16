@@ -53,12 +53,18 @@ function ksDistance(t: CdfTable, draws: number[]): number {
             d = Math.max(d, Math.abs(below / n - (t.p[i] ?? 1)));
         }
     }
+    let first = 0;
     for (let i = 0; i < n; i++) {
         const v = sorted[i] ?? 0;
         if (sorted[i + 1] === v) continue;
         const f = cdfAt(t, v);
         d = Math.max(d, Math.abs((i + 1) / n - f));
-        if (t.kind === "continuous") d = Math.max(d, Math.abs(f - i / n));
+        if (t.kind === "continuous") {
+            const atom = t.x.indexOf(v);
+            const below = atom < 0 ? f : (t.p[atom] ?? 0);
+            d = Math.max(d, Math.abs(below - first / n));
+        }
+        first = i + 1;
     }
     return d;
 }
