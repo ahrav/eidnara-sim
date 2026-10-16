@@ -224,7 +224,9 @@ store sits under the user's home.
 The driver keeps `<arm>/state.json` current with the model index and the
 pid and start time of the daemon and of the host while a session is open,
 replacing the file whole so a kill mid-write leaves the previous state. Pi's
-pid is recorded as soon as its process exists, before the readiness wait;
+pid is recorded as soon as its process exists, before the readiness wait, and
+the launcher runs only once that record is written (the gating shell waits
+on a pipe the driver releases after the write);
 OpenCode's once `spawnOpencode` returns, before the SDK setup; the OpenCode
 wrapper also writes its own pid and start time to `<arm>/opencode.launch`
 (staged and renamed whole; a record it cannot write ends the wrapper before
@@ -289,9 +291,10 @@ against the same store (OQ-10).
 | `model_switch` | Later sessions use the next configured model; the daemon keeps running with its summarizer model | The new model id |
 | `laptop_sleep` | One event-free clock jump (`docs/run.md`) | The `AdvanceClock` entry |
 
-`daemon_restart`, `plugin_reload`, `model_switch`, and `apply_diff` fire
-between sessions, while the host is stopped, so the harness's writes meet no
-concurrent host process; one fired inside a session stops the run. A scheduler-layer fault type with no mechanism here
+`daemon_restart`, `plugin_reload`, `model_switch`, `store_full`, and
+`apply_diff` fire between sessions, while the host is stopped, so the
+harness's writes (the ballast among them) meet no concurrent host process;
+one fired inside a session stops the run. A scheduler-layer fault type with no mechanism here
 (`host_upgrade`, `two_hosts_one_daemon`) stops the run before `StartRun`,
 through the driver's `supports`, so a resume cannot heal it; provider faults
 belong to the proxy and the sleep to the clock, so `supports` accepts them.

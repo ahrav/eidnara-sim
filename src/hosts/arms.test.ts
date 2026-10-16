@@ -373,6 +373,28 @@ test("an OpenCode session reports its spawn before the SDK setup runs", async ()
     expect(spawned[0]).not.toBeNull();
 });
 
+test("the Pi launcher runs only once the host's pid is recorded", async () => {
+    const run = runDir();
+    const checkout = fakeV1(run);
+    const marker = join(run, "launched");
+    writeFileSync(join(run, "sandbox.sh"), `#!/bin/sh\ntouch '${marker}'\nexec sleep 300\n`, {
+        mode: 0o755,
+    });
+    const ctx = context(run);
+    const host = new PiSimHost({
+        ...ctx,
+        config: { ...ctx.config, eidnara_checkout: checkout, pi_install: checkout },
+        onSpawn: () => {
+            throw new Error("state.json: ENOSPC");
+        },
+    });
+    await expect(host.openSession(ctx.root, "s1", null)).rejects.toThrow("ENOSPC");
+    await Bun.sleep(300);
+    expect(existsSync(marker)).toBe(false);
+    const child = (globalThis as Untyped).__simPiChild;
+    expect(await gone(child.pid)).toBe(true);
+});
+
 test("a Pi session whose readiness response is a refusal fails and stops the launcher tree", async () => {
     const run = runDir();
     const checkout = fakeV1(run);

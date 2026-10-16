@@ -404,10 +404,14 @@ export class PiSimHost extends SimHost {
             ro,
             cwd,
         );
-        const child: ChildProcess = spawn(argv[0] as string, argv.slice(1), {
+        // The shell waits for one line on fd 3 before it execs the launcher, so Pi starts only once
+        // the driver has recorded the pid; stdin stays Pi's RPC channel. A harness that dies first
+        // closes the pipe and the shell exits, and a record that fails ends the shell the same way.
+        const gated = ["/bin/sh", "-c", 'read _ <&3 && exec 3<&- "$@"', "sh", ...argv];
+        const child: ChildProcess = spawn(gated[0] as string, gated.slice(1), {
             cwd,
             env,
-            stdio: ["pipe", "pipe", "pipe"],
+            stdio: ["pipe", "pipe", "pipe", "pipe"],
         });
         this.launchStart = child.pid === undefined ? null : processStart(child.pid);
         const spawnError = new Promise<never>((_, reject) => child.once("error", reject));
@@ -415,7 +419,16 @@ export class PiSimHost extends SimHost {
         this.rpc = new rpcClient.PiRpcProcess(child, new rpcClient.PiRpcProtocol(), {
             stderrLimit: 20_000,
         });
-        this.ctx.onSpawn?.();
+        const gate = child.stdio[3] as import("node:stream").Writable | null;
+        try {
+            this.ctx.onSpawn?.();
+        } catch (caught) {
+            gate?.destroy();
+            child.kill("SIGKILL");
+            this.rpc = null;
+            throw caught;
+        }
+        gate?.end("\n");
         const ready = this.rpc.sendCommand("get_state", {}, { timeoutMs: 120_000 });
         try {
             const state = await Promise.race([ready, spawnError]);

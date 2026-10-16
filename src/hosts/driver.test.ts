@@ -17,6 +17,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "../config/config";
 import { sandboxAvailable, writeLauncher } from "../run/launcher";
+import { running } from "../run/procs";
 import type { ScenarioEvent } from "../run/scheduler";
 import { type FaultType, SEAMS } from "../scenario/faults";
 import type { DaemonStack, HostContext, PromptResult, SimHost } from "./arms";
@@ -42,7 +43,18 @@ const tmp = () => {
 
 const BASE_MS = Date.UTC(2031, 0, 1);
 const sandbox = sandboxAvailable();
-const sudo = spawnSync("sudo", ["-n", "true"]).status === 0;
+/** The mount tests need a real mount, which some containers deny even with a passwordless sudo. */
+const sudo = (() => {
+    if (spawnSync("sudo", ["-n", "true"]).status !== 0) return false;
+    const probe = mkdtempSync(join(tmpdir(), "sim-mount-probe-"));
+    try {
+        if (spawnSync("sudo", ["-n", "mount", "--bind", probe, probe]).status !== 0) return false;
+        spawnSync("sudo", ["-n", "umount", probe]);
+        return true;
+    } finally {
+        rmSync(probe, { recursive: true, force: true });
+    }
+})();
 
 class FakeHost {
     opened: string[] = [];
@@ -830,7 +842,7 @@ touch ${escaped}
         await driver.reap();
         await orphan.exited;
         expect(orphan.signalCode).toBe("SIGTERM");
-        expect(spawnSync("kill", ["-0", String(sleeper)]).status).not.toBe(0);
+        expect(running(sleeper)).toBe(false);
     });
 
     test("the reaper stops the OpenCode launch the wrapper recorded before the server answered", async () => {

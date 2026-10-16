@@ -104,7 +104,7 @@ export function expandTemplate(template: string, env: Record<string, string>): s
     });
 }
 
-const BETWEEN_SESSIONS = new Set(["daemon_restart", "plugin_reload", "model_switch"]);
+const BETWEEN_SESSIONS = new Set(["daemon_restart", "plugin_reload", "model_switch", "store_full"]);
 
 const SUPPORTED = new Set([
     "daemon_sigkill_mid_fold",
