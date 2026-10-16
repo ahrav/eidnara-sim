@@ -232,6 +232,11 @@ export class Scheduler {
                 this.log({ kind: "EndJob", job, outcome: "failed(interrupted)" });
             }
         }
+        for (const e of kinds("ItemState")) {
+            if (e.state === "missed" && typeof e.fault === "string") {
+                this.fired.add(`${this.arm}/${e.fault}`);
+            }
+        }
         const observed = new Set(kinds("FaultObserved").map((e) => e.fault));
         for (const fired of kinds("FaultFired")) {
             const f = this.o.faults.find((x) => x.id === fired.fault);

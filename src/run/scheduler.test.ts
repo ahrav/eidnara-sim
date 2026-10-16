@@ -1053,6 +1053,56 @@ describe("Scheduler", () => {
         );
     });
 
+    test("a resume after a missed sleep neither repeats the miss nor fires the sleep mid-session", async () => {
+        const events: ScenarioEvent[] = [
+            { id: "e-000000", kind: "session_start", scenario_ms: 0, session: "s-0000" },
+            { id: "e-000001", kind: "user_turn", scenario_ms: 0, session: "s-0000", index: 0 },
+            { id: "e-000002", kind: "session_end", scenario_ms: 0, session: "s-0000" },
+            { id: "e-100000", kind: "session_start", scenario_ms: 50, session: "s-0001" },
+            { id: "e-100001", kind: "user_turn", scenario_ms: 5_000, session: "s-0001", index: 0 },
+            { id: "e-100002", kind: "session_end", scenario_ms: 5_000, session: "s-0001" },
+        ];
+        const sleep = {
+            ...episode("f-sleep", "laptop_sleep", { kind: "session_start", session: "s-0001" }),
+            params: { duration_ms: 50 },
+        };
+        const path = join(dir(), "j.jsonl");
+        const j = new Journal(path);
+        j.append({
+            kind: "StartRun",
+            arm: null,
+            scenario_ms: 0,
+            order: ["a"],
+            scenario: scenarioId(events, [sleep]),
+        });
+        j.append({ kind: "StartArm", arm: "a", scenario_ms: 0 });
+        for (const id of ["e-000000", "e-000001", "e-000002"]) {
+            j.append({ kind: "Event", arm: "a", scenario_ms: 0, event: id, outcome: "ok" });
+        }
+        j.append({
+            kind: "ItemState",
+            arm: "a",
+            scenario_ms: 120,
+            fault: "f-sleep",
+            state: "missed",
+        });
+        j.append({ kind: "Event", arm: "a", scenario_ms: 120, event: "e-100000", outcome: "ok" });
+        j.close();
+        const resumed = new Journal(path);
+        await new Scheduler({
+            events,
+            faults: [sleep],
+            journal: resumed,
+            settleMs: 0,
+            order: ["a"],
+            drivers: { a: fakeDriver([]) },
+        }).run();
+        const about = resumed.entries.filter((e) => e.fault === "f-sleep");
+        expect(about.map((e) => [e.kind, e.state])).toEqual([["ItemState", "missed"]]);
+        const jump = resumed.entries.find((e) => e.kind === "AdvanceClock");
+        expect(jump).toMatchObject({ next_event: "e-100001", scenario_ms: 5_000 });
+    });
+
     test("a journal with EndRun whose arm has orphan markers and no events is refused", async () => {
         const path = join(dir(), "j.jsonl");
         const j = new Journal(path);

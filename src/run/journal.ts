@@ -129,11 +129,9 @@ export function bootId(): string | undefined {
 
 /**
  * The kernel's start time of `pid` in clock ticks since boot, field 22 of `/proc/<pid>/stat`,
- * which with the pid identifies one process incarnation; `null` where `/proc` has no entry.
- */
-/**
- * `gone` is a pid with no live process (no `/proc` entry, or a zombie or exiting state);
- * `unknown` is an identity this host cannot read, which never counts as dead.
+ * which with the pid identifies one process incarnation. `gone` is a pid with no live process
+ * (no `/proc` entry, or a zombie or exiting state); `unknown` is an identity this host cannot
+ * read, which never counts as dead.
  */
 function startTicks(pid: number): number | "gone" | "unknown" {
     try {

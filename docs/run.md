@@ -148,7 +148,8 @@ without `EndArm`:
 - journals `ItemState failed(interrupted)` and `Event` for a `BeginTurn`
   with no `EndTurn`, and `EndJob failed(interrupted)` for each `RegisterJob`
   beyond its id's `EndJob` count;
-- marks every fired fault as fired, arms again a persistent provider fault
+- marks every fired fault, and every laptop sleep journaled `missed`, as
+  handled, arms again a persistent provider fault
   whose session has not ended and a one-shot provider fault whose turn has not
   begun, and journals `ItemState failed(interrupted)` for a scheduler fault
   with no `FaultObserved`. A `single`, `burst`, or `intermittent` fault whose
