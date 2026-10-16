@@ -23,8 +23,10 @@ runtime and the Bun-compiled OpenCode binary print a jumped clock and keep a
 100 ms timer, and the daemon binary's own `clock_gettime` import binds to the
 interposer. A binary that fails is recorded `wall_clock_only`. Tests run the
 real launcher, a binary that drops the interposer, and a binary whose own code
-leaves `clock_gettime` unbound. On this host all three intercept. The run
-command that calls `preflight` at `StartRun` lands with the host drivers.
+leaves `clock_gettime` unbound. In the live test on this host all three
+intercept; that is a test observation, and OQ-9 stays unresolved until the
+first S run's `StartRun` records the interception test in its manifest. The
+run command that calls `preflight` at `StartRun` lands with the host drivers.
 
 ## Failure scenario
 

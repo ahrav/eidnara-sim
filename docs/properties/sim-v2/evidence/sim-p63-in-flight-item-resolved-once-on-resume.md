@@ -19,8 +19,10 @@ No harness code, test, or run exists yet. The surface lands in M4
 (#1028).
 
 M4 (#1028) journals `ItemState failed(interrupted)` and `Event` once for a
-`BeginTurn` without `EndTurn` when a run resumes; the resume test checks both
-entries.
+`BeginTurn` without `EndTurn` when a run resumes, and a later resume writes
+neither again. One resume test kills after `BeginTurn` and before the fixture
+bills the turn, the `issued` state, and checks both entries and that the
+interrupted turn is billed nowhere; another kills after the bill.
 
 ## Failure scenario
 
