@@ -63,7 +63,7 @@ const config = {
 
 function scenarioBody(seed = 101, tier = "S") {
     return {
-        schema: "test",
+        schema: GENERATOR_VERSION,
         manifest: {
             seed,
             tier,

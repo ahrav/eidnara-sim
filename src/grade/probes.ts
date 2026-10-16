@@ -1,7 +1,6 @@
 import {
     closeSync,
     constants,
-    existsSync,
     fstatSync,
     ftruncateSync,
     openSync,
@@ -69,9 +68,13 @@ export interface GradeRecord extends Outcome {
 }
 
 const READS = /^(cat|less|more|head|tail|sed|view|bat|grep|rg|read)\b/;
-const TESTS = /^(cargo (test|t)|(bun|npm|pnpm) (run )?test)\b/;
-const QUIET =
-    /^\s*(cargo (build|check|test|b|c|t)|(bun|npm|pnpm) (install|i|ci|(run )?(test|build))|git (status|log|diff)|ls|pwd)\b[^&|;`$()\n]*$/;
+/** `cargo [+toolchain] [OPTIONS]` ahead of the subcommand: the toolchain selector and Cargo's global options. */
+const CARGO =
+    "cargo(?: \\+\\S+)?(?: (?:-[vq]+|--verbose|--quiet|--locked|--offline|--frozen|--color(?:=\\S+| \\S+)|-C ?\\S+|--config(?:=\\S+| \\S+)|-Z ?\\S+))*";
+const TESTS = new RegExp(`^(${CARGO} (test|t)|(bun|npm|pnpm) (run )?test)\\b`);
+const QUIET = new RegExp(
+    `^\\s*(${CARGO} (build|check|test|b|c|t)|(bun|npm|pnpm) (install|i|ci|(run )?(test|build))|git (status|log|diff)|ls|pwd)\\b[^&|;\`$()\\n]*$`,
+);
 const FOLDS = ["history_summarizer", "native_compaction"];
 const USER_SIM_LABELS = [
     "task",
@@ -246,10 +249,16 @@ const executed = (x: Command): string[] => {
     const lastList = guarded.reduce((n, p, i) => (/^[;&\n]$/.test(p.op) ? i : n), 0);
     const mixed = guarded.slice(lastList).some((p) => p.op === "||");
     const firstListEnd = guarded.findIndex((p, i) => i > 0 && /^[;&\n]$/.test(p.op));
-    const exitAt = guarded.findIndex(
-        (p) =>
-            /^[;&\n]$/.test(p.op) && /^(exit|return)\b|^exec\s+[^\s<>&\d]/.test(unprefixed(p.seg)),
-    );
+    const exitAt = guarded.findIndex((p, i) => {
+        const own = (parts[i] as { op: string }).op;
+        const next = parts[i + 1]?.op ?? ";";
+        const foreground = own !== "|" && next !== "|" && next !== "&";
+        return (
+            /^[;&\n]$/.test(p.op) &&
+            foreground &&
+            /^(exit|return)\b|^exec\s+[^\s<>&\d]/.test(unprefixed(p.seg))
+        );
+    });
     const afterExit = exitAt < 0 ? guarded.length : exitAt + 1;
     const unfinished = x.exit === null && firstListEnd >= 0 ? firstListEnd : guarded.length;
     const reached = Math.min(afterExit, unfinished);
@@ -291,6 +300,8 @@ const shellWords = (segment: string): string[] => {
 /** grep and rg options whose value is the next word, so that word is neither pattern nor file. */
 const GREP_OPERAND_OPTIONS =
     /^(-[ABCmdDgtTEjM]|--(max-count|after-context|before-context|context|include|exclude|exclude-dir|glob|iglob|type|type-not|max-depth|threads|color|colour|devices|directories|label|encoding|pre|sort|sortr))$/;
+/** rg's replacement text option; grep's `-r` is recursion and takes no value. */
+const RG_OPERAND_OPTIONS = /^(-r|--replace)$/;
 /**
  * A read segment's file operands. For grep and rg the pattern is the first non-option word unless
  * an option supplies it (`-e`, `--regexp`, `-f`, `--file`), in which case every positional word is a file.
@@ -310,7 +321,8 @@ const operands = (segment: string): string[] => {
             supplied = true;
             i++;
         } else if (attached.test(w)) supplied = true;
-        else if (GREP_OPERAND_OPTIONS.test(w)) i++;
+        else if (GREP_OPERAND_OPTIONS.test(w) || (words[0] === "rg" && RG_OPERAND_OPTIONS.test(w)))
+            i++;
         else if (!w.startsWith("-")) files.push(w);
     }
     if (!supplied) files.shift();
@@ -698,11 +710,45 @@ function newest(grades: GradeRecord[]): GradeRecord[] {
 export class GradeLog {
     constructor(private readonly path: string) {}
 
+    /** The log opened without following a link and checked to be a regular file; null when absent. */
+    private open(flags: number): number | null {
+        let fd: number;
+        try {
+            fd = openSync(this.path, flags | constants.O_NOFOLLOW);
+        } catch (e) {
+            const code = (e as NodeJS.ErrnoException).code;
+            if (code === "ENOENT") return null;
+            if (code === "ELOOP") {
+                throw new GradeRefused(`grade log ${this.path} is a link, not a regular file`);
+            }
+            throw e;
+        }
+        try {
+            const stat = fstatSync(fd);
+            if (!stat.isFile() || stat.nlink !== 1) {
+                throw new GradeRefused(`grade log ${this.path} is a link, not a regular file`);
+            }
+        } catch (e) {
+            closeSync(fd);
+            throw e;
+        }
+        return fd;
+    }
+
     /** Earlier records stay readable after an interrupted append: only newline-terminated lines count. */
-    private complete(): string {
-        if (!existsSync(this.path)) return "";
-        const text = readFileSync(this.path, "utf8");
+    private completeFrom(fd: number): string {
+        const text = readFileSync(fd, "utf8");
         return text.slice(0, text.lastIndexOf("\n") + 1);
+    }
+
+    private complete(): string {
+        const fd = this.open(constants.O_RDONLY);
+        if (fd === null) return "";
+        try {
+            return this.completeFrom(fd);
+        } finally {
+            closeSync(fd);
+        }
     }
 
     all(): GradeRecord[] {
@@ -764,21 +810,9 @@ export class GradeLog {
                 `grade ${item}/${arm} v${record.version} changes ${changedField}`,
             );
         }
-        const kept = Buffer.byteLength(this.complete());
-        let fd: number;
+        const fd = this.open(constants.O_RDWR | constants.O_CREAT) as number;
         try {
-            fd = openSync(this.path, constants.O_WRONLY | constants.O_CREAT | constants.O_NOFOLLOW);
-        } catch (e) {
-            if ((e as NodeJS.ErrnoException).code === "ELOOP") {
-                throw new GradeRefused(`grade log ${this.path} is a link, not a regular file`);
-            }
-            throw e;
-        }
-        try {
-            const stat = fstatSync(fd);
-            if (!stat.isFile() || stat.nlink !== 1) {
-                throw new GradeRefused(`grade log ${this.path} is a link, not a regular file`);
-            }
+            const kept = Buffer.byteLength(this.completeFrom(fd));
             ftruncateSync(fd, kept);
             const line = Buffer.from(`${JSON.stringify(record)}\n`);
             let written = 0;

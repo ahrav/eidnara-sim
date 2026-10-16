@@ -1238,6 +1238,86 @@ describe("grading harness", () => {
         expect(() => gradeItem(f.probe, [snap], rules)).toThrow("patch");
     });
 
+    test("a plain multi-file diff with timestamps yields every path", () => {
+        const f = fixture("P6-pass");
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        const prior = snap.artefacts.find((a) => a.class === "diff" && a.role === "prior-session");
+        if (prior?.class !== "diff") throw new Error("fixture lacks prior diff");
+        prior.patch =
+            "--- src/old.ts\t2026-01-01 00:00:00\n+++ src/old.ts\t2026-01-02 00:00:00\n@@ -1 +1 @@\n-a\n+b\n--- src/second.ts\n+++ src/second.ts\n@@ -1 +1 @@\n-c\n+d\n";
+        const log = snap.artefacts.find((a) => a.class === "command-log" && a.role === "turn");
+        if (log?.class !== "command-log") throw new Error("fixture lacks command-log");
+        log.commands.push(
+            { command: "cat src/old.ts", exit: 0, scenario_ms: 10 },
+            { command: "cat src/second.ts", exit: 0, scenario_ms: 20 },
+        );
+        expect(gradeItem(f.probe, [snap], rules)?.metrics["P6.reread_files"]).toBe(2);
+    });
+
+    test("a blank hunk line needs its space prefix, and operative headers win over the diff label", () => {
+        const f = fixture("P2-pass");
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        const diff = snap.artefacts.find((a) => a.class === "diff");
+        if (diff?.class !== "diff") throw new Error("fixture lacks diff");
+        diff.patch = "--- a/x\n+++ b/x\n@@ -1 +1 @@\n\n";
+        expect(() => gradeItem(f.probe, [snap], rules)).toThrow("patch");
+        const p1 = fixture("P1-pass");
+        const probe = { ...p1.probe, check: { must: ["^src/expected\\.ts$"] } };
+        const s1 = structuredClone(p1.snapshots[0]) as Snapshot;
+        const d1 = s1.artefacts.find((a) => a.class === "diff" && a.role === "turn");
+        if (d1?.class !== "diff") throw new Error("fixture lacks diff");
+        d1.patch =
+            "diff --git a/src/expected.ts b/src/expected.ts\n--- a/src/unrelated.ts\n+++ b/src/unrelated.ts\n@@ -1 +1 @@\n-a\n+b\n";
+        expect(gradeItem(probe, [s1], rules)?.verdict).toBe("fail");
+    });
+
+    test("an exit inside a pipeline does not end the list, and rg replacements are not files", () => {
+        const f = fixture("P13-pass");
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        const log = snap.artefacts.find((a) => a.class === "command-log");
+        if (log?.class !== "command-log") throw new Error("fixture lacks command-log");
+        const commit = log.commands.find((c) => c.command.startsWith("git commit")) as Command;
+        commit.command = `exit 0 | cat; ${commit.command}`;
+        expect(gradeItem(f.probe, [snap], rules)?.metrics["P13.rule_kept"]).toBe(true);
+        const p6 = fixture("P6-pass");
+        const s6 = structuredClone(p6.snapshots[0]) as Snapshot;
+        const l6 = s6.artefacts.find((a) => a.class === "command-log" && a.role === "turn");
+        if (l6?.class !== "command-log") throw new Error("fixture lacks command-log");
+        l6.commands.push({
+            command: "rg needle -r src/connection.rs README.md",
+            exit: 1,
+            scenario_ms: 10,
+        });
+        expect(gradeItem(p6.probe, [s6], rules)?.metrics["P6.reread_files"]).toBe(0);
+    });
+
+    test("cargo global options and toolchain selectors precede the subcommand", () => {
+        const f = fixture("P13-pass");
+        for (const cmd of ["cargo --quiet test", "cargo +nightly test", "cargo --locked build"]) {
+            const snap = structuredClone(f.snapshots[0]) as Snapshot;
+            const log = snap.artefacts.find((a) => a.class === "command-log");
+            if (log?.class !== "command-log") throw new Error("fixture lacks command-log");
+            log.commands.unshift({ command: cmd, exit: 0, scenario_ms: 100 });
+            log.commands.push({ command: cmd, exit: 0, scenario_ms: 900 });
+            expect(gradeItem(f.probe, [snap], rules)?.metrics["P13.repeated_action"]).toBe(false);
+        }
+        const p6 = fixture("P6-pass");
+        const s6 = structuredClone(p6.snapshots[0]) as Snapshot;
+        const l6 = s6.artefacts.find((a) => a.class === "command-log" && a.role === "turn");
+        if (l6?.class !== "command-log") throw new Error("fixture lacks command-log");
+        l6.commands.push({ command: "cargo --quiet test", exit: 0, scenario_ms: 10 });
+        expect(gradeItem(p6.probe, [s6], rules)?.metrics["P6.ran_tests"]).toBe(true);
+    });
+
+    test("the grade log is read through a no-follow descriptor", () => {
+        const dir = mkdtempSync(join(tmpdir(), "sim-grades-"));
+        const target = join(dir, "elsewhere.jsonl");
+        writeFileSync(target, `${JSON.stringify(grade("P2-pass"))}\n`);
+        const linked = join(dir, "grades.jsonl");
+        symlinkSync(target, linked);
+        expect(() => new GradeLog(linked).all()).toThrow("is a link");
+    });
+
     test("a check pattern that is empty after its prefix or fails to compile is refused", () => {
         const f = fixture("P1-fail");
         for (const bad of ["(?i)", "["]) {

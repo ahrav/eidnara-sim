@@ -179,6 +179,7 @@ describe("compiled S scenario", async () => {
         };
         expect(inputs.preregistration_sha256).toHaveLength(64);
         expect(scenarioInputMismatch(s, inputs)).toBeNull();
+        expect(scenarioInputMismatch({ ...s, schema: "test" }, inputs)).toContain("schema");
         const stale = { ...s, manifest: { ...s.manifest, generator_version: "sim-scenario/v1" } };
         expect(scenarioInputMismatch(stale as Scenario, inputs)).toContain("sim-scenario/v1");
     });

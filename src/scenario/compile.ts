@@ -654,6 +654,9 @@ export interface ScenarioInputs {
 /** A cached scenario is reusable only when the current generator and the named inputs produced it. */
 export function scenarioInputMismatch(scenario: Scenario, inputs: ScenarioInputs): string | null {
     const m = scenario.manifest;
+    if (scenario.schema !== GENERATOR_VERSION) {
+        return `scenario.json has schema ${scenario.schema}, not ${GENERATOR_VERSION}`;
+    }
     if (m.generator_version !== GENERATOR_VERSION) {
         return `scenario.json is from generator ${m.generator_version}, not ${GENERATOR_VERSION}`;
     }

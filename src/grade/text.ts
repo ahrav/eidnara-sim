@@ -66,125 +66,138 @@ function gitPath(token: string): string {
         .replace(/^[ab]\//, "");
 }
 
-function parseDiff(patch: string): { added: string[]; paths: string[]; surviving: string[] } {
-    const added: string[] = [];
-    const paths: string[] = [];
-    const surviving: string[] = [];
-    let inHunk = false;
-    let current: string | null = null;
-    let deleted = false;
-    const close = () => {
-        if (current !== null && !deleted) surviving.push(current);
-        current = null;
-        deleted = false;
-    };
-    for (const line of patch.split("\n")) {
-        if (line.startsWith("diff --git ")) {
-            close();
-            inHunk = false;
-            const named =
-                /^diff --git ("a\/(?:[^"\\]|\\.)*"|a\/\S+) ("b\/(?:[^"\\]|\\.)*"|b\/.+)$/.exec(
-                    line,
-                );
-            if (named) {
-                paths.push(gitPath(named[1] as string), gitPath(named[2] as string));
-                current = gitPath(named[2] as string);
-            }
-        } else if (line.startsWith("@@")) inHunk = true;
-        else if (inHunk) {
-            if (line.startsWith("+")) added.push(line.slice(1));
-        } else if (line.startsWith("--- a/") || line.startsWith('--- "a/')) {
-            paths.push(gitPath(line.slice("--- ".length)));
-        } else if (line.startsWith("+++ /dev/null") || line.startsWith("deleted file mode ")) {
-            deleted = true;
-        } else if (line.startsWith("+++ b/") || line.startsWith('+++ "b/')) {
-            const path = gitPath(line.slice("+++ ".length));
-            paths.push(path);
-            if (current === null) surviving.push(path);
-        }
-    }
-    close();
-    return { added, paths: [...new Set(paths)], surviving: [...new Set(surviving)] };
-}
-
 const HUNK_HEADER = /^@@ -\d+(,\d+)? \+\d+(,\d+)? @@/;
 const FILE_META =
     /^(index |old mode |new mode |deleted file mode |new file mode |similarity index |dissimilarity index |rename from |rename to |copy from |copy to |Binary files |GIT binary patch|literal |delta )/;
+const GIT_LABEL = /^diff --git ("a\/(?:[^"\\]|\\.)*"|a\/\S+) ("b\/(?:[^"\\]|\\.)*"|b\/.+)$/;
+
+/** A `---`/`+++` header's path: the token before any tab-separated timestamp, decoded, or null for `/dev/null`. */
+function headerPath(rest: string): string | null {
+    const token = rest.startsWith('"') ? rest : (rest.split("\t")[0] as string);
+    if (token === "/dev/null") return null;
+    return gitPath(token);
+}
+
+interface Scan {
+    ok: boolean;
+    added: string[];
+    paths: string[];
+    surviving: string[];
+}
 
 /**
- * A non-empty patch must be a well-formed unified diff: every line is a file header, Git file
- * metadata, a hunk header, or a hunk line (` `, `+`, `-`, `\`) inside a hunk, and the text opens
- * with a `diff --git` or `---` header. An empty patch is a turn that changed nothing.
+ * One pass over a unified diff. The scan is strict: every line is a file header, Git file
+ * metadata, a hunk header, or a hunk line whose count the header declared, headers come in
+ * pairs before their hunks, and each text file carries a hunk. `ok` reports whether the whole
+ * payload held to that grammar; the paths and added lines come from the same walk.
  */
-export const unifiedDiff = (v: unknown): boolean => {
-    if (typeof v !== "string") return false;
-    if (v.length === 0) return true;
-    let inHunk = false;
-    let inBinary = false;
+function scanDiff(patch: string): Scan {
+    const added: string[] = [];
+    const paths: string[] = [];
+    const surviving: string[] = [];
+    let ok = true;
     let opened = false;
     let fileBody = true;
-    let oldLeft = 0;
-    let newLeft = 0;
     let pendingNew = false;
     let headersDone = false;
-    const hunkComplete = () => !inHunk || (oldLeft === 0 && newLeft === 0);
-    for (const line of v.replace(/\n$/, "").split("\n")) {
-        if (inHunk && /^[ +-]/.test(line) && !(oldLeft === 0 && newLeft === 0)) {
+    let inBinary = false;
+    let oldLeft = 0;
+    let newLeft = 0;
+    let label: string | null = null;
+    let operative: string | null = null;
+    let deleted = false;
+    const hunkOpen = () => oldLeft > 0 || newLeft > 0;
+    const close = () => {
+        const survivor = operative ?? label;
+        if (survivor !== null && !deleted) surviving.push(survivor);
+        label = null;
+        operative = null;
+        deleted = false;
+    };
+    const fail = () => {
+        ok = false;
+    };
+    for (const line of patch.replace(/\n$/, "").split("\n")) {
+        if (inBinary && !line.startsWith("diff --git ")) continue;
+        if (hunkOpen()) {
+            if (line.startsWith("\\")) continue;
             const kind = line[0];
             if (kind === " " || kind === "-") oldLeft--;
             if (kind === " " || kind === "+") newLeft--;
-            if (oldLeft < 0 || newLeft < 0) return false;
+            if (kind === "+") added.push(line.slice(1));
+            if (!(kind === " " || kind === "+" || kind === "-") || oldLeft < 0 || newLeft < 0) {
+                fail();
+                break;
+            }
             continue;
         }
-        if (inHunk && line.startsWith("\\")) continue;
-        if (inHunk && line.length === 0 && !(oldLeft === 0 && newLeft === 0)) {
-            oldLeft--;
-            newLeft--;
-            if (oldLeft < 0 || newLeft < 0) return false;
-            continue;
-        }
-        if (inBinary && !line.startsWith("diff --git ")) continue;
+        if (line.startsWith("\\")) continue;
         if (line.startsWith("diff --git ")) {
-            if (!fileBody || !hunkComplete() || pendingNew) return false;
-            inBinary = false;
-            headersDone = false;
-            if (
-                !/^diff --git ("a\/(?:[^"\\]|\\.)*"|a\/\S+) ("b\/(?:[^"\\]|\\.)*"|b\/.+)$/.test(
-                    line,
-                )
-            )
-                return false;
-            inHunk = false;
+            if (!fileBody || pendingNew) fail();
+            const named = GIT_LABEL.exec(line);
+            if (!named) {
+                fail();
+                break;
+            }
+            close();
+            paths.push(gitPath(named[1] as string), gitPath(named[2] as string));
+            label = gitPath(named[2] as string);
             opened = true;
             fileBody = false;
+            headersDone = false;
+            inBinary = false;
         } else if (line.startsWith("--- ")) {
-            if (!hunkComplete() || pendingNew) return false;
-            inHunk = false;
+            if (pendingNew) fail();
+            if (headersDone) {
+                if (!fileBody) fail();
+                close();
+                headersDone = false;
+            }
+            const old = headerPath(line.slice(4));
+            if (old !== null) paths.push(old);
             opened = true;
             pendingNew = true;
             fileBody = false;
         } else if (line.startsWith("+++ ")) {
-            if (!hunkComplete() || !pendingNew) return false;
+            if (!pendingNew) fail();
+            const next = headerPath(line.slice(4));
+            if (next === null) deleted = true;
+            else {
+                paths.push(next);
+                operative = next;
+            }
             pendingNew = false;
             headersDone = true;
-            inHunk = false;
             fileBody = false;
         } else if (HUNK_HEADER.test(line)) {
-            if (!opened || !hunkComplete() || pendingNew || !headersDone) return false;
+            if (!opened || pendingNew || !headersDone) fail();
             const m = HUNK_HEADER.exec(line) as RegExpExecArray;
             oldLeft = m[1] === undefined ? 1 : Number(m[1].slice(1));
             newLeft = m[2] === undefined ? 1 : Number(m[2].slice(1));
-            inHunk = true;
             fileBody = true;
         } else if (FILE_META.test(line)) {
-            if (!hunkComplete() || pendingNew || inHunk) return false;
-            inHunk = false;
+            if (pendingNew || headersDone) fail();
             fileBody = true;
+            if (line.startsWith("deleted file mode ")) deleted = true;
             if (line.startsWith("GIT binary patch")) inBinary = true;
-        } else return false;
+        } else {
+            fail();
+            break;
+        }
+        if (!ok) break;
     }
-    return opened && fileBody && hunkComplete() && !pendingNew;
-};
+    if (hunkOpen() || pendingNew || !fileBody || !opened) ok = false;
+    close();
+    return { ok, added, paths: [...new Set(paths)], surviving: [...new Set(surviving)] };
+}
+
+function parseDiff(patch: string): Scan {
+    return scanDiff(patch);
+}
+
+/** A non-empty patch must scan as a well-formed unified diff; an empty patch is a turn that changed nothing. */
+export const unifiedDiff = (v: unknown): boolean =>
+    typeof v === "string" && (v.length === 0 || scanDiff(v).ok);
 
 export function addedLines(patch: string): string {
     return parseDiff(patch).added.join("\n");

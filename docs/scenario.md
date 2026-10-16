@@ -5,8 +5,8 @@ scenario to `runs/scenarios/<tier>-<seed>.json`. The inputs are the seed, the
 tier's pre-registration in `prereg/<tier>.json`, the corpus under `corpus/`,
 and the generator version `sim-scenario/v2`. The same inputs produce the same
 bytes in any process, and a run reuses a cached `scenario.json` only when its
-generator version, pre-registration hash, and corpus inputs hash match the
-current inputs. The compiler scores cue and probe pairs with
+top-level `schema`, generator version, pre-registration hash, and corpus
+inputs hash match the current inputs. The compiler scores cue and probe pairs with
 `amazon.titan-embed-text-v2:0`, the model the pre-registration names, through
 the AWS profile in `sim.config.json`, and caches each vector in
 `embeddings.jsonl` beside the output. It refuses any other embedder.
