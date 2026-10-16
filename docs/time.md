@@ -64,8 +64,8 @@ time between jumps (SIM-P19).
 `TRANSCRIPT_STORES` maps each host version to the paths where the host keeps
 its own transcripts, so the control arm's reads of them can be attributed
 (SIM-P35). Preflight reads each host's version (`pi --version`, `opencode
---version`) and refuses a version with no row. The check that each resolved
-path exists after an arm's first session lands with the host drivers.
+--version`) and refuses a version with no row. After an arm's first session
+the driver checks that each resolved path exists (`docs/hosts.md`).
 
 | Host | Versions | Paths |
 |---|---|---|

@@ -1,8 +1,9 @@
 # Host drivers
 
-`src/hosts/arms.ts` launches Pi or OpenCode for one session and wraps the
-daemon stack. The arm driver that runs a scenario's events and faults on them
-lands next.
+`src/hosts/` holds the arm drivers. `arms.ts` launches Pi or OpenCode and
+wraps the daemon stack, and `driver.ts` runs one arm's events and
+scheduler-layer faults. The run command that wires them to the proxy, clock,
+and scheduler lands next.
 
 ## Eidnara build
 
@@ -32,6 +33,15 @@ The v1 harness closure pins OpenCode 1.18.22 and finds it on `PATH`, so
 `eidnara-cf` runs as `eidnara` here; its counterfactual deletions land with
 the counterfactual arm.
 
+`HostDriver` owns the arm's daemon and its current host. `reset` stops both,
+deletes the arm root and store, clones each scenario repository into a
+workspace, and, on an Eidnara arm, starts a fresh daemon through the v1
+`HermeticHostStack` with the interposer environment. `finish` runs after the
+arm's last event, before `EndArm`: it closes the host, stops the daemon with
+SIGTERM so its store stays on disk, appends the daemon's output to
+`<arm>/daemon.log`, and unmounts the store. The daemon also appends its output
+there before each restart.
+
 `DaemonStack` starts the daemon through the v1 `HermeticHostStack` with the
 interposer environment, restarts it with SIGKILL against the same store, and
 stops it with SIGTERM so its store stays on disk. It appends the daemon's
@@ -39,16 +49,19 @@ output to the arm's `daemon.log` before each restart and at stop; the v1
 stack keeps the last 256 KiB of that output, so a longer stretch keeps its
 tail.
 
-`openSession` launches one host process in a workspace through the sandbox
-launcher, and `closeSession` stops it. The sandbox runs the host under
+Each `session_start` launches one host process in the session's workspace
+through the sandbox launcher, and each `session_end` closes it. The sandbox runs the host under
 root-owned `sudo` and `unshare`, so closing a host walks the launcher's
 process tree and signals every process the user owns, with SIGKILL after
-10 s; a process that survives SIGKILL stops the run. `prompt` sends one user turn with the turn deadline and returns the
-host's error, if any. After a Pi turn fails, the host aborts it and waits up
+10 s; a process that survives SIGKILL stops the run. A user turn is one prompt with the turn deadline, and the host's error
+becomes a failed turn. After a Pi turn fails, the host aborts it and waits up
 to 30 s for its `agent_end`, so a late end cannot finish the next turn.
 OpenCode turns race the deadline, abort the session (waiting at most 5 s for
 the abort call), and wait 30 s for the call to drain; a call still running
-then stops the run.
+then stops the run. An `apply_diff` event writes its file inside the
+workspace and commits that path alone, so the agent's own uncommitted edits
+stay uncommitted; content already committed adds no commit, and a path that
+resolves outside the workspace through `..` or a symlink stops the run.
 
 Pi runs in RPC mode with `--session-id sim-<session>`, its agent directory,
 settings, and model list under the arm root, and the Eidnara extension from
@@ -86,3 +99,63 @@ distortion. Preflight writes the wrappers, then runs `cargo --version`,
 launcher, so the rustc check goes through the same wrapper cargo uses, and
 records the versions; a tool that fails or runs past 60 s has its tree
 stopped and stops the run.
+
+The daemon's store directory `<arm>/s` stays visible inside the sandbox on
+Eidnara arms, because the plugin reaches the daemon through the connection
+file and socket under it, and a daemon restart recreates them there. The
+agent can therefore read the store, as it can on a workstation where the
+store sits under the user's home.
+
+## Resume
+
+The driver keeps `<arm>/state.json` current with the model index and the
+pid and start time of the daemon and of the host while a session is open.
+A new harness process calls `resume(open)` on an arm that has `StartArm` and
+no `EndArm`. The driver restores the model index, stops each recorded process
+whose start time still matches, unmounts a store left mounted, mounts the
+existing store image, starts the daemon against the existing store, and, when
+the next event is inside a session, opens that session again. Pi reopens the
+same session transcript by its session id, and OpenCode reuses the session
+with the same title. `reset` stops recorded processes and unmounts the store
+the same way before it deletes anything, so a harness killed during `reset`
+leaves no recorded process running into the next attempt. A daemon still
+starting when the harness dies has no pid on record yet; its mount then
+stays busy and the next `reset` or `resume` stops with the `umount` error.
+
+## Transcript-store check
+
+After an arm's first `session_end`, the driver expands the preflight's
+transcript-store paths for the host version with the host's own variables
+(`$PI_CODING_AGENT_DIR`, `$XDG_DATA_HOME`) and writes the result to
+`<arm>/transcripts.json`. A missing path stops the run (OQ-7).
+
+## Infrastructure faults
+
+The scheduler opens an outage window before a daemon fault and closes it at
+the next event. The harness owns every daemon restart, through the hermetic
+host stack's `restartHost`, which sends SIGKILL and starts the fixture
+against the same store (OQ-10).
+
+| Fault | Mechanism | Evidence |
+|---|---|---|
+| `daemon_sigkill_mid_fold` | The session's first observed history-summarizer call fires it; SIGKILL and restart | `pid_before`, `pid_after`, `restarted_by: harness` |
+| `daemon_restart` | At `session_start`, SIGKILL and restart | As above |
+| `store_full` | When the scenario schedules `store_full`, each Eidnara arm's store lives on a sparse 2 GiB ext4 loop mount (`nosuid,nodev,noexec`) at `<arm>/s`, room for the daemon to materialize its harness closures twice, with its image outside the sandbox's kept paths; the fault fills it, and `session_end` removes the ballast | `avail_kb: 0`; any other value stops the run |
+| `plugin_reload` | The host process and its plugin start afresh at every `session_start` | The reload note |
+| `model_switch` | Later sessions use the next configured model; the daemon keeps running with its summarizer model | The new model id |
+| `laptop_sleep` | One event-free clock jump (`docs/run.md`) | The `AdvanceClock` entry |
+
+`plugin_reload` and `model_switch` fire between sessions; one fired inside a
+session stops the run, and so does a fault type with no mechanism here
+(`host_upgrade`, `two_hosts_one_daemon`). A daemon that exits outside an
+outage window stops the run with `HarnessFailure`; the driver checks the
+daemon after every turn.
+
+## Limits
+
+- Closing the host at `session_end` can cut a memory capture still
+  streaming; one smoke run recorded it as `stream_cut`.
+- A daemon that dies during a turn is detected when the turn ends.
+- `plugin_reload` adds no mechanism beyond the per-session host process.
+- On OpenCode, the turn deadline aborts the session through the server, so a
+  server that ignores the abort holds the run for the 30 s drain window.

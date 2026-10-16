@@ -443,3 +443,100 @@ describe("resume of fired faults", () => {
         expect(resumed.entries.filter((e) => e.kind === "FaultFired")).toHaveLength(2);
     });
 });
+
+describe("driver lifecycle hooks", () => {
+    test("a resumed arm gets the open session, its open jobs end, and finish precedes EndArm", async () => {
+        const path = join(dir(), "j.jsonl");
+        const events = fixtureEvents(3);
+        const first = new Journal(path);
+        const calls: string[] = [];
+        let scheduler: Scheduler | null = null;
+        const interrupted: ArmDriver = {
+            reset: async () => void calls.push("reset"),
+            event: async (e) => {
+                if (e.index === 1) {
+                    scheduler?.jobStart("memory_capture-0");
+                    throw new Error("harness killed");
+                }
+                return {};
+            },
+            fault: async () => ({}),
+            finish: async () => void calls.push("finish"),
+        };
+        scheduler = new Scheduler({
+            events,
+            faults: [],
+            journal: first,
+            settleMs: 0,
+            order: ["a"],
+            drivers: { a: interrupted },
+        });
+        await expect(scheduler.run()).rejects.toThrow("harness killed");
+        first.close();
+
+        const second = new Journal(path);
+        let finishedAt = -1;
+        const resumed: ArmDriver = {
+            reset: async () => void calls.push("reset"),
+            resume: async (open) => void calls.push(`resume:${open?.id ?? null}`),
+            event: async (e) => {
+                calls.push(e.id);
+                return {};
+            },
+            fault: async () => ({}),
+            finish: async () => {
+                calls.push("finish");
+                finishedAt = second.entries.length;
+            },
+        };
+        await new Scheduler({
+            events,
+            faults: [],
+            journal: second,
+            settleMs: 0,
+            order: ["a"],
+            drivers: { a: resumed },
+        }).run();
+        expect(calls).toEqual(["reset", "resume:e-000000", "e-000003", "e-999999", "finish"]);
+        const tail = second.entries.map((e) => [e.kind, e.job ?? e.event ?? null]);
+        expect(tail).toContainEqual(["EndJob", "memory_capture-0"]);
+        const endArm = second.entries.findIndex((e) => e.kind === "EndArm");
+        expect(endArm).toBe(finishedAt);
+    });
+});
+
+test("a mid-fold kill observed in the arm's last turn is observed before finish and EndArm", async () => {
+    const j = new Journal(join(dir(), "j.jsonl"));
+    let scheduler: Scheduler | null = null;
+    const order: string[] = [];
+    const kill = episode("k", "daemon_sigkill_mid_fold", {
+        kind: "first_summarizer_call",
+        session: "s-0000",
+    });
+    const events = fixtureEvents(1).filter((e) => e.kind !== "session_end");
+    const driver: ArmDriver = {
+        reset: async () => undefined,
+        event: async (e) => {
+            if (e.kind === "user_turn") scheduler?.observe("history_summarizer", driver);
+            return {};
+        },
+        fault: async () => {
+            await Bun.sleep(200);
+            order.push("fault");
+            return {};
+        },
+        finish: async () => void order.push("finish"),
+    };
+    scheduler = new Scheduler({
+        events,
+        faults: [kill],
+        journal: j,
+        settleMs: 0,
+        order: ["a"],
+        drivers: { a: driver },
+    });
+    await scheduler.run();
+    expect(order).toEqual(["fault", "finish"]);
+    const kinds = j.entries.map((e) => e.kind);
+    expect(kinds.indexOf("FaultObserved")).toBeLessThan(kinds.indexOf("EndArm"));
+});

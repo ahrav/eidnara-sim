@@ -20,7 +20,12 @@ No harness code, test, or run exists yet. The surface lands in M8
 
 M4 (#1028) keeps a per-host-version table of transcript-store paths and refuses
 at preflight a host version with no row; a test checks the known versions and
-the refusal. Observing and attributing reads lands with the host drivers.
+the refusal.
+
+The host driver checks after each arm's first session that every resolved
+path in the table exists and stops the run otherwise; the live witness on
+2026-10-16 found `$PI_CODING_AGENT_DIR/sessions` for Pi 0.80.2. Observing and
+attributing the reads lands in M8 (#1034).
 
 ## Failure scenario
 

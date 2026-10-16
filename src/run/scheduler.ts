@@ -14,8 +14,15 @@ export interface ScenarioEvent {
 
 export interface ArmDriver {
     reset(): Promise<void>;
+    /**
+     * Restores a started arm in a new harness process. `open` is the `session_start` of the
+     * session the next event belongs to, or null between sessions.
+     */
+    resume?(open: ScenarioEvent | null): Promise<void>;
     event(e: ScenarioEvent): Promise<{ failed?: string }>;
     fault(f: FaultEpisode): Promise<Record<string, unknown>>;
+    /** Stops everything the arm runs, after its last event and before `EndArm`. */
+    finish?(): Promise<void>;
 }
 
 export interface ProxyControl {
@@ -73,7 +80,8 @@ export class Scheduler {
             onClock(start);
             const driver = this.o.drivers[arm];
             if (!driver) throw new Error(`no driver for arm ${arm}`);
-            if (!mine.some((e) => e.kind === "StartArm")) {
+            const started = mine.some((e) => e.kind === "StartArm");
+            if (!started) {
                 await driver.reset();
                 this.log({ kind: "StartArm" });
             }
@@ -83,7 +91,12 @@ export class Scheduler {
                     .filter((e) => e.arm === arm && e.kind === "Event")
                     .map((e) => e.event as string),
             );
-            for (const e of this.o.events) if (!done.has(e.id)) await this.step(driver, e);
+            const pending = this.o.events.filter((e) => !done.has(e.id));
+            if (started) await driver.resume?.(this.openSession(pending[0], done));
+            for (const e of pending) await this.step(driver, e);
+            await this.idle();
+            await this.pendingKill;
+            await driver.finish?.();
             this.log({ kind: "EndArm" });
         }
         this.arm = null;
@@ -101,6 +114,10 @@ export class Scheduler {
         for (const e of kinds("BeginTurn").filter((x) => !ended.has(x.event))) {
             this.log({ kind: "ItemState", event: e.event, state: "failed(interrupted)" });
             this.log({ kind: "Event", event: e.event, outcome: "failed(interrupted)" });
+        }
+        const closed = new Set(kinds("EndJob").map((e) => e.job));
+        for (const e of kinds("RegisterJob").filter((x) => !closed.has(x.job))) {
+            this.log({ kind: "EndJob", job: e.job, interrupted: true });
         }
         const observed = new Set(kinds("FaultObserved").map((e) => e.fault));
         for (const fired of kinds("FaultFired")) {
@@ -124,6 +141,16 @@ export class Scheduler {
             if (f.strategy === "persistent" || (target && !begun.has(target.id)))
                 this.o.proxy?.arm(f.id);
         }
+    }
+
+    private openSession(next: ScenarioEvent | undefined, done: Set<string>): ScenarioEvent | null {
+        if (!next || next.kind === "session_start") return null;
+        const start = this.o.events.find(
+            (e) => e.kind === "session_start" && e.session === next.session,
+        );
+        if (!start || !done.has(start.id)) return null;
+        this.session = next.session;
+        return start;
     }
 
     private async idle(): Promise<void> {
@@ -212,7 +239,10 @@ export class Scheduler {
                 x.trigger.session === this.session &&
                 !this.fired.has(`${this.arm}/${x.id}`),
         );
-        if (f) this.pendingKill = this.fire(driver, f);
+        if (!f) return;
+        const kill = this.fire(driver, f);
+        kill.catch(() => undefined);
+        this.pendingKill = kill;
     }
 
     daemonExited(detail: Record<string, unknown>): void {

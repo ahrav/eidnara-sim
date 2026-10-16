@@ -61,6 +61,11 @@ list. For each arm, it resets the driver, then walks the events:
 6. At a session end, disarm the session's persistent provider faults.
 7. Journal `Event` for the event.
 
+After the arm's last event, the scheduler waits for the busy set to empty and
+for a mid-fold SIGKILL still restarting the daemon, then calls the driver's
+`finish` and journals `EndArm`, so nothing an arm started runs into the next
+arm.
+
 `observe("history_summarizer", driver)` fires the session's mid-fold SIGKILL
 on the first observed summarizer call. `daemonExited` inside an outage window
 is journaled as expected; outside one, it throws `HarnessFailure`.
@@ -78,6 +83,11 @@ A restarted harness opens the same journal and, for each arm without
   whose session has not ended and a one-shot provider fault whose turn has not
   begun, and journals `ItemState failed(interrupted)` for a scheduler fault
   with no `FaultObserved`;
+- journals `EndJob` with `interrupted: true` for each job registered without
+  an `EndJob`, since the killed process's jobs ended with it;
+- calls the driver's `resume` with the `session_start` of the session the
+  next event belongs to, or null between sessions, so the driver restarts
+  what the killed process ran;
 - continues with the first event that has no `Event` entry, with the arm's
   clock restored.
 
