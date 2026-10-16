@@ -44,7 +44,7 @@ function context(run: string): HostContext {
         host: "pi",
         root,
         launcher: join(run, "sandbox.sh"),
-        offsetFile: join(run, "offset"),
+        offsetFile: join(run, "clock/offset"),
         keep: [root],
         proxyHttp1: "http://127.0.0.1:1",
         proxyHttp2: "http://127.0.0.1:2",
@@ -319,7 +319,7 @@ test("a Pi session whose readiness check fails stops the launcher tree it spawne
     const ctx = context(run);
     const config = { ...ctx.config, eidnara_checkout: checkout, pi_install: checkout };
     const host = new PiSimHost({ ...ctx, config });
-    const outcome = await host.openSession(run, "s1", null).then(
+    const outcome = await host.openSession(join(run, "arm"), "s1", null).then(
         () => "opened",
         (e: unknown) => String(e),
     );
@@ -339,7 +339,7 @@ test("an OpenCode session whose SDK setup fails stops the server it spawned", as
     const ctx = { ...context(run), host: "opencode" as const };
     const config = { ...ctx.config, eidnara_checkout: checkout };
     const host = new OpencodeSimHost({ ...ctx, config });
-    const outcome = await host.openSession(run, "s1", null).then(
+    const outcome = await host.openSession(join(run, "arm"), "s1", null).then(
         () => "opened",
         (e: unknown) => String(e),
     );
@@ -358,7 +358,7 @@ test("a Pi session whose readiness response is a refusal fails and stops the lau
     const config = { ...ctx.config, eidnara_checkout: checkout, pi_install: checkout };
     const host = new PiSimHost({ ...ctx, config });
     (globalThis as Untyped).__simGetState = "refuse";
-    const opened = host.openSession(run, "s1", null).then(
+    const opened = host.openSession(join(run, "arm"), "s1", null).then(
         () => "opened",
         (e: unknown) => String(e),
     );
@@ -382,7 +382,7 @@ test("an OpenCode session-list error fails the open instead of creating a second
     const host = new OpencodeSimHost({ ...ctx, config });
     (globalThis as Untyped).__simList = "error";
     (globalThis as Untyped).__simCreated = false;
-    const outcome = await host.openSession(run, "s1", null).then(
+    const outcome = await host.openSession(join(run, "arm"), "s1", null).then(
         () => "opened",
         (e: unknown) => String(e),
     );
@@ -592,7 +592,7 @@ test("an OpenCode session under a symlinked home leaves the link's target untouc
         ...ctx,
         config: { ...ctx.config, eidnara_checkout: checkout },
     });
-    const outcome = await host.openSession(run, "s1", null).then(
+    const outcome = await host.openSession(join(run, "arm"), "s1", null).then(
         () => "opened",
         (e: unknown) => String(e),
     );
@@ -711,7 +711,7 @@ test("Pi runs in the session workspace even though the launcher starts its comma
         { mode: 0o755 },
     );
     const ctx = context(run);
-    const workspace = join(run, "ws");
+    const workspace = join(ctx.root, "ws");
     mkdirSync(workspace);
     const host = new PiSimHost({
         ...ctx,
@@ -756,7 +756,7 @@ test("OpenCode gets the hosts' sandbox PATH, not the harness's ambient one", asy
     const ambient = process.env.PATH;
     process.env.PATH = `/sim-ambient-marker:${ambient}`;
     try {
-        await host.openSession(run, "s1", null).catch(() => undefined);
+        await host.openSession(join(run, "arm"), "s1", null).catch(() => undefined);
     } finally {
         process.env.PATH = ambient;
         for (const pid of serving()) process.kill(pid, "SIGKILL");
@@ -832,4 +832,125 @@ test("a standalone OpenCode binary keeps its own directory read-only, not the fi
     });
     expect(install.binary).toBe(join(run, "opt/opencode"));
     expect(install.root).toBe(join(run, "opt"));
+});
+
+test("a Pi turn stays open while compaction has promised a continuation", async () => {
+    const host = piHost(context(runDir()));
+    (host as Untyped).settleMs = 50;
+    const overflow = {
+        type: "agent_end",
+        willRetry: false,
+        messages: [{ role: "assistant", stopReason: "error", errorMessage: "prompt is too long" }],
+    };
+    const final = { type: "agent_end", willRetry: false, messages: [{ role: "assistant" }] };
+    const rpc = liveRpc(
+        [
+            [0, overflow],
+            [20, { type: "compaction_start", reason: "overflow" }],
+            [40, { type: "compaction_end", reason: "overflow", willRetry: true }],
+            [400, { type: "agent_start" }],
+            [450, final],
+        ],
+        0,
+    );
+    (host as Untyped).rpc = rpc;
+    expect(await host.prompt("hi", 5_000)).toEqual({});
+});
+
+test("OpenCode counts an abort as confirmed only when the server answers true", async () => {
+    const host = new OpencodeSimHost({ ...context(runDir()), host: "opencode" });
+    (host as Untyped).sid = "s";
+    (host as Untyped).client = {
+        session: {
+            prompt: async () => {
+                throw new Error("socket hang up");
+            },
+            abort: async () => ({ data: false }),
+        },
+    };
+    await expect(host.prompt("hi", 1_000)).rejects.toThrow(/not aborted/);
+});
+
+test("a FIFO left at the daemon log path fails the append without blocking teardown", async () => {
+    const run = runDir();
+    expect(Bun.spawnSync(["mkfifo", join(run, "daemon.log")]).exitCode).toBe(0);
+    let terminated = false;
+    const stack = new DaemonStack({
+        config: loadConfig(),
+        root: run,
+        dataDir: join(run, "data"),
+        logFile: join(run, "daemon.log"),
+        offsetFile: join(run, "offset"),
+        proxyHttp1: "",
+        proxyHttp2: "",
+        model: "m",
+    });
+    (stack as Untyped).stack = {
+        hostLog: () => "log",
+        terminateHost: async () => {
+            terminated = true;
+        },
+    };
+    const outcome = await Promise.race([
+        stack.stop().then(
+            () => "stopped",
+            (e: unknown) => String(e),
+        ),
+        Bun.sleep(2_000).then(() => "hung"),
+    ]);
+    expect(outcome).toMatch(/ENXIO|not a regular file/);
+    expect(terminated).toBe(true);
+});
+
+test("a failed SIGKILL fallback still records the log and reports both failures", async () => {
+    const run = runDir();
+    const stack = new DaemonStack({
+        config: loadConfig(),
+        root: run,
+        dataDir: join(run, "data"),
+        logFile: join(run, "daemon.log"),
+        offsetFile: join(run, "offset"),
+        proxyHttp1: "",
+        proxyHttp2: "",
+        model: "m",
+    });
+    (stack as Untyped).stack = {
+        hostLog: () => "last words\n",
+        terminateHost: async () => {
+            throw new Error("did not exit after SIGTERM");
+        },
+        crashHost: async () => {
+            throw new Error("did not exit after SIGKILL");
+        },
+    };
+    await expect(stack.stop()).rejects.toThrow(/SIGTERM[\s\S]*SIGKILL/);
+    expect(readFileSync(join(run, "daemon.log"), "utf8")).toBe("last words\n");
+});
+
+test("the scenario clock directory is read-only inside host sandboxes", () => {
+    const run = runDir();
+    const ctx = { ...context(run), offsetFile: join(run, "clock/offset") };
+    expect(new PiSimHost(ctx).readOnly).toContain(join(run, "clock"));
+});
+
+test("a session workspace outside every kept path is refused before launch", async () => {
+    const run = runDir();
+    const host = new PiSimHost(context(run));
+    const outside = join(run, "elsewhere");
+    mkdirSync(outside);
+    await expect(host.openSession(outside, "s1", null)).rejects.toThrow(
+        `workspace ${outside} is not under a kept path`,
+    );
+});
+
+test("a launch whose identity was never captured is not signalled at teardown", async () => {
+    const host = new PiSimHost(context(runDir()));
+    const child = Bun.spawn(["sleep", "300"], { stdio: ["ignore", "ignore", "ignore"] });
+    await Bun.sleep(100);
+    try {
+        await (host as Untyped).stopTree(child.pid, null);
+        expect(running(child.pid)).toBe(true);
+    } finally {
+        child.kill("SIGKILL");
+    }
 });

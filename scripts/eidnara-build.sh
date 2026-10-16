@@ -14,7 +14,7 @@ case "$dst_real/" in
         ;;
 esac
 case "$src_real/" in
-    "$dst_real/"* | "$dst_real.partial/"*)
+    "$dst_real/"* | "$dst_real.partial/"* | "$dst_real.partial."*)
         echo "eidnara-build: <checkout> must be a separate directory outside <clone> $dst and its partial clone" >&2
         exit 64
         ;;
@@ -49,14 +49,23 @@ if [ -d "$dst/.git" ]; then
         exit 65
     fi
 else
-    # The clone is made beside the destination and renamed into place once it carries its
-    # source record, so an interrupted clone leaves only the partial tree the next build removes.
-    rm -rf "$dst.partial"
-    git clone --quiet --no-hardlinks "$src" "$dst.partial"
-    refuse_reserved "$dst.partial"
-    rm -f "$dst.partial/.sim-build-source"
-    printf '%s\n' "$src_real" > "$dst.partial/.sim-build-source"
-    mv -T "$dst.partial" "$dst"
+    # The clone is made in a fresh directory beside the destination and renamed into place
+    # once it carries its source record. Each such directory holds an owner record, and only
+    # a directory whose record names this source is removed as an interrupted clone.
+    for left in "$dst".partial.*; do
+        if [ -d "$left" ] && [ ! -L "$left" ] &&
+            [ "$(cat "$left/.sim-build-owner" 2>/dev/null)" = "$src_real" ]; then
+            rm -rf "$left"
+        fi
+    done
+    partial=$(mktemp -d "$dst.partial.XXXXXX")
+    printf '%s\n' "$src_real" > "$partial/.sim-build-owner"
+    git clone --quiet --no-hardlinks "$src" "$partial/clone"
+    refuse_reserved "$partial/clone"
+    rm -f "$partial/clone/.sim-build-source"
+    printf '%s\n' "$src_real" > "$partial/clone/.sim-build-source"
+    mv -T "$partial/clone" "$dst"
+    rm -rf "$partial"
 fi
 # .sim-build-commit exists only between a completed build and the next start,
 # so a clone without it holds a mixed or partial tree.

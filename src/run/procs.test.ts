@@ -18,7 +18,7 @@ const root = () => {
 
 async function sandboxed(script: string) {
     const r = root();
-    const argv = launch(writeLauncher(r), [r], {}, ["/bin/sh", "-c", script]);
+    const argv = launch(writeLauncher(r), [], {}, ["/bin/sh", "-c", script]);
     const child = spawn(argv[0] as string, argv.slice(1), { stdio: "ignore" });
     const pid = child.pid as number;
     let inner: number | undefined;
@@ -52,13 +52,14 @@ test.skipIf(!sandboxAvailable())(
 
 test.skipIf(!sandboxAvailable())("a read-only kept path refuses writes inside the sandbox", () => {
     const r = root();
-    const ro = join(r, "ro");
-    mkdirSync(ro);
+    const w = join(r, "w");
+    const ro = join(w, "ro");
+    mkdirSync(ro, { recursive: true });
     const argv = launch(
         writeLauncher(r),
-        [r],
+        [w],
         {},
-        ["/bin/sh", "-c", `touch ${ro}/x && touch ${r}/y`],
+        ["/bin/sh", "-c", `touch ${ro}/x && touch ${w}/y`],
         [ro],
     );
     const result = Bun.spawnSync(argv, { stdout: "pipe", stderr: "pipe" });
@@ -110,7 +111,7 @@ test.skipIf(!canMount())("a mount nested inside a read-only path is read-only to
     ]);
     expect(mounted.exitCode).toBe(0);
     try {
-        const argv = launch(writeLauncher(r), [r], {}, ["/bin/sh", "-c", `touch ${sub}/x`], [ro]);
+        const argv = launch(writeLauncher(r), [], {}, ["/bin/sh", "-c", `touch ${sub}/x`], [ro]);
         const result = Bun.spawnSync(argv, { stdout: "pipe", stderr: "pipe" });
         expect(result.stderr.toString()).toContain("Read-only file system");
         expect(result.exitCode).not.toBe(0);

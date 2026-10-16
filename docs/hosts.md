@@ -12,9 +12,10 @@ checkout, checks out its `HEAD`, and builds every artefact inside the clone,
 so the source checkout itself stays read-only; it refuses a clone path that
 is the checkout or lies beneath it, and reuses an existing clone only when
 its `.sim-build-source` names the same checkout. It refuses a symlink at `<clone>.lock`, holds the lock with `flock` for the whole build, so a second build of the same clone is
-refused. A first clone is made at `<clone>.partial` and renamed into place
-once it carries its source record, so an interrupted clone leaves only the
-partial tree, which the next build removes. A source that tracks either
+refused. A first clone is made in a fresh `<clone>.partial.XXXXXX` directory that
+holds an owner record, and is renamed into place once it carries its source
+record; the next build removes only partial directories whose owner record
+names the same source. A source that tracks either
 record path is refused, and each record is unlinked before it is written. `.sim-build-commit` holds
 the built commit from the end of one successful build until the next build
 starts, and preflight requires it to match the clone's `HEAD` and
@@ -53,12 +54,14 @@ interposer environment, restarts it with SIGKILL against the same store, and
 stops it with SIGTERM so its store stays on disk; a daemon that outlives
 SIGTERM is killed with the stack's SIGKILL path and the stop still fails. It
 appends the daemon's output to the arm's `daemon.log` before each restart and
-after the daemon has stopped, opening the log with `O_NOFOLLOW` so a symlink
-left there fails the append; the v1
+after the daemon has stopped, opening the log with `O_NOFOLLOW` and `O_NONBLOCK` and requiring a regular
+file, so a symlink or FIFO left there fails the append without blocking; a
+failed SIGKILL fallback still records the log and reports both failures; the v1
 stack keeps the last 256 KiB of that output, so a longer stretch keeps its
 tail.
 
-`openSession` launches one host process in a workspace through the sandbox
+`openSession` launches one host process in a workspace, which must lie below
+a kept path since the launcher masks the run root, through the sandbox
 launcher, and `closeSession` stops it; when the readiness check fails or Pi
 refuses it, or the OpenCode SDK setup or session listing fails after the
 launch, `openSession` closes the session it started before it throws. The
@@ -76,7 +79,7 @@ process tree and signals every process the user owns, with SIGKILL after
 root that has not exited by then, since a launcher still in its privileged
 setup has no user-owned process to signal. The launcher root's start time is
 taken when it is spawned, so a root pid the kernel has since reused is left
-alone. Each pid in that walk is
+alone, and a launch whose start time could not be read is not signalled. Each pid in that walk is
 paired with its start time and checked against it before every signal, so a
 pid the kernel reuses during the grace period is left alone. The launcher's
 pid namespace ends with its init, so a child forked while the tree stops dies
@@ -86,7 +89,9 @@ before it retries a failed request itself, so a Pi turn ends only at an
 `agent_end` Pi will not retry. After that end Pi may compact the session and
 continue the run, so a turn is settled only once `get_state` reports Pi
 neither streaming nor compacting and a 1 s window passes with no
-`agent_start` or `compaction_start`; its result is the last such `agent_end`.
+`agent_start` or `compaction_start`, and no `compaction_end` with
+`willRetry: true` waits for its continuation's start; its result is the last
+such `agent_end`.
 Both waits are bounded by the turn's remaining time (the state check gets at
 least 1 s), and a refused `get_state` counts as unsettled, so the turn goes
 through the abort and drain below. A prompt Pi refuses in preflight starts no
@@ -96,7 +101,7 @@ stops the run, so a late end cannot finish the next turn. OpenCode turns race th
 abort the session (waiting at most 5 s for the abort call), and wait 30 s for
 the call to drain; a call still running then stops the run, and so does an
 abort call still pending after 30 s, since it would cancel the next turn,
-and so does an abort that fails or reports an error. A
+and so does an abort the server does not confirm with `true`. A
 prompt request that fails before the server answers is aborted the same way,
 and an abort that fails stops the run, since the turn's completion cannot be
 established. A Pi `agent_end` seen before the prompt response fails settles
@@ -121,12 +126,14 @@ executes with the user's privileges. Both reach Bedrock only through the
 proxy, with placeholder AWS credentials.
 
 The launcher binds kept paths read-write and read-only paths read-only, and
-refuses a writable kept path under a read-only one and any path that equals
-or contains a masked root (`/tmp`, the user's home), directly or through a
-symlink, so narrow paths such as
+refuses a writable kept path under a read-only one, compared through
+canonical paths so a symlink alias cannot split them, and any path that
+equals or contains a masked root (`/tmp`, the user's home, the run root),
+directly or through a symlink, so narrow paths such as
 `~/.cargo` stay visible while the home itself stays hidden. Configured paths
 must be normalized, since the launcher refuses others. The arm's own
-directories are read-write. The toolchain paths, the tool
+directories are read-write; the scenario clock's directory is read-only
+inside the sandbox, since the scheduler writes it from outside. The toolchain paths, the tool
 wrappers, the interposer build, the eidnara build clone, and the Node and Pi
 installs are read-only, so the agent reads and runs them while later
 sessions and arms run the same files; `touch` under `~/.cargo/bin` fails inside

@@ -201,3 +201,12 @@ test("a source that tracks a symlinked provenance record cannot redirect the rec
     expect(r.exitCode).not.toBe(0);
     expect(r.stderr.toString()).toContain("tracks the reserved");
 });
+
+test("an unrelated directory at the partial-clone path is left alone", () => {
+    const { stubs, src, dst } = fixture();
+    mkdirSync(`${dst}.partial`);
+    writeFileSync(join(`${dst}.partial`, "mine"), "keep\n");
+    const r = build(src, dst, stubs);
+    expect(r.exitCode).toBe(0);
+    expect(readFileSync(join(`${dst}.partial`, "mine"), "utf8")).toBe("keep\n");
+});

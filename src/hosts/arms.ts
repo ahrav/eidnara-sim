@@ -2,6 +2,7 @@ import { type ChildProcess, spawn } from "node:child_process";
 import {
     closeSync,
     constants,
+    fstatSync,
     lstatSync,
     mkdirSync,
     openSync,
@@ -167,10 +168,17 @@ export class DaemonStack {
     // O_NOFOLLOW makes a symlink left at the log path fail the append instead of redirecting it.
     private saveLog(): void {
         if (!this.stack) return;
+        // O_NONBLOCK turns a FIFO with no reader into ENXIO instead of a blocked open.
         const flags =
-            constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW;
+            constants.O_WRONLY |
+            constants.O_APPEND |
+            constants.O_CREAT |
+            constants.O_NOFOLLOW |
+            constants.O_NONBLOCK;
         const fd = openSync(this.ctx.logFile, flags, 0o600);
         try {
+            if (!fstatSync(fd).isFile())
+                throw new Error(`${this.ctx.logFile} is not a regular file`);
             const log = Buffer.from(this.stack.hostLog());
             for (let at = 0; at < log.length; ) at += writeSync(fd, log, at);
         } finally {
@@ -186,13 +194,13 @@ export class DaemonStack {
     async stop(): Promise<void> {
         const stack = this.stack;
         if (!stack) return;
-        let stopError: unknown;
+        const failures: unknown[] = [];
         try {
             await stack.terminateHost();
         } catch (caught) {
             // terminateHost gives up after SIGTERM; the stack's SIGKILL path ends the daemon.
-            stopError = caught;
-            await stack.crashHost();
+            failures.push(caught);
+            await stack.crashHost().catch((killFailure: unknown) => failures.push(killFailure));
         }
         // The log is taken after shutdown, so it keeps what the daemon wrote while stopping.
         let logError: unknown;
@@ -202,8 +210,11 @@ export class DaemonStack {
             logError = caught;
         }
         this.stack = null;
-        if (stopError !== undefined) throw stopError;
-        if (logError !== undefined) throw logError;
+        if (logError !== undefined) failures.push(logError);
+        if (failures.length === 1) throw failures[0];
+        if (failures.length > 1) {
+            throw new Error(`daemon stop failed: ${failures.map(String).join("; ")}`);
+        }
     }
 }
 
@@ -241,7 +252,18 @@ export abstract class SimHost {
             toolbinDir(launcher),
             interposer,
             config.eidnara_checkout,
+            // The scheduler writes the scenario clock from outside; hosts only read it.
+            dirname(this.ctx.offsetFile),
         ];
+    }
+
+    /** The launcher masks the run root, so a workspace exists inside the sandbox only below a kept path. */
+    protected requireKeptWorkspace(cwd: string): void {
+        const real = realpathSync(cwd);
+        const kept = this.ctx.keep.map((k) => realpathSync(k));
+        if (!kept.some((k) => real === k || real.startsWith(`${k}/`))) {
+            throw new Error(`workspace ${cwd} is not under a kept path`);
+        }
     }
 
     protected controlDir(rel: string): string {
@@ -255,9 +277,11 @@ export abstract class SimHost {
         renameSync(staged, path);
     }
 
-    protected async stopTree(pid: number | null | undefined, start?: string | null): Promise<void> {
-        if (pid == null) return;
-        if (!(await stopOwnedTree(pid, 10_000, start ?? undefined)))
+    // A launch whose start time was never read cannot be told from a reused pid, so it is
+    // left alone; its launcher had already exited, which ends the sandbox's namespace.
+    protected async stopTree(pid: number | null | undefined, start: string | null): Promise<void> {
+        if (pid == null || start === null) return;
+        if (!(await stopOwnedTree(pid, 10_000, start)))
             throw new Error(`host tree ${pid} survived SIGKILL`);
     }
 
@@ -310,6 +334,7 @@ export class PiSimHost extends SimHost {
     }
 
     async openSession(cwd: string, session: string, connection: string | null): Promise<void> {
+        this.requireKeptWorkspace(cwd);
         const { config } = this.ctx;
         const rpcClient = await v1(config, "packages/e2e-tests/src/pi-runner/rpc-client.ts");
         this.writeConfigs(connection);
@@ -387,9 +412,15 @@ export class PiSimHost extends SimHost {
 
     async prompt(text: string, timeoutMs: number): Promise<PromptResult> {
         const deadline = Date.now() + timeoutMs;
-        const watch = { activity: 0, last: undefined as Untyped };
+        const watch = { activity: 0, last: undefined as Untyped, promised: 0 };
         const off = this.rpc.onEvent((e: Untyped) => {
             if (e.type === "agent_start" || e.type === "compaction_start") watch.activity++;
+            // compaction_end with willRetry promises a fresh run, which settles only at its own end.
+            if (e.type === "compaction_end" && e.willRetry === true) {
+                watch.activity++;
+                watch.promised++;
+            }
+            if (e.type === "agent_start" && watch.promised > 0) watch.promised--;
             if (e.type === "agent_end" && e.willRetry !== true) {
                 watch.activity++;
                 watch.last = e;
@@ -436,7 +467,7 @@ export class PiSimHost extends SimHost {
     protected drainMs = 30_000;
 
     private async settle(
-        watch: { activity: number; last: Untyped },
+        watch: { activity: number; last: Untyped; promised: number },
         deadline: number,
     ): Promise<Untyped> {
         for (;;) {
@@ -449,7 +480,7 @@ export class PiSimHost extends SimHost {
                 throw new Error(`Pi get_state refused while settling: ${JSON.stringify(state)}`);
             }
             const busy = state.data?.isStreaming === true || state.data?.isCompacting === true;
-            if (!busy && watch.activity === mark) return watch.last;
+            if (!busy && watch.promised === 0 && watch.activity === mark) return watch.last;
             if (Date.now() >= deadline) throw new Error("Pi turn still busy at its deadline");
         }
     }
@@ -480,6 +511,7 @@ export class OpencodeSimHost extends SimHost {
     private launched: { pid: number | null; start: string | null } | null = null;
 
     async openSession(cwd: string, session: string, connection: string | null): Promise<void> {
+        this.requireKeptWorkspace(cwd);
         const { config } = this.ctx;
         const spawnMod = await v1(config, "packages/e2e-tests/src/opencode-runner/spawn.ts");
         const extra: Record<string, unknown> = {
@@ -615,7 +647,7 @@ export class OpencodeSimHost extends SimHost {
             // An abort still in flight when the next turn starts would cancel that turn instead.
             const answered = await withDeadline(
                 abort.then(
-                    (r: Untyped) => !r?.error,
+                    (r: Untyped) => r?.data === true,
                     () => false,
                 ),
                 this.abortWaitMs,
@@ -633,7 +665,7 @@ export class OpencodeSimHost extends SimHost {
         if ("caught" in first) {
             // The request failed with the server's answer unknown, so the turn is aborted before the next one.
             const abort = this.client.session.abort({ path: { id: this.sid } }).then(
-                (r: Untyped) => !r?.error,
+                (r: Untyped) => r?.data === true,
                 () => false,
             );
             const error = String(first.caught).slice(0, 2000);
