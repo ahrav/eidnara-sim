@@ -1,4 +1,4 @@
-import { appendFileSync, statSync, truncateSync } from "node:fs";
+import { constants, fstatSync, ftruncateSync, openSync, writeSync } from "node:fs";
 
 export const COMPONENTS = [
     "agent",
@@ -73,12 +73,17 @@ export function recordProblems(value: Record<string, unknown>): string[] {
     return problems;
 }
 
-function existingBytes(path: string): number {
+/** Creates the journal exclusively without following a symlink, so a path that already exists in any form is refused. */
+function openJournal(path: string): number {
+    const flags = constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW;
+    let fd: number;
     try {
-        return statSync(path).size;
-    } catch {
-        return 0;
+        fd = openSync(path, flags, 0o600);
+    } catch (caught) {
+        throw new Error(`journal refused: ${path} (${(caught as Error).message})`);
     }
+    if (!fstatSync(fd).isFile()) throw new Error(`journal refused: ${path} is not a regular file`);
+    return fd;
 }
 
 /** `wall_ms` is the write-time Unix timestamp in milliseconds, clamped to the preceding record's value and to the record's own `started_wall_ms`. */
@@ -87,12 +92,11 @@ export class RecordWriter {
     private lastWall = 0;
     private bytes = 0;
     private uncertain: Error | null = null;
+    private readonly fd: number | null;
     readonly records: CallRecord[] = [];
 
-    constructor(private readonly path: string | null) {
-        if (path && existingBytes(path) > 0) {
-            throw new Error(`journal refused: ${path} already holds records`);
-        }
+    constructor(path: string | null) {
+        this.fd = path === null ? null : openJournal(path);
     }
 
     write(partial: Omit<CallRecord, "seq" | "wall_ms">): CallRecord {
@@ -105,7 +109,7 @@ export class RecordWriter {
         const record = { ...partial, seq: this.seq, wall_ms };
         const problems = recordProblems(record);
         if (problems.length > 0) throw new Error(`call record refused: ${problems.join(", ")}`);
-        if (this.path) this.append(this.path, `${JSON.stringify(record)}\n`);
+        if (this.fd !== null) this.append(this.fd, `${JSON.stringify(record)}\n`);
         this.seq++;
         this.lastWall = wall_ms;
         this.records.push(record);
@@ -113,13 +117,23 @@ export class RecordWriter {
     }
 
     /** On append failure, RecordWriter attempts to truncate the file to its successfully appended byte count; if truncation fails, subsequent write calls throw. */
-    private append(path: string, line: string): void {
+    private append(fd: number, line: string): void {
+        const bytes = Buffer.from(line, "utf8");
         try {
-            appendFileSync(path, line);
-            this.bytes += Buffer.byteLength(line);
+            let written = 0;
+            while (written < bytes.length) {
+                written += writeSync(
+                    fd,
+                    bytes,
+                    written,
+                    bytes.length - written,
+                    this.bytes + written,
+                );
+            }
+            this.bytes += bytes.length;
         } catch (caught) {
             try {
-                truncateSync(path, this.bytes);
+                ftruncateSync(fd, this.bytes);
             } catch {
                 this.uncertain = caught as Error;
             }

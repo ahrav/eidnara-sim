@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { connect } from "node:http2";
 import { connect as tcp } from "node:net";
 import { BedrockRuntimeClient } from "@aws-sdk/client-bedrock-runtime";
@@ -141,8 +141,12 @@ function hostSees(type: FaultType, r: HostResult): boolean {
             return r.status >= 500;
         case "provider_timeout":
             return r.timedOut && r.ms >= HOST_TIMEOUT_MS(type) - 20;
-        case "truncated_length":
-            return stopReason === "max_tokens";
+        case "truncated_length": {
+            const delta = r.events.find((e) => e.type === "contentBlockDelta")?.member.delta as
+                | { text?: string }
+                | undefined;
+            return stopReason === "max_tokens" && delta?.text === "The change is partly";
+        }
         case "truncated_no_length":
             return r.status === 200 && has("contentBlockDelta") && !has("messageStop");
         case "empty_content":
@@ -193,6 +197,7 @@ async function start(
     fault: ProxyFault | null,
     upstream: Upstream = scriptedUpstream(),
     windowMs = 5_000,
+    requestDeadlineMs?: number,
 ) {
     const records = new RecordWriter(null);
     const injector = new FaultInjector(fault ? [fault] : [], new Rng(7), windowMs);
@@ -206,6 +211,7 @@ async function start(
         clock: { scenarioMs: () => (scenario += 10) },
         scope: () => ({ arm: "eidnara", session: "s-0001", turn: "e-000001" }),
         observe: (e) => started.push(e),
+        requestDeadlineMs,
     });
     await gateway.start();
     gateways.push(gateway);
@@ -257,7 +263,10 @@ function hostSeesJson(type: FaultType, r: JsonResult): boolean {
         case "provider_timeout":
             return r.timedOut && r.ms >= HOST_TIMEOUT_MS(type) - 20;
         case "truncated_length":
-            return r.json?.stopReason === "max_tokens";
+            return (
+                r.json?.stopReason === "max_tokens" &&
+                content.some((c) => c.text === "The change is partly")
+            );
         case "truncated_no_length":
             return r.status === 200 && r.json === null && r.text.length > 0;
         case "empty_content":
@@ -723,9 +732,12 @@ describe("classification", () => {
         );
     });
 
-    test("wireJson serializes a Buffer and a Uint8Array as base64", () => {
+    test("wireJson serializes a Buffer and a Uint8Array as base64 and keeps a Buffer-shaped document", () => {
         expect(wireJson({ a: Buffer.from([1, 2, 3]), b: new Uint8Array([4]) })).toBe(
             '{"a":"AQID","b":"BA=="}',
+        );
+        expect(wireJson({ input: { type: "Buffer", data: [1, 2, 3] } })).toBe(
+            '{"input":{"type":"Buffer","data":[1,2,3]}}',
         );
     });
 
@@ -1049,6 +1061,33 @@ describe("every request yields one record", () => {
         await call;
     });
 
+    test("stop() waits for an upload in progress to yield its record", async () => {
+        const { gateway, records, url } = await start(null);
+        gateways = gateways.filter((g) => g !== gateway);
+        const body = JSON.stringify(AGENT_BODY);
+        const sock = tcp(Number(new URL(url).port), "127.0.0.1");
+        await new Promise<void>((r) => sock.on("connect", () => r()));
+        const head = `POST /model/m/converse HTTP/1.1\r\nHost: x\r\nContent-Length: ${body.length + 50}\r\n\r\n`;
+        sock.write(`${head}${body.slice(0, 20)}`);
+        await Bun.sleep(50);
+        await gateway.stop();
+        expect(records.records.map((r) => [r.component, r.status])).toEqual([["rejected", 0]]);
+        sock.destroy();
+    });
+
+    test("the request deadline bounds an upstream that never answers", async () => {
+        const hang: Upstream = {
+            converse: (_m, _b, _s, signal) =>
+                new Promise((_resolve, reject) =>
+                    signal.addEventListener("abort", () => reject(signal.reason)),
+                ),
+        };
+        const { records, url } = await start(null, hang, 5_000, 100);
+        const r = await hostCallJson(url, AGENT_BODY, 1_500);
+        expect(r.status).toBe(500);
+        expect(records.records[0]?.error).toMatch(/TimeoutError/);
+    });
+
     test("a method other than POST and a body over the limit are rejected with one record each", async () => {
         const { gateway, records, url } = await start(null);
         const put = await fetch(`${url}/model/m/converse`, {
@@ -1067,8 +1106,7 @@ describe("every request yields one record", () => {
         expect(gateway.failures).toEqual([]);
     }, 20_000);
 
-    test("the writer keeps no record whose append failed", () => {
-        const writer = new RecordWriter("/nonexistent-dir-for-sim-test/records.jsonl");
+    test("the writer opens a fresh journal exclusively and refuses every other path", () => {
         const partial = {
             arm: "a",
             session: null,
@@ -1089,16 +1127,18 @@ describe("every request yields one record", () => {
             fault_ref: null,
             error: null,
         } as const;
-        expect(() => writer.write(partial)).toThrow();
-        expect(writer.records).toHaveLength(0);
-        const dir = "runs/zz-records-uncertain";
+        const dir = "runs/zz-records-journal";
         rmSync(dir, { recursive: true, force: true });
-        const uncertain = new RecordWriter(`${dir}/records.jsonl`);
-        expect(() => uncertain.write(partial)).toThrow();
+        expect(() => new RecordWriter(`${dir}/records.jsonl`)).toThrow(/journal refused/);
         mkdirSync(dir, { recursive: true });
-        expect(() => uncertain.write(partial)).toThrow(/journal refused/);
-        writeFileSync(`${dir}/records.jsonl`, "{}\n");
-        expect(() => new RecordWriter(`${dir}/records.jsonl`)).toThrow(/already holds records/);
+        const writer = new RecordWriter(`${dir}/records.jsonl`);
+        const record = writer.write(partial);
+        expect(readFileSync(`${dir}/records.jsonl`, "utf8")).toBe(`${JSON.stringify(record)}\n`);
+        expect(() => new RecordWriter(`${dir}/records.jsonl`)).toThrow(/journal refused/);
+        writeFileSync(`${dir}/target.txt`, "");
+        symlinkSync("target.txt", `${dir}/linked.jsonl`);
+        expect(() => new RecordWriter(`${dir}/linked.jsonl`)).toThrow(/journal refused/);
+        expect(readFileSync(`${dir}/target.txt`, "utf8")).toBe("");
         rmSync(dir, { recursive: true, force: true });
     });
 

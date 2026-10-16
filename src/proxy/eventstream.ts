@@ -37,16 +37,23 @@ export function encodeMessage(headers: Record<string, string>, payload: Uint8Arr
     return message;
 }
 
-/** A `Buffer` reaches the replacer as `{ type: "Buffer", data: [...] }` because `JSON.stringify` calls its `toJSON()` first. */
+/** A JSON value whose binary members are already base64 text. */
+type WireJson = string | number | boolean | null | WireJson[] | { [key: string]: WireJson };
+
+function toWire(value: unknown): WireJson {
+    if (value instanceof Uint8Array) return Buffer.from(value).toString("base64");
+    if (Array.isArray(value)) return value.map(toWire);
+    if (value !== null && typeof value === "object") {
+        const out: { [key: string]: WireJson } = {};
+        for (const [k, v] of Object.entries(value)) out[k] = toWire(v);
+        return out;
+    }
+    return value as WireJson;
+}
+
+/** `toWire` converts `Buffer` and `Uint8Array` values to base64 strings before `JSON.stringify` applies its `toJSON()` protocol. */
 export function wireJson(value: unknown): string {
-    return JSON.stringify(value, (_key, v) => {
-        if (v instanceof Uint8Array) return Buffer.from(v).toString("base64");
-        const asBuffer = v as { type?: unknown; data?: unknown } | null;
-        if (asBuffer?.type === "Buffer" && Array.isArray(asBuffer.data)) {
-            return Buffer.from(asBuffer.data as number[]).toString("base64");
-        }
-        return v;
-    });
+    return JSON.stringify(toWire(value));
 }
 
 /** One `converse-stream` event: its `:event-type` and the JSON member it carries. */

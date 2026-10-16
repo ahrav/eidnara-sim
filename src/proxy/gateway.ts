@@ -165,6 +165,7 @@ export class Gateway {
 
     async start(): Promise<void> {
         const h1 = createHttp1Server((req, res) => {
+            this.inFlight++;
             const gone = new AbortController();
             res.on("close", () => !res.writableFinished && gone.abort());
             collectBody(req, (body) => {
@@ -197,6 +198,7 @@ export class Gateway {
             session.on("close", () => this.sessions.delete(session));
         });
         h2.on("stream", (stream, headers) => {
+            this.inFlight++;
             const gone = new AbortController();
             stream.on("close", () => !stream.writableFinished && gone.abort());
             collectBody(stream, (body) => {
@@ -229,7 +231,11 @@ export class Gateway {
             try {
                 await new Promise<void>((done, reject) => {
                     server.once("error", reject);
-                    server.listen(0, "127.0.0.1", () => done());
+                    server.listen(0, "127.0.0.1", () => {
+                        server.off("error", reject);
+                        server.on("error", (caught) => this.failures.push(caught));
+                        done();
+                    });
                 });
             } catch (caught) {
                 await this.stop(0);
@@ -274,7 +280,6 @@ export class Gateway {
             finish_reason: null,
             error: null,
         };
-        this.inFlight++;
         const call = this.calls++;
         let done: Done = {
             component: "rejected",
@@ -376,22 +381,24 @@ export class Gateway {
             return { ...done, ...outcome };
         }
         const usage: Usage = {};
+        const deadlineMs = this.options.requestDeadlineMs ?? 900_000;
+        const signal = AbortSignal.any([sink.signal, AbortSignal.timeout(deadlineMs)]);
         const delay = async () => {
             if (!fault) return;
             done.fault_ref = fault.id;
-            await sleep(fault.params.delay_ms ?? 2_000, sink.signal);
+            await sleep(fault.params.delay_ms ?? 2_000, signal);
         };
         let retries = 0;
         let sawStop = false;
         let sawMetadata = false;
         try {
-            const deadlineAt = Date.now() + (this.options.requestDeadlineMs ?? 900_000);
+            const deadlineAt = Date.now() + deadlineMs;
             const response = await sendWithRetry(
-                () => this.options.upstream.converse(model, body, streaming, sink.signal),
+                () => this.options.upstream.converse(model, body, streaming, signal),
                 {
                     rng,
                     deadlineAt,
-                    signal: sink.signal,
+                    signal,
                     onRetry: () => retries++,
                 },
             );

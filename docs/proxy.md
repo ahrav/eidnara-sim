@@ -11,16 +11,18 @@ base64 strings the wire format carries in both directions, and a failure
 mid-stream reaches the host as an event stream message: a modeled exception
 framed as `exception`, any other throw as an `error` with its code and
 message, so the host's SDK raises the same failure. `Gateway.stop()`
-closes every connection and waits up to five seconds for in-flight handlers to
-write their records. Each call draws its backoff jitter from its own
+closes every connection and waits up to five seconds for in-flight requests,
+counted from the moment their headers arrive, to write their records. Each call draws its backoff jitter from its own
 generator seeded from the run's `rng` at receipt, so concurrent calls keep one
 seed to one backoff sequence.
 
 ## Call records
 
 `RecordWriter` appends one record per request to a JSONL file and keeps them
-in memory; a path that already holds bytes is refused at construction, and a
-record enters memory only after its line reached the file. A
+in memory. The journal is created exclusively at construction with
+`O_NOFOLLOW`, so an existing path, a symlink, or anything other than a fresh
+regular file is refused, and a record enters memory only after its line
+reached the file. A
 failed append is truncated back to the bytes that reached the file, and when
 that truncation fails too the writer refuses every later record, so the
 journal never carries a partial line followed by a whole one.
@@ -66,8 +68,11 @@ half) and the `memory_capture` event for capture-timed faults.
 
 `sendWithRetry` retries a 429 or 5xx from upstream with backoff
 `min(60 s, 2 s * 2^min(attempt, 5)) * (0.5 + jitter)`, while the delay ends
-before the request deadline. The jitter draws from the `rng` the run passes
-in, so one seed gives one backoff sequence.
+before the request deadline (`requestDeadlineMs`, default 15 minutes). The
+same deadline aborts the upstream call and stream in progress, so a provider
+that accepts a connection and answers nothing still yields a record. The
+jitter draws from the `rng` the run passes in, so one seed gives one backoff
+sequence.
 
 ## Fault injection
 
