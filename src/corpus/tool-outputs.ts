@@ -60,7 +60,7 @@ export function classify(tool: string, command: string, content: string): Sample
     if (tool !== "execute_bash" || SHELL_ERROR.test(content)) return null;
     const bare = command.replace(QUOTED, '""');
     if (RUNNER.test(bare)) return NO_RUN.test(command) ? null : "test_run";
-    if (/\b(grep|rg|ag)\b/.test(bare)) return "grep";
+    if (SEARCH.test(bare)) return "grep";
     if (/^\s*(cat|head|tail|sed -n)\b/.test(command)) return "file_read";
     return null;
 }
@@ -100,6 +100,8 @@ const NO_RUN = /(^|\s)(--help|-h|--version|--co|--collect-only|--fixtures|--mark
 const SHELL_ERROR = /^(?:bash|sh): (?:line \d+: )?(?:syntax error|.*: command not found)/;
 const TRACEBACK = "Traceback (most recent call last)";
 const TRACE_END = /^(?:E\s+)?\s*[\w.]*(?:Error|Exception|Failure|Exit|Interrupt|Warning)\b/;
+const SEARCH =
+    /(^|&&|;|\|)\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*(?:sudo\s+|xargs\s+(?:-\S+\s+)*)?(?:grep|rg|ag)\b|-exec\s+(?:grep|rg|ag)\b/;
 
 function harvestCodes(lines: string[], base: Provenanced, codes: Map<string, ErrorCodeEntry>) {
     for (const [i, line] of lines.entries()) {
@@ -142,10 +144,16 @@ export function extractFrom(rows: TrajectoryRow[], dataset: Dataset): Extraction
             if (m.role !== "tool" || !m.content) continue;
             const source_id = `${dataset.repo}@${dataset.revision}:${row.trajectory_id}#${index}`;
             const base = { repo: row.repo, license: dataset.license, source_id };
-            const lines = m.content.split("\n").filter((l) => !FOOTER.test(l));
+            const raw = m.content.split("\n");
+            let end = raw.length;
+            while (end > 0 && (raw[end - 1] ?? "").trim() === "") end--;
+            while (end > 0 && FOOTER.test(raw[end - 1] ?? "")) end--;
+            const footer = raw.slice(end).join("\n");
+            const lines = raw.slice(0, end);
             const tool = m.name ?? "";
-            const exit = EXIT.exec(m.content)?.[1];
-            const failed = exit !== undefined && (exit !== "0" || m.content.includes(TRACEBACK));
+            const exit = EXIT.exec(footer)?.[1];
+            const failed =
+                exit !== undefined && (exit !== "0" || lines.join("\n").includes(TRACEBACK));
             if (tool === "execute_bash" && failed) harvestCodes(lines, base, codes);
 
             const body = lines.join("\n").trim();

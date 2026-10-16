@@ -4,8 +4,8 @@
 SWE-rebench-OpenHands-Trajectories by Nebius
 (https://huggingface.co/datasets/nebius/SWE-rebench-openhands-trajectories,
 revision `35455389ab51bf5e2306bfd436ef72d0f98bf882`), licensed under the
-Creative Commons Attribution 4.0 International License
-(https://creativecommons.org/licenses/by/4.0/).
+Creative Commons Attribution 4.0 International License (SPDX: CC-BY-4.0,
+https://creativecommons.org/licenses/by/4.0/).
 
 Changes from the source: each entry is an excerpt of one tool message. The
 OpenHands status footer lines are removed, content longer than 4,000

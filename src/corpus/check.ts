@@ -85,6 +85,16 @@ export function checkCorpus(): CorpusReport {
     }
 
     problems.push(...bankProblems(parseJson(read("fact-bank.json"), "fact-bank.json")));
+    const openhands = sources.find((d) => d.id === "openhands");
+    const notice = existsSync(join(CORPUS_DIR, "tool-outputs/NOTICE.md"))
+        ? read("tool-outputs/NOTICE.md")
+        : "";
+    need(
+        openhands !== undefined &&
+            notice.includes(openhands.repo) &&
+            notice.includes(openhands.license),
+        "tool-outputs/NOTICE.md must name the OpenHands repository and its licence",
+    );
     const samples = parseJsonl(read("tool-outputs/samples.jsonl"));
     const codes = parseJsonl(read("tool-outputs/error-codes.jsonl"));
     need(codes.length === ERROR_CODES, `error codes: ${codes.length}, need ${ERROR_CODES}`);
@@ -201,7 +211,10 @@ export function checkCorpus(): CorpusReport {
             `tool_mix: ${c.category} share or error_rate is not a count over n`,
         );
         const known = c.category === "other" ? [] : (CATEGORIES[c.category] ?? []);
-        const listed = Array.isArray(c.tools) && c.tools.every((t) => known.includes(t));
+        const listed =
+            Array.isArray(c.tools) &&
+            c.tools.length > 0 === known.length > 0 &&
+            c.tools.every((t) => known.includes(t));
         need(listed, `tool_mix: ${c.category} tools ${c.tools} are not all in its category`);
     }
     need(counted === mix?.n, `tool_mix: category counts total ${counted}, n is ${mix?.n}`);
