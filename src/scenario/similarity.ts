@@ -30,7 +30,7 @@ export function bm25Ratio(query: string, doc: string, collection: string[]): num
             return s + (idf * f * 2.2) / (f + 1.2 * (0.25 + (0.75 * target.length) / avg));
         }, 0);
     const self = score(target);
-    return self === 0 ? 0 : round4(score(terms(query)) / self);
+    return self === 0 ? 0 : score(terms(query)) / self;
 }
 
 export function cosine(a: number[], b: number[]): number {
@@ -43,7 +43,7 @@ export function cosine(a: number[], b: number[]): number {
         na += v * v;
         nb += w * w;
     });
-    return na === 0 || nb === 0 ? 0 : round4(dot / Math.sqrt(na * nb));
+    return na === 0 || nb === 0 ? 0 : dot / Math.sqrt(na * nb);
 }
 
 /** hashEmbedder computes signed, feature-hashed bag-of-words vectors locally. */
@@ -118,6 +118,7 @@ export function bedrockEmbedder(profile: string, region: string, cachePath: stri
     };
 }
 
-function round4(v: number): number {
+/** Four-decimal rendering for the journaled score; the gate compares the full value. */
+export function round4(v: number): number {
     return Math.round(v * 1e4) / 1e4;
 }

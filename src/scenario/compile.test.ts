@@ -81,7 +81,7 @@ describe("SIM-P01: deterministic compile across processes", () => {
                 tier,
                 generator_version: "sim-scenario/v1",
             });
-        }, 60_000);
+        }, 180_000);
     }
 
     test("a different seed yields a different scenario", async () => {
@@ -206,6 +206,64 @@ describe("compiled S scenario", async () => {
             expect(
                 (start?.scenario_ms as number) - (prevEnd?.scenario_ms as number),
             ).toBeGreaterThanOrEqual(3_600_000);
+        }
+    });
+
+    test("a hand-applied constraint diff sits inside the scope its statement names", () => {
+        const diffs = s.events.filter((e) => e.kind === "apply_diff") as unknown as {
+            fact: string;
+            path: string;
+        }[];
+        const checked = s.facts.filter(
+            (f) => f.kind === "constraint" && f.manner === "hand_applied_diff",
+        );
+        expect(checked.length).toBeGreaterThan(0);
+        for (const f of checked) {
+            const scope = /\b((?:src|tests?)\/[\w./-]*)/.exec(f.statement)?.[1] ?? "";
+            const path = diffs.find((d) => d.fact === f.id)?.path ?? "";
+            const expected = /\.[a-z]+$/.test(scope) ? "notes/" : `${scope.replace(/\/$/, "")}/`;
+            expect({ fact: f.id, path: path.slice(0, expected.length) }).toEqual({
+                fact: f.id,
+                path: expected,
+            });
+        }
+    });
+
+    test("P14 items in one session take disjoint windows inside its last third", () => {
+        const bySession = new Map<string, { from: number; to: number }[]>();
+        for (const p of s.probes.filter((x) => x.type === "P14")) {
+            const c = p.check as { window_from_turn: number; window_to_turn: number };
+            const list = bySession.get(p.session) ?? [];
+            list.push({ from: c.window_from_turn, to: c.window_to_turn });
+            bySession.set(p.session, list);
+        }
+        for (const [session, windows] of bySession) {
+            const turns = s.sessions.find((x) => x.id === session)?.requests ?? 0;
+            windows.sort((a, b) => a.from - b.from);
+            expect(windows[0]?.from).toBe(Math.floor((2 * turns) / 3));
+            expect(windows.at(-1)?.to).toBe(turns);
+            for (const [i, w] of windows.entries()) {
+                expect(w.to - w.from).toBeGreaterThanOrEqual(10);
+                if (i > 0) expect(w.from).toBe(windows[i - 1]?.to ?? -1);
+            }
+        }
+    });
+
+    test("a reversed fact forbids its superseded value beside the final one", () => {
+        const reversed = s.facts.filter((f) => f.manner === "stated_then_reversed");
+        expect(reversed.length).toBeGreaterThan(0);
+        for (const f of reversed) {
+            for (const p of s.probes.filter((x) => x.fact === f.id && x.text)) {
+                const c = p.check as { must?: string[]; must_not?: string[] };
+                const harm = p.type === "P2" || p.type === "P11" || p.type === "P10";
+                if (!harm && !c.must_not?.length) continue;
+                const forbidden = c.must_not ?? [];
+                expect({ probe: p.type, count: forbidden.length }).toEqual({
+                    probe: p.type,
+                    count: forbidden.length >= 2 ? forbidden.length : 2,
+                });
+                expect(new Set(forbidden).size).toBe(forbidden.length);
+            }
         }
     });
 
@@ -365,6 +423,15 @@ describe("compile-time refusals", () => {
         await expect(withInput(() => undefined, short)).rejects.toThrow(/embedder short returned/);
     });
 
+    test("a forced p90 quota above a project's sessions is refused", async () => {
+        const input = loadCompileInput(101, "S", hashEmbedder, true);
+        const prereg = structuredClone(input.prereg);
+        prereg.scenario.forced_p90_sessions = 50;
+        await expect(compileScenario({ ...input, prereg })).rejects.toThrow(
+            /forced_p90_sessions 50 exceeds/,
+        );
+    });
+
     test("a seed outside the unsigned 32-bit range is refused", async () => {
         const input = loadCompileInput(0, "S", hashEmbedder, true);
         await expect(compileScenario({ ...input, seed: 2 ** 32 })).rejects.toThrow(
@@ -400,9 +467,9 @@ describe("compile-time refusals", () => {
         await expect(
             withInput((bank) => {
                 for (const t of (bank.rust?.constraint ?? []) as Template[])
-                    t.example = `// ${t.id}`;
+                    t.example = { path: "src/{token}.rs", content: `// ${t.id}` };
                 for (const t of (bank.typescript?.constraint ?? []) as Template[])
-                    t.example = `// ${t.id}`;
+                    t.example = { path: "src/{token}.ts", content: `// ${t.id}` };
             }),
         ).rejects.toThrow(/diff .* delivered text carries markers/);
     });

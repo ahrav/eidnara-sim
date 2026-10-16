@@ -12,7 +12,8 @@ the AWS profile in `sim.config.json`, and caches each vector in
 model to match; the tests use it, and its scenarios name the stand-in model in
 both `manifest.embedding_model` and `manifest.cue_probe_similarity`, so they
 do not witness SIM-P08. Any other `--embedder` value, a non-integer seed, or a
-flag without a value exits with the usage line.
+flag without a value exits with the usage line, and an `--out` path inside
+`eidnara_checkout` is refused before any directory is created.
 
 ## Output
 
@@ -25,7 +26,7 @@ The scenario file is canonical JSON with these sections:
 | `sessions` | Session id, project, start time, request count, the idle gap before the session, the minimum gap the compiler enforced, and whether the request count was forced into the p90 regime |
 | `facts` | Ledger facts with template, kind, project, conveyance manner, statement, and the cue texts that carry it |
 | `probes` | Probe items P1 to P14 and the P1 controls with project, session, user text, the grading check, and the event that delivers it |
-| `similarity` | BM25 ratio and embedding cosine for every cue and probe pair |
+| `similarity` | BM25 ratio and embedding cosine for every cue and probe pair, journaled to four decimals; the threshold gate compares the full-precision values |
 | `events` | `apply_diff`, `session_start`, `user_turn`, and `session_end` events in scenario time |
 | `faults` | Fault episodes with type, strategy, trigger, parameters, and seam-table entry |
 | `cf_deletions` | Counterfactual deletions before 20% of the P1, P3, and P5 probes (L only) |
@@ -87,7 +88,7 @@ the earlier one and supersedes it.
 | P11 | the P1 fact | A session of the twin project after the conveyance; the check forbids the convention |
 | P12 | tool error | A real error from `corpus/tool-outputs/error-codes.jsonl`; the check requires the exception name |
 | P13 | session rule | Conveyed in the first third of a turn range in a forced p90 session and probed in its last third; each P13 item has its own range of at least 30 turns, so at least 11 turns separate cue and probe |
-| P14 | none | The last third of a forced p90 session, measured from user-sim labels |
+| P14 | none | The last third of a forced p90 session, split into one window of at least ten turns per item (`window_from_turn` to `window_to_turn`), measured from user-sim labels |
 
 Conveyance manners follow the fixed weights 35/20/15/10/10/10 for correction,
 hand-applied diff, tool error, rejected approach, direct statement, and stated
@@ -98,12 +99,18 @@ rejected-approach wording, and only constraint, decision, and tool-error facts
 take the tool-error wording. P13 facts, which convey and probe within one
 session, take neither the diff nor the reversal manner, and a template whose
 statement has no generated token takes no reversal, since its decoy would
-equal the statement. A fact whose remaining pool holds no permitted manner
+equal the statement. A reversed fact's checks forbid the decoy's rendering
+beside the final value, so applying or leaking the superseded value scores as
+harm. A fact whose remaining pool holds no permitted manner
 takes a correction, so the realised mix sits a little off the weights; the
 100-seed test keeps it within 5 percentage points. A
 hand-applied diff is an `apply_diff` event before the session, adding a file
 whose content implies the fact, followed by a user turn that points at the
-latest commit without stating the fact.
+latest commit without stating the fact. A constraint template whose scope is
+a directory names an example path inside that scope (`src/cmd/{token}.rs`,
+`src/adapter/{token}.ts`, `tests/{token}.rs`, `test/{codename}.{token}.test.ts`);
+every other template adds `notes/{token}.md`, a note that states the fact in
+its own words, so a diff cue always carries the fact's scope.
 
 Every request that carries no conveyance or probe is a filler task from the
 fact bank, or, with probability 0.1, a paste of a corpus tool-output sample.
@@ -113,6 +120,8 @@ fact bank, or, with probability 0.1, a paste of a corpus tool-output sample.
 The compiler throws, and writes nothing, when:
 
 - the seed is outside the unsigned 32-bit range of the random streams;
+- `forced_p90_sessions` asks a base repository for more forced sessions than
+  it has;
 - the embedder differs from `cue_probe_similarity.embedding_model`, or returns
   a vector count or shape that does not match the texts;
 - a cue and probe pair has a BM25 ratio above `bm25_max` or a cosine above
@@ -163,15 +172,15 @@ thresholds (`bm25_max` 0.4, `cosine_max` 0.6):
 
 | Tier | Seed | `scenario_hash` | Largest BM25 ratio | Largest cosine |
 |---|---|---|---|---|
-| S | 101 | `eee444d7` | 0.2147 | 0.5194 |
-| S | 102 | `b9c7d473` | 0.2503 | 0.4867 |
-| M | 201 | `d0dd302a` | 0.2502 | 0.4992 |
-| M | 202 | `f9f0e4ac` | 0.2516 | 0.4997 |
-| M | 203 | `0590e08d` | 0.2496 | 0.4843 |
-| L | 301 | `325d2270` | 0.2606 | 0.5092 |
-| L | 302 | `f2b399d7` | 0.2573 | 0.4957 |
-| L | 303 | `0faa11a1` | 0.2511 | 0.5083 |
-| XL | 401 | `bf092109` | 0.2558 | 0.4962 |
+| S | 101 | `7dc86c7a` | 0.2137 | 0.5194 |
+| S | 102 | `6ffdd82b` | 0.2527 | 0.4867 |
+| M | 201 | `b9d51275` | 0.2526 | 0.4992 |
+| M | 202 | `b05f5661` | 0.2522 | 0.4997 |
+| M | 203 | `186052e4` | 0.2498 | 0.4843 |
+| L | 301 | `eb5b5028` | 0.2613 | 0.5092 |
+| L | 302 | `d99bdd54` | 0.258 | 0.4957 |
+| L | 303 | `94c1afcd` | 0.2512 | 0.5083 |
+| XL | 401 | `07ffbbaa` | 0.2562 | 0.4962 |
 
 ## Known limits
 

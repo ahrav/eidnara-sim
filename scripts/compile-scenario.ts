@@ -1,5 +1,5 @@
-import { mkdirSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { loadConfig } from "../src/config/config";
 import { canonicalJson } from "../src/prereg/canonical";
 import { TIERS, type Tier } from "../src/prereg/schema";
@@ -30,8 +30,18 @@ if (
     process.exit(2);
 }
 const out = outArg ?? join(import.meta.dir, "..", "runs", "scenarios", `${tier}-${seed}.json`);
-mkdirSync(dirname(out), { recursive: true });
 const config = loadConfig();
+const canonical = (path: string) => {
+    let existing = resolve(path);
+    while (!existsSync(existing)) existing = dirname(existing);
+    return join(realpathSync(existing), relative(existing, resolve(path)));
+};
+const checkout = canonical(config.eidnara_checkout);
+if (`${canonical(out)}${sep}`.startsWith(`${checkout}${sep}`)) {
+    console.error(`--out ${out} is inside eidnara_checkout ${config.eidnara_checkout}`);
+    process.exit(2);
+}
+mkdirSync(dirname(out), { recursive: true });
 const local = embedderArg === "local";
 const cache = join(dirname(out), "embeddings.jsonl");
 const { aws_profile, region } = config.bedrock;

@@ -4,7 +4,7 @@ import { canonicalJson, sha256Hex } from "../prereg/canonical";
 import type { Preregistration } from "../prereg/schema";
 import { Rng } from "../rng";
 import { scheduleFaults, validateFault } from "./faults";
-import { bm25Ratio, cosine, type Embedder } from "./similarity";
+import { bm25Ratio, cosine, type Embedder, round4 } from "./similarity";
 import { Tokens } from "./tokens";
 
 export const GENERATOR_VERSION = "sim-scenario/v1";
@@ -25,7 +25,7 @@ export interface Template {
     probe: string;
     out_probe?: string;
     update?: string;
-    example?: string;
+    example?: { path: string; content: string };
     authority?: { path: string; content: string };
     check: Record<string, unknown>;
     out_check?: Record<string, unknown>;
@@ -202,6 +202,11 @@ export async function compileScenario(input: CompileInput) {
             const own = plan.flatMap((q, i) => (q.id === p.id ? [i] : []));
             const quota =
                 Math.floor(s.forced_p90_sessions / bases.length) + (extra.has(p.id) ? 1 : 0);
+            if (quota > own.length) {
+                throw new Error(
+                    `forced_p90_sessions ${s.forced_p90_sessions} exceeds the ${own.length} sessions of ${p.id}`,
+                );
+            }
             return range(0, quota).map((k) => own[Math.floor(((k + 0.5) * own.length) / quota)]);
         }),
     );
@@ -370,26 +375,27 @@ export async function compileScenario(input: CompileInput) {
         const after = (t: Turn) => (x: Session) =>
             all(x).filter((i) => x.id !== t.session || i > t.index);
 
+        const decoy = manner === "stated_then_reversed" ? tokens.word() : undefined;
+        const swap = decoy
+            ? {
+                  token: decoy,
+                  TOKEN: decoy.toUpperCase(),
+                  value: tokens.number(),
+                  codename: tokens.codename(),
+              }
+            : undefined;
         let conveyed: Turn;
         if (manner === "hand_applied_diff") {
             const content = tpl.example
-                ? `${render(tpl.example, vars)}\n`
+                ? `${render(tpl.example.content, vars)}\n`
                 : `# Note\n\n${statement.charAt(0).toUpperCase()}${statement.slice(1)}.\n`;
-            const ext = project.lang === "rust" ? `_example.rs` : `-example.ts`;
-            const path = tpl.example ? `src/${word}${ext}` : `notes/${word}.md`;
+            const path = tpl.example ? render(tpl.example.path, vars) : `notes/${word}.md`;
             conveyed = cue(
                 "I pushed a small change to the repo. Look over the latest commit before we continue.",
                 content,
             );
             diffs.push({ session: conveyed.session, path, content, fact: id });
         } else if (manner === "stated_then_reversed") {
-            const decoy = tokens.word();
-            const swap = {
-                token: decoy,
-                TOKEN: decoy.toUpperCase(),
-                value: tokens.number(),
-                codename: tokens.codename(),
-            };
             const first = cue(
                 `For the record, ${render(tpl.statement, { ...vars, ...swap })}.`,
                 undefined,
@@ -456,8 +462,14 @@ export async function compileScenario(input: CompileInput) {
             });
             return t;
         };
-        const check = renderDeep(tpl.check, vars);
-        const mustNot = { must_not: (check as { must?: string[] }).must ?? [] };
+        type Check = { must?: string[]; must_not?: string[] };
+        const superseded = swap ? renderDeep<Check>(tpl.check, { ...vars, ...swap }) : {};
+        const forbid = (c: Check): Check => {
+            const must_not = [...(c.must_not ?? []), ...(superseded.must_not ?? [])];
+            return must_not.length > 0 ? { ...c, must_not } : c;
+        };
+        const check = forbid(renderDeep<Check>(tpl.check, vars));
+        const mustNot = { must_not: [...(check.must ?? []), ...(superseded.must ?? [])] };
         const probeText = render(tpl.probe, vars);
         const outText = render(tpl.out_probe ?? tpl.probe, vars);
         const fromConveyed = later(project.id);
@@ -488,7 +500,12 @@ export async function compileScenario(input: CompileInput) {
     }
     for (const i of range(0, perType)) {
         const session = p90[i % p90.length] as Session;
-        const check = { window_from_turn: Math.floor((2 * session.turn_ms.length) / 3) };
+        const slot = Math.floor(i / p90.length);
+        const slots = Math.ceil((perType - (i % p90.length)) / p90.length);
+        const turns = session.turn_ms.length;
+        const lastThird = Math.floor((2 * turns) / 3);
+        const edge = (k: number) => lastThird + Math.floor((k * (turns - lastThird)) / slots);
+        const check = { window_from_turn: edge(slot), window_to_turn: edge(slot + 1) };
         const { project, id } = session;
         const pid = pad("q", probes.length);
         keys.push(pid);
@@ -543,19 +560,24 @@ export async function compileScenario(input: CompileInput) {
         );
     }
     const vec = new Map(texts.map((t, i) => [t, vectors[i] ?? []]));
-    const similarity = pairs.map(({ probe, fact, cue, text }) => ({
+    const scored = pairs.map(({ probe, fact, cue, text }) => ({
         probe,
         fact,
         bm25: bm25Ratio(text, cue, allCues),
         cosine: cosine(vec.get(text) ?? [], vec.get(cue) ?? []),
     }));
-    for (const x of similarity) {
+    for (const x of scored) {
         if (x.bm25 > Number(thresholds.bm25_max) || x.cosine > Number(thresholds.cosine_max)) {
             throw new Error(
-                `${x.probe}: cue/probe similarity bm25 ${x.bm25}, cosine ${x.cosine} exceeds the pre-registered threshold`,
+                `${x.probe}: cue/probe similarity bm25 ${round4(x.bm25)}, cosine ${round4(x.cosine)} exceeds the pre-registered threshold`,
             );
         }
     }
+    const similarity = scored.map((x) => ({
+        ...x,
+        bm25: round4(x.bm25),
+        cosine: round4(x.cosine),
+    }));
     const delivered = [...turns.values()].map((t) => [`${t.session}#${t.index}`, t.text]);
     for (const d of diffs)
         delivered.push([`${d.session} diff ${d.path}`, `${d.path}\n${d.content}`]);

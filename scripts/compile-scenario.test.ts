@@ -1,5 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync } from "node:fs";
+import {
+    existsSync,
+    mkdirSync,
+    mkdtempSync,
+    readdirSync,
+    readFileSync,
+    writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -13,6 +20,36 @@ const run = (...args: string[]) =>
             AWS_SHARED_CREDENTIALS_FILE: "/dev/null",
         },
     });
+
+describe("compile-scenario output boundary", () => {
+    test("an output under the Eidnara checkout is refused before anything is written", () => {
+        const dir = mkdtempSync(join(tmpdir(), "sim-cli-"));
+        const checkout = join(dir, "eidnara");
+        mkdirSync(checkout);
+        const config = JSON.parse(readFileSync(join(ROOT, "sim.config.json"), "utf8"));
+        const configPath = join(dir, "sim.config.json");
+        writeFileSync(configPath, JSON.stringify({ ...config, eidnara_checkout: checkout }));
+        const out = join(checkout, "runs", "s.json");
+        const r = Bun.spawnSync(
+            [
+                "bun",
+                "scripts/compile-scenario.ts",
+                "--tier",
+                "S",
+                "--seed",
+                "101",
+                "--embedder",
+                "local",
+                "--out",
+                out,
+            ],
+            { cwd: ROOT, env: { ...process.env, SIM_CONFIG: configPath } },
+        );
+        expect(r.exitCode).toBe(2);
+        expect(r.stderr.toString()).toContain("eidnara_checkout");
+        expect(readdirSync(checkout)).toEqual([]);
+    });
+});
 
 describe("compile-scenario arguments", () => {
     const out = join(mkdtempSync(join(tmpdir(), "sim-cli-")), "s.json");
