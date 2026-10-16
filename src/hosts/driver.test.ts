@@ -33,14 +33,16 @@ const tmp = () => {
 
 class FakeHost {
     opened: string[] = [];
+    connections: (string | null)[] = [];
     closed = 0;
     onPrompt: () => void = () => undefined;
     constructor(
         readonly ctx: HostContext,
         private readonly transcripts: string,
     ) {}
-    async openSession(cwd: string, session: string) {
+    async openSession(cwd: string, session: string, connection: string | null = null) {
         this.opened.push(`${session}@${cwd}`);
+        this.connections.push(connection);
     }
     failNext = false;
     interrupts: (number | undefined)[] = [];
@@ -375,8 +377,9 @@ describe("HostDriver faults", () => {
     });
 
     test("a host upgrade moves later sessions to the configured next version, or is skipped", async () => {
-        const { driver } = fixture("eidnara");
+        const { driver } = fixture("host");
         const o = (driver as unknown as { o: DriverOptions }).o;
+        o.hostVersions = { from: "0.80.2", to: "0.87.1" };
         o.config = { ...o.config, upgrade: undefined };
         expect(await driver.fault(episode("host_upgrade"))).toEqual({
             skipped: "no next pi version is configured (config.upgrade.pi_install)",
@@ -386,11 +389,17 @@ describe("HostDriver faults", () => {
             host: "pi",
             from: o.config.pi_install,
             to: "/next/pi",
+            from_version: "0.80.2",
+            to_version: "0.87.1",
             takes_effect: "next session_start",
         });
         expect(driver.host?.ctx.config.pi_install).toBe("/next/pi");
         await driver.fault(episode("model_switch"));
         expect(driver.host?.ctx.config.pi_install).toBe("/next/pi");
+        const resumed = new HostDriver(o);
+        await resumed.resume(null);
+        expect(resumed.host?.ctx.config.pi_install).toBe("/next/pi");
+        await resumed.stop();
     });
 
     test("a second host client runs one turn on the arm's daemon at the session's start", async () => {
@@ -405,6 +414,16 @@ describe("HostDriver faults", () => {
         });
         const second = hosts.at(-1) as FakeHost;
         expect(second.opened).toEqual([`s-0000-b@${driver.workspace("p")}`]);
+        expect(second.connections).toEqual([driver.daemon.connectionFile]);
+        expect(second.closed).toBe(0);
+        const inner = driver as unknown as Record<string, unknown> & { newHost(): SimHost };
+        driver.host = inner.newHost();
+        const noop = () => undefined;
+        inner.snapshots = { sessionStart: noop, sessionEnd: noop, addTools: noop };
+        inner.transcriptsChecked = true;
+        await driver.event(at);
+        expect(second.closed).toBe(0);
+        await driver.event(ev("session_end", { project: "p" }));
         expect(second.closed).toBe(1);
         await expect(driver.fault(episode("two_hosts_one_daemon"))).rejects.toThrow(
             "session_start",

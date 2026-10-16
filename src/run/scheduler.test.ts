@@ -25,8 +25,8 @@ function fakeDriver(
             if (turnMs) await Bun.sleep(turnMs);
             return {};
         },
-        fault: async (f) => {
-            log.push(`fault:${f.id}`);
+        fault: async (f, at) => {
+            log.push(`fault:${f.id}@${at?.id ?? "-"}`);
             return { pid_before: 1, pid_after: 2 };
         },
     };
@@ -509,6 +509,23 @@ describe("counterfactual preparation", () => {
         const kinds = journal.entries.map((x) => x.kind);
         expect(kinds.indexOf("CounterfactualDeletion")).toBeLessThan(kinds.indexOf("BeginTurn"));
         expect(seen).toEqual(["q-1", "q-2"]);
+    });
+});
+
+describe("fault delivery", () => {
+    test("a fault triggered at a session start reaches the driver with that event", async () => {
+        const events = fixtureEvents(1);
+        const start = events.find((e) => e.kind === "session_start") as ScenarioEvent;
+        const log: string[] = [];
+        await new Scheduler({
+            events,
+            faults: [episode("f", "daemon_restart", { kind: "session_start", session: "s-0000" })],
+            journal: new Journal(join(dir(), "j.jsonl")),
+            settleMs: 0,
+            order: ["a"],
+            drivers: { a: fakeDriver(log) },
+        }).run();
+        expect(log).toContain(`fault:f@${start.id}`);
     });
 });
 

@@ -190,7 +190,7 @@ function panels(r: TierReport): string[] {
         ...(r.soak_by_month.length === 0
             ? []
             : [
-                  "### RSS soak by month of scenario time",
+                  "### Within-month RSS soak, by month of scenario time",
                   "",
                   ...table(
                       ["arm", "month", "verdict", "samples", "slope MB/session", "R2", "bound"],

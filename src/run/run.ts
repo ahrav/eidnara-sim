@@ -461,6 +461,10 @@ async function runArms(
             ...(manifest.side_model ? { sideModel: manifest.side_model } : {}),
             turnDeadlineMs: prereg.liveness_bounds.turn_deadline_ms,
             transcriptPaths: hostRow.transcript_paths,
+            hostVersions: {
+                from: hostRow.version,
+                to: manifest.preflight.upgrade?.find((h) => h.host === o.host)?.version ?? null,
+            },
             loopStore,
             onDaemonExit: (detail) => scheduler.daemonExited(detail),
             callsFor: (session) => [
@@ -523,7 +527,11 @@ async function runArms(
                 scope.session = e.session;
                 scope.turn = e.kind === "user_turn" ? e.id : null;
                 try {
-                    if (e.kind !== "user_turn") return await driver.event(e);
+                    if (e.kind !== "user_turn") {
+                        const out = await driver.event(e);
+                        guard();
+                        return out;
+                    }
                     const turn = scripted.find((t) => t.id === e.id);
                     if (!turn) throw new HarnessFailure(`${e.id}: no scripted user turn`);
                     const d = await userSim.deliver(arm, turn, lastAgent(arm, e.session));
@@ -534,6 +542,7 @@ async function runArms(
                         text: d.text,
                         interrupt_ms: d.interruptMs,
                     });
+                    guard();
                     const cut = d.label !== "interrupt" || out.user?.interrupted === true;
                     const label = cut ? d.label : "task";
                     const scheduled = cut ? {} : { scheduled: "interrupt" };
@@ -558,9 +567,18 @@ async function runArms(
                     });
                 }
             },
-            fault: (f, at) => {
+            fault: async (f, at) => {
                 guard();
-                return driver.fault(f, at);
+                const second = f.type === "two_hosts_one_daemon" && at !== undefined;
+                const prior = { session: scope.session, turn: scope.turn };
+                if (second) Object.assign(scope, { session: `${at.session}-b`, turn: null });
+                try {
+                    const evidence = await driver.fault(f, at);
+                    guard();
+                    return evidence;
+                } finally {
+                    Object.assign(scope, prior);
+                }
             },
             finish: async () => {
                 sampler.stop();

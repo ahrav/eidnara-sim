@@ -106,10 +106,6 @@ export function tierReport(
         continuity: continuity(runs),
         soak_by_month: perArm
             .filter(({ arm }) => armBase(arm.arm) !== "host")
-            .filter(
-                ({ arm }) =>
-                    Math.max(0, ...arm.resources.map((s) => s.scenario_ms)) > 30 * 86_400_000,
-            )
             .flatMap(({ g, arm }) => soakByMonth(g.run, arm, "rss")),
         counterfactual: counterfactual(runs),
     };

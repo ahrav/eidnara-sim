@@ -152,8 +152,17 @@ history summaries, stays in place.
 
 XL runs one seed per host with `host` and `eidnara`. Its scenario's fault
 schedule adds `host_upgrade` and `two_hosts_one_daemon` (`docs/hosts.md`).
-The tier stops each run once with SIGTERM at `--restart-at` of its limit
-(0.4 by default at XL) and resumes it from its journal, so every XL run
-exercises a harness restart, which `tier-result.json` records as
-`restarted`. When an arm's samples span more than 30 days of scenario
-time, the report adds an RSS soak verdict per month of scenario time.
+Each XL paired run is stopped once with SIGTERM when its journal holds
+`--restart-at` (0.4 by default at XL, a fraction in [0, 1)) of its planned
+events across its arms, checked every 30 s, and resumed from its journal
+within the rest of its wall limit. The restart writes `<run>/restarted`,
+so a rerun of the command neither restarts that run again nor reports it
+unrestarted; `tier-result.json` records `restarted` per run, and the
+command exits 1 naming any paired run without a restart.
+A run stopped by the scheduled restart logs no `EndTurn` for the turn the
+stop cut, so the resumed run marks that turn `failed(interrupted)`.
+
+When an arm's samples span more than 30 days of scenario time, the report
+adds a within-month RSS soak verdict per month of scenario time: each
+month's slope, bound, and return-to-baseline use that month's samples and
+sessions alone, and the whole-span soak verdict stays the gate's input.

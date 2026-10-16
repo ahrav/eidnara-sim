@@ -4,7 +4,7 @@ import { launch } from "./launcher";
 import { FAKETIME_LIB, faketimeEnv, writeOffset } from "./timeinject";
 
 export interface BinaryProbe {
-    name: "pi" | "opencode" | "daemon";
+    name: "pi" | "opencode" | "opencode-upgrade" | "daemon";
     path: string;
     keep: string[];
     argv: string[];

@@ -295,9 +295,11 @@ describe("soak by month", () => {
         );
         const kinds = new Map(Array.from({ length: 60 }, (_, d) => [`end-${d}`, "session_end"]));
         const months = soakByMonth(run([], "", kinds), arm({ journal, resources }), "rss");
-        expect(months.map((m) => [m.month, m.verdict])).toEqual([
-            [1, "no leak"],
-            [2, "leak"],
+        expect(months.map((m) => [m.month, m.verdict, m.samples, m.sessions])).toEqual([
+            [1, "no leak", 30, 30],
+            [2, "leak", 30, 30],
         ]);
+        const short = arm({ journal, resources: resources.slice(0, 30) });
+        expect(soakByMonth(run([], "", kinds), short, "rss")).toEqual([]);
     });
 });

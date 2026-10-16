@@ -5,7 +5,7 @@ export interface TranscriptStore {
 }
 
 export const TRANSCRIPT_STORES: TranscriptStore[] = [
-    { host: "pi", versions: /^0\.80\./, paths: ["$PI_CODING_AGENT_DIR/sessions"] },
+    { host: "pi", versions: /^0\.8[07]\./, paths: ["$PI_CODING_AGENT_DIR/sessions"] },
     {
         host: "opencode",
         versions: /^1\.1[89]\./,

@@ -70,7 +70,7 @@ export interface SchedulerOptions {
 }
 
 const PROXY_LAYER = "proxy-sink";
-const OUTAGE = new Set(["daemon_sigkill_mid_fold", "daemon_restart", "host_upgrade"]);
+const OUTAGE = new Set(["daemon_sigkill_mid_fold", "daemon_restart"]);
 
 export class Scheduler {
     clock: Clock | null = null;

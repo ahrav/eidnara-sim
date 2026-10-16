@@ -137,15 +137,16 @@ const runJob = async (job: TierJob) => {
         ...["--arms", job.arms.join(","), "--events", String(job.events), ...job.extra],
         ...(moved ? ["--faults", join(job.dir, "faults.json")] : []),
     ];
-    const cut = restartAt > 0 && job.group === "main" && eventsRun(job.dir) === 0;
+    const marker = join(job.dir, "restarted");
     const due = restartAt * job.events * job.arms.length;
+    const cut = restartAt > 0 && job.group === "main" && !existsSync(marker);
     const t0 = Date.now();
-    let restarted = false;
     let code = await run(args, log, limit, cut ? () => eventsRun(job.dir) >= due : undefined);
-    if (cut && code === SIGTERM_EXIT && Date.now() - t0 < limit) {
-        restarted = true;
+    if (cut && code === SIGTERM_EXIT && eventsRun(job.dir) >= due && Date.now() - t0 < limit) {
+        writeFileSync(marker, `${new Date().toISOString()}\n`);
         code = await run(args, log, limit - (Date.now() - t0));
     }
+    const restarted = existsSync(marker);
     const ran = existsSync(join(job.dir, "manifest.json"));
     const graded = ran ? await run(["grade-run.ts", job.dir], log) : null;
     const aa =
