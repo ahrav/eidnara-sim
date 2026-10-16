@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, truncateSync } from "node:fs";
 import type { Preregistration } from "../prereg/schema";
 import type { ProbeItem } from "../scenario/compile";
 import {
@@ -43,8 +43,18 @@ export interface GradeRecord extends Outcome {
 
 const READS = /\b(cat|less|more|head|tail|sed|view|bat|grep|rg)\b|^read /;
 const TESTS = /\b(cargo test|bun test|npm test|pnpm test)\b/;
-const QUIET = /^\s*(cargo (build|check|test)|bun (test|install)|git (status|log|diff)|ls|pwd)\b/;
+const QUIET =
+    /^\s*(cargo (build|check|test)|bun (test|install)|git (status|log|diff)|ls|pwd)\b[^&|;`$()]*$/;
 const FOLDS = ["history_summarizer", "native_compaction"];
+const USER_SIM_LABELS = [
+    "task",
+    "pushback",
+    "interrupt",
+    "redirect",
+    "abandon",
+    "clarify",
+    "paste",
+];
 
 const REQUIRED: Record<string, (keyof Check)[]> = {
     P1: ["must"],
@@ -77,10 +87,17 @@ const commandText = (r: ArtefactReader) =>
         .commands()
         .map((c) => c.command)
         .join("\n");
-const work = (r: ArtefactReader) => `${addedLines(r.diff())}\n${commandText(r)}`;
+/** Changed paths join the added lines so a check pattern can match a file name. */
+const changed = (r: ArtefactReader) => {
+    const patch = r.diff();
+    return `${diffPaths(patch).join("\n")}\n${addedLines(patch)}`;
+};
+const work = (r: ArtefactReader) => `${changed(r)}\n${commandText(r)}`;
+
+const completed = (c: CallView) => c.status >= 200 && c.status < 300 && c.error === null;
 
 function foldsIn(r: ArtefactReader, turns?: [number, number]): CallView[] {
-    const folds = r.calls().filter((c) => FOLDS.includes(c.component));
+    const folds = r.calls().filter((c) => FOLDS.includes(c.component) && completed(c));
     if (!turns) return folds;
     const [lo, hi] = turns;
     return folds.filter(
@@ -89,7 +106,7 @@ function foldsIn(r: ArtefactReader, turns?: [number, number]): CallView[] {
 }
 
 function p4(r: ArtefactReader, c: Check): Outcome {
-    const added = addedLines(r.diff());
+    const added = changed(r);
     const kept = matchesAll(added, c.must ?? []);
     const wrong = matchesAny(added, c.must_not ?? []);
     const collapsed = wrong && c.scope === "out";
@@ -131,13 +148,12 @@ function p13(r: ArtefactReader, c: Check, rules: Rules): Outcome {
     const before = new Set(commands.filter((x) => x.scenario_ms < boundary).map((x) => x.command));
     const kept = c.commands_must
         ? after.some((x) => matchesAll(x.command, c.commands_must ?? []))
-        : matchesAll(addedLines(r.diff()), c.must ?? []);
+        : matchesAll(changed(r), c.must ?? []);
     const min = Number(rules.p13_reduction_ratio.min);
     const max = Number(rules.p13_reduction_ratio.max);
-    const measured = folds.filter((x) => x.input_tokens > 0);
-    const ratioOk = measured.every((x) => {
+    const ratioOk = folds.every((x) => {
         const ratio = x.output_tokens / x.input_tokens;
-        return ratio >= min && ratio <= max;
+        return x.input_tokens > 0 && ratio >= min && ratio <= max;
     });
     const repeated = after.some((x) => before.has(x.command) && !QUIET.test(x.command));
     const parts = [kept, ratioOk, !repeated];
@@ -164,6 +180,11 @@ function p14(r: ArtefactReader, c: Check): Outcome {
     if (userSim.length === 0 || userSim.some((x) => !x.label || x.turn_index === undefined)) {
         return { verdict: "excluded", reason: "no labelled user-sim turns", metrics: {} };
     }
+    const unknown = userSim.find((x) => !USER_SIM_LABELS.includes(x.label ?? ""));
+    if (unknown) {
+        const reason = `unknown user-sim label ${unknown.label}`;
+        return { verdict: "excluded", reason, metrics: {} };
+    }
     const from = c.window_from_turn ?? 0;
     const pushback = userSim.filter(
         (x) => x.label === "pushback" && x.scenario_ms >= boundary && (x.turn_index ?? -1) >= from,
@@ -180,21 +201,15 @@ function p14(r: ArtefactReader, c: Check): Outcome {
 type Grader = (r: ArtefactReader, check: Check, rules: Rules, probe: ProbeItem) => Outcome;
 
 const GRADERS: Record<string, Grader> = {
-    P1: (r, c) =>
-        binary("P1", matchesAll(addedLines(r.diff()), c.must ?? []), {}, "rule not applied"),
+    P1: (r, c) => binary("P1", matchesAll(changed(r), c.must ?? []), {}, "rule not applied"),
     "P1-control": (r, c) =>
-        binary(
-            "P1-control",
-            matchesAll(addedLines(r.diff()), c.must ?? []),
-            {},
-            "rule not applied",
-        ),
+        binary("P1-control", matchesAll(changed(r), c.must ?? []), {}, "rule not applied"),
     P2: (r, c) => {
-        const over = matchesAny(addedLines(r.diff()), c.must_not ?? []);
+        const over = matchesAny(changed(r), c.must_not ?? []);
         return binary("P2", !over, { "P2.harm": over }, "applied the rule outside its scope");
     },
     P3: (r, c) => {
-        const added = addedLines(r.diff());
+        const added = changed(r);
         const authoritative = matchesAll(added, c.must ?? []);
         const stale = matchesAny(added, c.must_not ?? []);
         const reliance = stale ? "stale" : authoritative ? "authoritative" : "neither";
@@ -210,22 +225,18 @@ const GRADERS: Record<string, Grader> = {
     P9: (r, _c, _rules, p) =>
         binary("P9", abstains(r.answer(), p.text ?? ""), {}, "answered instead of abstaining"),
     P10: (r, c) => {
-        const leaked = matchesAny(`${addedLines(r.diff())}\n${r.answer()}`, c.must_not ?? []);
+        const anchors = (c.must_not ?? []).map((s) => (s.startsWith("(?i)") ? s : `(?i)${s}`));
+        const leaked = matchesAny(`${changed(r)}\n${r.answer()}`, anchors);
         return binary("P10", !leaked, { "P10.harm": leaked }, "anchor value leaked");
     },
     P11: (r, c, rules) => {
-        const injected = matchesAny(addedLines(r.diff()), c.must_not ?? []);
+        const injected = matchesAny(changed(r), c.must_not ?? []);
         const weighted = injected ? -Number(rules.p11_false_positive_weight) : 1;
         const extra = { "P11.harm": injected, "P11.weighted_score": weighted };
         return binary("P11", !injected, extra, "injected the other project's rule");
     },
     P12: (r, c) =>
-        binary(
-            "P12",
-            matchesAll(addedLines(r.diff()), c.must ?? []),
-            {},
-            "fix omits the error code",
-        ),
+        binary("P12", matchesAll(changed(r), c.must ?? []), {}, "fix omits the error code"),
     P13: p13,
     P14: p14,
 };
@@ -283,10 +294,22 @@ export function gradeItem(
 export class GradeLog {
     constructor(private readonly path: string) {}
 
+    /** Earlier records stay readable after an interrupted append: only newline-terminated lines count. */
+    private complete(): string {
+        if (!existsSync(this.path)) return "";
+        const text = readFileSync(this.path, "utf8");
+        return text.slice(0, text.lastIndexOf("\n") + 1);
+    }
+
     all(): GradeRecord[] {
-        if (!existsSync(this.path)) return [];
-        const lines = readFileSync(this.path, "utf8").split("\n").filter(Boolean);
-        return lines.map((l) => JSON.parse(l) as GradeRecord);
+        const lines = this.complete().split("\n").filter(Boolean);
+        return lines.map((l, i) => {
+            try {
+                return JSON.parse(l) as GradeRecord;
+            } catch {
+                throw new GradeRefused(`grade log ${this.path}: line ${i + 1} is corrupt`);
+            }
+        });
     }
 
     latest(): GradeRecord[] {
@@ -310,6 +333,7 @@ export class GradeLog {
                 `grade ${record.item}/${record.arm} v${record.version} expected v${expected}`,
             );
         }
+        if (existsSync(this.path)) truncateSync(this.path, Buffer.byteLength(this.complete()));
         appendFileSync(this.path, `${JSON.stringify(record)}\n`);
     }
 }

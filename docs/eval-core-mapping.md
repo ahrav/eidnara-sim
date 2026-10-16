@@ -81,7 +81,7 @@ counterpart holds part of the value; the note names the rest), `extension`
 | `grading` | none | extension | The M5 probe grading rules, added in revision 4 before any run. eval-core grades with deterministic oracles and has no probe rules; `eval-manifest/v10` would add them. |
 | `grading.first_attempt_only` | none | extension | A grade reads the first probe turn's artefacts only (SIM-P41). |
 | `grading.lookup_match` | none | extension | P8 matches the value as a whole word, the v1 A/B rule. |
-| `grading.abstain_rule` | none | extension | P9 abstains with a first line of `UNKNOWN` alone or abstention wording with no guessed value, the v1 A/B rule. |
+| `grading.abstain_rule` | none | extension | P9 abstains with a first line of `UNKNOWN` alone or abstention wording with no value-shaped or hedged guess, extending the v1 A/B rule. |
 | `grading.p11_false_positive_weight` | none | extension | A P11 false-positive injection counts this many times a hit in `P11.weighted_score` (SIM-P50); `P11.harm` stays binary. |
 | `grading.p13_reduction_ratio` | none | extension | Summary output tokens per summarized input token a P13 fold must fall between. |
 | `grading.p13_reduction_ratio.min` | none | extension | Lower bound, a decimal in (0, 1). |

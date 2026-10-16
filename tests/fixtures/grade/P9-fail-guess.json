@@ -31,7 +31,9 @@
               "scenario_ms": 0,
               "input_tokens": 1000,
               "output_tokens": 100,
-              "response_text": "I don't know for sure, maybe 30632 seconds."
+              "response_text": "I don't know for sure, maybe 30632 seconds.",
+              "status": 200,
+              "error": null
             }
           ]
         }

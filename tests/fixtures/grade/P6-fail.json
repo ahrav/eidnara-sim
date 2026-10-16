@@ -62,7 +62,9 @@
               "scenario_ms": 0,
               "input_tokens": 1000,
               "output_tokens": 100,
-              "response_text": "Where did we stop?"
+              "response_text": "Where did we stop?",
+              "status": 200,
+              "error": null
             }
           ]
         }

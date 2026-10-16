@@ -31,7 +31,9 @@
               "scenario_ms": 0,
               "input_tokens": 1000,
               "output_tokens": 100,
-              "response_text": "We never settled how long to keep that history, so there is no figure to give."
+              "response_text": "We never settled how long to keep that history, so there is no figure to give.",
+              "status": 200,
+              "error": null
             }
           ]
         }

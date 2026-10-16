@@ -49,6 +49,9 @@ export interface CallView {
     turn: string | null;
     turn_index?: number;
     scenario_ms: number;
+    /** The HTTP status and error the proxy recorded for the call. */
+    status: number;
+    error: string | null;
     input_tokens: number;
     output_tokens: number;
     response_text?: string;
@@ -87,24 +90,29 @@ export class ArtefactReader {
 
     constructor(private readonly snapshot: Snapshot) {}
 
-    private find<T extends Artefact>(test: (a: Artefact) => a is T): T | undefined {
+    private find<T extends Artefact>(label: string, test: (a: Artefact) => a is T): T {
         const found = this.snapshot.artefacts.find(test);
-        if (found) this.read.add(found.id);
+        if (!found) throw new GradeRefused(`snapshot ${this.snapshot.id} has no ${label} artefact`);
+        this.read.add(found.id);
         return found;
     }
 
     diff(role: DiffArtefact["role"] = "turn"): string {
-        const d = this.find((a): a is DiffArtefact => a.class === "diff" && a.role === role);
-        return d?.patch ?? "";
+        return this.find(
+            `${role} diff`,
+            (a): a is DiffArtefact => a.class === "diff" && a.role === role,
+        ).patch;
     }
 
     commands(role: CommandLog["role"] = "turn"): Command[] {
-        const log = this.find((a): a is CommandLog => a.class === "command-log" && a.role === role);
-        return log?.commands ?? [];
+        return this.find(
+            `${role} command-log`,
+            (a): a is CommandLog => a.class === "command-log" && a.role === role,
+        ).commands;
     }
 
     calls(): CallView[] {
-        return this.find((a): a is ProxyCalls => a.class === "proxy-call")?.calls ?? [];
+        return this.find("proxy-call", (a): a is ProxyCalls => a.class === "proxy-call").calls;
     }
 
     turnCalls(): CallView[] {

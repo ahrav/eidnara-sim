@@ -31,7 +31,9 @@
               "scenario_ms": 0,
               "input_tokens": 1000,
               "output_tokens": 100,
-              "response_text": "Use xeric-magpie-81."
+              "response_text": "Use xeric-magpie-81.",
+              "status": 200,
+              "error": null
             }
           ]
         }

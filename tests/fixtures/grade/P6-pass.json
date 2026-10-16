@@ -57,7 +57,9 @@
               "scenario_ms": 0,
               "input_tokens": 1000,
               "output_tokens": 100,
-              "response_text": "Added the field."
+              "response_text": "Added the field.",
+              "status": 200,
+              "error": null
             }
           ]
         }

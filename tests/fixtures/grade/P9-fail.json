@@ -31,7 +31,9 @@
               "scenario_ms": 0,
               "input_tokens": 1000,
               "output_tokens": 100,
-              "response_text": "We keep it for 30632 seconds."
+              "response_text": "We keep it for 30632 seconds.",
+              "status": 200,
+              "error": null
             }
           ]
         }

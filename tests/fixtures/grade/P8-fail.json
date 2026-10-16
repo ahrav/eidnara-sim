@@ -31,7 +31,9 @@
               "scenario_ms": 0,
               "input_tokens": 1000,
               "output_tokens": 100,
-              "response_text": "Use xeric-magpie-810 or staging."
+              "response_text": "Use xeric-magpie-810 or staging.",
+              "status": 200,
+              "error": null
             }
           ]
         }

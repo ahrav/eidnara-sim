@@ -59,7 +59,9 @@
               "scenario_ms": 500,
               "input_tokens": 20000,
               "output_tokens": 15000,
-              "turn_index": 5
+              "turn_index": 5,
+              "status": 200,
+              "error": null
             }
           ]
         }

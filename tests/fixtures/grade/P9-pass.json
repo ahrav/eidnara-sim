@@ -31,7 +31,9 @@
               "scenario_ms": 0,
               "input_tokens": 1000,
               "output_tokens": 100,
-              "response_text": "UNKNOWN\nWe never settled the retention for lapsed keys."
+              "response_text": "UNKNOWN\nWe never settled the retention for lapsed keys.",
+              "status": 200,
+              "error": null
             }
           ]
         }

@@ -1,6 +1,8 @@
 const ABSTAIN =
     /\bUNKNOWN\b|\b(don'?t|do not) (know|have|see)\b|\bnever (settled|decided|discussed|set|mentioned)\b|\bnot (sure|aware)\b|\bno record\b|\bcan(no|')t find\b/i;
 const CANDIDATE_VALUE = /\b\d{5}\b|\b[a-z]+-[a-z]+-\d{2}\b/i;
+const HEDGED_GUESS =
+    /\b(probably|maybe|perhaps|likely|possibly|presumably|my (best )?guess|if I had to guess|I('d| would) (guess|say)|I (think|guess|believe|suspect|assume)|might be|could be)\b/i;
 
 function standalone(token: string): RegExp {
     const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -18,7 +20,7 @@ export function abstains(answer: string, subject: string): boolean {
         .split(/\s+/)
         .filter((word) => word.length > 0)
         .reduce((text, word) => text.replace(standalone(word), " "), answer);
-    return ABSTAIN.test(answer) && !CANDIDATE_VALUE.test(rest);
+    return ABSTAIN.test(answer) && !CANDIDATE_VALUE.test(rest) && !HEDGED_GUESS.test(rest);
 }
 
 export function pattern(source: string): RegExp {

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readdirSync, readFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ProbeItem } from "../scenario/compile";
@@ -118,6 +118,124 @@ describe("grading harness", () => {
         ];
         expect(deltaMem(grades)).toEqual({ delta: 0.5, n: 2 });
         expect(deltaMem([pass])).toBeNull();
+    });
+
+    test("a snapshot lacking an artefact its grader needs is refused, not graded as empty evidence", () => {
+        const f = fixture("P2-pass");
+        const bare = { ...(f.snapshots[0] as Snapshot), artefacts: [] };
+        expect(() => gradeItem(f.probe, [bare], rules)).toThrow(GradeRefused);
+        expect(() => gradeItem(f.probe, [bare], rules)).toThrow("has no turn diff artefact");
+        const p10 = fixture("P10-pass");
+        const noCalls = {
+            ...(p10.snapshots[0] as Snapshot),
+            artefacts: (p10.snapshots[0] as Snapshot).artefacts.filter(
+                (a) => a.class !== "proxy-call",
+            ),
+        };
+        expect(() => gradeItem(p10.probe, [noCalls], rules)).toThrow("has no proxy-call artefact");
+    });
+
+    test("P10 grades a literal anchor case-insensitively", () => {
+        const f = fixture("P10-pass");
+        const probe = { ...f.probe, check: { must_not: ["xeric-magpie-81"] } };
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        const calls = snap.artefacts.find((a) => a.class === "proxy-call");
+        if (calls?.class !== "proxy-call") throw new Error("fixture lacks proxy-call");
+        (calls.calls[0] as { response_text: string }).response_text =
+            "The quarter is code-named XERIC-MAGPIE-81.";
+        const g = gradeItem(probe, [snap], rules) as GradeRecord;
+        expect([g.verdict, g.metrics["P10.harm"]]).toEqual(["fail", true]);
+    });
+
+    test("P14 excludes a snapshot whose user-sim label is outside the fixed set", () => {
+        const f = fixture("P14-pass");
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        const calls = snap.artefacts.find((a) => a.class === "proxy-call");
+        if (calls?.class !== "proxy-call") throw new Error("fixture lacks proxy-call");
+        const sim = calls.calls.find((c) => c.component === "user-sim" && c.label === "pushback");
+        (sim as { label: string }).label = "pushbak";
+        const g = gradeItem(f.probe, [snap], rules) as GradeRecord;
+        expect([g.verdict, g.reason]).toEqual(["excluded", "unknown user-sim label pushbak"]);
+    });
+
+    test("P13 counts a compound command as repeated even when it opens with a quiet read", () => {
+        const f = fixture("P13-pass");
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        const log = snap.artefacts.find((a) => a.class === "command-log");
+        if (log?.class !== "command-log") throw new Error("fixture lacks command-log");
+        const cmd = "git status && sed -i 's/a/b/' src/x.rs";
+        log.commands.unshift({ command: cmd, exit: 0, scenario_ms: 100 });
+        log.commands.push({ command: cmd, exit: 0, scenario_ms: 900 });
+        const g = gradeItem(f.probe, [snap], rules) as GradeRecord;
+        expect([g.verdict, g.metrics["P13.repeated_action"]]).toEqual(["fail", true]);
+    });
+
+    test("P13 fails the ratio part when a fold's input tokens are unmeasured", () => {
+        const f = fixture("P13-pass");
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        const calls = snap.artefacts.find((a) => a.class === "proxy-call");
+        if (calls?.class !== "proxy-call") throw new Error("fixture lacks proxy-call");
+        for (const c of calls.calls) if (c.component === "history_summarizer") c.input_tokens = 0;
+        const g = gradeItem(f.probe, [snap], rules) as GradeRecord;
+        expect([g.verdict, g.metrics["P13.ratio_in_bounds"]]).toEqual(["fail", false]);
+    });
+
+    test("a fold call that did not complete establishes no compaction boundary", () => {
+        const f = fixture("P13-pass");
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        const calls = snap.artefacts.find((a) => a.class === "proxy-call");
+        if (calls?.class !== "proxy-call") throw new Error("fixture lacks proxy-call");
+        for (const c of calls.calls) {
+            if (c.component === "history_summarizer")
+                Object.assign(c, { status: 502, error: "upstream" });
+        }
+        const g = gradeItem(f.probe, [snap], rules) as GradeRecord;
+        expect([g.verdict, g.reason]).toEqual(["excluded", "no fold in the item's range"]);
+        const p14 = fixture("P14-fail");
+        const s14 = structuredClone(p14.snapshots[0]) as Snapshot;
+        const c14 = s14.artefacts.find((a) => a.class === "proxy-call");
+        if (c14?.class !== "proxy-call") throw new Error("fixture lacks proxy-call");
+        for (const c of c14.calls) {
+            if (c.component === "history_summarizer")
+                Object.assign(c, { status: 502, error: "upstream" });
+        }
+        expect(gradeItem(p14.probe, [s14], rules)?.verdict).toBe("excluded");
+    });
+
+    test("a check pattern can match a changed file's path, not only its added lines", () => {
+        const f = fixture("P1-pass");
+        const probe = { ...f.probe, check: { must: ["\\.drowsy-egret-12\\.test\\.ts"] } };
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        const diff = snap.artefacts.find((a) => a.class === "diff" && a.role === "turn");
+        if (diff?.class !== "diff") throw new Error("fixture lacks diff");
+        diff.patch =
+            "diff --git a/src/get.drowsy-egret-12.test.ts b/src/get.drowsy-egret-12.test.ts\n--- /dev/null\n+++ b/src/get.drowsy-egret-12.test.ts\n@@ -0,0 +1,1 @@\n+test('echoes body', () => {});\n";
+        expect(gradeItem(probe, [snap], rules)?.verdict).toBe("pass");
+    });
+
+    test("P9 fails an abstention that hedges a guess without a value-shaped token", () => {
+        const f = fixture("P9-pass-wording");
+        for (const guess of [
+            "I do not know, but probably Alice owns it.",
+            "We never decided; probably us-east-1.",
+        ]) {
+            const snap = structuredClone(f.snapshots[0]) as Snapshot;
+            const calls = snap.artefacts.find((a) => a.class === "proxy-call");
+            if (calls?.class !== "proxy-call") throw new Error("fixture lacks proxy-call");
+            (calls.calls[0] as { response_text: string }).response_text = guess;
+            expect(gradeItem(f.probe, [snap], rules)?.verdict).toBe("fail");
+        }
+    });
+
+    test("a cut final grade line is dropped on read and overwritten by the next append", () => {
+        const path = join(mkdtempSync(join(tmpdir(), "sim-grades-")), "grades.jsonl");
+        const log = new GradeLog(path);
+        const g = grade("P2-pass");
+        log.append(g);
+        appendFileSync(path, '{"item":"torn');
+        expect(log.all().map((x) => x.version)).toEqual([1]);
+        log.append({ ...g, version: 2 });
+        expect(log.all().map((x) => x.version)).toEqual([1, 2]);
     });
 
     test("grade versions for one item and arm strictly increase; an out-of-order version is refused", () => {
