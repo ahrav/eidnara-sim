@@ -11,9 +11,9 @@ import {
     table,
 } from "./distributions";
 import { ERROR_CODE_FIELDS, entryProblems, parseJsonl, SAMPLE_FIELDS } from "./entries";
-import { QUANTITIES } from "./fit";
+import { CATEGORY_NAMES, QUANTITIES, TABLES } from "./fit";
 import { loadRepos, REPOS_DIR } from "./repos";
-import { CORPUS_DIR, loadSources } from "./sources";
+import { CORPUS_DIR, loadSources, parseJson } from "./sources";
 
 const SAMPLES_PER_KIND = 150;
 const ERROR_CODES = 200;
@@ -49,7 +49,7 @@ export function checkCorpus(): CorpusReport {
     const problems: string[] = [];
     const need = (ok: boolean, problem: string) => ok || problems.push(problem);
     const read = (path: string) => readFileSync(join(CORPUS_DIR, path), "utf8");
-    const manifest = JSON.parse(read("manifest.json"));
+    const manifest = parseJson(read("manifest.json"), "manifest.json");
     need(manifest.schema === "sim-corpus-manifest/v1", `manifest: schema ${manifest.schema}`);
     const files = manifest.files as Record<string, string>;
     const listed = Object.keys(files).sort().join(",");
@@ -114,25 +114,27 @@ export function checkCorpus(): CorpusReport {
     const tracelab = sources.find((d) => d.id === "tracelab");
     const origin = `${tracelab?.repo}@${tracelab?.revision}:`;
     for (const [name, q] of Object.entries(dist.quantities)) {
-        need(
-            typeof q.source === "string" && q.source.startsWith(origin),
-            `${name}: source ${q.source}`,
-        );
+        const table = TABLES[name as keyof typeof TABLES];
+        need(q.source === `${origin}${table}`, `${name}: source ${q.source}`);
         need(q.n > 0, `${name}: n missing`);
         need(CDF_KINDS.has(q.cdf.kind), `${name}: cdf kind ${q.cdf.kind}`);
+        const floor = name === "tool_steps_per_request" ? 1 : 0;
+        need(
+            q.cdf.x.every((v) => v >= floor),
+            `${name}: values must be at least ${floor}`,
+        );
         if (q.cdf.kind === "discrete") {
-            const counts = q.cdf.x.every((v) => Number.isSafeInteger(v) && v >= 0);
-            need(counts, `${name}: discrete values must be non-negative integers`);
+            need(q.cdf.x.every(Number.isSafeInteger), `${name}: discrete values must be integers`);
         } else {
             need(q.cdf.p.join(",") === GRID.join(","), `${name}: p must be the fit grid`);
         }
         problems.push(...cdfProblems(q.cdf).map((why) => `${name}: ${why}`));
     }
     const mix = dist.tool_mix;
-    need(typeof mix?.source === "string" && mix.source !== "", "tool_mix: source missing");
+    need(mix?.source === `${origin}tool_calls`, `tool_mix: source ${mix?.source}`);
     need(mix?.n > 0, "tool_mix: n missing");
-    const names = (mix?.categories ?? []).map((c) => c.category);
-    need(names.length > 0 && new Set(names).size === names.length, "tool_mix: categories");
+    const names = (mix?.categories ?? []).map((c) => c.category).sort();
+    need(names.join(",") === CATEGORY_NAMES.join(","), `tool_mix: categories ${names}`);
     const shareSum = (mix?.categories ?? []).reduce((sum, c) => sum + c.share, 0);
     need(Math.abs(shareSum - 1) < 1e-5, `tool_mix: shares sum to ${shareSum}`);
     for (const c of mix?.categories ?? []) {

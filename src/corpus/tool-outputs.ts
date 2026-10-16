@@ -152,6 +152,7 @@ export function extractFrom(rows: TrajectoryRow[], dataset: Dataset): Extraction
             const command = calls.get(m.tool_call_id ?? "") ?? "";
             const kind = classify(tool, command, body);
             if (kind === null || body.length < MIN_CHARS || taken.has(kind)) continue;
+            if (tool === "execute_bash" && exit === undefined) continue;
             if ((perKind.get(kind) ?? 0) >= SAMPLES_PER_KIND) continue;
             taken.add(kind);
             perKind.set(kind, (perKind.get(kind) ?? 0) + 1);
