@@ -18,6 +18,16 @@ wall-clock-only or refuses the run.
 No harness code, test, or run exists yet. The surface lands in M4
 (#1028).
 
+M4 (#1028) provides the per-binary interception test as `preflight`: Pi's Node
+runtime and the Bun-compiled OpenCode binary print a jumped clock and keep a
+100 ms timer, and the daemon binary's own `clock_gettime` import binds to the
+interposer. A binary that fails is recorded `wall_clock_only`. Tests run the
+real launcher, a binary that drops the interposer, and a binary whose own code
+leaves `clock_gettime` unbound. In the live test on this host all three
+intercept; that is a test observation, and OQ-9 stays unresolved until the
+first S run's `StartRun` records the interception test in its manifest. The
+run command that calls `preflight` at `StartRun` lands with the host drivers.
+
 ## Failure scenario
 
 A binary silently runs on wall time and every scenario-time claim about it is

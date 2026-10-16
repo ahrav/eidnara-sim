@@ -55,6 +55,7 @@ export interface SchedulerOptions {
     proxy?: ProxyControl;
     jobPollMs?: number;
     settleMs?: number;
+    onClock?: (arm: string, scenarioMs: number) => void;
 }
 
 const PROXY_LAYER = "proxy-sink";
@@ -191,7 +192,10 @@ export class Scheduler {
             const mine = entries.filter((e) => e.arm === arm);
             if (mine.some((e) => e.kind === "EndArm")) continue;
             this.arm = arm;
-            this.clock = new Clock(mine.at(-1)?.scenario_ms ?? 0, this.o.journal);
+            const start = mine.at(-1)?.scenario_ms ?? 0;
+            const onClock = (ms: number) => this.o.onClock?.(arm, ms);
+            this.clock = new Clock(start, this.o.journal, undefined, onClock);
+            onClock(start);
             const driver = this.o.drivers[arm] as ArmDriver;
             let ended = false;
             try {

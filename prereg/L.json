@@ -1,7 +1,7 @@
 {
     "schema": "sim-prereg/v1",
     "tier": "L",
-    "revision": 2,
+    "revision": 3,
     "frozen": true,
     "arms": {
         "default": "eidnara",
@@ -94,7 +94,8 @@
     "liveness_bounds": {
         "turn_deadline_ms": 900000,
         "job_deadline_ms": 1200000,
-        "tier_wall_budget_ms": 108000000
+        "tier_wall_budget_ms": 108000000,
+        "daemon_busy_cpu_fraction": "0.05"
     },
     "bootstrap": {
         "replicates": 2000,

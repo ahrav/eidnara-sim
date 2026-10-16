@@ -129,6 +129,8 @@ export interface Preregistration {
         turn_deadline_ms: number;
         job_deadline_ms: number;
         tier_wall_budget_ms: number;
+        /** Daemon CPU time per wall second above which the daemon holds the clock (OQ-2). */
+        daemon_busy_cpu_fraction: string;
     };
     bootstrap: { replicates: number; seed: number };
     leak_bound: { c_bytes_per_session: number; r2_threshold: string; sample_interval_ms: number };

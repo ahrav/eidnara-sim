@@ -18,6 +18,10 @@ unaffected.
 No harness code, test, or run exists yet. The surface lands in M8
 (#1034).
 
+M4 (#1028) keeps a per-host-version table of transcript-store paths and refuses
+at preflight a host version with no row; a test checks the known versions and
+the refusal. Observing and attributing reads lands with the host drivers.
+
 ## Failure scenario
 
 The control arm is handicapped or its transcript search goes unattributed.
