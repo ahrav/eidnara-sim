@@ -1023,6 +1023,68 @@ describe("grading harness", () => {
         expect(gradeItem(f.probe, [snap], rules)?.metrics["P13.ratio_in_bounds"]).toBe(true);
     });
 
+    test("a quoted redirection target is one word", () => {
+        const f = fixture("P6-pass");
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        const prior = snap.artefacts.find((a) => a.class === "diff" && a.role === "prior-session");
+        if (prior?.class !== "diff") throw new Error("fixture lacks prior diff");
+        prior.patch = "diff --git a/file b/file\n--- a/file\n+++ b/file\n@@ -1 +1 @@\n-a\n+b\n";
+        const log = snap.artefacts.find((a) => a.class === "command-log" && a.role === "turn");
+        if (log?.class !== "command-log") throw new Error("fixture lacks command-log");
+        log.commands.push({ command: 'cat /dev/null > "out file"', exit: 0, scenario_ms: 10 });
+        expect(gradeItem(f.probe, [snap], rules)?.metrics["P6.reread_files"]).toBe(0);
+    });
+
+    test("a plain unified-diff deletion names its old path for re-read accounting", () => {
+        const f = fixture("P6-pass");
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        const prior = snap.artefacts.find((a) => a.class === "diff" && a.role === "prior-session");
+        if (prior?.class !== "diff") throw new Error("fixture lacks prior diff");
+        prior.patch = "--- a/src/old.ts\n+++ /dev/null\n@@ -1 +0,0 @@\n-gone\n";
+        const log = snap.artefacts.find((a) => a.class === "command-log" && a.role === "turn");
+        if (log?.class !== "command-log") throw new Error("fixture lacks command-log");
+        log.commands.push({ command: "cat src/old.ts", exit: 1, scenario_ms: 10 });
+        expect(gradeItem(f.probe, [snap], rules)?.metrics["P6.reread_files"]).toBe(1);
+    });
+
+    test("test-result exit codes are integers and workspace files form a map", () => {
+        const f = fixture("P2-pass");
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        (snap.artefacts as unknown[]).push({
+            id: "t1",
+            class: "test-result",
+            command: "x",
+            exit: 0.5,
+            summary: [],
+        });
+        expect(() => gradeItem(f.probe, [snap], rules)).toThrow("artefacts[1].exit");
+        const ws = structuredClone(f.snapshots[0]) as Snapshot;
+        (ws.artefacts as unknown[]).push({
+            id: "w1",
+            class: "workspace-state",
+            files: ["content"],
+        });
+        expect(() => gradeItem(f.probe, [ws], rules)).toThrow("artefacts[1].files");
+    });
+
+    test("a git binary patch is a well-formed diff", () => {
+        const f = fixture("P2-pass");
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        const diff = snap.artefacts.find((a) => a.class === "diff");
+        if (diff?.class !== "diff") throw new Error("fixture lacks diff");
+        diff.patch =
+            "diff --git a/img.png b/img.png\nindex 1111111..2222222 100644\nGIT binary patch\nliteral 12\nTcmZQzU|?i`;\n\nliteral 10\nRcmZQzU|?i`\n\n";
+        expect(gradeItem(f.probe, [snap], rules)?.verdict).toBe("pass");
+    });
+
+    test("a P10 item requires its answer channel", () => {
+        const f = fixture("P10-pass");
+        const check = f.probe.check as { must_not: string[] };
+        expect(() =>
+            gradeItem({ ...f.probe, check: { must_not: check.must_not } }, f.snapshots, rules),
+        ).toThrow("check.answer_must_not");
+    });
+
     test("a check pattern that is empty after its prefix or fails to compile is refused", () => {
         const f = fixture("P1-fail");
         for (const bad of ["(?i)", "["]) {
@@ -1255,8 +1317,8 @@ describe("grading harness", () => {
         if (calls?.class !== "proxy-call") throw new Error("fixture lacks proxy-call");
         (calls.calls[0] as { response_text: string }).response_text = "The port is 80095.";
         expect(gradeItem(f.probe, [snap], rules)?.verdict).toBe("fail");
-        const diffOnly = { ...f.probe, check: { must_not: check.must_not } };
-        expect(gradeItem(diffOnly, [snap], rules)?.verdict).toBe("pass");
+        const clean = { ...f.probe, check: { ...check, answer_must_not: "never-present-\\d{9}" } };
+        expect(gradeItem(clean, [snap], rules)?.verdict).toBe("pass");
     });
 
     test("proxy calls must carry strictly increasing sequence numbers", () => {

@@ -122,7 +122,7 @@ const REQUIRED: Record<string, (keyof Check)[]> = {
     P6: ["must"],
     P8: ["answer"],
     P9: ["abstain"],
-    P10: ["must_not"],
+    P10: ["must_not", "answer_must_not"],
     P11: ["must_not"],
     P12: ["must"],
     P13: ["turns"],
@@ -289,12 +289,8 @@ const GREP_OPERAND_OPTIONS =
  * an option supplies it (`-e`, `--regexp`, `-f`, `--file`), in which case every positional word is a file.
  */
 const operands = (segment: string): string => {
-    const unredirected = segment
-        .replace(/(^|\s)\d*&?>>?\s*\S+/g, " ")
-        .replace(/(^|\s)\d*<\s*(?=\S)/g, " ")
-        .trim();
-    const words = shellWords(unredirected);
-    if (!/^(grep|rg)$/.test(words[0] as string)) return unredirected;
+    const words = unredirectedWords(shellWords(segment));
+    if (!/^(grep|rg)$/.test(words[0] as string)) return words.join(" ");
     const files: string[] = [];
     let supplied = false;
     for (let i = 1; i < words.length; i++) {
@@ -308,6 +304,22 @@ const operands = (segment: string): string => {
     }
     if (!supplied) files.shift();
     return [words[0], ...files].join(" ");
+};
+/**
+ * Shell words with output redirections removed (operator and target) and input redirections
+ * reduced to their target, which the command reads.
+ */
+const unredirectedWords = (words: string[]): string[] => {
+    const out: string[] = [];
+    for (let i = 0; i < words.length; i++) {
+        const w = words[i] as string;
+        if (/^\d*&?>>?$/.test(w)) i++;
+        else if (/^\d*&?>>?./.test(w)) continue;
+        else if (/^\d*<$/.test(w)) continue;
+        else if (/^\d*<./.test(w)) out.push(w.replace(/^\d*</, ""));
+        else out.push(w);
+    }
+    return out;
 };
 /** The command after any leading `NAME=value` assignments. */
 const unprefixed = (seg: string) =>

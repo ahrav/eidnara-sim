@@ -93,6 +93,8 @@ function parseDiff(patch: string): { added: string[]; paths: string[]; surviving
         } else if (line.startsWith("@@")) inHunk = true;
         else if (inHunk) {
             if (line.startsWith("+")) added.push(line.slice(1));
+        } else if (line.startsWith("--- a/") || line.startsWith('--- "a/')) {
+            paths.push(gitPath(line.slice("--- ".length)));
         } else if (line.startsWith("+++ /dev/null") || line.startsWith("deleted file mode ")) {
             deleted = true;
         } else if (line.startsWith("+++ b/") || line.startsWith('+++ "b/')) {
@@ -118,13 +120,16 @@ export const unifiedDiff = (v: unknown): boolean => {
     if (typeof v !== "string") return false;
     if (v.length === 0) return true;
     let inHunk = false;
+    let inBinary = false;
     let opened = false;
     let fileBody = true;
     for (const line of v.replace(/\n$/, "").split("\n")) {
         if (inHunk && /^[ +\-\\]/.test(line)) continue;
         if (inHunk && line.length === 0) continue;
+        if (inBinary && !line.startsWith("diff --git ")) continue;
         if (line.startsWith("diff --git ")) {
             if (!fileBody) return false;
+            inBinary = false;
             if (
                 !/^diff --git ("a\/(?:[^"\\]|\\.)*"|a\/\S+) ("b\/(?:[^"\\]|\\.)*"|b\/.+)$/.test(
                     line,
@@ -145,6 +150,7 @@ export const unifiedDiff = (v: unknown): boolean => {
         } else if (FILE_META.test(line)) {
             inHunk = false;
             fileBody = true;
+            if (line.startsWith("GIT binary patch")) inBinary = true;
         } else return false;
     }
     return opened && fileBody;

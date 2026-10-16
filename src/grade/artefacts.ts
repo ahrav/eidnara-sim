@@ -115,7 +115,7 @@ const listOf = (shape: Record<string, Field>, path: string, v: unknown): string 
 const mapOf =
     (f: Field): Field =>
     (v) =>
-        typeof v === "object" && v !== null && Object.values(v).every(f);
+        typeof v === "object" && v !== null && !Array.isArray(v) && Object.values(v).every(f);
 
 /** The first field of `value` that fails `shape`, as a dotted path, or null when every field holds. */
 export function badField(
@@ -171,7 +171,11 @@ const PAYLOADS: Record<ArtefactClass, (a: Record<string, unknown>, path: string)
             listOf(COMMAND, `${p}.commands`, a.commands),
         "test-result": (a, p) =>
             badField(
-                { command: str, exit: num, summary: (v) => Array.isArray(v) && v.every(str) },
+                {
+                    command: str,
+                    exit: Number.isInteger,
+                    summary: (v) => Array.isArray(v) && v.every(str),
+                },
                 a,
                 p,
             ),
