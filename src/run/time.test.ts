@@ -57,8 +57,10 @@ describe("time injection", () => {
         expect(() => launch("/x/sandbox.sh", ["/a/./b"], {}, ["true"])).toThrow(/normalized/);
         expect(() => launch("/x/sandbox.sh", ["/a//b"], {}, ["true"])).toThrow(/normalized/);
         expect(() => launch("/x/sandbox.sh", [], { A: "x y" }, ["true"])).toThrow(/plain word/);
+        expect(() => launch("/x/sandbox.sh", [], {}, ["true"], [], "/a b")).toThrow(/must match/);
         expect(launch("/x/sandbox.sh", ["/k"], { A: "1" }, ["true"], ["/r"])).toEqual([
             "/x/sandbox.sh",
+            "/",
             "/k",
             "--ro",
             "/r",

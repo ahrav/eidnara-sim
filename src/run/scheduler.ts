@@ -111,7 +111,7 @@ export class Scheduler {
             const driver = this.o.drivers[arm] as ArmDriver;
             const started = mine.some((e) => e.kind === "StartArm");
             if (!started) {
-                await driver.reset();
+                await this.orFinish(driver, () => driver.reset());
                 this.log({ kind: "StartArm" });
             }
             this.resume(mine);
@@ -138,16 +138,24 @@ export class Scheduler {
         pending: ScenarioEvent[],
         done: Set<string>,
     ): Promise<void> {
-        try {
+        await this.orFinish(driver, async () => {
             if (started) await driver.resume?.(this.openSession(pending[0], done));
             for (const e of pending) await this.step(driver, e);
             await this.pendingKill;
             await this.idle();
+        });
+        await driver.finish?.();
+    }
+
+    /** A failure waits for a mid-fold restart in flight, finishes the driver, and surfaces as itself. */
+    private async orFinish<T>(driver: ArmDriver, work: () => Promise<T>): Promise<T> {
+        try {
+            return await work();
         } catch (caught) {
+            await this.pendingKill?.catch(() => undefined);
             await driver.finish?.().catch(() => undefined);
             throw caught;
         }
-        await driver.finish?.();
     }
 
     /** Existing Event and failed(interrupted) entries make recovery writes idempotent across resumes. */

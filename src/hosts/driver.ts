@@ -207,7 +207,11 @@ export class HostDriver implements ArmDriver {
     }
 
     async resume(open: ScenarioEvent | null): Promise<void> {
-        this.model = this.readState()?.model ?? 0;
+        const state = this.readState();
+        if (!state) {
+            throw new HarnessFailure(`resume of arm ${this.o.arm}: ${this.stateFile} is gone`);
+        }
+        this.model = state.model;
         const checked = join(this.armDir, "transcripts.json");
         this.transcriptsChecked =
             existsSync(checked) && JSON.parse(readFileSync(checked, "utf8")).missing.length === 0;
@@ -267,7 +271,11 @@ export class HostDriver implements ArmDriver {
     }
 
     private applyDiff(e: ScenarioEvent): void {
-        const dir = realpathSync(this.workspace(this.project(e)));
+        const project = this.project(e);
+        const dir = realpathSync(this.workspace(project));
+        if (dir !== join(realpathSync(this.o.armRoot), "workspaces", project)) {
+            throw new HarnessFailure(`apply_diff workspace ${project} leaves ${this.o.armRoot}`);
+        }
         const path = resolve(dir, String(e.path));
         const inside = (p: string) => {
             const real = realpathSync(p);

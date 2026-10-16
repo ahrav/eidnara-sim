@@ -254,7 +254,14 @@ export class PiSimHost extends SimHost {
         };
         const node = join(nodeRoot(), "bin/node");
         const ro = [...this.readOnly, nodeRoot(), config.pi_install];
-        const argv = launch(this.ctx.launcher, this.ctx.keep, this.timeEnv, [node, ...args], ro);
+        const argv = launch(
+            this.ctx.launcher,
+            this.ctx.keep,
+            this.timeEnv,
+            [node, ...args],
+            ro,
+            cwd,
+        );
         const child: ChildProcess = spawn(argv[0] as string, argv.slice(1), {
             cwd,
             env,
@@ -344,7 +351,7 @@ export class OpencodeSimHost extends SimHost {
         const binary = plainPath(config.opencode_binary);
         const ro = [...this.readOnly, dirname(dirname(dirname(binary)))];
         const launcher = plainPath(this.ctx.launcher);
-        const argv = launch(launcher, this.ctx.keep, this.timeEnv, [binary], ro);
+        const argv = launch(launcher, this.ctx.keep, this.timeEnv, [binary], ro, cwd);
         const wrapper = `#!/bin/sh\nexec ${argv.map(shellQuote).join(" ")} "$@"\n`;
         writeFileSync(join(sbin, "opencode"), wrapper, { mode: 0o755 });
         const env = {

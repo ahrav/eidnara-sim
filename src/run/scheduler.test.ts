@@ -984,6 +984,66 @@ describe("driver lifecycle hooks", () => {
         expect(endArm).toBe(finishedAt);
     });
 
+    test("a failing reset is finished too, before the failure surfaces", async () => {
+        const j = new Journal(join(dir(), "j.jsonl"));
+        const calls: string[] = [];
+        const driver: ArmDriver = {
+            reset: async () => {
+                throw new Error("mount failed");
+            },
+            event: async () => ({}),
+            fault: async () => ({}),
+            finish: async () => void calls.push("finish"),
+        };
+        const scheduler = new Scheduler({
+            events: fixtureEvents(1),
+            faults: [],
+            journal: j,
+            settleMs: 0,
+            order: ["a"],
+            drivers: { a: driver },
+        });
+        await expect(scheduler.run()).rejects.toThrow("mount failed");
+        expect(calls).toEqual(["finish"]);
+        expect(j.entries.some((e) => e.kind === "StartArm")).toBe(false);
+    });
+
+    test("a pending mid-fold restart settles before a failing arm is finished", async () => {
+        const j = new Journal(join(dir(), "j.jsonl"));
+        let scheduler: Scheduler | null = null;
+        const order: string[] = [];
+        const kill = episode("k", "daemon_sigkill_mid_fold", {
+            kind: "first_summarizer_call",
+            session: "s-0000",
+        });
+        const driver: ArmDriver = {
+            reset: async () => undefined,
+            event: async (e) => {
+                if (e.kind === "user_turn") {
+                    scheduler?.observe("history_summarizer", driver);
+                    throw new Error("turn failed");
+                }
+                return {};
+            },
+            fault: async () => {
+                await Bun.sleep(200);
+                order.push("restart");
+                return {};
+            },
+            finish: async () => void order.push("finish"),
+        };
+        scheduler = new Scheduler({
+            events: fixtureEvents(1),
+            faults: [kill],
+            journal: j,
+            settleMs: 0,
+            order: ["a"],
+            drivers: { a: driver },
+        });
+        await expect(scheduler.run()).rejects.toThrow("turn failed");
+        expect(order).toEqual(["restart", "finish"]);
+    });
+
     test("an arm whose event throws is finished without EndArm, and the failure is kept", async () => {
         const j = new Journal(join(dir(), "j.jsonl"));
         const calls: string[] = [];

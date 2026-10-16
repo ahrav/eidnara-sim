@@ -331,6 +331,26 @@ describe("HostDriver lifecycle", () => {
         expect(existsSync(join(root, "host/r/workspaces/made"))).toBe(false);
     });
 
+    test("apply_diff refuses a workspace whose directory the host replaced with a symlink", async () => {
+        const { driver } = fixture("host", { p: gitRepo() });
+        await driver.reset();
+        const ws = driver.workspace("p");
+        const elsewhere = gitRepo();
+        rmSync(ws, { recursive: true, force: true });
+        symlinkSync(elsewhere, ws);
+        const diff = ev("apply_diff", { path: "planted.txt", content: "A" });
+        await expect(driver.event(diff)).rejects.toThrow("leaves");
+        expect(existsSync(join(elsewhere, "planted.txt"))).toBe(false);
+    });
+
+    test("a resume with state.json gone stops instead of guessing the arm's state", async () => {
+        const { driver, armDir } = fixture("host", { p: gitRepo() });
+        await driver.reset();
+        rmSync(join(armDir, "state.json"));
+        const fresh = new HostDriver((driver as unknown as { o: DriverOptions }).o);
+        await expect(fresh.resume(null)).rejects.toThrow("state.json");
+    });
+
     test("the host pid is recorded as soon as the host spawns", async () => {
         const { driver, hosts, armDir } = fixture("host", { p: gitRepo() });
         await driver.reset();

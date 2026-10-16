@@ -81,9 +81,10 @@ For each arm, it resets the driver, then walks the events:
 After the arm's last event, the scheduler waits for a mid-fold SIGKILL still
 restarting the daemon and for the busy set to empty, calls the driver's
 `finish`, closes any outage window and the current session, and journals
-`EndArm`, so nothing an arm started runs into the next arm. When an event or
-fault throws, the scheduler still calls `finish`, then fails with the original
-error; the arm's journal ends before `EndArm`, so a resume takes it up again.
+`EndArm`, so nothing an arm started runs into the next arm. When `reset`, an
+event, or a fault throws, the scheduler waits for a mid-fold restart still in
+flight, calls `finish`, then fails with the original error; the arm's journal
+ends before `EndArm`, so a resume takes it up again.
 
 `observe("history_summarizer", driver)` fires the session's mid-fold SIGKILL
 on the first observed summarizer call. `daemonExited` inside an outage window

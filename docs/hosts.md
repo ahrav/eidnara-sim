@@ -63,11 +63,13 @@ then stops the run. An `apply_diff` event writes its file inside the
 workspace and commits that path alone, so the agent's own uncommitted edits
 stay uncommitted; content already committed adds no commit, and a path that
 resolves outside the workspace through `..` or a symlink stops the run before
-any directory is created. The commit's author and committer dates are the
+any directory is created, and so does a workspace directory the host replaced
+with a symlink, since the harness writes with its own privileges. The commit's author and committer dates are the
 event's scenario instant (`baseMs + scenario_ms`), so paired arms and a
 resumed delivery produce the same commit.
 
-Pi runs in RPC mode with `--session-id sim-<session>`, its agent directory,
+Each host process starts in the session's workspace, which the launcher
+enters after its privilege drop. Pi runs in RPC mode with `--session-id sim-<session>`, its agent directory,
 settings, and model list under the arm root, and the Eidnara extension from
 the build clone on Eidnara arms. OpenCode runs through the v1 `spawnOpencode`,
 with a wrapper script that launches the pinned binary through the sandbox
@@ -121,8 +123,8 @@ A new harness process calls `resume(open)` on an arm that has `StartArm` and
 no `EndArm`. The driver restores the model index, stops each recorded process
 whose start time still matches (a process that outlives SIGTERM and SIGKILL
 stops the resume with `HarnessFailure`), unmounts a store left mounted, mounts the
-existing store image (a missing image stops the resume, since only `reset`
-formats one), starts the daemon against the existing store, and, when
+existing store image (a missing image or `state.json` stops the resume,
+since only `reset` formats one and the state names what to stop), starts the daemon against the existing store, and, when
 the next event is inside a session, opens that session again. Pi reopens the
 same session transcript by its session id, and OpenCode reuses the session
 with the same title. `reset` stops recorded processes and unmounts the store

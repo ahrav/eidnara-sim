@@ -70,3 +70,13 @@ test("a process start time identifies one process across pid reuse", () => {
     expect(processStart(process.pid)).toBe(processStart(process.pid));
     expect(processStart(2 ** 22 + 7)).toBeNull();
 });
+
+test.skipIf(!sandboxAvailable())("a launch with a kept cwd starts the command there", () => {
+    const r = root();
+    const ws = join(r, "ws");
+    mkdirSync(ws);
+    const argv = launch(writeLauncher(r), [r], {}, ["/bin/pwd", "-P"], [], ws);
+    const out = Bun.spawnSync(argv, { cwd: process.cwd(), stdout: "pipe", stderr: "pipe" });
+    expect(out.exitCode).toBe(0);
+    expect(out.stdout.toString()).toBe(`${ws}\n`);
+});
