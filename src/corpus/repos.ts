@@ -41,6 +41,7 @@ export interface RepoSpec {
 }
 
 const SHA = /^[0-9a-f]{40}$/;
+const ROLES = new Set<RepoSpec["role"]>(["rust-service", "typescript-package"]);
 
 function httpsHost(url: string): boolean {
     try {
@@ -66,6 +67,7 @@ export function loadRepos(): RepoSpec[] {
     if (new Set(ids).size !== ids.length) throw new Error(`repos.json: duplicate id in ${ids}`);
     for (const repo of repos) {
         if (!SHA.test(repo.commit)) throw new Error(`repos.json: ${repo.id}: commit is not a SHA`);
+        if (!ROLES.has(repo.role)) throw new Error(`repos.json: ${repo.id}: role ${repo.role}`);
         if (typeof repo.url !== "string" || !httpsHost(repo.url)) {
             throw new Error(`repos.json: ${repo.id}: url must be an https URL with a host`);
         }
@@ -144,6 +146,7 @@ function run(cmd: string[], cwd: string, env: Record<string, string> = {}) {
         maxBuffer: 256 * 1024 * 1024,
     });
     if (result.error) throw new Error(`${bin}: ${result.error.message}`);
+    if (result.signal) throw new Error(`${bin}: terminated by ${result.signal}`);
     return { code: result.status ?? -1, output: `${result.stdout}${result.stderr}` };
 }
 

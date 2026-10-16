@@ -40,7 +40,7 @@ const ROWS_SCANNED = 4096;
 
 const FOOTER =
     /^\[(The command completed|Current working directory|Python interpreter|Command finished)/;
-const EXIT = /\[Command finished with exit code (-?\d+)\]/g;
+const EXIT = /\[(?:Command finished|The command completed) with exit code (-?\d+)\.?\]/g;
 const EXCEPTION =
     /^((?:[A-Za-z_]\w*\.)*[A-Z]\w*(?:Error|Exception|Failure|Exit|Interrupt|Warning))(?::\s?(.*))?$/;
 

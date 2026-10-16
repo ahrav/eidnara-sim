@@ -240,6 +240,27 @@ describe("extractFrom", () => {
         expect(trace?.content).toContain("ValueError: bad input value");
     });
 
+    test("a result that ends only with the completed footer still records its exit code", () => {
+        const out = extractFrom(
+            [
+                {
+                    trajectory_id: "t8",
+                    repo: "o/r",
+                    trajectory: [
+                        call("c14", "execute_bash", { command: "grep -rn foo ." }),
+                        result(
+                            "c14",
+                            "execute_bash",
+                            "a.py:1: foo bar baz qux quux corge grault garply\n[The command completed with exit code 1.]",
+                        ),
+                    ],
+                },
+            ],
+            dataset,
+        );
+        expect(out.samples.map((s) => [s.kind, s.exit_code])).toEqual([["grep", 1]]);
+    });
+
     test("a command result without a completion footer yields no sample", () => {
         const pending = extractFrom(
             [
