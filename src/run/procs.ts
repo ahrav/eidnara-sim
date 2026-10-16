@@ -19,7 +19,18 @@ export function childrenByParent(pid: number): number[] {
     return out;
 }
 
-function childrenOf(pid: number): number[] {
+/** Reads one task's `children` file; null when the kernel offers none. Tests substitute a reader. */
+export type ChildrenReader = (pid: number, tid: string) => string | null;
+
+const readChildren: ChildrenReader = (pid, tid) => {
+    try {
+        return readFileSync(`/proc/${pid}/task/${tid}/children`, "utf8");
+    } catch {
+        return null;
+    }
+};
+
+function childrenOf(pid: number, read: ChildrenReader): number[] {
     let tasks: string[];
     try {
         tasks = readdirSync(`/proc/${pid}/task`);
@@ -28,16 +39,13 @@ function childrenOf(pid: number): number[] {
     }
     let listedAny = false;
     const found = tasks.flatMap((tid) => {
-        try {
-            const listed = readFileSync(`/proc/${pid}/task/${tid}/children`, "utf8");
-            listedAny = true;
-            return listed
-                .split(" ")
-                .filter((c) => c.trim() !== "")
-                .map(Number);
-        } catch {
-            return [];
-        }
+        const listed = read(pid, tid);
+        if (listed === null) return [];
+        listedAny = true;
+        return listed
+            .split(" ")
+            .filter((c) => c.trim() !== "")
+            .map(Number);
     });
     return listedAny ? found : childrenByParent(pid);
 }
@@ -50,13 +58,13 @@ function ownedBy(pid: number, uid: number | undefined): boolean {
     }
 }
 
-export function ownedProcesses(rootPid: number): number[] {
+export function ownedProcesses(rootPid: number, read: ChildrenReader = readChildren): number[] {
     const uid = process.getuid?.();
     const out: number[] = [];
     const queue = [rootPid];
     for (let next = queue.shift(); next !== undefined; next = queue.shift()) {
         if (ownedBy(next, uid)) out.push(next);
-        queue.push(...childrenOf(next));
+        queue.push(...childrenOf(next, read));
     }
     return out;
 }
@@ -139,13 +147,15 @@ export async function stopOwnedTree(
     };
     if (await phase("SIGTERM", graceMs)) return true;
     if (await phase("SIGKILL", 2_000)) return true;
-    if (rootStart === undefined) return false;
+    // The privileged fallback walks the root only while the pinned identity still holds it; a
+    // root already gone leaves the verdict to the descendants seen.
+    if (rootStart === undefined || !alive(root)) return settled();
     // The launcher is root-owned until its sandbox drops privileges, so what is left of a pinned
     // launch is killed through the same passwordless sudo the launcher runs under.
     const privileged = treeProcesses(rootPid)
         .map((pid) => ({ pid, start: processStart(pid) }))
         .filter(alive);
-    if (privileged.length === 0) return true;
+    if (privileged.length === 0) return settled();
     Bun.spawnSync([
         "sudo",
         "-n",
@@ -161,7 +171,7 @@ function treeProcesses(rootPid: number): number[] {
     const queue = [rootPid];
     for (let next = queue.shift(); next !== undefined; next = queue.shift()) {
         if (statFields(next) !== null) out.push(next);
-        queue.push(...childrenOf(next));
+        queue.push(...childrenOf(next, readChildren));
     }
     return out;
 }

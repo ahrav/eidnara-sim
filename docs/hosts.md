@@ -275,9 +275,10 @@ harness left holds the data directory busy, then its own, and unmounts the
 store before it deletes anything, so a harness killed during `reset`
 leaves no recorded process running into the next attempt, and it removes the
 `daemon.log` and `transcripts.json` of an abandoned attempt. A daemon or an
-OpenCode server still starting when the harness dies has no pid on record
-yet; a daemon's mount then stays busy and the next `reset` or `resume` stops
-with the `umount` error.
+OpenCode server still starting when the harness dies has no pid in
+`state.json` yet; the reaper finds the daemon by its `--state-root` argument
+and the OpenCode launcher by the wrapper's `opencode.launch` record, so both
+stop before the next `reset` or `resume` proceeds.
 
 ## Transcript-store check
 

@@ -105,12 +105,19 @@ test.skipIf(!sandboxAvailable())(
 test("a pinned root whose pid now belongs to another process is left alone, with nothing walked under it", async () => {
     const child = spawn("/bin/sh", ["-c", "sleep 300; true"], { stdio: "ignore" });
     const pid = child.pid as number;
-    await Bun.sleep(50);
-    const stopping = stopOwnedTree(pid, 500, "1");
-    expect(await stopping).toBe(true);
-    expect(running(pid)).toBe(true);
-    child.kill("SIGKILL");
-    for (const grandchild of childrenByParent(pid)) process.kill(grandchild, "SIGKILL");
+    let grandchild: number | undefined;
+    for (let i = 0; i < 100 && grandchild === undefined; i++) {
+        await Bun.sleep(20);
+        grandchild = childrenByParent(pid)[0];
+    }
+    try {
+        expect(await stopOwnedTree(pid, 500, "1")).toBe(true);
+        expect(running(pid)).toBe(true);
+        expect(running(grandchild as number)).toBe(true);
+    } finally {
+        child.kill("SIGKILL");
+        if (grandchild) process.kill(grandchild, "SIGKILL");
+    }
 });
 
 test("descendants are found by parent pid when the task children files are unavailable", async () => {
@@ -124,6 +131,7 @@ test("descendants are found by parent pid when the task children files are unava
     try {
         expect(grandchild).toBeGreaterThan(0);
         expect(ownedProcesses(pid)).toContain(grandchild as number);
+        expect(ownedProcesses(pid, () => null)).toContain(grandchild as number);
     } finally {
         child.kill("SIGKILL");
         if (grandchild) process.kill(grandchild, "SIGKILL");
