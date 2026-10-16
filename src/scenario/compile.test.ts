@@ -640,6 +640,15 @@ describe("fact bank checks", () => {
         expect(re.test("git commit -m[quiet_vole]")).toBe(true);
         expect(re.test("git commit --message[quiet_vole]")).toBe(false);
         expect(re.test('git commit --dry-run -m "[quiet_vole] cap"')).toBe(false);
+        expect(re.test("git commit -m=[quiet_vole] cap")).toBe(false);
+        const forbid = new RegExp(
+            ((t?.check as { commands_must_not: string[] }).commands_must_not[0] ?? "$^").replaceAll(
+                "{token}",
+                "quiet_vole",
+            ),
+        );
+        expect(forbid.test("git commit --allow-empty -m 'untagged later'")).toBe(true);
+        expect(forbid.test("git commit -m '[quiet_vole] first'")).toBe(false);
         expect(re.test('git commit -m "[quiet_vole] cap" --dry-run')).toBe(false);
         expect(re.test("git commit --message=[quiet_vole] cap")).toBe(true);
         expect(re.test("git commit -mwrong -m[quiet_vole]")).toBe(false);
@@ -685,13 +694,12 @@ describe("fact bank checks", () => {
                 'tracing::event!(Level::DEBUG, "bound");',
             ),
         ).toBe(true);
-        const mutex = new RegExp(
-            (
-                templates("rejected").find((x) => x.id === "rs-no-global-mutex")?.check as {
-                    must_not: string[];
-                }
-            ).must_not[0] ?? "$^",
-        );
+        const mutexChecks = (
+            templates("rejected").find((x) => x.id === "rs-no-global-mutex")?.check as {
+                must_not: string[];
+            }
+        ).must_not;
+        const mutex = { test: (line: string) => mutexChecks.some((x) => new RegExp(x).test(line)) };
         expect(
             mutex.test("static STORE: Mutex<HashMap<String, Bytes>> = Mutex::new(HashMap::new());"),
         ).toBe(true);
@@ -710,6 +718,26 @@ describe("fact bank checks", () => {
         );
         expect(map.test("const cache = new WeakMap<App, Handler>()")).toBe(false);
         expect(map.test("const cache = new Map<string, Handler>()")).toBe(true);
+        expect(map.test("const cache = new Map;")).toBe(true);
+        expect(map.test("const cache = new Map")).toBe(true);
+        expect(
+            mutex.test("static ref KEY_LOCKS: DashMap<String, Arc<Mutex<()>>> = DashMap::new();"),
+        ).toBe(false);
+        expect(
+            mutex.test(
+                "static ref STORE: Mutex<HashMap<String, Bytes>> = Mutex::new(HashMap::new());",
+            ),
+        ).toBe(true);
+        expect(
+            must("scoped_update", "rs-scope-log-level").test(
+                "if tracing::enabled!(Level::TRACE) { tracing::info!(command = %name); }",
+            ),
+        ).toBe(false);
+        expect(
+            must("scoped_update", "rs-scope-log-level").test(
+                "tracing::event!(Level::TRACE, command = %name);",
+            ),
+        ).toBe(true);
     });
 
     test("every anchor forbids its value in the diff and in the final answer", () => {

@@ -9,7 +9,7 @@ import {
     statSync,
     writeFileSync,
 } from "node:fs";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { loadConfig } from "../src/config/config";
 import { canonicalJson } from "../src/prereg/canonical";
 import { TIERS, type Tier } from "../src/prereg/schema";
@@ -57,8 +57,12 @@ const canonical = (path: string): string => {
 };
 const checkout = canonical(config.eidnara_checkout);
 const cache = join(dirname(out), "embeddings.jsonl");
+const inside = (path: string) => {
+    const rel = relative(checkout, canonical(path));
+    return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+};
 for (const path of [out, cache, dirname(out)]) {
-    if (`${canonical(path)}${sep}`.startsWith(`${checkout}${sep}`)) {
+    if (inside(path)) {
         console.error(`${path} resolves inside eidnara_checkout ${config.eidnara_checkout}`);
         process.exit(2);
     }

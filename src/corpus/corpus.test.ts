@@ -124,12 +124,22 @@ describe("committed corpus", () => {
         delete broken.typescript.scoped_update[0].out_probe;
         delete broken.typescript.scoped_update[0].out_check;
         delete broken.any;
+        broken.rust.constraint[0].statement = "   ";
+        delete broken.rust.constraint[1].out_probe;
+        broken.rust.plan[1].check = { must: ["{code}"] };
+        broken.rust.rejected[0].check = { answer: "x" };
+        broken.typescript.rationale[0].check = { judge: "{codenam}" };
         expect(bankProblems(broken)).toEqual([
             "fact-bank any: language missing",
+            "fact-bank rust/constraint[0] rs-cmd-const-prefix: statement missing",
+            "fact-bank rust/constraint[1] rs-cmd-error-tag: out_probe missing",
             "fact-bank rust/decision[0] rs-scan-page: authority missing",
             "fact-bank rust/plan[0] rs-plan-field: check key must pattern {tokne} names an unknown placeholder",
+            "fact-bank rust/plan[1] rs-plan-cmd: check key must pattern {code} names an unknown placeholder",
             "fact-bank rust/rationale[0] rs-why-noalloc: check key judge is blank",
+            "fact-bank rust/rejected[0] rs-no-global-mutex: check key answer is not graded for rejected facts",
             "fact-bank rust/scoped_update[0] rs-scope-log-level: update missing",
+            "fact-bank typescript/rationale[0] ts-why-aot: check key judge names an unknown placeholder",
             "fact-bank typescript/scoped_update[0] ts-scope-quotes: out_probe missing",
             "fact-bank typescript/scoped_update[0] ts-scope-quotes: out_check missing",
         ]);
