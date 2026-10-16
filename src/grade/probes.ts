@@ -69,9 +69,9 @@ export interface GradeRecord extends Outcome {
 }
 
 const READS = /^(cat|less|more|head|tail|sed|view|bat|grep|rg|read)\b/;
-const TESTS = /^(cargo test|(bun|npm|pnpm) (run )?test)\b/;
+const TESTS = /^(cargo (test|t)|(bun|npm|pnpm) (run )?test)\b/;
 const QUIET =
-    /^\s*(cargo (build|check|test)|(bun|npm|pnpm) (install|i|ci|(run )?(test|build))|git (status|log|diff)|ls|pwd)\b[^&|;`$()\n]*$/;
+    /^\s*(cargo (build|check|test|b|c|t)|(bun|npm|pnpm) (install|i|ci|(run )?(test|build))|git (status|log|diff)|ls|pwd)\b[^&|;`$()\n]*$/;
 const FOLDS = ["history_summarizer", "native_compaction"];
 const USER_SIM_LABELS = [
     "task",
@@ -247,7 +247,7 @@ const executed = (x: Command): string[] => {
     const mixed = guarded.slice(lastList).some((p) => p.op === "||");
     const firstListEnd = guarded.findIndex((p, i) => i > 0 && /^[;&\n]$/.test(p.op));
     const exitAt = guarded.findIndex(
-        (p) => /^[;&\n]$/.test(p.op) && /^(exit|return)\b/.test(p.seg),
+        (p) => /^[;&\n]$/.test(p.op) && /^(exit|return)\b/.test(unprefixed(p.seg)),
     );
     const afterExit = exitAt < 0 ? guarded.length : exitAt + 1;
     const unfinished = x.exit === null && firstListEnd >= 0 ? firstListEnd : guarded.length;
@@ -388,8 +388,9 @@ function p13(r: ArtefactReader, c: Check, rules: Rules): Outcome {
     const min = Number(rules.p13_reduction_ratio.min);
     const max = Number(rules.p13_reduction_ratio.max);
     const ratioOk = folds.every((x) => {
-        const ratio = x.output_tokens / x.input_tokens;
-        return x.input_tokens > 0 && ratio >= min && ratio <= max;
+        const input = x.input_tokens + x.cache_read_tokens + x.cache_write_tokens;
+        const ratio = x.output_tokens / input;
+        return input > 0 && ratio >= min && ratio <= max;
     });
     const repeated = after.some((x) => before.has(x.command) && !QUIET.test(unprefixed(x.command)));
     const parts = [kept, ratioOk, !repeated];
@@ -598,10 +599,7 @@ function isGradeRecord(value: unknown): value is GradeRecord {
         Number.isInteger(g.later_attempts_logged) && (g.later_attempts_logged as number) >= 0;
     const paired = g.probe_type === "P1" || g.probe_type === "P1-control";
     const pair = paired ? text(g.pair) : g.pair === undefined;
-    const graded =
-        metrics &&
-        (g.verdict === "excluded" ||
-            Object.keys(g.metrics as object).some((k) => k.startsWith(`${g.probe_type}.`)));
+    const graded = metrics && (g.verdict === "excluded" || primaryAgrees(g));
     const optionals = optional(str)(g.reason);
     return (
         strings &&
@@ -615,6 +613,22 @@ function isGradeRecord(value: unknown): value is GradeRecord {
         pair &&
         graded
     );
+}
+
+/** A graded record's primary metric exists and matches its verdict: `<type>.pass` for the binary graders, the fold score for P13, the correction count for P14. */
+function primaryAgrees(g: Record<string, unknown>): boolean {
+    const m = g.metrics as Record<string, unknown>;
+    const pass = g.verdict === "pass";
+    if (g.probe_type === "P13") {
+        const score = m["P13.fold_fidelity_score"];
+        return typeof score === "number" && (pass ? score === 1 : score !== 1);
+    }
+    if (g.probe_type === "P14") {
+        const n = m["P14.post_compaction_correction_count"];
+        return typeof n === "number" && (pass ? n === 0 : n > 0);
+    }
+    if (g.probe_type === "P7") return typeof m["P7.pass"] === "boolean" && m["P7.pass"] === pass;
+    return m[`${g.probe_type}.pass`] === pass;
 }
 
 /** The field a regrade changed among those fixed for an item and arm, or null. */
@@ -719,7 +733,11 @@ export class GradeLog {
                 throw new GradeRefused(`grade log ${this.path} is a link, not a regular file`);
             }
             ftruncateSync(fd, kept);
-            writeSync(fd, `${JSON.stringify(record)}\n`, kept);
+            const line = Buffer.from(`${JSON.stringify(record)}\n`);
+            let written = 0;
+            while (written < line.length) {
+                written += writeSync(fd, line, written, line.length - written, kept + written);
+            }
         } finally {
             closeSync(fd);
         }

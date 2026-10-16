@@ -78,6 +78,8 @@
           "class": "proxy-call",
           "calls": [
             {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
               "seq": 14,
               "arm": "host",
               "session": "s-0003",
@@ -90,6 +92,8 @@
               "error": null
             },
             {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
               "seq": 15,
               "arm": "host",
               "session": "s-0003",
@@ -102,6 +106,8 @@
               "error": null
             },
             {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
               "seq": 16,
               "arm": "host",
               "session": "s-0003",
@@ -115,6 +121,8 @@
               "error": null
             },
             {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
               "seq": 17,
               "arm": "host",
               "session": "s-0003",
@@ -127,6 +135,8 @@
               "error": null
             },
             {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
               "seq": 18,
               "arm": "host",
               "session": "s-0003",
@@ -139,6 +149,8 @@
               "error": null
             },
             {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
               "seq": 19,
               "arm": "host",
               "session": "s-0003",

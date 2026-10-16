@@ -16,14 +16,14 @@ A snapshot holds the artefacts the harness captured at a probe turn's first
 | `command-log` | Each command the agent ran, with its exit code and scenario time |
 | `test-result` | A test command, its exit code, and its summary lines |
 | `workspace-state` | Selected workspace files by path |
-| `proxy-call` | Call records with arm, session, component, turn, scenario time, HTTP status and error, token counts, and the response text the proxy relayed |
+| `proxy-call` | Call records with arm, session, component, turn, scenario time, HTTP status and error, input, output, cache-read, and cache-write token counts, and the response text the proxy relayed |
 
 `gradeItem` refuses a snapshot with an artefact of any other class, such as
 an agent transcript or self-report (SIM-P40), a snapshot that lacks an
 artefact its grader reads (a missing diff or command log is refused, so it
 cannot pass a negative-match grader as empty evidence), an artefact without a
 unique nonempty id or with a payload outside its class's shape (a non-empty
-patch that is not a well-formed unified diff, a command without its text or with a
+patch that is not a well-formed unified diff with complete file headers, a command without its text or with a
 fractional exit status, a call with a non-integer
 status, a component outside the proxy's set, a negative token count or
 scenario time, a sequence number that fails to increase, or an arm or session
@@ -42,12 +42,13 @@ role present twice in one snapshot is refused as ambiguous. The answer a P8, P9,
 of the probe turn in the `proxy-call` artefact; a turn with no completed
 response refuses the grade.
 
-`GradeLog` appends grades to one JSONL file, validating each record's shape before writing it through a no-follow descriptor to a regular, single-link file. A regrade of an item and arm
+`GradeLog` appends grades to one JSONL file, validating each record's shape before writing it, in full, through a no-follow descriptor to a regular, single-link file. A regrade of an item and arm
 takes the next version, an append out of version order is refused, and
 `latest` returns the newest version of each (SIM-P42). A line that parses
 but lacks a grade record's fields (non-empty item, arm, and snapshot ids, a known probe type, metrics of
-boolean, string, or finite number values with at least one key of the probe
-type unless excluded, a non-negative attempt count, at least one distinct
+boolean, string, or finite number values whose primary metric agrees with
+the verdict unless excluded: `<type>.pass`, the P13 fold score, or the P14
+correction count, a non-negative attempt count, at least one distinct
 input id, a `pair` on P1 and P1-control records), or whose version is other than the
 successor of the item and arm's previous one, or that changes the snapshot,
 probe type, or pair of an earlier version, is refused by line number. A kill mid-append
@@ -70,7 +71,7 @@ the complete earlier grades stay readable.
 | P10 | The added lines carry no `must_not` pattern and the final completed response carries no `answer_must_not` pattern, compared case-insensitively | `P10.harm` |
 | P11 | No added line carries the other project's rule | `P11.harm` (binary); `P11.weighted_score` is +1 for a hit and minus `p11_false_positive_weight` (−2) for an injection, so summed over items an injection costs twice a hit (SIM-P50) |
 | P12 | The added lines name the exception from the replayed error | |
-| P13 | Score 1, over the completed folds whose call falls in the item's `check.turns` range (a fold call without a turn index refuses the grade): after the first of them, the session rule still holds (a `commands_must` pattern, `(?i)` prefix kept and the whole pattern grouped, matches from the first character of an executed shell segment); every fold call's output-to-input token ratio, summarizer or native compaction, is within `p13_reduction_ratio` (0.02 to 0.5), a fold with no input tokens recorded failing this part; and no command from before the fold repeats after it, builds, tests, and installs in any package-manager form, status reads, and listings aside, where a compound command counts as a repeat | `P13.fold_fidelity_score` is the share of the three parts that hold, `P13.folds` the folds in range; with none the item is excluded |
+| P13 | Score 1, over the completed folds whose call falls in the item's `check.turns` range (a fold call without a turn index refuses the grade): after the first of them, the session rule still holds (a `commands_must` pattern, `(?i)` prefix kept and the whole pattern grouped, matches from the first character of an executed shell segment); every fold call's ratio of output tokens to total input tokens (fresh, cache-read, and cache-write), summarizer or native compaction, is within `p13_reduction_ratio` (0.02 to 0.5), a fold with no input tokens recorded failing this part; and no command from before the fold repeats after it, builds, tests, and installs in any package-manager form (Cargo's `b`, `c`, and `t` aliases included), status reads, and listings aside, where a compound command counts as a repeat | `P13.fold_fidelity_score` is the share of the three parts that hold, `P13.folds` the folds in range; with none the item is excluded |
 | P14 | No completed user-sim `pushback` call that is sequenced after the first completed fold and whose turn index is at or after `window_from_turn`; the fold itself may precede the window | `P14.post_compaction_correction_count`; an item is excluded with no compaction, when any completed user-sim call lacks its label or turn index, when a label is outside `task`, `pushback`, `interrupt`, `redirect`, `abandon`, `clarify`, `paste` (SIM-P25), or when no completed user-sim call falls after the fold inside the window; two completed user-sim calls for one turn index refuse the grade |
 
 A fold is a `history_summarizer` or `native_compaction` call with a 2xx
@@ -92,7 +93,7 @@ or follows `&&` in the command's last list when that list has no `||` and
 the command exited 0 (the exit code is that list's); every member of a
 pipeline shares the guard of its first command; a command without a recorded
 exit status credits its first list only; segments after a top-level `exit`
-or `return` are unreachable; leading `NAME=value` assignments are
+or `return`, assignment-prefixed or bare, are unreachable; leading `NAME=value` assignments are
 dropped before the command word is classified; a `||` continuation is left out
 because the exit code does not say whether it ran. The P13 fold boundary
 sits at the fold call's scenario millisecond: a command logged in that same millisecond counts as after the

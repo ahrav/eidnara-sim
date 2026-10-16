@@ -76,6 +76,8 @@
           "class": "proxy-call",
           "calls": [
             {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
               "seq": 97,
               "arm": "eidnara",
               "session": "s-0003",
@@ -88,6 +90,8 @@
               "error": null
             },
             {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
               "seq": 98,
               "arm": "eidnara",
               "session": "s-0003",
@@ -100,6 +104,8 @@
               "error": null
             },
             {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
               "seq": 99,
               "arm": "eidnara",
               "session": "s-0003",
@@ -112,6 +118,8 @@
               "error": null
             },
             {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
               "seq": 100,
               "arm": "eidnara",
               "session": "s-0003",
@@ -124,6 +132,8 @@
               "error": null
             },
             {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
               "seq": 101,
               "arm": "eidnara",
               "session": "s-0003",
@@ -136,6 +146,8 @@
               "error": null
             },
             {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
               "seq": 102,
               "arm": "eidnara",
               "session": "s-0003",
@@ -148,6 +160,8 @@
               "error": null
             },
             {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
               "seq": 103,
               "arm": "eidnara",
               "session": "s-0003",
@@ -160,6 +174,8 @@
               "error": null
             },
             {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
               "seq": 104,
               "arm": "eidnara",
               "session": "s-0003",
@@ -172,6 +188,8 @@
               "error": null
             },
             {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
               "seq": 105,
               "arm": "eidnara",
               "session": "s-0003",
@@ -184,6 +202,8 @@
               "error": null
             },
             {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
               "seq": 106,
               "arm": "eidnara",
               "session": "s-0003",
@@ -196,6 +216,8 @@
               "error": null
             },
             {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
               "seq": 107,
               "arm": "eidnara",
               "session": "s-0003",
@@ -208,6 +230,8 @@
               "error": null
             },
             {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
               "seq": 108,
               "arm": "eidnara",
               "session": "s-0003",

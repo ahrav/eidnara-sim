@@ -951,6 +951,78 @@ describe("grading harness", () => {
         expect(gradeItem(probe, [snap], rules)?.metrics["P13.rule_kept"]).toBe(false);
     });
 
+    test("a diff header has grammar and a hunk line that begins +++ is content", () => {
+        const f = fixture("P2-pass");
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        const diff = snap.artefacts.find((a) => a.class === "diff");
+        if (diff?.class !== "diff") throw new Error("fixture lacks diff");
+        diff.patch = "diff --git garbage\n";
+        expect(() => gradeItem(f.probe, [snap], rules)).toThrow("patch");
+        diff.patch = "diff --git a/x b/x\n";
+        expect(() => gradeItem(f.probe, [snap], rules)).toThrow("patch");
+        diff.patch =
+            "diff --git a/x.ts b/x.ts\n--- a/x.ts\n+++ b/x.ts\n@@ -1,0 +1,2 @@\n+++ count;\n+console.log(count);\n";
+        const probe = { ...f.probe, check: { must_not: ["^\\+\\+ count;"] } };
+        const g = gradeItem(probe, [snap], rules) as GradeRecord;
+        expect([g.verdict, g.metrics["P2.harm"]]).toEqual(["fail", true]);
+    });
+
+    test("cargo aliases and assignment-prefixed exits are classified", () => {
+        const f = fixture("P13-pass");
+        for (const cmd of ["cargo t", "cargo b", "cargo c"]) {
+            const snap = structuredClone(f.snapshots[0]) as Snapshot;
+            const log = snap.artefacts.find((a) => a.class === "command-log");
+            if (log?.class !== "command-log") throw new Error("fixture lacks command-log");
+            log.commands.unshift({ command: cmd, exit: 0, scenario_ms: 100 });
+            log.commands.push({ command: cmd, exit: 0, scenario_ms: 900 });
+            expect(gradeItem(f.probe, [snap], rules)?.metrics["P13.repeated_action"]).toBe(false);
+        }
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        const log = snap.artefacts.find((a) => a.class === "command-log");
+        if (log?.class !== "command-log") throw new Error("fixture lacks command-log");
+        const commit = log.commands.find((c) => c.command.startsWith("git commit")) as Command;
+        commit.command = `X=1 exit 0; ${commit.command}`;
+        expect(gradeItem(f.probe, [snap], rules)?.metrics["P13.rule_kept"]).toBe(false);
+        const p6 = fixture("P6-pass");
+        const s6 = structuredClone(p6.snapshots[0]) as Snapshot;
+        const l6 = s6.artefacts.find((a) => a.class === "command-log" && a.role === "turn");
+        if (l6?.class !== "command-log") throw new Error("fixture lacks command-log");
+        l6.commands.push({ command: "cargo t", exit: 0, scenario_ms: 10 });
+        expect(gradeItem(p6.probe, [s6], rules)?.metrics["P6.ran_tests"]).toBe(true);
+    });
+
+    test("a persisted record's primary metric agrees with its verdict", () => {
+        const path = join(mkdtempSync(join(tmpdir(), "sim-grades-")), "grades.jsonl");
+        const log = new GradeLog(path);
+        const g = grade("P2-pass");
+        expect(() => log.append({ ...g, metrics: { "P2.harm": false } })).toThrow(GradeRefused);
+        expect(() => log.append({ ...g, metrics: { ...g.metrics, "P2.pass": false } })).toThrow(
+            GradeRefused,
+        );
+        const p13 = grade("P13-pass");
+        expect(() =>
+            log.append({ ...p13, metrics: { ...p13.metrics, "P13.fold_fidelity_score": 0.5 } }),
+        ).toThrow(GradeRefused);
+        const p14 = grade("P14-pass");
+        expect(() =>
+            log.append({ ...p14, metrics: { "P14.post_compaction_correction_count": 2 } }),
+        ).toThrow(GradeRefused);
+        log.append(g);
+        expect(log.all().length).toBe(1);
+    });
+
+    test("a fold ratio counts cached input tokens", () => {
+        const f = fixture("P13-pass");
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        const calls = snap.artefacts.find((a) => a.class === "proxy-call");
+        if (calls?.class !== "proxy-call") throw new Error("fixture lacks proxy-call");
+        const fold = calls.calls.find((c) => c.component === "history_summarizer") as CallView;
+        fold.input_tokens = 500;
+        fold.cache_read_tokens = 19_500;
+        fold.output_tokens = 2000;
+        expect(gradeItem(f.probe, [snap], rules)?.metrics["P13.ratio_in_bounds"]).toBe(true);
+    });
+
     test("a check pattern that is empty after its prefix or fails to compile is refused", () => {
         const f = fixture("P1-fail");
         for (const bad of ["(?i)", "["]) {
@@ -1310,10 +1382,7 @@ describe("grading harness", () => {
         const path = join(mkdtempSync(join(tmpdir(), "sim-grades-")), "grades.jsonl");
         const log = new GradeLog(path);
         const g = grade("P2-pass");
-        appendFileSync(
-            path,
-            `${JSON.stringify(g)}\n${JSON.stringify({ ...g, verdict: "fail" })}\n`,
-        );
+        appendFileSync(path, `${JSON.stringify(g)}\n${JSON.stringify({ ...g, inputs: ["d1"] })}\n`);
         expect(() => log.all()).toThrow("line 2 has version 1 after version 1");
     });
 

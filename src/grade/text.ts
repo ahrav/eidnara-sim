@@ -119,22 +119,35 @@ export const unifiedDiff = (v: unknown): boolean => {
     if (v.length === 0) return true;
     let inHunk = false;
     let opened = false;
+    let fileBody = true;
     for (const line of v.replace(/\n$/, "").split("\n")) {
+        if (inHunk && /^[ +\-\\]/.test(line)) continue;
+        if (inHunk && line.length === 0) continue;
         if (line.startsWith("diff --git ")) {
+            if (!fileBody) return false;
+            if (
+                !/^diff --git ("a\/(?:[^"\\]|\\.)*"|a\/\S+) ("b\/(?:[^"\\]|\\.)*"|b\/.+)$/.test(
+                    line,
+                )
+            )
+                return false;
             inHunk = false;
             opened = true;
+            fileBody = false;
         } else if (line.startsWith("--- ") || line.startsWith("+++ ")) {
             inHunk = false;
             opened = true;
+            fileBody = true;
         } else if (HUNK_HEADER.test(line)) {
             if (!opened) return false;
             inHunk = true;
-        } else if (FILE_META.test(line)) inHunk = false;
-        else if (inHunk && /^[ +\-\\]/.test(line)) continue;
-        else if (inHunk && line.length === 0) continue;
-        else return false;
+            fileBody = true;
+        } else if (FILE_META.test(line)) {
+            inHunk = false;
+            fileBody = true;
+        } else return false;
     }
-    return opened;
+    return opened && fileBody;
 };
 
 export function addedLines(patch: string): string {

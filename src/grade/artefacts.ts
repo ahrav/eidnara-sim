@@ -58,6 +58,8 @@ export interface CallView {
     error: string | null;
     input_tokens: number;
     output_tokens: number;
+    cache_read_tokens: number;
+    cache_write_tokens: number;
     response_text?: string;
     label?: string;
 }
@@ -141,6 +143,8 @@ const CALL: Record<string, Field> = {
     error: nullable(str),
     input_tokens: count,
     output_tokens: count,
+    cache_read_tokens: count,
+    cache_write_tokens: count,
     response_text: optional(str),
     label: optional(str),
 };

@@ -21,7 +21,7 @@ The scenario file is canonical JSON with these sections:
 
 | Section | Contents |
 |---|---|
-| `manifest` | Seed, tier, generator and random-schema versions, one sha256 over every corpus file the compiler reads (`manifest.json`, `fact-bank.json`, `repos.json`, `distributions.json`, and the two `tool-outputs` files), the sha256 of the pre-registration, the embedding model, the similarity thresholds, the gap scale factors, and the probe count per type |
+| `manifest` | Seed, tier, generator and random-schema versions, one sha256 over the bytes of every corpus file the compiler parsed (`manifest.json`, `fact-bank.json`, `repos.json`, `distributions.json`, and the two `tool-outputs` files, read once), the sha256 of the pre-registration, the embedding model, the similarity thresholds, the gap scale factors, and the probe count per type |
 | `projects` | Each repository in `corpus/repos.json` and its twin |
 | `sessions` | Session id, project, start time, request count, the idle gap before the session, the minimum gap the compiler enforced, and whether the request count was forced into the p90 regime |
 | `facts` | Ledger facts with template, kind, project, conveyance manner, statement, and the cue texts that carry it |
