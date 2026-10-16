@@ -53,6 +53,16 @@ describe("sessionMetrics", () => {
     });
 });
 
+test("betweenGaps measures from the latest end of every earlier session", () => {
+    const nested: [number, number][] = [
+        [0, 100_000],
+        [10_000, 20_000],
+        [30_000, 40_000],
+        [130_000, 140_000],
+    ];
+    expect(betweenGaps(nested)).toEqual([30]);
+});
+
 test("betweenGaps keeps positive gaps between consecutive sessions only", () => {
     expect(
         betweenGaps([

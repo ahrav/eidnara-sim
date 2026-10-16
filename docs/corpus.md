@@ -49,7 +49,7 @@ The scenario compiler conditions on at least one request.
 | `tool_steps_per_request` | 79,216 | 2 | 18 | 90 |
 | `append_tokens_per_step` | 665,453 | 1,045 | 6,963 | 159,485 |
 | `idle_within_session_s` | 70,163 | 106 | 963 | 41,118 |
-| `idle_between_sessions_s` | 4,221 | 1,605 | 111,627 | 1,043,601 |
+| `idle_between_sessions_s` | 1,675 | 2,641 | 245,896 | 1,787,034 |
 | `tool_output_chars` | 743,050 | 407 | 8,219 | 40,151 |
 
 Tool output size has a public distribution in TraceLab's `tool_calls.result_chars`,

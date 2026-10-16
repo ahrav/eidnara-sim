@@ -5,6 +5,15 @@ import { CORPUS_DIR } from "./sources";
 
 export const REPOS_DIR = join(CORPUS_DIR, "repos");
 const TWINS_DIR = join(CORPUS_DIR, "twins");
+const ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+/** The id restriction keeps the returned path a direct child of REPOS_DIR. */
+export function repoDir(id: string): string {
+    if (!ID.test(id)) {
+        throw new Error(`repos.json: id ${JSON.stringify(id)} is not a plain directory name`);
+    }
+    return join(REPOS_DIR, id);
+}
 
 export interface Rename {
     glob: string;

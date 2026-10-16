@@ -46,7 +46,7 @@ const DEFINITIONS = {
     idle_within_session_s:
         "Seconds before each user-message round after a session's first, from the latest end of all earlier rounds in the session to that round's first timing event, when that start is at or after the end.",
     idle_between_sessions_s:
-        "Seconds from one session's last timing event to the same user's next session's first timing event, positive gaps only.",
+        "Seconds from the latest end of all of a user's earlier sessions to the next session's first timing event, positive gaps only.",
     tool_output_chars:
         "result_chars per tool call: characters of the tool result returned to the model.",
 };
@@ -92,12 +92,16 @@ export function sessionMetrics(rounds: Round[]): { steps: number[]; idle: number
     return { steps, idle, end };
 }
 
+/** A gap opens only when a session starts after every earlier session of the same user has ended. */
 export function betweenGaps(spans: [number, number][]): number[] {
     const sorted = [...spans].sort((a, b) => a[0] - b[0]);
-    return sorted.flatMap(([start], i) => {
-        const prev = sorted[i - 1];
-        return prev && start > prev[1] ? [(start - prev[1]) / 1000] : [];
-    });
+    const gaps: number[] = [];
+    let end = Number.NEGATIVE_INFINITY;
+    for (const [start, stop] of sorted) {
+        if (Number.isFinite(end) && start > end) gaps.push((start - end) / 1000);
+        end = Math.max(end, stop);
+    }
+    return gaps;
 }
 
 function push<K, V>(map: Map<K, V[]>, key: K, value: V): void {

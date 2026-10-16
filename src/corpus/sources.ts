@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { createReadStream, existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 
 export const CORPUS_DIR = resolve(import.meta.dir, "../../corpus");
 export const CACHE_DIR = join(CORPUS_DIR, "cache");
@@ -21,7 +21,11 @@ export function loadSources(): Dataset[] {
 }
 
 export function cachePath(dataset: Dataset, path: string): string {
-    return join(CACHE_DIR, dataset.id, dataset.revision, path);
+    const dest = resolve(CACHE_DIR, dataset.id, dataset.revision, path);
+    if (!dest.startsWith(CACHE_DIR + sep)) {
+        throw new Error(`sources.json: ${dataset.id}/${path} escapes corpus/cache`);
+    }
+    return dest;
 }
 
 async function sha256File(path: string): Promise<string> {
