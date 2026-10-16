@@ -90,7 +90,7 @@ the earlier one and supersedes it.
 | P1 control | the P1 fact | The same task as the P1 item, in the same window before the fact is conveyed |
 | P2 | the P1 fact | Later session of the same project, outside the scope; the check forbids the convention |
 | P3 | decision | A diff changes the authoritative value before a later session; the check requires the new value |
-| P4 | scoped update | A second conveyance narrows the rule to one module; items alternate inside and outside it |
+| P4 | scoped update | A second conveyance narrows the rule to one module; items alternate inside and outside it, with the alternation offset by seed parity so the pooled counts balance per language across seeds |
 | P5 | rejected approach | Later session; the check forbids the rejected approach |
 | P6 | plan | First turn of a later session, at least one hour after the previous session ends |
 | P7 | rationale | Later session; judge-graded against the reference reason |
@@ -153,15 +153,15 @@ thresholds (`bm25_max` 0.4, `cosine_max` 0.6):
 
 | Tier | Seed | `scenario_hash` | Largest BM25 ratio | Largest cosine |
 |---|---|---|---|---|
-| S | 101 | `9b68b7e1` | 0.2162 | 0.5194 |
-| S | 102 | `8601c191` | 0.2527 | 0.4867 |
-| M | 201 | `42aab56c` | 0.2508 | 0.4992 |
-| M | 202 | `2d26d3fe` | 0.254 | 0.4997 |
-| M | 203 | `2ca0f6cf` | 0.255 | 0.4843 |
-| L | 301 | `d2aefb99` | 0.2552 | 0.5092 |
-| L | 302 | `62f964fc` | 0.2557 | 0.4957 |
-| L | 303 | `23f91e8f` | 0.2596 | 0.5083 |
-| XL | 401 | `e702d17e` | 0.2583 | 0.4962 |
+| S | 101 | `5ff3cc37` | 0.2162 | 0.5194 |
+| S | 102 | `25594754` | 0.2527 | 0.4867 |
+| M | 201 | `2e1ff9fa` | 0.2508 | 0.4992 |
+| M | 202 | `9ed89f49` | 0.254 | 0.4997 |
+| M | 203 | `c9c020e5` | 0.255 | 0.4843 |
+| L | 301 | `b50cf1a9` | 0.2552 | 0.5092 |
+| L | 302 | `58f81277` | 0.2557 | 0.4957 |
+| L | 303 | `d7781456` | 0.2596 | 0.5083 |
+| XL | 401 | `7570fca5` | 0.2583 | 0.4962 |
 
 ## Known limits
 

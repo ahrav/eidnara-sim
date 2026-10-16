@@ -76,6 +76,7 @@ export function bedrockEmbedder(profile: string, region: string, cachePath: stri
     if (existsSync(cachePath)) {
         const text = readFileSync(cachePath, "utf8");
         const complete = text.slice(0, text.lastIndexOf("\n") + 1);
+        if (complete.length !== text.length) writeFileSync(cachePath, complete);
         for (const line of complete.split("\n").filter(Boolean)) {
             let entry: { key: string; vector: number[] };
             try {
