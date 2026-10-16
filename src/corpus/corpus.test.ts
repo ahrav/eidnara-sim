@@ -121,13 +121,17 @@ describe("committed corpus", () => {
         broken.rust.rationale[0].check.judge = "  ";
         broken.any.lookup[0].check.answer = "";
         broken.any.anchor[0].check.must_not = [""];
+        delete broken.typescript.scoped_update[0].out_probe;
+        delete broken.typescript.scoped_update[0].out_check;
+        delete broken.any;
         expect(bankProblems(broken)).toEqual([
+            "fact-bank any: language missing",
             "fact-bank rust/decision[0] rs-scan-page: authority missing",
             "fact-bank rust/plan[0] rs-plan-field: check key must pattern {tokne} names an unknown placeholder",
             "fact-bank rust/rationale[0] rs-why-noalloc: check key judge is blank",
             "fact-bank rust/scoped_update[0] rs-scope-log-level: update missing",
-            "fact-bank any/lookup[0] lookup-staging-alias: check key answer is blank",
-            "fact-bank any/anchor[0] anchor-ticket: check key must_not pattern is blank",
+            "fact-bank typescript/scoped_update[0] ts-scope-quotes: out_probe missing",
+            "fact-bank typescript/scoped_update[0] ts-scope-quotes: out_check missing",
         ]);
     });
 

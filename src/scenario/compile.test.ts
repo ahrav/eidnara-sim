@@ -311,10 +311,36 @@ describe("compiled S scenario", async () => {
         }
     });
 
+    test("SIM-P08: an authoritative P3 diff is scored against its fact's probes", () => {
+        const diffs = s.events.filter((e) => e.kind === "apply_diff") as unknown as {
+            fact: string;
+            content: string;
+        }[];
+        for (const f of s.facts.filter((x) => x.kind === "decision")) {
+            const authority = diffs.find((d) => d.fact === f.id && !f.cues.includes(d.content));
+            expect(authority).toBeDefined();
+            for (const p of s.probes.filter((x) => x.fact === f.id && x.text)) {
+                const scored = s.similarity.filter((x) => x.probe === p.id);
+                expect(scored.length).toBe(f.cues.length + 1);
+            }
+        }
+    });
+
     test("SIM-P08: every cue/probe pair is journaled below both thresholds", () => {
+        const authorities = s.events.filter(
+            (e) =>
+                e.kind === "apply_diff" &&
+                e.role === undefined &&
+                s.facts.find((f) => f.id === e.fact)?.cues.includes(e.content as string) === false,
+        ).length;
         const expected = s.probes
             .filter((p) => p.text)
-            .reduce((n, p) => n + (s.facts.find((f) => f.id === p.fact)?.cues.length ?? 0), 0);
+            .reduce((n, p) => {
+                const fact = s.facts.find((f) => f.id === p.fact);
+                const authority = fact?.kind === "decision" ? 1 : 0;
+                return n + (fact?.cues.length ?? 0) + authority;
+            }, 0);
+        expect(authorities).toBeGreaterThan(0);
         expect(s.similarity.length).toBe(expected);
         const t = s.manifest.cue_probe_similarity;
         for (const x of s.similarity) {
@@ -450,13 +476,12 @@ describe("fact bank checks", () => {
         expect(Object.keys(t?.check ?? {})).toEqual(["paths_must"]);
     });
 
-    test("the module-level Map rule matches typed, let, and WeakMap declarations", () => {
+    test("the module-level Map rule matches typed and let declarations and leaves WeakMap alone", () => {
         const t = templates("rejected").find((x) => x.id === "ts-no-module-map");
         const re = new RegExp((t?.check as { must_not: string[] }).must_not[0] ?? "$^", "m");
         for (const line of [
             "const cache = new Map()",
             "const cache = new Map<string, Handler>()",
-            "export const cache = new WeakMap<object, Handler>()",
             "let cache: Map<string, Handler> = new Map()",
         ])
             expect({ line, hit: re.test(line) }).toEqual({ line, hit: true });
@@ -604,9 +629,77 @@ describe("fact bank checks", () => {
         expect(re.test('git commit -m"[quiet_vole] implement cap"')).toBe(true);
         expect(re.test("git commit -m[quiet_vole]")).toBe(true);
         expect(re.test("git commit --message[quiet_vole]")).toBe(false);
+        expect(re.test('git commit --dry-run -m "[quiet_vole] cap"')).toBe(false);
+        expect(re.test('git commit -m "[quiet_vole] cap" --dry-run')).toBe(false);
         expect(re.test("git commit --message=[quiet_vole] cap")).toBe(true);
         expect(re.test("git commit -mwrong -m[quiet_vole]")).toBe(false);
         expect(re.test('git commit -m "wrong" -m"[quiet_vole] later"')).toBe(false);
+    });
+
+    test("grading patterns bind to identifiers and admit equivalent forms", () => {
+        const must = (kind: string, id: string, key = "must", out = false) => {
+            const t = templates(kind).find((x) => x.id === id);
+            const c = (out ? t?.out_check : t?.check) as Record<string, string[]>;
+            return new RegExp(
+                (c[key]?.[0] ?? "$^")
+                    .replaceAll("{TOKEN}", "QUIET_VOLE")
+                    .replaceAll("{code_re}", "ValueError"),
+            );
+        };
+        expect(
+            must("constraint", "rs-cmd-const-prefix").test(
+                "pub const QUIET_VOLE_MAX_KEYS: usize = 4;",
+            ),
+        ).toBe(true);
+        expect(
+            must("constraint", "rs-cmd-const-prefix").test(
+                "pub const DEFAULT_QUIET_VOLE_MAX_KEYS: usize = 4;",
+            ),
+        ).toBe(false);
+        expect(
+            must("constraint", "ts-const-prefix").test("export const DEFAULT_QUIET_VOLE_X = 1"),
+        ).toBe(false);
+        expect(
+            must("tool_error", "error-recurred").test("Fix the ValueError raised by parse()"),
+        ).toBe(true);
+        expect(must("tool_error", "error-recurred").test("Fix the NotAValueErrorsWrapper")).toBe(
+            false,
+        );
+        expect(
+            must("scoped_update", "rs-scope-log-level").test(
+                "tracing::event!(tracing::Level::TRACE, command = %name);",
+            ),
+        ).toBe(true);
+        expect(
+            must("scoped_update", "rs-scope-log-level", "must", true).test(
+                'tracing::event!(Level::DEBUG, "bound");',
+            ),
+        ).toBe(true);
+        const mutex = new RegExp(
+            (
+                templates("rejected").find((x) => x.id === "rs-no-global-mutex")?.check as {
+                    must_not: string[];
+                }
+            ).must_not[0] ?? "$^",
+        );
+        expect(
+            mutex.test("static STORE: Mutex<HashMap<String, Bytes>> = Mutex::new(HashMap::new());"),
+        ).toBe(true);
+        expect(
+            mutex.test(
+                "static KEY_LOCKS: OnceLock<DashMap<String, Arc<Mutex<()>>>> = OnceLock::new();",
+            ),
+        ).toBe(false);
+        const map = new RegExp(
+            (
+                templates("rejected").find((x) => x.id === "ts-no-module-map")?.check as {
+                    must_not: string[];
+                }
+            ).must_not[0] ?? "$^",
+            "m",
+        );
+        expect(map.test("const cache = new WeakMap<App, Handler>()")).toBe(false);
+        expect(map.test("const cache = new Map<string, Handler>()")).toBe(true);
     });
 
     test("every anchor forbids its value in the diff and in the final answer", () => {

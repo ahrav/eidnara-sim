@@ -566,9 +566,16 @@ export async function compileScenario(input: CompileInput) {
     const pairs = probes.flatMap((p) => {
         const fact = facts.find((f) => f.id === p.fact);
         const text = p.text;
-        return fact && text
-            ? fact.cues.map((cue) => ({ probe: p.id, fact: fact.id, cue, text }))
-            : [];
+        if (!fact || !text) return [];
+        const authority = diffs
+            .filter((d) => d.fact === fact.id && !fact.cues.includes(d.content))
+            .map((d) => d.content);
+        return [...fact.cues, ...authority].map((cue) => ({
+            probe: p.id,
+            fact: fact.id,
+            cue,
+            text,
+        }));
     });
     const texts = [...new Set(pairs.flatMap((x) => [x.cue, x.text]))];
     const vectors = await input.embedder.embed(texts);
