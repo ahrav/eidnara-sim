@@ -53,6 +53,7 @@ export function loadRepos(): RepoSpec[] {
     if (raw.schema !== "sim-corpus-repos/v1") throw new Error("repos.json: unknown schema");
     const repos = raw.repos as RepoSpec[];
     const ids = repos.flatMap((r) => [r.id, r.twin.id]);
+    for (const id of ids) repoDir(id);
     if (new Set(ids).size !== ids.length) throw new Error(`repos.json: duplicate id in ${ids}`);
     for (const repo of repos) {
         if (!SHA.test(repo.commit)) throw new Error(`repos.json: ${repo.id}: commit is not a SHA`);

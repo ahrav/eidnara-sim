@@ -43,11 +43,22 @@ export function loadSources(): Dataset[] {
         if (!/^[0-9a-f]{40}$/.test(d.revision)) {
             throw new Error(`sources.json: ${d.id}: revision is not a commit SHA`);
         }
+        if (!/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(d.repo)) {
+            throw new Error(
+                `sources.json: ${d.id}: repo ${JSON.stringify(d.repo)} is not owner/name`,
+            );
+        }
         const paths = d.files.map((f) => f.path);
         if (new Set(paths).size !== paths.length) {
             throw new Error(`sources.json: ${d.id}: a file path repeats`);
         }
         for (const f of d.files) {
+            const segments = f.path.split("/");
+            if (!segments.every((s) => s !== "" && s !== "." && s !== "..")) {
+                throw new Error(
+                    `sources.json: ${d.id}/${f.path}: path must be relative plain segments`,
+                );
+            }
             if (!/^[0-9a-f]{64}$/.test(f.sha256)) {
                 throw new Error(`sources.json: ${d.id}/${f.path}: sha256 is not 64 hex digits`);
             }
