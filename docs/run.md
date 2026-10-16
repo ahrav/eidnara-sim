@@ -19,7 +19,8 @@ and linking it to `lease.<n+1>.json`. Exactly one of several racing resumers can
 name; the others read the winner's live lease on their next attempt and are
 refused. The winner removes the lower-numbered files. `releaseLease` marks the calling
 process's own lease released in place, so the directory keeps its highest
-generation and every later taker targets the next number.
+generation and every later taker targets the next number; a released lease is
+free whichever machine released it.
 
 ## Journal
 

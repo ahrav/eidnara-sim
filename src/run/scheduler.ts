@@ -330,7 +330,10 @@ export class Scheduler {
                         x.trigger.session === this.session &&
                         !this.fired.has(`${this.arm}/${x.id}`),
                 );
-                if (f) this.pendingKill = this.fire(driver, f);
+                if (!f) return;
+                const kill = this.fire(driver, f);
+                kill.catch(() => undefined);
+                this.pendingKill = kill;
             },
             daemonExited: (detail) => {
                 live();

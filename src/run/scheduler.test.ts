@@ -316,6 +316,16 @@ describe("Journal and lease", () => {
         expect(() => takeLease(d)).toThrow(/on another-machine/);
     });
 
+    test("a released lease is free whatever machine released it", () => {
+        const d = dir();
+        writeFileSync(
+            join(d, "lease.0.json"),
+            JSON.stringify({ pid: 1, host: "another-machine", started_wall_ms: 0, released: true }),
+        );
+        expect(takeLease(d).pid).toBe(process.pid);
+        releaseLease(d);
+    });
+
     test("a lease file whose number is outside the safe integer range refuses the directory", () => {
         const d = dir();
         writeFileSync(join(d, "lease.99999999999999999999.json"), "{}");
@@ -695,6 +705,53 @@ describe("Scheduler", () => {
         expect(() => handle?.jobStart("after-the-fact")).toThrow(/arm has ended/);
         expect(j.entries.filter((e) => e.kind === "RegisterJob")).toEqual([]);
         j.close();
+    });
+
+    test("a kill whose driver call rejects before the turn ends is not an unhandled rejection", async () => {
+        const j = new Journal(join(dir(), "j.jsonl"));
+        const kill = episode("k", "daemon_sigkill_mid_fold", {
+            kind: "first_summarizer_call",
+            session: "s-0000",
+        });
+        let unhandled = 0;
+        const onUnhandled = () => void unhandled++;
+        process.on("unhandledRejection", onUnhandled);
+        let handle: ArmHandle | null = null;
+        const driver: ArmDriver = {
+            bind: (h) => {
+                handle = h;
+            },
+            reset: async () => undefined,
+            event: async (e) => {
+                if (e.kind === "user_turn") {
+                    handle?.observe("history_summarizer");
+                    await Bun.sleep(40);
+                }
+                return {};
+            },
+            fault: async () => {
+                throw new Error("no daemon to kill");
+            },
+        };
+        try {
+            await expect(
+                new Scheduler({
+                    events: fixtureEvents(1),
+                    faults: [kill],
+                    journal: j,
+                    settleMs: 0,
+                    order: ["a"],
+                    drivers: { a: driver },
+                }).run(),
+            ).rejects.toThrow(/no daemon to kill/);
+            await Bun.sleep(10);
+        } finally {
+            process.off("unhandledRejection", onUnhandled);
+        }
+        expect(unhandled).toBe(0);
+        expect(j.entries).toContainEqual(
+            expect.objectContaining({ kind: "ItemState", fault: "k", fatal: true }),
+        );
     });
 
     test("a kill fired by a job during the idle wait keeps its outage window open until it is observed", async () => {

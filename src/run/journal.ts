@@ -127,7 +127,6 @@ function alive(pid: number): boolean {
 
 /** A holder is alive when its incarnation still runs; a recycled pid is a dead holder. */
 function holderAlive(held: Lease, boot: string | undefined): boolean {
-    if (held.released) return false;
     if (held.boot !== undefined && boot !== undefined && held.boot !== boot) return false;
     const ticks = held.started_ticks === undefined ? null : startTicks(held.pid);
     return ticks === null ? alive(held.pid) : ticks === held.started_ticks;
@@ -176,7 +175,7 @@ export function takeLease(dir: string): Lease {
         const numbers = leaseNumbers(dir);
         const top = numbers.at(-1);
         const held = top === undefined ? null : readLease(join(dir, `lease.${top}.json`));
-        if (held && (held.host !== mine.host || holderAlive(held, mine.boot))) {
+        if (held && !held.released && (held.host !== mine.host || holderAlive(held, mine.boot))) {
             throw new Error(`run directory ${dir} is leased by pid ${held.pid} on ${held.host}`);
         }
         const staged = join(dir, `lease.${randomUUID()}.tmp`);
