@@ -53,7 +53,8 @@ export interface SchedulerOptions {
     settleMs?: number;
     /**
      * Runs at each arm's start and at every clock jump. A returned number is the whole-second
-     * clock offset the arm's processes now read, journaled as `ClockOffset`.
+     * clock offset the arm's processes now read, journaled as `offset_s`: on a `ClockOffset`
+     * entry at the arm's start, and on the jump's own `AdvanceClock` entry otherwise.
      */
     onClock?: (arm: string, scenarioMs: number) => number | undefined;
 }
@@ -89,12 +90,13 @@ export class Scheduler {
             if (mine.some((e) => e.kind === "EndArm")) continue;
             this.arm = arm;
             const start = mine.at(-1)?.scenario_ms ?? 0;
-            const onClock = (ms: number) => {
+            const offsetAt = (ms: number) => {
                 const offset_s = this.o.onClock?.(arm, ms);
-                if (typeof offset_s === "number") this.log({ kind: "ClockOffset", offset_s });
+                return typeof offset_s === "number" ? { offset_s } : {};
             };
-            this.clock = new Clock(start, this.o.journal, Date.now, onClock);
-            onClock(start);
+            this.clock = new Clock(start, this.o.journal, Date.now, offsetAt);
+            const initial = offsetAt(start);
+            if (initial.offset_s !== undefined) this.log({ kind: "ClockOffset", ...initial });
             const driver = this.o.drivers[arm];
             if (!driver) throw new Error(`no driver for arm ${arm}`);
             const started = mine.some((e) => e.kind === "StartArm");

@@ -43,13 +43,20 @@ function logMs(line: string): number | null {
 
 /**
  * Hosts and plugins stamp logs with wall time plus the whole-second offset the harness wrote at
- * the arm's start and at each clock jump (`ClockOffset`), so a stamp maps back to wall time
- * through each offset whose span contains the result. Two spans claim one stamp when an offset
- * shrank; such a line counts in every turn it can belong to. A journal without `ClockOffset`
- * entries is read on scenario time, taking stamps as `base_wall_ms + scenario_ms`.
+ * the arm's start (`ClockOffset`) and at each clock jump (`AdvanceClock`, `offset_s`), so a stamp
+ * maps back to wall time through each offset whose span contains the result. Two spans claim one
+ * stamp when an offset shrank; such a line counts in every turn it can belong to. A journal
+ * without offsets is read on scenario time, taking stamps as `base_wall_ms + scenario_ms`; one
+ * whose turns began before its first offset has a prefix neither reading covers, so it is refused.
  */
 function timeline(arm: ArmLogs, base: number): Timeline {
-    const offsets = arm.journal.filter((e) => e.kind === "ClockOffset");
+    const offsets = arm.journal.filter((e) => typeof e.offset_s === "number");
+    const first = offsets[0];
+    if (first && arm.journal.some((e) => e.kind === "BeginTurn" && e.seq < first.seq)) {
+        throw new Error(
+            `${arm.arm}: clock journal mixes turns before its first clock offset with offsets after; the run was resumed under a harness that journals offsets`,
+        );
+    }
     if (offsets.length === 0) {
         const stamps = (line: string) => {
             const ms = logMs(line);
@@ -75,6 +82,10 @@ function timeline(arm: ArmLogs, base: number): Timeline {
     return { at: (e) => e.wall_ms, stamps };
 }
 
+/** A turn's end: its `EndTurn`, or the `Event` a resume writes for a turn a harness kill cut. */
+const endsTurn = (e: Entry) =>
+    e.kind === "EndTurn" || (e.kind === "Event" && e.outcome === "failed(interrupted)");
+
 /**
  * The turns that end after `fault`, starting with the one a mid-turn fault interrupted. Callers
  * anchor at `FaultFired` when available because the interrupted turn can end before
@@ -91,7 +102,7 @@ function turnsAfter(arm: ArmLogs, fault: Entry, tl: Timeline): Turn[] {
             if (last && last.next === Number.POSITIVE_INFINITY) last.next = tl.at(e);
         }
         const begin = begins.get(String(e.event));
-        if (e.seq > fault.seq && e.kind === "EndTurn" && begin) {
+        if (e.seq > fault.seq && endsTurn(e) && begin) {
             const from = begin.seq < fault.seq ? tl.at(fault) : tl.at(begin);
             turns.push({ event: String(e.event), from, end: e, next: Number.POSITIVE_INFINITY });
         }
@@ -145,50 +156,67 @@ function storeReasons(checks: Checks): string[] {
 export function recoveries(run: RunLogs): Recovery[] {
     return run.arms.flatMap((arm) => {
         const tl = timeline(arm, run.base_wall_ms);
-        return arm.journal
-            .filter((e) => e.kind === "FaultObserved" && INFRA.has(String(e.type)))
-            .map((e): Recovery => {
-                const evidence = (e.evidence ?? {}) as { skipped?: unknown; store?: StoreCheck };
-                const base = { arm: arm.arm, fault: String(e.fault), type: String(e.type) };
-                if (evidence.skipped !== undefined) {
-                    const reasons = [`skipped: ${String(evidence.skipped)}`];
-                    return { ...base, turns_to_first_clean: null, recovered: null, reasons };
-                }
-                const fired =
-                    arm.journal.find((x) => x.kind === "FaultFired" && x.fault === e.fault) ?? e;
-                const turns = turnsAfter(arm, fired, tl);
-                const dirty = turns.map((t) => dirtyReasons(arm, t, tl));
-                const index = dirty.findIndex((r) => r.length === 0);
-                const reasons =
-                    index < 0
-                        ? turns.flatMap((t, i) => (dirty[i] ?? []).map((r) => `${t.event}: ${r}`))
-                        : [];
-                if (turns.length === 0) reasons.push("no later turn");
-                const result = {
-                    ...base,
-                    turns_to_first_clean: index < 0 ? null : index + 1,
-                    reasons,
-                };
-                if (!RESTARTS.has(base.type)) return { ...result, recovered: index >= 0 };
-                const pass = arm.journal.find(
-                    (x) => x.kind === "StoreChecked" && x.seq > fired.seq && x.fault === base.fault,
-                );
-                const checks: Checks = {
-                    after_crash: evidence.store,
-                    post_crash_pass: pass?.store as StoreCheck | undefined,
-                    final: arm.finalStore,
-                };
-                const store = storeReasons(checks);
-                const summary = Object.fromEntries(
-                    Object.entries(checks).map(([k, c]) => [k, c?.integrity ?? "unchecked"]),
-                );
-                reasons.push(...store);
-                return {
-                    ...result,
-                    reasons,
-                    recovered: index >= 0 && store.length === 0,
-                    store: summary,
-                };
-            });
+        const observations = new Map(
+            arm.journal.filter((e) => e.kind === "FaultObserved").map((e) => [e.fault, e]),
+        );
+        // Each infrastructure fault once, anchored at its FaultFired when the journal has one.
+        const anchors = new Map<unknown, Entry>();
+        for (const e of arm.journal) {
+            const anchored = anchors.get(e.fault);
+            if (e.kind === "FaultFired" && INFRA.has(String(e.type))) anchors.set(e.fault, e);
+            else if (e.kind === "FaultObserved" && INFRA.has(String(e.type)) && !anchored)
+                anchors.set(e.fault, e);
+        }
+        return [...anchors.values()].map((fired): Recovery => {
+            // A sleep's evidence is its clock jump; the scheduler observes it in the same tick.
+            const observed =
+                observations.get(fired.fault) ??
+                (fired.type === "laptop_sleep" ? fired : undefined);
+            const evidence = (observed?.evidence ?? {}) as {
+                skipped?: unknown;
+                store?: StoreCheck;
+            };
+            const base = { arm: arm.arm, fault: String(fired.fault), type: String(fired.type) };
+            if (evidence.skipped !== undefined) {
+                const reasons = [`skipped: ${String(evidence.skipped)}`];
+                return { ...base, turns_to_first_clean: null, recovered: null, reasons };
+            }
+            const turns = turnsAfter(arm, fired, tl);
+            const dirty = turns.map((t) => dirtyReasons(arm, t, tl));
+            const index = dirty.findIndex((r) => r.length === 0);
+            const reasons =
+                index < 0
+                    ? turns.flatMap((t, i) => (dirty[i] ?? []).map((r) => `${t.event}: ${r}`))
+                    : [];
+            if (turns.length === 0) reasons.push("no later turn");
+            // A kill between FaultFired and FaultObserved leaves the fault without evidence.
+            if (!observed) reasons.push("fault not observed: harness interrupted");
+            const clean = index >= 0 && observed !== undefined;
+            const result = {
+                ...base,
+                turns_to_first_clean: index < 0 ? null : index + 1,
+                reasons,
+            };
+            if (!RESTARTS.has(base.type)) return { ...result, recovered: clean };
+            const pass = arm.journal.find(
+                (x) => x.kind === "StoreChecked" && x.seq > fired.seq && x.fault === base.fault,
+            );
+            const checks: Checks = {
+                after_crash: evidence.store,
+                post_crash_pass: pass?.store as StoreCheck | undefined,
+                final: arm.finalStore,
+            };
+            const store = storeReasons(checks);
+            const summary = Object.fromEntries(
+                Object.entries(checks).map(([k, c]) => [k, c?.integrity ?? "unchecked"]),
+            );
+            reasons.push(...store);
+            return {
+                ...result,
+                reasons,
+                recovered: clean && store.length === 0,
+                store: summary,
+            };
+        });
     });
 }

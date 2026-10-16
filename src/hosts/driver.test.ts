@@ -554,6 +554,20 @@ describe("HostDriver faults", () => {
         expect(second.stores).toBeUndefined();
     });
 
+    test("a pass the replacement serves while its start is still settling counts", async () => {
+        const { driver } = fixture("eidnara");
+        const daemon = fakeDaemon(10);
+        daemon.restart = async () => {
+            daemon.current = 11;
+            pluginLog(driver, PASS);
+        };
+        driver.daemon = daemon as unknown as DaemonStack;
+        driver.host = new FakeHost({} as HostContext, "/x") as unknown as SimHost;
+        await driver.fault(episode("daemon_restart"));
+        const outcome = await driver.event(ev("user_turn", { id: "e-1", text: "go" }));
+        expect(outcome.stores?.map((s) => s.fault)).toEqual(["f-daemon_restart"]);
+    });
+
     test("the store check waits for the first pass the replacement daemon serves", async () => {
         const { driver } = fixture("eidnara");
         driver.daemon = fakeDaemon(10) as unknown as DaemonStack;

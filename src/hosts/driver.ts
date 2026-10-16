@@ -100,10 +100,10 @@ export class HostDriver implements ArmDriver {
 
     private readonly snapshots: SnapshotRecorder;
     /**
-     * Daemon restarts owed a store check, each with the plugin log's length when its replacement
-     * daemon was up. The check runs at the end of the first turn whose log, past that mark, shows a
-     * pass the replacement served (`served_from=transform`): the wire contract's first pass after
-     * the crash.
+     * Daemon restarts owed a store check, each with the plugin log's length between the kill and
+     * the replacement's start. The check runs at the end of the first turn whose log, past that
+     * mark, shows a pass the daemon served (`served_from=transform`): the wire contract's first
+     * pass after the crash.
      */
     private storeFaults: Record<string, number> = {};
     /** A daemon restart in progress; the turn it interrupts ends after it and fails with it. */
@@ -464,8 +464,10 @@ export class HostDriver implements ArmDriver {
         const before = daemon.pid();
         await daemon.crash();
         const store = checkStore(this.storeDb);
+        // Marked before the start, so a pass the replacement serves while its start settles counts.
+        const mark = this.pluginLogLength();
         await daemon.restart();
-        this.storeFaults[fault] = this.pluginLogLength();
+        this.storeFaults[fault] = mark;
         this.recordState();
         return {
             signal: "SIGKILL",

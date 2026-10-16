@@ -52,14 +52,15 @@ unchanged`, `decision=error`) from its start until the next turn starts. A
 pass the daemon declined by policy, such as `declined:invocation_budget`,
 also serves raw history and counts toward F3, and leaves the turn clean.
 The plugin stamps its log in the host's faked clock: wall time plus the
-whole-second offset the harness journaled as `ClockOffset` at the arm's start
-and each clock jump. The oracle maps a stamp back to wall time through each
+whole-second offset the harness journaled as `offset_s` at the arm's start
+(`ClockOffset`) and on each clock jump (`AdvanceClock`). The oracle maps a stamp back to wall time through each
 offset whose span contains the result and reads the turns' windows in the
 journal's `wall_ms`; when an offset shrank, a stamp can fall in two spans and
-counts in both turns. A journal without `ClockOffset` entries, recorded
-before the harness journaled offsets, is read as `base_wall_ms` plus
+counts in both turns. A journal without offsets, recorded
+before the harness journaled them, is read as `base_wall_ms` plus
 scenario time, which the offset's rounding and the idle wall time since the
-last jump can skew. A stalled
+last jump can skew; a journal whose turns began before its first offset is
+refused, since neither reading covers its prefix. A stalled
 daemon gives a turn that looks clean to the agent, and its fail-open
 publication keeps the turn from counting.
 

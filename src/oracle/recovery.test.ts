@@ -267,6 +267,48 @@ describe("recovery windows", () => {
     });
 });
 
+describe("resumed journals", () => {
+    test("a turn a harness kill interrupted counts as the dirty first turn", () => {
+        seq = 0;
+        const journal = [
+            entry("FaultObserved", 0, { fault: "f", type: "plugin_reload", evidence: {} }),
+            entry("BeginTurn", 10, { event: "e-1" }),
+            entry("ItemState", 10, { event: "e-1", state: "failed(interrupted)" }),
+            entry("Event", 10, { event: "e-1", outcome: "failed(interrupted)" }),
+            entry("BeginTurn", 30, { event: "e-2" }),
+            entry("EndTurn", 40, { event: "e-2", outcome: "ok" }),
+            entry("Event", 40, { event: "e-2", outcome: "ok" }),
+        ];
+        const [r] = recoveries(run([arm(journal)]));
+        expect([r?.recovered, r?.turns_to_first_clean]).toEqual([true, 2]);
+        const [only] = recoveries(run([arm(journal.slice(0, 4))]));
+        expect([only?.recovered, only?.reasons]).toEqual([
+            false,
+            ["e-1: turn ended failed(interrupted)"],
+        ]);
+    });
+
+    test("a fault fired but never observed is reported, unrecovered", () => {
+        seq = 0;
+        const journal = [
+            entry("FaultFired", 0, { fault: "k", type: "daemon_restart", layer: "scheduler" }),
+            entry("ItemState", 0, { fault: "k", state: "failed(interrupted)" }),
+            entry("BeginTurn", 10, { event: "e-1" }),
+            entry("EndTurn", 20, { event: "e-1", outcome: "ok" }),
+        ];
+        const got = recoveries(run([arm(journal, [], store("ok"))]));
+        expect(got.map((r) => [r.fault, r.recovered, r.turns_to_first_clean])).toEqual([
+            ["k", false, 1],
+        ]);
+        expect(got[0]?.reasons).toContain("fault not observed: harness interrupted");
+        expect(got[0]?.store).toEqual({
+            after_crash: "unchecked",
+            post_crash_pass: "unchecked",
+            final: "ok",
+        });
+    });
+});
+
 describe("plugin log attribution", () => {
     const wall = (ms: number, extra: Record<string, unknown>) => ({ ...extra, wall_ms: ms });
 
@@ -295,5 +337,28 @@ describe("plugin log attribution", () => {
         expect([r?.recovered, r?.turns_to_first_clean]).toEqual([true, 2]);
         const [both] = recoveries(run([arm(journal.slice(0, 4), log)], base));
         expect(both?.reasons).toEqual(["e-1: 1 fail-open publications"]);
+    });
+
+    test("a journal whose turns began before its first clock offset is refused", () => {
+        seq = 0;
+        const base = 1_000_000_000;
+        const journal = [
+            entry(
+                "FaultObserved",
+                0,
+                wall(100, { fault: "f", type: "plugin_reload", evidence: {} }),
+            ),
+            entry("BeginTurn", 0, wall(200, { event: "e-1" })),
+            entry("EndTurn", 1_000, wall(1_200, { event: "e-1", outcome: "ok" })),
+            entry("ClockOffset", 1_000, wall(5_000, { offset_s: (base - 4_000) / 1000 })),
+            entry("BeginTurn", 1_000, wall(5_100, { event: "e-2" })),
+            entry("EndTurn", 2_000, wall(6_100, { event: "e-2", outcome: "ok" })),
+        ];
+        const log = [
+            `${stamp(base + 500)} [eidnara][s-1] rust pass: decision=error served_from=raw`,
+        ];
+        expect(() => recoveries(run([arm(journal, log)], base))).toThrow(
+            "eidnara: clock journal mixes",
+        );
     });
 });

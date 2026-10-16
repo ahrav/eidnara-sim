@@ -12,7 +12,8 @@ export class Clock {
         private scenario: number,
         private readonly journal: Journal,
         private readonly wall: () => number = Date.now,
-        private readonly onAdvance: (scenarioMs: number) => void = () => undefined,
+        /** Runs before the jump is journaled; its fields ride on the `AdvanceClock` entry. */
+        private readonly onAdvance: (scenarioMs: number) => Record<string, unknown> = () => ({}),
     ) {}
 
     now(): number {
@@ -41,9 +42,10 @@ export class Clock {
         if (target <= this.scenario) return;
         const from_ms = this.scenario;
         this.scenario = target;
-        this.onAdvance(target);
+        const extra = this.onAdvance(target);
         this.journal.append({
             ...detail,
+            ...extra,
             kind: "AdvanceClock",
             arm,
             scenario_ms: target,
