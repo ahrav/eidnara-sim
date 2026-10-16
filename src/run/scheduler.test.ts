@@ -1383,6 +1383,7 @@ describe("Scheduler", () => {
     });
 
     test("an EndTurn without its BeginTurn is refused on resume, and a duplicate EndTurn recovers one Event", async () => {
+        const journals: Journal[] = [];
         const make = (lines: Partial<Entry>[]) => {
             const path = join(dir(), "j.jsonl");
             const j = new Journal(path);
@@ -1397,10 +1398,12 @@ describe("Scheduler", () => {
             j.append({ kind: "Event", arm: "a", scenario_ms: 0, event: "e-000000", outcome: "ok" });
             for (const l of lines) j.append({ arm: "a", scenario_ms: 0, ...l } as never);
             j.close();
+            const journal = new Journal(path);
+            journals.push(journal);
             return new Scheduler({
                 events: fixtureEvents(2),
                 faults: [],
-                journal: new Journal(path),
+                journal,
                 settleMs: 0,
                 order: ["a"],
                 drivers: { a: fakeDriver([]) },
@@ -1415,6 +1418,68 @@ describe("Scheduler", () => {
             { kind: "EndTurn", event: "e-000001", outcome: "ok" },
         ]);
         await dup.run();
+        expect(
+            journals.at(-1)?.entries.filter((e) => e.kind === "Event" && e.event === "e-000001"),
+        ).toHaveLength(1);
+    });
+
+    test("a resume does not reopen an outage window the daemon exit already closed", async () => {
+        const path = join(dir(), "j.jsonl");
+        const restart = episode("r", "daemon_restart", {
+            kind: "session_start",
+            session: "s-0000",
+        });
+        const j = new Journal(path);
+        j.append({
+            kind: "StartRun",
+            arm: null,
+            scenario_ms: 0,
+            order: ["a"],
+            scenario: scenarioId(fixtureEvents(1), [restart]),
+        });
+        j.append({ kind: "StartArm", arm: "a", scenario_ms: 0 });
+        j.append({
+            kind: "FaultFired",
+            arm: "a",
+            scenario_ms: 0,
+            fault: "r",
+            type: "daemon_restart",
+            layer: "scheduler",
+        });
+        j.append({
+            kind: "ItemState",
+            arm: "a",
+            scenario_ms: 0,
+            daemon_exit: { signal: "SIGTERM" },
+            expected: true,
+            fatal: false,
+        });
+        j.close();
+        const inner = fakeDriver([]);
+        let exit: unknown = "none";
+        const driver: ArmDriver = {
+            ...inner,
+            bind: (h) => {
+                inner.bind(h);
+                try {
+                    h.daemonExited({ signal: "SIGSEGV" });
+                    exit = "accepted";
+                } catch (caught) {
+                    exit = caught;
+                }
+            },
+        };
+        await expect(
+            new Scheduler({
+                events: fixtureEvents(1),
+                faults: [restart],
+                journal: new Journal(path),
+                settleMs: 0,
+                order: ["a"],
+                drivers: { a: driver },
+            }).run(),
+        ).rejects.toThrow(HarnessFailure);
+        expect(exit).toBeInstanceOf(HarnessFailure);
     });
 
     test("a FaultObserved without its FaultFired is refused on resume", async () => {

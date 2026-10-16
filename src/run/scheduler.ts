@@ -214,20 +214,29 @@ export class Scheduler {
         if (this.fatal) throw this.fatal;
     }
 
-    /** Existing Event and failed(interrupted) entries make recovery writes idempotent across resumes. */
-    /** An outage fault fired but not yet observed when the journal stopped keeps its window open. */
+    /**
+     * Replays the arm's entries to find an outage window still open when the journal stopped:
+     * an outage fault's `FaultFired` opens it, and the daemon exit it admits, its evidence or
+     * interruption record, or the next scheduled step closes it.
+     */
     private openOutage(mine: Entry[]): string | null {
-        const observed = new Set(
-            mine.filter((e) => e.kind === "FaultObserved").map((e) => e.fault),
-        );
-        const open = mine.find(
-            (e) =>
-                e.kind === "FaultFired" &&
-                typeof e.fault === "string" &&
-                !observed.has(e.fault) &&
-                OUTAGE.has(this.o.faults.find((f) => f.id === e.fault)?.type ?? ""),
-        );
-        return typeof open?.fault === "string" ? open.fault : null;
+        let outage: string | null = null;
+        for (const e of mine) {
+            if (e.kind === "FaultFired" && typeof e.fault === "string") {
+                const type = this.o.faults.find((f) => f.id === e.fault)?.type ?? "";
+                if (OUTAGE.has(type)) outage = e.fault;
+            } else if (outage !== null) {
+                const closes =
+                    (e.kind === "FaultObserved" && e.fault === outage) ||
+                    (e.kind === "ItemState" &&
+                        (e.daemon_exit !== undefined || e.fault === outage)) ||
+                    e.kind === "AdvanceClock" ||
+                    e.kind === "BeginTurn" ||
+                    e.kind === "Event";
+                if (closes) outage = null;
+            }
+        }
+        return outage;
     }
 
     /**

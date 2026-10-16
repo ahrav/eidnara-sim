@@ -122,8 +122,10 @@ call through it is refused:
 Each arm's driver receives an `ArmHandle` through `bind` at the arm's start,
 before `reset`, with the session the journal left open already restored so a
 late summarizer observation from it still fires its kill, and with an outage
-window whose fault fired but was never observed still open, so the delayed
-scheduled exit reads as expected. The handle carries `jobStart`, `jobEnd`, `observe`, and
+window still open when the journal's replay shows its fault fired and nothing
+closed it yet (the admitted daemon exit, the fault's evidence or interruption
+record, or the next scheduled step), so the delayed scheduled exit reads as
+expected and a window already spent stays closed. The handle carries `jobStart`, `jobEnd`, `observe`, and
 `daemonExited`, and every call checks that its arm is still the one running,
 so a callback a finished arm left behind is refused instead of writing under
 the next arm. `observe("history_summarizer")` fires the session's mid-fold
