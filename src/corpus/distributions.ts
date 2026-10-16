@@ -38,7 +38,10 @@ export function loadDistributions(): Distributions {
 }
 
 export function loadCited(): Cited {
-    return JSON.parse(readFileSync(join(CORPUS_DIR, "cited-percentiles.json"), "utf8"));
+    const raw = JSON.parse(readFileSync(join(CORPUS_DIR, "cited-percentiles.json"), "utf8"));
+    if (raw.schema !== "sim-corpus-cited/v1")
+        throw new Error("cited-percentiles.json: unknown schema");
+    return raw as Cited;
 }
 
 export function table(dist: Distributions, name: string): CdfTable {

@@ -28,6 +28,17 @@ const OUTPUTS = [
     "tool-outputs/samples.jsonl",
 ];
 const CDF_KINDS = new Set(["discrete", "continuous"]);
+const CITED_CHECKS = [
+    "append_tokens_per_step@0.5",
+    "append_tokens_per_step@0.9",
+    "idle_within_session_s@0.5",
+    "idle_within_session_s@0.9",
+    "idle_within_session_s@0.99",
+    "requests_per_session@0.5",
+    "requests_per_session@0.9",
+    "requests_per_session@0.99",
+];
+const TAIL_CHECKS = ["append_tokens_per_step@10000"];
 
 export interface CorpusReport {
     problems: string[];
@@ -57,6 +68,8 @@ export function checkCorpus(): CorpusReport {
     const samples = parseJsonl(read("tool-outputs/samples.jsonl"));
     const codes = parseJsonl(read("tool-outputs/error-codes.jsonl"));
     need(codes.length === ERROR_CODES, `error codes: ${codes.length}, need ${ERROR_CODES}`);
+    const codeNames = new Set(codes.map((c) => (c as { code?: string }).code?.trim()));
+    need(codeNames.size === codes.length, "error codes: a name repeats");
     problems.push(
         ...entryProblems(samples, "samples", SAMPLE_FIELDS),
         ...entryProblems(codes, "error_codes", ERROR_CODE_FIELDS),
@@ -102,6 +115,10 @@ export function checkCorpus(): CorpusReport {
         need(typeof q.source === "string" && q.source !== "", `${name}: source missing`);
         need(q.n > 0, `${name}: n missing`);
         need(CDF_KINDS.has(q.cdf.kind), `${name}: cdf kind ${q.cdf.kind}`);
+        if (q.cdf.kind === "discrete") {
+            const counts = q.cdf.x.every((v) => Number.isSafeInteger(v) && v >= 0);
+            need(counts, `${name}: discrete values must be non-negative integers`);
+        }
         problems.push(...cdfProblems(q.cdf).map((why) => `${name}: ${why}`));
     }
     const mix = dist.tool_mix;
@@ -119,6 +136,16 @@ export function checkCorpus(): CorpusReport {
     const tools = (mix?.categories ?? []).flatMap((c) => c.tools);
     need(new Set(tools).size === tools.length, "tool_mix: a tool appears in two categories");
     const cited = loadCited();
+    const citedKeys = cited.checks
+        .map((c) => `${c.quantity}@${c.q}`)
+        .sort()
+        .join(",");
+    need(citedKeys === CITED_CHECKS.join(","), `cited checks: ${citedKeys}`);
+    const tailKeys = cited.tail_checks
+        .map((t) => `${t.quantity}@${t.threshold}`)
+        .sort()
+        .join(",");
+    need(tailKeys === TAIL_CHECKS.join(","), `tail checks: ${tailKeys}`);
     const percentiles = compareCited(cited, (name, q) => quantile(table(dist, name), q));
     for (const r of failedChecks(percentiles)) {
         const why = r.within ? "is in band but carries a deviation" : "out of band";

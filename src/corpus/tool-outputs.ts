@@ -56,9 +56,9 @@ export function classify(tool: string, command: string, content: string): Sample
     if (tool === "str_replace_editor") {
         return content.startsWith("Here's the result of running `cat -n`") ? "file_read" : null;
     }
-    if (content.includes("Traceback (most recent call last)")) return "stack_trace";
+    if (content.includes(TRACEBACK)) return "stack_trace";
     if (tool !== "execute_bash") return null;
-    if (RUNNER.test(command)) {
+    if (RUNNER.test(command.replace(QUOTED, '""'))) {
         return /(^|\s)(--help|-h)(\s|$)/.test(command) ? null : "test_run";
     }
     if (/\b(grep|rg|ag)\b/.test(command)) return "grep";
@@ -77,9 +77,18 @@ export function commandOf(args: string): string {
     }
 }
 
-function clip(body: string, keepTail: boolean): string {
+function clip(body: string, kind: SampleKind): string {
     if (body.length <= CONTENT_CAP) return body;
-    return keepTail ? body.slice(-CONTENT_CAP) : body.slice(0, CONTENT_CAP);
+    if (kind === "stack_trace") {
+        const start = Math.max(0, body.lastIndexOf(TRACEBACK));
+        const lines = body.slice(start).split("\n");
+        const last = lines.findIndex((l, i) => i > 0 && TRACE_END.test(l));
+        const end =
+            last < 0 ? start + CONTENT_CAP : start + lines.slice(0, last + 1).join("\n").length;
+        if (end - start <= CONTENT_CAP) return body.slice(start, start + CONTENT_CAP);
+        return body.slice(end - CONTENT_CAP, end);
+    }
+    return kind === "test_run" ? body.slice(-CONTENT_CAP) : body.slice(0, CONTENT_CAP);
 }
 
 type Provenanced = Omit<Provenance, "id">;
@@ -87,6 +96,9 @@ type Provenanced = Omit<Provenance, "id">;
 const FRAME = /^\s*File "/;
 const RUNNER =
     /(^|&&|;|\|)\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*(?:python3?\s+-m\s+)?(?:pytest|py\.test|tox|nox|unittest)\b/;
+const QUOTED = /"(?:\\.|[^"\\])*"|'[^']*'/g;
+const TRACEBACK = "Traceback (most recent call last)";
+const TRACE_END = /^(?:E\s+)?\s*[\w.]*(?:Error|Exception|Failure|Exit|Interrupt|Warning)\b/;
 
 function harvestCodes(lines: string[], base: Provenanced, codes: Map<string, ErrorCodeEntry>) {
     for (const [i, line] of lines.entries()) {
@@ -131,7 +143,9 @@ export function extractFrom(rows: TrajectoryRow[], dataset: Dataset): Extraction
             const base = { repo: row.repo, license: dataset.license, source_id };
             const lines = m.content.split("\n").filter((l) => !FOOTER.test(l));
             const tool = m.name ?? "";
-            if (tool === "execute_bash") harvestCodes(lines, base, codes);
+            const exit = EXIT.exec(m.content)?.[1];
+            const failed = m.content.includes(TRACEBACK) || (exit !== undefined && exit !== "0");
+            if (tool === "execute_bash" && failed) harvestCodes(lines, base, codes);
 
             const body = lines.join("\n").trim();
             const command = calls.get(m.tool_call_id ?? "") ?? "";
@@ -140,7 +154,6 @@ export function extractFrom(rows: TrajectoryRow[], dataset: Dataset): Extraction
             if ((perKind.get(kind) ?? 0) >= SAMPLES_PER_KIND) continue;
             taken.add(kind);
             perKind.set(kind, (perKind.get(kind) ?? 0) + 1);
-            const exit = EXIT.exec(m.content)?.[1];
             samples.push({
                 id: `out-${samples.length.toString().padStart(4, "0")}`,
                 kind,
@@ -149,7 +162,7 @@ export function extractFrom(rows: TrajectoryRow[], dataset: Dataset): Extraction
                 exit_code: exit === undefined ? null : Number(exit),
                 chars: body.length,
                 truncated: body.length > CONTENT_CAP,
-                content: clip(body, kind === "test_run" || kind === "stack_trace"),
+                content: clip(body, kind),
                 ...base,
             });
         }
