@@ -17,7 +17,10 @@ export interface Dataset {
 export function loadSources(): Dataset[] {
     const raw = JSON.parse(readFileSync(join(CORPUS_DIR, "sources.json"), "utf8"));
     if (raw.schema !== "sim-corpus-sources/v1") throw new Error("sources.json: unknown schema");
-    return raw.datasets as Dataset[];
+    const datasets = raw.datasets as Dataset[];
+    const ids = datasets.map((d) => d.id);
+    if (new Set(ids).size !== ids.length) throw new Error(`sources.json: duplicate id in ${ids}`);
+    return datasets;
 }
 
 export function under(root: string, ...parts: string[]): string {

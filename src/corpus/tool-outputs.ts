@@ -58,7 +58,7 @@ export function classify(tool: string, command: string, content: string): Sample
     }
     if (content.includes("Traceback (most recent call last)")) return "stack_trace";
     if (tool !== "execute_bash") return null;
-    if (/\b(pytest|py\.test|unittest|tox|nox)\b/.test(command)) {
+    if (RUNNER.test(command)) {
         return /(^|\s)(--help|-h)(\s|$)/.test(command) ? null : "test_run";
     }
     if (/\b(grep|rg|ag)\b/.test(command)) return "grep";
@@ -85,6 +85,8 @@ function clip(body: string, keepTail: boolean): string {
 type Provenanced = Omit<Provenance, "id">;
 
 const FRAME = /^\s*File "/;
+const RUNNER =
+    /(^|&&|;|\|)\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*(?:python3?\s+-m\s+)?(?:pytest|py\.test|tox|nox|unittest)\b/;
 
 function harvestCodes(lines: string[], base: Provenanced, codes: Map<string, ErrorCodeEntry>) {
     for (const [i, line] of lines.entries()) {

@@ -34,6 +34,14 @@ test("summarize keeps bun counts and failing names once, without timings", () =>
     expect(summarize(out)).toEqual(["(fail) Stop > shuts down", "1610 pass", "2 skip", "4 fail"]);
 });
 
+test("summarize keeps one result line per cargo target, including identical ones", () => {
+    const line = "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out";
+    expect(summarize(`${line}; finished in 0.00s\n${line}; finished in 0.01s`)).toEqual([
+        line,
+        line,
+    ]);
+});
+
 test("summarize changes when the fail count changes with the same failing names", () => {
     const run = (fails: number) =>
         summarize(["(fail) a > b [1.00ms]", ` ${10 - fails} pass`, ` ${fails} fail`].join("\n"));

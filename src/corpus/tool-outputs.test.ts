@@ -50,6 +50,19 @@ describe("classify and commandOf", () => {
             classify("str_replace_editor", "view /", "Traceback (most recent call last)"),
         ).toBeNull();
     });
+    test("a runner counts only in executable position", () => {
+        expect(
+            classify("execute_bash", 'cd /w && find . -name "tox.ini" | head', "./tox.ini"),
+        ).toBeNull();
+        expect(
+            classify("execute_bash", 'grep -r "[unittest]" nose2/tests/', "a.cfg:[unittest]"),
+        ).toBe("grep");
+        expect(classify("execute_bash", 'python -c "import pytest; print(1)"', "1")).toBeNull();
+        expect(
+            classify("execute_bash", "cd /w && SKIP=1 python -m unittest tests.t -v", "ok"),
+        ).toBe("test_run");
+        expect(classify("execute_bash", "cd /w && pytest -x", "ok")).toBe("test_run");
+    });
     test("a test runner's help text is no test run", () => {
         expect(
             classify("execute_bash", "python -m pytest --help | head -20", "usage: pytest"),
