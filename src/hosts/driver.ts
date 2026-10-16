@@ -28,8 +28,10 @@ interface ArmState {
     model: number;
     daemon: { pid: number; start: string | null } | null;
     host: { pid: number; start: string | null } | null;
-    /** Size of the store_full ballast while the fault is active. */
-    ballast: number | null;
+    /** The store_full ballast while the fault is active: its length and the blocks it holds. */
+    ballast: { bytes: number; blocks: number } | null;
+    /** True while a resume has removed the ballast and has yet to fill the store again. */
+    refilling: boolean;
     /** The sandboxed git run of an apply_diff in flight, with the workspace it holds. */
     git: { pid: number; start: string | null; project: string } | null;
 }
@@ -119,7 +121,8 @@ export class HostDriver implements ArmDriver {
     daemon: DaemonStack | null = null;
     private model = 0;
     private storeMount: string | null = null;
-    private ballastBytes: number | null = null;
+    private ballastShape: ArmState["ballast"] = null;
+    private refilling = false;
     private gitRun: ArmState["git"] = null;
     private sessionProject: string | null = null;
     private transcriptsChecked = false;
@@ -197,13 +200,17 @@ export class HostDriver implements ArmDriver {
         const argv = launch(this.o.launcher, keep, env, ["git", ...args], ro, dir);
         const seconds = String(Math.ceil(this.o.turnDeadlineMs / 1000));
         const bounded = ["timeout", "-s", "KILL", seconds, ...argv];
-        const child = spawn(bounded[0] as string, bounded.slice(1), {
+        // The shell waits for one line on stdin before it execs, so the run starts only once
+        // its pid is on disk; a harness that dies first closes stdin and the shell exits.
+        const gated = ["/bin/sh", "-c", 'read _ && exec "$@"', "sh", ...bounded];
+        const child = spawn(gated[0] as string, gated.slice(1), {
             env: { PATH: process.env.PATH ?? "" },
-            stdio: ["ignore", "ignore", "pipe"],
+            stdio: ["pipe", "ignore", "pipe"],
         });
         const pid = child.pid as number;
         this.gitRun = { pid, start: processStart(pid), project };
         this.recordState();
+        child.stdin?.end("\n");
         let stderr = "";
         child.stderr?.on("data", (chunk: Buffer) => {
             stderr = `${stderr}${chunk}`.slice(-20_000);
@@ -214,6 +221,7 @@ export class HostDriver implements ArmDriver {
                 resolve(code ?? (signal === "SIGKILL" ? 137 : -1)),
             );
         });
+        if (status !== 0) rmSync(join(dir, ".git", "index.lock"), { force: true });
         this.gitRun = null;
         this.recordState();
         return { status, stderr: status === 137 ? `cut off after ${seconds} s` : stderr };
@@ -243,7 +251,8 @@ export class HostDriver implements ArmDriver {
             model: this.model,
             daemon: proc(this.daemonPid()),
             host: proc(this.sessionProject === null ? null : (this.host?.hostPid() ?? null)),
-            ballast: this.ballastBytes,
+            ballast: this.ballastShape,
+            refilling: this.refilling,
             git: this.gitRun,
         };
         mkdirSync(this.armDir, { recursive: true });
@@ -259,17 +268,16 @@ export class HostDriver implements ArmDriver {
         return this.storeMount ? join(this.storeMount, "ballast") : null;
     }
 
-    private async startArm(fresh: boolean, expectBallast: number | null = null): Promise<void> {
+    private async startArm(fresh: boolean, state: ArmState | null = null): Promise<void> {
         mkdirSync(this.storeRoot, { recursive: true, mode: 0o700 });
         if (this.o.loopStore && eidnaraOn(this.o.arm)) this.mountStore(fresh);
-        const filled = expectBallast !== null;
+        const filled = state?.ballast != null;
+        if (filled && !state?.refilling)
+            this.requireBallast(state?.ballast ?? null, "before the kill");
         if (filled) {
-            const size = statSync(this.ballast ?? "", { throwIfNoEntry: false })?.size ?? null;
-            if (size !== expectBallast) {
-                throw new HarnessFailure(
-                    `store_full ballast ${this.ballast} changed before the kill`,
-                );
-            }
+            this.ballastShape = state?.ballast ?? null;
+            this.refilling = true;
+            this.recordState();
         }
         if (this.ballast) rmSync(this.ballast, { force: true });
         try {
@@ -292,9 +300,27 @@ export class HostDriver implements ArmDriver {
                 this.recordState();
             }
         }
-        if (filled) this.requireFull();
+        if (filled) {
+            this.requireFull();
+            this.refilling = false;
+            this.recordState();
+        }
         this.host = this.newHost();
         this.recordState();
+    }
+
+    /** The ballast's length and allocated blocks both have to match; a sparse replacement or a punched hole fails. */
+    private requireBallast(expected: ArmState["ballast"], when: string): void {
+        const stat = statSync(this.ballast ?? "", { throwIfNoEntry: false });
+        const shape = stat ? { bytes: stat.size, blocks: stat.blocks } : null;
+        if (
+            !expected ||
+            !shape ||
+            shape.bytes !== expected.bytes ||
+            shape.blocks !== expected.blocks
+        ) {
+            throw new HarnessFailure(`store_full ballast ${this.ballast} changed ${when}`);
+        }
     }
 
     async reset(): Promise<void> {
@@ -331,7 +357,7 @@ export class HostDriver implements ArmDriver {
             this.transcriptsChecked = true;
         }
         await this.reapStale();
-        await this.startArm(false, state.ballast ?? null);
+        await this.startArm(false, state);
         if (open) await this.event(open);
     }
 
@@ -361,14 +387,28 @@ export class HostDriver implements ArmDriver {
         writeWhole(this.stateFile, JSON.stringify({ ...state, git: null }));
     }
 
+    /** Every recorded teardown is attempted; the first failure surfaces once all have run. */
     private async reapStale(): Promise<void> {
         const state = this.readState();
-        if (state) await this.reapGit(state);
-        await this.stopRecorded(state?.host);
-        await this.stopRecorded(state?.daemon);
-        if (spawnSync("findmnt", ["-n", "-M", this.storeRoot]).status === 0) {
-            run(["sudo", "-n", "umount", this.storeRoot]);
+        let failure: unknown = null;
+        const steps: Array<() => Promise<void> | void> = [
+            () => (state ? this.reapGit(state) : undefined),
+            () => this.stopRecorded(state?.host),
+            () => this.stopRecorded(state?.daemon),
+            () => {
+                if (spawnSync("findmnt", ["-n", "-M", this.storeRoot]).status === 0) {
+                    run(["sudo", "-n", "umount", this.storeRoot]);
+                }
+            },
+        ];
+        for (const step of steps) {
+            try {
+                await step();
+            } catch (caught) {
+                failure ??= caught;
+            }
         }
+        if (failure) throw failure;
     }
 
     private async openSession(e: ScenarioEvent, host: SimHost): Promise<void> {
@@ -521,7 +561,8 @@ export class HostDriver implements ArmDriver {
             "conv=notrunc",
         ];
         spawnSync("dd", tail);
-        this.ballastBytes = statSync(this.ballast).size;
+        const stat = statSync(this.ballast);
+        this.ballastShape = { bytes: stat.size, blocks: stat.blocks };
     }
 
     private fillStore(): Record<string, unknown> {
@@ -546,14 +587,9 @@ export class HostDriver implements ArmDriver {
     private clearStoreFill(): void {
         const ballast = this.ballast;
         if (!ballast) return;
-        if (this.ballastBytes !== null) {
-            const size = statSync(ballast, { throwIfNoEntry: false })?.size ?? null;
-            if (size !== this.ballastBytes) {
-                throw new HarnessFailure(
-                    `store_full ballast ${ballast} changed during the episode`,
-                );
-            }
-            this.ballastBytes = null;
+        if (this.ballastShape !== null) {
+            this.requireBallast(this.ballastShape, "during the episode");
+            this.ballastShape = null;
             this.recordState();
         }
         rmSync(ballast, { force: true });

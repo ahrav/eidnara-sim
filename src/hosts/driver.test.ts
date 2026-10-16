@@ -9,6 +9,7 @@ import {
     readdirSync,
     readFileSync,
     rmSync,
+    statSync,
     symlinkSync,
     writeFileSync,
 } from "node:fs";
@@ -564,6 +565,45 @@ touch ${escaped}
         },
     );
 
+    test.skipIf(!sandbox)("a git run is recorded before its process exists", async () => {
+        const { driver, armDir } = fixture("host", { p: gitRepo() }, { turnDeadlineMs: 60_000 });
+        await driver.reset();
+        const ws = driver.workspace("p");
+        writeFileSync(join(ws, ".gitattributes"), "* filter=mark\n");
+        const marker = join(armDir, "filter-ran");
+        spawnSync("git", ["config", "filter.mark.clean", `sh -c 'touch ${marker}; cat'`], {
+            cwd: ws,
+        });
+        const applying = driver.event(ev("apply_diff", { path: "a.txt", content: "A" }));
+        applying.catch(() => undefined);
+        let recordedBeforeRun = false;
+        for (let i = 0; i < 200 && !existsSync(marker); i++) {
+            const state = JSON.parse(readFileSync(join(armDir, "state.json"), "utf8"));
+            if (state.git) {
+                recordedBeforeRun = true;
+                break;
+            }
+            await Bun.sleep(5);
+        }
+        await applying;
+        expect(recordedBeforeRun).toBe(true);
+    });
+
+    test.skipIf(!sandbox)(
+        "a git run cut off by the deadline leaves no index.lock behind",
+        async () => {
+            const { driver } = fixture("host", { p: gitRepo() });
+            await driver.reset();
+            const ws = driver.workspace("p");
+            writeFileSync(join(ws, ".gitattributes"), "* filter=slow\n");
+            spawnSync("git", ["config", "filter.slow.clean", "sleep 300"], { cwd: ws });
+            await expect(
+                driver.event(ev("apply_diff", { path: "a.txt", content: "A" })),
+            ).rejects.toThrow(/git add/);
+            expect(existsSync(join(ws, ".git/index.lock"))).toBe(false);
+        },
+    );
+
     test.skipIf(!sandbox)("a hook cannot write into the configured checkout", async () => {
         const checkout = mkdtempSync("/var/tmp/sim-checkout-");
         dirs.push(checkout);
@@ -730,6 +770,69 @@ describe("HostDriver faults", () => {
             await driver.stop().catch(() => undefined);
         }
     });
+
+    test.skipIf(!sudo)(
+        "a ballast recreated sparse by the host stops the run at session_end",
+        async () => {
+            const { driver, transcripts } = fixture("eidnara");
+            mkdirSync(join(transcripts, "sessions"), { recursive: true });
+            driver.daemon = fakeDaemon(10) as unknown as DaemonStack;
+            driver.host = new FakeHost({} as HostContext, transcripts) as unknown as SimHost;
+            const inner = driver as unknown as { mountStore(f: boolean): void };
+            inner.mountStore(true);
+            try {
+                await driver.fault(episode("store_full"));
+                const ballast = join(driver.storeRoot, "ballast");
+                const size = statSync(ballast).size;
+                rmSync(ballast);
+                spawnSync("truncate", ["-s", String(size), ballast]);
+                await expect(driver.event(ev("session_end"))).rejects.toThrow("ballast");
+            } finally {
+                await driver.stop().catch(() => undefined);
+            }
+        },
+    );
+
+    test.skipIf(!sudo)(
+        "a resume killed between removing and refilling the ballast refills it next time",
+        async () => {
+            const daemonFactory = (ctx: { dataDir: string }) =>
+                ({
+                    ...fakeDaemon(null),
+                    start: async () => {
+                        mkdirSync(ctx.dataDir, { recursive: true });
+                        if (process.env.SIM_TEST_KILL_START === "1") throw new Error("killed here");
+                    },
+                }) as unknown as DaemonStack;
+            const { driver, armDir } = fixture("eidnara", {}, { loopStore: true, daemonFactory });
+            let fresh: HostDriver | null = null;
+            let again: HostDriver | null = null;
+            try {
+                await driver.reset();
+                await driver.fault(episode("store_full"));
+                const o = (driver as unknown as { o: DriverOptions }).o;
+                fresh = new HostDriver(o);
+                process.env.SIM_TEST_KILL_START = "1";
+                await expect(fresh.resume(null)).rejects.toThrow("killed here");
+                delete process.env.SIM_TEST_KILL_START;
+                rmSync(join(fresh.storeRoot, "ballast"), { force: true });
+                await fresh.stop().catch(() => undefined);
+                const state = JSON.parse(readFileSync(join(armDir, "state.json"), "utf8"));
+                expect(state.ballast).not.toBeNull();
+                again = new HostDriver(o);
+                await again.resume(null);
+                const df = spawnSync("df", ["--output=avail", again.storeRoot], {
+                    encoding: "utf8",
+                });
+                expect(Number(df.stdout.trim().split("\n").at(-1))).toBe(0);
+            } finally {
+                delete process.env.SIM_TEST_KILL_START;
+                await again?.stop().catch(() => undefined);
+                await fresh?.stop().catch(() => undefined);
+                await driver.stop().catch(() => undefined);
+            }
+        },
+    );
 
     test.skipIf(!sudo)("a ballast left after its fault ended is removed on resume", async () => {
         const daemonFactory = (ctx: { dataDir: string }) =>

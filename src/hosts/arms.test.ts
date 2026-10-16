@@ -243,29 +243,6 @@ test("a Pi turn whose abort cannot drain the previous turn fails the session", a
     expect(rpc.commands).toEqual(["prompt", "abort"]);
 });
 
-test("stopping the daemon stack terminates the daemon even when the log cannot be appended", async () => {
-    const run = runDir();
-    let terminated = false;
-    const stack = new DaemonStack({
-        config: loadConfig(),
-        root: run,
-        dataDir: join(run, "data"),
-        logFile: join(run, "missing-dir", "daemon.log"),
-        offsetFile: join(run, "offset"),
-        proxyHttp1: "",
-        proxyHttp2: "",
-        model: "m",
-    });
-    (stack as Untyped).stack = {
-        hostLog: () => "log",
-        terminateHost: async () => {
-            terminated = true;
-        },
-    };
-    await expect(stack.stop()).rejects.toThrow(/ENOENT/);
-    expect(terminated).toBe(true);
-});
-
 test("a settled OpenCode turn leaves no deadline timer holding the runtime", async () => {
     const script = `
 import { OpencodeSimHost } from "./src/hosts/arms";
@@ -300,29 +277,6 @@ test("the OpenCode wrapper lives outside every path the sandbox keeps writable",
     expect(await Bun.file(path).text()).toBe(
         `#!/bin/sh\nexec '/x/sandbox.sh' '--' '/x/opencode' "$@"\n`,
     );
-});
-
-test("stopping the daemon stack saves the daemon's output through its graceful exit", async () => {
-    const run = runDir();
-    const stack = new DaemonStack({
-        config: loadConfig(),
-        root: run,
-        dataDir: join(run, "data"),
-        logFile: join(run, "daemon.log"),
-        offsetFile: join(run, "offset"),
-        proxyHttp1: "",
-        proxyHttp2: "",
-        model: "m",
-    });
-    let log = "booted\n";
-    (stack as Untyped).stack = {
-        hostLog: () => log,
-        terminateHost: async () => {
-            log += "shutting down cleanly\n";
-        },
-    };
-    await stack.stop();
-    expect(await Bun.file(join(run, "daemon.log")).text()).toBe("booted\nshutting down cleanly\n");
 });
 
 test("a Pi session whose readiness check fails stops the launcher tree it spawned", async () => {
@@ -380,59 +334,6 @@ test("an OpenCode session reports its spawn before the SDK setup runs", async ()
     await host.closeSession().catch(() => undefined);
     expect(spawned).toHaveLength(1);
     expect(spawned[0]).not.toBeNull();
-});
-
-test("a restarted daemon's output is saved from its own first line", async () => {
-    const run = runDir();
-    const stack = new DaemonStack({
-        config: loadConfig(),
-        root: run,
-        dataDir: join(run, "data"),
-        logFile: join(run, "daemon.log"),
-        offsetFile: join(run, "offset"),
-        proxyHttp1: "",
-        proxyHttp2: "",
-        model: "m",
-    });
-    let log = "booted\n";
-    (stack as Untyped).stack = {
-        hostLog: () => log,
-        restartHost: async () => {
-            log = "booted\n";
-        },
-        terminateHost: async () => undefined,
-    };
-    await stack.restart();
-    await stack.stop();
-    expect(await Bun.file(join(run, "daemon.log")).text()).toBe("booted\nbooted\n");
-});
-
-test("the daemon's output is on disk before its termination begins", async () => {
-    const run = runDir();
-    const stack = new DaemonStack({
-        config: loadConfig(),
-        root: run,
-        dataDir: join(run, "data"),
-        logFile: join(run, "daemon.log"),
-        offsetFile: join(run, "offset"),
-        proxyHttp1: "",
-        proxyHttp2: "",
-        model: "m",
-    });
-    let log = "booted\n";
-    let onDiskAtTerminate = "";
-    (stack as Untyped).stack = {
-        hostLog: () => log,
-        terminateHost: async () => {
-            onDiskAtTerminate = await Bun.file(join(run, "daemon.log"))
-                .text()
-                .catch(() => "");
-            log += "shutting down cleanly\n";
-        },
-    };
-    await stack.stop();
-    expect(onDiskAtTerminate).toBe("booted\n");
-    expect(await Bun.file(join(run, "daemon.log")).text()).toBe("booted\nshutting down cleanly\n");
 });
 
 test("a Pi session whose readiness response is a refusal fails and stops the launcher tree", async () => {
@@ -726,6 +627,24 @@ test("settling a Pi turn stays within the turn deadline when get_state hangs", a
     expect(Date.now() - started).toBeLessThan(2_000);
 });
 
+function daemonStack(run: string, logFile = join(run, "daemon.log")) {
+    return new DaemonStack({
+        config: loadConfig(),
+        root: run,
+        dataDir: join(run, "data"),
+        logFile,
+        offsetFile: join(run, "offset"),
+        proxyHttp1: "",
+        proxyHttp2: "",
+        model: "m",
+    });
+}
+
+function fakeChild() {
+    const { PassThrough } = require("node:stream");
+    return { pid: 4242, stdout: new PassThrough(), stderr: new PassThrough() };
+}
+
 test("appending the daemon log refuses a symlink left at the log path", async () => {
     const run = runDir();
     const target = join(run, "precious");
@@ -742,12 +661,16 @@ test("appending the daemon log refuses a symlink left at the log path", async ()
         proxyHttp2: "",
         model: "m",
     });
+    const child = fakeChild();
     (stack as Untyped).stack = {
-        hostLog: () => "log",
+        child,
         terminateHost: async () => {
             terminated = true;
         },
     };
+    (stack as Untyped).attach();
+    child.stdout.write("log\n");
+    await Bun.sleep(20);
     await expect(stack.stop()).rejects.toThrow(/ELOOP|symbolic link/);
     expect(terminated).toBe(true);
     expect(readFileSync(target, "utf8")).toBe("keep\n");
@@ -827,4 +750,64 @@ test("the protected OpenCode install is the canonical binary's, not the symlink'
     });
     expect(install.binary).toBe(join(real, "opencode.exe"));
     expect(install.root).toBe(join(run, "real/node_modules"));
+});
+
+test("the daemon's output reaches daemon.log as it is written, through a graceful stop", async () => {
+    const run = runDir();
+    const stack = daemonStack(run);
+    const child = fakeChild();
+    let onDiskAtTerminate = "";
+    (stack as Untyped).stack = {
+        child,
+        terminateHost: async () => {
+            onDiskAtTerminate = await Bun.file(join(run, "daemon.log")).text();
+            child.stderr.write("shutting down cleanly\n");
+            await Bun.sleep(20);
+        },
+    };
+    (stack as Untyped).attach();
+    child.stdout.write("booted\n");
+    await Bun.sleep(20);
+    await stack.stop();
+    expect(onDiskAtTerminate).toBe("booted\n");
+    expect(await Bun.file(join(run, "daemon.log")).text()).toBe("booted\nshutting down cleanly\n");
+});
+
+test("a restarted daemon's output follows the previous generation's in daemon.log", async () => {
+    const run = runDir();
+    const stack = daemonStack(run);
+    const first = fakeChild();
+    const second = fakeChild();
+    const inner = {
+        child: first,
+        restartHost: async () => void (inner.child = second),
+        terminateHost: async () => undefined,
+    };
+    (stack as Untyped).stack = inner;
+    (stack as Untyped).attach();
+    first.stdout.write("booted\n");
+    await Bun.sleep(20);
+    await stack.restart();
+    second.stdout.write("booted\n");
+    await Bun.sleep(20);
+    await stack.stop();
+    expect(await Bun.file(join(run, "daemon.log")).text()).toBe("booted\nbooted\n");
+});
+
+test("stopping the daemon stack terminates the daemon even when the log cannot be appended", async () => {
+    const run = runDir();
+    let terminated = false;
+    const stack = daemonStack(run, join(run, "missing-dir", "daemon.log"));
+    const child = fakeChild();
+    (stack as Untyped).stack = {
+        child,
+        terminateHost: async () => {
+            terminated = true;
+        },
+    };
+    (stack as Untyped).attach();
+    child.stdout.write("log\n");
+    await Bun.sleep(20);
+    await expect(stack.stop()).rejects.toThrow(/ENOENT/);
+    expect(terminated).toBe(true);
 });

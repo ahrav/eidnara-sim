@@ -157,61 +157,56 @@ export class DaemonStack {
             daemonEnv: faketimeEnv(this.ctx.offsetFile),
         });
         this.connectionFile = this.stack.connectionFile;
+        this.attach();
     }
 
-    private saved = "";
+    private logError: unknown;
 
     /**
-     * Appends what the stack has logged since the last save; a restart resets both. O_NOFOLLOW
-     * makes a symlink left at the log path fail the append instead of redirecting it.
+     * Every chunk the daemon writes goes to `daemon.log` as it arrives, so a kill at any point
+     * loses nothing already written. O_NOFOLLOW makes a symlink left at the log path fail the
+     * append instead of redirecting it; the first failure surfaces at stop.
      */
-    private saveLog(stack: Untyped = this.stack): void {
-        if (!stack) return;
-        const log: string = stack.hostLog();
-        const delta = log.startsWith(this.saved) ? log.slice(this.saved.length) : log;
+    private append(chunk: Buffer): void {
         const flags =
             constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW;
-        const fd = openSync(this.ctx.logFile, flags, 0o600);
         try {
-            writeSync(fd, delta);
-        } finally {
-            closeSync(fd);
+            const fd = openSync(this.ctx.logFile, flags, 0o600);
+            try {
+                writeSync(fd, new Uint8Array(chunk));
+            } finally {
+                closeSync(fd);
+            }
+        } catch (caught) {
+            this.logError ??= caught;
         }
-        this.saved = log;
+    }
+
+    /** Follows the current daemon generation's output; a restart attaches to the next one. */
+    private attach(): void {
+        const child = this.stack?.child;
+        const sink = (chunk: Buffer) => this.append(chunk);
+        child?.stdout?.on("data", sink);
+        child?.stderr?.on("data", sink);
     }
 
     async restart(): Promise<void> {
-        this.saveLog();
         await this.stack.restartHost();
-        this.saved = "";
+        this.attach();
     }
 
-    /** The log is saved before and after termination, so a kill in between loses only the shutdown lines. */
     async stop(): Promise<void> {
         const stack = this.stack;
         if (!stack) return;
-        let logError: unknown;
-        try {
-            this.saveLog(stack);
-        } catch (caught) {
-            logError = caught;
-        }
         this.stack = null;
         try {
             await stack.terminateHost();
         } catch (caught) {
             // terminateHost gives up after SIGTERM; the stack's SIGKILL path ends the daemon.
             await stack.crashHost();
-            this.saved = "";
             throw caught;
         }
-        try {
-            this.saveLog(stack);
-        } catch (caught) {
-            logError ??= caught;
-        }
-        this.saved = "";
-        if (logError !== undefined) throw logError;
+        if (this.logError !== undefined) throw this.logError;
     }
 }
 
