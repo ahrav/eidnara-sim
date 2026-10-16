@@ -96,7 +96,8 @@ class BusyCount {
 /**
  * Between two consecutive entries of one arm, scenario time holds while the busy set is empty
  * (an `AdvanceClock` is the one exception) and advances by at most the wall time that passed
- * while it is busy, so a change to `scenario_ms` on any entry has a wall-clock cause.
+ * while it is busy, so a change to `scenario_ms` on any entry has a wall-clock cause. A
+ * `RegisterJob` is written after its job joined the busy set, so it is read as busy.
  */
 function wallRate(entries: Entry[], slackMs = 5): void {
     const busy = new BusyCount();
@@ -106,7 +107,7 @@ function wallRate(entries: Entry[], slackMs = 5): void {
         if (p) {
             const dScenario = e.scenario_ms - p.scenario_ms;
             const dWall = e.wall_ms - p.wall_ms;
-            if (busy.size() === 0) {
+            if (busy.size() === 0 && e.kind !== "RegisterJob") {
                 if (e.kind !== "AdvanceClock") expect(dScenario).toBe(0);
             } else {
                 expect(dScenario).toBeLessThanOrEqual(dWall + slackMs);
