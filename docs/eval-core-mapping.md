@@ -49,6 +49,10 @@ counterpart holds part of the value; the note names the rest), `extension`
 | `scenario.simulated_days` | none | extension | `eval-manifest/v10` generator parameters. |
 | `scenario.sessions_per_project` | none | extension | As above. |
 | `scenario.forced_p90_sessions` | none | extension | As above (SIM-P09). |
+| `scenario.cue_probe_similarity` | none | extension | Compile-time thresholds for SIM-P08, added in revision 2 before any run. `eval-manifest/v10` generator parameters. |
+| `scenario.cue_probe_similarity.bm25_max` | none | extension | Highest permitted BM25 ratio of a probe against its cue. |
+| `scenario.cue_probe_similarity.cosine_max` | none | extension | Highest permitted embedding cosine of a probe against its cue. |
+| `scenario.cue_probe_similarity.embedding_model` | none | extension | The embedding model the thresholds apply to; the scenario manifest records the model it used. |
 | `stopping_rule` | `AnalysisFamily.stopping_rule` | partial | `fixed_n` maps; CUSUM does not. |
 | `stopping_rule.kind` | `StoppingRule::FixedN` | mapped | |
 | `stopping_rule.paired_items_per_probe_type` | `FixedN { pairs }` | partial | Pooled over the tier's paired runs. eval-core fixes one pair count per family; the count times the number of probe types is the projected `pairs`. |

@@ -1,0 +1,176 @@
+import { randomBytes } from "node:crypto";
+import { appendFileSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { sha256Hex } from "../prereg/canonical";
+import { EMBEDDING_MODELS } from "../prereg/schema";
+
+export interface Embedder {
+    model: string;
+    embed(texts: string[]): Promise<number[][]>;
+}
+
+export function terms(text: string): string[] {
+    return text.toLowerCase().match(/[a-z0-9]+/g) ?? [];
+}
+
+/**
+ * `bm25Ratio` normalizes the BM25 score of `query` against `doc` by `doc`'s
+ * self-score. Document frequencies come from `collection`.
+ */
+export function bm25Ratio(query: string, doc: string, collection: string[]): number {
+    const docs = collection.map((d) => terms(d));
+    const avg = docs.reduce((s, d) => s + d.length, 0) / Math.max(1, docs.length);
+    const df = new Map<string, number>();
+    for (const d of docs) for (const t of new Set(d)) df.set(t, (df.get(t) ?? 0) + 1);
+    const n = docs.length;
+    const target = terms(doc);
+    const tf = new Map<string, number>();
+    for (const t of target) tf.set(t, (tf.get(t) ?? 0) + 1);
+    const score = (q: string[]) =>
+        [...new Set(q)].reduce((s, t) => {
+            const f = tf.get(t) ?? 0;
+            const idf = Math.log(1 + (n - (df.get(t) ?? 0) + 0.5) / ((df.get(t) ?? 0) + 0.5));
+            return s + (idf * f * 2.2) / (f + 1.2 * (0.25 + (0.75 * target.length) / avg));
+        }, 0);
+    const self = score(target);
+    return self === 0 ? 0 : score(terms(query)) / self;
+}
+
+export function cosine(a: number[], b: number[]): number {
+    let dot = 0;
+    let na = 0;
+    let nb = 0;
+    a.forEach((v, i) => {
+        const w = b[i] ?? 0;
+        dot += v * w;
+        na += v * v;
+        nb += w * w;
+    });
+    return na === 0 || nb === 0 ? 0 : dot / Math.sqrt(na * nb);
+}
+
+/** hashEmbedder computes signed, feature-hashed bag-of-words vectors locally. */
+export const hashEmbedder: Embedder = {
+    model: "local-hash-256/v1",
+    async embed(texts) {
+        return texts.map((text) => {
+            const v = new Array<number>(256).fill(0);
+            for (const t of terms(text)) {
+                const h = Number.parseInt(sha256Hex(t).slice(0, 8), 16);
+                v[h % 256] = (v[h % 256] ?? 0) + (h & 0x100 ? 1 : -1);
+            }
+            return v;
+        });
+    },
+};
+
+/**
+ * `bedrockEmbedder` fetches Titan text embeddings through the AWS CLI and
+ * caches vectors by a digest of the model and text. Embedding runs entirely
+ * offline when `cachePath` contains vectors for every requested text.
+ */
+const DIMENSIONS = 256;
+const wellFormed = (v: unknown): v is number[] =>
+    Array.isArray(v) &&
+    v.length === DIMENSIONS &&
+    v.every((x) => typeof x === "number" && Number.isFinite(x)) &&
+    v.some((x) => x !== 0);
+
+export function bedrockEmbedder(profile: string, region: string, cachePath: string): Embedder {
+    const model = EMBEDDING_MODELS[0];
+    const cache = new Map<string, number[]>();
+    if (existsSync(cachePath)) {
+        const text = readFileSync(cachePath, "utf8");
+        const complete = text.slice(0, text.lastIndexOf("\n") + 1);
+        if (complete.length !== text.length) writeFileSync(cachePath, complete);
+        for (const line of complete.split("\n").filter(Boolean)) {
+            let entry: { key: string; vector: number[] };
+            try {
+                entry = JSON.parse(line);
+            } catch {
+                throw new Error(`embedding cache ${cachePath} holds a malformed line`);
+            }
+            if (wellFormed(entry.vector)) {
+                cache.set(
+                    entry.key,
+                    entry.vector.map((x) => Math.round(x * 1e6) / 1e6),
+                );
+            }
+        }
+    }
+    return {
+        model,
+        async embed(texts) {
+            const out: number[][] = [];
+            for (const text of texts) {
+                const key = sha256Hex(`${model}\n${text}`);
+                let vector = cache.get(key);
+                if (vector === undefined) {
+                    const input = { inputText: text, dimensions: DIMENSIONS, normalize: true };
+                    const outFile = `${cachePath}.${randomBytes(6).toString("hex")}.tmp`;
+                    const cli = `bedrock-runtime invoke-model --cli-binary-format raw-in-base64-out`;
+                    const flags = [
+                        "--no-cli-auto-prompt",
+                        "--profile",
+                        profile,
+                        "--region",
+                        region,
+                        "--model-id",
+                        model,
+                    ];
+                    const argv = [
+                        "aws",
+                        ...cli.split(" "),
+                        ...flags,
+                        "--body",
+                        JSON.stringify(input),
+                    ];
+                    let response: { embedding: number[] };
+                    writeFileSync(outFile, "", { flag: "wx" });
+                    const proc = Bun.spawn([...argv, outFile], {
+                        stdout: "ignore",
+                        stderr: "pipe",
+                        timeout: 60_000,
+                    });
+                    const stop = () => {
+                        proc.kill();
+                        rmSync(outFile, { force: true });
+                        process.exit(143);
+                    };
+                    process.once("SIGTERM", stop);
+                    process.once("SIGINT", stop);
+                    try {
+                        const [code, stderr] = await Promise.all([
+                            proc.exited,
+                            new Response(proc.stderr).text(),
+                        ]);
+                        if (code !== 0) throw new Error(`embed: ${stderr}`);
+                        response = JSON.parse(readFileSync(outFile, "utf8"));
+                    } finally {
+                        process.off("SIGTERM", stop);
+                        process.off("SIGINT", stop);
+                        rmSync(outFile, { force: true });
+                    }
+                    const rounded: unknown = response.embedding.map(
+                        (x) => Math.round(x * 1e6) / 1e6,
+                    );
+                    if (!wellFormed(rounded)) {
+                        const count = Array.isArray(rounded) ? rounded.length : 0;
+                        throw new Error(
+                            `embed: ${model} returned ${count} components for a ${DIMENSIONS}-dimension model; each must be finite and the vector non-zero`,
+                        );
+                    }
+                    vector = rounded;
+                    cache.set(key, vector);
+                    appendFileSync(cachePath, `${JSON.stringify({ key, vector })}\n`);
+                }
+                out.push(vector);
+            }
+            return out;
+        },
+    };
+}
+
+/** Four-decimal rendering for the journaled score; the gate compares the full value. */
+export function round4(v: number): number {
+    return Math.round(v * 1e4) / 1e4;
+}

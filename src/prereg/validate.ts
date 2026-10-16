@@ -5,6 +5,7 @@ import {
     CLAIMS,
     CLUSTER_KEYS,
     DIRECTIONS,
+    EMBEDDING_MODELS,
     type Family,
     HOSTS,
     INTERVAL_METHODS,
@@ -37,12 +38,26 @@ const posInt: Check = (v) =>
     Number.isSafeInteger(v) && (v as number) > 0 ? null : "expected a positive integer";
 const nonNegInt: Check = (v) =>
     Number.isSafeInteger(v) && (v as number) >= 0 ? null : "expected a non-negative integer";
+const uint32: Check = (v) =>
+    Number.isInteger(v) && (v as number) >= 0 && (v as number) <= 0xffff_ffff
+        ? null
+        : "expected an integer in [0, 4294967295]";
 const decimal: Check = (v) =>
     isCanonicalDecimal(v) ? null : "expected a canonical decimal string";
 const unitRate: Check = (v) =>
     isCanonicalDecimal(v) && Number(v) > 0 && Number(v) < 1
         ? null
         : "expected a canonical decimal in (0, 1)";
+const unitClosed: Check = (v) =>
+    isCanonicalDecimal(v) && (v === "0" || v === "1" || /^0\.\d+$/.test(v))
+        ? null
+        : "expected a canonical decimal in [0, 1]";
+const intAtLeast =
+    (min: number): Check =>
+    (v) =>
+        Number.isSafeInteger(v) && (v as number) >= min
+            ? null
+            : `expected an integer of at least ${min}`;
 const text: Check = (v) =>
     typeof v === "string" && v.trim() !== "" ? null : "expected a non-blank string";
 const list =
@@ -97,8 +112,17 @@ const PREREG_SHAPE: Shape = {
         order_by_seed: list(list(oneOf(ARMS)), false),
     },
     hosts: list(oneOf(HOSTS)),
-    seeds: list(nonNegInt),
-    scenario: { simulated_days: posInt, sessions_per_project: posInt, forced_p90_sessions: posInt },
+    seeds: list(uint32),
+    scenario: {
+        simulated_days: posInt,
+        sessions_per_project: posInt,
+        forced_p90_sessions: intAtLeast(3),
+        cue_probe_similarity: {
+            bm25_max: unitClosed,
+            cosine_max: unitClosed,
+            embedding_model: oneOf(EMBEDDING_MODELS),
+        },
+    },
     stopping_rule: {
         kind: literal("fixed_n"),
         paired_items_per_probe_type: posInt,
@@ -248,6 +272,16 @@ function checkFamilies(p: Preregistration, errors: string[]): void {
     });
 }
 
+function checkItemSplit(p: Preregistration, errors: string[]): void {
+    const runs = p.seeds.length * p.hosts.length;
+    const items = p.stopping_rule.paired_items_per_probe_type;
+    if (runs > 0 && items % runs !== 0) {
+        errors.push(
+            `stopping_rule.paired_items_per_probe_type: ${items} is not a multiple of the ${runs} seed-host runs`,
+        );
+    }
+}
+
 function checkArms(p: Preregistration, errors: string[]): void {
     if (!(p.arms.run.includes("host") && p.arms.run.includes("eidnara"))) {
         errors.push("arms.run: must include host and eidnara");
@@ -280,9 +314,11 @@ export function validatePreregistration(value: unknown): string[] {
         else if (field in value) errors.push(`${field}: allowed only at tier ${tiers.join(", ")}`);
     }
     if (errors.length > 0) return errors;
+    // SAFETY: checkShape found no error, so value has every field PREREG_SHAPE requires with the declared type.
     const p = value as unknown as Preregistration;
     checkFamilies(p, errors);
     checkArms(p, errors);
+    checkItemSplit(p, errors);
     return errors;
 }
 

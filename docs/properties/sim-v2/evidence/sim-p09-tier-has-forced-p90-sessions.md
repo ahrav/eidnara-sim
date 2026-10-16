@@ -13,15 +13,21 @@ v2 harness before any harness code existed.
 
 A compiled scenario has at least three sessions in the p90 request-count regime.
 
-No harness code, test, or run exists yet. The surface lands in M2
-(#1026).
-
 M1 (#1025) lands the enabling state. `corpus/distributions.json` holds the
 fitted `requests_per_session` table (TraceLab v0.0.2, n = 8,058 sessions, p90
 = 16). `sampleSession` in `src/corpus/sampler.ts` takes a tail floor, and the
 SIM-P09 test in `src/corpus/corpus.test.ts` shows that a 0.9 floor yields only
 sessions at or above the fitted p90. The compile-time count of three such
 sessions per scenario lands in M2.
+
+M2 (#1026) draws the request count of `forced_p90_sessions` sessions from the
+tail above p90, with an equal share per base project spread evenly over that
+project's sessions, and then pads each forced session to the P13 turn range
+(30 turns per P13 item it hosts). A
+test over 100 S seeds checks that each scenario has at least the pre-registered
+number of forced sessions and that each holds at least the fitted p90 request
+count. That count holds through the padding alone, so the scenario test
+witnesses the regime, and the M1 sampler test witnesses the tail draw.
 
 ## Failure scenario
 

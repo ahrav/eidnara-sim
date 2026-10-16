@@ -12,6 +12,7 @@ import {
     table,
 } from "./distributions";
 import { ERROR_CODE_FIELDS, entryProblems, parseJsonl, SAMPLE_FIELDS } from "./entries";
+import { bankProblems } from "./fact-bank";
 import { CATEGORIES, CATEGORY_NAMES, KINDS, QUANTITIES, TABLES, TRACELAB_FILES } from "./fit";
 import { loadRepos, REPOS_DIR } from "./repos";
 import { CORPUS_DIR, loadSources, parseJson } from "./sources";
@@ -24,6 +25,8 @@ const SHA = /^[0-9a-f]{40}$/;
 const REPO_LICENSES = new Set(["MIT", "Apache-2.0"]);
 const OUTPUTS = [
     "distributions.json",
+    "fact-bank.json",
+    "repos.json",
     "tool-outputs/error-codes.jsonl",
     "tool-outputs/samples.jsonl",
 ];
@@ -81,6 +84,7 @@ export function checkCorpus(): CorpusReport {
         need(actual === digest, `${path}: sha256 ${actual}, manifest ${digest}`);
     }
 
+    problems.push(...bankProblems(parseJson(read("fact-bank.json"), "fact-bank.json")));
     const openhands = sources.find((d) => d.id === "openhands");
     const notice = existsSync(join(CORPUS_DIR, "tool-outputs/NOTICE.md"))
         ? read("tool-outputs/NOTICE.md")

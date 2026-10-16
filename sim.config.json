@@ -7,7 +7,7 @@
     "pi_install": "/tmp/eidnara-e2e-pi-install-0.80.2",
     "opencode_binary": "/local/home/ahrav/.local/share/mise/installs/node/24.18.0/lib/node_modules/opencode-ai/bin/opencode.exe",
     "bedrock": {
-        "aws_profile": "default",
+        "aws_profile": "bw-bedrock",
         "region": "us-west-2"
     }
 }

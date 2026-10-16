@@ -5,6 +5,9 @@
 
 export const PREREG_SCHEMA = "sim-prereg/v1";
 
+/** Embedding models the scenario compiler can construct for the cue/probe similarity gate. */
+export const EMBEDDING_MODELS = ["amazon.titan-embed-text-v2:0"] as const;
+
 export const TIERS = ["S", "M", "L", "XL"] as const;
 export type Tier = (typeof TIERS)[number];
 
@@ -104,7 +107,13 @@ export interface Preregistration {
     arms: { default: "eidnara"; run: string[]; order_by_seed: string[][] };
     hosts: string[];
     seeds: number[];
-    scenario: { simulated_days: number; sessions_per_project: number; forced_p90_sessions: number };
+    scenario: {
+        simulated_days: number;
+        sessions_per_project: number;
+        forced_p90_sessions: number;
+        /** Compile-time SIM-P08 ceilings; decimals in [0, 1]. */
+        cue_probe_similarity: { bm25_max: string; cosine_max: string; embedding_model: string };
+    };
     /** `paired_items_per_probe_type` is pooled over the tier's paired runs. */
     stopping_rule: { kind: "fixed_n"; paired_items_per_probe_type: number; cusum: Cusum[] };
     missingness_policy: {
