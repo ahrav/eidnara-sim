@@ -43,9 +43,12 @@ async function sha256File(path: string): Promise<string> {
  * cache file matches its file.sha256.
  */
 export async function fetchDataset(dataset: Dataset, log = console.log): Promise<void> {
-    if (dataset.access !== "public") {
-        log(`${dataset.id}: ${dataset.access}, skipped`);
+    if (dataset.access === "gated") {
+        log(`${dataset.id}: gated, skipped`);
         return;
+    }
+    if (dataset.access !== "public") {
+        throw new Error(`sources.json: ${dataset.id}: access ${JSON.stringify(dataset.access)}`);
     }
     for (const file of dataset.files) {
         const dest = cachePath(dataset, file.path);

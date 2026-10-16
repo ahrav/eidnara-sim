@@ -45,6 +45,19 @@ export function fitCdf(values: readonly number[], kind: CdfTable["kind"]): CdfTa
     return { kind, p: [...GRID], x };
 }
 
+export function cdfProblems(table: CdfTable): string[] {
+    const { p, x } = table;
+    const problems: string[] = [];
+    if (p.length === 0 || p.length !== x.length) problems.push("p and x need equal nonzero length");
+    if (![...p, ...x].every(Number.isFinite)) problems.push("entries must be finite");
+    if (!p.every((v, i) => v >= 0 && v <= 1 && (i === 0 || v > (p[i - 1] ?? 0)))) {
+        problems.push("p must increase strictly within [0, 1]");
+    }
+    if (p[p.length - 1] !== 1) problems.push("p must end at 1");
+    if (!x.every((v, i) => i === 0 || v >= (x[i - 1] ?? 0))) problems.push("x must not decrease");
+    return problems;
+}
+
 /** Inverse CDF at probability `q` in [0, 1]. */
 export function quantile(table: CdfTable, q: number): number {
     const { p, x } = table;

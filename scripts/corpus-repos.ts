@@ -10,7 +10,7 @@ import {
     repoDir,
     runOffline,
 } from "../src/corpus/repos";
-import { CORPUS_DIR } from "../src/corpus/sources";
+import { CORPUS_DIR, under } from "../src/corpus/sources";
 
 // Usage: bun scripts/corpus-repos.ts [--record]
 const record = process.argv.includes("--record");
@@ -21,7 +21,7 @@ for (const repo of repos) {
     const base = repoDir(repo.id);
     const twinDir = repoDir(repo.twin.id);
     cloneAt(repo.url, repo.commit, base);
-    cpSync(join(base, repo.license_file), join(REPOS_DIR, `${repo.id}.LICENSE`));
+    cpSync(under(base, repo.license_file), join(REPOS_DIR, `${repo.id}.LICENSE`));
     const twinCommit = buildTwin(base, twinDir, repo.twin);
     if (record) repo.twin.commit = twinCommit;
     else if (twinCommit !== repo.twin.commit) {
@@ -34,7 +34,8 @@ for (const repo of repos) {
         prepare(dir, repo.prepare);
         const outcome = runOffline(dir, repo.test);
         console.log(`${label}: exit ${outcome.exit_code}\n  ${outcome.summary.join("\n  ")}`);
-        if (record && label === repo.id) repo.expected = outcome;
+        if (outcome.summary.length === 0) failures.push(`${label}: no test result lines in output`);
+        else if (record && label === repo.id) repo.expected = outcome;
         else if (JSON.stringify(outcome) !== JSON.stringify(repo.expected)) {
             failures.push(`${label}: offline test outcome differs from repos.json`);
         }
