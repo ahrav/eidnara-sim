@@ -66,3 +66,10 @@ export function encodeException(exceptionType: string, member: unknown): Buffer 
         Buffer.from(wireJson(member), "utf8"),
     );
 }
+
+export function encodeError(code: string, message: string): Buffer {
+    return encodeMessage(
+        { ":error-code": code, ":error-message": message, ":message-type": "error" },
+        Buffer.alloc(0),
+    );
+}

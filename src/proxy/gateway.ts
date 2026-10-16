@@ -12,9 +12,9 @@ import {
     ConverseStreamCommand,
 } from "@aws-sdk/client-bedrock-runtime";
 import { defaultProvider } from "@aws-sdk/credential-provider-node";
-import type { Rng } from "../rng";
+import { Rng } from "../rng";
 import { COMPONENT_HEADER, type ConverseBody, classify } from "./classify";
-import { encodeEvent, encodeException, wireJson } from "./eventstream";
+import { encodeError, encodeEvent, encodeException, wireJson } from "./eventstream";
 import { type FaultInjector, type Sink, sleep, writeFault } from "./inject";
 import type { CallRecord, Component, RecordWriter } from "./records";
 
@@ -335,7 +335,8 @@ export class Gateway {
         const done: Done = { ...tag, model, status: 200 };
         progress(done);
         const fault = this.options.injector.take(tag.component, call);
-        if (fault) done.fault_ref = fault.id;
+        const rng = new Rng(this.options.rng.nextU32());
+        if (fault && fault.type !== "slow_stream") done.fault_ref = fault.id;
         const firstByte = () => {
             if (done.first_byte_ms != null) return;
             done.first_byte_ms = performance.now() - started;
@@ -359,8 +360,11 @@ export class Gateway {
             return { ...done, ...outcome };
         }
         const usage: Usage = {};
-        const delay = () =>
-            fault ? sleep(fault.params.delay_ms ?? 2_000, sink.signal) : undefined;
+        const delay = async () => {
+            if (!fault) return;
+            done.fault_ref = fault.id;
+            await sleep(fault.params.delay_ms ?? 2_000, sink.signal);
+        };
         let retries = 0;
         let sawStop = false;
         let sawMetadata = false;
@@ -369,7 +373,7 @@ export class Gateway {
             const response = await sendWithRetry(
                 () => this.options.upstream.converse(model, body, streaming, sink.signal),
                 {
-                    rng: this.options.rng,
+                    rng,
                     deadlineAt,
                     signal: sink.signal,
                     onRetry: () => retries++,
@@ -426,16 +430,20 @@ export class Gateway {
             done.status = failure.$metadata?.httpStatusCode ?? 500;
             done.error = `${failure.name}: ${failure.message}`;
             const errorType = failure.name ?? "InternalServerException";
-            const message = { message: failure.message ?? "error" };
+            const text = failure.message ?? "error";
             if (sink.sent() === 0) {
-                sink.status(done.status, {
+                answer(done.status, {
                     "content-type": "application/json",
                     "x-amzn-errortype": errorType,
                 });
-                sink.write(Buffer.from(JSON.stringify(message)));
+                sink.write(Buffer.from(JSON.stringify({ message: text })));
             } else if (streaming) {
                 if (!sawStop || !sawMetadata) done.finish_reason = "stream_cut";
-                sink.write(encodeException(errorType, message));
+                sink.write(
+                    errorType.endsWith("Exception")
+                        ? encodeException(errorType, { message: text })
+                        : encodeError(errorType, text),
+                );
             }
         }
         return {

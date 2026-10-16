@@ -7,11 +7,14 @@ HTTP/2 server (`Gateway.urls`), forwards `POST /model/<id>/converse` and
 injects scheduled provider faults at the response edge. `bedrockUpstream`
 sends to Bedrock through the AWS SDK with the profile and region from
 `sim.config.json`; blob fields (image and document bytes) pass through as the
-base64 strings the wire format carries in both directions, and a modeled
-stream error from Bedrock reaches the host as an exception-framed event stream
-message, so the host's SDK raises it as the same exception. `Gateway.stop()`
+base64 strings the wire format carries in both directions, and a failure
+mid-stream reaches the host as an event stream message: a modeled exception
+framed as `exception`, any other throw as an `error` with its code and
+message, so the host's SDK raises the same failure. `Gateway.stop()`
 closes every connection and waits up to five seconds for in-flight handlers to
-write their records.
+write their records. Each call draws its backoff jitter from its own
+generator seeded from the run's `rng` at receipt, so concurrent calls keep one
+seed to one backoff sequence.
 
 ## Call records
 
@@ -89,7 +92,7 @@ it, and the record's `proxy_retries` is 0.
 | `truncated_no_length` | A partial text block, then the stream ends with no `messageStop` or metadata; on `converse`, the first half of the JSON body |
 | `empty_content` | `messageStop` with `end_turn` and no content block |
 | `schema_wrong_tool_call` | A `toolUse` block for the request's first tool whose input is not JSON; on `converse`, an input object with an argument the tool's schema lacks |
-| `slow_stream` | The provider's answer, with `delay_ms` (default 2 s) before each event; on `converse`, before the body |
+| `slow_stream` | The provider's answer, with `delay_ms` (default 2 s) before each event; on `converse`, before the body. The record carries `fault_ref` only once a delay ran, so an upstream that fails before answering leaves the episode untriggered |
 
 ## Witnesses
 

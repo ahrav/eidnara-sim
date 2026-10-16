@@ -105,8 +105,13 @@ async function hostCall(
         }
         if (response.status === 200) {
             for (const m of decodeMessages(buffer)) {
-                const type = m.headers[":event-type"] ?? m.headers[":exception-type"] ?? "";
-                result.events.push({ type, member: JSON.parse(m.payload.toString("utf8")) });
+                const type =
+                    m.headers[":event-type"] ??
+                    m.headers[":exception-type"] ??
+                    m.headers[":error-code"] ??
+                    "";
+                const payload = m.payload.toString("utf8");
+                result.events.push({ type, member: payload ? JSON.parse(payload) : {} });
             }
         }
     } catch {
@@ -814,6 +819,100 @@ describe("every request yields one record", () => {
             ["stream_cut", "the stream ended without both a stop reason and metadata"],
         ]);
     });
+
+    test("an upstream error answer records its first byte and call_started", async () => {
+        const bad: Upstream = {
+            async converse() {
+                throw Object.assign(new Error("bad input"), {
+                    name: "ValidationException",
+                    $metadata: { httpStatusCode: 400 },
+                });
+            },
+        };
+        const { records, started, url } = await start(null, bad);
+        expect((await hostCallJson(url, AGENT_BODY, 2_000)).status).toBe(400);
+        expect(typeof records.records[0]?.first_byte_ms).toBe("number");
+        expect(started.map((e) => e.component)).toEqual(["agent"]);
+    });
+
+    test("slow_stream over an upstream that rejects leaves no fault_ref", async () => {
+        const bad: Upstream = {
+            async converse() {
+                throw Object.assign(new Error("bad input"), {
+                    name: "ValidationException",
+                    $metadata: { httpStatusCode: 400 },
+                });
+            },
+        };
+        const fault = {
+            id: "s",
+            type: "slow_stream",
+            strategy: "single",
+            params: { count: 1, delay_ms: 10 },
+        } as ProxyFault;
+        const { records, injector, url } = await start(fault, bad);
+        injector.arm("s");
+        expect((await hostCallJson(url, AGENT_BODY, 2_000)).status).toBe(400);
+        expect(records.records[0]?.fault_ref).toBeNull();
+        expect(injector.report()[0]).toMatchObject({ injected_seq: [], status: "untriggered" });
+    });
+
+    test("a throw mid-stream is framed as an error, or as an exception when modeled", async () => {
+        const throwing = (name: string): Upstream => ({
+            async converse() {
+                async function* events() {
+                    yield { messageStart: { role: "assistant" } };
+                    throw Object.assign(new Error("boom"), { name });
+                }
+                return { events: events() };
+            },
+        });
+        const plain = await start(null, throwing("Error"));
+        const seen = await hostCall(plain.url, AGENT_BODY, 2_000);
+        expect(seen.events.at(-1)).toEqual({ type: "Error", member: {} });
+        expect(plain.records.records[0]).toMatchObject({
+            finish_reason: "stream_cut",
+            error: "Error: boom",
+        });
+        const modeled = await start(null, throwing("ModelStreamErrorException"));
+        const m = await hostCall(modeled.url, AGENT_BODY, 2_000);
+        expect(m.events.at(-1)).toEqual({
+            type: "ModelStreamErrorException",
+            member: { message: "boom" },
+        });
+    });
+
+    test("a call's backoff draws do not depend on which concurrent call fails first", async () => {
+        const run = async (firstToFail: 0 | 1) => {
+            let seen = 0;
+            const up: Upstream = {
+                async converse(m, b, streaming, signal) {
+                    const idx = seen < 2 ? seen++ : -1;
+                    if (idx >= 0) {
+                        await Bun.sleep(idx === firstToFail ? 0 : 40);
+                        throw Object.assign(new Error("slow down"), {
+                            name: "ThrottlingException",
+                            $metadata: { httpStatusCode: 429 },
+                        });
+                    }
+                    return scriptedUpstream().converse(m, b, streaming, signal);
+                },
+            };
+            const { url, records } = await start(null, up);
+            const a = hostCallJson(url, AGENT_BODY, 10_000);
+            await Bun.sleep(10);
+            const b = hostCallJson(url, AGENT_BODY, 10_000);
+            await Promise.all([a, b]);
+            const byStart = [...records.records].sort(
+                (p, q) => p.started_wall_ms - q.started_wall_ms,
+            );
+            expect(byStart.map((r) => r.proxy_retries)).toEqual([1, 1]);
+            return byStart.map((r) => r.wall_ms - r.started_wall_ms);
+        };
+        const [first, second] = [await run(0), await run(1)];
+        expect(Math.abs((first[0] ?? 0) - (second[0] ?? 0))).toBeLessThan(80);
+        expect(Math.abs((first[1] ?? 0) - (second[1] ?? 0))).toBeLessThan(80);
+    }, 30_000);
 
     test("stop() returns after in-flight handlers wrote their records", async () => {
         const slow: Upstream = {
