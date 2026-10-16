@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import {
     existsSync,
     linkSync,
+    lstatSync,
     mkdirSync,
     mkdtempSync,
     readdirSync,
@@ -491,6 +492,39 @@ touch ${escaped}
         expect(existsSync(join(armDir, "transcripts.json"))).toBe(false);
     });
 
+    test("a resume refuses to retry a transcript-store check that already recorded a gap", async () => {
+        const { driver, armDir } = fixture("host", { p: gitRepo() });
+        await driver.reset();
+        const record = { checked_after: "first session_end", paths: ["/x"], missing: ["/x"] };
+        writeFileSync(join(armDir, "transcripts.json"), JSON.stringify(record));
+        const fresh = new HostDriver((driver as unknown as { o: DriverOptions }).o);
+        await expect(fresh.resume(null)).rejects.toThrow("transcript store missing");
+    });
+
+    test("reap on an arm with no recorded state stops, since it cannot know what to stop", async () => {
+        const { driver, armDir } = fixture("host", { p: gitRepo() });
+        await driver.reset();
+        rmSync(join(armDir, "state.json"));
+        const fresh = new HostDriver((driver as unknown as { o: DriverOptions }).o);
+        await expect(fresh.reap()).rejects.toThrow("state.json");
+    });
+
+    test("a resumed daemon keeps the arm's first model after a model switch", async () => {
+        const models: string[] = [];
+        const daemonFactory = (ctx: { model: string }) =>
+            ({
+                ...fakeDaemon(10),
+                start: async () => void models.push(ctx.model),
+            }) as unknown as DaemonStack;
+        const { driver } = fixture("eidnara", {}, { daemonFactory });
+        await driver.reset();
+        await driver.fault(episode("model_switch"));
+        const fresh = new HostDriver((driver as unknown as { o: DriverOptions }).o);
+        await fresh.resume(null);
+        expect(models).toEqual(["model-a", "model-a"]);
+        expect(fresh.host?.ctx.model).toBe("model-b");
+    });
+
     test("a resume with state.json gone stops instead of guessing the arm's state", async () => {
         const { driver, armDir } = fixture("host", { p: gitRepo() });
         await driver.reset();
@@ -601,6 +635,43 @@ describe("HostDriver faults", () => {
             expect(() => inner.mountStore(false)).toThrow("store image");
         } finally {
             await driver.stop();
+        }
+    });
+
+    test.skipIf(!sudo)("store_full replaces a ballast link the host planted", async () => {
+        const { driver } = fixture("eidnara");
+        driver.daemon = fakeDaemon(10) as unknown as DaemonStack;
+        const inner = driver as unknown as { mountStore(f: boolean): void };
+        inner.mountStore(true);
+        const victim = join(tmp(), "victim");
+        writeFileSync(victim, "small");
+        try {
+            symlinkSync(victim, join(driver.storeRoot, "ballast"));
+            expect(await driver.fault(episode("store_full"))).toMatchObject({ avail_kb: 0 });
+            expect(readFileSync(victim, "utf8")).toBe("small");
+            expect(lstatSync(join(driver.storeRoot, "ballast")).isSymbolicLink()).toBe(false);
+        } finally {
+            await driver.stop().catch(() => undefined);
+        }
+    });
+
+    test.skipIf(!sudo)("a ballast that vanished before the kill stops the resume", async () => {
+        const daemonFactory = (ctx: { dataDir: string }) =>
+            ({
+                ...fakeDaemon(10),
+                start: async () => void mkdirSync(ctx.dataDir, { recursive: true }),
+            }) as unknown as DaemonStack;
+        const { driver } = fixture("eidnara", {}, { loopStore: true, daemonFactory });
+        let fresh: HostDriver | null = null;
+        try {
+            await driver.reset();
+            await driver.fault(episode("store_full"));
+            rmSync(join(driver.storeRoot, "ballast"));
+            fresh = new HostDriver((driver as unknown as { o: DriverOptions }).o);
+            await expect(fresh.resume(null)).rejects.toThrow("ballast");
+        } finally {
+            await fresh?.stop().catch(() => undefined);
+            await driver.stop().catch(() => undefined);
         }
     });
 

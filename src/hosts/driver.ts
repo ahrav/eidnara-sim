@@ -28,6 +28,8 @@ interface ArmState {
     model: number;
     daemon: { pid: number; start: string | null } | null;
     host: { pid: number; start: string | null } | null;
+    /** Size of the store_full ballast while the fault is active. */
+    ballast: number | null;
 }
 
 export interface DriverOptions extends Omit<HostContext, "root" | "model"> {
@@ -208,6 +210,7 @@ export class HostDriver implements ArmDriver {
             model: this.model,
             daemon: proc(this.daemonPid()),
             host: proc(this.sessionProject === null ? null : (this.host?.hostPid() ?? null)),
+            ballast: this.ballastBytes,
         };
         mkdirSync(this.armDir, { recursive: true });
         writeWhole(this.stateFile, JSON.stringify(state));
@@ -222,11 +225,19 @@ export class HostDriver implements ArmDriver {
         return this.storeMount ? join(this.storeMount, "ballast") : null;
     }
 
-    private async startArm(fresh: boolean): Promise<void> {
+    private async startArm(fresh: boolean, expectBallast: number | null = null): Promise<void> {
         mkdirSync(this.storeRoot, { recursive: true, mode: 0o700 });
         if (this.o.loopStore && eidnaraOn(this.o.arm)) this.mountStore(fresh);
-        const filled = this.ballast !== null && existsSync(this.ballast);
-        if (filled) rmSync(this.ballast as string, { force: true });
+        const filled = expectBallast !== null;
+        if (filled) {
+            const size = statSync(this.ballast ?? "", { throwIfNoEntry: false })?.size ?? null;
+            if (size !== expectBallast) {
+                throw new HarnessFailure(
+                    `store_full ballast ${this.ballast} changed before the kill`,
+                );
+            }
+            rmSync(this.ballast as string, { force: true });
+        }
         try {
             if (eidnaraOn(this.o.arm)) {
                 realChild(this.o.armRoot, "runtime", "daemon runtime");
@@ -237,13 +248,16 @@ export class HostDriver implements ArmDriver {
                     root: this.o.armRoot,
                     dataDir: this.dataDir,
                     logFile: join(this.armDir, "daemon.log"),
-                    model: this.currentModel(),
+                    model: this.o.models[0] as string,
                 });
                 await this.daemon.start();
                 this.recordState();
             }
         } finally {
-            if (filled) this.fill();
+            if (filled) {
+                this.fill();
+                this.recordState();
+            }
         }
         this.host = this.newHost();
         this.recordState();
@@ -275,20 +289,29 @@ export class HostDriver implements ArmDriver {
         }
         this.model = state.model;
         const checked = join(this.armDir, "transcripts.json");
-        this.transcriptsChecked =
-            existsSync(checked) && JSON.parse(readFileSync(checked, "utf8")).missing.length === 0;
+        if (existsSync(checked)) {
+            const missing = JSON.parse(readFileSync(checked, "utf8")).missing as string[];
+            if (missing.length > 0) {
+                throw new HarnessFailure(`transcript store missing: ${missing.join(", ")}`);
+            }
+            this.transcriptsChecked = true;
+        }
         await this.reapStale();
-        await this.startArm(false);
+        await this.startArm(false, state.ballast ?? null);
         if (open) await this.event(open);
     }
 
+    /** Stops what the killed harness recorded; a missing record is a lost arm, so the resume stops. */
     async reap(): Promise<void> {
+        if (!this.readState()) {
+            throw new HarnessFailure(`resume of arm ${this.o.arm}: ${this.stateFile} is gone`);
+        }
         await this.reapStale();
     }
 
     private async reapStale(): Promise<void> {
         const state = this.readState();
-        for (const proc of [state?.daemon, state?.host]) {
+        for (const proc of [state?.host, state?.daemon]) {
             if (proc && running(proc.pid) && processStart(proc.pid) === proc.start) {
                 if (!(await stopOwnedTree(proc.pid, 5_000))) {
                     throw new HarnessFailure(`recorded process ${proc.pid} survived SIGKILL`);
@@ -396,7 +419,11 @@ export class HostDriver implements ArmDriver {
                 restarted_by: "harness",
             };
         }
-        if (f.type === "store_full") return this.fillStore();
+        if (f.type === "store_full") {
+            const evidence = this.fillStore();
+            this.recordState();
+            return evidence;
+        }
         if (f.type === "plugin_reload") {
             return { reload: "host process and plugin respawn at the next session_start" };
         }
@@ -427,6 +454,8 @@ export class HostDriver implements ArmDriver {
     /** An unwritten `fallocate` extent and a short `dd` tail fill the store while the sparse image stays small. */
     private fill(): void {
         if (!this.storeMount || !this.ballast) return;
+        rmSync(this.ballast, { force: true });
+        writeFileSync(this.ballast, "", { flag: "wx" });
         const free = run(["df", "-B1", "--output=avail", this.storeMount])
             .trim()
             .split("\n")

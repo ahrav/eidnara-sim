@@ -55,8 +55,8 @@ there before each restart.
 `DaemonStack` starts the daemon through the v1 `HermeticHostStack` with the
 interposer environment, restarts it with SIGKILL against the same store, and
 stops it with SIGTERM so its store stays on disk. It appends the daemon's
-output to the arm's `daemon.log` before each restart and after the stop, so
-the shutdown's own output is kept; the v1
+output to the arm's `daemon.log` before each restart and before and after
+the stop, so a kill between the two loses only the shutdown lines; the v1
 stack keeps the last 256 KiB of that output, so a longer stretch keeps its
 tail.
 
@@ -170,13 +170,17 @@ The driver keeps `<arm>/state.json` current with the model index and the
 pid and start time of the daemon and of the host while a session is open,
 replacing the file whole so a kill mid-write leaves the previous state. Pi's
 pid is recorded as soon as its process exists, before the readiness wait;
-OpenCode's is known once `spawnOpencode` returns.
+OpenCode's once `spawnOpencode` returns, before the SDK setup. The state
+also carries the size of an active `store_full` ballast and, through
+`transcripts.json`, a transcript-store gap already found; a resume stops on
+either a changed ballast or a recorded gap, since neither may heal.
 A new harness process calls `reap()` and then `resume(open)` on an arm that
 has `StartArm` and no `EndArm`; an arm whose every event is journaled is only
-reaped and finished. `reap` stops each recorded process
+reaped and finished. `reap` requires the state and stops each recorded process, host first,
 whose start time still matches (a process that outlives SIGTERM and SIGKILL
 stops the resume with `HarnessFailure`) and unmounts a store left mounted,
-before the scheduler arms any proxy fault again. `resume` restores the model index, mounts the
+before the scheduler arms any proxy fault again. `resume` restores the host model index (the daemon keeps the arm's first
+model, as it did before the kill), mounts the
 existing store image (a missing image or `state.json` stops the resume,
 since only `reset` formats one and the state names what to stop), starts the daemon against the existing store, and, when
 the next event is inside a session, opens that session again. Pi reopens the
@@ -207,7 +211,7 @@ against the same store (OQ-10).
 |---|---|---|
 | `daemon_sigkill_mid_fold` | The session's first observed history-summarizer call fires it; SIGKILL and restart | `pid_before`, `pid_after`, `restarted_by: harness` |
 | `daemon_restart` | At `session_start`, SIGKILL and restart | As above |
-| `store_full` | When the scenario schedules `store_full`, each Eidnara arm's store lives on a sparse 2 GiB ext4 loop mount (`nosuid,nodev,noexec`) at `<arm>/s`, room for the daemon to materialize its harness closures twice, with its image outside the sandbox's kept paths; the fault fills it with a `fallocate`d ballast topped up by `dd`, so the sparse image stays small, and `session_end` removes the ballast; a resume that finds the ballast removes it for the daemon's start and fills the store again, whether or not that start succeeds; the store is writable to the host, so `session_end` requires the ballast to be whole and stops the run otherwise | `avail_kb: 0`; any other value stops the run |
+| `store_full` | When the scenario schedules `store_full`, each Eidnara arm's store lives on a sparse 2 GiB ext4 loop mount (`nosuid,nodev,noexec`) at `<arm>/s`, room for the daemon to materialize its harness closures twice, with its image outside the sandbox's kept paths; the fault fills it with a `fallocate`d ballast topped up by `dd`, so the sparse image stays small, and `session_end` removes the ballast; a resume that finds the ballast removes it for the daemon's start and fills the store again, whether or not that start succeeds; the store is writable to the host, so `session_end` requires the ballast to be whole and stops the run otherwise; the fault replaces whatever the host left at the ballast's name with a fresh regular file before allocating | `avail_kb: 0`; any other value stops the run |
 | `plugin_reload` | The host process and its plugin start afresh at every `session_start` | The reload note |
 | `model_switch` | Later sessions use the next configured model; the daemon keeps running with its summarizer model | The new model id |
 | `laptop_sleep` | One event-free clock jump (`docs/run.md`) | The `AdvanceClock` entry |

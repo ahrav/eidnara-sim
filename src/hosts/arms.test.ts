@@ -297,6 +297,53 @@ test("an OpenCode session whose SDK setup fails stops the server it spawned", as
     expect(left).toEqual([]);
 });
 
+test("an OpenCode session reports its spawn before the SDK setup runs", async () => {
+    const run = runDir();
+    const checkout = fakeV1(run);
+    const ctx = { ...context(run), host: "opencode" as const };
+    const config = { ...ctx.config, eidnara_checkout: checkout };
+    const spawned: Array<number | null> = [];
+    const host = new OpencodeSimHost({
+        ...ctx,
+        config,
+        onSpawn: () => void spawned.push(host.hostPid()),
+    });
+    await host.openSession(run, "s1", null).catch(() => undefined);
+    await Bun.sleep(200);
+    for (const pid of serving()) process.kill(pid, "SIGKILL");
+    await host.closeSession().catch(() => undefined);
+    expect(spawned).toHaveLength(1);
+    expect(spawned[0]).not.toBeNull();
+});
+
+test("the daemon's output is on disk before its termination begins", async () => {
+    const run = runDir();
+    const stack = new DaemonStack({
+        config: loadConfig(),
+        root: run,
+        dataDir: join(run, "data"),
+        logFile: join(run, "daemon.log"),
+        offsetFile: join(run, "offset"),
+        proxyHttp1: "",
+        proxyHttp2: "",
+        model: "m",
+    });
+    let log = "booted\n";
+    let onDiskAtTerminate = "";
+    (stack as Untyped).stack = {
+        hostLog: () => log,
+        terminateHost: async () => {
+            onDiskAtTerminate = await Bun.file(join(run, "daemon.log"))
+                .text()
+                .catch(() => "");
+            log += "shutting down cleanly\n";
+        },
+    };
+    await stack.stop();
+    expect(onDiskAtTerminate).toBe("booted\n");
+    expect(await Bun.file(join(run, "daemon.log")).text()).toBe("booted\nshutting down cleanly\n");
+});
+
 test("a Pi session whose readiness response is a refusal fails and stops the launcher tree", async () => {
     const run = runDir();
     const checkout = fakeV1(run);

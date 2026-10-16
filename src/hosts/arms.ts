@@ -139,8 +139,15 @@ export class DaemonStack {
         this.connectionFile = this.stack.connectionFile;
     }
 
+    private saved = "";
+
+    /** Appends what the stack has logged since the last save; a restart resets both. */
     private saveLog(): void {
-        if (this.stack) appendFileSync(this.ctx.logFile, this.stack.hostLog());
+        if (!this.stack) return;
+        const log: string = this.stack.hostLog();
+        const delta = log.startsWith(this.saved) ? log.slice(this.saved.length) : log;
+        appendFileSync(this.ctx.logFile, delta);
+        this.saved = log;
     }
 
     async restart(): Promise<void> {
@@ -148,18 +155,29 @@ export class DaemonStack {
         await this.stack.restartHost();
     }
 
+    /** The log is saved before and after termination, so a kill in between loses only the shutdown lines. */
     async stop(): Promise<void> {
         const stack = this.stack;
         if (!stack) return;
+        let failure: unknown = null;
+        try {
+            this.saveLog();
+        } catch (caught) {
+            failure = caught;
+        }
         try {
             await stack.terminateHost();
         } finally {
             try {
                 this.saveLog();
+            } catch (caught) {
+                failure ??= caught;
             } finally {
                 this.stack = null;
+                this.saved = "";
             }
         }
+        if (failure) throw failure;
     }
 }
 
@@ -446,6 +464,7 @@ export class OpencodeSimHost extends SimHost {
                 PATH: `${hostbin}:${this.toolchain.path}:${process.env.PATH ?? ""}`,
             },
         });
+        this.ctx.onSpawn?.();
         const sdkPath = "packages/e2e-tests/node_modules/@opencode-ai/sdk/dist/index.js";
         try {
             const sdk = await import(join(config.eidnara_checkout, sdkPath));
