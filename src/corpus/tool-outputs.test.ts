@@ -88,6 +88,9 @@ describe("classify and commandOf", () => {
         expect(classify("execute_bash", "find . -name '*.py' | xargs grep -l foo", "a.py")).toBe(
             "grep",
         );
+        expect(
+            classify("execute_bash", "echo -exec rg followed by a long message here", "x"),
+        ).toBeNull();
     });
     test("a runner name inside a quoted pattern is not a pipeline segment", () => {
         const cmd =
@@ -103,7 +106,26 @@ describe("classify and commandOf", () => {
         expect(classify("execute_bash", "python -m pytest --version", "pytest 8.0")).toBeNull();
         expect(classify("execute_bash", "pytest --collect-only -q tests", "t.py::a")).toBeNull();
         expect(classify("execute_bash", "pytest --co tests", "t.py::a")).toBeNull();
+        expect(classify("execute_bash", "python --version && pytest tests", "1 passed")).toBe(
+            "test_run",
+        );
+        expect(classify("execute_bash", "pytest tests && python tool.py --help", "ok")).toBe(
+            "test_run",
+        );
         expect(classify("execute_bash", "pytest tests/test_h.py", "ok")).toBe("test_run");
+        expect(
+            classify("execute_bash", "printf long-output # ; pytest tests", "long-output"),
+        ).toBeNull();
+        expect(
+            classify(
+                "execute_bash",
+                "echo setup done; pytest",
+                "setup done\nbash: line 1: pytest: command not found",
+            ),
+        ).toBeNull();
+        expect(
+            classify("execute_bash", "echo \\; pytest followed by a long unquoted message", "x"),
+        ).toBeNull();
     });
     test("commandOf reads command and path, and falls back to the raw text", () => {
         expect(commandOf('{"command":"view","path":"/a.py"}')).toBe("view /a.py");
@@ -226,6 +248,27 @@ describe("extractFrom", () => {
         expect(trace?.truncated).toBe(true);
         expect(trace?.content.startsWith("Traceback (most recent call last)")).toBe(true);
         expect(trace?.content).toContain("ValueError: bad input value");
+    });
+
+    test("a result that ends only with the completed footer still records its exit code", () => {
+        const out = extractFrom(
+            [
+                {
+                    trajectory_id: "t8",
+                    repo: "o/r",
+                    trajectory: [
+                        call("c14", "execute_bash", { command: "grep -rn foo ." }),
+                        result(
+                            "c14",
+                            "execute_bash",
+                            "a.py:1: foo bar baz qux quux corge grault garply\n[The command completed with exit code 1.]",
+                        ),
+                    ],
+                },
+            ],
+            dataset,
+        );
+        expect(out.samples.map((s) => [s.kind, s.exit_code])).toEqual([["grep", 1]]);
     });
 
     test("a command result without a completion footer yields no sample", () => {

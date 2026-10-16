@@ -49,7 +49,22 @@ describe("sessionMetrics", () => {
     });
 
     test("a session with no user message has no steps and no idle gaps", () => {
-        expect(sessionMetrics([round(0, false, 0, 1)])).toEqual({ steps: [], idle: [], end: 1 });
+        expect(sessionMetrics([round(0, false, 0, 1)])).toEqual({
+            steps: [],
+            idle: [],
+            append: [],
+            end: 1,
+        });
+    });
+
+    test("append tokens count only for rounds inside a request", () => {
+        const m = sessionMetrics([
+            { ...round(0, false, 0, 10), append: 500 },
+            { ...round(1, true, 20, 30), append: 100 },
+            { ...round(2, false, 40, 50), append: null },
+            { ...round(3, false, 60, 70), append: 200 },
+        ]);
+        expect(m.append).toEqual([100, 200]);
     });
 });
 

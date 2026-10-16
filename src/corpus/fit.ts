@@ -61,7 +61,7 @@ const DEFINITIONS = {
     tool_steps_per_request:
         "Rounds (LLM invocations) from one user-message round up to the next, per request.",
     append_tokens_per_step:
-        "newly_append_tokens per round: non-cached input tokens appended for the invocation.",
+        "newly_append_tokens per round within a request (a user-message round and the rounds up to the next): non-cached input tokens appended for the invocation.",
     idle_within_session_s:
         "Seconds before each user-message round after a session's first, from the latest end of all earlier rounds in the session to that round's first timing event; a round that starts before that end counts as zero.",
     idle_between_sessions_s:
@@ -88,6 +88,7 @@ export interface Round {
     requestStart: boolean;
     t0: number;
     t1: number;
+    append?: number | null;
 }
 
 /**
@@ -96,10 +97,16 @@ export interface Round {
  * earlier rounds in the session; a request that starts before that end
  * contributes zero.
  */
-export function sessionMetrics(rounds: Round[]): { steps: number[]; idle: number[]; end: number } {
+export function sessionMetrics(rounds: Round[]): {
+    steps: number[];
+    idle: number[];
+    append: number[];
+    end: number;
+} {
     const sorted = [...rounds].sort((a, b) => a.t0 - b.t0 || a.index - b.index);
     const steps: number[] = [];
     const idle: number[] = [];
+    const append: number[] = [];
     let current = 0;
     let end = Number.NEGATIVE_INFINITY;
     for (const round of sorted) {
@@ -110,10 +117,11 @@ export function sessionMetrics(rounds: Round[]): { steps: number[]; idle: number
             }
             current = 1;
         } else if (current > 0) current++;
+        if (current > 0 && round.append != null) append.push(round.append);
         end = Math.max(end, round.t1);
     }
     if (current > 0) steps.push(current);
-    return { steps, idle, end };
+    return { steps, idle, append, end };
 }
 
 /** A gap opens only when a session starts after every earlier session of the same user has ended. */
@@ -146,14 +154,12 @@ export async function fitTraceLab(dataset: Dataset): Promise<TraceLabFit> {
     }
 
     const requests = new Map<string, number>();
-    const append: number[] = [];
     const bySession = new Map<string, Round[]>();
     const userOf = new Map<string, string>();
     for (const r of roundRows) {
         const session = r.session_id as string;
         const requestStart = r.first_input_event_type === "user_message";
         requests.set(session, (requests.get(session) ?? 0) + (requestStart ? 1 : 0));
-        if (r.newly_append_tokens !== null) append.push(Number(r.newly_append_tokens));
         const s = span.get(r.round_pk as bigint);
         if (s === undefined) continue;
         userOf.set(session, r.user as string);
@@ -162,16 +168,19 @@ export async function fitTraceLab(dataset: Dataset): Promise<TraceLabFit> {
             requestStart,
             t0: s[0],
             t1: s[1],
+            append: r.newly_append_tokens === null ? null : Number(r.newly_append_tokens),
         });
     }
 
     const idle: number[] = [];
     const steps: number[] = [];
+    const append: number[] = [];
     const spansByUser = new Map<string, [number, number][]>();
     for (const [session, rounds] of bySession) {
         const m = sessionMetrics(rounds);
         steps.push(...m.steps);
         idle.push(...m.idle);
+        append.push(...m.append);
         const start = rounds.reduce((min, r) => Math.min(min, r.t0), Number.POSITIVE_INFINITY);
         push(spansByUser, userOf.get(session) ?? "", [start, m.end] as [number, number]);
     }

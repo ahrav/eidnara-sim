@@ -42,6 +42,15 @@ test("summarize keeps one result line per cargo target, including identical ones
     ]);
 });
 
+test("summarize reads result lines through ANSI colour codes", () => {
+    const out = [
+        "\x1b[32m 1610 pass\x1b[0m",
+        "\x1b[31m 4 fail\x1b[0m",
+        "\x1b[31m(fail) a > b\x1b[0m [1.00ms]",
+    ].join("\n");
+    expect(summarize(out)).toEqual(["(fail) a > b", "1610 pass", "4 fail"]);
+});
+
 test("summarize changes when the fail count changes with the same failing names", () => {
     const run = (fails: number) =>
         summarize(["(fail) a > b [1.00ms]", ` ${10 - fails} pass`, ` ${fails} fail`].join("\n"));
