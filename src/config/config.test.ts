@@ -116,3 +116,16 @@ test("the tool homes the hosts need must be configured", () => {
         "config.toolchain.env.RUSTUP_HOME: missing",
     );
 });
+
+test("toolchain homes and caches must be normalized absolute paths", () => {
+    const base = loadConfig() as any;
+    const env = (extra: Record<string, unknown>) => ({
+        ...base,
+        toolchain: { ...base.toolchain, env: { ...base.toolchain.env, ...extra } },
+    });
+    for (const value of ["cache", "/opt/../cache", "/opt/cache/"]) {
+        expect(() => parseConfig(env({ CARGO_HOME: value }))).toThrow(
+            "config.toolchain.env.CARGO_HOME: expected a normalized absolute path",
+        );
+    }
+});

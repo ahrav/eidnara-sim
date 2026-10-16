@@ -86,7 +86,9 @@ function signal(targets: Target[], name: NodeJS.Signals): void {
     for (const t of targets.filter(alive)) {
         try {
             process.kill(t.pid, name);
-        } catch {}
+        } catch {
+            // A target that exits before the signal is already stopped.
+        }
     }
 }
 
@@ -98,14 +100,20 @@ export async function stopOwnedTree(
     graceMs: number,
     rootStart?: string,
 ): Promise<boolean> {
-    if (rootStart !== undefined && processStart(rootPid) !== rootStart) return true;
+    if (rootStart !== undefined && !running(rootPid, rootStart)) return true;
     const targets = ownedProcesses(rootPid).map((pid) => ({ pid, start: processStart(pid) }));
-    const all = [...targets, { pid: rootPid, start: processStart(rootPid) }];
+    // The root keeps its launch identity throughout; a pid reused between the check above and
+    // the walk gives a tree that belongs to another process, which is left alone.
+    const root = { pid: rootPid, start: rootStart ?? processStart(rootPid) };
+    if (rootStart !== undefined && !running(rootPid, rootStart)) return true;
+    const all = [...targets, root];
     signal(targets, "SIGTERM");
     if (await stopped(all, graceMs)) return true;
     signal(targets, "SIGKILL");
     if (await stopped(all, 2_000)) return true;
     if (rootStart === undefined) return false;
+    // The launch-identity check protects processes that reuse rootPid before privileged tree traversal.
+    if (!running(rootPid, rootStart)) return false;
     // The launcher is root-owned until its sandbox drops privileges, so what is left of a pinned
     // launch is killed through the same passwordless sudo the launcher runs under.
     const privileged = treeProcesses(rootPid)

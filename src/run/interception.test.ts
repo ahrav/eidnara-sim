@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { exitedAsExpected, probes } from "./interception";
@@ -29,4 +29,18 @@ test("the daemon fixture probe accepts its usage error as a normal exit, other p
     expect(exitedAsExpected(daemon!, 0, "")).toBe(false);
     expect(exitedAsExpected(pi!, 0, "")).toBe(true);
     expect(exitedAsExpected(pi!, 1, usage)).toBe(false);
+});
+
+test("the Pi probe keeps the same directory the live host keeps for a standalone node", () => {
+    const dir = tempDir("sim-probes-");
+    mkdirSync(join(dir, "opt"));
+    writeFileSync(join(dir, "opt/node"), "");
+    mkdirSync(join(dir, "install/bin"), { recursive: true });
+    writeFileSync(join(dir, "install/bin/node"), "");
+    for (const f of ["opencode", "direct_host_fixture"]) writeFileSync(join(dir, f), "");
+    const rest = { opencode: join(dir, "opencode"), daemon: join(dir, "direct_host_fixture") };
+    expect(probes({ node: join(dir, "opt/node"), ...rest })[0]?.keep).toEqual([join(dir, "opt")]);
+    expect(probes({ node: join(dir, "install/bin/node"), ...rest })[0]?.keep).toEqual([
+        join(dir, "install"),
+    ]);
 });
