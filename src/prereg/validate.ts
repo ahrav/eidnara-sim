@@ -308,9 +308,13 @@ function checkFamilies(p: Preregistration, errors: string[]): void {
                 `${at}.interval_method: ${f.interval_method} does not analyse a ${f.outcome} outcome`,
             );
         }
-        if (f.id === "resources" && Number(f.margin.value) !== p.leak_bound.c_bytes_per_session) {
+        if (
+            f.id === "resources" &&
+            (f.margin.scale !== "bytes" ||
+                Number(f.margin.value) !== p.leak_bound.c_bytes_per_session)
+        ) {
             errors.push(
-                `${at}.margin.value: the resources margin is leak_bound.c_bytes_per_session`,
+                `${at}.margin: the resources margin is leak_bound.c_bytes_per_session in bytes`,
             );
         }
         if (f.id === "harm" && (f.multiplicity !== "holm" || !sameSet(f.metrics, HARM_METRICS))) {

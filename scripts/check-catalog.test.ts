@@ -153,11 +153,7 @@ describe("catalog checker", () => {
             /Check: `always` - [^\n]*\n(?:[^\n]+\n)*?(?=Fault\/timing angle:)/,
             "Check: `always`\n",
         );
-        edit(
-            path,
-            "Impact: Arms of one seed",
-            "Impact: Arms of one seed\nUnexpected field: silently accepted",
-        );
+        edit(path, "Impact: Arms of one seed", "Impact: Arms of one seed\nID: extra");
         const evidence = join(dir, "evidence/sim-p01-scenario-compile-is-deterministic.md");
         writeFileSync(
             evidence,
@@ -167,9 +163,7 @@ describe("catalog checker", () => {
         expect(errors).toContain(
             "sim-p01-scenario-compile-is-deterministic: Check states no condition after its semantics",
         );
-        expect(errors).toContain(
-            "sim-p01-scenario-compile-is-deterministic: undeclared field Unexpected field",
-        );
+        expect(errors).toContain("sim-p01-scenario-compile-is-deterministic: undeclared field ID");
         expect(errors).toContain(
             "sim-p01-scenario-compile-is-deterministic: evidence section ## Discovery trigger is empty",
         );

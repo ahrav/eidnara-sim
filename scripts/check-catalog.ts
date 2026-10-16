@@ -3,6 +3,8 @@ import { basename, dirname, join, resolve } from "node:path";
 
 const ROOT = resolve(import.meta.dir, "..");
 const SEMANTICS = ["always", "always-or-unreached", "sometimes", "reachable", "unreachable"];
+/** Capitalised lead-ins a continuation line may open with; every other `Name:` line is a field. */
+const PROSE_LEAD_INS = ["PROPOSED"];
 const EVIDENCE_HEADINGS = [
     "## Discovery trigger",
     "## Evidence trail",
@@ -88,8 +90,10 @@ export function checkRecord(record: Record, spec: FieldSpec[], catalogDir: strin
             return;
         }
         for (const line of value.split("\n").slice(1)) {
-            const m = /^([A-Z][a-z][A-Za-z/ ]*):/.exec(line);
-            if (m) errors.push(`${at}: undeclared field ${m[1]}`);
+            const m = /^([A-Z][A-Za-z/ ]*):/.exec(line);
+            if (m && !PROSE_LEAD_INS.includes(m[1] ?? "")) {
+                errors.push(`${at}: undeclared field ${m[1]}`);
+            }
         }
         if (name === "Check" && (value.split(/ -(?:\s|$)/)[1] ?? "").trim() === "") {
             errors.push(`${at}: Check states no condition after its semantics`);

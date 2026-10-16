@@ -294,11 +294,18 @@ describe("pre-registration validator", () => {
         fam("probe-P1").outcome = "slope";
         fam("probe-P5").mde.value = "0";
         m.leak_bound.c_bytes_per_session = 1;
+        const l = load("L") as any;
+        const res = l.families.find((f: any) => f.id === "resources");
+        res.margin.scale = "count";
+        res.mde.scale = "count";
+        expect(validatePreregistration(l)).toEqual([
+            "families[resources].margin: the resources margin is leak_bound.c_bytes_per_session in bytes",
+        ]);
         expect(validatePreregistration(m).sort()).toEqual(
             [
                 "families[probe-P1].interval_method: exact-mcnemar-newcombe-cluster-bootstrap does not analyse a slope outcome",
                 "families[probe-P5].mde.value: a superiority family detects a positive effect",
-                "families[resources].margin.value: the resources margin is leak_bound.c_bytes_per_session",
+                "families[resources].margin: the resources margin is leak_bound.c_bytes_per_session in bytes",
             ].sort(),
         );
     });
