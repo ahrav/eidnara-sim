@@ -1,5 +1,4 @@
-import { createHash } from "node:crypto";
-import { canonicalJson } from "../prereg/canonical";
+import { canonicalJson, sha256Hex } from "../prereg/canonical";
 import { COMPONENT_HEADER } from "../proxy/classify";
 import type { Rng } from "../rng";
 import type { ProbeItem } from "../scenario/compile";
@@ -112,7 +111,13 @@ export function blind(
         if (token) throw new BlindingRefused(`pair ${pair.id} ${label} names an arm: ${token}`);
     }
     const [first, second] = order === "a_then_b" ? [pair.a, pair.b] : [pair.b, pair.a];
-    return { pair: pair.id, order, reference, first: normalise(first), second: normalise(second) };
+    return {
+        pair: pair.id,
+        order,
+        reference: normalise(reference),
+        first: normalise(first),
+        second: normalise(second),
+    };
 }
 
 export const RUBRIC = `You compare two answers to one question against a reference reason.
@@ -123,7 +128,7 @@ export function judgePrompt(p: BlindedPrompt): string {
     return `${RUBRIC}\n\nReference reason:\n${p.reference}\n\nFirst answer:\n${p.first}\n\nSecond answer:\n${p.second}`;
 }
 
-const sha = (text: string) => createHash("sha256").update(text).digest("hex");
+const sha = sha256Hex;
 
 export const pairDigests = (pair: Pair) => ({ a: sha(pair.a), b: sha(pair.b) });
 export const referenceDigest = (reference: string) => sha(reference);
@@ -181,7 +186,7 @@ export function parseVerdict(text: string): RawVerdict {
         .trim()
         .toLowerCase()
         .replace(/[.!]+$/, "");
-    if (word === "first" || word === "second" || word === "both" || word === "neither") return word;
+    if (VERDICTS.includes(word)) return word as RawVerdict;
     throw new GradeRefused(`judge reply ${JSON.stringify(text.slice(0, 80))} is not a verdict`);
 }
 

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { sha256Hex } from "../prereg/canonical";
 import { Rng } from "../rng";
 import type { ProbeItem } from "../scenario/compile";
 import { loadPrereg } from "../scenario/inputs";
@@ -717,9 +717,10 @@ describe("P7 judge path", () => {
     test("the judge identity names the preprocessing version", () => {
         const id = judgeIdentity(rules.judge.model);
         expect(id.prompt_digest).toBe(
-            createHash("sha256")
-                .update(`${PREPROCESSING_VERSION}\n${judgePrompt(EMPTY_PROMPT)}`)
-                .digest("hex"),
+            "65c06cfd918d48dccecb428c26c9b0ae1a40ddd1126ba7eb67dfc785ea5da360",
+        );
+        expect(id.prompt_digest).toBe(
+            sha256Hex(`${PREPROCESSING_VERSION}\n${judgePrompt(EMPTY_PROMPT)}`),
         );
     });
 
@@ -943,6 +944,13 @@ describe("P7 judge path", () => {
         expect(() =>
             gradeP7(judgment, { ...pinned, snapshots: { ...ctx.snapshots, b: [other] } }, rules),
         ).toThrow("not the probe's event e-1");
+    });
+
+    test("the judge sees the reference reason normalised like the answers", () => {
+        const pair = { id: "p", a: "fine", b: "fine" };
+        expect(blind(pair, "a_then_b", "**allocation** dominated\n`p99`", []).reference).toBe(
+            "allocation dominated p99",
+        );
     });
 
     test("the human-check sample is ten percent of P7 items, rounded up, from a seeded draw", () => {
