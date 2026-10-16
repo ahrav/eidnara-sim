@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { sha256Hex } from "../prereg/canonical";
+import { loadRates } from "./distributions";
 import { fitTraceLab } from "./fit";
 import { CORPUS_DIR, type Dataset } from "./sources";
 import { extractToolOutputs } from "./tool-outputs";
@@ -26,9 +27,7 @@ function byId(datasets: Dataset[], id: string): Dataset {
 
 export async function buildCorpus(datasets: Dataset[]): Promise<Map<string, string>> {
     const fit = await fitTraceLab(byId(datasets, "tracelab"));
-    const rates = JSON.parse(readFileSync(join(CORPUS_DIR, "published-rates.json"), "utf8"));
-    if (rates.schema !== "sim-corpus-rates/v1")
-        throw new Error("published-rates.json: unknown schema");
+    const rates = loadRates();
     const extraction = await extractToolOutputs(byId(datasets, "openhands"));
 
     const files = new Map<string, string>();

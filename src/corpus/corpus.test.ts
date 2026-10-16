@@ -10,6 +10,7 @@ import {
     failedChecks,
     loadCited,
     loadDistributions,
+    loadRates,
     table,
     waived,
 } from "./distributions";
@@ -203,7 +204,7 @@ describe("SIM-P09: forced p90 sessions", () => {
 });
 
 describe("SIM-P10: user-behaviour rates", () => {
-    const published = JSON.parse(readFileSync(join(CORPUS_DIR, "published-rates.json"), "utf8"));
+    const published = loadRates();
 
     test("the four behaviour rates are present", () => {
         expect(Object.keys(published.rates).sort()).toEqual([
