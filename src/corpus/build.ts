@@ -4,11 +4,22 @@ import { fitTraceLab } from "./fit";
 import type { Dataset } from "./sources";
 import { extractToolOutputs } from "./tool-outputs";
 
+const MARK = /"@@numbers:(\d+)@@"/g;
+
 export function renderJson(value: unknown): string {
-    return `${JSON.stringify(value, null, 4).replace(
-        /\[\s+([-\d.e,\s]+?)\s+\]/g,
-        (_m, body: string) => `[${body.split(/,\s+/).join(", ")}]`,
-    )}\n`;
+    const compact: string[] = [];
+    const text = JSON.stringify(
+        value,
+        (_key, v: unknown) => {
+            const numeric =
+                Array.isArray(v) && v.length > 0 && v.every((n) => typeof n === "number");
+            if (!numeric) return v;
+            compact.push(`[${(v as number[]).map((n) => JSON.stringify(n)).join(", ")}]`);
+            return `@@numbers:${compact.length - 1}@@`;
+        },
+        4,
+    );
+    return `${text.replace(MARK, (_m, i: string) => compact[Number(i)] ?? "[]")}\n`;
 }
 
 const jsonl = (entries: readonly unknown[]) =>

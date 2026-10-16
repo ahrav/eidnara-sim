@@ -72,6 +72,12 @@ export function loadRepos(): RepoSpec[] {
                     `repos.json: ${repo.twin.id}: rename needs glob, pattern, and replace`,
                 );
             }
+            const inside = rename.glob.split("/").every((s) => s !== "" && s !== "." && s !== "..");
+            if (!inside) {
+                throw new Error(
+                    `repos.json: ${repo.twin.id}: glob ${rename.glob} must stay inside the twin`,
+                );
+            }
             try {
                 new RegExp(rename.pattern, "g");
             } catch (error) {
