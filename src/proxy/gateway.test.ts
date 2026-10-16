@@ -831,10 +831,12 @@ describe("classification", () => {
         );
     });
 
-    test("header values longer than the format's length field are cut to 65,535 bytes", () => {
-        const [m] = decodeMessages(encodeError("x".repeat(70_000), "y".repeat(70_000)));
-        expect(Buffer.byteLength(m?.headers[":error-code"] ?? "")).toBe(65_535);
-        expect(Buffer.byteLength(m?.headers[":error-message"] ?? "")).toBe(65_535);
+    test("string header values are cut to 32,767 bytes on a code point boundary", () => {
+        const [m] = decodeMessages(encodeError("x".repeat(70_000), "é".repeat(20_000)));
+        expect(Buffer.byteLength(m?.headers[":error-code"] ?? "")).toBe(32_767);
+        const message = m?.headers[":error-message"] ?? "";
+        expect(Buffer.byteLength(message)).toBe(32_766);
+        expect(message.includes("\uFFFD")).toBe(false);
     });
 
     test("wireJson serializes a Buffer and a Uint8Array as base64 and keeps a Buffer-shaped document", () => {
@@ -1051,6 +1053,25 @@ describe("every request yields one record", () => {
         expect((await hostCallJson(url, AGENT_BODY, 2_000)).status).toBe(400);
         expect(typeof records.records[0]?.first_byte_ms).toBe("number");
         expect(started.map((e) => e.component)).toEqual(["agent"]);
+        const modeled = await start(null, {
+            async converse() {
+                throw Object.assign(new Error("model said no"), {
+                    name: "ModelErrorException",
+                    originalStatusCode: 424,
+                    resourceName: "arn:model",
+                    $metadata: { httpStatusCode: 424 },
+                });
+            },
+        });
+        const r = await hostCallJson(modeled.url, AGENT_BODY, 2_000);
+        expect([r.status, r.json]).toEqual([
+            424,
+            {
+                message: "model said no",
+                originalStatusCode: 424,
+                resourceName: "arn:model",
+            } as never,
+        ]);
     });
 
     test("slow_stream over an upstream that rejects leaves no fault_ref", async () => {

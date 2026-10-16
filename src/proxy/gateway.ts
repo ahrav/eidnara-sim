@@ -495,7 +495,7 @@ export class Gateway {
                     "content-type": "application/json",
                     "x-amzn-errortype": errorType,
                 });
-                sink.write(Buffer.from(JSON.stringify({ message: text })));
+                sink.write(Buffer.from(JSON.stringify(payload)));
             } else if (streaming) {
                 if (!sawStop || !sawMetadata) done.finish_reason = "stream_cut";
                 const member = errorType[0]?.toLowerCase() + errorType.slice(1);

@@ -12,8 +12,9 @@ mid-stream reaches the host as an event stream message: a modeled exception
 framed as `exception` under its wire member name (`modelStreamErrorException`)
 with its own fields (for example `originalStatusCode`),
 any other throw as an `error` with its code and message, so the host's SDK
-raises the same failure. Header values are cut to the format's 65,535-byte
-limit. `Gateway.stop()`
+raises the same failure, and an error before any answer carries the same
+fields in its JSON body. String header values are cut to the format's
+32,767-byte limit on a code point boundary. `Gateway.stop()`
 closes every connection, then stops both listeners, and waits up to five
 seconds in all for in-flight requests, counted from the moment their headers
 arrive, to write their records; the
