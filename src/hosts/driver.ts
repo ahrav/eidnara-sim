@@ -226,7 +226,11 @@ export class HostDriver implements ArmDriver {
     /** Clones a harness-owned source into a fresh workspace with the harness's own view. */
     private async gitClone(project: string, source: string, target: string): Promise<void> {
         const argv = ["git", "clone", "--quiet", "--no-hardlinks", source, target];
-        const env = { ...process.env, ...GIT_ENV } as Record<string, string>;
+        // Ambient GIT_* variables (GIT_DIR, GIT_WORK_TREE, ...) would redirect the clone.
+        const inherited = Object.entries(process.env).filter(
+            ([key, value]) => !key.startsWith("GIT_") && value !== undefined,
+        );
+        const env = { ...Object.fromEntries(inherited), ...GIT_ENV } as Record<string, string>;
         const r = await this.recorded(project, argv, env, this.o.armRoot);
         if (r.status !== 0) throw new Error(`${argv.join(" ")}: ${r.stderr}`);
     }

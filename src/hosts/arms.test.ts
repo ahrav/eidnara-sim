@@ -87,6 +87,14 @@ export class PiRpcProcess {
         `export async function spawnOpencode(opts: any) {
     globalThis.__simSpawnOpts = opts;
     const child = Bun.spawn(["/bin/sh", "-c", "sleep 300; exit 0", "sh", "serve", "${PORT}"]);
+    // The runner answers once the server is observable, as the real one does after readiness.
+    const { readFileSync } = await import("node:fs");
+    for (let i = 0; i < 200; i++) {
+        try {
+            if (readFileSync("/proc/" + child.pid + "/cmdline", "utf8").includes("serve")) break;
+        } catch {}
+        await Bun.sleep(5);
+    }
     return { url: "http://127.0.0.1:${PORT}", port: ${PORT}, kill: async () => child.kill() };
 }
 `,

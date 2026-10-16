@@ -779,6 +779,18 @@ touch ${escaped}
         await expect(fresh.reap()).rejects.toThrow("outlived");
     });
 
+    test("reset's clone ignores ambient GIT_* variables", async () => {
+        const { driver } = fixture("host", { p: gitRepo() });
+        process.env.GIT_DIR = join(tmp(), "ambient.git");
+        try {
+            await driver.reset();
+            expect(existsSync(join(driver.workspace("p"), ".git", "HEAD"))).toBe(true);
+            expect(readFileSync(join(driver.workspace("p"), "README"), "utf8")).toBe("hi\n");
+        } finally {
+            delete process.env.GIT_DIR;
+        }
+    });
+
     test("reset starts the fresh arm with no fault or git state carried over", async () => {
         const { driver, armDir } = fixture("host", { p: gitRepo() });
         const inner = driver as unknown as {
