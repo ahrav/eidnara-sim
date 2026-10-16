@@ -8,13 +8,15 @@ both.
 Leases are files `lease.<n>.json`, and the highest number names the holder.
 `takeLease(dir)` reads the highest lease: one held by a live process, or by any
 process on another machine, refuses the call. The machine is `/etc/machine-id`
-(the hostname where that file is absent), so machines or containers that share
-a hostname on one directory stay distinct; a lease carries the kernel boot id,
-so one left by an earlier boot of this machine reads as dead; it carries the
+(`hostname:<name>` where that file is absent), so machines or containers that
+share a hostname on one directory stay distinct; a lease carries the kernel
+boot id, so one left by an earlier boot of this machine reads as dead, while a
+boot mismatch under the hostname fallback is refused as another machine; it carries the
 holder's pid namespace, so a lease from another namespace on this machine is
 refused rather than probed against unrelated local pids; and the holder is
 identified by pid and by its kernel start time (`/proc/<pid>/stat`), so a pid
-that a later process reuses still reads as a dead holder. A lease is read through
+that a later process reuses still reads as a dead holder; a holder whose
+identity cannot be read is treated as alive and refused. A lease is read through
 a descriptor that follows no symlink and must name a small regular file; a
 lease that cannot be read or does not parse to a lease refuses the directory,
 since a lease is linked into place whole and a damaged one is corruption, never
@@ -100,6 +102,9 @@ call through it is refused:
    opens a session with a laptop sleep, that jump carries the fault id and the
    sleep fires first; the compiler sizes the sleep to the gap before its
    session, so the jump spans the gap and lands on the session's first event.
+   When the clock has already reached the session, because a job ran that
+   long, there is no jump to carry the sleep and it is journaled
+   `ItemState missed`.
 4. Fire the faults keyed on the event. Provider faults are armed on the proxy
    at the Nth user turn of their session, and `FaultFired` is journaled after
    the proxy accepted the arming. Scheduler faults call the driver's
@@ -120,9 +125,9 @@ the next arm. `observe("history_summarizer")` fires the session's mid-fold
 SIGKILL on the first observed summarizer call. `daemonExited` inside an outage
 window is journaled as expected and closes the window, so a second exit of the
 replacement daemon is unexpected; outside one, it journals a fatal `ItemState`,
-throws `HarnessFailure`, and fails the run at its next wait, including an idle
-wait on a job that never ends, or before `EndRun`, whether or not the caller
-swallowed the throw. A scheduler fault whose driver call rejects
+throws `HarnessFailure`, and fails the run at once: a driver call in flight is
+raced against it, an idle wait on a job that never ends is ended by it, and
+`EndRun` is refused, whether or not the caller swallowed the throw. A scheduler fault whose driver call rejects
 journals a fatal `ItemState` and fails the run.
 
 ## Resume
@@ -132,7 +137,8 @@ A restarted harness opens the same journal. A journal holding a fatal
 driver could not carry out), before or after `EndRun`, is a failed run and is
 refused with `HarnessFailure`; otherwise a journal with `EndRun` is complete
 and the run returns at once, after checking that `StartRun` names this arm
-order and scenario and that every arm has its `EndArm`. Otherwise the harness checks that every
+order and scenario and that every arm has `StartArm`, `EndArm`, and an `Event`
+for every scheduled event. Otherwise the harness checks that every
 unfinished arm has a driver, refuses an arm order or scenario hash different
 from the ones `StartRun` recorded, journals `ResumeRun`, and, for each arm
 without `EndArm`:

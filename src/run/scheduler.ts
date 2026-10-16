@@ -69,6 +69,8 @@ export class Scheduler {
     private pendingKill: Promise<unknown> | null = null;
     private generation = 0;
     private fatal: HarnessFailure | null = null;
+    private failed: Promise<never> | null = null;
+    private fail: ((error: HarnessFailure) => void) | null = null;
 
     constructor(private readonly o: SchedulerOptions) {
         if (!o.proxy && o.faults.some((f) => f.seam.layer === PROXY_LAYER)) {
@@ -107,7 +109,7 @@ export class Scheduler {
             }
         }
         if (entries.some((e) => e.kind === "EndRun")) {
-            const open = this.o.order.filter((arm) => !finished.has(arm));
+            const open = this.o.order.filter((arm) => !this.completed(entries, arm));
             if (!start || open.length > 0) {
                 throw new Error(`journal: EndRun with unfinished arms ${JSON.stringify(open)}`);
             }
@@ -161,6 +163,29 @@ export class Scheduler {
         }
         if (this.fatal) throw this.fatal;
         this.log({ kind: "EndRun" });
+    }
+
+    /** An arm is complete when it started, ended, and journaled an `Event` for every event. */
+    private completed(entries: Entry[], arm: string): boolean {
+        const mine = entries.filter((e) => e.arm === arm);
+        const kinds = new Set(mine.map((e) => e.kind));
+        if (!kinds.has("StartArm") || !kinds.has("EndArm")) return false;
+        const done = new Set(mine.filter((e) => e.kind === "Event").map((e) => e.event));
+        return this.o.events.every((e) => done.has(e.id));
+    }
+
+    /**
+     * Resolves with the driver call's result, or rejects as soon as a fatal daemon exit is
+     * recorded, so a call the dead daemon never answers cannot hold the run.
+     */
+    private untilFatal<T>(call: Promise<T>): Promise<T> {
+        if (this.fatal) return Promise.reject(this.fatal);
+        this.failed ??= new Promise<never>((_, reject) => {
+            this.fail = reject;
+        });
+        this.failed.catch(() => undefined);
+        call.catch(() => undefined);
+        return Promise.race([call, this.failed]);
     }
 
     /**
@@ -248,9 +273,9 @@ export class Scheduler {
     }
 
     private async fire(driver: ArmDriver, f: FaultEpisode): Promise<void> {
-        this.fired.add(`${this.arm}/${f.id}`);
         if (f.seam.layer === PROXY_LAYER) this.o.proxy?.arm(f.id);
         this.log({ kind: "FaultFired", fault: f.id, type: f.type, layer: f.seam.layer });
+        this.fired.add(`${this.arm}/${f.id}`);
         if (f.seam.layer === PROXY_LAYER) return;
         if (f.type === "laptop_sleep") return;
         if (OUTAGE.has(f.type)) this.outage = f.id;
@@ -285,9 +310,15 @@ export class Scheduler {
         const clock = this.clock as Clock;
         const sleep = this.sleepBefore(e);
         const arm = this.arm ?? "";
+        const jumped = clock.now() < e.scenario_ms;
         clock.advanceTo(e.scenario_ms, arm, sleep ? { fault: sleep.id } : { next_event: e.id });
         this.session = e.session;
-        if (sleep) await this.fire(driver, sleep);
+        if (sleep && !jumped) {
+            this.log({ kind: "ItemState", fault: sleep.id, state: "missed" });
+            this.fired.add(`${this.arm}/${sleep.id}`);
+        } else if (sleep) {
+            await this.fire(driver, sleep);
+        }
         for (const f of this.faultsAt(e)) await this.fire(driver, f);
         let outcome: { failed?: string };
         if (e.kind === "user_turn") {
@@ -295,7 +326,7 @@ export class Scheduler {
             this.log({ kind: "BeginTurn", event: e.id, probe: e.probe ?? null });
             clock.begin(turn);
             try {
-                outcome = await driver.event(e);
+                outcome = await this.untilFatal(driver.event(e));
             } finally {
                 clock.end(turn);
             }
@@ -304,7 +335,7 @@ export class Scheduler {
             this.log({ kind: "EndTurn", event: e.id, outcome: outcome.failed ?? "ok", ...item });
             await Bun.sleep(this.o.settleMs ?? 1_000);
         } else {
-            outcome = await driver.event(e);
+            outcome = await this.untilFatal(driver.event(e));
         }
         if (e.kind === "session_end") {
             for (const f of this.o.faults) {
@@ -356,6 +387,7 @@ export class Scheduler {
                     this.fatal ??= new HarnessFailure(
                         "daemon exited outside a scheduled outage window",
                     );
+                    this.fail?.(this.fatal);
                     throw this.fatal;
                 }
             },

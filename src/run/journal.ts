@@ -118,7 +118,8 @@ function readTrimmed(path: string): string | null {
  * stands in where the file is absent.
  */
 export function leaseHost(): string {
-    return readTrimmed("/etc/machine-id") ?? hostname();
+    const id = readTrimmed("/etc/machine-id");
+    return id ? id : `hostname:${hostname()}`;
 }
 
 /** The kernel's boot id: a lease from an earlier boot of this machine names a dead process. */
@@ -130,15 +131,19 @@ export function bootId(): string | undefined {
  * The kernel's start time of `pid` in clock ticks since boot, field 22 of `/proc/<pid>/stat`,
  * which with the pid identifies one process incarnation; `null` where `/proc` has no entry.
  */
-function startTicks(pid: number): number | null {
+/**
+ * `gone` is a pid with no live process (no `/proc` entry, or a zombie or exiting state);
+ * `unknown` is an identity this host cannot read, which never counts as dead.
+ */
+function startTicks(pid: number): number | "gone" | "unknown" {
     try {
         const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
         const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
-        if (fields[0] === "Z" || fields[0] === "X") return null;
+        if (fields[0] === "Z" || fields[0] === "X") return "gone";
         const ticks = Number(fields[19]);
-        return Number.isFinite(ticks) ? ticks : null;
-    } catch {
-        return null;
+        return Number.isFinite(ticks) ? ticks : "unknown";
+    } catch (caught) {
+        return (caught as { code?: string }).code === "ENOENT" ? "gone" : "unknown";
     }
 }
 
@@ -153,11 +158,14 @@ function alive(pid: number): boolean {
 
 /** A holder is alive when its incarnation still runs; a recycled pid is a dead holder. */
 function holderAlive(held: Lease, mine: Lease): boolean {
-    if (held.boot !== undefined && mine.boot !== undefined && held.boot !== mine.boot) return false;
+    if (held.boot !== undefined && mine.boot !== undefined && held.boot !== mine.boot) {
+        return held.host.startsWith("hostname:");
+    }
     if (held.ns !== undefined && mine.ns !== undefined && held.ns !== mine.ns) return true;
     const ticks = startTicks(held.pid);
-    if (held.started_ticks === undefined) return ticks === null ? alive(held.pid) : true;
-    return ticks === held.started_ticks;
+    if (ticks === "unknown") return true;
+    if (ticks === "gone") return false;
+    return held.started_ticks === undefined || ticks === held.started_ticks;
 }
 
 const LEASE_BYTES = 4096;
@@ -198,13 +206,14 @@ function readLease(path: string): Lease | null {
 
 /** The fields that name this process's own lease, compared whole when releasing it. */
 function ownIdentity(): Lease {
+    const own = startTicks(process.pid);
     return {
         pid: process.pid,
         host: leaseHost(),
         boot: bootId(),
         ns: pidNamespace(),
         started_wall_ms: Date.now(),
-        started_ticks: startTicks(process.pid) ?? undefined,
+        started_ticks: typeof own === "number" ? own : undefined,
         token: randomUUID(),
     };
 }
@@ -277,7 +286,11 @@ export function takeLease(dir: string): Lease {
         } finally {
             rmSync(staged);
         }
-        for (const n of numbers) rmSync(join(dir, `lease.${n}.json`), { force: true });
+        for (const n of numbers) {
+            try {
+                rmSync(join(dir, `lease.${n}.json`), { force: true });
+            } catch {}
+        }
         return mine;
     }
     throw new Error(`could not lease ${dir}`);
@@ -355,13 +368,13 @@ export class Journal {
             if (st.nlink !== 1) throw new Error(`journal ${path} has ${st.nlink} links`);
             if (st.uid !== process.getuid?.()) throw new Error(`journal ${path} has another owner`);
             read = readJournal(this.fd);
+            ftruncateSync(this.fd, read.bytes ?? 0);
         } catch (caught) {
             closeSync(this.fd);
             throw caught;
         }
         this.entries = [...read];
         for (const e of this.entries) this.last.set(e.arm, e.scenario_ms);
-        ftruncateSync(this.fd, read.bytes ?? 0);
     }
 
     append(entry: NewEntry): Entry {

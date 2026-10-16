@@ -470,15 +470,17 @@ describe("Journal and lease", () => {
     test("a zombie holder is a dead holder", () => {
         const d = dir();
         const child = Bun.spawn(["true"]);
-        const start = Date.now();
-        while (!existsSync(`/proc/${child.pid}/stat`) || Date.now() - start > 2_000) break;
+        const deadline = Date.now() + 2_000;
         let state = "";
-        for (let i = 0; i < 200 && state !== "Z"; i++) {
-            const stat = readFileSync(`/proc/${child.pid}/stat`, "utf8");
-            state = stat.slice(stat.lastIndexOf(")") + 2).split(" ")[0] ?? "";
+        while (state !== "Z" && Date.now() < deadline) {
+            try {
+                const stat = readFileSync(`/proc/${child.pid}/stat`, "utf8");
+                state = stat.slice(stat.lastIndexOf(")") + 2).split(" ")[0] ?? "";
+            } catch {}
             if (state !== "Z") Bun.sleepSync(5);
         }
-        expect(state).toBe("Z");
+        if (state !== "Z")
+            throw new Error(`child never became a zombie (state ${state || "none"})`);
         const mine = takeLease(d);
         releaseLease(d, mine);
         const stat = readFileSync(`/proc/${child.pid}/stat`, "utf8");
@@ -733,8 +735,11 @@ describe("Scheduler", () => {
             ["e-100002", 8 * 3_600_000 + 5_000],
         ]);
         const at = j.entries.indexOf(jumps[0] as Entry);
-        expect(j.entries[at - 1]?.kind).toBe("Event");
+        expect(j.entries[at - 1]).toMatchObject({ kind: "Event", event: "e-000002" });
         expect(j.entries[at + 1]).toMatchObject({ kind: "FaultFired", fault: "f-sleep" });
+        const opening = j.entries.findIndex((e) => e.kind === "Event" && e.event === "e-100000");
+        expect(opening).toBeGreaterThan(at);
+        expect(j.entries[opening]?.scenario_ms).toBe(8 * 3_600_000);
         expect((jumps[0] as Entry).from_ms).toBeGreaterThanOrEqual(20);
         expect(j.entries.filter((e) => e.kind === "FaultFired")).toHaveLength(1);
         const started = j.entries.find((e) => e.kind === "Event" && e.event === "e-100001");
@@ -986,6 +991,120 @@ describe("Scheduler", () => {
         expect(j.entries.filter((e) => e.kind === "ItemState").map((e) => e.expected)).toEqual([
             true,
             false,
+        ]);
+    });
+
+    test("an unexpected daemon exit ends a turn the dead daemon never answers", async () => {
+        const j = new Journal(join(dir(), "j.jsonl"));
+        const driver = fakeDriver([], 0, async (e) => {
+            if (e.kind === "user_turn" && e.index === 0) {
+                setTimeout(() => {
+                    try {
+                        driver.arm().daemonExited({ signal: "SIGKILL" });
+                    } catch {}
+                }, 30);
+                await new Promise(() => undefined);
+            }
+        });
+        await expect(
+            new Scheduler({
+                events: fixtureEvents(2),
+                faults: [],
+                journal: j,
+                settleMs: 0,
+                order: ["a"],
+                drivers: { a: driver },
+            }).run(),
+        ).rejects.toThrow(HarnessFailure);
+    }, 3_000);
+
+    test("a laptop sleep whose session the clock already reached is journaled missed, with no jump claimed", async () => {
+        const events: ScenarioEvent[] = [
+            { id: "e-000000", kind: "session_start", scenario_ms: 0, session: "s-0000" },
+            { id: "e-000001", kind: "user_turn", scenario_ms: 0, session: "s-0000", index: 0 },
+            { id: "e-000002", kind: "session_end", scenario_ms: 0, session: "s-0000" },
+            { id: "e-100000", kind: "session_start", scenario_ms: 50, session: "s-0001" },
+            { id: "e-100001", kind: "session_end", scenario_ms: 50, session: "s-0001" },
+        ];
+        const sleep = {
+            ...episode("f-sleep", "laptop_sleep", { kind: "session_start", session: "s-0001" }),
+            params: { duration_ms: 50 },
+        };
+        const j = new Journal(join(dir(), "j.jsonl"));
+        const driver = fakeDriver([], 0, (e) => {
+            if (e.kind === "user_turn") {
+                driver.arm().jobStart("long");
+                setTimeout(() => driver.arm().jobEnd("long"), 120);
+            }
+        });
+        await new Scheduler({
+            events,
+            faults: [sleep],
+            journal: j,
+            settleMs: 0,
+            jobPollMs: 5,
+            order: ["a"],
+            drivers: { a: driver },
+        }).run();
+        expect(j.entries.filter((e) => e.kind === "AdvanceClock")).toEqual([]);
+        expect(j.entries.filter((e) => e.kind === "FaultFired")).toEqual([]);
+        expect(j.entries).toContainEqual(
+            expect.objectContaining({ kind: "ItemState", fault: "f-sleep", state: "missed" }),
+        );
+    });
+
+    test("a journal with EndRun whose arm has orphan markers and no events is refused", async () => {
+        const path = join(dir(), "j.jsonl");
+        const j = new Journal(path);
+        j.append({
+            kind: "StartRun",
+            arm: null,
+            scenario_ms: 0,
+            order: ["a"],
+            scenario: scenarioId(fixtureEvents(1), []),
+        });
+        j.append({ kind: "EndArm", arm: "a", scenario_ms: 0 });
+        j.append({ kind: "EndRun", arm: null, scenario_ms: 0 });
+        j.close();
+        await expect(
+            new Scheduler({
+                events: fixtureEvents(1),
+                faults: [],
+                journal: new Journal(path),
+                settleMs: 0,
+                order: ["a"],
+                drivers: { a: fakeDriver([]) },
+            }).run(),
+        ).rejects.toThrow(/unfinished arms/);
+    });
+
+    test("a proxy fault whose arming failed once fires on the next run of the same scheduler", async () => {
+        const path = join(dir(), "j.jsonl");
+        const faults = [
+            episode("p1", "provider_429", { kind: "user_turn", session: "s-0000", n: 1 }),
+        ];
+        let failures = 1;
+        const proxy = {
+            arm: () => {
+                if (failures-- > 0) throw new Error("proxy warming up");
+            },
+            disarm: () => undefined,
+            reset: () => undefined,
+        };
+        const j = new Journal(path);
+        const scheduler = new Scheduler({
+            events: fixtureEvents(1),
+            faults,
+            journal: j,
+            settleMs: 0,
+            order: ["a"],
+            drivers: { a: fakeDriver([]) },
+            proxy,
+        });
+        await expect(scheduler.run()).rejects.toThrow(/warming up/);
+        await scheduler.run();
+        expect(j.entries.filter((e) => e.kind === "FaultFired").map((e) => e.fault)).toEqual([
+            "p1",
         ]);
     });
 
@@ -1599,6 +1718,12 @@ describe("resume", () => {
         const resumed = after.slice(before.length);
         const last = before.at(-1) as Entry;
         expect(resumed[0]).toMatchObject({ kind: "ResumeRun", arm: null });
+        const terminal = new Set(
+            before.filter((e) => e.kind === "Event").map((e) => `${e.arm}/${e.event}`),
+        );
+        for (const e of resumed.filter((e) => e.kind === "BeginTurn")) {
+            expect(terminal.has(`${e.arm}/${e.event}`)).toBe(false);
+        }
         expect(resumed[1]?.scenario_ms).toBe(last.scenario_ms);
         return { before, resumed: resumed.slice(1), last };
     };

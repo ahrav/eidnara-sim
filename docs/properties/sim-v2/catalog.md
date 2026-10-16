@@ -399,7 +399,7 @@ run yet
 Guarantee: SIM-P12: Every `AdvanceClock` entry is preceded by `busy_set` empty
 at the same sequence, and between a `BeginTurn` or `RegisterJob` and the
 matching `EndTurn` or `EndJob` `scenario_ms` grows only at wall-clock rate, by
-at most the elapsed `wall_ms`.
+at most the elapsed `wall_ms` under a steady system clock.
 Check: `always` - for each `AdvanceClock`, assert the busy set is empty at that
 `seq`, and for each open turn or job interval assert `scenario_ms` changes only
 by wall-clock progression; a jump mid-turn shows a turn a time it never lived
