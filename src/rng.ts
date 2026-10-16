@@ -3,15 +3,14 @@ export class Rng {
     private s: Uint32Array;
 
     constructor(seed: number) {
-        // splitmix32 expands one 32-bit seed into four well-mixed state words.
-        this.s = new Uint32Array(4);
-        let x = seed >>> 0;
-        for (let i = 0; i < 4; i++) {
-            x = (x + 0x9e3779b9) >>> 0;
-            let z = x;
-            z = Math.imul(z ^ (z >>> 16), 0x85ebca6b) >>> 0;
-            z = Math.imul(z ^ (z >>> 13), 0xc2b2ae35) >>> 0;
-            this.s[i] = (z ^ (z >>> 16)) >>> 0;
+        if (!Number.isSafeInteger(seed) || seed < 0) {
+            throw new Error(`Rng: seed ${seed} is not a non-negative safe integer`);
+        }
+        this.s = splitmix32(seed % 4294967296);
+        const high = Math.floor(seed / 4294967296);
+        if (high > 0) {
+            const mixed = splitmix32(high);
+            for (let i = 0; i < 4; i++) this.s[i] = ((this.s[i] ?? 0) ^ (mixed[i] ?? 0)) >>> 0;
         }
     }
 
@@ -34,6 +33,19 @@ export class Rng {
     next(): number {
         return this.nextU32() / 4294967296;
     }
+}
+
+function splitmix32(seed: number): Uint32Array {
+    const s = new Uint32Array(4);
+    let x = seed >>> 0;
+    for (let i = 0; i < 4; i++) {
+        x = (x + 0x9e3779b9) >>> 0;
+        let z = x;
+        z = Math.imul(z ^ (z >>> 16), 0x85ebca6b) >>> 0;
+        z = Math.imul(z ^ (z >>> 13), 0xc2b2ae35) >>> 0;
+        s[i] = (z ^ (z >>> 16)) >>> 0;
+    }
+    return s;
 }
 
 function rotl(x: number, k: number): number {

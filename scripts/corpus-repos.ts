@@ -42,7 +42,7 @@ for (const repo of repos) {
     }
 }
 
-if (record) {
+if (record && failures.length === 0) {
     const path = join(CORPUS_DIR, "repos.json");
     const raw = JSON.parse(readFileSync(path, "utf8"));
     writeFileSync(path, renderJson({ ...raw, repos }));

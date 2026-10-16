@@ -65,6 +65,7 @@ export async function fetchDataset(dataset: Dataset, log = console.log): Promise
         if (!response.ok || response.body === null) {
             throw new Error(`${url}: HTTP ${response.status}`);
         }
+        rmSync(dest, { force: true });
         const writer = Bun.file(dest).writer();
         for await (const chunk of response.body) writer.write(chunk);
         await writer.end();
