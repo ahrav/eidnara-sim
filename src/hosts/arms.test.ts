@@ -840,7 +840,8 @@ test("a restarted daemon's output follows the previous generation's in daemon.lo
     const second = fakeChild();
     const inner = {
         child: first,
-        restartHost: async () => void (inner.child = second),
+        crashHost: async () => undefined,
+        startHost: async () => void (inner.child = second),
         terminateHost: async () => undefined,
     };
     (stack as Untyped).stack = inner;
@@ -923,7 +924,7 @@ test("Pi launches the canonical node that preflight probed, whatever its install
     const install = nodeInstall(join(run, "node-link"));
     expect(install.exe).toBe(join(run, "opt/runtime/node"));
     expect(install.bin).toBe(join(run, "opt/runtime"));
-    expect(install.root).toBe(join(run, "opt"));
+    expect(install.root).toBe(join(run, "opt/runtime"));
 });
 
 test("the output a daemon wrote while starting reaches daemon.log once the stack is up", async () => {
@@ -1114,4 +1115,193 @@ test("a launch whose identity was never captured is not signalled at teardown", 
     } finally {
         child.kill("SIGKILL");
     }
+});
+
+test("an OpenCode session list that never answers fails the open and stops the server", async () => {
+    const run = runDir();
+    const checkout = fakeV1(run);
+    writeFileSync(
+        join(checkout, "packages/e2e-tests/node_modules/@opencode-ai/sdk/dist/index.js"),
+        "export function createOpencodeClient() { return { session: { list: () => new Promise(() => {}) } }; }\n",
+    );
+    const ctx = { ...context(run), host: "opencode" as const };
+    const host = new OpencodeSimHost({
+        ...ctx,
+        config: { ...ctx.config, eidnara_checkout: checkout },
+    });
+    (host as Untyped).setupMs = 200;
+    const outcome = await Promise.race([
+        host.openSession(join(run, "arm"), "s1", null).then(
+            () => "opened",
+            (e: unknown) => String(e),
+        ),
+        Bun.sleep(3_000).then(() => "hung"),
+    ]);
+    await Bun.sleep(100);
+    const left = serving();
+    for (const pid of left) process.kill(pid, "SIGKILL");
+    expect(outcome).toMatch(/session setup/);
+    expect(left).toEqual([]);
+});
+
+test("a Pi abort that never answers does not delay a drain that already ended", async () => {
+    const host = piHost(context(runDir()));
+    const final = { type: "agent_end", willRetry: false, messages: [{ role: "assistant" }] };
+    const rpc = liveRpc([[50, final]], 0);
+    const send = rpc.sendCommand.bind(rpc);
+    rpc.sendCommand = (method: string) => {
+        if (method === "prompt") return send(method).then(() => Promise.reject(new Error("lost")));
+        if (method === "abort") return new Promise(() => {});
+        return send(method);
+    };
+    (host as Untyped).rpc = rpc;
+    (host as Untyped).drainMs = 2_000;
+    const started = Date.now();
+    expect(await host.prompt("hi", 5_000)).toEqual({ error: "Error: lost" });
+    expect(Date.now() - started).toBeLessThan(1_000);
+});
+
+test("a daemon whose forced shutdown is unconfirmed stays tracked for another stop", async () => {
+    const run = runDir();
+    const stack = new DaemonStack({
+        config: loadConfig(),
+        root: run,
+        dataDir: join(run, "data"),
+        logFile: join(run, "daemon.log"),
+        offsetFile: join(run, "offset"),
+        proxyHttp1: "",
+        proxyHttp2: "",
+        model: "m",
+    });
+    const fake = {
+        hostLog: () => "",
+        terminateHost: async () => {
+            throw new Error("did not exit after SIGTERM");
+        },
+        crashHost: async () => {
+            throw new Error("did not exit after SIGKILL");
+        },
+    };
+    (stack as Untyped).stack = fake;
+    await expect(stack.stop()).rejects.toThrow(/SIGKILL/);
+    expect((stack as Untyped).stack).toBe(fake);
+});
+
+test("a restart records the old daemon's output after it is killed and before the new start", async () => {
+    const run = runDir();
+    const calls: string[] = [];
+    const stack = daemonStack(run);
+    const old = fakeChild();
+    const fresh = fakeChild();
+    const inner = {
+        child: old,
+        crashHost: async () => {
+            calls.push("crash");
+            old.stderr.write("last bytes\n");
+            await Bun.sleep(20);
+        },
+        startHost: async () => {
+            calls.push("start");
+            inner.child = fresh;
+        },
+        restartHost: async () => {
+            calls.push("restart");
+        },
+    };
+    (stack as Untyped).stack = inner;
+    (stack as Untyped).attach();
+    old.stdout.write("before kill\n");
+    await Bun.sleep(20);
+    await stack.restart();
+    expect(calls).toEqual(["crash", "start"]);
+    expect(readFileSync(join(run, "daemon.log"), "utf8")).toBe("before kill\nlast bytes\n");
+});
+
+test("a Pi turn ending just before its deadline still waits the full quiet window", async () => {
+    const host = piHost(context(runDir()));
+    (host as Untyped).settleMs = 200;
+    const end = { type: "agent_end", willRetry: false, messages: [{ role: "assistant" }] };
+    const late = { type: "agent_start" };
+    const final = {
+        type: "agent_end",
+        willRetry: false,
+        messages: [{ role: "assistant", stopReason: "error", errorMessage: "late" }],
+    };
+    (host as Untyped).rpc = liveRpc(
+        [
+            [250, end],
+            [400, late],
+            [420, final],
+        ],
+        0,
+    );
+    const started = Date.now();
+    const outcome = await host.prompt("hi", 300).catch((e: unknown) => String(e));
+    expect(outcome).not.toEqual({});
+    expect(Date.now() - started).toBeGreaterThanOrEqual(440);
+});
+
+test("a staged control file left by an earlier session does not block the next write", () => {
+    const ctx = context(runDir());
+    const host = new PiSimHost(ctx);
+    mkdirSync(host.agentDir, { recursive: true });
+    writeFileSync(join(host.agentDir, `settings.json.${process.pid}`), "stale\n");
+    (host as Untyped).writeConfigs(null);
+    expect(
+        JSON.parse(readFileSync(join(host.agentDir, "settings.json"), "utf8")).defaultModel,
+    ).toBe("m");
+});
+
+test("a Pi session whose shutdown is unconfirmed keeps its handle for another close", async () => {
+    const host = new PiSimHost(context(runDir()));
+    const rpc = {
+        child: { pid: 4242, stdin: { end: () => undefined } },
+        shutdown: async () => {
+            throw new Error("did not exit");
+        },
+    };
+    (host as Untyped).rpc = rpc;
+    (host as Untyped).stopTree = async () => {
+        throw new Error("host tree 4242 survived SIGKILL");
+    };
+    await expect(host.closeSession()).rejects.toThrow(/survived SIGKILL/);
+    expect(host.hostPid()).toBe(4242);
+});
+
+test("an OpenCode session whose shutdown is unconfirmed keeps its handle for another close", async () => {
+    const host = new OpencodeSimHost({ ...context(runDir()), host: "opencode" });
+    const oc = {
+        port: 1,
+        kill: async () => {
+            throw new Error("did not exit");
+        },
+    };
+    (host as Untyped).oc = oc;
+    (host as Untyped).launched = { pid: 4242, start: "1" };
+    (host as Untyped).stopTree = async () => {
+        throw new Error("host tree 4242 survived SIGKILL");
+    };
+    await expect(host.closeSession()).rejects.toThrow(/survived SIGKILL/);
+    expect((host as Untyped).oc).toBe(oc);
+});
+
+test("a standalone node keeps its own directory read-only, not the filesystem root", () => {
+    const run = runDir();
+    mkdirSync(join(run, "opt"));
+    writeFileSync(join(run, "opt/node"), "", { mode: 0o755 });
+    expect(nodeInstall(join(run, "opt/node")).root).toBe(join(run, "opt"));
+    mkdirSync(join(run, "install/bin"), { recursive: true });
+    writeFileSync(join(run, "install/bin/node"), "", { mode: 0o755 });
+    expect(nodeInstall(join(run, "install/bin/node")).root).toBe(join(run, "install"));
+});
+
+test("a control tree whose base is a symlink is refused before anything is created", () => {
+    const run = runDir();
+    const elsewhere = join(run, "elsewhere");
+    mkdirSync(elsewhere);
+    symlinkSync(elsewhere, join(run, "arm-link"));
+    const ctx = { ...context(run), root: join(run, "arm-link") };
+    const host = new PiSimHost(ctx);
+    expect(() => (host as Untyped).writeConfigs(null)).toThrow(/symlink/);
+    expect(readdirSync(elsewhere)).toEqual([]);
 });

@@ -210,3 +210,32 @@ test("an unrelated directory at the partial-clone path is left alone", () => {
     expect(r.exitCode).toBe(0);
     expect(readFileSync(join(`${dst}.partial`, "mine"), "utf8")).toBe("keep\n");
 });
+
+test("a FIFO at the build lock path is refused instead of blocking the build", () => {
+    const { stubs, src, dst } = fixture();
+    expect(Bun.spawnSync(["mkfifo", `${dst}.lock`]).exitCode).toBe(0);
+    const r = Bun.spawnSync(
+        ["timeout", "10", "bash", join(import.meta.dir, "eidnara-build.sh"), src, dst],
+        {
+            env: { ...process.env, PATH: `${stubs}:${process.env.PATH ?? ""}` },
+            stdout: "pipe",
+            stderr: "pipe",
+        },
+    );
+    expect(r.exitCode).not.toBe(124);
+    expect(r.exitCode).not.toBe(0);
+    expect(r.stderr.toString()).toContain("is not a regular file");
+});
+
+test("a reused clone whose Git directory is a link is refused before any Git command", () => {
+    const { stubs, src, root } = fixture();
+    const dst = join(root, "linked-git");
+    mkdirSync(dst);
+    symlinkSync(join(src, ".git"), join(dst, ".git"));
+    writeFileSync(join(dst, ".sim-build-source"), `${src}\n`);
+    const head = git(src, "rev-parse", "--abbrev-ref", "HEAD");
+    const r = build(src, dst, stubs);
+    expect(r.exitCode).not.toBe(0);
+    expect(r.stderr.toString()).toContain("is not a real directory");
+    expect(git(src, "rev-parse", "--abbrev-ref", "HEAD")).toBe(head);
+});

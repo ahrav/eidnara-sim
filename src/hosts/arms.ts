@@ -2,6 +2,7 @@ import { type ChildProcess, spawn } from "node:child_process";
 import {
     closeSync,
     constants,
+    existsSync,
     fstatSync,
     lstatSync,
     mkdirSync,
@@ -14,7 +15,7 @@ import {
     writeFileSync,
     writeSync,
 } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative } from "node:path";
 import type { SimConfig } from "../config/config";
 import { withDeadline } from "../run/deadline";
 import { launch, plainPath, shellQuote } from "../run/launcher";
@@ -35,6 +36,15 @@ async function v1(config: SimConfig, path: string): Promise<Untyped> {
  * anywhere in `rel` stops the walk before anything is created beyond it.
  */
 function realDir(base: string, rel: string): string {
+    // The base itself must be canonical: its nearest existing ancestor resolves to itself, so
+    // creating the rest of it cannot follow a link out of the run tree.
+    let existing = base;
+    while (!existsSync(existing) && dirname(existing) !== existing) existing = dirname(existing);
+    if (realpathSync(existing) !== existing) {
+        throw new Error(
+            `${base} is reached through a symlink; control files need a real directory`,
+        );
+    }
     mkdirSync(base, { recursive: true });
     let dir = base;
     for (const part of rel.split("/").filter((p) => p !== "")) {
@@ -219,29 +229,49 @@ export class DaemonStack {
         child?.stderr?.on("data", sink);
     }
 
+    /** The old generation's last bytes stream while it is crashed; the new one is attached once started. */
     async restart(): Promise<void> {
-        await this.stack.restartHost();
+        await this.stack.crashHost();
+        await this.stack.startHost();
         this.attach();
     }
 
     async stop(): Promise<void> {
         const stack = this.stack;
         if (!stack) return;
-        this.stack = null;
         const failures: unknown[] = [];
+        let stopConfirmed = true;
         try {
             await stack.terminateHost();
         } catch (caught) {
             // terminateHost gives up after SIGTERM; the stack's SIGKILL path ends the daemon.
             failures.push(caught);
-            await stack.crashHost().catch((killFailure: unknown) => failures.push(killFailure));
+            await stack.crashHost().catch((killFailure: unknown) => {
+                failures.push(killFailure);
+                stopConfirmed = false;
+            });
         }
+        // A daemon whose forced stop is unconfirmed stays tracked, so a later stop can retry.
+        if (failures.length === 0 || stopConfirmed) this.stack = null;
         if (this.logError !== undefined) failures.push(this.logError);
         if (failures.length === 1) throw failures[0];
         if (failures.length > 1) {
             throw new Error(`daemon stop failed: ${failures.map(String).join("; ")}`);
         }
     }
+}
+
+/** Runs each step in order, whatever the earlier ones did, and returns their failures. */
+async function settleAll(steps: Array<() => Promise<unknown>>): Promise<unknown[]> {
+    const failures: unknown[] = [];
+    for (const step of steps) {
+        try {
+            await step();
+        } catch (caught) {
+            failures.push(caught);
+        }
+    }
+    return failures;
 }
 
 function turnResult(outcome: Untyped): PromptResult {
@@ -253,7 +283,9 @@ function turnResult(outcome: Untyped): PromptResult {
 /** The canonical node preflight probes; `root` is the install tree the sandbox keeps read-only. */
 export function nodeInstall(which: string): { exe: string; bin: string; root: string } {
     const exe = realpathSync(which);
-    return { exe, bin: dirname(exe), root: resolve(exe, "../..") };
+    // An install keeps node in <root>/bin; a standalone binary keeps its own directory.
+    const bin = dirname(exe);
+    return { exe, bin, root: basename(bin) === "bin" ? dirname(bin) : bin };
 }
 
 export const hostNode = () => nodeInstall(Bun.which("node") ?? "node");
@@ -308,6 +340,8 @@ export abstract class SimHost {
     /** The file is created fresh and renamed into place, so a symlink left at `path` is replaced, never followed. */
     protected writeControlFile(path: string, content: string): void {
         const staged = `${path}.${process.pid}`;
+        // A staged file left by an interrupted write is removed, never followed, before the fresh one.
+        rmSync(staged, { force: true });
         writeFileSync(staged, content, { flag: "wx" });
         renameSync(staged, path);
     }
@@ -495,7 +529,8 @@ export class PiSimHost extends SimHost {
                 }
             }
             const drained = this.agentEnd(this.drainMs);
-            await this.rpc.sendCommand("abort", {}, { timeoutMs: 60_000 }).catch(() => undefined);
+            // The abort runs alongside the drain, so an abort that never answers cannot delay it.
+            this.rpc.sendCommand("abort", {}, { timeoutMs: this.drainMs }).catch(() => undefined);
             // A turn that outlives the abort would end during the next turn and be taken for it.
             await drained.catch((reason: unknown) => {
                 throw new Error(
@@ -520,7 +555,8 @@ export class PiSimHost extends SimHost {
     ): Promise<Untyped> {
         for (;;) {
             const mark = watch.activity;
-            await Bun.sleep(Math.max(0, Math.min(this.settleMs, deadline - Date.now())));
+            // The quiet window always runs in full; a late continuation must have room to appear.
+            await Bun.sleep(this.settleMs);
             // The state check gets the turn's remaining time, with at least 1 s to answer.
             const timeoutMs = Math.max(1_000, deadline - Date.now());
             const state = await this.rpc.sendCommand("get_state", {}, { timeoutMs });
@@ -533,16 +569,17 @@ export class PiSimHost extends SimHost {
         }
     }
 
+    // The handle is cleared only after the whole teardown succeeds, so a failed close can be retried.
     async closeSession(): Promise<void> {
         const rpc = this.rpc;
-        this.rpc = null;
         if (!rpc) return;
         rpc.child.stdin?.end();
-        try {
-            await this.stopTree(rpc.child.pid, this.launchStart);
-        } finally {
-            await rpc.shutdown(10_000);
-        }
+        const failures = await settleAll([
+            () => this.stopTree(rpc.child.pid, this.launchStart),
+            () => rpc.shutdown(10_000),
+        ]);
+        if (failures.length > 0) throw failures[0];
+        this.rpc = null;
     }
 
     transcriptEnv(): Record<string, string> {
@@ -556,6 +593,7 @@ export class OpencodeSimHost extends SimHost {
     private sid: string | null = null;
     private readonly home = join(this.ctx.root, "home");
     protected abortWaitMs = 30_000;
+    protected setupMs = 120_000;
     private launched: { pid: number | null; start: string | null } | null = null;
 
     async openSession(cwd: string, session: string, connection: string | null): Promise<void> {
@@ -625,7 +663,10 @@ export class OpencodeSimHost extends SimHost {
         try {
             const sdk = await import(join(config.eidnara_checkout, sdkPath));
             this.client = sdk.createOpencodeClient({ baseUrl: this.oc.url });
-            this.sid = await this.findOrCreateSession(cwd, session);
+            const sid = await withDeadline(this.findOrCreateSession(cwd, session), this.setupMs);
+            if (sid === null)
+                throw new Error(`OpenCode session setup still pending after ${this.setupMs} ms`);
+            this.sid = sid;
         } catch (caught) {
             await this.closeSession();
             throw caught;
@@ -742,18 +783,19 @@ export class OpencodeSimHost extends SimHost {
         return info?.error ? { error: JSON.stringify(info.error).slice(0, 2000) } : {};
     }
 
+    // The handles are cleared only after the whole teardown succeeds, so a failed close can be retried.
     async closeSession(): Promise<void> {
         const oc = this.oc;
+        if (!oc) return;
         const launched = this.launched ?? { pid: this.hostPid(), start: null };
+        const failures = await settleAll([
+            () => this.stopTree(launched.pid, launched.start),
+            () => oc.kill(),
+        ]);
+        if (failures.length > 0) throw failures[0];
         this.oc = null;
         this.client = null;
         this.launched = null;
-        if (!oc) return;
-        try {
-            await this.stopTree(launched.pid, launched.start);
-        } finally {
-            await oc.kill();
-        }
     }
 
     transcriptEnv(): Record<string, string> {

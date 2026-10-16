@@ -150,13 +150,14 @@ test.skipIf(!canMount())("a mount nested inside a read-only path is read-only to
 });
 
 test.skipIf(!canMount())(
-    "a launcher still privileged at teardown makes the stop report failure",
+    "a launcher still privileged at teardown is killed through sudo",
     async () => {
         const child = spawn("sudo", ["-n", "sleep", "300"], { stdio: "ignore" });
         const pid = child.pid as number;
         await Bun.sleep(300);
         try {
-            expect(await stopOwnedTree(pid, 300)).toBe(false);
+            expect(await stopOwnedTree(pid, 300, processStart(pid) ?? undefined)).toBe(true);
+            expect(running(pid)).toBe(false);
         } finally {
             Bun.spawnSync(["sudo", "-n", "pkill", "-KILL", "-P", String(pid)]);
             Bun.spawnSync(["sudo", "-n", "kill", "-KILL", String(pid)]);
@@ -173,5 +174,36 @@ test("a root pid whose start time no longer matches its launch is left alone", a
         expect(running(pid)).toBe(true);
     } finally {
         child.kill("SIGKILL");
+    }
+});
+
+test.skipIf(!sandboxAvailable() || Bun.which("ipcmk") === null)(
+    "the sandbox has its own System V IPC namespace",
+    () => {
+        const made = Bun.spawnSync(["ipcmk", "-M", "4096"]).stdout.toString();
+        const id = made.match(/(\d+)/)?.[1] as string;
+        try {
+            const r = root();
+            const argv = launch(writeLauncher(r), [], {}, ["/bin/sh", "-c", `ipcs -m -i ${id}`]);
+            const result = Bun.spawnSync(argv, { stdout: "pipe", stderr: "pipe" });
+            expect(result.stderr.toString()).toContain(`id ${id} not found`);
+        } finally {
+            Bun.spawnSync(["ipcrm", "-m", id]);
+        }
+    },
+);
+
+test.skipIf(!canMount())("a nested mount whose path has a space is remounted read-only", () => {
+    const r = root();
+    const ro = join(r, "ro");
+    const sub = join(ro, "a b");
+    mkdirSync(sub, { recursive: true });
+    expect(Bun.spawnSync(["sudo", "-n", "mount", "-t", "tmpfs", "tmpfs", sub]).exitCode).toBe(0);
+    try {
+        const argv = launch(writeLauncher(r), [], {}, ["/bin/sh", "-c", `touch '${sub}/x'`], [ro]);
+        const result = Bun.spawnSync(argv, { stdout: "pipe", stderr: "pipe" });
+        expect(result.stderr.toString()).toContain("Read-only file system");
+    } finally {
+        Bun.spawnSync(["sudo", "-n", "umount", sub]);
     }
 });

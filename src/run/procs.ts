@@ -71,6 +71,15 @@ interface Target {
 
 const alive = (t: Target) => t.start !== null && running(t.pid, t.start);
 
+async function stopped(targets: Target[], timeoutMs: number): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    while (targets.some(alive)) {
+        if (Date.now() >= deadline) return false;
+        await Bun.sleep(50);
+    }
+    return true;
+}
+
 // Each pid is checked against its start time right before the signal, so a pid the kernel
 // reused for another process during the grace period is left alone.
 function signal(targets: Target[], name: NodeJS.Signals): void {
@@ -111,5 +120,30 @@ export async function stopOwnedTree(
         return settled();
     };
     if (await phase("SIGTERM", graceMs)) return true;
-    return phase("SIGKILL", 2_000);
+    if (await phase("SIGKILL", 2_000)) return true;
+    if (rootStart === undefined) return false;
+    // The launcher is root-owned until its sandbox drops privileges, so what is left of a pinned
+    // launch is killed through the same passwordless sudo the launcher runs under.
+    const privileged = treeProcesses(rootPid)
+        .map((pid) => ({ pid, start: processStart(pid) }))
+        .filter(alive);
+    if (privileged.length === 0) return true;
+    Bun.spawnSync([
+        "sudo",
+        "-n",
+        "kill",
+        "-KILL",
+        ...privileged.filter(alive).map((t) => String(t.pid)),
+    ]);
+    return stopped([...seen.values(), root, ...privileged], 2_000);
+}
+
+function treeProcesses(rootPid: number): number[] {
+    const out: number[] = [];
+    const queue = [rootPid];
+    for (let next = queue.shift(); next !== undefined; next = queue.shift()) {
+        if (statFields(next) !== null) out.push(next);
+        queue.push(...childrenOf(next));
+    }
+    return out;
 }

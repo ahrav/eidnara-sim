@@ -88,6 +88,9 @@ describe("time injection", () => {
         expect(() => launch(launcher, [aliased], {}, ["true"], [join(run, "tools")])).toThrow(
             /is kept writable under read-only/,
         );
+        expect(() =>
+            launch(launcher, [join(aliased, "not-yet")], {}, ["true"], [join(run, "tools")]),
+        ).toThrow(/is kept writable under read-only/);
         expect(launch("/x/sandbox.sh", [], {}, ["true"], [join(home, ".cargo")])).toContain(
             join(home, ".cargo"),
         );
