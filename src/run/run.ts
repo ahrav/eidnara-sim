@@ -346,6 +346,8 @@ async function runArms(
         rng: new Rng((seed ^ 0x27d4eb2f) >>> 0),
         clock: { scenarioMs: now },
         scope: () => ({ ...scope }),
+        downstream: (e) =>
+            appendFileSync(join(o.out, "downstream.jsonl"), `${JSON.stringify(e)}\n`),
         observe: (e) => {
             const driver = drivers[scope.arm];
             if (driver) scheduler.observe(e.component, driver);

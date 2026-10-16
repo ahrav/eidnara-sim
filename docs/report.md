@@ -104,3 +104,25 @@ cost, the falsification set, the A/A reports (`<run>/aa.json`, or a note
 that control arms ran without one), the claim boundary, and the
 pre-registration. It refuses a report whose own text, outside the
 attached boundary and pre-registration, contains the word parity.
+
+## Run conditions and continuity
+
+`src/report/conditions.ts` opens the report with each run's conditions,
+read from its manifest and arm directories: the events it ran against the
+scenario's total, marked as a capped prefix when they are fewer; the time
+interception outcome per binary from the preflight; and any transcript
+store path the driver found missing after the first `session_end`. It then
+reads each host's transcripts back, Pi's session files under
+`.pi/agent/sessions` and OpenCode's `session` table in `opencode.db`, and
+compares each `sim-<session>` creation time with the session's scenario
+wall time (`base_wall_ms + scenario_ms` of its `session_start`). The table
+says whether the creation times follow scenario order and gives the
+largest lead and lag. Hosts run at wall pace between clock jumps, so a
+lead up to the idle wall time since the last jump is expected; a lag, or
+an order break, is a D2 caveat for that host.
+
+The continuity table gives each arm's P8 and P9 pass rate beside the v1
+harness's cross-session recall (host 0 to 3%, Eidnara 99 to 100%). For
+every pass it counts the passes whose turn ran a command that reads the
+host's transcript store, so a `host` pass is split between transcript
+search and the rest.

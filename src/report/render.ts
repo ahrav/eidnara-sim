@@ -3,6 +3,7 @@ import type { OracleCount } from "../oracle/oracles";
 import type { Recovery } from "../oracle/recovery";
 import type { Preregistration } from "../prereg/schema";
 import type { TierVerdict, ZeroEffect } from "../stats/gate";
+import { type Continuity, type RunConditions, renderConditions } from "./conditions";
 import { type CostPanel, PRICE_TABLE, V1_PRICE } from "./cost";
 import type { Intrusiveness } from "./intrusive";
 import type { SoakVerdict } from "./soak";
@@ -27,6 +28,8 @@ export interface TierReport {
     prereg: Preregistration;
     claim_boundary: string;
     witness: PropertyWitness[];
+    conditions: RunConditions[];
+    continuity: Continuity[];
 }
 
 const fmt = (x: number | null | undefined, digits = 2) =>
@@ -269,6 +272,7 @@ export function renderTier(r: TierReport): string {
         "",
         `Runs: ${r.runs.join(", ")}. Arms: ${r.arms.join(", ")}.`,
         "",
+        ...renderConditions(r.conditions, r.continuity),
         ...accuracy(r),
         ...gates(r),
         ...panels(r),

@@ -8,6 +8,7 @@ import { recoveries } from "../oracle/recovery";
 import type { Preregistration } from "../prereg/schema";
 import type { Scenario } from "../scenario/compile";
 import { evaluateTier, falsificationSet } from "../stats/gate";
+import { continuity, runConditions } from "./conditions";
 import { costPanel } from "./cost";
 import { falsificationPairs } from "./falsify";
 import { intrusiveness } from "./intrusive";
@@ -100,5 +101,7 @@ export function tierReport(
         prereg,
         claim_boundary: claimBoundary,
         witness: propertyWitness(catalog, runs),
+        conditions: runs.map(runConditions),
+        continuity: continuity(runs),
     };
 }

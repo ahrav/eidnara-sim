@@ -95,6 +95,8 @@ export interface GatewayOptions {
     scope: () => Scope;
     observe?: (event: CallStarted) => void;
     requestDeadlineMs?: number;
+    /** HTTP/2 session errors, GOAWAY frames, and stream resets on the host side of the proxy. */
+    downstream?: (event: Record<string, unknown>) => void;
 }
 
 const ROUTE = /^\/model\/([^/]+)\/(converse-stream|converse)$/;
@@ -158,10 +160,35 @@ export class Gateway {
             });
         });
         const h2 = createHttp2Server();
+        const log = (kind: string, detail: Record<string, unknown>) =>
+            this.options.downstream?.({
+                kind,
+                wall_ms: Date.now(),
+                ...this.options.scope(),
+                ...detail,
+            });
+        let sessions = 0;
+        h2.on("session", (session) => {
+            const id = sessions++;
+            session.on("error", (e: Error) =>
+                log("session_error", { session: id, error: e.message }),
+            );
+            session.on("frameError", (type: number, code: number) =>
+                log("frame_error", { session: id, type, code }),
+            );
+            session.on("goaway", (code: number) => log("goaway", { session: id, code }));
+        });
         h2.on("stream", (stream, headers) => {
             const chunks: Buffer[] = [];
             const gone = new AbortController();
-            stream.on("close", () => !stream.writableFinished && gone.abort());
+            stream.on("close", () => {
+                if (stream.rstCode)
+                    log("stream_reset", {
+                        code: stream.rstCode,
+                        finished: stream.writableFinished,
+                    });
+                if (!stream.writableFinished) gone.abort();
+            });
             stream.on("data", (c: Buffer) => chunks.push(c));
             stream.on("error", () => undefined);
             stream.on("end", () => {

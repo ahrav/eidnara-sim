@@ -10,7 +10,7 @@ import { loadPrereg } from "../src/scenario/inputs";
 import type { PairingRecord } from "../src/usersim/usersim";
 
 const dir = resolve(process.argv[2] ?? "");
-if (!existsSync(join(dir, "grades.jsonl"))) {
+if (!existsSync(join(dir, "manifest.json"))) {
     console.error("usage: bun scripts/aa-report.ts <graded run dir>");
     process.exit(2);
 }
@@ -19,7 +19,8 @@ const { bootstrap, aa_controls } = loadPrereg(manifest.tier as Tier);
 const scenario = JSON.parse(readFileSync(join(dir, "scenario.json"), "utf8")) as Scenario;
 const fact = new Map(scenario.probes.map((p) => [p.id, p.fact ?? p.id]));
 const clusterOf = (item: string) => fact.get(item) ?? item;
-const grades = new GradeLog(join(dir, "grades.jsonl")).latest();
+const graded = join(dir, "grades.jsonl");
+const grades = existsSync(graded) ? new GradeLog(graded).latest() : [];
 const pairing = readJournal(join(dir, "pairing.jsonl")) as unknown as PairingRecord[];
 /** A percentile interval over fewer clusters than this undercovers, so it decides nothing. */
 const MIN_CLUSTERS = 5;

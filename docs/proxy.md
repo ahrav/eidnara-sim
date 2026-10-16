@@ -73,6 +73,15 @@ unchanged. The v1 A/B gateway removed the same `thinking` field.
 before the request deadline. The jitter draws from the `rng` the run passes
 in, so one seed gives one backoff sequence.
 
+## Host connections
+
+Pi reaches the proxy over HTTP/2 and OpenCode over HTTP/1.1. The HTTP/2
+server reports each session error, frame error, GOAWAY, and stream reset
+on the host side through the `downstream` option, and the run appends
+them, with the arm, session, and turn in scope, to `downstream.jsonl`. A
+host turn that ends with a socket error while its call record shows a
+complete upstream stream reads its connection's events there.
+
 ## Fault injection
 
 `FaultInjector` holds the scenario's proxy-sink episodes. The scheduler calls
