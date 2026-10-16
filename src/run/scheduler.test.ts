@@ -641,8 +641,8 @@ test("quiescing jobs waits for background jobs while the turn itself stays open"
         reset: async () => undefined,
         event: async (e) => {
             if (e.kind !== "user_turn") return {};
-            scheduler?.jobStart("history_summarizer-0");
-            setTimeout(() => scheduler?.jobEnd("history_summarizer-0"), 60);
+            setTimeout(() => scheduler?.jobStart("history_summarizer-0"), 20);
+            setTimeout(() => scheduler?.jobEnd("history_summarizer-0"), 90);
             await scheduler?.quiesceJobs();
             settled = true;
             return {};
@@ -653,7 +653,7 @@ test("quiescing jobs waits for background jobs while the turn itself stays open"
         events: fixtureEvents(1),
         faults: [],
         journal: j,
-        settleMs: 0,
+        settleMs: 50,
         jobPollMs: 5,
         order: ["a"],
         drivers: { a: driver },

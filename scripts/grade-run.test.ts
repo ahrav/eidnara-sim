@@ -221,6 +221,24 @@ describe("grade-run", () => {
         expect(() => readFileSync(join(dir, "grades.jsonl"))).toThrow();
     });
 
+    test("a journal whose terminal events name an unscheduled or repeated id is refused", async () => {
+        const dir = run({ probes: [p5.probe] });
+        snapshot(dir, "eidnara", snap);
+        const path = join(dir, "journal.jsonl");
+        const lines = readFileSync(path, "utf8")
+            .trim()
+            .split("\n")
+            .map((l) => JSON.parse(l));
+        const swapped = lines.map((e) =>
+            e.kind === "Event" && e.arm === "host" && e.event === "e-1"
+                ? { ...e, event: "e-9" }
+                : e,
+        );
+        writeFileSync(path, swapped.map((e) => `${JSON.stringify(e)}\n`).join(""));
+        await expect(gradeRun(dir, null)).rejects.toThrow(/arm host .*2 of 3 events .*e-9/);
+        expect(() => readFileSync(join(dir, "grades.jsonl"))).toThrow();
+    });
+
     test("a P7 snapshot carrying a transcript artefact aborts grading instead of reading as a refusal", async () => {
         const p7 = fixture("P7-pass");
         const dir = run({ probes: [p7.probe] });

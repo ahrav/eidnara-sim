@@ -179,8 +179,13 @@ export class Scheduler {
         await this.quiesce(() => this.clock?.busyIds() ?? []);
     }
 
-    /** Waits for the background jobs in the busy set, with the turn itself still open. */
+    /**
+     * Waits the settle window, in which a background call the host dispatched after its answer
+     * registers its job, then waits for the background jobs in the busy set, with the turn
+     * itself still open.
+     */
     async quiesceJobs(): Promise<void> {
+        await Bun.sleep(this.o.settleMs ?? 1_000);
         await this.quiesce(() =>
             (this.clock?.busyIds() ?? []).filter((id) => id.startsWith("job:")),
         );

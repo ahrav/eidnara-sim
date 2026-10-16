@@ -318,7 +318,8 @@ export class HostDriver implements ArmDriver {
         writeFileSync(path, String(e.content));
         this.withPristineRepo(dir, this.project(e), () => {
             const blob = this.workspaceGit(dir, ["hash-object", "-w", "--no-filters", "--", path]);
-            const entry = `100644,${blob},${relative(dir, path)}`;
+            const executable = (lstatSync(path).mode & 0o111) !== 0;
+            const entry = `${executable ? "100755" : "100644"},${blob},${relative(dir, path)}`;
             const head = this.workspaceGit(dir, ["rev-parse", "--verify", "HEAD"]);
             const scratch = { GIT_INDEX_FILE: join(this.armDir, "apply-diff.index") };
             rmSync(`${scratch.GIT_INDEX_FILE}.lock`, { force: true });

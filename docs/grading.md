@@ -49,8 +49,12 @@ The driver takes the snapshot after the scheduler's background jobs (a
 summarizer or compaction call the turn started) have ended, so the
 `proxy-call` artefact holds those calls. Each recorder git run against a
 workspace is bounded by the turn deadline; a run past it fails the probe turn
-with `snapshot: git ... timed out` and the item has no snapshot. A recorder
-rebuilt after a kill also removes an index lock the killed git left.
+with `snapshot: git ... timed out` and the item has no snapshot; a run past the
+bound at a session boundary leaves that session without a start or end tree,
+so the next session carries no prior-session diff. The recorder removes the
+index lock a killed git leaves, after a timeout and when rebuilt after a
+kill. The driver waits the scheduler's settle window and then its background
+jobs before it takes a probe snapshot.
 The snapshot tree adds, with `--force`, the paths the project's source
 repository tracks although its ignore rules match them (the driver lists
 them from the source at reset), so a change to such a file is in the diff.

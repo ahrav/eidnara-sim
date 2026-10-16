@@ -268,6 +268,29 @@ describe("HostDriver lifecycle", () => {
         await expect(driver.event(next)).rejects.toThrow("alternates");
     });
 
+    test("apply_diff keeps the executable bit of the file it updates", async () => {
+        const source = gitRepo();
+        writeFileSync(join(source, "run.sh"), "#!/bin/sh\necho 1\n", { mode: 0o755 });
+        spawnSync("git", ["add", "run.sh"], { cwd: source });
+        spawnSync(
+            "git",
+            ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "add the script"],
+            {
+                cwd: source,
+                env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" },
+            },
+        );
+        const { driver } = fixture("host", { p: source });
+        await driver.reset();
+        const ws = driver.workspace("p");
+        await driver.event(ev("apply_diff", { path: "run.sh", content: "#!/bin/sh\necho 2\n" }));
+        const tree = spawnSync("git", ["ls-tree", "HEAD", "run.sh"], { cwd: ws }).stdout.toString();
+        expect(tree.startsWith("100755 ")).toBe(true);
+        expect(
+            spawnSync("git", ["status", "--porcelain"], { cwd: ws }).stdout.toString().trim(),
+        ).toBe("");
+    });
+
     test("apply_diff proceeds over a scratch index lock a killed git left behind", async () => {
         const { driver, armDir } = fixture("host", { p: gitRepo() });
         await driver.reset();
@@ -837,7 +860,8 @@ test("snapshot git that outlives its bound fails the probe turn instead of hangi
         `#!/bin/sh\nif [ "$1" = "add" ]; then sleep 30; fi\nexec ${real} "$@"\n`,
         { mode: 0o755 },
     );
-    const { driver, hosts } = fixture("host", { p: gitRepo() });
+    const { driver, hosts, transcripts } = fixture("host", { p: gitRepo() });
+    mkdirSync(join(transcripts, "sessions"), { recursive: true });
     const o = { ...(driver as unknown as { o: DriverOptions }).o, turnDeadlineMs: 300 };
     const fresh = new HostDriver(o);
     await fresh.reset();
@@ -854,7 +878,15 @@ test("snapshot git that outlives its bound fails the probe turn instead of hangi
         expect(outcome.failed).toContain("timed out");
         expect(outcome.snapshot).toBeUndefined();
         expect(host.closed).toBe(0);
+        await fresh.event(ev("session_end", { session: "s-0" }));
+        expect(host.closed).toBe(1);
     } finally {
         process.env.PATH = path;
     }
+    await fresh.event(ev("session_start", { session: "s-1" }));
+    const next = await fresh.event(
+        ev("user_turn", { id: "e-2", session: "s-1", text: "again", probe: "q-2" }),
+    );
+    expect(next.failed).toBeUndefined();
+    expect(next.snapshot).toBe("host:q-2:e-2");
 });

@@ -12,7 +12,7 @@ import {
     writeFileSync,
 } from "node:fs";
 import { basename, join, relative, sep } from "node:path";
-import { git, gitEnv } from "../git";
+import { GitTimeout, git, gitEnv } from "../git";
 import type { Artefact, CallView, Command, Snapshot } from "../grade/artefacts";
 
 interface RecorderState {
@@ -91,7 +91,14 @@ export class SnapshotRecorder {
             scope.GIT_WORK_TREE = work;
             scope.GIT_INDEX_FILE = join(this.gitDir, `${basename(work)}.index`);
         }
-        return git(work ?? this.armDir, args, scope, work ? this.gitTimeoutMs : undefined);
+        try {
+            return git(work ?? this.armDir, args, scope, this.gitTimeoutMs);
+        } catch (caught) {
+            if (caught instanceof GitTimeout && scope.GIT_INDEX_FILE) {
+                rmSync(`${scope.GIT_INDEX_FILE}.lock`, { force: true });
+            }
+            throw caught;
+        }
     }
 
     private save(): void {
@@ -180,10 +187,17 @@ export class SnapshotRecorder {
         return this.git(["diff", ...flags, from, to]);
     }
 
+    /**
+     * Opens a session: its start tree is the base of the prior-session diff later sessions
+     * carry. A git run past its bound leaves the session open with no start tree, so that
+     * session contributes no prior-session diff.
+     */
     sessionStart(session: string, project: string, dir: string): void {
         if (this.state.session === session || this.state.ended === session) return;
+        const start = this.boundedTree(dir);
         this.state.session = session;
-        this.state.starts[project] = this.tree(dir);
+        if (start) this.state.starts[project] = start;
+        else delete this.state.starts[project];
         this.state.commands = [];
         this.save();
     }
@@ -191,10 +205,22 @@ export class SnapshotRecorder {
     sessionEnd(session: string, project: string, dir: string): void {
         if (this.state.ended === session) return;
         const from = this.state.starts[project];
-        if (from) this.state.last[project] = { from, to: this.tree(dir) };
+        const to = from ? this.boundedTree(dir) : null;
+        if (from && to) this.state.last[project] = { from, to };
+        else delete this.state.last[project];
         this.state.session = null;
         this.state.ended = session;
         this.save();
+    }
+
+    private boundedTree(dir: string): string | null {
+        try {
+            return this.tree(dir);
+        } catch (caught) {
+            if (!(caught instanceof GitTimeout)) throw caught;
+            console.error(`snapshot: ${caught.message}`);
+            return null;
+        }
     }
 
     addTools(tools: Command[]): void {

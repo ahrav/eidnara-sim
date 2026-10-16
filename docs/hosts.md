@@ -62,8 +62,8 @@ then stops the run. An `apply_diff` event writes its file inside the
 workspace and commits that path alone, so the agent's own uncommitted edits
 stay uncommitted; content already committed adds no commit, and a path that
 resolves outside the workspace through `..` or a symlink stops the run. The
-commit is built with plumbing (`hash-object --no-filters`, a scratch index,
-`commit-tree`, `update-ref`) and every workspace git run pins `GIT_DIR` and
+commit is built with plumbing (`hash-object --no-filters`, a scratch index
+whose entry keeps the file's executable bit, `commit-tree`, `update-ref`) and every workspace git run pins `GIT_DIR` and
 `GIT_WORK_TREE`, points `core.hooksPath` at an absent directory, turns
 `core.fsmonitor` and `commit.gpgsign` off, and runs with the repository's
 config swapped for the clone's baseline (the agent's config returns
