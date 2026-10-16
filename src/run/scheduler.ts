@@ -64,8 +64,11 @@ const OUTAGE = new Set(["daemon_sigkill_mid_fold", "daemon_restart", "host_upgra
 function describe(v: unknown): string {
     if (v === null) return "null";
     if (Array.isArray(v)) return "an array";
-    if (typeof v === "object")
-        return `an object with failed: ${typeof (v as { failed: unknown }).failed}`;
+    if (typeof v === "object") {
+        const failed = (v as { failed: unknown }).failed;
+        if (failed === "ok") return 'an object with failed: "ok", the success literal';
+        return `an object with failed: ${typeof failed}`;
+    }
     return typeof v;
 }
 
@@ -717,7 +720,7 @@ export class Scheduler {
         if (OUTAGE.has(f.type)) this.outage = f.id;
         let evidence: Record<string, unknown>;
         try {
-            const got: unknown = await this.untilFatal(driver.fault(f));
+            const got: unknown = await this.untilFatal(driver.fault(structuredClone(f)));
             if (typeof got !== "object" || got === null || Array.isArray(got)) {
                 throw new Error(`fault evidence is ${describe(got)}`);
             }
@@ -769,16 +772,20 @@ export class Scheduler {
         } else if (sleep) {
             await this.fire(driver, sleep);
         }
-        for (const f of this.faultsAt(e)) await this.fire(driver, f);
+        const due = this.faultsAt(e);
+        for (const f of due) await this.fire(driver, f);
+        if (due.length > 0) await this.quiesce();
         const deliver = async (): Promise<{ failed?: string }> => {
-            const got: unknown = await this.untilFatal(driver.event(e));
-            const shaped =
+            const got: unknown = await this.untilFatal(driver.event(structuredClone(e)));
+            const failed = (got as { failed?: unknown } | null)?.failed;
+            const wellFormed =
                 typeof got === "object" &&
                 got !== null &&
                 !Array.isArray(got) &&
-                ((got as { failed?: unknown }).failed === undefined ||
-                    typeof (got as { failed?: unknown }).failed === "string");
-            if (!shaped) throw new Error(`event ${e.id}: driver outcome is ${describe(got)}`);
+                (failed === undefined || (typeof failed === "string" && failed !== "ok"));
+            if (!wellFormed) {
+                throw new Error(`event ${e.id}: driver outcome is ${describe(got)}`);
+            }
             return got as { failed?: string };
         };
         let outcome: { failed?: string };
@@ -820,6 +827,9 @@ export class Scheduler {
         return {
             jobStart: (id) => {
                 const clock = live();
+                if (typeof id !== "string" || id === "") {
+                    throw new Error(`job id is ${describe(id)}, which is not a name`);
+                }
                 if (clock.busyIds().includes(`job:${id}`)) {
                     throw new Error(`clock: job:${id} is already busy`);
                 }
@@ -833,6 +843,9 @@ export class Scheduler {
             },
             jobEnd: (id) => {
                 const clock = live();
+                if (typeof id !== "string" || id === "") {
+                    throw new Error(`job id is ${describe(id)}, which is not a name`);
+                }
                 if (!clock.busyIds().includes(`job:${id}`)) {
                     throw new Error(`clock: job:${id} is not busy`);
                 }

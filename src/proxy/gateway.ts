@@ -161,6 +161,8 @@ interface Request {
     receivedMono: number;
     /** The same receipt on the wall clock. */
     receivedWall: number;
+    /** The retry seed, drawn from the root stream at receipt so the draw order is the receipt order. */
+    seed: number;
     /**
      * The arm, session, turn, and scenario time that owned the request at receipt, or the
      * error reading them raised with whatever was read first; `handle()` records that error
@@ -184,6 +186,7 @@ export class Gateway {
             this.inFlight++;
             const receivedMono = performance.now();
             const receivedWall = Date.now();
+            const seed = this.options.rng.nextU32();
             const owner = this.received();
             const gone = new AbortController();
             res.on("close", () => !res.writableFinished && gone.abort());
@@ -196,6 +199,7 @@ export class Gateway {
                     body,
                     receivedMono,
                     receivedWall,
+                    seed,
                     owner,
                 };
                 this.handle(request, {
@@ -226,6 +230,7 @@ export class Gateway {
             this.inFlight++;
             const receivedMono = performance.now();
             const receivedWall = Date.now();
+            const seed = this.options.rng.nextU32();
             const owner = this.received();
             const gone = new AbortController();
             stream.on("close", () => !stream.writableFinished && gone.abort());
@@ -239,6 +244,7 @@ export class Gateway {
                     body,
                     receivedMono,
                     receivedWall,
+                    seed,
                     owner,
                 };
                 this.handle(request, {
@@ -411,7 +417,7 @@ export class Gateway {
         const done: Done = { ...tag, model, status: 200 };
         progress(done);
         const fault = this.options.injector.take(tag.component, call, startedMono);
-        const rng = new Rng(this.options.rng.nextU32());
+        const rng = new Rng(request.seed);
         const firstByte = () => {
             if (done.first_byte_ms != null) return;
             done.first_byte_ms = performance.now() - started;

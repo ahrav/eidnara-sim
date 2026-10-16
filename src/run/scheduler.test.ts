@@ -3049,6 +3049,90 @@ describe("Scheduler", () => {
         expect(() => new Journal(path)).toThrow(/run failed: fault r failed/);
     });
 
+    test("the driver boundary refuses the success literal as a failure, non-string job ids, and event mutation, and a turn fault that starts a job is quiesced before the turn", async () => {
+        const events = fixtureEvents(1);
+        const run = (driver: ArmDriver, faults: FaultEpisode[] = []) => {
+            const j = new Journal(join(dir(), "j.jsonl"));
+            return {
+                j,
+                done: new Scheduler({
+                    events,
+                    faults,
+                    journal: j,
+                    settleMs: 0,
+                    order: ["a"],
+                    drivers: { a: driver },
+                }).run(),
+            };
+        };
+        const okAsFailure = run({ ...fakeDriver([]), event: async () => ({ failed: "ok" }) });
+        await expect(okAsFailure.done).rejects.toThrow(/the success literal/);
+        let handle: ArmHandle | null = null;
+        const badIds: string[] = [];
+        const mutating = run({
+            ...fakeDriver([]),
+            bind: (h) => {
+                handle = h;
+            },
+            event: async (e) => {
+                if (e.kind === "user_turn") {
+                    for (const id of [undefined, {}, ""]) {
+                        try {
+                            handle?.jobStart(id as never);
+                        } catch (caught) {
+                            badIds.push(String(caught));
+                        }
+                    }
+                    (e as { id: string }).id = "e-mutated";
+                }
+                return {};
+            },
+        });
+        await mutating.done;
+        expect(badIds).toHaveLength(3);
+        expect(badIds.every((m) => /job id is .* not a name/.test(m))).toBe(true);
+        expect(mutating.j.entries.map((e) => e.event)).not.toContain("e-mutated");
+        await new Scheduler({
+            events,
+            faults: [],
+            journal: new Journal(mutating.j.path),
+            settleMs: 0,
+            order: ["a"],
+            drivers: { a: fakeDriver([]) },
+        }).run();
+        const restart = episode("t", "daemon_restart", {
+            kind: "user_turn",
+            session: "s-0000",
+            n: 1,
+        });
+        let h2: ArmHandle | null = null;
+        const jobbing = run(
+            {
+                ...fakeDriver([]),
+                bind: (h) => {
+                    h2 = h;
+                },
+                fault: async () => {
+                    h2?.jobStart("warm");
+                    setTimeout(() => h2?.jobEnd("warm"), 30);
+                    return { restarted_by: "harness" };
+                },
+            },
+            [restart],
+        );
+        await jobbing.done;
+        const kinds = jobbing.j.entries.map((e) => e.kind);
+        expect(kinds.indexOf("EndJob")).toBeLessThan(kinds.indexOf("BeginTurn"));
+        await new Scheduler({
+            events,
+            faults: [restart],
+            journal: new Journal(jobbing.j.path),
+            settleMs: 0,
+            order: ["a"],
+            drivers: { a: fakeDriver([]) },
+        }).run();
+    });
+
     test("a FaultObserved without its FaultFired is refused on resume", async () => {
         const path = join(dir(), "j.jsonl");
         const restart = episode("r", "daemon_restart", {

@@ -52,8 +52,8 @@ acknowledged entry survives a power loss, and flushes the truncation that
 rolls a failed append back (closing the journal when that flush fails), so a
 refused entry cannot reappear after a crash, and refuses to open while a
 `journal.jsonl.failed` marker sits beside the file (`poison` writes and
-flushes it when a record that must land, such as a fatal fault or exit, cannot
-be appended, so a later process cannot resume past a failure the journal
+flushes it, and its directory entry, when a record that must land, such as a
+fatal fault or exit, cannot be appended, so a later process cannot resume past a failure the journal
 itself could not record), reads and truncates the file
 through that one descriptor, and refuses every operation after `close`. On
 read it
@@ -132,9 +132,12 @@ call through it is refused:
    the error propagates. Scheduler faults call the driver's
    `fault` and journal its evidence. The mid-fold SIGKILL, the daemon restart,
    and the host upgrade open an outage window first.
-5. Deliver the event to the driver. Its outcome must be an object whose
-   `failed` is absent or a string; anything else fails the run before any
-   terminal record. A user turn is bracketed by `BeginTurn`
+5. Deliver the event to the driver, as a copy, so a driver that mutates it
+   touches nothing the scheduler records. Its outcome must be an object whose
+   `failed` is absent or a string other than `"ok"` (the success literal);
+   anything else fails the run before any terminal record. When a fault keyed
+   to the turn fired, the scheduler quiesces again before `BeginTurn`, so a
+   job the fault's callback started ends first. A user turn is bracketed by `BeginTurn`
    and `EndTurn` and holds the clock busy while it runs; its settle interval
    is raced against the fatal channel, and a fatal exit inside it refuses the
    run before the turn's `Event`. An `apply_diff`
@@ -154,8 +157,8 @@ valid, an observation during `bind` fires no second kill, and a daemon exit
 reported through the new handle is unexpected because the interruption marker
 closed the outage window. The session the journal left open is restored
 before `bind`, so a late summarizer observation from it still fires its kill.
-The handle carries `jobStart` and `jobEnd`, which journal `RegisterJob`
-before the job holds the clock and `EndJob` with the reading the clock then
+The handle carries `jobStart` and `jobEnd`, which take a non-empty string
+id and journal `RegisterJob` before the job holds the clock and `EndJob` with the reading the clock then
 stops at, so each busy transition and its record share one clock sample (a
 failed append of either is fatal and poisons the run, so a caller that
 swallows the throw cannot leave a live job unregistered or the clock busy

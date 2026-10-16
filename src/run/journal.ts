@@ -515,6 +515,7 @@ export class Journal {
             } finally {
                 closeSync(fd);
             }
+            syncDirectory(dirname(realpathSync(marker)));
         } finally {
             if (this.fd >= 0) {
                 const fd = this.fd;

@@ -32,7 +32,7 @@ if (import.meta.main) {
     const turnMs = Number(process.argv[3] ?? 150);
     const issueMs = Number(process.argv[5] ?? 0);
     const lease = takeLease(dir);
-    const journal = new Journal(join(dir, "journal.jsonl"));
+    const journal = new Journal(join(dir, "journal.jsonl"), lease.within);
     const driver = (arm: string): ArmDriver => ({
         bind: () => undefined,
         reset: async () => appendFileSync(join(dir, "resets.log"), `${arm}\n`),
