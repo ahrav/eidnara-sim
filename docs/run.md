@@ -52,8 +52,9 @@ list. For each arm, it resets the driver, then walks the events:
    default), so a background job the host starts after its answer registers
    before the clock moves, then wait until the busy set is empty.
 2. Close any outage window from the previous event.
-3. On a laptop sleep, jump by the fault's `duration_ms`; then jump to the
-   event's scheduled time if it is still later than now.
+3. For each laptop sleep keyed on the event, jump by its `duration_ms`, one
+   `AdvanceClock` each; then jump to the event's scheduled time if it is still
+   later than now.
 4. Fire the faults keyed on the event. Provider faults are armed on the proxy
    at the Nth user turn of their session. Scheduler faults call the driver's
    `fault` and journal its evidence. The mid-fold SIGKILL, the daemon restart,

@@ -492,6 +492,38 @@ describe("resume of a journaled sleep jump", () => {
     });
 });
 
+describe("two sleeps on one event", () => {
+    test("each scheduled sleep jumps the clock by its own duration before it is observed", async () => {
+        const j = new Journal(join(dir(), "j.jsonl"));
+        const sleeps = [3_600_000, 7_200_000].map((duration_ms, i) => ({
+            ...episode(`f-sleep-${i}`, "laptop_sleep", {
+                kind: "session_start",
+                session: "s-0000",
+            }),
+            params: { duration_ms },
+        }));
+        await new Scheduler({
+            events: fixtureEvents(1),
+            faults: sleeps,
+            journal: j,
+            settleMs: 0,
+            order: ["a"],
+            drivers: { a: fakeDriver([]) },
+        }).run();
+        const jumps = j.entries.filter((e) => e.kind === "AdvanceClock" && e.fault !== undefined);
+        expect(jumps.map((e) => [e.fault, e.scenario_ms - Number(e.from_ms)])).toEqual([
+            ["f-sleep-0", 3_600_000],
+            ["f-sleep-1", 7_200_000],
+        ]);
+        const observed = j.entries.filter((e) => e.kind === "FaultObserved");
+        expect(observed.map((e) => e.evidence)).toEqual([
+            { clock_advanced_ms: 3_600_000 },
+            { clock_advanced_ms: 7_200_000 },
+        ]);
+        expect((j.entries.at(-1) as Entry).scenario_ms).toBeGreaterThanOrEqual(10_800_000);
+    });
+});
+
 describe("store checks outside turns", () => {
     test("store checks a session end or finish settles are journaled with their event", async () => {
         const j = new Journal(join(dir(), "j.jsonl"));

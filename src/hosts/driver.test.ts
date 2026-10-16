@@ -643,6 +643,43 @@ describe("HostDriver faults", () => {
         expect(turn.stores).toBeUndefined();
     });
 
+    test("a pass served between turns is checked before the next turn's own passes", async () => {
+        const { driver } = fixture("eidnara");
+        driver.daemon = fakeDaemon(10) as unknown as DaemonStack;
+        const host = new FakeHost({} as HostContext, "/x");
+        driver.host = host as unknown as SimHost;
+        mkdirSync(dirname(driver.storeDb), { recursive: true });
+        const db = new Database(driver.storeDb);
+        db.run(SEGMENTS_DDL);
+        db.run(
+            "insert into history_segments (session_id, sequence, start_message, end_message) values ('s', 1, 0, 9)",
+        );
+        db.close();
+        await driver.fault(episode("daemon_restart"));
+        pluginLog(driver, PASS);
+        // The next turn's own pass compacts the store; the check must predate it.
+        host.onPrompt = () => new Database(driver.storeDb).run("delete from history_segments");
+        const outcome = await driver.event(ev("user_turn", { id: "e-1", text: "go" }));
+        expect(outcome.stores?.map((s) => [s.fault, s.store.segments])).toEqual([
+            ["f-daemon_restart", 1],
+        ]);
+    });
+
+    test("a probe turn checks the store after its background jobs settle", async () => {
+        const { driver, hosts } = fixture("host", { p: gitRepo() });
+        const o = (driver as unknown as { o: DriverOptions }).o;
+        o.settle = async () => pluginLog(driver, PASS);
+        await driver.reset();
+        driver.daemon = fakeDaemon(10) as unknown as DaemonStack;
+        hosts.at(-1);
+        await driver.event(ev("session_start", { session: "s-0" }));
+        await driver.fault(episode("daemon_restart"));
+        const outcome = await driver.event(
+            ev("user_turn", { id: "e-1", session: "s-0", text: "go", probe: "q-1" }),
+        );
+        expect(outcome.stores?.map((s) => s.fault)).toEqual(["f-daemon_restart"]);
+    });
+
     test("the store check waits for the first pass the replacement daemon serves", async () => {
         const { driver } = fixture("eidnara");
         driver.daemon = fakeDaemon(10) as unknown as DaemonStack;

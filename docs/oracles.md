@@ -79,12 +79,13 @@ A daemon restart (`daemon_restart`, `daemon_sigkill_mid_fold`) also needs a
 sound store, which three checks of the store (`src/hosts/storecheck.ts`)
 judge. The arm driver checks the store after the SIGKILL and before the
 replacement daemon starts, which shows the state the crash left and keeps
-the replacement's startup out of the baseline; at the end of the first turn
-whose plugin log, past its length at the restart, shows a pass the
-replacement served (`served_from=transform`), so that turn's passes include
-the first pass after the crash, or else at the session's end, the arm's
-finish, or a later daemon fault before it kills the daemon, once a served pass
-is on record, and journals that
+the replacement's startup out of the baseline; at the first turn boundary
+(a turn's start, or its end after its background jobs settle) at which the
+plugin log, past its length at the restart, shows a pass the replacement
+served (`served_from=transform`), so the check follows the turn whose passes
+include the first pass after the crash, or else at the session's end, the
+arm's finish, or a later daemon fault before it kills the daemon, and journals
+that
 check as `StoreChecked` with the fault's id (`event` names the turn or
 session end, or is null at finish), one entry per restart it settles, written
 before the turn's `EndTurn`; and

@@ -270,12 +270,13 @@ export class Scheduler {
         this.outage = null;
         const clock = this.clock as Clock;
         const faults = this.faultsAt(e);
-        const sleep = faults.find((f) => f.type === "laptop_sleep");
         const arm = this.arm ?? "";
-        if (sleep)
+        // Every sleep keyed on this event jumps the clock by its own duration, one entry each.
+        for (const sleep of faults.filter((f) => f.type === "laptop_sleep")) {
             clock.advanceTo(clock.now() + (sleep.params.duration_ms ?? 0), arm, {
                 fault: sleep.id,
             });
+        }
         clock.advanceTo(e.scenario_ms, arm, { next_event: e.id });
         this.session = e.session;
         for (const f of faults) await this.fire(driver, f);

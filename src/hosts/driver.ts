@@ -316,16 +316,16 @@ export class HostDriver implements ArmDriver {
                 before = null;
             }
         }
+        // A pass served between turns earned its check before this turn's own passes.
+        const outcome: TurnOutcome = {};
+        const owedBefore = this.owedStores();
+        if (owedBefore) outcome.stores = owedBefore;
         this.turn = e.id;
         const result = await host.prompt(String(e.text), this.o.turnDeadlineMs);
         if (this.daemon && this.daemonPid() === null) this.o.onDaemonExit({ after: e.id });
         const tools = host.drainTools();
         this.turn = null;
-        const outcome: TurnOutcome = {};
         if (result.error) outcome.failed = result.error;
-        await this.restarting;
-        const stores = this.owedStores();
-        if (stores) outcome.stores = stores;
         if (e.probe && before === null) {
             const reason = "snapshot: git timed out before the turn";
             outcome.failed = outcome.failed ? `${outcome.failed} | ${reason}` : reason;
@@ -362,6 +362,10 @@ export class HostDriver implements ArmDriver {
                 outcome.failed = outcome.failed ? `${outcome.failed} | ${reason}` : reason;
             }
         }
+        // After the turn and, for a probe, its settled background jobs: the check this turn earned.
+        await this.restarting;
+        const owedAfter = this.owedStores();
+        if (owedAfter) outcome.stores = [...(outcome.stores ?? []), ...owedAfter];
         return outcome;
     }
 
