@@ -90,6 +90,8 @@ export class HostDriver implements ArmDriver {
     private readonly snapshots: SnapshotRecorder;
     /** Daemon restarts that the end of the current or next turn owes a store check. */
     private storeFaults: string[] = [];
+    /** A daemon restart in progress; the turn it interrupts ends after it. */
+    private restarting: Promise<unknown> = Promise.resolve();
 
     constructor(private readonly o: DriverOptions) {
         this.snapshots = new SnapshotRecorder(dirname(o.armRoot), o.arm, o.callsFor ?? (() => []));
@@ -257,6 +259,7 @@ export class HostDriver implements ArmDriver {
         this.snapshots.addTools(tools, e.id);
         const outcome: TurnOutcome = {};
         if (result.error) outcome.failed = result.error;
+        await this.restarting;
         if (this.storeFaults.length > 0 && this.daemon) {
             const store = checkStore(this.storeDb);
             outcome.stores = this.storeFaults.map((fault) => ({ fault, store }));
@@ -316,19 +319,9 @@ export class HostDriver implements ArmDriver {
             throw new HarnessFailure(`fault type ${f.type} has no mechanism`);
         if (f.type === "daemon_sigkill_mid_fold" || f.type === "daemon_restart") {
             if (!this.daemon) return { skipped: "arm runs no daemon" };
-            const before = this.daemonPid();
-            await this.daemon.crash();
-            const store = checkStore(this.storeDb);
-            await this.daemon.restart();
-            this.storeFaults.push(f.id);
-            this.recordState();
-            return {
-                signal: "SIGKILL",
-                pid_before: before,
-                pid_after: this.daemonPid(),
-                restarted_by: "harness",
-                store,
-            };
+            const restart = this.restartDaemon(this.daemon, f.id);
+            this.restarting = restart.catch(() => undefined);
+            return restart;
         }
         if (f.type === "store_full") return this.fillStore();
         if (this.sessionProject !== null) {
@@ -341,6 +334,25 @@ export class HostDriver implements ArmDriver {
         this.host = this.newHost();
         this.recordState();
         return { model: this.currentModel() };
+    }
+
+    private async restartDaemon(
+        daemon: DaemonStack,
+        fault: string,
+    ): Promise<Record<string, unknown>> {
+        const before = daemon.pid();
+        await daemon.crash();
+        const store = checkStore(this.storeDb);
+        await daemon.restart();
+        this.storeFaults.push(fault);
+        this.recordState();
+        return {
+            signal: "SIGKILL",
+            pid_before: before,
+            pid_after: daemon.pid(),
+            restarted_by: "harness",
+            store,
+        };
     }
 
     private mountStore(fresh: boolean): void {

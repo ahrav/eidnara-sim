@@ -33,7 +33,7 @@ function inspect(path: string): StoreCheck {
         const integrity = rows.map((r) => r.integrity_check).join("; ");
         const segments = db
             .query(
-                "select session_id, sequence, start_message, end_message from history_segments order by session_id, start_message",
+                "select session_id, sequence, start_message, end_message from history_segments order by session_id, start_message, end_message, sequence",
             )
             .all() as Segment[];
         const overlaps: StoreCheck["overlaps"] = [];

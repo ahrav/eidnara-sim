@@ -339,6 +339,21 @@ describe("HostDriver faults", () => {
         expect((evidence.store as StoreCheck).ranges).toEqual([["s", 1, 0, 9]]);
     });
 
+    test("the turn a mid-fold kill interrupts waits for the restart and carries its store check", async () => {
+        const { driver } = fixture("eidnara");
+        const daemon = fakeDaemon(10);
+        daemon.restart = async () => {
+            await Bun.sleep(100);
+            daemon.current = 11;
+        };
+        driver.daemon = daemon as unknown as DaemonStack;
+        driver.host = new FakeHost({} as HostContext, "/x") as unknown as SimHost;
+        const kill = driver.fault(episode("daemon_sigkill_mid_fold"));
+        const outcome = await driver.event(ev("user_turn", { id: "e-1", text: "go" }));
+        expect(outcome.stores?.map((s) => s.fault)).toEqual(["f-daemon_sigkill_mid_fold"]);
+        expect((await kill).pid_after).toBe(11);
+    });
+
     test("a store check owed by a daemon restart survives a harness restart", async () => {
         const { driver, armDir } = fixture("host", { p: gitRepo() });
         await driver.reset();
