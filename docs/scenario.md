@@ -119,7 +119,10 @@ The compiler throws, and writes nothing, when:
   refuses a trigger other than a session start, the Nth user turn of a
   session, or the first summarizer call of a session; a trigger that names an
   unknown session or a turn the session lacks; and an episode whose seam entry
-  differs from the seam table (SIM-P05).
+  differs from the seam table (SIM-P05);
+- `scheduleFaults` finds fewer sessions with two or more turns than provider
+  episodes, no forced p90 session for the mid-fold SIGKILL, or no session
+  after the first that starts without a hand-applied diff for the sleep.
 
 ## Faults
 
@@ -133,7 +136,7 @@ daemon. Each type gets one episode.
 |---|---|---|
 | Proxy sink (provider faults) | The Nth user turn of a session with at least two turns; each provider episode gets its own session | single (1 call), burst (3 calls), intermittent (probability 0.3 over 10 calls), or persistent (to the end of the session) |
 | Scheduler, mid-fold SIGKILL | The first observed summarizer call of a forced p90 session (OQ-8, schedule half) | single |
-| Clock, laptop sleep | The start of the session after the widest idle gap | single, with `duration_ms` equal to that gap, so the jump holds no events (SIM-P18) |
+| Clock, laptop sleep | The start of the session after the widest idle gap, among sessions that start without a hand-applied diff | single, with `duration_ms` equal to that gap, so the jump holds no events (SIM-P18) |
 | Scheduler, every other type | The start of a session after the first | single; the store-full fault is persistent for that one session (`sessions: 1`) |
 
 ## Counterfactual deletions

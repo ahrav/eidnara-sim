@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { table } from "../corpus/distributions";
 import { canonicalJson, sha256Hex } from "../prereg/canonical";
 import { TIERS } from "../prereg/schema";
+import { Rng } from "../rng";
 import {
     type Bank,
     type CompileInput,
@@ -16,7 +17,13 @@ import {
     type Scenario,
     type Template,
 } from "./compile";
-import { type FaultEpisode, SEAMS, validateFault } from "./faults";
+import {
+    type FaultEpisode,
+    type FaultSession,
+    SEAMS,
+    scheduleFaults,
+    validateFault,
+} from "./faults";
 import { loadCompileInput } from "./inputs";
 import { type Embedder, hashEmbedder } from "./similarity";
 
@@ -398,11 +405,37 @@ describe("fault schedule", () => {
         expect(() => validateFault(zero, sessions)).toThrow(/outside the session's 4 turns/);
         const lost = episode({ kind: "session_start", session: "s-9999" });
         expect(() => validateFault(lost, sessions)).toThrow(/unknown session/);
-        const good = episode({ kind: "session_start", session: "s-0000" });
+        const good = episode({ kind: "user_turn", session: "s-0000", n: 2 });
         const altered = { ...good, seam: { ...SEAMS.provider_429, oracle: "none" } };
         expect(() => validateFault(altered, sessions)).toThrow(/seam entry missing or altered/);
+        const unknownType = {
+            ...good,
+            type: "provider_418",
+            seam: undefined,
+        } as unknown as FaultEpisode;
+        expect(() => validateFault(unknownType, sessions)).toThrow(/seam entry missing or altered/);
         const copied = JSON.parse(JSON.stringify(good)) as FaultEpisode;
         expect(() => validateFault(copied, sessions)).not.toThrow();
+    });
+
+    test("a session list too small for the tier's faults is refused by name", () => {
+        const session = (id: string, requests: number, gap_before_ms = 1000): FaultSession => ({
+            id,
+            requests,
+            forced_p90: false,
+            has_diff: false,
+            gap_before_ms,
+        });
+        const few = [session("s-0000", 3), session("s-0001", 3), session("s-0002", 1)];
+        expect(() => scheduleFaults("M", few, new Rng(1))).toThrow(
+            /8 provider faults need 8 sessions with two or more turns; 2 available/,
+        );
+        const noP90 = Array.from({ length: 9 }, (_, i) => session(`s-${i}`, 3));
+        expect(() => scheduleFaults("L", noP90, new Rng(1))).toThrow(/no forced p90 session/);
+        const allDiffs = noP90.map((x, i) => ({ ...x, forced_p90: i === 1, has_diff: i > 0 }));
+        expect(() => scheduleFaults("L", allDiffs, new Rng(1))).toThrow(
+            /no session starts without a hand-applied diff/,
+        );
     });
 
     test("every seam entry names its layer, outcomes, in-flight fate, surviving state, and oracle", () => {
@@ -449,18 +482,19 @@ describe("fault schedule", () => {
             );
         }, 60_000);
 
-    test("the laptop sleep spans an event-free gap of its full duration", async () => {
-        const s = await compileScenario(loadCompileInput(301, "L", hashEmbedder, true));
-        const sleep = s.faults.find((f) => f.type === "laptop_sleep") as FaultEpisode;
-        const start = s.events.findIndex(
-            (e) => e.kind === "session_start" && e.session === sleep.trigger.session,
-        );
-        const before = s.events[start - 1] as unknown as { kind: string; scenario_ms: number };
-        expect(before.kind).toBe("session_end");
-        const at = s.events[start]?.scenario_ms as number;
-        expect(at - before.scenario_ms).toBe(sleep.params.duration_ms ?? -1);
-        expect(sleep.params.duration_ms ?? 0).toBeGreaterThan(0);
-    }, 60_000);
+    for (const seed of [300, 301])
+        test(`the laptop sleep spans an event-free gap of its full duration (seed ${seed})`, async () => {
+            const s = await compileScenario(loadCompileInput(seed, "L", hashEmbedder, true));
+            const sleep = s.faults.find((f) => f.type === "laptop_sleep") as FaultEpisode;
+            const start = s.events.findIndex(
+                (e) => e.kind === "session_start" && e.session === sleep.trigger.session,
+            );
+            const before = s.events[start - 1] as unknown as { kind: string; scenario_ms: number };
+            expect(before.kind).toBe("session_end");
+            const at = s.events[start]?.scenario_ms as number;
+            expect(at - before.scenario_ms).toBe(sleep.params.duration_ms ?? -1);
+            expect(sleep.params.duration_ms ?? 0).toBeGreaterThan(0);
+        }, 60_000);
 
     test("provider faults use every strategy across seeds", async () => {
         const strategies = new Set<string>();
@@ -489,10 +523,14 @@ describe("counterfactual deletions", () => {
             );
             for (const d of cf) {
                 const probe = eligible.find((p) => p.id === d.probe);
+                expect(d.before_event).toMatch(/^e-\d{6}$/);
                 expect(d.before_event as string).toBe(probe?.event as string);
                 expect(d.fact as string).toBe(probe?.fact as string);
             }
         }
+        expect(a?.cf_deletions.map((d) => d.probe)).not.toEqual(
+            b?.cf_deletions.map((d) => d.probe),
+        );
     }, 60_000);
 
     test("tiers without the eidnara-cf arm schedule no deletions", async () => {

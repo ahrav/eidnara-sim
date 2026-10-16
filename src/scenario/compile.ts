@@ -598,7 +598,12 @@ export async function compileScenario(input: CompileInput) {
         const gap_before_ms = prev ? x.start_ms - prev.start_ms - lastTurn(prev) : 0;
         return { ...x, requests: turn_ms.length, gap_before_ms };
     });
-    const faults = scheduleFaults(prereg.tier, summary, rngFor("faults"));
+    const diffSessions = new Set(diffs.map((d) => d.session));
+    const faults = scheduleFaults(
+        prereg.tier,
+        summary.map((x) => ({ ...x, has_diff: diffSessions.has(x.id) })),
+        rngFor("faults"),
+    );
     const turnCounts = new Map(summary.map((x) => [x.id, x.requests]));
     for (const f of faults) validateFault(f, turnCounts);
     const eligible = probes.filter((p) => ["P1", "P3", "P5"].includes(p.type));
