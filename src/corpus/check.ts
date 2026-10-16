@@ -133,8 +133,15 @@ export function checkCorpus(): CorpusReport {
             content?: string;
             chars?: number;
             truncated?: boolean;
+            exit_code?: number | null;
         };
         const content = e.content ?? "";
+        const exitOk =
+            e.tool === "execute_bash" ? Number.isSafeInteger(e.exit_code) : e.exit_code === null;
+        need(
+            exitOk,
+            `samples ${e.id}: exit_code must be an integer for a command and null otherwise`,
+        );
         const consistent = kindMatches({
             kind: e.kind ?? "",
             tool: e.tool ?? "",

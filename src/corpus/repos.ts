@@ -119,7 +119,11 @@ export function loadRepos(): RepoSpec[] {
             ["prepare", repo.prepare],
             ["test", repo.test],
         ] as const) {
-            const ok = Array.isArray(cmd) && cmd.length > 0 && cmd.every((a) => a.trim() !== "");
+            const ok =
+                Array.isArray(cmd) &&
+                cmd.length > 0 &&
+                cmd.every((a) => typeof a === "string" && a.trim() !== "") &&
+                cmd[0] === cmd[0]?.trim();
             if (!ok) throw new Error(`repos.json: ${repo.id}: ${field} must list a command`);
         }
     }

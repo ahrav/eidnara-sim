@@ -88,6 +88,9 @@ describe("classify and commandOf", () => {
         expect(classify("execute_bash", "find . -name '*.py' | xargs grep -l foo", "a.py")).toBe(
             "grep",
         );
+        expect(
+            classify("execute_bash", "echo -exec rg followed by a long message here", "x"),
+        ).toBeNull();
     });
     test("a runner name inside a quoted pattern is not a pipeline segment", () => {
         const cmd =

@@ -116,7 +116,7 @@ const SHELL_ERROR = /^(?:bash|sh): (?:line \d+: )?(?:syntax error|.*: command no
 const TRACEBACK = "Traceback (most recent call last)";
 const TRACE_END = /^(?:E\s+)?\s*[\w.]*(?:Error|Exception|Failure|Exit|Interrupt|Warning)\b/;
 const SEARCH =
-    /(^|&&|;|\|)\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*(?:sudo\s+|xargs\s+(?:-\S+\s+)*)?(?:grep|rg|ag)\b|-exec\s+(?:grep|rg|ag)\b/;
+    /(^|&&|;|\|)\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*(?:sudo\s+|xargs\s+(?:-\S+\s+)*)?(?:grep|rg|ag)\b|(^|&&|;|\|)\s*find\b[^&;|]*-exec\s+(?:grep|rg|ag)\b/;
 
 function harvestCodes(lines: string[], base: Provenanced, codes: Map<string, ErrorCodeEntry>) {
     for (const [i, line] of lines.entries()) {
