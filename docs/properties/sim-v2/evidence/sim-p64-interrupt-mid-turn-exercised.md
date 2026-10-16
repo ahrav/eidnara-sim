@@ -13,8 +13,11 @@ v2 harness before any harness code existed.
 
 A harness kill lands while an item is `issued` at least once per campaign.
 
-No harness code, test, or run exists yet. The surface lands in M4
-(#1028).
+At the 2026-10-12 proposal no harness code, test, or run existed; the
+surface landed in M4 (#1028).
+
+M4 (#1028) exercises an interrupt mid-turn: a resume test kills the harness
+with SIGKILL while a turn is in flight and billed.
 
 ## Failure scenario
 

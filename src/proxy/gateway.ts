@@ -157,6 +157,18 @@ interface Request {
     header: string | undefined;
     expect: string | undefined;
     body: Body;
+    /** Receipt of the request's first bytes on the monotonic clock, before its body arrived. */
+    receivedMono: number;
+    /** The same receipt on the wall clock. */
+    receivedWall: number;
+    /** The retry seed, drawn from the root stream at receipt so the draw order is the receipt order. */
+    seed: number;
+    /**
+     * The arm, session, turn, and scenario time that owned the request at receipt, or the
+     * error reading them raised with whatever was read first; `handle()` records that error
+     * against the request under that scope.
+     */
+    owner: { scope: Scope; scenario_ms: number } | { scope?: Scope; error: unknown };
 }
 
 export class Gateway {
@@ -172,6 +184,10 @@ export class Gateway {
     async start(): Promise<void> {
         const onRequest = (req: IncomingMessage, res: ServerResponse) => {
             this.inFlight++;
+            const receivedMono = performance.now();
+            const receivedWall = Date.now();
+            const seed = this.options.rng.nextU32();
+            const owner = this.received();
             const gone = new AbortController();
             res.on("close", () => !res.writableFinished && gone.abort());
             collectBody(req, (body) => {
@@ -181,6 +197,10 @@ export class Gateway {
                     header: req.headers[COMPONENT_HEADER] as string | undefined,
                     expect: req.headers.expect,
                     body,
+                    receivedMono,
+                    receivedWall,
+                    seed,
+                    owner,
                 };
                 this.handle(request, {
                     status: (code, headers) => {
@@ -208,6 +228,10 @@ export class Gateway {
         });
         h2.on("stream", (stream, headers) => {
             this.inFlight++;
+            const receivedMono = performance.now();
+            const receivedWall = Date.now();
+            const seed = this.options.rng.nextU32();
+            const owner = this.received();
             const gone = new AbortController();
             stream.on("close", () => !stream.writableFinished && gone.abort());
             collectBody(stream, (body) => {
@@ -218,6 +242,10 @@ export class Gateway {
                     header: headers[COMPONENT_HEADER] as string | undefined,
                     expect: undefined,
                     body,
+                    receivedMono,
+                    receivedWall,
+                    seed,
+                    owner,
                 };
                 this.handle(request, {
                     status: (code, h) => {
@@ -267,6 +295,18 @@ export class Gateway {
         while (this.inFlight > 0 && Date.now() < deadline) await Bun.sleep(10);
     }
 
+    /** The owning scope and scenario time, read when a request's first bytes arrive. */
+    private received(): Request["owner"] {
+        let scope: Scope | undefined;
+        try {
+            const { arm, session, turn } = this.options.scope();
+            scope = { arm, session, turn };
+            return { scope, scenario_ms: this.options.clock.scenarioMs() };
+        } catch (error) {
+            return { scope, error };
+        }
+    }
+
     private async handle(request: Request, outer: Sink) {
         let sent = 0;
         const sink: Sink & { sent: () => number } = {
@@ -279,20 +319,20 @@ export class Gateway {
             sent: () => sent,
         };
         const call = this.calls++;
-        const startedWall = Date.now();
-        const startedMono = performance.now();
+        const startedWall = request.receivedWall;
+        const startedMono = request.receivedMono;
         let done: Done = {
             component: "rejected",
             componentSource: "inferred",
             model: "",
             status: 500,
         };
-        let scope: Scope = { arm: "", session: null, turn: null };
+        let scope: Scope = request.owner.scope ?? { arm: "", session: null, turn: null };
         let scenario_ms = 0;
         try {
-            scope = this.options.scope();
-            scenario_ms = this.options.clock.scenarioMs();
-            done = await this.serve(request, sink, call, (d) => {
+            if ("error" in request.owner) throw request.owner.error;
+            ({ scope, scenario_ms } = request.owner);
+            done = await this.serve(request, sink, call, startedMono, (d) => {
                 done = d;
             });
         } catch (caught) {
@@ -326,11 +366,12 @@ export class Gateway {
         request: Request,
         sink: Sink & { sent: () => number },
         call: number,
+        startedMono: number,
         progress: (d: Done) => void,
     ): Promise<Done> {
         const { path, method, header, expect, body: upload } = request;
         const received = upload.received;
-        const started = performance.now();
+        const started = startedMono;
         const route = ROUTE.exec(path.split("?", 1)[0] ?? "");
         const parse = <T>(f: () => T): T | undefined => {
             try {
@@ -375,8 +416,8 @@ export class Gateway {
         const tag = classify(body, header);
         const done: Done = { ...tag, model, status: 200 };
         progress(done);
-        const fault = this.options.injector.take(tag.component, call);
-        const rng = new Rng(this.options.rng.nextU32());
+        const fault = this.options.injector.take(tag.component, call, startedMono);
+        const rng = new Rng(request.seed);
         const firstByte = () => {
             if (done.first_byte_ms != null) return;
             done.first_byte_ms = performance.now() - started;

@@ -1,4 +1,4 @@
-import type { Rng } from "../rng";
+import { Rng } from "../rng";
 import type { FaultEpisode, FaultType } from "../scenario/faults";
 import { encodeEvent } from "./eventstream";
 import type { CallRecord, Component } from "./records";
@@ -21,22 +21,61 @@ export interface WitnessReport extends Witness {
 interface Armed {
     fault: ProxyFault;
     calls: number;
+    /** The arming on the monotonic clock; a call received before it takes nothing from this fault. */
+    at: number;
 }
 
 export const TARGET: Component = "agent";
+
+/** The generator for one episode: one draw from `base` mixed with the episode id. */
+export function episodeStream(base: Rng, id: string): Rng {
+    return new Rng((base.nextU32() ^ fnv1a(id)) >>> 0);
+}
+
+function fnv1a(text: string): number {
+    let h = 0x811c9dc5;
+    for (let i = 0; i < text.length; i++) {
+        h ^= text.charCodeAt(i);
+        h = Math.imul(h, 0x01000193) >>> 0;
+    }
+    return h >>> 0;
+}
 
 export class FaultInjector {
     private readonly armed = new Map<string, Armed>();
     private readonly witnesses = new Map<string, Witness>();
     /** `at` is a monotonic `performance.now()` stamp, so a wall-clock step cannot move the window. */
     private readonly pending: { fault: string; at: number; call: number }[] = [];
+    /**
+     * One generator per episode, seeded from the injector's generator and the episode id, so an
+     * episode's draws depend on nothing another episode did and every arm replays them alike.
+     */
+    private readonly streams = new Map<string, { rng: Rng; seed: Uint32Array }>();
+    private resetAt = 0;
 
     constructor(
         private readonly faults: ProxyFault[],
-        private readonly rng: Rng,
+        rng: Rng,
         private readonly windowMs: number,
     ) {
         for (const f of faults) {
+            const stream = episodeStream(rng, f.id);
+            this.streams.set(f.id, { rng: stream, seed: stream.state() });
+        }
+        this.reset();
+    }
+
+    /**
+     * Returns the injector to its constructed state: nothing armed or pending, witnesses empty,
+     * and every episode's generator back at its seed, so every arm draws the same masks. The
+     * scheduler calls it at each arm's start; `report()` therefore describes the current arm only.
+     */
+    reset(): void {
+        this.resetAt = performance.now();
+        this.armed.clear();
+        this.pending.length = 0;
+        for (const s of this.streams.values()) s.rng.restore(s.seed);
+        for (const f of this.faults) {
             this.witnesses.set(f.id, {
                 fault: f.id,
                 type: f.type,
@@ -51,7 +90,7 @@ export class FaultInjector {
     arm(id: string): void {
         const fault = this.faults.find((f) => f.id === id);
         if (!fault) throw new Error(`unknown proxy fault ${id}`);
-        this.armed.set(id, { fault, calls: 0 });
+        this.armed.set(id, { fault, calls: 0, at: performance.now() });
         (this.witnesses.get(id) as Witness).armed = true;
     }
 
@@ -59,9 +98,15 @@ export class FaultInjector {
         this.armed.delete(id);
     }
 
-    take(component: Component, call: number): ProxyFault | null {
-        if (component !== TARGET) return null;
+    /**
+     * `startedMono` is the call's receipt on the monotonic clock; a call received before the
+     * last reset belongs to the previous arm and takes nothing from this one, and a call
+     * received before a fault was armed takes nothing from that fault.
+     */
+    take(component: Component, call: number, startedMono = performance.now()): ProxyFault | null {
+        if (component !== TARGET || startedMono < this.resetAt) return null;
         for (const [id, a] of this.armed) {
+            if (startedMono < a.at) continue;
             const { strategy, params } = a.fault;
             a.calls++;
             const limit =
@@ -69,7 +114,8 @@ export class FaultInjector {
                     ? Number.POSITIVE_INFINITY
                     : (params.count ?? params.calls ?? 1);
             if (a.calls >= limit) this.armed.delete(id);
-            if (strategy !== "intermittent" || this.rng.next() < (params.probability ?? 1)) {
+            const draw = () => (this.streams.get(id) as { rng: Rng }).rng.next();
+            if (strategy !== "intermittent" || draw() < (params.probability ?? 1)) {
                 this.pending.push({ fault: id, at: performance.now(), call });
                 return a.fault;
             }
@@ -77,9 +123,14 @@ export class FaultInjector {
         return null;
     }
 
-    /** `startedMono` is the call's receipt on the same monotonic clock `take()` stamps. */
+    /**
+     * `startedMono` is the call's receipt on the same monotonic clock `take()` and `reset()`
+     * stamp; a call received before the last reset belongs to the previous arm and is ignored,
+     * and a call received before an injection cannot be the host's reaction to it.
+     */
     observe(record: CallRecord, call: number, startedMono: number): void {
-        for (const p of this.pending.filter((x) => call > x.call)) {
+        if (startedMono < this.resetAt) return;
+        for (const p of this.pending.filter((x) => call > x.call && startedMono >= x.at)) {
             if (record.component !== TARGET) continue;
             const inWindow = startedMono <= p.at + this.windowMs;
             if (inWindow)

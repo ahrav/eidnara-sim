@@ -368,19 +368,21 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M4 (#1028); nothing constructs
-it yet
-Guarantee: SIM-P11: Journal entries in sequence order have non-decreasing
-`scenario_ms`.
-Check: `always` - walk the journal in `seq` order and assert `scenario_ms` never
-decreases; one decrease reorders events and breaks every age-dependent metric.
+Exercised: partial - unit tests in src/run/scheduler.test.ts rebuild each arm's
+entries and assert non-decreasing `scenario_ms`; no campaign run yet
+Guarantee: SIM-P11: Within each arm, journal entries in sequence order have
+non-decreasing `scenario_ms`; every arm's clock starts at 0.
+Check: `always` - walk each arm's entries in `seq` order and assert
+`scenario_ms` never decreases; one decrease reorders events and breaks every
+age-dependent metric.
 Fault/timing angle: resume after a crash restores the clock; a stale value would
 move time backwards.
 Required faults and enabling state: a run with an interrupt and resume.
 Confidence: low - [evidence](evidence/sim-p11-scenario-time-is-monotone.md).
-PROPOSED: reconstructed from the condensed index in spec #1007; no
-implementation exists to verify against, and a default tier run reaches it.
-Existing check: none
+PROPOSED: reconstructed from the condensed index in spec #1007; the M4 unit
+tests verify the record, and a default tier run reaches it.
+Existing check: src/run/scheduler.test.ts `invariants()` - per-arm
+non-decreasing `scenario_ms` and each arm's first entry at 0
 Impact: Age, idle-gap, and staleness metrics are computed on a reordered
 timeline.
 Open questions: None.
@@ -390,11 +392,14 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M4 (#1028); nothing constructs
-it yet
+Exercised: partial - unit tests in src/run/scheduler.test.ts rebuild the busy
+set from the journal, assert it is empty at every `AdvanceClock`, and bound
+every `scenario_ms` change by the wall time that passed while busy; no campaign
+run yet
 Guarantee: SIM-P12: Every `AdvanceClock` entry is preceded by `busy_set` empty
-at the same sequence, and no `scenario_ms` change appears between a `BeginTurn`
-or `RegisterJob` and the matching `EndTurn` or `EndJob`.
+at the same sequence, and between a `BeginTurn` or `RegisterJob` and the
+matching `EndTurn` or `EndJob` `scenario_ms` grows only at wall-clock rate, by
+at most the elapsed `wall_ms` under a steady system clock.
 Check: `always` - for each `AdvanceClock`, assert the busy set is empty at that
 `seq`, and for each open turn or job interval assert `scenario_ms` changes only
 by wall-clock progression; a jump mid-turn shows a turn a time it never lived
@@ -404,9 +409,13 @@ arrive after the scheduler decided to jump.
 Required faults and enabling state: a turn followed by a fold or memory-capture
 job that outlives the turn.
 Confidence: low - [evidence](evidence/sim-p12-clock-advances-only-when-idle.md).
-PROPOSED: reconstructed from the condensed index in spec #1007; no
-implementation exists to verify against, and a default tier run reaches it.
-Existing check: none
+PROPOSED: reconstructed from the condensed index in spec #1007; the M4 unit
+tests verify the record, and a default tier run reaches it.
+Existing check: src/run/scheduler.test.ts `invariants()` and `wallRate()` - busy
+set rebuilt from turn and job entries, empty at every `AdvanceClock`; while idle
+`scenario_ms` holds except across `AdvanceClock`, and while busy it advances by
+at most the elapsed `wall_ms`, a bound that holds under a steady system clock
+during the test
 Impact: A fold or capture job sees a simulated gap mid-execution and its timing
 metrics are invalid.
 Open questions:
@@ -419,8 +428,9 @@ Open questions:
 Type: reachability
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M4 (#1028); nothing constructs
-it yet
+Exercised: partial - the unit test "a background job registered after a turn
+ends holds the clock until it ends" constructs a job alone in the busy set; no
+campaign run yet
 Guarantee: SIM-P13: A background job is in `busy_set` while no turn is in
 `busy_set`.
 Check: `sometimes` - observe at least one journal state where the busy set holds
@@ -430,9 +440,10 @@ Fault/timing angle: none.
 Required faults and enabling state: a fold or memory-capture job that outlives
 its triggering turn.
 Confidence: low - [evidence](evidence/sim-p13-background-job-holds-clock.md).
-PROPOSED: reconstructed from the condensed index in spec #1007; no
-implementation exists to verify against, and a default tier run reaches it.
-Existing check: none
+PROPOSED: reconstructed from the condensed index in spec #1007; the M4 unit
+tests verify the record, and a default tier run reaches it.
+Existing check: src/run/scheduler.test.ts - a job registered after `EndTurn`
+holds the clock with no turn busy
 Impact: The job-holds-clock branch is never exercised and SIM-P12's job half is
 untested.
 Open questions: None.
@@ -442,8 +453,9 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M4 (#1028); nothing constructs
-it yet
+Exercised: partial - the unit test "arms run in order from one event list"
+asserts every `AdvanceClock` lands on the earliest later event; no campaign run
+yet
 Guarantee: SIM-P14: After `AdvanceClock`, `scenario_ms` equals the earliest
 scheduled event time greater than the previous value.
 Check: `always` - for each `AdvanceClock`, assert the new `scenario_ms` equals
@@ -452,9 +464,10 @@ it.
 Fault/timing angle: a laptop-sleep fault inserts a jump of its own duration.
 Required faults and enabling state: a scenario with idle gaps between events.
 Confidence: low - [evidence](evidence/sim-p14-idle-jump-lands-on-next-event.md).
-PROPOSED: reconstructed from the condensed index in spec #1007; no
-implementation exists to verify against, and a default tier run reaches it.
-Existing check: none
+PROPOSED: reconstructed from the condensed index in spec #1007; the M4 unit
+tests verify the record, and a default tier run reaches it.
+Existing check: src/run/scheduler.test.ts - every `AdvanceClock` target equals
+the earliest event time after `from_ms`, with the expected jump count
 Impact: Events are skipped or issued late and the scenario differs from its
 compiled plan.
 Open questions: None.
@@ -539,21 +552,26 @@ Open questions: None.
 Type: safety
 Reachability: explicit-config-only
 Status: active
-Exercised: not yet - the harness surface lands in M4 (#1028); nothing constructs
-it yet
-Guarantee: SIM-P18: A laptop-sleep fault produces exactly one `AdvanceClock` of
-the scheduled duration with `busy_set` empty and no events inside the gap.
-Check: `always` - for each sleep fault, assert one `AdvanceClock` of exactly its
-duration, an empty busy set at that `seq`, and no event with `scenario_ms`
-inside the gap.
+Exercised: partial - the unit test "a laptop sleep is one event-free jump across
+the gap" constructs a scheduled sleep; no campaign run yet
+Guarantee: SIM-P18: A laptop-sleep fault produces exactly one `AdvanceClock`,
+carrying the fault id, that spans the idle gap before its session with
+`busy_set` empty and no events inside the gap; when a job kept the clock busy
+past the session's start there is no gap to jump and the fault is journaled
+`ItemState missed` with no `AdvanceClock` or `FaultFired`.
+Check: `always` - for each sleep fault, assert either one `AdvanceClock`
+carrying its id that lands on the session's first event, an empty busy set at
+that `seq`, and no event with `scenario_ms` inside the gap, or one
+`ItemState missed` and nothing else about the fault.
 Fault/timing angle: a sleep scheduled while a job is busy must wait for the job.
 Required faults and enabling state: a scheduled laptop-sleep fault.
 Confidence: low -
 [evidence](evidence/sim-p18-sleep-fault-is-event-free-jump.md). PROPOSED:
-reconstructed from the condensed index in spec #1007; no implementation exists
-to verify against, and reached only when the tier schedules faults or the
+reconstructed from the condensed index in spec #1007; the M4 unit tests verify
+the record, and reached only when the tier schedules faults or the
 counterfactual arm.
-Existing check: none
+Existing check: src/run/scheduler.test.ts - one `AdvanceClock` carrying the
+fault id lands on the session's first event with the fault fired right after
 Impact: The sleep fault tests a different condition than the one scheduled.
 Open questions: None.
 
@@ -1513,8 +1531,9 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M4 (#1028); nothing constructs
-it yet
+Exercised: partial - lease unit tests, including eight processes resuming a dead
+lease at once and two harness processes started on one run directory; no
+campaign run yet
 Guarantee: SIM-P60: A run directory holds one exclusive claim, and a second
 `StartRun` or `ResumeRun` on the same directory is refused before any write.
 Check: `always` - attempt a second start on a claimed directory and assert
@@ -1522,9 +1541,12 @@ refusal with no journal change.
 Fault/timing angle: two harness processes started near-simultaneously.
 Required faults and enabling state: a live claim and a second process.
 Confidence: low - [evidence](evidence/sim-p60-journal-has-one-writer.md).
-PROPOSED: reconstructed from the condensed index in spec #1007; no
-implementation exists to verify against, and a default tier run reaches it.
-Existing check: none
+PROPOSED: reconstructed from the condensed index in spec #1007; the M4 unit
+tests verify the record, and a default tier run reaches it.
+Existing check: src/run/scheduler.test.ts - live and foreign-host holders
+refused, dead leases taken over and damaged ones refused, one winner among
+racing resumers, and the second of two harness processes on one directory
+refused with the journal holding one `StartRun` and no `ResumeRun`
 Impact: Two writers interleave sequence numbers and corrupt the journal.
 Open questions: None.
 
@@ -1533,8 +1555,8 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M4 (#1028); nothing constructs
-it yet
+Exercised: partial - journal unit tests and the SIGKILL resume tests' raw byte
+prefix check; no campaign run yet
 Guarantee: SIM-P61: Entries have strictly increasing `seq`, no entry is
 rewritten, and a partial trailing entry is detected on load.
 Check: `always` - assert strictly increasing `seq`, byte-stable prefixes across
@@ -1543,9 +1565,10 @@ Fault/timing angle: a kill mid-write leaves a partial line.
 Required faults and enabling state: a harness kill during a journal append.
 Confidence: low -
 [evidence](evidence/sim-p61-journal-is-append-only-with-monotone-seq.md).
-PROPOSED: reconstructed from the condensed index in spec #1007; no
-implementation exists to verify against, and a default tier run reaches it.
-Existing check: none
+PROPOSED: reconstructed from the condensed index in spec #1007; the M4 unit
+tests verify the record, and a default tier run reaches it.
+Existing check: src/run/scheduler.test.ts - consecutive `seq` required on read,
+corrupt lines refused, resumed file starts with the killed run's bytes
 Impact: Resume reads a corrupt entry as valid.
 Open questions: None.
 
@@ -1554,8 +1577,8 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M4 (#1028); nothing constructs
-it yet
+Exercised: partial - the SIGKILL resume tests cover the `BeginTurn` half; the
+`call_id` half waits for a proxy-billing driver
 Guarantee: SIM-P62: After `ResumeRun`, no `BeginTurn` appears for an item
 already terminal, and no call record repeats a pre-interrupt `call_id`.
 Check: `always` - after resume, assert no `BeginTurn` for terminal items and no
@@ -1564,9 +1587,10 @@ Fault/timing angle: an interrupt between `EndTurn` and its journal entry.
 Required faults and enabling state: a harness kill at varied points.
 Confidence: low -
 [evidence](evidence/sim-p62-resume-does-not-reissue-completed-items.md).
-PROPOSED: reconstructed from the condensed index in spec #1007; no
-implementation exists to verify against, and a default tier run reaches it.
-Existing check: none
+PROPOSED: reconstructed from the condensed index in spec #1007; the M4 unit
+tests verify the `BeginTurn` half, and a default tier run reaches it.
+Existing check: src/run/scheduler.test.ts - each arm's events appear once after
+resume and the fixture's per-event billing log has no duplicate
 Impact: Completed items are re-billed and double-counted.
 Open questions: None.
 
@@ -1575,8 +1599,8 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M4 (#1028); nothing constructs
-it yet
+Exercised: partial - the SIGKILL resume tests kill before and after the fixture
+bills the in-flight turn; no campaign run yet
 Guarantee: SIM-P63: An item `issued` but not `attempted` at interrupt becomes
 exactly one of `failed(interrupted)` or `reissued(marker)`, and its
 pre-interrupt calls are billed once.
@@ -1586,9 +1610,11 @@ Fault/timing angle: the interrupt lands mid-turn.
 Required faults and enabling state: a harness kill while an item is issued.
 Confidence: low -
 [evidence](evidence/sim-p63-in-flight-item-resolved-once-on-resume.md).
-PROPOSED: reconstructed from the condensed index in spec #1007; no
-implementation exists to verify against, and a default tier run reaches it.
-Existing check: none
+PROPOSED: reconstructed from the condensed index in spec #1007; the M4 unit
+tests verify the recovery-state half, and a default tier run reaches it.
+Existing check: src/run/scheduler.test.ts - one `ItemState failed(interrupted)`
+and one `Event` for the in-flight turn, billed nowhere when killed before the
+attempt
 Impact: An interrupted item is counted twice or vanishes.
 Open questions:
 - OQ-1 is resolved in the M0 pre-registration: an in-flight item at interrupt is
@@ -1600,8 +1626,7 @@ Open questions:
 Type: reachability
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M4 (#1028); nothing constructs
-it yet
+Exercised: partial - the SIGKILL resume tests kill mid-turn; no campaign run yet
 Guarantee: SIM-P64: A harness kill lands while an item is `issued` at least once
 per campaign.
 Check: `sometimes` - observe at least one interrupt with an issued item; only
@@ -1609,9 +1634,11 @@ then does SIM-P63 run.
 Fault/timing angle: none.
 Required faults and enabling state: a scheduled harness kill.
 Confidence: low - [evidence](evidence/sim-p64-interrupt-mid-turn-exercised.md).
-PROPOSED: reconstructed from the condensed index in spec #1007; no
-implementation exists to verify against, and a default tier run reaches it.
-Existing check: none
+PROPOSED: reconstructed from the condensed index in spec #1007; the M4 unit
+tests construct the interrupt path; a campaign check of its occurrence is
+still to come, and a default tier run reaches it.
+Existing check: src/run/scheduler.test.ts - a kill lands while a `BeginTurn` is
+open
 Impact: The in-flight resolution path is never exercised.
 Open questions: None.
 
@@ -1620,8 +1647,9 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M4 (#1028); nothing constructs
-it yet
+Exercised: not yet - `tape_id` and divergence indices land in M6; the M4
+SIGKILL resume tests observe event-list identity, which this record does not
+promise
 Guarantee: SIM-P65: A resumed sibling arm replays the same `tape_id` and reports
 the same divergence index for all events before the interrupt.
 Check: `always` - compare `tape_id` and pre-interrupt divergence indices before
@@ -1629,8 +1657,9 @@ and after resume.
 Fault/timing angle: resume rebuilds tape state from disk.
 Required faults and enabling state: an interrupt in a sibling arm.
 Confidence: low - [evidence](evidence/sim-p65-resume-preserves-pairing.md).
-PROPOSED: reconstructed from the condensed index in spec #1007; no
-implementation exists to verify against, and a default tier run reaches it.
+PROPOSED: reconstructed from the condensed index in spec #1007; the M4 unit
+tests observe event-list identity, which this record does not promise, and a
+default tier run reaches it.
 Existing check: none
 Impact: Pairing breaks silently after resume.
 Open questions: None.
@@ -1681,8 +1710,8 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M4 (#1028); nothing constructs
-it yet
+Exercised: partial - the SIGKILL resume tests compare the first resumed entry's
+`scenario_ms` with the last journaled value; no campaign run yet
 Guarantee: SIM-P68: After `ResumeRun`, `scenario_ms` equals the last journaled
 clock value and `busy_set` is empty.
 Check: `always` - after resume, compare the clock to the last journaled value
@@ -1690,9 +1719,12 @@ and assert an empty busy set.
 Fault/timing angle: none.
 Required faults and enabling state: an interrupt and resume.
 Confidence: low - [evidence](evidence/sim-p68-clock-restored-on-resume.md).
-PROPOSED: reconstructed from the condensed index in spec #1007; no
-implementation exists to verify against, and a default tier run reaches it.
-Existing check: none
+PROPOSED: reconstructed from the condensed index in spec #1007; the M4 unit
+tests verify the record, and a default tier run reaches it.
+Existing check: src/run/scheduler.test.ts - the first entry after `ResumeRun`
+carries the arm's last journaled `scenario_ms`, and `invariants()` requires the
+journal-derived busy set empty at every `BeginTurn` and `AdvanceClock`,
+including the first after resume
 Impact: Resume moves time or holds stale busy entries.
 Open questions: None.
 

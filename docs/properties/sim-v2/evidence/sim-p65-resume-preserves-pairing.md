@@ -14,8 +14,14 @@ v2 harness before any harness code existed.
 A resumed sibling arm replays the same `tape_id` and reports the same divergence
 index for all events before the interrupt.
 
-No harness code, test, or run exists yet. The surface lands in M4
-(#1028).
+At the 2026-10-12 proposal no harness code, test, or run existed; the
+surface landed in M4 (#1028).
+
+M4 (#1028) resumes each arm from its own cursor over the shared event list; the
+resume tests check that every arm's completed events equal the full event list
+in order. That observes event-list identity, which this record does not
+promise: the record stays unexercised until `tape_id` and divergence indices
+land with the tapes in M6 and a test compares them across a resume.
 
 ## Failure scenario
 

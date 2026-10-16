@@ -14,8 +14,18 @@ v2 harness before any harness code existed.
 A run directory holds one exclusive claim, and a second `StartRun` or
 `ResumeRun` on the same directory is refused before any write.
 
-No harness code, test, or run exists yet. The surface lands in M4
-(#1028).
+At the 2026-10-12 proposal no harness code, test, or run existed; the
+surface landed in M4 (#1028).
+
+M4 (#1028) links a numbered lease file into the run directory before opening
+the journal; a takeover links the next number, which exactly one racing
+resumer can create. Tests check that a live holder and a holder on another
+host are refused, that a dead lease is taken over and a damaged one refuses
+the directory, and that
+eight processes resuming a dead lease at once produce one holder and seven
+refusals. A second fixture harness started once the first holds the lease and has
+journaled `StartRun` is refused with `is leased by pid`, and the journal ends
+with one `StartRun`, no `ResumeRun`, and the first harness's `EndRun`.
 
 ## Failure scenario
 

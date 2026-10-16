@@ -86,8 +86,21 @@ sequence.
 ## Fault injection
 
 `FaultInjector` holds the scenario's proxy-sink episodes. The scheduler calls
-`arm(id)` when an episode's trigger event occurs and `disarm(id)` at the end
-of a persistent episode's session. While armed, an episode replaces agent
+`reset()` at each arm's start, which clears armed and pending episodes, empties
+the witnesses, returns each episode's own generator (seeded from the injector's generator and
+the episode id) to its seed so every arm draws the same intermittent masks, and ignores calls whose first bytes arrived before the reset, both when they
+ask for a fault and when their records are observed; a call received before
+a fault was armed takes nothing from that fault, and a call received before
+an injection is never that injection's host observation; a record carries the
+arm, session, turn, scenario time, wall time, and retry seed of the request's
+receipt (the seed is drawn from the root stream at receipt, so the draw order
+is the receipt order whatever the uploads' completion order)
+(the scope read at receipt is kept even when the clock read fails, so the
+failure record names its owner),
+and its first-byte latency runs from that receipt; among requests received in
+one epoch, fault selection follows classification, which needs the body, so
+it runs in body-completion order; `arm(id)` when an episode's trigger event occurs; and
+`disarm(id)` at the end of an episode's session. While armed, an episode replaces agent
 calls' answers by strategy:
 
 | Strategy | Calls faulted |
