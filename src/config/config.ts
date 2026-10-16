@@ -97,6 +97,9 @@ export function parseConfig(value: unknown): SimConfig {
     if (typeof env !== "object" || env === null || Array.isArray(env)) {
         throw new ConfigError("config.toolchain.env: missing");
     }
+    for (const required of ["CARGO_HOME", "RUSTUP_HOME"]) {
+        if (!(required in env)) throw new ConfigError(`config.toolchain.env.${required}: missing`);
+    }
     for (const [key, value] of Object.entries(env)) {
         const word = typeof value === "string" && ENV_KEY.test(key) && PLAIN_VALUE.test(value);
         if (!word || ["PATH", "HOME", "LD_PRELOAD"].includes(key)) {

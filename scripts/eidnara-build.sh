@@ -22,9 +22,15 @@ esac
 dst=$dst_real
 src=$src_real
 # One build per clone at a time, held from the record's removal to its publication.
+# The lock's directory is outside every sandbox view (the home is masked and the clone is
+# read-only), so the check-then-open below races only with the operator.
 lock="$dst_real.lock"
 if [ -L "$lock" ]; then
     echo "eidnara-build: $lock is a symlink" >&2
+    exit 65
+fi
+if [ -e "$lock" ] && [ ! -f "$lock" ]; then
+    echo "eidnara-build: $lock is not a regular file" >&2
     exit 65
 fi
 exec 9>>"$lock"
@@ -43,7 +49,13 @@ refuse_reserved() {
 }
 # .sim-build-source names the checkout this clone was made from, so the forced
 # checkout and clean below only ever touch a clone this script created.
-if [ -d "$dst/.git" ]; then
+if [ -e "$dst/.git" ] || [ -L "$dst/.git" ]; then
+    # A linked Git directory would let the fetch and checkout below write into another repository.
+    if [ -L "$dst/.git" ] || [ ! -d "$dst/.git" ] ||
+        [ "$(realpath -m "$dst/.git")" != "$dst_real/.git" ]; then
+        echo "eidnara-build: $dst/.git is not a real directory inside the clone" >&2
+        exit 65
+    fi
     if [ "$(cat "$dst/.sim-build-source" 2>/dev/null)" != "$src_real" ]; then
         echo "eidnara-build: $dst was not cloned by this script from $src" >&2
         exit 65

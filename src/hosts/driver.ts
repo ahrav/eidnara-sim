@@ -3,6 +3,7 @@ import {
     existsSync,
     lstatSync,
     mkdirSync,
+    readdirSync,
     readFileSync,
     realpathSync,
     renameSync,
@@ -20,7 +21,10 @@ import {
     DaemonStack,
     eidnaraOn,
     type HostContext,
+    hostNode,
     makeHost,
+    opencodeInstall,
+    readOnlyPaths,
     type SimHost,
 } from "./arms";
 
@@ -100,7 +104,7 @@ export function expandTemplate(template: string, env: Record<string, string>): s
     });
 }
 
-const BETWEEN_SESSIONS = new Set(["daemon_restart", "plugin_reload", "model_switch"]);
+const BETWEEN_SESSIONS = new Set(["daemon_restart", "plugin_reload", "model_switch", "store_full"]);
 
 const SUPPORTED = new Set([
     "daemon_sigkill_mid_fold",
@@ -190,8 +194,24 @@ export class HostDriver implements ArmDriver {
             env.GIT_COMMITTER_DATE = env.GIT_AUTHOR_DATE;
         }
         const keep = [...new Set([...this.keep, this.o.armRoot])];
-        const checkout = this.o.config.eidnara_checkout;
-        const ro = existsSync(checkout) ? [checkout] : [];
+        // Git reads no scenario clock, so the clock directory stays out of its view; the hosts'
+        // installs join the set, since a hook could otherwise poison a later session's host.
+        const clock = dirname(this.o.offsetFile);
+        const resolved = (find: () => string): string | null => {
+            try {
+                return find();
+            } catch {
+                return null;
+            }
+        };
+        const installs = [
+            this.o.config.pi_install,
+            resolved(() => hostNode().root),
+            resolved(() => opencodeInstall(this.o.config).root),
+        ].filter((p): p is string => p !== null);
+        const ro = [...new Set([...readOnlyPaths(this.o), ...installs])].filter(
+            (p) => p !== clock && existsSync(p),
+        );
         // `timeout` runs inside the sandbox, so the recorded pid execs into the launcher's `sudo`
         // and the reaper's walk starts at the root-owned process, as it does for a host.
         const seconds = String(Math.ceil(this.o.turnDeadlineMs / 1000));
@@ -266,7 +286,7 @@ export class HostDriver implements ArmDriver {
 
     /** The daemon's directories are host-writable, so every daemon start and restart rechecks them. */
     private checkDaemonDirs(): void {
-        realChild(this.o.armRoot, "runtime", "daemon runtime");
+        realChild(this.armDir, "runtime", "daemon runtime");
         realChild(this.storeRoot, "d", "daemon data");
     }
 
@@ -425,10 +445,10 @@ export class HostDriver implements ArmDriver {
         if (!state) {
             throw new HarnessFailure(`resume of arm ${this.o.arm}: ${this.stateFile} is gone`);
         }
+        await this.reapStale();
         if (state.failed !== null && state.failed !== undefined) {
             throw new HarnessFailure(`arm ${this.o.arm} failed to finish earlier: ${state.failed}`);
         }
-        await this.reapStale();
     }
 
     private async stopRecorded(proc: { pid: number; start: string | null } | null | undefined) {
@@ -438,11 +458,62 @@ export class HostDriver implements ArmDriver {
         }
     }
 
+    /**
+     * Daemons the fixture started against this arm's store, found by their `--state-root`
+     * argument; one spawned before the harness died has no record in `state.json` yet.
+     */
+    private daemonsOnStore(): number[] {
+        const uid = process.getuid?.();
+        const ours = (pid: string) => {
+            try {
+                if (statSync(`/proc/${pid}`).uid !== uid) return false;
+                const cmd = readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0");
+                const at = cmd.indexOf("--state-root");
+                return at >= 0 && cmd[at + 1] === this.dataDir;
+            } catch {
+                return false;
+            }
+        };
+        return readdirSync("/proc")
+            .filter((e) => /^\d+$/.test(e) && ours(e))
+            .map(Number);
+    }
+
+    /** The OpenCode wrapper's own record of its pid and start time, written before the server answers. */
+    private launchRecord(): { pid: number; start: string | null } | null {
+        const path = join(this.armDir, "opencode.launch");
+        if (lstatSync(path, { throwIfNoEntry: false })?.isFile() !== true) return null;
+        const [pid, start] = readFileSync(path, "utf8").trim().split(" ");
+        const parsed = Number(pid);
+        if (!Number.isInteger(parsed) || parsed <= 0) return null;
+        return { pid: parsed, start: start ?? null };
+    }
+
     /** Removes a stale `index.lock` when `.git` is a real directory; a link there is left alone. */
     private unlockGit(dir: string): void {
         const gitDir = join(dir, ".git");
-        if (lstatSync(gitDir, { throwIfNoEntry: false })?.isDirectory()) {
-            rmSync(join(gitDir, "index.lock"), { force: true });
+        if (!lstatSync(gitDir, { throwIfNoEntry: false })?.isDirectory()) return;
+        for (const lock of ["index.lock", "HEAD.lock", "packed-refs.lock"]) {
+            rmSync(join(gitDir, lock), { force: true });
+        }
+        const refs = join(gitDir, "refs");
+        if (!lstatSync(refs, { throwIfNoEntry: false })?.isDirectory()) return;
+        const walk = (d: string) => {
+            for (const entry of readdirSync(d, { withFileTypes: true })) {
+                const path = join(d, entry.name);
+                if (entry.isDirectory()) walk(path);
+                else if (entry.isFile() && entry.name.endsWith(".lock"))
+                    rmSync(path, { force: true });
+            }
+        };
+        walk(refs);
+    }
+
+    /** Repository git follows `.git`, so it has to be the workspace's own directory, a link to none. */
+    private requireOwnGitDir(dir: string): void {
+        const gitDir = join(dir, ".git");
+        if (!lstatSync(gitDir, { throwIfNoEntry: false })?.isDirectory()) {
+            throw new HarnessFailure(`workspace ${dir}: .git is not the workspace's own directory`);
         }
     }
 
@@ -461,6 +532,12 @@ export class HostDriver implements ArmDriver {
         const steps: Array<() => Promise<void> | void> = [
             () => (state ? this.reapGit(state) : undefined),
             () => this.stopRecorded(state?.host),
+            () => this.stopRecorded(this.launchRecord()),
+            async () => {
+                for (const pid of this.daemonsOnStore()) {
+                    await this.stopRecorded({ pid, start: processStart(pid) });
+                }
+            },
             () => this.stopRecorded(state?.daemon),
             () => this.unmount(this.dataDir),
             () => this.unmount(this.storeRoot),
@@ -498,6 +575,11 @@ export class HostDriver implements ArmDriver {
             return {};
         }
         if (e.kind === "apply_diff") {
+            if (this.sessionProject !== null) {
+                throw new HarnessFailure(
+                    `apply_diff fires between sessions; ${e.id} fired inside one`,
+                );
+            }
             await this.applyDiff(e);
             return {};
         }
@@ -535,6 +617,7 @@ export class HostDriver implements ArmDriver {
         ) {
             throw new HarnessFailure(`apply_diff path ${String(e.path)} leaves ${dir}`);
         }
+        this.requireOwnGitDir(dir);
         writeWhole(path, String(e.content));
         await this.gitOk(project, dir, ["add", "--", path]);
         const staged = await this.git(project, dir, ["diff", "--cached", "--quiet", "--", path]);
@@ -548,7 +631,12 @@ export class HostDriver implements ArmDriver {
     private checkTranscripts(host: SimHost): void {
         const env = host.transcriptEnv();
         const paths = this.o.transcriptPaths.map((t) => expandTemplate(t, env));
-        const missing = paths.filter((p) => !existsSync(p));
+        // A link left where the store was is the host's placeholder, so the store counts as missing.
+        const present = (p: string) => {
+            const stat = lstatSync(p, { throwIfNoEntry: false });
+            return stat !== undefined && (stat.isFile() || stat.isDirectory());
+        };
+        const missing = paths.filter((p) => !present(p));
         const record = { checked_after: "first session_end", paths, missing };
         writeWhole(join(this.armDir, "transcripts.json"), JSON.stringify(record));
         if (missing.length > 0) throw new Error(`transcript store missing: ${missing.join(", ")}`);
@@ -674,20 +762,22 @@ export class HostDriver implements ArmDriver {
         }
     }
 
+    /**
+     * A host or daemon whose teardown fails stays held, with its session and recorded identity, so
+     * the failure's state names it and a later stop can try again.
+     */
     async stop(): Promise<void> {
-        const host = this.host;
-        const daemon = this.daemon;
-        this.host = null;
-        this.daemon = null;
-        this.sessionProject = null;
         let failure: unknown = null;
         try {
-            await host?.closeSession();
+            await this.host?.closeSession();
+            this.host = null;
+            this.sessionProject = null;
         } catch (caught) {
             failure = caught;
         }
         try {
-            await daemon?.stop();
+            await this.daemon?.stop();
+            this.daemon = null;
         } catch (caught) {
             failure ??= caught;
         }
@@ -697,9 +787,12 @@ export class HostDriver implements ArmDriver {
             failure ??= caught;
         }
         if (this.storeMount) {
-            const r = spawnSync("sudo", ["-n", "umount", this.storeMount], { encoding: "utf8" });
-            if (r.status === 0) this.storeMount = null;
-            else failure ??= new Error(`umount ${this.storeMount}: ${r.stderr}`);
+            try {
+                this.unmount(this.storeMount);
+                this.storeMount = null;
+            } catch (caught) {
+                failure ??= caught;
+            }
         }
         if (failure) throw failure;
     }

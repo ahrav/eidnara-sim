@@ -108,3 +108,11 @@ test("wall-clock tools are limited to the wrappers cargo is pointed at and prefl
         "config.toolchain.wall_clock_tools: clang is not one of rustc, rustdoc",
     );
 });
+
+test("the tool homes the hosts need must be configured", () => {
+    const base = loadConfig() as any;
+    const { RUSTUP_HOME: _, ...env } = base.toolchain.env;
+    expect(() => parseConfig({ ...base, toolchain: { ...base.toolchain, env } })).toThrow(
+        "config.toolchain.env.RUSTUP_HOME: missing",
+    );
+});

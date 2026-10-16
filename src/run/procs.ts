@@ -98,11 +98,52 @@ export async function stopOwnedTree(
     graceMs: number,
     rootStart?: string,
 ): Promise<boolean> {
-    if (rootStart !== undefined && processStart(rootPid) !== rootStart) return true;
-    const targets = ownedProcesses(rootPid).map((pid) => ({ pid, start: processStart(pid) }));
-    const all = [...targets, { pid: rootPid, start: processStart(rootPid) }];
-    signal(targets, "SIGTERM");
-    if (await stopped(all, graceMs)) return true;
-    signal(targets, "SIGKILL");
-    return stopped(all, 2_000);
+    const root = { pid: rootPid, start: rootStart ?? processStart(rootPid) };
+    if (!alive(root)) return true;
+    // Descendants keep being discovered while the root lives: a root-owned launcher still in
+    // its privileged setup starts the user-owned command later, and that command is the target.
+    const seen = new Map<number, Target>();
+    const sweep = (name: NodeJS.Signals) => {
+        for (const pid of ownedProcesses(rootPid)) {
+            if (!seen.has(pid)) seen.set(pid, { pid, start: processStart(pid) });
+        }
+        signal([...seen.values()], name);
+    };
+    const settled = () => !alive(root) && [...seen.values()].every((t) => !alive(t));
+    const phase = async (name: NodeJS.Signals, ms: number) => {
+        const deadline = Date.now() + ms;
+        while (Date.now() < deadline) {
+            sweep(name);
+            if (settled()) return true;
+            await Bun.sleep(50);
+        }
+        return settled();
+    };
+    if (await phase("SIGTERM", graceMs)) return true;
+    if (await phase("SIGKILL", 2_000)) return true;
+    if (rootStart === undefined) return false;
+    // The launcher is root-owned until its sandbox drops privileges, so what is left of a pinned
+    // launch is killed through the same passwordless sudo the launcher runs under.
+    const privileged = treeProcesses(rootPid)
+        .map((pid) => ({ pid, start: processStart(pid) }))
+        .filter(alive);
+    if (privileged.length === 0) return true;
+    Bun.spawnSync([
+        "sudo",
+        "-n",
+        "kill",
+        "-KILL",
+        ...privileged.filter(alive).map((t) => String(t.pid)),
+    ]);
+    return stopped([...seen.values(), root, ...privileged], 2_000);
+}
+
+function treeProcesses(rootPid: number): number[] {
+    const out: number[] = [];
+    const queue = [rootPid];
+    for (let next = queue.shift(); next !== undefined; next = queue.shift()) {
+        if (statFields(next) !== null) out.push(next);
+        queue.push(...childrenOf(next));
+    }
+    return out;
 }

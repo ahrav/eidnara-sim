@@ -8,11 +8,12 @@ import {
     symlinkSync,
     writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "../config/config";
 import {
     checkToolchainBins,
+    checkToolchainHomes,
     SYSTEM_PATH,
     sandboxPath,
     TOOLCHAIN_PROBES,
@@ -107,22 +108,6 @@ test("a toolchain bin reached through a symlink out of its keep path is refused"
     expect(() => checkToolchainBins(config(join(kept, "bin")))).not.toThrow();
 });
 
-test("a tool in a kept bin that links to an executable outside the keep paths is refused", () => {
-    const dir = root();
-    const kept = join(dir, "kept/bin");
-    mkdirSync(kept, { recursive: true });
-    writeFileSync(join(dir, "rustc-elsewhere"), "", { mode: 0o755 });
-    symlinkSync(join(dir, "rustc-elsewhere"), join(kept, "rustc"));
-    const base = loadConfig();
-    const config = {
-        ...base,
-        toolchain: { ...base.toolchain, bin: [kept], keep: [join(dir, "kept")] },
-    };
-    expect(() => checkToolchainBins(config)).toThrow(
-        `toolchain tool ${join(kept, "rustc")} resolves outside its keep paths`,
-    );
-});
-
 test("any executable in a kept bin that resolves outside the keep paths is refused", () => {
     const dir = root();
     const kept = join(dir, "kept/bin");
@@ -136,5 +121,44 @@ test("any executable in a kept bin that resolves outside the keep paths is refus
     };
     expect(() => checkToolchainBins(config)).toThrow(
         `toolchain tool ${join(kept, "rustfmt")} resolves outside its keep paths`,
+    );
+});
+
+test("a dangling symlink in a kept bin is refused", () => {
+    const dir = root();
+    const kept = join(dir, "kept/bin");
+    mkdirSync(kept, { recursive: true });
+    symlinkSync(join(dir, "not-yet"), join(kept, "cargo-x"));
+    const base = loadConfig();
+    const config = {
+        ...base,
+        toolchain: { ...base.toolchain, bin: [kept], keep: [join(dir, "kept")] },
+    };
+    expect(() => checkToolchainBins(config)).toThrow(
+        `toolchain tool ${join(kept, "cargo-x")} is a dangling symlink`,
+    );
+});
+
+test("tool homes and caches must be read-only keeps or private to the sandbox", () => {
+    const dir = root();
+    const base = loadConfig();
+    const kept = join(dir, "kept");
+    mkdirSync(join(kept, "cargo"), { recursive: true });
+    // /var/tmp is writable and stays shared across sandboxes, unlike the masked home and /tmp.
+    const shared = realpathSync(mkdtempSync("/var/tmp/sim-shared-"));
+    dirs.push(shared);
+    const config = (env: Record<string, string>) => ({
+        ...base,
+        toolchain: { ...base.toolchain, keep: [kept], env },
+    });
+    expect(() =>
+        checkToolchainHomes(
+            config({ CARGO_HOME: join(kept, "cargo"), RUSTUP_HOME: join(homedir(), ".rustup") }),
+        ),
+    ).not.toThrow();
+    expect(() =>
+        checkToolchainHomes(config({ CARGO_HOME: join(kept, "cargo"), RUSTUP_HOME: shared })),
+    ).toThrow(
+        `toolchain.env.RUSTUP_HOME ${shared} is neither kept read-only nor private to the sandbox`,
     );
 });

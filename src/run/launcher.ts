@@ -1,12 +1,13 @@
 import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { writeAtomic } from "./atomic";
 
 // `--kill-child` sends SIGKILL to namespace PID 1 when the unshare parent dies.
 const UNSHARE_ARGS = [
     "--mount",
     "--pid",
+    "--ipc",
     "--fork",
     "--kill-child",
     "--mount-proc",
@@ -47,7 +48,8 @@ export function maskedPaths(runRoot: string): string[] {
 // through variables set after setpriv. The staging tree and the interposer's own
 // shared-memory objects live in a private /dev/shm that ends with the namespace.
 // A read-only remount covers one mount, so each read-only path is remounted together
-// with every mount `--rbind` carried in below it.
+// with every mount `--rbind` carried in below it; `findmnt -l` prints each target
+// unescaped on its own line.
 function script(hidden: readonly string[]): string {
     const mounts = hidden
         .map((dir) => `mount -t tmpfs -o mode=1777 tmpfs ${plainPath(dir)}`)
@@ -74,7 +76,7 @@ for p in $keep; do mkdir -p "$st$p"; mount --rbind "$p" "$st$p"; done
 ${mounts}
 for p in $keep; do mkdir -p "$p"; mount --rbind "$st$p" "$p"; done
 for p in $keep; do umount -R "$st$p" || true; done
-for p in $ro; do for m in $(findmnt -rn -o TARGET -R "$p"); do mount -o remount,bind,ro "$m"; done; done
+for p in $ro; do findmnt -ln -o TARGET -R "$p" | while IFS= read -r m; do mount -o remount,bind,ro "$m"; done; done
 find "$st" -depth -type d -empty -delete || true
 setpriv ${ids} --init-groups --no-new-privs --inh-caps=-all --bounding-set=-all -- env --default-signal=INT,TERM --chdir="$cwd" PATH="$SIM_PATH" $envs "$@"
 exit 0' sh "$@"
@@ -106,11 +108,14 @@ export function launch(
     const kept = keep.map(plainPath);
     const ro = readOnly.map(plainPath);
     // Binding a masked root, or a directory above one, would put the masked tree back in view.
-    const canonical = (path: string) => {
+    // A path not created yet resolves through its nearest existing ancestor, since mkdir -p and
+    // the bind mounts follow that ancestor's symlinks.
+    const canonical = (path: string): string => {
         try {
             return realpathSync(path);
         } catch {
-            return path;
+            const parent = dirname(path);
+            return parent === path ? path : join(canonical(parent), basename(path));
         }
     };
     const masked = ["/tmp", realpathSync(homedir()), canonical(dirname(launcher))];

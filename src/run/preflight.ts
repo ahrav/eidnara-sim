@@ -5,7 +5,12 @@ import { checkBuildMarker, checkDaemonFromBuild } from "./buildmarker";
 import { assess, type Interception, interceptionTest, probes } from "./interception";
 import { writeLauncher } from "./launcher";
 import { buildFaketime } from "./timeinject";
-import { checkToolchainBins, type ToolchainProbe, toolchainProbe } from "./toolchain";
+import {
+    checkToolchainBins,
+    checkToolchainHomes,
+    type ToolchainProbe,
+    toolchainProbe,
+} from "./toolchain";
 import { hostVersion, transcriptPaths } from "./transcripts";
 
 export interface Preflight {
@@ -62,6 +67,7 @@ export async function preflight(config: SimConfig, runRoot: string): Promise<Pre
     });
     const offset = join(runRoot, "interception", "offset");
     checkToolchainBins(config);
+    checkToolchainHomes(config);
     const toolchain = await toolchainProbe(config, launcher, offset);
     return { launcher, time_injection, distortions, hosts, toolchain };
 }
