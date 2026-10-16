@@ -130,6 +130,14 @@ describe("catalog checker", () => {
         );
     });
 
+    test("refuses a blank free-text field", () => {
+        const path = copy();
+        edit(path, /Impact: [^\n]*\n(?:[^\n]+\n)*?(?=Open questions:)/, "Impact:\n");
+        expect(checkCatalog(path, METHOD, IDS)).toContain(
+            "sim-p01-scenario-compile-is-deterministic: Impact is blank",
+        );
+    });
+
     test("refuses a Guarantee that carries its id and no claim", () => {
         const path = copy();
         edit(path, /Guarantee: SIM-P01:[^\n]*\n(?:[^\n]+\n)*?(?=Check:)/, "Guarantee: SIM-P01:\n");

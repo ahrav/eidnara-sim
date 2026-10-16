@@ -49,44 +49,68 @@ export interface TierReport {
     families: FamilyVerdict[];
 }
 
-function checkVerdict(f: FamilyVerdict, family: Family, errors: string[]): void {
+function checkVerdict(
+    f: FamilyVerdict,
+    family: Family,
+    prereg: Preregistration,
+    errors: string[],
+): void {
     const at = `families[${f.family}]`;
-    if (!VERDICT_KINDS.includes(f.verdict)) errors.push(`${at}.verdict: ${f.verdict}`);
+    const verdict = typeof f.verdict === "string" ? f.verdict : "";
+    if (verdict === "") errors.push(`${at}.verdict: expected a verdict kind`);
+    else if (!VERDICT_KINDS.includes(f.verdict)) errors.push(`${at}.verdict: ${verdict}`);
     if (!Number.isSafeInteger(f.n) || f.n < 0) errors.push(`${at}.n: missing`);
+    else if (
+        family.analysis_unit === "item" &&
+        f.n > prereg.stopping_rule.paired_items_per_probe_type
+    ) {
+        errors.push(
+            `${at}.n: exceeds the ${prereg.stopping_rule.paired_items_per_probe_type} paired items the tier issues`,
+        );
+    } else if (family.analysis_unit === "run" && f.n > prereg.seeds.length * prereg.hosts.length) {
+        errors.push(
+            `${at}.n: exceeds the ${prereg.seeds.length * prereg.hosts.length} paired runs the tier produces`,
+        );
+    }
     if (!isCanonicalDecimal(f.mde)) errors.push(`${at}.mde: expected a canonical decimal string`);
-    if ((family.claim === "descriptive") !== (f.verdict === "descriptive")) {
-        errors.push(`${at}.verdict: a ${family.claim} family cannot report ${f.verdict}`);
+    else if (verdict === NULL_VERDICT && Number(f.mde) <= 0) {
+        errors.push(`${at}.mde: a null verdict states a positive detectable effect`);
+    }
+    if ((family.claim === "descriptive") !== (verdict === "descriptive")) {
+        errors.push(`${at}.verdict: a ${family.claim} family cannot report ${verdict}`);
     }
     const bound = BOUND_DIRECTIONS.includes(family.direction);
-    if (bound && !BOUND_VERDICTS.includes(f.verdict)) {
+    if (bound && !BOUND_VERDICTS.includes(verdict)) {
         errors.push(
             `${at}.verdict: a ${family.direction} gate compares each run to a bound and reports passed-gate or failed-gate`,
         );
-    } else if (MARGIN_DIRECTIONS.includes(family.direction) && f.verdict === "better") {
+    } else if (MARGIN_DIRECTIONS.includes(family.direction) && verdict === "better") {
         errors.push(
             `${at}.verdict: a ${family.direction} family claims at most its margin, never better`,
         );
     } else if (
         !bound &&
         !MARGIN_DIRECTIONS.includes(family.direction) &&
-        f.verdict === "passed-gate"
+        verdict === "passed-gate"
     ) {
         errors.push(
             `${at}.verdict: a ${family.direction} family makes a paired claim, never passed-gate`,
         );
     }
-    if ((f.verdict === NULL_VERDICT) !== isCanonicalDecimal(f.resolution_ratio)) {
+    const ratio = isCanonicalDecimal(f.resolution_ratio) && Number(f.resolution_ratio) > 0;
+    const ratioAllowed = verdict === NULL_VERDICT ? ratio : f.resolution_ratio === undefined;
+    if (!ratioAllowed) {
         errors.push(
-            `${at}.resolution_ratio: a null verdict carries its resolution ratio as a canonical decimal; other verdicts omit it`,
+            `${at}.resolution_ratio: a null verdict carries its resolution ratio as a positive canonical decimal; other verdicts omit it`,
         );
     }
     const belowFloor = needsPairedRuns(family) && f.n < family.min_paired_runs;
-    if (belowFloor !== (f.verdict === "insufficient-runs")) {
+    if (belowFloor !== (verdict === "insufficient-runs")) {
         errors.push(
             `${at}.verdict: insufficient-runs is the verdict exactly when n is below ${family.min_paired_runs}`,
         );
     }
-    const failed = f.verdict === "failed-gate";
+    const failed = verdict === "failed-gate";
     const payload =
         typeof f.failed_metric === "string" &&
         family.metrics.includes(f.failed_metric) &&
@@ -130,7 +154,7 @@ export function checkReport(report: unknown, prereg: Preregistration): string[] 
         if (seen.has(f.family)) errors.push(`families[${f.family}]: duplicate`);
         seen.add(f.family);
         if (!family) errors.push(`families[${f.family}]: not pre-registered`);
-        else checkVerdict(f, family, errors);
+        else checkVerdict(f, family, prereg, errors);
     });
     for (const id of registered.keys())
         if (!seen.has(id)) errors.push(`families[${id}]: missing from report`);

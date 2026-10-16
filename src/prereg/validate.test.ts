@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { CLAIM_BOUNDARY, checkReport, type FamilyVerdict, type TierReport } from "./report";
-import { needsPairedRuns, type Preregistration, REQUIRED_FAMILIES, TIERS } from "./schema";
+import { type Preregistration, REQUIRED_FAMILIES, TIERS } from "./schema";
 import { parsePreregistration, preregistrationHash, validatePreregistration } from "./validate";
 
 const PREREG_DIR = join(import.meta.dir, "../../prereg");
@@ -150,6 +150,7 @@ describe("pre-registration validator", () => {
                 "families[cost].min_paired_runs: exceeds the 6 paired runs the tier produces",
                 "families[intrusiveness].interval_method: a zero-tolerance gate compares each run to a bound and takes none",
                 "arms.order_by_seed[1]: is not a permutation of arms.run",
+                "arms.order_by_seed: every arm runs first for exactly one seed",
             ].sort(),
         );
     });
@@ -177,7 +178,7 @@ describe("pre-registration validator", () => {
             ["eidnara", "host"],
             ["host", "eidnara"],
         ];
-        expect(validatePreregistration(m)).toEqual(["arms.run: tier M runs eidnara-kl"]);
+        expect(validatePreregistration(m)).toContain("arms.run: tier M runs eidnara-kl");
         const l = load("L") as any;
         l.arms.run = ["host", "eidnara", "eidnara-kl"];
         l.arms.order_by_seed = l.arms.order_by_seed.map((o: string[]) =>
@@ -188,6 +189,56 @@ describe("pre-registration validator", () => {
         s.arms.run.push("eidnara-cf");
         s.arms.order_by_seed = s.arms.order_by_seed.map((o: string[]) => [...o, "eidnara-cf"]);
         expect(validatePreregistration(s)).toEqual(["arms.run: eidnara-cf runs at tier L alone"]);
+    });
+
+    test("requires distinct seed orders and, when seeds cover the arms, a balanced first position", () => {
+        const m = load("M") as any;
+        m.arms.order_by_seed = [
+            m.arms.order_by_seed[0],
+            m.arms.order_by_seed[0],
+            m.arms.order_by_seed[0],
+        ];
+        expect(validatePreregistration(m).sort()).toEqual(
+            [
+                "arms.order_by_seed: seeds share an arm order",
+                "arms.order_by_seed: every arm runs first for exactly one seed",
+            ].sort(),
+        );
+        m.arms.order_by_seed = [
+            ["host", "eidnara", "eidnara-kl"],
+            ["host", "eidnara-kl", "eidnara"],
+            ["eidnara-kl", "host", "eidnara"],
+        ];
+        expect(validatePreregistration(m)).toEqual([
+            "arms.order_by_seed: every arm runs first for exactly one seed",
+        ]);
+    });
+
+    test("refuses incompatible margin and MDE scales, a nonzero zero-tolerance margin, and a non-positive CUSUM threshold", () => {
+        const m = load("M") as any;
+        const fam = (id: string) => m.families.find((f: any) => f.id === id);
+        fam("latency").mde.scale = "bytes";
+        fam("intrusiveness").margin.value = "5";
+        fam("probe-P8").mde.scale = "ratio";
+        expect(validatePreregistration(m).sort()).toEqual(
+            [
+                "families[latency].mde.scale: bytes is not comparable with the ms margin",
+                "families[intrusiveness].margin.value: a zero-tolerance gate has a margin of 0",
+            ].sort(),
+        );
+        const l = load("L") as any;
+        l.stopping_rule.cusum[0].h = "0";
+        expect(validatePreregistration(l)).toEqual([
+            "stopping_rule.cusum[0].h: expected a positive canonical decimal",
+        ]);
+    });
+
+    test("requires bootstrap replicates inside eval-core's 40 to 10000", () => {
+        const s = load("S") as any;
+        s.bootstrap.replicates = 39;
+        expect(validatePreregistration(s)).toEqual(["bootstrap.replicates: expected 40 to 10000"]);
+        s.bootstrap.replicates = 10001;
+        expect(validatePreregistration(s)).toEqual(["bootstrap.replicates: expected 40 to 10000"]);
     });
 
     test("requires both A/A control pairs and five M repeats", () => {
@@ -249,7 +300,7 @@ function acceptedReport(prereg: Preregistration): TierReport {
         families: prereg.families.map((f) => ({
             family: f.id,
             verdict: verdict(f),
-            n: needsPairedRuns(f) ? f.min_paired_runs : 24,
+            n: f.analysis_unit === "run" ? prereg.seeds.length * prereg.hosts.length : 24,
             mde: "1",
         })),
     };
@@ -270,12 +321,36 @@ describe("report check against the pre-registration", () => {
         at(r, "probe-P1").verdict = "no-difference-above-x-pp-detectable-at-n";
         at(r, "probe-P2").resolution_ratio = "0.5";
         expect(checkReport(r, m)).toEqual([
-            "families[probe-P1].resolution_ratio: a null verdict carries its resolution ratio as a canonical decimal; other verdicts omit it",
-            "families[probe-P2].resolution_ratio: a null verdict carries its resolution ratio as a canonical decimal; other verdicts omit it",
+            "families[probe-P1].resolution_ratio: a null verdict carries its resolution ratio as a positive canonical decimal; other verdicts omit it",
+            "families[probe-P2].resolution_ratio: a null verdict carries its resolution ratio as a positive canonical decimal; other verdicts omit it",
         ]);
         at(r, "probe-P1").resolution_ratio = "0.5";
         delete at(r, "probe-P2").resolution_ratio;
         expect(checkReport(r, m)).toEqual([]);
+    });
+
+    test("caps n at the paired items or paired runs the pre-registration produces", () => {
+        const r = acceptedReport(m);
+        at(r, "probe-P1").n = 121;
+        at(r, "harm").n = 120;
+        at(r, "dependability").n = 7;
+        expect(checkReport(r, m)).toEqual([
+            "families[probe-P1].n: exceeds the 120 paired items the tier issues",
+            "families[dependability].n: exceeds the 6 paired runs the tier produces",
+        ]);
+    });
+
+    test("requires a positive detectable effect and resolution ratio on a null verdict", () => {
+        const r = acceptedReport(m);
+        Object.assign(at(r, "probe-P1"), {
+            verdict: "no-difference-above-x-pp-detectable-at-n",
+            mde: "0",
+            resolution_ratio: "0",
+        });
+        expect(checkReport(r, m)).toEqual([
+            "families[probe-P1].mde: a null verdict states a positive detectable effect",
+            "families[probe-P1].resolution_ratio: a null verdict carries its resolution ratio as a positive canonical decimal; other verdicts omit it",
+        ]);
     });
 
     test("refuses a verdict without n or without an MDE by name", () => {
@@ -370,7 +445,7 @@ describe("report check against the pre-registration", () => {
             "families[harm].verdict: a noninferiority family claims at most its margin, never better",
             "families[dependability].verdict: a at-most family claims at most its margin, never better",
             "families[resources].verdict: a threshold gate compares each run to a bound and reports passed-gate or failed-gate",
-            "families[resources].resolution_ratio: a null verdict carries its resolution ratio as a canonical decimal; other verdicts omit it",
+            "families[resources].resolution_ratio: a null verdict carries its resolution ratio as a positive canonical decimal; other verdicts omit it",
             "families[intrusiveness].verdict: a zero-tolerance gate compares each run to a bound and reports passed-gate or failed-gate",
         ]);
         Object.assign(at(r, "intrusiveness"), {
@@ -419,7 +494,9 @@ describe("report check against the pre-registration", () => {
         ]);
         const r = acceptedReport(s) as any;
         r.families.push(null, {});
+        at(r, "probe-P1").verdict = JSON.parse('{"toString":null,"valueOf":null}');
         const errors = checkReport(r, s);
+        expect(errors).toContain("families[probe-P1].verdict: expected a verdict kind");
         expect(errors).toContain(
             `families[${s.families.length}]: expected a verdict object with a family`,
         );

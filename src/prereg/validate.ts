@@ -40,6 +40,14 @@ const nonNegInt: Check = (v) =>
     Number.isSafeInteger(v) && (v as number) >= 0 ? null : "expected a non-negative integer";
 const decimal: Check = (v) =>
     isCanonicalDecimal(v) ? null : "expected a canonical decimal string";
+const positiveDecimal: Check = (v) =>
+    isCanonicalDecimal(v) && Number(v) > 0 ? null : "expected a positive canonical decimal";
+const intRange =
+    (low: number, high: number): Check =>
+    (v) =>
+        Number.isSafeInteger(v) && (v as number) >= low && (v as number) <= high
+            ? null
+            : `expected ${low} to ${high}`;
 const unitRate: Check = (v) =>
     isCanonicalDecimal(v) && Number(v) > 0 && Number(v) < 1
         ? null
@@ -123,7 +131,7 @@ const PREREG_SHAPE: Shape = {
             statistic: text,
             sd_source: text,
             k: decimal,
-            h: decimal,
+            h: positiveDecimal,
         }),
     },
     missingness_policy: {
@@ -143,7 +151,7 @@ const PREREG_SHAPE: Shape = {
         job_deadline_ms: posInt,
         tier_wall_budget_ms: posInt,
     },
-    bootstrap: { replicates: posInt, seed: nonNegInt },
+    bootstrap: { replicates: intRange(40, 10000), seed: nonNegInt },
     leak_bound: { c_bytes_per_session: posInt, r2_threshold: unitRate, sample_interval_ms: posInt },
     scoring: { p11_false_positive_weight: literal("2") },
     families: new ArrayOf(FAMILY_SHAPE),
@@ -175,6 +183,10 @@ const TIER_SECTIONS: Record<string, { tiers: readonly string[]; shape: Shape }> 
 
 /** The five harm metrics the harm family is Holm-corrected over (spec #1007). */
 export const HARM_METRICS = ["P2.harm", "P3.harm", "P4.harm", "P10.harm", "P11.harm"];
+/** `pp` and `ratio` both measure a rate; every other scale is its own dimension. */
+function scaleGroup(scale: string): string {
+    return scale === "pp" || scale === "ratio" ? "rate" : scale;
+}
 /** Arms a tier runs beyond `host` and `eidnara`; `eidnara-cf` is L's alone. */
 const TIER_COMPARISON_ARMS: Record<string, readonly string[]> = {
     S: ["eidnara-kl"],
@@ -261,6 +273,14 @@ function checkFamilies(p: Preregistration, errors: string[]): void {
         if (f.min_paired_runs > runs) {
             errors.push(`${at}.min_paired_runs: exceeds the ${runs} paired runs the tier produces`);
         }
+        if (scaleGroup(f.mde.scale) !== scaleGroup(f.margin.scale)) {
+            errors.push(
+                `${at}.mde.scale: ${f.mde.scale} is not comparable with the ${f.margin.scale} margin`,
+            );
+        }
+        if (f.direction === "zero-tolerance" && Number(f.margin.value) !== 0) {
+            errors.push(`${at}.margin.value: a zero-tolerance gate has a margin of 0`);
+        }
         if (
             f.id === "harm" &&
             (f.multiplicity !== "holm" ||
@@ -312,6 +332,14 @@ function checkArms(p: Preregistration, errors: string[]): void {
             errors.push(`arms.order_by_seed[${i}]: is not a permutation of arms.run`);
         }
     });
+    const orders = p.arms.order_by_seed.map((order) => order.join(","));
+    if (new Set(orders).size !== orders.length) {
+        errors.push("arms.order_by_seed: seeds share an arm order");
+    }
+    const firsts = p.arms.order_by_seed.map((order) => order[0]);
+    if (p.seeds.length >= p.arms.run.length && [...new Set(firsts)].sort().join(",") !== runSet) {
+        errors.push("arms.order_by_seed: every arm runs first for exactly one seed");
+    }
 }
 
 /** Every refusal, each naming the field path it applies to; an empty list means accepted. */

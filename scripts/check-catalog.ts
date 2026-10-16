@@ -83,6 +83,10 @@ export function checkRecord(record: Record, spec: FieldSpec[], catalogDir: strin
         return errors;
     }
     record.fields.forEach(([name, value], i) => {
+        if (value.trim() === "") {
+            errors.push(`${at}: ${name} is blank`);
+            return;
+        }
         const allowed = spec[i]?.values;
         const head = (value.split(/ -(?:\s|$)/)[0] ?? "").trim();
         if (allowed && !allowed.includes(head)) {
