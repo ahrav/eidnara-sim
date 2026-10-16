@@ -1,3 +1,4 @@
+import { armBase } from "../hosts/arms";
 import type { CallRecord } from "../proxy/records";
 import type { ArmLogs, RunLogs } from "./logs";
 
@@ -208,7 +209,7 @@ export function runOracles(run: RunLogs): Activation[] {
     return run.arms.flatMap((arm) => {
         const overflow = f1(arm);
         const f9 =
-            NO_HOST_COMPACTION.has(arm.arm) &&
+            NO_HOST_COMPACTION.has(armBase(arm.arm)) &&
             overflow.length > 0 &&
             !arm.calls.some((c) => c.component === "native_compaction")
                 ? [

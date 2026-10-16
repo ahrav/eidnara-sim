@@ -16,7 +16,8 @@ The v1 harness closure resolves `opencode` through a shell, and that shell
 sees the `PATH` the harness started with, so the run refuses to start
 unless the pinned OpenCode release's `node_modules/.bin` is on `PATH`.
 
-`--arms` keeps the listed arms of the seed's pre-registered order, and
+`--arms` keeps the listed arms of the seed's pre-registered order, plus
+any A/A control label such as `host~aa` (`docs/user-sim.md`), and
 `--events N` runs the first N scenario events. `--faults` replaces the
 scenario's fault schedule, `--context-limit` sets the model window the host
 sees (200,000 by default), and `--models` lists the models `model_switch`

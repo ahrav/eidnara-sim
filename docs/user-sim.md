@@ -95,6 +95,35 @@ their band. A run cut short of its scenario can leave a band and is
 flagged. The P14 grader reads the `UserTurn` labels of the session, since a
 replayed reply makes no model call.
 
+## A/A control
+
+An arm label `<arm>~<tag>`, such as `host~aa`, runs as `<arm>` under its own
+label, with its own directories, journal entries, and call records
+(`armBase` in `src/hosts/arms.ts`). `--arms host,host~aa` runs it right
+after its arm, once, and only for a pair the tier pre-registers in
+`aa_controls.pairs` (S and M). A control's reference arm is its own arm,
+so its divergence records and tape replies pair it with that arm; every
+other arm's reference is the first of the order. Both arms of a pair share
+the scenario, the behaviour plan, and the tape, so the control measures
+the noise the agent and the user-sim add on their own. `grade-run.ts`
+judges a control of `host` against nothing, and P7 grades, which come from
+judgments against the host arm, stay out of the A/A pairing.
+
+`scripts/aa-report.ts <run>` reads the run's graded items and, for each
+control, pairs every item both arms graded. For each metric, verdicts as
+`<type>.pass` and each numeric grade metric, it reports the mean
+difference with a percentile bootstrap interval that resamples ledger
+facts (the pre-registered `cluster_key`), using the pre-registered
+`bootstrap` replicates and seed. A metric over fewer than five ledger
+facts is listed as uninformative and decides nothing. Over the rest it
+reports whether every interval covers zero and the metrics whose interval
+misses it against the five percent expected by chance, the share of paired items whose verdicts
+differ (the disagreement rate), and how many sessions diverged at which
+index. With fewer than five pre-registered A/A repeats the result is
+descriptive. M7 applies each family's own pre-registered interval method;
+this report uses the cluster bootstrap for every metric. It writes
+`<run>/aa.json`.
+
 ## Limits
 
 - The persona writes only the reactive part of a turn; the task wording is

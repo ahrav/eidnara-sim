@@ -18,7 +18,7 @@ import {
     type TurnOutcome,
 } from "../run/scheduler";
 import type { FaultEpisode } from "../scenario/faults";
-import { DaemonStack, eidnaraOn, type HostContext, makeHost, type SimHost } from "./arms";
+import { armBase, DaemonStack, eidnaraOn, type HostContext, makeHost, type SimHost } from "./arms";
 import { SnapshotRecorder } from "./snapshot";
 import { checkStore } from "./storecheck";
 
@@ -28,7 +28,9 @@ interface ArmState {
     host: { pid: number; start: string | null } | null;
 }
 
-export interface DriverOptions extends Omit<HostContext, "root" | "model"> {
+export interface DriverOptions extends Omit<HostContext, "root" | "model" | "arm"> {
+    /** The arm's label; `armBase` gives the arm it runs as. */
+    arm: string;
     armRoot: string;
     projects: Record<string, string>;
     models: string[];
@@ -133,8 +135,9 @@ export class HostDriver implements ArmDriver {
 
     private newHost(): SimHost {
         const make = this.o.hostFactory ?? makeHost;
-        const keep = eidnaraOn(this.o.arm) ? [...this.o.keep, this.storeRoot] : this.o.keep;
-        return make({ ...this.o, keep, root: this.o.armRoot, model: this.currentModel() });
+        const arm = armBase(this.o.arm);
+        const keep = eidnaraOn(arm) ? [...this.o.keep, this.storeRoot] : this.o.keep;
+        return make({ ...this.o, arm, keep, root: this.o.armRoot, model: this.currentModel() });
     }
 
     private recordState(): void {
@@ -156,8 +159,8 @@ export class HostDriver implements ArmDriver {
 
     private async startArm(fresh: boolean): Promise<void> {
         mkdirSync(this.storeRoot, { recursive: true, mode: 0o700 });
-        if (this.o.loopStore && eidnaraOn(this.o.arm)) this.mountStore(fresh);
-        if (eidnaraOn(this.o.arm)) {
+        if (this.o.loopStore && eidnaraOn(armBase(this.o.arm))) this.mountStore(fresh);
+        if (eidnaraOn(armBase(this.o.arm))) {
             this.daemon = new DaemonStack({
                 ...this.o,
                 root: this.o.armRoot,

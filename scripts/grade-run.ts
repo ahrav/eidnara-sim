@@ -4,6 +4,7 @@ import { loadConfig } from "../src/config/config";
 import type { Snapshot } from "../src/grade/artefacts";
 import { gradeP7, judgePair, p7Pair, proxyJudge } from "../src/grade/judge";
 import { deltaMem, GradeLog, type GradeRecord, gradeItem } from "../src/grade/probes";
+import { armBase } from "../src/hosts/arms";
 import { bedrockUpstream, Gateway } from "../src/proxy/gateway";
 import { FaultInjector } from "../src/proxy/inject";
 import { RecordWriter } from "../src/proxy/records";
@@ -66,7 +67,7 @@ for (const probe of scenario.probes.filter((p) => p.type !== "P7")) {
 
 let judgeErrors = 0;
 const p7 = scenario.probes.filter((p) => p.type === "P7");
-const memoryArms = arms.filter((a) => a !== "host");
+const memoryArms = arms.filter((a) => armBase(a) !== "host");
 const pairs = p7.flatMap((probe) =>
     memoryArms.flatMap((arm) => {
         const a = snapshots.get(`${arm}/${probe.id}`)?.[0];

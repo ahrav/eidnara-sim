@@ -363,6 +363,17 @@ describe("HostDriver faults", () => {
         expect(check).toEqual({ integrity: "ok", segments: 0, overlaps: [], ranges: [] });
     });
 
+    test("an A/A control label runs as its arm: the host sees the base arm and no store", async () => {
+        const { driver } = fixture("eidnara~aa");
+        await driver.fault(episode("model_switch"));
+        expect(driver.host?.ctx.arm).toBe("eidnara");
+        expect(driver.host?.ctx.keep).toContain(driver.storeRoot);
+        const plain = fixture("host~aa").driver;
+        await plain.fault(episode("model_switch"));
+        expect(plain.host?.ctx.arm).toBe("host");
+        expect(plain.host?.ctx.keep).not.toContain(plain.storeRoot);
+    });
+
     test("a model switch moves later sessions to the next model and keeps the daemon", async () => {
         const { driver } = fixture("eidnara");
         const daemon = fakeDaemon(10) as unknown as DaemonStack;

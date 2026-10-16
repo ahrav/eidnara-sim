@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { sha256Hex } from "../src/prereg/canonical";
 import { readJournal } from "../src/run/journal";
+import { referenceArm } from "../src/run/run";
 import type { Scenario } from "../src/scenario/compile";
 import { type PairingRecord, pairingMismatches, type TurnRecord } from "../src/usersim/usersim";
 
@@ -13,8 +14,7 @@ if (!existsSync(join(dir, "pairing.jsonl"))) {
 const manifest = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8"));
 const scenario = JSON.parse(readFileSync(join(dir, "scenario.json"), "utf8")) as Scenario;
 const records = readJournal(join(dir, "pairing.jsonl")) as unknown as PairingRecord[];
-const first = manifest.order[0] as string;
-const reference = () => first;
+const reference = referenceArm(manifest.order);
 const turns = records.filter((r): r is TurnRecord => r.kind === "turn");
 const script = new Map(
     scenario.events
@@ -33,7 +33,7 @@ const unsent = turns
     .map((r) => `${r.arm} ${r.event}`);
 const journal = readJournal(join(dir, "journal.jsonl"));
 const report = {
-    reference: first,
+    reference: Object.fromEntries(manifest.order.map((a: string) => [a, reference(a)])),
     mismatches_before_divergence: pairingMismatches(records, reference),
     divergences: records.filter((r) => r.kind === "divergedAt"),
     sources: Object.fromEntries(

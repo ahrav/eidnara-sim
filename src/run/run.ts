@@ -9,7 +9,7 @@ import {
 import { dirname, join, resolve } from "node:path";
 import type { SimConfig } from "../config/config";
 import type { CallView } from "../grade/artefacts";
-import type { ArmName } from "../hosts/arms";
+import { armBase } from "../hosts/arms";
 import { HostDriver } from "../hosts/driver";
 import { canonicalJson } from "../prereg/canonical";
 import type { Tier } from "../prereg/schema";
@@ -51,7 +51,7 @@ interface Manifest {
     tier: Tier;
     seed: number;
     host: "pi" | "opencode";
-    order: ArmName[];
+    order: string[];
     events: number;
     context_limit: number;
     models: string[];
@@ -118,17 +118,37 @@ async function loadScenario(o: RunOptions): Promise<Scenario> {
     return scenario;
 }
 
-function armOrder(o: RunOptions): ArmName[] {
+/**
+ * The seed's pre-registered order, kept to `--arms`. An A/A control label `<arm>~<tag>` runs
+ * right after its arm when the tier pre-registers the `[arm, arm]` pair.
+ */
+export function armOrder(o: Pick<RunOptions, "tier" | "seed" | "arms">): string[] {
     const prereg = loadPrereg(o.tier);
     const index = prereg.seeds.indexOf(o.seed);
     if (index < 0) throw new HarnessFailure(`seed ${o.seed} is not pre-registered for ${o.tier}`);
-    const order = prereg.arms.order_by_seed[index] ?? prereg.arms.run;
-    const unknown = (o.arms ?? []).filter((a) => !order.includes(a));
+    const order: string[] = prereg.arms.order_by_seed[index] ?? prereg.arms.run;
+    const pairs = prereg.aa_controls?.pairs ?? [];
+    const control = (a: string) =>
+        /^[a-z-]+~[a-z0-9]+$/.test(a) &&
+        pairs.some(([x, y]) => x === armBase(a) && y === armBase(a));
+    if (new Set(o.arms).size !== (o.arms ?? []).length) {
+        throw new HarnessFailure("--arms lists an arm twice");
+    }
+    const unknown = (o.arms ?? []).filter((a) => !order.includes(a) && !control(a));
     if (unknown.length > 0) throw new HarnessFailure(`arms not in the ${o.tier} order: ${unknown}`);
-    const kept = order.filter((a) => !o.arms || o.arms.includes(a)) as ArmName[];
+    const kept = order
+        .filter((a) => !o.arms || o.arms.includes(a))
+        .flatMap((a) => [a, ...(o.arms ?? []).filter((c) => control(c) && armBase(c) === a)]);
+    if ((o.arms ?? []).some((a) => control(a) && !kept.includes(armBase(a)))) {
+        throw new HarnessFailure("an A/A control arm runs only beside its arm");
+    }
     if (kept.length === 0) throw new HarnessFailure("no arm to run");
     return kept;
 }
+
+/** The arm a user-sim divergence is measured against: an A/A control's own arm, else the first. */
+export const referenceArm = (order: string[]) => (arm: string) =>
+    arm.includes("~") ? armBase(arm) : (order[0] as string);
 
 const sameJson = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 
@@ -276,7 +296,7 @@ async function runArms(
     const hostRow = manifest.preflight.hosts.find((h) => h.host === o.host);
     if (!hostRow) throw new Error(`preflight lists no ${o.host} host`);
 
-    const drivers: Partial<Record<ArmName, ArmDriver>> = {};
+    const drivers: Record<string, ArmDriver> = {};
     const proxyFaults = scenario.faults.filter((f) => f.seam.layer === "proxy-sink");
     const injector = new FaultInjector(proxyFaults, new Rng((seed ^ 0x5bd1e995) >>> 0), 120_000);
     const offsetFile = (arm: string) => join(o.out, arm, "clock", "offset");
@@ -325,7 +345,7 @@ async function runArms(
         clock: { scenarioMs: now },
         scope: () => ({ ...scope }),
         observe: (e) => {
-            const driver = drivers[scope.arm as ArmName];
+            const driver = drivers[scope.arm];
             if (driver) scheduler.observe(e.component, driver);
             if (!BACKGROUND.has(e.component)) return;
             const id = `${e.component}-${jobSeq++}`;
@@ -361,7 +381,7 @@ async function runArms(
         tape: new Tape(join(o.out, "tape.jsonl"), manifest.tapes),
         pairing: new Pairing(
             join(o.out, "pairing.jsonl"),
-            () => manifest.order[0] as string,
+            referenceArm(manifest.order),
             manifest.tapes.map((t) => join(dirname(t), "pairing.jsonl")),
         ),
         llm: proxyUserSim(
