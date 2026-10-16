@@ -1318,6 +1318,105 @@ describe("grading harness", () => {
         expect(() => new GradeLog(linked).all()).toThrow("is a link");
     });
 
+    test("a metadata-only or binary file must be a complete operation", () => {
+        const f = fixture("P2-pass");
+        const run = (patch: string) => {
+            const snap = structuredClone(f.snapshots[0]) as Snapshot;
+            const diff = snap.artefacts.find((a) => a.class === "diff");
+            if (diff?.class !== "diff") throw new Error("fixture lacks diff");
+            diff.patch = patch;
+            return () =>
+                gradeItem(f.probe, [snap], rules) as NonNullable<ReturnType<typeof gradeItem>>;
+        };
+        expect(run("diff --git a/x b/x\nindex 2e65efe..7898192 100644\n")).toThrow("patch");
+        expect(run("diff --git a/x b/x\nGIT binary patch\n")).toThrow("patch");
+        expect(run("diff --git a/x b/x\nGIT binary patch\nliteral 5\nMcmYex\n\n")).toThrow("patch");
+        expect(run("diff --git a/x b/x\nold mode 100644\n")).toThrow("patch");
+        expect(run("diff --git a/x b/x\nsimilarity index 100%\nrename from x\n")).toThrow("patch");
+        expect(run("diff --git a/x b/x\nold mode 100644\nnew mode 100755\n")().verdict).toBe(
+            "pass",
+        );
+        expect(
+            run("diff --git a/x b/y\nsimilarity index 100%\nrename from x\nrename to y\n")()
+                .verdict,
+        ).toBe("pass");
+        expect(
+            run("diff --git a/x b/x\nnew file mode 100644\nindex 0000000..e69de29\n")().verdict,
+        ).toBe("pass");
+        expect(run("diff --git a/x b/x\nBinary files a/x and b/x differ\n")().verdict).toBe("pass");
+        expect(
+            run(
+                "diff --git a/x b/x\nGIT binary patch\nliteral 5\nMcmYex\n\nliteral 0\nHcmV?d00001\n\n",
+            )().verdict,
+        ).toBe("pass");
+    });
+
+    test("heredoc delimiters and here-strings are not file operands", () => {
+        const f = fixture("P6-pass");
+        for (const cmd of [
+            "cat << src/connection.rs\nbody\nsrc/connection.rs",
+            "cat <<< src/connection.rs",
+            "cat <<src/connection.rs\nsrc/connection.rs",
+            "cat <<<src/connection.rs",
+        ]) {
+            const snap = structuredClone(f.snapshots[0]) as Snapshot;
+            const log = snap.artefacts.find((a) => a.class === "command-log" && a.role === "turn");
+            if (log?.class !== "command-log") throw new Error("fixture lacks command-log");
+            log.commands.push({ command: cmd, exit: 0, scenario_ms: 10 });
+            expect(gradeItem(f.probe, [snap], rules)?.metrics["P6.reread_files"]).toBe(0);
+        }
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        const log = snap.artefacts.find((a) => a.class === "command-log" && a.role === "turn");
+        if (log?.class !== "command-log") throw new Error("fixture lacks command-log");
+        log.commands.push({ command: "cat < src/connection.rs", exit: 0, scenario_ms: 10 });
+        expect(gradeItem(f.probe, [snap], rules)?.metrics["P6.reread_files"]).toBe(1);
+    });
+
+    test("a top-level return does not end the list, and grep -E is a flag", () => {
+        const f = fixture("P6-pass");
+        for (const cmd of ["return; cat src/connection.rs", "grep -E needle src/connection.rs"]) {
+            const snap = structuredClone(f.snapshots[0]) as Snapshot;
+            const log = snap.artefacts.find((a) => a.class === "command-log" && a.role === "turn");
+            if (log?.class !== "command-log") throw new Error("fixture lacks command-log");
+            log.commands.push({ command: cmd, exit: 0, scenario_ms: 10 });
+            expect(gradeItem(f.probe, [snap], rules)?.metrics["P6.reread_files"]).toBe(1);
+        }
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        const log = snap.artefacts.find((a) => a.class === "command-log" && a.role === "turn");
+        if (log?.class !== "command-log") throw new Error("fixture lacks command-log");
+        log.commands.push({ command: "rg -E utf8 src/connection.rs", exit: 1, scenario_ms: 10 });
+        expect(gradeItem(f.probe, [snap], rules)?.metrics["P6.reread_files"]).toBe(0);
+    });
+
+    test("a persisted grade carries every registered metric in agreement with its verdict", () => {
+        const path = join(mkdtempSync(join(tmpdir(), "sim-grades-")), "grades.jsonl");
+        const log = new GradeLog(path);
+        const p11 = grade("P11-fail");
+        const bad = [
+            { ...p11, metrics: { "P11.pass": false, "P11.harm": false, "P11.weighted_score": -2 } },
+            { ...p11, metrics: { "P11.pass": false, "P11.harm": true, "P11.weighted_score": 1 } },
+            { ...p11, metrics: { "P11.pass": false } },
+            { ...p11, metrics: { ...p11.metrics, "P11.extra": 1 } },
+            {
+                ...grade("P4-pass"),
+                metrics: { "P4.pass": true, "P4.harm": true, "P4.collapsed": true },
+            },
+            {
+                ...grade("P3-pass"),
+                metrics: { "P3.pass": true, "P3.reliance": "stale", "P3.harm": false },
+            },
+            { ...grade("P6-pass"), metrics: { "P6.pass": true, "P6.reread_files": -1 } },
+            { ...grade("P13-pass"), metrics: { "P13.fold_fidelity_score": 1, "P13.folds": 1 } },
+        ];
+        for (const g of bad) {
+            expect(() => log.append(g as unknown as GradeRecord)).toThrow(GradeRefused);
+        }
+        for (const name of ["P11-fail", "P4-pass", "P3-pass", "P6-pass", "P13-pass", "P14-pass"]) {
+            log.append(grade(name));
+        }
+        expect(log.all()).toHaveLength(6);
+    });
+
     test("a check pattern that is empty after its prefix or fails to compile is refused", () => {
         const f = fixture("P1-fail");
         for (const bad of ["(?i)", "["]) {

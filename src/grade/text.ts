@@ -97,28 +97,66 @@ function scanDiff(patch: string): Scan {
     const surviving: string[] = [];
     let ok = true;
     let opened = false;
-    let fileBody = true;
     let pendingNew = false;
     let headersDone = false;
-    let inBinary = false;
     let oldLeft = 0;
     let newLeft = 0;
     let label: string | null = null;
     let operative: string | null = null;
     let deleted = false;
+    let hunks = 0;
+    const meta = new Set<string>();
+    /** Binary payload progress: blocks closed so far and whether a `literal`/`delta` block is open. */
+    let binaryBlocks = 0;
+    let binaryOpen = false;
+    let binaryPayload = false;
     const hunkOpen = () => oldLeft > 0 || newLeft > 0;
+    /**
+     * A file is complete when it carries a hunk, a `Binary files ... differ` note, two closed
+     * binary blocks, a mode pair, a rename or copy pair, or an empty-file creation or deletion
+     * with its index line; a file before any header is the empty patch's vacuous start.
+     */
+    const fileBody = () =>
+        !opened ||
+        hunks > 0 ||
+        meta.has("differ") ||
+        (meta.has("binary") && binaryBlocks === 2 && !binaryOpen) ||
+        (meta.has("old mode") && meta.has("new mode")) ||
+        (meta.has("rename from") && meta.has("rename to")) ||
+        (meta.has("copy from") && meta.has("copy to")) ||
+        ((meta.has("new file mode") || meta.has("deleted file mode")) && meta.has("index"));
     const close = () => {
         const survivor = operative ?? label;
         if (survivor !== null && !deleted) surviving.push(survivor);
         label = null;
         operative = null;
         deleted = false;
+        hunks = 0;
+        meta.clear();
+        binaryBlocks = 0;
+        binaryOpen = false;
+        binaryPayload = false;
     };
     const fail = () => {
         ok = false;
     };
     for (const line of patch.replace(/\n$/, "").split("\n")) {
-        if (inBinary && !line.startsWith("diff --git ")) continue;
+        if (meta.has("binary") && !line.startsWith("diff --git ")) {
+            if (binaryOpen) {
+                if (line.length === 0) {
+                    if (!binaryPayload) fail();
+                    binaryOpen = false;
+                    binaryBlocks++;
+                } else if (/^[A-Za-z][0-9A-Za-z!#$%&()*+\-;<=>?@^_`{|}~]+$/.test(line)) {
+                    binaryPayload = true;
+                } else fail();
+            } else if (/^(literal|delta) \d+$/.test(line) && binaryBlocks < 2) {
+                binaryOpen = true;
+                binaryPayload = false;
+            } else fail();
+            if (!ok) break;
+            continue;
+        }
         if (hunkOpen()) {
             if (line.startsWith("\\")) continue;
             const kind = line[0];
@@ -133,7 +171,7 @@ function scanDiff(patch: string): Scan {
         }
         if (line.startsWith("\\")) continue;
         if (line.startsWith("diff --git ")) {
-            if (!fileBody || pendingNew) fail();
+            if (!fileBody() || pendingNew) fail();
             const named = GIT_LABEL.exec(line);
             if (!named) {
                 fail();
@@ -143,13 +181,11 @@ function scanDiff(patch: string): Scan {
             paths.push(gitPath(named[1] as string), gitPath(named[2] as string));
             label = gitPath(named[2] as string);
             opened = true;
-            fileBody = false;
             headersDone = false;
-            inBinary = false;
         } else if (line.startsWith("--- ")) {
             if (pendingNew) fail();
             if (headersDone) {
-                if (!fileBody) fail();
+                if (!fileBody()) fail();
                 close();
                 headersDone = false;
             }
@@ -157,7 +193,6 @@ function scanDiff(patch: string): Scan {
             if (old !== null) paths.push(old);
             opened = true;
             pendingNew = true;
-            fileBody = false;
         } else if (line.startsWith("+++ ")) {
             if (!pendingNew) fail();
             const next = headerPath(line.slice(4));
@@ -168,25 +203,27 @@ function scanDiff(patch: string): Scan {
             }
             pendingNew = false;
             headersDone = true;
-            fileBody = false;
         } else if (HUNK_HEADER.test(line)) {
             if (!opened || pendingNew || !headersDone) fail();
             const m = HUNK_HEADER.exec(line) as RegExpExecArray;
             oldLeft = m[1] === undefined ? 1 : Number(m[1].slice(1));
             newLeft = m[2] === undefined ? 1 : Number(m[2].slice(1));
-            fileBody = true;
+            hunks++;
         } else if (FILE_META.test(line)) {
-            if (pendingNew || headersDone) fail();
-            fileBody = true;
-            if (line.startsWith("deleted file mode ")) deleted = true;
-            if (line.startsWith("GIT binary patch")) inBinary = true;
+            if (pendingNew || headersDone || label === null) fail();
+            const kind = ((FILE_META.exec(line) as RegExpExecArray)[1] as string).trim();
+            if (kind === "deleted file mode") deleted = true;
+            if (kind === "Binary files") meta.add("differ");
+            else if (kind === "GIT binary patch") meta.add("binary");
+            else if (kind === "literal" || kind === "delta") fail();
+            else meta.add(kind);
         } else {
             fail();
             break;
         }
         if (!ok) break;
     }
-    if (hunkOpen() || pendingNew || !fileBody || !opened) ok = false;
+    if (hunkOpen() || pendingNew || !fileBody() || !opened) ok = false;
     close();
     return { ok, added, paths: [...new Set(paths)], surviving: [...new Set(surviving)] };
 }
