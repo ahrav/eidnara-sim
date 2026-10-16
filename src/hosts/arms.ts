@@ -173,6 +173,25 @@ export abstract class SimHost {
         ];
     }
 
+    /** A directory under the arm root that is reached through real directories only. */
+    protected controlDir(rel: string): string {
+        const dir = join(this.ctx.root, rel);
+        mkdirSync(dir, { recursive: true });
+        if (realpathSync(dir) !== join(realpathSync(this.ctx.root), rel)) {
+            throw new Error(
+                `${dir} is reached through a symlink; control files need a real directory`,
+            );
+        }
+        return dir;
+    }
+
+    /** The file is created fresh and renamed into place, so a symlink left at `path` is replaced, never followed. */
+    protected writeControlFile(path: string, content: string): void {
+        const staged = `${path}.${process.pid}`;
+        writeFileSync(staged, content, { flag: "wx" });
+        renameSync(staged, path);
+    }
+
     protected async stopTree(pid: number | null | undefined): Promise<void> {
         if (pid == null) return;
         if (!(await stopOwnedTree(pid, 10_000)))
@@ -191,7 +210,7 @@ export class PiSimHost extends SimHost {
     readonly agentDir = join(this.ctx.root, "home/.pi/agent");
 
     private writeConfigs(connectionFile: string | null): void {
-        mkdirSync(this.agentDir, { recursive: true });
+        const agentDir = this.controlDir("home/.pi/agent");
         const settings = {
             packages: [],
             defaultProvider: "amazon-bedrock",
@@ -203,7 +222,7 @@ export class PiSimHost extends SimHost {
             quietStartup: true,
             enableInstallTelemetry: false,
         };
-        writeFileSync(join(this.agentDir, "settings.json"), JSON.stringify(settings, null, 2));
+        this.writeControlFile(join(agentDir, "settings.json"), JSON.stringify(settings, null, 2));
         const model = {
             id: this.ctx.model,
             name: this.ctx.model,
@@ -215,12 +234,14 @@ export class PiSimHost extends SimHost {
             cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
         };
         const providers = { "amazon-bedrock": { baseUrl: this.ctx.proxyHttp2, models: [model] } };
-        writeFileSync(join(this.agentDir, "models.json"), JSON.stringify({ providers }, null, 2));
+        this.writeControlFile(
+            join(agentDir, "models.json"),
+            JSON.stringify({ providers }, null, 2),
+        );
         if (connectionFile) {
-            const dir = join(this.ctx.root, "home/config/eidnara");
-            mkdirSync(dir, { recursive: true });
+            const dir = this.controlDir("home/config/eidnara");
             const config = eidnaraUserConfig(connectionFile, this.ctx.model);
-            writeFileSync(join(dir, "eidnara.jsonc"), JSON.stringify(config, null, 2));
+            this.writeControlFile(join(dir, "eidnara.jsonc"), JSON.stringify(config, null, 2));
         }
     }
 
@@ -267,7 +288,10 @@ export class PiSimHost extends SimHost {
         });
         const ready = this.rpc.sendCommand("get_state", {}, { timeoutMs: 120_000 });
         try {
-            await Promise.race([ready, spawnError]);
+            const state = await Promise.race([ready, spawnError]);
+            if (state.success === false) {
+                throw new Error(`Pi get_state refused: ${JSON.stringify(state).slice(0, 2000)}`);
+            }
         } catch (caught) {
             await this.closeSession();
             throw caught;
@@ -357,13 +381,11 @@ export class OpencodeSimHost extends SimHost {
             this.writeWrapper(launch(launcher, this.ctx.keep, this.timeEnv, [binary], ro)),
         );
         const env = {
-            configDir: join(this.home, "config"),
-            dataDir: join(this.home, "data"),
-            cacheDir: join(this.home, "cache"),
+            configDir: this.controlDir("home/config"),
+            dataDir: this.controlDir("home/data"),
+            cacheDir: this.controlDir("home/cache"),
             workdir: cwd,
         };
-        for (const d of [env.configDir, env.dataDir, env.cacheDir])
-            mkdirSync(d, { recursive: true });
         const eidnara = connection
             ? {
                   eidnaraConfig: eidnaraUserConfig(connection, this.ctx.model),
@@ -407,6 +429,7 @@ export class OpencodeSimHost extends SimHost {
 
     private async findOrCreateSession(cwd: string, session: string): Promise<string> {
         const listed = await this.client.session.list({ query: { directory: cwd } });
+        if (listed.error) throw new Error(`session.list failed: ${JSON.stringify(listed.error)}`);
         const latest = ((listed.data ?? []) as Array<Record<string, Untyped>>)
             .filter((s) => s.title === `sim-${session}`)
             .at(0);
@@ -468,7 +491,18 @@ export class OpencodeSimHost extends SimHost {
             if (drained === null) throw new Error("OpenCode turn still running 30 s after abort");
             return { error: `turn deadline ${timeoutMs} ms` };
         }
-        if ("caught" in first) return { error: String(first.caught).slice(0, 2000) };
+        if ("caught" in first) {
+            // The request failed with the server's answer unknown, so the turn is aborted before the next one.
+            const abort = this.client.session.abort({ path: { id: this.sid } }).then(
+                (r: Untyped) => !r?.error,
+                () => false,
+            );
+            const error = String(first.caught).slice(0, 2000);
+            if (!(await withDeadline(abort, 30_000))) {
+                throw new Error(`OpenCode turn not aborted after a rejected prompt (${error})`);
+            }
+            return { error };
+        }
         const { result } = first;
         if (result.error) return { error: JSON.stringify(result.error).slice(0, 2000) };
         const info = result.data?.info;
