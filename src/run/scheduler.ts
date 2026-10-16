@@ -408,6 +408,9 @@ export class Scheduler {
                     return;
                 }
                 case "RegisterJob": {
+                    if (typeof e.job !== "string" || e.job === "") {
+                        throw fail("RegisterJob names no job", e);
+                    }
                     if ((jobs.get(e.job) ?? 0) > 0) {
                         throw fail(`RegisterJob for ${e.job} while it is open`, e);
                     }
@@ -415,6 +418,9 @@ export class Scheduler {
                     return;
                 }
                 case "EndJob": {
+                    if (typeof e.job !== "string" || e.job === "") {
+                        throw fail("EndJob names no job", e);
+                    }
                     const n = jobs.get(e.job) ?? 0;
                     if (n <= 0) throw fail(`EndJob for ${e.job} has no RegisterJob`, e);
                     jobs.set(e.job, n - 1);
@@ -450,7 +456,11 @@ export class Scheduler {
                     if (e.type !== f.type) {
                         throw fail(`FaultObserved for ${f.id} misreports its type`, e);
                     }
-                    if (typeof e.evidence !== "object" || e.evidence === null) {
+                    if (
+                        typeof e.evidence !== "object" ||
+                        e.evidence === null ||
+                        Array.isArray(e.evidence)
+                    ) {
                         throw fail(`FaultObserved for ${f.id} carries no evidence`, e);
                     }
                     observed.add(e.fault);
@@ -479,8 +489,11 @@ export class Scheduler {
                     if (e.from_ms !== clockMs)
                         throw fail("AdvanceClock starts away from the clock", e);
                     clockMs = e.scenario_ms;
+                    if ((e.fault === undefined) === (e.next_event === undefined)) {
+                        throw fail("AdvanceClock names neither one sleep nor one event", e);
+                    }
                     if (e.fault !== undefined) jumped.add(e.fault);
-                    else if (e.next_event !== undefined && e.next_event !== due.id) {
+                    else if (e.next_event !== due.id) {
                         throw fail("AdvanceClock names an event other than the one due", e);
                     }
                     outage = null;
@@ -488,6 +501,14 @@ export class Scheduler {
                 }
                 case "ItemState": {
                     if (e.daemon_exit !== undefined) {
+                        const detail = e.daemon_exit;
+                        if (
+                            typeof detail !== "object" ||
+                            detail === null ||
+                            Array.isArray(detail)
+                        ) {
+                            throw fail("daemon exit carries no detail", e);
+                        }
                         if (e.expected !== true || e.fatal !== false || outage === null) {
                             throw fail("daemon exit outside a replayed outage window", e);
                         }
@@ -739,7 +760,12 @@ export class Scheduler {
             }
             throw caught;
         }
-        this.log({ kind: "FaultObserved", fault: f.id, type: f.type, evidence });
+        try {
+            this.log({ kind: "FaultObserved", fault: f.id, type: f.type, evidence });
+        } catch (caught) {
+            this.poison(`fault ${f.id} evidence could not be journaled`, caught);
+            throw caught;
+        }
         if (this.outage === f.id) this.outage = null;
     }
 

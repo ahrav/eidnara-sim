@@ -3133,6 +3133,172 @@ describe("Scheduler", () => {
         }).run();
     });
 
+    test("replay refuses array evidence, a detail-less daemon exit, a jump naming no cause or both, and nameless jobs; an unjournalable observation poisons the run", async () => {
+        const restart = episode("r", "daemon_restart", {
+            kind: "session_start",
+            session: "s-0000",
+        });
+        const events = fixtureEvents(1);
+        const e0 = events[0]?.id as string;
+        const open = (lines: Partial<Entry>[], faults: FaultEpisode[] = []) => {
+            const path = join(dir(), "j.jsonl");
+            const j = new Journal(path);
+            j.append({
+                kind: "StartRun",
+                arm: null,
+                scenario_ms: 0,
+                order: ["a"],
+                scenario: scenarioId(events, faults),
+            });
+            j.append({ kind: "StartArm", arm: "a", scenario_ms: 0 });
+            for (const l of lines) j.append({ arm: "a", scenario_ms: 0, ...l } as never);
+            j.close();
+            return new Scheduler({
+                events,
+                faults,
+                journal: new Journal(path),
+                settleMs: 0,
+                order: ["a"],
+                drivers: { a: fakeDriver([]) },
+            }).run();
+        };
+        const fired: Partial<Entry> = {
+            kind: "FaultFired",
+            fault: "r",
+            type: "daemon_restart",
+            layer: "scheduler",
+        };
+        await expect(
+            open(
+                [
+                    fired,
+                    { kind: "FaultObserved", fault: "r", type: "daemon_restart", evidence: [] },
+                ],
+                [restart],
+            ),
+        ).rejects.toThrow(/FaultObserved for r carries no evidence/);
+        await expect(
+            open(
+                [fired, { kind: "ItemState", daemon_exit: null, expected: true, fatal: false }],
+                [restart],
+            ),
+        ).rejects.toThrow(/daemon exit carries no detail/);
+        const toTurn: Partial<Entry>[] = [
+            { kind: "Event", event: e0, outcome: "ok" },
+            { kind: "BeginTurn", event: "e-000001" },
+            { kind: "EndTurn", event: "e-000001", outcome: "ok" },
+            { kind: "Event", event: "e-000001", outcome: "ok" },
+        ];
+        await expect(
+            open([...toTurn, { kind: "AdvanceClock", from_ms: 0, scenario_ms: 60_000, busy: [] }]),
+        ).rejects.toThrow(/names neither one sleep nor one event/);
+        const later: ScenarioEvent[] = [
+            ...events,
+            { id: "e-100000", kind: "session_start", scenario_ms: 120_000, session: "s-0001" },
+            { id: "e-100001", kind: "session_end", scenario_ms: 120_000, session: "s-0001" },
+        ];
+        const nap = {
+            ...episode("z", "laptop_sleep", { kind: "session_start", session: "s-0001" }),
+            params: { duration_ms: 50 },
+        };
+        const both = join(dir(), "j.jsonl");
+        const k = new Journal(both);
+        k.append({
+            kind: "StartRun",
+            arm: null,
+            scenario_ms: 0,
+            order: ["a"],
+            scenario: scenarioId(later, [nap]),
+        });
+        k.append({ kind: "StartArm", arm: "a", scenario_ms: 0 });
+        for (const l of toTurn) k.append({ arm: "a", scenario_ms: 0, ...l } as never);
+        k.append({
+            kind: "AdvanceClock",
+            arm: "a",
+            from_ms: 0,
+            scenario_ms: 60_000,
+            next_event: "e-999999",
+            busy: [],
+        });
+        k.append({
+            kind: "Event",
+            arm: "a",
+            scenario_ms: 60_000,
+            event: "e-999999",
+            outcome: "ok",
+        });
+        k.append({
+            kind: "AdvanceClock",
+            arm: "a",
+            from_ms: 60_000,
+            scenario_ms: 120_000,
+            fault: "z",
+            next_event: "e-100000",
+            busy: [],
+        });
+        k.close();
+        await expect(
+            new Scheduler({
+                events: later,
+                faults: [nap],
+                journal: new Journal(both),
+                settleMs: 0,
+                order: ["a"],
+                drivers: { a: fakeDriver([]) },
+            }).run(),
+        ).rejects.toThrow(/names neither one sleep nor one event/);
+        await expect(open([{ kind: "RegisterJob" }, { kind: "EndJob" }])).rejects.toThrow(
+            /RegisterJob names no job/,
+        );
+        await expect(open([{ kind: "EndJob", job: "" }])).rejects.toThrow(/EndJob names no job/);
+        const path = join(dir(), "j.jsonl");
+        const inner = new Journal(path);
+        const journal = new Proxy(inner, {
+            get(target, key, receiver) {
+                if (key === "append") {
+                    return (entry: Entry) => {
+                        if (entry.kind === "FaultObserved") throw new Error("ENOSPC");
+                        return target.append(entry);
+                    };
+                }
+                return Reflect.get(target, key, receiver);
+            },
+        });
+        await expect(
+            new Scheduler({
+                events,
+                faults: [restart],
+                journal,
+                settleMs: 0,
+                order: ["a"],
+                drivers: { a: fakeDriver([]) },
+            }).run(),
+        ).rejects.toThrow(/ENOSPC/);
+        expect(() => new Journal(path)).toThrow(
+            /run failed: fault r evidence could not be journaled/,
+        );
+    });
+
+    test("a failure marker is read through a validated descriptor and sits beside the file the kernel opened", () => {
+        const leased = dir();
+        const link = join(dir(), "run");
+        symlinkSync(leased, link);
+        const j = new Journal(join(link, "j.jsonl"));
+        rmSync(link);
+        symlinkSync(dir(), link);
+        j.poison("marked through the link");
+        expect(existsSync(join(leased, "j.jsonl.failed"))).toBe(true);
+        expect(() => new Journal(join(leased, "j.jsonl"))).toThrow(/marked through the link/);
+        const d = dir();
+        const target = join(d, "j.jsonl");
+        new Journal(target).close();
+        symlinkSync(join(d, "elsewhere"), join(d, "j.jsonl.failed"));
+        expect(() => new Journal(target)).toThrow(/failure marker .* cannot be opened/);
+        rmSync(join(d, "j.jsonl.failed"));
+        writeFileSync(join(d, "j.jsonl.failed"), "x".repeat(5_000));
+        expect(() => new Journal(target)).toThrow(/is not a small regular file/);
+    });
+
     test("a FaultObserved without its FaultFired is refused on resume", async () => {
         const path = join(dir(), "j.jsonl");
         const restart = episode("r", "daemon_restart", {

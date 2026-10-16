@@ -7,7 +7,9 @@ both.
 
 Leases are files `lease.<n>.json`, and the highest number names the holder.
 `takeLease(dir)` resolves the directory path once and works on the resolved
-path, so a symlink repointed mid-way touches nothing else; it reads the highest lease: one held by a live process, or by any
+path, so a symlink repointed mid-way touches nothing else; it flushes the
+staged lease before linking it and the directory after, so the acknowledged
+lease survives a storage crash; it reads the highest lease: one held by a live process, or by any
 process on another machine, refuses the call. The machine is `/etc/machine-id`
 (`hostname:<name>` where that file is absent), so machines or containers that
 share a hostname on one directory stay distinct; a lease carries the kernel
@@ -51,9 +53,13 @@ appended line with `fdatasync` before the entry counts as appended, so an
 acknowledged entry survives a power loss, and flushes the truncation that
 rolls a failed append back (closing the journal when that flush fails), so a
 refused entry cannot reappear after a crash, and refuses to open while a
-`journal.jsonl.failed` marker sits beside the file (`poison` writes and
-flushes it, and its directory entry, when a record that must land, such as a
-fatal fault or exit, cannot be appended, so a later process cannot resume past a failure the journal
+`journal.jsonl.failed` marker sits beside the file the kernel opened
+(`poison` writes it at that pinned path and flushes it and its directory
+entry when a record that must land, such as a fatal fault, its evidence, an
+exit, or a job transition, cannot be appended; the marker is read through a
+descriptor opened without following links or blocking and must be a regular
+single-link file of at most 4 KiB, so a marker of any other shape is itself a
+failed run), so a later process cannot resume past a failure the journal
 itself could not record), reads and truncates the file
 through that one descriptor, and refuses every operation after `close`. On
 read it
@@ -200,8 +206,9 @@ schedule, a turn's `Event` with no `EndTurn` or interruption marker before
 it or with an outcome other than that record's, an `Event` or `EndTurn`
 without a string outcome, an `EndTurn` misreporting its event's probe, a
 `FaultObserved` after the fault's interruption marker, a `FaultFired` or `FaultObserved`
-naming a type or layer other than its episode's, a `FaultObserved` without an
-evidence object, an `Event` that passes a
+naming a type or layer other than its episode's, a `FaultObserved` without a
+non-array evidence object, a daemon exit without an object detail, a
+`RegisterJob` or `EndJob` without a non-empty string job, an `Event` that passes a
 session-start or user-turn trigger whose fault neither fired nor was missed,
 a `BeginTurn` for a turn other than the one due, repeated for one turn,
 timestamped before its schedule, while a job is open, before a fault keyed to
@@ -210,8 +217,9 @@ that turn fired, or while such a scheduler fault is unresolved, a second
 unmarked, an interruption marker that closes no open turn
 or unobserved fault, a `RegisterJob` for a job still open or an `EndJob` with
 no open `RegisterJob`, an `AdvanceClock` while a turn or job is open, landing
-anywhere but the event due, jumping nowhere, or starting anywhere but the
-replayed clock, any other entry whose clock reading leaves the replayed clock
+anywhere but the event due, jumping nowhere, starting anywhere but the
+replayed clock, or naming anything but exactly one of a sleep fault and the
+event due, any other entry whose clock reading leaves the replayed clock
 (an entry written while idle carries the clock exactly; one written while a
 turn or job is open carries a reading at or past it and moves it; only an
 `AdvanceClock` or busy work moves the clock), a `FaultFired` repeated or

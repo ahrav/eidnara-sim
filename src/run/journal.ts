@@ -12,6 +12,7 @@ import {
     readdirSync,
     readFileSync,
     readlinkSync,
+    readSync,
     realpathSync,
     renameSync,
     rmSync,
@@ -257,6 +258,16 @@ export function directoryIdentity(dir: string): DirIdentity {
     return { dev: st.dev, ino: st.ino };
 }
 
+/** Flushes a file's contents to its device. */
+function flushFile(path: string): void {
+    const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    try {
+        fsyncSync(fd);
+    } finally {
+        closeSync(fd);
+    }
+}
+
 /** Flushes a directory's entries, so a file just created in it survives a crash. */
 function syncDirectory(dir: string): void {
     const fd = openSync(dir, constants.O_RDONLY | constants.O_DIRECTORY);
@@ -267,10 +278,38 @@ function syncDirectory(dir: string): void {
     }
 }
 
-/** The directory the open descriptor's file lives in, read back from the kernel. */
-function parentOf(fd: number): DirIdentity {
-    const real = readlinkSync(`/proc/self/fd/${fd}`);
-    return directoryIdentity(dirname(real));
+/** The largest failure marker read back; the reason is one line. */
+const MAX_MARKER_BYTES = 4096;
+
+/**
+ * The reason a failure marker carries, or `null` when there is none. The marker is opened
+ * without following links or blocking and must be a regular single-link file under the size
+ * bound; anything else is itself a failed run.
+ */
+function readMarker(marker: string): string | null {
+    let fd: number;
+    try {
+        fd = openSync(marker, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    } catch (caught) {
+        if ((caught as NodeJS.ErrnoException).code === "ENOENT") return null;
+        return `failure marker ${basename(marker)} cannot be opened`;
+    }
+    try {
+        const st = fstatSync(fd);
+        if (!st.isFile() || st.nlink !== 1 || st.size > MAX_MARKER_BYTES) {
+            return `failure marker ${basename(marker)} is not a small regular file`;
+        }
+        const buf = Buffer.alloc(st.size);
+        let at = 0;
+        while (at < st.size) {
+            const n = readSync(fd, buf, at, st.size - at, at);
+            if (n <= 0) break;
+            at += n;
+        }
+        return buf.subarray(0, at).toString("utf8").trim() || "marked failed";
+    } finally {
+        closeSync(fd);
+    }
 }
 
 const LEASE = /^lease\.(0|[1-9]\d*)\.json$/;
@@ -319,8 +358,10 @@ export function takeLease(runDir: string): Lease & { within: DirIdentity } {
         }
         const staged = join(dir, `lease.${randomUUID()}.tmp`);
         writeFileSync(staged, JSON.stringify(mine), { flag: "wx" });
+        flushFile(staged);
         try {
             linkSync(staged, join(dir, `lease.${(top ?? -1) + 1}.json`));
+            syncDirectory(dir);
         } catch {
             continue;
         } finally {
@@ -408,6 +449,8 @@ export class Journal {
     readonly entries: Entry[];
     private readonly last = new Map<string | null, number>();
     private fd: number;
+    /** The file's path as the kernel resolved it at open, pinned for the failure marker. */
+    private realPath = "";
     /** Bytes of complete lines on disk; a failed append truncates back to it. */
     private length = 0;
 
@@ -422,10 +465,6 @@ export class Journal {
         within: DirIdentity = directoryIdentity(dirname(resolve(path))),
     ) {
         const { O_APPEND, O_CREAT, O_NOFOLLOW, O_RDWR } = constants;
-        if (existsSync(`${path}.failed`)) {
-            const reason = readFileSync(`${path}.failed`, "utf8").trim();
-            throw new HarnessFailure(`run failed: ${reason}`);
-        }
         this.fd = openSync(path, O_RDWR | O_APPEND | O_CREAT | O_NOFOLLOW, 0o644);
         let read: Entry[] & { bytes?: number };
         try {
@@ -433,13 +472,16 @@ export class Journal {
             if (!st.isFile()) throw new Error(`journal ${path} is not a regular file`);
             if (st.nlink !== 1) throw new Error(`journal ${path} has ${st.nlink} links`);
             if (st.uid !== process.getuid?.()) throw new Error(`journal ${path} has another owner`);
-            const parent = parentOf(this.fd);
+            this.realPath = readlinkSync(`/proc/self/fd/${this.fd}`);
+            const parent = directoryIdentity(dirname(this.realPath));
             if (parent.dev !== within.dev || parent.ino !== within.ino) {
                 throw new Error(`journal ${basename(path)} opened outside its run directory`);
             }
+            const poisoned = readMarker(`${this.realPath}.failed`);
+            if (poisoned !== null) throw new HarnessFailure(`run failed: ${poisoned}`);
             read = readJournal(this.fd);
             ftruncateSync(this.fd, read.bytes ?? 0);
-            if (st.size === 0) syncDirectory(dirname(readlinkSync(`/proc/self/fd/${this.fd}`)));
+            if (st.size === 0) syncDirectory(dirname(this.realPath));
         } catch (caught) {
             closeSync(this.fd);
             throw caught;
@@ -502,7 +544,7 @@ export class Journal {
      * could not be appended. The journal is closed afterwards.
      */
     poison(reason: string): void {
-        const marker = `${this.path}.failed`;
+        const marker = `${this.realPath}.failed`;
         try {
             const fd = openSync(
                 marker,
