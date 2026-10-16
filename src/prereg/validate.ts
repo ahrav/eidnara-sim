@@ -339,6 +339,14 @@ function checkFamilies(p: Preregistration, errors: string[]): void {
     });
 }
 
+function checkScenario(p: Preregistration, errors: string[]): void {
+    if (p.scenario.forced_p90_sessions > p.scenario.sessions_per_project) {
+        errors.push(
+            `scenario.forced_p90_sessions: exceeds the ${p.scenario.sessions_per_project} sessions a project holds`,
+        );
+    }
+}
+
 function checkArms(p: Preregistration, errors: string[]): void {
     const arms = TIER_ARMS[p.tier] ?? [];
     if (!sameSet(p.arms.run, arms)) {
@@ -395,6 +403,7 @@ export function validatePreregistration(value: unknown): string[] {
     // SAFETY: This cast requires value to satisfy every Preregistration invariant.
     const p = value as unknown as Preregistration;
     checkFamilies(p, errors);
+    checkScenario(p, errors);
     checkArms(p, errors);
     return errors;
 }

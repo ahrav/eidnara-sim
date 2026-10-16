@@ -312,6 +312,14 @@ describe("pre-registration validator", () => {
         );
     });
 
+    test("keeps the forced p90 sessions within one project's sessions", () => {
+        const s = load("S") as any;
+        s.scenario.forced_p90_sessions = s.scenario.sessions_per_project + 1;
+        expect(validatePreregistration(s)).toEqual([
+            `scenario.forced_p90_sessions: exceeds the ${s.scenario.sessions_per_project} sessions a project holds`,
+        ]);
+    });
+
     test("requires both A/A control pairs and five M repeats", () => {
         const prereg = load("M") as any;
         prereg.aa_controls.pairs = [["host", "host"]];

@@ -46,7 +46,7 @@ export function parseConfig(value: unknown): SimConfig {
     }
     const bedrock = v.bedrock as Record<string, unknown> | undefined;
     for (const field of ["aws_profile", "region"] as const) {
-        if (typeof bedrock?.[field] !== "string" || bedrock[field] === "") {
+        if (typeof bedrock?.[field] !== "string" || bedrock[field].trim() === "") {
             throw new ConfigError(`config.bedrock.${field}: missing`);
         }
     }

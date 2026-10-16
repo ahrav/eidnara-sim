@@ -17,6 +17,9 @@ test("a missing or relative path is refused by field name", () => {
     expect(() => parseConfig({ ...base, bedrock: { region: "us-west-2" } })).toThrow(
         "config.bedrock.aws_profile: missing",
     );
+    expect(() => parseConfig({ ...base, bedrock: { aws_profile: "x", region: "  " } })).toThrow(
+        "config.bedrock.region: missing",
+    );
 });
 
 test("an empty SIM_CONFIG falls back to the committed file", () => {
