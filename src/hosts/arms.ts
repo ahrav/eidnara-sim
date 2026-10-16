@@ -279,7 +279,12 @@ export class PiSimHost extends SimHost {
         });
         this.ctx.onSpawn?.();
         const ready = this.rpc.sendCommand("get_state", {}, { timeoutMs: 120_000 });
-        await Promise.race([ready, spawnError]);
+        try {
+            await Promise.race([ready, spawnError]);
+        } catch (caught) {
+            await this.closeSession();
+            throw caught;
+        }
     }
 
     hostPid(): number | null {
@@ -288,21 +293,23 @@ export class PiSimHost extends SimHost {
 
     // Pi emits `agent_end` with `willRetry: true` before it retries a failed request itself,
     // so the turn is over only at an end Pi will not retry.
-    private agentEnd(timeoutMs: number): Promise<Untyped> {
+    private agentEnd(timeoutMs: number, signal?: AbortSignal): Promise<Untyped> {
         const end = this.rpc.waitForEvent(
             (e: Untyped) => e.type === "agent_end" && e.willRetry !== true,
-            { timeoutMs, label: "agent_end" },
+            { timeoutMs, label: "agent_end", signal },
         );
         end.catch(() => undefined);
         return end;
     }
 
     async prompt(text: string, timeoutMs: number): Promise<PromptResult> {
-        const end = this.agentEnd(timeoutMs);
+        const waiting = new AbortController();
+        const end = this.agentEnd(timeoutMs, waiting.signal);
         try {
             const response = await this.rpc.sendCommand("prompt", { message: text }, { timeoutMs });
             if (response.success === false) {
-                throw new Error(JSON.stringify(response).slice(0, 2000));
+                waiting.abort();
+                return { error: JSON.stringify(response).slice(0, 2000) };
             }
             const outcome = await end;
             const messages = (outcome.messages ?? []) as Array<Record<string, Untyped>>;
@@ -401,23 +408,29 @@ export class OpencodeSimHost extends SimHost {
             },
         });
         const sdkPath = "packages/e2e-tests/node_modules/@opencode-ai/sdk/dist/index.js";
-        const sdk = await import(join(config.eidnara_checkout, sdkPath));
-        this.client = sdk.createOpencodeClient({ baseUrl: this.oc.url });
+        try {
+            const sdk = await import(join(config.eidnara_checkout, sdkPath));
+            this.client = sdk.createOpencodeClient({ baseUrl: this.oc.url });
+            this.sid = await this.findOrCreateSession(cwd, session);
+        } catch (caught) {
+            await this.closeSession();
+            throw caught;
+        }
+    }
+
+    private async findOrCreateSession(cwd: string, session: string): Promise<string> {
         const listed = await this.client.session.list({ query: { directory: cwd } });
         const latest = ((listed.data ?? []) as Array<Record<string, Untyped>>)
             .filter((s) => s.title === `sim-${session}`)
             .at(0);
-        if (latest) {
-            this.sid = String(latest.id);
-            return;
-        }
+        if (latest) return String(latest.id);
         const created = await this.client.session.create({
             query: { directory: cwd },
             body: { title: `sim-${session}` },
         });
         if (!created.data)
             throw new Error(`session.create failed: ${JSON.stringify(created.error)}`);
-        this.sid = created.data.id;
+        return created.data.id;
     }
 
     private writeWrapper(argv: string[]): string {

@@ -1,13 +1,23 @@
-import { expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { afterEach, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "../config/config";
 import { TOOLCHAIN_PROBES, toolchainEnv, writeToolWrappers } from "./toolchain";
 
+const dirs: string[] = [];
+afterEach(() => {
+    for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+});
+const root = () => {
+    const d = realpathSync(mkdtempSync(join(tmpdir(), "sim-tools-")));
+    dirs.push(d);
+    return d;
+};
+
 test("each wall-clock tool runs through a wrapper that drops the preload, and cargo is pointed at it", () => {
-    const root = realpathSync(mkdtempSync(join(tmpdir(), "sim-tools-")));
-    const bin = join(root, "bin");
+    const dir = root();
+    const bin = join(dir, "bin");
     mkdirSync(bin);
     for (const tool of ["rustc", "rustdoc"]) writeFileSync(join(bin, tool), "", { mode: 0o755 });
     const base = loadConfig();
@@ -15,10 +25,10 @@ test("each wall-clock tool runs through a wrapper that drops the preload, and ca
         ...base,
         toolchain: { bin: [bin], keep: [bin], env: {}, wall_clock_tools: ["rustc", "rustdoc"] },
     };
-    const launcher = join(root, "sandbox.sh");
+    const launcher = join(dir, "sandbox.sh");
     writeToolWrappers(config, launcher);
     const { path, env } = toolchainEnv(config, launcher);
-    const toolbin = join(root, "toolbin");
+    const toolbin = join(dir, "toolbin");
     expect(path).toBe(`${toolbin}:${bin}`);
     expect(env).toEqual({ RUSTC: join(toolbin, "rustc"), RUSTDOC: join(toolbin, "rustdoc") });
     expect(readFileSync(join(toolbin, "rustc"), "utf8")).toBe(
@@ -27,8 +37,8 @@ test("each wall-clock tool runs through a wrapper that drops the preload, and ca
 });
 
 test("the rustc probe falls back to PATH when no wrapper defines RUSTC", () => {
-    const root = realpathSync(mkdtempSync(join(tmpdir(), "sim-tools-")));
-    const bin = join(root, "bin");
+    const dir = root();
+    const bin = join(dir, "bin");
     mkdirSync(bin);
     writeFileSync(join(bin, "rustc"), "#!/bin/sh\necho rustc 1.0.0\n", { mode: 0o755 });
     const script = TOOLCHAIN_PROBES.find(([tool]) => tool === "rustc")?.[1] as string;

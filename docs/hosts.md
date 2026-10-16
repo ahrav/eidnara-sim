@@ -10,7 +10,8 @@ and scheduler lands next.
 The plugins, native addon, daemon, and host fixture come from one commit.
 `scripts/eidnara-build.sh <checkout> <clone>` clones the eidnara source
 checkout, checks out its `HEAD`, and builds every artefact inside the clone,
-so the source checkout itself stays read-only. On a reused clone it force-checks
+so the source checkout itself stays read-only; it refuses a clone path that
+is the checkout. On a reused clone it force-checks
 out the fetched commit and removes untracked files, so edits and stray files
 from an earlier build go while ignored outputs (`node_modules`, `target`, the
 plugin `dist` directories) stay for the incremental build. The clone is the
@@ -56,7 +57,9 @@ stack keeps the last 256 KiB of that output, so a longer stretch keeps its
 tail.
 
 Each `session_start` launches one host process in the session's workspace
-through the sandbox launcher, and each `session_end` closes it. The sandbox runs the host under
+through the sandbox launcher, and each `session_end` closes it; when the
+readiness check or the OpenCode SDK setup fails after the launch,
+`openSession` closes the session it started before it throws. The sandbox runs the host under
 root-owned `sudo` and `unshare`, so closing a host walks the launcher's
 process tree and signals every process the user owns, with SIGKILL after
 10 s; a process that survives SIGKILL stops the run. Each pid in that walk is
@@ -66,9 +69,10 @@ pid namespace ends with its init, so a child forked while the tree stops dies
 with the namespace. `prompt` sends one user turn with the turn deadline and
 returns the host's error, if any. Pi emits `agent_end` with `willRetry: true`
 before it retries a failed request itself, so a Pi turn ends only at an
-`agent_end` Pi will not retry. After a Pi turn fails, the host aborts it and
-waits up to 30 s for its `agent_end`; a turn still running then stops the run,
-so a late end cannot finish the next turn. OpenCode turns race the deadline,
+`agent_end` Pi will not retry. A prompt Pi refuses in preflight starts no
+turn, so its error is returned at once. After a Pi turn fails, the host
+aborts it and waits up to 30 s for its `agent_end`; a turn still running then
+stops the run, so a late end cannot finish the next turn. OpenCode turns race the deadline,
 abort the session (waiting at most 5 s for the abort call), and wait 30 s for
 the call to drain; a call still running then stops the run. Every deadline
 timer is cleared once its race settles. An `apply_diff` event writes its file inside the
@@ -92,8 +96,9 @@ root, and the arm root the agent can write holds nothing a later session
 executes with the user's privileges. Both reach Bedrock only through the
 proxy, with placeholder AWS credentials.
 
-The launcher binds kept paths read-write and read-only paths read-only.
-The arm's own directories are read-write. The toolchain paths, the tool
+The launcher binds kept paths read-write and read-only paths read-only, and
+refuses a writable kept path under a read-only one. The arm's own
+directories are read-write. The toolchain paths, the tool
 wrappers, the interposer build, the eidnara build clone, and the Node and Pi
 installs are read-only, so the agent reads and runs them while later
 sessions and arms run the same files; `touch` under `~/.cargo/bin` fails inside
