@@ -188,9 +188,17 @@ export class DaemonStack {
         }
     }
 
-    /** Follows the current daemon generation's output; a restart attaches to the next one. */
+    /**
+     * Follows the current daemon generation's output; a restart attaches to the next one. The
+     * output the stack captured while the generation started is written first, so the log opens
+     * with the startup lines the readiness wait consumed.
+     */
     private attach(): void {
-        const child = this.stack?.child;
+        const stack = this.stack;
+        if (!stack) return;
+        const captured = `${stack.stdout ?? ""}${stack.stderr ?? ""}`;
+        if (captured.length > 0) this.append(Buffer.from(captured));
+        const child = stack.child;
         const sink = (chunk: Buffer) => this.append(chunk);
         child?.stdout?.on("data", sink);
         child?.stderr?.on("data", sink);

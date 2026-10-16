@@ -22,6 +22,8 @@ export interface ArmDriver {
     resume?(open: ScenarioEvent | null): Promise<void>;
     /** Stops what a killed harness left running, before any fault is armed again. */
     reap?(): Promise<void>;
+    /** Whether the driver has a mechanism for the fault; a run refuses an unsupported one before it starts. */
+    supports?(f: FaultEpisode): boolean;
     event(e: ScenarioEvent): Promise<{ failed?: string }>;
     fault(f: FaultEpisode): Promise<Record<string, unknown>>;
     /** Stops everything the arm runs, after its last event and before `EndArm`. */
@@ -86,6 +88,15 @@ export class Scheduler {
         for (const arm of this.o.order) {
             if (!finished.has(arm) && !this.o.drivers[arm])
                 throw new Error(`no driver for arm ${arm}`);
+        }
+        for (const arm of this.o.order) {
+            const driver = this.o.drivers[arm];
+            const refused = this.o.faults.find((f) => driver?.supports?.(f) === false);
+            if (refused) {
+                throw new HarnessFailure(
+                    `scheduler: arm ${arm} has no mechanism for fault type ${refused.type} (${refused.id})`,
+                );
+            }
         }
         const scenario = scenarioId(this.o.events, this.o.faults);
         const start = entries.find((e) => e.kind === "StartRun");

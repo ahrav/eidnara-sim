@@ -984,6 +984,25 @@ describe("driver lifecycle hooks", () => {
         expect(endArm).toBe(finishedAt);
     });
 
+    test("a fault no driver supports is refused before StartRun", async () => {
+        const j = new Journal(join(dir(), "j.jsonl"));
+        const driver: ArmDriver = {
+            ...fakeDriver([]),
+            supports: (f) => f.type !== "host_upgrade",
+        };
+        const faults = [episode("u", "host_upgrade", { kind: "session_start", session: "s-0000" })];
+        const scheduler = new Scheduler({
+            events: fixtureEvents(1),
+            faults,
+            journal: j,
+            settleMs: 0,
+            order: ["a"],
+            drivers: { a: driver },
+        });
+        await expect(scheduler.run()).rejects.toThrow("host_upgrade");
+        expect(j.entries).toHaveLength(0);
+    });
+
     test("a resume whose first pending event ends a session opens no host for it", async () => {
         const path = join(dir(), "j.jsonl");
         const j = new Journal(path);

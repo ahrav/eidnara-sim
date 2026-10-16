@@ -24,7 +24,15 @@ import { type DriverOptions, expandTemplate, HostDriver } from "./driver";
 
 const dirs: string[] = [];
 afterEach(() => {
-    for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+    for (const d of dirs.splice(0)) {
+        const mounted = spawnSync("findmnt", ["-l", "-n", "-o", "TARGET", "-R", d], {
+            encoding: "utf8",
+        });
+        const targets = mounted.stdout.trim().split("\n").filter(Boolean).reverse();
+        for (const target of targets) spawnSync("sudo", ["-n", "umount", target]);
+        if (targets.length > 0) throw new Error(`test left ${targets.join(", ")} mounted`);
+        rmSync(d, { recursive: true, force: true });
+    }
 });
 const tmp = () => {
     const d = mkdtempSync(join(tmpdir(), "sim-driver-"));
@@ -34,6 +42,7 @@ const tmp = () => {
 
 const BASE_MS = Date.UTC(2031, 0, 1);
 const sandbox = sandboxAvailable();
+const sudo = spawnSync("sudo", ["-n", "true"]).status === 0;
 
 class FakeHost {
     opened: string[] = [];
@@ -425,28 +434,69 @@ touch ${escaped}
         expect(exits).toEqual([{ after: "e-9" }]);
     });
 
-    test("a daemon restart refuses a runtime directory the host replaced with a symlink", async () => {
-        const daemonFactory = () =>
-            ({ ...fakeDaemon(null), start: async () => undefined }) as unknown as DaemonStack;
-        const { driver, root } = fixture("eidnara", {}, { daemonFactory });
-        await driver.reset();
-        const runtime = join(root, "eidnara", "r", "runtime");
-        rmSync(runtime, { recursive: true, force: true });
-        symlinkSync(tmp(), runtime);
-        await expect(driver.fault(episode("daemon_restart"))).rejects.toThrow("leaves");
-    });
+    test.skipIf(!sudo)(
+        "a daemon restart refuses a runtime directory the host replaced with a symlink",
+        async () => {
+            const daemonFactory = () =>
+                ({ ...fakeDaemon(null), start: async () => undefined }) as unknown as DaemonStack;
+            const { driver, root } = fixture("eidnara", {}, { daemonFactory });
+            try {
+                await driver.reset();
+                const runtime = join(root, "eidnara", "r", "runtime");
+                rmSync(runtime, { recursive: true, force: true });
+                symlinkSync(tmp(), runtime);
+                await expect(driver.fault(episode("daemon_restart"))).rejects.toThrow("leaves");
+            } finally {
+                await driver.stop().catch(() => undefined);
+            }
+        },
+    );
 
-    test("a resume refuses a daemon runtime or data directory the host replaced with a symlink", async () => {
-        const daemonFactory = () =>
-            ({ ...fakeDaemon(null), start: async () => undefined }) as unknown as DaemonStack;
-        const { driver, root } = fixture("eidnara", {}, { daemonFactory });
-        await driver.reset();
-        const runtime = join(root, "eidnara", "r", "runtime");
-        rmSync(runtime, { recursive: true, force: true });
-        symlinkSync(tmp(), runtime);
-        const fresh = new HostDriver((driver as unknown as { o: DriverOptions }).o);
-        await expect(fresh.resume(null)).rejects.toThrow("leaves");
-    });
+    test.skipIf(!sudo)(
+        "the daemon's data directory is a mount point the host cannot rename",
+        async () => {
+            const daemonFactory = () =>
+                ({ ...fakeDaemon(null), start: async () => undefined }) as unknown as DaemonStack;
+            const { driver } = fixture("eidnara", {}, { daemonFactory });
+            try {
+                await driver.reset();
+                expect(spawnSync("findmnt", ["-n", "-M", driver.dataDir]).status).toBe(0);
+                const moved = spawnSync(
+                    "mv",
+                    [driver.dataDir, join(driver.storeRoot, "elsewhere")],
+                    {
+                        encoding: "utf8",
+                    },
+                );
+                expect(moved.status).not.toBe(0);
+            } finally {
+                await driver.stop().catch(() => undefined);
+            }
+            expect(spawnSync("findmnt", ["-n", "-M", driver.dataDir]).status).not.toBe(0);
+        },
+    );
+
+    test.skipIf(!sudo)(
+        "a resume refuses a daemon runtime or data directory the host replaced with a symlink",
+        async () => {
+            const daemonFactory = () =>
+                ({ ...fakeDaemon(null), start: async () => undefined }) as unknown as DaemonStack;
+            const { driver, root } = fixture("eidnara", {}, { daemonFactory });
+            let fresh: HostDriver | null = null;
+            try {
+                await driver.reset();
+                await driver.stop();
+                const runtime = join(root, "eidnara", "r", "runtime");
+                rmSync(runtime, { recursive: true, force: true });
+                symlinkSync(tmp(), runtime);
+                fresh = new HostDriver((driver as unknown as { o: DriverOptions }).o);
+                await expect(fresh.resume(null)).rejects.toThrow("leaves");
+            } finally {
+                await fresh?.stop().catch(() => undefined);
+                await driver.stop().catch(() => undefined);
+            }
+        },
+    );
 
     test.skipIf(!sandbox)(
         "apply_diff refuses a staged sibling the host planted as a symlink",
@@ -521,21 +571,30 @@ touch ${escaped}
         await expect(fresh.reap()).rejects.toThrow("state.json");
     });
 
-    test("a resumed daemon keeps the arm's first model after a model switch", async () => {
-        const models: string[] = [];
-        const daemonFactory = (ctx: { model: string }) =>
-            ({
-                ...fakeDaemon(null),
-                start: async () => void models.push(ctx.model),
-            }) as unknown as DaemonStack;
-        const { driver } = fixture("eidnara", {}, { daemonFactory });
-        await driver.reset();
-        await driver.fault(episode("model_switch"));
-        const fresh = new HostDriver((driver as unknown as { o: DriverOptions }).o);
-        await fresh.resume(null);
-        expect(models).toEqual(["model-a", "model-a"]);
-        expect(fresh.host?.ctx.model).toBe("model-b");
-    });
+    test.skipIf(!sudo)(
+        "a resumed daemon keeps the arm's first model after a model switch",
+        async () => {
+            const models: string[] = [];
+            const daemonFactory = (ctx: { model: string }) =>
+                ({
+                    ...fakeDaemon(null),
+                    start: async () => void models.push(ctx.model),
+                }) as unknown as DaemonStack;
+            const { driver } = fixture("eidnara", {}, { daemonFactory });
+            let fresh: HostDriver | null = null;
+            try {
+                await driver.reset();
+                await driver.fault(episode("model_switch"));
+                fresh = new HostDriver((driver as unknown as { o: DriverOptions }).o);
+                await fresh.resume(null);
+                expect(models).toEqual(["model-a", "model-a"]);
+                expect(fresh.host?.ctx.model).toBe("model-b");
+            } finally {
+                await fresh?.stop().catch(() => undefined);
+                await driver.stop().catch(() => undefined);
+            }
+        },
+    );
 
     test.skipIf(!sandbox)(
         "a git run the killed harness left behind is recorded and reaped",
@@ -634,6 +693,40 @@ touch ${escaped}
         expect(state).toMatchObject({ ballast: null, refilling: false, git: null });
     });
 
+    test.skipIf(!sandbox)(
+        "a git run whose record cannot be written is ended, not left waiting",
+        async () => {
+            const { driver, armDir } = fixture("host", { p: gitRepo() });
+            await driver.reset();
+            const before = spawnSync("pgrep", ["-f", "read _ && exec"], { encoding: "utf8" })
+                .stdout.trim()
+                .split("\n")
+                .filter(Boolean).length;
+            spawnSync("chmod", ["0500", armDir]);
+            try {
+                await expect(
+                    driver.event(ev("apply_diff", { path: "a.txt", content: "A" })),
+                ).rejects.toThrow(/EACCES|EPERM/);
+            } finally {
+                spawnSync("chmod", ["0700", armDir]);
+            }
+            await Bun.sleep(100);
+            const after = spawnSync("pgrep", ["-f", "read _ && exec"], { encoding: "utf8" })
+                .stdout.trim()
+                .split("\n")
+                .filter(Boolean).length;
+            expect(after).toBe(before);
+        },
+    );
+
+    test("the driver refuses the fault types it has no mechanism for, before any run starts", () => {
+        const { driver } = fixture("host");
+        expect(driver.supports(episode("host_upgrade"))).toBe(false);
+        expect(driver.supports(episode("two_hosts_one_daemon"))).toBe(false);
+        expect(driver.supports(episode("model_switch"))).toBe(true);
+        expect(driver.supports(episode("laptop_sleep"))).toBe(true);
+    });
+
     test.skipIf(!sandbox)("a hook cannot write into the configured checkout", async () => {
         const checkout = mkdtempSync("/var/tmp/sim-checkout-");
         dirs.push(checkout);
@@ -712,7 +805,6 @@ describe("HostDriver faults", () => {
         }
     });
 
-    const sudo = spawnSync("sudo", ["-n", "true"]).status === 0;
     test.skipIf(!sudo)(
         "store_full fills the loop store and leaves its image sparse once the ballast goes",
         async () => {

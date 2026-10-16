@@ -874,6 +874,25 @@ test("Pi launches the canonical node that preflight probed, whatever its install
     expect(install.root).toBe(join(run, "opt"));
 });
 
+test("the output a daemon wrote while starting reaches daemon.log once the stack is up", async () => {
+    const run = runDir();
+    const stack = daemonStack(run);
+    const child = fakeChild();
+    (stack as Untyped).stack = {
+        child,
+        stdout: "starting out\n",
+        stderr: "starting err\n",
+        terminateHost: async () => undefined,
+    };
+    (stack as Untyped).attach();
+    child.stdout.write("live\n");
+    await Bun.sleep(20);
+    await stack.stop();
+    expect(readFileSync(join(run, "daemon.log"), "utf8")).toBe(
+        "starting out\nstarting err\nlive\n",
+    );
+});
+
 test("the daemon log keeps what the daemon wrote while it shut down", async () => {
     const run = runDir();
     let terminated = false;
