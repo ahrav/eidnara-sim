@@ -7,6 +7,7 @@ import { oracleReport } from "../oracle/oracles";
 import { recoveries } from "../oracle/recovery";
 import type { Preregistration } from "../prereg/schema";
 import type { Scenario } from "../scenario/compile";
+import { betaQuantile } from "../stats/dist";
 import { evaluateTier, falsificationSet } from "../stats/gate";
 import { continuity, runConditions } from "./conditions";
 import { costPanel } from "./cost";
@@ -103,5 +104,64 @@ export function tierReport(
         witness: propertyWitness(catalog, runs),
         conditions: runs.map(runConditions),
         continuity: continuity(runs),
+        counterfactual: counterfactual(runs),
+    };
+}
+
+export interface Counterfactual {
+    items: number;
+    memory_passes: number;
+    flips: number;
+    attribution_rate: number | null;
+    interval: [number, number] | null;
+    deletions: { probe: string; deleted: number; remaining: number }[];
+}
+
+/**
+ * The counterfactual arm's attribution rate: of the sampled P1, P3, and P5 items the memory arm
+ * passed, the share that fail once the counterfactual arm deletes the fact's memory, with a
+ * Clopper-Pearson interval.
+ */
+export function counterfactual(
+    runs: GradedRun[],
+    memory = "eidnara",
+    cf = "eidnara-cf",
+): Counterfactual | null {
+    if (!runs.some((g) => g.run.arms.some((a) => a.arm === cf))) return null;
+    const pairs = runs.flatMap((g) => {
+        const verdict = (arm: string, item: string) =>
+            g.grades.find((r) => r.arm === arm && r.item === item)?.verdict;
+        return (g.scenario.cf_deletions ?? []).map((d) => ({
+            m: verdict(memory, d.probe),
+            c: verdict(cf, d.probe),
+        }));
+    });
+    const graded = pairs.filter((p) => p.m && p.c && p.m !== "excluded" && p.c !== "excluded");
+    const passes = graded.filter((p) => p.m === "pass");
+    const flips = passes.filter((p) => p.c === "fail").length;
+    const n = passes.length;
+    const interval: [number, number] | null =
+        n === 0
+            ? null
+            : [
+                  flips === 0 ? 0 : betaQuantile(0.025, flips, n - flips + 1),
+                  flips === n ? 1 : betaQuantile(0.975, flips + 1, n - flips),
+              ];
+    const deletions = runs.flatMap((g) =>
+        (g.run.arms.find((a) => a.arm === cf)?.journal ?? [])
+            .filter((e) => e.kind === "CounterfactualDeletion")
+            .map((e) => ({
+                probe: String(e.probe),
+                deleted: ((e.deleted as number[] | undefined) ?? []).length,
+                remaining: Number(e.remaining ?? 0),
+            })),
+    );
+    return {
+        items: graded.length,
+        memory_passes: n,
+        flips,
+        attribution_rate: n ? flips / n : null,
+        interval,
+        deletions,
     };
 }

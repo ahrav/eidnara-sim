@@ -7,6 +7,7 @@ import { type Continuity, type RunConditions, renderConditions } from "./conditi
 import { type CostPanel, PRICE_TABLE, V1_PRICE } from "./cost";
 import type { Intrusiveness } from "./intrusive";
 import type { SoakVerdict } from "./soak";
+import type { Counterfactual } from "./tier";
 import type { PropertyWitness } from "./witness";
 
 export interface TierReport {
@@ -30,6 +31,7 @@ export interface TierReport {
     witness: PropertyWitness[];
     conditions: RunConditions[];
     continuity: Continuity[];
+    counterfactual: Counterfactual | null;
 }
 
 const fmt = (x: number | null | undefined, digits = 2) =>
@@ -277,6 +279,12 @@ export function renderTier(r: TierReport): string {
         ...accuracy(r),
         ...gates(r),
         ...panels(r),
+        "## Counterfactual attribution",
+        "",
+        r.counterfactual === null
+            ? "No counterfactual arm in these runs."
+            : `Of ${r.counterfactual.memory_passes} sampled items the memory arm passed, ${r.counterfactual.flips} fail with the fact's memory deleted: attribution ${fmt(r.counterfactual.attribution_rate)} [${fmt(r.counterfactual.interval?.[0])}, ${fmt(r.counterfactual.interval?.[1])}]. Deletions: ${r.counterfactual.deletions.map((d) => `${d.probe} deleted ${d.deleted}, ${d.remaining} left`).join("; ") || "none"}.`,
+        "",
         "## Property witness",
         "",
         `Violated: ${

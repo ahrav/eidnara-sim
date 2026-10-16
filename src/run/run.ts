@@ -44,6 +44,10 @@ export interface RunOptions {
     models?: string[];
     /** Earlier runs' user-sim tapes to replay from. */
     tapes?: string[];
+    /** Eidnara's side-call model, for a model-factor run. */
+    sideModel?: string;
+    /** The user-sim model in place of the pre-registered one, for a user-sim variant run. */
+    userSimModel?: string;
 }
 
 interface Manifest {
@@ -59,6 +63,8 @@ interface Manifest {
     eidnara_commit: string;
     fault_override: FaultEpisode[] | null;
     tapes: string[];
+    side_model: string | null;
+    user_sim_model: string;
     prereg_sha256: string;
     base_wall_ms: number;
     preflight: Preflight;
@@ -99,15 +105,19 @@ function gitHead(dir: string): string {
     return r.stdout.toString().trim();
 }
 
+/** `items` overrides the pre-registered paired items per probe type, as L's resizing sets it. */
 export async function loadScenario(
     o: Pick<RunOptions, "config" | "tier" | "seed" | "out">,
+    items?: number,
 ): Promise<Scenario> {
     const path = join(o.out, "scenario.json");
     if (!existsSync(path)) {
         const { aws_profile, region } = o.config.bedrock;
         const cache = join(ROOT, "runs/scenarios/embeddings.jsonl");
         const embedder = bedrockEmbedder(aws_profile, region, cache);
-        const compiled = await compileScenario(loadCompileInput(o.seed, o.tier, embedder));
+        const input = loadCompileInput(o.seed, o.tier, embedder);
+        if (items !== undefined) input.prereg.stopping_rule.paired_items_per_probe_type = items;
+        const compiled = await compileScenario(input);
         writeAtomic(path, `${canonicalJson(compiled)}\n`);
     }
     const scenario = JSON.parse(readFileSync(path, "utf8")) as Scenario;
@@ -167,6 +177,8 @@ async function loadManifest(o: RunOptions, scenario: Scenario): Promise<Manifest
         models: o.models ?? [o.config.agent_model],
         fault_override: o.faults ?? null,
         tapes: o.tapes ?? [],
+        side_model: o.sideModel ?? null,
+        user_sim_model: o.userSimModel ?? loadPrereg(o.tier).user_sim.model,
     };
     if (existsSync(path)) {
         const manifest = JSON.parse(readFileSync(path, "utf8")) as Manifest;
@@ -177,6 +189,8 @@ async function loadManifest(o: RunOptions, scenario: Scenario): Promise<Manifest
             models: o.models !== undefined,
             fault_override: o.faults !== undefined,
             tapes: o.tapes !== undefined,
+            side_model: o.sideModel !== undefined,
+            user_sim_model: o.userSimModel !== undefined,
         };
         const differs = Object.entries(wanted).filter(
             ([k, v]) => given[k] !== false && !sameJson(manifest[k as keyof Manifest], v),
@@ -390,7 +404,7 @@ async function runArms(
         ),
         llm: proxyUserSim(
             gateway.urls[0] as string,
-            prereg.user_sim.model,
+            manifest.user_sim_model ?? prereg.user_sim.model,
             prereg.user_sim.max_tokens,
         ),
         normalise: normaliser(prereg.divergence_policy.normalisation),
@@ -399,6 +413,16 @@ async function runArms(
             ...scenario.probes.map((p) => p.id),
         ],
     });
+    const deletions = new Map(
+        scenario.cf_deletions.map((c) => [
+            c.before_event,
+            {
+                probe: c.probe,
+                fact: c.fact,
+                statement: scenario.facts.find((f) => f.id === c.fact)?.statement ?? "",
+            },
+        ]),
+    );
     const userTurns = (arm: string, session?: string) =>
         journal.entries.filter(
             (e) =>
@@ -424,6 +448,7 @@ async function runArms(
             projects,
             models: manifest.models,
             contextLimit: manifest.context_limit,
+            ...(manifest.side_model ? { sideModel: manifest.side_model } : {}),
             turnDeadlineMs: prereg.liveness_bounds.turn_deadline_ms,
             transcriptPaths: hostRow.transcript_paths,
             loopStore,
@@ -491,9 +516,14 @@ async function runArms(
                     if (e.kind !== "user_turn") return await driver.event(e);
                     const turn = scripted.find((t) => t.id === e.id);
                     if (!turn) throw new HarnessFailure(`${e.id}: no scripted user turn`);
+                    const cf = deletions.get(e.id);
+                    const counterfactual =
+                        cf && armBase(arm) === "eidnara-cf"
+                            ? { probe: cf.probe, fact: cf.fact, ...driver.deleteFact(cf.statement) }
+                            : undefined;
                     const d = await userSim.deliver(arm, turn, lastAgent(arm, e.session));
                     const user = { session: e.session, label: d.label, delivered: d.delivered };
-                    if (!d.delivered) return { user };
+                    if (!d.delivered) return { user, counterfactual };
                     const out = await driver.event({
                         ...e,
                         text: d.text,
@@ -502,7 +532,11 @@ async function runArms(
                     const cut = d.label !== "interrupt" || out.user?.interrupted === true;
                     const label = cut ? d.label : "task";
                     const scheduled = cut ? {} : { scheduled: "interrupt" };
-                    return { ...out, user: { ...user, ...out.user, label, ...scheduled } };
+                    return {
+                        ...out,
+                        user: { ...user, ...out.user, label, ...scheduled },
+                        ...(counterfactual ? { counterfactual } : {}),
+                    };
                 } finally {
                     scope.turn = null;
                 }

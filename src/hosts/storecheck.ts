@@ -84,3 +84,54 @@ export function memoryNotes(path: string): MemoryNote[] | null {
         db.close();
     }
 }
+
+export interface Deletion {
+    deleted: number[];
+    remaining: number;
+}
+
+const runsOf = (text: string, size = 4) => {
+    const words = text.toLowerCase().match(/[\w[\]-]+/g) ?? [];
+    return new Set(
+        words
+            .slice(0, Math.max(0, words.length - size + 1))
+            .map((_, i) => words.slice(i, i + size).join(" ")),
+    );
+};
+
+/**
+ * Deletes the memory notes that carry a ledger fact from a live store, and reads back how many
+ * matching notes remain. A note carries the fact when it shares a four-word run with the fact's
+ * statement or holds one of its distinctive values (a token with a digit, an underscore, or a
+ * bracket, such as a codename).
+ */
+export function deleteFactNotes(path: string, statement: string): Deletion {
+    const db = new Database(path);
+    try {
+        db.run("pragma busy_timeout = 10000");
+        const fact = runsOf(statement);
+        const values = (statement.toLowerCase().match(/[\w[\]-]+/g) ?? []).filter(
+            (t) => t.length >= 4 && /[\d_[\]]/.test(t),
+        );
+        const carries = (content: string) =>
+            [...runsOf(content)].some((r) => fact.has(r)) ||
+            values.some((v) => content.toLowerCase().includes(v));
+        const notes = db.query("select id, content from notes").all() as {
+            id: number;
+            content: string;
+        }[];
+        const hits = notes.filter((n) => carries(n.content));
+        const ids = hits.map((n) => n.id);
+        db.transaction(() => {
+            for (const id of ids) {
+                db.run("delete from note_deliveries where note_id = ?", [id]);
+                db.run("delete from notes where id = ?", [id]);
+            }
+        })();
+        const left = db.query("select id, content from notes").all() as typeof notes;
+        const remaining = left.filter((n) => carries(n.content)).length;
+        return { deleted: ids, remaining };
+    } finally {
+        db.close();
+    }
+}

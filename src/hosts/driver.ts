@@ -20,7 +20,7 @@ import {
 import type { FaultEpisode } from "../scenario/faults";
 import { armBase, DaemonStack, eidnaraOn, type HostContext, makeHost, type SimHost } from "./arms";
 import { SnapshotRecorder } from "./snapshot";
-import { checkStore, memoryNotes } from "./storecheck";
+import { checkStore, type Deletion, deleteFactNotes, memoryNotes } from "./storecheck";
 
 interface ArmState {
     model: number;
@@ -166,7 +166,7 @@ export class HostDriver implements ArmDriver {
                 root: this.o.armRoot,
                 dataDir: this.dataDir,
                 logFile: join(this.armDir, "daemon.log"),
-                model: this.currentModel(),
+                model: this.o.sideModel ?? this.currentModel(),
             });
             await this.daemon.start();
             this.recordState();
@@ -363,6 +363,13 @@ export class HostDriver implements ArmDriver {
 
     private clearStoreFill(): void {
         if (this.storeMount) rmSync(join(this.storeMount, "ballast"), { force: true });
+    }
+
+    deleteFact(statement: string): Deletion | { skipped: string } {
+        if (!this.daemon) return { skipped: "arm runs no daemon" };
+        return existsSync(this.storeDb)
+            ? deleteFactNotes(this.storeDb, statement)
+            : { skipped: "no store yet" };
     }
 
     get storeDb(): string {

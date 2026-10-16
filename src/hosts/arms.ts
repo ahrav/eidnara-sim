@@ -40,6 +40,8 @@ export interface HostContext {
     proxyHttp2: string;
     model: string;
     contextLimit: number;
+    /** The model of Eidnara's own summarizer and researcher calls; the agent model by default. */
+    sideModel?: string;
     now?: () => number;
 }
 
@@ -267,7 +269,7 @@ export class PiSimHost extends SimHost {
         if (connectionFile) {
             const dir = join(this.ctx.root, "home/config/eidnara");
             mkdirSync(dir, { recursive: true });
-            const config = eidnaraUserConfig(connectionFile, this.ctx.model);
+            const config = eidnaraUserConfig(connectionFile, this.ctx.sideModel ?? this.ctx.model);
             writeFileSync(join(dir, "eidnara.jsonc"), JSON.stringify(config, null, 2));
         }
     }
@@ -429,7 +431,10 @@ export class OpencodeSimHost extends SimHost {
             mkdirSync(d, { recursive: true });
         const eidnara = connection
             ? {
-                  eidnaraConfig: eidnaraUserConfig(connection, this.ctx.model),
+                  eidnaraConfig: eidnaraUserConfig(
+                      connection,
+                      this.ctx.sideModel ?? this.ctx.model,
+                  ),
                   userHostConnectionFile: connection,
               }
             : {};

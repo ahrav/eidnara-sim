@@ -20,6 +20,8 @@ export interface TurnOutcome {
     stores?: { fault: string; store: StoreCheck }[];
     /** The user turn the user-sim sent or skipped, journaled as `UserTurn`. */
     user?: Record<string, unknown>;
+    /** A counterfactual arm's memory deletion before the turn, journaled ahead of `EndTurn`. */
+    counterfactual?: Record<string, unknown>;
 }
 
 export interface ArmDriver {
@@ -238,6 +240,13 @@ export class Scheduler {
                 outcome = await driver.event(e);
             } finally {
                 clock.end(turn);
+            }
+            if (outcome.counterfactual) {
+                this.log({
+                    kind: "CounterfactualDeletion",
+                    event: e.id,
+                    ...outcome.counterfactual,
+                });
             }
             const state = outcome.failed ? "failed" : "completed";
             const item = e.probe ? { probe: e.probe, state } : {};

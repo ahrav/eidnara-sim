@@ -29,6 +29,15 @@ Every run that wrote a manifest is graded and reported, including one
 stopped at the limit; the report's run-conditions panel gives the events
 each run reached against its plan.
 
+A scheduled fault whose trigger session lies past the prefix moves into
+it (`compressFaults`): the faults keep their order and spread evenly over
+the prefix's sessions, each onto the first session from its place that
+has enough user turns for a turn-triggered fault, or that is in the p90
+regime (else the longest session) for a summarizer-triggered one. The
+moved schedule goes to `<run>/faults.json` and the run's `--faults`, so
+the manifest records it; a fault no prefix session can host keeps its
+trigger and stays untriggered.
+
 The prefix is a cap on the pre-registered scenario, so a tier report
 covers fewer items than the pre-registered `paired_items_per_probe_type`;
 the report's n and detectable differences say how few. The capped prefix
@@ -72,3 +81,38 @@ A control label puts a tilde inside run paths (`<run>/host~aa/r`). The
 sandbox launcher passes paths and values to a shell, so it accepts a
 tilde only inside a word, never at a word's start or after `:` or `=`,
 where a shell would expand it.
+
+## M and L profiles
+
+Beside its paired runs, a tier runs the profiles its pre-registration
+calls for, each reported apart under `<dir>/<profile>/`:
+
+| Tier | Profile | Runs |
+|---|---|---|
+| M | `side-haiku` | Per host, the first seed's `host` and `eidnara` arms with Eidnara's summarizer and researcher calls on Haiku 5.5 (`--side-model`), the model factor against the paired runs' Opus |
+| M | `usersim-luna` | One Pi run of the first seed's `host` and `eidnara` arms with `gpt-5.6-luna` as the user-sim (`--user-sim-model`) |
+| L | `concurrent` | Per host, each arm of the first seed alone in its own run (`<dir>/L-301-<host>-concurrent/<arm>`), all started together on the paired runs' prefix; `tier-result.json` records the start skew |
+
+M's six paired runs (three seeds on two hosts) each carry `host~aa` and
+`eidnara~aa`, which gives six repeats of each A/A pair.
+
+L starts only after `<dir>/L-resizing.json` records its paired items per
+probe type. `--resize-from <M tier dir>` computes it from the graded M
+runs with the pre-registered rule (`src/run/resize.ts`): per probe type,
+the discordance M observed, the ledger-fact design effect from M's
+intraclass correlation, and the n that reaches the family's L effect at
+its power, with Holm's first step for the harm metrics; L's count is the
+largest n, and a type M never saw discordant keeps the planning count.
+The L scenarios are compiled with that count.
+
+## Counterfactual arm
+
+L's `eidnara-cf` arm runs like `eidnara` except before each turn the
+scenario's `cf_deletions` names: there it deletes from the live store
+every memory note that carries the sampled P1, P3, or P5 fact (a note
+sharing a four-word run with the fact's statement, or holding one of its
+distinctive values) with the note's deliveries, reads back how many such
+notes remain, and journals both as `CounterfactualDeletion`. The report's
+counterfactual panel gives the attribution rate: of the sampled items the
+`eidnara` arm passed, the share the counterfactual arm fails, with a
+Clopper-Pearson interval.

@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import type { Scenario } from "../scenario/compile";
+import type { FaultEpisode } from "../scenario/faults";
 import { loadPrereg } from "../scenario/inputs";
-import { capEvents, tierPlan } from "./tier";
+import { capEvents, compressFaults, tierPlan } from "./tier";
 
 const event = (kind: string, i: number) => ({
     id: `e-${i}`,
@@ -41,5 +42,43 @@ describe("tier plan", () => {
         const xl = loadPrereg("XL");
         const one = tierPlan(xl, new Map([[401, scenario([5])]]), ["pi"], "/out", 60_000);
         expect(one[0]?.arms).toEqual(xl.arms.order_by_seed[0] ?? xl.arms.run);
+    });
+
+    test("faults past the prefix move into it, by order, onto a session that can host them", () => {
+        const events = [
+            ...["s-1", "s-2", "s-3"].flatMap((session, k) => [
+                { id: `${session}-start`, kind: "session_start", session },
+                ...Array.from({ length: [2, 5, 1][k] as number }, (_, t) => ({
+                    id: `${session}-${t}`,
+                    kind: "user_turn",
+                    session,
+                })),
+                { id: `${session}-end`, kind: "session_end", session },
+            ]),
+        ];
+        const fault = (id: string, kind: string, n?: number) =>
+            ({
+                id,
+                type: "daemon_restart",
+                trigger: { kind, session: "s-far", ...(n ? { n } : {}) },
+            }) as unknown as FaultEpisode;
+        const s = {
+            events,
+            sessions: [{ id: "s-3", forced_p90: true }],
+            faults: [
+                fault("a", "user_turn", 4),
+                fault("b", "session_start"),
+                fault("c", "user_turn", 9),
+                fault("d", "first_summarizer_call"),
+            ],
+        } as unknown as Scenario;
+        const moved = compressFaults(s, events.length).map((f) => f.trigger.session);
+        expect(moved).toEqual(["s-2", "s-2", "s-far", "s-3"]);
+        expect(compressFaults(s, 5).map((f) => f.trigger.session)).toEqual([
+            "s-far",
+            "s-1",
+            "s-far",
+            "s-1",
+        ]);
     });
 });
