@@ -55,6 +55,8 @@
           "calls": [
             {
               "seq": 5,
+              "arm": "eidnara",
+              "session": "s-1",
               "component": "history_summarizer",
               "turn": "e-0",
               "scenario_ms": 500,

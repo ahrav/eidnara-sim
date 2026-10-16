@@ -34,19 +34,32 @@ function parseDiff(patch: string): { added: string[]; paths: string[]; surviving
     const paths: string[] = [];
     const surviving: string[] = [];
     let inHunk = false;
+    let current: string | null = null;
+    let deleted = false;
+    const close = () => {
+        if (current !== null && !deleted) surviving.push(current);
+        current = null;
+        deleted = false;
+    };
     for (const line of patch.split("\n")) {
         if (line.startsWith("diff --git ")) {
+            close();
             inHunk = false;
             const named = /^diff --git a\/(.+) b\/(.+)$/.exec(line);
-            if (named) paths.push(named[1] as string, named[2] as string);
+            if (named) {
+                paths.push(named[1] as string, named[2] as string);
+                current = named[2] as string;
+            }
         } else if (line.startsWith("@@")) inHunk = true;
         else if (inHunk) {
             if (line.startsWith("+")) added.push(line.slice(1));
-        } else if (line.startsWith("+++ b/")) {
+        } else if (line.startsWith("+++ /dev/null")) deleted = true;
+        else if (line.startsWith("+++ b/")) {
             paths.push(line.slice("+++ b/".length));
-            surviving.push(line.slice("+++ b/".length));
+            if (current === null) surviving.push(line.slice("+++ b/".length));
         }
     }
+    close();
     return { added, paths: [...new Set(paths)], surviving: [...new Set(surviving)] };
 }
 

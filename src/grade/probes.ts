@@ -96,8 +96,12 @@ const CHECK_FIELDS: Record<keyof Check, Field> = {
     answer_must_not: (v: unknown) => compiles(v) || patternList(v),
     abstain: bool,
     scope: oneOf(["in", "out"]),
-    window_from_turn: num,
-    turns: (v: unknown) => Array.isArray(v) && v.length === 2 && v.every(num),
+    window_from_turn: (v: unknown) => Number.isInteger(v) && (v as number) >= 0,
+    turns: (v: unknown) =>
+        Array.isArray(v) &&
+        v.length === 2 &&
+        v.every((n) => Number.isInteger(n) && n >= 0) &&
+        (v[0] as number) < (v[1] as number),
 };
 
 const REQUIRED: Record<string, (keyof Check)[]> = {
@@ -229,11 +233,14 @@ const executed = (x: Command): string[] => {
     });
     const lastList = guarded.reduce((n, p, i) => (/^[;&\n]$/.test(p.op) ? i : n), 0);
     const mixed = guarded.slice(lastList).some((p) => p.op === "||");
+    const firstListEnd = guarded.findIndex((p, i) => i > 0 && /^[;&\n]$/.test(p.op));
+    const reached = x.exit === null && firstListEnd >= 0 ? firstListEnd : guarded.length;
     return guarded
+        .slice(0, reached)
         .filter(
             (p, i) => p.op !== "||" && (p.op !== "&&" || (x.exit === 0 && i >= lastList && !mixed)),
         )
-        .map((p) => p.seg);
+        .map((p) => unprefixed(p.seg));
 };
 /**
  * A read segment's file operands. For grep and rg the pattern is the first non-option word unless
@@ -255,6 +262,9 @@ const operands = (segment: string): string => {
     if (!supplied) files.shift();
     return [words[0], ...files].join(" ");
 };
+/** The command after any leading `NAME=value` assignments. */
+const unprefixed = (seg: string) =>
+    seg.replace(/^(\s*[A-Za-z_]\w*=(?:'[^']*'|"[^"]*"|\S*)\s+)+/, "");
 const anchored = (p: string) => (p.startsWith("(?i)") ? `(?i)^${p.slice(4)}` : `^${p}`);
 /** Match from the segment's first character; the `m` flag of `pattern` would let `^` match an inner line. */
 const startsWithAll = (seg: string, sources: string[]) =>
@@ -330,7 +340,7 @@ function p13(r: ArtefactReader, c: Check, rules: Rules): Outcome {
         const ratio = x.output_tokens / x.input_tokens;
         return x.input_tokens > 0 && ratio >= min && ratio <= max;
     });
-    const repeated = after.some((x) => before.has(x.command) && !QUIET.test(x.command));
+    const repeated = after.some((x) => before.has(x.command) && !QUIET.test(unprefixed(x.command)));
     const parts = [kept, ratioOk, !repeated];
     const score = parts.filter(Boolean).length / parts.length;
     return {

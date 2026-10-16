@@ -89,6 +89,8 @@
           "calls": [
             {
               "seq": 36,
+              "arm": "eidnara",
+              "session": "s-0003",
               "component": "agent",
               "turn": "e-000010",
               "scenario_ms": 4703985,
@@ -99,6 +101,8 @@
             },
             {
               "seq": 37,
+              "arm": "eidnara",
+              "session": "s-0003",
               "component": "agent",
               "turn": "e-000010",
               "scenario_ms": 4707290,
@@ -109,6 +113,8 @@
             },
             {
               "seq": 38,
+              "arm": "eidnara",
+              "session": "s-0003",
               "component": "agent",
               "turn": "e-000010",
               "scenario_ms": 4711925,
@@ -120,6 +126,8 @@
             },
             {
               "seq": 39,
+              "arm": "eidnara",
+              "session": "s-0003",
               "component": "memory_capture",
               "turn": null,
               "scenario_ms": 4721967,
@@ -130,6 +138,8 @@
             },
             {
               "seq": 40,
+              "arm": "eidnara",
+              "session": "s-0003",
               "component": "agent",
               "turn": "e-000011",
               "scenario_ms": 4723533,
@@ -140,6 +150,8 @@
             },
             {
               "seq": 41,
+              "arm": "eidnara",
+              "session": "s-0003",
               "component": "agent",
               "turn": "e-000011",
               "scenario_ms": 4726293,
@@ -150,6 +162,8 @@
             },
             {
               "seq": 42,
+              "arm": "eidnara",
+              "session": "s-0003",
               "component": "agent",
               "turn": "e-000011",
               "scenario_ms": 4732068,

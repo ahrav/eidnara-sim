@@ -79,6 +79,8 @@
           "calls": [
             {
               "seq": 14,
+              "arm": "host",
+              "session": "s-0003",
               "component": "agent",
               "turn": "e-000010",
               "scenario_ms": 4703926,
@@ -89,6 +91,8 @@
             },
             {
               "seq": 15,
+              "arm": "host",
+              "session": "s-0003",
               "component": "agent",
               "turn": "e-000010",
               "scenario_ms": 4707014,
@@ -99,6 +103,8 @@
             },
             {
               "seq": 16,
+              "arm": "host",
+              "session": "s-0003",
               "component": "agent",
               "turn": "e-000010",
               "scenario_ms": 4709945,
@@ -110,6 +116,8 @@
             },
             {
               "seq": 17,
+              "arm": "host",
+              "session": "s-0003",
               "component": "agent",
               "turn": "e-000011",
               "scenario_ms": 4718803,
@@ -120,6 +128,8 @@
             },
             {
               "seq": 18,
+              "arm": "host",
+              "session": "s-0003",
               "component": "agent",
               "turn": "e-000011",
               "scenario_ms": 4721960,
@@ -130,6 +140,8 @@
             },
             {
               "seq": 19,
+              "arm": "host",
+              "session": "s-0003",
               "component": "agent",
               "turn": "e-000011",
               "scenario_ms": 4725708,

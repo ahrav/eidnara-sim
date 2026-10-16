@@ -46,6 +46,8 @@ export interface WorkspaceState {
 
 export interface CallView {
     seq: number;
+    arm: string;
+    session: string;
     component: string;
     turn: string | null;
     turn_index?: number;
@@ -129,6 +131,8 @@ export function badField(
 
 const CALL: Record<string, Field> = {
     seq: num,
+    arm: text,
+    session: text,
     component: oneOf(COMPONENTS),
     turn: nullable(str),
     turn_index: optional(count),
@@ -142,7 +146,7 @@ const CALL: Record<string, Field> = {
 };
 const COMMAND: Record<string, Field> = {
     command: str,
-    exit: nullable(num),
+    exit: nullable(Number.isInteger),
     scenario_ms: nonNegative,
 };
 
@@ -171,6 +175,15 @@ const PAYLOADS: Record<ArtefactClass, (a: Record<string, unknown>, path: string)
             listOf(CALL, `${p}.calls`, a.calls) ?? unordered(a.calls, `${p}.calls`),
     };
 
+/** The first call from another arm or session than the snapshot's, as a path, or null. */
+const foreignCall = (snapshot: Snapshot, calls: CallView[], path: string): string | null => {
+    for (const [i, c] of calls.entries()) {
+        if (c.arm !== snapshot.arm) return `${path}[${i}].arm`;
+        if (c.session !== snapshot.session) return `${path}[${i}].session`;
+    }
+    return null;
+};
+
 const SNAPSHOT: Record<string, Field> = {
     id: text,
     item: text,
@@ -187,6 +200,11 @@ export function assertArtefactsOnly(snapshot: Snapshot): void {
     if (top) throw new GradeRefused(`${top} is missing or malformed`);
     const ids = new Set<string>();
     for (const [i, raw] of snapshot.artefacts.entries()) {
+        if (typeof raw !== "object" || raw === null) {
+            throw new GradeRefused(
+                `snapshot ${snapshot.id}: artefacts[${i}] is missing or malformed`,
+            );
+        }
         // SAFETY: the field checks below establish whether each artefact satisfies the Artefact contract.
         const a = raw as unknown as Record<string, unknown>;
         if (!text(a.id)) {
@@ -199,7 +217,11 @@ export function assertArtefactsOnly(snapshot: Snapshot): void {
         if (!(ARTEFACT_CLASSES as readonly string[]).includes(a.class as string)) {
             throw new GradeRefused(`artefact ${id} of class ${a.class} is not a grade input`);
         }
-        const bad = PAYLOADS[a.class as ArtefactClass](a, `artefacts[${i}]`);
+        const bad =
+            PAYLOADS[a.class as ArtefactClass](a, `artefacts[${i}]`) ??
+            (a.class === "proxy-call"
+                ? foreignCall(snapshot, a.calls as CallView[], `artefacts[${i}].calls`)
+                : null);
         if (bad) throw new GradeRefused(`snapshot ${snapshot.id}: ${bad} is missing or malformed`);
     }
 }

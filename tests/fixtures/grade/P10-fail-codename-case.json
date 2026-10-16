@@ -36,6 +36,8 @@
           "calls": [
             {
               "seq": 1,
+              "arm": "eidnara",
+              "session": "s-1",
               "component": "agent",
               "turn": "e-1",
               "scenario_ms": 0,

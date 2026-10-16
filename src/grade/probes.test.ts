@@ -32,6 +32,14 @@ const fixtures = readdirSync(DIR)
     .filter((f) => f.endsWith(".json") && !f.startsWith("P7-"))
     .map((f) => [f, JSON.parse(readFileSync(join(DIR, f), "utf8")) as Fixture] as const);
 const fixture = (name: string) => fixtures.find(([f]) => f === `${name}.json`)?.[1] as Fixture;
+/** A copy of the snapshot moved to another session, its proxy calls included. */
+const retagged = (snapshot: Snapshot, session: string): Snapshot => {
+    const copy = structuredClone(snapshot);
+    copy.session = session;
+    for (const a of copy.artefacts)
+        if (a.class === "proxy-call") for (const c of a.calls) c.session = session;
+    return copy;
+};
 const grade = (name: string, r = rules) =>
     gradeItem(fixture(name).probe, fixture(name).snapshots, r) as GradeRecord;
 
@@ -461,7 +469,7 @@ describe("grading harness", () => {
 
     test("a snapshot from another session than the probe's is refused", () => {
         const f = fixture("P14-pass");
-        const other = { ...(f.snapshots[0] as Snapshot), session: "s-9" };
+        const other = retagged(f.snapshots[0] as Snapshot, "s-9");
         expect(() => gradeItem(f.probe, [other], rules)).toThrow("session s-9");
         const failed = { ...other, turn_outcome: "failed" as const };
         expect(() => gradeItem(f.probe, [failed], rules)).toThrow("session s-9");
@@ -632,6 +640,88 @@ describe("grading harness", () => {
         const commit = log.commands.find((c) => c.command.startsWith("git commit")) as Command;
         commit.command = `printf 'note\n${commit.command}'`;
         expect(gradeItem(f.probe, [snap], rules)?.metrics["P13.rule_kept"]).toBe(false);
+    });
+
+    test("leading shell assignments do not hide the command word", () => {
+        const f = fixture("P13-pass");
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        const log = snap.artefacts.find((a) => a.class === "command-log");
+        if (log?.class !== "command-log") throw new Error("fixture lacks command-log");
+        log.commands.unshift({ command: "CI=1 bun test", exit: 0, scenario_ms: 100 });
+        log.commands.push({ command: "CI=1 bun test", exit: 0, scenario_ms: 900 });
+        expect(gradeItem(f.probe, [snap], rules)?.metrics["P13.repeated_action"]).toBe(false);
+        const p6 = fixture("P6-pass");
+        const s6 = structuredClone(p6.snapshots[0]) as Snapshot;
+        const l6 = s6.artefacts.find((a) => a.class === "command-log" && a.role === "turn");
+        if (l6?.class !== "command-log") throw new Error("fixture lacks command-log");
+        l6.commands.push({ command: "RUST_BACKTRACE=1 cargo test", exit: 0, scenario_ms: 10 });
+        expect(gradeItem(p6.probe, [s6], rules)?.metrics["P6.ran_tests"]).toBe(true);
+    });
+
+    test("a header-only rename keeps its new path among the surviving paths", () => {
+        const f = fixture("P1-pass");
+        const probe = { ...f.probe, check: { must: ["\\.drowsy-egret-12\\.test\\.ts"] } };
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        const diff = snap.artefacts.find((a) => a.class === "diff" && a.role === "turn");
+        if (diff?.class !== "diff") throw new Error("fixture lacks diff");
+        diff.patch =
+            "diff --git a/src/get.test.ts b/src/get.drowsy-egret-12.test.ts\nsimilarity index 100%\nrename from src/get.test.ts\nrename to src/get.drowsy-egret-12.test.ts\n";
+        expect(gradeItem(probe, [snap], rules)?.verdict).toBe("pass");
+    });
+
+    test("turn bounds are non-negative integers with an increasing range", () => {
+        const p13 = fixture("P13-pass");
+        const check = p13.probe.check as { commands_must: string[] };
+        for (const turns of [
+            [30, 0],
+            [0, 0],
+            [-1, 30],
+            [0.5, 30],
+        ]) {
+            expect(() =>
+                gradeItem({ ...p13.probe, check: { ...check, turns } }, p13.snapshots, rules),
+            ).toThrow("check.turns");
+        }
+        const p14 = fixture("P14-pass");
+        expect(() =>
+            gradeItem({ ...p14.probe, check: { window_from_turn: 4.5 } }, p14.snapshots, rules),
+        ).toThrow("check.window_from_turn");
+    });
+
+    test("a command exit status is an integer or null", () => {
+        const f = fixture("P6-pass");
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        const log = snap.artefacts.find((a) => a.class === "command-log" && a.role === "turn");
+        if (log?.class !== "command-log") throw new Error("fixture lacks command-log");
+        (log.commands[0] as Command).exit = 0.5;
+        expect(() => gradeItem(f.probe, [snap], rules)).toThrow("commands[0].exit");
+    });
+
+    test("a command without an exit status credits only its first list", () => {
+        const f = fixture("P13-pass");
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        const log = snap.artefacts.find((a) => a.class === "command-log");
+        if (log?.class !== "command-log") throw new Error("fixture lacks command-log");
+        const commit = log.commands.find((c) => c.command.startsWith("git commit")) as Command;
+        commit.command = `sleep 100; ${commit.command}`;
+        commit.exit = null;
+        expect(gradeItem(f.probe, [snap], rules)?.metrics["P13.rule_kept"]).toBe(false);
+    });
+
+    test("a null artefact entry is refused as malformed evidence", () => {
+        const f = fixture("P2-pass");
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        (snap.artefacts as unknown[]).push(null);
+        expect(() => gradeItem(f.probe, [snap], rules)).toThrow(GradeRefused);
+    });
+
+    test("every proxy call belongs to the snapshot's arm and session", () => {
+        const f = fixture("P8-pass");
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        const calls = snap.artefacts.find((a) => a.class === "proxy-call");
+        if (calls?.class !== "proxy-call") throw new Error("fixture lacks proxy-call");
+        (calls.calls[0] as CallView).arm = "host";
+        expect(() => gradeItem(f.probe, [snap], rules)).toThrow("calls[0].arm");
     });
 
     test("a check pattern that is empty after its prefix or fails to compile is refused", () => {
@@ -854,7 +944,7 @@ describe("grading harness", () => {
     test("every counted snapshot is bound to the probe's session and event", () => {
         const f = fixture("P8-pass");
         const first = f.snapshots[0] as Snapshot;
-        const stray = { ...structuredClone(first), id: "other", session: "s-9" };
+        const stray = { ...retagged(first, "s-9"), id: "other" };
         expect(() => gradeItem(f.probe, [first, stray], rules)).toThrow("session s-9");
     });
 

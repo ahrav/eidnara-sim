@@ -26,6 +26,8 @@
           "calls": [
             {
               "seq": 2,
+              "arm": "eidnara",
+              "session": "s-1",
               "component": "user-sim",
               "turn": null,
               "turn_index": 3,
@@ -38,6 +40,8 @@
             },
             {
               "seq": 5,
+              "arm": "eidnara",
+              "session": "s-1",
               "component": "history_summarizer",
               "turn": "e-0",
               "scenario_ms": 500,
@@ -49,6 +53,8 @@
             },
             {
               "seq": 15,
+              "arm": "eidnara",
+              "session": "s-1",
               "component": "user-sim",
               "turn": null,
               "turn_index": 5,
@@ -61,6 +67,8 @@
             },
             {
               "seq": 16,
+              "arm": "eidnara",
+              "session": "s-1",
               "component": "user-sim",
               "turn": null,
               "turn_index": 6,
@@ -73,6 +81,8 @@
             },
             {
               "seq": 30,
+              "arm": "eidnara",
+              "session": "s-1",
               "component": "user-sim",
               "turn": null,
               "turn_index": 2,

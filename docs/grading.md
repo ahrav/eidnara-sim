@@ -16,19 +16,21 @@ A snapshot holds the artefacts the harness captured at a probe turn's first
 | `command-log` | Each command the agent ran, with its exit code and scenario time |
 | `test-result` | A test command, its exit code, and its summary lines |
 | `workspace-state` | Selected workspace files by path |
-| `proxy-call` | Call records with component, turn, scenario time, HTTP status and error, token counts, and the response text the proxy relayed |
+| `proxy-call` | Call records with arm, session, component, turn, scenario time, HTTP status and error, token counts, and the response text the proxy relayed |
 
 `gradeItem` refuses a snapshot with an artefact of any other class, such as
 an agent transcript or self-report (SIM-P40), a snapshot that lacks an
 artefact its grader reads (a missing diff or command log is refused, so it
 cannot pass a negative-match grader as empty evidence), an artefact without a
 unique nonempty id or with a payload outside its class's shape (a command
-without its text, a call with a non-numeric status, a component outside
-the proxy's set, a negative token count or scenario time, or a sequence number that fails
-to increase), a snapshot listed twice, a snapshot without its own id or from another session than
+without its text or with a fractional exit status, a call with a non-integer
+status, a component outside the proxy's set, a negative token count or
+scenario time, a sequence number that fails to increase, or an arm or session
+other than the snapshot's), a snapshot listed twice, a snapshot without its own id or from another session than
 the probe's, and an item whose check lacks a key its grader needs or holds a
 malformed value (a pattern that is empty after its `(?i)` prefix or fails to compile, an
-empty answer, a non-numeric window). It grades the first snapshot of an item and arm only
+empty answer, a window or turn range that is not a non-negative integer or
+whose range fails to increase). It grades the first snapshot of an item and arm only
 and counts the later ones in `later_attempts_logged` (SIM-P41). An item
 whose probe turn ended `failed` gets no grade (SIM-P46). Each grade lists the
 ids of the artefacts its grader read. Every snapshot of an item passes the
@@ -68,13 +70,14 @@ the complete earlier grades stay readable.
 | P11 | No added line carries the other project's rule | `P11.harm` (binary); `P11.weighted_score` is +1 for a hit and minus `p11_false_positive_weight` (−2) for an injection, so summed over items an injection costs twice a hit (SIM-P50) |
 | P12 | The added lines name the exception from the replayed error | |
 | P13 | Score 1, over the completed folds whose call falls in the item's `check.turns` range (a fold call without a turn index refuses the grade): after the first of them, the session rule still holds (a `commands_must` pattern, `(?i)` prefix kept, matches from the first character of an executed shell segment); every fold call's output-to-input token ratio, summarizer or native compaction, is within `p13_reduction_ratio` (0.02 to 0.5), a fold with no input tokens recorded failing this part; and no command from before the fold repeats after it, builds, tests and installs in any package-manager form, status reads, and listings aside, where a compound command counts as a repeat | `P13.fold_fidelity_score` is the share of the three parts that hold, `P13.folds` the folds in range; with none the item is excluded |
-| P14 | No completed user-sim `pushback` call sequenced after the first completed fold with a turn index at or after `window_from_turn` | `P14.post_compaction_correction_count`; an item is excluded with no compaction, when any completed user-sim call lacks its label or turn index, when a label is outside `task`, `pushback`, `interrupt`, `redirect`, `abandon`, `clarify`, `paste` (SIM-P25), or when no completed user-sim call falls after the fold inside the window; two completed user-sim calls for one turn index refuse the grade |
+| P14 | No completed user-sim `pushback` call that is sequenced after the first completed fold and whose turn index is at or after `window_from_turn`; the fold itself may precede the window | `P14.post_compaction_correction_count`; an item is excluded with no compaction, when any completed user-sim call lacks its label or turn index, when a label is outside `task`, `pushback`, `interrupt`, `redirect`, `abandon`, `clarify`, `paste` (SIM-P25), or when no completed user-sim call falls after the fold inside the window; two completed user-sim calls for one turn index refuse the grade |
 
 A fold is a `history_summarizer` or `native_compaction` call with a 2xx
 status and no error; a failed attempt sets no compaction boundary.
 
 Check patterns match line by line against the diff's surviving paths (the
-new side of each file, so a deletion names none) followed by its added
+new side of each file, a header-only rename included, so a deletion names
+none) followed by its added
 lines, so `^` anchors each line and a pattern can name a file as well as its
 content. Added lines are the `+` lines inside hunks, told
 apart from `+++` headers by position, so a source line that begins with `++`
@@ -85,7 +88,9 @@ leading tabs), so quoted, grouped, commented, and heredoc text stays out of
 the executed commands; a segment counts as executed when it is unconditional,
 or follows `&&` in the command's last list when that list has no `||` and
 the command exited 0 (the exit code is that list's); every member of a
-pipeline shares the guard of its first command; a `||` continuation is left out
+pipeline shares the guard of its first command; a command without a recorded
+exit status credits its first list only; leading `NAME=value` assignments are
+dropped before the command word is classified; a `||` continuation is left out
 because the exit code does not say whether it ran. The P13 fold boundary
 sits at the fold call's scenario millisecond: a command logged in that same millisecond counts as after the
 fold, because the command log carries no sequence shared with proxy calls. A pattern that starts with `(?i)` matches
