@@ -104,5 +104,30 @@ export async function stopOwnedTree(
     signal(targets, "SIGTERM");
     if (await stopped(all, graceMs)) return true;
     signal(targets, "SIGKILL");
-    return stopped(all, 2_000);
+    if (await stopped(all, 2_000)) return true;
+    if (rootStart === undefined) return false;
+    // The launcher is root-owned until its sandbox drops privileges, so what is left of a pinned
+    // launch is killed through the same passwordless sudo the launcher runs under.
+    const privileged = treeProcesses(rootPid)
+        .map((pid) => ({ pid, start: processStart(pid) }))
+        .filter(alive);
+    if (privileged.length === 0) return true;
+    Bun.spawnSync([
+        "sudo",
+        "-n",
+        "kill",
+        "-KILL",
+        ...privileged.filter(alive).map((t) => String(t.pid)),
+    ]);
+    return stopped([...all, ...privileged], 2_000);
+}
+
+function treeProcesses(rootPid: number): number[] {
+    const out: number[] = [];
+    const queue = [rootPid];
+    for (let next = queue.shift(); next !== undefined; next = queue.shift()) {
+        if (statFields(next) !== null) out.push(next);
+        queue.push(...childrenOf(next));
+    }
+    return out;
 }

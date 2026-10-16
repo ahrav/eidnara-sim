@@ -186,21 +186,28 @@ export class DaemonStack {
         }
     }
 
+    // The stack's restartHost is crashHost then startHost, and startHost clears the output
+    // buffers; the log is taken between the two so it keeps the old daemon's last bytes.
     async restart(): Promise<void> {
+        await this.stack.crashHost();
         this.saveLog();
-        await this.stack.restartHost();
+        await this.stack.startHost();
     }
 
     async stop(): Promise<void> {
         const stack = this.stack;
         if (!stack) return;
         const failures: unknown[] = [];
+        let stopConfirmed = true;
         try {
             await stack.terminateHost();
         } catch (caught) {
             // terminateHost gives up after SIGTERM; the stack's SIGKILL path ends the daemon.
             failures.push(caught);
-            await stack.crashHost().catch((killFailure: unknown) => failures.push(killFailure));
+            await stack.crashHost().catch((killFailure: unknown) => {
+                failures.push(killFailure);
+                stopConfirmed = false;
+            });
         }
         // The log is taken after shutdown, so it keeps what the daemon wrote while stopping.
         let logError: unknown;
@@ -209,7 +216,8 @@ export class DaemonStack {
         } catch (caught) {
             logError = caught;
         }
-        this.stack = null;
+        // A daemon whose forced stop is unconfirmed stays tracked, so a later stop can retry.
+        if (failures.length === 0 || stopConfirmed) this.stack = null;
         if (logError !== undefined) failures.push(logError);
         if (failures.length === 1) throw failures[0];
         if (failures.length > 1) {
@@ -447,7 +455,8 @@ export class PiSimHost extends SimHost {
                 } catch {}
             }
             const drained = this.agentEnd(this.drainMs);
-            await this.rpc.sendCommand("abort", {}, { timeoutMs: 60_000 }).catch(() => undefined);
+            // The abort runs alongside the drain, so an abort that never answers cannot delay it.
+            this.rpc.sendCommand("abort", {}, { timeoutMs: this.drainMs }).catch(() => undefined);
             // A turn that outlives the abort would end during the next turn and be taken for it.
             await drained.catch((reason: unknown) => {
                 throw new Error(
@@ -472,7 +481,8 @@ export class PiSimHost extends SimHost {
     ): Promise<Untyped> {
         for (;;) {
             const mark = watch.activity;
-            await Bun.sleep(Math.max(0, Math.min(this.settleMs, deadline - Date.now())));
+            // The quiet window always runs in full; a late continuation must have room to appear.
+            await Bun.sleep(this.settleMs);
             // The state check gets the turn's remaining time, with at least 1 s to answer.
             const timeoutMs = Math.max(1_000, deadline - Date.now());
             const state = await this.rpc.sendCommand("get_state", {}, { timeoutMs });
@@ -508,6 +518,7 @@ export class OpencodeSimHost extends SimHost {
     private sid: string | null = null;
     private readonly home = join(this.ctx.root, "home");
     protected abortWaitMs = 30_000;
+    protected setupMs = 120_000;
     private launched: { pid: number | null; start: string | null } | null = null;
 
     async openSession(cwd: string, session: string, connection: string | null): Promise<void> {
@@ -576,7 +587,10 @@ export class OpencodeSimHost extends SimHost {
         try {
             const sdk = await import(join(config.eidnara_checkout, sdkPath));
             this.client = sdk.createOpencodeClient({ baseUrl: this.oc.url });
-            this.sid = await this.findOrCreateSession(cwd, session);
+            const sid = await withDeadline(this.findOrCreateSession(cwd, session), this.setupMs);
+            if (sid === null)
+                throw new Error(`OpenCode session setup still pending after ${this.setupMs} ms`);
+            this.sid = sid;
         } catch (caught) {
             await this.closeSession();
             throw caught;

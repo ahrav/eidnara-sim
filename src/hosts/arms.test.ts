@@ -954,3 +954,131 @@ test("a launch whose identity was never captured is not signalled at teardown", 
         child.kill("SIGKILL");
     }
 });
+
+test("an OpenCode session list that never answers fails the open and stops the server", async () => {
+    const run = runDir();
+    const checkout = fakeV1(run);
+    writeFileSync(
+        join(checkout, "packages/e2e-tests/node_modules/@opencode-ai/sdk/dist/index.js"),
+        "export function createOpencodeClient() { return { session: { list: () => new Promise(() => {}) } }; }\n",
+    );
+    const ctx = { ...context(run), host: "opencode" as const };
+    const host = new OpencodeSimHost({
+        ...ctx,
+        config: { ...ctx.config, eidnara_checkout: checkout },
+    });
+    (host as Untyped).setupMs = 200;
+    const outcome = await Promise.race([
+        host.openSession(join(run, "arm"), "s1", null).then(
+            () => "opened",
+            (e: unknown) => String(e),
+        ),
+        Bun.sleep(3_000).then(() => "hung"),
+    ]);
+    await Bun.sleep(100);
+    const left = serving();
+    for (const pid of left) process.kill(pid, "SIGKILL");
+    expect(outcome).toMatch(/session setup/);
+    expect(left).toEqual([]);
+});
+
+test("a Pi abort that never answers does not delay a drain that already ended", async () => {
+    const host = piHost(context(runDir()));
+    const final = { type: "agent_end", willRetry: false, messages: [{ role: "assistant" }] };
+    const rpc = liveRpc([[50, final]], 0);
+    const send = rpc.sendCommand.bind(rpc);
+    rpc.sendCommand = (method: string) => {
+        if (method === "prompt") return send(method).then(() => Promise.reject(new Error("lost")));
+        if (method === "abort") return new Promise(() => {});
+        return send(method);
+    };
+    (host as Untyped).rpc = rpc;
+    (host as Untyped).drainMs = 2_000;
+    const started = Date.now();
+    expect(await host.prompt("hi", 5_000)).toEqual({ error: "Error: lost" });
+    expect(Date.now() - started).toBeLessThan(1_000);
+});
+
+test("a daemon whose forced shutdown is unconfirmed stays tracked for another stop", async () => {
+    const run = runDir();
+    const stack = new DaemonStack({
+        config: loadConfig(),
+        root: run,
+        dataDir: join(run, "data"),
+        logFile: join(run, "daemon.log"),
+        offsetFile: join(run, "offset"),
+        proxyHttp1: "",
+        proxyHttp2: "",
+        model: "m",
+    });
+    const fake = {
+        hostLog: () => "",
+        terminateHost: async () => {
+            throw new Error("did not exit after SIGTERM");
+        },
+        crashHost: async () => {
+            throw new Error("did not exit after SIGKILL");
+        },
+    };
+    (stack as Untyped).stack = fake;
+    await expect(stack.stop()).rejects.toThrow(/SIGKILL/);
+    expect((stack as Untyped).stack).toBe(fake);
+});
+
+test("a restart records the old daemon's output after it is killed and before the new start", async () => {
+    const run = runDir();
+    const calls: string[] = [];
+    let output = "before kill\n";
+    const stack = new DaemonStack({
+        config: loadConfig(),
+        root: run,
+        dataDir: join(run, "data"),
+        logFile: join(run, "daemon.log"),
+        offsetFile: join(run, "offset"),
+        proxyHttp1: "",
+        proxyHttp2: "",
+        model: "m",
+    });
+    (stack as Untyped).stack = {
+        hostLog: () => output,
+        crashHost: async () => {
+            calls.push("crash");
+            output = "before kill\nlast bytes\n";
+        },
+        startHost: async () => {
+            calls.push("start");
+            output = "";
+        },
+        restartHost: async () => {
+            calls.push("restart");
+            output = "";
+        },
+    };
+    await stack.restart();
+    expect(calls).toEqual(["crash", "start"]);
+    expect(readFileSync(join(run, "daemon.log"), "utf8")).toBe("before kill\nlast bytes\n");
+});
+
+test("a Pi turn ending just before its deadline still waits the full quiet window", async () => {
+    const host = piHost(context(runDir()));
+    (host as Untyped).settleMs = 200;
+    const end = { type: "agent_end", willRetry: false, messages: [{ role: "assistant" }] };
+    const late = { type: "agent_start" };
+    const final = {
+        type: "agent_end",
+        willRetry: false,
+        messages: [{ role: "assistant", stopReason: "error", errorMessage: "late" }],
+    };
+    (host as Untyped).rpc = liveRpc(
+        [
+            [250, end],
+            [400, late],
+            [420, final],
+        ],
+        0,
+    );
+    const started = Date.now();
+    const outcome = await host.prompt("hi", 300).catch((e: unknown) => String(e));
+    expect(outcome).not.toEqual({});
+    expect(Date.now() - started).toBeGreaterThanOrEqual(440);
+});

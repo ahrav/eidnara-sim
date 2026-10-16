@@ -138,3 +138,18 @@ test("any executable in a kept bin that resolves outside the keep paths is refus
         `toolchain tool ${join(kept, "rustfmt")} resolves outside its keep paths`,
     );
 });
+
+test("a dangling symlink in a kept bin is refused", () => {
+    const dir = root();
+    const kept = join(dir, "kept/bin");
+    mkdirSync(kept, { recursive: true });
+    symlinkSync(join(dir, "not-yet"), join(kept, "cargo-x"));
+    const base = loadConfig();
+    const config = {
+        ...base,
+        toolchain: { ...base.toolchain, bin: [kept], keep: [join(dir, "kept")] },
+    };
+    expect(() => checkToolchainBins(config)).toThrow(
+        `toolchain tool ${join(kept, "cargo-x")} is a dangling symlink`,
+    );
+});

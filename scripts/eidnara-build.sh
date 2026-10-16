@@ -22,9 +22,15 @@ esac
 dst=$dst_real
 src=$src_real
 # One build per clone at a time, held from the record's removal to its publication.
+# The lock's directory is outside every sandbox view (the home is masked and the clone is
+# read-only), so the check-then-open below races only with the operator.
 lock="$dst_real.lock"
 if [ -L "$lock" ]; then
     echo "eidnara-build: $lock is a symlink" >&2
+    exit 65
+fi
+if [ -e "$lock" ] && [ ! -f "$lock" ]; then
+    echo "eidnara-build: $lock is not a regular file" >&2
     exit 65
 fi
 exec 9>>"$lock"

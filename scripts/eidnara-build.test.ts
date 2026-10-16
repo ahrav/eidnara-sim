@@ -210,3 +210,19 @@ test("an unrelated directory at the partial-clone path is left alone", () => {
     expect(r.exitCode).toBe(0);
     expect(readFileSync(join(`${dst}.partial`, "mine"), "utf8")).toBe("keep\n");
 });
+
+test("a FIFO at the build lock path is refused instead of blocking the build", () => {
+    const { stubs, src, dst } = fixture();
+    expect(Bun.spawnSync(["mkfifo", `${dst}.lock`]).exitCode).toBe(0);
+    const r = Bun.spawnSync(
+        ["timeout", "10", "bash", join(import.meta.dir, "eidnara-build.sh"), src, dst],
+        {
+            env: { ...process.env, PATH: `${stubs}:${process.env.PATH ?? ""}` },
+            stdout: "pipe",
+            stderr: "pipe",
+        },
+    );
+    expect(r.exitCode).not.toBe(124);
+    expect(r.exitCode).not.toBe(0);
+    expect(r.stderr.toString()).toContain("is not a regular file");
+});

@@ -75,9 +75,10 @@ directory and the daemon's runtime directory are regenerated on every start,
 so they are removed first. The sandbox runs the host under
 root-owned `sudo` and `unshare`, so closing a host walks the launcher's
 process tree and signals every process the user owns, with SIGKILL after
-10 s; a process that survives SIGKILL stops the run, and so does a launcher
-root that has not exited by then, since a launcher still in its privileged
-setup has no user-owned process to signal. The launcher root's start time is
+10 s; what is left of a launch whose identity was pinned at spawn, including a
+launcher still root-owned in its privileged setup, is then killed through the
+passwordless `sudo` the launcher runs under, and a process that survives that
+stops the run. The launcher root's start time is
 taken when it is spawned, so a root pid the kernel has since reused is left
 alone, and a launch whose start time could not be read is not signalled. Each pid in that walk is
 paired with its start time and checked against it before every signal, so a
@@ -96,11 +97,13 @@ Both waits are bounded by the turn's remaining time (the state check gets at
 least 1 s), and a refused `get_state` counts as unsettled, so the turn goes
 through the abort and drain below. A prompt Pi refuses in preflight starts no
 turn, so its error is returned at once. After a Pi turn fails, the host
-aborts it and waits up to 30 s for its `agent_end`; a turn still running then
+aborts it and, alongside the abort, waits up to 30 s for its `agent_end`; a turn still running then
 stops the run, so a late end cannot finish the next turn. OpenCode turns race the deadline,
 abort the session (waiting at most 5 s for the abort call), and wait 30 s for
 the call to drain; a call still running then stops the run, and so does an
 abort call still pending after 30 s, since it would cancel the next turn,
+an OpenCode session setup (listing or creating the session) still pending
+after 120 s,
 and so does an abort the server does not confirm with `true`. A
 prompt request that fails before the server answers is aborted the same way,
 and an abort that fails stops the run, since the turn's completion cannot be

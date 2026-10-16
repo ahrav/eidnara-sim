@@ -79,9 +79,13 @@ export async function toolchainProbe(
 ): Promise<ToolchainProbe[]> {
     writeToolWrappers(config, launcher);
     const { path, env } = toolchainEnv(config, launcher);
+    // The probe sees the hosts' home layout: an empty home, so a tool found only through the
+    // harness user's own home fails here as it would in a session.
+    const home = join(dirname(offset), "probe-home");
+    mkdirSync(home, { recursive: true });
     const keep = [dirname(offset)];
     const ro = [...config.toolchain.keep, toolbinDir(launcher), dirname(dirname(FAKETIME_LIB))];
-    const vars = { ...faketimeEnv(offset), ...env };
+    const vars = { ...faketimeEnv(offset), ...env, HOME: home };
     const results: ToolchainProbe[] = [];
     for (const [tool, script] of TOOLCHAIN_PROBES) {
         const r = await probe(launch(launcher, keep, vars, ["/bin/sh", "-c", script], ro), path);
@@ -116,7 +120,10 @@ export function checkToolchainBins(config: SimConfig): void {
         // Every entry is on the agent's PATH, so every entry must resolve inside the keep paths.
         for (const entry of readdirSync(bin)) {
             const path = join(bin, entry);
-            if (existsSync(path) && !kept(realpathSync(path))) {
+            if (!existsSync(path)) {
+                throw new Error(`toolchain tool ${path} is a dangling symlink`);
+            }
+            if (!kept(realpathSync(path))) {
                 throw new Error(`toolchain tool ${path} resolves outside its keep paths`);
             }
         }
