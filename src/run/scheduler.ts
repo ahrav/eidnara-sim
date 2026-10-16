@@ -114,8 +114,12 @@ export class Scheduler {
         if (!start && entries.length > 0) {
             throw new Error("journal: StartRun is not the first entry");
         }
+        const endRun = entries.findIndex((e) => e.kind === "EndRun");
+        if (endRun >= 0 && endRun !== entries.length - 1) {
+            throw new Error("journal: entries follow EndRun");
+        }
         for (const arm of this.o.order) this.checkLifecycle(entries, arm);
-        if (entries.some((e) => e.kind === "EndRun")) {
+        if (endRun >= 0) {
             const open = this.o.order.filter((arm) => !this.completed(entries, arm));
             if (!start || open.length > 0) {
                 throw new Error(`journal: EndRun with unfinished arms ${JSON.stringify(open)}`);
@@ -190,39 +194,95 @@ export class Scheduler {
     }
 
     /**
-     * Refuses an arm whose entries contradict the scheduler's lifecycle: `EndArm` before every
-     * event completed, a turn entry naming anything but a configured user turn, an `EndTurn`
-     * without its `BeginTurn`, or a `FaultObserved` without its `FaultFired`. Runs before any
-     * recovery entry is written, so a corrupt journal is refused unchanged.
+     * Refuses an arm whose entries contradict the scheduler's lifecycle, replayed in journal
+     * order: `EndArm` before every event completed; a turn entry naming anything but a
+     * configured user turn; `Event` records outside the configured order, or for a turn with
+     * no `EndTurn` or interruption marker before it; an `EndTurn` without its `BeginTurn`; a
+     * `FaultObserved` without its `FaultFired`; an `EndJob` with no open registration; and a
+     * `FaultFired` away from its trigger's place in the event sequence. Runs before any recovery
+     * entry is written, so a corrupt journal is refused unchanged.
      */
     private checkLifecycle(entries: Entry[], arm: string): void {
         const mine = entries.filter((e) => e.arm === arm);
-        const kinds = (k: string) => mine.filter((e) => e.kind === k);
-        if (kinds("EndArm").length > 0 && !this.completed(entries, arm)) {
-            throw new Error(`journal: arm ${arm} has EndArm before its events completed`);
+        const fail = (what: string) => new Error(`journal: ${what} in arm ${arm}`);
+        if (mine.some((e) => e.kind === "EndArm") && !this.completed(entries, arm)) {
+            throw fail("EndArm before its events completed");
         }
         const turns = new Set(this.o.events.filter((e) => e.kind === "user_turn").map((e) => e.id));
-        for (const e of [...kinds("BeginTurn"), ...kinds("EndTurn")]) {
-            if (!turns.has(e.event as string)) {
-                throw new Error(
-                    `journal: ${e.kind} for ${e.event} in arm ${arm} is not a user turn`,
-                );
-            }
-        }
         const begun = new Set<unknown>();
+        const ended = new Set<unknown>();
         const fired = new Set<unknown>();
+        const jobs = new Map<unknown, number>();
+        let done = 0;
         for (const e of mine) {
+            if ((e.kind === "BeginTurn" || e.kind === "EndTurn") && !turns.has(e.event as string)) {
+                throw fail(`${e.kind} for ${e.event} is not a user turn`);
+            }
             if (e.kind === "BeginTurn") begun.add(e.event);
-            if (e.kind === "FaultFired") fired.add(e.fault);
-            if (e.kind === "EndTurn" && !begun.has(e.event)) {
-                throw new Error(`journal: EndTurn for ${e.event} in arm ${arm} has no BeginTurn`);
+            if (e.kind === "EndTurn") {
+                if (!begun.has(e.event)) throw fail(`EndTurn for ${e.event} has no BeginTurn`);
+                ended.add(e.event);
+            }
+            if (e.kind === "ItemState" && e.state === "failed(interrupted)") ended.add(e.event);
+            if (e.kind === "Event") {
+                if (e.event !== this.o.events[done]?.id) {
+                    throw fail(`Event for ${e.event} is out of scenario order`);
+                }
+                if (turns.has(e.event as string) && !ended.has(e.event)) {
+                    throw fail(`Event for ${e.event} has no EndTurn`);
+                }
+                done++;
+            }
+            if (e.kind === "RegisterJob") jobs.set(e.job, (jobs.get(e.job) ?? 0) + 1);
+            if (e.kind === "EndJob") {
+                const open = jobs.get(e.job) ?? 0;
+                if (open <= 0) throw fail(`EndJob for ${e.job} has no RegisterJob`);
+                jobs.set(e.job, open - 1);
+            }
+            if (e.kind === "FaultFired") {
+                const f = this.o.faults.find((x) => x.id === e.fault);
+                if (!f) throw fail(`FaultFired for unknown fault ${e.fault}`);
+                const [lo, hi] = this.triggerCursor(f);
+                if (done < lo || done > hi) {
+                    throw fail(`FaultFired for ${f.id} is away from its trigger`);
+                }
+                fired.add(e.fault);
             }
             if (e.kind === "FaultObserved" && !fired.has(e.fault)) {
-                throw new Error(
-                    `journal: FaultObserved for ${e.fault} in arm ${arm} has no FaultFired`,
-                );
+                throw fail(`FaultObserved for ${e.fault} has no FaultFired`);
             }
         }
+    }
+
+    /**
+     * The range of completed-event counts at which `f` can fire: a session-start or user-turn
+     * trigger fires while its event is the next one due (a laptop sleep on the session's first
+     * event), and a summarizer-call trigger fires any time its session is open.
+     */
+    private triggerCursor(f: FaultEpisode): [number, number] {
+        const events = this.o.events;
+        const t = f.trigger;
+        const at = (pred: (e: ScenarioEvent) => boolean) => {
+            const i = events.findIndex(pred);
+            return i < 0 ? events.length : i;
+        };
+        if (t.kind === "first_summarizer_call") {
+            const start = at((e) => e.kind === "session_start" && e.session === t.session);
+            const end = at((e) => e.kind === "session_end" && e.session === t.session);
+            return [start, end];
+        }
+        if (f.type === "laptop_sleep") {
+            const first = at((e) => e.session === t.session);
+            return [first, first];
+        }
+        const i =
+            t.kind === "session_start"
+                ? at((e) => e.kind === "session_start" && e.session === t.session)
+                : at(
+                      (e) =>
+                          e.kind === "user_turn" && e.session === t.session && e.index === t.n - 1,
+                  );
+        return [i, i];
     }
 
     /**
@@ -551,7 +611,21 @@ export class Scheduler {
                     );
                     this.fail?.(this.fatal);
                 }
-                this.log({ kind: "ItemState", daemon_exit: detail, expected, fatal: !expected });
+                try {
+                    this.log({
+                        kind: "ItemState",
+                        daemon_exit: detail,
+                        expected,
+                        fatal: !expected,
+                    });
+                } catch (caught) {
+                    const error = caught instanceof Error ? caught.message : String(caught);
+                    this.fatal ??= new HarnessFailure(
+                        `daemon exit could not be journaled: ${error}`,
+                    );
+                    this.fail?.(this.fatal);
+                    throw caught;
+                }
                 if (this.fatal && !expected) throw this.fatal;
             },
         };

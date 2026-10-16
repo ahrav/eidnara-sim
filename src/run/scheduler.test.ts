@@ -1118,6 +1118,10 @@ describe("Scheduler", () => {
         });
         j.append({ kind: "StartArm", arm: "a", scenario_ms: 0 });
         for (const id of ["e-000000", "e-000001", "e-000002"]) {
+            if (id === "e-000001") {
+                j.append({ kind: "BeginTurn", arm: "a", scenario_ms: 0, event: id });
+                j.append({ kind: "EndTurn", arm: "a", scenario_ms: 0, event: id, outcome: "ok" });
+            }
             j.append({ kind: "Event", arm: "a", scenario_ms: 0, event: id, outcome: "ok" });
         }
         j.append({
@@ -1931,6 +1935,110 @@ describe("Scheduler", () => {
             writeFileSync(join(d, name), "{}");
             expect(() => takeLease(d)).toThrow(/no canonical number/);
         }
+    });
+
+    test("journals with evidence after EndRun, a turn Event without EndTurn, out-of-order Events, an orphan EndJob, or a FaultFired away from its trigger are refused", async () => {
+        const restart = episode("r", "daemon_restart", {
+            kind: "session_start",
+            session: "s-0000",
+        });
+        const open = (lines: Partial<Entry>[]) => {
+            const path = join(dir(), "j.jsonl");
+            const j = new Journal(path);
+            j.append({
+                kind: "StartRun",
+                arm: null,
+                scenario_ms: 0,
+                order: ["a"],
+                scenario: scenarioId(fixtureEvents(1), [restart]),
+            });
+            j.append({ kind: "StartArm", arm: "a", scenario_ms: 0 });
+            for (const l of lines) j.append({ arm: "a", scenario_ms: 0, ...l } as never);
+            j.close();
+            return new Scheduler({
+                events: fixtureEvents(1),
+                faults: [restart],
+                journal: new Journal(path),
+                settleMs: 0,
+                order: ["a"],
+                drivers: { a: fakeDriver([]) },
+            }).run();
+        };
+        const ev = (event: string) => ({ kind: "Event", event, outcome: "ok" }) as const;
+        const all = fixtureEvents(1).map((e) => e.id);
+        await expect(
+            open([
+                { kind: "EndRun", arm: null } as never,
+                ev(all[0] as string),
+                { kind: "BeginTurn", event: all[1] },
+                { kind: "EndTurn", event: all[1], outcome: "ok" },
+                ev(all[1] as string),
+                ev(all[2] as string),
+                { kind: "EndArm" },
+            ]),
+        ).rejects.toThrow(/entries follow EndRun/);
+        await expect(open([ev(all[0] as string), ev(all[1] as string)])).rejects.toThrow(
+            /has no EndTurn/,
+        );
+        await expect(open([ev(all[2] as string)])).rejects.toThrow(/out of scenario order/);
+        await expect(open([{ kind: "EndJob", job: "j" }])).rejects.toThrow(/has no RegisterJob/);
+        await expect(
+            open([
+                { kind: "EndJob", job: "j" },
+                { kind: "RegisterJob", job: "j" },
+            ]),
+        ).rejects.toThrow(/has no RegisterJob/);
+        await expect(
+            open([
+                ev(all[0] as string),
+                { kind: "FaultFired", fault: "r", type: "daemon_restart", layer: "scheduler" },
+            ]),
+        ).rejects.toThrow(/away from its trigger/);
+    });
+
+    test("a daemon exit whose journal append fails is fatal even when a watcher swallows the throw", async () => {
+        const restart = episode("r", "daemon_restart", {
+            kind: "session_start",
+            session: "s-0000",
+        });
+        const inner = new Journal(join(dir(), "j.jsonl"));
+        const journal = new Proxy(inner, {
+            get(target, key, receiver) {
+                if (key === "append") {
+                    return (entry: Entry) => {
+                        if (entry.kind === "ItemState" && entry.daemon_exit !== undefined) {
+                            throw new Error("ENOSPC");
+                        }
+                        return target.append(entry);
+                    };
+                }
+                return Reflect.get(target, key, receiver);
+            },
+        });
+        let handle: ArmHandle | null = null;
+        const driver: ArmDriver = {
+            ...fakeDriver([]),
+            bind: (h) => {
+                handle = h;
+            },
+            fault: async () => {
+                try {
+                    handle?.daemonExited({ signal: "SIGTERM" });
+                } catch {}
+                return { restarted_by: "harness" };
+            },
+        };
+        await expect(
+            new Scheduler({
+                events: fixtureEvents(1),
+                faults: [restart],
+                journal,
+                settleMs: 0,
+                order: ["a"],
+                drivers: { a: driver },
+            }).run(),
+        ).rejects.toThrow(HarnessFailure);
+        expect(inner.entries.map((e) => e.kind)).not.toContain("EndRun");
     });
 
     test("a FaultObserved without its FaultFired is refused on resume", async () => {
@@ -2797,10 +2905,9 @@ describe("resume of fired faults", () => {
         const start = { order: ["a"], scenario: scenarioId(fixtureEvents(2), faults) };
         j.append({ kind: "StartRun", arm: null, scenario_ms: 0, ...start });
         j.append({ kind: "StartArm", arm: "a", scenario_ms: 0 });
+        j.append({ kind: "FaultFired", arm: "a", scenario_ms: 0, fault: "restart" });
         j.append({ kind: "Event", arm: "a", scenario_ms: 0, event: "e-000000" });
         j.append({ kind: "FaultFired", arm: "a", scenario_ms: 0, fault: "slow" });
-        j.append({ kind: "FaultFired", arm: "a", scenario_ms: 0, fault: "restart" });
-        j.append({ kind: "FaultFired", arm: "a", scenario_ms: 0, fault: "later" });
         j.append({ kind: "FaultFired", arm: "a", scenario_ms: 0, fault: "begun" });
         j.append({ kind: "BeginTurn", arm: "a", scenario_ms: 0, event: "e-000001" });
         j.close();
@@ -2846,8 +2953,8 @@ describe("resume of fired faults", () => {
         const start = { order: ["a"], scenario: scenarioId(fixtureEvents(3), faults) };
         j.append({ kind: "StartRun", arm: null, scenario_ms: 0, ...start });
         j.append({ kind: "StartArm", arm: "a", scenario_ms: 0 });
-        j.append({ kind: "Event", arm: "a", scenario_ms: 0, event: "e-000000" });
         j.append({ kind: "FaultFired", arm: "a", scenario_ms: 0, fault: "restart" });
+        j.append({ kind: "Event", arm: "a", scenario_ms: 0, event: "e-000000" });
         j.append({
             kind: "ItemState",
             arm: "a",
