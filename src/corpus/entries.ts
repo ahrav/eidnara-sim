@@ -1,15 +1,52 @@
 /** Licenses a corpus entry may carry; each permits redistribution with attribution. */
 const ALLOWED_LICENSES = new Set(["CC-BY-4.0", "ODC-BY-1.0", "MIT", "Apache-2.0"]);
 
-export function entryProblems(entries: readonly unknown[], label: string): string[] {
+type FieldType = "string" | "number" | "boolean" | "number|null";
+
+const COMMON: Record<string, FieldType> = { id: "string", repo: "string", source_id: "string" };
+export const SAMPLE_FIELDS: Record<string, FieldType> = {
+    ...COMMON,
+    kind: "string",
+    tool: "string",
+    command: "string",
+    exit_code: "number|null",
+    chars: "number",
+    truncated: "boolean",
+    content: "string",
+};
+export const ERROR_CODE_FIELDS: Record<string, FieldType> = {
+    ...COMMON,
+    code: "string",
+    message: "string",
+    context: "string",
+};
+
+function hasType(value: unknown, type: FieldType): boolean {
+    if (type === "number|null") return value === null || typeof value === "number";
+    return typeof value === type;
+}
+
+export function entryProblems(
+    entries: readonly unknown[],
+    label: string,
+    fields: Record<string, FieldType>,
+): string[] {
     const problems: string[] = [];
+    const ids = new Set<string>();
     entries.forEach((entry, i) => {
         const e = (entry ?? {}) as Record<string, unknown>;
         const where = `${label}[${i}]${typeof e.id === "string" ? ` (${e.id})` : ""}`;
+        for (const [field, type] of Object.entries(fields)) {
+            if (!hasType(e[field], type)) problems.push(`${where}: ${field} must be ${type}`);
+        }
+        if (typeof e.id === "string") {
+            if (ids.has(e.id)) problems.push(`${where}: duplicate id`);
+            ids.add(e.id);
+        }
         if (typeof e.license !== "string" || !ALLOWED_LICENSES.has(e.license)) {
             problems.push(`${where}: license missing or not permitted`);
         }
-        if (typeof e.source_id !== "string" || e.source_id.trim() === "") {
+        if (typeof e.source_id === "string" && e.source_id.trim() === "") {
             problems.push(`${where}: source_id missing`);
         }
     });

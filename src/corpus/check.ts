@@ -10,12 +10,13 @@ import {
     loadDistributions,
     table,
 } from "./distributions";
-import { entryProblems, parseJsonl } from "./entries";
+import { ERROR_CODE_FIELDS, entryProblems, parseJsonl, SAMPLE_FIELDS } from "./entries";
+import { QUANTITIES } from "./fit";
 import { loadRepos, REPOS_DIR } from "./repos";
-import { CORPUS_DIR } from "./sources";
+import { CORPUS_DIR, loadSources } from "./sources";
 
-const MIN_SAMPLES = 500;
-const MIN_ERROR_CODES = 100;
+const SAMPLES_PER_KIND = 150;
+const ERROR_CODES = 200;
 const KINDS = ["stack_trace", "test_run", "grep", "file_read"];
 const SHA = /^[0-9a-f]{40}$/;
 const REPO_LICENSES = new Set(["MIT", "Apache-2.0"]);
@@ -38,9 +39,16 @@ export function checkCorpus(): CorpusReport {
     const need = (ok: boolean, problem: string) => ok || problems.push(problem);
     const read = (path: string) => readFileSync(join(CORPUS_DIR, path), "utf8");
     const manifest = JSON.parse(read("manifest.json"));
+    need(manifest.schema === "sim-corpus-manifest/v1", `manifest: schema ${manifest.schema}`);
     const files = manifest.files as Record<string, string>;
     const listed = Object.keys(files).sort().join(",");
     need(listed === OUTPUTS.join(","), `manifest: files ${listed}, need ${OUTPUTS.join(",")}`);
+    const sources = loadSources();
+    const configured = sources.map((d) => ({ id: d.id, revision: d.revision, access: d.access }));
+    need(
+        JSON.stringify(manifest.datasets) === JSON.stringify(configured),
+        "manifest: datasets differ from sources.json",
+    );
     for (const [path, digest] of Object.entries(files)) {
         const actual = sha256Hex(read(path));
         need(actual === digest, `${path}: sha256 ${actual}, manifest ${digest}`);
@@ -48,24 +56,68 @@ export function checkCorpus(): CorpusReport {
 
     const samples = parseJsonl(read("tool-outputs/samples.jsonl"));
     const codes = parseJsonl(read("tool-outputs/error-codes.jsonl"));
-    need(samples.length >= MIN_SAMPLES, `samples: ${samples.length} < ${MIN_SAMPLES}`);
-    need(codes.length >= MIN_ERROR_CODES, `error codes: ${codes.length} < ${MIN_ERROR_CODES}`);
-    problems.push(...entryProblems(samples, "samples"), ...entryProblems(codes, "error_codes"));
-    const kinds = new Set(samples.map((s) => (s as { kind?: string }).kind));
-    need(
-        KINDS.every((k) => kinds.has(k)),
-        `samples: kinds ${[...kinds].join(",")}`,
+    need(codes.length === ERROR_CODES, `error codes: ${codes.length}, need ${ERROR_CODES}`);
+    problems.push(
+        ...entryProblems(samples, "samples", SAMPLE_FIELDS),
+        ...entryProblems(codes, "error_codes", ERROR_CODE_FIELDS),
     );
+    const byKind = new Map<string, number>();
+    for (const s of samples) {
+        const kind = String((s as { kind?: string }).kind);
+        byKind.set(kind, (byKind.get(kind) ?? 0) + 1);
+    }
+    need(
+        [...byKind.keys()].every((k) => KINDS.includes(k)),
+        `samples: kinds ${[...byKind.keys()]}`,
+    );
+    for (const kind of KINDS) {
+        const n = byKind.get(kind) ?? 0;
+        need(n === SAMPLES_PER_KIND, `samples: ${kind} has ${n}, need ${SAMPLES_PER_KIND}`);
+    }
+    for (const [label, entries] of [
+        ["samples", samples],
+        ["error_codes", codes],
+    ] as const) {
+        for (const entry of entries) {
+            const e = entry as { id?: string; source_id?: string; license?: string };
+            const dataset = sources.find((d) =>
+                e.source_id?.startsWith(`${d.repo}@${d.revision}:`),
+            );
+            need(
+                dataset !== undefined && dataset.license === e.license,
+                `${label} ${e.id}: license ${e.license} for source ${e.source_id}`,
+            );
+        }
+    }
     const named = codes.filter((c) => (c as { code?: string }).code?.trim());
     need(named.length === codes.length, "error codes: an entry has an empty code");
 
     const dist = loadDistributions();
+    const quantityNames = Object.keys(dist.quantities).sort().join(",");
+    need(
+        quantityNames === QUANTITIES.join(","),
+        `quantities: ${quantityNames}, need ${QUANTITIES.join(",")}`,
+    );
     for (const [name, q] of Object.entries(dist.quantities)) {
         need(typeof q.source === "string" && q.source !== "", `${name}: source missing`);
         need(q.n > 0, `${name}: n missing`);
         need(CDF_KINDS.has(q.cdf.kind), `${name}: cdf kind ${q.cdf.kind}`);
         problems.push(...cdfProblems(q.cdf).map((why) => `${name}: ${why}`));
     }
+    const mix = dist.tool_mix;
+    need(typeof mix?.source === "string" && mix.source !== "", "tool_mix: source missing");
+    need(mix?.n > 0, "tool_mix: n missing");
+    const names = (mix?.categories ?? []).map((c) => c.category);
+    need(names.length > 0 && new Set(names).size === names.length, "tool_mix: categories");
+    const shareSum = (mix?.categories ?? []).reduce((sum, c) => sum + c.share, 0);
+    need(Math.abs(shareSum - 1) < 1e-5, `tool_mix: shares sum to ${shareSum}`);
+    for (const c of mix?.categories ?? []) {
+        const unit = (v: number) => Number.isFinite(v) && v >= 0 && v <= 1;
+        need(unit(c.share) && unit(c.error_rate), `tool_mix: ${c.category} share or error_rate`);
+        need(Array.isArray(c.tools), `tool_mix: ${c.category} tools`);
+    }
+    const tools = (mix?.categories ?? []).flatMap((c) => c.tools);
+    need(new Set(tools).size === tools.length, "tool_mix: a tool appears in two categories");
     const cited = loadCited();
     const percentiles = compareCited(cited, (name, q) => quantile(table(dist, name), q));
     for (const r of failedChecks(percentiles)) {
