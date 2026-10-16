@@ -18,6 +18,11 @@ divergence.
 No harness code, test, or run exists yet. The surface lands in M2
 (#1026).
 
+M2 (#1026) compiles the event list into the scenario file once per seed, with
+no arm input, so every arm reads the same scheduled events. The fault and
+counterfactual deletion schedules join the same file in the second M2 unit, and
+the per-arm comparison lands with the scheduler in M4.
+
 ## Failure scenario
 
 Fault and recovery metrics compare arms under different conditions.

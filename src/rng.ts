@@ -34,6 +34,10 @@ export class Rng {
     next(): number {
         return this.nextU32() / 4294967296;
     }
+
+    pick<T>(items: readonly T[]): T {
+        return items[Math.floor(this.next() * items.length)] as T;
+    }
 }
 
 function rotl(x: number, k: number): number {

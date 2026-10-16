@@ -18,6 +18,12 @@ scheduled time and after every conveyance event the item depends on has reached
 No harness code, test, or run exists yet. The surface lands in M4
 (#1028).
 
+M2 (#1026) places every probe turn after each conveyance, update, and diff of
+its fact in the compiled event order, and the compiler refuses a scenario where
+a probe precedes one. The SIM-P06 test in `src/scenario/compile.test.ts` checks
+the order and the scheduled times. The per-arm `BeginTurn` and `EndTurn` check
+lands with the scheduler in M4.
+
 ## Failure scenario
 
 A probe tests a fact that was never conveyed and is scored as a miss.

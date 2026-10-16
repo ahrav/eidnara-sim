@@ -23,6 +23,11 @@ SIM-P09 test in `src/corpus/corpus.test.ts` shows that a 0.9 floor yields only
 sessions at or above the fitted p90. The compile-time count of three such
 sessions per scenario lands in M2.
 
+M2 (#1026) draws the request count of `forced_p90_sessions` sessions from the
+tail above p90, spread evenly over the base projects' sessions. A test over 100
+S seeds checks that each scenario has at least the pre-registered number of
+forced sessions and that each holds at least the fitted p90 request count.
+
 ## Failure scenario
 
 Fold and compaction paths are never exercised and P13 and P14 have no items.

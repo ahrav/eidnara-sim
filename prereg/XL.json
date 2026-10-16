@@ -1,7 +1,7 @@
 {
     "schema": "sim-prereg/v1",
     "tier": "XL",
-    "revision": 1,
+    "revision": 2,
     "frozen": true,
     "arms": {
         "default": "eidnara",
@@ -26,7 +26,12 @@
     "scenario": {
         "simulated_days": 120,
         "sessions_per_project": 1500,
-        "forced_p90_sessions": 3
+        "forced_p90_sessions": 3,
+        "cue_probe_similarity": {
+            "bm25_max": "0.4",
+            "cosine_max": "0.6",
+            "embedding_model": "amazon.titan-embed-text-v2:0"
+        }
     },
     "stopping_rule": {
         "kind": "fixed_n",

@@ -104,7 +104,13 @@ export interface Preregistration {
     arms: { default: "eidnara"; run: string[]; order_by_seed: string[][] };
     hosts: string[];
     seeds: number[];
-    scenario: { simulated_days: number; sessions_per_project: number; forced_p90_sessions: number };
+    scenario: {
+        simulated_days: number;
+        sessions_per_project: number;
+        forced_p90_sessions: number;
+        /** Compile-time SIM-P08 ceilings; decimals in [0, 1]. */
+        cue_probe_similarity: { bm25_max: string; cosine_max: string; embedding_model: string };
+    };
     /** `paired_items_per_probe_type` is pooled over the tier's paired runs. */
     stopping_rule: { kind: "fixed_n"; paired_items_per_probe_type: number; cusum: Cusum[] };
     missingness_policy: {

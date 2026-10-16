@@ -17,6 +17,14 @@ or a grading hint from a fixed marker set.
 No harness code, test, or run exists yet. The surface lands in M2
 (#1026).
 
+M2 (#1026) scans every compiled user text and every diff path and content
+against the marker set in `markerHits` (probe ids, the word probe, fact and
+template ids, probe item ids, and grading words) and refuses a scenario with a
+hit. The tests show a clean S scenario, a table of marker hits and misses, and
+the refusal of a template that names a probe, a template that carries its own
+id, and a diff that carries a template id. The scan over live user-sim output
+lands in M6.
+
 ## Failure scenario
 
 The agent recognises the probe and the score measures test awareness.

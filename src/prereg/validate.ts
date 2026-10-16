@@ -98,7 +98,12 @@ const PREREG_SHAPE: Shape = {
     },
     hosts: list(oneOf(HOSTS)),
     seeds: list(nonNegInt),
-    scenario: { simulated_days: posInt, sessions_per_project: posInt, forced_p90_sessions: posInt },
+    scenario: {
+        simulated_days: posInt,
+        sessions_per_project: posInt,
+        forced_p90_sessions: posInt,
+        cue_probe_similarity: { bm25_max: unitRate, cosine_max: unitRate, embedding_model: text },
+    },
     stopping_rule: {
         kind: literal("fixed_n"),
         paired_items_per_probe_type: posInt,

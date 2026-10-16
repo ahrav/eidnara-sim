@@ -18,6 +18,12 @@ across processes.
 No harness code, test, or run exists yet. The surface lands in M2
 (#1026).
 
+M2 (#1026) lands the compiler in `src/scenario/compile.ts`. Every random draw
+comes from a seeded stream per domain, and the scenario is written as canonical
+JSON with `scenario_hash` over it. The SIM-P01 tests in
+`src/scenario/compile.test.ts` run `scripts/compile-scenario.ts` twice in
+separate processes for one seed per tier and compare the bytes and the hash.
+
 ## Failure scenario
 
 Arms of one seed see different worlds and every paired comparison is invalid.
