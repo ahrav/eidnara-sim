@@ -13,6 +13,7 @@ case "$dst_real/" in
         exit 64
         ;;
 esac
+dst=$dst_real
 # .sim-build-source names the checkout this clone was made from, so the forced
 # checkout and clean below only ever touch a clone this script created.
 if [ -d "$dst/.git" ]; then

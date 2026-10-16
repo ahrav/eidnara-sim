@@ -324,25 +324,35 @@ export class PiSimHost extends SimHost {
     }
 
     async prompt(text: string, timeoutMs: number): Promise<PromptResult> {
+        const deadline = Date.now() + timeoutMs;
+        const watch = { activity: 0, last: undefined as Untyped };
+        const off = this.rpc.onEvent((e: Untyped) => {
+            if (e.type === "agent_start" || e.type === "compaction_start") watch.activity++;
+            if (e.type === "agent_end" && e.willRetry !== true) {
+                watch.activity++;
+                watch.last = e;
+            }
+        });
         const waiting = new AbortController();
         const end = this.agentEnd(timeoutMs, waiting.signal);
-        let ended: Untyped;
-        end.then(
-            (outcome: Untyped) => {
-                ended = outcome;
-            },
-            () => undefined,
-        );
+        let settling = false;
         try {
             const response = await this.rpc.sendCommand("prompt", { message: text }, { timeoutMs });
             if (response.success === false) {
                 waiting.abort();
                 return { error: JSON.stringify(response).slice(0, 2000) };
             }
-            return turnResult(await end);
+            await end;
+            settling = true;
+            return turnResult(await this.settle(watch, deadline));
         } catch (caught) {
             // An agent_end already seen settles the turn, whatever became of the prompt response.
-            if (ended) return turnResult(ended);
+            if (watch.last && !settling) {
+                settling = true;
+                try {
+                    return turnResult(await this.settle(watch, deadline));
+                } catch {}
+            }
             const drained = this.agentEnd(30_000);
             await this.rpc.sendCommand("abort", {}, { timeoutMs: 60_000 }).catch(() => undefined);
             // A turn that outlives the abort would end during the next turn and be taken for it.
@@ -350,6 +360,27 @@ export class PiSimHost extends SimHost {
                 throw new Error(`Pi turn still running 30 s after abort (${String(reason)})`);
             });
             return { error: String(caught).slice(0, 2000) };
+        } finally {
+            off();
+        }
+    }
+
+    // After its last agent_end, Pi may compact and continue the run, emitting compaction_start
+    // and a fresh agent_start. The turn is settled once Pi reports itself idle and a quiet window
+    // passes with neither, and the turn's result is then the last agent_end Pi will not retry.
+    protected settleMs = 1_000;
+
+    private async settle(
+        watch: { activity: number; last: Untyped },
+        deadline: number,
+    ): Promise<Untyped> {
+        for (;;) {
+            const mark = watch.activity;
+            await Bun.sleep(this.settleMs);
+            const state = await this.rpc.sendCommand("get_state", {}, { timeoutMs: 10_000 });
+            const busy = state.data?.isStreaming === true || state.data?.isCompacting === true;
+            if (!busy && watch.activity === mark) return watch.last;
+            if (Date.now() >= deadline) throw new Error("Pi turn still busy at its deadline");
         }
     }
 

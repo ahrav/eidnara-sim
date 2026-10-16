@@ -13,8 +13,10 @@ so the source checkout itself stays read-only; it refuses a clone path that
 is the checkout or lies beneath it, and reuses an existing clone only when
 its `.sim-build-source` names the same checkout. `.sim-build-commit` holds
 the built commit from the end of one successful build until the next build
-starts, and preflight requires it to match the clone's `HEAD`, so a partial
-or mixed tree stops the run. On a reused clone it force-checks
+starts, and preflight requires it to match the clone's `HEAD` and
+`daemon_binary` to be the clone's own
+`target/release/examples/direct_host_fixture`, so a partial or mixed tree,
+or a daemon from another commit, stops the run. On a reused clone it force-checks
 out the fetched commit and removes untracked files, so edits and stray files
 from an earlier build go while ignored outputs (`node_modules`, `target`, the
 plugin `dist` directories) stay for the incremental build. The clone is the
@@ -69,7 +71,10 @@ pid namespace ends with its init, so a child forked while the tree stops dies
 with the namespace. `prompt` sends one user turn with the turn deadline and
 returns the host's error, if any. Pi emits `agent_end` with `willRetry: true`
 before it retries a failed request itself, so a Pi turn ends only at an
-`agent_end` Pi will not retry. A prompt Pi refuses in preflight starts no
+`agent_end` Pi will not retry. After that end Pi may compact the session and
+continue the run, so a turn is settled only once `get_state` reports Pi
+neither streaming nor compacting and a 1 s window passes with no
+`agent_start` or `compaction_start`; its result is the last such `agent_end`. A prompt Pi refuses in preflight starts no
 turn, so its error is returned at once. After a Pi turn fails, the host
 aborts it and waits up to 30 s for its `agent_end`; a turn still running then
 stops the run, so a late end cannot finish the next turn. OpenCode turns race the deadline,

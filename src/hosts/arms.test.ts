@@ -122,12 +122,23 @@ async function gone(pid: number): Promise<boolean> {
 
 function fakeRpc(opts: { promptFails?: boolean; ends: Untyped[]; drainEnds?: boolean }) {
     const commands: string[] = [];
+    const listeners: Array<(e: Untyped) => void> = [];
     let served = 0;
     return {
         commands,
+        onEvent(listener: (e: Untyped) => void) {
+            listeners.push(listener);
+            return () => listeners.splice(listeners.indexOf(listener), 1);
+        },
         sendCommand(method: string): Promise<Untyped> {
-            commands.push(method);
+            if (method !== "get_state") commands.push(method);
             if (method === "prompt" && opts.promptFails) return Promise.reject(new Error("boom"));
+            if (method === "get_state") {
+                return Promise.resolve({
+                    success: true,
+                    data: { isStreaming: false, isCompacting: false },
+                });
+            }
             return Promise.resolve({ success: true });
         },
         waitForEvent(predicate: (e: Untyped) => boolean, o: { timeoutMs: number }) {
@@ -135,6 +146,7 @@ function fakeRpc(opts: { promptFails?: boolean; ends: Untyped[]; drainEnds?: boo
             if (stillRunning) return Promise.reject(new Error(`timeout ${o.timeoutMs}`));
             for (; served < opts.ends.length; served++) {
                 const event = opts.ends[served];
+                for (const l of [...listeners]) l(event);
                 if (predicate(event)) {
                     served++;
                     return Promise.resolve(event);
@@ -145,8 +157,57 @@ function fakeRpc(opts: { promptFails?: boolean; ends: Untyped[]; drainEnds?: boo
     };
 }
 
+/** Replays `script` as timed Pi events after the prompt; get_state reports busy until `idleAt` ms. */
+function liveRpc(script: Array<[number, Untyped]>, idleAt: number) {
+    const listeners: Array<(e: Untyped) => void> = [];
+    let started = 0;
+    const emit = (e: Untyped) => {
+        for (const l of [...listeners]) l(e);
+    };
+    return {
+        onEvent(listener: (e: Untyped) => void) {
+            listeners.push(listener);
+            return () => listeners.splice(listeners.indexOf(listener), 1);
+        },
+        sendCommand(method: string): Promise<Untyped> {
+            if (method === "prompt") {
+                started = Date.now();
+                for (const [ms, e] of script) setTimeout(() => emit(e), ms);
+            }
+            if (method === "get_state") {
+                const busy = Date.now() - started < idleAt;
+                return Promise.resolve({
+                    success: true,
+                    data: { isStreaming: busy, isCompacting: false },
+                });
+            }
+            return Promise.resolve({ success: true });
+        },
+        waitForEvent(predicate: (e: Untyped) => boolean, o: { timeoutMs: number }) {
+            return new Promise((resolve, reject) => {
+                const off = this.onEvent((e: Untyped) => {
+                    if (!predicate(e)) return;
+                    off();
+                    clearTimeout(timer);
+                    resolve(e);
+                });
+                const timer = setTimeout(() => {
+                    off();
+                    reject(new Error(`no agent_end within ${o.timeoutMs}`));
+                }, o.timeoutMs);
+            });
+        },
+    };
+}
+
+function piHost(ctx: HostContext): PiSimHost {
+    const host = new PiSimHost(ctx);
+    (host as Untyped).settleMs = 1;
+    return host;
+}
+
 test("a Pi turn waits through an agent_end that Pi will retry", async () => {
-    const host = new PiSimHost(context(runDir()));
+    const host = piHost(context(runDir()));
     const retrying = {
         type: "agent_end",
         willRetry: true,
@@ -158,7 +219,7 @@ test("a Pi turn waits through an agent_end that Pi will retry", async () => {
 });
 
 test("a Pi prompt Pi refuses returns its error without aborting or draining a turn", async () => {
-    const host = new PiSimHost(context(runDir()));
+    const host = piHost(context(runDir()));
     const rpc = fakeRpc({ ends: [] });
     rpc.sendCommand = (method: string) => {
         rpc.commands.push(method);
@@ -170,7 +231,7 @@ test("a Pi prompt Pi refuses returns its error without aborting or draining a tu
 });
 
 test("a Pi turn whose abort cannot drain the previous turn fails the session", async () => {
-    const host = new PiSimHost(context(runDir()));
+    const host = piHost(context(runDir()));
     const rpc = fakeRpc({ promptFails: true, ends: [], drainEnds: false });
     (host as Untyped).rpc = rpc;
     await expect(host.prompt("hi", 1_000)).rejects.toThrow(/agent_end/);
@@ -370,7 +431,7 @@ test("a Pi control file that an agent replaced with a symlink is replaced, and i
 });
 
 test("a Pi turn whose end was observed before the prompt response failed keeps that result", async () => {
-    const host = new PiSimHost(context(runDir()));
+    const host = piHost(context(runDir()));
     const final = { type: "agent_end", willRetry: false, messages: [{ role: "assistant" }] };
     const rpc = fakeRpc({ promptFails: true, ends: [final] });
     (host as Untyped).rpc = rpc;
@@ -468,3 +529,25 @@ test("OpenCode teardown targets the server this harness spawned, not another pro
         for (const pid of serving()) process.kill(pid, "SIGKILL");
     }
 }, 10_000);
+
+test("a Pi turn waits through Pi's post-run overflow compaction and its continuation", async () => {
+    const host = piHost(context(runDir()));
+    (host as Untyped).settleMs = 50;
+    const overflow = {
+        type: "agent_end",
+        willRetry: false,
+        messages: [{ role: "assistant", stopReason: "error", errorMessage: "prompt is too long" }],
+    };
+    const final = { type: "agent_end", willRetry: false, messages: [{ role: "assistant" }] };
+    (host as Untyped).rpc = liveRpc(
+        [
+            [0, overflow],
+            [30, { type: "compaction_start", reason: "overflow" }],
+            [60, { type: "compaction_end", reason: "overflow", willRetry: true }],
+            [70, { type: "agent_start" }],
+            [120, final],
+        ],
+        120,
+    );
+    expect(await host.prompt("hi", 5_000)).toEqual({});
+});

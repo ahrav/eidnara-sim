@@ -1,7 +1,7 @@
 import { realpathSync } from "node:fs";
 import { join } from "node:path";
 import type { SimConfig } from "../config/config";
-import { checkBuildMarker } from "./buildmarker";
+import { checkBuildMarker, checkDaemonFromBuild } from "./buildmarker";
 import { assess, type Interception, interceptionTest, probes } from "./interception";
 import { writeLauncher } from "./launcher";
 import { buildFaketime } from "./timeinject";
@@ -22,6 +22,7 @@ export function piCli(config: SimConfig): string {
 
 export async function preflight(config: SimConfig, runRoot: string): Promise<Preflight> {
     checkBuildMarker(config.eidnara_checkout);
+    checkDaemonFromBuild(config.eidnara_checkout, config.daemon_binary);
     await buildFaketime();
     const launcher = writeLauncher(runRoot);
     const node = realpathSync(Bun.which("node") ?? "node");
