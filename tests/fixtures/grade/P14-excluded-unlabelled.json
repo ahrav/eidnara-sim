@@ -74,6 +74,10 @@
   ],
   "expect": {
     "verdict": "excluded",
-    "reason": "no labelled user-sim turns"
+    "reason": "no labelled user-sim turns",
+    "metrics": {},
+    "inputs": [
+      "p1"
+    ]
   }
 }

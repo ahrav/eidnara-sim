@@ -37,11 +37,14 @@
   ],
   "expect": {
     "verdict": "fail",
+    "reason": "missing the expected rule; collapsed a still-valid fact",
     "metrics": {
       "P4.pass": false,
-      "P4.collapsed": true,
-      "P4.harm": true
+      "P4.harm": true,
+      "P4.collapsed": true
     },
-    "reason": "collapsed a still-valid fact"
+    "inputs": [
+      "d1"
+    ]
   }
 }

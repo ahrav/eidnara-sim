@@ -49,6 +49,10 @@
     "verdict": "pass",
     "metrics": {
       "P5.pass": true
-    }
+    },
+    "inputs": [
+      "c1",
+      "d1"
+    ]
   }
 }

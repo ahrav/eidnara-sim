@@ -42,8 +42,13 @@
   ],
   "expect": {
     "verdict": "fail",
+    "reason": "answer lacks the value",
     "metrics": {
-      "P8.pass": false
-    }
+      "P8.pass": false,
+      "P8.cross_session_pass_rate": false
+    },
+    "inputs": [
+      "p1"
+    ]
   }
 }

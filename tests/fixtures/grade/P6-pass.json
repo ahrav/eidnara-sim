@@ -73,6 +73,12 @@
       "P6.reread_files": 0,
       "P6.ran_tests": false,
       "P6.rediscovery_tokens": 1100
-    }
+    },
+    "inputs": [
+      "c1",
+      "d1",
+      "p1",
+      "prior"
+    ]
   }
 }

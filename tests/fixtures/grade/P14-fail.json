@@ -53,9 +53,12 @@
   ],
   "expect": {
     "verdict": "fail",
+    "reason": "user corrected the agent after compaction",
     "metrics": {
       "P14.post_compaction_correction_count": 1
     },
-    "reason": "user corrected the agent after compaction"
+    "inputs": [
+      "p1"
+    ]
   }
 }

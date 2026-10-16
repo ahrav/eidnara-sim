@@ -33,9 +33,13 @@
   ],
   "expect": {
     "verdict": "fail",
+    "reason": "applied the rule outside its scope",
     "metrics": {
       "P2.pass": false,
       "P2.harm": true
-    }
+    },
+    "inputs": [
+      "d1"
+    ]
   }
 }

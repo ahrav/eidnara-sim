@@ -154,6 +154,9 @@
     "reason": "rule not applied",
     "metrics": {
       "P1-control.pass": false
-    }
+    },
+    "inputs": [
+      "host:q-0012:diff"
+    ]
   }
 }

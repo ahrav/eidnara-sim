@@ -50,9 +50,14 @@
   ],
   "expect": {
     "verdict": "fail",
+    "reason": "anchor value leaked",
     "metrics": {
       "P10.pass": false,
       "P10.harm": true
-    }
+    },
+    "inputs": [
+      "d1",
+      "p1"
+    ]
   }
 }

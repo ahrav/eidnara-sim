@@ -38,7 +38,11 @@
     "verdict": "pass",
     "metrics": {
       "P3.pass": true,
-      "P3.reliance": "authoritative"
-    }
+      "P3.reliance": "authoritative",
+      "P3.harm": false
+    },
+    "inputs": [
+      "d1"
+    ]
   }
 }

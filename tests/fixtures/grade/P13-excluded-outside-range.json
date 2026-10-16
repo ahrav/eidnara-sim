@@ -65,6 +65,10 @@
   ],
   "expect": {
     "verdict": "excluded",
-    "reason": "no fold in the item's range"
+    "reason": "no fold in the item's range",
+    "metrics": {},
+    "inputs": [
+      "p1"
+    ]
   }
 }

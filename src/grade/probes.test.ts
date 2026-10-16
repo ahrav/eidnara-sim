@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ProbeItem } from "../scenario/compile";
 import { loadPrereg } from "../scenario/inputs";
-import { GradeRefused, type Snapshot } from "./artefacts";
+import { type CallView, GradeRefused, type Snapshot } from "./artefacts";
 import { deltaMem, GradeLog, type GradeRecord, gradeItem } from "./probes";
 
 const DIR = join(import.meta.dir, "../../tests/fixtures/grade");
@@ -13,7 +13,12 @@ const rules = loadPrereg("S").grading;
 interface Fixture {
     probe: ProbeItem;
     snapshots: Snapshot[];
-    expect: { verdict: string; reason?: string; metrics?: Record<string, unknown> };
+    expect: {
+        verdict: string;
+        reason?: string;
+        metrics: GradeRecord["metrics"];
+        inputs: string[];
+    };
 }
 const fixtures = readdirSync(DIR)
     .filter((f) => f.endsWith(".json") && !f.startsWith("P7-"))
@@ -34,11 +39,10 @@ describe("recorded fixtures", () => {
         test(`${file} grades as recorded and lists the artefacts it read`, () => {
             const g = gradeItem(f.probe, f.snapshots, rules) as GradeRecord;
             expect(g.verdict).toBe(f.expect.verdict as GradeRecord["verdict"]);
-            if (f.expect.reason) expect(g.reason).toBe(f.expect.reason);
-            for (const [k, v] of Object.entries(f.expect.metrics ?? {})) {
-                if (typeof v === "number") expect(g.metrics[k] as number).toBeCloseTo(v);
-                else expect(g.metrics[k]).toBe(v as never);
-            }
+            expect(g.reason).toBe(f.expect.reason);
+            expect(g.metrics).toEqual(f.expect.metrics);
+            expect(f.expect.inputs.length).toBeGreaterThan(0);
+            expect(g.inputs).toEqual(f.expect.inputs);
             const ids = new Set((f.snapshots[0] as Snapshot).artefacts.map((a) => a.id));
             for (const id of g.inputs) expect(ids.has(id)).toBe(true);
             expect(g.snapshot).toBe((f.snapshots[0] as Snapshot).id);
@@ -293,6 +297,84 @@ describe("grading harness", () => {
         const f = fixture("P8-pass");
         const failed = { ...(f.snapshots[0] as Snapshot), turn_outcome: "failed" as const };
         expect(gradeItem({ ...f.probe, type: "P7" }, [failed], rules)).toBeNull();
+    });
+
+    test("the answer is the last completed agent call, and P10 reads every completed response of the turn", () => {
+        const p8 = fixture("P8-pass");
+        const s8 = structuredClone(p8.snapshots[0]) as Snapshot;
+        const c8 = s8.artefacts.find((a) => a.class === "proxy-call");
+        if (c8?.class !== "proxy-call") throw new Error("fixture lacks proxy-call");
+        const last = c8.calls.at(-1) as CallView;
+        c8.calls.push({
+            ...last,
+            seq: last.seq + 1,
+            status: 502,
+            error: "upstream",
+            response_text: undefined,
+        });
+        expect(gradeItem(p8.probe, [s8], rules)?.verdict).toBe("pass");
+
+        const p10 = fixture("P10-pass");
+        const s10 = structuredClone(p10.snapshots[0]) as Snapshot;
+        const c10 = s10.artefacts.find((a) => a.class === "proxy-call");
+        if (c10?.class !== "proxy-call") throw new Error("fixture lacks proxy-call");
+        const final = c10.calls[0] as CallView;
+        c10.calls.unshift({
+            ...final,
+            seq: 0,
+            response_text: "Draft: the port is 80095, let me check.",
+        });
+        const g = gradeItem(p10.probe, [s10], rules) as GradeRecord;
+        expect([g.verdict, g.metrics["P10.harm"]]).toEqual(["fail", true]);
+    });
+
+    test("P4 refuses a scope outside in/out and names both halves of a double failure", () => {
+        const f = fixture("P4-fail-in-scope");
+        const check = f.probe.check as { must: string[]; must_not: string[]; scope: string };
+        expect(() =>
+            gradeItem({ ...f.probe, check: { ...check, scope: "sideways" } }, f.snapshots, rules),
+        ).toThrow("check.scope");
+        const both = { ...f.probe, check: { ...check, must: ["never-present-\\d{9}"] } };
+        expect(gradeItem(both, f.snapshots, rules)?.reason).toBe(
+            "missing the expected rule; kept the superseded rule",
+        );
+    });
+
+    test("P6 counts a re-read only when a read segment names the prior-session path as a whole", () => {
+        const f = fixture("P6-pass");
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        const log = snap.artefacts.find((a) => a.class === "command-log" && a.role === "turn");
+        if (log?.class !== "command-log") throw new Error("fixture lacks command-log");
+        log.commands.push(
+            { command: "cat README.md; git diff src/connection.rs", exit: 0, scenario_ms: 10 },
+            { command: "cat src/connection.rs.bak", exit: 0, scenario_ms: 20 },
+        );
+        expect(gradeItem(f.probe, [snap], rules)?.metrics["P6.reread_files"]).toBe(0);
+        log.commands.push({
+            command: "cargo build && cat src/connection.rs",
+            exit: 0,
+            scenario_ms: 30,
+        });
+        expect(gradeItem(f.probe, [snap], rules)?.metrics["P6.reread_files"]).toBe(1);
+    });
+
+    test("every snapshot is artefacts-only, and a turn outcome outside the contract is refused", () => {
+        const f = fixture("P8-pass");
+        const first = f.snapshots[0] as Snapshot;
+        const leak = structuredClone(first);
+        (leak.artefacts as unknown[]).push({ id: "t1", class: "transcript", messages: [] });
+        expect(() => gradeItem(f.probe, [first, leak], rules)).toThrow("class transcript");
+        const odd = { ...first, turn_outcome: "failed(interrupted)" as never };
+        expect(() => gradeItem(f.probe, [odd], rules)).toThrow("turn_outcome");
+    });
+
+    test("a grade log line that parses but is not a grade record is refused", () => {
+        const path = join(mkdtempSync(join(tmpdir(), "sim-grades-")), "grades.jsonl");
+        const log = new GradeLog(path);
+        log.append(grade("P2-pass"));
+        appendFileSync(path, '{"item":"x","arm":"host"}\n');
+        expect(() => log.all()).toThrow(GradeRefused);
+        expect(() => log.all()).toThrow("line 2 is not a grade record");
     });
 
     test("grade versions for one item and arm strictly increase; an out-of-order version is refused", () => {

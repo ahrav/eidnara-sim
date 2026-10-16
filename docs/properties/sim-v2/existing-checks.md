@@ -20,5 +20,6 @@ Checks in this tree that enforce records at M0:
 | --- | --- | --- |
 | `src/prereg/validate.test.ts`: report refused by missing family name, hash mismatch, and the token `parity` | SIM-P52, P53 | unaudited |
 | `src/prereg/validate.test.ts`: a run-level gate with a paired interval below six paired runs refused, and a report verdict below the family's floor other than `insufficient-runs` refused | SIM-P56 | unaudited |
+| `src/grade/probes.test.ts`: transcript artefact refused and exact input ids per fixture, first attempt only, strictly increasing grade versions, no grade for a failed turn, P13 fixtures, P1/control pairing by fact, P11 false-positive weight | SIM-P40, P41, P42, P46, P47, P49, P50 | unaudited |
 
-None found: user-sim, tape, clock, counterfactual, and grading checks.
+None found: user-sim, tape, clock, and counterfactual checks.

@@ -36,6 +36,9 @@
     "metrics": {
       "P2.pass": true,
       "P2.harm": false
-    }
+    },
+    "inputs": [
+      "d1"
+    ]
   }
 }

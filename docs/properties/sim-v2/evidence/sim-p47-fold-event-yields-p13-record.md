@@ -15,9 +15,6 @@ Every observed fold or host compaction event, a `history_summarizer` or
 `native_compaction` call followed by a context-size drop, yields one P13 record
 naming the event.
 
-No harness code, test, or run exists yet. The surface lands in M5
-(#1029).
-
 M5 (#1029) grades each P13 item from the first fold call inside its compiled turn range and counts the range's folds in `P13.folds`; one record per fold remains open.
 
 ## Failure scenario

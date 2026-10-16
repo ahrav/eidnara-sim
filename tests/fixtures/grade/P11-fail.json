@@ -33,10 +33,14 @@
   ],
   "expect": {
     "verdict": "fail",
+    "reason": "injected the other project's rule",
     "metrics": {
       "P11.pass": false,
       "P11.harm": true,
       "P11.weighted_score": -2
-    }
+    },
+    "inputs": [
+      "d1"
+    ]
   }
 }

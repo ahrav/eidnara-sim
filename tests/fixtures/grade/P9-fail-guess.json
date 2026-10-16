@@ -42,8 +42,13 @@
   ],
   "expect": {
     "verdict": "fail",
+    "reason": "answered instead of abstaining",
     "metrics": {
-      "P9.pass": false
-    }
+      "P9.pass": false,
+      "P9.cross_session_pass_rate": false
+    },
+    "inputs": [
+      "p1"
+    ]
   }
 }

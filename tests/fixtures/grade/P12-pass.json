@@ -35,6 +35,9 @@
     "verdict": "pass",
     "metrics": {
       "P12.pass": true
-    }
+    },
+    "inputs": [
+      "d1"
+    ]
   }
 }

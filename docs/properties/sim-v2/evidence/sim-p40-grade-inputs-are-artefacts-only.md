@@ -15,9 +15,6 @@ Each grade record lists its input artefact ids, every id is of class diff,
 command-log, test-result, workspace-state, or proxy-call, and classes transcript
 and agent self-report never appear.
 
-No harness code, test, or run exists yet. The surface lands in M5
-(#1029).
-
 M5 (#1029) refuses a snapshot carrying any artefact outside the five classes, and each grade lists the artefact ids its grader read; a test adds a transcript artefact and checks the refusal (`docs/grading.md`).
 
 ## Failure scenario

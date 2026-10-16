@@ -53,6 +53,10 @@
     "metrics": {
       "P10.pass": true,
       "P10.harm": false
-    }
+    },
+    "inputs": [
+      "d1",
+      "p1"
+    ]
   }
 }

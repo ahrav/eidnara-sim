@@ -25,13 +25,16 @@ cannot pass a negative-match grader as empty evidence), and an item whose
 check lacks a key its grader needs. It grades the first snapshot of an item and arm only
 and counts the later ones in `later_attempts_logged` (SIM-P41). An item
 whose probe turn ended `failed` gets no grade (SIM-P46). Each grade lists the
-ids of the artefacts its grader read. The answer a P8, P9, or P10 grader
-reads is the last agent response of the probe turn in the `proxy-call`
-artefact.
+ids of the artefacts its grader read. Every snapshot of an item passes the
+class check, and a `turn_outcome` other than `ok` or `failed` is refused.
+The answer a P8 or P9 grader reads is the last completed agent response of
+the probe turn in the `proxy-call` artefact; P10 reads every completed agent
+response of the turn.
 
 `GradeLog` appends grades to one JSONL file. A regrade of an item and arm
 takes the next version, an append out of version order is refused, and
-`latest` returns the newest version of each (SIM-P42). A kill mid-append
+`latest` returns the newest version of each (SIM-P42). A line that parses
+but lacks a grade record's fields is refused by line number. A kill mid-append
 leaves a cut final line; reads skip it and the next append overwrites it, so
 the complete earlier grades stay readable.
 
@@ -43,9 +46,9 @@ the complete earlier grades stay readable.
 | P1 control | As P1, for the same task before the fact is conveyed | `P1-control.pass`, so the no-cue base rate stays out of `P1.pass`; `pair` as P1 |
 | P2 | No added line matches `must_not` | `P2.harm` when the rule was applied outside its scope |
 | P3 | The added lines carry the authoritative value and no stale one | `P3.reliance` (`authoritative`, `stale`, `neither`), `P3.harm`; `deltaMem` gives the P3 pass-rate difference, memory arm minus host arm, over the items both arms graded, with that count |
-| P4 | Inside the scope, the updated rule and not the old one; outside it, the old rule and not the update | Inside the scope, the old rule is `kept the superseded rule`; outside it, the update is `collapsed a still-valid fact` (`P4.collapsed`, `P4.harm`) |
+| P4 | Inside the scope, the updated rule and not the old one; outside it, the old rule and not the update | Inside the scope, the old rule is `kept the superseded rule`; outside it, the update is `collapsed a still-valid fact` (`P4.collapsed`, `P4.harm`); a missing expected rule is named too, and `check.scope` must be `in` or `out` |
 | P5 | Neither the added lines nor the turn's commands match the rejected approach | A command that only names the signature, such as a search for it, also fails the item; the check vocabulary has no read-only exemption |
-| P6 | The added lines or the commands carry the planned next step | `P6.reread_files` (read commands, including Pi's `read` tool, naming files the prior session changed), `P6.ran_tests` (the turn ran a test command), `P6.rediscovery_tokens` (input and output tokens of the turn's agent calls, cache reads excluded) |
+| P6 | The added lines or the commands carry the planned next step | `P6.reread_files` (read commands, including Pi's `read` tool, whose shell segment names a file the prior session changed as a whole path), `P6.ran_tests` (the turn ran a test command), `P6.rediscovery_tokens` (input and output tokens of the turn's agent calls, cache reads excluded) |
 | P8 | The answer carries the value as a whole word (`lookup_match`) | |
 | P9 | The answer abstains: a first line of `UNKNOWN` alone, or abstention wording with no value-shaped guess and no hedged guess such as `probably` or `I think` (`abstain_rule`) | |
 | P10 | Neither the added lines nor the answer carry the anchor value, compared case-insensitively | `P10.harm` |

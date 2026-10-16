@@ -1064,7 +1064,7 @@ Confidence: low -
 [evidence](evidence/sim-p40-grade-inputs-are-artefacts-only.md). PROPOSED:
 reconstructed from the condensed index in spec #1007; no implementation exists
 to verify against, and a default tier run reaches it.
-Existing check: none
+Existing check: `src/grade/probes.test.ts`, grading harness: a snapshot carrying a transcript artefact is refused, and every fixture grade lists exactly the artefact ids its grader read; status unaudited
 Impact: A system that restates a rule and then violates it scores as compliant.
 Open questions: None.
 
@@ -1086,7 +1086,7 @@ Confidence: low -
 [evidence](evidence/sim-p41-first-attempt-snapshot-set-once.md). PROPOSED:
 reconstructed from the condensed index in spec #1007; no implementation exists
 to verify against, and a default tier run reaches it.
-Existing check: none
+Existing check: `src/grade/probes.test.ts`, grading harness: only the first attempt is graded and later snapshots are counted; status unaudited
 Impact: A later corrected attempt is graded as the first.
 Open questions: None.
 
@@ -1108,7 +1108,7 @@ Confidence: low -
 [evidence](evidence/sim-p42-grade-is-versioned-not-overwritten.md). PROPOSED:
 reconstructed from the condensed index in spec #1007; no implementation exists
 to verify against, and a default tier run reaches it.
-Existing check: none
+Existing check: `src/grade/probes.test.ts`, grading harness: grade versions for one item and arm strictly increase and an out-of-order version is refused; status unaudited
 Impact: A report silently uses a different grade than the one recorded.
 Open questions: None.
 
@@ -1194,7 +1194,7 @@ Confidence: low -
 [evidence](evidence/sim-p46-failed-turn-item-is-not-a-grade.md). PROPOSED:
 reconstructed from the condensed index in spec #1007; no implementation exists
 to verify against, and a default tier run reaches it.
-Existing check: none
+Existing check: `src/grade/probes.test.ts`, grading harness: a probe turn that failed has no grade, before any grader is selected; status unaudited
 Impact: An arm is penalised in recall for provider faults it did not cause, or
 failures vanish.
 Open questions:
@@ -1218,7 +1218,7 @@ Required faults and enabling state: a p90 session.
 Confidence: low - [evidence](evidence/sim-p47-fold-event-yields-p13-record.md).
 PROPOSED: reconstructed from the condensed index in spec #1007; no
 implementation exists to verify against, and a default tier run reaches it.
-Existing check: none
+Existing check: `src/grade/probes.test.ts`, recorded fixtures: the P13 pass, fail, partial, and excluded-outside-range fixtures grade as recorded; status unaudited
 Impact: Fold fidelity is measured on a subset of folds.
 Open questions: None.
 
@@ -1257,7 +1257,7 @@ Required faults and enabling state: a probe plan with P1 items.
 Confidence: low - [evidence](evidence/sim-p49-p1-control-instance-paired.md).
 PROPOSED: reconstructed from the condensed index in spec #1007; no
 implementation exists to verify against, and a default tier run reaches it.
-Existing check: none
+Existing check: `src/grade/probes.test.ts`, grading harness: P1 and its control are paired by fact under separate metrics; status unaudited
 Impact: P1 compliance cannot be separated from the task's base rate.
 Open questions: None.
 
@@ -1278,7 +1278,7 @@ Confidence: low -
 [evidence](evidence/sim-p50-p11-false-positive-weight-applied.md). PROPOSED:
 reconstructed from the condensed index in spec #1007; no implementation exists
 to verify against, and a default tier run reaches it.
-Existing check: none
+Existing check: `src/grade/probes.test.ts`, grading harness: P11 scores a hit +1 and a false-positive injection minus the pre-registered weight; status unaudited
 Impact: Wrong-project injection is under-penalised.
 Open questions: None.
 

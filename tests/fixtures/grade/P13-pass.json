@@ -66,7 +66,15 @@
   "expect": {
     "verdict": "pass",
     "metrics": {
-      "P13.fold_fidelity_score": 1
-    }
+      "P13.fold_fidelity_score": 1,
+      "P13.rule_kept": true,
+      "P13.ratio_in_bounds": true,
+      "P13.repeated_action": false,
+      "P13.folds": 1
+    },
+    "inputs": [
+      "c1",
+      "p1"
+    ]
   }
 }

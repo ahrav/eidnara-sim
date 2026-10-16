@@ -5,6 +5,7 @@ import {
     ArtefactReader,
     assertArtefactsOnly,
     type CallView,
+    completed,
     GradeRefused,
     type Snapshot,
 } from "./artefacts";
@@ -94,7 +95,12 @@ const changed = (r: ArtefactReader) => {
 };
 const work = (r: ArtefactReader) => `${changed(r)}\n${commandText(r)}`;
 
-const completed = (c: CallView) => c.status >= 200 && c.status < 300 && c.error === null;
+/** P6 requires the read and the prior-session path to occur in the same shell segment. */
+const segments = (command: string) => command.split(/[;&|\n]+/).map((s) => s.trim());
+const namesPath = (segment: string, path: string) =>
+    new RegExp(`(^|[\\s'"=])${path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}($|[\\s'"])`).test(
+        segment,
+    );
 
 function foldsIn(r: ArtefactReader, turns?: [number, number]): CallView[] {
     const folds = r.calls().filter((c) => FOLDS.includes(c.component) && completed(c));
@@ -110,16 +116,15 @@ function p4(r: ArtefactReader, c: Check): Outcome {
     const kept = matchesAll(added, c.must ?? []);
     const wrong = matchesAny(added, c.must_not ?? []);
     const collapsed = wrong && c.scope === "out";
-    const reason = !wrong
-        ? "missing the expected rule"
-        : collapsed
-          ? "collapsed a still-valid fact"
-          : "kept the superseded rule";
+    const reasons = [
+        kept ? "" : "missing the expected rule",
+        wrong ? (collapsed ? "collapsed a still-valid fact" : "kept the superseded rule") : "",
+    ].filter(Boolean);
     return binary(
         "P4",
         kept && !wrong,
         { "P4.harm": collapsed, "P4.collapsed": collapsed },
-        reason,
+        reasons.join("; "),
     );
 }
 
@@ -127,7 +132,7 @@ function p6(r: ArtefactReader, c: Check): Outcome {
     const prior = diffPaths(r.diff("prior-session"));
     const commands = r.commands();
     const reread = prior.filter((p) =>
-        commands.some((x) => READS.test(x.command) && x.command.includes(p)),
+        commands.some((x) => segments(x.command).some((s) => READS.test(s) && namesPath(s, p))),
     );
     const tokens = r.turnCalls().reduce((n, x) => n + x.input_tokens + x.output_tokens, 0);
     return binary("P6", matchesAll(work(r), c.must ?? []), {
@@ -231,7 +236,7 @@ const GRADERS: Record<string, Grader> = {
     },
     P10: (r, c) => {
         const anchors = (c.must_not ?? []).map((s) => (s.startsWith("(?i)") ? s : `(?i)${s}`));
-        const leaked = matchesAny(`${changed(r)}\n${r.answer()}`, anchors);
+        const leaked = matchesAny(`${changed(r)}\n${r.responses()}`, anchors);
         return binary("P10", !leaked, { "P10.harm": leaked }, "anchor value leaked");
     },
     P11: (r, c, rules) => {
@@ -255,6 +260,9 @@ function graderFor(probe: ProbeItem): Grader {
             `P13 item ${probe.id} has neither check.must nor check.commands_must`,
         );
     }
+    if (probe.type === "P4" && check.scope !== "in" && check.scope !== "out") {
+        throw new GradeRefused(`P4 item ${probe.id} has check.scope ${check.scope}, not in or out`);
+    }
     for (const key of REQUIRED[probe.type] ?? []) {
         const value = check[key];
         if (value === undefined || (Array.isArray(value) && value.length === 0)) {
@@ -275,8 +283,11 @@ export function gradeItem(
     if (snapshots.some((s) => s.item !== probe.id || s.arm !== first.arm)) {
         throw new GradeRefused(`snapshots for ${probe.id} mix items or arms`);
     }
-    assertArtefactsOnly(first);
+    for (const s of snapshots) assertArtefactsOnly(s);
     if (first.turn_outcome === "failed") return null;
+    if (first.turn_outcome !== "ok") {
+        throw new GradeRefused(`snapshot ${first.id} has turn_outcome ${first.turn_outcome}`);
+    }
     const grader = graderFor(probe);
     const reader = new ArtefactReader(first);
     const outcome = grader(reader, (probe.check ?? {}) as Check, rules, probe);
@@ -294,6 +305,19 @@ export function gradeItem(
         ...(paired ? { pair: probe.fact as string } : {}),
         ...outcome,
     };
+}
+
+const VERDICTS: Verdict[] = ["pass", "fail", "excluded"];
+
+function isGradeRecord(value: unknown): value is GradeRecord {
+    if (typeof value !== "object" || value === null) return false;
+    const g = value as Record<string, unknown>;
+    const strings = ["item", "arm", "probe_type", "snapshot"].every(
+        (k) => typeof g[k] === "string",
+    );
+    const version = typeof g.version === "number" && Number.isInteger(g.version) && g.version >= 1;
+    const verdict = VERDICTS.includes(g.verdict as Verdict);
+    return strings && version && verdict && typeof g.metrics === "object" && g.metrics !== null;
 }
 
 function newest(grades: GradeRecord[]): GradeRecord[] {
@@ -318,11 +342,18 @@ export class GradeLog {
     all(): GradeRecord[] {
         const lines = this.complete().split("\n").filter(Boolean);
         return lines.map((l, i) => {
+            let parsed: unknown;
             try {
-                return JSON.parse(l) as GradeRecord;
+                parsed = JSON.parse(l);
             } catch {
                 throw new GradeRefused(`grade log ${this.path}: line ${i + 1} is corrupt`);
             }
+            if (!isGradeRecord(parsed)) {
+                throw new GradeRefused(
+                    `grade log ${this.path}: line ${i + 1} is not a grade record`,
+                );
+            }
+            return parsed;
         });
     }
 

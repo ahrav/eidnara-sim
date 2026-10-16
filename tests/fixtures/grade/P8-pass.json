@@ -43,7 +43,11 @@
   "expect": {
     "verdict": "pass",
     "metrics": {
-      "P8.pass": true
-    }
+      "P8.pass": true,
+      "P8.cross_session_pass_rate": true
+    },
+    "inputs": [
+      "p1"
+    ]
   }
 }

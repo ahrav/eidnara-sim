@@ -37,6 +37,9 @@
       "P11.pass": true,
       "P11.harm": false,
       "P11.weighted_score": 1
-    }
+    },
+    "inputs": [
+      "d1"
+    ]
   }
 }

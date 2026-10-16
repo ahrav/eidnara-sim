@@ -203,6 +203,9 @@
     "verdict": "pass",
     "metrics": {
       "P1-control.pass": true
-    }
+    },
+    "inputs": [
+      "diff-s0003-const"
+    ]
   }
 }

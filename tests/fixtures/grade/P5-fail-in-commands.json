@@ -53,6 +53,10 @@
     "reason": "reused the rejected approach",
     "metrics": {
       "P5.pass": false
-    }
+    },
+    "inputs": [
+      "c1",
+      "d1"
+    ]
   }
 }

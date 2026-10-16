@@ -36,10 +36,14 @@
   ],
   "expect": {
     "verdict": "fail",
+    "reason": "relied on stale",
     "metrics": {
       "P3.pass": false,
       "P3.reliance": "stale",
       "P3.harm": true
-    }
+    },
+    "inputs": [
+      "d1"
+    ]
   }
 }

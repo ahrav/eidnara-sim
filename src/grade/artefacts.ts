@@ -77,6 +77,8 @@ export interface Snapshot {
 
 export class GradeRefused extends Error {}
 
+export const completed = (c: CallView) => c.status >= 200 && c.status < 300 && c.error === null;
+
 export function assertArtefactsOnly(snapshot: Snapshot): void {
     for (const a of snapshot.artefacts as Array<{ id: string; class: string }>) {
         if (!(ARTEFACT_CLASSES as readonly string[]).includes(a.class)) {
@@ -117,10 +119,18 @@ export class ArtefactReader {
 
     turnCalls(): CallView[] {
         const turn = this.snapshot.turn;
-        return this.calls().filter((c) => c.component === "agent" && c.turn === turn);
+        return this.calls().filter(
+            (c) => c.component === "agent" && c.turn === turn && completed(c),
+        );
     }
 
     answer(): string {
         return this.turnCalls().at(-1)?.response_text ?? "";
+    }
+
+    responses(): string {
+        return this.turnCalls()
+            .map((c) => c.response_text ?? "")
+            .join("\n");
     }
 }

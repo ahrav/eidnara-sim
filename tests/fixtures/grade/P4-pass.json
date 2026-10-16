@@ -39,7 +39,11 @@
     "verdict": "pass",
     "metrics": {
       "P4.pass": true,
+      "P4.harm": false,
       "P4.collapsed": false
-    }
+    },
+    "inputs": [
+      "d1"
+    ]
   }
 }

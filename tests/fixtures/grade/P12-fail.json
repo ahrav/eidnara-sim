@@ -33,8 +33,12 @@
   ],
   "expect": {
     "verdict": "fail",
+    "reason": "fix omits the error code",
     "metrics": {
       "P12.pass": false
-    }
+    },
+    "inputs": [
+      "d1"
+    ]
   }
 }

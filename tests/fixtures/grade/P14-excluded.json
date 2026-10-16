@@ -42,6 +42,10 @@
   ],
   "expect": {
     "verdict": "excluded",
-    "reason": "no compaction in the session"
+    "reason": "no compaction in the session",
+    "metrics": {},
+    "inputs": [
+      "p1"
+    ]
   }
 }

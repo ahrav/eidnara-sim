@@ -74,7 +74,12 @@
       "P13.fold_fidelity_score": 0.6666666666666666,
       "P13.rule_kept": true,
       "P13.ratio_in_bounds": true,
-      "P13.repeated_action": true
-    }
+      "P13.repeated_action": true,
+      "P13.folds": 1
+    },
+    "inputs": [
+      "c1",
+      "p1"
+    ]
   }
 }

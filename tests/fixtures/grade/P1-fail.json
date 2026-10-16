@@ -201,9 +201,12 @@
   ],
   "expect": {
     "verdict": "fail",
+    "reason": "rule not applied",
     "metrics": {
       "P1.pass": false
     },
-    "reason": "rule not applied"
+    "inputs": [
+      "diff-s0003"
+    ]
   }
 }
