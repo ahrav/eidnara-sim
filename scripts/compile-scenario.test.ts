@@ -217,6 +217,34 @@ describe("compile-scenario dangling cache link", () => {
     });
 });
 
+describe("compile-scenario root checkout", () => {
+    test("a checkout configured at the filesystem root still contains every output", () => {
+        const dir = mkdtempSync(join(tmpdir(), "sim-cli-"));
+        const config = JSON.parse(readFileSync(join(ROOT, "sim.config.json"), "utf8"));
+        const configPath = join(dir, "sim.config.json");
+        writeFileSync(configPath, JSON.stringify({ ...config, eidnara_checkout: "/" }));
+        const out = join(dir, "s.json");
+        const r = Bun.spawnSync(
+            [
+                "bun",
+                "scripts/compile-scenario.ts",
+                "--tier",
+                "S",
+                "--seed",
+                "101",
+                "--embedder",
+                "local",
+                "--out",
+                out,
+            ],
+            { cwd: ROOT, env: { ...process.env, SIM_CONFIG: configPath } },
+        );
+        expect(r.exitCode).toBe(2);
+        expect(r.stderr.toString()).toContain("eidnara_checkout");
+        expect(existsSync(out)).toBe(false);
+    });
+});
+
 describe("compile-scenario arguments", () => {
     test("a seed outside the tier's registered seeds is refused for a Titan compile", () => {
         const out = join(mkdtempSync(join(tmpdir(), "sim-cli-")), "s.json");

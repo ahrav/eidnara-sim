@@ -38,9 +38,35 @@ const SAMPLE_VARS: Record<string, string> = {
     code_re: "ValueError",
 };
 const QUOTE_STYLES = ["double", "single"];
+const ERROR_VARS = ["code", "code_re", "context"];
+/** The grading channel each fact kind must use; every other kind grades the diff or command log. */
+const REQUIRED_CHECK: Record<string, string> = {
+    lookup: "answer",
+    rationale: "judge",
+    never_settled: "abstain",
+    anchor: "must_not",
+};
+const DIFF_KEYS = [
+    "must",
+    "must_not",
+    "paths_must",
+    "paths_must_not",
+    "first_line_must",
+    "commands_must",
+    "commands_must_not",
+    "quote_style_must",
+];
+/** Check keys each fact kind may grade with; kinds absent here grade the diff or command log. */
+const ALLOWED_KEYS: Record<string, string[]> = {
+    lookup: ["answer"],
+    rationale: ["judge"],
+    never_settled: ["abstain"],
+    anchor: ["must_not", "answer_must_not"],
+};
 const LIST_CHECKS = [
     "must",
     "must_not",
+    "commands_must_not",
     "paths_must",
     "paths_must_not",
     "first_line_must",
@@ -55,10 +81,17 @@ const isObject = (v: unknown): v is Json =>
     typeof v === "object" && v !== null && !Array.isArray(v);
 const isStringList = (v: unknown) => Array.isArray(v) && v.every((x) => typeof x === "string");
 
-const patternProblem = (pattern: string): string | null => {
+const placeholderProblem = (text: string, kind: string): string | null => {
+    const known = (k: string) =>
+        k in SAMPLE_VARS && (kind === "tool_error" || !ERROR_VARS.includes(k));
+    const unknown = [...text.matchAll(/\{(\w+)\}/g)].find(([, k]) => !(k && known(k)));
+    return unknown ? "names an unknown placeholder" : null;
+};
+
+const patternProblem = (pattern: string, kind: string): string | null => {
     if (pattern.trim() === "") return "is blank";
-    const unknown = [...pattern.matchAll(/\{(\w+)\}/g)].find(([, k]) => !(k && k in SAMPLE_VARS));
-    if (unknown) return `${pattern} names an unknown placeholder`;
+    const unknown = placeholderProblem(pattern, kind);
+    if (unknown) return `${pattern} ${unknown}`;
     try {
         new RegExp(pattern.replace(/\{(\w+)\}/g, (_m, k: string) => SAMPLE_VARS[k] ?? ""));
         return null;
@@ -67,16 +100,20 @@ const patternProblem = (pattern: string): string | null => {
     }
 };
 
-function checkProblems(where: string, check: unknown): string[] {
+function checkProblems(where: string, check: unknown, kind: string): string[] {
     if (!isObject(check)) return [`${where}: check is not an object`];
     const problems: string[] = [];
     for (const [key, value] of Object.entries(check)) {
+        const known = [...LIST_CHECKS, ...SCALAR_CHECKS, ...FLAG_CHECKS, "quote_style_must"];
+        if (known.includes(key) && !(ALLOWED_KEYS[kind] ?? DIFF_KEYS).includes(key)) {
+            problems.push(`${where}: check key ${key} is not graded for ${kind} facts`);
+        }
         if (LIST_CHECKS.includes(key)) {
             if (!isStringList(value) || value.length === 0) {
                 problems.push(`${where}: check key ${key} is not a non-empty list of strings`);
             } else {
                 for (const pattern of value) {
-                    const problem = patternProblem(pattern);
+                    const problem = patternProblem(pattern, kind);
                     if (problem) problems.push(`${where}: check key ${key} pattern ${problem}`);
                 }
             }
@@ -88,11 +125,15 @@ function checkProblems(where: string, check: unknown): string[] {
             if (typeof value !== "string")
                 problems.push(`${where}: check key ${key} is not a string`);
             else if (value.trim() === "") problems.push(`${where}: check key ${key} is blank`);
+            else if (placeholderProblem(value, kind))
+                problems.push(`${where}: check key ${key} names an unknown placeholder`);
         } else if (FLAG_CHECKS.includes(key)) {
             if (value !== true) problems.push(`${where}: check key ${key} is not true`);
         } else problems.push(`${where}: check key ${key} is not a check kind`);
     }
     if (Object.keys(check).length === 0) problems.push(`${where}: check is empty`);
+    const required = REQUIRED_CHECK[kind];
+    if (required && !(required in check)) problems.push(`${where}: check needs ${required}`);
     return problems;
 }
 
@@ -153,8 +194,14 @@ export function bankProblems(bank: unknown): string[] {
                 if (ids.has(id)) problems.push(`${where}: duplicate template id`);
                 ids.add(id);
                 for (const field of ["id", "statement", "probe"]) {
-                    if (typeof t[field] !== "string" || t[field] === "")
+                    if (typeof t[field] !== "string" || t[field].trim() === "")
                         problems.push(`${where}: ${field} missing`);
+                }
+                if (
+                    kind === "constraint" &&
+                    (typeof t.out_probe !== "string" || t.out_probe.trim() === "")
+                ) {
+                    problems.push(`${where}: out_probe missing`);
                 }
                 for (const field of ["out_probe", "update"]) {
                     if (field in t && typeof t[field] !== "string")
@@ -191,9 +238,9 @@ export function bankProblems(bank: unknown): string[] {
                         problems.push(`${where}: authority needs path and content`);
                     }
                 }
-                problems.push(...checkProblems(where, t.check));
+                problems.push(...checkProblems(where, t.check, kind));
                 if ("out_check" in t)
-                    problems.push(...checkProblems(`${where} out_check`, t.out_check));
+                    problems.push(...checkProblems(`${where} out_check`, t.out_check, kind));
             });
         }
     }

@@ -32,7 +32,7 @@ The scenario file is canonical JSON with these sections:
 | `projects` | Each repository in `corpus/repos.json` and its twin |
 | `sessions` | Session id, project, start time, request count, the minimum idle gap before the session, and whether the request count was forced into the p90 regime |
 | `facts` | Ledger facts with template, kind, project, conveyance manner, statement, and the cue texts that carry it |
-| `probes` | Probe items P1 to P14 and the P1 controls with project, session, user text, the grading check, and the event that delivers it. Check keys: `must` and `must_not` regexes over the added lines of the agent's diff, `paths_must` and `paths_must_not` over the paths the diff adds or changes, `first_line_must` over the first line of every file the diff adds, `quote_style_must` (`double` or `single`) over the delimiter of every string literal in the added lines, `commands_must` over the command log, `answer`, `answer_must_not`, `abstain`, and `judge` over the final assistant text, and `window_from_turn` and `window_to_turn` for P14. Every `*_must` and `*_must_not` key holds a list of JavaScript regular expressions |
+| `probes` | Probe items P1 to P14 and the P1 controls with project, session, user text, the grading check, and the event that delivers it. Check keys: `must` and `must_not` regexes over the added lines of the agent's diff, `paths_must` and `paths_must_not` over the paths the diff adds or changes, `first_line_must` over the first line of every file the diff adds, `quote_style_must` (`double` or `single`) over the delimiter of every string literal in the added lines, `commands_must` and `commands_must_not` over the command log, `answer`, `answer_must_not`, `abstain`, and `judge` over the final assistant text, and `window_from_turn` and `window_to_turn` for P14. Every `*_must` and `*_must_not` key holds a list of JavaScript regular expressions |
 | `similarity` | BM25 ratio and embedding cosine for every cue and probe pair, and for a decision fact's authoritative diff content against its probes, journaled to four decimals; the threshold gate compares the full-precision values |
 | `events` | `apply_diff`, `session_start`, `user_turn`, and `session_end` events in scenario time |
 | `scenario_hash` | sha256 of the canonical JSON of every other section |
@@ -99,7 +99,7 @@ the earlier one and supersedes it.
 | P10 | anchor | Later, unrelated task; the value must not appear |
 | P11 | the P1 fact | A session of the twin project after the conveyance; the check forbids the convention |
 | P12 | tool error | A real error from `corpus/tool-outputs/error-codes.jsonl`; the check requires the exception name |
-| P13 | session rule | Conveyed in the first third of a turn range in a forced p90 session and probed in its last third; each P13 item has its own range of at least 30 turns, so at least 11 turns separate cue and probe |
+| P13 | session rule | Conveyed in the first third of a turn range in a forced p90 session and probed in its last third; each P13 item has its own range of at least 30 turns, so at least 11 turns separate cue and probe. A session rule holds "until I say otherwise", so a later instance in the same session supersedes it |
 | P14 | none | The last third of a forced p90 session, split into one window of at least ten turns per item (`window_from_turn` to `window_to_turn`), measured from user-sim labels |
 
 Conveyance manners follow the fixed weights 35/20/15/10/10/10 for correction,
@@ -153,15 +153,15 @@ thresholds (`bm25_max` 0.4, `cosine_max` 0.6):
 
 | Tier | Seed | `scenario_hash` | Largest BM25 ratio | Largest cosine |
 |---|---|---|---|---|
-| S | 101 | `74fb6d4a` | 0.2635 | 0.5194 |
-| S | 102 | `f823be59` | 0.2577 | 0.4867 |
-| M | 201 | `4856c7ff` | 0.2747 | 0.4992 |
-| M | 202 | `56d7ec3c` | 0.2787 | 0.4997 |
-| M | 203 | `802e6939` | 0.2788 | 0.4843 |
-| L | 301 | `3b0610a5` | 0.2733 | 0.5092 |
-| L | 302 | `2f8336dd` | 0.259 | 0.4957 |
-| L | 303 | `32192c4e` | 0.2807 | 0.5083 |
-| XL | 401 | `603b91ee` | 0.281 | 0.4962 |
+| S | 101 | `f18a93a0` | 0.2631 | 0.5194 |
+| S | 102 | `64004eb2` | 0.2573 | 0.4867 |
+| M | 201 | `287a3375` | 0.2743 | 0.4992 |
+| M | 202 | `8a734396` | 0.2783 | 0.4997 |
+| M | 203 | `52111418` | 0.2784 | 0.4843 |
+| L | 301 | `3c9c2086` | 0.2729 | 0.5092 |
+| L | 302 | `0feabab5` | 0.259 | 0.4957 |
+| L | 303 | `d153eedf` | 0.2803 | 0.5083 |
+| XL | 401 | `7096ad05` | 0.2806 | 0.4962 |
 
 ## Known limits
 

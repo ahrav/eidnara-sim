@@ -1,6 +1,6 @@
 {
     "schema": "sim-fact-bank/v1",
-    "note": "Fact templates for the scenario compiler. {TOKEN} and {token} are a generated word pair in upper and lower case, {value} and {value2} are distinct five-digit numbers, {codename} is an adjective-noun-NN codename, and {code} and {context} come from corpus/tool-outputs/error-codes.jsonl. A check's must and must_not regexes apply to the added lines of the agent's diff, paths_must and paths_must_not to the paths of the files the diff adds or changes, first_line_must to the first line of every file the diff adds, quote_style_must (double or single) to the delimiter of every string literal in the added lines, commands_must to the command log, and answer, answer_must_not, abstain, and judge checks to the final assistant text of the agent call record the proxy captures.",
+    "note": "Fact templates for the scenario compiler. {TOKEN} and {token} are a generated word pair in upper and lower case, {value} and {value2} are distinct five-digit numbers, {codename} is an adjective-noun-NN codename, and {code} and {context} come from corpus/tool-outputs/error-codes.jsonl. A check's must and must_not regexes apply to the added lines of the agent's diff, paths_must and paths_must_not to the paths of the files the diff adds or changes, first_line_must to the first line of every file the diff adds, quote_style_must (double or single) to the delimiter of every string literal in the added lines, commands_must and commands_must_not to the command log, and answer, answer_must_not, abstain, and judge checks to the final assistant text of the agent call record the proxy captures.",
     "rust": {
         "constraint": [
             {
@@ -155,7 +155,7 @@
                 "check": {
                     "must_not": [
                         "static\\s+\\w+\\s*:[^\\n]*Mutex<\\s*(?:\\w+::)*(?:State|Shared|Db|Keyspace|HashMap|BTreeMap)\\b",
-                        "lazy_static",
+                        "static\\s+ref\\s+\\w+\\s*:[^\\n]*Mutex<\\s*(?:\\w+::)*(?:State|Shared|Db|Keyspace|HashMap|BTreeMap)\\b",
                         "OnceLock<\\s*Mutex<\\s*(?:\\w+::)*(?:State|Shared|Db|Keyspace|HashMap|BTreeMap)\\b"
                     ]
                 }
@@ -180,18 +180,18 @@
                 "out_probe": "Log the bound address when the server starts listening.",
                 "check": {
                     "must": [
-                        "trace!|Level::TRACE\\b"
+                        "trace!|event!\\(\\s*(?:tracing::)?Level::TRACE\\b"
                     ],
                     "must_not": [
-                        "debug!|Level::DEBUG\\b"
+                        "debug!|event!\\(\\s*(?:tracing::)?Level::DEBUG\\b"
                     ]
                 },
                 "out_check": {
                     "must": [
-                        "debug!|Level::DEBUG\\b"
+                        "debug!|event!\\(\\s*(?:tracing::)?Level::DEBUG\\b"
                     ],
                     "must_not": [
-                        "trace!|Level::TRACE\\b"
+                        "trace!|event!\\(\\s*(?:tracing::)?Level::TRACE\\b"
                     ]
                 }
             }
@@ -353,7 +353,7 @@
                 "probe": "Speed up repeated handler compilation.",
                 "check": {
                     "must_not": [
-                        "^(?:export\\s+)?(?:const|let|var)\\s+\\w+(?:\\s*:[^=]+)?\\s*=\\s*new\\s+Map(?:<[^(]*>)?\\s*\\("
+                        "^(?:export\\s+)?(?:const|let|var)\\s+\\w+(?:\\s*:[^=]+)?\\s*=\\s*new\\s+Map\\b(?:<[^(\\n]*>)?(?:\\s*\\(|\\s*;|\\s*$)"
                     ]
                 }
             },
@@ -487,11 +487,14 @@
         "session_rule": [
             {
                 "id": "session-commit-tag",
-                "statement": "for the rest of this session, every commit message starts with [{token}]",
+                "statement": "until I say otherwise, every commit message starts with [{token}]",
                 "probe": "Commit what we have so far.",
                 "check": {
                     "commands_must": [
-                        "git commit\\b(?![^\\n]*--dry-run)(?:(?!\\s(?:-\\w*m|--message))[^\\n])*\\s(?:-\\w*m[ =]?|--message[ =])[\"']?\\[{token}\\]"
+                        "git commit\\b(?![^\\n]*--dry-run)(?:(?!\\s(?:-\\w*m|--message))[^\\n])*\\s(?:-\\w*m ?|--message[ =])[\"']?\\[{token}\\]"
+                    ],
+                    "commands_must_not": [
+                        "git commit\\b(?![^\\n]*--dry-run)(?:(?!\\s(?:-\\w*m|--message))[^\\n])*\\s(?:-\\w*m ?|--message[ =])(?!\\s*[\"']?\\[{token}\\])"
                     ]
                 }
             },
