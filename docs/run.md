@@ -19,7 +19,8 @@ the calling process's own lease at the end of a run.
 
 ## Journal
 
-`Journal` appends one JSON line per entry with `seq` (0, 1, 2, ... in append
+`Journal` opens its file without following symlinks and requires a regular
+file, then appends one JSON line per entry with `seq` (0, 1, 2, ... in append
 order), `kind`, `arm`, `scenario_ms`, and `wall_ms`; a line is written whole
 before the entry counts as appended. On open, it truncates the
 file to its complete prefix, dropping only a last line that a kill cut
@@ -43,7 +44,8 @@ entries of different arms are not ordered by scenario time.
 
 ## Clock
 
-`Clock` keeps scenario time and a busy set of turns and background jobs.
+`Clock` keeps scenario time and a busy set of turns and background jobs; an
+id that is already busy is refused, so two jobs never share one marker.
 While anything is busy, scenario time runs at wall speed, measured on the
 monotonic clock (`performance.now()`), so a system clock step never reaches
 scenario time; while nothing is busy, it holds. Scenario time only ratchets
@@ -104,7 +106,10 @@ without `EndArm`:
 - marks every fired fault as fired, arms again a persistent provider fault
   whose session has not ended and a one-shot provider fault whose turn has not
   begun, and journals `ItemState failed(interrupted)` for a scheduler fault
-  with no `FaultObserved`;
+  with no `FaultObserved`. A `single`, `burst`, or `intermittent` fault whose
+  turn had begun is spent with that interrupted turn: its remaining calls are
+  not injected into later turns, and the proxy's call records keep
+  `fault_ref` on every call it did fault;
 - continues with the first event that has no `Event` entry, with the arm's
   clock restored.
 

@@ -18,8 +18,9 @@ the matching `EndTurn` or `EndJob`.
 At the 2026-10-12 proposal no harness code, test, or run existed; the
 surface landed in M4 (#1028).
 
-M4 (#1028) advances scenario time only through `Clock.advanceTo`, which refuses
-while any turn or job is busy. The tests rebuild the busy set from the
+M4 (#1028) runs scenario time at wall speed while any turn or job is busy and
+jumps it only through `Clock.advanceTo`, which refuses while any turn or job is
+busy, so no jump lands inside a busy interval. The tests rebuild the busy set from the
 journal's turn and job entries and check that it is empty at every
 `AdvanceClock`.
 

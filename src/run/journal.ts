@@ -1,13 +1,15 @@
 import { randomUUID } from "node:crypto";
 import {
     closeSync,
+    constants,
     existsSync,
+    fstatSync,
+    ftruncateSync,
     linkSync,
     openSync,
     readdirSync,
     readFileSync,
     rmSync,
-    truncateSync,
     writeFileSync,
     writeSync,
 } from "node:fs";
@@ -176,8 +178,13 @@ export class Journal {
         const read = readJournal(path);
         this.entries = [...read];
         for (const e of this.entries) this.last.set(e.arm, e.scenario_ms);
-        if (existsSync(path)) truncateSync(path, read.bytes ?? 0);
-        this.fd = openSync(path, "a");
+        const { O_APPEND, O_CREAT, O_NOFOLLOW, O_RDWR } = constants;
+        this.fd = openSync(path, O_RDWR | O_APPEND | O_CREAT | O_NOFOLLOW, 0o644);
+        if (!fstatSync(this.fd).isFile()) {
+            closeSync(this.fd);
+            throw new Error(`journal ${path} is not a regular file`);
+        }
+        ftruncateSync(this.fd, read.bytes ?? 0);
     }
 
     append(entry: NewEntry): Entry {

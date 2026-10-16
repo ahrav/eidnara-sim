@@ -1,5 +1,5 @@
 import { describe, expect, setSystemTime, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { fixtureEvents } from "../../tests/run-fixture";
@@ -102,6 +102,7 @@ describe("Clock", () => {
         expect(clock.now()).toBe(300);
         expect(() => clock.advanceTo(10_000, "a")).toThrow(/advance while busy/);
         clock.begin("job");
+        expect(() => clock.begin("job")).toThrow(/already busy/);
         clock.end("turn");
         wall += 200;
         expect(clock.now()).toBe(500);
@@ -196,6 +197,16 @@ describe("Journal and lease", () => {
         } finally {
             other.kill();
         }
+    });
+
+    test("a journal path that is a symlink is refused and its target left alone", () => {
+        const d = dir();
+        const target = join(d, "target.txt");
+        writeFileSync(target, "precious bytes with no newline");
+        const link = join(d, "journal.jsonl");
+        symlinkSync(target, link);
+        expect(() => new Journal(link)).toThrow();
+        expect(readFileSync(target, "utf8")).toBe("precious bytes with no newline");
     });
 
     test("releaseLease leaves a lease held by the same pid on another host", () => {

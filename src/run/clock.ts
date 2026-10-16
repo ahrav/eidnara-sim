@@ -29,6 +29,7 @@ export class Clock {
     }
 
     begin(id: string): void {
+        if (this.busy.has(id)) throw new Error(`clock: ${id} is already busy`);
         if (this.busy.size === 0) this.anchor = this.wall();
         this.busy.add(id);
     }
