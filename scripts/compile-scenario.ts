@@ -39,7 +39,9 @@ const seed = Number(seedArg);
 if (!TIERS.includes(tier as Tier)) usage(`--tier must be one of ${TIERS.join(", ")}`);
 if (!/^\d+$/.test(seedArg ?? "")) usage("--seed must be a non-negative integer");
 if (![undefined, "local"].includes(embedderArg)) usage("--embedder accepts only local");
-const out = outArg ?? join(import.meta.dir, "..", "runs", "scenarios", `${tier}-${seed}.json`);
+const local = embedderArg === "local";
+const defaultName = `${tier}-${seed}${local ? ".local" : ""}.json`;
+const out = outArg ?? join(import.meta.dir, "..", "runs", "scenarios", defaultName);
 const config = loadConfig();
 const kind = (path: string) => {
     try {
@@ -90,7 +92,6 @@ if (statSync(out, { throwIfNoEntry: false })?.isDirectory()) {
     console.error(`--out ${out} is a directory; name the scenario file`);
     process.exit(2);
 }
-const local = embedderArg === "local";
 const registered = loadPrereg(tier as Tier).seeds;
 if (!local && !registered.includes(seed)) {
     console.error(

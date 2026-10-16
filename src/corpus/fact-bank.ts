@@ -91,6 +91,22 @@ const placeholderProblem = (text: string, kind: string): string | null => {
     return unknown ? "names an unknown placeholder" : null;
 };
 
+const fill = (text: string) => text.replace(/\{(\w+)\}/g, (m, k: string) => SAMPLE_VARS[k] ?? m);
+/** A normalised path inside the project: relative, with no empty, `.`, or `..` segment. */
+const projectRelative = (path: string) => {
+    const parts = fill(path).split("/");
+    return parts.length > 0 && parts.every((p) => p !== "" && p !== "." && p !== "..");
+};
+const satisfies = (patterns: unknown, text: string) =>
+    !Array.isArray(patterns) ||
+    patterns.every((pattern) => {
+        try {
+            return new RegExp(fill(String(pattern))).test(text);
+        } catch {
+            return false;
+        }
+    });
+
 const patternProblem = (pattern: string, kind: string): string | null => {
     if (pattern.trim() === "") return "is blank";
     const unknown = placeholderProblem(pattern, kind);
@@ -223,6 +239,8 @@ export function bankProblems(bank: unknown): string[] {
                         }
                         if (typeof part.path === "string" && part.path.trim() === "") {
                             problems.push(`${where}: ${field} path is blank`);
+                        } else if (typeof part.path === "string" && !projectRelative(part.path)) {
+                            problems.push(`${where}: ${field} path escapes the project`);
                         }
                     }
                 }
@@ -255,19 +273,17 @@ export function bankProblems(bank: unknown): string[] {
                     problems.push(`${where}: authority missing`);
                 }
                 if (kind === "decision" && isObject(t.authority) && isObject(t.check)) {
-                    const fill = (text: string) =>
-                        text.replace(/\{(\w+)\}/g, (m, k: string) => SAMPLE_VARS[k] ?? m);
                     const content = fill(String(t.authority.content ?? ""));
-                    const must = Array.isArray(t.check.must) ? (t.check.must as string[]) : [];
-                    const satisfied = must.every((pattern) => {
-                        try {
-                            return new RegExp(fill(pattern)).test(content);
-                        } catch {
-                            return false;
-                        }
-                    });
-                    if (!satisfied)
+                    if (!satisfies(t.check.must, content)) {
                         problems.push(`${where}: authority content does not satisfy the check`);
+                    }
+                }
+                if (kind === "constraint" && isObject(t.example) && isObject(t.check)) {
+                    const content = fill(String(t.example.content ?? ""));
+                    const path = fill(String(t.example.path ?? ""));
+                    if (!satisfies(t.check.must, content) || !satisfies(t.check.paths_must, path)) {
+                        problems.push(`${where}: example content does not satisfy the check`);
+                    }
                 }
                 if ("example" in t) {
                     const e = t.example;

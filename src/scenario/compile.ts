@@ -563,7 +563,10 @@ export async function compileScenario(input: CompileInput) {
         }
     }
 
-    const allCues = [...facts.flatMap((f) => f.cues), ...diffs.map((d) => d.content)];
+    const authorities = diffs.filter(
+        (d) => !facts.find((f) => f.id === d.fact)?.cues.includes(d.content),
+    );
+    const allCues = [...facts.flatMap((f) => f.cues), ...authorities.map((d) => d.content)];
     const pairs = probes.flatMap((p) => {
         const fact = facts.find((f) => f.id === p.fact);
         const text = p.text;
