@@ -89,7 +89,7 @@ const context = (
     inputs: ["snap-eidnara:calls", "snap-host:calls"],
     later_attempts: { a: 0, b: 0 },
     calibration: null,
-    permutation: { trials: 20, correct: 11 },
+    permutation: { trials: 20, correct: 11, judge: judgeIdentity(rules.judge.model) },
     ...extra,
 });
 
@@ -175,7 +175,7 @@ describe("P7 judge path", () => {
         expect(ok[0]?.metrics.calibration_digest).toMatch(/^[0-9a-f]{64}$/);
         const identified = context(f.probe.id, f.pair, f.probe.check.judge, {
             calibration: calibration(),
-            permutation: { trials: 20, correct: 13 },
+            permutation: { trials: 20, correct: 13, judge: judgeIdentity(rules.judge.model) },
         });
         const refused = gradeP7(judgment, identified, rules)[0];
         expect(refused?.metrics.gate_eligible).toBe(false);
@@ -340,7 +340,9 @@ describe("P7 judge path", () => {
             { a: "eidnara", b: "host" },
         ]);
         expect(() => p7Pair("q-1", snap("eidnara", "q-2"), snap("host"))).toThrow("mix items");
-        expect(() => p7Pair("q-1", snap("eidnara"), snap("eidnara"))).toThrow("one arm");
+        expect(() => p7Pair("q-1", snap("eidnara"), snap("eidnara"))).toThrow("same snapshot");
+        const twin = { ...snap("host"), id: "snap-host-run2" };
+        expect(p7Pair("q-1", snap("host"), twin)?.arms).toEqual({ a: "host", b: "host" });
         expect(p7Pair("q-1", snap("eidnara"), snap("host", "q-1", "failed"))).toBeNull();
     });
 
@@ -548,6 +550,41 @@ describe("P7 judge path", () => {
         expect(() => proxyJudge(url, "openai.gpt-5.6-luna", "us.anthropic.x")).not.toThrow();
     });
 
+    test("a judgment whose recall disagrees with its order verdicts is refused", async () => {
+        const f = load("P7-pass");
+        const judgment = await judgePair(
+            scripted(f.judge_verdicts),
+            f.pair,
+            f.probe.check.judge,
+            [],
+        );
+        const flipped = { ...judgment, recall: { a: false, b: true } };
+        expect(() =>
+            gradeP7(flipped, context(f.probe.id, f.pair, f.probe.check.judge), rules),
+        ).toThrow(GradeRefused);
+    });
+
+    test("permutation evidence from another judge keeps the grade out of gates", async () => {
+        const f = load("P7-pass");
+        const judgment = await judgePair(
+            scripted(f.judge_verdicts),
+            f.pair,
+            f.probe.check.judge,
+            [],
+        );
+        const foreign = {
+            calibration: calibration(),
+            permutation: { trials: 20, correct: 11, judge: judgeIdentity("global.meta.llama-4") },
+        };
+        const [g] = gradeP7(
+            judgment,
+            context(f.probe.id, f.pair, f.probe.check.judge, foreign),
+            rules,
+        );
+        expect(g?.metrics.gate_eligible).toBe(false);
+        expect(String(g?.metrics.permutation)).toContain("refused: permutation judge");
+    });
+
     test("the human-check sample is ten percent of P7 items, rounded up, from a seeded draw", () => {
         const items = Array.from({ length: 24 }, (_, i) => `q-${i}`);
         const a = humanCheckSample(items, rules, new Rng(9));
@@ -653,6 +690,11 @@ describe("proxy judge", () => {
         await expect(judge.verdict("prompt")).rejects.toThrow("judge reply is not JSON");
         expect(await judge.verdict("prompt")).toBe("first");
         await expect(judge.verdict("prompt")).rejects.toThrow("is not a verdict");
+    });
+
+    test("an unreachable gateway is a judge refusal", async () => {
+        const judge = proxyJudge("http://127.0.0.1:1", rules.judge.model, "anthropic.x");
+        await expect(judge.verdict("prompt")).rejects.toThrow(GradeRefused);
     });
 
     test("a well-formed status with a malformed body is a judge refusal, not a crash", async () => {

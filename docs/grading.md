@@ -75,7 +75,8 @@ eval-core judge contract (`crates/eval-core/src/judge.rs`), which TypeScript
 cannot call, and the divergences are listed below.
 
 1. `p7Pair` builds the pair from the two arms' snapshots of one P7 item:
-   it refuses a snapshot of another item or two snapshots of one arm,
+   it refuses a snapshot of another item or one snapshot on both sides
+   (two runs of one arm, as in an A/A pair, are distinct snapshots),
    refuses a snapshot with a non-grade artefact, returns null when either
    probe turn ended `failed` (SIM-P46), reads each probe turn's last agent
    answer from the `proxy-call` artefact, refuses an answer that is empty
@@ -117,13 +118,15 @@ cannot call, and the divergences are listed below.
 5. `gradeP7` writes one grade per arm, each with its arm's later-attempt
    count, for the item, the exact answers, and the reference reason the
    judgment names (the judgment carries the answers' and the reference's
-   digests, and the context must match). Each grade carries the judge model,
+   digests, and the context must match), and only when the judgment's
+   recall is the one its two order verdicts imply. Each grade carries the judge model,
    the prompt and rubric digests, both order verdicts, both answer lengths
    and `longer_recalled_alone`, the calibration digest, and the permutation
    check's result and counts. It computes the digest and runs the check
    itself and records a refusal of either as `refused: <reason>`, so
-   `gate_eligible` is true only when the judgment's judge identity and the
-   calibration set's judge identity both equal the pre-registered judge's
+   `gate_eligible` is true only when the judgment's judge identity, the
+   calibration set's judge identity, and the permutation evidence's judge
+   identity all equal the pre-registered judge's
    (`grading.judge.model` with the current prompt and rubric digests), the
    set validates, and the permutation check passes.
 6. `permutationCheck` refuses counts that are not safe whole numbers and arm
@@ -153,8 +156,9 @@ cannot call, and the divergences are listed below.
 covering the request and the body read, whose expiry is a judge refusal. It refuses a judge model from the agent model's
 family (SIM-P43), where the family is the provider segment of the model id
 (`provider.model` or `region.provider.model`), and a model id whose provider
-it does not know; a reply that is not JSON, carries no text block, or whose
-text blocks together are not one verdict word is a judge refusal. The
+it does not know; an unreachable gateway, a reply that is not JSON, one that
+carries no text block, or one whose text blocks together are not one verdict
+word is a judge refusal. The
 pre-registered judge is `global.openai.gpt-5.6-luna`.
 On 2026-10-16 the two P7 fixtures went through the gateway to that model
 (`sim-runs/judge-smoke/judge-calls.jsonl` holds the four `judge` call

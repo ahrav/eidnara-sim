@@ -182,7 +182,8 @@ export function proxyJudge(
                 }
                 if (caught instanceof SyntaxError)
                     throw new GradeRefused("judge reply is not JSON");
-                throw caught;
+                if (caught instanceof GradeRefused) throw caught;
+                throw new GradeRefused(`judge call failed: ${(caught as Error).message}`);
             }
             const content = body?.output?.message?.content;
             const texts = Array.isArray(content)
@@ -219,6 +220,12 @@ function unswap(order: Order, verdict: RawVerdict): Recall {
     return order === "a_then_b" ? { a: firstOk, b: secondOk } : { a: secondOk, b: firstOk };
 }
 
+function recallFrom(orders: Record<Order, RawVerdict>): Recall | "Inconsistent" {
+    const x = unswap("a_then_b", orders.a_then_b);
+    const y = unswap("b_then_a", orders.b_then_a);
+    return x.a === y.a && x.b === y.b ? x : "Inconsistent";
+}
+
 export async function judgePair(
     client: JudgeClient,
     pair: Pair,
@@ -229,9 +236,7 @@ export async function judgePair(
     const verdicts: RawVerdict[] = [];
     for (const prompt of prompts) verdicts.push(await client.verdict(prompt));
     const orders = { a_then_b: verdicts[0], b_then_a: verdicts[1] } as Record<Order, RawVerdict>;
-    const x = unswap("a_then_b", orders.a_then_b);
-    const y = unswap("b_then_a", orders.b_then_a);
-    const recall = x.a === y.a && x.b === y.b ? x : "Inconsistent";
+    const recall = recallFrom(orders);
     const lengths = { a: normalise(pair.a).length, b: normalise(pair.b).length };
     let longer: boolean | null = null;
     if (recall !== "Inconsistent" && recall.a !== recall.b && lengths.a !== lengths.b) {
@@ -318,7 +323,7 @@ export function p7Pair(item: string, a: Snapshot, b: Snapshot): P7Inputs | null 
     if (a.item !== item || b.item !== item) {
         throw new GradeRefused(`snapshots for ${item} mix items`);
     }
-    if (a.arm === b.arm) throw new GradeRefused(`P7 item ${item}: both snapshots are one arm`);
+    if (a.id === b.id) throw new GradeRefused(`P7 item ${item}: both sides are the same snapshot`);
     const readers = [a, b].map((snapshot) => {
         assertArtefactsOnly(snapshot);
         return new ArtefactReader(snapshot);
@@ -351,7 +356,7 @@ export interface P7Context {
     inputs: string[];
     later_attempts: { a: number; b: number };
     calibration: CalibrationSet | null;
-    permutation: { trials: number; correct: number } | null;
+    permutation: { trials: number; correct: number; judge: JudgeIdentity } | null;
 }
 
 export function gradeP7(j: Judgment, c: P7Context, rules: Rules, version = 1): GradeRecord[] {
@@ -364,21 +369,23 @@ export function gradeP7(j: Judgment, c: P7Context, rules: Rules, version = 1): G
     if (j.reference !== c.reference) {
         throw new GradeRefused(`judgment for ${j.pair} was made against another reference`);
     }
+    if (canonicalJson(recallFrom(j.orders)) !== canonicalJson(j.recall)) {
+        throw new GradeRefused(`judgment for ${j.pair} records a recall its order verdicts deny`);
+    }
+    const expected = canonicalJson(judgeIdentity(rules.judge.model));
+    const requireJudge = (source: string, identity: JudgeIdentity) => {
+        if (canonicalJson(identity) !== expected) {
+            throw new GradeRefused(
+                `${source} judge ${identity.model} is not the pre-registered judge ${rules.judge.model}`,
+            );
+        }
+    };
     let digest: string | null = null;
     let calibration = "none";
     try {
         if (c.calibration) {
-            const expected = canonicalJson(judgeIdentity(rules.judge.model));
-            for (const [source, identity] of [
-                ["judgment", j.judge],
-                ["calibration", c.calibration.judge],
-            ] as const) {
-                if (canonicalJson(identity) !== expected) {
-                    throw new GradeRefused(
-                        `${source} judge ${identity.model} is not the pre-registered judge ${rules.judge.model}`,
-                    );
-                }
-            }
+            requireJudge("judgment", j.judge);
+            requireJudge("calibration", c.calibration.judge);
         }
         digest = calibrationDigest(c.calibration, rules);
         if (digest) calibration = "valid";
@@ -388,6 +395,7 @@ export function gradeP7(j: Judgment, c: P7Context, rules: Rules, version = 1): G
     let permutation = "none";
     if (c.permutation) {
         try {
+            requireJudge("permutation", c.permutation.judge);
             permutationCheck(c.permutation.trials, c.permutation.correct, rules);
             permutation = "pass";
         } catch (caught) {
