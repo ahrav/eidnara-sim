@@ -196,6 +196,27 @@ describe("compile-scenario output parent", () => {
     });
 });
 
+describe("compile-scenario dangling cache link", () => {
+    test("a cache symlink whose target does not exist yet is tolerated", () => {
+        const dir = mkdtempSync(join(tmpdir(), "sim-cli-"));
+        const outDir = join(dir, "out");
+        mkdirSync(outDir);
+        symlinkSync(join(dir, "elsewhere", "embeddings.jsonl"), join(outDir, "embeddings.jsonl"));
+        const r = run(
+            "--tier",
+            "S",
+            "--seed",
+            "101",
+            "--embedder",
+            "local",
+            "--out",
+            join(outDir, "s.json"),
+        );
+        expect(r.stderr.toString()).toBe("");
+        expect(r.exitCode).toBe(0);
+    });
+});
+
 describe("compile-scenario arguments", () => {
     test("a seed outside the tier's registered seeds is refused for a Titan compile", () => {
         const out = join(mkdtempSync(join(tmpdir(), "sim-cli-")), "s.json");

@@ -89,11 +89,25 @@ describe("committed corpus", () => {
         broken.any.lookup[0].check.musts = ["x"];
         broken.typescript.filler = "not a list";
         broken.rust.filler = [];
+        broken.schema = "sim-fact-bank/v0";
+        broken.python = {};
+        broken.rust.rationale = [];
+        broken.typescript.scoped_update[0].check.quote_style_must = "backtick";
+        broken.any.anchor[0].check.must_not = ["[unclosed"];
+        broken.any.anchor[1].id = "lookup-port";
+        delete broken.any.never_settled;
         expect(bankProblems(broken)).toEqual([
+            "fact-bank schema: sim-fact-bank/v0 is not sim-fact-bank/v1",
             "fact-bank rust/plan[0] rs-plan-field: probe missing",
+            "fact-bank rust/rationale: expected at least one template",
             "fact-bank rust/filler: expected a non-empty list of non-blank strings",
+            "fact-bank typescript/scoped_update[0] ts-scope-quotes: check key quote_style_must is not double or single",
             "fact-bank typescript/filler: expected a non-empty list of non-blank strings",
+            "fact-bank any/never_settled: kind missing",
             "fact-bank any/lookup[0] lookup-staging-alias: check key musts is not a check kind",
+            "fact-bank any/anchor[0] anchor-ticket: check key must_not pattern [unclosed is not a regular expression",
+            "fact-bank any/anchor[1] lookup-port: duplicate template id",
+            "fact-bank python: unknown language",
         ]);
     });
 
