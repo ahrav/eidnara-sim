@@ -123,12 +123,27 @@ export const unifiedDiff = (v: unknown): boolean => {
     let inBinary = false;
     let opened = false;
     let fileBody = true;
+    let oldLeft = 0;
+    let newLeft = 0;
+    const hunkComplete = () => !inHunk || (oldLeft === 0 && newLeft === 0);
     for (const line of v.replace(/\n$/, "").split("\n")) {
-        if (inHunk && /^[ +\-\\]/.test(line)) continue;
-        if (inHunk && line.length === 0) continue;
+        if (inHunk && /^[ +-]/.test(line) && !(oldLeft === 0 && newLeft === 0)) {
+            const kind = line[0];
+            if (kind === " " || kind === "-") oldLeft--;
+            if (kind === " " || kind === "+") newLeft--;
+            if (oldLeft < 0 || newLeft < 0) return false;
+            continue;
+        }
+        if (inHunk && line.startsWith("\\")) continue;
+        if (inHunk && line.length === 0 && !(oldLeft === 0 && newLeft === 0)) {
+            oldLeft--;
+            newLeft--;
+            if (oldLeft < 0 || newLeft < 0) return false;
+            continue;
+        }
         if (inBinary && !line.startsWith("diff --git ")) continue;
         if (line.startsWith("diff --git ")) {
-            if (!fileBody) return false;
+            if (!fileBody || !hunkComplete()) return false;
             inBinary = false;
             if (
                 !/^diff --git ("a\/(?:[^"\\]|\\.)*"|a\/\S+) ("b\/(?:[^"\\]|\\.)*"|b\/.+)$/.test(
@@ -140,20 +155,25 @@ export const unifiedDiff = (v: unknown): boolean => {
             opened = true;
             fileBody = false;
         } else if (line.startsWith("--- ") || line.startsWith("+++ ")) {
+            if (!hunkComplete()) return false;
             inHunk = false;
             opened = true;
             fileBody = true;
         } else if (HUNK_HEADER.test(line)) {
-            if (!opened) return false;
+            if (!opened || !hunkComplete()) return false;
+            const m = HUNK_HEADER.exec(line) as RegExpExecArray;
+            oldLeft = m[1] === undefined ? 1 : Number(m[1].slice(1));
+            newLeft = m[2] === undefined ? 1 : Number(m[2].slice(1));
             inHunk = true;
             fileBody = true;
         } else if (FILE_META.test(line)) {
+            if (!hunkComplete()) return false;
             inHunk = false;
             fileBody = true;
             if (line.startsWith("GIT binary patch")) inBinary = true;
         } else return false;
     }
-    return opened && fileBody;
+    return opened && fileBody && hunkComplete();
 };
 
 export function addedLines(patch: string): string {

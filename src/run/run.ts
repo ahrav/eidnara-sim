@@ -14,7 +14,7 @@ import type { SimConfig } from "../config/config";
 import type { ArmName } from "../hosts/arms";
 import { HostDriver } from "../hosts/driver";
 import { canonicalJson, sha256Hex } from "../prereg/canonical";
-import type { Tier } from "../prereg/schema";
+import type { Preregistration, Tier } from "../prereg/schema";
 import { preregistrationHash } from "../prereg/validate";
 import { bedrockUpstream, Gateway } from "../proxy/gateway";
 import { FaultInjector } from "../proxy/inject";
@@ -318,6 +318,16 @@ export function requireDeclaredProjects(scenario: Scenario): void {
 const EVENT_KINDS = new Set(["session_start", "user_turn", "apply_diff", "session_end"]);
 
 /** `scenario.json` is accepted only when its body still hashes to its `scenario_hash`. */
+/** One parsed pre-registration per run options object, so every startup step reads the same revision. */
+const preregs = new WeakMap<object, Preregistration>();
+function preregOf(o: Pick<RunOptions, "tier">): Preregistration {
+    const cached = preregs.get(o);
+    if (cached) return cached;
+    const loaded = loadPrereg(o.tier);
+    preregs.set(o, loaded);
+    return loaded;
+}
+
 export async function loadScenario(o: Pick<RunOptions, "config" | "out" | "seed" | "tier">) {
     const path = join(o.out, "scenario.json");
     if (!existsSync(path)) {
@@ -336,7 +346,7 @@ export async function loadScenario(o: Pick<RunOptions, "config" | "out" | "seed"
         );
     }
     const stale = scenarioInputMismatch(scenario, {
-        preregistration_sha256: preregistrationHash(loadPrereg(o.tier)),
+        preregistration_sha256: preregistrationHash(preregOf(o)),
         corpus_inputs_sha256: corpusInputsSha256(),
     });
     if (stale) throw new HarnessFailure(stale);
@@ -467,7 +477,7 @@ function validateEpisodes(raw: unknown[], scenario: Scenario, source: string): v
 
 /** The pre-registered arm order for this seed, which `order_by_seed` may permute. */
 function seedOrder(o: RunOptions): readonly string[] {
-    const prereg = loadPrereg(o.tier);
+    const prereg = preregOf(o);
     const index = prereg.seeds.indexOf(o.seed);
     if (index < 0) throw new HarnessFailure(`seed ${o.seed} is not pre-registered for ${o.tier}`);
     return prereg.arms.order_by_seed[index] ?? prereg.arms.run;
@@ -601,7 +611,7 @@ export async function loadManifest(
     };
     const digests = {
         scenario_hash: scenario.scenario_hash,
-        prereg_sha256: preregistrationHash(loadPrereg(o.tier)),
+        prereg_sha256: preregistrationHash(preregOf(o)),
         ...eidnaraIdentity(o.config.eidnara_checkout),
         ...simIdentity(),
         binaries: binaryDigests(o.config),
@@ -705,7 +715,7 @@ export async function runTier(o: RunOptions): Promise<void> {
     requireOutsideIdentity(o.out);
     requirePinnedPath(o.config);
     mkdirSync(o.out, { recursive: true });
-    requirePlainArtifacts(o.out, loadPrereg(o.tier).arms.run);
+    requirePlainArtifacts(o.out, preregOf(o).arms.run);
     takeLease(o.out);
     const cleanup: Array<() => Promise<void> | void> = [() => releaseLease(o.out)];
     let done: Promise<void> | null = null;
@@ -794,7 +804,7 @@ async function runArms(
         holds.set(timer, end);
     };
     const { config, seed } = o;
-    const prereg = loadPrereg(o.tier);
+    const prereg = preregOf(o);
     const wallBudgetMs = prereg.liveness_bounds.tier_wall_budget_ms;
     const budget = setTimeout(() => {
         stop.reason ??= `tier wall budget of ${wallBudgetMs} ms exhausted`;

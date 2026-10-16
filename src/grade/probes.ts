@@ -265,10 +265,16 @@ const shellWords = (segment: string): string[] => {
     let word = "";
     let quote = "";
     let open = false;
+    let escaped = false;
     for (const ch of segment) {
-        if (quote) {
+        if (escaped) {
+            word += ch;
+            escaped = false;
+        } else if (quote) {
             if (ch === quote) quote = "";
             else word += ch;
+        } else if (ch === "\\") {
+            escaped = true;
         } else if (ch === "'" || ch === '"') {
             quote = ch;
             open = true;
@@ -290,15 +296,19 @@ const GREP_OPERAND_OPTIONS =
  */
 const operands = (segment: string): string => {
     const words = unredirectedWords(shellWords(segment));
-    if (!/^(grep|rg)$/.test(words[0] as string)) return words.join(" ");
+    if (!/^(grep|rg|sed)$/.test(words[0] as string)) return words.join(" ");
+    const scriptOptions =
+        words[0] === "sed" ? /^(-e|-f|--expression|--file)$/ : /^(-e|-f|--regexp|--file)$/;
+    const attached =
+        words[0] === "sed" ? /^(-e.|-f.|--expression=|--file=)/ : /^(-e.|-f.|--regexp=|--file=)/;
     const files: string[] = [];
     let supplied = false;
     for (let i = 1; i < words.length; i++) {
         const w = words[i] as string;
-        if (/^(-e|-f|--regexp|--file)$/.test(w)) {
+        if (scriptOptions.test(w)) {
             supplied = true;
             i++;
-        } else if (/^(-e.|-f.|--regexp=|--file=)/.test(w)) supplied = true;
+        } else if (attached.test(w)) supplied = true;
         else if (GREP_OPERAND_OPTIONS.test(w)) i++;
         else if (!w.startsWith("-")) files.push(w);
     }
@@ -509,7 +519,7 @@ const GRADERS: Record<string, Grader> = {
 };
 
 function graderFor(probe: ProbeItem): Grader {
-    const grader = GRADERS[probe.type];
+    const grader = Object.hasOwn(GRADERS, probe.type) ? GRADERS[probe.type] : undefined;
     if (!grader) throw new GradeRefused(`no programmatic grader for ${probe.type}`);
     const check = (probe.check ?? {}) as Record<string, unknown>;
     if (probe.type === "P13" && check.must === undefined && check.commands_must === undefined) {
