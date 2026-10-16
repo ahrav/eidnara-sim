@@ -57,6 +57,9 @@ export function loadRepos(): RepoSpec[] {
     if (new Set(ids).size !== ids.length) throw new Error(`repos.json: duplicate id in ${ids}`);
     for (const repo of repos) {
         if (!SHA.test(repo.commit)) throw new Error(`repos.json: ${repo.id}: commit is not a SHA`);
+        if (typeof repo.url !== "string" || !/^https:\/\/\S+$/.test(repo.url)) {
+            throw new Error(`repos.json: ${repo.id}: url must be an https URL`);
+        }
         if (typeof repo.license_file !== "string" || !isPlainRelativePath(repo.license_file)) {
             throw new Error(
                 `repos.json: ${repo.id}: license_file must be a relative path in the clone`,
@@ -175,11 +178,13 @@ export function buildTwin(baseDir: string, twinDir: string, twin: TwinSpec): str
 }
 
 /** Identical Cargo result lines can represent distinct targets, so summarize preserves their multiplicity. */
+const ANSI = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
+
 export function summarize(output: string): string[] {
     const results: string[] = [];
     const fails = new Set<string>();
     for (const raw of output.split("\n")) {
-        const line = raw.trim();
+        const line = raw.replace(ANSI, "").trim();
         if (/^test result:/.test(line)) results.push(line.replace(/; finished in .*$/, ""));
         else if (/^\(fail\) /.test(line)) fails.add(line.replace(/ \[[\d.]+m?s\]$/, ""));
         else if (/^\d+ (pass|fail|skip)$/.test(line)) results.push(line);

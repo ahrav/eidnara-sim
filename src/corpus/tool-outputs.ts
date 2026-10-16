@@ -65,6 +65,23 @@ export function classify(tool: string, command: string, content: string): Sample
     return null;
 }
 
+/** A committed sample's kind must follow from its tool, command, and clipped content. */
+export function kindMatches(sample: {
+    kind: string;
+    tool: string;
+    command: string;
+    content: string;
+}): boolean {
+    if (sample.kind === "stack_trace") {
+        const last = sample.content.trimEnd().split("\n").at(-1) ?? "";
+        return (
+            sample.tool === "execute_bash" &&
+            (sample.content.includes(TRACEBACK) || TRACE_END.test(last))
+        );
+    }
+    return classify(sample.tool, sample.command, sample.content) === sample.kind;
+}
+
 export function commandOf(args: string): string {
     try {
         const parsed = JSON.parse(args) as { command?: string; path?: string };

@@ -15,7 +15,7 @@ import { ERROR_CODE_FIELDS, entryProblems, parseJsonl, SAMPLE_FIELDS } from "./e
 import { CATEGORIES, CATEGORY_NAMES, KINDS, QUANTITIES, TABLES, TRACELAB_FILES } from "./fit";
 import { loadRepos, REPOS_DIR } from "./repos";
 import { CORPUS_DIR, loadSources, parseJson } from "./sources";
-import { OPENHANDS_FILE } from "./tool-outputs";
+import { kindMatches, OPENHANDS_FILE } from "./tool-outputs";
 
 const SAMPLES_PER_KIND = 150;
 const ERROR_CODES = 200;
@@ -125,8 +125,26 @@ export function checkCorpus(): CorpusReport {
     });
     need(new Set(perTrajectory).size === samples.length, "samples: a trajectory repeats a kind");
     for (const s of samples) {
-        const e = s as { id?: string; content?: string; chars?: number; truncated?: boolean };
+        const e = s as {
+            id?: string;
+            kind?: string;
+            tool?: string;
+            command?: string;
+            content?: string;
+            chars?: number;
+            truncated?: boolean;
+        };
         const content = e.content ?? "";
+        const consistent = kindMatches({
+            kind: e.kind ?? "",
+            tool: e.tool ?? "",
+            command: e.command ?? "",
+            content,
+        });
+        need(
+            consistent,
+            `samples ${e.id}: kind ${e.kind} does not follow from tool, command, and content`,
+        );
         const sized = e.truncated
             ? content.length <= CONTENT_CAP && (e.chars ?? 0) > CONTENT_CAP
             : content.length === e.chars && content.length <= CONTENT_CAP;
