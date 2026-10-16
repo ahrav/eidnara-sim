@@ -54,6 +54,8 @@ const agentCall = (response_text: string, arm = "eidnara", session = "s-1"): Cal
         error: null,
         input_tokens: 1,
         output_tokens: 1,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
         response_text,
     };
     return view;
