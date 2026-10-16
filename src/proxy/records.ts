@@ -110,7 +110,11 @@ export function readRecords(path: string): CallRecord[] {
     });
 }
 
-/** `wall_ms` is the write-time Unix timestamp in milliseconds, clamped to the preceding record's value. */
+/**
+ * `wall_ms` is the write-time Unix timestamp in milliseconds, clamped to the preceding record's
+ * value. The sequence advances only after the append succeeded, so a failed append leaves the
+ * file and the next sequence number as they were.
+ */
 export class RecordWriter {
     private seq = 0;
     private lastWall = 0;
@@ -128,10 +132,10 @@ export class RecordWriter {
         const record = { ...partial, seq: this.seq, wall_ms } as CallRecord;
         const problems = recordProblems(record);
         if (problems.length > 0) throw new Error(`call record refused: ${problems.join(", ")}`);
+        if (this.path) appendFileSync(this.path, `${JSON.stringify(record)}\n`);
         this.seq++;
         this.lastWall = wall_ms;
         this.records.push(record);
-        if (this.path) appendFileSync(this.path, `${JSON.stringify(record)}\n`);
         return record;
     }
 }

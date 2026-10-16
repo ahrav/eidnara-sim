@@ -40,7 +40,10 @@ mechanism for (`host_upgrade`, `two_hosts_one_daemon`, so a full XL run is
 refused up front), a `--models` list that repeats an entry, and a
 `model_switch` schedule with fewer than two models. A `daemon_sigkill_mid_fold` needs a
 `first_summarizer_call` trigger, one session carries at most one mid-fold
-kill and one laptop sleep, and `store_full` supports `sessions: 1` only.
+kill and one laptop sleep, a laptop sleep needs an idle gap before its
+session's start, a strategy accepts only its own limit parameters (`count`
+for `burst`; `probability` and `calls` for `intermittent`), and `store_full`
+supports `sessions: 1` only. `--out /` is refused.
 `--out` may not overlap the Pi install either. An `--out` inside this checkout must be
 ignored by git (`runs/` is), and may not overlap a corpus checkout, since
 both trees are part of the run identity. Before taking the lease, every artifact the run appends to or
@@ -104,8 +107,7 @@ toolchain wrappers are created exclusively after removing any planted name.
    of the seed's pre-registered arm order, when a resumed journal breaks the
    run's state machine (a `ResumeRun` or arm entry before `StartRun`, an arm
    entry before `StartArm` or after `EndArm`, an `EndTurn` or `EndJob` with
-   no open item, or an `Event` naming an unscheduled, repeated, or reordered
-   event), when any of those digests changed, when an
+   no open item, or an `Event` that is not the arm's next scheduled event), when any of those digests changed, when an
    interception result, probed path, or toolchain version
    changed, or when the selected host's version or transcript paths changed,
    and appends its preflight result to `preflight.jsonl` (dropping an
@@ -121,7 +123,8 @@ toolchain wrappers are created exclusively after removing any planted name.
 4. Start the capture proxy; its records append to `calls.jsonl`, and a
    reopened writer continues the sequence after the last complete record. A
    cut last line is dropped; a complete line that is not a record in
-   sequence refuses the run. The fault injector replays the existing
+   sequence refuses the run. The writer advances its sequence only after an
+   append succeeded, so a failed append leaves the file recoverable. The fault injector replays the existing
    records, so a fault injected and observed before a hard kill keeps its
    witness in the resumed run. Witnesses are kept per arm: the scheduler arms
    each proxy fault for the arm it is running, and `faults.jsonl` lists one

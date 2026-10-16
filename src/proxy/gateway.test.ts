@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { appendFileSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -1050,6 +1050,16 @@ describe("call records", () => {
         const [l0, l1] = good.trim().split("\n") as [string, string];
         writeFileSync(path, `${l1}\n${l0}\n`);
         expect(() => new RecordWriter(path)).toThrow(/line 1 is corrupt: seq 1 at position 0/);
+    });
+
+    test("a failed append leaves the sequence where it was", () => {
+        const dir = mkdtempSync(join(tmpdir(), "sim-records-"));
+        const path = join(dir, "sub", "calls.jsonl");
+        const writer = new RecordWriter(path);
+        expect(() => writer.write(RECORD)).toThrow(/ENOENT/);
+        mkdirSync(join(dir, "sub"));
+        expect(writer.write(RECORD).seq).toBe(0);
+        expect(readFileSync(path, "utf8").trim().split("\n")).toHaveLength(1);
     });
 
     test("a corrupt complete last line refuses the writer instead of resuming before it", () => {

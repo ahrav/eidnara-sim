@@ -97,7 +97,8 @@ const realExisting = (path: string): string => {
     return join(realpathSync(probe), path.slice(probe.length));
 };
 
-const within = (path: string, dir: string) => path === dir || path.startsWith(`${dir}/`);
+const within = (path: string, dir: string) =>
+    dir === "/" || path === dir || path.startsWith(`${dir}/`);
 
 const ARTIFACTS = [
     `lease.${process.pid}.tmp`,
@@ -243,7 +244,7 @@ export function requireJournalShape(
             const at = position.get(String(e.event));
             const next = cursor.get(e.arm) ?? 0;
             if (at === undefined) throw bad(e, `names unscheduled event ${String(e.event)}`);
-            if (at < next) throw bad(e, `repeats or reorders event ${String(e.event)}`);
+            if (at !== next) throw bad(e, `is not the next scheduled event (${String(e.event)})`);
             cursor.set(e.arm, at + 1);
         }
     }
@@ -405,6 +406,17 @@ function strategyProblems(
         if (strategy !== expected) problems.push(`${type} uses the ${expected} strategy`);
         return problems;
     }
+    const allowed: Record<string, string[]> = {
+        single: [],
+        burst: ["count"],
+        intermittent: ["probability", "calls"],
+        persistent: [],
+    };
+    for (const key of ["count", "calls", "probability"]) {
+        if (key in params && !(allowed[strategy] ?? []).includes(key)) {
+            problems.push(`${key} does not apply to the ${strategy} strategy`);
+        }
+    }
     if (strategy === "burst" && typeof params.count !== "number")
         problems.push("burst needs count");
     if (strategy === "intermittent") {
@@ -492,6 +504,23 @@ function validateEpisodes(raw: unknown[], scenario: Scenario, source: string): v
                 );
             }
             perSession.add(key);
+        }
+        if (episode.type === "laptop_sleep") {
+            const events = scenario.events.map((e) => ({
+                kind: String(e.kind),
+                session: String(e.session),
+                scenario_ms: Number(e.scenario_ms),
+            }));
+            const at = events.findIndex(
+                (e) => e.kind === "session_start" && e.session === episode.trigger.session,
+            );
+            const before = at > 0 ? (events[at - 1]?.scenario_ms ?? null) : null;
+            const gap = at >= 0 && before !== null && (events[at]?.scenario_ms ?? 0) > before;
+            if (!gap) {
+                throw new HarnessFailure(
+                    `${source}: laptop_sleep ${episode.id} targets session ${episode.trigger.session}, which has no idle gap before its start`,
+                );
+            }
         }
         if (episode.type === "store_full" && episode.params.sessions !== 1) {
             throw new HarnessFailure(`${source}: store_full supports sessions: 1 only`);
@@ -766,6 +795,7 @@ export async function runSteps(steps: Array<() => Promise<void> | void>): Promis
 
 export async function runTier(o: RunOptions): Promise<void> {
     plainPath(o.out);
+    if (resolve(o.out) === "/") throw new HarnessFailure("--out may not be the filesystem root");
     requireOutsideCheckout(o.out, o.config.eidnara_checkout);
     requireOutsideCheckout(o.out, o.config.pi_install, "the Pi install");
     requireOutsideIdentity(o.out);

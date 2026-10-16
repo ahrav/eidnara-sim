@@ -61,7 +61,11 @@ function scenarioBody(seed = 101, tier = "S") {
             { id: "s-0000", requests: 2 },
             { id: "s-0001", requests: 1 },
         ],
-        events: [{ id: "e-000000", kind: "session_start", scenario_ms: 0, session: "s-0000" }],
+        events: [
+            { id: "e-000000", kind: "session_start", scenario_ms: 0, session: "s-0000" },
+            { id: "e-000001", kind: "session_end", scenario_ms: 5, session: "s-0000" },
+            { id: "e-000002", kind: "session_start", scenario_ms: 10, session: "s-0001" },
+        ],
         faults: [],
     };
 }
@@ -316,10 +320,13 @@ describe("run inputs", () => {
             /unscheduled event e-9/,
         );
         expect(() => requireJournalShape([...start, ev("e-2"), ev("e-1")], ids)).toThrow(
-            /reorders event e-1/,
+            /is not the next scheduled event \(e-2\)/,
         );
         expect(() => requireJournalShape([...start, ev("e-1"), ev("e-1")], ids)).toThrow(
-            /repeats or reorders/,
+            /is not the next scheduled event \(e-1\)/,
+        );
+        expect(() => requireJournalShape([...start, ev("e-2")], ids)).toThrow(
+            /is not the next scheduled event \(e-2\)/,
         );
     });
 
@@ -400,16 +407,20 @@ describe("run inputs", () => {
         expect(() => faultOverride([kill("k1"), kill("k2")], scenario)).toThrow(
             /two daemon_sigkill_mid_fold episodes target session s-0000/,
         );
-        const sleep = (id: string) => ({
+        const sleep = (id: string, session = "s-0001") => ({
             ...episode,
             id,
             type: "laptop_sleep",
             seam: SEAMS.laptop_sleep,
-            trigger: { kind: "session_start", session: "s-0000" },
+            trigger: { kind: "session_start", session },
         });
         expect(() => faultOverride([sleep("z1"), sleep("z2")], scenario)).toThrow(
-            /two laptop_sleep episodes target session s-0000/,
+            /two laptop_sleep episodes target session s-0001/,
         );
+        expect(() => faultOverride([sleep("z0", "s-0000")], scenario)).toThrow(
+            /no idle gap before its start/,
+        );
+        expect(faultOverride([sleep("z1")], scenario)).toHaveLength(1);
         const longFull = {
             ...episode,
             type: "store_full",
@@ -424,6 +435,10 @@ describe("run inputs", () => {
         const switchOnTurn = { ...episode, type: "model_switch", seam: SEAMS.model_switch };
         expect(() => faultOverride([switchOnTurn], scenario)).toThrow(
             /model_switch fires at a session_start trigger only/,
+        );
+        const singleWithCount = { ...episode, params: { count: 3 } };
+        expect(() => faultOverride([singleWithCount], scenario)).toThrow(
+            /count does not apply to the single strategy/,
         );
         const burstNoCount = { ...episode, strategy: "burst" };
         expect(() => faultOverride([burstNoCount], scenario)).toThrow(/burst needs count/);
@@ -469,7 +484,7 @@ describe("run inputs", () => {
         };
         const o: RunOptions = { config, tier: "S", seed: 101, host: "pi", out };
         await expect(loadManifest({ ...o, events: 9 }, scenario, checks)).rejects.toThrow(
-            /--events 9 exceeds the 1 compiled events/,
+            /--events 9 exceeds the 3 compiled events/,
         );
         const first = await loadManifest(o, scenario, checks);
         expect(first.manifest.preflight.hosts[0]?.version).toBe("0.80.2");
