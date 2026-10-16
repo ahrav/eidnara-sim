@@ -1709,7 +1709,9 @@ Confidence: low - [evidence](evidence/sim-p68-clock-restored-on-resume.md).
 PROPOSED: reconstructed from the condensed index in spec #1007; the M4 unit
 tests verify the record, and a default tier run reaches it.
 Existing check: src/run/scheduler.test.ts - the first entry after `ResumeRun`
-carries the arm's last journaled `scenario_ms`
+carries the arm's last journaled `scenario_ms`, and `invariants()` requires the
+journal-derived busy set empty at every `BeginTurn` and `AdvanceClock`,
+including the first after resume
 Impact: Resume moves time or holds stale busy entries.
 Open questions: None.
 

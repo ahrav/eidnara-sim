@@ -119,8 +119,8 @@ export class Scheduler {
             this.arm = arm;
             this.clock = new Clock(mine.at(-1)?.scenario_ms ?? 0, this.o.journal);
             const driver = this.o.drivers[arm] as ArmDriver;
-            driver.bind(this.handle(++this.generation, driver));
             try {
+                driver.bind(this.handle(++this.generation, driver));
                 if (!mine.some((e) => e.kind === "StartArm")) {
                     await driver.reset();
                     this.o.proxy?.reset?.();
@@ -287,7 +287,7 @@ export class Scheduler {
             } finally {
                 clock.end(turn);
             }
-            const state = outcome.failed ? "failed" : "completed";
+            const state = outcome.failed === undefined ? "completed" : "failed";
             const item = e.probe ? { probe: e.probe, state } : {};
             this.log({ kind: "EndTurn", event: e.id, outcome: outcome.failed ?? "ok", ...item });
             await Bun.sleep(this.o.settleMs ?? 1_000);

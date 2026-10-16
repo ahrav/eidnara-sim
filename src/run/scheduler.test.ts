@@ -1,6 +1,7 @@
 import { describe, expect, setSystemTime, test } from "bun:test";
 import {
     existsSync,
+    linkSync,
     mkdtempSync,
     readdirSync,
     readFileSync,
@@ -20,6 +21,7 @@ import {
     type Entry,
     Journal,
     leaseHost,
+    pidNamespace,
     readJournal,
     releaseLease,
     takeLease,
@@ -93,6 +95,7 @@ function invariants(entries: Entry[]): void {
     }
     const busy = new BusyCount();
     for (const e of entries) {
+        if (e.kind === "BeginTurn") expect(busy.open()).toEqual([]);
         busy.apply(e);
         if (e.kind === "AdvanceClock") expect(busy.open()).toEqual([]);
     }
@@ -324,6 +327,43 @@ describe("Journal and lease", () => {
         );
         expect(takeLease(d).pid).toBe(process.pid);
         releaseLease(d);
+    });
+
+    test("a dead lease from another pid namespace on this machine is refused, since its pid cannot be probed here", () => {
+        const d = dir();
+        const mine = takeLease(d);
+        releaseLease(d);
+        expect(typeof mine.ns).toBe("string");
+        const dead = Bun.spawnSync(["true"]).pid;
+        writeFileSync(
+            join(d, "lease.0.json"),
+            JSON.stringify({ ...mine, pid: dead, ns: "pid:[1]", released: undefined }),
+        );
+        expect(() => takeLease(d)).toThrow(/is leased by pid/);
+    });
+
+    test("a lease that parses to the wrong shape refuses the directory instead of being trusted", () => {
+        const d = dir();
+        writeFileSync(
+            join(d, "lease.0.json"),
+            JSON.stringify({
+                pid: process.pid,
+                host: leaseHost(),
+                started_wall_ms: 0,
+                released: "false",
+            }),
+        );
+        expect(() => takeLease(d)).toThrow(/malformed/);
+    });
+
+    test("a journal path that is a hard link is refused and the other name left alone", () => {
+        const d = dir();
+        const other = join(d, "other.txt");
+        writeFileSync(other, "bytes with no newline");
+        const link = join(d, "journal.jsonl");
+        linkSync(other, link);
+        expect(() => new Journal(link)).toThrow(/links/);
+        expect(readFileSync(other, "utf8")).toBe("bytes with no newline");
     });
 
     test("a lease file whose number is outside the safe integer range refuses the directory", () => {
@@ -837,6 +877,30 @@ describe("Scheduler", () => {
         invariants(j.entries);
     });
 
+    test("a driver whose bind throws leaves no live handle behind", async () => {
+        const j = new Journal(join(dir(), "j.jsonl"));
+        let handle: ArmHandle | null = null;
+        const driver: ArmDriver = {
+            ...fakeDriver([]),
+            bind: (h) => {
+                handle = h;
+                throw new Error("bind failed");
+            },
+        };
+        await expect(
+            new Scheduler({
+                events: fixtureEvents(1),
+                faults: [],
+                journal: j,
+                settleMs: 0,
+                order: ["a"],
+                drivers: { a: driver },
+            }).run(),
+        ).rejects.toThrow(/bind failed/);
+        expect(() => handle?.jobStart("late")).toThrow(/arm has ended/);
+        expect(j.entries.map((e) => e.kind)).toEqual(["StartRun"]);
+    });
+
     test("a fault the driver cannot carry out fails the run, and the journal stays failed on reopen", async () => {
         const path = join(dir(), "j.jsonl");
         const j = new Journal(path);
@@ -1087,12 +1151,32 @@ describe("Scheduler", () => {
         expect(kinds.indexOf("EndJob:b")).toBeLessThan(kinds.indexOf("EndArm:b"));
     });
 
-    test("a failed turn's Event carries the driver's outcome", async () => {
+    test("a failed turn's Event carries the driver's outcome, and an empty failure string is still a failure", async () => {
         const j = new Journal(join(dir(), "j.jsonl"));
         const driver: ArmDriver = {
             ...fakeDriver([]),
             event: async (e) => (e.kind === "user_turn" && e.index === 1 ? { failed: "boom" } : {}),
         };
+        const probed = fixtureEvents(2).map((e) =>
+            e.kind === "user_turn" ? { ...e, probe: `probe-${e.index}` } : e,
+        );
+        const empty: ArmDriver = {
+            ...fakeDriver([]),
+            event: async (e) => (e.kind === "user_turn" && e.index === 0 ? { failed: "" } : {}),
+        };
+        const k = new Journal(join(dir(), "j.jsonl"));
+        await new Scheduler({
+            events: probed,
+            faults: [],
+            journal: k,
+            settleMs: 0,
+            order: ["a"],
+            drivers: { a: empty },
+        }).run();
+        expect(k.entries.filter((e) => e.kind === "EndTurn").map((e) => e.state)).toEqual([
+            "failed",
+            "completed",
+        ]);
         await new Scheduler({
             events: fixtureEvents(2),
             faults: [],

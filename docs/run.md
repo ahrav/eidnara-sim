@@ -10,9 +10,13 @@ Leases are files `lease.<n>.json`, and the highest number names the holder.
 process on another machine, refuses the call. The machine is `/etc/machine-id`
 (the hostname where that file is absent), so machines or containers that share
 a hostname on one directory stay distinct; a lease carries the kernel boot id,
-so one left by an earlier boot of this machine reads as dead; and the holder is
+so one left by an earlier boot of this machine reads as dead; it carries the
+holder's pid namespace, so a lease from another namespace on this machine is
+refused rather than probed against unrelated local pids; and the holder is
 identified by pid and by its kernel start time (`/proc/<pid>/stat`), so a pid
-that a later process reuses still reads as a dead holder. A lease whose process on this host has
+that a later process reuses still reads as a dead holder. A lease file that
+does not parse is one a kill cut and reads as dead; one that parses to the
+wrong shape is corruption and refuses the directory. A lease whose process on this host has
 exited, or that a kill left unreadable, is taken over by writing a uniquely
 named temporary file with the process id, host, start time, and start ticks
 and linking it to `lease.<n+1>.json`. Exactly one of several racing resumers can create that
@@ -25,7 +29,8 @@ free whichever machine released it.
 ## Journal
 
 `Journal` opens its file without following symlinks, requires a regular
-file, and reads and truncates it through that one descriptor. On read it
+file with one link owned by the harness user, and reads and truncates it
+through that one descriptor. On read it
 accepts a line only when it parses, carries the next `seq`, names a known
 `kind`, has `arm` and finite `scenario_ms` and `wall_ms`, and keeps its arm's
 `scenario_ms` non-decreasing. It appends one JSON line per entry with `seq` (0, 1, 2, ... in append
@@ -44,7 +49,7 @@ entries of different arms are not ordered by scenario time.
 | `StartArm`, `EndArm` | An arm starts, after its driver's reset, and finishes |
 | `AdvanceClock` | The clock jumps; carries `from_ms`, an empty `busy` list, and the next event id or the laptop-sleep fault |
 | `BeginTurn` | A user turn is delivered |
-| `EndTurn` | The turn is answered; a probe turn carries `probe` and `state` (`completed` or `failed`) |
+| `EndTurn` | The turn is answered; a probe turn carries `probe` and `state` (`completed`, or `failed` whenever the driver returned `failed`, even empty) |
 | `RegisterJob`, `EndJob` | A background job starts and ends; on resume, a job in flight at the kill gets an `EndJob` with outcome `failed(interrupted)` |
 | `FaultFired`, `FaultObserved` | A scheduled fault fires, and the driver returns its evidence |
 | `ItemState` | On resume, an in-flight turn or a scheduler fault without evidence is `failed(interrupted)`; the daemon exits; a scheduler fault the driver could not carry out is `failed` with `fatal: true`, as is a daemon exit outside an outage window |

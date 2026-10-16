@@ -9,6 +9,7 @@ import {
     openSync,
     readdirSync,
     readFileSync,
+    readlinkSync,
     renameSync,
     rmSync,
     writeFileSync,
@@ -75,9 +76,26 @@ interface Lease {
     pid: number;
     host: string;
     boot?: string;
+    ns?: string;
     started_wall_ms: number;
     started_ticks?: number;
     released?: boolean;
+}
+
+const optional = (v: unknown, type: string) => v === undefined || typeof v === type;
+
+function isLease(v: unknown): v is Lease {
+    if (typeof v !== "object" || v === null) return false;
+    const l = v as Record<string, unknown>;
+    return (
+        Number.isSafeInteger(l.pid) &&
+        typeof l.host === "string" &&
+        optional(l.boot, "string") &&
+        optional(l.ns, "string") &&
+        typeof l.started_wall_ms === "number" &&
+        optional(l.started_ticks, "number") &&
+        optional(l.released, "boolean")
+    );
 }
 
 function readTrimmed(path: string): string | null {
@@ -126,17 +144,34 @@ function alive(pid: number): boolean {
 }
 
 /** A holder is alive when its incarnation still runs; a recycled pid is a dead holder. */
-function holderAlive(held: Lease, boot: string | undefined): boolean {
-    if (held.boot !== undefined && boot !== undefined && held.boot !== boot) return false;
+function holderAlive(held: Lease, mine: Lease): boolean {
+    if (held.boot !== undefined && mine.boot !== undefined && held.boot !== mine.boot) return false;
+    if (held.ns !== undefined && mine.ns !== undefined && held.ns !== mine.ns) return true;
     const ticks = held.started_ticks === undefined ? null : startTicks(held.pid);
     return ticks === null ? alive(held.pid) : ticks === held.started_ticks;
 }
 
+/**
+ * A lease that fails to parse is one a kill cut mid-write and reads as dead; one that parses to
+ * the wrong shape is corruption and refuses the directory.
+ */
 function readLease(path: string): Lease | null {
+    let parsed: unknown;
     try {
-        return JSON.parse(readFileSync(path, "utf8")) as Lease;
+        parsed = JSON.parse(readFileSync(path, "utf8"));
     } catch {
         return null;
+    }
+    if (!isLease(parsed)) throw new Error(`lease ${path} is malformed`);
+    return parsed;
+}
+
+/** The pid namespace this process lives in; pids from another namespace cannot be probed here. */
+export function pidNamespace(): string | undefined {
+    try {
+        return readlinkSync("/proc/self/ns/pid");
+    } catch {
+        return undefined;
     }
 }
 
@@ -168,6 +203,7 @@ export function takeLease(dir: string): Lease {
         pid: process.pid,
         host: leaseHost(),
         boot: bootId(),
+        ns: pidNamespace(),
         started_wall_ms: Date.now(),
         started_ticks: startTicks(process.pid) ?? undefined,
     };
@@ -175,7 +211,7 @@ export function takeLease(dir: string): Lease {
         const numbers = leaseNumbers(dir);
         const top = numbers.at(-1);
         const held = top === undefined ? null : readLease(join(dir, `lease.${top}.json`));
-        if (held && !held.released && (held.host !== mine.host || holderAlive(held, mine.boot))) {
+        if (held && !held.released && (held.host !== mine.host || holderAlive(held, mine))) {
             throw new Error(`run directory ${dir} is leased by pid ${held.pid} on ${held.host}`);
         }
         const staged = join(dir, `lease.${randomUUID()}.tmp`);
@@ -254,8 +290,10 @@ export class Journal {
         this.fd = openSync(path, O_RDWR | O_APPEND | O_CREAT | O_NOFOLLOW, 0o644);
         let read: Entry[] & { bytes?: number };
         try {
-            if (!fstatSync(this.fd).isFile())
-                throw new Error(`journal ${path} is not a regular file`);
+            const st = fstatSync(this.fd);
+            if (!st.isFile()) throw new Error(`journal ${path} is not a regular file`);
+            if (st.nlink !== 1) throw new Error(`journal ${path} has ${st.nlink} links`);
+            if (st.uid !== process.getuid?.()) throw new Error(`journal ${path} has another owner`);
             read = readJournal(this.fd);
         } catch (caught) {
             closeSync(this.fd);
