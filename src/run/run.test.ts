@@ -363,6 +363,16 @@ describe("run inputs", () => {
             trigger: { kind: "session_start", session: "s-0000" },
         };
         expect(() => faultOverride([killOnStart], scenario)).toThrow(/first_summarizer_call/);
+        const kill = (id: string) => ({
+            ...episode,
+            id,
+            type: "daemon_sigkill_mid_fold",
+            seam: SEAMS.daemon_sigkill_mid_fold,
+            trigger: { kind: "first_summarizer_call", session: "s-0000" },
+        });
+        expect(() => faultOverride([kill("k1"), kill("k2")], scenario)).toThrow(
+            /two mid-fold kills target session s-0000/,
+        );
         const switchOnTurn = { ...episode, type: "model_switch", seam: SEAMS.model_switch };
         expect(() => faultOverride([switchOnTurn], scenario)).toThrow(
             /model_switch fires at a session_start trigger only/,
@@ -550,8 +560,7 @@ describe("run inputs", () => {
             "opencode",
             "opencode_sdk",
             "pi",
-            "pi_lock",
-            "pi_package",
+            "pi_install",
         ]);
         const swapped = { ...config, daemon_binary: join(out, "daemon") };
         writeFileSync(swapped.daemon_binary, "daemon 2");

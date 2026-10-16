@@ -39,7 +39,7 @@ root inside it), a schedule with a fault type the host driver has no
 mechanism for (`host_upgrade`, `two_hosts_one_daemon`, so a full XL run is
 refused up front), a `--models` list that repeats an entry, and a
 `model_switch` schedule with fewer than two models. A `daemon_sigkill_mid_fold` needs a
-`first_summarizer_call` trigger. An `--out` inside this checkout must be
+`first_summarizer_call` trigger, and one session carries at most one. An `--out` inside this checkout must be
 ignored by git (`runs/` is), and may not overlap a corpus checkout, since
 both trees are part of the run identity. Before taking the lease, every artifact the run appends to or
 replaces (`journal.jsonl`, `calls.jsonl`, the manifest, the scenario, the
@@ -89,8 +89,9 @@ toolchain wrappers are created exclusively after removing any planted name.
    working-tree digest (a digest covers tracked edits and untracked
    unignored files), the commit and working-tree digest of every corpus
    checkout the scenario's projects clone from, the SHA-256 of the daemon,
-   OpenCode, and Pi executables, the whole installed Pi package directory and
-   the Pi install's lock file, the Node runtime Pi runs on, the libfaketime
+   OpenCode, and Pi executables, the whole Pi install tree (every file under
+   `pi_install`, since Node resolves the CLI's dependencies there), the Node
+   runtime Pi runs on, the libfaketime
    interposer, and the OpenCode SDK module the host stack imports (`absent`
    when not installed), the
    Bedrock region and profile name, base wall time, and preflight result. The working-tree digest hashes an
@@ -229,7 +230,9 @@ deterministic fault of the set fired, every fault with a mechanism observed
 the full store with `avail_kb: 0`), one fault-tagged sleep jump per arm and
 sleep, agent calls on both configured models, and no duplicate `Event` entry
 (the mid-fold kills fire only when a summarizer call happens, so they are not
-required); the scheduled run must hold the clock with at least one job while
+required), every completed turn `ok` (so a store filled by `store_full`
+still served the turns after it) and, on `eidnara`, the daemon's log naming
+the full store; the scheduled run must hold the clock with at least one job while
 no turn is open (SIM-P13), and every finished run's journal must open with a
 `Preflight` entry, before `StartRun` or `ResumeRun`, whose probed binaries
 all intercepted, hold exactly one `EndArm` per arm the manifest names, and

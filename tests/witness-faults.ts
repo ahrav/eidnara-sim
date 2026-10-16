@@ -317,6 +317,7 @@ for (const name of ["scheduled", "rogue"]) {
 type ArmSummary = {
     fired: unknown[];
     observed: { fault: unknown; evidence: unknown }[];
+    turns: unknown[];
     models: unknown[];
     duplicate_events: number;
 };
@@ -368,6 +369,10 @@ const armEvidence = (
             );
         }
         check(a.duplicate_events === 0, `${name}/${arm}: no duplicate Event entry`);
+        check(
+            a.turns.length > 0 && a.turns.every((t) => String(t).endsWith(":ok")),
+            `${name}/${arm}: every completed turn ended ok, including those after the faults`,
+        );
         if (arm === "eidnara") mechanismEvidence(name, a, expected);
     }
 };
@@ -391,6 +396,11 @@ const mechanismEvidence = (name: string, a: ArmSummary, expected: FaultEpisode[]
         }
         if (f.type === "store_full") {
             check(e.avail_kb === 0, `${name}/eidnara: ${f.id} filled the store (avail_kb 0)`);
+            const s = summary[name as "scheduled" | "resume"];
+            check(
+                (s?.full_store_enospc_log_lines ?? 0) > 0,
+                `${name}/eidnara: the daemon logged the full store (database or disk is full)`,
+            );
         }
     }
 };

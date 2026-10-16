@@ -444,6 +444,7 @@ export function faultOverride(raw: unknown, scenario: Scenario): FaultEpisode[] 
 function validateEpisodes(raw: unknown[], scenario: Scenario, source: string): void {
     const turns = new Map(scenario.sessions.map((x) => [x.id, x.requests]));
     const ids = new Set<string>();
+    const foldKills = new Set<string>();
     raw.forEach((value, i) => {
         const problems = episodeProblems(value);
         if (problems.length > 0) {
@@ -452,6 +453,14 @@ function validateEpisodes(raw: unknown[], scenario: Scenario, source: string): v
         const episode = value as FaultEpisode;
         if (ids.has(episode.id)) throw new HarnessFailure(`${source}: duplicate id ${episode.id}`);
         ids.add(episode.id);
+        if (episode.type === "daemon_sigkill_mid_fold") {
+            if (foldKills.has(episode.trigger.session)) {
+                throw new HarnessFailure(
+                    `${source}: two mid-fold kills target session ${episode.trigger.session}`,
+                );
+            }
+            foldKills.add(episode.trigger.session);
+        }
         try {
             validateFault(episode, turns);
         } catch (caught) {
@@ -486,12 +495,6 @@ function eventCount(requested: number | undefined, compiled: number): number {
         throw new HarnessFailure(`--events ${requested} exceeds the ${compiled} compiled events`);
     }
     return requested;
-}
-
-/** The lock file that pins the Pi install's dependency tree, whichever package manager wrote it. */
-function piLock(config: SimConfig): string {
-    const names = ["package-lock.json", "bun.lock", "bun.lockb", "pnpm-lock.yaml", "yarn.lock"];
-    return names.map((n) => join(config.pi_install, n)).find((p) => existsSync(p)) ?? "absent";
 }
 
 /** Every regular file under `dir`, hashed by length-framed relative path and content. */
@@ -530,23 +533,23 @@ export function corpusIdentity(
 }
 
 /**
- * Runtime artifacts the hosts load, hashed by content. The interposer and the OpenCode SDK are
- * `absent` when not yet built or not installed; preflight builds the interposer before this runs.
+ * Runtime artifacts the hosts load, hashed by content; the Pi install is hashed as a whole tree,
+ * since Node resolves the CLI's dependencies anywhere under it. The interposer and the OpenCode
+ * SDK are `absent` when not yet built or not installed; preflight builds the interposer first.
  */
 function binaryDigests(config: SimConfig): Record<string, string> {
     const files = {
         daemon: config.daemon_binary,
         opencode: config.opencode_binary,
         pi: piCli(config),
-        pi_package: dirname(dirname(piCli(config))),
-        pi_lock: piLock(config),
+        pi_install: config.pi_install,
         faketime: FAKETIME_LIB,
         node: realpathSync(Bun.which("node") ?? "node"),
         opencode_sdk: join(config.eidnara_checkout, OPENCODE_SDK),
     };
     return Object.fromEntries(
         Object.entries(files).map(([name, path]) => {
-            const optional = name === "opencode_sdk" || name === "faketime" || name === "pi_lock";
+            const optional = name === "opencode_sdk" || name === "faketime";
             if (optional && !existsSync(path)) return [name, "absent"];
             if (lstatSync(path).isDirectory()) return [name, directoryDigest(path)];
             return [name, createHash("sha256").update(readFileSync(path)).digest("hex")];
