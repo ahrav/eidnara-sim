@@ -248,6 +248,8 @@ describe("Scheduler", () => {
         const jump = jumps[0] as Entry;
         expect(jump.scenario_ms - (jump.from_ms as number)).toBe(8 * 3_600_000 - 60_000);
         expect(jump.scenario_ms).toBeGreaterThanOrEqual(8 * 3_600_000);
+        const observed = j.entries.find((e) => e.kind === "FaultObserved" && e.fault === "f-sleep");
+        expect(observed?.evidence).toEqual({ clock_advanced_ms: 8 * 3_600_000 - 60_000 });
     });
 
     test("proxy faults arm on their user turn and persistent ones disarm at session end", async () => {

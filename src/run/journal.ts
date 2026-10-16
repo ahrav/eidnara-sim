@@ -26,6 +26,7 @@ export type EntryKind =
     | "FaultObserved"
     | "ItemState"
     | "SnapshotArtefacts"
+    | "StoreChecked"
     | "EndArm"
     | "EndRun";
 

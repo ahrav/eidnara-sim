@@ -1,3 +1,4 @@
+import type { StoreCheck } from "../hosts/storecheck";
 import type { FaultEpisode } from "../scenario/faults";
 import { Clock } from "./clock";
 import type { Entry, EntryKind, Journal } from "./journal";
@@ -12,6 +13,13 @@ export interface ScenarioEvent {
     [field: string]: unknown;
 }
 
+export interface TurnOutcome {
+    failed?: string;
+    snapshot?: string;
+    /** Store checks the arm owed daemon restarts, one `StoreChecked` entry each. */
+    stores?: { fault: string; store: StoreCheck }[];
+}
+
 export interface ArmDriver {
     reset(): Promise<void>;
     /**
@@ -19,7 +27,7 @@ export interface ArmDriver {
      * session the next event belongs to, or null between sessions.
      */
     resume?(open: ScenarioEvent | null): Promise<void>;
-    event(e: ScenarioEvent): Promise<{ failed?: string; snapshot?: string }>;
+    event(e: ScenarioEvent): Promise<TurnOutcome>;
     fault(f: FaultEpisode): Promise<Record<string, unknown>>;
     /** Stops everything the arm runs, after its last event and before `EndArm`. */
     finish?(): Promise<void>;
@@ -190,7 +198,11 @@ export class Scheduler {
             this.o.proxy?.arm(f.id);
             return;
         }
-        if (f.type === "laptop_sleep") return;
+        if (f.type === "laptop_sleep") {
+            const evidence = { clock_advanced_ms: f.params.duration_ms ?? 0 };
+            this.log({ kind: "FaultObserved", fault: f.id, type: f.type, evidence });
+            return;
+        }
         if (OUTAGE.has(f.type)) this.outage = f.id;
         const evidence = await driver.fault(f);
         this.log({ kind: "FaultObserved", fault: f.id, type: f.type, evidence });
@@ -215,7 +227,7 @@ export class Scheduler {
             const turn = `turn:${e.id}`;
             this.log({ kind: "BeginTurn", event: e.id, probe: e.probe ?? null });
             clock.begin(turn);
-            let outcome: { failed?: string; snapshot?: string };
+            let outcome: TurnOutcome;
             try {
                 outcome = await driver.event(e);
             } finally {
@@ -227,6 +239,8 @@ export class Scheduler {
             if (e.probe && outcome.snapshot && !this.snapshotted(e.probe)) {
                 this.log({ kind: "SnapshotArtefacts", item: e.probe, snapshot: outcome.snapshot });
             }
+            for (const s of outcome.stores ?? [])
+                this.log({ kind: "StoreChecked", event: e.id, ...s });
             await Bun.sleep(this.o.settleMs ?? 1_000);
         } else {
             await driver.event(e);

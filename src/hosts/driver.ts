@@ -11,10 +11,16 @@ import {
 import { dirname, join, resolve } from "node:path";
 import type { CallView } from "../grade/artefacts";
 import { processStart, running, stopOwnedTree } from "../run/procs";
-import { type ArmDriver, HarnessFailure, type ScenarioEvent } from "../run/scheduler";
+import {
+    type ArmDriver,
+    HarnessFailure,
+    type ScenarioEvent,
+    type TurnOutcome,
+} from "../run/scheduler";
 import type { FaultEpisode } from "../scenario/faults";
 import { DaemonStack, eidnaraOn, type HostContext, makeHost, type SimHost } from "./arms";
 import { SnapshotRecorder } from "./snapshot";
+import { checkStore } from "./storecheck";
 
 interface ArmState {
     model: number;
@@ -80,12 +86,14 @@ export class HostDriver implements ArmDriver {
     private transcriptsChecked = false;
 
     private readonly snapshots: SnapshotRecorder;
+    /** Daemon restarts that the end of the current or next turn owes a store check. */
+    private storeFaults: string[] = [];
 
     constructor(private readonly o: DriverOptions) {
         this.snapshots = new SnapshotRecorder(dirname(o.armRoot), o.arm, o.callsFor ?? (() => []));
     }
 
-    private get armDir(): string {
+    get armDir(): string {
         return dirname(this.o.armRoot);
     }
 
@@ -211,7 +219,7 @@ export class HostDriver implements ArmDriver {
         this.recordState();
     }
 
-    async event(e: ScenarioEvent): Promise<{ failed?: string; snapshot?: string }> {
+    async event(e: ScenarioEvent): Promise<TurnOutcome> {
         const host = this.requireHost();
         if (e.kind === "session_start") {
             await this.openSession(e, host);
@@ -239,8 +247,13 @@ export class HostDriver implements ArmDriver {
         if (this.daemon && this.daemonPid() === null) this.o.onDaemonExit({ after: e.id });
         const tools = host.drainTools();
         this.snapshots.addTools(tools, e.id);
-        const outcome: { failed?: string; snapshot?: string } = {};
+        const outcome: TurnOutcome = {};
         if (result.error) outcome.failed = result.error;
+        if (this.storeFaults.length > 0 && this.daemon) {
+            const store = checkStore(this.storeDb);
+            outcome.stores = this.storeFaults.map((fault) => ({ fault, store }));
+            this.storeFaults = [];
+        }
         if (e.probe) {
             const probe = { probe: e.probe, session: e.session, id: e.id };
             outcome.snapshot = this.snapshots.capture(
@@ -297,6 +310,7 @@ export class HostDriver implements ArmDriver {
             if (!this.daemon) return { skipped: "arm runs no daemon" };
             const before = this.daemonPid();
             await this.daemon.restart();
+            this.storeFaults.push(f.id);
             this.recordState();
             const after = this.daemonPid();
             return {
@@ -304,6 +318,7 @@ export class HostDriver implements ArmDriver {
                 pid_before: before,
                 pid_after: after,
                 restarted_by: "harness",
+                store: checkStore(this.storeDb),
             };
         }
         if (f.type === "store_full") return this.fillStore();
@@ -346,11 +361,15 @@ export class HostDriver implements ArmDriver {
         if (this.storeMount) rmSync(join(this.storeMount, "ballast"), { force: true });
     }
 
-    async finish(): Promise<void> {
-        await this.stop();
+    get storeDb(): string {
+        return join(this.dataDir, "eidnara", "context", "store.db");
     }
 
-    async stop(): Promise<void> {
+    async finish(): Promise<void> {
+        await this.stop(true);
+    }
+
+    async stop(checkFinalStore = false): Promise<void> {
         const host = this.host;
         const daemon = this.daemon;
         this.host = null;
@@ -363,6 +382,10 @@ export class HostDriver implements ArmDriver {
         }
         try {
             await daemon?.stop();
+            if (daemon && checkFinalStore) {
+                const check = checkStore(this.storeDb);
+                writeFileSync(join(this.armDir, "store-check.json"), `${JSON.stringify(check)}\n`);
+            }
         } catch (caught) {
             failure ??= caught;
         }

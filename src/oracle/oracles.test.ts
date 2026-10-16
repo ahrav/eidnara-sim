@@ -20,6 +20,7 @@ const fixtures = readdirSync(DIR)
 const runOf = (f: Fixture, tier = "S"): RunLogs => ({
     dir: "",
     tier,
+    base_wall_ms: 0,
     prereg,
     kinds: new Map(Object.entries(f.kinds)),
     arms: f.arms,

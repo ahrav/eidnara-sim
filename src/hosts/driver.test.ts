@@ -1,3 +1,4 @@
+import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import {
@@ -10,7 +11,7 @@ import {
     writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { loadConfig } from "../config/config";
 import { gradeItem } from "../grade/probes";
 import type { ScenarioEvent } from "../run/scheduler";
@@ -305,7 +306,42 @@ describe("HostDriver faults", () => {
             pid_before: 10,
             pid_after: 11,
             restarted_by: "harness",
+            store: { integrity: "missing", segments: 0, overlaps: [], ranges: [] },
         });
+    });
+
+    test("the turn ending after daemon restarts carries a store check for each of them", async () => {
+        const { driver } = fixture("eidnara");
+        driver.daemon = fakeDaemon(10) as unknown as DaemonStack;
+        driver.host = new FakeHost({} as HostContext, "/x") as unknown as SimHost;
+        await driver.fault(episode("daemon_restart"));
+        await driver.fault(episode("daemon_sigkill_mid_fold"));
+        const first = await driver.event(ev("user_turn", { id: "e-1", text: "go" }));
+        const second = await driver.event(ev("user_turn", { id: "e-2", text: "go" }));
+        const store = { integrity: "missing", segments: 0, overlaps: [], ranges: [] };
+        expect(first.stores).toEqual([
+            { fault: "f-daemon_restart", store },
+            { fault: "f-daemon_sigkill_mid_fold", store },
+        ]);
+        expect(second.stores).toBeUndefined();
+    });
+
+    test("finish stops the daemon and writes the final store check", async () => {
+        const { driver } = fixture("eidnara");
+        const daemon = fakeDaemon(10);
+        let stopped = false;
+        daemon.stop = async () => {
+            stopped = true;
+        };
+        driver.daemon = daemon as unknown as DaemonStack;
+        mkdirSync(dirname(driver.storeDb), { recursive: true });
+        new Database(driver.storeDb).run(
+            "create table history_segments (session_id text, sequence integer, start_message integer, end_message integer)",
+        );
+        await driver.finish();
+        expect(stopped).toBe(true);
+        const check = JSON.parse(readFileSync(join(driver.armDir, "store-check.json"), "utf8"));
+        expect(check).toEqual({ integrity: "ok", segments: 0, overlaps: [], ranges: [] });
     });
 
     test("a model switch moves later sessions to the next model and keeps the daemon", async () => {

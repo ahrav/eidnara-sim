@@ -26,14 +26,88 @@ refused calls, and per-arm totals are the sum of the per-component totals
 
 `oracleReport(runs)` groups activations by tier and, for each oracle, gives
 the count, the count per arm and per component (the call's component for
-F1 and F2, `transform` for F3, `memory_capture` for F8), and `uncovered: true` when it never fired in that tier.
+F1 and F2, `transform` for F3, `memory_capture` for F8), and
+`uncovered: true` when it never fired in that tier.
 `scripts/oracle-run.ts <run dir>...` writes each run's activations, ledgers,
+recoveries,
 and the pre-registration digest it used to `<run>/oracles.json`, warns when
 that digest differs from the one the run's manifest recorded, and prints the
 report.
 
 F1 misses an overflow the plugin hid by serving a raw history that still fit
 the window; F3 counts those passes.
+
+## Recovery
+
+`recoveries(run)` reads each infrastructure fault the journal observed and
+the turns that end after it, starting with the turn a mid-turn fault such
+as `daemon_sigkill_mid_fold` interrupted, whose window opens at the fault.
+A clean turn ends `ok`, has no gateway 4xx and no overflow among its calls,
+and has no fail-open publication in the plugin log (`serving the input
+unchanged`, `decision=error`) from its start until the next turn starts. A
+pass the daemon declined by policy, such as `declined:invocation_budget`,
+also serves raw history and counts toward F3, and leaves the turn clean.
+The plugin logs in the host's faked clock, so the window is `base_wall_ms`
+plus the turns' scenario times. A stalled
+daemon gives a turn that looks clean to the agent, and its fail-open
+publication keeps the turn from counting.
+
+For each fault the oracle reports `turns_to_first_clean` and `recovered`,
+which is false with no clean turn after the fault, and lists the reasons.
+The infrastructure faults are the scenario compiler's set
+(`src/scenario/faults.ts`) plus `host_upgrade` and `two_hosts_one_daemon`.
+A fault an arm skipped, such as a daemon fault on the `host` arm, has
+`recovered: null` and the skip as its reason, so tallies leave it out.
+
+A daemon restart (`daemon_restart`, `daemon_sigkill_mid_fold`) also needs a
+sound store, which three checks of the store (`src/hosts/storecheck.ts`)
+judge. The arm driver checks the store right after the restart, which shows
+the state the crash left; at the end of the turn in progress at the
+restart, or else the next turn, whose passes include the first pass after
+the crash, and journals that check as `StoreChecked` with the fault's id,
+one entry per restart that turn owes; and `finish` checks the final store after the daemon
+stops and writes it to `<arm>/store-check.json`. Each check runs SQLite's
+`integrity_check`, lists every history segment, and looks for segments of
+one session whose message ranges overlap; the memory store refuses such a
+segment on write ("ranges must be strictly increasing",
+`crates/memory-store/src/lib.rs` in eidnara), so a stored overlap or a
+duplicated segment means a write bypassed that refusal. A store that fails
+to open reports `error: <reason>` as its integrity.
+
+The wire contract's post-crash rule (`docs/host-wire-protocol.md` in
+eidnara, the revert paragraph of the transform section) is that the next
+pass after a crash folds from the surviving history and removes nothing
+further. The oracle checks it as: each segment the restart check listed is
+still present, unchanged, at the post-crash check. A host compaction in the
+same turn can also remove segments under the contract's compaction rule;
+the reason names the segments, so a maintainer can tell the two apart from
+the turn's calls. `recovered` needs all three checks present, each with
+integrity `ok` and no overlap, and the surviving segments kept; a missing
+check is a reason of its own. `two_hosts_one_daemon` has no mechanism yet
+(`docs/hosts.md`), so no run observes it, and the oracle has no check for
+two clients reading one proposal.
+
+The recorded `witness-8` eidnara arm reaches a clean turn after each of its
+four faults: the restart and plugin reload at the first later turn, and the
+model switch and full store at the second, because the turn on the full
+store published two fail-open passes. That run predates the store check, so
+its restart is unrecovered for want of one.
+
+In the live `recovery-3` run (S seed 101, Pi, eidnara arm, a 30000-token
+context limit so that sessions fold), the daemon took a SIGKILL during the
+history-summarizer calls of `s-0004` and `s-0005` and a restart at
+`s-0005`'s start. Each restart left the one segment of `s-0003`; each
+post-crash check and the final store kept it with integrity `ok` and no
+overlap. The `s-0005` faults recovered at the first turn. The `s-0004` kill
+recovered at the second: in the turn it cut, the plugin logged a failed pass
+(`connection generation retired`) and a `decision=error` pass about a
+second after the restart. The final store
+holds two segments of `s-0005` and none of `s-0004`, whose only fold the
+kill cut. The run is the fixture `tests/fixtures/recovery/recovery-3-eidnara.json`;
+a test that empties its post-crash segment lists turns all three verdicts
+unrecovered. In `recovery-2`, a restart of an empty store recovered the same
+way, and the plugin logged two `declined:invocation_budget` passes, which
+count toward F3 and leave their turns clean.
 
 ## Fixtures
 
