@@ -1,6 +1,7 @@
 import { realpathSync } from "node:fs";
 import { join } from "node:path";
 import type { SimConfig } from "../config/config";
+import { checkBuildMarker } from "./buildmarker";
 import { assess, type Interception, interceptionTest, probes } from "./interception";
 import { writeLauncher } from "./launcher";
 import { buildFaketime } from "./timeinject";
@@ -20,6 +21,7 @@ export function piCli(config: SimConfig): string {
 }
 
 export async function preflight(config: SimConfig, runRoot: string): Promise<Preflight> {
+    checkBuildMarker(config.eidnara_checkout);
     await buildFaketime();
     const launcher = writeLauncher(runRoot);
     const node = realpathSync(Bun.which("node") ?? "node");
@@ -32,7 +34,7 @@ export async function preflight(config: SimConfig, runRoot: string): Promise<Pre
     const wallTools = config.toolchain.wall_clock_tools;
     if (wallTools.length > 0) distortions.push(`${wallTools.join(", ")} read wall-clock time`);
     distortions.push(
-        "toolchain caches are read-only, so a dependency missing from them fails to fetch",
+        "toolchain caches are read-only and the sandbox keeps the host network, so a dependency missing from them fails unless the agent points a cache elsewhere and fetches it",
     );
     const hosts = (
         [

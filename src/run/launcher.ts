@@ -44,6 +44,8 @@ export function maskedPaths(runRoot: string): string[] {
 // The setuid sudo boundary strips LD_PRELOAD, so the interposer reaches the host only
 // through variables set after setpriv. The staging tree and the interposer's own
 // shared-memory objects live in a private /dev/shm that ends with the namespace.
+// A read-only remount covers one mount, so each read-only path is remounted together
+// with every mount `--rbind` carried in below it.
 function script(hidden: readonly string[]): string {
     const mounts = hidden
         .map((dir) => `mount -t tmpfs -o mode=1777 tmpfs ${plainPath(dir)}`)
@@ -70,7 +72,7 @@ for p in $keep; do mkdir -p "$st$p"; mount --rbind "$p" "$st$p"; done
 ${mounts}
 for p in $keep; do mkdir -p "$p"; mount --rbind "$st$p" "$p"; done
 for p in $keep; do umount -R "$st$p" || true; done
-for p in $ro; do mount -o remount,bind,ro "$p"; done
+for p in $ro; do for m in $(findmnt -rn -o TARGET -R "$p"); do mount -o remount,bind,ro "$m"; done; done
 find "$st" -depth -type d -empty -delete || true
 setpriv ${ids} --init-groups --no-new-privs --inh-caps=-all --bounding-set=-all -- env --default-signal=INT,TERM --chdir="$cwd" PATH="$SIM_PATH" $envs "$@"
 exit 0' sh "$@"
@@ -102,6 +104,12 @@ export function launch(
         return `${k}=${v}`;
     });
     const ro = readOnly.map(plainPath);
+    // A read-only bind over a parent takes its writable children with it, so the two sets stay disjoint.
+    for (const path of keep) {
+        const parent = ro.find((dir) => !ro.includes(path) && within(path, dir));
+        if (parent)
+            throw new Error(`sandbox path ${path} is kept writable under read-only ${parent}`);
+    }
     const start = plainPath(cwd);
     return [
         launcher,

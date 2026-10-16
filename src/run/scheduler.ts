@@ -20,6 +20,8 @@ export interface ArmDriver {
      * session the next event belongs to, or null between sessions.
      */
     resume?(open: ScenarioEvent | null): Promise<void>;
+    /** Stops what a killed harness left running, before any fault is armed again. */
+    reap?(): Promise<void>;
     event(e: ScenarioEvent): Promise<{ failed?: string }>;
     fault(f: FaultEpisode): Promise<Record<string, unknown>>;
     /** Stops everything the arm runs, after its last event and before `EndArm`. */
@@ -116,10 +118,14 @@ export class Scheduler {
             onClock(start);
             const driver = this.o.drivers[arm] as ArmDriver;
             const started = mine.some((e) => e.kind === "StartArm");
-            if (!started) {
-                await this.orFinish(driver, () => driver.reset());
-                this.log({ kind: "StartArm" });
-            }
+            await this.orFinish(driver, async () => {
+                if (started) {
+                    await driver.reap?.();
+                } else {
+                    await driver.reset();
+                    this.log({ kind: "StartArm" });
+                }
+            });
             this.resume(mine);
             const done = new Set(
                 this.o.journal.entries
@@ -147,7 +153,9 @@ export class Scheduler {
         done: Set<string>,
     ): Promise<void> {
         await this.orFinish(driver, async () => {
-            if (started) await driver.resume?.(this.openSession(pending[0], done));
+            if (started && pending.length > 0) {
+                await driver.resume?.(this.openSession(pending[0], done));
+            }
             for (const e of pending) await this.step(driver, e);
             await this.pendingKill;
             await this.idle();

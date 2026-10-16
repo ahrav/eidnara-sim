@@ -5,11 +5,13 @@ import {
     mkdirSync,
     readFileSync,
     realpathSync,
+    renameSync,
     rmSync,
+    statSync,
     writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { writeAtomic } from "../run/atomic";
+import { launch } from "../run/launcher";
 import { processStart, running, stopOwnedTree } from "../run/procs";
 import { type ArmDriver, HarnessFailure, type ScenarioEvent } from "../run/scheduler";
 import type { FaultEpisode } from "../scenario/faults";
@@ -26,6 +28,8 @@ interface ArmState {
     model: number;
     daemon: { pid: number; start: string | null } | null;
     host: { pid: number; start: string | null } | null;
+    /** Size of the store_full ballast while the fault is active. */
+    ballast: number | null;
 }
 
 export interface DriverOptions extends Omit<HostContext, "root" | "model"> {
@@ -42,34 +46,46 @@ export interface DriverOptions extends Omit<HostContext, "root" | "model"> {
     onDaemonExit: (detail: Record<string, unknown>) => void;
 }
 
-const git = (cwd: string, args: string[], dateMs?: number) => {
-    const env: NodeJS.ProcessEnv = {
-        ...process.env,
-        GIT_CONFIG_GLOBAL: "/dev/null",
-        GIT_CONFIG_NOSYSTEM: "1",
-        GIT_AUTHOR_NAME: "sim-user",
-        GIT_AUTHOR_EMAIL: "sim-user@users.noreply.github.com",
-        GIT_COMMITTER_NAME: "sim-user",
-        GIT_COMMITTER_EMAIL: "sim-user@users.noreply.github.com",
-    };
-    if (dateMs !== undefined) {
-        env.GIT_AUTHOR_DATE = `@${Math.floor(dateMs / 1000)} +0000`;
-        env.GIT_COMMITTER_DATE = env.GIT_AUTHOR_DATE;
-    }
-    const r = spawnSync("git", args, { cwd, env, encoding: "utf8" });
-    if (r.status !== 0) throw new Error(`git ${args.join(" ")}: ${r.stderr}`);
-    return r.stdout.trim();
+const GIT_ENV = {
+    GIT_CONFIG_GLOBAL: "/dev/null",
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_AUTHOR_NAME: "sim-user",
+    GIT_AUTHOR_EMAIL: "sim-user@users.noreply.github.com",
+    GIT_COMMITTER_NAME: "sim-user",
+    GIT_COMMITTER_EMAIL: "sim-user@users.noreply.github.com",
+    TZ: "UTC",
 };
 
-/** The rename publishes a complete file, so a kill mid-write leaves the previous one. */
+/** Clones from a harness-owned source into a fresh workspace run with the harness's own view. */
+const gitClone = (cwd: string, args: string[]) => {
+    const r = spawnSync("git", args, {
+        cwd,
+        env: { ...process.env, ...GIT_ENV },
+        encoding: "utf8",
+    });
+    if (r.status !== 0) throw new Error(`git ${args.join(" ")}: ${r.stderr}`);
+};
 
-/** A control file that fails to parse names itself in the failure. */
-function readJson<T>(path: string): T {
-    try {
-        return JSON.parse(readFileSync(path, "utf8")) as T;
-    } catch (caught) {
-        throw new HarnessFailure(`${path} is not valid JSON: ${(caught as Error).message}`);
+/**
+ * The rename publishes a complete file, so a kill mid-write leaves the previous one. The staged
+ * file is created exclusively, so a link planted at its name is removed, never written through.
+ */
+function writeWhole(path: string, text: string): void {
+    const staged = `${path}.${process.pid}`;
+    rmSync(staged, { force: true });
+    writeFileSync(staged, text, { flag: "wx" });
+    renameSync(staged, path);
+}
+
+/** `path` resolves to `parent/name` through real directories only; a planted symlink stops the run. */
+function realChild(parent: string, name: string, what: string): string {
+    const path = join(parent, name);
+    if (!existsSync(path)) return path;
+    const real = realpathSync(path);
+    if (real !== join(realpathSync(parent), name)) {
+        throw new HarnessFailure(`${what} ${path} leaves ${parent}`);
     }
+    return real;
 }
 
 function run(argv: string[]): string {
@@ -101,6 +117,7 @@ export class HostDriver implements ArmDriver {
     daemon: DaemonStack | null = null;
     private model = 0;
     private storeMount: string | null = null;
+    private ballastBytes: number | null = null;
     private sessionProject: string | null = null;
     private transcriptsChecked = false;
 
@@ -144,11 +161,46 @@ export class HostDriver implements ArmDriver {
         return this.o.models[this.model % this.o.models.length] as string;
     }
 
+    /** The paths the sandbox keeps writable for this arm: the host's, plus the store on Eidnara arms. */
+    private get keep(): string[] {
+        return eidnaraOn(this.o.arm) ? [...this.o.keep, this.storeRoot] : this.o.keep;
+    }
+
     private newHost(): SimHost {
         const make = this.o.hostFactory ?? makeHost;
-        const keep = eidnaraOn(this.o.arm) ? [...this.o.keep, this.storeRoot] : this.o.keep;
+        const { keep } = this;
         const onSpawn = () => this.recordState();
         return make({ ...this.o, keep, root: this.o.armRoot, model: this.currentModel(), onSpawn });
+    }
+
+    /**
+     * Git over an agent-written repository runs inside the arm's sandbox, so a hook, filter, or
+     * config the agent planted acts with the host's own view of the filesystem.
+     */
+    private git(dir: string, args: string[], dateMs?: number): { status: number; stderr: string } {
+        const env: Record<string, string> = { ...GIT_ENV, HOME: join(this.o.armRoot, "home") };
+        if (dateMs !== undefined) {
+            env.GIT_AUTHOR_DATE = `@${Math.floor(dateMs / 1000)}`;
+            env.GIT_COMMITTER_DATE = env.GIT_AUTHOR_DATE;
+        }
+        const keep = [...new Set([...this.keep, this.o.armRoot])];
+        const argv = launch(this.o.launcher, keep, env, ["git", ...args], [], dir);
+        const seconds = String(Math.ceil(this.o.turnDeadlineMs / 1000));
+        const bounded = ["timeout", "-s", "KILL", seconds, ...argv];
+        const r = spawnSync(bounded[0] as string, bounded.slice(1), { encoding: "utf8" });
+        const stderr = r.status === 137 ? `cut off after ${seconds} s` : r.stderr;
+        return { status: r.status ?? -1, stderr };
+    }
+
+    private gitOk(dir: string, args: string[], dateMs?: number): void {
+        const r = this.git(dir, args, dateMs);
+        if (r.status !== 0) throw new Error(`git ${args.join(" ")}: ${r.stderr}`);
+    }
+
+    /** The real workspace directory; a symlink the host planted at it or above it stops the run. */
+    private workspaceDir(project: string): string {
+        const workspaces = realChild(this.o.armRoot, "workspaces", "workspaces");
+        return realChild(workspaces, project, `workspace ${project}`);
     }
 
     private recordState(): void {
@@ -158,38 +210,55 @@ export class HostDriver implements ArmDriver {
             model: this.model,
             daemon: proc(this.daemonPid()),
             host: proc(this.sessionProject === null ? null : (this.host?.hostPid() ?? null)),
+            ballast: this.ballastBytes,
         };
         mkdirSync(this.armDir, { recursive: true });
-        writeAtomic(this.stateFile, JSON.stringify(state));
+        writeWhole(this.stateFile, JSON.stringify(state));
     }
 
     private readState(): ArmState | null {
         if (!existsSync(this.stateFile)) return null;
-        return readJson<ArmState>(this.stateFile);
+        return JSON.parse(readFileSync(this.stateFile, "utf8")) as ArmState;
     }
 
     private get ballast(): string | null {
         return this.storeMount ? join(this.storeMount, "ballast") : null;
     }
 
-    private async startArm(fresh: boolean): Promise<void> {
+    private async startArm(fresh: boolean, expectBallast: number | null = null): Promise<void> {
         mkdirSync(this.storeRoot, { recursive: true, mode: 0o700 });
         if (this.o.loopStore && eidnaraOn(this.o.arm)) this.mountStore(fresh);
-        const filled = this.ballast !== null && existsSync(this.ballast);
-        if (filled) this.clearStoreFill();
-        if (eidnaraOn(this.o.arm)) {
-            const make = this.o.daemonFactory ?? ((ctx: DaemonContext) => new DaemonStack(ctx));
-            this.daemon = make({
-                ...this.o,
-                root: this.o.armRoot,
-                dataDir: this.dataDir,
-                logFile: join(this.armDir, "daemon.log"),
-                model: this.currentModel(),
-            });
-            await this.daemon.start();
-            this.recordState();
+        const filled = expectBallast !== null;
+        if (filled) {
+            const size = statSync(this.ballast ?? "", { throwIfNoEntry: false })?.size ?? null;
+            if (size !== expectBallast) {
+                throw new HarnessFailure(
+                    `store_full ballast ${this.ballast} changed before the kill`,
+                );
+            }
+            rmSync(this.ballast as string, { force: true });
         }
-        if (filled) this.fillStore();
+        try {
+            if (eidnaraOn(this.o.arm)) {
+                realChild(this.o.armRoot, "runtime", "daemon runtime");
+                realChild(this.storeRoot, "d", "daemon data");
+                const make = this.o.daemonFactory ?? ((ctx: DaemonContext) => new DaemonStack(ctx));
+                this.daemon = make({
+                    ...this.o,
+                    root: this.o.armRoot,
+                    dataDir: this.dataDir,
+                    logFile: join(this.armDir, "daemon.log"),
+                    model: this.o.models[0] as string,
+                });
+                await this.daemon.start();
+                this.recordState();
+            }
+        } finally {
+            if (filled) {
+                this.fill();
+                this.recordState();
+            }
+        }
         this.host = this.newHost();
         this.recordState();
     }
@@ -202,10 +271,13 @@ export class HostDriver implements ArmDriver {
         for (const dir of [this.o.armRoot, this.storeRoot])
             rmSync(dir, { recursive: true, force: true });
         rmSync(this.image, { force: true });
+        for (const stale of ["daemon.log", "transcripts.json"]) {
+            rmSync(join(this.armDir, stale), { force: true });
+        }
         mkdirSync(join(this.o.armRoot, "workspaces"), { recursive: true });
         for (const [project, source] of Object.entries(this.o.projects)) {
             const target = this.workspace(project);
-            git(this.o.armRoot, ["clone", "--quiet", "--no-hardlinks", source, target]);
+            gitClone(this.o.armRoot, ["clone", "--quiet", "--no-hardlinks", source, target]);
         }
         await this.startArm(true);
     }
@@ -217,16 +289,29 @@ export class HostDriver implements ArmDriver {
         }
         this.model = state.model;
         const checked = join(this.armDir, "transcripts.json");
-        this.transcriptsChecked =
-            existsSync(checked) && readJson<{ missing: unknown[] }>(checked).missing.length === 0;
+        if (existsSync(checked)) {
+            const missing = JSON.parse(readFileSync(checked, "utf8")).missing as string[];
+            if (missing.length > 0) {
+                throw new HarnessFailure(`transcript store missing: ${missing.join(", ")}`);
+            }
+            this.transcriptsChecked = true;
+        }
         await this.reapStale();
-        await this.startArm(false);
+        await this.startArm(false, state.ballast ?? null);
         if (open) await this.event(open);
+    }
+
+    /** Stops what the killed harness recorded; a missing record is a lost arm, so the resume stops. */
+    async reap(): Promise<void> {
+        if (!this.readState()) {
+            throw new HarnessFailure(`resume of arm ${this.o.arm}: ${this.stateFile} is gone`);
+        }
+        await this.reapStale();
     }
 
     private async reapStale(): Promise<void> {
         const state = this.readState();
-        for (const proc of [state?.daemon, state?.host]) {
+        for (const proc of [state?.host, state?.daemon]) {
             if (proc && running(proc.pid) && processStart(proc.pid) === proc.start) {
                 if (!(await stopOwnedTree(proc.pid, 5_000))) {
                     throw new HarnessFailure(`recorded process ${proc.pid} survived SIGKILL`);
@@ -241,7 +326,7 @@ export class HostDriver implements ArmDriver {
     private async openSession(e: ScenarioEvent, host: SimHost): Promise<void> {
         this.sessionProject = this.project(e);
         const connection = this.daemon?.connectionFile ?? null;
-        await host.openSession(this.workspace(this.sessionProject), e.session, connection);
+        await host.openSession(this.workspaceDir(this.sessionProject), e.session, connection);
         this.recordState();
     }
 
@@ -256,6 +341,7 @@ export class HostDriver implements ArmDriver {
             this.clearStoreFill();
             this.sessionProject = null;
             this.recordState();
+            this.checkDaemon(e);
             if (!this.transcriptsChecked) this.checkTranscripts(host);
             return {};
         }
@@ -264,8 +350,12 @@ export class HostDriver implements ArmDriver {
             return {};
         }
         const result = await host.prompt(String(e.text), this.o.turnDeadlineMs);
-        if (this.daemon && this.daemonPid() === null) this.o.onDaemonExit({ after: e.id });
+        this.checkDaemon(e);
         return result.error ? { failed: result.error } : {};
+    }
+
+    private checkDaemon(e: ScenarioEvent): void {
+        if (this.daemon && this.daemonPid() === null) this.o.onDaemonExit({ after: e.id });
     }
 
     private project(e: ScenarioEvent): string {
@@ -275,11 +365,7 @@ export class HostDriver implements ArmDriver {
     }
 
     private applyDiff(e: ScenarioEvent): void {
-        const project = this.project(e);
-        const dir = realpathSync(this.workspace(project));
-        if (dir !== join(realpathSync(this.o.armRoot), "workspaces", project)) {
-            throw new HarnessFailure(`apply_diff workspace ${project} leaves ${this.o.armRoot}`);
-        }
+        const dir = this.workspaceDir(this.project(e));
         const path = resolve(dir, String(e.path));
         const inside = (p: string) => {
             const real = realpathSync(p);
@@ -296,16 +382,12 @@ export class HostDriver implements ArmDriver {
         ) {
             throw new HarnessFailure(`apply_diff path ${String(e.path)} leaves ${dir}`);
         }
-        writeFileSync(path, String(e.content));
-        git(dir, ["add", "--", path]);
-        if (
-            spawnSync("git", ["diff", "--cached", "--quiet", "--", path], { cwd: dir }).status === 0
-        ) {
-            return;
-        }
+        writeWhole(path, String(e.content));
+        this.gitOk(dir, ["add", "--", path]);
+        if (this.git(dir, ["diff", "--cached", "--quiet", "--", path]).status === 0) return;
         const message = `Add ${String(e.path)}`;
         const when = this.o.baseMs + e.scenario_ms;
-        git(dir, ["commit", "--quiet", "--no-verify", "-m", message, "--", path], when);
+        this.gitOk(dir, ["commit", "--quiet", "--no-verify", "-m", message, "--", path], when);
     }
 
     private checkTranscripts(host: SimHost): void {
@@ -313,7 +395,7 @@ export class HostDriver implements ArmDriver {
         const paths = this.o.transcriptPaths.map((t) => expandTemplate(t, env));
         const missing = paths.filter((p) => !existsSync(p));
         const record = { checked_after: "first session_end", paths, missing };
-        writeAtomic(join(this.armDir, "transcripts.json"), JSON.stringify(record));
+        writeWhole(join(this.armDir, "transcripts.json"), JSON.stringify(record));
         if (missing.length > 0) throw new Error(`transcript store missing: ${missing.join(", ")}`);
         this.transcriptsChecked = true;
     }
@@ -337,7 +419,11 @@ export class HostDriver implements ArmDriver {
                 restarted_by: "harness",
             };
         }
-        if (f.type === "store_full") return this.fillStore();
+        if (f.type === "store_full") {
+            const evidence = this.fillStore();
+            this.recordState();
+            return evidence;
+        }
         if (f.type === "plugin_reload") {
             return { reload: "host process and plugin respawn at the next session_start" };
         }
@@ -365,24 +451,50 @@ export class HostDriver implements ArmDriver {
         run(["sudo", "-n", "chmod", "0700", this.storeRoot]);
     }
 
-    private fillStore(): Record<string, unknown> {
-        if (!this.storeMount) return { skipped: "arm runs no loop-mounted store" };
-        const ballast = join(this.storeMount, "ballast");
+    /** An unwritten `fallocate` extent and a short `dd` tail fill the store while the sparse image stays small. */
+    private fill(): void {
+        if (!this.storeMount || !this.ballast) return;
+        rmSync(this.ballast, { force: true });
+        writeFileSync(this.ballast, "", { flag: "wx" });
         const free = run(["df", "-B1", "--output=avail", this.storeMount])
             .trim()
             .split("\n")
             .at(-1);
-        spawnSync("fallocate", ["-l", String(free), ballast]);
-        const append = ["if=/dev/zero", `of=${ballast}`, "bs=1M", "oflag=append", "conv=notrunc"];
-        spawnSync("dd", append);
+        spawnSync("fallocate", ["-l", String(free), this.ballast]);
+        const tail = [
+            "if=/dev/zero",
+            `of=${this.ballast}`,
+            "bs=1M",
+            "oflag=append",
+            "conv=notrunc",
+        ];
+        spawnSync("dd", tail);
+        this.ballastBytes = statSync(this.ballast).size;
+    }
+
+    private fillStore(): Record<string, unknown> {
+        if (!this.storeMount) return { skipped: "arm runs no loop-mounted store" };
+        this.fill();
         const df = run(["df", "--output=avail", this.storeMount]);
         const avail = Number(df.trim().split("\n").at(-1));
         if (avail !== 0) throw new HarnessFailure(`store_full left ${avail} KiB free`);
         return { mount: this.storeMount, avail_kb: avail };
     }
 
+    /** The ballast must still be whole at the episode's end, since the store is writable to the host. */
     private clearStoreFill(): void {
-        if (this.ballast) rmSync(this.ballast, { force: true });
+        const ballast = this.ballast;
+        if (!ballast) return;
+        if (this.ballastBytes !== null) {
+            const size = statSync(ballast, { throwIfNoEntry: false })?.size ?? null;
+            if (size !== this.ballastBytes) {
+                throw new HarnessFailure(
+                    `store_full ballast ${ballast} changed during the episode`,
+                );
+            }
+        }
+        rmSync(ballast, { force: true });
+        this.ballastBytes = null;
     }
 
     async finish(): Promise<void> {

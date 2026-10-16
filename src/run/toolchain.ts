@@ -55,8 +55,11 @@ async function probe(argv: string[], path: string): Promise<{ ok: boolean; out: 
     });
     const code = await withDeadline(child.exited, 60_000);
     if (code === null) {
-        await stopOwnedTree(child.pid, 2_000);
-        return { ok: false, out: "no exit after 60 s" };
+        const stopped = await stopOwnedTree(child.pid, 2_000);
+        return {
+            ok: false,
+            out: stopped ? "no exit after 60 s" : "no exit after 60 s; its tree survived SIGKILL",
+        };
     }
     const out = await new Response(code === 0 ? child.stdout : child.stderr).text();
     return { ok: code === 0, out: out.trim() };
