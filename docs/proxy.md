@@ -128,8 +128,8 @@ wait ends is recorded in `gateway.failures` alongside any handler failure.
 Request bodies are buffered up to 32 MiB; bytes past the limit are counted
 and dropped, and the request is answered 413 with one record. The
 `arrival` hook sees each request at its first byte and may return a function
-that runs once the call is classified or rejected; the run holds the clock
-with it while no turn is open. The `observe` hook sees each classified call as it
+that runs once the call is classified or rejected, or once the client
+abandons the upload; the run holds the clock with it for every request. The `observe` hook sees each classified call as it
 starts and may return a function, which the gateway calls once that call's
 record is written or its write failed; the run uses it to end the background
 job the call registered.

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SimConfig } from "../config/config";
@@ -261,6 +261,55 @@ describe("run inputs", () => {
         await expect(loadManifest(o, scenario, checks)).rejects.toThrow(
             /names arms outside the S order/,
         );
+    });
+
+    test("a staging file that is a link is refused instead of followed", async () => {
+        const out = dir();
+        const scenario = writeScenario(out, scenarioBody());
+        const target = join(out, "elsewhere.json");
+        writeFileSync(target, "keep");
+        symlinkSync(target, join(out, `manifest.json.${process.pid}`));
+        const checks: Preflight = {
+            launcher: "",
+            time_injection: [],
+            distortions: [],
+            hosts: [{ host: "pi", version: "0.80.2", transcript_paths: [] }],
+            toolchain: [],
+        };
+        const o: RunOptions = { config, tier: "S", seed: 101, host: "pi", out };
+        await expect(loadManifest(o, scenario, checks)).rejects.toThrow(/exists or is a link/);
+        expect(readFileSync(target, "utf8")).toBe("keep");
+    });
+
+    test("a resume validates mechanisms against the saved manifest, not the CLI defaults", async () => {
+        const out = dir();
+        const body = scenarioBody();
+        const scenario = writeScenario(out, {
+            ...body,
+            faults: [
+                {
+                    id: "f",
+                    type: "model_switch",
+                    strategy: "single",
+                    trigger: { kind: "session_start", session: "s-0000" },
+                    params: {},
+                    seam: SEAMS.model_switch,
+                },
+            ],
+        });
+        const checks: Preflight = {
+            launcher: "",
+            time_injection: [],
+            distortions: [],
+            hosts: [{ host: "pi", version: "0.80.2", transcript_paths: [] }],
+            toolchain: [],
+        };
+        const o: RunOptions = { config, tier: "S", seed: 101, host: "pi", out };
+        await expect(loadManifest(o, scenario, checks)).rejects.toThrow(/two distinct --models/);
+        await loadManifest({ ...o, models: ["a", "b"] }, scenario, checks);
+        await expect(loadManifest(o, scenario, checks)).resolves.toMatchObject({
+            manifest: { models: ["a", "b"] },
+        });
     });
 
     test("a resume is refused when an executable's content changed, whatever its version", async () => {

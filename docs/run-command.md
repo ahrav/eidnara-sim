@@ -33,9 +33,11 @@ refused up front), a `--models` list that repeats an entry, and a
 already ends in `EndRun` is a completed run and is refused, so the sealed
 journal gains no entry. Before taking the lease, every artifact the run appends to or
 replaces (`journal.jsonl`, `calls.jsonl`, the manifest, the scenario, the
-fault and preflight files, and each arm's `resources.jsonl`, clock offset,
+fault and preflight files, this process's staging names for the lease, the
+scenario, and the manifest, and each arm's `resources.jsonl`, clock offset,
 and `state.json`) must be a regular file or absent; a symlink there is
-refused.
+refused, and the scenario and manifest staging files are created
+exclusively without following a link.
 
 ## Run sequence
 
@@ -68,7 +70,9 @@ refused.
    eidnara commit, eidnara-sim commit, working-tree digest, or an executable
    digest changed, when an interception result
    changed, or when the selected host's version or transcript paths changed,
-   and appends its preflight result to `preflight.jsonl`. Every invocation
+   and appends its preflight result to `preflight.jsonl`; on resume the
+   mechanism checks (fault types, models) run against the manifest's saved
+   values, so omitted options inherit. Every invocation
    then journals a `Preflight` entry with its interception results and host
    identities before `StartRun` or `ResumeRun` (SIM-P16).
 4. Start the capture proxy; its records append to `calls.jsonl`, and a
@@ -83,7 +87,9 @@ refused.
    through its driver.
 6. At the end, or after a failure or signal, stop each arm's sampler and
    driver, stop the proxy, append this invocation's proxy-fault witness
-   report to `faults.jsonl`, close the journal, and release the lease. Each
+   report to `faults.jsonl` (a completed run appends it before `EndRun`, so
+   a sealed journal always has its witness line; teardown appends it only
+   when that did not happen), close the journal, and release the lease. Each
    step runs even when an earlier one fails, and the first failure is
    rethrown after the last step, so the command exits nonzero. Stopping the
    proxy aborts in-flight handlers and waits up to ten seconds for them to
@@ -96,10 +102,11 @@ refused.
    through the scheduler and fails the run.
 
 The scheduler's `onClock` hook writes each arm's offset file, so every
-process the arm launches reads `base_wall_ms + scenario_ms`. A request that
-arrives while no turn is open registers a `request-<n>` job from its first
-byte, released once the call is classified, so a slow upload cannot straddle a
-clock jump. The proxy's `observe` event for a background component (history
+process the arm launches reads `base_wall_ms + scenario_ms`. Every request
+registers a `request-<n>` job from its first byte, released once the call is
+classified or the upload is abandoned, so an upload that outlives its turn or
+straddles the settle period holds the clock until the classified call takes
+over. The proxy's `observe` event for a background component (history
 summarizer, memory capture, memory classifier, context researcher, title,
 native compaction) registers a job, and the completion of that same call ends
 it, whether its record was written or refused. The resource sampler takes a baseline sample when an arm starts,
@@ -158,6 +165,11 @@ in `EndRun` with contiguous call `seq` values from 0 and no journal
 invariant violation (including a repeated sleep jump). The summary parses
 final journals and call records strictly; a corrupt complete line fails the
 witness, while polling during a run tolerates an unterminated final line.
+The scheduled and resume runs must also show their evidence per arm: every
+deterministic fault of the set fired, every fault with a mechanism observed,
+agent calls on both configured models, and no duplicate `Event` entry (the
+mid-fold kills fire only when a summarizer call happens, so they are not
+required).
 
 Runs on 2026-10-16 against eidnara `bb866266c` (`witness-8`; `resume` ran
 again after the store image grew to 2 GiB):

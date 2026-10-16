@@ -117,6 +117,8 @@ const MAX_BODY = 32 * 1024 * 1024;
 class Body {
     private readonly chunks: Buffer[] = [];
     total = 0;
+    /** Set when the request's `end` fired, so an abort before it releases the arrival hold. */
+    complete = false;
 
     push(chunk: Buffer): void {
         this.total += chunk.length;
@@ -189,9 +191,16 @@ export class Gateway {
             const body = new Body();
             const gone = new AbortController();
             const release = this.arrive();
-            res.on("close", () => !res.writableFinished && gone.abort());
+            const abandoned = () => {
+                gone.abort();
+                if (!body.complete) release();
+            };
+            res.on("close", () => !res.writableFinished && abandoned());
+            req.on("aborted", abandoned);
+            req.on("error", abandoned);
             req.on("data", (c: Buffer) => body.push(c));
             req.on("end", () => {
+                body.complete = true;
                 const header = req.headers[COMPONENT_HEADER] as string | undefined;
                 this.track(
                     this.handle(
@@ -220,10 +229,16 @@ export class Gateway {
             const body = new Body();
             const gone = new AbortController();
             const release = this.arrive();
-            stream.on("close", () => !stream.writableFinished && gone.abort());
+            const abandoned = () => {
+                gone.abort();
+                if (!body.complete) release();
+            };
+            stream.on("close", () => !stream.writableFinished && abandoned());
+            stream.on("aborted", abandoned);
             stream.on("data", (c: Buffer) => body.push(c));
-            stream.on("error", () => undefined);
+            stream.on("error", abandoned);
             stream.on("end", () => {
+                body.complete = true;
                 const live = () => !stream.destroyed;
                 const header = headers[COMPONENT_HEADER] as string | undefined;
                 this.track(

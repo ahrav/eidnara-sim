@@ -278,9 +278,56 @@ for (const name of ["scheduled", "rogue"]) {
     const r = outcome[name] as { timed_out?: boolean } | undefined;
     if (r) check(!r.timed_out, `${name}: finished within the run limit`);
 }
+type ArmSummary = {
+    fired: unknown[];
+    observed: { fault: unknown }[];
+    models: unknown[];
+    duplicate_events: number;
+};
+/** Each listed arm fired every expected fault, observed those with a mechanism, and saw both models. */
+const armEvidence = (
+    name: "scheduled" | "resume",
+    arms: string[],
+    expected: FaultEpisode[],
+    bothModels: boolean,
+) => {
+    const s = summary[name];
+    if (!s) return check(false, `${name}: no summary`);
+    const observable = expected.filter((f) => f.type !== "laptop_sleep").map((f) => f.id);
+    for (const arm of arms) {
+        const a = s.arms[arm] as ArmSummary | undefined;
+        if (!a) {
+            check(false, `${name}: arm ${arm} has no journal entries`);
+            continue;
+        }
+        const fired = new Set(a.fired);
+        const observed = new Set(a.observed.map((x) => x.fault));
+        check(
+            expected.every((f) => fired.has(f.id)),
+            `${name}/${arm}: fired ${expected.map((f) => f.id).join(", ")}`,
+        );
+        check(
+            observable.every((id) => observed.has(id)),
+            `${name}/${arm}: observed ${observable.join(", ")}`,
+        );
+        if (bothModels) {
+            check(
+                models.split(",").every((m) => a.models.includes(m)),
+                `${name}/${arm}: agent calls used both configured models`,
+            );
+        }
+        check(a.duplicate_events === 0, `${name}/${arm}: no duplicate Event entry`);
+    }
+};
+const deterministic = FAULTS.filter((f) => f.trigger.kind !== "first_summarizer_call");
 if (run("scheduled")) {
     check(run("scheduled")?.code === 0, "scheduled: exit 0");
     check(invariantsClean("scheduled"), "scheduled: EndRun, unique seq, clean invariants");
+    armEvidence("scheduled", ["host", "eidnara"], deterministic, true);
+}
+if (summary.rogue) {
+    const rogueArm = summary.rogue.arms.eidnara as ArmSummary | undefined;
+    check(rogueArm?.duplicate_events === 0, "rogue/eidnara: no duplicate Event entry");
 }
 if (run("rogue")) {
     const rogue = outcome.rogue as { code: number; stderr: string };
@@ -298,6 +345,7 @@ if (outcome.resume) {
     );
     check(resume.rebilled.length === 0, "resume: no turn rebilled");
     check(invariantsClean("resume"), "resume: EndRun, unique seq, clean invariants");
+    armEvidence("resume", ["eidnara"], RESUME_FAULTS, true);
 }
 if (failures.length > 0) {
     console.error(`witness failed:\n  ${failures.join("\n  ")}`);

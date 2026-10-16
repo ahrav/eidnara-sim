@@ -1,9 +1,12 @@
 import { createHash } from "node:crypto";
 import {
     appendFileSync,
+    closeSync,
+    constants,
     existsSync,
     lstatSync,
     mkdirSync,
+    openSync,
     readFileSync,
     realpathSync,
     renameSync,
@@ -102,9 +105,12 @@ const within = (path: string, dir: string) => path === dir || path.startsWith(`$
 
 const ARTIFACTS = [
     "lease.json",
+    `lease.${process.pid}.tmp`,
     "journal.jsonl",
     "scenario.json",
+    `scenario.json.${process.pid}`,
     "manifest.json",
+    `manifest.json.${process.pid}`,
     "preflight.jsonl",
     "calls.jsonl",
     "faults.jsonl",
@@ -142,9 +148,22 @@ export function requireOutsideCheckout(out: string, checkout: string): void {
     }
 }
 
+/** The staging file is created exclusively without following a link, then renamed into place. */
 function writeAtomic(path: string, text: string): void {
-    writeFileSync(`${path}.${process.pid}`, text);
-    renameSync(`${path}.${process.pid}`, path);
+    const staging = `${path}.${process.pid}`;
+    const { O_WRONLY, O_CREAT, O_EXCL, O_NOFOLLOW } = constants;
+    let fd: number;
+    try {
+        fd = openSync(staging, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o644);
+    } catch (caught) {
+        throw new HarnessFailure(`${staging} exists or is a link: ${(caught as Error).message}`);
+    }
+    try {
+        writeFileSync(fd, text);
+    } finally {
+        closeSync(fd);
+    }
+    renameSync(staging, path);
 }
 
 function git(dir: string, args: string[]): string {
@@ -319,7 +338,6 @@ export async function loadManifest(
         models: o.models ?? [o.config.agent_model],
         fault_override: o.faults === undefined ? null : faultOverride(o.faults, scenario),
     };
-    requireMechanisms(wanted.fault_override ?? scenario.faults, wanted.models);
     const digests = {
         scenario_hash: scenario.scenario_hash,
         prereg_sha256: preregistrationHash(loadPrereg(o.tier)),
@@ -365,9 +383,11 @@ export async function loadManifest(
         if (!sameJson(hostRow(manifest.preflight), hostRow(checks))) {
             throw new HarnessFailure(`the ${o.host} host changed since the run started`);
         }
+        requireMechanisms(manifest.fault_override ?? scenario.faults, manifest.models);
         appendFileSync(join(o.out, "preflight.jsonl"), `${JSON.stringify(checks)}\n`);
         return { manifest, checks };
     }
+    requireMechanisms(wanted.fault_override ?? scenario.faults, wanted.models);
     const manifest: Manifest = {
         schema: "sim-run-manifest/v1",
         ...wanted,
@@ -496,6 +516,14 @@ async function runArms(
     const injector = new FaultInjector(proxyFaults, new Rng((seed ^ 0x5bd1e995) >>> 0), 120_000);
     const callsPath = join(o.out, "calls.jsonl");
     injector.restore(readRecords(callsPath));
+    /** This invocation's witness report, appended once: before `EndRun`, or at teardown otherwise. */
+    const witnessed = { done: false };
+    const writeWitnesses = () => {
+        if (witnessed.done) return;
+        const report = manifest.order.flatMap((arm) => injector.report(arm));
+        appendFileSync(join(o.out, "faults.jsonl"), `${JSON.stringify(report)}\n`);
+        witnessed.done = true;
+    };
     const offsetFile = (arm: string) => join(o.out, arm, "clock", "offset");
     const scheduler = new Scheduler({
         events,
@@ -506,9 +534,10 @@ async function runArms(
         proxy: injector,
         idleLimitMs: prereg.liveness_bounds.job_deadline_ms,
         onClock: (arm, ms) => writeOffset(offsetFile(arm), manifest.base_wall_ms, ms),
-        verify: () => {
+        verify: (point) => {
             handlersFailed();
             if (samplerFailure !== null) throw samplerFailure;
+            if (point === "EndRun") writeWitnesses();
         },
     });
     const now = () => scheduler.clock?.now() ?? 0;
@@ -522,7 +551,7 @@ async function runArms(
         clock: { scenarioMs: now },
         scope: () => ({ ...scope }),
         arrival: () => {
-            if (scope.turn !== null || scope.arm === "") return;
+            if (scope.arm === "") return;
             const id = `request-${jobSeq++}`;
             scheduler.jobStart(id);
             return () => scheduler.jobEnd(id);
@@ -546,8 +575,7 @@ async function runArms(
     };
     cleanup.push(async () => {
         await gateway.stop();
-        const report = manifest.order.flatMap((arm) => injector.report(arm));
-        appendFileSync(join(o.out, "faults.jsonl"), `${JSON.stringify(report)}\n`);
+        writeWitnesses();
         handlersFailed();
     });
 

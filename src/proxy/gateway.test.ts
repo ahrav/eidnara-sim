@@ -608,6 +608,39 @@ describe("call records", () => {
         expect(log).toEqual(["arrived", "observed:history_summarizer", "released", "ended"]);
     });
 
+    test("an upload the client abandons releases its arrival hold", async () => {
+        const log: string[] = [];
+        const gateway = new Gateway({
+            upstream: scriptedUpstream(),
+            records: new RecordWriter(null),
+            injector: new FaultInjector([], new Rng(1), 1_000),
+            rng: new Rng(1),
+            clock: { scenarioMs: () => 0 },
+            scope: () => ({ arm: "a", session: null, turn: null }),
+            arrival: () => {
+                log.push("arrived");
+                return () => log.push("released");
+            },
+        });
+        await gateway.start();
+        gateways.push(gateway);
+        const url = new URL(`${gateway.urls[0]}/model/m/converse`);
+        const req = request({
+            host: url.hostname,
+            port: url.port,
+            method: "POST",
+            path: url.pathname,
+            headers: { "content-length": "100" },
+        });
+        req.on("error", () => undefined);
+        req.write("partial");
+        await Bun.sleep(100);
+        expect(log).toEqual(["arrived"]);
+        req.destroy();
+        await Bun.sleep(200);
+        expect(log).toEqual(["arrived", "released"]);
+    });
+
     test("a function returned by observe runs once the call's record is written, even when the write fails", async () => {
         const records = new RecordWriter(null);
         const seen: string[] = [];
