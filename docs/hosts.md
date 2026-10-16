@@ -10,7 +10,11 @@ The plugins, native addon, daemon, and host fixture come from one commit.
 `scripts/eidnara-build.sh <checkout> <clone>` clones the eidnara source
 checkout, checks out its `HEAD`, and builds every artefact inside the clone,
 so the source checkout itself stays read-only; it refuses a clone path that
-is the checkout. On a reused clone it force-checks
+is the checkout or lies beneath it, and reuses an existing clone only when
+its `.sim-build-source` names the same checkout. `.sim-build-commit` holds
+the built commit from the end of one successful build until the next build
+starts, and preflight requires it to match the clone's `HEAD`, so a partial
+or mixed tree stops the run. On a reused clone it force-checks
 out the fetched commit and removes untracked files, so edits and stray files
 from an earlier build go while ignored outputs (`node_modules`, `target`, the
 plugin `dist` directories) stay for the incremental build. The clone is the
@@ -50,10 +54,12 @@ launcher, and `closeSession` stops it; when the readiness check fails or Pi
 refuses it, or the OpenCode SDK setup or session listing fails after the
 launch, `openSession` closes the session it started before it throws. The
 control files the hosts write under the arm root (Pi's settings, model list,
-and Eidnara config; OpenCode's config, data, and cache directories) go
-through real directories only and are created fresh and renamed into place,
-so a symlink an earlier session left there is refused or replaced, never
-followed. The sandbox runs the host under
+and Eidnara config; OpenCode's config, data, and cache directories; the
+daemon's runtime and store directories) go through real directories only
+and are created fresh and renamed into place, so a symlink an earlier
+session left there is refused or replaced, never followed. OpenCode's config
+directory and the daemon's runtime directory are regenerated on every start,
+so they are removed first. The sandbox runs the host under
 root-owned `sudo` and `unshare`, so closing a host walks the launcher's
 process tree and signals every process the user owns, with SIGKILL after
 10 s; a process that survives SIGKILL stops the run. Each pid in that walk is
@@ -68,9 +74,12 @@ turn, so its error is returned at once. After a Pi turn fails, the host
 aborts it and waits up to 30 s for its `agent_end`; a turn still running then
 stops the run, so a late end cannot finish the next turn. OpenCode turns race the deadline,
 abort the session (waiting at most 5 s for the abort call), and wait 30 s for
-the call to drain; a call still running then stops the run. A prompt request
-that fails before the server answers is aborted the same way, and an abort
-that fails stops the run, since the turn's completion cannot be established.
+the call to drain; a call still running then stops the run, and so does an
+abort call still pending after 30 s, since it would cancel the next turn. A
+prompt request that fails before the server answers is aborted the same way,
+and an abort that fails stops the run, since the turn's completion cannot be
+established. A Pi `agent_end` seen before the prompt response fails settles
+that turn with its result.
 Every deadline timer is cleared once its race settles.
 
 Pi runs in RPC mode with `--session-id sim-<session>`, its agent directory,
@@ -95,12 +104,16 @@ the sandbox with `Read-only file system`.
 The agent's build tools come from `config.toolchain`: its `bin` directories
 join the host's `PATH`, its `keep` paths (the cargo binaries, registry, and
 git cache, rustup, and the bun binary and install cache) stay visible and
-read-only inside the sandbox, and its `env` sets `CARGO_HOME`, `RUSTUP_HOME`,
+read-only inside the sandbox (a mount nested inside a read-only path is
+remounted read-only too), and its `env` sets `CARGO_HOME`, `RUSTUP_HOME`,
 and `BUN_INSTALL_CACHE_DIR`. The hosts replace `HOME`, and Bun resolves its
 cache from `HOME` unless that variable names it, so the variable is what points
 `bun install` at the kept cache. The agent builds and tests against the
-dependencies already in those caches; fetching a dependency they lack fails,
-and preflight records that distortion.
+dependencies already in those caches; fetching a dependency they lack fails
+against those caches. The sandbox keeps the host network namespace, since the
+hosts reach the proxy over loopback, so an agent that points a cache at its
+writable workspace can fetch, and preflight records the distortion in those
+terms.
 
 Every process the host starts inherits the interposer. rustc 1.99 hangs at
 startup under libfaketime 0.9.10: in the first two-arm witness run

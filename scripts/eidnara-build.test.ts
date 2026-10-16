@@ -73,3 +73,37 @@ test("the build refuses a clone path that is the source checkout itself", () => 
     expect(r.stderr.toString()).toContain("must be a separate directory");
     expect(readFileSync(join(src, "README"), "utf8")).toBe("edited\n");
 });
+
+test("the build refuses a clone path beneath the source checkout", () => {
+    const { stubs, src } = fixture();
+    const r = build(src, join(src, "build-clone"), stubs);
+    expect(r.exitCode).not.toBe(0);
+    expect(r.stderr.toString()).toContain("must be a separate directory");
+    expect(existsSync(join(src, "build-clone"))).toBe(false);
+});
+
+test("the build refuses to reuse a repository it did not clone", () => {
+    const { stubs, src, root } = fixture();
+    const other = join(root, "other");
+    mkdirSync(other);
+    writeFileSync(join(other, "mine.txt"), "theirs\n");
+    git(other, "init", "--quiet");
+    git(other, "add", ".");
+    git(other, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "--quiet", "-m", "other");
+    const head = git(other, "rev-parse", "HEAD");
+    const r = build(src, other, stubs);
+    expect(r.exitCode).not.toBe(0);
+    expect(r.stderr.toString()).toContain("was not cloned by this script");
+    expect(git(other, "rev-parse", "HEAD")).toBe(head);
+    expect(readFileSync(join(other, "mine.txt"), "utf8")).toBe("theirs\n");
+});
+
+test("a successful build records its commit, and a failed one leaves no record", () => {
+    const { stubs, src, dst } = fixture();
+    expect(build(src, dst, stubs).exitCode).toBe(0);
+    const head = git(src, "rev-parse", "HEAD");
+    expect(readFileSync(join(dst, ".sim-build-commit"), "utf8").trim()).toBe(head);
+    writeFileSync(join(stubs, "cargo"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+    expect(build(src, dst, stubs).exitCode).not.toBe(0);
+    expect(existsSync(join(dst, ".sim-build-commit"))).toBe(false);
+});

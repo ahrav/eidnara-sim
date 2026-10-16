@@ -6,9 +6,10 @@ import {
     readFileSync,
     realpathSync,
     renameSync,
+    rmSync,
     writeFileSync,
 } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import type { SimConfig } from "../config/config";
 import { withDeadline } from "../run/deadline";
 import { launch, plainPath, shellQuote } from "../run/launcher";
@@ -20,6 +21,16 @@ import { toolbinDir, toolchainEnv } from "../run/toolchain";
 type Untyped = any;
 async function v1(config: SimConfig, path: string): Promise<Untyped> {
     return import(join(config.eidnara_checkout, path));
+}
+
+/** `base/rel` created and confirmed reachable through real directories, with no symlink in `rel`. */
+function realDir(base: string, rel: string): string {
+    const dir = join(base, rel);
+    mkdirSync(dir, { recursive: true });
+    if (realpathSync(dir) !== join(realpathSync(base), rel)) {
+        throw new Error(`${dir} is reached through a symlink; control files need a real directory`);
+    }
+    return dir;
 }
 
 export const DUMMY_AWS = {
@@ -97,9 +108,10 @@ export class DaemonStack {
         const hh = await v1(config, "packages/e2e-tests/src/rust-runner/hermetic-host.ts");
         const sources = hr.detectHarnessRuntimeSources();
         if (!sources.ok) throw new Error(`harness runtime sources: ${sources.reason}`);
-        const runtimeDir = join(this.ctx.root, "runtime");
-        mkdirSync(runtimeDir, { recursive: true, mode: 0o700 });
-        mkdirSync(this.ctx.dataDir, { recursive: true, mode: 0o700 });
+        // The runtime is regenerated on every start, so whatever an earlier session left there goes first.
+        rmSync(join(this.ctx.root, "runtime"), { recursive: true, force: true });
+        const runtimeDir = realDir(this.ctx.root, "runtime");
+        realDir(dirname(this.ctx.dataDir), basename(this.ctx.dataDir));
         const harnessRuntime = hr.writeHarnessRuntime({
             dir: runtimeDir,
             sources: sources.sources,
@@ -146,6 +158,12 @@ export class DaemonStack {
     }
 }
 
+function turnResult(outcome: Untyped): PromptResult {
+    const messages = (outcome.messages ?? []) as Array<Record<string, Untyped>>;
+    const last = messages.filter((m) => m.role === "assistant").at(-1);
+    return last?.stopReason === "error" ? { error: String(last.errorMessage ?? "error") } : {};
+}
+
 function nodeRoot(): string {
     return resolve(realpathSync(Bun.which("node") ?? "node"), "../..");
 }
@@ -173,16 +191,8 @@ export abstract class SimHost {
         ];
     }
 
-    /** A directory under the arm root that is reached through real directories only. */
     protected controlDir(rel: string): string {
-        const dir = join(this.ctx.root, rel);
-        mkdirSync(dir, { recursive: true });
-        if (realpathSync(dir) !== join(realpathSync(this.ctx.root), rel)) {
-            throw new Error(
-                `${dir} is reached through a symlink; control files need a real directory`,
-            );
-        }
-        return dir;
+        return realDir(this.ctx.root, rel);
     }
 
     /** The file is created fresh and renamed into place, so a symlink left at `path` is replaced, never followed. */
@@ -316,19 +326,23 @@ export class PiSimHost extends SimHost {
     async prompt(text: string, timeoutMs: number): Promise<PromptResult> {
         const waiting = new AbortController();
         const end = this.agentEnd(timeoutMs, waiting.signal);
+        let ended: Untyped;
+        end.then(
+            (outcome: Untyped) => {
+                ended = outcome;
+            },
+            () => undefined,
+        );
         try {
             const response = await this.rpc.sendCommand("prompt", { message: text }, { timeoutMs });
             if (response.success === false) {
                 waiting.abort();
                 return { error: JSON.stringify(response).slice(0, 2000) };
             }
-            const outcome = await end;
-            const messages = (outcome.messages ?? []) as Array<Record<string, Untyped>>;
-            const last = messages.filter((m) => m.role === "assistant").at(-1);
-            return last?.stopReason === "error"
-                ? { error: String(last.errorMessage ?? "error") }
-                : {};
+            return turnResult(await end);
         } catch (caught) {
+            // An agent_end already seen settles the turn, whatever became of the prompt response.
+            if (ended) return turnResult(ended);
             const drained = this.agentEnd(30_000);
             await this.rpc.sendCommand("abort", {}, { timeoutMs: 60_000 }).catch(() => undefined);
             // A turn that outlives the abort would end during the next turn and be taken for it.
@@ -361,6 +375,7 @@ export class OpencodeSimHost extends SimHost {
     private client: Untyped = null;
     private sid: string | null = null;
     private readonly home = join(this.ctx.root, "home");
+    protected abortWaitMs = 30_000;
 
     async openSession(cwd: string, session: string, connection: string | null): Promise<void> {
         const { config } = this.ctx;
@@ -380,6 +395,8 @@ export class OpencodeSimHost extends SimHost {
         const hostbin = dirname(
             this.writeWrapper(launch(launcher, this.ctx.keep, this.timeEnv, [binary], ro)),
         );
+        // The v1 runner rewrites the configuration on each spawn, so an earlier session's files go first.
+        rmSync(join(this.home, "config"), { recursive: true, force: true });
         const env = {
             configDir: this.controlDir("home/config"),
             dataDir: this.controlDir("home/data"),
@@ -483,10 +500,19 @@ export class OpencodeSimHost extends SimHost {
         const first = await withDeadline(settled, timeoutMs);
         if (first === null) {
             const abort = this.client.session.abort({ path: { id: this.sid } });
-            await withDeadline(
-                abort.catch(() => undefined),
-                5_000,
+            // An abort still in flight when the next turn starts would cancel that turn instead.
+            const answered = await withDeadline(
+                abort.then(
+                    () => true,
+                    () => true,
+                ),
+                this.abortWaitMs,
             );
+            if (answered === null) {
+                throw new Error(
+                    `OpenCode abort still pending ${this.abortWaitMs} ms after the deadline`,
+                );
+            }
             const drained = await withDeadline(settled, 30_000);
             if (drained === null) throw new Error("OpenCode turn still running 30 s after abort");
             return { error: `turn deadline ${timeoutMs} ms` };
@@ -498,7 +524,7 @@ export class OpencodeSimHost extends SimHost {
                 () => false,
             );
             const error = String(first.caught).slice(0, 2000);
-            if (!(await withDeadline(abort, 30_000))) {
+            if (!(await withDeadline(abort, this.abortWaitMs))) {
                 throw new Error(`OpenCode turn not aborted after a rejected prompt (${error})`);
             }
             return { error };
