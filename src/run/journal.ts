@@ -15,6 +15,7 @@ import { join } from "node:path";
 
 export type EntryKind =
     | "StartRun"
+    | "ResumeRun"
     | "StartArm"
     | "BeginTurn"
     | "EndTurn"
@@ -106,17 +107,18 @@ export function takeLease(dir: string): Lease {
     throw new Error(`could not lease ${dir}`);
 }
 
-/** Removes this process's lease; another process's lease is left in place. */
 export function releaseLease(dir: string): void {
     for (const n of leaseNumbers(dir)) {
         const path = join(dir, `lease.${n}.json`);
-        if (readLease(path)?.pid === process.pid) rmSync(path, { force: true });
+        const held = readLease(path);
+        if (held?.pid === process.pid && held.host === hostname()) rmSync(path, { force: true });
     }
 }
 
 /**
- * Every newline-terminated line must parse; a cut last line without its newline, which a kill
- * mid-write leaves, is dropped. `bytes` is the length of the complete prefix.
+ * Every newline-terminated line must parse and carry the next `seq`; a cut last line without
+ * its newline, which a kill mid-write leaves, is dropped. `bytes` is the length of the complete
+ * prefix.
  */
 export function readJournal(path: string): Entry[] & { bytes?: number } {
     const entries: Entry[] & { bytes?: number } = [];
@@ -125,11 +127,14 @@ export function readJournal(path: string): Entry[] & { bytes?: number } {
     const lines = readFileSync(path, "utf8").split("\n");
     lines.forEach((line, i) => {
         if (i === lines.length - 1) return;
+        let entry: Entry;
         try {
-            entries.push(JSON.parse(line) as Entry);
+            entry = JSON.parse(line) as Entry;
         } catch {
             throw new Error(`journal ${path}: line ${i + 1} is corrupt`);
         }
+        if (entry.seq !== i) throw new Error(`journal ${path}: line ${i + 1} has seq ${entry.seq}`);
+        entries.push(entry);
         entries.bytes = (entries.bytes ?? 0) + Buffer.byteLength(line) + 1;
     });
     return entries;

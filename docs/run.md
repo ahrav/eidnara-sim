@@ -28,7 +28,7 @@ entries of different arms are not ordered by scenario time.
 
 | Kind | Written when |
 |---|---|
-| `StartRun`, `EndRun` | The run starts (with the arm order) and ends |
+| `StartRun`, `ResumeRun`, `EndRun` | The run starts (with the arm order), a restarted harness takes it up (with the same order), and it ends |
 | `StartArm`, `EndArm` | An arm starts, after its driver's reset, and finishes |
 | `AdvanceClock` | The clock jumps; carries `from_ms`, an empty `busy` list, and the next event id or the laptop-sleep fault |
 | `BeginTurn` | A user turn is delivered |
@@ -51,8 +51,11 @@ last journaled `scenario_ms`.
 ## Scheduler
 
 `Scheduler` runs the arms in the given order, one at a time, over one event
-list. For each arm, it resets the driver, then walks the events, and closes
-any outage window, pending kill, and current session before `EndArm`:
+list. A scheduler whose scenario holds provider faults requires proxy
+control at construction, so a journaled `FaultFired` always armed the proxy.
+For each arm, it resets the driver, then walks the events, and before `EndArm`
+waits for a pending kill and for the busy set to empty, then closes any
+outage window and the current session:
 
 1. Wait one settle interval after each answered turn (`settleMs`, 1 s by
    default), so a background job the host starts after its answer registers
@@ -79,8 +82,10 @@ is journaled as expected; outside one, it throws `HarnessFailure`.
 
 ## Resume
 
-A restarted harness opens the same journal and, for each arm without
-`EndArm`:
+A restarted harness opens the same journal. A journal with `EndRun` is
+complete and the run returns at once. Otherwise the harness refuses an arm
+order different from the one `StartRun` recorded, journals `ResumeRun`, and,
+for each arm without `EndArm`:
 
 - journals `Event` for a turn with `EndTurn` but no `Event`, so the answered
   turn is never delivered again;
@@ -93,6 +98,14 @@ A restarted harness opens the same journal and, for each arm without
   with no `FaultObserved`;
 - continues with the first event that has no `Event` entry, with the arm's
   clock restored.
+
+Each recovery entry is written only while its item has no terminal entry, so
+a harness killed during recovery leaves nothing for the next resume to write
+twice. The driver handed to a resumed scheduler owns its host and daemon
+state: `reset()` runs only before `StartArm`, so a driver built for a resume
+brings the daemon up itself before the first event. A non-turn event with no
+`Event` entry is delivered again; `apply_diff` carries its full `path` and
+`content`, so a driver writes the whole file and a repeat is idempotent.
 
 The resume tests kill the harness with SIGKILL mid-turn, after a turn's
 answer, and during the second arm, and check the journal prefix, the next

@@ -47,7 +47,11 @@ export class Scheduler {
     private readonly fired = new Set<string>();
     private pendingKill: Promise<unknown> | null = null;
 
-    constructor(private readonly o: SchedulerOptions) {}
+    constructor(private readonly o: SchedulerOptions) {
+        if (!o.proxy && o.faults.some((f) => f.seam.layer === PROXY_LAYER)) {
+            throw new Error("scheduler: proxy faults are scheduled but no proxy control was given");
+        }
+    }
 
     private log(entry: { kind: EntryKind; [field: string]: unknown }): Entry {
         return this.o.journal.append({
@@ -59,8 +63,17 @@ export class Scheduler {
 
     async run(): Promise<void> {
         const entries = this.o.journal.entries;
-        if (!entries.some((e) => e.kind === "StartRun")) {
+        if (entries.some((e) => e.kind === "EndRun")) return;
+        const start = entries.find((e) => e.kind === "StartRun");
+        if (!start) {
             this.log({ kind: "StartRun", order: this.o.order });
+        } else {
+            if (JSON.stringify(start.order) !== JSON.stringify(this.o.order)) {
+                throw new Error(
+                    `scheduler: run was started with arm order ${JSON.stringify(start.order)}`,
+                );
+            }
+            this.log({ kind: "ResumeRun", order: this.o.order });
         }
         for (const arm of this.o.order) {
             const mine = entries.filter((e) => e.arm === arm);
@@ -81,6 +94,7 @@ export class Scheduler {
             );
             for (const e of this.o.events) if (!done.has(e.id)) await this.step(driver, e);
             await this.pendingKill;
+            await this.idle();
             this.pendingKill = null;
             this.outage = null;
             this.session = null;
@@ -90,16 +104,23 @@ export class Scheduler {
         this.log({ kind: "EndRun" });
     }
 
+    /** Existing Event and failed(interrupted) entries make recovery writes idempotent across resumes. */
     private resume(mine: Entry[]): void {
         const kinds = (k: string) => mine.filter((e) => e.kind === k);
         const done = new Set(kinds("Event").map((e) => e.event));
         const ended = new Set(kinds("EndTurn").map((e) => e.event));
         const begun = new Set(kinds("BeginTurn").map((e) => e.event));
+        const interrupted = kinds("ItemState").filter((e) => e.state === "failed(interrupted)");
+        const marked = new Set(interrupted.map((e) => e.event ?? e.fault));
         for (const e of kinds("EndTurn").filter((x) => !done.has(x.event))) {
             this.log({ kind: "Event", event: e.event, outcome: e.outcome });
         }
-        for (const e of kinds("BeginTurn").filter((x) => !ended.has(x.event))) {
-            this.log({ kind: "ItemState", event: e.event, state: "failed(interrupted)" });
+        for (const e of kinds("BeginTurn").filter(
+            (x) => !ended.has(x.event) && !done.has(x.event),
+        )) {
+            if (!marked.has(e.event)) {
+                this.log({ kind: "ItemState", event: e.event, state: "failed(interrupted)" });
+            }
             this.log({ kind: "Event", event: e.event, outcome: "failed(interrupted)" });
         }
         const jobsEnded = new Set(kinds("EndJob").map((e) => e.job));
@@ -112,7 +133,7 @@ export class Scheduler {
             this.fired.add(`${this.arm}/${fired.fault}`);
             if (!f) continue;
             if (f.seam.layer !== PROXY_LAYER) {
-                if (!observed.has(f.id) && f.type !== "laptop_sleep") {
+                if (!observed.has(f.id) && !marked.has(f.id) && f.type !== "laptop_sleep") {
                     this.log({ kind: "ItemState", fault: f.id, state: "failed(interrupted)" });
                 }
                 continue;

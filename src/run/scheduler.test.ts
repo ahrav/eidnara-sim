@@ -153,6 +153,18 @@ describe("Journal and lease", () => {
         writeFileSync(path, '{"seq":0}\nnot json\n');
         expect(() => new Journal(path)).toThrow(/line 2 is corrupt/);
         expect(readFileSync(path, "utf8")).toBe('{"seq":0}\nnot json\n');
+        writeFileSync(path, '{"seq":0}\n{"seq":0}\n');
+        expect(() => new Journal(path)).toThrow(/line 2 .*seq/);
+    });
+
+    test("releaseLease leaves a lease held by the same pid on another host", () => {
+        const d = dir();
+        writeFileSync(
+            join(d, "lease.0.json"),
+            JSON.stringify({ pid: process.pid, host: "elsewhere", started_wall_ms: 0 }),
+        );
+        releaseLease(d);
+        expect(existsSync(join(d, "lease.0.json"))).toBe(true);
     });
 
     test("racing resumers of a dead lease produce one holder", async () => {
@@ -462,6 +474,72 @@ describe("Scheduler", () => {
         expect(unexpected.map((e) => e.arm)).toEqual(["b"]);
     });
 
+    test("a proxy fault without proxy control is refused before the run", () => {
+        const j = new Journal(join(dir(), "j.jsonl"));
+        const faults = [
+            episode("p1", "provider_429", { kind: "user_turn", session: "s-0000", n: 1 }),
+        ];
+        const o = {
+            events: fixtureEvents(1),
+            faults,
+            journal: j,
+            order: ["a"],
+            drivers: { a: fakeDriver([]) },
+        };
+        expect(() => new Scheduler(o)).toThrow(/proxy/);
+        new Scheduler({ ...o, proxy: { arm: () => undefined, disarm: () => undefined } });
+    });
+
+    test("a finished run is left alone, and a resume with a different arm order is refused", async () => {
+        const path = join(dir(), "j.jsonl");
+        const make = (journal: Journal, order: string[]) =>
+            new Scheduler({
+                events: fixtureEvents(1),
+                faults: [],
+                journal,
+                settleMs: 0,
+                order,
+                drivers: { a: fakeDriver([]), b: fakeDriver([]) },
+            });
+        const j = new Journal(path);
+        await make(j, ["a", "b"]).run();
+        j.close();
+        const n = j.entries.length;
+        const again = new Journal(path);
+        await make(again, ["a", "b"]).run();
+        expect(again.entries).toHaveLength(n);
+        again.close();
+        const partial = new Journal(join(dir(), "j.jsonl"));
+        partial.append({ kind: "StartRun", arm: null, scenario_ms: 0, order: ["a", "b"] });
+        await expect(make(partial, ["a"]).run()).rejects.toThrow(/order/);
+    });
+
+    test("a job registered during the last event is drained before EndArm", async () => {
+        const j = new Journal(join(dir(), "j.jsonl"));
+        let scheduler: Scheduler | null = null;
+        const driver = fakeDriver([], 0, (e) => {
+            if (e.kind === "session_end") {
+                scheduler?.jobStart("late");
+                setTimeout(() => scheduler?.jobEnd("late"), 40);
+            }
+        });
+        scheduler = new Scheduler({
+            events: fixtureEvents(1),
+            faults: [],
+            journal: j,
+            settleMs: 0,
+            jobPollMs: 5,
+            order: ["a", "b"],
+            drivers: { a: driver, b: driver },
+        });
+        await scheduler.run();
+        await Bun.sleep(100);
+        invariants(j.entries);
+        const kinds = j.entries.map((e) => `${e.kind}:${e.arm}`);
+        expect(kinds.indexOf("EndJob:a")).toBeLessThan(kinds.indexOf("EndArm:a"));
+        expect(kinds.indexOf("EndJob:b")).toBeLessThan(kinds.indexOf("EndArm:b"));
+    });
+
     test("a failed turn's Event carries the driver's outcome", async () => {
         const j = new Journal(join(dir(), "j.jsonl"));
         const driver: ArmDriver = {
@@ -532,8 +610,9 @@ describe("resume", () => {
         }
         const resumed = after.slice(before.length);
         const last = before.at(-1) as Entry;
-        expect(resumed[0]?.scenario_ms).toBe(last.scenario_ms);
-        return { before, resumed, last };
+        expect(resumed[0]).toMatchObject({ kind: "ResumeRun", arm: null });
+        expect(resumed[1]?.scenario_ms).toBe(last.scenario_ms);
+        return { before, resumed: resumed.slice(1), last };
     };
     const inFlight = (entries: Entry[], bills: string[]) => {
         const last = entries.at(-1);
@@ -574,7 +653,7 @@ describe("resume of fired faults", () => {
     test("a persistent proxy fault fired before the kill is armed again, a one-shot one only if its turn has not begun; a scheduler fault without evidence is interrupted", async () => {
         const path = join(dir(), "j.jsonl");
         const j = new Journal(path);
-        j.append({ kind: "StartRun", arm: null, scenario_ms: 0 });
+        j.append({ kind: "StartRun", arm: null, scenario_ms: 0, order: ["a"] });
         j.append({ kind: "StartArm", arm: "a", scenario_ms: 0 });
         j.append({ kind: "Event", arm: "a", scenario_ms: 0, event: "e-000000" });
         j.append({ kind: "FaultFired", arm: "a", scenario_ms: 0, fault: "slow" });
@@ -626,10 +705,70 @@ describe("resume of fired faults", () => {
         expect(resumed.entries.filter((e) => e.kind === "FaultFired")).toHaveLength(4);
     });
 
+    test("a second resume does not repeat an earlier resume's recovery entries", async () => {
+        const path = join(dir(), "j.jsonl");
+        const j = new Journal(path);
+        j.append({ kind: "StartRun", arm: null, scenario_ms: 0, order: ["a"] });
+        j.append({ kind: "StartArm", arm: "a", scenario_ms: 0 });
+        j.append({ kind: "Event", arm: "a", scenario_ms: 0, event: "e-000000" });
+        j.append({ kind: "FaultFired", arm: "a", scenario_ms: 0, fault: "restart" });
+        j.append({
+            kind: "ItemState",
+            arm: "a",
+            scenario_ms: 0,
+            fault: "restart",
+            state: "failed(interrupted)",
+        });
+        j.append({ kind: "BeginTurn", arm: "a", scenario_ms: 0, event: "e-000001" });
+        j.append({
+            kind: "ItemState",
+            arm: "a",
+            scenario_ms: 0,
+            event: "e-000001",
+            state: "failed(interrupted)",
+        });
+        j.append({
+            kind: "Event",
+            arm: "a",
+            scenario_ms: 0,
+            event: "e-000001",
+            outcome: "failed(interrupted)",
+        });
+        j.append({ kind: "BeginTurn", arm: "a", scenario_ms: 60_000, event: "e-000002" });
+        j.append({
+            kind: "ItemState",
+            arm: "a",
+            scenario_ms: 60_000,
+            event: "e-000002",
+            state: "failed(interrupted)",
+        });
+        j.close();
+        const resumed = new Journal(path);
+        await new Scheduler({
+            events: fixtureEvents(3),
+            faults: [
+                episode("restart", "daemon_restart", { kind: "session_start", session: "s-0000" }),
+            ],
+            journal: resumed,
+            settleMs: 0,
+            order: ["a"],
+            drivers: { a: fakeDriver([]) },
+        }).run();
+        invariants(resumed.entries);
+        const count = (kind: string, key: string, value: string) =>
+            resumed.entries.filter((e) => e.kind === kind && e[key] === value).length;
+        expect(count("ItemState", "fault", "restart")).toBe(1);
+        expect(count("ItemState", "event", "e-000001")).toBe(1);
+        expect(count("Event", "event", "e-000001")).toBe(1);
+        expect(count("ItemState", "event", "e-000002")).toBe(1);
+        expect(count("Event", "event", "e-000002")).toBe(1);
+        expect(count("BeginTurn", "event", "e-000002")).toBe(1);
+    });
+
     test("a background job in flight at the kill is closed on resume before the clock moves", async () => {
         const path = join(dir(), "j.jsonl");
         const j = new Journal(path);
-        j.append({ kind: "StartRun", arm: null, scenario_ms: 0 });
+        j.append({ kind: "StartRun", arm: null, scenario_ms: 0, order: ["a"] });
         j.append({ kind: "StartArm", arm: "a", scenario_ms: 0 });
         j.append({ kind: "Event", arm: "a", scenario_ms: 0, event: "e-000000" });
         j.append({ kind: "BeginTurn", arm: "a", scenario_ms: 0, event: "e-000001" });
