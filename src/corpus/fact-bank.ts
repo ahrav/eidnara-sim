@@ -102,6 +102,9 @@ export function bankProblems(bank: unknown): string[] {
     const problems: string[] = [];
     if (bank.schema !== SCHEMA) problems.push(`fact-bank schema: ${bank.schema} is not ${SCHEMA}`);
     const ids = new Set<string>();
+    for (const lang of LANGUAGES) {
+        if (!(lang in bank)) problems.push(`fact-bank ${lang}: language missing`);
+    }
     for (const [lang, kinds] of Object.entries(bank)) {
         if (lang === "schema" || lang === "note") continue;
         if (!LANGUAGES.includes(lang)) {
@@ -157,8 +160,13 @@ export function bankProblems(bank: unknown): string[] {
                     if (field in t && typeof t[field] !== "string")
                         problems.push(`${where}: ${field} is not a string`);
                 }
-                if (kind === "scoped_update" && typeof t.update !== "string") {
-                    problems.push(`${where}: update missing`);
+                if (kind === "scoped_update") {
+                    for (const field of ["update", "out_probe"]) {
+                        if (typeof t[field] !== "string" || t[field] === "") {
+                            problems.push(`${where}: ${field} missing`);
+                        }
+                    }
+                    if (!("out_check" in t)) problems.push(`${where}: out_check missing`);
                 }
                 if (kind === "decision" && !("authority" in t)) {
                     problems.push(`${where}: authority missing`);

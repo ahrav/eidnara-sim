@@ -33,7 +33,7 @@ The scenario file is canonical JSON with these sections:
 | `sessions` | Session id, project, start time, request count, the idle gap before the session, the minimum gap the compiler enforced, and whether the request count was forced into the p90 regime |
 | `facts` | Ledger facts with template, kind, project, conveyance manner, statement, and the cue texts that carry it |
 | `probes` | Probe items P1 to P14 and the P1 controls with project, session, user text, the grading check, and the event that delivers it. Check keys: `must` and `must_not` regexes over the added lines of the agent's diff, `paths_must` and `paths_must_not` over the paths the diff adds or changes, `first_line_must` over the first line of every file the diff adds, `quote_style_must` (`double` or `single`) over the delimiter of every string literal in the added lines, `commands_must` over the command log, `answer`, `answer_must_not`, `abstain`, and `judge` over the final assistant text, and `window_from_turn` and `window_to_turn` for P14. Every `*_must` and `*_must_not` key holds a list of JavaScript regular expressions |
-| `similarity` | BM25 ratio and embedding cosine for every cue and probe pair, journaled to four decimals; the threshold gate compares the full-precision values |
+| `similarity` | BM25 ratio and embedding cosine for every cue and probe pair, and for a decision fact's authoritative diff content against its probes, journaled to four decimals; the threshold gate compares the full-precision values |
 | `events` | `apply_diff`, `session_start`, `user_turn`, and `session_end` events in scenario time |
 | `faults` | Fault episodes with type, strategy, trigger, parameters, and seam-table entry |
 | `cf_deletions` | Counterfactual deletions before 20% of the P1, P3, and P5 probes (L only) |
@@ -198,15 +198,15 @@ thresholds (`bm25_max` 0.4, `cosine_max` 0.6):
 
 | Tier | Seed | `scenario_hash` | Largest BM25 ratio | Largest cosine |
 |---|---|---|---|---|
-| S | 101 | `c940b00c` | 0.2162 | 0.5194 |
-| S | 102 | `2840be57` | 0.2527 | 0.4867 |
-| M | 201 | `baceaa01` | 0.2527 | 0.4992 |
-| M | 202 | `d3612f6d` | 0.253 | 0.4997 |
-| M | 203 | `70462958` | 0.2553 | 0.4843 |
-| L | 301 | `a3925f99` | 0.2552 | 0.5092 |
-| L | 302 | `4e8c416b` | 0.259 | 0.4957 |
-| L | 303 | `f5ea8980` | 0.258 | 0.5083 |
-| XL | 401 | `47f116b5` | 0.2546 | 0.4962 |
+| S | 101 | `a228f1a5` | 0.2635 | 0.5194 |
+| S | 102 | `cc4b1bae` | 0.2577 | 0.4867 |
+| M | 201 | `aba96afc` | 0.2747 | 0.4992 |
+| M | 202 | `7582fcb8` | 0.2787 | 0.4997 |
+| M | 203 | `46aeb66f` | 0.2788 | 0.4843 |
+| L | 301 | `933122ea` | 0.2733 | 0.5092 |
+| L | 302 | `482ba031` | 0.259 | 0.4957 |
+| L | 303 | `cefbf3dd` | 0.2807 | 0.5083 |
+| XL | 401 | `7e524da0` | 0.281 | 0.4962 |
 
 ## Known limits
 

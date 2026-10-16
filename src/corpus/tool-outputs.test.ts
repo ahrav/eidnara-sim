@@ -23,7 +23,9 @@ const result = (id: string, name: string, content: string) => ({
     tool_call_id: id,
 });
 const FOOTER = "[The command completed with exit code 1.]\n[Command finished with exit code 1]";
-const TRACE = `Traceback (most recent call last):\n  File "a.py", line 1\nValueError: bad input value\n${FOOTER}`;
+const TRACE_BODY =
+    'Traceback (most recent call last):\n  File "a.py", line 1\nValueError: bad input value';
+const TRACE = `${TRACE_BODY}\n${FOOTER}`;
 
 describe("classify and commandOf", () => {
     test("a traceback wins over the command's kind", () => {
@@ -80,6 +82,12 @@ describe("classify and commandOf", () => {
             classify("execute_bash", 'find . -name "*.py" -exec grep -l "x" {} \\;', "a.py"),
         ).toBe("grep");
         expect(classify("execute_bash", "ls | grep test", "test_a.py")).toBe("grep");
+        expect(
+            classify("execute_bash", "echo rg followed by an unquoted message", "rg ..."),
+        ).toBeNull();
+        expect(classify("execute_bash", "find . -name '*.py' | xargs grep -l foo", "a.py")).toBe(
+            "grep",
+        );
     });
     test("a runner name inside a quoted pattern is not a pipeline segment", () => {
         const cmd =
@@ -115,7 +123,7 @@ describe("extractFrom", () => {
                 call("c1", "execute_bash", { command: "python -m pytest tests" }),
                 result("c1", "execute_bash", TRACE),
                 call("c2", "execute_bash", { command: "python t.py" }),
-                result("c2", "execute_bash", `${TRACE}\nKeyError: 'k'`),
+                result("c2", "execute_bash", `${TRACE_BODY}\nKeyError: 'k'\n${FOOTER}`),
                 call("c3", "str_replace_editor", { command: "view", path: "/a.py" }),
                 result("c3", "str_replace_editor", longRead),
             ],
@@ -199,7 +207,7 @@ describe("extractFrom", () => {
     });
 
     test("a long stack trace keeps its traceback when unrelated output follows it", () => {
-        const noisy = `${TRACE}\n${"pip install output\n".repeat(400)}`;
+        const noisy = `${TRACE_BODY}\n${"pip install output\n".repeat(400)}${FOOTER}`;
         const out2 = extractFrom(
             [
                 {

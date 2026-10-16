@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { CORPUS_DIR, isPlainRelativePath, under } from "./sources";
 
@@ -62,6 +62,9 @@ export function loadRepos(): RepoSpec[] {
                 `repos.json: ${repo.id}: license_file must be a relative path in the clone`,
             );
         }
+        if (!existsSync(join(TWINS_DIR, repo.twin.id))) {
+            throw new Error(`repos.json: ${repo.twin.id}: corpus/twins/${repo.twin.id} is missing`);
+        }
         if (!Array.isArray(repo.twin.renames)) {
             throw new Error(`repos.json: ${repo.twin.id}: renames must be an array`);
         }
@@ -70,6 +73,12 @@ export function loadRepos(): RepoSpec[] {
             if (!fields.every((f) => typeof f === "string") || rename.glob === "") {
                 throw new Error(
                     `repos.json: ${repo.twin.id}: rename needs glob, pattern, and replace`,
+                );
+            }
+            const inside = rename.glob.split("/").every((s) => s !== "" && s !== "." && s !== "..");
+            if (!inside) {
+                throw new Error(
+                    `repos.json: ${repo.twin.id}: glob ${rename.glob} must stay inside the twin`,
                 );
             }
             try {

@@ -14,7 +14,7 @@
                 },
                 "check": {
                     "must": [
-                        "{TOKEN}_[A-Z0-9_]+"
+                        "\\b{TOKEN}_[A-Z0-9_]+"
                     ]
                 }
             },
@@ -154,9 +154,9 @@
                 "probe": "Make concurrent writers to the same key safe.",
                 "check": {
                     "must_not": [
-                        "static\\s+\\w+\\s*:\\s*.*Mutex",
+                        "static\\s+\\w+\\s*:[^\\n]*Mutex<\\s*(?:\\w+::)*(?:State|Shared|Db|Keyspace|HashMap|BTreeMap)\\b",
                         "lazy_static",
-                        "OnceLock<.*Mutex"
+                        "OnceLock<\\s*Mutex<\\s*(?:\\w+::)*(?:State|Shared|Db|Keyspace|HashMap|BTreeMap)\\b"
                     ]
                 }
             },
@@ -180,18 +180,18 @@
                 "out_probe": "Log the bound address when the server starts listening.",
                 "check": {
                     "must": [
-                        "trace!"
+                        "trace!|Level::TRACE\\b"
                     ],
                     "must_not": [
-                        "debug!"
+                        "debug!|Level::DEBUG\\b"
                     ]
                 },
                 "out_check": {
                     "must": [
-                        "debug!"
+                        "debug!|Level::DEBUG\\b"
                     ],
                     "must_not": [
-                        "trace!"
+                        "trace!|Level::TRACE\\b"
                     ]
                 }
             }
@@ -217,7 +217,7 @@
                 },
                 "check": {
                     "must": [
-                        "{TOKEN}_[A-Z0-9_]+"
+                        "\\b{TOKEN}_[A-Z0-9_]+"
                     ]
                 }
             },
@@ -353,7 +353,7 @@
                 "probe": "Speed up repeated handler compilation.",
                 "check": {
                     "must_not": [
-                        "^(?:export\\s+)?(?:const|let|var)\\s+\\w+(?:\\s*:[^=]+)?\\s*=\\s*new\\s+(?:Weak)?Map(?:<[^(]*>)?\\s*\\("
+                        "^(?:export\\s+)?(?:const|let|var)\\s+\\w+(?:\\s*:[^=]+)?\\s*=\\s*new\\s+Map(?:<[^(]*>)?\\s*\\("
                     ]
                 }
             },
@@ -479,7 +479,7 @@
                 "probe": "The failure from the other day showed up again in CI. Add a troubleshooting note naming the exact exception class we hit.",
                 "check": {
                     "must": [
-                        "{code_re}"
+                        "\\b{code_re}\\b"
                     ]
                 }
             }
@@ -491,7 +491,7 @@
                 "probe": "Commit what we have so far.",
                 "check": {
                     "commands_must": [
-                        "git commit\\b(?:(?!\\s(?:-\\w*m|--message))[^\\n])*\\s(?:-\\w*m[ =]?|--message[ =])[\"']?\\[{token}\\]"
+                        "git commit\\b(?![^\\n]*--dry-run)(?:(?!\\s(?:-\\w*m|--message))[^\\n])*\\s(?:-\\w*m[ =]?|--message[ =])[\"']?\\[{token}\\]"
                     ]
                 }
             },
