@@ -1,4 +1,5 @@
 import { describe, expect, setSystemTime, test } from "bun:test";
+import { execFileSync } from "node:child_process";
 import {
     closeSync,
     existsSync,
@@ -3601,6 +3602,37 @@ describe("Scheduler", () => {
         k.close();
         expect(readJournal(k.path)).toHaveLength(0);
         expect(() => readJournal("/dev/zero")).toThrow(/is not a regular file/);
+    });
+
+    test("the journal and the lease operate on a pinned directory handle, a FIFO marker cannot block poison, and a lease whose directory flush fails is unlinked", () => {
+        const base = dir();
+        const first = join(base, "a");
+        const second = join(base, "b");
+        mkdirSync(first);
+        mkdirSync(second);
+        const lease = takeLease(first);
+        const j = new Journal(join(first, "j.jsonl"), lease.within);
+        j.append({ kind: "StartRun", arm: null, scenario_ms: 0, order: ["a"], scenario: "s" });
+        renameSync(first, join(base, "a-moved"));
+        renameSync(second, first);
+        j.append({ kind: "StartArm", arm: "a", scenario_ms: 0 });
+        j.close();
+        expect(readJournal(join(base, "a-moved", "j.jsonl"))).toHaveLength(2);
+        expect(existsSync(join(first, "j.jsonl"))).toBe(false);
+        const back = new Journal(join(base, "a-moved", "j.jsonl"), lease.within);
+        back.poison("after the rename");
+        expect(existsSync(join(base, "a-moved", "j.jsonl.failed"))).toBe(true);
+        expect(existsSync(join(first, "j.jsonl.failed"))).toBe(false);
+        releaseLease(join(base, "a-moved"), lease);
+        expect(
+            JSON.parse(readFileSync(join(base, "a-moved", "lease.0.json"), "utf8")).released,
+        ).toBe(true);
+        const fifoDir = dir();
+        const fifo = new Journal(join(fifoDir, "j.jsonl"));
+        execFileSync("mkfifo", [join(fifoDir, "j.jsonl.failed")]);
+        const started = performance.now();
+        expect(() => fifo.poison("blocked?")).toThrow(/is not this run's file|ENXIO/);
+        expect(performance.now() - started).toBeLessThan(2_000);
     });
 
     test("a FaultObserved without its FaultFired is refused on resume", async () => {

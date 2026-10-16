@@ -6,11 +6,13 @@ both.
 ## Lease
 
 Leases are files `lease.<n>.json`, and the highest number names the holder.
-`takeLease(dir)` resolves the directory path once and works on the resolved
-path, so a symlink repointed mid-way touches nothing else; it flushes the
-staged lease before linking it and the directory after, as `releaseLease`
-does around its rename, so an acknowledged lease or release survives a
-storage crash; it reads the highest lease: one held by a live process, or by any
+`takeLease(dir)` opens the directory once and performs every read, write,
+link, rename, and deletion through `/proc/self/fd/<fd>/`, which the kernel
+resolves against that open directory, so a symlink repointed or a directory
+renamed mid-way cannot move an operation elsewhere (`releaseLease` works the
+same way); it flushes the staged lease before linking it and the directory
+after (a link whose directory flush fails is unlinked again and the failure
+raised), so an acknowledged lease or release survives a storage crash; it reads the highest lease: one held by a live process, or by any
 process on another machine, refuses the call. The machine is `/etc/machine-id`
 (`hostname:<name>` where that file is absent), so machines or containers that
 share a hostname on one directory stay distinct; a lease carries the kernel
@@ -41,15 +43,14 @@ free whichever machine released it.
 
 ## Journal
 
-`Journal` checks that the directory its path names is the one `takeLease`
-fixed before the creating open, so a repointed path creates nothing
-elsewhere, opens its file without following symlinks, requires a regular
-file with one link owned by the harness user, checks through
-`/proc/self/fd` that the file the kernel opened lives in the directory
-`takeLease` fixed (`lease.within`, the device and inode read before the lease
-files were touched and checked again after; by default the directory the path
-names as the constructor starts), so a directory symlink repointed between
-the lease and the open cannot route the journal elsewhere, refuses a file
+`Journal` opens the run directory once, checks that it is the one
+`takeLease` fixed (`lease.within`, the device and inode of the directory the
+lease landed in; by default the directory the path names as the constructor
+starts), and opens, reads, and marks its file through that directory handle
+(`/proc/self/fd/<fd>/journal.jsonl`), so a symlink repointed or a directory
+renamed after the lease cannot route the journal, or its failure marker,
+elsewhere; it opens the file without following symlinks, requires a regular
+file with one link owned by the harness user, refuses a file
 over `MAX_JOURNAL_BYTES` (256 MiB) before reading it and an append that would
 carry it over, flushes the directory when it creates the file and each
 appended line with `fdatasync` before the entry counts as appended, so an
@@ -57,10 +58,11 @@ acknowledged entry survives a power loss, and flushes the truncation that
 rolls a failed append back (closing the journal when that flush fails), so a
 refused entry cannot reappear after a crash, and refuses to open while a
 `journal.jsonl.failed` marker sits beside the file the kernel opened
-(`poison` reads the journal's current path back from the kernel, so a run
+(`poison` writes the marker through the same directory handle, so a run
 directory renamed since the open still gets its marker beside the journal,
-creates it exclusively, or truncates and rewrites an existing marker only
-when that file is this user's regular single-link file,
+creates it exclusively, or opens an existing marker without blocking and
+truncates and rewrites it only when that file is this user's regular
+single-link file,
 and flushes it and its directory entry when a record that must land, such as a fatal fault, its evidence, an
 exit, or a job transition, cannot be appended; the marker is read through a
 descriptor opened without following links or blocking and must be a regular

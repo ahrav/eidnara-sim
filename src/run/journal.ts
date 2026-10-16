@@ -12,7 +12,6 @@ import {
     readFileSync,
     readlinkSync,
     readSync,
-    realpathSync,
     renameSync,
     rmSync,
     statSync,
@@ -20,7 +19,7 @@ import {
     writeSync,
 } from "node:fs";
 import { hostname } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 
 export type EntryKind =
     | "StartRun"
@@ -257,19 +256,41 @@ export function directoryIdentity(dir: string): DirIdentity {
     return { dev: st.dev, ino: st.ino };
 }
 
-/** Flushes a file's contents to its device. */
-function flushFile(path: string): void {
-    const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
-    try {
-        fsyncSync(fd);
-    } finally {
-        closeSync(fd);
+/**
+ * An open run directory. Every path built with `at` passes through `/proc/self/fd/<fd>/`, which
+ * the kernel resolves against the directory inode this descriptor holds, so a symlink or rename
+ * elsewhere on the original path cannot move the operation to another directory.
+ */
+class PinnedDir {
+    readonly fd: number;
+    readonly identity: DirIdentity;
+    closed = false;
+    constructor(dir: string) {
+        this.fd = openSync(dir, constants.O_RDONLY | constants.O_DIRECTORY);
+        const st = fstatSync(this.fd);
+        this.identity = { dev: st.dev, ino: st.ino };
+    }
+    at(name: string): string {
+        if (this.closed) throw new Error("run directory handle is closed");
+        return `/proc/self/fd/${this.fd}/${name}`;
+    }
+    /** The directory's current path, read back from the kernel. */
+    path(): string {
+        return readlinkSync(`/proc/self/fd/${this.fd}`);
+    }
+    sync(): void {
+        fsyncSync(this.fd);
+    }
+    close(): void {
+        if (this.closed) return;
+        this.closed = true;
+        closeSync(this.fd);
     }
 }
 
-/** Flushes a directory's entries, so a file just created in it survives a crash. */
-function syncDirectory(dir: string): void {
-    const fd = openSync(dir, constants.O_RDONLY | constants.O_DIRECTORY);
+/** Flushes a file's contents to its device. */
+function flushFile(path: string): void {
+    const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
     try {
         fsyncSync(fd);
     } finally {
@@ -344,42 +365,51 @@ function leaseNumbers(dir: string): number[] {
  */
 export function takeLease(runDir: string): Lease & { within: DirIdentity } {
     const mine = ownIdentity();
-    const dir = realpathSync(runDir);
-    const within = directoryIdentity(dir);
-    for (let attempt = 0; attempt < 3; attempt++) {
-        const numbers = leaseNumbers(dir);
-        const top = numbers.at(-1);
-        if (top === Number.MAX_SAFE_INTEGER)
-            throw new Error(`lease numbers in ${dir} are exhausted`);
-        const held = top === undefined ? null : readLease(join(dir, `lease.${top}.json`));
-        if (held && !held.released && (held.host !== mine.host || holderAlive(held, mine))) {
-            throw new Error(`run directory ${dir} is leased by pid ${held.pid} on ${held.host}`);
-        }
-        const staged = join(dir, `lease.${randomUUID()}.tmp`);
-        writeFileSync(staged, JSON.stringify(mine), { flag: "wx" });
-        flushFile(staged);
-        try {
-            linkSync(staged, join(dir, `lease.${(top ?? -1) + 1}.json`));
-            syncDirectory(dir);
-        } catch {
-            continue;
-        } finally {
+    const pinned = new PinnedDir(runDir);
+    try {
+        const dir = pinned.path();
+        for (let attempt = 0; attempt < 3; attempt++) {
+            const numbers = leaseNumbers(pinned.at("."));
+            const top = numbers.at(-1);
+            if (top === Number.MAX_SAFE_INTEGER)
+                throw new Error(`lease numbers in ${dir} are exhausted`);
+            const held = top === undefined ? null : readLease(pinned.at(`lease.${top}.json`));
+            if (held && !held.released && (held.host !== mine.host || holderAlive(held, mine))) {
+                throw new Error(
+                    `run directory ${dir} is leased by pid ${held.pid} on ${held.host}`,
+                );
+            }
+            const staged = pinned.at(`lease.${randomUUID()}.tmp`);
+            writeFileSync(staged, JSON.stringify(mine), { flag: "wx" });
+            flushFile(staged);
+            const link = pinned.at(`lease.${(top ?? -1) + 1}.json`);
+            let linked = false;
             try {
-                rmSync(staged);
-            } catch {}
+                linkSync(staged, link);
+                linked = true;
+                pinned.sync();
+            } catch (caught) {
+                if (!linked) continue;
+                try {
+                    rmSync(link, { force: true });
+                } catch {}
+                throw caught;
+            } finally {
+                try {
+                    rmSync(staged);
+                } catch {}
+            }
+            for (const n of numbers) {
+                try {
+                    rmSync(pinned.at(`lease.${n}.json`), { force: true });
+                } catch {}
+            }
+            return { ...mine, within: pinned.identity };
         }
-        for (const n of numbers) {
-            try {
-                rmSync(join(dir, `lease.${n}.json`), { force: true });
-            } catch {}
-        }
-        const after = directoryIdentity(dir);
-        if (after.dev !== within.dev || after.ino !== within.ino) {
-            throw new Error(`run directory ${dir} changed while it was being leased`);
-        }
-        return { ...mine, within };
+        throw new Error(`could not lease ${dir}`);
+    } finally {
+        pinned.close();
     }
-    throw new Error(`could not lease ${dir}`);
 }
 
 /**
@@ -387,17 +417,21 @@ export function takeLease(runDir: string): Lease & { within: DirIdentity } {
  * the directory keeps its highest generation and later takers all target the next one.
  */
 export function releaseLease(runDir: string, lease: Lease): void {
-    const dir = realpathSync(runDir);
-    const top = leaseNumbers(dir).at(-1);
-    if (top === undefined) return;
-    const path = join(dir, `lease.${top}.json`);
-    const held = readLease(path);
-    if (!held || held.released || !sameLease(held, lease)) return;
-    const staged = join(dir, `lease.${randomUUID()}.tmp`);
-    writeFileSync(staged, JSON.stringify({ ...held, released: true }), { flag: "wx" });
-    flushFile(staged);
-    renameSync(staged, path);
-    syncDirectory(dir);
+    const pinned = new PinnedDir(runDir);
+    try {
+        const top = leaseNumbers(pinned.at(".")).at(-1);
+        if (top === undefined) return;
+        const path = pinned.at(`lease.${top}.json`);
+        const held = readLease(path);
+        if (!held || held.released || !sameLease(held, lease)) return;
+        const staged = pinned.at(`lease.${randomUUID()}.tmp`);
+        writeFileSync(staged, JSON.stringify({ ...held, released: true }), { flag: "wx" });
+        flushFile(staged);
+        renameSync(staged, path);
+        pinned.sync();
+    } finally {
+        pinned.close();
+    }
 }
 
 /**
@@ -470,8 +504,9 @@ export class Journal {
     readonly entries: Entry[];
     private readonly last = new Map<string | null, number>();
     private fd: number;
-    /** The file's path as the kernel resolved it at open, pinned for the failure marker. */
-    private realPath = "";
+    /** The run directory, held open for the journal's life so the failure marker lands beside it. */
+    private readonly dir: PinnedDir;
+    private readonly name: string;
     /** Bytes of complete lines on disk; a failed append truncates back to it. */
     private length = 0;
 
@@ -486,29 +521,36 @@ export class Journal {
         within: DirIdentity = directoryIdentity(dirname(resolve(path))),
     ) {
         const { O_APPEND, O_CREAT, O_NOFOLLOW, O_RDWR } = constants;
-        const target = directoryIdentity(dirname(resolve(path)));
-        if (target.dev !== within.dev || target.ino !== within.ino) {
-            throw new Error(`journal ${basename(path)} would open outside its run directory`);
+        this.name = basename(path);
+        this.dir = new PinnedDir(dirname(resolve(path)));
+        try {
+            const target = this.dir.identity;
+            if (target.dev !== within.dev || target.ino !== within.ino) {
+                throw new Error(`journal ${this.name} would open outside its run directory`);
+            }
+            const poisoned = readMarker(this.dir.at(`${this.name}.failed`));
+            if (poisoned !== null) throw new HarnessFailure(`run failed: ${poisoned}`);
+            this.fd = openSync(
+                this.dir.at(this.name),
+                O_RDWR | O_APPEND | O_CREAT | O_NOFOLLOW,
+                0o644,
+            );
+        } catch (caught) {
+            this.dir.close();
+            throw caught;
         }
-        this.fd = openSync(path, O_RDWR | O_APPEND | O_CREAT | O_NOFOLLOW, 0o644);
         let read: Entry[] & { bytes?: number };
         try {
             const st = fstatSync(this.fd);
             if (!st.isFile()) throw new Error(`journal ${path} is not a regular file`);
             if (st.nlink !== 1) throw new Error(`journal ${path} has ${st.nlink} links`);
             if (st.uid !== process.getuid?.()) throw new Error(`journal ${path} has another owner`);
-            this.realPath = readlinkSync(`/proc/self/fd/${this.fd}`);
-            const parent = directoryIdentity(dirname(this.realPath));
-            if (parent.dev !== within.dev || parent.ino !== within.ino) {
-                throw new Error(`journal ${basename(path)} opened outside its run directory`);
-            }
-            const poisoned = readMarker(`${this.realPath}.failed`);
-            if (poisoned !== null) throw new HarnessFailure(`run failed: ${poisoned}`);
             read = readJournal(this.fd);
             ftruncateSync(this.fd, read.bytes ?? 0);
-            if (st.size === 0) syncDirectory(dirname(this.realPath));
+            if (st.size === 0) this.dir.sync();
         } catch (caught) {
             closeSync(this.fd);
+            this.dir.close();
             throw caught;
         }
         this.entries = [...read];
@@ -573,6 +615,7 @@ export class Journal {
         const fd = this.open();
         this.fd = -1;
         closeSync(fd);
+        this.dir.close();
     }
 
     /**
@@ -581,21 +624,21 @@ export class Journal {
      * could not be appended. The journal is closed afterwards.
      */
     poison(reason: string): void {
-        const current = this.fd >= 0 ? readlinkSync(`/proc/self/fd/${this.fd}`) : this.realPath;
-        const marker = `${current}.failed`;
+        if (this.dir.closed) return;
+        const marker = this.dir.at(`${this.name}.failed`);
         try {
-            const { O_CREAT, O_EXCL, O_NOFOLLOW, O_WRONLY } = constants;
+            const { O_CREAT, O_EXCL, O_NOFOLLOW, O_NONBLOCK, O_WRONLY } = constants;
             let fd: number;
             try {
                 fd = openSync(marker, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o644);
             } catch (caught) {
                 if ((caught as NodeJS.ErrnoException).code !== "EEXIST") throw caught;
-                fd = openSync(marker, O_WRONLY | O_NOFOLLOW);
+                fd = openSync(marker, O_WRONLY | O_NOFOLLOW | O_NONBLOCK);
                 const st = fstatSync(fd);
                 const own = st.isFile() && st.nlink === 1 && st.uid === process.getuid?.();
                 if (!own) {
                     closeSync(fd);
-                    throw new Error(`failure marker ${basename(marker)} is not this run's file`);
+                    throw new Error(`failure marker ${this.name}.failed is not this run's file`);
                 }
                 ftruncateSync(fd, 0);
             }
@@ -605,7 +648,7 @@ export class Journal {
             } finally {
                 closeSync(fd);
             }
-            syncDirectory(dirname(realpathSync(marker)));
+            this.dir.sync();
         } finally {
             if (this.fd >= 0) {
                 const fd = this.fd;
@@ -614,6 +657,7 @@ export class Journal {
                     closeSync(fd);
                 } catch {}
             }
+            this.dir.close();
         }
     }
 
