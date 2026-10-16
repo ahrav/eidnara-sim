@@ -489,8 +489,10 @@ export async function compileScenario(input: CompileInput) {
         const session = p90[i % p90.length] as Session;
         const check = { window_from_turn: Math.floor((2 * session.turn_ms.length) / 3) };
         const { project, id } = session;
+        const pid = pad("q", probes.length);
+        keys.push(pid);
         probes.push({
-            id: pad("q", probes.length),
+            id: pid,
             type: "P14",
             fact: null,
             project,
