@@ -384,6 +384,16 @@ describe("compile-time refusals", () => {
         ).rejects.toThrow(/delivered text carries markers probe/);
     });
 
+    test("a filler that carries a P14 item id is refused", async () => {
+        await expect(
+            withInput((bank) => {
+                for (const lang of ["rust", "typescript"] as const) {
+                    (bank[lang] as Record<string, string[]>).filler = ["Tidy the q-0084 helper."];
+                }
+            }),
+        ).rejects.toThrow(/delivered text carries markers q-0084/);
+    });
+
     test("a diff whose content carries a ledger key is refused", async () => {
         await expect(
             withInput((bank) => {

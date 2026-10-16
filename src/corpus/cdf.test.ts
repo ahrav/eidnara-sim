@@ -1,6 +1,22 @@
 import { describe, expect, test } from "bun:test";
 import { Rng } from "../rng";
-import { fitCdf, GRID, quantile, sample } from "./cdf";
+import { fitCdf, GRID, quantile, sample, tailShare } from "./cdf";
+
+describe("tailShare", () => {
+    test("a continuous table interpolates the CDF at the threshold", () => {
+        const t = { kind: "continuous" as const, p: [0, 0.5, 1], x: [0, 10, 20] };
+        expect(tailShare(t, 5)).toBeCloseTo(0.75, 9);
+        expect(tailShare(t, 10)).toBeCloseTo(0.5, 9);
+        expect(tailShare(t, 0)).toBe(1);
+        expect(tailShare(t, 25)).toBe(0);
+    });
+    test("a discrete table counts mass at the threshold", () => {
+        const t = fitCdf([1, 2, 2, 3], "discrete");
+        expect(tailShare(t, 2)).toBeCloseTo(0.75, 9);
+        expect(tailShare(t, 3)).toBeCloseTo(0.25, 9);
+        expect(tailShare(t, 4)).toBe(0);
+    });
+});
 
 describe("fitCdf and quantile", () => {
     const values = Array.from({ length: 1000 }, (_, i) => i + 1);

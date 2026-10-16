@@ -129,6 +129,11 @@ describe("sampler over 10,000 sessions", () => {
         expect(Math.max(...idle)).toBeGreaterThan(11 * 3600);
     });
 
+    test("append token counts are whole numbers", () => {
+        const append = pooled.append_tokens_per_step ?? [];
+        expect(append.filter((a) => !Number.isInteger(a))).toEqual([]);
+    });
+
     test("the append tail reaches 10k tokens per step", () => {
         const append = pooled.append_tokens_per_step ?? [];
         const share = append.filter((a) => a >= 10_000).length / append.length;
@@ -170,7 +175,7 @@ describe("SIM-P10: user-behaviour rates", () => {
         });
     });
 
-    test("each rate's numbers appear as percentages in its quote and stay ordered", () => {
+    test("each rate's numbers lie in [0, 1], appear as percentages in its quote, and stay ordered", () => {
         for (const [name, raw] of Object.entries(published.rates)) {
             const rate = raw as Rate;
             const numbers = [
@@ -182,6 +187,8 @@ describe("SIM-P10: user-behaviour rates", () => {
             expect({ name, any: numbers.length > 0 }).toEqual({ name, any: true });
             const quoted = [...rate.quote.matchAll(/(\d+(?:\.\d+)?)%/g)].map((m) => Number(m[1]));
             for (const v of numbers) {
+                expect(v).toBeGreaterThanOrEqual(0);
+                expect(v).toBeLessThanOrEqual(1);
                 const found = quoted.some((q) => Math.abs(q / 100 - v) < 1e-9);
                 expect({ name, v, found }).toEqual({ name, v, found: true });
             }

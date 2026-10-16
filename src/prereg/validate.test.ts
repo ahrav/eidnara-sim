@@ -74,6 +74,15 @@ describe("pre-registration validator", () => {
         expect(errors).toContain("families[harm]: missing");
     });
 
+    test("refuses a seed outside the unsigned 32-bit range of the random streams", () => {
+        const prereg = load("S") as any;
+        prereg.seeds[0] = 2 ** 32;
+        prereg.arms.order_by_seed.length = prereg.seeds.length;
+        expect(validatePreregistration(prereg)).toContain(
+            "seeds: expected an integer in [0, 4294967295]",
+        );
+    });
+
     test("refuses a run-level statistical gate below six paired runs", () => {
         const prereg = load("M") as any;
         prereg.families.find((f: any) => f.id === "dependability").min_paired_runs = 5;

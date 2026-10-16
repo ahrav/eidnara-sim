@@ -37,6 +37,10 @@ const posInt: Check = (v) =>
     Number.isSafeInteger(v) && (v as number) > 0 ? null : "expected a positive integer";
 const nonNegInt: Check = (v) =>
     Number.isSafeInteger(v) && (v as number) >= 0 ? null : "expected a non-negative integer";
+const uint32: Check = (v) =>
+    Number.isInteger(v) && (v as number) >= 0 && (v as number) <= 0xffff_ffff
+        ? null
+        : "expected an integer in [0, 4294967295]";
 const decimal: Check = (v) =>
     isCanonicalDecimal(v) ? null : "expected a canonical decimal string";
 const unitRate: Check = (v) =>
@@ -97,7 +101,7 @@ const PREREG_SHAPE: Shape = {
         order_by_seed: list(list(oneOf(ARMS)), false),
     },
     hosts: list(oneOf(HOSTS)),
-    seeds: list(nonNegInt),
+    seeds: list(uint32),
     scenario: {
         simulated_days: posInt,
         sessions_per_project: posInt,

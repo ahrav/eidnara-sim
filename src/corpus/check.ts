@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { sha256Hex } from "../prereg/canonical";
-import { quantile } from "./cdf";
+import { quantile, tailShare } from "./cdf";
 import {
     type CheckResult,
     compareCited,
@@ -62,8 +62,7 @@ export function checkCorpus(): CorpusReport {
         );
     }
     for (const tail of cited.tail_checks) {
-        const { p, x } = table(dist, tail.quantity);
-        const share = 1 - (p[x.findIndex((v) => v >= tail.threshold)] ?? 1);
+        const share = tailShare(table(dist, tail.quantity), tail.threshold);
         need(share >= tail.min_share, `${tail.quantity}: share >= ${tail.threshold} is ${share}`);
     }
 
