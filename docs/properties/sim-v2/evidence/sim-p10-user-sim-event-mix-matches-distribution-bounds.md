@@ -23,9 +23,13 @@ pushback and interrupt rates per turn and redirect and abandon rates per
 session, each quoted from the SWE-chat paper v2 because the SWE-chat tables
 are gated. The abandon rate is a band (0.1 to 0.3) taken from the paper's
 sensitivity analysis, since the dataset does not capture abandoned sessions.
-The SIM-P10 test in `src/corpus/corpus.test.ts` checks that every rate has a
-quote and a value or band in [0, 1]. The user-sim check against these bands
-lands in M6.
+That band is a specification choice recorded as `bounded-not-measured` in
+`corpus/published-rates.json`, not a fitted target: the M6 check treats
+abandonment as a bounded input and reports the realised rate without claiming
+a match to a measured population. The three per-turn and per-session rates
+are fitted targets. The SIM-P10 test in `src/corpus/corpus.test.ts` checks
+that every rate has a quote and a value or band in [0, 1]. The user-sim check
+against these bands lands in M6.
 
 ## Failure scenario
 

@@ -128,7 +128,7 @@ export function checkCorpus(): CorpusReport {
                 e.source_id?.startsWith(`${d.repo}@${d.revision}:`),
             );
             need(
-                dataset !== undefined && dataset.license === e.license,
+                dataset?.id === "openhands" && dataset.license === e.license,
                 `${label} ${e.id}: license ${e.license} for source ${e.source_id}`,
             );
         }
@@ -168,13 +168,21 @@ export function checkCorpus(): CorpusReport {
     need(mix?.n > 0, "tool_mix: n missing");
     const names = (mix?.categories ?? []).map((c) => c.category).sort();
     need(names.join(",") === CATEGORY_NAMES.join(","), `tool_mix: categories ${names}`);
-    const shareSum = (mix?.categories ?? []).reduce((sum, c) => sum + c.share, 0);
-    need(Math.abs(shareSum - 1) < 1e-5, `tool_mix: shares sum to ${shareSum}`);
+    const round6 = (v: number) => Math.round(v * 1e6) / 1e6;
+    let counted = 0;
     for (const c of mix?.categories ?? []) {
-        const unit = (v: number) => Number.isFinite(v) && v >= 0 && v <= 1;
-        need(unit(c.share) && unit(c.error_rate), `tool_mix: ${c.category} share or error_rate`);
+        const count = Math.round(c.share * mix.n);
+        const errors = Math.round(c.error_rate * count);
+        counted += count;
+        need(
+            count > 0 &&
+                round6(count / mix.n) === c.share &&
+                round6(errors / count) === c.error_rate,
+            `tool_mix: ${c.category} share or error_rate is not a count over n`,
+        );
         need(Array.isArray(c.tools), `tool_mix: ${c.category} tools`);
     }
+    need(counted === mix?.n, `tool_mix: category counts total ${counted}, n is ${mix?.n}`);
     const tools = (mix?.categories ?? []).flatMap((c) => c.tools);
     need(new Set(tools).size === tools.length, "tool_mix: a tool appears in two categories");
     const cited = loadCited();

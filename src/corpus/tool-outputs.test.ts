@@ -74,6 +74,13 @@ describe("classify and commandOf", () => {
         ).toBeNull();
         expect(classify("execute_bash", "grep -rn foo .", "a.py:1: foo")).toBe("grep");
     });
+    test("a search tool named only inside quotes is not a grep", () => {
+        expect(classify("execute_bash", 'echo "run rg next"', "run rg next")).toBeNull();
+        expect(
+            classify("execute_bash", 'find . -name "*.py" -exec grep -l "x" {} \\;', "a.py"),
+        ).toBe("grep");
+        expect(classify("execute_bash", "ls | grep test", "test_a.py")).toBe("grep");
+    });
     test("a runner name inside a quoted pattern is not a pipeline segment", () => {
         const cmd =
             'cd /w && find . -name "*.py" -exec grep -l "pytest\\|unittest" {} \\; | head -5';

@@ -32,6 +32,11 @@ export function loadSources(): Dataset[] {
     const ids = datasets.map((d) => d.id);
     if (new Set(ids).size !== ids.length) throw new Error(`sources.json: duplicate id in ${ids}`);
     for (const d of datasets) {
+        if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(d.id)) {
+            throw new Error(
+                `sources.json: id ${JSON.stringify(d.id)} is not a plain directory name`,
+            );
+        }
         if (d.access !== "public" && d.access !== "gated") {
             throw new Error(`sources.json: ${d.id}: access ${JSON.stringify(d.access)}`);
         }
