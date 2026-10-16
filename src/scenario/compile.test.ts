@@ -831,6 +831,8 @@ describe("fault schedule", () => {
                     expect(f.params).toEqual({ duration_ms: session?.gap_before_ms ?? -1 });
                 if (f.type === "store_full")
                     expect([f.strategy, f.params]).toEqual(["persistent", { sessions: 1 }]);
+                else if (!PROVIDER.includes(f.type))
+                    expect([f.type, f.strategy]).toEqual([f.type, "single"]);
             }
             expect(providerSessions.size).toBe(
                 s.faults.filter((f) => PROVIDER.includes(f.type)).length,
