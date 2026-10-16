@@ -3,8 +3,8 @@ import {
     existsSync,
     linkSync,
     openSync,
+    readdirSync,
     readFileSync,
-    renameSync,
     rmSync,
     truncateSync,
     writeFileSync,
@@ -63,42 +63,60 @@ function readLease(path: string): Lease | null {
     }
 }
 
+const LEASE = /^lease\.(\d+)\.json$/;
+
+/** The numbers of every lease file in `dir`, ascending. The highest names the holder. */
+function leaseNumbers(dir: string): number[] {
+    return readdirSync(dir)
+        .flatMap((name) => {
+            const m = LEASE.exec(name);
+            return m ? [Number(m[1])] : [];
+        })
+        .sort((a, b) => a - b);
+}
+
 /**
- * The lease file names the one process that may append to the journal. A lease whose process
- * on this host has exited, or that a kill left unreadable, is moved aside by one atomic rename
- * and replaced, which is how a killed run resumes.
+ * The lease names the one process that may append to the journal. Leases are numbered files
+ * `lease.<n>.json`, and the highest number is the holder. A takeover links `lease.<n+1>.json`,
+ * which exactly one of several racing resumers can create; the others then read the winner's
+ * live lease and are refused. Only the winner removes the lower-numbered files, which is how a
+ * killed run resumes.
  */
 export function takeLease(dir: string): Lease {
-    const path = join(dir, "lease.json");
     const mine: Lease = { pid: process.pid, host: hostname(), started_wall_ms: Date.now() };
     for (let attempt = 0; attempt < 3; attempt++) {
-        const staged = join(dir, `lease.${process.pid}.tmp`);
-        writeFileSync(staged, JSON.stringify(mine));
-        try {
-            linkSync(staged, path);
-            rmSync(staged);
-            return mine;
-        } catch {
-            rmSync(staged);
-        }
-        const held = readLease(path);
+        const numbers = leaseNumbers(dir);
+        const top = numbers.at(-1);
+        const held = top === undefined ? null : readLease(join(dir, `lease.${top}.json`));
         if (held && (held.host !== mine.host || alive(held.pid))) {
             throw new Error(`run directory ${dir} is leased by pid ${held.pid} on ${held.host}`);
         }
+        const staged = join(dir, `lease.${process.pid}.tmp`);
+        writeFileSync(staged, JSON.stringify(mine));
         try {
-            renameSync(path, join(dir, `lease.stale.${process.pid}.${attempt}`));
-        } catch {}
+            linkSync(staged, join(dir, `lease.${(top ?? -1) + 1}.json`));
+        } catch {
+            continue;
+        } finally {
+            rmSync(staged);
+        }
+        for (const n of numbers) rmSync(join(dir, `lease.${n}.json`), { force: true });
+        return mine;
     }
     throw new Error(`could not lease ${dir}`);
 }
 
+/** Removes this process's lease; another process's lease is left in place. */
 export function releaseLease(dir: string): void {
-    rmSync(join(dir, "lease.json"), { force: true });
+    for (const n of leaseNumbers(dir)) {
+        const path = join(dir, `lease.${n}.json`);
+        if (readLease(path)?.pid === process.pid) rmSync(path, { force: true });
+    }
 }
 
 /**
- * Every line but the last must parse; a cut last line, which a kill mid-write leaves, is
- * dropped. `bytes` is the length of the complete prefix.
+ * Every newline-terminated line must parse; a cut last line without its newline, which a kill
+ * mid-write leaves, is dropped. `bytes` is the length of the complete prefix.
  */
 export function readJournal(path: string): Entry[] & { bytes?: number } {
     const entries: Entry[] & { bytes?: number } = [];
@@ -109,10 +127,10 @@ export function readJournal(path: string): Entry[] & { bytes?: number } {
         if (i === lines.length - 1) return;
         try {
             entries.push(JSON.parse(line) as Entry);
-            entries.bytes = (entries.bytes ?? 0) + Buffer.byteLength(line) + 1;
         } catch {
-            if (i < lines.length - 2) throw new Error(`journal ${path}: line ${i + 1} is corrupt`);
+            throw new Error(`journal ${path}: line ${i + 1} is corrupt`);
         }
+        entries.bytes = (entries.bytes ?? 0) + Buffer.byteLength(line) + 1;
     });
     return entries;
 }

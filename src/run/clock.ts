@@ -15,7 +15,8 @@ export class Clock {
     ) {}
 
     now(): number {
-        return this.anchor === null ? this.scenario : this.scenario + (this.wall() - this.anchor);
+        if (this.anchor === null) return this.scenario;
+        return this.scenario + Math.max(0, this.wall() - this.anchor);
     }
 
     busyIds(): string[] {

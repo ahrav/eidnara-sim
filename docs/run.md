@@ -1,22 +1,27 @@
 # Run journal, clock, and scheduler
 
-A run directory holds `lease.json` and `journal.jsonl`. `src/run/` owns both.
+A run directory holds numbered lease files and `journal.jsonl`. `src/run/` owns
+both.
 
 ## Lease
 
-`takeLease(dir)` writes a temporary file with the process id, host, and start
-time and links it to `lease.json`, which fails while another lease exists. A
-lease held by a live process, or by any process on another host, refuses the
-call. A lease whose process on this host has exited, or that a kill left
-unreadable, is renamed aside in one step and replaced; only one of two racing
-resumers can rename it. `releaseLease` removes the lease at the end of a run.
+Leases are files `lease.<n>.json`, and the highest number names the holder.
+`takeLease(dir)` reads the highest lease: one held by a live process, or by any
+process on another host, refuses the call. A lease whose process on this host
+has exited, or that a kill left unreadable, is taken over by writing a temporary
+file with the process id, host, and start time and linking it to
+`lease.<n+1>.json`. Exactly one of several racing resumers can create that
+name; the others read the winner's live lease on their next attempt and are
+refused. The winner removes the lower-numbered files. `releaseLease` removes
+the calling process's own lease at the end of a run.
 
 ## Journal
 
 `Journal` appends one JSON line per entry with `seq` (0, 1, 2, ... in append
 order), `kind`, `arm`, `scenario_ms`, and `wall_ms`. On open, it truncates the
 file to its complete prefix, dropping only a last line that a kill cut
-mid-write, and refuses a journal whose earlier line does not parse. `append`
+mid-write before its newline, and refuses a journal whose newline-terminated
+line does not parse. `append`
 refuses an entry whose `scenario_ms` is below the same arm's previous entry.
 Scenario time is monotone per arm: each arm starts its own clock at 0, so
 entries of different arms are not ordered by scenario time.
@@ -28,7 +33,7 @@ entries of different arms are not ordered by scenario time.
 | `AdvanceClock` | The clock jumps; carries `from_ms`, an empty `busy` list, and the next event id or the laptop-sleep fault |
 | `BeginTurn` | A user turn is delivered |
 | `EndTurn` | The turn is answered; a probe turn carries `probe` and `state` (`completed` or `failed`) |
-| `RegisterJob`, `EndJob` | A background job starts and ends |
+| `RegisterJob`, `EndJob` | A background job starts and ends; on resume, a job in flight at the kill gets an `EndJob` with outcome `failed(interrupted)` |
 | `FaultFired`, `FaultObserved` | A scheduled fault fires, and the driver returns its evidence |
 | `ItemState` | On resume, an in-flight turn or a scheduler fault without evidence is `failed(interrupted)`; the daemon exits |
 | `Event` | A scheduled event is complete, with its outcome |
@@ -37,8 +42,9 @@ entries of different arms are not ordered by scenario time.
 
 `Clock` keeps scenario time and a busy set of turns and background jobs.
 While anything is busy, scenario time runs at wall speed; while nothing is
-busy, it holds. `advanceTo` jumps forward to a target time and refuses while
-anything is busy. Each arm's clock starts at 0, or, on resume, at the arm's
+busy, it holds. A wall clock that steps backward while busy holds scenario
+time until it catches up. `advanceTo` jumps forward to a target time and
+refuses while anything is busy. Each arm's clock starts at 0, or, on resume, at the arm's
 last journaled `scenario_ms`.
 
 ## Scheduler
@@ -50,16 +56,20 @@ list. For each arm, it resets the driver, then walks the events:
    default), so a background job the host starts after its answer registers
    before the clock moves, then wait until the busy set is empty.
 2. Close any outage window from the previous event.
-3. On a laptop sleep, jump by the fault's `duration_ms`; then jump to the
-   event's scheduled time if it is still later than now.
+3. Jump to the event's scheduled time if it is later than now. When the event
+   opens a session with a laptop sleep, that jump carries the fault id and the
+   sleep fires first; the compiler sizes the sleep to the gap before its
+   session, so the jump spans the gap and lands on the session's first event.
 4. Fire the faults keyed on the event. Provider faults are armed on the proxy
    at the Nth user turn of their session. Scheduler faults call the driver's
    `fault` and journal its evidence. The mid-fold SIGKILL, the daemon restart,
    and the host upgrade open an outage window first.
 5. Deliver the event to the driver. A user turn is bracketed by `BeginTurn`
    and `EndTurn` and holds the clock busy while it runs.
-6. At a session end, disarm the session's persistent provider faults.
-7. Journal `Event` for the event.
+6. At a session end, disarm every provider fault of the session, so one that
+   its turn left unexhausted reaches no later session or arm.
+7. Wait for a mid-fold kill fired during the event, then journal `Event` for
+   the event.
 
 `observe("history_summarizer", driver)` fires the session's mid-fold SIGKILL
 on the first observed summarizer call. `daemonExited` inside an outage window
@@ -73,7 +83,8 @@ A restarted harness opens the same journal and, for each arm without
 - journals `Event` for a turn with `EndTurn` but no `Event`, so the answered
   turn is never delivered again;
 - journals `ItemState failed(interrupted)` and `Event` for a `BeginTurn`
-  with no `EndTurn`;
+  with no `EndTurn`, and `EndJob failed(interrupted)` for a `RegisterJob` with
+  no `EndJob`;
 - marks every fired fault as fired, arms again a persistent provider fault
   whose session has not ended and a one-shot provider fault whose turn has not
   begun, and journals `ItemState failed(interrupted)` for a scheduler fault

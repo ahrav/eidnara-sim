@@ -11,7 +11,8 @@ v2 harness before any harness code existed.
 
 ## Evidence trail
 
-Journal entries in sequence order have non-decreasing `scenario_ms`.
+Within each arm, journal entries in sequence order have non-decreasing
+`scenario_ms`.
 
 No harness code, test, or run exists yet. The surface lands in M4
 (#1028).

@@ -80,6 +80,7 @@ export class Scheduler {
                     .map((e) => e.event as string),
             );
             for (const e of this.o.events) if (!done.has(e.id)) await this.step(driver, e);
+            await this.pendingKill;
             this.log({ kind: "EndArm" });
         }
         this.arm = null;
@@ -97,6 +98,10 @@ export class Scheduler {
         for (const e of kinds("BeginTurn").filter((x) => !ended.has(x.event))) {
             this.log({ kind: "ItemState", event: e.event, state: "failed(interrupted)" });
             this.log({ kind: "Event", event: e.event, outcome: "failed(interrupted)" });
+        }
+        const jobsEnded = new Set(kinds("EndJob").map((e) => e.job));
+        for (const e of kinds("RegisterJob").filter((x) => !jobsEnded.has(x.job))) {
+            this.log({ kind: "EndJob", job: e.job, outcome: "failed(interrupted)" });
         }
         const observed = new Set(kinds("FaultObserved").map((e) => e.fault));
         for (const fired of kinds("FaultFired")) {
@@ -148,26 +153,36 @@ export class Scheduler {
         this.log({ kind: "FaultObserved", fault: f.id, type: f.type, evidence });
     }
 
+    /**
+     * The idle clock advance onto a session's first event is the jump across the gap before
+     * that session, so a laptop sleep scheduled for the session fires there, whatever kind of
+     * event opens it.
+     */
+    private sleepBefore(e: ScenarioEvent): FaultEpisode | undefined {
+        return this.o.faults.find(
+            (f) =>
+                f.type === "laptop_sleep" &&
+                f.trigger.session === e.session &&
+                !this.fired.has(`${this.arm}/${f.id}`),
+        );
+    }
+
     private async step(driver: ArmDriver, e: ScenarioEvent): Promise<void> {
         await this.idle();
         await this.pendingKill;
         this.outage = null;
         const clock = this.clock as Clock;
-        const faults = this.faultsAt(e);
-        const sleep = faults.find((f) => f.type === "laptop_sleep");
+        const sleep = this.sleepBefore(e);
         const arm = this.arm ?? "";
-        if (sleep)
-            clock.advanceTo(clock.now() + (sleep.params.duration_ms ?? 0), arm, {
-                fault: sleep.id,
-            });
-        clock.advanceTo(e.scenario_ms, arm, { next_event: e.id });
+        clock.advanceTo(e.scenario_ms, arm, sleep ? { fault: sleep.id } : { next_event: e.id });
         this.session = e.session;
-        for (const f of faults) await this.fire(driver, f);
+        if (sleep) await this.fire(driver, sleep);
+        for (const f of this.faultsAt(e)) await this.fire(driver, f);
+        let outcome: { failed?: string };
         if (e.kind === "user_turn") {
             const turn = `turn:${e.id}`;
             this.log({ kind: "BeginTurn", event: e.id, probe: e.probe ?? null });
             clock.begin(turn);
-            let outcome: { failed?: string };
             try {
                 outcome = await driver.event(e);
             } finally {
@@ -178,16 +193,17 @@ export class Scheduler {
             this.log({ kind: "EndTurn", event: e.id, outcome: outcome.failed ?? "ok", ...item });
             await Bun.sleep(this.o.settleMs ?? 1_000);
         } else {
-            await driver.event(e);
+            outcome = await driver.event(e);
         }
         if (e.kind === "session_end") {
             for (const f of this.o.faults) {
-                const mine = f.trigger.session === e.session && f.seam.layer === PROXY_LAYER;
-                if (mine && f.strategy === "persistent") this.o.proxy?.disarm(f.id);
+                if (f.trigger.session === e.session && f.seam.layer === PROXY_LAYER)
+                    this.o.proxy?.disarm(f.id);
             }
             this.session = null;
         }
-        this.log({ kind: "Event", event: e.id, outcome: "ok" });
+        await this.pendingKill;
+        this.log({ kind: "Event", event: e.id, outcome: outcome.failed ?? "ok" });
     }
 
     jobStart(id: string): void {
