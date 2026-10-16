@@ -1,6 +1,6 @@
 import { realpathSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 // `--kill-child` sends SIGKILL to namespace PID 1 when the unshare parent dies.
 const UNSHARE_ARGS = [
@@ -107,7 +107,6 @@ export function launch(
     const kept = keep.map(plainPath);
     const ro = readOnly.map(plainPath);
     // Binding a masked root, or a directory above one, would put the masked tree back in view.
-    const masked = ["/tmp", realpathSync(homedir())];
     const canonical = (path: string) => {
         try {
             return realpathSync(path);
@@ -115,13 +114,17 @@ export function launch(
             return path;
         }
     };
+    const masked = ["/tmp", realpathSync(homedir()), canonical(dirname(launcher))];
     for (const path of [...kept, ...ro]) {
         const hidden = masked.find((m) => within(m, path) || within(m, canonical(path)));
         if (hidden) throw new Error(`sandbox path ${path} would restore masked ${hidden}`);
     }
     // A read-only bind over a parent takes its writable children with it, so the two sets stay disjoint.
+    const roReal = ro.map(canonical);
     for (const path of kept) {
-        const parent = ro.find((dir) => !ro.includes(path) && within(path, dir));
+        if (ro.includes(path)) continue;
+        const real = canonical(path);
+        const parent = ro.find((dir, i) => within(path, dir) || within(real, roReal[i] as string));
         if (parent)
             throw new Error(`sandbox path ${path} is kept writable under read-only ${parent}`);
     }

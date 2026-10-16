@@ -88,3 +88,23 @@ test("configured paths must use the sandbox launcher's plain-path grammar", () =
         "config.toolchain.keep: expected plain paths the sandbox launcher can pass",
     );
 });
+
+test("toolchain env accepts only the cache and home variables the hosts support", () => {
+    const base = loadConfig() as any;
+    const env = (extra: Record<string, unknown>) => ({
+        ...base,
+        toolchain: { ...base.toolchain, env: { ...base.toolchain.env, ...extra } },
+    });
+    expect(() => parseConfig(env({ RUSTC_WRAPPER: "/writable/wrapper" }))).toThrow(
+        "config.toolchain.env.RUSTC_WRAPPER: not a supported toolchain variable",
+    );
+    expect(() => parseConfig(env({ CARGO_HOME: "/c" }))).not.toThrow();
+});
+
+test("wall-clock tools are limited to the wrappers cargo is pointed at and preflight probes", () => {
+    const base = loadConfig() as any;
+    const toolchain = { ...base.toolchain, wall_clock_tools: ["rustc", "clang"] };
+    expect(() => parseConfig({ ...base, toolchain })).toThrow(
+        "config.toolchain.wall_clock_tools: clang is not one of rustc, rustdoc",
+    );
+});

@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { SimConfig } from "../config/config";
 import { withDeadline } from "./deadline";
@@ -109,16 +109,13 @@ export function versionLine(tool: string, out: string): string {
 export function checkToolchainBins(config: SimConfig): void {
     const keep = config.toolchain.keep.map((k) => realpathSync(k));
     const kept = (real: string) => keep.some((k) => real === k || real.startsWith(`${k}/`));
-    const tools = new Set([
-        ...TOOLCHAIN_PROBES.map(([tool]) => tool),
-        ...config.toolchain.wall_clock_tools,
-    ]);
     for (const bin of config.toolchain.bin) {
         if (!kept(realpathSync(bin))) {
             throw new Error(`toolchain bin ${bin} resolves outside its keep paths`);
         }
-        for (const tool of tools) {
-            const path = join(bin, tool);
+        // Every entry is on the agent's PATH, so every entry must resolve inside the keep paths.
+        for (const entry of readdirSync(bin)) {
+            const path = join(bin, entry);
             if (existsSync(path) && !kept(realpathSync(path))) {
                 throw new Error(`toolchain tool ${path} resolves outside its keep paths`);
             }

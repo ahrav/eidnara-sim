@@ -189,3 +189,24 @@ test("the build refuses a checkout at its own partial-clone path", () => {
     expect(r.stderr.toString()).toContain("must be a separate directory");
     expect(existsSync(join(`${dst}.partial`, "README"))).toBe(true);
 });
+
+test("a source that tracks a symlinked provenance record cannot redirect the record's write", () => {
+    const { stubs, src, root } = fixture();
+    writeFileSync(join(src, "precious"), "keep\n");
+    symlinkSync(join(src, "precious"), join(src, ".sim-build-source"));
+    git(src, "add", "precious", ".sim-build-source");
+    git(src, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "--quiet", "-m", "marker link");
+    const r = build(src, join(root, "linked-clone"), stubs);
+    expect(readFileSync(join(src, "precious"), "utf8")).toBe("keep\n");
+    expect(r.exitCode).not.toBe(0);
+    expect(r.stderr.toString()).toContain("tracks the reserved");
+});
+
+test("an unrelated directory at the partial-clone path is left alone", () => {
+    const { stubs, src, dst } = fixture();
+    mkdirSync(`${dst}.partial`);
+    writeFileSync(join(`${dst}.partial`, "mine"), "keep\n");
+    const r = build(src, dst, stubs);
+    expect(r.exitCode).toBe(0);
+    expect(readFileSync(join(`${dst}.partial`, "mine"), "utf8")).toBe("keep\n");
+});
