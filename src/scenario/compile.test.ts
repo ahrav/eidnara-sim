@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { table } from "../corpus/distributions";
 import { canonicalJson, sha256Hex } from "../prereg/canonical";
 import { TIERS } from "../prereg/schema";
+import { Rng } from "../rng";
 import {
     type Bank,
     type CompileInput,
@@ -16,7 +17,13 @@ import {
     type Scenario,
     type Template,
 } from "./compile";
-import { type FaultEpisode, SEAMS, validateFault } from "./faults";
+import {
+    type FaultEpisode,
+    type FaultSession,
+    SEAMS,
+    scheduleFaults,
+    validateFault,
+} from "./faults";
 import { loadCompileInput } from "./inputs";
 import { type Embedder, hashEmbedder } from "./similarity";
 
@@ -170,12 +177,17 @@ describe("compiled S scenario", async () => {
         }
     });
 
-    test("P4 items cover inside and outside the update's scope in both languages", () => {
+    test("P4 items split evenly inside and outside the update's scope in both languages", () => {
         const p4 = s.probes.filter((p) => p.type === "P4");
-        const scopes = new Set(
-            p4.map((p) => `${p.project}/${(p.check as { must?: string[] }).must?.[0]}`),
-        );
+        const must = (p: (typeof p4)[number]) => (p.check as { must?: string[] }).must?.[0];
+        const scopes = new Set(p4.map((p) => `${p.project}/${must(p)}`));
         expect(scopes.size).toBeGreaterThanOrEqual(4);
+        const outs = p4.filter((p) => {
+            const tpl = input.bank[s.projects.find((x) => x.id === p.project)?.lang ?? ""];
+            const scoped = (tpl?.scoped_update ?? []) as Template[];
+            return scoped.some((t) => (t.out_check as { must?: string[] })?.must?.[0] === must(p));
+        });
+        expect(Math.abs(2 * outs.length - p4.length)).toBeLessThanOrEqual(1);
     });
 
     test("each P6 item opens a session that follows at least one hour of idle time", () => {
@@ -207,9 +219,19 @@ describe("compiled S scenario", async () => {
         }
     });
 
-    test("SIM-P07: no delivered user text carries a marker", () => {
+    test("SIM-P07: no delivered user text, diff path, or diff content carries a marker", () => {
         const keys = [...s.facts.flatMap((f) => [f.id, f.template]), ...s.probes.map((p) => p.id)];
-        for (const t of all)
+        const diffs = s.events.filter((e) => e.kind === "apply_diff") as unknown as {
+            id: string;
+            path: string;
+            content: string;
+        }[];
+        expect(diffs.length).toBeGreaterThan(0);
+        const delivered = [
+            ...all.map((t) => ({ id: t.id, text: t.text })),
+            ...diffs.map((d) => ({ id: d.id, text: `${d.path}\n${d.content}` })),
+        ];
+        for (const t of delivered)
             expect({ id: t.id, hits: markerHits(t.text, keys) }).toEqual({ id: t.id, hits: [] });
     });
 
@@ -248,6 +270,13 @@ describe("over 100 seeds", () => {
             const forced = s.sessions.filter((x) => x.forced_p90);
             expect(forced.length).toBeGreaterThanOrEqual(input.prereg.scenario.forced_p90_sessions);
             for (const x of forced) expect(x.requests).toBeGreaterThanOrEqual(p90Of(input));
+            const perProject = new Map<string, number>();
+            for (const x of forced) perProject.set(x.project, (perProject.get(x.project) ?? 0) + 1);
+            const bases = input.projects.filter((p) => !p.twin_of).length;
+            expect(perProject.size).toBe(Math.min(bases, forced.length));
+            expect(
+                Math.max(...perProject.values()) - Math.min(...perProject.values()),
+            ).toBeLessThanOrEqual(1);
             for (const f of s.facts) counts.set(f.manner, (counts.get(f.manner) ?? 0) + 1);
             total += s.facts.length;
         }
@@ -288,6 +317,21 @@ describe("markerHits", () => {
     });
 });
 
+describe("corpus identity", () => {
+    test("corpus/manifest.json digests every corpus file the compiler reads", () => {
+        const manifest = JSON.parse(readFileSync(join(ROOT, "corpus", "manifest.json"), "utf8"));
+        expect(Object.keys(manifest.files).sort()).toEqual(
+            [
+                "distributions.json",
+                "fact-bank.json",
+                "repos.json",
+                "tool-outputs/error-codes.jsonl",
+                "tool-outputs/samples.jsonl",
+            ].sort(),
+        );
+    });
+});
+
 describe("compile-time refusals", () => {
     const withInput = (edit: (bank: Bank) => void, embedder: Embedder = hashEmbedder) => {
         const input = loadCompileInput(101, "S", embedder, true);
@@ -307,6 +351,23 @@ describe("compile-time refusals", () => {
                 for (const t of lookups(bank)) t.probe = `${t.statement}, for the record`;
             }, orthogonal),
         ).rejects.toThrow(/bm25 1, cosine 0 exceeds/);
+    });
+
+    test("an embedder that returns empty or short vectors is refused", async () => {
+        const empty: Embedder = { model: "empty", embed: async (texts) => texts.map(() => []) };
+        await expect(withInput(() => undefined, empty)).rejects.toThrow(/embedder empty returned/);
+        const short: Embedder = {
+            model: "short",
+            embed: async (texts) => texts.slice(1).map(() => [1, 0]),
+        };
+        await expect(withInput(() => undefined, short)).rejects.toThrow(/embedder short returned/);
+    });
+
+    test("a seed outside the unsigned 32-bit range is refused", async () => {
+        const input = loadCompileInput(0, "S", hashEmbedder, true);
+        await expect(compileScenario({ ...input, seed: 2 ** 32 })).rejects.toThrow(
+            /seed 4294967296 is outside/,
+        );
     });
 
     test("a probe whose embedding matches its cue is refused on the cosine alone", async () => {
@@ -340,6 +401,23 @@ describe("compile-time refusals", () => {
                 for (const t of lookups(bank)) t.probe = `${t.probe} (${t.id})`;
             }),
         ).rejects.toThrow(/delivered text carries markers lookup-/);
+    });
+});
+
+describe("between-session gaps", () => {
+    test("sessions keep their sampled gaps after placement extends earlier sessions", async () => {
+        const s = await compileScenario(inputS(101));
+        const end = new Map(
+            s.events
+                .filter((e) => e.kind === "session_end")
+                .map((e) => [e.session as string, e.scenario_ms as number]),
+        );
+        const gaps = s.sessions
+            .slice(1)
+            .map((x, i) => x.start_ms - (end.get(s.sessions[i]?.id ?? "") ?? 0));
+        expect(gaps.filter((g) => g <= 1).length).toBeLessThan(0.05 * gaps.length);
+        const sorted = [...gaps].sort((a, b) => a - b);
+        expect(sorted[Math.floor(sorted.length / 2)] ?? 0).toBeGreaterThan(1_000);
     });
 });
 
@@ -398,11 +476,37 @@ describe("fault schedule", () => {
         expect(() => validateFault(zero, sessions)).toThrow(/outside the session's 4 turns/);
         const lost = episode({ kind: "session_start", session: "s-9999" });
         expect(() => validateFault(lost, sessions)).toThrow(/unknown session/);
-        const good = episode({ kind: "session_start", session: "s-0000" });
+        const good = episode({ kind: "user_turn", session: "s-0000", n: 2 });
         const altered = { ...good, seam: { ...SEAMS.provider_429, oracle: "none" } };
         expect(() => validateFault(altered, sessions)).toThrow(/seam entry missing or altered/);
+        const unknownType = {
+            ...good,
+            type: "provider_418",
+            seam: undefined,
+        } as unknown as FaultEpisode;
+        expect(() => validateFault(unknownType, sessions)).toThrow(/seam entry missing or altered/);
         const copied = JSON.parse(JSON.stringify(good)) as FaultEpisode;
         expect(() => validateFault(copied, sessions)).not.toThrow();
+    });
+
+    test("a session list too small for the tier's faults is refused by name", () => {
+        const session = (id: string, requests: number, gap_before_ms = 1000): FaultSession => ({
+            id,
+            requests,
+            forced_p90: false,
+            has_diff: false,
+            gap_before_ms,
+        });
+        const few = [session("s-0000", 3), session("s-0001", 3), session("s-0002", 1)];
+        expect(() => scheduleFaults("M", few, new Rng(1))).toThrow(
+            /8 provider faults need 8 sessions with two or more turns; 2 available/,
+        );
+        const noP90 = Array.from({ length: 9 }, (_, i) => session(`s-${i}`, 3));
+        expect(() => scheduleFaults("L", noP90, new Rng(1))).toThrow(/no forced p90 session/);
+        const allDiffs = noP90.map((x, i) => ({ ...x, forced_p90: i === 1, has_diff: i > 0 }));
+        expect(() => scheduleFaults("L", allDiffs, new Rng(1))).toThrow(
+            /no session starts without a hand-applied diff/,
+        );
     });
 
     test("every seam entry names its layer, outcomes, in-flight fate, surviving state, and oracle", () => {
@@ -449,18 +553,19 @@ describe("fault schedule", () => {
             );
         }, 60_000);
 
-    test("the laptop sleep spans an event-free gap of its full duration", async () => {
-        const s = await compileScenario(loadCompileInput(301, "L", hashEmbedder, true));
-        const sleep = s.faults.find((f) => f.type === "laptop_sleep") as FaultEpisode;
-        const start = s.events.findIndex(
-            (e) => e.kind === "session_start" && e.session === sleep.trigger.session,
-        );
-        const before = s.events[start - 1] as unknown as { kind: string; scenario_ms: number };
-        expect(before.kind).toBe("session_end");
-        const at = s.events[start]?.scenario_ms as number;
-        expect(at - before.scenario_ms).toBe(sleep.params.duration_ms ?? -1);
-        expect(sleep.params.duration_ms ?? 0).toBeGreaterThan(0);
-    }, 60_000);
+    for (const seed of [314, 301])
+        test(`the laptop sleep spans an event-free gap of its full duration (seed ${seed})`, async () => {
+            const s = await compileScenario(loadCompileInput(seed, "L", hashEmbedder, true));
+            const sleep = s.faults.find((f) => f.type === "laptop_sleep") as FaultEpisode;
+            const start = s.events.findIndex(
+                (e) => e.kind === "session_start" && e.session === sleep.trigger.session,
+            );
+            const before = s.events[start - 1] as unknown as { kind: string; scenario_ms: number };
+            expect(before.kind).toBe("session_end");
+            const at = s.events[start]?.scenario_ms as number;
+            expect(at - before.scenario_ms).toBe(sleep.params.duration_ms ?? -1);
+            expect(sleep.params.duration_ms ?? 0).toBeGreaterThan(0);
+        }, 60_000);
 
     test("provider faults use every strategy across seeds", async () => {
         const strategies = new Set<string>();
@@ -489,10 +594,14 @@ describe("counterfactual deletions", () => {
             );
             for (const d of cf) {
                 const probe = eligible.find((p) => p.id === d.probe);
+                expect(d.before_event).toMatch(/^e-\d{6}$/);
                 expect(d.before_event as string).toBe(probe?.event as string);
                 expect(d.fact as string).toBe(probe?.fact as string);
             }
         }
+        expect(a?.cf_deletions.map((d) => d.probe)).not.toEqual(
+            b?.cf_deletions.map((d) => d.probe),
+        );
     }, 60_000);
 
     test("tiers without the eidnara-cf arm schedule no deletions", async () => {
