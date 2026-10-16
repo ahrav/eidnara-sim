@@ -12,8 +12,9 @@ import {
     writeFileSync,
 } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
-import { GitTimeout, git } from "../git";
+import { GitBound, git } from "../git";
 import type { CallView } from "../grade/artefacts";
+import { sha256Hex } from "../prereg/canonical";
 import { processStart, running, stopOwnedTree } from "../run/procs";
 import { type ArmDriver, HarnessFailure, type ScenarioEvent } from "../run/scheduler";
 import type { FaultEpisode } from "../scenario/faults";
@@ -193,6 +194,22 @@ export class HostDriver implements ArmDriver {
             const tracked = ["ls-files", "-z", "--cached", "--ignored", "--exclude-standard"];
             const forced = git(source, tracked).split("\0").filter(Boolean);
             this.snapshots.trackIgnored(project, forced);
+            const rules: Record<string, string> = {};
+            const listed = git(source, [
+                "ls-files",
+                "-s",
+                "-z",
+                "--",
+                ".gitignore",
+                "**/.gitignore",
+            ]);
+            for (const row of listed.split("\0").filter(Boolean)) {
+                const [meta, path] = row.split("\t") as [string, string];
+                rules[path] = meta.split(" ")[1] as string;
+            }
+            const exclude = join(target, ".git", "info", "exclude");
+            const digest = existsSync(exclude) ? sha256Hex(readFileSync(exclude, "utf8")) : null;
+            this.snapshots.trackIgnoreRules(project, rules, digest);
         }
         await this.startArm(true);
     }
@@ -256,7 +273,7 @@ export class HostDriver implements ArmDriver {
             try {
                 before = this.snapshots.tree(dir);
             } catch (caught) {
-                if (!(caught instanceof GitTimeout)) throw caught;
+                if (!(caught instanceof GitBound)) throw caught;
                 before = null;
             }
         }
@@ -274,8 +291,17 @@ export class HostDriver implements ArmDriver {
             await this.o.settle?.();
             try {
                 const nested = this.snapshots.embedded(dir);
-                if (nested.length > 0) {
-                    const reason = `embedded repository at ${nested.join(", ")}`;
+                const after = this.snapshots.tree(dir, nested);
+                const reasons = [
+                    nested.length > 0 ? `embedded repository at ${nested.join(", ")}` : null,
+                    ...(() => {
+                        const changed = this.snapshots.ignoreChanges(dir, project);
+                        return changed.length > 0
+                            ? [`ignore rules changed: ${changed.join(", ")}`]
+                            : [];
+                    })(),
+                ].filter((r): r is string => r !== null);
+                for (const reason of reasons) {
                     outcome.failed = outcome.failed ? `${outcome.failed} | ${reason}` : reason;
                 }
                 const probe = { probe: e.probe, session: e.session, id: e.id };
@@ -286,9 +312,10 @@ export class HostDriver implements ArmDriver {
                     before,
                     tools,
                     !!outcome.failed,
+                    after,
                 );
             } catch (caught) {
-                if (!(caught instanceof GitTimeout)) throw caught;
+                if (!(caught instanceof GitBound)) throw caught;
                 const reason = `snapshot: ${caught.message}`;
                 outcome.failed = outcome.failed ? `${outcome.failed} | ${reason}` : reason;
             }
@@ -304,6 +331,13 @@ export class HostDriver implements ArmDriver {
 
     private applyDiff(e: ScenarioEvent): void {
         const workspace = this.workspace(this.project(e));
+        const stat = lstatSync(workspace, { throwIfNoEntry: false });
+        if (stat?.isSymbolicLink()) {
+            throw new HarnessFailure(`workspace ${workspace} is a symlink or lies behind one`);
+        }
+        if (!stat?.isDirectory()) {
+            throw new HarnessFailure(`workspace ${workspace} is not a directory`);
+        }
         const expected = join(realpathSync(this.armDir), relative(this.armDir, workspace));
         if (realpathSync(workspace) !== expected) {
             throw new HarnessFailure(`workspace ${workspace} is a symlink or lies behind one`);
@@ -311,9 +345,15 @@ export class HostDriver implements ArmDriver {
         const dir = realpathSync(workspace);
         const path = resolve(dir, String(e.path));
         const inside = path.startsWith(`${dir}/`);
+        const present = (at: string) => lstatSync(at, { throwIfNoEntry: false }) !== undefined;
         let ancestor = dirname(path);
-        while (inside && ancestor !== dir && !existsSync(ancestor)) ancestor = dirname(ancestor);
-        const parent = inside ? realpathSync(ancestor) : "";
+        while (inside && ancestor !== dir && !present(ancestor)) ancestor = dirname(ancestor);
+        let parent = "";
+        try {
+            parent = inside ? realpathSync(ancestor) : "";
+        } catch {
+            parent = "";
+        }
         const contained = parent === dir || parent.startsWith(`${dir}/`);
         if (!inside || !contained || lstatSync(path, { throwIfNoEntry: false })?.isSymbolicLink()) {
             throw new HarnessFailure(`apply_diff path ${String(e.path)} leaves ${dir}`);
@@ -352,7 +392,8 @@ export class HostDriver implements ArmDriver {
             "core.fsmonitor=false",
             "commit.gpgsign=false",
         ];
-        return git(dir, [...off.flatMap((setting) => ["-c", setting]), ...args], scope).trim();
+        const argv = [...off.flatMap((setting) => ["-c", setting]), ...args];
+        return git(dir, argv, scope, this.o.turnDeadlineMs).trim();
     }
 
     /**
@@ -368,10 +409,12 @@ export class HostDriver implements ArmDriver {
             throw new HarnessFailure(`${gitDir} is not a directory`);
         }
         for (const entry of readdirSync(gitDir, { recursive: true, withFileTypes: true })) {
-            if (entry.isSymbolicLink()) {
-                const at = join(relative(dir, entry.parentPath), entry.name);
-                throw new HarnessFailure(`${at} is a symlink; git would write through it`);
-            }
+            if (entry.isFile() || entry.isDirectory()) continue;
+            const at = join(relative(dir, entry.parentPath), entry.name);
+            const kind = entry.isSymbolicLink()
+                ? "a symlink; git would write through it"
+                : "not a regular file";
+            throw new HarnessFailure(`${at} is ${kind}`);
         }
         if (existsSync(join(gitDir, "objects", "info", "alternates"))) {
             throw new HarnessFailure(".git/objects/info/alternates names another object store");
@@ -379,6 +422,9 @@ export class HostDriver implements ArmDriver {
         const config = join(gitDir, "config");
         const aside = join(gitDir, "config.sim-aside");
         if (existsSync(aside)) renameSync(aside, config);
+        if (!lstatSync(config, { throwIfNoEntry: false })?.isFile()) {
+            throw new HarnessFailure(`${relative(dir, config)} is not a file`);
+        }
         renameSync(config, aside);
         try {
             copyFileSync(join(this.armDir, `${project}.gitconfig`), config);

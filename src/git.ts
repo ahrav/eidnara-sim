@@ -14,27 +14,38 @@ export function gitEnv(extra: Record<string, string> = {}): Record<string, strin
     return { ...env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", ...extra };
 }
 
-export class GitTimeout extends Error {}
+/** A git run that hit one of the harness's bounds: its time limit or its output cap. */
+export class GitBound extends Error {}
+export class GitTimeout extends GitBound {}
+export class GitOverflow extends GitBound {}
+
+export const GIT_OUTPUT_CAP = 256 << 20;
 
 /**
  * Runs git in `cwd` under `gitEnv(extra)` and returns its stdout; a non-zero exit throws.
- * With `timeoutMs`, a run still going at the bound is killed and throws `GitTimeout`.
+ * With `timeoutMs`, a run still going at the bound is killed and throws `GitTimeout`; output
+ * past `maxBuffer` throws `GitOverflow`.
  */
 export function git(
     cwd: string,
     args: string[],
     extra: Record<string, string> = {},
     timeoutMs?: number,
+    maxBuffer = GIT_OUTPUT_CAP,
 ): string {
     const r = spawnSync("git", args, {
         cwd,
         env: gitEnv(extra),
         encoding: "utf8",
-        maxBuffer: 256 << 20,
+        maxBuffer,
         ...(timeoutMs ? { timeout: timeoutMs, killSignal: "SIGKILL" } : {}),
     });
-    if ((r.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT") {
+    const code = (r.error as NodeJS.ErrnoException | undefined)?.code;
+    if (code === "ETIMEDOUT") {
         throw new GitTimeout(`git ${args.join(" ")}: timed out after ${timeoutMs} ms`);
+    }
+    if (code === "ENOBUFS") {
+        throw new GitOverflow(`git ${args.join(" ")}: output passed ${maxBuffer} bytes`);
     }
     if (r.error) throw new Error(`git ${args.join(" ")}: ${r.error.message}`);
     if (r.status !== 0) throw new Error(`git ${args.join(" ")}: ${r.stderr}`);

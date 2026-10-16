@@ -170,8 +170,38 @@ test("a message listing that returns an error instead of data is a capture failu
         sid: "s",
         oc: { stderr: () => "" },
     });
-    await expect(host.prompt("go", 5_000)).rejects.toThrow("Unauthorized");
+    const result = await host.prompt("go", 5_000);
+    expect(result.error).toContain("tool capture");
+    expect(result.error).toContain("Unauthorized");
     expect(host.drainTools()).toEqual([]);
+});
+
+test("a message listing that stalls past the turn deadline fails the turn as a capture gap", async () => {
+    let listed = 0;
+    const client = {
+        session: {
+            messages: () =>
+                listed++ === 0 ? Promise.resolve({ data: [] }) : new Promise(() => undefined),
+            prompt: async () => ({ data: { info: {} } }),
+            abort: async () => ({}),
+        },
+    };
+    const host = new OpencodeSimHost({
+        ...({} as HostContext),
+        config: loadConfig(),
+        root: "/x",
+        launcher: "/x/sandbox.sh",
+        now: () => 100,
+    });
+    Object.assign(host as unknown as Record<string, unknown>, {
+        client,
+        sid: "s",
+        oc: { stderr: () => "" },
+    });
+    const started = Date.now();
+    const result = await host.prompt("go", 1_200);
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(result.error).toContain("session.messages timed out");
 });
 
 test("a Pi tool run is timed from its start event, and an unfinished one keeps its start time", () => {

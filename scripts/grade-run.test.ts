@@ -261,6 +261,40 @@ describe("grade-run", () => {
         expect(() => readFileSync(join(dir, "grades.jsonl"))).toThrow();
     });
 
+    test("an answer the proxy truncated excludes its item, and grades are appended only once every item is graded", async () => {
+        const p8 = fixture("P8-pass");
+        const cut = structuredClone(p8.snapshots[0]) as Snapshot;
+        const calls = cut.artefacts.find((a) => a.class === "proxy-call") as unknown as {
+            calls: Record<string, unknown>[];
+        };
+        (calls.calls.at(-1) as Record<string, unknown>).response_text_truncated = true;
+        const dir = run({ probes: [p5.probe, p8.probe] });
+        snapshot(dir, "eidnara", snap);
+        snapshot(dir, "eidnara", cut);
+        const summary = await gradeRun(dir, null);
+        expect(summary.verdicts).toEqual({ "eidnara/P5": { pass: 1 } });
+        expect(summary.skipped.eidnara).toEqual({ "answer refused": 1 });
+        const leaky = structuredClone(cut);
+        (leaky.artefacts as unknown[]).push({ id: "t", class: "transcript" });
+        const broken = run({ probes: [p5.probe, p8.probe] });
+        snapshot(broken, "eidnara", snap);
+        snapshot(broken, "eidnara", leaky);
+        await expect(gradeRun(broken, null)).rejects.toThrow("is not a grade input");
+        expect(() => readFileSync(join(broken, "grades.jsonl"))).toThrow();
+    });
+
+    test("a journaled snapshot row whose arm or item differs from its journal entry is refused", async () => {
+        const dir = run({ probes: [p5.probe] });
+        snapshot(dir, "eidnara", snap);
+        const path = join(dir, "eidnara", "snapshots.jsonl");
+        const row = JSON.parse(readFileSync(path, "utf8").trim());
+        writeFileSync(path, `${JSON.stringify({ ...row, item: "P5-other" })}\n`);
+        await expect(gradeRun(dir, null)).rejects.toThrow("does not match its journal entry");
+        writeFileSync(path, `${JSON.stringify({ ...row, artefacts: [] })}\n`);
+        await expect(gradeRun(dir, null)).rejects.toThrow("has no artefacts");
+        expect(() => readFileSync(join(dir, "grades.jsonl"))).toThrow();
+    });
+
     test("a run directory leased by a live process is refused", async () => {
         const dir = run({ probes: [p5.probe] });
         takeLease(dir);

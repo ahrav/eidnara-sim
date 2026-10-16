@@ -71,8 +71,10 @@ afterwards), because the agent can write that config and the harness process
 runs outside the sandbox. The workspace path itself must be a real directory
 under the arm root, an existing ancestor of the diff's path must resolve
 inside it before any directory is created, and a `.git` that is a file or
-symlink, any symlink under `.git`, or an `objects/info/alternates` file stops
-the run before git writes anything.
+symlink, any entry under `.git` that is not a regular file or directory, a
+missing `.git/config`, or an `objects/info/alternates` file stops the run
+before git writes anything; every workspace git run is bounded by the turn
+deadline.
 
 Pi runs in RPC mode with `--session-id sim-<session>`, its agent directory,
 settings, and model list under the arm root, and the Eidnara extension from

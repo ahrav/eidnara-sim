@@ -506,16 +506,26 @@ export class OpencodeSimHost extends SimHost {
         return pids.length > 0 ? Math.min(...pids.map(Number)) : null;
     }
 
-    private async messages(): Promise<Array<{ info: Untyped; parts: Untyped[] }>> {
-        const listed = await this.client.session.messages({ path: { id: this.sid } });
+    /** Lists the session's messages within `deadlineMs`; a listing that stalls past it throws. */
+    private async messages(
+        deadlineMs: number,
+    ): Promise<Array<{ info: Untyped; parts: Untyped[] }>> {
+        const call = this.client.session.messages({ path: { id: this.sid } });
+        const listed = await Promise.race([call, Bun.sleep(deadlineMs).then(() => null)]);
+        if (listed === null) throw new Error(`session.messages timed out after ${deadlineMs} ms`);
         if (listed.error || !listed.data) {
             throw new Error(`session.messages failed: ${JSON.stringify(listed.error ?? null)}`);
         }
         return listed.data as Array<{ info: Untyped; parts: Untyped[] }>;
     }
 
-    private async logTurnTools(seen: Set<string>, startScenario: number): Promise<void> {
-        const fresh = (await this.messages()).filter((m) => !seen.has(String(m.info?.id)));
+    private async logTurnTools(
+        seen: Set<string>,
+        startScenario: number,
+        deadlineMs: number,
+    ): Promise<void> {
+        const listed = await this.messages(deadlineMs);
+        const fresh = listed.filter((m) => !seen.has(String(m.info?.id)));
         const origin = Math.min(...fresh.map((m) => Number(m.info?.time?.created ?? Infinity)));
         for (const m of fresh) {
             for (const part of m.parts.filter((p) => p.type === "tool")) {
@@ -532,15 +542,27 @@ export class OpencodeSimHost extends SimHost {
      * logs its tools here or never. A failed turn whose listing also fails keeps its own
      * error and names the capture gap.
      */
+    /**
+     * Runs one turn under `timeoutMs`, which also bounds the message listings before and
+     * after it. A listing that stalls before the turn fails the turn; one that stalls after it
+     * fails the turn as a capture gap, since its tool runs are then unknown.
+     */
     async prompt(text: string, timeoutMs: number): Promise<PromptResult> {
-        const seen = new Set((await this.messages()).map((m) => String(m.info?.id)));
+        const started = Date.now();
+        let seen: Set<string>;
+        try {
+            seen = new Set((await this.messages(timeoutMs)).map((m) => String(m.info?.id)));
+        } catch (caught) {
+            return { error: `tool capture: ${String(caught)}`.slice(0, 2000) };
+        }
         const startScenario = this.ctx.now?.() ?? 0;
         const outcome = await this.turn(text, timeoutMs);
+        const remaining = Math.max(1_000, timeoutMs - (Date.now() - started));
         try {
-            await this.logTurnTools(seen, startScenario);
+            await this.logTurnTools(seen, startScenario, remaining);
         } catch (caught) {
-            if (!outcome.error) throw caught;
-            return { error: `${outcome.error} | tool capture: ${String(caught)}`.slice(0, 2000) };
+            const gap = `tool capture: ${String(caught)}`;
+            return { error: (outcome.error ? `${outcome.error} | ${gap}` : gap).slice(0, 2000) };
         }
         return outcome;
     }
