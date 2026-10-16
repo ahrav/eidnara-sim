@@ -121,11 +121,7 @@ export class Scheduler {
                     .map((e) => e.event as string),
             );
             const pending = this.o.events.filter((e) => !done.has(e.id));
-            if (started) await driver.resume?.(this.openSession(pending[0], done));
-            for (const e of pending) await this.step(driver, e);
-            await this.pendingKill;
-            await this.idle();
-            await driver.finish?.();
+            await this.runArm(driver, started, pending, done);
             this.pendingKill = null;
             this.outage = null;
             this.session = null;
@@ -133,6 +129,25 @@ export class Scheduler {
         }
         this.arm = null;
         this.log({ kind: "EndRun" });
+    }
+
+    /** Resume continues a failed arm whose journal ends before `EndArm`. */
+    private async runArm(
+        driver: ArmDriver,
+        started: boolean,
+        pending: ScenarioEvent[],
+        done: Set<string>,
+    ): Promise<void> {
+        try {
+            if (started) await driver.resume?.(this.openSession(pending[0], done));
+            for (const e of pending) await this.step(driver, e);
+            await this.pendingKill;
+            await this.idle();
+        } catch (caught) {
+            await driver.finish?.().catch(() => undefined);
+            throw caught;
+        }
+        await driver.finish?.();
     }
 
     /** Existing Event and failed(interrupted) entries make recovery writes idempotent across resumes. */

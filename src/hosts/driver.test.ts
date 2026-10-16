@@ -27,16 +27,21 @@ const tmp = () => {
     return d;
 };
 
+const BASE_MS = Date.UTC(2031, 0, 1);
+
 class FakeHost {
     opened: string[] = [];
     closed = 0;
+    pid: number | null = null;
     onPrompt: () => void = () => undefined;
+    onSpawn: () => void = () => undefined;
     constructor(
         readonly ctx: HostContext,
         private readonly transcripts: string,
     ) {}
     async openSession(cwd: string, session: string) {
         this.opened.push(`${session}@${cwd}`);
+        this.onSpawn();
     }
     async prompt(): Promise<PromptResult> {
         this.onPrompt();
@@ -51,7 +56,7 @@ class FakeHost {
         return { PI_CODING_AGENT_DIR: this.transcripts };
     }
     hostPid() {
-        return null;
+        return this.pid;
     }
 }
 
@@ -76,6 +81,7 @@ function fixture(arm: DriverOptions["arm"], projects: Record<string, string> = {
         turnDeadlineMs: 1_000,
         transcriptPaths: ["$PI_CODING_AGENT_DIR/sessions"],
         loopStore: false,
+        baseMs: BASE_MS,
         hostFactory: (ctx) => {
             const h = new FakeHost(ctx, transcripts);
             hosts.push(h);
@@ -268,6 +274,53 @@ describe("HostDriver lifecycle", () => {
         await plain.driver.event(ev("user_turn", { text: "go" }));
         expect(plain.exits).toEqual([]);
     });
+
+    test("apply_diff commits carry the scenario instant, so paired arms get one hash", async () => {
+        const { driver } = fixture("host", { p: gitRepo() });
+        await driver.reset();
+        const ws = driver.workspace("p");
+        await driver.event(ev("apply_diff", { path: "a.txt", content: "A", scenario_ms: 90_000 }));
+        const dates = spawnSync("git", ["log", "-1", "--format=%at %ct"], { cwd: ws });
+        const at = String(Math.floor((BASE_MS + 90_000) / 1000));
+        expect(dates.stdout.toString().trim()).toBe(`${at} ${at}`);
+    });
+
+    test("apply_diff rejects an escaping path before creating any directory", async () => {
+        const { driver, root } = fixture("host", { p: gitRepo() });
+        await driver.reset();
+        const ws = driver.workspace("p");
+        const outside = tmp();
+        symlinkSync(outside, join(ws, "link"));
+        const viaLink = ev("apply_diff", { path: "link/new/x", content: "A" });
+        await expect(driver.event(viaLink)).rejects.toThrow("leaves");
+        expect(existsSync(join(outside, "new"))).toBe(false);
+        const up = ev("apply_diff", { path: "../made/x", content: "A" });
+        await expect(driver.event(up)).rejects.toThrow("leaves");
+        expect(existsSync(join(root, "host/r/workspaces/made"))).toBe(false);
+    });
+
+    test("the host pid is recorded as soon as the host spawns", async () => {
+        const { driver, hosts, armDir } = fixture("host", { p: gitRepo() });
+        await driver.reset();
+        const host = hosts.at(-1) as FakeHost;
+        let recorded: unknown = null;
+        host.onSpawn = () => {
+            host.pid = process.pid;
+            host.ctx.onSpawn?.();
+            recorded = JSON.parse(readFileSync(join(armDir, "state.json"), "utf8")).host;
+            throw new Error("killed while the host came up");
+        };
+        await expect(driver.event(ev("session_start"))).rejects.toThrow("came up");
+        expect(recorded).toMatchObject({ pid: process.pid });
+    });
+
+    test("state.json is replaced whole, with no staged sibling left behind", async () => {
+        const { driver, armDir } = fixture("host", { p: gitRepo() });
+        await driver.reset();
+        const files = (await import("node:fs")).readdirSync(armDir);
+        expect(files.filter((f) => f.startsWith("state.json"))).toEqual(["state.json"]);
+        expect(JSON.parse(readFileSync(join(armDir, "state.json"), "utf8")).model).toBe(0);
+    });
 });
 
 describe("HostDriver faults", () => {
@@ -278,6 +331,28 @@ describe("HostDriver faults", () => {
             expect(await driver.fault(episode(type))).toEqual({ skipped: "arm runs no daemon" });
         }
     });
+
+    const sudo = spawnSync("sudo", ["-n", "true"]).status === 0;
+    test.skipIf(!sudo)(
+        "store_full fills the loop store and leaves its image sparse once the ballast goes",
+        async () => {
+            const { driver, armDir } = fixture("eidnara");
+            driver.daemon = fakeDaemon(10) as unknown as DaemonStack;
+            const inner = driver as unknown as {
+                mountStore(f: boolean): void;
+                clearStoreFill(): void;
+            };
+            inner.mountStore(true);
+            try {
+                expect(await driver.fault(episode("store_full"))).toMatchObject({ avail_kb: 0 });
+                inner.clearStoreFill();
+                const du = spawnSync("du", ["-m", join(armDir, "store.img")], { encoding: "utf8" });
+                expect(Number(du.stdout.split("\t")[0])).toBeLessThan(200);
+            } finally {
+                await driver.stop();
+            }
+        },
+    );
 
     test("store_full without a loop-mounted store is skipped for the missing store", async () => {
         const { driver } = fixture("eidnara");

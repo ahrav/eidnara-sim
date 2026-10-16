@@ -5,6 +5,7 @@ import {
     mkdirSync,
     readFileSync,
     realpathSync,
+    renameSync,
     rmSync,
     writeFileSync,
 } from "node:fs";
@@ -27,12 +28,14 @@ export interface DriverOptions extends Omit<HostContext, "root" | "model"> {
     turnDeadlineMs: number;
     transcriptPaths: string[];
     loopStore: boolean;
+    /** Wall time of scenario time 0, the same value the clock offset targets. */
+    baseMs: number;
     hostFactory?: (ctx: HostContext) => SimHost;
     onDaemonExit: (detail: Record<string, unknown>) => void;
 }
 
-const git = (cwd: string, ...args: string[]) => {
-    const env = {
+const git = (cwd: string, args: string[], dateMs?: number) => {
+    const env: NodeJS.ProcessEnv = {
         ...process.env,
         GIT_CONFIG_GLOBAL: "/dev/null",
         GIT_CONFIG_NOSYSTEM: "1",
@@ -41,6 +44,10 @@ const git = (cwd: string, ...args: string[]) => {
         GIT_COMMITTER_NAME: "sim-user",
         GIT_COMMITTER_EMAIL: "sim-user@users.noreply.github.com",
     };
+    if (dateMs !== undefined) {
+        env.GIT_AUTHOR_DATE = `@${Math.floor(dateMs / 1000)} +0000`;
+        env.GIT_COMMITTER_DATE = env.GIT_AUTHOR_DATE;
+    }
     const r = spawnSync("git", args, { cwd, env, encoding: "utf8" });
     if (r.status !== 0) throw new Error(`git ${args.join(" ")}: ${r.stderr}`);
     return r.stdout.trim();
@@ -119,7 +126,8 @@ export class HostDriver implements ArmDriver {
     private newHost(): SimHost {
         const make = this.o.hostFactory ?? makeHost;
         const keep = eidnaraOn(this.o.arm) ? [...this.o.keep, this.storeRoot] : this.o.keep;
-        return make({ ...this.o, keep, root: this.o.armRoot, model: this.currentModel() });
+        const onSpawn = () => this.recordState();
+        return make({ ...this.o, keep, root: this.o.armRoot, model: this.currentModel(), onSpawn });
     }
 
     private recordState(): void {
@@ -131,7 +139,9 @@ export class HostDriver implements ArmDriver {
             host: proc(this.sessionProject === null ? null : (this.host?.hostPid() ?? null)),
         };
         mkdirSync(this.armDir, { recursive: true });
-        writeFileSync(this.stateFile, JSON.stringify(state));
+        const staged = `${this.stateFile}.${process.pid}`;
+        writeFileSync(staged, JSON.stringify(state));
+        renameSync(staged, this.stateFile);
     }
 
     private readState(): ArmState | null {
@@ -167,7 +177,7 @@ export class HostDriver implements ArmDriver {
         mkdirSync(join(this.o.armRoot, "workspaces"), { recursive: true });
         for (const [project, source] of Object.entries(this.o.projects)) {
             const target = this.workspace(project);
-            git(this.o.armRoot, "clone", "--quiet", "--no-hardlinks", source, target);
+            git(this.o.armRoot, ["clone", "--quiet", "--no-hardlinks", source, target]);
         }
         await this.startArm(true);
     }
@@ -186,7 +196,9 @@ export class HostDriver implements ArmDriver {
         const state = this.readState();
         for (const proc of [state?.daemon, state?.host]) {
             if (proc && running(proc.pid) && processStart(proc.pid) === proc.start) {
-                await stopOwnedTree(proc.pid, 5_000);
+                if (!(await stopOwnedTree(proc.pid, 5_000))) {
+                    throw new HarnessFailure(`recorded process ${proc.pid} survived SIGKILL`);
+                }
             }
         }
         if (spawnSync("findmnt", ["-n", "-M", this.storeRoot]).status === 0) {
@@ -233,20 +245,31 @@ export class HostDriver implements ArmDriver {
     private applyDiff(e: ScenarioEvent): void {
         const dir = realpathSync(this.workspace(this.project(e)));
         const path = resolve(dir, String(e.path));
+        const inside = (p: string) => {
+            const real = realpathSync(p);
+            return real === dir || real.startsWith(`${dir}/`);
+        };
+        let existing = dirname(path);
+        while (!existsSync(existing)) existing = dirname(existing);
+        if (!inside(existing))
+            throw new HarnessFailure(`apply_diff path ${String(e.path)} leaves ${dir}`);
         mkdirSync(dirname(path), { recursive: true });
-        const parent = realpathSync(dirname(path));
-        const inside = parent === dir || parent.startsWith(`${dir}/`);
-        if (!inside || lstatSync(path, { throwIfNoEntry: false })?.isSymbolicLink()) {
+        if (
+            !inside(dirname(path)) ||
+            lstatSync(path, { throwIfNoEntry: false })?.isSymbolicLink()
+        ) {
             throw new HarnessFailure(`apply_diff path ${String(e.path)} leaves ${dir}`);
         }
         writeFileSync(path, String(e.content));
-        git(dir, "add", "--", path);
+        git(dir, ["add", "--", path]);
         if (
             spawnSync("git", ["diff", "--cached", "--quiet", "--", path], { cwd: dir }).status === 0
         ) {
             return;
         }
-        git(dir, "commit", "--quiet", "--no-verify", "-m", `Add ${String(e.path)}`, "--", path);
+        const message = `Add ${String(e.path)}`;
+        const when = this.o.baseMs + e.scenario_ms;
+        git(dir, ["commit", "--quiet", "--no-verify", "-m", message, "--", path], when);
     }
 
     private checkTranscripts(host: SimHost): void {
@@ -304,7 +327,13 @@ export class HostDriver implements ArmDriver {
     private fillStore(): Record<string, unknown> {
         if (!this.storeMount) return { skipped: "arm runs no loop-mounted store" };
         const ballast = join(this.storeMount, "ballast");
-        spawnSync("dd", ["if=/dev/zero", `of=${ballast}`, "bs=1M", "count=4096"]);
+        const free = run(["df", "-B1", "--output=avail", this.storeMount])
+            .trim()
+            .split("\n")
+            .at(-1);
+        spawnSync("fallocate", ["-l", String(free), ballast]);
+        const append = ["if=/dev/zero", `of=${ballast}`, "bs=1M", "oflag=append", "conv=notrunc"];
+        spawnSync("dd", append);
         const df = run(["df", "--output=avail", this.storeMount]);
         const avail = Number(df.trim().split("\n").at(-1));
         if (avail !== 0) throw new HarnessFailure(`store_full left ${avail} KiB free`);

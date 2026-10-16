@@ -61,7 +61,10 @@ the abort call), and wait 30 s for the call to drain; a call still running
 then stops the run. An `apply_diff` event writes its file inside the
 workspace and commits that path alone, so the agent's own uncommitted edits
 stay uncommitted; content already committed adds no commit, and a path that
-resolves outside the workspace through `..` or a symlink stops the run.
+resolves outside the workspace through `..` or a symlink stops the run before
+any directory is created. The commit's author and committer dates are the
+event's scenario instant (`baseMs + scenario_ms`), so paired arms and a
+resumed delivery produce the same commit.
 
 Pi runs in RPC mode with `--session-id sim-<session>`, its agent directory,
 settings, and model list under the arm root, and the Eidnara extension from
@@ -109,18 +112,23 @@ store sits under the user's home.
 ## Resume
 
 The driver keeps `<arm>/state.json` current with the model index and the
-pid and start time of the daemon and of the host while a session is open.
+pid and start time of the daemon and of the host while a session is open,
+replacing the file whole so a kill mid-write leaves the previous state. Pi's
+pid is recorded as soon as its process exists, before the readiness wait;
+OpenCode's is known once `spawnOpencode` returns.
 A new harness process calls `resume(open)` on an arm that has `StartArm` and
 no `EndArm`. The driver restores the model index, stops each recorded process
-whose start time still matches, unmounts a store left mounted, mounts the
+whose start time still matches (a process that outlives SIGTERM and SIGKILL
+stops the resume with `HarnessFailure`), unmounts a store left mounted, mounts the
 existing store image, starts the daemon against the existing store, and, when
 the next event is inside a session, opens that session again. Pi reopens the
 same session transcript by its session id, and OpenCode reuses the session
 with the same title. `reset` stops recorded processes and unmounts the store
 the same way before it deletes anything, so a harness killed during `reset`
-leaves no recorded process running into the next attempt. A daemon still
-starting when the harness dies has no pid on record yet; its mount then
-stays busy and the next `reset` or `resume` stops with the `umount` error.
+leaves no recorded process running into the next attempt. A daemon or an
+OpenCode server still starting when the harness dies has no pid on record
+yet; a daemon's mount then stays busy and the next `reset` or `resume` stops
+with the `umount` error.
 
 ## Transcript-store check
 
@@ -140,7 +148,7 @@ against the same store (OQ-10).
 |---|---|---|
 | `daemon_sigkill_mid_fold` | The session's first observed history-summarizer call fires it; SIGKILL and restart | `pid_before`, `pid_after`, `restarted_by: harness` |
 | `daemon_restart` | At `session_start`, SIGKILL and restart | As above |
-| `store_full` | When the scenario schedules `store_full`, each Eidnara arm's store lives on a sparse 2 GiB ext4 loop mount (`nosuid,nodev,noexec`) at `<arm>/s`, room for the daemon to materialize its harness closures twice, with its image outside the sandbox's kept paths; the fault fills it, and `session_end` removes the ballast | `avail_kb: 0`; any other value stops the run |
+| `store_full` | When the scenario schedules `store_full`, each Eidnara arm's store lives on a sparse 2 GiB ext4 loop mount (`nosuid,nodev,noexec`) at `<arm>/s`, room for the daemon to materialize its harness closures twice, with its image outside the sandbox's kept paths; the fault fills it with a `fallocate`d ballast topped up by `dd`, so the sparse image stays small, and `session_end` removes the ballast | `avail_kb: 0`; any other value stops the run |
 | `plugin_reload` | The host process and its plugin start afresh at every `session_start` | The reload note |
 | `model_switch` | Later sessions use the next configured model; the daemon keeps running with its summarizer model | The new model id |
 | `laptop_sleep` | One event-free clock jump (`docs/run.md`) | The `AdvanceClock` entry |

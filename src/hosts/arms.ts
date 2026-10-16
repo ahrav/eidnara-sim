@@ -40,6 +40,8 @@ export interface HostContext {
     proxyHttp2: string;
     model: string;
     contextLimit: number;
+    /** Runs once the host process exists, before its readiness wait. */
+    onSpawn?: () => void;
 }
 
 export interface PromptResult {
@@ -260,6 +262,7 @@ export class PiSimHost extends SimHost {
         this.rpc = new rpcClient.PiRpcProcess(child, new rpcClient.PiRpcProtocol(), {
             stderrLimit: 20_000,
         });
+        this.ctx.onSpawn?.();
         const ready = this.rpc.sendCommand("get_state", {}, { timeoutMs: 120_000 });
         await Promise.race([ready, spawnError]);
     }

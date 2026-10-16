@@ -970,11 +970,46 @@ describe("driver lifecycle hooks", () => {
             order: ["a"],
             drivers: { a: resumed },
         }).run();
-        expect(calls).toEqual(["reset", "resume:e-000000", "e-000003", "e-999999", "finish"]);
+        expect(calls).toEqual([
+            "reset",
+            "finish",
+            "resume:e-000000",
+            "e-000003",
+            "e-999999",
+            "finish",
+        ]);
         const tail = second.entries.map((e) => [e.kind, e.job ?? e.event ?? null]);
         expect(tail).toContainEqual(["EndJob", "memory_capture-0"]);
         const endArm = second.entries.findIndex((e) => e.kind === "EndArm");
         expect(endArm).toBe(finishedAt);
+    });
+
+    test("an arm whose event throws is finished without EndArm, and the failure is kept", async () => {
+        const j = new Journal(join(dir(), "j.jsonl"));
+        const calls: string[] = [];
+        const driver: ArmDriver = {
+            reset: async () => undefined,
+            event: async (e) => {
+                if (e.index === 1) throw new Error("transcript store missing");
+                return {};
+            },
+            fault: async () => ({}),
+            finish: async () => {
+                calls.push("finish");
+                throw new Error("umount failed");
+            },
+        };
+        const scheduler = new Scheduler({
+            events: fixtureEvents(2),
+            faults: [],
+            journal: j,
+            settleMs: 0,
+            order: ["a"],
+            drivers: { a: driver },
+        });
+        await expect(scheduler.run()).rejects.toThrow("transcript store missing");
+        expect(calls).toEqual(["finish"]);
+        expect(j.entries.some((e) => e.kind === "EndArm")).toBe(false);
     });
 });
 
