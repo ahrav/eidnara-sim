@@ -21,7 +21,9 @@ import {
     DaemonStack,
     eidnaraOn,
     type HostContext,
+    hostNode,
     makeHost,
+    opencodeInstall,
     readOnlyPaths,
     type SimHost,
 } from "./arms";
@@ -192,9 +194,24 @@ export class HostDriver implements ArmDriver {
             env.GIT_COMMITTER_DATE = env.GIT_AUTHOR_DATE;
         }
         const keep = [...new Set([...this.keep, this.o.armRoot])];
-        // Git reads no scenario clock, so the clock directory stays out of its view.
+        // Git reads no scenario clock, so the clock directory stays out of its view; the hosts'
+        // installs join the set, since a hook could otherwise poison a later session's host.
         const clock = dirname(this.o.offsetFile);
-        const ro = readOnlyPaths(this.o).filter((p) => p !== clock && existsSync(p));
+        const resolved = (find: () => string): string | null => {
+            try {
+                return find();
+            } catch {
+                return null;
+            }
+        };
+        const installs = [
+            this.o.config.pi_install,
+            resolved(() => hostNode().root),
+            resolved(() => opencodeInstall(this.o.config).root),
+        ].filter((p): p is string => p !== null);
+        const ro = [...new Set([...readOnlyPaths(this.o), ...installs])].filter(
+            (p) => p !== clock && existsSync(p),
+        );
         // `timeout` runs inside the sandbox, so the recorded pid execs into the launcher's `sudo`
         // and the reaper's walk starts at the root-owned process, as it does for a host.
         const seconds = String(Math.ceil(this.o.turnDeadlineMs / 1000));
@@ -428,10 +445,10 @@ export class HostDriver implements ArmDriver {
         if (!state) {
             throw new HarnessFailure(`resume of arm ${this.o.arm}: ${this.stateFile} is gone`);
         }
+        await this.reapStale();
         if (state.failed !== null && state.failed !== undefined) {
             throw new HarnessFailure(`arm ${this.o.arm} failed to finish earlier: ${state.failed}`);
         }
-        await this.reapStale();
     }
 
     private async stopRecorded(proc: { pid: number; start: string | null } | null | undefined) {
@@ -475,8 +492,28 @@ export class HostDriver implements ArmDriver {
     /** Removes a stale `index.lock` when `.git` is a real directory; a link there is left alone. */
     private unlockGit(dir: string): void {
         const gitDir = join(dir, ".git");
-        if (lstatSync(gitDir, { throwIfNoEntry: false })?.isDirectory()) {
-            rmSync(join(gitDir, "index.lock"), { force: true });
+        if (!lstatSync(gitDir, { throwIfNoEntry: false })?.isDirectory()) return;
+        for (const lock of ["index.lock", "HEAD.lock", "packed-refs.lock"]) {
+            rmSync(join(gitDir, lock), { force: true });
+        }
+        const refs = join(gitDir, "refs");
+        if (!lstatSync(refs, { throwIfNoEntry: false })?.isDirectory()) return;
+        const walk = (d: string) => {
+            for (const entry of readdirSync(d, { withFileTypes: true })) {
+                const path = join(d, entry.name);
+                if (entry.isDirectory()) walk(path);
+                else if (entry.isFile() && entry.name.endsWith(".lock"))
+                    rmSync(path, { force: true });
+            }
+        };
+        walk(refs);
+    }
+
+    /** Repository git follows `.git`, so it has to be the workspace's own directory, a link to none. */
+    private requireOwnGitDir(dir: string): void {
+        const gitDir = join(dir, ".git");
+        if (!lstatSync(gitDir, { throwIfNoEntry: false })?.isDirectory()) {
+            throw new HarnessFailure(`workspace ${dir}: .git is not the workspace's own directory`);
         }
     }
 
@@ -580,6 +617,7 @@ export class HostDriver implements ArmDriver {
         ) {
             throw new HarnessFailure(`apply_diff path ${String(e.path)} leaves ${dir}`);
         }
+        this.requireOwnGitDir(dir);
         writeWhole(path, String(e.content));
         await this.gitOk(project, dir, ["add", "--", path]);
         const staged = await this.git(project, dir, ["diff", "--cached", "--quiet", "--", path]);
@@ -593,7 +631,12 @@ export class HostDriver implements ArmDriver {
     private checkTranscripts(host: SimHost): void {
         const env = host.transcriptEnv();
         const paths = this.o.transcriptPaths.map((t) => expandTemplate(t, env));
-        const missing = paths.filter((p) => !existsSync(p));
+        // A link left where the store was is the host's placeholder, so the store counts as missing.
+        const present = (p: string) => {
+            const stat = lstatSync(p, { throwIfNoEntry: false });
+            return stat !== undefined && (stat.isFile() || stat.isDirectory());
+        };
+        const missing = paths.filter((p) => !present(p));
         const record = { checked_after: "first session_end", paths, missing };
         writeWhole(join(this.armDir, "transcripts.json"), JSON.stringify(record));
         if (missing.length > 0) throw new Error(`transcript store missing: ${missing.join(", ")}`);

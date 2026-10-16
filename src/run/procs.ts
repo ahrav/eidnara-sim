@@ -71,15 +71,6 @@ interface Target {
 
 const alive = (t: Target) => t.start !== null && running(t.pid, t.start);
 
-async function stopped(targets: Target[], timeoutMs: number): Promise<boolean> {
-    const deadline = Date.now() + timeoutMs;
-    while (targets.some(alive)) {
-        if (Date.now() >= deadline) return false;
-        await Bun.sleep(50);
-    }
-    return true;
-}
-
 // Each pid is checked against its start time right before the signal, so a pid the kernel
 // reused for another process during the grace period is left alone.
 function signal(targets: Target[], name: NodeJS.Signals): void {
@@ -98,20 +89,27 @@ export async function stopOwnedTree(
     graceMs: number,
     rootStart?: string,
 ): Promise<boolean> {
-    if (rootStart !== undefined && processStart(rootPid) !== rootStart) return true;
-    const owned = () => ownedProcesses(rootPid).map((pid) => ({ pid, start: processStart(pid) }));
-    const root = { pid: rootPid, start: processStart(rootPid) };
-    // A root-owned launcher still in its privileged setup has no user-owned process to signal
-    // yet; the one it is about to start is the target, so the walk waits for it.
-    let targets = owned();
-    const deadline = Date.now() + graceMs;
-    while (targets.length === 0 && alive(root) && Date.now() < deadline) {
-        await Bun.sleep(50);
-        targets = owned();
-    }
-    const all = [...targets, root];
-    signal(targets, "SIGTERM");
-    if (await stopped(all, graceMs)) return true;
-    signal(targets, "SIGKILL");
-    return stopped(all, 2_000);
+    const root = { pid: rootPid, start: rootStart ?? processStart(rootPid) };
+    if (!alive(root)) return true;
+    // Descendants keep being discovered while the root lives: a root-owned launcher still in
+    // its privileged setup starts the user-owned command later, and that command is the target.
+    const seen = new Map<number, Target>();
+    const sweep = (name: NodeJS.Signals) => {
+        for (const pid of ownedProcesses(rootPid)) {
+            if (!seen.has(pid)) seen.set(pid, { pid, start: processStart(pid) });
+        }
+        signal([...seen.values()], name);
+    };
+    const settled = () => !alive(root) && [...seen.values()].every((t) => !alive(t));
+    const phase = async (name: NodeJS.Signals, ms: number) => {
+        const deadline = Date.now() + ms;
+        while (Date.now() < deadline) {
+            sweep(name);
+            if (settled()) return true;
+            await Bun.sleep(50);
+        }
+        return settled();
+    };
+    if (await phase("SIGTERM", graceMs)) return true;
+    return phase("SIGKILL", 2_000);
 }

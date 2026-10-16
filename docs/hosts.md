@@ -123,7 +123,8 @@ any directory is created. The file is written whole and renamed into place,
 so a hard link the agent left at the path keeps its other name's content, and
 the `git add` and `git commit` run inside the arm's sandbox under the turn
 deadline, with the hosts' read-only paths (toolchains, the interposer, the
-build clone) read-only and a fresh environment, so a hook,
+build clone, the Pi, Node, and OpenCode installs) read-only and a fresh
+environment, and only against a `.git` that is the workspace's own directory, so a hook,
 filter, or config the agent planted in the repository acts with the host's
 own view of the filesystem and sees none of the harness's variables, and a
 hook that hangs stops the run instead of the harness. The run's pid is in
@@ -132,14 +133,19 @@ until the record is written, then execs the launcher, so the recorded pid is
 the launcher's `sudo` and the deadline's `timeout` runs inside the sandbox),
 so a resume stops one the killed harness left behind and removes its
 `index.lock` before replaying the event; a run that fails removes its own
-`index.lock`, and both removals leave a `.git` that is a link alone. The commit's author and committer dates are the
+`index.lock`, `HEAD.lock`, `packed-refs.lock`, and any ref lock, and both
+removals leave a `.git` that is a link alone. The commit's author and committer dates are the
 event's scenario instant (`baseMs + scenario_ms`), so paired arms and a
 resumed delivery produce the same commit. Every session and `apply_diff`
 requires the workspace to resolve to the real `<arm>/r/workspaces/<project>`;
 a symlink the agent put at it or above it stops the run, since the harness
 and the launcher would follow it with their own privileges; the daemon's
 `runtime` and data directories get the same check before every daemon start
-and restart.
+and restart; the data directory is bound to itself, so it is a mount point
+the host cannot rename or replace while a restart writes under it, and the
+daemon's harness runtime lives at `<arm>/runtime`, beside the arm and outside
+every path the host can write, so a restart executes what the harness
+generated.
 
 Each host process starts in the session's workspace, which the launcher
 enters after its privilege drop. Pi runs in RPC mode with `--session-id sim-<session>`, its agent directory,
@@ -221,8 +227,9 @@ replacing the file whole so a kill mid-write leaves the previous state. Pi's
 pid is recorded as soon as its process exists, before the readiness wait;
 OpenCode's once `spawnOpencode` returns, before the SDK setup; the OpenCode
 wrapper also writes its own pid and start time to `<arm>/opencode.launch`
-before it execs the launcher, so a harness killed while the server starts
-leaves a record the next resume reaps. A daemon the fixture spawned before
+(staged and renamed whole; a record it cannot write ends the wrapper before
+the launcher) before it execs the launcher, so a harness killed while the
+server starts leaves a record the next resume reaps. A daemon the fixture spawned before
 the harness died carries this arm's data directory as its `--state-root`, and
 the reaper finds and stops it by that argument. The state
 also carries the length and allocated blocks of an active `store_full`
@@ -235,9 +242,10 @@ that is a link (a sparse replacement, a punched hole, or a look-alike
 elsewhere all count), or on a recorded gap, since neither may heal.
 A new harness process calls `reap()` and then `resume(open)` on an arm that
 has `StartArm` and no `EndArm`; an arm whose every event is journaled is only
-reaped and finished. `reap` requires the state, refuses an arm whose `finish`
-failed earlier (the state records the failure, so a resume cannot heal it),
-and stops each recorded process, host first,
+reaped and finished. `reap` requires the state, stops each recorded process, host first,
+and then refuses an arm whose `finish` failed earlier (the state records the
+failure, so a resume cannot heal it, while the reap still releases what it
+can),
 whose start time still matches, then unmounts a store left mounted; every
 step runs and the first failure surfaces afterwards (a process that outlives
 SIGTERM and SIGKILL stops the resume with `HarnessFailure`),
@@ -262,7 +270,8 @@ with the `umount` error.
 After an arm's first `session_end`, the driver expands the preflight's
 transcript-store paths for the host version with the host's own variables
 (`$PI_CODING_AGENT_DIR`, `$XDG_DATA_HOME`) and writes the result to
-`<arm>/transcripts.json`. A missing path stops the run (OQ-7).
+`<arm>/transcripts.json`. A missing path stops the run (OQ-7); a link left
+where the store should be counts as missing.
 
 ## Infrastructure faults
 

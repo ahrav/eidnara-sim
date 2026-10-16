@@ -280,6 +280,31 @@ console.log(JSON.stringify(await host.prompt("hi", 20_000)));
     expect(Date.now() - started).toBeLessThan(5_000);
 }, 15_000);
 
+test("the OpenCode wrapper stops before the launcher when its launch record cannot be written", async () => {
+    const run = runDir();
+    const ctx = { ...context(run), host: "opencode" as const, root: join(run, "gone", "arm") };
+    const host = new OpencodeSimHost(ctx);
+    const path = (host as Untyped).writeWrapper(["/bin/sh", "-c", "touch ran"]) as string;
+    const r = Bun.spawnSync([path], { cwd: run, stdout: "pipe", stderr: "pipe" });
+    expect(r.exitCode).toBe(70);
+    expect(existsSync(join(run, "ran"))).toBe(false);
+});
+
+test("the daemon's harness runtime lives beside the arm, outside what the host can write", () => {
+    const run = runDir();
+    const stack = new DaemonStack({
+        config: loadConfig(),
+        root: join(run, "arm", "r"),
+        dataDir: join(run, "arm", "s", "d"),
+        logFile: join(run, "arm", "daemon.log"),
+        offsetFile: join(run, "offset"),
+        proxyHttp1: "",
+        proxyHttp2: "",
+        model: "m",
+    });
+    expect(stack.runtimeDir).toBe(join(run, "arm", "runtime"));
+});
+
 test("the OpenCode wrapper lives outside every path the sandbox keeps writable", async () => {
     const ctx = { ...context(runDir()), host: "opencode" as const };
     const host = new OpencodeSimHost(ctx);
@@ -287,7 +312,7 @@ test("the OpenCode wrapper lives outside every path the sandbox keeps writable",
     for (const kept of ctx.keep) expect(path.startsWith(`${kept}/`)).toBe(false);
     const record = join(dirname(ctx.root), "opencode.launch");
     expect(await Bun.file(path).text()).toBe(
-        `#!/bin/sh\nprintf '%s %s\\n' "$$" "$(awk '{print $22}' /proc/$$/stat)" > '${record}'\nexec '/x/sandbox.sh' '--' '/x/opencode' "$@"\n`,
+        `#!/bin/sh\nr='${record}'\nprintf '%s %s\\n' "$$" "$(awk '{print $22}' /proc/$$/stat)" > "$r.$$" || exit 70\nmv -f "$r.$$" "$r" || exit 70\nexec '/x/sandbox.sh' '--' '/x/opencode' "$@"\n`,
     );
 });
 
@@ -513,12 +538,13 @@ test("the daemon stack refuses a symlinked store directory and replaces a symlin
     symlinkSync(elsewhere, join(store, "d"));
     await expect(stack(join(store, "d")).start()).rejects.toThrow(/symlink/);
     rmSync(join(store, "d"));
-    rmSync(join(root, "runtime"), { recursive: true, force: true });
-    symlinkSync(elsewhere, join(root, "runtime"));
+    rmSync(join(run, "runtime"), { recursive: true, force: true });
+    symlinkSync(elsewhere, join(run, "runtime"));
     await stack(join(store, "d")).start();
     expect(existsSync(join(elsewhere, "runtime.json"))).toBe(false);
-    expect(lstatSync(join(root, "runtime")).isSymbolicLink()).toBe(false);
-    expect(existsSync(join(root, "runtime/runtime.json"))).toBe(true);
+    expect(lstatSync(join(run, "runtime")).isSymbolicLink()).toBe(false);
+    expect(existsSync(join(run, "runtime/runtime.json"))).toBe(true);
+    expect(existsSync(join(root, "runtime"))).toBe(false);
 });
 
 test("OpenCode teardown targets the server this harness spawned, not another process on the port", async () => {

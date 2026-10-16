@@ -126,6 +126,11 @@ export class DaemonStack {
         return this.stack?.child?.pid ?? null;
     }
 
+    /** The harness runtime the daemon executes lives beside the arm, outside every path the host can write. */
+    get runtimeDir(): string {
+        return join(dirname(this.ctx.root), "runtime");
+    }
+
     async start(): Promise<void> {
         const { config } = this.ctx;
         const hr = await v1(config, "packages/e2e-tests/src/bedrock-peer/harness-runtime.ts");
@@ -133,10 +138,10 @@ export class DaemonStack {
         const sources = hr.detectHarnessRuntimeSources();
         if (!sources.ok) throw new Error(`harness runtime sources: ${sources.reason}`);
         // The runtime is regenerated on every start, so whatever an earlier session left there goes first.
-        rmSync(join(this.ctx.root, "runtime"), { recursive: true, force: true });
-        const runtimeDir = realDir(this.ctx.root, "runtime");
+        rmSync(this.runtimeDir, { recursive: true, force: true });
         // The store sits beside the arm root, so its walk starts at the arm directory both share.
         const armDir = dirname(this.ctx.root);
+        const runtimeDir = realDir(armDir, "runtime");
         const store = relative(armDir, this.ctx.dataDir);
         if (store.startsWith("..") || isAbsolute(store)) {
             throw new Error(`daemon store ${this.ctx.dataDir} lies outside ${armDir}`);
@@ -251,7 +256,7 @@ export function nodeInstall(which: string): { exe: string; bin: string; root: st
     return { exe, bin: dirname(exe), root: resolve(exe, "../..") };
 }
 
-const hostNode = () => nodeInstall(Bun.which("node") ?? "node");
+export const hostNode = () => nodeInstall(Bun.which("node") ?? "node");
 
 /** Paths every sandboxed process of an arm reads but must not change: toolchains, the interposer, Eidnara sources, the clock. */
 export function readOnlyPaths(ctx: {
@@ -472,7 +477,9 @@ export class PiSimHost extends SimHost {
                 settling = true;
                 try {
                     return turnResult(await this.settle(watch, deadline));
-                } catch {}
+                } catch {
+                    // A settle that fails here takes the abort-and-drain path below.
+                }
             }
             const drained = this.agentEnd(this.drainMs);
             await this.rpc.sendCommand("abort", {}, { timeoutMs: 60_000 }).catch(() => undefined);
@@ -638,9 +645,13 @@ export class OpencodeSimHost extends SimHost {
         const path = join(dir, "opencode");
         const staged = `${path}.${process.pid}`;
         const record = shellQuote(join(dirname(this.ctx.root), "opencode.launch"));
+        // The record is staged and renamed whole, and a record that cannot be written ends the
+        // wrapper before the launcher, so the server never runs unrecorded.
         const script = [
             "#!/bin/sh",
-            `printf '%s %s\\n' "$$" "$(awk '{print $22}' /proc/$$/stat)" > ${record}`,
+            `r=${record}`,
+            `printf '%s %s\\n' "$$" "$(awk '{print $22}' /proc/$$/stat)" > "$r.$$" || exit 70`,
+            `mv -f "$r.$$" "$r" || exit 70`,
             `exec ${argv.map(shellQuote).join(" ")} "$@"`,
             "",
         ].join("\n");

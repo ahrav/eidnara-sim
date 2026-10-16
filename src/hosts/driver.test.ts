@@ -848,6 +848,86 @@ touch ${escaped}
         expect(orphan.signalCode).toBe("SIGTERM");
     });
 
+    test.skipIf(!sandbox)("a hook cannot write into the Pi install", async () => {
+        const install = mkdtempSync("/var/tmp/sim-pi-install-");
+        dirs.push(install);
+        const { driver } = fixture("host", { p: gitRepo() });
+        const o = (driver as unknown as { o: DriverOptions }).o;
+        o.config = { ...o.config, pi_install: install };
+        await driver.reset();
+        const ws = driver.workspace("p");
+        writeFileSync(join(ws, ".git/hooks/post-commit"), `#!/bin/sh\ntouch ${install}/planted\n`, {
+            mode: 0o755,
+        });
+        await driver.event(ev("apply_diff", { path: "a.txt", content: "A" }));
+        expect(existsSync(join(install, "planted"))).toBe(false);
+    });
+
+    test.skipIf(!sandbox)(
+        "a git run cut off while committing leaves no ref lock behind",
+        async () => {
+            const { driver } = fixture("host", { p: gitRepo() });
+            await driver.reset();
+            const ws = driver.workspace("p");
+            writeFileSync(
+                join(ws, ".git/hooks/reference-transaction"),
+                "#!/bin/sh\nexec sleep 300\n",
+                {
+                    mode: 0o755,
+                },
+            );
+            writeFileSync(join(ws, ".git/HEAD.lock"), "");
+            await expect(
+                driver.event(ev("apply_diff", { path: "a.txt", content: "A" })),
+            ).rejects.toThrow(/git commit/);
+            expect(existsSync(join(ws, ".git/HEAD.lock"))).toBe(false);
+            expect(existsSync(join(ws, ".git/index.lock"))).toBe(false);
+        },
+    );
+
+    test("apply_diff refuses a workspace whose .git is a link to another repository", async () => {
+        const { driver } = fixture("host", { p: gitRepo() });
+        await driver.reset();
+        const ws = driver.workspace("p");
+        const other = gitRepo();
+        rmSync(join(ws, ".git"), { recursive: true, force: true });
+        symlinkSync(join(other, ".git"), join(ws, ".git"));
+        await expect(
+            driver.event(ev("apply_diff", { path: "a.txt", content: "A" })),
+        ).rejects.toThrow(/\.git/);
+        const log = spawnSync("git", ["log", "--format=%s", "-1"], {
+            cwd: other,
+            encoding: "utf8",
+        });
+        expect(log.stdout.trim()).toBe("init");
+    });
+
+    test("a transcript store left as a link counts as missing", async () => {
+        const { driver, transcripts } = fixture("host");
+        await driver.reset();
+        mkdirSync(transcripts, { recursive: true });
+        symlinkSync(tmp(), join(transcripts, "sessions"));
+        await expect(driver.event(ev("session_end"))).rejects.toThrow("transcript store missing");
+    });
+
+    test("a recorded finish failure still reaps what the state names before it stops the resume", async () => {
+        const { driver, armDir } = fixture("host", { p: gitRepo() });
+        await driver.reset();
+        await driver.stop();
+        const orphan = Bun.spawn(["sleep", "300"]);
+        const start = readFileSync(`/proc/${orphan.pid}/stat`, "utf8")
+            .split(") ")[1]
+            ?.split(" ")[19];
+        const state = JSON.parse(readFileSync(join(armDir, "state.json"), "utf8"));
+        state.host = { pid: orphan.pid, start };
+        state.failed = "umount: target is busy";
+        writeFileSync(join(armDir, "state.json"), JSON.stringify(state));
+        const fresh = new HostDriver((driver as unknown as { o: DriverOptions }).o);
+        await expect(fresh.reap()).rejects.toThrow("target is busy");
+        await orphan.exited;
+        expect(orphan.signalCode).toBe("SIGTERM");
+    });
+
     test.skipIf(!sandbox)("a hook cannot write into the configured checkout", async () => {
         const checkout = mkdtempSync("/var/tmp/sim-checkout-");
         dirs.push(checkout);
