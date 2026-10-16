@@ -253,6 +253,24 @@ export function nodeInstall(which: string): { exe: string; bin: string; root: st
 
 const hostNode = () => nodeInstall(Bun.which("node") ?? "node");
 
+/** Paths every sandboxed process of an arm reads but must not change: toolchains, the interposer, Eidnara sources, the clock. */
+export function readOnlyPaths(ctx: {
+    config: SimConfig;
+    launcher: string;
+    offsetFile: string;
+}): string[] {
+    const { config, launcher } = ctx;
+    const interposer = dirname(dirname(FAKETIME_LIB));
+    return [
+        ...config.toolchain.keep,
+        toolbinDir(launcher),
+        interposer,
+        config.eidnara_checkout,
+        // The scheduler writes the scenario clock from outside; hosts only read it.
+        dirname(ctx.offsetFile),
+    ];
+}
+
 export abstract class SimHost {
     readonly toolchain: { path: string; env: Record<string, string> };
 
@@ -266,16 +284,7 @@ export abstract class SimHost {
 
     /** Paths the host reads but must not change: toolchains, the interposer, eidnara sources. */
     get readOnly(): string[] {
-        const { config, launcher } = this.ctx;
-        const interposer = dirname(dirname(FAKETIME_LIB));
-        return [
-            ...config.toolchain.keep,
-            toolbinDir(launcher),
-            interposer,
-            config.eidnara_checkout,
-            // The scheduler writes the scenario clock from outside; hosts only read it.
-            dirname(this.ctx.offsetFile),
-        ];
+        return readOnlyPaths(this.ctx);
     }
 
     /** The launcher masks the run root, so a workspace exists inside the sandbox only below a kept path. */
@@ -619,14 +628,23 @@ export class OpencodeSimHost extends SimHost {
         return created.data.id;
     }
 
+    /**
+     * The wrapper records its own pid and start time beside the arm before it execs the launcher,
+     * so a harness killed during the server's startup leaves a record the next resume can reap.
+     */
     private writeWrapper(argv: string[]): string {
         const dir = join(dirname(this.ctx.launcher), "hostbin", this.ctx.arm);
         mkdirSync(dir, { recursive: true });
         const path = join(dir, "opencode");
         const staged = `${path}.${process.pid}`;
-        writeFileSync(staged, `#!/bin/sh\nexec ${argv.map(shellQuote).join(" ")} "$@"\n`, {
-            mode: 0o755,
-        });
+        const record = shellQuote(join(dirname(this.ctx.root), "opencode.launch"));
+        const script = [
+            "#!/bin/sh",
+            `printf '%s %s\\n' "$$" "$(awk '{print $22}' /proc/$$/stat)" > ${record}`,
+            `exec ${argv.map(shellQuote).join(" ")} "$@"`,
+            "",
+        ].join("\n");
+        writeFileSync(staged, script, { mode: 0o755 });
         renameSync(staged, path);
         return path;
     }

@@ -13,7 +13,7 @@ import {
     writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { loadConfig } from "../config/config";
 import { running } from "../run/procs";
 import {
@@ -285,8 +285,9 @@ test("the OpenCode wrapper lives outside every path the sandbox keeps writable",
     const host = new OpencodeSimHost(ctx);
     const path = (host as Untyped).writeWrapper(["/x/sandbox.sh", "--", "/x/opencode"]) as string;
     for (const kept of ctx.keep) expect(path.startsWith(`${kept}/`)).toBe(false);
+    const record = join(dirname(ctx.root), "opencode.launch");
     expect(await Bun.file(path).text()).toBe(
-        `#!/bin/sh\nexec '/x/sandbox.sh' '--' '/x/opencode' "$@"\n`,
+        `#!/bin/sh\nprintf '%s %s\\n' "$$" "$(awk '{print $22}' /proc/$$/stat)" > '${record}'\nexec '/x/sandbox.sh' '--' '/x/opencode' "$@"\n`,
     );
 });
 

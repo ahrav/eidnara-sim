@@ -85,6 +85,23 @@ test("a process start time identifies one process across pid reuse", () => {
     expect(processStart(2 ** 22 + 7)).toBeNull();
 });
 
+test.skipIf(!sandboxAvailable())(
+    "stopping the launcher's tree during its privileged setup still ends the command it starts",
+    async () => {
+        const r = root();
+        const argv = launch(writeLauncher(r), [], {}, ["/bin/sh", "-c", "exec /bin/sleep 300"]);
+        const child = spawn(argv[0] as string, argv.slice(1), { stdio: "ignore" });
+        const pid = child.pid as number;
+        const stopping = stopOwnedTree(pid, 5_000);
+        expect(await stopping).toBe(true);
+        await Bun.sleep(200);
+        const sleepers = Bun.spawnSync(["pgrep", "-f", "^/bin/sleep 300$"])
+            .stdout.toString()
+            .trim();
+        expect(sleepers).toBe("");
+    },
+);
+
 test.skipIf(!sandboxAvailable())("a launch with a kept cwd starts the command there", () => {
     const r = root();
     const kept = realpathSync(mkdtempSync("/var/tmp/sim-kept-"));

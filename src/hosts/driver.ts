@@ -21,6 +21,7 @@ import {
     eidnaraOn,
     type HostContext,
     makeHost,
+    readOnlyPaths,
     type SimHost,
 } from "./arms";
 
@@ -190,8 +191,9 @@ export class HostDriver implements ArmDriver {
             env.GIT_COMMITTER_DATE = env.GIT_AUTHOR_DATE;
         }
         const keep = [...new Set([...this.keep, this.o.armRoot])];
-        const checkout = this.o.config.eidnara_checkout;
-        const ro = existsSync(checkout) ? [checkout] : [];
+        // Git reads no scenario clock, so the clock directory stays out of its view.
+        const clock = dirname(this.o.offsetFile);
+        const ro = readOnlyPaths(this.o).filter((p) => p !== clock && existsSync(p));
         // `timeout` runs inside the sandbox, so the recorded pid execs into the launcher's `sudo`
         // and the reaper's walk starts at the root-owned process, as it does for a host.
         const seconds = String(Math.ceil(this.o.turnDeadlineMs / 1000));
@@ -438,6 +440,16 @@ export class HostDriver implements ArmDriver {
         }
     }
 
+    /** The OpenCode wrapper's own record of its pid and start time, written before the server answers. */
+    private launchRecord(): { pid: number; start: string | null } | null {
+        const path = join(this.armDir, "opencode.launch");
+        if (lstatSync(path, { throwIfNoEntry: false })?.isFile() !== true) return null;
+        const [pid, start] = readFileSync(path, "utf8").trim().split(" ");
+        const parsed = Number(pid);
+        if (!Number.isInteger(parsed) || parsed <= 0) return null;
+        return { pid: parsed, start: start ?? null };
+    }
+
     /** Removes a stale `index.lock` when `.git` is a real directory; a link there is left alone. */
     private unlockGit(dir: string): void {
         const gitDir = join(dir, ".git");
@@ -461,6 +473,7 @@ export class HostDriver implements ArmDriver {
         const steps: Array<() => Promise<void> | void> = [
             () => (state ? this.reapGit(state) : undefined),
             () => this.stopRecorded(state?.host),
+            () => this.stopRecorded(this.launchRecord()),
             () => this.stopRecorded(state?.daemon),
             () => this.unmount(this.dataDir),
             () => this.unmount(this.storeRoot),

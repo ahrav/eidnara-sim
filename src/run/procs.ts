@@ -99,8 +99,17 @@ export async function stopOwnedTree(
     rootStart?: string,
 ): Promise<boolean> {
     if (rootStart !== undefined && processStart(rootPid) !== rootStart) return true;
-    const targets = ownedProcesses(rootPid).map((pid) => ({ pid, start: processStart(pid) }));
-    const all = [...targets, { pid: rootPid, start: processStart(rootPid) }];
+    const owned = () => ownedProcesses(rootPid).map((pid) => ({ pid, start: processStart(pid) }));
+    const root = { pid: rootPid, start: processStart(rootPid) };
+    // A root-owned launcher still in its privileged setup has no user-owned process to signal
+    // yet; the one it is about to start is the target, so the walk waits for it.
+    let targets = owned();
+    const deadline = Date.now() + graceMs;
+    while (targets.length === 0 && alive(root) && Date.now() < deadline) {
+        await Bun.sleep(50);
+        targets = owned();
+    }
+    const all = [...targets, root];
     signal(targets, "SIGTERM");
     if (await stopped(all, graceMs)) return true;
     signal(targets, "SIGKILL");

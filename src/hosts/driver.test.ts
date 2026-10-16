@@ -771,6 +771,41 @@ touch ${escaped}
         expect(driver.supports(episode("slow_stream"))).toBe(true);
     });
 
+    test.skipIf(!sandbox)("a filter cannot write into a configured toolchain path", async () => {
+        const tools = mkdtempSync("/var/tmp/sim-tools-");
+        dirs.push(tools);
+        const { driver } = fixture("host", { p: gitRepo() });
+        const o = (driver as unknown as { o: DriverOptions }).o;
+        o.config = { ...o.config, toolchain: { ...o.config.toolchain, keep: [tools] } };
+        await driver.reset();
+        const ws = driver.workspace("p");
+        writeFileSync(join(ws, ".gitattributes"), "* filter=poison\n");
+        spawnSync(
+            "git",
+            ["config", "filter.poison.clean", `sh -c 'touch ${tools}/poisoned; cat'`],
+            {
+                cwd: ws,
+            },
+        );
+        await driver.event(ev("apply_diff", { path: "a.txt", content: "A" }));
+        expect(existsSync(join(tools, "poisoned"))).toBe(false);
+    });
+
+    test("the reaper stops the OpenCode launch the wrapper recorded before the server answered", async () => {
+        const { driver, armDir } = fixture("host", { p: gitRepo() });
+        await driver.reset();
+        await driver.stop();
+        const orphan = Bun.spawn(["sleep", "300"]);
+        const start = readFileSync(`/proc/${orphan.pid}/stat`, "utf8")
+            .split(") ")[1]
+            ?.split(" ")[19];
+        writeFileSync(join(armDir, "opencode.launch"), `${orphan.pid} ${start}\n`);
+        const fresh = new HostDriver((driver as unknown as { o: DriverOptions }).o);
+        await fresh.reap();
+        await orphan.exited;
+        expect(orphan.signalCode).toBe("SIGTERM");
+    });
+
     test.skipIf(!sandbox)("a hook cannot write into the configured checkout", async () => {
         const checkout = mkdtempSync("/var/tmp/sim-checkout-");
         dirs.push(checkout);
