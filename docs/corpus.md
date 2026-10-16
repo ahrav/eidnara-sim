@@ -8,7 +8,10 @@ network access.
 ## Sources
 
 `corpus/sources.json` pins each dataset to a Hugging Face revision and records
-the sha256 of every file the build reads.
+the sha256 of every file the build reads. `corpus/manifest.json` records the
+dataset revisions and the sha256 of every corpus file the scenario compiler
+reads: the derived `distributions.json` and tool-output files, and the
+hand-authored `fact-bank.json` and `repos.json`.
 
 | Dataset | Revision | License | Use |
 |---|---|---|---|

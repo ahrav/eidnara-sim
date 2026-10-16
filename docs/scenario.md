@@ -11,7 +11,8 @@ the AWS profile in `sim.config.json`, and caches each vector in
 `--embedder local` swaps in a hashed bag of words and rewrites the threshold
 model to match; the tests use it, and its scenarios name the stand-in model in
 both `manifest.embedding_model` and `manifest.cue_probe_similarity`, so they
-do not witness SIM-P08.
+do not witness SIM-P08. Any other `--embedder` value, a non-integer seed, or a
+flag without a value exits with the usage line.
 
 ## Output
 
@@ -33,25 +34,28 @@ The scenario file is canonical JSON with these sections:
 ## Sessions and time
 
 Each base repository gets `sessions_per_project` sessions and each twin a
-quarter as many, shuffled into one sequence. `forced_p90_sessions` sessions,
-spread evenly over the base sessions, draw their request count from the tail
-above p90; every other session draws from the full fitted distribution with
+quarter as many, shuffled into one sequence. `forced_p90_sessions` sessions
+draw their request count from the tail above p90: each base repository takes
+an equal share, a seeded draw assigns any remainder, and each share spreads
+evenly over that repository's sessions; every other session draws from the full fitted distribution with
 at least one request. Idle gaps within a session come from
 `idle_within_session_s` and gaps between sessions from
 `idle_between_sessions_s`.
 
 The sampled gaps run longer than the tier's `simulated_days`, so the compiler
 scales them to fit. Within-session gaps scale down only when the sessions alone
-would fill more than 80% of the span; between-session gaps then fill the rest.
-`manifest.within_session_gap_scale` and `manifest.between_session_gap_scale`
-record both factors. For the pre-registered seeds, within-session gaps scale
-to between 9% and 32% and between-session gaps to between 0.9% and 2.7%.
+would fill more than 80% of the span; the P13 turn ranges of the forced p90
+sessions then join the session time, and between-session gaps fill the rest,
+each at least one millisecond. `manifest.within_session_gap_scale` and
+`manifest.between_session_gap_scale` record both factors. For the
+pre-registered seeds, within-session gaps scale to between 9% and 32% and
+between-session gaps to between 0.9% and 2.5%.
 
-A session that opens with a P6 probe starts at least one hour after the
-previous session ends, and the compiler shifts later sessions to keep that
-gap. Turns added during placement shift later sessions the same way, so a
-scenario can run past `simulated_days`; the pre-registered seeds end within
-0.04 days of it.
+Every session keeps its sampled gap after the previous session ends. A session
+that opens with a P6 probe widens that gap to at least one hour, and turns
+added during placement lengthen their session, so both push every later
+session back by the same amount and a scenario runs past `simulated_days`; the
+pre-registered seeds end between 0.2 and 1.2 days past it.
 
 ## Facts, conveyance, and probes
 
@@ -108,18 +112,24 @@ fact bank, or, with probability 0.1, a paste of a corpus tool-output sample.
 
 The compiler throws, and writes nothing, when:
 
-- the embedder differs from `cue_probe_similarity.embedding_model`;
+- the seed is outside the unsigned 32-bit range of the random streams;
+- the embedder differs from `cue_probe_similarity.embedding_model`, or returns
+  a vector count or shape that does not match the texts;
 - a cue and probe pair has a BM25 ratio above `bm25_max` or a cosine above
   `cosine_max` (SIM-P08);
 - any user text or diff path or content matches the marker set: probe ids,
   the word probe, fact, template, or probe item ids, or grading words
   (SIM-P07);
-- a probe turn precedes any conveyance, update, or diff of its fact (SIM-P06);
+- a probe turn precedes any conveyance, update, or diff of its fact, or a P1
+  control follows the first conveyance of its fact (SIM-P06);
 - `validateFault`, which the compiler runs on every scheduled episode,
   refuses a trigger other than a session start, the Nth user turn of a
   session, or the first summarizer call of a session; a trigger that names an
   unknown session or a turn the session lacks; and an episode whose seam entry
-  differs from the seam table (SIM-P05).
+  differs from the seam table (SIM-P05);
+- `scheduleFaults` finds fewer sessions with two or more turns than provider
+  episodes, no forced p90 session for the mid-fold SIGKILL, or no session
+  after the first that starts without a hand-applied diff for the sleep.
 
 ## Faults
 
@@ -133,7 +143,7 @@ daemon. Each type gets one episode.
 |---|---|---|
 | Proxy sink (provider faults) | The Nth user turn of a session with at least two turns; each provider episode gets its own session | single (1 call), burst (3 calls), intermittent (probability 0.3 over 10 calls), or persistent (to the end of the session) |
 | Scheduler, mid-fold SIGKILL | The first observed summarizer call of a forced p90 session (OQ-8, schedule half) | single |
-| Clock, laptop sleep | The start of the session after the widest idle gap | single, with `duration_ms` equal to that gap, so the jump holds no events (SIM-P18) |
+| Clock, laptop sleep | The start of the session after the widest idle gap, among sessions that start without a hand-applied diff | single, with `duration_ms` equal to that gap, so the jump holds no events (SIM-P18) |
 | Scheduler, every other type | The start of a session after the first | single; the store-full fault is persistent for that one session (`sessions: 1`) |
 
 ## Counterfactual deletions
@@ -153,15 +163,15 @@ thresholds (`bm25_max` 0.4, `cosine_max` 0.6):
 
 | Tier | Seed | `scenario_hash` | Largest BM25 ratio | Largest cosine |
 |---|---|---|---|---|
-| S | 101 | `0f6f1315` | 0.2125 | 0.5194 |
-| S | 102 | `c934a700` | 0.2628 | 0.4867 |
-| M | 201 | `bf1633ad` | 0.2516 | 0.4992 |
-| M | 202 | `ae03ca00` | 0.2551 | 0.4997 |
-| M | 203 | `b2b7eae6` | 0.2535 | 0.4843 |
-| L | 301 | `23fb44dd` | 0.2558 | 0.5092 |
-| L | 302 | `583c6d6f` | 0.2535 | 0.4957 |
-| L | 303 | `417d577b` | 0.2514 | 0.5083 |
-| XL | 401 | `0d1475ba` | 0.2561 | 0.4962 |
+| S | 101 | `807b8ccb` | 0.2111 | 0.5194 |
+| S | 102 | `911f9849` | 0.256 | 0.4867 |
+| M | 201 | `aa0185f5` | 0.2516 | 0.4992 |
+| M | 202 | `68283323` | 0.2532 | 0.4997 |
+| M | 203 | `47df1b4d` | 0.2508 | 0.4843 |
+| L | 301 | `ea818c97` | 0.2555 | 0.5092 |
+| L | 302 | `4b4d5c13` | 0.2523 | 0.4957 |
+| L | 303 | `329a43b2` | 0.2514 | 0.5083 |
+| XL | 401 | `71ff92a2` | 0.251 | 0.4962 |
 
 ## Known limits
 

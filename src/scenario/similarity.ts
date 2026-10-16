@@ -71,8 +71,13 @@ export function bedrockEmbedder(profile: string, region: string, cachePath: stri
     const cache = new Map<string, number[]>();
     if (existsSync(cachePath)) {
         for (const line of readFileSync(cachePath, "utf8").split("\n").filter(Boolean)) {
-            const { key, vector } = JSON.parse(line);
-            cache.set(key, vector);
+            let entry: { key: string; vector: number[] };
+            try {
+                entry = JSON.parse(line);
+            } catch {
+                throw new Error(`embedding cache ${cachePath} holds a malformed line`);
+            }
+            cache.set(entry.key, entry.vector);
         }
     }
     return {
@@ -94,11 +99,15 @@ export function bedrockEmbedder(profile: string, region: string, cachePath: stri
                         "--body",
                         JSON.stringify(input),
                     ];
-                    const r = Bun.spawnSync([...argv, outFile], { timeout: 60_000 });
-                    if (r.exitCode !== 0) throw new Error(`embed: ${r.stderr.toString()}`);
-                    const response = JSON.parse(readFileSync(outFile, "utf8"));
-                    rmSync(outFile);
-                    vector = (response.embedding as number[]).map((x) => Math.round(x * 1e6) / 1e6);
+                    let response: { embedding: number[] };
+                    try {
+                        const r = Bun.spawnSync([...argv, outFile], { timeout: 60_000 });
+                        if (r.exitCode !== 0) throw new Error(`embed: ${r.stderr.toString()}`);
+                        response = JSON.parse(readFileSync(outFile, "utf8"));
+                    } finally {
+                        rmSync(outFile, { force: true });
+                    }
+                    vector = response.embedding.map((x) => Math.round(x * 1e6) / 1e6);
                     cache.set(key, vector);
                     appendFileSync(cachePath, `${JSON.stringify({ key, vector })}\n`);
                 }

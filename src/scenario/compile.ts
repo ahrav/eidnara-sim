@@ -170,6 +170,9 @@ const range = (lo: number, hi: number) =>
 
 export async function compileScenario(input: CompileInput) {
     const { seed, prereg, dist, bank } = input;
+    if (!Number.isInteger(seed) || seed < 0 || seed > 0xffff_ffff) {
+        throw new Error(`seed ${seed} is outside the unsigned 32-bit range of the random streams`);
+    }
     const s = prereg.scenario;
     const thresholds = s.cue_probe_similarity;
     if (input.embedder.model !== thresholds.embedding_model) {
@@ -184,15 +187,23 @@ export async function compileScenario(input: CompileInput) {
     const sessRng = rngFor("sessions");
     const count = (p: Project) =>
         p.twin_of ? Math.ceil(s.sessions_per_project / 4) : s.sessions_per_project;
+    const bases = input.projects.filter((p) => !p.twin_of);
     const plan = shuffle(
         input.projects.flatMap((p) => Array<Project>(count(p)).fill(p)),
         sessRng,
     );
-    const baseIdx = plan.flatMap((p, i) => (p.twin_of ? [] : [i]));
+    const extra = new Set(
+        shuffle([...bases], sessRng)
+            .slice(0, s.forced_p90_sessions % bases.length)
+            .map((p) => p.id),
+    );
     const forced = new Set(
-        range(0, s.forced_p90_sessions).map(
-            (k) => baseIdx[Math.floor(((k + 0.5) * baseIdx.length) / s.forced_p90_sessions)],
-        ),
+        bases.flatMap((p) => {
+            const own = plan.flatMap((q, i) => (q.id === p.id ? [i] : []));
+            const quota =
+                Math.floor(s.forced_p90_sessions / bases.length) + (extra.has(p.id) ? 1 : 0);
+            return range(0, quota).map((k) => own[Math.floor(((k + 0.5) * own.length) / quota)]);
+        }),
     );
     const [reqTable, idleTable, betweenTable] = [
         table(dist, "requests_per_session"),
@@ -215,21 +226,14 @@ export async function compileScenario(input: CompileInput) {
         };
     });
     const between = sessions.slice(1).map(() => sample(betweenTable, sessRng) * 1000);
-    const inSession = sessions.reduce((sum, x) => sum + lastTurn(x), 0);
+    const inSession = () => sessions.reduce((sum, x) => sum + lastTurn(x), 0);
     const betweenSum = Math.max(
         1,
         between.reduce((a, b) => a + b, 0),
     );
     const span = s.simulated_days * 86_400_000;
-    const withinScale = Math.min(1, (0.8 * span) / Math.max(1, inSession));
+    const withinScale = Math.min(1, (0.8 * span) / Math.max(1, inSession()));
     for (const x of sessions) x.turn_ms = x.turn_ms.map((t) => Math.round(t * withinScale));
-    const gapScale = (span - inSession * withinScale) / betweenSum;
-    let clock = 0;
-    sessions.forEach((x, i) => {
-        if (i > 0) clock += Math.round((between[i - 1] ?? 0) * gapScale);
-        x.start_ms = clock;
-        clock += lastTurn(x);
-    });
 
     const perType = Math.ceil(
         prereg.stopping_rule.paired_items_per_probe_type /
@@ -240,6 +244,17 @@ export async function compileScenario(input: CompileInput) {
         while (x.turn_ms.length < P13_SPAN * Math.ceil(perType / p90.length))
             x.turn_ms.push(lastTurn(x) + 60_000);
     }
+    const gapScale = Math.max(0, span - inSession()) / betweenSum;
+    const gaps = between.map((g) => Math.max(1, Math.round(g * gapScale)));
+    const schedule = () => {
+        let clock = 0;
+        sessions.forEach((x, i) => {
+            if (i > 0) clock += Math.max(gaps[i - 1] ?? 1, x.min_gap_ms);
+            x.start_ms = clock;
+            clock += lastTurn(x);
+        });
+    };
+    schedule();
 
     const turns = new Map<string, Turn>();
     const key = (session: string, index: number) => `${session}#${index}`;
@@ -270,7 +285,6 @@ export async function compileScenario(input: CompileInput) {
         return t;
     };
 
-    const bases = input.projects.filter((p) => !p.twin_of);
     const twinOf = (p: string) => input.projects.find((x) => x.twin_of === p)?.id ?? p;
     const facts: Fact[] = [];
     const probes: ProbeItem[] = [];
@@ -458,7 +472,7 @@ export async function compileScenario(input: CompileInput) {
                 range(turnHi - third, turnHi),
             );
         } else if (f.type === "P4") {
-            const out = slot % 2 === 1;
+            const out = (slot + (f.i % owners.length)) % 2 === 1;
             const c = out ? renderDeep(tpl.out_check ?? tpl.check, vars) : check;
             addProbe("P4", project.id, out ? outText : probeText, c, fromConveyed);
         } else if (f.type === "P6") {
@@ -519,6 +533,13 @@ export async function compileScenario(input: CompileInput) {
     });
     const texts = [...new Set(pairs.flatMap((x) => [x.cue, x.text]))];
     const vectors = await input.embedder.embed(texts);
+    const dims = vectors[0]?.length ?? 0;
+    const wellFormed = (v: number[]) => v.length === dims && v.every(Number.isFinite);
+    if (vectors.length !== texts.length || dims === 0 || !vectors.every(wellFormed)) {
+        throw new Error(
+            `embedder ${input.embedder.model} returned ${vectors.length} vectors for ${texts.length} texts; each must hold the same positive count of finite numbers`,
+        );
+    }
     const vec = new Map(texts.map((t, i) => [t, vectors[i] ?? []]));
     const similarity = pairs.map(({ probe, fact, cue, text }) => ({
         probe,
@@ -541,10 +562,7 @@ export async function compileScenario(input: CompileInput) {
         if (hits) throw new Error(`${where}: delivered text carries markers ${hits}`);
     }
 
-    sessions.forEach((x, i) => {
-        const prev = sessions[i - 1];
-        if (prev) x.start_ms = Math.max(x.start_ms, prev.start_ms + lastTurn(prev) + x.min_gap_ms);
-    });
+    schedule();
     const raw: { at: number; order: number; event: Record<string, unknown> }[] = [];
     for (const session of sessions) {
         const { id, project } = session;
@@ -583,22 +601,37 @@ export async function compileScenario(input: CompileInput) {
         ),
     );
     for (const p of probes) if (p.text) p.event = probeEvent.get(p.id);
+    const firstCue = new Map<unknown, number>();
     const lastCue = new Map<unknown, number>();
     events.forEach((e, i) => {
-        if (e.fact && e.role !== "probe") lastCue.set(e.fact, i);
+        if (!e.fact || e.role === "probe") return;
+        if (!firstCue.has(e.fact)) firstCue.set(e.fact, i);
+        lastCue.set(e.fact, i);
     });
     events.forEach((e, i) => {
         if (e.role === "probe" && e.fact && i < (lastCue.get(e.fact) ?? 0)) {
             throw new Error(`${e.id}: probe precedes a conveyance of ${e.fact}`);
         }
     });
+    const order = new Map(events.map((e, i) => [e.id, i]));
+    for (const p of probes) {
+        const control = order.get(p.event ?? "") ?? Number.POSITIVE_INFINITY;
+        if (p.type === "P1-control" && control > (firstCue.get(p.fact) ?? -1)) {
+            throw new Error(`${p.id}: P1 control follows a conveyance of ${p.fact}`);
+        }
+    }
 
     const summary = sessions.map(({ turn_ms, ...x }, i) => {
         const prev = sessions[i - 1];
         const gap_before_ms = prev ? x.start_ms - prev.start_ms - lastTurn(prev) : 0;
         return { ...x, requests: turn_ms.length, gap_before_ms };
     });
-    const faults = scheduleFaults(prereg.tier, summary, rngFor("faults"));
+    const diffSessions = new Set(diffs.map((d) => d.session));
+    const faults = scheduleFaults(
+        prereg.tier,
+        summary.map((x) => ({ ...x, has_diff: diffSessions.has(x.id) })),
+        rngFor("faults"),
+    );
     const turnCounts = new Map(summary.map((x) => [x.id, x.requests]));
     for (const f of faults) validateFault(f, turnCounts);
     const eligible = probes.filter((p) => ["P1", "P3", "P5"].includes(p.type));

@@ -14,9 +14,6 @@ v2 harness before any harness code existed.
 Every call record has `scenario_ms` equal to the clock at receipt and a
 `wall_ms`, and `wall_ms` is non-decreasing in sequence order.
 
-No harness code, test, or run exists yet. The surface lands in M3
-(#1027).
-
 M3 (#1027) stamps every call record with `scenario_ms` from the scheduler's
 clock handle at receipt and with `wall_ms` at write time, clamped so it never
 decreases in `seq` order. Tests in `src/proxy/gateway.test.ts` check both on
