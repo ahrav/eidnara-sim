@@ -18,7 +18,8 @@ the calling process's own lease at the end of a run.
 ## Journal
 
 `Journal` appends one JSON line per entry with `seq` (0, 1, 2, ... in append
-order), `kind`, `arm`, `scenario_ms`, and `wall_ms`. On open, it truncates the
+order), `kind`, `arm`, `scenario_ms`, and `wall_ms`; a line is written whole
+before the entry counts as appended. On open, it truncates the
 file to its complete prefix, dropping only a last line that a kill cut
 mid-write before its newline, and refuses a journal whose newline-terminated
 line does not parse. `append`
@@ -28,7 +29,7 @@ entries of different arms are not ordered by scenario time.
 
 | Kind | Written when |
 |---|---|
-| `StartRun`, `ResumeRun`, `EndRun` | The run starts (with the arm order), a restarted harness takes it up (with the same order), and it ends |
+| `StartRun`, `ResumeRun`, `EndRun` | The run starts (with the arm order and a hash of the events and faults), a restarted harness takes it up (with the same), and it ends |
 | `StartArm`, `EndArm` | An arm starts, after its driver's reset, and finishes |
 | `AdvanceClock` | The clock jumps; carries `from_ms`, an empty `busy` list, and the next event id or the laptop-sleep fault |
 | `BeginTurn` | A user turn is delivered |
@@ -41,10 +42,11 @@ entries of different arms are not ordered by scenario time.
 ## Clock
 
 `Clock` keeps scenario time and a busy set of turns and background jobs.
-While anything is busy, scenario time runs at wall speed; while nothing is
-busy, it holds. Scenario time only ratchets forward: a wall clock that steps
-backward while busy holds scenario time at the highest value already read
-until the wall clock passes it again. `advanceTo` jumps forward to a target time and
+While anything is busy, scenario time runs at wall speed, measured on the
+monotonic clock (`performance.now()`), so a system clock step never reaches
+scenario time; while nothing is busy, it holds. Scenario time only ratchets
+forward: an injected wall source that steps backward while busy holds scenario
+time at the highest value already read until the source passes it again. `advanceTo` jumps forward to a target time and
 refuses while anything is busy. Each arm's clock starts at 0, or, on resume, at the arm's
 last journaled `scenario_ms`.
 
@@ -59,7 +61,9 @@ outage window and the current session:
 
 1. Wait one settle interval after each answered turn (`settleMs`, 1 s by
    default), so a background job the host starts after its answer registers
-   before the clock moves, then wait until the busy set is empty.
+   before the clock moves; then wait for any pending mid-fold kill, and last
+   until the busy set is empty, so a job that registers during the kill is
+   seen before the jump.
 2. Close any outage window from the previous event.
 3. Jump to the event's scheduled time if it is later than now. When the event
    opens a session with a laptop sleep, that jump carries the fault id and the
@@ -83,15 +87,16 @@ is journaled as expected; outside one, it throws `HarnessFailure`.
 ## Resume
 
 A restarted harness opens the same journal. A journal with `EndRun` is
-complete and the run returns at once. Otherwise the harness refuses an arm
-order different from the one `StartRun` recorded, journals `ResumeRun`, and,
-for each arm without `EndArm`:
+complete and the run returns at once. Otherwise the harness checks that every
+unfinished arm has a driver, refuses an arm order or scenario hash different
+from the ones `StartRun` recorded, journals `ResumeRun`, and, for each arm
+without `EndArm`:
 
 - journals `Event` for a turn with `EndTurn` but no `Event`, so the answered
   turn is never delivered again;
 - journals `ItemState failed(interrupted)` and `Event` for a `BeginTurn`
-  with no `EndTurn`, and `EndJob failed(interrupted)` for a `RegisterJob` with
-  no `EndJob`;
+  with no `EndTurn`, and `EndJob failed(interrupted)` for each `RegisterJob`
+  beyond its id's `EndJob` count;
 - marks every fired fault as fired, arms again a persistent provider fault
   whose session has not ended and a one-shot provider fault whose turn has not
   begun, and journals `ItemState failed(interrupted)` for a scheduler fault

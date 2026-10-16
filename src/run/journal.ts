@@ -159,7 +159,12 @@ export class Journal {
             throw new Error(`journal: scenario_ms ${entry.scenario_ms} precedes ${last}`);
         }
         const full = { ...entry, seq: this.entries.length, wall_ms: Date.now() } as Entry;
-        writeSync(this.fd, `${JSON.stringify(full)}\n`);
+        const line = Buffer.from(`${JSON.stringify(full)}\n`);
+        for (let written = 0; written < line.length; ) {
+            const n = writeSync(this.fd, line, written);
+            if (n <= 0) throw new Error(`journal: short write at seq ${full.seq}`);
+            written += n;
+        }
         this.entries.push(full);
         this.last.set(entry.arm, entry.scenario_ms);
         return full;

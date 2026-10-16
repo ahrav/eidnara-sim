@@ -11,7 +11,7 @@ export class Clock {
     constructor(
         private scenario: number,
         private readonly journal: Journal,
-        private readonly wall: () => number = Date.now,
+        private readonly wall: () => number = () => Math.round(performance.now()),
     ) {}
 
     now(): number {
