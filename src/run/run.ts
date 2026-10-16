@@ -35,7 +35,7 @@ import { running } from "./procs";
 import { ResourceSampler } from "./sampler";
 import { type ArmDriver, HarnessFailure, type ScenarioEvent, Scheduler } from "./scheduler";
 import { FAKETIME_LIB, writeOffset } from "./timeinject";
-import { TOOLCHAIN_PROBES } from "./toolchain";
+import { SYSTEM_PATH, TOOLCHAIN_PROBES } from "./toolchain";
 
 export interface RunOptions {
     config: SimConfig;
@@ -223,8 +223,12 @@ export function requireOutsideIdentity(out: string, root = ROOT): void {
  */
 export function requireJournalShape(
     entries: readonly Entry[],
-    scheduled?: readonly { id: string; kind: string }[],
+    scheduled?: readonly { id: string; kind: string; scenario_ms?: number }[],
+    order?: readonly string[],
 ): void {
+    const scheduledMs = new Map((scheduled ?? []).map((e) => [e.id, e.scenario_ms]));
+    let nextArm = 0;
+    let ended = false;
     const turns = new Set((scheduled ?? []).filter((e) => e.kind === "user_turn").map((e) => e.id));
     const closedTurns = new Set<string>();
     const position = new Map((scheduled ?? []).map((e, i) => [e.id, i]));
@@ -238,6 +242,7 @@ export function requireJournalShape(
         if (!Number.isFinite(e.scenario_ms))
             throw bad(e, `has scenario_ms ${JSON.stringify(e.scenario_ms)}`);
         if (!Number.isInteger(e.seq)) throw bad(e, `has seq ${JSON.stringify(e.seq)}`);
+        if (ended) throw bad(e, "follows EndRun");
         if (e.kind === "Preflight") continue;
         if (e.kind === "StartRun") {
             if (started) throw bad(e, "repeats StartRun");
@@ -252,12 +257,20 @@ export function requireJournalShape(
         if (e.kind === "EndRun") {
             const unfinished = [...arms].find(([, st]) => st !== "ended");
             if (unfinished) throw bad(e, `is an EndRun with arm ${unfinished[0]} unfinished`);
+            ended = true;
             continue;
         }
         if (e.arm === null) throw bad(e, "names no arm");
         const state = arms.get(e.arm);
         if (e.kind === "StartArm") {
             if (state) throw bad(e, "repeats StartArm");
+            if (order && order[nextArm] !== e.arm) {
+                throw bad(
+                    e,
+                    `starts arm ${e.arm}; the order expects ${order[nextArm] ?? "no arm"}`,
+                );
+            }
+            nextArm++;
             arms.set(e.arm, "open");
             continue;
         }
@@ -273,8 +286,15 @@ export function requireJournalShape(
             }
             arms.set(e.arm, "ended");
         }
-        if (e.kind === "BeginTurn") open.add(`${e.arm}/turn/${String(e.event)}`);
-        if (e.kind === "RegisterJob") open.add(`${e.arm}/job/${String(e.job)}`);
+        if (e.kind === "BeginTurn" || e.kind === "RegisterJob") {
+            const item =
+                e.kind === "BeginTurn" ? `turn/${String(e.event)}` : `job/${String(e.job)}`;
+            if (open.has(`${e.arm}/${item}`)) throw bad(e, `opens ${item}, which is already open`);
+            if (e.kind === "BeginTurn" && closedTurns.has(`${e.arm}/${String(e.event)}`)) {
+                throw bad(e, `reopens turn ${String(e.event)}`);
+            }
+            open.add(`${e.arm}/${item}`);
+        }
         if (e.kind === "EndTurn" || e.kind === "EndJob") {
             const item = e.kind === "EndTurn" ? `turn/${String(e.event)}` : `job/${String(e.job)}`;
             if (!open.delete(`${e.arm}/${item}`)) throw bad(e, `closes ${item}, which is not open`);
@@ -295,6 +315,10 @@ export function requireJournalShape(
             if (turns.has(id) && !closedTurns.has(`${e.arm}/${id}`)) {
                 throw bad(e, `completes turn ${id} without an EndTurn or interruption`);
             }
+            const due = scheduledMs.get(id);
+            if (due !== undefined && (e.scenario_ms as number) < due) {
+                throw bad(e, `records ${id} at ${e.scenario_ms}, before its scheduled ${due}`);
+            }
             cursor.set(e.arm, at + 1);
         }
     }
@@ -308,7 +332,14 @@ export function manifestIdentity(manifest: Manifest): string {
 
 /** A run with no journal yet owns no evidence or arm payload; any such existing file is refused. */
 export function requireFreshArmRoots(out: string, arms: readonly string[]): void {
-    const evidence = ["calls.jsonl", "faults.jsonl", "preflight.jsonl"];
+    const evidence = [
+        "calls.jsonl",
+        "faults.jsonl",
+        "preflight.jsonl",
+        "toolbin",
+        "interception",
+        "hostbin",
+    ];
     const perArm = [
         "r",
         "s",
@@ -346,8 +377,11 @@ function readJsonFile<T>(path: string): T {
     }
 }
 
+/** The Git executable, resolved once from PATH and bound into the manifest's `binaries`. */
+const GIT = realpathSync(Bun.which("git") ?? "git");
+
 function git(dir: string, args: string[]): string {
-    const r = Bun.spawnSync(["git", "-C", dir, ...args], { stdout: "pipe", stderr: "pipe" });
+    const r = Bun.spawnSync([GIT, "-C", dir, ...args], { stdout: "pipe", stderr: "pipe" });
     if (r.exitCode !== 0) throw new Error(`git ${args.join(" ")} in ${dir} failed`);
     return r.stdout.toString();
 }
@@ -706,7 +740,8 @@ function toolchainIdentity(config: SimConfig): {
     const names = [...new Set([...probed, ...config.toolchain.wall_clock_tools])];
     const tools: Record<string, string> = {};
     for (const tool of names) {
-        const path = config.toolchain.bin.map((dir) => join(dir, tool)).find((p) => existsSync(p));
+        const dirs = [...config.toolchain.bin, ...SYSTEM_PATH.split(":")];
+        const path = dirs.map((dir) => join(dir, tool)).find((p) => existsSync(p));
         tools[tool] = path
             ? createHash("sha256")
                   .update(readFileSync(realpathSync(path)))
@@ -747,6 +782,7 @@ function binaryDigests(config: SimConfig): Record<string, string> {
         pi_install: config.pi_install,
         faketime: FAKETIME_LIB,
         node: realpathSync(Bun.which("node") ?? "node"),
+        git: GIT,
         opencode_sdk: join(config.eidnara_checkout, OPENCODE_SDK),
         opencode_sdk_lock: join(config.eidnara_checkout, "packages/e2e-tests/bun.lock"),
     };
@@ -1014,7 +1050,17 @@ async function runArms(
     }, wallBudgetMs);
     budget.unref();
     cleanup.push(() => clearTimeout(budget));
-    const journal = new Journal(join(o.out, "journal.jsonl"));
+    const journalPath = join(o.out, "journal.jsonl");
+    const fresh = !existsSync(journalPath) || readFileSync(journalPath, "utf8").trim() === "";
+    if (fresh) {
+        if (existsSync(journalPath) && readFileSync(journalPath).length > 0) {
+            throw new HarnessFailure(
+                `${journalPath} holds no complete entry; refusing to truncate it`,
+            );
+        }
+        requireFreshArmRoots(o.out, loadPrereg(o.tier).arms.run);
+    }
+    const journal = new Journal(journalPath);
     cleanup.push(() => journal.close());
     cleanup.push(() => {
         for (const [timer, end] of holds) {
@@ -1027,15 +1073,17 @@ async function runArms(
         throw new HarnessFailure(`${o.out} holds a completed run; its journal ends with EndRun`);
     }
     requireJournalShape(journal.entries);
-    if (journal.entries.length === 0) requireFreshArmRoots(o.out, loadPrereg(o.tier).arms.run);
-    rmSync(join(o.out, "toolbin"), { recursive: true, force: true });
+    if (!fresh) rmSync(join(o.out, "toolbin"), { recursive: true, force: true });
     const compiled = await tracked(() => loadScenario(o));
     const { manifest, checks } = await tracked(() => loadManifest(o, compiled));
     requireJournalShape(
         journal.entries,
-        compiled.events
-            .slice(0, manifest.events)
-            .map((e) => ({ id: String(e.id), kind: String(e.kind) })),
+        compiled.events.slice(0, manifest.events).map((e) => ({
+            id: String(e.id),
+            kind: String(e.kind),
+            scenario_ms: Number(e.scenario_ms),
+        })),
+        manifest.order,
     );
     const bound = journal.entries.find((e) => e.kind === "Preflight")?.manifest_sha256;
     const manifestDigest = manifestIdentity(manifest);
@@ -1096,7 +1144,8 @@ async function runArms(
             const sampler = samplers.get(arm);
             if (sampler) holdForCpu(sampler, arm);
         },
-        verify: (point) => {
+        verify: async (point) => {
+            if (point === "EndRun") await gateway.stop();
             handlersFailed();
             if (samplerFailure !== null) throw samplerFailure;
             if (point === "EndRun") writeWitnesses();

@@ -248,10 +248,24 @@ function summarize(dir: string) {
         ),
         bindings: {
             scenario_hash: sha256Hex(canonicalJson(scenarioBody)) === scenario.scenario_hash,
+            manifest_scenario:
+                (manifest as { scenario_hash?: string }).scenario_hash === scenario.scenario_hash,
             manifest_bound:
                 journal.find((e) => e.kind === "Preflight")?.manifest_sha256 ===
                 manifestIdentity(manifest as never),
         },
+        options: {
+            tier: (manifest as { tier?: string }).tier,
+            seed: (manifest as { seed?: number }).seed,
+            order: manifest.order,
+            events: manifestEvents,
+            context_limit: (manifest as { context_limit?: number }).context_limit,
+            models: (manifest as { models?: string[] }).models,
+            fault_override: (manifest as { fault_override?: unknown }).fault_override,
+        },
+        rogue_exit: journal.filter(
+            (e) => e.kind === "ItemState" && e.daemon_exit !== undefined && e.expected === false,
+        ).length,
         end_arms: Object.fromEntries(
             (manifest.order ?? []).map((arm) => [arm, perArm(arm, "EndArm").length]),
         ),
@@ -299,6 +313,9 @@ function summarize(dir: string) {
                 arm,
                 {
                     fired: perArm(arm, "FaultFired").map((e) => e.fault),
+                    fired_at: Object.fromEntries(
+                        perArm(arm, "FaultFired").map((e) => [String(e.fault), e.scenario_ms]),
+                    ),
                     fired_before: Object.fromEntries(
                         perArm(arm, "FaultFired").map((e) => {
                             const at = journal.indexOf(e);
@@ -402,6 +419,7 @@ for (const name of ["scheduled", "rogue"]) {
 }
 type ArmSummary = {
     fired: unknown[];
+    fired_at: Record<string, unknown>;
     fired_before: Record<string, unknown>;
     observed: { fault: unknown; evidence: unknown }[];
     turns: unknown[];
@@ -467,9 +485,10 @@ const armEvidence = (
         for (const f of expected.filter((x) => x.trigger.kind === "session_start")) {
             const count = a.fired.filter((id) => id === f.id).length;
             const boundary = s.session_starts[f.trigger.session];
+            const at = s.session_start_ms[f.trigger.session];
             check(
-                count === 1 && a.fired_before[f.id] === boundary,
-                `${name}/${arm}: ${f.id} fired once, right before ${boundary ?? "its session start"}`,
+                count === 1 && a.fired_before[f.id] === boundary && a.fired_at[f.id] === at,
+                `${name}/${arm}: ${f.id} fired once, at ${at}, right before ${boundary ?? "its session start"}`,
             );
         }
         check(
@@ -548,6 +567,36 @@ const mechanismEvidence = (name: string, arm: string, a: ArmSummary, expected: F
     }
 };
 const deterministic = FAULTS.filter((f) => f.trigger.kind !== "first_summarizer_call");
+/** The manifest each case must carry, from the arguments `launch` passes to run-tier. */
+const PRESCRIBED = {
+    scheduled: {
+        tier: "S",
+        seed: 101,
+        order: ["host", "eidnara"],
+        events: 23,
+        context_limit: 24000,
+        models: models.split(","),
+        fault_override: FAULT_SETS.scheduled,
+    },
+    rogue: {
+        tier: "S",
+        seed: 101,
+        order: ["eidnara"],
+        events: 6,
+        context_limit: 24000,
+        models: [config.agent_model],
+        fault_override: FAULT_SETS.rogue,
+    },
+    resume: {
+        tier: "S",
+        seed: 101,
+        order: ["eidnara"],
+        events: 13,
+        context_limit: 24000,
+        models: models.split(","),
+        fault_override: FAULT_SETS.resume,
+    },
+} as const;
 for (const name of ["scheduled", "rogue", "resume"] as const) {
     check(summary[name] !== null, `${name}: run directory present (every case is required)`);
     check(
@@ -556,9 +605,16 @@ for (const name of ["scheduled", "rogue", "resume"] as const) {
     );
     const b = summary[name]?.bindings;
     check(b?.scenario_hash === true, `${name}: scenario.json still hashes to its scenario_hash`);
+    check(b?.manifest_scenario === true, `${name}: manifest.json names this scenario's hash`);
     check(
         b?.manifest_bound === true,
         `${name}: manifest.json matches the digest its journal bound`,
+    );
+    const want = PRESCRIBED[name];
+    const got = summary[name]?.options;
+    check(
+        JSON.stringify(got) === JSON.stringify(want),
+        `${name}: manifest options are the witness's prescribed ones (${JSON.stringify(want)})`,
     );
 }
 for (const name of ["scheduled", "rogue", "resume"] as const) {
@@ -588,6 +644,10 @@ if (summary.scheduled) {
 if (summary.rogue) {
     const rogueArm = summary.rogue.arms.eidnara as ArmSummary | undefined;
     check(rogueArm?.duplicate_events === 0, "rogue/eidnara: no duplicate Event entry");
+    check(
+        summary.rogue.rogue_exit === 1,
+        "rogue/eidnara: the journal records exactly one unexpected daemon exit (ItemState daemon_exit, expected false)",
+    );
 }
 if (run("rogue")) {
     const rogue = outcome.rogue as { code: number; stderr: string };

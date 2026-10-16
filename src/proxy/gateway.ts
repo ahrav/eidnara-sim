@@ -338,7 +338,9 @@ export class Gateway {
     }
 
     /** `drainMs` bounds the wait for the aborted in-flight handlers to write their records. */
+    /** Idempotent: a second call after the gateway closed returns at once. */
     async stop(): Promise<void> {
+        if (this.closed) return;
         const closed = Promise.all(
             this.servers.map((s) => new Promise<void>((done) => s.close(() => done()))),
         );

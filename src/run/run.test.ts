@@ -384,6 +384,24 @@ describe("run inputs", () => {
         expect(() =>
             requireJournalShape([
                 ...start,
+                e("EndArm", "a"),
+                e("EndRun", null),
+                e("ResumeRun", null),
+            ]),
+        ).toThrow(/follows EndRun/);
+        expect(() =>
+            requireJournalShape([
+                ...start,
+                e("BeginTurn", "a", { event: "t" }),
+                e("BeginTurn", "a", { event: "t" }),
+            ]),
+        ).toThrow(/opens turn\/t, which is already open/);
+        expect(() =>
+            requireJournalShape([e("StartRun", null), e("StartArm", "b")], undefined, ["a", "b"]),
+        ).toThrow(/starts arm b; the order expects a/);
+        expect(() =>
+            requireJournalShape([
+                ...start,
                 { ...e("Event", "a", { event: "x" }), scenario_ms: "10" as never },
             ]),
         ).toThrow(/has scenario_ms "10"/);
@@ -411,6 +429,10 @@ describe("run inputs", () => {
         expect(() =>
             requireJournalShape([...start, ev("e-1"), ...turn, ev("e-2")], ids),
         ).not.toThrow();
+        const late = [{ id: "e-1", kind: "session_start", scenario_ms: 500 }];
+        expect(() => requireJournalShape([...start, ev("e-1")], late)).toThrow(
+            /records e-1 at 0, before its scheduled 500/,
+        );
         expect(() => requireJournalShape([...start, ev("e-1"), ev("e-2")], ids)).toThrow(
             /completes turn e-2 without an EndTurn or interruption/,
         );
@@ -740,6 +762,7 @@ describe("run inputs", () => {
         expect(Object.keys(manifest.binaries).sort()).toEqual([
             "daemon",
             "faketime",
+            "git",
             "node",
             "opencode",
             "opencode_sdk",
