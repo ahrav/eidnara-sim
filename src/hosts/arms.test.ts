@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
 import {
     existsSync,
     lstatSync,
@@ -15,7 +16,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { loadConfig } from "../config/config";
-import { running } from "../run/procs";
+import { processStart, running } from "../run/procs";
 import {
     DaemonStack,
     type HostContext,
@@ -87,6 +88,14 @@ export class PiRpcProcess {
         `export async function spawnOpencode(opts: any) {
     globalThis.__simSpawnOpts = opts;
     const child = Bun.spawn(["/bin/sh", "-c", "sleep 300; exit 0", "sh", "serve", "${PORT}"]);
+    // The runner answers once the server is observable, as the real one does after readiness.
+    const { readFileSync } = await import("node:fs");
+    for (let i = 0; i < 200; i++) {
+        try {
+            if (readFileSync("/proc/" + child.pid + "/cmdline", "utf8").includes("serve")) break;
+        } catch {}
+        await Bun.sleep(5);
+    }
     return { url: "http://127.0.0.1:${PORT}", port: ${PORT}, kill: async () => child.kill() };
 }
 `,
@@ -305,14 +314,30 @@ test("the daemon's harness runtime lives beside the arm, outside what the host c
     expect(stack.runtimeDir).toBe(join(run, "arm", "runtime"));
 });
 
+test("the OpenCode wrapper stops before the launcher when the harness that spawned it is gone", async () => {
+    const run = runDir();
+    const ctx = { ...context(run), host: "opencode" as const };
+    const host = new OpencodeSimHost(ctx);
+    const gone = spawnSync("true").pid as number;
+    const path = (host as Untyped).writeWrapper(["/bin/sh", "-c", "touch ran"], {
+        pid: gone,
+        start: "1",
+    }) as string;
+    const r = Bun.spawnSync([path], { cwd: run, stdout: "pipe", stderr: "pipe" });
+    expect(r.exitCode).toBe(70);
+    expect(existsSync(join(run, "ran"))).toBe(false);
+    expect(existsSync(join(dirname(ctx.root), "opencode.launch"))).toBe(true);
+});
+
 test("the OpenCode wrapper lives outside every path the sandbox keeps writable", async () => {
     const ctx = { ...context(runDir()), host: "opencode" as const };
     const host = new OpencodeSimHost(ctx);
     const path = (host as Untyped).writeWrapper(["/x/sandbox.sh", "--", "/x/opencode"]) as string;
     for (const kept of ctx.keep) expect(path.startsWith(`${kept}/`)).toBe(false);
     const record = join(dirname(ctx.root), "opencode.launch");
+    const harness = `${process.pid} ${processStart(process.pid)}`;
     expect(await Bun.file(path).text()).toBe(
-        `#!/bin/sh\nr='${record}'\nprintf '%s %s\\n' "$$" "$(awk '{print $22}' /proc/$$/stat)" > "$r.$$" || exit 70\nmv -f "$r.$$" "$r" || exit 70\nexec '/x/sandbox.sh' '--' '/x/opencode' "$@"\n`,
+        `#!/bin/sh\nr='${record}'\nprintf '%s %s\\n' "$$" "$(awk '{print $22}' /proc/$$/stat)" > "$r.$$" || exit 70\nmv -f "$r.$$" "$r" || exit 70\n[ "${process.pid} $(awk '{print $22}' /proc/${process.pid}/stat 2>/dev/null)" = '${harness}' ] || exit 70\nexec '/x/sandbox.sh' '--' '/x/opencode' "$@"\n`,
     );
 });
 
@@ -1304,4 +1329,45 @@ test("a control tree whose base is a symlink is refused before anything is creat
     const host = new PiSimHost(ctx);
     expect(() => (host as Untyped).writeConfigs(null)).toThrow(/symlink/);
     expect(readdirSync(elsewhere)).toEqual([]);
+});
+
+test("a daemon root reached through a symlink is refused before anything beneath it is removed", async () => {
+    const run = runDir();
+    const checkout = fakeDaemonV1(run);
+    const elsewhere = join(run, "elsewhere");
+    mkdirSync(join(elsewhere, "runtime"), { recursive: true });
+    writeFileSync(join(elsewhere, "runtime/keep.txt"), "theirs\n");
+    symlinkSync(elsewhere, join(run, "arm-link"));
+    const stack = new DaemonStack({
+        config: { ...loadConfig(), eidnara_checkout: checkout },
+        root: join(run, "arm-link"),
+        dataDir: join(run, "store"),
+        logFile: join(run, "daemon.log"),
+        offsetFile: join(run, "offset"),
+        proxyHttp1: "",
+        proxyHttp2: "",
+        model: "m",
+    });
+    await expect(stack.start()).rejects.toThrow(/symlink/);
+    expect(readFileSync(join(elsewhere, "runtime/keep.txt"), "utf8")).toBe("theirs\n");
+});
+
+test("an OpenCode close whose launcher is confirmed gone clears its handles despite a stale kill failure", async () => {
+    const host = new OpencodeSimHost({ ...context(runDir()), host: "opencode" });
+    const oc = {
+        port: 1,
+        kill: async () => {
+            throw new Error("opencode serve did not exit after SIGKILL");
+        },
+    };
+    (host as Untyped).oc = oc;
+    (host as Untyped).launched = { pid: 4242, start: "1" };
+    (host as Untyped).stopTree = async () => true;
+    await host.closeSession();
+    expect((host as Untyped).oc).toBeNull();
+    (host as Untyped).oc = oc;
+    (host as Untyped).launched = { pid: 4242, start: null };
+    delete (host as Untyped).stopTree;
+    await expect(host.closeSession()).rejects.toThrow(/did not exit after SIGKILL/);
+    expect((host as Untyped).oc).toBe(oc);
 });

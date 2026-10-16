@@ -19,7 +19,8 @@ export interface ArmDriver {
      * Restores a started arm in a new harness process. `open` is the `session_start` of the
      * session the next event belongs to, or null between sessions.
      */
-    resume?(open: ScenarioEvent | null): Promise<void>;
+    /** `interrupted` names the faults the journal fired and never observed before the kill. */
+    resume?(open: ScenarioEvent | null, interrupted?: readonly string[]): Promise<void>;
     /** Stops what a killed harness left running, before any fault is armed again. */
     reap?(): Promise<void>;
     /** Whether the driver has a mechanism for the fault; a run refuses an unsupported one before it starts. */
@@ -73,6 +74,8 @@ export class Scheduler {
     private arm: string | null = null;
     private session: string | null = null;
     private outage: string | null = null;
+    /** Faults the journal fired and never observed on the arm being resumed. */
+    private interrupted: string[] = [];
     private readonly fired = new Set<string>();
     private readonly jobStarted = new Map<string, number>();
     private pendingKill: Promise<unknown> | null = null;
@@ -131,13 +134,17 @@ export class Scheduler {
             const start = mine.at(-1)?.scenario_ms ?? 0;
             const onClock = (ms: number) => this.o.onClock?.(arm, ms);
             this.clock = new Clock(start, this.o.journal, undefined, onClock);
-            onClock(start);
             const driver = this.o.drivers[arm] as ArmDriver;
             const started = mine.some((e) => e.kind === "StartArm");
+            // A fresh arm's processes start under the published clock; on a resume, the killed
+            // harness's processes read the shared clock too, so they are gone before the restored
+            // time reaches it.
             await this.orFinish(driver, async () => {
                 if (started) {
                     await driver.reap?.();
+                    onClock(start);
                 } else {
+                    onClock(start);
                     await driver.reset();
                     this.log({ kind: "StartArm" });
                 }
@@ -177,7 +184,7 @@ export class Scheduler {
     ): Promise<void> {
         await this.orFinish(driver, async () => {
             if (started && pending.length > 0) {
-                await driver.resume?.(this.openSession(pending[0], done));
+                await driver.resume?.(this.openSession(pending[0], done), this.interrupted);
             }
             for (const e of pending) await this.step(driver, e);
             await this.pendingKill;
@@ -197,7 +204,11 @@ export class Scheduler {
             return await work();
         } catch (caught) {
             await this.pendingKill?.catch(() => undefined);
+            // A job the finish itself starts ends before the failure surfaces; one the failed
+            // work left open is the resume's to close, as it would be after a kill.
+            const open = new Set(this.clock?.busyIds() ?? []);
             await driver.finish?.().catch(() => undefined);
+            await this.idle((id) => !open.has(id));
             throw caught;
         }
     }
@@ -230,13 +241,17 @@ export class Scheduler {
             if (n > 0) this.log({ kind: "EndJob", job, outcome: "failed(interrupted)" });
         }
         const observed = new Set(kinds("FaultObserved").map((e) => e.fault));
+        this.interrupted = [];
         for (const fired of kinds("FaultFired")) {
             const f = this.o.faults.find((x) => x.id === fired.fault);
             this.fired.add(`${this.arm}/${fired.fault}`);
             if (!f) continue;
             if (f.seam.layer !== PROXY_LAYER) {
-                if (!observed.has(f.id) && !marked.has(f.id) && f.type !== "laptop_sleep") {
-                    this.log({ kind: "ItemState", fault: f.id, state: "failed(interrupted)" });
+                if (!observed.has(f.id) && f.type !== "laptop_sleep") {
+                    this.interrupted.push(f.id);
+                    if (!marked.has(f.id)) {
+                        this.log({ kind: "ItemState", fault: f.id, state: "failed(interrupted)" });
+                    }
                 }
                 continue;
             }
@@ -267,17 +282,20 @@ export class Scheduler {
 
     /**
      * Each live job may hold the clock for `idleLimitMs` of wall time from its own `RegisterJob`,
-     * measured on the monotonic clock so a wall-clock step does not move the deadline.
+     * measured on the monotonic clock so a wall-clock step does not move the deadline. `counts`
+     * selects which busy ids are waited for; a failure path leaves the ids it inherited open.
      */
-    private async idle(): Promise<void> {
+    private async idle(counts: (id: string) => boolean = () => true): Promise<void> {
         const limitMs = this.o.idleLimitMs ?? Number.POSITIVE_INFINITY;
         const entered = performance.now();
-        while ((this.clock?.busyIds().length ?? 0) > 0) {
+        while ((this.clock?.busyIds() ?? []).some(counts)) {
             this.checkStop();
-            const live = [...this.jobStarted.values()];
+            const live = [...this.jobStarted.entries()]
+                .filter(([id]) => counts(id))
+                .map(([, at]) => at);
             const oldest = live.length > 0 ? Math.min(...live) : entered;
             if (performance.now() > oldest + limitMs) {
-                const busy = this.clock?.busyIds().join(", ");
+                const busy = this.clock?.busyIds().filter(counts).join(", ");
                 throw new HarnessFailure(
                     `busy set held the clock past ${this.o.idleLimitMs} ms: ${busy}`,
                 );

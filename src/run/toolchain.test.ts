@@ -18,6 +18,7 @@ import {
     sandboxPath,
     TOOLCHAIN_PROBES,
     toolchainEnv,
+    toolchainProbe,
     versionLine,
     writeToolWrappers,
 } from "./toolchain";
@@ -161,4 +162,74 @@ test("tool homes and caches must be read-only keeps or private to the sandbox", 
     ).toThrow(
         `toolchain.env.RUSTUP_HOME ${shared} is neither kept read-only nor private to the sandbox`,
     );
+});
+
+test("the probe runs the configured compiler, whatever RUSTC the harness inherited", async () => {
+    const dir = root();
+    const bin = join(dir, "bin");
+    const ambient = join(dir, "ambient");
+    const launcherDir = join(dir, "launcher");
+    const clock = join(dir, "clock");
+    for (const d of [bin, ambient, launcherDir, clock]) mkdirSync(d);
+    const stub = (path: string, line: string) =>
+        writeFileSync(path, `#!/bin/sh\necho '${line}'\n`, { mode: 0o755 });
+    stub(join(bin, "cargo"), "cargo 1.0.0");
+    stub(join(bin, "rustc"), "rustc 1.0.0");
+    stub(join(bin, "rustdoc"), "rustdoc 1.0.0");
+    stub(join(bin, "bun"), "1.0.0");
+    stub(join(ambient, "rustc"), "rustc 9.9.9-ambient");
+    // Stands in for the sandbox launcher: applies the --env pairs and runs the command.
+    const launcher = join(launcherDir, "sandbox.sh");
+    writeFileSync(
+        launcher,
+        '#!/bin/sh\nwhile [ "$1" != "--env" ]; do shift; done\nshift\n' +
+            'envs=""\nwhile [ "$1" != "--" ]; do envs="$envs $1"; shift; done\nshift\n' +
+            'exec env $envs "$@"\n',
+        { mode: 0o755 },
+    );
+    const offset = join(clock, "offset");
+    writeFileSync(offset, "+0\n");
+    const base = loadConfig();
+    const config = {
+        ...base,
+        toolchain: { ...base.toolchain, bin: [bin], keep: [bin], wall_clock_tools: [] },
+    };
+    const before = process.env.RUSTC;
+    process.env.RUSTC = join(ambient, "rustc");
+    try {
+        const results = await toolchainProbe(config, launcher, offset);
+        expect(results.find((r) => r.tool === "rustc")?.version).toBe("rustc 1.0.0");
+    } finally {
+        if (before === undefined) delete process.env.RUSTC;
+        else process.env.RUSTC = before;
+    }
+});
+
+test("a tool home is accepted only where its configured path and its target share one safe root", () => {
+    const dir = root();
+    const base = loadConfig();
+    const kept = join(dir, "kept");
+    mkdirSync(join(kept, "cargo"), { recursive: true });
+    const shared = realpathSync(mkdtempSync("/var/tmp/sim-shared-"));
+    dirs.push(shared);
+    // A link in shared writable space that points into a keep path is still a shared control point.
+    symlinkSync(join(kept, "cargo"), join(shared, "cargo"));
+    const config = (env: Record<string, string>) => ({
+        ...base,
+        toolchain: { ...base.toolchain, keep: [kept], env },
+    });
+    expect(() =>
+        checkToolchainHomes(
+            config({ CARGO_HOME: join(shared, "cargo"), RUSTUP_HOME: join(kept, "cargo") }),
+        ),
+    ).toThrow(`toolchain.env.CARGO_HOME ${join(shared, "cargo")} is neither kept read-only`);
+    // The home is accepted under both the name the harness sees and its canonical path.
+    expect(() =>
+        checkToolchainHomes(
+            config({
+                CARGO_HOME: join(homedir(), ".cargo"),
+                RUSTUP_HOME: join(realpathSync(homedir()), ".rustup"),
+            }),
+        ),
+    ).not.toThrow();
 });

@@ -1092,6 +1092,59 @@ describe("driver lifecycle hooks", () => {
         expect(calls.slice(0, 3)).toEqual(["reap", "arm slow", "resume"]);
     });
 
+    test("a resumed arm's clock is published only after the killed harness's processes are reaped", async () => {
+        const path = join(dir(), "j.jsonl");
+        const j = new Journal(path);
+        const start = { order: ["a"], scenario: scenarioId(fixtureEvents(2), []) };
+        j.append({ kind: "StartRun", arm: null, scenario_ms: 0, ...start });
+        j.append({ kind: "StartArm", arm: "a", scenario_ms: 0 });
+        j.append({ kind: "Event", arm: "a", scenario_ms: 0, event: "e-000000" });
+        j.close();
+        const calls: string[] = [];
+        const driver: ArmDriver = {
+            ...fakeDriver([]),
+            reap: async () => void calls.push("reap"),
+            resume: async () => void calls.push("resume"),
+        };
+        await new Scheduler({
+            events: fixtureEvents(2),
+            faults: [],
+            journal: new Journal(path),
+            settleMs: 0,
+            order: ["a"],
+            drivers: { a: driver },
+            onClock: (arm, ms) => void calls.push(`clock ${arm} ${ms}`),
+        }).run();
+        expect(calls.slice(0, 3)).toEqual(["reap", "clock a 0", "resume"]);
+    });
+
+    test("a job that starts while a failing finish runs ends before run() rethrows", async () => {
+        const j = new Journal(join(dir(), "j.jsonl"));
+        let scheduler: Scheduler | null = null;
+        const driver: ArmDriver = {
+            ...fakeDriver([]),
+            event: async () => {
+                throw new Error("turn broke");
+            },
+            finish: async () => {
+                scheduler?.jobStart("late-capture");
+                setTimeout(() => scheduler?.jobEnd("late-capture"), 150);
+            },
+        };
+        scheduler = new Scheduler({
+            events: fixtureEvents(1),
+            faults: [],
+            journal: j,
+            settleMs: 0,
+            jobPollMs: 5,
+            order: ["a"],
+            drivers: { a: driver },
+        });
+        await expect(scheduler.run()).rejects.toThrow("turn broke");
+        const kinds = j.entries.map((e) => `${e.kind}:${e.arm}`);
+        expect(kinds).toContain("EndJob:a");
+    });
+
     test("a job that starts while the driver finishes ends before EndArm", async () => {
         const j = new Journal(join(dir(), "j.jsonl"));
         let scheduler: Scheduler | null = null;

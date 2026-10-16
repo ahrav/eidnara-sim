@@ -239,3 +239,41 @@ test("a reused clone whose Git directory is a link is refused before any Git com
     expect(r.stderr.toString()).toContain("is not a real directory");
     expect(git(src, "rev-parse", "--abbrev-ref", "HEAD")).toBe(head);
 });
+
+test("a linked provenance record does not make an unrelated repository the build clone", () => {
+    const { stubs, src, root } = fixture();
+    const other = join(root, "other");
+    mkdirSync(other);
+    writeFileSync(join(other, "mine.txt"), "theirs\n");
+    git(other, "init", "--quiet");
+    git(other, "add", ".");
+    git(other, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "--quiet", "-m", "other");
+    const head = git(other, "rev-parse", "HEAD");
+    writeFileSync(join(root, "record"), `${src}\n`);
+    symlinkSync(join(root, "record"), join(other, ".sim-build-source"));
+    const r = build(src, other, stubs);
+    expect(r.exitCode).toBe(65);
+    expect(r.stderr.toString()).toContain("was not cloned by this script");
+    expect(git(other, "rev-parse", "HEAD")).toBe(head);
+    expect(readFileSync(join(other, "mine.txt"), "utf8")).toBe("theirs\n");
+});
+
+test("cargo writes its outputs into the clone whatever the operator's target directory is", () => {
+    const { stubs, src, dst, root } = fixture();
+    const argsFile = join(root, "cargo-args");
+    writeFileSync(join(stubs, "cargo"), `#!/bin/sh\nprintf '%s\\n' "$@" > ${argsFile}\nexit 0\n`, {
+        mode: 0o755,
+    });
+    const r = Bun.spawnSync(["bash", SCRIPT, src, dst], {
+        env: {
+            ...process.env,
+            PATH: `${stubs}:${process.env.PATH ?? ""}`,
+            CARGO_TARGET_DIR: join(root, "elsewhere"),
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+    });
+    expect(r.exitCode).toBe(0);
+    const args = readFileSync(argsFile, "utf8").split("\n");
+    expect(args[args.indexOf("--target-dir") + 1]).toBe(join(dst, "target"));
+});

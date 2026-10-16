@@ -11,15 +11,39 @@ function statFields(pid: number): string[] | null {
 
 /** A kernel without `CONFIG_PROC_CHILDREN` has no `children` files; the parent field of every `stat` is the fallback. */
 export function childrenByParent(pid: number): number[] {
-    const out: number[] = [];
-    for (const entry of readdirSync("/proc")) {
-        if (!/^\d+$/.test(entry)) continue;
-        if (statFields(Number(entry))?.[1] === String(pid)) out.push(Number(entry));
-    }
-    return out;
+    return parentIndex().get(pid) ?? [];
 }
 
-function childrenOf(pid: number): number[] {
+/** One pass over `/proc` grouping every process under its parent, so a walk reads each process once. */
+function parentIndex(): Map<number, number[]> {
+    const index = new Map<number, number[]>();
+    for (const entry of readdirSync("/proc")) {
+        if (!/^\d+$/.test(entry)) continue;
+        const ppid = statFields(Number(entry))?.[1];
+        if (ppid === undefined) continue;
+        const siblings = index.get(Number(ppid)) ?? [];
+        siblings.push(Number(entry));
+        index.set(Number(ppid), siblings);
+    }
+    return index;
+}
+
+/** Reads one task's `children` file; null when the kernel offers none. Tests substitute a reader. */
+export type ChildrenReader = (pid: number, tid: string) => string | null;
+
+const readChildren: ChildrenReader = (pid, tid) => {
+    try {
+        return readFileSync(`/proc/${pid}/task/${tid}/children`, "utf8");
+    } catch {
+        return null;
+    }
+};
+
+function childrenOf(
+    pid: number,
+    read: ChildrenReader,
+    fallback: () => Map<number, number[]>,
+): number[] {
     let tasks: string[];
     try {
         tasks = readdirSync(`/proc/${pid}/task`);
@@ -28,18 +52,24 @@ function childrenOf(pid: number): number[] {
     }
     let listedAny = false;
     const found = tasks.flatMap((tid) => {
-        try {
-            const listed = readFileSync(`/proc/${pid}/task/${tid}/children`, "utf8");
-            listedAny = true;
-            return listed
-                .split(" ")
-                .filter((c) => c.trim() !== "")
-                .map(Number);
-        } catch {
-            return [];
-        }
+        const listed = read(pid, tid);
+        if (listed === null) return [];
+        listedAny = true;
+        return listed
+            .split(" ")
+            .filter((c) => c.trim() !== "")
+            .map(Number);
     });
-    return listedAny ? found : childrenByParent(pid);
+    return listedAny ? found : (fallback().get(pid) ?? []);
+}
+
+/** Builds the parent index on first use, so a walk with `children` files reads `/proc` once at most. */
+function lazyIndex(): () => Map<number, number[]> {
+    let index: Map<number, number[]> | null = null;
+    return () => {
+        index ??= parentIndex();
+        return index;
+    };
 }
 
 function ownedBy(pid: number, uid: number | undefined): boolean {
@@ -50,13 +80,14 @@ function ownedBy(pid: number, uid: number | undefined): boolean {
     }
 }
 
-export function ownedProcesses(rootPid: number): number[] {
+export function ownedProcesses(rootPid: number, read: ChildrenReader = readChildren): number[] {
     const uid = process.getuid?.();
     const out: number[] = [];
     const queue = [rootPid];
+    const fallback = lazyIndex();
     for (let next = queue.shift(); next !== undefined; next = queue.shift()) {
         if (ownedBy(next, uid)) out.push(next);
-        queue.push(...childrenOf(next));
+        queue.push(...childrenOf(next, read, fallback));
     }
     return out;
 }
@@ -99,7 +130,9 @@ function signal(targets: Target[], name: NodeJS.Signals): void {
     for (const t of targets.filter(alive)) {
         try {
             process.kill(t.pid, name);
-        } catch {}
+        } catch {
+            // A target that exits before the signal is already stopped.
+        }
     }
 }
 
@@ -121,9 +154,12 @@ export async function stopOwnedTree(
     // still receive the signal.
     const sweep = (name: NodeJS.Signals) => {
         if (alive(root)) {
-            for (const pid of ownedProcesses(rootPid)) {
-                if (!seen.has(pid)) seen.set(pid, { pid, start: processStart(pid) });
-            }
+            const walked = ownedProcesses(rootPid).map((pid) => ({
+                pid,
+                start: processStart(pid),
+            }));
+            // A walk during which the root changed hands belongs to another process and is dropped.
+            if (alive(root)) for (const t of walked) if (!seen.has(t.pid)) seen.set(t.pid, t);
         }
         signal([...seen.values()], name);
     };
@@ -139,13 +175,17 @@ export async function stopOwnedTree(
     };
     if (await phase("SIGTERM", graceMs)) return true;
     if (await phase("SIGKILL", 2_000)) return true;
-    if (rootStart === undefined) return false;
+    // The privileged fallback walks the root only while the pinned identity still holds it; a
+    // root already gone leaves the verdict to the descendants seen.
+    if (rootStart === undefined || !alive(root)) return settled();
     // The launcher is root-owned until its sandbox drops privileges, so what is left of a pinned
-    // launch is killed through the same passwordless sudo the launcher runs under.
-    const privileged = treeProcesses(rootPid)
-        .map((pid) => ({ pid, start: processStart(pid) }))
-        .filter(alive);
-    if (privileged.length === 0) return true;
+    // launch is killed through the same passwordless sudo the launcher runs under. The walk is
+    // taken only while the pinned root still holds its pid, and discarded when that changes
+    // during the walk, so a pid reused in between is never signalled.
+    const walked = treeProcesses(rootPid).map((pid) => ({ pid, start: processStart(pid) }));
+    if (!alive(root)) return settled();
+    const privileged = walked.filter(alive);
+    if (privileged.length === 0) return settled();
     Bun.spawnSync([
         "sudo",
         "-n",
@@ -159,9 +199,10 @@ export async function stopOwnedTree(
 function treeProcesses(rootPid: number): number[] {
     const out: number[] = [];
     const queue = [rootPid];
+    const fallback = lazyIndex();
     for (let next = queue.shift(); next !== undefined; next = queue.shift()) {
         if (statFields(next) !== null) out.push(next);
-        queue.push(...childrenOf(next));
+        queue.push(...childrenOf(next, readChildren, fallback));
     }
     return out;
 }

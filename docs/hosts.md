@@ -58,7 +58,9 @@ workspace, and, on an Eidnara arm, starts a fresh daemon through the v1
 arm's last event, before `EndArm`: it closes the host, stops the daemon with
 SIGTERM so its store stays on disk, and unmounts the store; a host or daemon
 whose teardown fails stays held with its recorded identity, so the failure's
-state names it for the next reap; the daemon's
+state names it for the next reap, and a driver that finishes before it ever
+reset or resumed adds the failure to the record on disk, leaving the
+identities the killed harness wrote in place; the daemon's
 output reaches `<arm>/daemon.log` as it is written.
 
 `DaemonStack` starts the daemon through the v1 `HermeticHostStack` with the
@@ -67,7 +69,9 @@ stops it with SIGTERM so its store stays on disk; a daemon that outlives
 SIGTERM is killed with the stack's SIGKILL path and the stop still fails. It
 appends every chunk the daemon writes to the arm's `daemon.log` as it
 arrives, across restarts, so a kill at any point loses nothing already
-written; the log opens with `O_NOFOLLOW` and `O_NONBLOCK` and must be a
+written; the output the readiness wait captured before the log attached
+comes first, as the v1 stack buffered it (its stdout, then its stderr), and
+the live stream after it keeps the order of arrival; the log opens with `O_NOFOLLOW` and `O_NONBLOCK` and must be a
 regular file, so a symlink or FIFO left there fails the append without
 blocking, and the first such failure surfaces at stop together with a failed
 SIGKILL fallback.
@@ -131,7 +135,9 @@ resolves outside the workspace through `..` or a symlink stops the run before
 any directory is created. The file is written whole and renamed into place,
 so a hard link the agent left at the path keeps its other name's content, and
 the `git add` and `git commit` run inside the arm's sandbox under the turn
-deadline, with the hosts' read-only paths (toolchains, the interposer, the
+deadline, with the selected workspace and a harness-owned git home
+(`<arm>/git-home`) kept and the sibling workspaces, the host's home, and
+the daemon's store masked, with the hosts' read-only paths (toolchains, the interposer, the
 build clone, the Pi, Node, and OpenCode installs) read-only and a fresh
 environment, and only against a `.git` that is the workspace's own directory, so a hook,
 filter, or config the agent planted in the repository acts with the host's
@@ -141,7 +147,9 @@ hook that hangs stops the run instead of the harness. The run's pid is in
 until the record is written, then execs the launcher, so the recorded pid is
 the launcher's `sudo` and the deadline's `timeout` runs inside the sandbox),
 so a resume stops one the killed harness left behind and removes its
-`index.lock` before replaying the event; a run that fails removes its own
+`index.lock` before replaying the event; a launch whose start time the
+kernel did not report is ended unreleased and stops the run, since the
+record names a process by pid and start; a run that fails removes its own
 `index.lock`, `HEAD.lock`, `packed-refs.lock`, and any ref lock, and both
 removals leave a `.git` that is a link alone. The commit's author and committer dates are the
 event's scenario instant (`baseMs + scenario_ms`), so paired arms and a
@@ -247,8 +255,10 @@ server starts leaves a record the next resume reaps. A daemon the fixture spawne
 the harness died carries this arm's data directory as its `--state-root`, and
 the reaper finds and stops it by that argument. The state
 also carries the length and allocated blocks of an active `store_full`
-ballast (cleared before the file goes, so a kill in between leaves a leftover
-the resume removes), a `refilling` flag while a resume has removed the ballast
+ballast with the fault's id (cleared before the file goes, so a kill in
+between leaves a leftover the resume removes, and a ballast whose fault the
+journal fired and never observed is removed on resume instead of refilled,
+since the run records that fault as interrupted), a `refilling` flag while a resume has removed the ballast
 and has yet to fill the store again, so a kill inside that window refills on
 the next attempt, and, through `transcripts.json`, a transcript-store gap
 already found; a resume stops on a ballast whose length or blocks changed, or
@@ -275,17 +285,18 @@ harness left holds the data directory busy, then its own, and unmounts the
 store before it deletes anything, so a harness killed during `reset`
 leaves no recorded process running into the next attempt, and it removes the
 `daemon.log` and `transcripts.json` of an abandoned attempt. A daemon or an
-OpenCode server still starting when the harness dies has no pid on record
-yet; a daemon's mount then stays busy and the next `reset` or `resume` stops
-with the `umount` error.
+OpenCode server still starting when the harness dies has no pid in
+`state.json` yet; the reaper finds the daemon by its `--state-root` argument
+and the OpenCode launcher by the wrapper's `opencode.launch` record, so both
+stop before the next `reset` or `resume` proceeds.
 
 ## Transcript-store check
 
 After an arm's first `session_end`, the driver expands the preflight's
 transcript-store paths for the host version with the host's own variables
 (`$PI_CODING_AGENT_DIR`, `$XDG_DATA_HOME`) and writes the result to
-`<arm>/transcripts.json`. A missing path stops the run (OQ-7); a link, or a
-node of the other kind (`TRANSCRIPT_STORES` names `opencode.db` as the one
+`<arm>/transcripts.json`. A missing path stops the run (OQ-7); a link at the
+store or at any ancestor below the arm root, or a node of the other kind (`TRANSCRIPT_STORES` names `opencode.db` as the one
 file, the rest are directories), left where the store should be counts as
 missing.
 
@@ -300,7 +311,7 @@ against the same store (OQ-10).
 |---|---|---|
 | `daemon_sigkill_mid_fold` | The session's first observed history-summarizer call fires it; SIGKILL and restart | `pid_before`, `pid_after`, `restarted_by: harness` |
 | `daemon_restart` | At `session_start`, SIGKILL and restart | As above |
-| `store_full` | When the scenario schedules `store_full`, each Eidnara arm's store lives on a sparse 2 GiB ext4 loop mount (`nosuid,nodev,noexec`) at `<arm>/s`, room for the daemon to materialize its harness closures twice, with its image outside the sandbox's kept paths; the fault fills it with a `fallocate`d ballast topped up by `dd`, so the sparse image stays small, and `session_end` removes the ballast; a resume that finds the ballast removes it for the daemon's start and fills the store again, whether or not that start succeeds, and requires the store to report no free space afterwards; the store is writable to the host, so `session_end` requires the ballast to be the regular file it created with its length and blocks unchanged, and stops the run otherwise; the fault replaces whatever the host left at the ballast's name with a fresh regular file before allocating | `avail_kb: 0`; any other value stops the run |
+| `store_full` | When the scenario schedules `store_full`, each Eidnara arm's store lives on a sparse 2 GiB ext4 loop mount (`nosuid,nodev,noexec`) at `<arm>/s`, room for the daemon to materialize its harness closures twice, with its image outside the sandbox's kept paths; the fault fills it with a `fallocate`d ballast topped up by `dd`, so the sparse image stays small, and `session_end` removes the ballast; a resume that finds the ballast removes it for the daemon's start and fills the store again, whether or not that start succeeds, and requires the store to report no free space afterwards; the store is writable to the host, so `session_end` requires the ballast to be the regular file it created with its length and blocks unchanged, its only name (a second hard link would keep the blocks allocated after the unlink), and the store to still report no free space, and stops the run otherwise; the fault replaces whatever the host left at the ballast's name with a fresh regular file before allocating | `avail_kb: 0`; any other value stops the run |
 | `plugin_reload` | The host process and its plugin start afresh at every `session_start` | The reload note |
 | `model_switch` | Later sessions use the next configured model; the daemon keeps running with its summarizer model | The new model id |
 | `laptop_sleep` | One event-free clock jump (`docs/run.md`) | The `AdvanceClock` entry |

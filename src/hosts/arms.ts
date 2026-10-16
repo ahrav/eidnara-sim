@@ -15,9 +15,10 @@ import {
     writeFileSync,
     writeSync,
 } from "node:fs";
-import { basename, dirname, isAbsolute, join, relative } from "node:path";
+import { dirname, isAbsolute, join, relative } from "node:path";
 import type { SimConfig } from "../config/config";
 import { withDeadline } from "../run/deadline";
+import { nodeInstall } from "../run/interception";
 import { launch, plainPath, shellQuote } from "../run/launcher";
 import { piCli } from "../run/preflight";
 import { parentPid, processStart, stopOwnedTree } from "../run/procs";
@@ -31,13 +32,10 @@ async function v1(config: SimConfig, path: string): Promise<Untyped> {
 }
 
 /**
- * `base/rel`, walked one component at a time: each existing component must be a real
- * directory, and each missing one is created only after its parent passed, so a symlink
- * anywhere in `rel` stops the walk before anything is created beyond it.
+ * `base`, created if missing: its nearest existing ancestor must resolve to itself, so the
+ * new directories remain beneath that verified ancestor.
  */
-function realDir(base: string, rel: string): string {
-    // The base itself must be canonical: its nearest existing ancestor resolves to itself, so
-    // creating the rest of it cannot follow a link out of the run tree.
+function realBase(base: string): string {
     let existing = base;
     while (!existsSync(existing) && dirname(existing) !== existing) existing = dirname(existing);
     if (realpathSync(existing) !== existing) {
@@ -46,7 +44,16 @@ function realDir(base: string, rel: string): string {
         );
     }
     mkdirSync(base, { recursive: true });
-    let dir = base;
+    return base;
+}
+
+/**
+ * `base/rel`, walked one component at a time: each existing component must be a real
+ * directory, and each missing one is created only after its parent passed, so a symlink
+ * anywhere in `rel` stops the walk before anything is created beyond it.
+ */
+function realDir(base: string, rel: string): string {
+    let dir = realBase(base);
     for (const part of rel.split("/").filter((p) => p !== "")) {
         dir = join(dir, part);
         let stat: ReturnType<typeof lstatSync> | undefined;
@@ -147,11 +154,13 @@ export class DaemonStack {
         const hh = await v1(config, "packages/e2e-tests/src/rust-runner/hermetic-host.ts");
         const sources = hr.detectHarnessRuntimeSources();
         if (!sources.ok) throw new Error(`harness runtime sources: ${sources.reason}`);
-        // The runtime is regenerated on every start, so whatever an earlier session left there goes first.
+        // Each start regenerates the runtime, which lives beside the arm; the arm root and the
+        // arm directory both have to be real directories before anything is removed.
+        realBase(this.ctx.root);
+        const armDir = realBase(dirname(this.ctx.root));
         rmSync(this.runtimeDir, { recursive: true, force: true });
-        // The store sits beside the arm root, so its walk starts at the arm directory both share.
-        const armDir = dirname(this.ctx.root);
         const runtimeDir = realDir(armDir, "runtime");
+        // The store sits beside the arm root, so its walk starts at the arm directory both share.
         const store = relative(armDir, this.ctx.dataDir);
         if (store.startsWith("..") || isAbsolute(store)) {
             throw new Error(`daemon store ${this.ctx.dataDir} lies outside ${armDir}`);
@@ -281,12 +290,7 @@ function turnResult(outcome: Untyped): PromptResult {
 }
 
 /** The canonical node preflight probes; `root` is the install tree the sandbox keeps read-only. */
-export function nodeInstall(which: string): { exe: string; bin: string; root: string } {
-    const exe = realpathSync(which);
-    // An install keeps node in <root>/bin; a standalone binary keeps its own directory.
-    const bin = dirname(exe);
-    return { exe, bin, root: basename(bin) === "bin" ? dirname(bin) : bin };
-}
+export { nodeInstall };
 
 export const hostNode = () => nodeInstall(Bun.which("node") ?? "node");
 
@@ -348,10 +352,15 @@ export abstract class SimHost {
 
     // A launch whose start time was never read cannot be told from a reused pid, so it is
     // left alone; its launcher had already exited, which ends the sandbox's namespace.
-    protected async stopTree(pid: number | null | undefined, start: string | null): Promise<void> {
-        if (pid == null || start === null) return;
+    // Returns whether the stop was confirmed through the launch's identity.
+    protected async stopTree(
+        pid: number | null | undefined,
+        start: string | null,
+    ): Promise<boolean> {
+        if (pid == null || start === null) return false;
         if (!(await stopOwnedTree(pid, 10_000, start)))
             throw new Error(`host tree ${pid} survived SIGKILL`);
+        return true;
     }
 
     abstract openSession(cwd: string, session: string, connection: string | null): Promise<void>;
@@ -692,8 +701,17 @@ export class OpencodeSimHost extends SimHost {
     /**
      * The wrapper records its own pid and start time beside the arm before it execs the launcher,
      * so a harness killed during the server's startup leaves a record the next resume can reap.
+     * It then execs only while the harness that spawned it is still that process, so a wrapper the
+     * kernel scheduled after the harness died ends before the launcher instead of running a server
+     * no record reached recovery in time to name.
      */
-    private writeWrapper(argv: string[]): string {
+    private writeWrapper(
+        argv: string[],
+        harness: { pid: number; start: string | null } = {
+            pid: process.pid,
+            start: processStart(process.pid),
+        },
+    ): string {
         const dir = join(dirname(this.ctx.launcher), "hostbin", this.ctx.arm);
         mkdirSync(dir, { recursive: true });
         const path = join(dir, "opencode");
@@ -706,6 +724,7 @@ export class OpencodeSimHost extends SimHost {
             `r=${record}`,
             `printf '%s %s\\n' "$$" "$(awk '{print $22}' /proc/$$/stat)" > "$r.$$" || exit 70`,
             `mv -f "$r.$$" "$r" || exit 70`,
+            `[ "${harness.pid} $(awk '{print $22}' /proc/${harness.pid}/stat 2>/dev/null)" = ${shellQuote(`${harness.pid} ${harness.start ?? ""}`)} ] || exit 70`,
             `exec ${argv.map(shellQuote).join(" ")} "$@"`,
             "",
         ].join("\n");
@@ -784,13 +803,21 @@ export class OpencodeSimHost extends SimHost {
     }
 
     // The handles are cleared only after the whole teardown succeeds, so a failed close can be retried.
+    // The launcher's exit, confirmed through its launch identity, settles the close; the kill
+    // step's own report counts only while that confirmation is missing.
     async closeSession(): Promise<void> {
         const oc = this.oc;
         if (!oc) return;
         const launched = this.launched ?? { pid: this.hostPid(), start: null };
+        let confirmed = false;
         const failures = await settleAll([
-            () => this.stopTree(launched.pid, launched.start),
-            () => oc.kill(),
+            async () => {
+                confirmed = await this.stopTree(launched.pid, launched.start);
+            },
+            () =>
+                oc.kill().catch((caught: unknown) => {
+                    if (!confirmed) throw caught;
+                }),
         ]);
         if (failures.length > 0) throw failures[0];
         this.oc = null;

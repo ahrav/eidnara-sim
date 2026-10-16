@@ -17,7 +17,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "../config/config";
 import { sandboxAvailable, writeLauncher } from "../run/launcher";
-import { running } from "../run/procs";
+import { processStart, running } from "../run/procs";
 import type { ScenarioEvent } from "../run/scheduler";
 import { type FaultType, SEAMS } from "../scenario/faults";
 import type { DaemonStack, HostContext, PromptResult, SimHost } from "./arms";
@@ -95,7 +95,7 @@ function fixture(
     extra: Partial<DriverOptions> = {},
 ) {
     const root = tmp();
-    const transcripts = join(root, "agent");
+    const transcripts = join(root, arm, "r", "home", "agent");
     const exits: Record<string, unknown>[] = [];
     const hosts: FakeHost[] = [];
     const o: DriverOptions = {
@@ -764,6 +764,155 @@ touch ${escaped}
         }
     });
 
+    test("a finish on a fresh driver keeps the identities the killed harness recorded", async () => {
+        const { driver, armDir } = fixture("host", { p: gitRepo() });
+        await driver.reset();
+        await driver.stop();
+        const state = JSON.parse(readFileSync(join(armDir, "state.json"), "utf8"));
+        state.host = { pid: 4_000_000, start: "1" };
+        writeFileSync(join(armDir, "state.json"), JSON.stringify(state));
+        const fresh = new HostDriver((driver as unknown as { o: DriverOptions }).o);
+        fresh.daemon = {
+            ...fakeDaemon(null),
+            stop: async () => {
+                throw new Error("umount: target is busy");
+            },
+        } as unknown as DaemonStack;
+        await expect(fresh.finish()).rejects.toThrow("busy");
+        const after = JSON.parse(readFileSync(join(armDir, "state.json"), "utf8"));
+        expect(after.host).toEqual({ pid: 4_000_000, start: "1" });
+        expect(after.failed).toContain("busy");
+    });
+
+    test("a transcript store reached through a linked ancestor counts as missing", async () => {
+        const { driver, transcripts } = fixture("host");
+        await driver.reset();
+        const elsewhere = tmp();
+        mkdirSync(join(elsewhere, "sessions"));
+        mkdirSync(join(transcripts, ".."), { recursive: true });
+        rmSync(transcripts, { recursive: true, force: true });
+        symlinkSync(elsewhere, transcripts);
+        await expect(driver.event(ev("session_end"))).rejects.toThrow("transcript store missing");
+    });
+
+    test("a git launch whose start identity cannot be read is killed before it is released", async () => {
+        let unreadable = false;
+        const procStart = (pid: number) => (unreadable ? null : processStart(pid));
+        const { driver, armDir } = fixture("host", { p: gitRepo() }, { procStart });
+        await driver.reset();
+        unreadable = true;
+        let message = "";
+        await driver.event(ev("apply_diff", { path: "a.txt", content: "A" })).catch((caught) => {
+            message = String(caught);
+        });
+        expect(message).toContain("has no start identity");
+        const pid = Number(/git launch (\d+)/.exec(message)?.[1]);
+        unreadable = false;
+        for (let i = 0; i < 50 && processStart(pid) !== null; i++) await Bun.sleep(20);
+        expect(processStart(pid)).toBeNull();
+        const state = JSON.parse(readFileSync(join(armDir, "state.json"), "utf8"));
+        expect(state.git).toBeNull();
+        const log = spawnSync("git", ["-C", driver.workspace("p"), "log", "--oneline"], {
+            encoding: "utf8",
+        });
+        expect(log.stdout.trim().split("\n")).toHaveLength(1);
+    });
+
+    test("the state records the daemon identity captured at its start", async () => {
+        const starts = new Map<number, string>();
+        const procStart = (pid: number) => starts.get(pid) ?? processStart(pid);
+        const { driver, armDir } = fixture("eidnara", {}, { procStart });
+        starts.set(10, "first");
+        driver.daemon = fakeDaemon(10) as unknown as DaemonStack;
+        const inner = driver as unknown as { noteDaemon(): void; recordState(): void };
+        inner.noteDaemon();
+        starts.set(10, "reused");
+        inner.recordState();
+        const state = JSON.parse(readFileSync(join(armDir, "state.json"), "utf8"));
+        expect(state.daemon).toEqual({ pid: 10, start: "first" });
+    });
+
+    test("a model switch the journal lost is rolled back on resume", async () => {
+        const { driver, armDir } = fixture("host", { p: gitRepo() });
+        await driver.reset();
+        await driver.fault(episode("model_switch"));
+        expect(JSON.parse(readFileSync(join(armDir, "state.json"), "utf8")).model).toBe(1);
+        await driver.stop();
+        const fresh = new HostDriver((driver as unknown as { o: DriverOptions }).o);
+        await fresh.resume(null, ["f-model_switch"]);
+        expect(JSON.parse(readFileSync(join(armDir, "state.json"), "utf8")).model).toBe(0);
+        await fresh.event(ev("session_start"));
+        expect(fresh.host?.ctx.model).toBe("model-a");
+        await fresh.stop();
+    });
+
+    test.skipIf(!sandbox)("a hook that moves .git out of the workspace stops the run", async () => {
+        const { driver } = fixture("host", { p: gitRepo() });
+        try {
+            await driver.reset();
+            const ws = driver.workspace("p");
+            writeFileSync(
+                join(ws, ".git/hooks/post-commit"),
+                `#!/bin/sh\nmv ${ws}/.git "$HOME/stolen" && ln -s "$HOME/stolen" ${ws}/.git\n`,
+                { mode: 0o755 },
+            );
+            await expect(
+                driver.event(ev("apply_diff", { path: "a.txt", content: "A" })),
+            ).rejects.toThrow("workspace's own directory");
+        } finally {
+            await driver.stop().catch(() => undefined);
+        }
+    });
+
+    test("a daemon whose process has exited is reported with the event id", async () => {
+        const { driver, exits, transcripts } = fixture("eidnara");
+        const gone = spawnSync("true").pid as number;
+        mkdirSync(join(transcripts, "sessions"), { recursive: true });
+        driver.host = new FakeHost({} as HostContext, transcripts) as unknown as SimHost;
+        driver.daemon = fakeDaemon(gone) as unknown as DaemonStack;
+        await driver.event(ev("session_end", { id: "e-9" }));
+        expect(exits).toEqual([{ after: "e-9" }]);
+    });
+
+    test.skipIf(!sandbox)("a hook in one workspace cannot reach a sibling workspace", async () => {
+        const { driver } = fixture("host", { p: gitRepo(), q: gitRepo() });
+        try {
+            await driver.reset();
+            const planted = join(driver.workspace("q"), "planted");
+            writeFileSync(
+                join(driver.workspace("p"), ".git/hooks/post-commit"),
+                `#!/bin/sh\ntouch ${planted}\ntouch ${driver.workspace("p")}/own\n`,
+                { mode: 0o755 },
+            );
+            await driver.event(ev("apply_diff", { path: "a.txt", content: "A" }));
+            expect(existsSync(planted)).toBe(false);
+            expect(existsSync(join(driver.workspace("p"), "own"))).toBe(true);
+        } finally {
+            await driver.stop().catch(() => undefined);
+        }
+    });
+
+    test.skipIf(!sandbox)("a hook cannot reach the daemon store", async () => {
+        const daemonFactory = () =>
+            ({ ...fakeDaemon(null), start: async () => undefined }) as unknown as DaemonStack;
+        const { driver } = fixture("eidnara", { p: gitRepo() }, { daemonFactory });
+        try {
+            await driver.reset();
+            const ws = driver.workspace("p");
+            writeFileSync(
+                join(ws, ".git/hooks/post-commit"),
+                `#!/bin/sh\ntouch ${driver.storeRoot}/planted\n`,
+                {
+                    mode: 0o755,
+                },
+            );
+            await driver.event(ev("apply_diff", { path: "a.txt", content: "A" }));
+            expect(existsSync(join(driver.storeRoot, "planted"))).toBe(false);
+        } finally {
+            await driver.stop().catch(() => undefined);
+        }
+    });
+
     test("a finish that fails is recorded, so a resume cannot heal the arm", async () => {
         const { driver, armDir } = fixture("eidnara");
         driver.daemon = {
@@ -777,6 +926,18 @@ touch ${escaped}
         expect(state.failed).toContain("outlived");
         const fresh = new HostDriver((driver as unknown as { o: DriverOptions }).o);
         await expect(fresh.reap()).rejects.toThrow("outlived");
+    });
+
+    test("reset's clone ignores ambient GIT_* variables", async () => {
+        const { driver } = fixture("host", { p: gitRepo() });
+        process.env.GIT_DIR = join(tmp(), "ambient.git");
+        try {
+            await driver.reset();
+            expect(existsSync(join(driver.workspace("p"), ".git", "HEAD"))).toBe(true);
+            expect(readFileSync(join(driver.workspace("p"), "README"), "utf8")).toBe("hi\n");
+        } finally {
+            delete process.env.GIT_DIR;
+        }
     });
 
     test("reset starts the fresh arm with no fault or git state carried over", async () => {
@@ -1186,6 +1347,92 @@ describe("HostDriver faults", () => {
             }
         },
     );
+
+    test.skipIf(!sudo)(
+        "a directory left at the ballast's name is replaced by the fill",
+        async () => {
+            const { driver } = fixture("eidnara");
+            driver.daemon = fakeDaemon(10) as unknown as DaemonStack;
+            const inner = driver as unknown as { mountStore(f: boolean): void };
+            inner.mountStore(true);
+            try {
+                mkdirSync(join(driver.storeRoot, "ballast", "deep"), { recursive: true });
+                const evidence = await driver.fault(episode("store_full"));
+                expect(evidence).toMatchObject({ avail_kb: 0 });
+                expect(statSync(join(driver.storeRoot, "ballast")).isFile()).toBe(true);
+            } finally {
+                await driver.stop().catch(() => undefined);
+            }
+        },
+    );
+
+    test.skipIf(!sudo)(
+        "a second name linked to the ballast stops the run at session_end",
+        async () => {
+            const { driver, transcripts } = fixture("eidnara");
+            mkdirSync(join(transcripts, "sessions"), { recursive: true });
+            driver.daemon = fakeDaemon(10) as unknown as DaemonStack;
+            driver.host = new FakeHost({} as HostContext, transcripts) as unknown as SimHost;
+            const inner = driver as unknown as { mountStore(f: boolean): void };
+            inner.mountStore(true);
+            try {
+                await driver.fault(episode("store_full"));
+                linkSync(join(driver.storeRoot, "ballast"), join(driver.storeRoot, "ballast-2"));
+                await expect(driver.event(ev("session_end"))).rejects.toThrow(
+                    "changed during the episode",
+                );
+            } finally {
+                await driver.stop().catch(() => undefined);
+            }
+        },
+    );
+
+    test.skipIf(!sudo)(
+        "a fault the journal lost is cleared on resume instead of refilled",
+        async () => {
+            const daemonFactory = (ctx: { dataDir: string }) =>
+                ({
+                    ...fakeDaemon(null),
+                    start: async () => void mkdirSync(ctx.dataDir, { recursive: true }),
+                }) as unknown as DaemonStack;
+            const { driver, armDir } = fixture("eidnara", {}, { loopStore: true, daemonFactory });
+            let fresh: HostDriver | null = null;
+            try {
+                await driver.reset();
+                await driver.fault(episode("store_full"));
+                fresh = new HostDriver((driver as unknown as { o: DriverOptions }).o);
+                await fresh.resume(null, ["f-store_full"]);
+                expect(existsSync(join(fresh.storeRoot, "ballast"))).toBe(false);
+                const df = spawnSync("df", ["--output=avail", fresh.storeRoot], {
+                    encoding: "utf8",
+                });
+                expect(Number(df.stdout.trim().split("\n").at(-1))).toBeGreaterThan(0);
+                const state = JSON.parse(readFileSync(join(armDir, "state.json"), "utf8"));
+                expect(state.ballast).toBeNull();
+            } finally {
+                await fresh?.stop().catch(() => undefined);
+                await driver.stop().catch(() => undefined);
+            }
+        },
+    );
+
+    test.skipIf(!sudo)("space freed during the episode stops the run at session_end", async () => {
+        const { driver, transcripts } = fixture("eidnara");
+        mkdirSync(join(transcripts, "sessions"), { recursive: true });
+        driver.daemon = fakeDaemon(10) as unknown as DaemonStack;
+        driver.host = new FakeHost({} as HostContext, transcripts) as unknown as SimHost;
+        const inner = driver as unknown as { mountStore(f: boolean): void };
+        inner.mountStore(true);
+        try {
+            const other = join(driver.storeRoot, "daemon-data");
+            spawnSync("fallocate", ["-l", "8M", other]);
+            await driver.fault(episode("store_full"));
+            rmSync(other);
+            await expect(driver.event(ev("session_end"))).rejects.toThrow("free");
+        } finally {
+            await driver.stop().catch(() => undefined);
+        }
+    });
 
     test.skipIf(!sudo)(
         "a ballast recreated sparse by the host stops the run at session_end",

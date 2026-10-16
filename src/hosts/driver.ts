@@ -11,7 +11,7 @@ import {
     statSync,
     writeFileSync,
 } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { launch } from "../run/launcher";
 import { processStart, running, stopOwnedTree } from "../run/procs";
 import { type ArmDriver, HarnessFailure, type ScenarioEvent } from "../run/scheduler";
@@ -33,14 +33,16 @@ interface ArmState {
     model: number;
     daemon: { pid: number; start: string | null } | null;
     host: { pid: number; start: string | null } | null;
-    /** The store_full ballast while the fault is active: its length and the blocks it holds. */
-    ballast: { bytes: number; blocks: number } | null;
+    /** The store_full ballast while the fault is active: its length, the blocks it holds, and its fault. */
+    ballast: { bytes: number; blocks: number; fault?: string } | null;
     /** True while a resume has removed the ballast and has yet to fill the store again. */
     refilling: boolean;
     /** The sandboxed git run of an apply_diff in flight, with the workspace it holds. */
     git: { pid: number; start: string | null; project: string } | null;
     /** The message of a `finish` that failed; a resume refuses the arm while it stands. */
     failed: string | null;
+    /** The latest model switch: its fault and the index it left, so an unobserved one rolls back. */
+    switched?: { fault: string; from: number } | null;
 }
 
 export interface DriverOptions extends Omit<HostContext, "root" | "model"> {
@@ -53,6 +55,8 @@ export interface DriverOptions extends Omit<HostContext, "root" | "model"> {
     /** Wall time of scenario time 0, the same value the clock offset targets. */
     baseMs: number;
     hostFactory?: (ctx: HostContext) => SimHost;
+    /** Reads a process's start identity; the default reads `/proc`. */
+    procStart?: (pid: number) => string | null;
     daemonFactory?: (ctx: DaemonContext) => DaemonStack;
     onDaemonExit: (detail: Record<string, unknown>) => void;
 }
@@ -124,6 +128,11 @@ export class HostDriver implements ArmDriver {
     private refilling = false;
     private gitRun: ArmState["git"] = null;
     private failed: string | null = null;
+    /** The identity the daemon's pid had when it started, so a later exit shows as one. */
+    private daemonId: { pid: number; start: string | null } | null = null;
+    private switched: { fault: string; from: number } | null = null;
+    /** True once this process has reset or resumed the arm, so its in-memory state is the arm's. */
+    private live = false;
     private sessionProject: string | null = null;
     private transcriptsChecked = false;
 
@@ -155,6 +164,24 @@ export class HostDriver implements ArmDriver {
 
     daemonPid(): number | null {
         return this.daemon?.pid() ?? null;
+    }
+
+    /** The daemon lives while the pid its stack holds still names the process that started there. */
+    private daemonAlive(): boolean {
+        const pid = this.daemonPid();
+        if (pid === null) return false;
+        const start = this.procStart(pid);
+        if (start === null) return false;
+        return this.daemonId?.pid !== pid || this.daemonId.start === start;
+    }
+
+    private noteDaemon(): void {
+        const pid = this.daemonPid();
+        this.daemonId = pid === null ? null : { pid, start: this.procStart(pid) };
+    }
+
+    private procStart(pid: number): string | null {
+        return (this.o.procStart ?? processStart)(pid);
     }
 
     private requireHost(): SimHost {
@@ -189,12 +216,17 @@ export class HostDriver implements ArmDriver {
         args: string[],
         dateMs?: number,
     ): Promise<{ status: number; stderr: string }> {
-        const env: Record<string, string> = { ...GIT_ENV, HOME: join(this.o.armRoot, "home") };
+        // Git's home is harness-owned, beside the arm, so a hook writes nothing a host reads.
+        const home = join(this.armDir, "git-home");
+        mkdirSync(home, { recursive: true, mode: 0o700 });
+        const env: Record<string, string> = { ...GIT_ENV, HOME: home };
         if (dateMs !== undefined) {
             env.GIT_AUTHOR_DATE = `@${Math.floor(dateMs / 1000)}`;
             env.GIT_COMMITTER_DATE = env.GIT_AUTHOR_DATE;
         }
-        const keep = [...new Set([...this.keep, this.o.armRoot])];
+        // Git sees the selected workspace and its own home; sibling workspaces, the host's home,
+        // and the daemon's store stay masked from repository-controlled hooks and filters.
+        const keep = [...new Set([...this.o.keep, dir, home])];
         // Git reads no scenario clock, so the clock directory stays out of its view; the hosts'
         // installs join the set, since a hook could otherwise poison a later session's host.
         const clock = dirname(this.o.offsetFile);
@@ -218,15 +250,23 @@ export class HostDriver implements ArmDriver {
         const seconds = String(Math.ceil(this.o.turnDeadlineMs / 1000));
         const bounded = ["timeout", "-s", "KILL", seconds, "git", ...args];
         const argv = launch(this.o.launcher, keep, env, bounded, ro, dir);
+        // A hook or filter runs inside this command, so the workspace's .git is checked on both
+        // sides of it; one moved out of the workspace stops the run.
+        this.requireOwnGitDir(dir);
         const r = await this.recorded(project, argv, { PATH: process.env.PATH ?? "" });
         if (r.status !== 0) this.unlockGit(dir);
+        this.requireOwnGitDir(dir);
         return { ...r, stderr: r.status === 137 ? `cut off after ${seconds} s` : r.stderr };
     }
 
     /** Clones a harness-owned source into a fresh workspace with the harness's own view. */
     private async gitClone(project: string, source: string, target: string): Promise<void> {
         const argv = ["git", "clone", "--quiet", "--no-hardlinks", source, target];
-        const env = { ...process.env, ...GIT_ENV } as Record<string, string>;
+        // Ambient GIT_* variables (GIT_DIR, GIT_WORK_TREE, ...) would redirect the clone.
+        const inherited = Object.entries(process.env).filter(
+            ([key, value]) => !key.startsWith("GIT_") && value !== undefined,
+        );
+        const env = { ...Object.fromEntries(inherited), ...GIT_ENV } as Record<string, string>;
         const r = await this.recorded(project, argv, env, this.o.armRoot);
         if (r.status !== 0) throw new Error(`${argv.join(" ")}: ${r.stderr}`);
     }
@@ -249,8 +289,14 @@ export class HostDriver implements ArmDriver {
             stdio: ["pipe", "ignore", "pipe"],
         });
         const pid = child.pid as number;
-        this.gitRun = { pid, start: processStart(pid), project };
+        const start = this.procStart(pid);
+        // The record names the process by pid and start; a start the kernel did not report
+        // leaves nothing the next reap could match, so the gated shell ends unreleased.
+        this.gitRun = start === null ? null : { pid, start, project };
         try {
+            if (start === null) {
+                throw new HarnessFailure(`git launch ${pid} for ${project} has no start identity`);
+            }
             this.recordState();
         } catch (caught) {
             this.gitRun = null;
@@ -315,10 +361,15 @@ export class HostDriver implements ArmDriver {
 
     private recordState(): void {
         const proc = (pid: number | null) =>
-            pid === null ? null : { pid, start: processStart(pid) };
+            pid === null ? null : { pid, start: this.procStart(pid) };
+        // The daemon's identity is the one captured at its start, so a pid reused after an exit
+        // is never recorded as the daemon.
+        const daemonPid = this.daemonPid();
+        const daemon = this.daemonId?.pid === daemonPid ? this.daemonId : proc(daemonPid);
         const state: ArmState = {
             model: this.model,
-            daemon: proc(this.daemonPid()),
+            daemon,
+            switched: this.switched,
             host: proc(this.sessionProject === null ? null : (this.host?.hostPid() ?? null)),
             ballast: this.ballastShape,
             refilling: this.refilling,
@@ -331,11 +382,26 @@ export class HostDriver implements ArmDriver {
 
     private readState(): ArmState | null {
         if (!existsSync(this.stateFile)) return null;
-        return JSON.parse(readFileSync(this.stateFile, "utf8")) as ArmState;
+        return this.readRecord<ArmState>(this.stateFile);
+    }
+
+    /** A harness-owned record that fails to parse names itself, since the arm cannot continue on it. */
+    private readRecord<T>(path: string): T {
+        try {
+            return JSON.parse(readFileSync(path, "utf8")) as T;
+        } catch (caught) {
+            throw new HarnessFailure(`arm ${this.o.arm}: ${path} is unreadable: ${String(caught)}`);
+        }
     }
 
     private get ballast(): string | null {
         return this.storeMount ? join(this.storeMount, "ballast") : null;
+    }
+
+    /** Whatever the host left at the ballast's name goes: a directory tree, a link, or a file. */
+    private removeBallast(): void {
+        if (!this.ballast) return;
+        rmSync(this.ballast, { recursive: true, force: true });
     }
 
     private async startArm(fresh: boolean, state: ArmState | null = null): Promise<void> {
@@ -349,7 +415,7 @@ export class HostDriver implements ArmDriver {
             this.refilling = true;
             this.recordState();
         }
-        if (this.ballast) rmSync(this.ballast, { force: true });
+        this.removeBallast();
         try {
             if (eidnaraOn(this.o.arm)) {
                 this.checkDaemonDirs();
@@ -363,6 +429,7 @@ export class HostDriver implements ArmDriver {
                     model: this.o.models[0] as string,
                 });
                 await this.daemon.start();
+                this.noteDaemon();
                 this.recordState();
             }
         } finally {
@@ -384,9 +451,11 @@ export class HostDriver implements ArmDriver {
     private requireBallast(expected: ArmState["ballast"], when: string): void {
         const stat = lstatSync(this.ballast ?? "", { throwIfNoEntry: false });
         const shape = stat?.isFile() ? { bytes: stat.size, blocks: stat.blocks } : null;
+        // A second name on the inode would keep the blocks allocated after the unlink.
         if (
             !expected ||
             !shape ||
+            stat?.nlink !== 1 ||
             shape.bytes !== expected.bytes ||
             shape.blocks !== expected.blocks
         ) {
@@ -398,12 +467,14 @@ export class HostDriver implements ArmDriver {
     async reset(): Promise<void> {
         await this.reapStale();
         await this.stop();
+        this.live = true;
         this.model = 0;
         this.transcriptsChecked = false;
         this.ballastShape = null;
         this.refilling = false;
         this.gitRun = null;
         this.failed = null;
+        this.switched = null;
         for (const dir of [this.o.armRoot, this.storeRoot])
             rmSync(dir, { recursive: true, force: true });
         rmSync(this.image, { force: true });
@@ -418,22 +489,30 @@ export class HostDriver implements ArmDriver {
         await this.startArm(true);
     }
 
-    async resume(open: ScenarioEvent | null): Promise<void> {
+    async resume(open: ScenarioEvent | null, interrupted: readonly string[] = []): Promise<void> {
         const state = this.readState();
         if (!state) {
             throw new HarnessFailure(`resume of arm ${this.o.arm}: ${this.stateFile} is gone`);
         }
-        this.model = state.model;
+        // A switch the journal never observed ended with the killed harness; the model it left
+        // goes back to the index it came from.
+        const undone = state.switched && interrupted.includes(state.switched.fault);
+        this.model = undone && state.switched ? state.switched.from : state.model;
+        this.switched = undone ? null : (state.switched ?? null);
+        this.live = true;
         const checked = join(this.armDir, "transcripts.json");
         if (existsSync(checked)) {
-            const missing = JSON.parse(readFileSync(checked, "utf8")).missing as string[];
+            const { missing } = this.readRecord<{ missing: string[] }>(checked);
             if (missing.length > 0) {
                 throw new HarnessFailure(`transcript store missing: ${missing.join(", ")}`);
             }
             this.transcriptsChecked = true;
         }
         await this.reapStale();
-        await this.startArm(false, state);
+        // A fault the journal never observed ended with the killed harness; its ballast goes with it.
+        const lost =
+            state.ballast?.fault !== undefined && interrupted.includes(state.ballast.fault);
+        await this.startArm(false, lost ? { ...state, ballast: null, refilling: false } : state);
         if (open) await this.event(open);
     }
 
@@ -591,7 +670,7 @@ export class HostDriver implements ArmDriver {
     }
 
     private checkDaemon(e: ScenarioEvent): void {
-        if (this.daemon && this.daemonPid() === null) this.o.onDaemonExit({ after: e.id });
+        if (this.daemon && !this.daemonAlive()) this.o.onDaemonExit({ after: e.id });
     }
 
     private project(e: ScenarioEvent): string {
@@ -633,9 +712,18 @@ export class HostDriver implements ArmDriver {
     private checkTranscripts(host: SimHost): void {
         const env = host.transcriptEnv();
         const paths = this.o.transcriptPaths.map((t) => expandTemplate(t, env));
-        // A link or a node of the wrong kind where the store should be is the host's placeholder,
-        // so the store counts as missing.
+        // A link anywhere below the arm root, or a node of the wrong kind where the store should
+        // be, is the host's placeholder, so the store counts as missing.
+        const root = realpathSync(this.o.armRoot);
         const present = (template: string, p: string) => {
+            const rel = relative(root, resolve(p));
+            if (rel.startsWith("..") || isAbsolute(rel)) return false;
+            let at = root;
+            for (const part of rel.split("/")) {
+                at = join(at, part);
+                if (lstatSync(at, { throwIfNoEntry: false })?.isSymbolicLink() !== false)
+                    return false;
+            }
             const stat = lstatSync(p, { throwIfNoEntry: false });
             if (stat === undefined) return false;
             return transcriptKind(template) === "file" ? stat.isFile() : stat.isDirectory();
@@ -658,6 +746,7 @@ export class HostDriver implements ArmDriver {
             const before = this.daemonPid();
             this.checkDaemonDirs();
             await this.daemon.restart();
+            this.noteDaemon();
             this.recordState();
             const after = this.daemonPid();
             return {
@@ -669,12 +758,14 @@ export class HostDriver implements ArmDriver {
         }
         if (f.type === "store_full") {
             const evidence = this.fillStore();
+            if (this.ballastShape) this.ballastShape = { ...this.ballastShape, fault: f.id };
             this.recordState();
             return evidence;
         }
         if (f.type === "plugin_reload") {
             return { reload: "host process and plugin respawn at the next session_start" };
         }
+        this.switched = { fault: f.id, from: this.model };
         this.model++;
         this.host = this.newHost();
         this.recordState();
@@ -702,7 +793,7 @@ export class HostDriver implements ArmDriver {
     /** An unwritten `fallocate` extent and a short `dd` tail fill the store while the sparse image stays small. */
     private fill(): void {
         if (!this.storeMount || !this.ballast) return;
-        rmSync(this.ballast, { force: true });
+        this.removeBallast();
         writeFileSync(this.ballast, "", { flag: "wx" });
         const free = run(["df", "-B1", "--output=avail", this.storeMount])
             .trim()
@@ -745,10 +836,13 @@ export class HostDriver implements ArmDriver {
         if (!ballast) return;
         if (this.ballastShape !== null) {
             this.requireBallast(this.ballastShape, "during the episode");
+            // Space freed beside the ballast would have let writes through, so the episode holds
+            // only while the store still reports none.
+            this.requireFull();
             this.ballastShape = null;
             this.recordState();
         }
-        rmSync(ballast, { force: true });
+        this.removeBallast();
     }
 
     /** A failed finish is recorded, so a resume of an otherwise exhausted arm cannot heal it. */
@@ -758,7 +852,17 @@ export class HostDriver implements ArmDriver {
         } catch (caught) {
             this.failed = String(caught);
             try {
-                this.recordState();
+                // A driver that finishes before it ever reset or resumed holds none of the
+                // recorded identities; the failure joins the record on disk rather than replacing it.
+                const recorded = this.readState();
+                if (recorded && !this.live) {
+                    writeWhole(
+                        this.stateFile,
+                        JSON.stringify({ ...recorded, failed: this.failed }),
+                    );
+                } else {
+                    this.recordState();
+                }
             } catch {
                 // The failure itself is what surfaces; a record that cannot be written changes nothing.
             }

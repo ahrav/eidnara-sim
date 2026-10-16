@@ -56,7 +56,8 @@ if [ -e "$dst/.git" ] || [ -L "$dst/.git" ]; then
         echo "eidnara-build: $dst/.git is not a real directory inside the clone" >&2
         exit 65
     fi
-    if [ "$(cat "$dst/.sim-build-source" 2>/dev/null)" != "$src_real" ]; then
+    if [ -L "$dst/.sim-build-source" ] || [ ! -f "$dst/.sim-build-source" ] ||
+        [ "$(cat "$dst/.sim-build-source")" != "$src_real" ]; then
         echo "eidnara-build: $dst was not cloned by this script from $src" >&2
         exit 65
     fi
@@ -65,8 +66,9 @@ else
     # once it carries its source record. Each such directory holds an owner record, and only
     # a directory whose record names this source is removed as an interrupted clone.
     for left in "$dst".partial.*; do
-        if [ -d "$left" ] && [ ! -L "$left" ] &&
-            [ "$(cat "$left/.sim-build-owner" 2>/dev/null)" = "$src_real" ]; then
+        if [ -d "$left" ] && [ ! -L "$left" ] && [ ! -L "$left/.sim-build-owner" ] &&
+            [ -f "$left/.sim-build-owner" ] &&
+            [ "$(cat "$left/.sim-build-owner")" = "$src_real" ]; then
             rm -rf "$left"
         fi
     done
@@ -93,7 +95,9 @@ bun install --frozen-lockfile
 (cd packages/shm-native && bun run build)
 (cd packages/pi-plugin && bun run build)
 (cd packages/opencode-plugin && bun run build)
-cargo build --locked --release -p daemon --example direct_host_fixture --bin eidnara-host \
-    --features direct-host-fixture
+# The daemon the config points at is <clone>/target/..., so Cargo's outputs go there whatever
+# CARGO_TARGET_DIR or a Cargo configuration specifies.
+cargo build --locked --release --target-dir "$dst/target" -p daemon \
+    --example direct_host_fixture --bin eidnara-host --features direct-host-fixture
 rm -f "$dst/.sim-build-commit"
 git -C "$dst" rev-parse HEAD | tee "$dst/.sim-build-commit"
