@@ -22,7 +22,7 @@ the tier runs the `eidnara-cf` arm. The scenario file is byte-stable per seed
 and precedes any run. Tests check that an L compile samples 20% of the eligible
 probes with distinct entries, that two seeds draw different samples, that each
 deletion names its probe's fact and event, and that S, M, and XL schedule no
-deletions (`src/scenario/compile.test.ts:936-977`). The journal entry before
+deletions (`src/scenario/compile.test.ts:977-1018`). The journal entry before
 `StartRun` lands with the runner in M4.
 
 ## Failure scenario

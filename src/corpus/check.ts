@@ -13,7 +13,7 @@ import {
 } from "./distributions";
 import { ERROR_CODE_FIELDS, entryProblems, parseJsonl, SAMPLE_FIELDS } from "./entries";
 import { bankProblems } from "./fact-bank";
-import { CATEGORY_NAMES, KINDS, QUANTITIES, TABLES, TRACELAB_FILES } from "./fit";
+import { CATEGORIES, CATEGORY_NAMES, KINDS, QUANTITIES, TABLES, TRACELAB_FILES } from "./fit";
 import { loadRepos, REPOS_DIR } from "./repos";
 import { CORPUS_DIR, loadSources, parseJson } from "./sources";
 import { OPENHANDS_FILE } from "./tool-outputs";
@@ -90,6 +90,12 @@ export function checkCorpus(): CorpusReport {
     need(codes.length === ERROR_CODES, `error codes: ${codes.length}, need ${ERROR_CODES}`);
     const codeNames = new Set(codes.map((c) => (c as { code?: string }).code?.trim()));
     need(codeNames.size === codes.length, "error codes: a name repeats");
+    for (const c of codes) {
+        const e = c as { id?: string; code?: string; context?: string };
+        const anchored =
+            (e.context ?? "").trim() !== "" && (e.context ?? "").includes(e.code ?? "\u0000");
+        need(anchored, `error_codes ${e.id}: context must contain the code`);
+    }
     problems.push(
         ...entryProblems(samples, "samples", SAMPLE_FIELDS),
         ...entryProblems(codes, "error_codes", ERROR_CODE_FIELDS),
@@ -194,7 +200,9 @@ export function checkCorpus(): CorpusReport {
             count > 0 && errors >= 0 && errors <= count && exact,
             `tool_mix: ${c.category} share or error_rate is not a count over n`,
         );
-        need(Array.isArray(c.tools), `tool_mix: ${c.category} tools`);
+        const known = c.category === "other" ? [] : (CATEGORIES[c.category] ?? []);
+        const listed = Array.isArray(c.tools) && c.tools.every((t) => known.includes(t));
+        need(listed, `tool_mix: ${c.category} tools ${c.tools} are not all in its category`);
     }
     need(counted === mix?.n, `tool_mix: category counts total ${counted}, n is ${mix?.n}`);
     const tools = (mix?.categories ?? []).flatMap((c) => c.tools);

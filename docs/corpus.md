@@ -95,9 +95,10 @@ with a recorded deviation comes back into band.
 `corpus/tool-outputs/samples.jsonl` holds 600 excerpts, 150 each of test runs,
 grep results, file reads, and stack traces, taken from the first 4,096
 trajectories in row order with at most one excerpt per trajectory and kind.
-`error-codes.jsonl` holds 200 distinct exception names from command output,
-each at its first occurrence with its message and the eight lines before it;
-a name without a message counts only directly below a traceback frame. Every entry
+`error-codes.jsonl` holds 200 distinct exception names from the output of
+completed commands that exited nonzero or printed a traceback, each at its
+first occurrence with its message and the eight lines before it; a name
+without a message counts only directly below a traceback frame. Every entry
 carries `license` and `source_id`; `bun run corpus:check` rejects an entry
 missing either. `corpus/tool-outputs/NOTICE.md` gives the attribution.
 

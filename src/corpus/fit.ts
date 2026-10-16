@@ -23,7 +23,7 @@ export interface TraceLabFit {
     tool_mix: { source: string; n: number; categories: ToolCategory[] };
 }
 
-const CATEGORIES: Record<string, string[]> = {
+export const CATEGORIES: Record<string, string[]> = {
     shell: ["Bash", "exec_command", "write_stdin", "exec", "shell_command", "shell", "wait"],
     read: ["Read", "view_image"],
     edit: ["Edit", "MultiEdit", "Write", "apply_patch", "NotebookEdit"],

@@ -262,7 +262,7 @@ describe("extractFrom", () => {
         expect(pending.error_codes).toEqual([]);
     });
 
-    test("harvests codes only from failed commands", () => {
+    test("harvests codes only from completed commands that exited nonzero or printed a traceback", () => {
         const ok = extractFrom(
             [
                 {

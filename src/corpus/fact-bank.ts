@@ -55,12 +55,15 @@ const isObject = (v: unknown): v is Json =>
     typeof v === "object" && v !== null && !Array.isArray(v);
 const isStringList = (v: unknown) => Array.isArray(v) && v.every((x) => typeof x === "string");
 
-const isRegExp = (pattern: string) => {
+const patternProblem = (pattern: string): string | null => {
+    if (pattern.trim() === "") return "is blank";
+    const unknown = [...pattern.matchAll(/\{(\w+)\}/g)].find(([, k]) => !(k && k in SAMPLE_VARS));
+    if (unknown) return `${pattern} names an unknown placeholder`;
     try {
-        new RegExp(pattern.replace(/\{(\w+)\}/g, (m, k: string) => SAMPLE_VARS[k] ?? m));
-        return true;
+        new RegExp(pattern.replace(/\{(\w+)\}/g, (_m, k: string) => SAMPLE_VARS[k] ?? ""));
+        return null;
     } catch {
-        return false;
+        return `${pattern} is not a regular expression`;
     }
 };
 
@@ -73,11 +76,8 @@ function checkProblems(where: string, check: unknown): string[] {
                 problems.push(`${where}: check key ${key} is not a non-empty list of strings`);
             } else {
                 for (const pattern of value) {
-                    if (!isRegExp(pattern)) {
-                        problems.push(
-                            `${where}: check key ${key} pattern ${pattern} is not a regular expression`,
-                        );
-                    }
+                    const problem = patternProblem(pattern);
+                    if (problem) problems.push(`${where}: check key ${key} pattern ${problem}`);
                 }
             }
         } else if (key === "quote_style_must") {
@@ -87,6 +87,7 @@ function checkProblems(where: string, check: unknown): string[] {
         } else if (SCALAR_CHECKS.includes(key)) {
             if (typeof value !== "string")
                 problems.push(`${where}: check key ${key} is not a string`);
+            else if (value.trim() === "") problems.push(`${where}: check key ${key} is blank`);
         } else if (FLAG_CHECKS.includes(key)) {
             if (value !== true) problems.push(`${where}: check key ${key} is not true`);
         } else problems.push(`${where}: check key ${key} is not a check kind`);
@@ -155,6 +156,12 @@ export function bankProblems(bank: unknown): string[] {
                 for (const field of ["out_probe", "update"]) {
                     if (field in t && typeof t[field] !== "string")
                         problems.push(`${where}: ${field} is not a string`);
+                }
+                if (kind === "scoped_update" && typeof t.update !== "string") {
+                    problems.push(`${where}: update missing`);
+                }
+                if (kind === "decision" && !("authority" in t)) {
+                    problems.push(`${where}: authority missing`);
                 }
                 if ("example" in t) {
                     const e = t.example;
