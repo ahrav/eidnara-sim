@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { sha256Hex } from "../prereg/canonical";
 import { cdfProblems, countProblems, GRID, quantile, tailShare } from "./cdf";
@@ -216,6 +216,24 @@ export function checkCorpus(): CorpusReport {
     need(counted === mix?.n, `tool_mix: category counts total ${counted}, n is ${mix?.n}`);
     const tools = (mix?.categories ?? []).flatMap((c) => c.tools);
     need(new Set(tools).size === tools.length, "tool_mix: a tool appears in two categories");
+    const requests = table(dist, "requests_per_session");
+    const sessions = dist.quantities.requests_per_session?.n ?? 0;
+    let totalRequests = 0;
+    let last = 0;
+    for (const [i, p] of requests.p.entries()) {
+        const k = Math.round(p * sessions);
+        totalRequests += (requests.x[i] ?? 0) * (k - last);
+        last = k;
+    }
+    const emptySessions = requests.x[0] === 0 ? Math.round((requests.p[0] ?? 0) * sessions) : 0;
+    need(
+        dist.quantities.tool_steps_per_request?.n === totalRequests,
+        `tool_steps_per_request: n ${dist.quantities.tool_steps_per_request?.n}, requests total ${totalRequests}`,
+    );
+    need(
+        dist.quantities.idle_within_session_s?.n === totalRequests - (sessions - emptySessions),
+        `idle_within_session_s: n must be one gap per request after each session's first`,
+    );
     const cited = loadCited();
     const citedKeys = cited.checks
         .map((c) => `${c.quantity}@${c.q}`)
@@ -245,7 +263,8 @@ export function checkCorpus(): CorpusReport {
         need(SHA.test(repo.commit), `${repo.id}: commit not a SHA`);
         need(SHA.test(repo.twin.commit), `${repo.twin.id}: commit not a SHA`);
         need(REPO_LICENSES.has(repo.license), `${repo.id}: license ${repo.license}`);
-        need(existsSync(join(REPOS_DIR, `${repo.id}.LICENSE`)), `${repo.id}: license copy missing`);
+        const copy = statSync(join(REPOS_DIR, `${repo.id}.LICENSE`), { throwIfNoEntry: false });
+        need(copy?.isFile() === true && copy.size > 0, `${repo.id}: license copy missing or empty`);
     }
     const roles = new Set(repos.map((r) => r.role));
     need(

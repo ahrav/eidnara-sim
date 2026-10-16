@@ -40,7 +40,7 @@ const ROWS_SCANNED = 4096;
 
 const FOOTER =
     /^\[(The command completed|Current working directory|Python interpreter|Command finished)/;
-const EXIT = /\[Command finished with exit code (-?\d+)\]/;
+const EXIT = /\[Command finished with exit code (-?\d+)\]/g;
 const EXCEPTION =
     /^((?:[A-Za-z_]\w*\.)*[A-Z]\w*(?:Error|Exception|Failure|Exit|Interrupt|Warning))(?::\s?(.*))?$/;
 
@@ -151,7 +151,7 @@ export function extractFrom(rows: TrajectoryRow[], dataset: Dataset): Extraction
             const footer = raw.slice(end).join("\n");
             const lines = raw.slice(0, end);
             const tool = m.name ?? "";
-            const exit = EXIT.exec(footer)?.[1];
+            const exit = [...footer.matchAll(EXIT)].at(-1)?.[1];
             const failed =
                 exit !== undefined && (exit !== "0" || lines.join("\n").includes(TRACEBACK));
             if (tool === "execute_bash" && failed) harvestCodes(lines, base, codes);

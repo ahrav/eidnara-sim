@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { CORPUS_DIR, isPlainRelativePath, under } from "./sources";
 
@@ -62,8 +62,23 @@ export function loadRepos(): RepoSpec[] {
                 `repos.json: ${repo.id}: license_file must be a relative path in the clone`,
             );
         }
-        if (!existsSync(join(TWINS_DIR, repo.twin.id))) {
-            throw new Error(`repos.json: ${repo.twin.id}: corpus/twins/${repo.twin.id} is missing`);
+        const overlay = join(TWINS_DIR, repo.twin.id);
+        if (!statSync(overlay, { throwIfNoEntry: false })?.isDirectory()) {
+            throw new Error(
+                `repos.json: ${repo.twin.id}: corpus/twins/${repo.twin.id} is not a directory`,
+            );
+        }
+        const expected = repo.expected;
+        const outcome =
+            typeof expected === "object" &&
+            expected !== null &&
+            Number.isSafeInteger(expected.exit_code) &&
+            Array.isArray(expected.summary) &&
+            expected.summary.every((s) => typeof s === "string" && s.trim() !== "");
+        if (!outcome) {
+            throw new Error(
+                `repos.json: ${repo.id}: expected needs an integer exit_code and summary lines`,
+            );
         }
         if (!Array.isArray(repo.twin.renames)) {
             throw new Error(`repos.json: ${repo.twin.id}: renames must be an array`);
