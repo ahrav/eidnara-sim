@@ -109,7 +109,7 @@ export function checkRecord(record: Record, spec: FieldSpec[], catalogDir: strin
         }
     }
     const oq = field("Open questions");
-    if (oq !== "None." && !(oq === "" || oq.startsWith("\n- ") || oq.startsWith("- "))) {
+    if (oq !== "None." && !(oq.startsWith("\n- ") || oq.startsWith("- "))) {
         errors.push(`${at}: Open questions is neither None. nor a list`);
     }
     return errors;
@@ -138,7 +138,10 @@ export function checkCatalog(
         .split("\n")
         .filter((line) => line.startsWith("| "))
         .slice(2)) {
-        const m = /^\| ([A-Z0-9-]+) \| \[([a-z0-9-]+)\]\(#\2\) \|/.exec(row);
+        const m =
+            /^\| ([A-Z0-9-]+) \| \[([a-z0-9-]+)\]\(#\2\) \| ([a-z]+) \| (`[^`]+`) \| ([a-z-]+) \| /.exec(
+                row,
+            );
         if (!m) {
             errors.push(`catalog: index row malformed: ${row}`);
             continue;
@@ -147,6 +150,17 @@ export function checkCatalog(
         const slug = m[2] ?? "";
         if (!slug.startsWith(`${id.toLowerCase()}-`)) {
             errors.push(`catalog: index row ${id} links ${slug}`);
+        }
+        const record = records.find((r) => r.slug === slug);
+        if (record) {
+            const get = (name: string) => record.fields.find(([n]) => n === name)?.[1] ?? "";
+            const shown = [m[3], m[4], m[5]].join(", ");
+            const held = [get("Type"), get("Check").split(" - ")[0], get("Reachability")].join(
+                ", ",
+            );
+            if (shown !== held) {
+                errors.push(`catalog: index row ${id} reads ${shown}; the record reads ${held}`);
+            }
         }
         linked.push(slug);
     }

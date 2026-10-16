@@ -124,10 +124,11 @@ Two refusals block it:
    gates (`UnsupportedEndpoints`) and any multiplicity other than `none`
    (`UnsupportedMultiplicity`). v2's families and Holm need
    `eval-analysis-family/v3`.
-2. `item_count_threshold` below 300 is `ItemCountThresholdBelowFloor`. S and
-   M probe counts are below it, so their probe families are descriptive or
-   use the v2 run floor until `eval-analysis-family/v3` adds a per-tier item
-   floor.
+2. `item_count_threshold` below 300 is `ItemCountThresholdBelowFloor`. Every
+   tier's registered probe count is below it (S 24, M 120, L 150 before
+   re-sizing, XL 60), so no tier's probe family projects until
+   `eval-analysis-family/v3` adds a per-tier item floor; L projects only if the
+   M re-sizing raises its count to at least 300.
 
 Required eval-core fields also lack a v2 source:
 

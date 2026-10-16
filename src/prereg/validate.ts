@@ -159,6 +159,10 @@ const TIER_SECTIONS: Record<string, { tiers: readonly string[]; shape: Shape }> 
 };
 
 export const HARM_METRIC_COUNT = 5;
+/** The A/A pairs S and M register, sorted as `arm/arm`. */
+const AA_CONTROL_PAIRS = ["eidnara/eidnara", "host/host"];
+/** M repeats its A/A pairs this many times before a pipeline false-positive rate is claimed. */
+export const AA_REPEATS_FOR_FALSE_POSITIVE_RATE = 5;
 
 function isObject(value: unknown): value is Obj {
     return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -261,6 +265,17 @@ function checkArms(p: Preregistration, errors: string[]): void {
             errors.push(`aa_controls.pairs[${i}]: expected one run arm twice`);
         }
     });
+    if (p.aa_controls) {
+        const pairs = p.aa_controls.pairs.map((pair) => pair.join("/")).sort();
+        if (pairs.join(",") !== AA_CONTROL_PAIRS.join(",")) {
+            errors.push("aa_controls.pairs: expected host/host and eidnara/eidnara");
+        }
+        if (p.tier === "M" && p.aa_controls.repeats < AA_REPEATS_FOR_FALSE_POSITIVE_RATE) {
+            errors.push(
+                `aa_controls.repeats: M repeats each A/A pair at least ${AA_REPEATS_FOR_FALSE_POSITIVE_RATE} times`,
+            );
+        }
+    }
     const runSet = [...p.arms.run].sort().join(",");
     p.arms.order_by_seed.forEach((order, i) => {
         if ([...order].sort().join(",") !== runSet) {

@@ -98,6 +98,26 @@ describe("catalog checker", () => {
         );
     });
 
+    test("refuses a blank Open questions field", () => {
+        const path = copy();
+        edit(path, "Open questions: None.", "Open questions:");
+        expect(checkCatalog(path, METHOD, IDS)).toContain(
+            "sim-p01-scenario-compile-is-deterministic: Open questions is neither None. nor a list",
+        );
+    });
+
+    test("refuses an index row whose type, check, or reachability differs from its record", () => {
+        const path = copy();
+        edit(
+            path,
+            "| SIM-P01 | [sim-p01-scenario-compile-is-deterministic](#sim-p01-scenario-compile-is-deterministic) | safety | `always` | default-production |",
+            "| SIM-P01 | [sim-p01-scenario-compile-is-deterministic](#sim-p01-scenario-compile-is-deterministic) | liveness | `unreachable` | test-only |",
+        );
+        expect(checkCatalog(path, METHOD, IDS)).toContain(
+            "catalog: index row SIM-P01 reads liveness, `unreachable`, test-only; the record reads safety, `always`, default-production",
+        );
+    });
+
     test("refuses an index row whose link is malformed", () => {
         const path = copy();
         edit(

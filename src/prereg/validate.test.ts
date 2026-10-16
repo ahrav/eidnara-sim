@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { CLAIM_BOUNDARY, checkReport, type TierReport } from "./report";
+import { CLAIM_BOUNDARY, checkReport, type FamilyVerdict, type TierReport } from "./report";
 import { needsPairedRuns, type Preregistration, REQUIRED_FAMILIES, TIERS } from "./schema";
 import { parsePreregistration, preregistrationHash, validatePreregistration } from "./validate";
 
@@ -132,6 +132,7 @@ describe("pre-registration validator", () => {
                 "families[probe-P2].claim: a descriptive claim and a descriptive direction go together",
                 "aa_controls.pairs[0]: expected one run arm twice",
                 "aa_controls.pairs[1]: expected one run arm twice",
+                "aa_controls.pairs: expected host/host and eidnara/eidnara",
             ].sort(),
         );
     });
@@ -151,6 +152,21 @@ describe("pre-registration validator", () => {
                 "arms.order_by_seed[1]: is not a permutation of arms.run",
             ].sort(),
         );
+    });
+
+    test("requires both A/A control pairs and five M repeats", () => {
+        const prereg = load("M") as any;
+        prereg.aa_controls.pairs = [["host", "host"]];
+        prereg.aa_controls.repeats = 1;
+        expect(validatePreregistration(prereg).sort()).toEqual([
+            "aa_controls.pairs: expected host/host and eidnara/eidnara",
+            "aa_controls.repeats: M repeats each A/A pair at least 5 times",
+        ]);
+        const s = load("S") as any;
+        s.aa_controls.pairs.push(["eidnara-kl", "eidnara-kl"]);
+        expect(validatePreregistration(s)).toEqual([
+            "aa_controls.pairs: expected host/host and eidnara/eidnara",
+        ]);
     });
 
     test("refuses a P11 false-positive weight other than two", () => {
@@ -211,6 +227,16 @@ describe("report check against the pre-registration", () => {
     test("accepts a report that carries every pre-registered family with an allowed verdict", () => {
         expect(checkReport(acceptedReport(s), s)).toEqual([]);
         expect(checkReport(acceptedReport(m), m)).toEqual([]);
+    });
+
+    test("refuses a verdict without n or without an MDE by name", () => {
+        const r = acceptedReport(m);
+        delete (at(r, "probe-P1") as Partial<FamilyVerdict>).n;
+        delete (at(r, "harm") as Partial<FamilyVerdict>).mde;
+        expect(checkReport(r, m)).toEqual([
+            "families[probe-P1].n: missing",
+            "families[harm].mde: expected a canonical decimal string",
+        ]);
     });
 
     test("refuses a report with a missing family by name", () => {
