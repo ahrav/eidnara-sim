@@ -67,7 +67,11 @@ export function blind(
     reference: string,
     canaries: string[],
 ): BlindedPrompt {
-    for (const text of [pair.a, pair.b]) {
+    for (const [label, text] of [
+        ["answer a", pair.a],
+        ["answer b", pair.b],
+        ["reference", reference],
+    ] as const) {
         const variants = [text, normalise(text)].flatMap((t) => [t, t.replace(INVISIBLE, " ")]);
         const folds = variants.map(foldWords);
         const joined = folds.map((f) => f.replaceAll(" ", ""));
@@ -78,13 +82,13 @@ export function blind(
                     folds.some((f) => f.includes(foldWords(c))) ||
                     joined.some((j) => j.includes(foldWords(c).replaceAll(" ", "")))),
         );
-        if (canary) throw new BlindingRefused(`pair ${pair.id} carries canary ${canary}`);
+        if (canary) throw new BlindingRefused(`pair ${pair.id} ${label} carries canary ${canary}`);
         const token = ARM_TOKENS.find(
             (t) =>
                 folds.some((f) => f.includes(` ${t} `)) ||
                 (!t.includes(" ") && joined.some((j) => j.includes(t))),
         );
-        if (token) throw new BlindingRefused(`pair ${pair.id} names an arm: ${token}`);
+        if (token) throw new BlindingRefused(`pair ${pair.id} ${label} names an arm: ${token}`);
     }
     const [first, second] = order === "a_then_b" ? [pair.a, pair.b] : [pair.b, pair.a];
     return { pair: pair.id, order, reference, first: normalise(first), second: normalise(second) };
@@ -286,7 +290,8 @@ export function p7Pair(item: string, a: Snapshot, b: Snapshot): P7Inputs | null 
         ["a", pair.a],
         ["b", pair.b],
     ] as const) {
-        if (text.trim() === "") throw new GradeRefused(`P7 item ${item}: answer ${side} is empty`);
+        if (normalise(text) === "")
+            throw new GradeRefused(`P7 item ${item}: answer ${side} is empty`);
     }
     return {
         pair,

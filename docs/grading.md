@@ -78,11 +78,13 @@ cannot call, and the divergences are listed below.
    it refuses a snapshot of another item or two snapshots of one arm,
    refuses a snapshot with a non-grade artefact, returns null when either
    probe turn ended `failed` (SIM-P46), reads each probe turn's last agent
-   answer from the `proxy-call` artefact, refuses an empty answer, and
+   answer from the `proxy-call` artefact, refuses an answer that is empty
+   after normalisation, and
    returns the snapshot ids, arm names, and the artefact ids it read as the
    grades' inputs.
 2. `blind` takes a pair of answers to one P7 item, the memory arm's as `a`
-   and the host arm's as `b`, and refuses either answer when it carries a
+   and the host arm's as `b`, and refuses either answer, or the reference
+   reason, when it carries a
    canary or names an arm. Names are matched as whole words after folding
    case, full width, and separators and dropping invisible characters and
    every combining mark after canonical decomposition (eval-core drops the

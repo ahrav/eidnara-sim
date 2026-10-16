@@ -407,6 +407,33 @@ describe("P7 judge path", () => {
         expect(() => gradeP7(judgment, context("q-other"), rules)).toThrow(GradeRefused);
     });
 
+    test("the reference reason is blinded like the answers", () => {
+        const pair = { id: "p", a: "fine", b: "fine" };
+        expect(() => blind(pair, "a_then_b", "the host arm said so", [])).toThrow("names an arm");
+        expect(() => blind(pair, "a_then_b", "see CANARY-7f3", ["CANARY-7f3"])).toThrow(
+            BlindingRefused,
+        );
+        expect(blind(pair, "a_then_b", "allocation dominated", []).reference).toBe(
+            "allocation dominated",
+        );
+    });
+
+    test("an answer that is only formatting is refused as empty", () => {
+        const snap = (arm: string, text: string): Snapshot => ({
+            id: `snap-${arm}`,
+            item: "q-1",
+            arm,
+            turn: "e-1",
+            turn_outcome: "ok",
+            artefacts: [{ id: `${arm}:calls`, class: "proxy-call", calls: [agentCall(text)] }],
+        });
+        for (const blank of ["**", "```\n```", "__ ** `"]) {
+            expect(() => p7Pair("q-1", snap("eidnara", "because"), snap("host", blank))).toThrow(
+                "answer b is empty",
+            );
+        }
+    });
+
     test("the human-check sample is ten percent of P7 items, rounded up, from a seeded draw", () => {
         const items = Array.from({ length: 24 }, (_, i) => `q-${i}`);
         const a = humanCheckSample(items, rules, new Rng(9));
