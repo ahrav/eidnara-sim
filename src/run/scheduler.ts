@@ -257,7 +257,10 @@ export class Scheduler {
             return;
         }
         if (OUTAGE.has(f.type)) this.outage = f.id;
-        const evidence = await driver.fault(f);
+        const { stores, ...evidence } = await driver.fault(f);
+        // Store checks an earlier restart owed, settled before this fault took the daemon down.
+        for (const s of (stores as TurnOutcome["stores"]) ?? [])
+            this.log({ kind: "StoreChecked", event: null, ...s });
         this.log({ kind: "FaultObserved", fault: f.id, type: f.type, evidence });
     }
 

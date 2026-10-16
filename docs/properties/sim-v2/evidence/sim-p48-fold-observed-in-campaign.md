@@ -18,9 +18,9 @@ eidnara arm) at a 30000-token context limit, recorded as
 `tests/fixtures/recovery/recovery-3-eidnara.json`: its call records hold five
 `history_summarizer` calls across sessions `s-0003` to `s-0005`, and the
 final store (`<arm>/store-check.json`, the fixture's `finalStore`) holds
-history segments for `sim-s-0003` and `sim-s-0005`. The default context limit
-gave no fold in the earlier S smoke runs, so a tier run reaches this property
-only once sessions grow past the fold threshold. No check counts folds yet.
+history segments for `sim-s-0003` and `sim-s-0005`. Whether a run at the
+default context limit folds is unresolved: no retained artifact records both
+an S run and its default limit. No check counts folds yet.
 
 ## Failure scenario
 

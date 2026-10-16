@@ -82,8 +82,9 @@ replacement daemon starts, which shows the state the crash left and keeps
 the replacement's startup out of the baseline; at the end of the first turn
 whose plugin log, past its length at the restart, shows a pass the
 replacement served (`served_from=transform`), so that turn's passes include
-the first pass after the crash, or else at the session's end or the arm's
-finish once the session's background passes have settled, and journals that
+the first pass after the crash, or else at the session's end, the arm's
+finish, or a later daemon fault before it kills the daemon, once a served pass
+is on record, and journals that
 check as `StoreChecked` with the fault's id (`event` names the turn or
 session end, or is null at finish), one entry per restart it settles, written
 before the turn's `EndTurn`; and
@@ -93,8 +94,10 @@ stops and writes it to `<arm>/store-check.json`. Each check runs SQLite's
 one session whose message ranges overlap; the memory store refuses such a
 segment on write ("ranges must be strictly increasing",
 `crates/memory-store/src/lib.rs` in eidnara), so a stored overlap or a
-duplicated segment means a write bypassed that refusal. A store that fails
-to open reports `error: <reason>` as its integrity.
+duplicated segment means a write bypassed that refusal. A segment whose own
+bounds are inverted passes SQLite's pragma, so the check appends it to the
+integrity string (`ok; inverted range <session>/<sequence>`). A store that
+fails to open reports `error: <reason>` as its integrity.
 
 The wire contract's post-crash rule (`docs/host-wire-protocol.md` in
 eidnara, the revert paragraph of the transform section) is that the next

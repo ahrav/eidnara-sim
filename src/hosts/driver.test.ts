@@ -629,6 +629,20 @@ describe("HostDriver faults", () => {
         expect(last.stores?.map((s) => s.fault)).toEqual(["f-daemon_sigkill_mid_fold"]);
     });
 
+    test("a restart settles the check an earlier restart's served pass earned, before it kills the daemon", async () => {
+        const { driver } = fixture("eidnara");
+        driver.daemon = fakeDaemon(10) as unknown as DaemonStack;
+        driver.host = new FakeHost({} as HostContext, "/x") as unknown as SimHost;
+        await driver.fault(episode("daemon_restart"));
+        pluginLog(driver, PASS);
+        const second = await driver.fault(episode("daemon_sigkill_mid_fold"));
+        expect((second.stores as { fault: string }[]).map((s) => s.fault)).toEqual([
+            "f-daemon_restart",
+        ]);
+        const turn = await driver.event(ev("user_turn", { id: "e-1", text: "go" }));
+        expect(turn.stores).toBeUndefined();
+    });
+
     test("the store check waits for the first pass the replacement daemon serves", async () => {
         const { driver } = fixture("eidnara");
         driver.daemon = fakeDaemon(10) as unknown as DaemonStack;

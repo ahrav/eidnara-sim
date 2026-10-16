@@ -1248,8 +1248,8 @@ Type: reachability
 Reachability: default-production
 Status: active
 Exercised: partial - the live S run `recovery-3` at a 30000-token context
-limit produced folds (`tests/fixtures/recovery/recovery-3-eidnara.json`); the
-default limit produced none, and no check counts them
+limit produced folds (`tests/fixtures/recovery/recovery-3-eidnara.json`); no
+retained run records the default limit, and no check counts them
 Guarantee: SIM-P48: A fold or host compaction occurs at least once per campaign.
 Check: `sometimes` - observe at least one fold or compaction event; without one
 P13 and SIM-P47 are vacuous.
@@ -1263,7 +1263,9 @@ PROPOSED: reconstructed from the condensed index in spec #1007; one live S run
 has since reached it at a lowered context limit.
 Existing check: none
 Impact: Fold fidelity is never measured.
-Open questions: None.
+Open questions:
+- Does a run at the default context limit fold? No retained artifact records
+  one; unresolved, needs a default-limit S run.
 
 ### sim-p49-p1-control-instance-paired
 

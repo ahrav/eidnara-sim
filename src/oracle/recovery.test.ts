@@ -233,6 +233,12 @@ describe("recovery oracles", () => {
             { session: "s", first: 1, second: 2 },
             { session: "s", first: 1, second: 3 },
         ]);
+        const inverted = new Database(path);
+        inverted.run(
+            "insert into history_segments (session_id, sequence, start_message, end_message) values ('u', 1, 9, 2)",
+        );
+        inverted.close();
+        expect(checkStore(path).integrity).toBe("ok; inverted range u/1");
         const junk = join(dirname(path), "junk.db");
         writeFileSync(junk, "not sqlite at all, padded past the header length of a database file");
         expect(checkStore(junk).integrity).toStartWith("error: ");

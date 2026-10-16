@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 
 export interface StoreCheck {
+    /** SQLite's `integrity_check` result, followed by any segment whose own bounds are inverted. */
     integrity: string;
     segments: number;
     overlaps: { session: string; first: number; second: number }[];
@@ -47,12 +48,19 @@ function inspect(path: string): StoreCheck {
     const db = new Database(path, { readonly: true });
     try {
         const rows = db.query("pragma integrity_check").all() as { integrity_check: string }[];
-        const integrity = rows.map((r) => r.integrity_check).join("; ");
+        const checks = rows.map((r) => r.integrity_check);
         const segments = db
             .query(
                 "select session_id, sequence, start_message, end_message, start_message_id, end_message_id, title, content from history_segments order by session_id, start_message, end_message, sequence",
             )
             .all() as Segment[];
+        // The schema has no constraint on the bounds, so an inverted range passes the pragma.
+        for (const g of segments) {
+            if (g.start_message > g.end_message) {
+                checks.push(`inverted range ${g.session_id}/${g.sequence}`);
+            }
+        }
+        const integrity = checks.join("; ");
         const overlaps: StoreCheck["overlaps"] = [];
         let reach: Segment | null = null;
         for (const next of segments) {

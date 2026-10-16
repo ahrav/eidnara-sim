@@ -514,6 +514,8 @@ export class HostDriver implements ArmDriver {
         fault: string,
     ): Promise<Record<string, unknown>> {
         const before = daemon.pid();
+        // An earlier restart's check that a served pass has earned is taken from this daemon.
+        const stores = this.owedStores();
         this.o.sampleDaemon?.();
         await daemon.crash();
         const store = checkStore(this.storeDb);
@@ -529,6 +531,7 @@ export class HostDriver implements ArmDriver {
             pid_after: daemon.pid(),
             restarted_by: "harness",
             store,
+            ...(stores ? { stores } : {}),
         };
     }
 

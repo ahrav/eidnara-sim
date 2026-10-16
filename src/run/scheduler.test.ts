@@ -503,12 +503,14 @@ describe("store checks outside turns", () => {
                 if (e.kind === "user_turn") return { stores: [{ fault: "r-0", store }] };
                 return {};
             },
-            fault: async () => ({}),
+            fault: async () => ({ pid_after: 2, stores: [{ fault: "r-9", store }] }),
             finish: async () => ({ stores: [{ fault: "r-2", store }] }),
         };
         await new Scheduler({
             events: fixtureEvents(1),
-            faults: [],
+            faults: [
+                episode("restart", "daemon_restart", { kind: "session_start", session: "s-0000" }),
+            ],
             journal: j,
             settleMs: 0,
             order: ["a"],
@@ -516,10 +518,17 @@ describe("store checks outside turns", () => {
         }).run();
         const checks = j.entries.filter((e) => e.kind === "StoreChecked");
         expect(checks.map((e) => [e.fault, e.event])).toEqual([
+            ["r-9", null],
             ["r-0", "e-000001"],
             ["r-1", "e-999999"],
             ["r-2", null],
         ]);
+        // A check a fault settles precedes its FaultObserved, whose evidence carries no stores.
+        const observed = j.entries.find((e) => e.kind === "FaultObserved");
+        expect(observed?.evidence).toEqual({ pid_after: 2 });
+        expect(j.entries.indexOf(checks[0] as Entry)).toBeLessThan(
+            j.entries.indexOf(observed as Entry),
+        );
         const kinds = j.entries.map((e) => e.kind);
         // A turn's check precedes its EndTurn, so a kill between the two replays the turn with
         // the check already on record, and the arm's last check precedes EndArm.
