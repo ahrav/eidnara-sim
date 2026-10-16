@@ -1,0 +1,86 @@
+{
+  "provenance": "constructed",
+  "probe": {
+    "id": "P14-f",
+    "type": "P14",
+    "fact": null,
+    "project": "mini-redis",
+    "session": "s-1",
+    "text": null,
+    "check": {
+      "window_from_turn": 4
+    }
+  },
+  "snapshots": [
+    {
+      "id": "s-P14-f",
+      "item": "P14-f",
+      "arm": "eidnara",
+      "turn": "e-1",
+      "turn_outcome": "ok",
+      "artefacts": [
+        {
+          "id": "p1",
+          "class": "proxy-call",
+          "calls": [
+            {
+              "seq": 5,
+              "component": "history_summarizer",
+              "turn": "e-0",
+              "scenario_ms": 500,
+              "input_tokens": 20000,
+              "output_tokens": 2000,
+              "turn_index": 5
+            },
+            {
+              "seq": 13,
+              "component": "user-sim",
+              "turn": null,
+              "turn_index": 3,
+              "scenario_ms": 400,
+              "input_tokens": 10,
+              "output_tokens": 10,
+              "label": "pushback"
+            },
+            {
+              "seq": 15,
+              "component": "user-sim",
+              "turn": null,
+              "turn_index": 5,
+              "scenario_ms": 600,
+              "input_tokens": 10,
+              "output_tokens": 10,
+              "label": "none"
+            },
+            {
+              "seq": 16,
+              "component": "user-sim",
+              "turn": null,
+              "turn_index": 6,
+              "scenario_ms": 700,
+              "input_tokens": 10,
+              "output_tokens": 10,
+              "label": "none"
+            },
+            {
+              "seq": 31,
+              "component": "user-sim",
+              "turn": null,
+              "turn_index": 6,
+              "scenario_ms": 450,
+              "input_tokens": 10,
+              "output_tokens": 10,
+              "label": "pushback"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "expect": {
+    "verdict": "pass",
+    "metrics": {
+      "P14.post_compaction_correction_count": 0
+    }
+  }
+}

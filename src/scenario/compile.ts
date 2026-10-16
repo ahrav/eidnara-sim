@@ -454,12 +454,14 @@ export async function compileScenario(input: CompileInput) {
             addProbe("P2", project.id, outText, mustNot, fromConveyed);
             addProbe("P11", twinOf(project.id), probeText, mustNot, later(twinOf(project.id)));
         } else if (host) {
-            addProbe("P13", project.id, probeText, check, [host], () =>
+            const ranged = { ...(check as Record<string, unknown>), turns: [turnLo, turnHi] };
+            addProbe("P13", project.id, probeText, ranged, [host], () =>
                 range(turnHi - third, turnHi),
             );
         } else if (f.type === "P4") {
             const out = slot % 2 === 1;
-            const c = out ? renderDeep(tpl.out_check ?? tpl.check, vars) : check;
+            const scoped = out ? renderDeep(tpl.out_check ?? tpl.check, vars) : check;
+            const c = { ...(scoped as Record<string, unknown>), scope: out ? "out" : "in" };
             addProbe("P4", project.id, out ? outText : probeText, c, fromConveyed);
         } else if (f.type === "P6") {
             const opening = fromConveyed.filter((x) => !turns.has(key(x.id, 0)));

@@ -1,7 +1,7 @@
 {
     "schema": "sim-prereg/v1",
     "tier": "S",
-    "revision": 3,
+    "revision": 4,
     "frozen": true,
     "arms": {
         "default": "eidnara",
@@ -95,6 +95,23 @@
         "c_bytes_per_session": 8388608,
         "r2_threshold": "0.8",
         "sample_interval_ms": 10000
+    },
+    "grading": {
+        "first_attempt_only": true,
+        "lookup_match": "whole-word",
+        "abstain_rule": "leading-UNKNOWN",
+        "p11_false_positive_weight": "2",
+        "p13_reduction_ratio": {
+            "min": "0.02",
+            "max": "0.5"
+        },
+        "judge": {
+            "model": "global.openai.gpt-5.6-luna",
+            "cross_judge": "global.anthropic.claude-haiku-5-5",
+            "calibration_min_pairs": 20,
+            "human_sample_percent": 10,
+            "arm_identification_ceiling_percent": 60
+        }
     },
     "families": [
         {

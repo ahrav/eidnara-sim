@@ -1,0 +1,45 @@
+{
+  "provenance": "constructed",
+  "probe": {
+    "id": "P14-c",
+    "type": "P14",
+    "fact": null,
+    "project": "mini-redis",
+    "session": "s-1",
+    "text": null,
+    "check": {
+      "window_from_turn": 4
+    }
+  },
+  "snapshots": [
+    {
+      "id": "s-P14-c",
+      "item": "P14-c",
+      "arm": "eidnara",
+      "turn": "e-1",
+      "turn_outcome": "ok",
+      "artefacts": [
+        {
+          "id": "p1",
+          "class": "proxy-call",
+          "calls": [
+            {
+              "seq": 15,
+              "component": "user-sim",
+              "turn": null,
+              "turn_index": 5,
+              "scenario_ms": 600,
+              "input_tokens": 10,
+              "output_tokens": 10,
+              "label": "pushback"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "expect": {
+    "verdict": "excluded",
+    "reason": "no compaction in the session"
+  }
+}

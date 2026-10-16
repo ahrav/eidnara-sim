@@ -1,0 +1,76 @@
+{
+  "provenance": "constructed",
+  "probe": {
+    "id": "P6-a",
+    "type": "P6",
+    "fact": "f-1",
+    "project": "mini-redis",
+    "session": "s-1",
+    "text": "Do the task.",
+    "check": {
+      "must": [
+        "jaunty_yak_count"
+      ]
+    },
+    "event": "e-1"
+  },
+  "snapshots": [
+    {
+      "id": "s-P6-a",
+      "item": "P6-a",
+      "arm": "eidnara",
+      "turn": "e-1",
+      "turn_outcome": "ok",
+      "artefacts": [
+        {
+          "id": "prior",
+          "class": "diff",
+          "role": "prior-session",
+          "patch": "diff --git a/src/connection.rs b/src/connection.rs\n--- a/src/connection.rs\n+++ b/src/connection.rs\n@@ -1,0 +1,1 @@\n+pub struct Connection {\n"
+        },
+        {
+          "id": "d1",
+          "class": "diff",
+          "role": "turn",
+          "patch": "diff --git a/src/connection.rs b/src/connection.rs\n--- a/src/connection.rs\n+++ b/src/connection.rs\n@@ -1,0 +1,1 @@\n+    jaunty_yak_count: u64,\n"
+        },
+        {
+          "id": "c1",
+          "class": "command-log",
+          "commands": [
+            {
+              "command": "cargo build",
+              "exit": 0,
+              "scenario_ms": 0
+            }
+          ],
+          "role": "turn"
+        },
+        {
+          "id": "p1",
+          "class": "proxy-call",
+          "calls": [
+            {
+              "seq": 1,
+              "component": "agent",
+              "turn": "e-1",
+              "scenario_ms": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "response_text": "Added the field."
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "expect": {
+    "verdict": "pass",
+    "metrics": {
+      "P6.pass": true,
+      "P6.reread_files": 0,
+      "P6.ran_tests": false,
+      "P6.rediscovery_tokens": 1100
+    }
+  }
+}

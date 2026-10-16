@@ -1,0 +1,47 @@
+{
+  "provenance": "constructed",
+  "probe": {
+    "id": "P4-c",
+    "type": "P4",
+    "fact": "f-1",
+    "project": "mini-redis",
+    "session": "s-1",
+    "text": "Do the task.",
+    "check": {
+      "must": [
+        "trace!"
+      ],
+      "must_not": [
+        "debug!"
+      ],
+      "scope": "in"
+    },
+    "event": "e-1"
+  },
+  "snapshots": [
+    {
+      "id": "s-P4-c",
+      "item": "P4-c",
+      "arm": "eidnara",
+      "turn": "e-1",
+      "turn_outcome": "ok",
+      "artefacts": [
+        {
+          "id": "d1",
+          "class": "diff",
+          "role": "turn",
+          "patch": "diff --git a/src/cmd/mod.rs b/src/cmd/mod.rs\n--- a/src/cmd/mod.rs\n+++ b/src/cmd/mod.rs\n@@ -1,0 +1,1 @@\n+debug!(cmd = %name, \"parsed\");\n"
+        }
+      ]
+    }
+  ],
+  "expect": {
+    "verdict": "fail",
+    "reason": "kept the superseded rule",
+    "metrics": {
+      "P4.pass": false,
+      "P4.collapsed": false,
+      "P4.harm": false
+    }
+  }
+}

@@ -1,0 +1,47 @@
+{
+  "provenance": "constructed",
+  "probe": {
+    "id": "P9-c",
+    "type": "P9",
+    "fact": "f-1",
+    "project": "mini-redis",
+    "session": "s-1",
+    "text": "How long do we hold on to the trail of keys once they lapse?",
+    "check": {
+      "abstain": true
+    },
+    "event": "e-1"
+  },
+  "snapshots": [
+    {
+      "id": "s-P9-c",
+      "item": "P9-c",
+      "arm": "eidnara",
+      "turn": "e-1",
+      "turn_outcome": "ok",
+      "artefacts": [
+        {
+          "id": "p1",
+          "class": "proxy-call",
+          "calls": [
+            {
+              "seq": 1,
+              "component": "agent",
+              "turn": "e-1",
+              "scenario_ms": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "response_text": "I don't know for sure, maybe 30632 seconds."
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "expect": {
+    "verdict": "fail",
+    "metrics": {
+      "P9.pass": false
+    }
+  }
+}

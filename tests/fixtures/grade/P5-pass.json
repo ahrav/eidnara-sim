@@ -1,0 +1,54 @@
+{
+  "provenance": "constructed",
+  "probe": {
+    "id": "P5-a",
+    "type": "P5",
+    "fact": "f-1",
+    "project": "mini-redis",
+    "session": "s-1",
+    "text": "Do the task.",
+    "check": {
+      "must_not": [
+        "static\\s+\\w+\\s*:\\s*.*Mutex",
+        "lazy_static",
+        "OnceLock<.*Mutex"
+      ]
+    },
+    "event": "e-1"
+  },
+  "snapshots": [
+    {
+      "id": "s-P5-a",
+      "item": "P5-a",
+      "arm": "eidnara",
+      "turn": "e-1",
+      "turn_outcome": "ok",
+      "artefacts": [
+        {
+          "id": "d1",
+          "class": "diff",
+          "role": "turn",
+          "patch": "diff --git a/src/db.rs b/src/db.rs\n--- a/src/db.rs\n+++ b/src/db.rs\n@@ -1,0 +1,1 @@\n+entries: DashMap<String, Entry>,\n"
+        },
+        {
+          "id": "c1",
+          "class": "command-log",
+          "commands": [
+            {
+              "command": "cargo test",
+              "exit": 0,
+              "scenario_ms": 0
+            }
+          ],
+          "role": "turn"
+        }
+      ]
+    }
+  ],
+  "expect": {
+    "verdict": "pass",
+    "metrics": {
+      "P5.pass": true
+    }
+  }
+}

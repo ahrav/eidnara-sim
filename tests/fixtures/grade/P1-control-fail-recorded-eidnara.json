@@ -1,0 +1,165 @@
+{
+  "provenance": "recorded: grade-1 live run (2026-10-16), eidnara arm, captured by SnapshotRecorder at probe turn e-000011; the agent declined the change because mini-redis has no multi-key GET",
+  "probe": {
+    "check": {
+      "must": [
+        "DROWSY_EGRET_[A-Z0-9_]+"
+      ]
+    },
+    "event": "e-000011",
+    "fact": "f-0012",
+    "id": "q-0012",
+    "project": "mini-redis",
+    "session": "s-0003",
+    "text": "Put a cap on how many keys one GET-style request may name, and reject requests above it.",
+    "type": "P1-control"
+  },
+  "snapshots": [
+    {
+      "id": "eidnara:q-0012",
+      "item": "q-0012",
+      "arm": "eidnara",
+      "turn": "e-000011",
+      "turn_outcome": "ok",
+      "artefacts": [
+        {
+          "id": "eidnara:q-0012:diff",
+          "class": "diff",
+          "role": "turn",
+          "patch": ""
+        },
+        {
+          "id": "eidnara:q-0012:turn-commands",
+          "class": "command-log",
+          "role": "turn",
+          "commands": [
+            {
+              "command": "eidnara_search {\"query\":\"key limit GET request cap\"}",
+              "exit": 0,
+              "scenario_ms": 4726269
+            },
+            {
+              "command": "ls -R src tests; cat src/cmd/mod.rs; cat src/cmd/get.rs",
+              "exit": 0,
+              "scenario_ms": 4726272
+            },
+            {
+              "command": "grep -rn -i \"max\\|limit\\|const \" src | grep -v \"^src/clients.*//\" | head -40; grep -rn \"mget\\|MGET\\|keys\" -i src | head; cat src/parse.rs | head -80; git log --oneline | head",
+              "exit": 0,
+              "scenario_ms": 4732042
+            }
+          ]
+        },
+        {
+          "id": "eidnara:q-0012:session-commands",
+          "class": "command-log",
+          "role": "session",
+          "commands": [
+            {
+              "command": "pwd; ls; git status 2>&1 | head; ls -d wemake_python_styleguide tests 2>&1",
+              "exit": 1,
+              "scenario_ms": 4707262
+            },
+            {
+              "command": "find / -maxdepth 6 -type d -name wemake_python_styleguide -not -path '*/site-packages/*' 2>/dev/null | head",
+              "exit": 0,
+              "scenario_ms": 4711904
+            },
+            {
+              "command": "eidnara_search {\"query\":\"key limit GET request cap\"}",
+              "exit": 0,
+              "scenario_ms": 4726269
+            },
+            {
+              "command": "ls -R src tests; cat src/cmd/mod.rs; cat src/cmd/get.rs",
+              "exit": 0,
+              "scenario_ms": 4726272
+            },
+            {
+              "command": "grep -rn -i \"max\\|limit\\|const \" src | grep -v \"^src/clients.*//\" | head -40; grep -rn \"mget\\|MGET\\|keys\" -i src | head; cat src/parse.rs | head -80; git log --oneline | head",
+              "exit": 0,
+              "scenario_ms": 4732042
+            }
+          ]
+        },
+        {
+          "id": "eidnara:q-0012:calls",
+          "class": "proxy-call",
+          "calls": [
+            {
+              "seq": 36,
+              "component": "agent",
+              "turn": "e-000010",
+              "scenario_ms": 4703985,
+              "input_tokens": 7747,
+              "output_tokens": 149
+            },
+            {
+              "seq": 37,
+              "component": "agent",
+              "turn": "e-000010",
+              "scenario_ms": 4707290,
+              "input_tokens": 7986,
+              "output_tokens": 166
+            },
+            {
+              "seq": 38,
+              "component": "agent",
+              "turn": "e-000010",
+              "scenario_ms": 4711925,
+              "input_tokens": 8094,
+              "output_tokens": 703,
+              "response_text": "I can't reproduce this from here. The output comes from **wemake-python-styleguide**, a Python project. The current directory (`mini-redis`) is a Rust crate, and I couldn't find a wemake checkout anywhere on this machine.\n\nFrom what you pasted:\n\n1. **The 38.51% coverage failure is a side effect, not the real problem.** Pytest stopped during collection (\"Interrupted: 6 errors during collection\"), so almost no tests ran. That's why coverage is low. Fix the collection errors and the coverage check should pass again.\n2. **\"32530 deselected\"** means you ran with a filter, probably `-k` or `-m`. Coverage is still checked against the whole package, so a filtered run can never reach the required 100%. Add `--no-cov` (or `--cov-fail-under=0`) for partial runs.\n3. **The 6 errors all happen while pytest imports files** (`conftest.py`, the hypothesis test, the snapshot file). That usually means:\n   - a test dependency is missing or the wrong version, such as `hypothesis`, `hypothesmith`, `syrupy`/`snapshottest` or `pytest-randomly`. Run `poetry install` (or `pip install -e . --group dev`) inside the project's environment.\n   - pytest is running under a different Python or virtualenv than the one the project was installed into. Check `which python pytest`.\n   - your Python version doesn't match what the project supports.\n\nThe actual cause is in the part of the output above what you pasted. To see it, run:\n\n```\npytest tests/conftest.py --no-cov -p no:randomly 2>&1 | head -60\n```\n\nand paste the `ImportError`/traceback section, or tell me where the repo is checked out and I'll run it myself."
+            },
+            {
+              "seq": 39,
+              "component": "memory_capture",
+              "turn": null,
+              "scenario_ms": 4721967,
+              "input_tokens": 5370,
+              "output_tokens": 50
+            },
+            {
+              "seq": 40,
+              "component": "agent",
+              "turn": "e-000011",
+              "scenario_ms": 4723533,
+              "input_tokens": 8710,
+              "output_tokens": 168
+            },
+            {
+              "seq": 41,
+              "component": "agent",
+              "turn": "e-000011",
+              "scenario_ms": 4726293,
+              "input_tokens": 14400,
+              "output_tokens": 291
+            },
+            {
+              "seq": 42,
+              "component": "agent",
+              "turn": "e-000011",
+              "scenario_ms": 4732068,
+              "input_tokens": 16246,
+              "output_tokens": 765,
+              "response_text": "I checked before changing anything, and there's a conflict with how the request is worded.\n\n**Current behavior: GET names exactly one key.** `Get::parse_frames` (`src/cmd/get.rs`) reads a single key. After that, `Command::from_frame` calls `parse.finish()`, which fails if any arguments are left over. So `GET a b c` is already rejected. The server treats that as a protocol error and closes the connection (errors aren't sent back as RESP replies here). There's no MGET or other multi-key read. The only commands that take a list of names are `SUBSCRIBE`/`UNSUBSCRIBE`, and their lists of channels have no limit.\n\nSo a cap on GET would just restate the current \"exactly 1\" rule. Which of these did you mean?\n\n1. **Add MGET with a cap.** A new `MGET key [key ...]` command that's rejected above a `MAX_KEYS_PER_REQUEST` limit (something like 1024?), plus client support and tests.\n2. **Cap SUBSCRIBE/UNSUBSCRIBE channel lists.** These are the only commands that currently take an unbounded list of names.\n3. **Change how over-limit requests are rejected.** For example, send a RESP error like `ERR too many keys` instead of closing the connection. That could apply to either option above.\n\nTell me which one, and the limit if you have a number in mind, and I'll implement it."
+            }
+          ]
+        },
+        {
+          "id": "eidnara:q-0012:prior-diff",
+          "class": "diff",
+          "role": "prior-session",
+          "patch": ""
+        }
+      ]
+    }
+  ],
+  "expect": {
+    "verdict": "fail",
+    "reason": "rule not applied",
+    "metrics": {
+      "P1-control.pass": false
+    }
+  }
+}

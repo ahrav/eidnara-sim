@@ -1,0 +1,41 @@
+{
+  "provenance": "constructed",
+  "probe": {
+    "id": "P10-b",
+    "type": "P10",
+    "fact": "f-1",
+    "project": "mini-redis",
+    "session": "s-1",
+    "text": "Do the task.",
+    "check": {
+      "must_not": [
+        "80095"
+      ]
+    },
+    "event": "e-1"
+  },
+  "snapshots": [
+    {
+      "id": "s-P10-b",
+      "item": "P10-b",
+      "arm": "eidnara",
+      "turn": "e-1",
+      "turn_outcome": "ok",
+      "artefacts": [
+        {
+          "id": "d1",
+          "class": "diff",
+          "role": "turn",
+          "patch": "diff --git a/src/main.rs b/src/main.rs\n--- a/src/main.rs\n+++ b/src/main.rs\n@@ -1,0 +1,1 @@\n+/// Entry point; listens on 80095 by default.\n"
+        }
+      ]
+    }
+  ],
+  "expect": {
+    "verdict": "fail",
+    "metrics": {
+      "P10.pass": false,
+      "P10.harm": true
+    }
+  }
+}

@@ -78,6 +78,20 @@ counterpart holds part of the value; the note names the rest), `extension`
 | `liveness_bounds.job_deadline_ms` | none | extension | 20 minutes; SIM-L02. |
 | `liveness_bounds.tier_wall_budget_ms` | none | extension | S 2 h, M 10 h, L 30 h, XL 96 h; SIM-L03. |
 | `liveness_bounds.daemon_busy_cpu_fraction` | none | extension | Daemon CPU time per wall second above which the M4 sampler holds the scenario clock (OQ-2), added in revision 3 before any run. |
+| `grading` | none | extension | The M5 probe grading rules, added in revision 4 before any run. eval-core grades with deterministic oracles and has no probe rules; `eval-manifest/v10` would add them. |
+| `grading.first_attempt_only` | none | extension | A grade reads the first probe turn's artefacts only (SIM-P41). |
+| `grading.lookup_match` | none | extension | P8 matches the value as a whole word, the v1 A/B rule. |
+| `grading.abstain_rule` | none | extension | P9 abstains with a first line of `UNKNOWN` alone or abstention wording with no guessed value, the v1 A/B rule. |
+| `grading.p11_false_positive_weight` | none | extension | A P11 false-positive injection counts this many times a hit in `P11.weighted_score` (SIM-P50); `P11.harm` stays binary. |
+| `grading.p13_reduction_ratio` | none | extension | Summary output tokens per summarized input token a P13 fold must fall between. |
+| `grading.p13_reduction_ratio.min` | none | extension | Lower bound, a decimal in (0, 1). |
+| `grading.p13_reduction_ratio.max` | none | extension | Upper bound, a decimal in (0, 1). |
+| `grading.judge` | `JudgeIdentity`, `SamplingPlan`, `PermutationCheck` | partial | The P7 judge settings. |
+| `grading.judge.model` | `JudgeIdentity` provider profile | partial | The P7 judge model (D4). |
+| `grading.judge.cross_judge` | none | extension | The model that re-judges the calibration set (D4); `eval-judge/v2` would add a second judge identity. |
+| `grading.judge.calibration_min_pairs` | `HUMAN_SAMPLE_MIN_PAIRS` | mapped | The calibration floor of 20 pairs. |
+| `grading.judge.human_sample_percent` | `HUMAN_SAMPLE_FLOOR_PERCENT` | mapped | The 10% human sample. |
+| `grading.judge.arm_identification_ceiling_percent` | `ARM_IDENTIFICATION_CEILING_PERCENT` | mapped | The 60% arm-identification ceiling, correct or inverted. |
 | `bootstrap` | `AnalysisFamily.bootstrap_*` | mapped | |
 | `bootstrap.replicates` | `bootstrap_replicates` | mapped | 2,000 lies inside 40 to 10,000. |
 | `bootstrap.seed` | `bootstrap_seed` | mapped | |

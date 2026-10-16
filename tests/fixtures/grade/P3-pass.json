@@ -1,0 +1,44 @@
+{
+  "provenance": "constructed",
+  "probe": {
+    "id": "P3-a",
+    "type": "P3",
+    "fact": "f-1",
+    "project": "mini-redis",
+    "session": "s-1",
+    "text": "Do the task.",
+    "check": {
+      "must": [
+        "63646|IVORY_WALRUS_PAGE_SIZE"
+      ],
+      "must_not": [
+        "30632"
+      ]
+    },
+    "event": "e-1"
+  },
+  "snapshots": [
+    {
+      "id": "s-P3-a",
+      "item": "P3-a",
+      "arm": "eidnara",
+      "turn": "e-1",
+      "turn_outcome": "ok",
+      "artefacts": [
+        {
+          "id": "d1",
+          "class": "diff",
+          "role": "turn",
+          "patch": "diff --git a/src/cmd/scan.rs b/src/cmd/scan.rs\n--- a/src/cmd/scan.rs\n+++ b/src/cmd/scan.rs\n@@ -1,0 +1,1 @@\n+let page = crate::IVORY_WALRUS_PAGE_SIZE;\n"
+        }
+      ]
+    }
+  ],
+  "expect": {
+    "verdict": "pass",
+    "metrics": {
+      "P3.pass": true,
+      "P3.reliance": "authoritative"
+    }
+  }
+}

@@ -17,6 +17,8 @@ dependability metrics; recall and harm rates name their excluded-failed count.
 No harness code, test, or run exists yet. The surface lands in M5
 (#1029).
 
+M5 (#1029) returns no grade for a snapshot whose probe turn failed; a test checks it.
+
 ## Failure scenario
 
 An arm is penalised in recall for provider faults it did not cause, or failures

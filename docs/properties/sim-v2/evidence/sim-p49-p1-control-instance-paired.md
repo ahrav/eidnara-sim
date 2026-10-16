@@ -17,6 +17,8 @@ pairs them.
 No harness code, test, or run exists yet. The surface lands in M2
 (#1026).
 
+M5 (#1029) labels each P1 and P1-control grade with its fact id, so the pair is joined by fact; a test grades a recorded control and a P1 item of the same fact.
+
 ## Failure scenario
 
 P1 compliance cannot be separated from the task's base rate.

@@ -18,6 +18,8 @@ naming the event.
 No harness code, test, or run exists yet. The surface lands in M5
 (#1029).
 
+M5 (#1029) grades each P13 item from the first fold call inside its compiled turn range and counts the range's folds in `P13.folds`; one record per fold remains open.
+
 ## Failure scenario
 
 Fold fidelity is measured on a subset of folds.

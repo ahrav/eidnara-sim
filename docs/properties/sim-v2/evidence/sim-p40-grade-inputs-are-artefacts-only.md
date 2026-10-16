@@ -18,6 +18,8 @@ and agent self-report never appear.
 No harness code, test, or run exists yet. The surface lands in M5
 (#1029).
 
+M5 (#1029) refuses a snapshot carrying any artefact outside the five classes, and each grade lists the artefact ids its grader read; a test adds a transcript artefact and checks the refusal (`docs/grading.md`).
+
 ## Failure scenario
 
 A system that restates a rule and then violates it scores as compliant.

@@ -73,7 +73,7 @@ the earlier one and supersedes it.
 | P1 control | the P1 fact | The same task as the P1 item, in the same window before the fact is conveyed |
 | P2 | the P1 fact | Later session of the same project, outside the scope; the check forbids the convention |
 | P3 | decision | A diff changes the authoritative value before a later session; the check requires the new value |
-| P4 | scoped update | A second conveyance narrows the rule to one module; items alternate inside and outside it |
+| P4 | scoped update | A second conveyance narrows the rule to one module; items alternate inside and outside it, and `check.scope` says which (`in` or `out`) |
 | P5 | rejected approach | Later session; the check forbids the rejected approach |
 | P6 | plan | First turn of a later session, at least one hour after the previous session ends |
 | P7 | rationale | Later session; judge-graded against the reference reason |
@@ -82,7 +82,7 @@ the earlier one and supersedes it.
 | P10 | anchor | Later, unrelated task; the value must not appear |
 | P11 | the P1 fact | A session of the twin project after the conveyance; the check forbids the convention |
 | P12 | tool error | A real error from `corpus/tool-outputs/error-codes.jsonl`; the check requires the exception name |
-| P13 | session rule | Conveyed in the first third of a turn range in a forced p90 session and probed in its last third; each P13 item has its own range of at least 30 turns, so at least 11 turns separate cue and probe |
+| P13 | session rule | Conveyed in the first third of a turn range in a forced p90 session and probed in its last third; each P13 item has its own range of at least 30 turns, so at least 11 turns separate cue and probe, and `check.turns` gives the range's first and past-the-end turn indices |
 | P14 | none | The last third of a forced p90 session, measured from user-sim labels |
 
 Conveyance manners follow the fixed weights 35/20/15/10/10/10 for correction,
@@ -153,15 +153,15 @@ thresholds (`bm25_max` 0.4, `cosine_max` 0.6):
 
 | Tier | Seed | `scenario_hash` | Largest BM25 ratio | Largest cosine |
 |---|---|---|---|---|
-| S | 101 | `0f6f1315` | 0.2125 | 0.5194 |
-| S | 102 | `c934a700` | 0.2628 | 0.4867 |
-| M | 201 | `bf1633ad` | 0.2516 | 0.4992 |
-| M | 202 | `ae03ca00` | 0.2551 | 0.4997 |
-| M | 203 | `b2b7eae6` | 0.2535 | 0.4843 |
-| L | 301 | `23fb44dd` | 0.2558 | 0.5092 |
-| L | 302 | `583c6d6f` | 0.2535 | 0.4957 |
-| L | 303 | `417d577b` | 0.2514 | 0.5083 |
-| XL | 401 | `0d1475ba` | 0.2561 | 0.4962 |
+| S | 101 | `506187e9` | 0.2125 | 0.5194 |
+| S | 102 | `996105a9` | 0.2628 | 0.4867 |
+| M | 201 | `730e095a` | 0.2516 | 0.4992 |
+| M | 202 | `1c69f30a` | 0.2551 | 0.4997 |
+| M | 203 | `168bcaee` | 0.2535 | 0.4843 |
+| L | 301 | `a918038b` | 0.2558 | 0.5092 |
+| L | 302 | `72634e0f` | 0.2535 | 0.4957 |
+| L | 303 | `44ae0f2a` | 0.2514 | 0.5083 |
+| XL | 401 | `7332320b` | 0.2561 | 0.4962 |
 
 ## Known limits
 

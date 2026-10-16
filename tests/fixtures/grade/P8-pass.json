@@ -1,0 +1,47 @@
+{
+  "provenance": "constructed",
+  "probe": {
+    "id": "P8-a",
+    "type": "P8",
+    "fact": "f-1",
+    "project": "mini-redis",
+    "session": "s-1",
+    "text": "Which alias should the deploy script aim at for pre-production?",
+    "check": {
+      "answer": "xeric-magpie-81"
+    },
+    "event": "e-1"
+  },
+  "snapshots": [
+    {
+      "id": "s-P8-a",
+      "item": "P8-a",
+      "arm": "eidnara",
+      "turn": "e-1",
+      "turn_outcome": "ok",
+      "artefacts": [
+        {
+          "id": "p1",
+          "class": "proxy-call",
+          "calls": [
+            {
+              "seq": 1,
+              "component": "agent",
+              "turn": "e-1",
+              "scenario_ms": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "response_text": "Use xeric-magpie-81."
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "expect": {
+    "verdict": "pass",
+    "metrics": {
+      "P8.pass": true
+    }
+  }
+}

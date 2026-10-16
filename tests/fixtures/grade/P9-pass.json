@@ -1,0 +1,47 @@
+{
+  "provenance": "constructed",
+  "probe": {
+    "id": "P9-a",
+    "type": "P9",
+    "fact": "f-1",
+    "project": "mini-redis",
+    "session": "s-1",
+    "text": "How long do we hold on to the trail of keys once they lapse?",
+    "check": {
+      "abstain": true
+    },
+    "event": "e-1"
+  },
+  "snapshots": [
+    {
+      "id": "s-P9-a",
+      "item": "P9-a",
+      "arm": "eidnara",
+      "turn": "e-1",
+      "turn_outcome": "ok",
+      "artefacts": [
+        {
+          "id": "p1",
+          "class": "proxy-call",
+          "calls": [
+            {
+              "seq": 1,
+              "component": "agent",
+              "turn": "e-1",
+              "scenario_ms": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "response_text": "UNKNOWN\nWe never settled the retention for lapsed keys."
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "expect": {
+    "verdict": "pass",
+    "metrics": {
+      "P9.pass": true
+    }
+  }
+}

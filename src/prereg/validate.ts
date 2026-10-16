@@ -136,6 +136,20 @@ const PREREG_SHAPE: Shape = {
     },
     bootstrap: { replicates: posInt, seed: nonNegInt },
     leak_bound: { c_bytes_per_session: posInt, r2_threshold: unitRate, sample_interval_ms: posInt },
+    grading: {
+        first_attempt_only: literal(true),
+        lookup_match: literal("whole-word"),
+        abstain_rule: literal("leading-UNKNOWN"),
+        p11_false_positive_weight: decimal,
+        p13_reduction_ratio: { min: unitRate, max: unitRate },
+        judge: {
+            model: text,
+            cross_judge: text,
+            calibration_min_pairs: posInt,
+            human_sample_percent: posInt,
+            arm_identification_ceiling_percent: posInt,
+        },
+    },
     families: new ArrayOf(FAMILY_SHAPE),
 };
 
@@ -274,6 +288,19 @@ function checkArms(p: Preregistration, errors: string[]): void {
     });
 }
 
+function checkGrading(p: Preregistration, errors: string[]): void {
+    const g = p.grading;
+    if (Number(g.p13_reduction_ratio.min) >= Number(g.p13_reduction_ratio.max)) {
+        errors.push("grading.p13_reduction_ratio: min must be below max");
+    }
+    if (Number(g.p11_false_positive_weight) <= 0) {
+        errors.push("grading.p11_false_positive_weight: must be positive");
+    }
+    for (const field of ["human_sample_percent", "arm_identification_ceiling_percent"] as const) {
+        if (g.judge[field] > 100) errors.push(`grading.judge.${field}: at most 100`);
+    }
+}
+
 /** Every refusal, each naming the field path it applies to; an empty list means accepted. */
 export function validatePreregistration(value: unknown): string[] {
     const errors: string[] = [];
@@ -289,6 +316,7 @@ export function validatePreregistration(value: unknown): string[] {
     const p = value as unknown as Preregistration;
     checkFamilies(p, errors);
     checkArms(p, errors);
+    checkGrading(p, errors);
     return errors;
 }
 
