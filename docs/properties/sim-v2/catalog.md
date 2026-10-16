@@ -1051,8 +1051,8 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M5 (#1029); nothing constructs
-it yet
+Exercised: partial - the M5 grading unit (#1029) exercises the grader on recorded
+fixtures in `src/grade/probes.test.ts`; run and report wiring lands in later units
 Guarantee: SIM-P40: Each grade record lists its input artefact ids, every id is
 of class diff, command-log, test-result, workspace-state, or proxy-call, and
 classes transcript and agent self-report never appear.
@@ -1073,8 +1073,8 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M5 (#1029); nothing constructs
-it yet
+Exercised: partial - the M5 grading unit (#1029) exercises the grader on recorded
+fixtures in `src/grade/probes.test.ts`; run and report wiring lands in later units
 Guarantee: SIM-P41: `SnapshotArtefacts` appears exactly once per item and arm,
 at the first `EndTurn` of the probe task, and grades reference that snapshot id.
 Check: `always` - count `SnapshotArtefacts` per item and arm, assert exactly one
@@ -1095,8 +1095,8 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M5 (#1029); nothing constructs
-it yet
+Exercised: partial - the M5 grading unit (#1029) exercises the grader on recorded
+fixtures in `src/grade/probes.test.ts`; run and report wiring lands in later units
 Guarantee: SIM-P42: For an item and arm, grade versions are strictly increasing,
 the report names the version used, and no journal entry rewrites an earlier
 version.
@@ -1181,8 +1181,8 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M5 (#1029); nothing constructs
-it yet
+Exercised: partial - the M5 grading unit (#1029) exercises the grader on recorded
+fixtures in `src/grade/probes.test.ts`; run and report wiring lands in later units
 Guarantee: SIM-P46: An item whose probe turn ended `failed` has no grade version
 and is counted in dependability metrics; recall and harm rates name their
 excluded-failed count.
@@ -1206,8 +1206,8 @@ Open questions:
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M5 (#1029); nothing constructs
-it yet
+Exercised: partial - the M5 grading unit (#1029) exercises the grader on recorded
+fixtures in `src/grade/probes.test.ts`; run and report wiring lands in later units
 Guarantee: SIM-P47: Every observed fold or host compaction event, a
 `history_summarizer` or `native_compaction` call followed by a context-size
 drop, yields one P13 record naming the event.
@@ -1246,8 +1246,8 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M2 (#1026); nothing constructs
-it yet
+Exercised: partial - the M5 grading unit (#1029) exercises the grader on recorded
+fixtures in `src/grade/probes.test.ts`; run and report wiring lands in later units
 Guarantee: SIM-P49: Every P1 item has a no-cue control instance with the same
 task, and the report pairs them.
 Check: `always` - for each P1 item, assert a control instance with the same task
@@ -1266,8 +1266,8 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M5 (#1029); nothing constructs
-it yet
+Exercised: partial - the M5 grading unit (#1029) exercises the grader on recorded
+fixtures in `src/grade/probes.test.ts`; run and report wiring lands in later units
 Guarantee: SIM-P50: The P11 harm score weights a false positive at twice a hit,
 and the weight is in the pre-registration record.
 Check: `always` - assert the P11 score formula uses the pre-registered weight of

@@ -1,5 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { appendFileSync, mkdtempSync, readdirSync, readFileSync, truncateSync } from "node:fs";
+import {
+    appendFileSync,
+    mkdtempSync,
+    readdirSync,
+    readFileSync,
+    symlinkSync,
+    truncateSync,
+    writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ProbeItem } from "../scenario/compile";
@@ -304,7 +312,7 @@ describe("grading harness", () => {
         expect(gradeItem({ ...f.probe, type: "P7" }, [failed], rules)).toBeNull();
     });
 
-    test("the answer is the last completed agent call, and P10 reads every completed response of the turn", () => {
+    test("the answer is the last completed agent call of the turn", () => {
         const p8 = fixture("P8-pass");
         const s8 = structuredClone(p8.snapshots[0]) as Snapshot;
         const c8 = s8.artefacts.find((a) => a.class === "proxy-call");
@@ -318,19 +326,6 @@ describe("grading harness", () => {
             response_text: undefined,
         });
         expect(gradeItem(p8.probe, [s8], rules)?.verdict).toBe("pass");
-
-        const p10 = fixture("P10-pass");
-        const s10 = structuredClone(p10.snapshots[0]) as Snapshot;
-        const c10 = s10.artefacts.find((a) => a.class === "proxy-call");
-        if (c10?.class !== "proxy-call") throw new Error("fixture lacks proxy-call");
-        const final = c10.calls[0] as CallView;
-        c10.calls.unshift({
-            ...final,
-            seq: 0,
-            response_text: "Draft: the port is 80095, let me check.",
-        });
-        const g = gradeItem(p10.probe, [s10], rules) as GradeRecord;
-        expect([g.verdict, g.metrics["P10.harm"]]).toEqual(["fail", true]);
     });
 
     test("P4 refuses a scope outside in/out and names both halves of a double failure", () => {
@@ -488,6 +483,44 @@ describe("grading harness", () => {
         expect(gradeItem(f.probe, [snap], rules)?.metrics["P6.ran_tests"]).toBe(false);
         log.commands.push({ command: "true; cd crate && cargo test", exit: 0, scenario_ms: 20 });
         expect(gradeItem(f.probe, [snap], rules)?.metrics["P6.ran_tests"]).toBe(true);
+    });
+
+    test("P10 applies answer_must_not to the final response only", () => {
+        const f = fixture("P10-pass");
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        const calls = snap.artefacts.find((a) => a.class === "proxy-call");
+        if (calls?.class !== "proxy-call") throw new Error("fixture lacks proxy-call");
+        const final = calls.calls[0] as CallView;
+        calls.calls.unshift({ ...final, seq: final.seq - 1, response_text: "Draft: port 80095." });
+        expect(gradeItem(f.probe, [snap], rules)?.verdict).toBe("pass");
+    });
+
+    test("a numeric heredoc delimiter suppresses its body", () => {
+        const f = fixture("P6-pass");
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        const log = snap.artefacts.find((a) => a.class === "command-log" && a.role === "turn");
+        if (log?.class !== "command-log") throw new Error("fixture lacks command-log");
+        log.commands.push({ command: "cat <<123\ncargo test\n123", exit: 0, scenario_ms: 10 });
+        expect(gradeItem(f.probe, [snap], rules)?.metrics["P6.ran_tests"]).toBe(false);
+    });
+
+    test("an HTTP status is an integer", () => {
+        const f = fixture("P8-pass");
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        const calls = snap.artefacts.find((a) => a.class === "proxy-call");
+        if (calls?.class !== "proxy-call") throw new Error("fixture lacks proxy-call");
+        (calls.calls[0] as CallView).status = 200.5;
+        expect(() => gradeItem(f.probe, [snap], rules)).toThrow("calls[0].status");
+    });
+
+    test("a grade log behind a link is refused before any write", () => {
+        const dir = mkdtempSync(join(tmpdir(), "sim-grades-"));
+        const target = join(dir, "elsewhere.jsonl");
+        writeFileSync(target, "");
+        const linked = join(dir, "grades.jsonl");
+        symlinkSync(target, linked);
+        expect(() => new GradeLog(linked).append(grade("P2-pass"))).toThrow("is a link");
+        expect(readFileSync(target, "utf8")).toBe("");
     });
 
     test("a check pattern that is empty after its prefix or fails to compile is refused", () => {

@@ -306,6 +306,15 @@ function checkGrading(p: Preregistration, errors: string[]): void {
     if (judge.calibration_min_pairs < 20) {
         errors.push("grading.judge.calibration_min_pairs: at least 20");
     }
+    const pairs = p.stopping_rule.paired_items_per_probe_type;
+    if (judge.calibration_min_pairs > pairs) {
+        errors.push(
+            `grading.judge.calibration_min_pairs: at most stopping_rule.paired_items_per_probe_type (${pairs})`,
+        );
+    }
+    if (judge.arm_identification_ceiling_percent < 50) {
+        errors.push("grading.judge.arm_identification_ceiling_percent: at least 50");
+    }
     if (judge.human_sample_percent < 10) {
         errors.push("grading.judge.human_sample_percent: at least 10");
     }

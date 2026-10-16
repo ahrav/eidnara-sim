@@ -93,6 +93,17 @@ describe("pre-registration validator", () => {
         ]);
     });
 
+    test("refuses judge thresholds the campaign cannot satisfy", () => {
+        const prereg = load("S") as any;
+        prereg.grading.judge.calibration_min_pairs =
+            prereg.stopping_rule.paired_items_per_probe_type + 1;
+        prereg.grading.judge.arm_identification_ceiling_percent = 49;
+        expect(validatePreregistration(prereg)).toEqual([
+            "grading.judge.calibration_min_pairs: at most stopping_rule.paired_items_per_probe_type (24)",
+            "grading.judge.arm_identification_ceiling_percent: at least 50",
+        ]);
+    });
+
     test("refuses a cross-judge that is the primary judge", () => {
         const prereg = load("S") as any;
         prereg.grading.judge.cross_judge = prereg.grading.judge.model;

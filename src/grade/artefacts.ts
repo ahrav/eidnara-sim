@@ -132,7 +132,7 @@ const CALL: Record<string, Field> = {
     turn: nullable(str),
     turn_index: optional(count),
     scenario_ms: num,
-    status: num,
+    status: (v) => Number.isInteger(v),
     error: nullable(str),
     input_tokens: count,
     output_tokens: count,
@@ -252,9 +252,5 @@ export class ArtefactReader {
 
     answer(): string {
         return this.completedResponses().at(-1) as string;
-    }
-
-    responses(): string {
-        return this.completedResponses().join("\n");
     }
 }
