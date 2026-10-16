@@ -103,12 +103,17 @@ toolchain wrappers are created exclusively after removing any planted name.
    run, and refuses when any option it states differs from the manifest, when the manifest's arm order is not a non-empty subsequence
    of the seed's pre-registered arm order, when a resumed journal breaks the
    run's state machine (a `ResumeRun` or arm entry before `StartRun`, an arm
-   entry before `StartArm` or after `EndArm`, an item closed twice, or an
-   `Event` naming an unscheduled, repeated, or reordered event), when any of those digests changed, when an
+   entry before `StartArm` or after `EndArm`, an `EndTurn` or `EndJob` with
+   no open item, or an `Event` naming an unscheduled, repeated, or reordered
+   event), when any of those digests changed, when an
    interception result, probed path, or toolchain version
    changed, or when the selected host's version or transcript paths changed,
    and appends its preflight result to `preflight.jsonl` (dropping an
-   unterminated final line first); on resume the
+   unterminated final line first). The `Preflight` journal entry carries a
+   digest of the manifest's execution fields (everything but the
+   per-invocation preflight); a resume whose manifest no longer matches the
+   digest the journal's first `Preflight` entry bound is refused, so inherited
+   options cannot change under a run's journaled identity. On resume the
    mechanism checks (fault types, models) run against the manifest's saved
    values, so omitted options inherit. Every invocation
    then journals a `Preflight` entry with its interception results and host
@@ -235,17 +240,20 @@ the full store with `avail_kb: 0`, and the model switch's boundary: sessions
 before its trigger used the first model, sessions from it on the second),
 exactly one jump tagged with each sleep episode's id per arm, agent calls on both configured models, and no duplicate `Event` entry
 (the mid-fold kills fire only when a summarizer call happens, so they are not
-required), every completed turn `ok` (so a store filled by `store_full`
-still served the turns after it) and, on `eidnara`, the daemon's log naming
-the full store; the scheduled run must hold the clock with at least one job while
-no turn is open (SIM-P13), and every finished run's journal must open with a
+required; `plugin_reload` has no startup record to inspect beyond the
+driver's evidence and the turns that follow), every completed turn `ok` (so a
+store filled by `store_full` still served the turns after it) and, on
+`eidnara`, the daemon's log naming the full store; the scheduled run must hold the clock with at least one background or
+daemon-cpu job while no turn is open (the synthetic `settle-cpu` and
+`request` holds do not count) (SIM-P13), and every finished run's journal must open with a
 `Preflight` entry, before `StartRun` or `ResumeRun`, whose probes are exactly
 `pi`, `opencode`, and `daemon`, all intercepted, hold exactly one `EndArm` per arm the manifest names, and
 include at least one ordinary event jump. All three case directories must be
 present.
-Every summarized directory must have been written by the current harness
-revision and working tree (`sim_commit`, `sim_worktree`), so a rerun of one
-case cannot certify stale evidence from another. These checks run on every
+Every summarized directory's manifest identity (pre-registration, Eidnara
+and harness commits and working trees, executables, corpus checkouts, Bedrock
+routing) must match the identity recomputed from the current environment, so
+a rerun of one case cannot certify stale evidence from another. These checks run on every
 summarized directory, with or without a cached launch outcome.
 
 Runs on 2026-10-16 against eidnara `bb866266c` (`witness-8`; `resume` ran

@@ -197,8 +197,9 @@ export function requireOutsideIdentity(out: string, root = ROOT): void {
 
 /**
  * A resumed journal's entries follow the run's state machine: `StartRun` precedes every arm
- * entry, each arm's entries sit between its `StartArm` and at most one `EndArm`, and a turn or job
- * closes at most once. A planted or reordered entry refuses the resume before it drives recovery.
+ * entry, each arm's entries sit between its `StartArm` and at most one `EndArm`, and an `EndTurn`
+ * or `EndJob` closes an item that is open. A planted or reordered entry refuses the resume before
+ * it drives recovery.
  */
 export function requireJournalShape(
     entries: readonly Entry[],
@@ -210,7 +211,7 @@ export function requireJournalShape(
         new HarnessFailure(`journal entry ${e.seq} (${e.kind}) ${why}`);
     let started = false;
     const arms = new Map<string, "open" | "ended">();
-    const ended = new Set<string>();
+    const open = new Set<string>();
     for (const e of entries) {
         if (e.kind === "Preflight") continue;
         if (e.kind === "StartRun") {
@@ -232,6 +233,12 @@ export function requireJournalShape(
         }
         if (state !== "open") throw bad(e, state ? "follows EndArm" : "precedes StartArm");
         if (e.kind === "EndArm") arms.set(e.arm, "ended");
+        if (e.kind === "BeginTurn") open.add(`${e.arm}/turn/${String(e.event)}`);
+        if (e.kind === "RegisterJob") open.add(`${e.arm}/job/${String(e.job)}`);
+        if (e.kind === "EndTurn" || e.kind === "EndJob") {
+            const item = e.kind === "EndTurn" ? `turn/${String(e.event)}` : `job/${String(e.job)}`;
+            if (!open.delete(`${e.arm}/${item}`)) throw bad(e, `closes ${item}, which is not open`);
+        }
         if (e.kind === "Event" && scheduled) {
             const at = position.get(String(e.event));
             const next = cursor.get(e.arm) ?? 0;
@@ -239,12 +246,13 @@ export function requireJournalShape(
             if (at < next) throw bad(e, `repeats or reorders event ${String(e.event)}`);
             cursor.set(e.arm, at + 1);
         }
-        if (e.kind === "EndTurn" || e.kind === "EndJob") {
-            const key = `${e.arm}/${e.kind}/${String(e.event ?? e.job)}`;
-            if (ended.has(key)) throw bad(e, "closes an item twice");
-            ended.add(key);
-        }
     }
+}
+
+/** The manifest's execution fields (everything but the per-invocation preflight), as one digest. */
+export function manifestIdentity(manifest: Manifest): string {
+    const { preflight: _preflight, ...fields } = manifest;
+    return sha256Hex(canonicalJson(fields));
 }
 
 /** A JSONL artifact's unterminated final line is a cut write; it is removed before appending. */
@@ -553,6 +561,18 @@ function directoryDigest(dir: string): string {
 /** The OpenCode SDK module the host stack imports from the Eidnara checkout (`src/hosts/arms.ts`). */
 const OPENCODE_SDK = "packages/e2e-tests/node_modules/@opencode-ai/sdk";
 
+/** Every input the manifest pins besides the scenario hash, recomputed from the live environment. */
+export function runIdentity(config: SimConfig, tier: Tier, projects: string[]) {
+    return {
+        prereg_sha256: preregistrationHash(loadPrereg(tier)),
+        ...eidnaraIdentity(config.eidnara_checkout),
+        ...simIdentity(),
+        binaries: binaryDigests(config),
+        corpus: corpusIdentity(projects),
+        bedrock: { region: config.bedrock.region, aws_profile: config.bedrock.aws_profile },
+    };
+}
+
 const simIdentity = () => {
     const { commit, worktree } = treeIdentity(ROOT);
     return { sim_commit: commit, sim_worktree: worktree };
@@ -639,12 +659,11 @@ export async function loadManifest(
     };
     const digests = {
         scenario_hash: scenario.scenario_hash,
-        prereg_sha256: preregistrationHash(loadPrereg(o.tier)),
-        ...eidnaraIdentity(o.config.eidnara_checkout),
-        ...simIdentity(),
-        binaries: binaryDigests(o.config),
-        corpus: corpusIdentity(scenario.projects.map((p) => p.id)),
-        bedrock: { region: o.config.bedrock.region, aws_profile: o.config.bedrock.aws_profile },
+        ...runIdentity(
+            o.config,
+            o.tier,
+            scenario.projects.map((p) => p.id),
+        ),
     };
     if (existsSync(path)) {
         const manifest = readJsonFile<Manifest>(path);
@@ -867,12 +886,20 @@ async function runArms(
         journal.entries,
         compiled.events.slice(0, manifest.events).map((e) => String(e.id)),
     );
+    const bound = journal.entries.find((e) => e.kind === "Preflight")?.manifest_sha256;
+    const manifestDigest = manifestIdentity(manifest);
+    if (typeof bound === "string" && bound !== manifestDigest) {
+        throw new HarnessFailure(
+            "manifest.json differs from the manifest this run's journal binds",
+        );
+    }
     journal.append({
         kind: "Preflight",
         arm: null,
         scenario_ms: 0,
         time_injection: checks.time_injection,
         hosts: checks.hosts,
+        manifest_sha256: manifestDigest,
     });
     const scenario = { ...compiled, faults: manifest.fault_override ?? compiled.faults };
     const events: ScenarioEvent[] = scenario.events

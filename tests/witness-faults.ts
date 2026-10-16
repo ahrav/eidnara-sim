@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { join, resolve } from "node:path";
 import { loadConfig } from "../src/config/config";
 import { checkJournal, type Schedule } from "../src/run/journal-check";
-import { pinnedBin, treeIdentity } from "../src/run/run";
+import { pinnedBin, runIdentity } from "../src/run/run";
 import type { Scenario } from "../src/scenario/compile";
 import { type FaultEpisode, type FaultType, SEAMS, type Trigger } from "../src/scenario/faults";
 import { loadPrereg } from "../src/scenario/inputs";
@@ -197,6 +197,17 @@ function schedule(dir: string): Schedule {
     return { events: new Map(events.map((e) => [String(e.id), Number(e.scenario_ms)])) };
 }
 
+const IDENTITY_FIELDS = [
+    "prereg_sha256",
+    "eidnara_commit",
+    "eidnara_worktree",
+    "sim_commit",
+    "sim_worktree",
+    "binaries",
+    "corpus",
+    "bedrock",
+] as const;
+
 function summarize(dir: string) {
     const manifest = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8")) as {
         order?: string[];
@@ -215,7 +226,12 @@ function summarize(dir: string) {
         end_arms: Object.fromEntries(
             (manifest.order ?? []).map((arm) => [arm, perArm(arm, "EndArm").length]),
         ),
-        identity: { sim_commit: manifest.sim_commit, sim_worktree: manifest.sim_worktree },
+        identity: Object.fromEntries(
+            IDENTITY_FIELDS.map((k) => [k, (manifest as Record<string, unknown>)[k]]),
+        ),
+        projects: (
+            JSON.parse(readFileSync(join(dir, "scenario.json"), "utf8")) as Scenario
+        ).projects.map((p) => p.id),
         preflight: {
             first: journal[0]?.kind === "Preflight",
             before_start:
@@ -288,7 +304,6 @@ const summary = {
     resume: existsSync(dirs.resume) ? summarize(dirs.resume) : null,
 };
 writeFileSync(join(out, "witness.json"), `${JSON.stringify(summary, null, 2)}\n`);
-const current = treeIdentity(ROOT);
 console.log(JSON.stringify(summary, null, 2));
 
 type Run = { code: number } | undefined;
@@ -437,17 +452,24 @@ for (const name of ["scheduled", "rogue", "resume"] as const) {
 for (const name of ["scheduled", "rogue", "resume"] as const) {
     const s = summary[name];
     if (!s) continue;
+    const live = runIdentity(config, "S", s.projects) as Record<string, unknown>;
+    const stale = IDENTITY_FIELDS.filter(
+        (k) => JSON.stringify(s.identity[k]) !== JSON.stringify(live[k]),
+    );
     check(
-        s.identity.sim_commit === current.commit && s.identity.sim_worktree === current.worktree,
-        `${name}: run directory was made by this harness revision and working tree`,
+        stale.length === 0,
+        `${name}: run directory matches the current runtime identity (stale: ${stale.join(", ") || "none"})`,
     );
 }
 if (run("scheduled")) check(run("scheduled")?.code === 0, "scheduled: exit 0");
 if (summary.scheduled) {
     check(invariantsClean("scheduled"), "scheduled: EndRun, unique seq, clean invariants");
+    const real = summary.scheduled.invariants.jobs_held_after_turn.filter(
+        (j) => !j.job.startsWith("settle-cpu-") && !j.job.startsWith("request-"),
+    );
     check(
-        summary.scheduled.invariants.jobs_held_after_turn.length > 0,
-        "scheduled: at least one background or CPU job held the clock with no turn open (SIM-P13)",
+        real.length > 0,
+        "scheduled: a background or daemon-cpu job (not the synthetic settle hold) held the clock with no turn open (SIM-P13)",
     );
     armEvidence("scheduled", ["host", "eidnara"], deterministic, true);
 }

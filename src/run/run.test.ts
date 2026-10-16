@@ -21,6 +21,7 @@ import {
     faultOverride,
     loadManifest,
     loadScenario,
+    manifestIdentity,
     type RunOptions,
     requireDeclaredProjects,
     requireJournalShape,
@@ -296,10 +297,17 @@ describe("run inputs", () => {
         expect(() =>
             requireJournalShape([
                 ...start,
+                e("BeginTurn", "a", { event: "t" }),
                 e("EndTurn", "a", { event: "t" }),
                 e("EndTurn", "a", { event: "t" }),
             ]),
-        ).toThrow(/closes an item twice/);
+        ).toThrow(/closes turn\/t, which is not open/);
+        expect(() => requireJournalShape([...start, e("EndTurn", "a", { event: "t" })])).toThrow(
+            /closes turn\/t, which is not open/,
+        );
+        expect(() => requireJournalShape([...start, e("EndJob", "a", { job: "j" })])).toThrow(
+            /closes job\/j, which is not open/,
+        );
         expect(() => requireJournalShape([e("ResumeRun", null)])).toThrow(/precedes StartRun/);
         const ids = ["e-1", "e-2"];
         const ev = (id: string) => e("Event", "a", { event: id });
@@ -490,6 +498,13 @@ describe("run inputs", () => {
         const o: RunOptions = { config, tier: "S", seed: 101, host: "pi", out };
         const { manifest } = await loadManifest(o, scenario, checks);
         expect(manifest.sim_commit).toMatch(/^[0-9a-f]{40}$/);
+        expect(manifestIdentity(manifest)).toMatch(/^[0-9a-f]{64}$/);
+        expect(manifestIdentity({ ...manifest, preflight: checks })).toBe(
+            manifestIdentity(manifest),
+        );
+        expect(manifestIdentity({ ...manifest, models: ["x"] })).not.toBe(
+            manifestIdentity(manifest),
+        );
         const path = join(out, "manifest.json");
         writeFileSync(path, JSON.stringify({ ...manifest, sim_commit: "0".repeat(40) }));
         await expect(loadManifest(o, scenario, checks)).rejects.toThrow(

@@ -129,6 +129,10 @@ already made; an intermittent window's unsuccessful attempts and its RNG
 position are not persisted, so a resumed window grants its remaining
 attempts from the injections alone.
 
+A call's record is written when its response ends; a harness killed while a
+response streams leaves no record for that attempt, and the resumed run
+marks the open turn interrupted rather than reissuing it.
+
 `Gateway.stop()` closes every connection, aborts the in-flight handlers, and
 waits up to `drainMs` (ten seconds by default) for them to write their call
 records, returning as soon as they have; a handler still active when the
