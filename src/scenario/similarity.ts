@@ -1,4 +1,5 @@
-import { appendFileSync, existsSync, readFileSync, rmSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { appendFileSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { sha256Hex } from "../prereg/canonical";
 import { EMBEDDING_MODELS } from "../prereg/schema";
 
@@ -90,7 +91,7 @@ export function bedrockEmbedder(profile: string, region: string, cachePath: stri
                 let vector = cache.get(key);
                 if (vector === undefined) {
                     const input = { inputText: text, dimensions: 256, normalize: true };
-                    const outFile = `${cachePath}.${process.pid}.tmp`;
+                    const outFile = `${cachePath}.${randomBytes(6).toString("hex")}.tmp`;
                     const cli = `bedrock-runtime invoke-model --cli-binary-format raw-in-base64-out`;
                     const flags = ["--profile", profile, "--region", region, "--model-id", model];
                     const argv = [
@@ -102,6 +103,7 @@ export function bedrockEmbedder(profile: string, region: string, cachePath: stri
                     ];
                     let response: { embedding: number[] };
                     try {
+                        writeFileSync(outFile, "", { flag: "wx" });
                         const r = Bun.spawnSync([...argv, outFile], { timeout: 60_000 });
                         if (r.exitCode !== 0) throw new Error(`embed: ${r.stderr.toString()}`);
                         response = JSON.parse(readFileSync(outFile, "utf8"));

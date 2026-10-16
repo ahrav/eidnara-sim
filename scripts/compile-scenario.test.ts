@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
     existsSync,
+    linkSync,
     mkdirSync,
     mkdtempSync,
     readdirSync,
@@ -91,7 +92,7 @@ describe("compile-scenario cache boundary", () => {
 });
 
 describe("compile-scenario temporary file", () => {
-    test("a pre-created temporary-file symlink into the Eidnara checkout is never followed", () => {
+    test("a hard-linked cache and a pre-placed temporary-file symlink never reach the Eidnara checkout", () => {
         const dir = mkdtempSync(join(tmpdir(), "sim-cli-"));
         const checkout = join(dir, "eidnara");
         mkdirSync(checkout);
@@ -99,6 +100,8 @@ describe("compile-scenario temporary file", () => {
         mkdirSync(outDir);
         const out = join(outDir, "s.json");
         symlinkSync(join(checkout, "stolen.json"), `${out}.tmp`);
+        writeFileSync(join(checkout, "linked.jsonl"), "");
+        linkSync(join(checkout, "linked.jsonl"), join(outDir, "embeddings.jsonl"));
         const config = JSON.parse(readFileSync(join(ROOT, "sim.config.json"), "utf8"));
         const configPath = join(dir, "sim.config.json");
         writeFileSync(configPath, JSON.stringify({ ...config, eidnara_checkout: checkout }));
@@ -117,8 +120,10 @@ describe("compile-scenario temporary file", () => {
             ],
             { cwd: ROOT, env: { ...process.env, SIM_CONFIG: configPath } },
         );
-        expect(r.exitCode).not.toBe(0);
-        expect(readdirSync(checkout)).toEqual([]);
+        expect(r.exitCode).toBe(2);
+        expect(r.stderr.toString()).toContain("hard link");
+        expect(readdirSync(checkout).sort()).toEqual(["linked.jsonl"]);
+        expect(readFileSync(join(checkout, "linked.jsonl"), "utf8")).toBe("");
     });
 });
 

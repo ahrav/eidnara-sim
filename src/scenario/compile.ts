@@ -476,8 +476,19 @@ export async function compileScenario(input: CompileInput) {
         const negate = (c: Check): Check =>
             Object.fromEntries(lists(c, "must").map(([k, v]) => [`${k}_not`, v]));
         const superseded = swap ? renderDeep<Check>(tpl.check, { ...vars, ...swap }) : {};
+        const swappedOnly = (pattern: string) =>
+            [...pattern.matchAll(/\{(\w+)\}/g)].every(
+                ([, k]) => k !== undefined && k in (swap ?? {}),
+            );
+        const obsolete: Check = Object.fromEntries(
+            lists(tpl.check as Check, "must").flatMap(([k, patterns]) =>
+                patterns.every(swappedOnly)
+                    ? [[k, patterns.map((x) => render(x, { ...vars, ...swap }))]]
+                    : [],
+            ),
+        );
         const base = renderDeep<Check>(tpl.check, vars);
-        const check = append(base, superseded);
+        const check = append(append(base, superseded), negate(obsolete));
         const mustNot = append(negate(base), negate(superseded));
         const probeText = render(tpl.probe, vars);
         const outText = render(tpl.out_probe ?? tpl.probe, vars);
@@ -562,10 +573,12 @@ export async function compileScenario(input: CompileInput) {
     const texts = [...new Set(pairs.flatMap((x) => [x.cue, x.text]))];
     const vectors = await input.embedder.embed(texts);
     const dims = vectors[0]?.length ?? 0;
-    const wellFormed = (v: number[]) => v.length === dims && v.every(Number.isFinite);
+    const norm = (v: number[]) => Math.sqrt(v.reduce((sum, x) => sum + x * x, 0));
+    const wellFormed = (v: number[]) =>
+        v.length === dims && v.every(Number.isFinite) && norm(v) > 0 && Number.isFinite(norm(v));
     if (vectors.length !== texts.length || dims === 0 || !vectors.every(wellFormed)) {
         throw new Error(
-            `embedder ${input.embedder.model} returned ${vectors.length} vectors for ${texts.length} texts; each must hold the same positive count of finite numbers`,
+            `embedder ${input.embedder.model} returned ${vectors.length} vectors for ${texts.length} texts; each must hold the same positive count of finite numbers with a finite positive norm`,
         );
     }
     const vec = new Map(texts.map((t, i) => [t, vectors[i] ?? []]));
@@ -576,6 +589,9 @@ export async function compileScenario(input: CompileInput) {
         cosine: cosine(vec.get(text) ?? [], vec.get(cue) ?? []),
     }));
     for (const x of scored) {
+        if (!Number.isFinite(x.bm25) || !Number.isFinite(x.cosine)) {
+            throw new Error(`${x.probe}: cue/probe similarity is not a finite number`);
+        }
         if (x.bm25 > Number(thresholds.bm25_max) || x.cosine > Number(thresholds.cosine_max)) {
             throw new Error(
                 `${x.probe}: cue/probe similarity bm25 ${round4(x.bm25)}, cosine ${round4(x.cosine)} exceeds the pre-registered threshold`,

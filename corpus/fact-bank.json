@@ -1,6 +1,6 @@
 {
     "schema": "sim-fact-bank/v1",
-    "note": "Fact templates for the scenario compiler. {TOKEN} and {token} are a generated word pair in upper and lower case, {value} and {value2} are distinct five-digit numbers, {codename} is an adjective-noun-NN codename, and {code} and {context} come from corpus/tool-outputs/error-codes.jsonl. A check's must and must_not regexes apply to the added lines of the agent's diff, paths_must and paths_must_not to the paths of the files the diff adds or changes, commands_must to the command log, and answer, answer_must_not, abstain, and judge checks to the final assistant text of the agent call record the proxy captures.",
+    "note": "Fact templates for the scenario compiler. {TOKEN} and {token} are a generated word pair in upper and lower case, {value} and {value2} are distinct five-digit numbers, {codename} is an adjective-noun-NN codename, and {code} and {context} come from corpus/tool-outputs/error-codes.jsonl. A check's must and must_not regexes apply to the added lines of the agent's diff, paths_must and paths_must_not to the paths of the files the diff adds or changes, first_line_must to the first line of every file the diff adds, commands_must to the command log, and answer, answer_must_not, abstain, and judge checks to the final assistant text of the agent call record the proxy captures.",
     "rust": {
         "constraint": [
             {
@@ -124,7 +124,7 @@
                 "probe": "Pick up the outstanding item from our earlier session.",
                 "check": {
                     "must": [
-                        "(?i){token}"
+                        "{token}|{TOKEN}"
                     ]
                 }
             }
@@ -363,7 +363,7 @@
                 "probe": "Make it possible to read context fields lazily.",
                 "check": {
                     "must_not": [
-                        "new Proxy\\("
+                        "new\\s+Proxy(?:<[^(]*>)?\\s*\\("
                     ]
                 }
             }
@@ -377,18 +377,18 @@
                 "out_probe": "Add an error message string when a route handler is missing.",
                 "check": {
                     "must": [
-                        "\"[^\"]+\""
+                        "(?<![\\w'])\"[^\"\\n]*\"(?!\\w)"
                     ],
                     "must_not": [
-                        "'[^']+'"
+                        "(?<![\\w\"])'[^'\\n]*'(?!\\w)"
                     ]
                 },
                 "out_check": {
                     "must": [
-                        "'[^']+'"
+                        "(?<![\\w\"])'[^'\\n]*'(?!\\w)"
                     ],
                     "must_not": [
-                        "\"[^\"]+\""
+                        "(?<![\\w'])\"[^\"\\n]*\"(?!\\w)"
                     ]
                 }
             }
@@ -463,7 +463,9 @@
                     "must_not": [
                         "{value}"
                     ],
-                    "answer_must_not": "{value}"
+                    "answer_must_not": [
+                        "{value}"
+                    ]
                 }
             },
             {
@@ -474,7 +476,9 @@
                     "must_not": [
                         "{codename}"
                     ],
-                    "answer_must_not": "{codename}"
+                    "answer_must_not": [
+                        "{codename}"
+                    ]
                 }
             }
         ],
@@ -497,7 +501,7 @@
                 "probe": "Commit what we have so far.",
                 "check": {
                     "commands_must": [
-                        "git commit\\b[^\\n]*?(?:-\\w*m|--message)[ =][\"']\\[{token}\\]"
+                        "git commit\\b(?:(?!\\s(?:-\\w*m|--message)\\b)[^\\n])*\\s(?:-\\w*m|--message)[ =][\"']\\[{token}\\]"
                     ]
                 }
             },
@@ -506,7 +510,7 @@
                 "statement": "until I say otherwise, new files you create open with a // {token} header line",
                 "probe": "Start a new module for the {codename} work with one exported placeholder function.",
                 "check": {
-                    "must": [
+                    "first_line_must": [
                         "// {token}"
                     ]
                 }
