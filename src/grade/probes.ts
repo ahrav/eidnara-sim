@@ -337,8 +337,26 @@ const unredirectedWords = (raw: string[]): string[] => {
     return out;
 };
 /** The command after any leading `NAME=value` assignments. */
-const unprefixed = (seg: string) =>
-    seg.replace(/^(\s*[A-Za-z_]\w*=(?:'[^']*'|"[^"]*"|\S*)\s+)+/, "");
+const unprefixed = (seg: string): string => {
+    let rest = seg.trimStart();
+    for (;;) {
+        const m = /^[A-Za-z_]\w*=/.exec(rest);
+        if (!m) return rest;
+        let i = m[0].length;
+        let quote = "";
+        while (i < rest.length) {
+            const ch = rest[i] as string;
+            if (quote) {
+                if (ch === quote) quote = "";
+            } else if (ch === "'" || ch === '"') quote = ch;
+            else if (ch === "\\") i++;
+            else if (/\s/.test(ch)) break;
+            i++;
+        }
+        if (i >= rest.length) return rest;
+        rest = rest.slice(i).trimStart();
+    }
+};
 const anchored = (p: string) => (p.startsWith("(?i)") ? `(?i)^(?:${p.slice(4)})` : `^(?:${p})`);
 /** Match from the segment's first character; the `m` flag of `pattern` would let `^` match an inner line. */
 const startsWithAll = (seg: string, sources: string[]) =>
@@ -347,7 +365,7 @@ const startsWithAll = (seg: string, sources: string[]) =>
         return new RegExp(re.source, re.flags.replace("m", "")).test(seg);
     });
 const namesPath = (words: string[], path: string) =>
-    words.some((w) => w === path || w === `./${path}` || w.replace(/^[A-Za-z_]\w*=/, "") === path);
+    words.some((w) => w === path || w === `./${path}`);
 const ranTests = (x: Command) => executed(x).some((s) => TESTS.test(s));
 
 function foldsIn(r: ArtefactReader, turns?: [number, number]): CallView[] {

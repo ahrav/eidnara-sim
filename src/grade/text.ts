@@ -126,6 +126,7 @@ export const unifiedDiff = (v: unknown): boolean => {
     let oldLeft = 0;
     let newLeft = 0;
     let pendingNew = false;
+    let headersDone = false;
     const hunkComplete = () => !inHunk || (oldLeft === 0 && newLeft === 0);
     for (const line of v.replace(/\n$/, "").split("\n")) {
         if (inHunk && /^[ +-]/.test(line) && !(oldLeft === 0 && newLeft === 0)) {
@@ -146,6 +147,7 @@ export const unifiedDiff = (v: unknown): boolean => {
         if (line.startsWith("diff --git ")) {
             if (!fileBody || !hunkComplete() || pendingNew) return false;
             inBinary = false;
+            headersDone = false;
             if (
                 !/^diff --git ("a\/(?:[^"\\]|\\.)*"|a\/\S+) ("b\/(?:[^"\\]|\\.)*"|b\/.+)$/.test(
                     line,
@@ -164,10 +166,11 @@ export const unifiedDiff = (v: unknown): boolean => {
         } else if (line.startsWith("+++ ")) {
             if (!hunkComplete() || !pendingNew) return false;
             pendingNew = false;
+            headersDone = true;
             inHunk = false;
             fileBody = false;
         } else if (HUNK_HEADER.test(line)) {
-            if (!opened || !hunkComplete() || pendingNew) return false;
+            if (!opened || !hunkComplete() || pendingNew || !headersDone) return false;
             const m = HUNK_HEADER.exec(line) as RegExpExecArray;
             oldLeft = m[1] === undefined ? 1 : Number(m[1].slice(1));
             newLeft = m[2] === undefined ? 1 : Number(m[2].slice(1));

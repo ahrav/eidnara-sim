@@ -14,7 +14,9 @@ v2 harness before any harness code existed.
 For an item and arm, grade versions are strictly increasing, the report names
 the version used, and no journal entry rewrites an earlier version.
 
-M5 (#1029) appends grades to a JSONL log in which a regrade takes the next version for its item and arm, and refuses an append out of order; a test checks both.
+M5 (#1029) appends grades to a JSONL log in which a regrade takes the next
+version for its item and arm, and refuses an append out of order; a test checks
+both.
 
 ## Failure scenario
 

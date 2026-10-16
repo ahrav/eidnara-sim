@@ -1206,6 +1206,38 @@ describe("grading harness", () => {
         ).toThrow("check.command_must");
     });
 
+    test("an assignment prefix with an escaped space is one word, and NAME= stays in a file operand", () => {
+        const f = fixture("P13-pass");
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        const log = snap.artefacts.find((a) => a.class === "command-log");
+        if (log?.class !== "command-log") throw new Error("fixture lacks command-log");
+        const cmd = "RUSTFLAGS=-C\\ opt-level=3 cargo build";
+        log.commands.unshift({ command: cmd, exit: 0, scenario_ms: 100 });
+        log.commands.push({ command: cmd, exit: 0, scenario_ms: 900 });
+        expect(gradeItem(f.probe, [snap], rules)?.metrics["P13.repeated_action"]).toBe(false);
+        const p6 = fixture("P6-pass");
+        const s6 = structuredClone(p6.snapshots[0]) as Snapshot;
+        const l6 = s6.artefacts.find((a) => a.class === "command-log" && a.role === "turn");
+        if (l6?.class !== "command-log") throw new Error("fixture lacks command-log");
+        l6.commands.push({ command: "cat FILE=src/connection.rs", exit: 1, scenario_ms: 10 });
+        expect(gradeItem(p6.probe, [s6], rules)?.metrics["P6.reread_files"]).toBe(0);
+        l6.commands.push({
+            command: 'LC_ALL="en US" cat src/connection.rs',
+            exit: 0,
+            scenario_ms: 20,
+        });
+        expect(gradeItem(p6.probe, [s6], rules)?.metrics["P6.reread_files"]).toBe(1);
+    });
+
+    test("a hunk needs its paired text headers", () => {
+        const f = fixture("P2-pass");
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        const diff = snap.artefacts.find((a) => a.class === "diff");
+        if (diff?.class !== "diff") throw new Error("fixture lacks diff");
+        diff.patch = "diff --git a/x b/x\n@@ -1 +1 @@\n-a\n+b\n";
+        expect(() => gradeItem(f.probe, [snap], rules)).toThrow("patch");
+    });
+
     test("a check pattern that is empty after its prefix or fails to compile is refused", () => {
         const f = fixture("P1-fail");
         for (const bad of ["(?i)", "["]) {

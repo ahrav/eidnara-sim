@@ -14,7 +14,10 @@ v2 harness before any harness code existed.
 The P11 harm score weights a false positive at twice a hit, and the weight is in
 the pre-registration record.
 
-Pre-registration revision 4 records `grading.p11_false_positive_weight` as 2, and M5 (#1029) scores each P11 item +1 for a hit and minus that weight for an injection in `P11.weighted_score`; a test checks both values and a changed weight.
+Pre-registration revision 4 records `grading.p11_false_positive_weight` as 2,
+and M5 (#1029) scores each P11 item +1 for a hit and minus that weight for an
+injection in `P11.weighted_score`; a test checks both values and a changed
+weight.
 
 ## Failure scenario
 
