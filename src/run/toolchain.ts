@@ -18,6 +18,11 @@ export const TOOLCHAIN_PROBES: [string, string][] = [
     ["bun", "exec bun --version"],
 ];
 
+export const SYSTEM_PATH = "/usr/local/bin:/usr/bin:/bin";
+
+/** The PATH sandboxed hosts and the toolchain probe share: the configured tools, then the system directories. */
+export const sandboxPath = (tools: string) => `${tools}:${SYSTEM_PATH}`;
+
 export const toolbinDir = (launcher: string) => join(dirname(launcher), "toolbin");
 
 function locate(config: SimConfig, tool: string): string {
@@ -49,7 +54,7 @@ export function toolchainEnv(
 
 async function probe(argv: string[], path: string): Promise<{ ok: boolean; out: string }> {
     const child = Bun.spawn(argv, {
-        env: { ...process.env, PATH: `${path}:${process.env.PATH ?? ""}` },
+        env: { ...process.env, PATH: sandboxPath(path) },
         stdout: "pipe",
         stderr: "pipe",
     });
@@ -79,7 +84,20 @@ export async function toolchainProbe(
     for (const [tool, script] of TOOLCHAIN_PROBES) {
         const r = await probe(launch(launcher, keep, vars, ["/bin/sh", "-c", script], ro), path);
         if (!r.ok) throw new Error(`toolchain: ${tool} under the interposer: ${r.out}`);
-        results.push({ tool, version: r.out.split("\n")[0] ?? "" });
+        results.push({ tool, version: versionLine(tool, r.out) });
     }
     return results;
+}
+
+const VERSION: Record<string, RegExp> = {
+    cargo: /^cargo \d+\.\d+/,
+    rustc: /^rustc \d+\.\d+/,
+    bun: /^\d+\.\d+\.\d+/,
+};
+
+export function versionLine(tool: string, out: string): string {
+    const line = out.split("\n")[0]?.trim() ?? "";
+    if (!VERSION[tool]?.test(line))
+        throw new Error(`toolchain: ${tool} printed no version (${line})`);
+    return line;
 }

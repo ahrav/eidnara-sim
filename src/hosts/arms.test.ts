@@ -16,7 +16,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "../config/config";
 import { running } from "../run/procs";
-import { DaemonStack, type HostContext, OpencodeSimHost, PiSimHost } from "./arms";
+import { DaemonStack, type HostContext, OpencodeSimHost, opencodeInstall, PiSimHost } from "./arms";
 
 type Untyped = any;
 
@@ -28,8 +28,11 @@ afterEach(() => {
 function context(run: string): HostContext {
     const root = join(run, "arm");
     mkdirSync(root);
+    const bin = join(run, "oc/node_modules/opencode-ai/bin");
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(join(bin, "opencode.exe"), "", { mode: 0o755 });
     return {
-        config: loadConfig(),
+        config: { ...loadConfig(), opencode_binary: join(bin, "opencode.exe") },
         arm: "host",
         host: "pi",
         root,
@@ -65,6 +68,7 @@ export class PiRpcProcess {
     constructor(public child: any) { globalThis.__simPiChild = child; }
     sendCommand() {
         if (globalThis.__simGetState === "refuse") return Promise.resolve({ success: false, error: "no model" });
+        if (globalThis.__simGetState === "ok") return Promise.resolve({ success: true, data: {} });
         return Promise.reject(new Error("get_state failed"));
     }
     shutdown() { return Promise.resolve(); }
@@ -625,4 +629,107 @@ test("settling a Pi turn stays within the turn deadline when get_state hangs", a
     const started = Date.now();
     await expect(host.prompt("hi", 300)).rejects.toThrow();
     expect(Date.now() - started).toBeLessThan(2_000);
+});
+
+test("appending the daemon log refuses a symlink left at the log path", async () => {
+    const run = runDir();
+    const target = join(run, "precious");
+    writeFileSync(target, "keep\n");
+    symlinkSync(target, join(run, "daemon.log"));
+    let terminated = false;
+    const stack = new DaemonStack({
+        config: loadConfig(),
+        root: run,
+        dataDir: join(run, "data"),
+        logFile: join(run, "daemon.log"),
+        offsetFile: join(run, "offset"),
+        proxyHttp1: "",
+        proxyHttp2: "",
+        model: "m",
+    });
+    (stack as Untyped).stack = {
+        hostLog: () => "log",
+        terminateHost: async () => {
+            terminated = true;
+        },
+    };
+    await expect(stack.stop()).rejects.toThrow(/ELOOP|symbolic link/);
+    expect(terminated).toBe(true);
+    expect(readFileSync(target, "utf8")).toBe("keep\n");
+});
+
+test("a daemon that outlives SIGTERM is killed before stop reports the failure", async () => {
+    const run = runDir();
+    let crashed = false;
+    const stack = new DaemonStack({
+        config: loadConfig(),
+        root: run,
+        dataDir: join(run, "data"),
+        logFile: join(run, "daemon.log"),
+        offsetFile: join(run, "offset"),
+        proxyHttp1: "",
+        proxyHttp2: "",
+        model: "m",
+    });
+    (stack as Untyped).stack = {
+        hostLog: () => "",
+        terminateHost: async () => {
+            throw new Error("direct host fixture did not exit after SIGTERM");
+        },
+        crashHost: async () => {
+            crashed = true;
+        },
+    };
+    await expect(stack.stop()).rejects.toThrow(/SIGTERM/);
+    expect(crashed).toBe(true);
+    expect(stack.pid()).toBeNull();
+});
+
+test("Pi runs in the session workspace even though the launcher starts its command at /", async () => {
+    const run = runDir();
+    const checkout = fakeV1(run);
+    const cli = join(checkout, "node_modules/@earendil-works/pi-coding-agent/dist/cli.js");
+    mkdirSync(join(cli, ".."), { recursive: true });
+    writeFileSync(
+        cli,
+        'require("fs").writeFileSync(process.env.HOME + "/cwd", process.cwd()); setInterval(() => {}, 1000);\n',
+    );
+    writeFileSync(
+        join(run, "sandbox.sh"),
+        '#!/bin/sh\nwhile [ "$1" != "--" ]; do shift; done\nshift\ncd /\nexec "$@"\n',
+        { mode: 0o755 },
+    );
+    const ctx = context(run);
+    const workspace = join(run, "ws");
+    mkdirSync(workspace);
+    const host = new PiSimHost({
+        ...ctx,
+        config: { ...ctx.config, eidnara_checkout: checkout, pi_install: checkout },
+    });
+    (globalThis as Untyped).__simGetState = "ok";
+    try {
+        await host.openSession(workspace, "s1", null);
+        const file = join(ctx.root, "home/cwd");
+        for (let i = 0; i < 100 && !existsSync(file); i++) await Bun.sleep(20);
+        expect(readFileSync(file, "utf8")).toBe(workspace);
+    } finally {
+        (globalThis as Untyped).__simGetState = undefined;
+        await host.closeSession().catch(() => undefined);
+    }
+});
+
+test("the protected OpenCode install is the canonical binary's, not the symlink's", () => {
+    const run = runDir();
+    const real = join(run, "real/node_modules/opencode-ai/bin");
+    mkdirSync(real, { recursive: true });
+    writeFileSync(join(real, "opencode.exe"), "", { mode: 0o755 });
+    const linked = join(run, "linked/node_modules/opencode-ai/bin");
+    mkdirSync(linked, { recursive: true });
+    symlinkSync(join(real, "opencode.exe"), join(linked, "opencode.exe"));
+    const install = opencodeInstall({
+        ...loadConfig(),
+        opencode_binary: join(linked, "opencode.exe"),
+    });
+    expect(install.binary).toBe(join(real, "opencode.exe"));
+    expect(install.root).toBe(join(run, "real/node_modules"));
 });

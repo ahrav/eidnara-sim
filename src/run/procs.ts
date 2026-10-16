@@ -92,7 +92,13 @@ function signal(targets: Target[], name: NodeJS.Signals): void {
 
 // The launcher root stays root-owned while the sandbox is set up, so the stop succeeds only
 // once the root itself has exited too; a root still privileged then reports failure.
-export async function stopOwnedTree(rootPid: number, graceMs: number): Promise<boolean> {
+// `rootStart`, captured when the launcher was spawned, rules out a root pid since reused.
+export async function stopOwnedTree(
+    rootPid: number,
+    graceMs: number,
+    rootStart?: string,
+): Promise<boolean> {
+    if (rootStart !== undefined && processStart(rootPid) !== rootStart) return true;
     const targets = ownedProcesses(rootPid).map((pid) => ({ pid, start: processStart(pid) }));
     const all = [...targets, { pid: rootPid, start: processStart(rootPid) }];
     signal(targets, "SIGTERM");

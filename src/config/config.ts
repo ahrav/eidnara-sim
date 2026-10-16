@@ -54,6 +54,14 @@ export function parseConfig(value: unknown): SimConfig {
             throw new ConfigError(`config.toolchain.${field}: expected absolute paths`);
         }
     }
+    const keep = toolchain?.keep as string[];
+    for (const dir of toolchain?.bin as string[]) {
+        if (!keep.some((k) => dir === k || dir.startsWith(k.endsWith("/") ? k : `${k}/`))) {
+            throw new ConfigError(
+                `config.toolchain.bin: ${dir} is not under a toolchain.keep path`,
+            );
+        }
+    }
     const tools = toolchain?.wall_clock_tools;
     if (!Array.isArray(tools) || !tools.every((t) => typeof t === "string" && /^[\w-]+$/.test(t))) {
         throw new ConfigError("config.toolchain.wall_clock_tools: expected command names");

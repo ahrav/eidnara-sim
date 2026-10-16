@@ -133,3 +133,15 @@ test.skipIf(!canMount())(
         }
     },
 );
+
+test("a root pid whose start time no longer matches its launch is left alone", async () => {
+    const child = spawn("sleep", ["300"], { stdio: "ignore" });
+    const pid = child.pid as number;
+    await Bun.sleep(100);
+    try {
+        expect(await stopOwnedTree(pid, 300, "1")).toBe(true);
+        expect(running(pid)).toBe(true);
+    } finally {
+        child.kill("SIGKILL");
+    }
+});

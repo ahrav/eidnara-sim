@@ -58,3 +58,11 @@ test("toolchain env entries must be words the sandbox launcher can pass", () => 
         "config.toolchain.env.RUSTFLAGS",
     );
 });
+
+test("every toolchain bin directory must be kept read-only", () => {
+    const base = loadConfig() as any;
+    const toolchain = { ...base.toolchain, bin: [...base.toolchain.bin, "/opt/tools/bin"] };
+    expect(() => parseConfig({ ...base, toolchain })).toThrow(
+        "config.toolchain.bin: /opt/tools/bin is not under a toolchain.keep path",
+    );
+});

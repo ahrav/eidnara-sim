@@ -1,22 +1,25 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import {
-    appendFileSync,
+    closeSync,
+    constants,
     lstatSync,
     mkdirSync,
+    openSync,
     readdirSync,
     readFileSync,
     realpathSync,
     renameSync,
     rmSync,
     writeFileSync,
+    writeSync,
 } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import type { SimConfig } from "../config/config";
 import { withDeadline } from "../run/deadline";
 import { launch, plainPath, shellQuote } from "../run/launcher";
-import { parentPid, stopOwnedTree } from "../run/procs";
+import { parentPid, processStart, stopOwnedTree } from "../run/procs";
 import { FAKETIME_LIB, faketimeEnv } from "../run/timeinject";
-import { toolbinDir, toolchainEnv } from "../run/toolchain";
+import { sandboxPath, toolbinDir, toolchainEnv } from "../run/toolchain";
 
 // biome-ignore lint/suspicious/noExplicitAny: v1 harness modules are imported by runtime path.
 type Untyped = any;
@@ -154,8 +157,17 @@ export class DaemonStack {
         this.connectionFile = this.stack.connectionFile;
     }
 
+    // O_NOFOLLOW makes a symlink left at the log path fail the append instead of redirecting it.
     private saveLog(): void {
-        if (this.stack) appendFileSync(this.ctx.logFile, this.stack.hostLog());
+        if (!this.stack) return;
+        const flags =
+            constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW;
+        const fd = openSync(this.ctx.logFile, flags, 0o600);
+        try {
+            writeSync(fd, this.stack.hostLog());
+        } finally {
+            closeSync(fd);
+        }
     }
 
     async restart(): Promise<void> {
@@ -166,12 +178,21 @@ export class DaemonStack {
     async stop(): Promise<void> {
         const stack = this.stack;
         if (!stack) return;
+        let logError: unknown;
         try {
             this.saveLog();
-        } finally {
-            await stack.terminateHost();
-            this.stack = null;
+        } catch (caught) {
+            logError = caught;
         }
+        this.stack = null;
+        try {
+            await stack.terminateHost();
+        } catch (caught) {
+            // terminateHost gives up after SIGTERM; the stack's SIGKILL path ends the daemon.
+            await stack.crashHost();
+            throw caught;
+        }
+        if (logError !== undefined) throw logError;
     }
 }
 
@@ -219,9 +240,9 @@ export abstract class SimHost {
         renameSync(staged, path);
     }
 
-    protected async stopTree(pid: number | null | undefined): Promise<void> {
+    protected async stopTree(pid: number | null | undefined, start?: string | null): Promise<void> {
         if (pid == null) return;
-        if (!(await stopOwnedTree(pid, 10_000)))
+        if (!(await stopOwnedTree(pid, 10_000, start ?? undefined)))
             throw new Error(`host tree ${pid} survived SIGKILL`);
     }
 
@@ -234,6 +255,7 @@ export abstract class SimHost {
 
 export class PiSimHost extends SimHost {
     private rpc: Untyped = null;
+    private launchStart: string | null = null;
     readonly agentDir = join(this.ctx.root, "home/.pi/agent");
 
     private writeConfigs(connectionFile: string | null): void {
@@ -288,7 +310,7 @@ export class PiSimHost extends SimHost {
         const home = join(this.ctx.root, "home");
         const tools = this.toolchain;
         const env = {
-            PATH: `${join(nodeRoot(), "bin")}:${tools.path}:/usr/local/bin:/usr/bin:/bin`,
+            PATH: `${join(nodeRoot(), "bin")}:${sandboxPath(tools.path)}`,
             ...tools.env,
             ...DUMMY_AWS,
             HOME: home,
@@ -302,12 +324,23 @@ export class PiSimHost extends SimHost {
         };
         const node = join(nodeRoot(), "bin/node");
         const ro = [...this.readOnly, nodeRoot(), config.pi_install];
-        const argv = launch(this.ctx.launcher, this.ctx.keep, this.timeEnv, [node, ...args], ro);
+        // The launcher starts its command at /, so the command enters the workspace itself.
+        const command = [
+            "/bin/sh",
+            "-c",
+            'cd "$1" && shift && exec "$@"',
+            "sh",
+            cwd,
+            node,
+            ...args,
+        ];
+        const argv = launch(this.ctx.launcher, this.ctx.keep, this.timeEnv, command, ro);
         const child: ChildProcess = spawn(argv[0] as string, argv.slice(1), {
             cwd,
             env,
             stdio: ["pipe", "pipe", "pipe"],
         });
+        this.launchStart = child.pid === undefined ? null : processStart(child.pid);
         const spawnError = new Promise<never>((_, reject) => child.once("error", reject));
         spawnError.catch(() => undefined);
         this.rpc = new rpcClient.PiRpcProcess(child, new rpcClient.PiRpcProtocol(), {
@@ -415,7 +448,7 @@ export class PiSimHost extends SimHost {
         if (!rpc) return;
         rpc.child.stdin?.end();
         try {
-            await this.stopTree(rpc.child.pid);
+            await this.stopTree(rpc.child.pid, this.launchStart);
         } finally {
             await rpc.shutdown(10_000);
         }
@@ -432,6 +465,7 @@ export class OpencodeSimHost extends SimHost {
     private sid: string | null = null;
     private readonly home = join(this.ctx.root, "home");
     protected abortWaitMs = 30_000;
+    private launched: { pid: number | null; start: string | null } | null = null;
 
     async openSession(cwd: string, session: string, connection: string | null): Promise<void> {
         const { config } = this.ctx;
@@ -445,8 +479,8 @@ export class OpencodeSimHost extends SimHost {
             extra.compaction = { auto: true, prune: true };
         }
         if (!connection) extra.plugin = [];
-        const binary = plainPath(config.opencode_binary);
-        const ro = [...this.readOnly, dirname(dirname(dirname(binary)))];
+        const { binary, root } = opencodeInstall(config);
+        const ro = [...this.readOnly, root];
         const launcher = plainPath(this.ctx.launcher);
         const hostbin = dirname(
             this.writeWrapper(launch(launcher, this.ctx.keep, this.timeEnv, [binary], ro)),
@@ -489,6 +523,11 @@ export class OpencodeSimHost extends SimHost {
                 PATH: `${hostbin}:${this.toolchain.path}:${process.env.PATH ?? ""}`,
             },
         });
+        const launchedPid = this.hostPid();
+        this.launched = {
+            pid: launchedPid,
+            start: launchedPid === null ? null : processStart(launchedPid),
+        };
         const sdkPath = "packages/e2e-tests/node_modules/@opencode-ai/sdk/dist/index.js";
         try {
             const sdk = await import(join(config.eidnara_checkout, sdkPath));
@@ -599,12 +638,13 @@ export class OpencodeSimHost extends SimHost {
 
     async closeSession(): Promise<void> {
         const oc = this.oc;
-        const pid = this.hostPid();
+        const launched = this.launched ?? { pid: this.hostPid(), start: null };
         this.oc = null;
         this.client = null;
+        this.launched = null;
         if (!oc) return;
         try {
-            await this.stopTree(pid);
+            await this.stopTree(launched.pid, launched.start);
         } finally {
             await oc.kill();
         }
@@ -613,6 +653,11 @@ export class OpencodeSimHost extends SimHost {
     transcriptEnv(): Record<string, string> {
         return { XDG_DATA_HOME: join(this.home, "data") };
     }
+}
+
+export function opencodeInstall(config: SimConfig): { binary: string; root: string } {
+    const binary = plainPath(realpathSync(config.opencode_binary));
+    return { binary, root: dirname(dirname(dirname(binary))) };
 }
 
 export function makeHost(ctx: HostContext): SimHost {

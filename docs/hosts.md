@@ -48,8 +48,11 @@ the counterfactual arm.
 
 `DaemonStack` starts the daemon through the v1 `HermeticHostStack` with the
 interposer environment, restarts it with SIGKILL against the same store, and
-stops it with SIGTERM so its store stays on disk. It appends the daemon's
-output to the arm's `daemon.log` before each restart and at stop; the v1
+stops it with SIGTERM so its store stays on disk; a daemon that outlives
+SIGTERM is killed with the stack's SIGKILL path and the stop still fails. It
+appends the daemon's output to the arm's `daemon.log` before each restart and
+at stop, opening the log with `O_NOFOLLOW` so a symlink left there fails the
+append; the v1
 stack keeps the last 256 KiB of that output, so a longer stretch keeps its
 tail.
 
@@ -69,7 +72,9 @@ root-owned `sudo` and `unshare`, so closing a host walks the launcher's
 process tree and signals every process the user owns, with SIGKILL after
 10 s; a process that survives SIGKILL stops the run, and so does a launcher
 root that has not exited by then, since a launcher still in its privileged
-setup has no user-owned process to signal. Each pid in that walk is
+setup has no user-owned process to signal. The launcher root's start time is
+taken when it is spawned, so a root pid the kernel has since reused is left
+alone. Each pid in that walk is
 paired with its start time and checked against it before every signal, so a
 pid the kernel reuses during the grace period is left alone. The launcher's
 pid namespace ends with its init, so a child forked while the tree stops dies
@@ -96,10 +101,13 @@ established. A Pi `agent_end` seen before the prompt response fails settles
 that turn with its result.
 Every deadline timer is cleared once its race settles.
 
-Pi runs in RPC mode with `--session-id sim-<session>`, its agent directory,
+Pi runs in RPC mode in the session workspace (the launcher starts its command
+at `/`, so the command changes into the workspace before exec) with
+`--session-id sim-<session>`, its agent directory,
 settings, and model list under the arm root, and the Eidnara extension from
 the build clone on Eidnara arms. OpenCode runs through the v1 `spawnOpencode`,
-with a wrapper script that launches the pinned binary through the sandbox
+with a wrapper script that launches the pinned binary, resolved to its
+canonical path so the read-only install covers the file that runs, through the sandbox
 launcher, and titles each session `sim-<session>`. The v1 runner starts the
 wrapper as the harness's own child and the wrapper execs the launcher, so
 `closeSession` stops the one process serving the session's port whose parent
@@ -118,8 +126,10 @@ installs are read-only, so the agent reads and runs them while later
 sessions and arms run the same files; `touch` under `~/.cargo/bin` fails inside
 the sandbox with `Read-only file system`.
 
-The agent's build tools come from `config.toolchain`: its `bin` directories
-join the host's `PATH`, its `keep` paths (the cargo binaries, registry, and
+The agent's build tools come from `config.toolchain`: its `bin` directories,
+each under a `keep` path, come first on the host's `PATH`, followed by the
+system directories `/usr/local/bin:/usr/bin:/bin`, the same `PATH` the
+toolchain probe uses, its `keep` paths (the cargo binaries, registry, and
 git cache, rustup, and the bun binary and install cache) stay visible and
 read-only inside the sandbox (a mount nested inside a read-only path is
 remounted read-only too), and its `env` sets `CARGO_HOME`, `RUSTUP_HOME`,
@@ -145,5 +155,6 @@ distortion. Preflight writes the wrappers, then runs `cargo --version`,
 `"${RUSTC:-rustc}" -vV`, and `bun --version` under the interposer through the
 launcher, so the rustc check goes through the same wrapper cargo uses (or
 `rustc` on `PATH` when no wrapper is configured), and
-records the versions; a tool that fails or runs past 60 s has its tree
+records each version line, which must name the tool's version; a tool that
+fails, prints no version, or runs past 60 s has its tree
 stopped and stops the run.
