@@ -104,6 +104,8 @@ export function judgePrompt(p: BlindedPrompt): string {
 
 const sha = (text: string) => createHash("sha256").update(text).digest("hex");
 
+export const pairDigests = (pair: Pair) => ({ a: sha(pair.a), b: sha(pair.b) });
+
 export interface JudgeIdentity {
     model: string;
     prompt_digest: string;
@@ -118,6 +120,11 @@ export function judgeIdentity(model: string): JudgeIdentity {
 export interface JudgeClient {
     identity: JudgeIdentity;
     verdict(prompt: string): Promise<RawVerdict>;
+}
+
+export interface ProxyJudgeOptions {
+    /** Wall-clock bound on one verdict request, after which the call is refused. */
+    deadlineMs?: number;
 }
 
 export function parseVerdict(text: string): RawVerdict {
@@ -135,24 +142,42 @@ function family(model: string): string {
     return found;
 }
 
-export function proxyJudge(gatewayUrl: string, model: string, agentModel: string): JudgeClient {
+export function proxyJudge(
+    gatewayUrl: string,
+    model: string,
+    agentModel: string,
+    options: ProxyJudgeOptions = {},
+): JudgeClient {
     if (family(model) === family(agentModel)) {
         throw new GradeRefused(`judge ${model} shares the agent model's family`);
     }
+    const deadlineMs = options.deadlineMs ?? 900_000;
     return {
         identity: judgeIdentity(model),
         async verdict(prompt) {
-            const response = await fetch(
-                `${gatewayUrl}/model/${encodeURIComponent(model)}/converse`,
-                {
-                    method: "POST",
-                    headers: { [COMPONENT_HEADER]: "judge", "content-type": "application/json" },
-                    body: JSON.stringify({
-                        messages: [{ role: "user", content: [{ text: prompt }] }],
-                        inferenceConfig: { maxTokens: 256 },
-                    }),
-                },
-            );
+            let response: Response;
+            try {
+                response = await fetch(
+                    `${gatewayUrl}/model/${encodeURIComponent(model)}/converse`,
+                    {
+                        method: "POST",
+                        headers: {
+                            [COMPONENT_HEADER]: "judge",
+                            "content-type": "application/json",
+                        },
+                        body: JSON.stringify({
+                            messages: [{ role: "user", content: [{ text: prompt }] }],
+                            inferenceConfig: { maxTokens: 256 },
+                        }),
+                        signal: AbortSignal.timeout(deadlineMs),
+                    },
+                );
+            } catch (caught) {
+                if ((caught as Error).name === "TimeoutError") {
+                    throw new GradeRefused(`judge call timed out after ${deadlineMs} ms`);
+                }
+                throw caught;
+            }
             if (!response.ok) throw new GradeRefused(`judge call failed: ${response.status}`);
             const body = (await response.json()) as {
                 output?: { message?: { content?: unknown } };
@@ -174,6 +199,7 @@ export interface Recall {
 
 export interface Judgment {
     pair: string;
+    answers: { a: string; b: string };
     judge: JudgeIdentity;
     orders: Record<Order, RawVerdict>;
     recall: Recall | "Inconsistent";
@@ -207,6 +233,7 @@ export async function judgePair(
     }
     return {
         pair: pair.id,
+        answers: pairDigests(pair),
         judge: client.identity,
         orders,
         recall,
@@ -273,6 +300,7 @@ export function calibrationDigest(set: CalibrationSet | null, rules: Rules): str
 
 export interface P7Inputs {
     pair: Pair;
+    answers: { a: string; b: string };
     snapshots: { a: string; b: string };
     arms: { a: string; b: string };
     inputs: string[];
@@ -299,6 +327,7 @@ export function p7Pair(item: string, a: Snapshot, b: Snapshot): P7Inputs | null 
     }
     return {
         pair,
+        answers: pairDigests(pair),
         snapshots: { a: a.id, b: b.id },
         arms: { a: a.arm, b: b.arm },
         inputs: [...ra.read, ...rb.read].sort(),
@@ -307,6 +336,7 @@ export function p7Pair(item: string, a: Snapshot, b: Snapshot): P7Inputs | null 
 
 export interface P7Context {
     item: string;
+    answers: { a: string; b: string };
     snapshots: { a: string; b: string };
     arms: { a: string; b: string };
     inputs: string[];
@@ -318,6 +348,9 @@ export interface P7Context {
 export function gradeP7(j: Judgment, c: P7Context, rules: Rules, version = 1): GradeRecord[] {
     if (j.pair !== c.item) {
         throw new GradeRefused(`judgment for ${j.pair} cannot grade item ${c.item}`);
+    }
+    if (j.answers.a !== c.answers.a || j.answers.b !== c.answers.b) {
+        throw new GradeRefused(`judgment for ${j.pair} was made on other answers`);
     }
     let digest: string | null = null;
     let calibration = "none";

@@ -18,6 +18,7 @@ import {
     normalise,
     type Pair,
     p7Pair,
+    pairDigests,
     parseVerdict,
     permutationCheck,
     proxyJudge,
@@ -73,8 +74,9 @@ const calibration = (pairs = 25, human = 20): CalibrationSet => {
     };
 };
 
-const context = (item: string, extra: Partial<Parameters<typeof gradeP7>[1]> = {}) => ({
+const context = (item: string, pair: Pair, extra: Partial<Parameters<typeof gradeP7>[1]> = {}) => ({
     item,
+    answers: pairDigests(pair),
     snapshots: { a: "snap-eidnara", b: "snap-host" },
     arms: { a: "eidnara", b: "host" },
     inputs: ["snap-eidnara:calls", "snap-host:calls"],
@@ -94,7 +96,7 @@ describe("P7 judge path", () => {
             expect(client.prompts[0]).toContain(`First answer:\n${normalise(f.pair.a)}`);
             expect(client.prompts[1]).toContain(`First answer:\n${normalise(f.pair.b)}`);
             for (const prompt of client.prompts) expect(prompt).not.toMatch(/eidnara|host/i);
-            const grades = gradeP7(judgment, context(f.probe.id), rules);
+            const grades = gradeP7(judgment, context(f.probe.id, f.pair), rules);
             expect(grades.map((g) => g.verdict)).toEqual([f.expect.a, f.expect.b] as never);
             for (const g of grades) {
                 expect(g.metrics.judge_model).toBe("global.openai.gpt-5.6-luna");
@@ -153,17 +155,21 @@ describe("P7 judge path", () => {
             f.probe.check.judge,
             [],
         );
-        const ok = gradeP7(judgment, context(f.probe.id, { calibration: calibration() }), rules);
+        const ok = gradeP7(
+            judgment,
+            context(f.probe.id, f.pair, { calibration: calibration() }),
+            rules,
+        );
         expect(ok[0]?.metrics.gate_eligible).toBe(true);
         expect(ok[0]?.metrics.calibration_digest).toMatch(/^[0-9a-f]{64}$/);
-        const identified = context(f.probe.id, {
+        const identified = context(f.probe.id, f.pair, {
             calibration: calibration(),
             permutation: { trials: 20, correct: 13 },
         });
         const refused = gradeP7(judgment, identified, rules)[0];
         expect(refused?.metrics.gate_eligible).toBe(false);
         expect(String(refused?.metrics.permutation)).toContain("refused");
-        const bad = context(f.probe.id, { calibration: calibration(25, 19) });
+        const bad = context(f.probe.id, f.pair, { calibration: calibration(25, 19) });
         const badSet = gradeP7(judgment, bad, rules)[0];
         expect([badSet?.metrics.gate_eligible, String(badSet?.metrics.calibration)]).toEqual([
             false,
@@ -198,7 +204,7 @@ describe("P7 judge path", () => {
             f.probe.check.judge,
             [],
         );
-        const [a] = gradeP7(judgment, context(f.probe.id), rules);
+        const [a] = gradeP7(judgment, context(f.probe.id, f.pair), rules);
         expect((a?.metrics.length_a as number) > (a?.metrics.length_b as number)).toBe(true);
         expect(a?.metrics.longer_recalled_alone).toBe(true);
     });
@@ -242,7 +248,7 @@ describe("P7 judge path", () => {
             ...calibration(),
             judge: judgeIdentity("global.anthropic.claude-haiku-5-5"),
         };
-        const [g] = gradeP7(judgment, context(f.probe.id, { calibration: foreign }), rules);
+        const [g] = gradeP7(judgment, context(f.probe.id, f.pair, { calibration: foreign }), rules);
         expect([g?.metrics.gate_eligible, g?.metrics.calibration_digest]).toEqual([false, "none"]);
         expect(String(g?.metrics.calibration)).toContain("refused: calibration judge");
         const stale = {
@@ -250,8 +256,8 @@ describe("P7 judge path", () => {
             judge: { ...judgeIdentity(rules.judge.model), rubric_digest: "0" },
         };
         expect(
-            gradeP7(judgment, context(f.probe.id, { calibration: stale }), rules)[0]?.metrics
-                .gate_eligible,
+            gradeP7(judgment, context(f.probe.id, f.pair, { calibration: stale }), rules)[0]
+                ?.metrics.gate_eligible,
         ).toBe(false);
     });
 
@@ -328,7 +334,7 @@ describe("P7 judge path", () => {
         );
         const grades = gradeP7(
             judgment,
-            context(f.probe.id, { later_attempts: { a: 2, b: 0 } }),
+            context(f.probe.id, f.pair, { later_attempts: { a: 2, b: 0 } }),
             rules,
         );
         expect(grades.map((g) => g.later_attempts_logged)).toEqual([2, 0]);
@@ -340,7 +346,11 @@ describe("P7 judge path", () => {
         other.identity = judgeIdentity("global.meta.llama-4-maverick");
         const judgment = await judgePair(other, f.pair, f.probe.check.judge, []);
         const matching = { ...calibration(), judge: other.identity };
-        const [g] = gradeP7(judgment, context(f.probe.id, { calibration: matching }), rules);
+        const [g] = gradeP7(
+            judgment,
+            context(f.probe.id, f.pair, { calibration: matching }),
+            rules,
+        );
         expect(g?.metrics.gate_eligible).toBe(false);
         expect(String(g?.metrics.calibration)).toContain("refused: judgment judge");
     });
@@ -404,7 +414,7 @@ describe("P7 judge path", () => {
             f.probe.check.judge,
             [],
         );
-        expect(() => gradeP7(judgment, context("q-other"), rules)).toThrow(GradeRefused);
+        expect(() => gradeP7(judgment, context("q-other", f.pair), rules)).toThrow(GradeRefused);
     });
 
     test("the reference reason is blinded like the answers", () => {
@@ -443,6 +453,19 @@ describe("P7 judge path", () => {
         const ghost = calibration();
         ghost.labels["\u200b\u200b"] = "a";
         expect(() => calibrationDigest(ghost, rules)).toThrow("blank");
+    });
+
+    test("a judgment grades only the answers it judged", async () => {
+        const f = load("P7-pass");
+        const judgment = await judgePair(
+            scripted(f.judge_verdicts),
+            f.pair,
+            f.probe.check.judge,
+            [],
+        );
+        expect(judgment.answers).toEqual(pairDigests(f.pair));
+        const other = { ...f.pair, b: `${f.pair.b} and more` };
+        expect(() => gradeP7(judgment, context(f.probe.id, other), rules)).toThrow(GradeRefused);
     });
 
     test("the human-check sample is ten percent of P7 items, rounded up, from a seeded draw", () => {
@@ -499,6 +522,17 @@ describe("proxy judge", () => {
             "anthropic.x",
         );
         await expect(judge.verdict("prompt")).rejects.toThrow("judge call failed: 502");
+    });
+
+    test("a judge call that never completes is refused at its deadline", async () => {
+        server = Bun.serve({ port: 0, fetch: () => new Promise<Response>(() => {}) });
+        const judge = proxyJudge(
+            `http://127.0.0.1:${server.port}`,
+            rules.judge.model,
+            "anthropic.x",
+            { deadlineMs: 50 },
+        );
+        await expect(judge.verdict("prompt")).rejects.toThrow("judge call timed out");
     });
 
     test("a well-formed status with a malformed body is a judge refusal, not a crash", async () => {
