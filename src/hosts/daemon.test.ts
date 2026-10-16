@@ -1,5 +1,13 @@
 import { expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import {
+    appendFileSync,
+    existsSync,
+    mkdirSync,
+    mkdtempSync,
+    readFileSync,
+    rmSync,
+    writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "../config/config";
@@ -137,4 +145,63 @@ test("the recovery marker outlives the copy, so a kill during recovery leaves th
     expect(() => daemon.recoverLog()).toThrow();
     expect(existsSync(`${logFile}.source`)).toBe(true);
     expect(existsSync(logPath)).toBe(true);
+});
+
+function stackCtx(dir: string) {
+    return {
+        config: loadConfig(),
+        root: dir,
+        dataDir: dir,
+        logFile: join(dir, "daemon.log"),
+        offsetFile: join(dir, "offset"),
+        proxyHttp1: "",
+        proxyHttp2: "",
+        model: "m",
+    };
+}
+
+test("a restart saves what the old daemon wrote up to its death, after the stack has replaced the log", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "sim-daemon-"));
+    const logPath = join(dir, "direct-host.log");
+    writeFileSync(logPath, "before\n");
+    const stack = {
+        logPath,
+        restartHost: async () => {
+            appendFileSync(logPath, "daemon: memory capture output rejected\n");
+            rmSync(logPath);
+            writeFileSync(logPath, "new lifetime\n");
+        },
+    };
+    const hh = {
+        __hermeticHostTest: {
+            diagnostics: () => ({ stdout: "out\n", stderr: "", retainedLog: "" }),
+        },
+    };
+    const daemon = new DaemonStack(stackCtx(dir));
+    Object.assign(daemon as unknown as Record<string, unknown>, { stack, hh });
+    await daemon.restart();
+    expect(readFileSync(join(dir, "daemon.log"), "utf8")).toBe(
+        "out\nbefore\ndaemon: memory capture output rejected\n",
+    );
+    expect(readFileSync(logPath, "utf8")).toBe("new lifetime\n");
+    expect(readFileSync(join(dir, "daemon.log.source"), "utf8")).toBe(logPath);
+});
+
+test("a recovery interrupted mid-copy rolls back the partial append before copying again", () => {
+    const dir = mkdtempSync(join(tmpdir(), "sim-daemon-"));
+    const logFile = join(dir, "daemon.log");
+    const logPath = join(dir, "direct-host.log");
+    writeFileSync(logFile, "earlier lifetime\n");
+    writeFileSync(logPath, "daemon: memory capture output rejected\nrest\n");
+    writeFileSync(
+        `${logFile}.source`,
+        JSON.stringify({ source: logPath, target_bytes: "earlier lifetime\n".length }),
+    );
+    appendFileSync(logFile, "daemon: memory capture output rej");
+    new DaemonStack(stackCtx(dir)).recoverLog();
+    expect(readFileSync(logFile, "utf8")).toBe(
+        "earlier lifetime\ndaemon: memory capture output rejected\nrest\n",
+    );
+    expect(existsSync(logPath)).toBe(false);
+    expect(existsSync(`${logFile}.source`)).toBe(false);
 });

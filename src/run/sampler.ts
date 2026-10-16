@@ -108,18 +108,16 @@ export class ResourceSampler {
 
     /**
      * A running sampler takes a final sample before its timer goes, so the last interval's
-     * growth is on record; a sample that cannot be written is reported and shutdown goes on.
+     * growth is on record. A final sample that cannot be written throws after the timer and
+     * busy state are cleared; the caller shuts the arm down in a `finally` and the error
+     * keeps the run from ending as complete evidence.
      */
     stop(): void {
         if (!this.timer) return;
         clearInterval(this.timer);
         this.timer = null;
-        try {
-            this.sample();
-        } catch (caught) {
-            console.error(`sampler: final sample not written: ${String(caught)}`);
-        }
         if (this.busy) this.o.onBusy(false);
         this.busy = false;
+        this.sample();
     }
 }

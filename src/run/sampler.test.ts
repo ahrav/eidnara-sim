@@ -64,7 +64,7 @@ test("start drops a sample line a kill cut, so the resumed file stays readable",
     expect(entries.map((e) => e.scenario_ms)).toEqual([1, 7, 7]);
 });
 
-test("a final sample that cannot be written does not keep stop from finishing", () => {
+test("a final sample that cannot be written fails stop, so the run does not end as complete evidence", () => {
     const dir = mkdtempSync(join(tmpdir(), "sim-sampler-"));
     const path = join(dir, "resources.jsonl");
     const sampler = new ResourceSampler({
@@ -78,5 +78,5 @@ test("a final sample that cannot be written does not keep stop from finishing", 
     });
     sampler.start();
     rmSync(dir, { recursive: true, force: true });
-    expect(() => sampler.stop()).not.toThrow();
+    expect(() => sampler.stop()).toThrow();
 });

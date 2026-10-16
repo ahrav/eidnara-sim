@@ -372,8 +372,11 @@ async function runArms(
             onBusy,
         });
         cleanup.push(async () => {
-            sampler.stop();
-            await driver.stop();
+            try {
+                sampler.stop();
+            } finally {
+                await driver.stop();
+            }
         });
         drivers[arm] = {
             reset: async () => {
@@ -405,8 +408,11 @@ async function runArms(
                 return driver.fault(f);
             },
             finish: async () => {
-                sampler.stop();
-                await driver.finish();
+                try {
+                    sampler.stop();
+                } finally {
+                    await driver.finish();
+                }
             },
         };
     }

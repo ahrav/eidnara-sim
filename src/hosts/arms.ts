@@ -3,13 +3,17 @@ import {
     appendFileSync,
     closeSync,
     existsSync,
+    linkSync,
     mkdirSync,
     openSync,
     readdirSync,
     readFileSync,
     readSync,
     realpathSync,
+    renameSync,
     rmSync,
+    statSync,
+    truncateSync,
     writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -148,20 +152,40 @@ export class DaemonStack {
         writeFileSync(this.logSourceFile, String(this.stack?.logPath ?? ""));
     }
 
+    /** Appends a dead lifetime's log to `daemon.log` exactly once, then removes it. */
+    private absorb(source: string): void {
+        const start = existsSync(this.ctx.logFile) ? statSync(this.ctx.logFile).size : 0;
+        const tmp = `${this.logSourceFile}.tmp`;
+        writeFileSync(tmp, JSON.stringify({ source, target_bytes: start }));
+        renameSync(tmp, this.logSourceFile);
+        appendFileFrom(source, this.ctx.logFile);
+        rmSync(source, { force: true });
+        rmSync(this.logSourceFile, { force: true });
+    }
+
     /**
-     * Saves the stderr log a killed lifetime left behind, then removes it and its marker, in
-     * that order, so a kill during the copy leaves the log findable (and the copy restarts
-     * from its beginning). A clean `stop` or `restart` has already saved and removed its log,
-     * so this finds a file only after a kill.
+     * Saves the stderr log a killed lifetime left behind. The marker names the log; while a
+     * copy runs it also records `daemon.log`'s length before the copy, so a kill mid-copy is
+     * rolled back to that length before the copy runs again, and the log is appended once.
+     * A clean `stop` or `restart` has already saved and removed its log, so this finds a file
+     * only after a kill.
      */
     recoverLog(): void {
         if (!existsSync(this.logSourceFile)) return;
-        const source = readFileSync(this.logSourceFile, "utf8").trim();
-        if (source !== "" && existsSync(source)) {
-            appendFileFrom(source, this.ctx.logFile);
-            rmSync(source, { force: true });
+        const note = readFileSync(this.logSourceFile, "utf8").trim();
+        let source = note;
+        if (note.startsWith("{")) {
+            let parsed: { source: string; target_bytes: number };
+            try {
+                parsed = JSON.parse(note);
+            } catch {
+                throw new Error(`${this.logSourceFile}: unreadable daemon log recovery marker`);
+            }
+            source = parsed.source;
+            if (existsSync(this.ctx.logFile)) truncateSync(this.ctx.logFile, parsed.target_bytes);
         }
-        rmSync(this.logSourceFile, { force: true });
+        if (source !== "" && existsSync(source)) this.absorb(source);
+        else rmSync(this.logSourceFile, { force: true });
     }
 
     async start(): Promise<void> {
@@ -208,30 +232,42 @@ export class DaemonStack {
      * (`logPath`, a private field the stack's own `diagnostics` view reads the same way) and
      * stdout from the `diagnostics` view.
      */
-    private saveLog(): void {
-        if (!this.stack) return;
-        const { stdout } = this.hh.__hermeticHostTest.diagnostics(this.stack);
+    /**
+     * Saves the lifetime's stdout, then its stderr log, once the daemon is dead so the log
+     * holds everything it wrote. `held` is a hard link taken before a restart: the stack
+     * replaces the log path when the new daemon starts, and the link keeps the old inode
+     * readable until the old daemon's last write has landed.
+     */
+    private saveLog(stdout: string, log: string): void {
         appendFileSync(this.ctx.logFile, stdout);
-        const logPath = String(this.stack.logPath ?? "");
-        if (existsSync(logPath)) {
-            appendFileFrom(logPath, this.ctx.logFile);
-            rmSync(logPath, { force: true });
+        if (existsSync(log)) {
+            appendFileFrom(log, this.ctx.logFile);
+            rmSync(log, { force: true });
         }
         rmSync(this.logSourceFile, { force: true });
     }
 
+    private get held(): string {
+        return `${this.ctx.logFile}.held`;
+    }
+
     async restart(): Promise<void> {
-        this.saveLog();
+        const { stdout } = this.hh.__hermeticHostTest.diagnostics(this.stack);
+        const live = String(this.stack.logPath ?? "");
+        rmSync(this.held, { force: true });
+        if (existsSync(live)) linkSync(live, this.held);
         await this.stack.restartHost();
+        this.saveLog(stdout, this.held);
         this.noteLogSource();
     }
 
     async stop(): Promise<void> {
         const stack = this.stack;
         if (!stack) return;
-        this.saveLog();
+        const { stdout } = this.hh.__hermeticHostTest.diagnostics(stack);
         await stack.terminateHost();
         this.stack = null;
+        this.saveLog(stdout, String(stack.logPath ?? ""));
     }
 }
 

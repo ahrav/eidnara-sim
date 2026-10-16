@@ -730,3 +730,18 @@ describe("oracle round seven", () => {
         expect(() => loadRun(dir, prereg)).toThrow("arm eidnara has no daemon.log");
     });
 });
+
+describe("oracle round eight", () => {
+    test("an EndTurn without an outcome refuses the run", () => {
+        const { dir, line } = completeDir(["eidnara"]);
+        const journal = [
+            { kind: "StartRun", arm: null, order: ["eidnara"], scenario_ms: 0 },
+            { kind: "EndTurn", arm: "eidnara", event: "e-1", scenario_ms: 5 },
+            { kind: "Event", arm: "eidnara", event: "e-1", scenario_ms: 5 },
+            { kind: "EndArm", arm: "eidnara", scenario_ms: 5 },
+            { kind: "EndRun", arm: null, scenario_ms: 5 },
+        ];
+        writeFileSync(join(dir, "journal.jsonl"), journal.map(line).join(""));
+        expect(() => loadRun(dir, prereg)).toThrow(/journal\.jsonl: line 2: outcome/);
+    });
+});

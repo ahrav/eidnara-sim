@@ -9,8 +9,8 @@ is a manifest arm outside the pre-registered names, a daemon arm with no
 numeric RSS sample or no `daemon.log`, a call record that fails the proxy's
 record contract (`recordProblems`), names an arm outside the manifest, or
 repeats a sequence number, a journal entry, resource sample, or tool run
-missing a field, or an evidence file with a line that does not parse. It
-gathers, per arm, the call records, journal entries,
+missing a field (an `EndTurn` needs its `outcome`), or an evidence file with
+a line that does not parse. It gathers, per arm, the call records, journal entries,
 plugin log (`<arm>/r/eidnara.log`), daemon log (`<arm>/daemon.log`),
 resource samples, and tool runs (`<arm>/tools.jsonl`, one line per tool
 report with its turn; a Pi run with a `call` id is reported at its start with
