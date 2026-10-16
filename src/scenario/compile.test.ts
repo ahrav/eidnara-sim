@@ -597,13 +597,23 @@ describe("fault schedule", () => {
             for (const field of [seam.in_flight_fate, seam.surviving_state, seam.oracle])
                 expect(field.length).toBeGreaterThan(5);
         }
-        for (const t of PROVIDER) expect(SEAMS[t as keyof typeof SEAMS].layer).toBe("proxy-sink");
+        for (const [t, seam] of Object.entries(SEAMS)) {
+            const layer = PROVIDER.includes(t)
+                ? "proxy-sink"
+                : t === "laptop_sleep"
+                  ? "clock"
+                  : "scheduler";
+            expect([t, seam.layer]).toEqual([t, layer]);
+        }
     });
 
     for (const tier of TIERS)
         test(`tier ${tier} schedules the spec's fault types once each on compiler-owned events`, async () => {
             const s = await compileScenario(loadCompileInput(1, tier, hashEmbedder, true));
             expect(s.faults.map((f) => f.type as string)).toEqual(SPEC_FAULTS[tier] ?? []);
+            expect(s.faults.map((f) => f.id)).toEqual(
+                s.faults.map((_, i) => `fault-${String(i).padStart(3, "0")}`),
+            );
             const sessions = new Map(s.sessions.map((x) => [x.id, x]));
             const providerSessions = new Set<string>();
             for (const f of s.faults) {
@@ -644,6 +654,11 @@ describe("fault schedule", () => {
             const at = s.events[start]?.scenario_ms as number;
             expect(at - before.scenario_ms).toBe(sleep.params.duration_ms ?? -1);
             expect(sleep.params.duration_ms ?? 0).toBeGreaterThan(0);
+            const diffAt = new Set(
+                s.events.filter((e) => e.kind === "apply_diff").map((e) => e.scenario_ms),
+            );
+            const quiet = s.sessions.slice(1).filter((x) => !diffAt.has(x.start_ms));
+            expect(sleep.params.duration_ms).toBe(Math.max(...quiet.map((x) => x.gap_before_ms)));
         }, 60_000);
 
     test("provider faults use every strategy across seeds", async () => {
