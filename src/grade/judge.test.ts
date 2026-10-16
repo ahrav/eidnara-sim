@@ -367,6 +367,46 @@ describe("P7 judge path", () => {
         ).toThrow(BlindingRefused);
     });
 
+    test("human sample ids must be strings, so numeric twins cannot pad the sample", () => {
+        const numericKeys = Object.fromEntries(
+            Array.from({ length: 25 }, (_, i) => [String(i), "a" as const]),
+        );
+        const twins = {
+            ...calibration(),
+            labels: numericKeys,
+            human: Array.from({ length: 10 }, (_, i) => [i, String(i)]).flat(),
+        } as unknown as CalibrationSet;
+        expect(() => calibrationDigest(twins, rules)).toThrow(GradeRefused);
+        const mixed = { ...calibration(), human: [0, ...calibration().human.slice(1)] };
+        expect(() => calibrationDigest(mixed as unknown as CalibrationSet, rules)).toThrow(
+            "not a string",
+        );
+    });
+
+    test("an arm name or canary split by visible punctuation is caught in its joined form", () => {
+        const base = { id: "p", a: "fine", b: "fine" };
+        for (const leak of ["eid-nara", "e.i.d.n.a.r.a", "the eid nara index"]) {
+            expect(() => blind({ ...base, b: leak }, "a_then_b", "r", [])).toThrow("names an arm");
+        }
+        expect(() =>
+            blind({ ...base, a: "uses CAN-ARY-7f3 here" }, "a_then_b", "r", ["CANARY-7f3"]),
+        ).toThrow(BlindingRefused);
+        expect(() =>
+            blind({ ...base, a: "refresh armour and pharmacy" }, "a_then_b", "r", []),
+        ).not.toThrow();
+    });
+
+    test("a judgment grades only the item its context names", async () => {
+        const f = load("P7-pass");
+        const judgment = await judgePair(
+            scripted(f.judge_verdicts),
+            f.pair,
+            f.probe.check.judge,
+            [],
+        );
+        expect(() => gradeP7(judgment, context("q-other"), rules)).toThrow(GradeRefused);
+    });
+
     test("the human-check sample is ten percent of P7 items, rounded up, from a seeded draw", () => {
         const items = Array.from({ length: 24 }, (_, i) => `q-${i}`);
         const a = humanCheckSample(items, rules, new Rng(9));

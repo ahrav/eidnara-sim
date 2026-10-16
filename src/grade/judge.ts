@@ -70,14 +70,20 @@ export function blind(
     for (const text of [pair.a, pair.b]) {
         const variants = [text, normalise(text)].flatMap((t) => [t, t.replace(INVISIBLE, " ")]);
         const folds = variants.map(foldWords);
+        const joined = folds.map((f) => f.replaceAll(" ", ""));
         const canary = canaries.find(
             (c) =>
                 c !== "" &&
                 (variants.some((v) => v.includes(c)) ||
-                    folds.some((f) => f.includes(foldWords(c)))),
+                    folds.some((f) => f.includes(foldWords(c))) ||
+                    joined.some((j) => j.includes(foldWords(c).replaceAll(" ", "")))),
         );
         if (canary) throw new BlindingRefused(`pair ${pair.id} carries canary ${canary}`);
-        const token = ARM_TOKENS.find((t) => folds.some((f) => f.includes(` ${t} `)));
+        const token = ARM_TOKENS.find(
+            (t) =>
+                folds.some((f) => f.includes(` ${t} `)) ||
+                (!t.includes(" ") && joined.some((j) => j.includes(t))),
+        );
         if (token) throw new BlindingRefused(`pair ${pair.id} names an arm: ${token}`);
     }
     const [first, second] = order === "a_then_b" ? [pair.a, pair.b] : [pair.b, pair.a];
@@ -231,6 +237,9 @@ export function calibrationDigest(set: CalibrationSet | null, rules: Rules): str
         throw new GradeRefused("calibration labels are not an object keyed by pair id");
     }
     if (!Array.isArray(set.human)) throw new GradeRefused("calibration human ids are not a list");
+    if (set.human.some((id) => typeof id !== "string")) {
+        throw new GradeRefused("a human label id is not a string");
+    }
     const pairs = Object.keys(set.labels).length;
     const { calibration_min_pairs: min, human_sample_percent: percent } = rules.judge;
     const floor = Math.max(Math.ceil((pairs * percent) / 100), min);
@@ -298,6 +307,9 @@ export interface P7Context {
 }
 
 export function gradeP7(j: Judgment, c: P7Context, rules: Rules, version = 1): GradeRecord[] {
+    if (j.pair !== c.item) {
+        throw new GradeRefused(`judgment for ${j.pair} cannot grade item ${c.item}`);
+    }
     let digest: string | null = null;
     let calibration = "none";
     try {

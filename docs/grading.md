@@ -88,7 +88,10 @@ cannot call, and the divergences are listed below.
    every combining mark after canonical decomposition (eval-core drops the
    combining diacritics block only); an invisible character is tried both
    as nothing and as a word separator, so `eid\u200bnara` and `arm\u200ba`
-   both match. The
+   both match, the normalised text is checked as well as the raw text, so
+   `Ei**dnara` matches, and canaries and one-word arm names are also
+   matched with every separator removed, so `eid-nara` and `CAN-ARY-7f3`
+   match. The
    arm names are eval-core's six plus `eidnara`, `host arm`, and
    `memory arm`. Doubled emphasis marks (`**`, `__`), backticks, heading
    marks, bullet marks, and code fence lines are stripped and whitespace
@@ -105,7 +108,7 @@ cannot call, and the divergences are listed below.
    `longer_recalled_alone` records whether the longer answer was the one
    recalled alone, for the verbosity audit.
 5. `gradeP7` writes one grade per arm, each with its arm's later-attempt
-   count. Each grade carries the judge model,
+   count, for the item the judgment names. Each grade carries the judge model,
    the prompt and rubric digests, both order verdicts, both answer lengths
    and `longer_recalled_alone`, the calibration digest, and the permutation
    check's result and counts. It computes the digest and runs the check
@@ -120,7 +123,8 @@ cannot call, and the divergences are listed below.
    human sample of at least 10% rounded up and never below 20 pairs. Only a
    set that passes gets a digest; a blank pair id, a human label naming no
    pair or naming one twice, a label other than `a`, `b`, `both`, or
-   `neither`, labels that are not an object keyed by pair id, and another
+   `neither`, labels that are not an object keyed by pair id, a human id
+   that is not a string, and another
    schema are refused. The set holds the judge identity,
    a label per pair, and the ids of the human-labelled pairs under the sim's
    own schema literal, `sim-judge-calibration/v1`, which also prefixes the
