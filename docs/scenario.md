@@ -33,7 +33,7 @@ The scenario file is canonical JSON with these sections:
 | `sessions` | Session id, project, start time, request count, the minimum idle gap before the session, and whether the request count was forced into the p90 regime |
 | `facts` | Ledger facts with template, kind, project, conveyance manner, statement, and the cue texts that carry it |
 | `probes` | Probe items P1 to P14 and the P1 controls with project, session, user text, the grading check, and the event that delivers it. Check keys: `must` and `must_not` regexes over the added lines of the agent's diff, `paths_must` and `paths_must_not` over the paths the diff adds or changes, `first_line_must` over the first line of every file the diff adds, `quote_style_must` (`double` or `single`) over the delimiter of every string literal in the added lines, `commands_must` and `commands_must_not` over the command log, an optional `scope` (a directory prefix) that limits the diff-channel keys to files under it, `answer`, `answer_must_not`, `abstain`, and `judge` over the final assistant text, and `window_from_turn` and `window_to_turn` for P14. Every `*_must` and `*_must_not` key holds a list of JavaScript regular expressions |
-| `similarity` | BM25 ratio and embedding cosine for every cue and probe pair, and for a decision fact's authoritative diff content against its probes, journaled to four decimals; the threshold gate compares the full-precision values |
+| `similarity` | BM25 ratio and embedding cosine for every cue and probe pair, and for a decision fact's authoritative diff content against its probes, each record naming its cue by `cue_sha256`, journaled to four decimals; the threshold gate compares the full-precision values |
 | `events` | `apply_diff`, `session_start`, `user_turn`, and `session_end` events in scenario time |
 | `scenario_hash` | sha256 of the canonical JSON of every other section |
 
@@ -153,15 +153,15 @@ thresholds (`bm25_max` 0.4, `cosine_max` 0.6):
 
 | Tier | Seed | `scenario_hash` | Largest BM25 ratio | Largest cosine |
 |---|---|---|---|---|
-| S | 101 | `466ab13d` | 0.2631 | 0.5194 |
-| S | 102 | `8aa5c5f5` | 0.2573 | 0.4867 |
-| M | 201 | `c0d9f5e5` | 0.2743 | 0.4992 |
-| M | 202 | `51f08092` | 0.2783 | 0.4997 |
-| M | 203 | `929b4bf2` | 0.2784 | 0.4843 |
-| L | 301 | `f55ac2e7` | 0.2729 | 0.5092 |
-| L | 302 | `5f024d22` | 0.259 | 0.4957 |
-| L | 303 | `323c841a` | 0.2803 | 0.5083 |
-| XL | 401 | `6612754a` | 0.2806 | 0.4962 |
+| S | 101 | `8cf40db8` | 0.2701 | 0.5194 |
+| S | 102 | `18f5908c` | 0.2658 | 0.4867 |
+| M | 201 | `4914835c` | 0.2609 | 0.4992 |
+| M | 202 | `101164db` | 0.2602 | 0.4997 |
+| M | 203 | `ccdadb77` | 0.2621 | 0.4843 |
+| L | 301 | `7312c7ed` | 0.2641 | 0.5092 |
+| L | 302 | `e58b2983` | 0.2671 | 0.4957 |
+| L | 303 | `73c70733` | 0.2655 | 0.5083 |
+| XL | 401 | `e14df96b` | 0.2617 | 0.4962 |
 
 ## Known limits
 

@@ -9,7 +9,7 @@ import {
     statSync,
     writeFileSync,
 } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import { loadConfig } from "../src/config/config";
 import { canonicalJson } from "../src/prereg/canonical";
 import { TIERS, type Tier } from "../src/prereg/schema";
@@ -29,7 +29,9 @@ for (let i = 0; i < argv.length; i += 2) {
     const value = argv[i + 1];
     if (!FLAGS.includes(name) || argv[i] === name) usage(`unknown argument ${argv[i]}`);
     if (args.has(name)) usage(`--${name} given twice`);
-    if (value === undefined || value.startsWith("--")) usage(`--${name} needs a value`);
+    if (value === undefined || value.trim() === "" || value.startsWith("--")) {
+        usage(`--${name} needs a value`);
+    }
     args.set(name, value as string);
 }
 const [tier, seedArg, embedderArg, outArg] = FLAGS.map((f) => args.get(f));
@@ -46,17 +48,20 @@ const kind = (path: string) => {
         return "missing";
     }
 };
+const target = (link: string) => {
+    const t = readlinkSync(link);
+    return isAbsolute(t) ? t : `${dirname(link)}${sep}${t}`;
+};
 const canonical = (path: string, depth = 0): string => {
     if (depth > 40) throw new Error(`${path}: too many levels of symbolic links`);
-    const absolute = isAbsolute(path) ? path : join(process.cwd(), path);
+    const absolute = isAbsolute(path) ? path : `${process.cwd()}${sep}${path}`;
     let cur: string = sep;
     for (const part of absolute.split(sep).filter((p) => p !== "" && p !== ".")) {
-        if (kind(cur) === "link")
-            cur = canonical(resolve(dirname(cur), readlinkSync(cur)), depth + 1);
+        if (kind(cur) === "link") cur = canonical(target(cur), depth + 1);
         else if (kind(cur) === "real") cur = realpathSync(cur);
         cur = part === ".." ? dirname(cur) : join(cur, part);
     }
-    if (kind(cur) === "link") return canonical(resolve(dirname(cur), readlinkSync(cur)), depth + 1);
+    if (kind(cur) === "link") return canonical(target(cur), depth + 1);
     return kind(cur) === "real" ? realpathSync(cur) : cur;
 };
 const checkout = canonical(config.eidnara_checkout);
