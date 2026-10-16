@@ -15,9 +15,6 @@ Scheduled event kinds, times, fault schedule, and counterfactual deletion
 schedule are identical across all arms for the whole run, independent of
 divergence.
 
-No harness code, test, or run exists yet. The surface lands in M2
-(#1026).
-
 M2 (#1026) compiles the event list, the fault schedule, and the counterfactual
 deletion schedule into the scenario file once per seed, with no arm input, so
 every arm reads the same schedule. Each fault names a compiler-chosen position:

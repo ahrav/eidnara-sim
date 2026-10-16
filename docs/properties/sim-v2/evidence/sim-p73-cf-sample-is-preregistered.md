@@ -17,12 +17,12 @@ from the seed at compile and journaled before `StartRun`.
 M2 (#1026) draws the sample at compile: `compileScenario` shuffles the P1, P3,
 and P5 probes with the seed's own `counterfactual` stream, takes the first 20%
 rounded, and writes each deletion's probe, fact, and preceding event to the
-scenario file's `cf_deletions` list (`src/scenario/compile.ts:609-615`) when
+scenario file's `cf_deletions` list (`src/scenario/compile.ts:620-626`) when
 the tier runs the `eidnara-cf` arm. The scenario file is byte-stable per seed
 and precedes any run. Tests check that an L compile samples 20% of the eligible
 probes with distinct entries, that two seeds draw different samples, that each
 deletion names its probe's fact and event, and that S, M, and XL schedule no
-deletions (`src/scenario/compile.test.ts:509-542`). The journal entry before
+deletions (`src/scenario/compile.test.ts:541-574`). The journal entry before
 `StartRun` lands with the runner in M4.
 
 ## Failure scenario
