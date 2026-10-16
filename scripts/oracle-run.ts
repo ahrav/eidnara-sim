@@ -12,8 +12,9 @@ export function runDirs(args: string[]): string[] {
     return [...new Set(args.map((d) => realpathSync(d)))];
 }
 
+/** Writes each run's `oracles.json` (activations, ledgers, recoveries, digest) and reports the tiers. */
 export function oracleRun(dirs: string[]) {
-    const results = dirs.map((dir) => {
+    const runs = dirs.map((dir) => {
         const manifest = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8"));
         const tier = manifest.tier as Tier;
         if (!TIERS.includes(tier)) throw new Error(`${dir}: unknown tier ${tier}`);
@@ -33,12 +34,19 @@ export function oracleRun(dirs: string[]) {
             recoveries: recoveries(run),
         };
         writeFileSync(join(dir, "oracles.json"), `${JSON.stringify(result, null, 2)}\n`);
-        return { run, result };
+        return run;
     });
-    const recovered = results.flatMap(({ run, result }) =>
-        result.recoveries.map((r) => ({ run: run.dir, ...r })),
-    );
-    return { oracles: oracleReport(results.map((r) => r.run)), recoveries: recovered };
+    return oracleReport(runs);
+}
+
+/** Every run's recovery rows from the `oracles.json` files `oracleRun` wrote, each with its run. */
+function recoveryRows(dirs: string[]): Record<string, unknown>[] {
+    return dirs.flatMap((dir) => {
+        const written = JSON.parse(readFileSync(join(dir, "oracles.json"), "utf8")) as {
+            recoveries: Record<string, unknown>[];
+        };
+        return written.recoveries.map((r) => ({ run: dir, ...r }));
+    });
 }
 
 if (import.meta.main) {
@@ -47,5 +55,7 @@ if (import.meta.main) {
         console.error("usage: bun scripts/oracle-run.ts <run dir>...");
         process.exit(2);
     }
-    console.log(JSON.stringify(oracleRun(runDirs(args)), null, 2));
+    const dirs = runDirs(args);
+    const oracles = oracleRun(dirs);
+    console.log(JSON.stringify({ oracles, recoveries: recoveryRows(dirs) }, null, 2));
 }
