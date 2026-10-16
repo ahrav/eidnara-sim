@@ -11,8 +11,9 @@ link, rename, and deletion through `/proc/self/fd/<fd>/`, which the kernel
 resolves against that open directory, so a symlink repointed or a directory
 renamed mid-way cannot move an operation elsewhere (`releaseLease` works the
 same way); it flushes the staged lease before linking it and the directory
-after (a link whose directory flush fails is unlinked again and the failure
-raised), so an acknowledged lease or release survives a storage crash; it reads the highest lease: one held by a live process, or by any
+after (a link whose directory flush fails is unlinked again and that unlink
+flushed before the failure is raised; when the rollback cannot be flushed
+either, the error names the directory's lease state as uncertain), so an acknowledged lease or release survives a storage crash; it reads the highest lease: one held by a live process, or by any
 process on another machine, refuses the call. The machine is `/etc/machine-id`
 (`hostname:<name>` where that file is absent), so machines or containers that
 share a hostname on one directory stay distinct; a lease carries the kernel
@@ -45,7 +46,7 @@ free whichever machine released it.
 
 `Journal` opens the run directory once, checks that it is the one
 `takeLease` fixed (`lease.within`, the device and inode of the directory the
-lease landed in; by default the directory the path names as the constructor
+lease landed in, carried at the kernel's full width as decimal strings; by default the directory the path names as the constructor
 starts), and opens, reads, and marks its file through that directory handle
 (`/proc/self/fd/<fd>/journal.jsonl`), so a symlink repointed or a directory
 renamed after the lease cannot route the journal, or its failure marker,
@@ -55,8 +56,9 @@ over `MAX_JOURNAL_BYTES` (256 MiB) before reading it and an append that would
 carry it over, flushes the directory when it creates the file and each
 appended line with `fdatasync` before the entry counts as appended, so an
 acknowledged entry survives a power loss, and flushes the truncation that
-rolls a failed append back (closing the journal when that flush fails), so a
-refused entry cannot reappear after a crash, and refuses to open while a
+rolls a failed append back (poisoning the run when that flush fails, so the
+uncertain tail is never resumed), so a refused entry cannot reappear after a
+crash, and refuses to open while a
 `journal.jsonl.failed` marker sits beside the file the kernel opened
 (`poison` writes the marker through the same directory handle, so a run
 directory renamed since the open still gets its marker beside the journal,
@@ -163,7 +165,9 @@ call through it is refused:
    driver call, and a later process refuses the journal. An `EndTurn` that cannot be
    appended poisons the run the same way. When a fault keyed
    to the turn fired, the scheduler quiesces again before `BeginTurn`, so a
-   job the fault's callback started ends first. A user turn is bracketed by `BeginTurn`
+   job the fault's callback started ends first. The outcome's `failed` string is copied
+   out once, so `EndTurn` and `Event` carry one value whatever the driver does
+   to its object afterwards. A user turn is bracketed by `BeginTurn`
    and `EndTurn` and holds the clock busy while it runs; its settle interval
    is raced against the fatal channel, and a fatal exit inside it refuses the
    run before the turn's `Event`. An `apply_diff`

@@ -3714,6 +3714,50 @@ describe("Scheduler", () => {
         }
     });
 
+    test("the turn's outcome is snapshotted before the settle window, and a rollback that cannot be flushed poisons the run", async () => {
+        const events = fixtureEvents(1);
+        const j = new Journal(join(dir(), "j.jsonl"));
+        const shared: { failed?: string } = {};
+        await new Scheduler({
+            events,
+            faults: [],
+            journal: j,
+            settleMs: 20,
+            order: ["a"],
+            drivers: {
+                a: {
+                    ...fakeDriver([]),
+                    event: async (e) => {
+                        if (e.kind === "user_turn") {
+                            setTimeout(() => {
+                                shared.failed = "late mutation";
+                            }, 5);
+                            return shared;
+                        }
+                        return {};
+                    },
+                },
+            },
+        }).run();
+        const turn = j.entries.filter((e) => e.event === "e-000001" && e.outcome !== undefined);
+        expect(turn.map((e) => e.outcome)).toEqual(["ok", "ok"]);
+        await new Scheduler({
+            events,
+            faults: [],
+            journal: new Journal(j.path),
+            settleMs: 0,
+            order: ["a"],
+            drivers: { a: fakeDriver([]) },
+        }).run();
+        const path = join(dir(), "j.jsonl");
+        const k = new Journal(path);
+        closeSync((k as unknown as { fd: number }).fd);
+        expect(() =>
+            k.append({ kind: "StartRun", arm: null, scenario_ms: 0, order: ["a"], scenario: "s" }),
+        ).toThrow(/EBADF/);
+        expect(() => new Journal(path)).toThrow(/rollback could not be flushed/);
+    });
+
     test("a FaultObserved without its FaultFired is refused on resume", async () => {
         const path = join(dir(), "j.jsonl");
         const restart = episode("r", "daemon_restart", {

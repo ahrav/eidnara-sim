@@ -245,15 +245,16 @@ export const MAX_JOURNAL_BYTES = 256 * 1024 * 1024;
 
 /** The device and inode of a run directory, fixed when its lease is taken. */
 export interface DirIdentity {
-    dev: number;
-    ino: number;
+    /** Decimal device and inode numbers at the kernel's full width, so a lease can carry them. */
+    dev: string;
+    ino: string;
 }
 
-/** The identity of the directory `dir` resolves to now. */
+/** The identity of the directory `dir` resolves to now, at the kernel's full width. */
 export function directoryIdentity(dir: string): DirIdentity {
-    const st = statSync(dir);
+    const st = statSync(dir, { bigint: true });
     if (!st.isDirectory()) throw new Error(`${dir} is not a directory`);
-    return { dev: st.dev, ino: st.ino };
+    return { dev: st.dev.toString(), ino: st.ino.toString() };
 }
 
 /**
@@ -267,8 +268,8 @@ class PinnedDir {
     closed = false;
     constructor(dir: string) {
         this.fd = openSync(dir, constants.O_RDONLY | constants.O_DIRECTORY);
-        const st = fstatSync(this.fd);
-        this.identity = { dev: st.dev, ino: st.ino };
+        const st = fstatSync(this.fd, { bigint: true });
+        this.identity = { dev: st.dev.toString(), ino: st.ino.toString() };
     }
     at(name: string): string {
         if (this.closed) throw new Error("run directory handle is closed");
@@ -392,7 +393,13 @@ export function takeLease(runDir: string): Lease & { within: DirIdentity } {
                 if (!linked) continue;
                 try {
                     rmSync(link, { force: true });
-                } catch {}
+                    pinned.sync();
+                } catch (unrolled) {
+                    const error = unrolled instanceof Error ? unrolled.message : String(unrolled);
+                    throw new Error(
+                        `lease in ${dir} could not be flushed and its rollback could not be flushed either; the directory's lease state is uncertain: ${error}`,
+                    );
+                }
                 throw caught;
             } finally {
                 try {
@@ -597,11 +604,18 @@ export class Journal {
             try {
                 ftruncateSync(fd, this.length);
                 fdatasyncSync(fd);
-            } catch {
-                this.fd = -1;
+            } catch (unflushed) {
+                const error = unflushed instanceof Error ? unflushed.message : String(unflushed);
                 try {
-                    closeSync(fd);
-                } catch {}
+                    this.poison(
+                        `append at seq ${full.seq} failed and its rollback could not be flushed: ${error}`,
+                    );
+                } catch {
+                    this.fd = -1;
+                    try {
+                        closeSync(fd);
+                    } catch {}
+                }
             }
             throw caught;
         }

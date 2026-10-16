@@ -884,7 +884,8 @@ export class Scheduler {
                 );
                 throw caught;
             }
-            return got as { failed?: string };
+            const { failed } = got as { failed?: string };
+            return failed === undefined ? {} : { failed };
         };
         let outcome: { failed?: string };
         if (e.kind === "user_turn") {
