@@ -42,3 +42,21 @@ Each arm ran 5 to 15 `memory_capture` calls, and every store ends with
 rest of this session"), which carry no durable memory, so this is
 consistent with the design and leaves cross-session recall unmeasured at
 S.
+
+## G4. The daemon exits on a dispatch task that outlives route close
+
+Runs: `tier-M/M-201-pi` arm `eidnara~aa`, `tier-M/M-202-pi` arm
+`eidnara-kl`, and `tier-M/M-202-opencode` arm `eidnara~aa` (Eidnara
+`bb866266c`).
+
+In each, the daemon's last log line is
+`Error: LifecycleFatal("dispatch task did not stop before route-gone")`,
+written by the forced route close in `crates/host-runtime/src/dispatch.rs`
+when a dispatch task neither finishes nor observes its abort within the
+route-close budget. The pass logged just before took 41,050 ms, 27,968 ms,
+and 63,313 ms of handler time, against tens to hundreds of milliseconds for
+the passes around it, so a long in-flight pass held the route when the
+host closed it. The daemon exited outside any scheduled outage, the
+harness stopped each run there, and each run resumed from its journal with
+a fresh daemon. All three are on M runs, on both hosts, during user turns
+with long sessions; no S run and no host arm shows the line.
