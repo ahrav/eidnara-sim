@@ -18,9 +18,10 @@ published reference within a stated tolerance
 | `negativeBinomial(x, y)` | Negative-binomial GLM with log link (an empty, ragged, non-finite, or mismatched design throws `RangeError`), fitted as R `MASS::glm.nb` does from R's `y + 0.1` starting means, so the design needs no intercept-first column order; with coefficient standard errors; theta is the highest-likelihood root of its score in [1e-8, 1e8], found by bisecting every downward crossing on a log grid so a finite maximum wins over the Poisson limit, and stops at 1e8 for counts with no overdispersion, and `converged` requires the coefficient iteration to settle at the final theta (relative change under 1e-8, as MASS's epsilon, or a change in the dispersion 1/theta under 1e-12, within 200 alternations by default) and is false when an iteration limit runs out, a number is not finite, or the arms separate (a fitted log-mean past 30 in magnitude) | `glm.nb(Days ~ Eth + Sex + Age + Lrn, quine)`: seven coefficients, six standard errors, and theta 1.274892646 |
 
 Every count argument (`signTest`, `mcnemarExact`, `newcombe`, and the
-`negativeBinomial` response) must be a nonnegative integer; anything else
-throws `RangeError`, so a malformed aggregate cannot reach a gate as a
-result.
+`negativeBinomial` response) must be a nonnegative integer, every `alpha`
+must lie in (0, 1), and every `holm` input must lie in [0, 1] or be NaN;
+anything else throws `RangeError`, so a malformed aggregate cannot reach
+a gate as a result.
 
 `src/stats/dist.ts` supplies the normal, binomial, and incomplete beta
 functions and the digamma function (positive arguments only, otherwise
@@ -46,6 +47,8 @@ The tier gate evaluation resamples ledger-fact clusters with this
 percentile bootstrap; no published table covers a cluster resample. The
 per-run report in `src/report/paired.ts` keeps its own `bootstrapMean`
 for its descriptive interval. A statistic that is undefined on the
-sample or on any resample makes both limits NaN, whatever the seed; an
+sample or on any resample makes both limits NaN, whatever the seed, and
+so does a BCa adjustment whose two tails straddle the acceleration pole
+`1 - a (z0 + z) = 0`; an
 empty sample or a replicate count that is not a positive integer throws
 `RangeError`.

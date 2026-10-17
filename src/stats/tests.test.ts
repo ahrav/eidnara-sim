@@ -113,6 +113,26 @@ describe("statistics against published references", () => {
         }
     });
 
+    test("BCa reports undefined limits when the acceleration pole separates its two tails", () => {
+        const xs = [1000, ...Array.from({ length: 49 }, (_, i) => i + 1)];
+        const stat = (s: number[]) => new Set(s).size + 0.001 * Math.max(...s);
+        const b = bootstrap(xs, stat, { replicates: 100_000, seed: 1, bca: true });
+        expect(b.a).toBeGreaterThan(0);
+        expect([b.lo, b.hi]).toEqual([Number.NaN, Number.NaN]);
+    });
+
+    test("the negative-binomial standard errors of a wide identity design are the Poisson ones", () => {
+        const p = 200;
+        const x = Array.from({ length: p }, (_, i) =>
+            Array.from({ length: p }, (_, j) => Number(i === j)),
+        );
+        const y = x.map((_, i) => 1 + (i % 3));
+        const fit = negativeBinomial(x, y, 1);
+        fit.se.forEach((v, i) => {
+            near(v, 1 / Math.sqrt(y[i] as number), 1e-6);
+        });
+    });
+
     test("BCa stays finite when every replicate falls on one side of the estimate", () => {
         const xs = Array.from({ length: 12 }, (_, i) => i);
         const b = bootstrap(xs, (x) => new Set(x).size, { replicates: 2000, seed: 1, bca: true });
@@ -352,6 +372,13 @@ describe("statistics against published references", () => {
         expect(() => bootstrap([1, 2], (s) => s.length, { replicates: 1.5, seed: 1 })).toThrow(
             RangeError,
         );
+        expect(() =>
+            bootstrap([1, 2, 3], (s) => s.length, { replicates: 10, seed: 1, alpha: 1.5 }),
+        ).toThrow(RangeError);
+        expect(() => newcombe(10, 5, 2, 5, 0)).toThrow(RangeError);
+        expect(() => mcnemarExact(150, 86, 1)).toThrow(RangeError);
+        expect(() => holm([-0.01, 0.02])).toThrow(RangeError);
+        expect(() => holm([0.5, Number.POSITIVE_INFINITY])).toThrow(RangeError);
         expect(() => digamma(0)).toThrow(RangeError);
         expect(() => digamma(-1_000_000_000.5)).toThrow(RangeError);
         near(digamma(1), -0.5772156649015329, 1e-9);

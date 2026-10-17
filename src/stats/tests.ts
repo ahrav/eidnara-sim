@@ -12,6 +12,10 @@ function trials(fn: string, n: number): void {
     if (n > TRIALS_MAX) throw new RangeError(`${fn}: at most ${TRIALS_MAX} trials`);
 }
 
+function level(fn: string, alpha: number): void {
+    if (!(alpha > 0 && alpha < 1)) throw new RangeError(`${fn}: alpha must lie in (0, 1)`);
+}
+
 /** Two-sided exact binomial test of `x` successes in `n` at one half: the sign test. */
 export function signTest(x: number, n: number): number {
     counts("signTest", [x, n]);
@@ -34,6 +38,7 @@ export interface McNemar {
 export function mcnemarExact(b: number, c: number, alpha = 0.05): McNemar {
     counts("mcnemarExact", [b, c]);
     trials("mcnemarExact", b + c);
+    level("mcnemarExact", alpha);
     const n = b + c;
     const lo = b === 0 ? 0 : betaQuantile(alpha / 2, b, c + 1);
     const hi = c === 0 ? 1 : betaQuantile(1 - alpha / 2, b + 1, c);
@@ -66,6 +71,7 @@ export function newcombe(
     const n = a + b + c + d;
     if (n === 0) throw new RangeError("newcombe: an empty table has no difference");
     counts("newcombe", [a, b, c, d]);
+    level("newcombe", alpha);
     const z = normalQuantile(1 - alpha / 2);
     const [p1, p2] = [(a + b) / n, (a + c) / n];
     const [l1, u1] = wilson(a + b, n, z);
@@ -86,6 +92,8 @@ export function newcombe(
  * counts toward the family size, preserving the correction strength for observed hypotheses.
  */
 export function holm(ps: readonly number[]): number[] {
+    if (!ps.every((p) => Number.isNaN(p) || (p >= 0 && p <= 1)))
+        throw new RangeError("holm: p-values must lie in [0, 1] or be NaN");
     const order = ps
         .map((p, i) => [p, i] as const)
         .filter(([p]) => !Number.isNaN(p))
@@ -169,6 +177,7 @@ export function bootstrap<T>(
     if (!(Number.isInteger(o.replicates) && o.replicates > 0))
         throw new RangeError("bootstrap: replicates must be a positive integer");
     const alpha = o.alpha ?? 0.05;
+    level("bootstrap", alpha);
     const estimate = stat([...xs]);
     const rng = new Rng(o.seed);
     const reps = Array.from({ length: o.replicates }, () => stat(resample(xs, rng))).sort(
@@ -189,20 +198,24 @@ export function bootstrap<T>(
     const a = acceleration(xs, stat);
     const adjust = (q: number) => {
         const z = normalQuantile(q);
-        return normalCdf(z0 + (z0 + z) / (1 - a * (z0 + z)));
+        const scale = 1 - a * (z0 + z);
+        return scale > 0 ? normalCdf(z0 + (z0 + z) / scale) : Number.NaN;
     };
+    const [qlo, qhi] = [adjust(alpha / 2), adjust(1 - alpha / 2)];
+    const ordered = qlo < qhi;
     return {
         estimate,
-        lo: percentile(reps, adjust(alpha / 2)),
-        hi: percentile(reps, adjust(1 - alpha / 2)),
+        lo: ordered ? percentile(reps, qlo) : Number.NaN,
+        hi: ordered ? percentile(reps, qhi) : Number.NaN,
         z0,
         a,
     };
 }
 
 /** Cholesky solve of a symmetric positive-definite system. */
-function solve(m: number[][], v: number[]): number[] {
-    const n = v.length;
+/** `m` must be symmetric positive-definite. */
+function cholesky(m: number[][]): number[][] {
+    const n = m.length;
     const l = m.map(() => new Array<number>(n).fill(0));
     for (let i = 0; i < n; i++) {
         for (let j = 0; j <= i; j++) {
@@ -212,6 +225,12 @@ function solve(m: number[][], v: number[]): number[] {
             (l[i] as number[])[j] = i === j ? Math.sqrt(s) : s / ((l[j] as number[])[j] as number);
         }
     }
+    return l;
+}
+
+/** `l` must be a lower Cholesky factor; `substitute` solves `(l * lᵀ) * x = v`. */
+function substitute(l: number[][], v: number[]): number[] {
+    const n = v.length;
     const y = new Array<number>(n).fill(0);
     for (let i = 0; i < n; i++) {
         let s = v[i] as number;
@@ -225,6 +244,10 @@ function solve(m: number[][], v: number[]): number[] {
         x[i] = s / ((l[i] as number[])[i] as number);
     }
     return x;
+}
+
+function solve(m: number[][], v: number[]): number[] {
+    return substitute(cholesky(m), v);
 }
 
 export interface NegBinFit {
@@ -377,11 +400,11 @@ export function negativeBinomial(x: number[][], y: number[], iterations = 200): 
             break;
         }
     }
-    const xtwx = weightedCross(x, weights());
+    const factor = cholesky(weightedCross(x, weights()));
     const se = beta.map((_, j) =>
         Math.sqrt(
-            solve(
-                xtwx,
+            substitute(
+                factor,
                 beta.map((__, k) => Number(k === j)),
             )[j] as number,
         ),
