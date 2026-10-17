@@ -428,6 +428,23 @@ describe("recovery oracles", () => {
         again.close();
         expect(checkStore(path).overlaps).toEqual([{ session: "s", first: 2, second: 3 }]);
         expect(checkStore(join(path, "missing")).integrity).toBe("missing");
+        // A row whose coordinates are not counts is reported as an integrity failure and left out of
+        // the ranges, so the check stays readable and the verdict is unrecovered.
+        const odd = new Database(path);
+        odd.run(
+            "insert into history_segments (session_id, sequence, start_message, end_message) values ('u', -1, 0, 5), ('v', 1, 9007199254740993, 9007199254740999)",
+        );
+        odd.close();
+        const flagged = checkStore(path);
+        expect(flagged.integrity).toBe(
+            "ok; segment u/-1 has a coordinate that is not a count; segment v/1 has a coordinate that is not a count",
+        );
+        expect(flagged.ranges.some((r) => r[0] === "u" || r[0] === "v")).toBe(false);
+        expect(flagged.segments).toBe(flagged.ranges.length);
+        expect(parseStoreCheck(flagged, "x")).toEqual(flagged);
+        const cleaned = new Database(path);
+        cleaned.run("delete from history_segments where session_id in ('u', 'v')");
+        cleaned.close();
         const nested = new Database(path);
         nested.run("delete from history_segments");
         nested.run(
@@ -671,6 +688,87 @@ describe("recovery windows", () => {
         a.calls = [stepped];
         const [r] = recoveries(run([a], base));
         expect([r?.recovered, r?.reasons]).toEqual([false, ["e-1: gateway 4xx"]]);
+    });
+
+    test("a stamp between an offset's rename and its settled instant is placed through both offsets", () => {
+        seq = 0;
+        const base = 1_000_000_000;
+        const journal = [
+            entry("ClockOffset", 0, {
+                wall_ms: 1_000,
+                offset_s: (base - 1_000) / 1000,
+                offset_wall_ms: 1_000,
+            }),
+            entry("FaultObserved", 0, {
+                wall_ms: 1_010,
+                fault: "f",
+                type: "plugin_reload",
+                evidence: {},
+            }),
+            entry("BeginTurn", 0, { wall_ms: 1_100, event: "e-1" }),
+            entry("EndTurn", 900, { wall_ms: 2_000, event: "e-1", outcome: "ok" }),
+            entry("AdvanceClock", 9_000, {
+                wall_ms: 4_070,
+                from_ms: 900,
+                offset_s: (base + 5_000) / 1000,
+                offset_wall_ms: 4_000,
+                offset_settled_ms: 4_050,
+            }),
+            entry("BeginTurn", 9_000, { wall_ms: 4_100, event: "e-2" }),
+            entry("EndTurn", 9_900, { wall_ms: 5_000, event: "e-2", outcome: "ok" }),
+        ];
+        // Emitted at wall 4_030, inside the transition, under the old offset the process still read:
+        // it lands in e-1's window, so e-1 is dirty and e-2 is the first clean turn.
+        const log = [
+            `${stamp(4_030 + base - 1_000)} [eidnara][s-1] rust pass: decision=error served_from=raw`,
+        ];
+        const [r] = recoveries(run([arm(journal, log)], base));
+        expect([r?.recovered, r?.turns_to_first_clean]).toEqual([true, 2]);
+    });
+
+    test("a model switch recovers only once an agent call ran on the switched model", () => {
+        seq = 0;
+        const journal = [
+            entry("FaultObserved", 0, {
+                fault: "m",
+                type: "model_switch",
+                evidence: { model: "new" },
+            }),
+            entry("BeginTurn", 10, { event: "e-1" }),
+            entry("EndTurn", 20, { event: "e-1", outcome: "ok" }),
+            entry("BeginTurn", 30, { event: "e-2" }),
+            entry("EndTurn", 40, { event: "e-2", outcome: "ok" }),
+        ];
+        const call = (turn: string, scenario_ms: number, component: string, model: string) =>
+            ({
+                turn,
+                status: 200,
+                error: null,
+                started_wall_ms: scenario_ms,
+                wall_ms: scenario_ms + 1,
+                scenario_ms,
+                component,
+                model,
+            }) as unknown as ArmLogs["calls"][number];
+        const a = arm(journal);
+        a.calls = [
+            call("e-1", 12, "agent", "old"),
+            call("e-1", 14, "memory_capture", "new"),
+            call("e-2", 32, "agent", "new"),
+        ];
+        const [r] = recoveries(run([a]));
+        expect([r?.recovered, r?.turns_to_first_clean]).toEqual([true, 2]);
+        const stale = arm(journal);
+        stale.calls = [call("e-1", 12, "agent", "old"), call("e-2", 32, "agent", "old")];
+        const [s] = recoveries(run([stale]));
+        expect([s?.recovered, s?.reasons]).toEqual([
+            false,
+            ["e-1: no agent call on new", "e-2: no agent call on new"],
+        ]);
+        const unnamed = journal.map((e) =>
+            e.kind === "FaultObserved" ? ({ ...e, evidence: {} } as Entry) : e,
+        );
+        expect(() => recoveries(run([arm(unnamed)]))).toThrow("model");
     });
 
     test("a clean turn's window closes when the next turn begins, even if that turn never ends", () => {

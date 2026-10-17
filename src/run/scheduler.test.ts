@@ -543,6 +543,16 @@ describe("fault schedule validity", () => {
         expect(() => new Scheduler({ ...base, faults: [text] })).toThrow(
             "laptop_sleep f-sleep needs a positive duration_ms",
         );
+        for (const duration of [1.5, Number.MAX_SAFE_INTEGER + 2]) {
+            const odd = { ...still, params: { duration_ms: duration } };
+            expect(() => new Scheduler({ ...base, faults: [odd] })).toThrow(
+                "laptop_sleep f-sleep needs a positive duration_ms",
+            );
+        }
+        const huge = { ...still, params: { duration_ms: Number.MAX_SAFE_INTEGER - 1 } };
+        expect(
+            () => new Scheduler({ ...base, faults: [huge, { ...huge, id: "f-sleep-2" }] }),
+        ).toThrow("sleeps advance the clock past");
         const numbered = { ...twice, id: 1 as unknown as string };
         expect(() => new Scheduler({ ...base, faults: [numbered] })).toThrow(
             "fault id must be a non-empty string",

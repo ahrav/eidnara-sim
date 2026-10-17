@@ -155,7 +155,7 @@ function requireTurnEnds(journal: Entry[], arms: string[], events: Scenario["eve
     for (const arm of arms) {
         const markers = new Map<
             string,
-            { kinds: string[]; begins: number; ends: number; closed?: Entry }
+            { kinds: string[]; begins: number; ends: number; ended?: Entry; closed?: Entry }
         >();
         for (const e of journal) {
             if (e.arm !== arm || !(String(e.kind) in rank)) continue;
@@ -166,7 +166,10 @@ function requireTurnEnds(journal: Entry[], arms: string[], events: Scenario["eve
             const m = markers.get(id) ?? { kinds: [], begins: 0, ends: 0 };
             m.kinds.push(String(e.kind));
             if (e.kind === "BeginTurn") m.begins += 1;
-            if (e.kind === "EndTurn") m.ends += 1;
+            if (e.kind === "EndTurn") {
+                m.ends += 1;
+                m.ended = e;
+            }
             if (e.kind === "Event") m.closed = e;
             markers.set(id, m);
         }
@@ -183,6 +186,14 @@ function requireTurnEnds(journal: Entry[], arms: string[], events: Scenario["eve
             if (m.ends === 0 && String(m.closed?.outcome) === "failed(interrupted)") continue;
             if (m.ends === 0) throw new Error(`arm ${arm}: turn ${id} has no EndTurn`);
             if (m.ends > 1) throw new Error(`arm ${arm}: turn ${id} has ${m.ends} EndTurn entries`);
+            // A turn's Event records its delivery (`ok`) or repeats the turn's own outcome; an Event
+            // recording a failure the EndTurn lacks, an interruption included, contradicts it.
+            const delivered = String(m.closed?.outcome ?? "ok");
+            if (m.ended && delivered !== "ok" && delivered !== String(m.ended.outcome)) {
+                throw new Error(
+                    `arm ${arm}: turn ${id} ended ${String(m.ended.outcome)} but its Event records ${delivered}`,
+                );
+            }
         }
     }
 }

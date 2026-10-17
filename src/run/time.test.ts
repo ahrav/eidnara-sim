@@ -30,7 +30,10 @@ describe("time injection", () => {
         const file = join(mkdtempSync(join(tmpdir(), "ft-")), "offset");
         const written = writeOffset(file, 10_000_000, 3_600_000, 10_000_000);
         expect(written.offset_s).toBe(3_600);
+        // The transition is bounded: the new offset is readable from no earlier than offset_wall_ms
+        // and the old one from no later than offset_settled_ms, both taken around the rename.
         expect(written.offset_wall_ms).toBeGreaterThan(0);
+        expect(written.offset_settled_ms).toBeGreaterThanOrEqual(written.offset_wall_ms);
         expect(readOffsetSeconds(file)).toBe(3_600);
         writeOffset(file, 0, 0, 5_000);
         expect(readFileSync(file, "utf8")).toBe("-5\n");
@@ -162,7 +165,11 @@ describe("clock hook", () => {
             settleMs: 0,
             onClock: (arm, ms) => {
                 calls.push([arm, ms]);
-                return { offset_s: ms / 1000 + 7, offset_wall_ms: 1_000 + ms };
+                return {
+                    offset_s: ms / 1000 + 7,
+                    offset_wall_ms: 1_000 + ms,
+                    offset_settled_ms: 1_000 + ms,
+                };
             },
         }).run();
         // The arm's start writes a ClockOffset; every jump carries its offset on the AdvanceClock

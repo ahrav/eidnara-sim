@@ -121,7 +121,9 @@ A fault an arm skipped has `recovered: null` and the skip as its reason, so
 tallies leave it out. The driver skips a daemon fault on the `host` arm and
 a `store_full` on an arm with no loop-mounted store; a skip journaled for
 any other fault, or a daemon fault skipped on another arm, refuses the arm.
-The oracle also refuses a journal whose fault ids are not nonempty strings,
+A `model_switch` turn is clean only when an agent call in it names the
+switched model, which the observation records. The oracle also refuses a
+journal whose fault ids are not nonempty strings,
 whose fired or observed types differ from the schedule, whose observation
 precedes its firing, whose sleep jump follows its firing, or whose store
 check for a restart precedes that restart's observation.

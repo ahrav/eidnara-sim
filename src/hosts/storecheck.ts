@@ -182,7 +182,16 @@ function inspect(path: string): StoreCheck {
             .iterate();
         const ranges: StoreCheck["ranges"] = [];
         const bounds: Bounds[] = [];
+        const malformed: string[] = [];
         for (const next of rows) {
+            // A row whose coordinates are not counts is an integrity failure the check reports
+            // and leaves out of its ranges, so the check stays readable.
+            if (![next.sequence, next.start_message, next.end_message].every(isCoordinate)) {
+                malformed.push(
+                    `segment ${next.session_id}/${next.sequence} has a coordinate that is not a count`,
+                );
+                continue;
+            }
             bounds.push({
                 session_id: next.session_id,
                 sequence: next.sequence,
@@ -198,7 +207,7 @@ function inspect(path: string): StoreCheck {
             ]);
         }
         const { overlaps, inverted } = derive(bounds);
-        checks.push(...inverted);
+        checks.push(...inverted, ...malformed);
         return {
             format: DIGEST_FORMAT,
             integrity: checks.join("; "),

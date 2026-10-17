@@ -869,6 +869,15 @@ describe("oracle round nine", () => {
         expect(loadRun(dir, prereg).arms[0]?.journal).toHaveLength(4);
         write([base[0], began, event("failed(interrupted)"), base[1], base[2]]);
         expect(loadRun(dir, prereg).arms[0]?.journal).toHaveLength(3);
+        // A turn's two closures agree on its outcome, and an interrupted turn has no EndTurn.
+        write([base[0], began, ended, event("failed(interrupted)"), base[1], base[2]]);
+        expect(() => loadRun(dir, prereg)).toThrow(
+            "arm eidnara: turn e-1 ended ok but its Event records failed(interrupted)",
+        );
+        write([base[0], began, ended, event("failed(timeout)"), base[1], base[2]]);
+        expect(() => loadRun(dir, prereg)).toThrow(
+            "arm eidnara: turn e-1 ended ok but its Event records failed(timeout)",
+        );
     });
 
     test("a manifest claiming more events than the scenario holds is refused", () => {

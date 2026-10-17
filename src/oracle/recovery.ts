@@ -82,7 +82,13 @@ function timeline(arm: ArmLogs, base: number): Timeline {
     // the arm rather than placing every log line outside its windows.
     const finite = (
         e: Entry,
-        field: "seq" | "wall_ms" | "scenario_ms" | "offset_s" | "offset_wall_ms",
+        field:
+            | "seq"
+            | "wall_ms"
+            | "scenario_ms"
+            | "offset_s"
+            | "offset_wall_ms"
+            | "offset_settled_ms",
     ): number => {
         const value = e[field];
         if (typeof value !== "number" || !Number.isFinite(value)) {
@@ -132,14 +138,25 @@ function timeline(arm: ArmLogs, base: number): Timeline {
             stamps,
         };
     }
-    // A span opens when its offset took effect (the rename the harness recorded as
-    // offset_wall_ms), which precedes the journal entry; entries without it open at the entry.
+    // A span opens when its offset could first be read (the instant before the rename, recorded
+    // as offset_wall_ms), which precedes the journal entry; entries without it open at the entry.
+    // The span before it runs until the rename had settled (offset_settled_ms), so a stamp from
+    // inside the rename is placed through both offsets.
     const effective = (e: Entry) =>
         typeof e.offset_wall_ms === "number" ? finite(e, "offset_wall_ms") : finite(e, "wall_ms");
+    const settled = (e: Entry) =>
+        typeof e.offset_settled_ms === "number" ? finite(e, "offset_settled_ms") : effective(e);
+    for (const e of offsets) {
+        if (settled(e) < effective(e)) {
+            throw new Error(
+                `${arm.arm}: clock offset ${String(e.seq)} settled before its rename began`,
+            );
+        }
+    }
     const spans = offsets.map((e, i) => ({
         offset: finite(e, "offset_s") * 1000,
         from: effective(e),
-        to: offsets[i + 1] ? effective(offsets[i + 1] as Entry) : Number.POSITIVE_INFINITY,
+        to: offsets[i + 1] ? settled(offsets[i + 1] as Entry) : Number.POSITIVE_INFINITY,
     }));
     // Two offsets written in one millisecond leave the earlier span empty; the newer owns the instant.
     for (const [i, span] of spans.entries()) {
@@ -296,16 +313,22 @@ function failOpenCount(evidence: Evidence, from: number, to: number): number {
     return records + unpaired;
 }
 
+/**
+ * The turn's calls, from where its window opens: a mid-turn fault excludes the calls before it.
+ * A call that started after the opening on the monotone clock is inside the window even when a
+ * backward wall step placed its completion before it.
+ */
+function turnCalls(evidence: Evidence, turn: Turn, tl: Timeline): Call[] {
+    return (evidence.callsByTurn.get(turn.event) ?? []).filter(
+        (c) => tl.done(c) >= turn.from || c.scenario_ms >= turn.fromScenario,
+    );
+}
+
 export function dirtyReasons(evidence: Evidence, turn: Turn, tl: Timeline): string[] {
     const reasons: string[] = [];
     if (String(turn.end.outcome) !== "ok")
         reasons.push(`turn ended ${String(turn.end.outcome).slice(0, 80)}`);
-    // The turn's calls, from where its window opens: a mid-turn fault excludes the calls before
-    // it. A call that started after the opening on the monotone clock is inside the window even
-    // when a backward wall step placed its completion before it.
-    const calls = (evidence.callsByTurn.get(turn.event) ?? []).filter(
-        (c) => tl.done(c) >= turn.from || c.scenario_ms >= turn.fromScenario,
-    );
+    const calls = turnCalls(evidence, turn, tl);
     if (calls.some((c) => c.status >= 400 && c.status < 500)) reasons.push("gateway 4xx");
     if (calls.some((c) => OVERFLOW.test(c.error ?? ""))) reasons.push("overflow");
     const failOpen = failOpenCount(evidence, turn.from, turn.next);
@@ -484,7 +507,26 @@ export function recoveries(run: RunLogs): Recovery[] {
             }
             const { tl, indexed } = evidenceOf();
             const turns = turnsAfter(arm, fired, tl);
-            const dirty = turns.map((t) => dirtyReasons(indexed, t, tl));
+            // A model switch is observed as the model the driver configured; the fault's seam is
+            // the model the agent's calls then name, so a clean turn also needs an agent call on it.
+            const switched = (observed?.evidence as { model?: unknown } | undefined)?.model;
+            if (base.type === "model_switch" && observed) {
+                if (typeof switched !== "string" || switched === "") {
+                    throw new Error(
+                        `${arm.arm}: ${base.fault} model_switch evidence does not name the model`,
+                    );
+                }
+            }
+            const dirty = turns.map((t) => {
+                const reasons = dirtyReasons(indexed, t, tl);
+                if (base.type === "model_switch" && typeof switched === "string") {
+                    const onModel = turnCalls(indexed, t, tl).some(
+                        (c) => c.component === "agent" && c.model === switched,
+                    );
+                    if (!onModel) reasons.push(`no agent call on ${switched}`);
+                }
+                return reasons;
+            });
             const index = dirty.findIndex((r) => r.length === 0);
             const reasons =
                 index < 0

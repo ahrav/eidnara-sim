@@ -79,6 +79,7 @@ export class Scheduler {
 
     constructor(private readonly o: SchedulerOptions) {
         const seen = new Set<string>();
+        let sleepMs = 0;
         for (const f of o.faults) {
             if (typeof f.id !== "string" || f.id === "") {
                 throw new Error(`fault id must be a non-empty string, got ${JSON.stringify(f.id)}`);
@@ -86,11 +87,20 @@ export class Scheduler {
             if (seen.has(f.id)) throw new Error(`fault id ${f.id} is scheduled twice`);
             seen.add(f.id);
             const duration = f.params.duration_ms;
+            // A jump is a whole count of milliseconds the journal can hold as a safe integer.
             const positive =
-                typeof duration === "number" && Number.isFinite(duration) && duration > 0;
+                typeof duration === "number" && Number.isSafeInteger(duration) && duration > 0;
             if (f.type === "laptop_sleep" && !positive) {
                 throw new Error(`laptop_sleep ${f.id} needs a positive duration_ms`);
             }
+            if (f.type === "laptop_sleep") sleepMs += duration as number;
+        }
+        // The clock's final position, every sleep included, is a safe integer too.
+        const last = Math.max(0, ...o.events.map((e) => e.scenario_ms));
+        if (!Number.isSafeInteger(last + sleepMs)) {
+            throw new Error(
+                `sleeps advance the clock past ${Number.MAX_SAFE_INTEGER} ms, which the journal cannot hold`,
+            );
         }
     }
 
