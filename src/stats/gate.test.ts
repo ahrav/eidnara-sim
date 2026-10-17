@@ -155,8 +155,8 @@ describe("tier gates", () => {
             ["P11.harm", "inconclusive"],
         ]);
         expect(harm?.passed).toBe(false);
-        expect(harm?.metrics[0]?.detectable).toBeCloseTo(4.52249, 5);
-        expect(harm?.metrics[0]?.resolution_ratio).toBeCloseTo(0.452249, 6);
+        expect(harm?.metrics[0]?.detectable).toBeCloseTo(5.43845, 5);
+        expect(harm?.metrics[0]?.resolution_ratio).toBeCloseTo(0.543845, 6);
         const twice = binary("P1.pass", [[0, 1]]);
         expect(() => evaluate([twice, twice])).toThrow("metric P1.pass is observed twice");
     });
@@ -893,5 +893,49 @@ describe("tier gate review findings, sixth Codex round", () => {
         );
         const fine = Array.from({ length: 4 }, (_, i) => ({ control: 100, treatment: 100 + i }));
         expect(() => falsificationSet(S, { wall_ms_per_scripted_idle_gap: fine })).not.toThrow();
+    });
+});
+
+describe("tier gate review findings, seventh Codex round", () => {
+    test("a metric registered in two families is refused", () => {
+        const twice = {
+            ...M,
+            families: M.families.map((f) =>
+                f.id === "probe-P2" ? { ...f, metrics: ["P2.pass", "P1.pass"] } : f,
+            ),
+        };
+        expect(() =>
+            evaluateTier(twice, {
+                observations: [],
+                excluded: [],
+                asymmetric: [],
+                journal_seq_at_eval: 7,
+                arms: { control: "host", treatment: "eidnara" },
+            }),
+        ).toThrow("P1.pass is registered in two families");
+    });
+
+    test("one paired item may be excluded once per arm", () => {
+        const obs = binary("P1.pass", repeat(4, [0, 1] as [number, number]));
+        const [a, b] = obs.items?.map((x) => x.item) ?? [];
+        const drop = (id: string, arm: string) => ({ id, arm, reason: "failed(interrupted)" });
+        const v = evaluate([obs], { excluded: [drop(a ?? "", "host"), drop(a ?? "", "eidnara")] });
+        expect(v.excluded_per_arm).toEqual({ host: 1, eidnara: 1 });
+        expect(metric(v, "probe-P1", "P1.pass")?.n).toBe(3);
+        expect(() =>
+            evaluate([obs], { excluded: [drop(b ?? "", "host"), drop(b ?? "", "host")] }),
+        ).toThrow(StatsRefusal);
+        expect(() =>
+            evaluate([obs], { excluded: [drop(b ?? "", "host")], asymmetric: [b] }),
+        ).toThrow(StatsRefusal);
+    });
+
+    test("a Holm family's detectable size uses the first-step one-sided alpha", () => {
+        const half: [number, number][] = Array.from({ length: 120 }, (_, i) =>
+            i < 15 ? [0, 1] : i < 30 ? [1, 0] : [0, 0],
+        );
+        const m = metric(evaluate([binary("P2.harm", half)]), "harm", "P2.harm");
+        expect(m?.detectable).toBeCloseTo(9.93, 2);
+        expect(m?.resolution_ratio).toBeCloseTo(0.993, 3);
     });
 });

@@ -118,7 +118,18 @@ const scaled = (x: number | null, f: Family) => {
     const unit = num(f.mde.value) === 0 ? f.margin.value : f.mde.value;
     return x === null || num(unit) === 0 ? null : x / num(unit);
 };
-const zSum = (f: Family) => normalQuantile(1 - num(f.alpha) / 2) + normalQuantile(num(f.power));
+const oneSided = (f: Family) => f.direction === "noninferiority" || f.direction === "at-most";
+/**
+ * The planning z for the detectable size: a Holm family with a one-sided claim is planned at its
+ * first step, alpha over the metric count, one-sided; every other family at alpha over two.
+ */
+const zSum = (f: Family) => {
+    const tail =
+        f.multiplicity === "holm" && oneSided(f)
+            ? num(f.alpha) / f.metrics.length
+            : num(f.alpha) / 2;
+    return normalQuantile(1 - tail) + normalQuantile(num(f.power));
+};
 const higherIsBetter = (metric: string) => /\.pass$|pass_rate$|fidelity_score$/.test(metric);
 const empty = (method: string): Stats => ({
     n: 0,
@@ -364,7 +375,13 @@ function check(p: Preregistration, input: TierInput): void {
             );
         }
     }
-    const byMetric = new Map(p.families.flatMap((f) => f.metrics.map((m) => [m, f] as const)));
+    const byMetric = new Map<string, Family>();
+    for (const f of p.families) {
+        for (const m of f.metrics) {
+            if (byMetric.has(m)) throw new StatsRefusal(`${m} is registered in two families`);
+            byMetric.set(m, f);
+        }
+    }
     const seen = new Set<string>();
     const runIds = new Map<string, string>();
     for (const e of input.excluded) {
@@ -372,10 +389,16 @@ function check(p: Preregistration, input: TierInput): void {
             throw new StatsRefusal(`excluded ${e.id}: arm ${e.arm} is neither compared arm`);
         }
     }
-    const excludedIds = input.excluded.map((e) => e.id);
-    const flagged = [...excludedIds, ...input.asymmetric];
-    if (new Set(flagged).size !== flagged.length) {
-        throw new StatsRefusal("excluded and asymmetric ids are distinct and listed once");
+    const exclusions = input.excluded.map((e) => `${e.arm}\n${e.id}`);
+    const excludedIds = new Set(input.excluded.map((e) => e.id));
+    if (
+        new Set(exclusions).size !== exclusions.length ||
+        new Set(input.asymmetric).size !== input.asymmetric.length ||
+        input.asymmetric.some((id) => excludedIds.has(id))
+    ) {
+        throw new StatsRefusal(
+            "an exclusion is listed once per arm, an asymmetric id once, and the two lists are disjoint",
+        );
     }
     const orderOf = new Map<string, number>();
     const clusterOf = new Map<string, string>();
