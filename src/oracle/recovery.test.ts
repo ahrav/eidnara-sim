@@ -158,6 +158,12 @@ describe("recovery oracles", () => {
             const fake = { ...ok, ranges: [["s", 1, 0, 9, digest]] };
             expect(() => recoveries(run([arm(journal(ok, fake), [], ok)]))).toThrow("store check");
         }
+        // A segment identity (session, sequence) appears once; the store's primary key says so.
+        const twice = store("ok", 0, [
+            ["s", 1, 0, 4, "0123456789abcdef"],
+            ["s", 1, 6, 9, "0123456789abcdef"],
+        ]);
+        expect(() => recoveries(run([arm(journal(ok, twice), [], ok)]))).toThrow("store check");
         // Sessions compare as SQLite's BINARY collation orders them, so "Z" sorts before "a".
         const binary = {
             integrity: "ok",
@@ -811,6 +817,20 @@ describe("plugin log attribution", () => {
             entry("EndTurn", 1_800, { wall_ms: 4_900, event: "e-2", outcome: "ok" }),
         ];
         expect(() => recoveries(run([arm(journal)], base))).toThrow("window");
+    });
+
+    test("a fault fired twice in one journal refuses the arm", () => {
+        seq = 0;
+        const journal = [
+            entry("FaultFired", 0, { fault: "f", type: "plugin_reload", layer: "scheduler" }),
+            entry("FaultObserved", 0, { fault: "f", type: "plugin_reload", evidence: {} }),
+            entry("BeginTurn", 10, { event: "e-1" }),
+            entry("EndTurn", 20, { event: "e-1", outcome: "ok" }),
+            entry("FaultFired", 30, { fault: "f", type: "plugin_reload", layer: "scheduler" }),
+            entry("BeginTurn", 40, { event: "e-2" }),
+            entry("EndTurn", 50, { event: "e-2", outcome: "ok" }),
+        ];
+        expect(() => recoveries(run([arm(journal)]))).toThrow("fired twice");
     });
 
     test("a journaled fault whose type differs from its schedule refuses the arm", () => {

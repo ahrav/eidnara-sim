@@ -90,6 +90,21 @@ const ROLES: Record<string, readonly string[]> = {
     "command-log": ["turn", "session"],
 };
 
+const isString = (v: unknown) => typeof v === "string";
+const isRecord = (v: unknown) => typeof v === "object" && v !== null && !Array.isArray(v);
+/** The fields each artefact class carries, and the check each must pass. */
+const PAYLOADS: Record<ArtefactClass, Array<[string, (v: unknown) => boolean]>> = {
+    diff: [["patch", isString]],
+    "command-log": [["commands", Array.isArray]],
+    "test-result": [
+        ["command", isString],
+        ["exit", (v) => typeof v === "number"],
+        ["summary", Array.isArray],
+    ],
+    "workspace-state": [["files", isRecord]],
+    "proxy-call": [["calls", Array.isArray]],
+};
+
 /**
  * Every artefact must be a grade input of a known class with its class's payload in place: a
  * diff carries a string `patch`, a command log an array of commands, a proxy-call artefact an
@@ -111,14 +126,10 @@ export function assertArtefactsOnly(snapshot: Snapshot): void {
         if (roles && !roles.includes(a.role as string)) {
             throw new GradeRefused(`artefact ${id} has no ${a.class} role`);
         }
-        const payload: [string, (v: unknown) => boolean] =
-            a.class === "diff"
-                ? ["patch", (v) => typeof v === "string"]
-                : a.class === "command-log"
-                  ? ["commands", Array.isArray]
-                  : ["calls", Array.isArray];
-        if (!payload[1](a[payload[0]])) {
-            throw new GradeRefused(`artefact ${id} of class ${a.class} has no ${payload[0]}`);
+        for (const [field, ok] of PAYLOADS[a.class as ArtefactClass]) {
+            if (!ok(a[field])) {
+                throw new GradeRefused(`artefact ${id} of class ${a.class} has no ${field}`);
+            }
         }
     }
 }

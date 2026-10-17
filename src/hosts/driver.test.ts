@@ -1372,25 +1372,25 @@ function captured(armDir: string): Record<string, { patch?: string }> {
     return Object.fromEntries(snap.artefacts.map((a: { id: string }) => [a.id, a]));
 }
 
-test("a recorder rebuilt over a stale index lock waits its bound for the holder, then removes it", async () => {
+test("a recorder rebuilt over an index lock moves the workspace to a fresh index and leaves the lock alone", () => {
     const repo = gitRepo();
     const armDir = tmp();
     const first = new SnapshotRecorder(armDir, "eidnara", () => []);
     first.sessionStart("s-1", "p", repo);
-    const lock = join(armDir, "snapshot.git", `${basename(repo)}.index.lock`);
+    const gitDir = join(armDir, "snapshot.git");
+    const lock = join(gitDir, `${basename(repo)}.index.lock`);
     writeFileSync(lock, "");
-    const holder = Bun.spawn(["sh", "-c", `sleep 0.2; rm -f '${lock}'`]);
     const started = Date.now();
     const resumed = new SnapshotRecorder(armDir, "eidnara", () => [], 5_000);
-    expect(Date.now() - started).toBeLessThan(4_000);
-    await holder.exited;
+    expect(Date.now() - started).toBeLessThan(1_000);
     writeFileSync(join(repo, "new.rs"), "fn x() {}\n");
     expect(resumed.tree(repo)).toMatch(/^[0-9a-f]{40}$/);
-    writeFileSync(lock, "");
-    const bounded = Date.now();
-    new SnapshotRecorder(armDir, "eidnara", () => [], 200);
-    expect(Date.now() - bounded).toBeGreaterThanOrEqual(200);
-    expect(existsSync(lock)).toBe(false);
+    expect(existsSync(lock)).toBe(true);
+    expect(existsSync(join(gitDir, `${basename(repo)}.1.index`))).toBe(true);
+    writeFileSync(join(gitDir, `${basename(repo)}.1.index.lock`), "");
+    const again = new SnapshotRecorder(armDir, "eidnara", () => [], 5_000);
+    expect(again.tree(repo)).toMatch(/^[0-9a-f]{40}$/);
+    expect(existsSync(join(gitDir, `${basename(repo)}.2.index`))).toBe(true);
 });
 
 test("a tool run reported at its start is on record, and its end report replaces it", () => {
@@ -1409,6 +1409,45 @@ test("a tool run reported at its start is on record, and its end report replaces
         { command: "cargo build", exit: 1, scenario_ms: 1, call: "t1" },
         { command: "ls", exit: 0, scenario_ms: 2 },
     ]);
+});
+
+test("a symlink planted at the recorder's staging path is never written through", () => {
+    const repo = gitRepo();
+    const armDir = tmp();
+    const victim = join(tmp(), "victim");
+    writeFileSync(victim, "keep");
+    symlinkSync(victim, join(armDir, "snapshot-state.json.tmp"));
+    const recorder = new SnapshotRecorder(armDir, "eidnara", () => []);
+    recorder.sessionStart("s-1", "p", repo);
+    recorder.sessionEnd("s-1", "p", repo);
+    expect(readFileSync(victim, "utf8")).toBe("keep");
+    expect(existsSync(join(armDir, "snapshot-state.json"))).toBe(true);
+});
+
+test("a recorder state naming a non-tree value where a tree id belongs is refused before git runs", () => {
+    const repo = gitRepo();
+    const armDir = tmp();
+    const first = new SnapshotRecorder(armDir, "eidnara", () => []);
+    first.sessionStart("s-1", "p", repo);
+    first.sessionEnd("s-1", "p", repo);
+    const statePath = join(armDir, "snapshot-state.json");
+    const state = JSON.parse(readFileSync(statePath, "utf8"));
+    const victim = join(tmp(), "victim");
+    state.last.p.from = `--output=${victim}`;
+    writeFileSync(statePath, JSON.stringify(state));
+    const resumed = new SnapshotRecorder(armDir, "eidnara", () => []);
+    resumed.sessionStart("s-2", "p", repo);
+    expect(() =>
+        resumed.capture(
+            { probe: "q", session: "s-2", id: "e-2" },
+            "p",
+            repo,
+            resumed.tree(repo),
+            [],
+            false,
+        ),
+    ).toThrow("where a tree id belongs");
+    expect(existsSync(victim)).toBe(false);
 });
 
 test("a recorder rebuilt over a cut last snapshot line drops the cut and appends whole records", () => {
@@ -1483,6 +1522,52 @@ test("the workspace walk is bounded by the recorder deadline", () => {
     const roomy = new SnapshotRecorder(armDir, "eidnara", () => [], 120_000);
     expect(roomy.embedded(repo)).toEqual([]);
 }, 120_000);
+
+test("a session end that leaves a nested repository where indexed files were drops them from the tree", () => {
+    const repo = gitRepo();
+    mkdirSync(join(repo, "vendor"));
+    writeFileSync(join(repo, "vendor", "old.rs"), "fn old() {}\n");
+    const armDir = tmp();
+    const recorder = new SnapshotRecorder(armDir, "eidnara", () => []);
+    recorder.sessionStart("s-1", "p", repo);
+    rmSync(join(repo, "vendor"), { recursive: true });
+    mkdirSync(join(repo, "vendor"));
+    spawnSync("git", ["init", "-q"], { cwd: join(repo, "vendor") });
+    writeFileSync(join(repo, "vendor", "new.rs"), "fn fresh() {}\n");
+    recorder.sessionEnd("s-1", "p", repo);
+    recorder.sessionStart("s-2", "p", repo);
+    const id = recorder.capture(
+        { probe: "q", session: "s-2", id: "e-2" },
+        "p",
+        repo,
+        recorder.tree(repo),
+        [],
+        false,
+    );
+    const prior = captured(armDir)[`${id}:prior-diff`]?.patch ?? "";
+    expect(prior).toContain("-fn old() {}");
+    expect(prior).not.toContain("fresh");
+});
+
+test("rule-file hashing is bounded by count and by the recorder deadline", () => {
+    const repo = gitRepo();
+    const armDir = tmp();
+    for (let i = 0; i < 1_100; i++) {
+        mkdirSync(join(repo, "many", `d${i}`), { recursive: true });
+        writeFileSync(join(repo, "many", `d${i}`, ".gitignore"), "x\n");
+    }
+    const recorder = new SnapshotRecorder(armDir, "eidnara", () => [], 60_000);
+    expect(() => recorder.survey(repo)).toThrow("more than 1000 rule files");
+    const few = gitRepo();
+    for (let i = 0; i < 50; i++) {
+        mkdirSync(join(few, "some", `d${i}`), { recursive: true });
+        writeFileSync(join(few, "some", `d${i}`, ".gitignore"), "x\n");
+    }
+    const slow = new SnapshotRecorder(tmp(), "eidnara", () => [], 0);
+    slow.trackIgnoreRules(basename(few), {}, null, null);
+    const files = Array.from({ length: 50 }, (_, i) => `some/d${i}/.gitignore`);
+    expect(() => slow.ignoreChanges(few, basename(few), files)).toThrow("hashing timed out");
+}, 60_000);
 
 test("the nested-repository check is bounded like the other snapshot git runs", () => {
     const repo = gitRepo();
@@ -1600,4 +1685,33 @@ test("a fresh recorder creates an empty tools.jsonl, so a run with no tool runs 
     const armDir = tmp();
     new SnapshotRecorder(armDir, "eidnara", () => []);
     expect(readFileSync(join(armDir, "tools.jsonl"), "utf8")).toBe("");
+});
+
+test("clearing a recorder leaves an empty tools.jsonl in place", () => {
+    const armDir = tmp();
+    const recorder = new SnapshotRecorder(armDir, "eidnara", () => []);
+    recorder.addTools([{ command: "ls", exit: 0, scenario_ms: 1 }], "e-1");
+    recorder.clear();
+    expect(readFileSync(join(armDir, "tools.jsonl"), "utf8")).toBe("");
+});
+
+test("a tool run recovered from an earlier turn is logged with no turn, whatever turn is in progress", async () => {
+    const { driver, hosts, armDir, transcripts } = fixture("host", { p: gitRepo() });
+    await driver.reset();
+    mkdirSync(join(transcripts, "sessions"), { recursive: true });
+    const host = hosts.at(-1) as FakeHost;
+    await driver.event(ev("session_start", { session: "s-0" }));
+    host.onPrompt = () => {
+        host.ctx.onTool?.({ command: "cargo build", exit: 0, scenario_ms: 3, recovered: true });
+        host.ctx.onTool?.({ command: "ls", exit: 0, scenario_ms: 4 });
+    };
+    await driver.event(ev("user_turn", { id: "e-1", session: "s-0", text: "go" }));
+    const lines = readFileSync(join(armDir, "tools.jsonl"), "utf8")
+        .trim()
+        .split("\n")
+        .map((l) => JSON.parse(l));
+    expect(lines.map((l) => [l.command, l.turn])).toEqual([
+        ["cargo build", null],
+        ["ls", "e-1"],
+    ]);
 });

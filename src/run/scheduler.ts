@@ -71,6 +71,8 @@ export interface SchedulerOptions {
      * `UserTurn` with `recovered: true` ahead of the turn's `failed(interrupted)` event.
      */
     recoverTurn?: (event: string) => Record<string, unknown> | undefined;
+    /** Runs before `EndArm` and `EndRun` are journaled; a throw leaves the arm or run open. */
+    beforeEnd?: () => void;
 }
 
 const PROXY_LAYER = "proxy-sink";
@@ -168,9 +170,11 @@ export class Scheduler {
             const summarised = mine.some((e) => e.kind === "UserSimRates");
             const rates = summarised ? undefined : this.o.armSummary?.(arm);
             if (rates) this.log({ kind: "UserSimRates", ...rates });
+            this.o.beforeEnd?.();
             this.log({ kind: "EndArm" });
         }
         this.arm = null;
+        this.o.beforeEnd?.();
         this.log({ kind: "EndRun" });
     }
 
@@ -272,10 +276,14 @@ export class Scheduler {
      * itself still open.
      */
     async quiesceJobs(): Promise<void> {
-        await Bun.sleep(this.o.settleMs ?? 1_000);
-        await this.quiesce(() =>
-            (this.clock?.busyIds() ?? []).filter((id) => id.startsWith("job:")),
-        );
+        const settle = this.o.settleMs ?? 1_000;
+        const jobs = () => (this.clock?.busyIds() ?? []).filter((id) => id.startsWith("job:"));
+        for (;;) {
+            await Bun.sleep(settle);
+            await this.quiesce(jobs);
+            await Bun.sleep(settle);
+            if (jobs().length === 0) return;
+        }
     }
 
     private async quiesce(pending: () => string[]): Promise<void> {
