@@ -46,15 +46,24 @@ const turn = (arm: string, event: string, text_sha256: string, index = 0) => ({
     source: "script",
 });
 
-const journal = (order: string[], events: number) => [
+const journal = (order: string[], events: number): Record<string, unknown>[] => [
     { kind: "StartRun", arm: null, order, scenario_ms: 0 },
     ...order.flatMap((arm) => [
-        ...Array.from({ length: events }, (_, i) => ({
-            kind: "Event",
-            arm,
-            event: `e-${i + 1}`,
-            scenario_ms: 0,
-        })),
+        ...Array.from({ length: events }, (_, i) => {
+            const event = `e-${i + 1}`;
+            const probe = PROBE_EVENTS[i];
+            const snapshot = probe ? `${arm}:${probe}` : undefined;
+            return [
+                ...(probe
+                    ? [
+                          { kind: "UserTurn", arm, event, delivered: true, scenario_ms: 0 },
+                          { kind: "SnapshotArtefacts", arm, item: probe, snapshot, scenario_ms: 0 },
+                          { kind: "EndTurn", arm, event, outcome: "ok", snapshot, scenario_ms: 0 },
+                      ]
+                    : []),
+                { kind: "Event", arm, event, scenario_ms: 0 },
+            ];
+        }).flat(),
         { kind: "EndArm", arm, scenario_ms: 0 },
     ]),
     { kind: "EndRun", arm: null, scenario_ms: 0 },
@@ -672,6 +681,60 @@ describe("aa-report", () => {
         writeFileSync(join(dir, "grades.jsonl"), `${kept.join("\n")}\n`);
         expect(() => aaReport(dir)).toThrow(/no A\/A control/);
         expect(existsSync(join(dir, "aa.json"))).toBe(false);
+    });
+
+    test("refuses a journal whose terminated last line is corrupt", () => {
+        const dir = gradedRun("S", preregistrationHash(loadPrereg("S")));
+        appendFileSync(join(dir, "journal.jsonl"), "not-json\n");
+        expect(() => aaReport(dir)).toThrow(/journal\.jsonl.*corrupt/);
+    });
+
+    test("refuses a paired item whose shared metric holds different value types", () => {
+        const dir = gradedRun("S", preregistrationHash(loadPrereg("S")));
+        const bad = { ...grade("host~aa", "p-1", "P3", "P3.delta_mem", 1), version: 2 };
+        (bad.metrics as Record<string, unknown>)["P3.delta_mem"] = "bad";
+        appendFileSync(join(dir, "grades.jsonl"), `${JSON.stringify(bad)}\n`);
+        expect(() => aaReport(dir)).toThrow(/p-1.*P3\.delta_mem/);
+    });
+
+    test("a grade must name the arm's journaled first snapshot of its item, from a turn that ended ok", () => {
+        const line = (o: unknown) => `${JSON.stringify(o)}\n`;
+        const stale = gradedRun("S", preregistrationHash(loadPrereg("S")));
+        appendFileSync(
+            join(stale, "grades.jsonl"),
+            line({
+                ...grade("host", "p-1", "P3", "P3.delta_mem", 0),
+                version: 2,
+                snapshot: "host:p-1:old",
+            }),
+        );
+        expect(() => aaReport(stale)).toThrow(/p-1.*snapshot/);
+        const failed = gradedRun("S", preregistrationHash(loadPrereg("S")));
+        const entries = journal(["host", "host~aa"], N_EVENTS).map((e) =>
+            e.kind === "EndTurn" && e.arm === "host~aa" && e.event === "e-1"
+                ? { ...e, outcome: "error" }
+                : e,
+        );
+        writeFileSync(join(failed, "journal.jsonl"), entries.map(line).join(""));
+        expect(() => aaReport(failed)).toThrow(/p-1.*snapshot/);
+    });
+
+    test("every paired turn has exactly one journaled UserTurn with the same delivery", () => {
+        const line = (o: unknown) => `${JSON.stringify(o)}\n`;
+        const lost = gradedRun("S", preregistrationHash(loadPrereg("S")));
+        const entries = journal(["host", "host~aa"], N_EVENTS).filter(
+            (e) => !(e.kind === "UserTurn" && e.arm === "host~aa" && e.event === "e-2"),
+        );
+        writeFileSync(join(lost, "journal.jsonl"), entries.map(line).join(""));
+        expect(() => aaReport(lost)).toThrow(/host~aa.*e-2.*UserTurn/);
+        const undelivered = gradedRun("S", preregistrationHash(loadPrereg("S")));
+        const flipped = journal(["host", "host~aa"], N_EVENTS).map((e) =>
+            e.kind === "UserTurn" && e.arm === "host~aa" && e.event === "e-2"
+                ? { ...e, delivered: false }
+                : e,
+        );
+        writeFileSync(join(undelivered, "journal.jsonl"), flipped.map(line).join(""));
+        expect(() => aaReport(undelivered)).toThrow(/host~aa.*e-2.*UserTurn/);
     });
 
     test("a run-level family forms one cluster per run, so one run leaves it uninformative", () => {

@@ -43,6 +43,16 @@ describe("time injection", () => {
     test("the launcher refuses paths and values the shell would split", () => {
         expect(() => launch("/x/sandbox.sh", ["/a b"], {}, ["true"])).toThrow(/must match/);
         expect(() => launch("/x/sandbox.sh", [], { A: "x y" }, ["true"])).toThrow(/plain word/);
+        // An A/A control's directories carry its label, `host~aa`, in sandbox paths and the
+        // clock file an env value names.
+        const control = launch(
+            "/x/sandbox.sh",
+            ["/runs/r/host~aa", "/runs/r/host~aa/clock"],
+            { FAKETIME_TIMESTAMP_FILE: "/runs/r/host~aa/clock/offset" },
+            ["true"],
+        );
+        expect(control).toContain("/runs/r/host~aa");
+        expect(control).toContain("FAKETIME_TIMESTAMP_FILE=/runs/r/host~aa/clock/offset");
         expect(launch("/x/sandbox.sh", ["/k"], { A: "1" }, ["true"], ["/r"])).toEqual([
             "/x/sandbox.sh",
             "/k",

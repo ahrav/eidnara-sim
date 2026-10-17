@@ -3,8 +3,10 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 const UNSHARE_ARGS = ["--mount", "--pid", "--fork", "--mount-proc", "--propagation", "private"];
-const PLAIN_PATH = /^\/[A-Za-z0-9._@+/-]*$/;
-const PLAIN_VALUE = /^[A-Za-z0-9._@+/:,=-]*$/;
+// `~` is admitted for A/A control labels such as `host~aa`; the sandbox script reads these
+// words from parameters, which the shell never tilde-expands.
+const PLAIN_PATH = /^\/[A-Za-z0-9._@+~/-]*$/;
+const PLAIN_VALUE = /^[A-Za-z0-9._@+~/:,=-]*$/;
 
 export const shellQuote = (arg: string) => `'${arg.replaceAll("'", "'\\''")}'`;
 

@@ -78,33 +78,6 @@ function report(dir: string) {
     );
     const clusterOf = (metric: string) => (item: string) =>
         runLevel.has(probeType(metric)) ? "run" : (fact.get(item) ?? item);
-    // GradeLog repairs a cut last line in place, so only a file that is nobody else's may be opened.
-    const gradesPath = join(dir, "grades.jsonl");
-    const stat = lstatSync(gradesPath);
-    if (!stat.isFile() || stat.nlink !== 1) {
-        throw new Error(`${gradesPath} is not a regular file with one link`);
-    }
-    const log = new GradeLog(gradesPath);
-    // Only a P7 grade names an opponent, and each item/arm sequence runs 1..n once.
-    const versions = new Map<string, number[]>();
-    for (const g of log.all()) {
-        if ((g.probe_type === "P7") !== (typeof g.against === "string")) {
-            throw new Error(
-                `${gradesPath}: ${g.arm}/${g.item} has an against value only P7 carries`,
-            );
-        }
-        const key = `${g.arm}/${g.item}/${g.against ?? ""}`;
-        versions.set(key, [...(versions.get(key) ?? []), g.version]);
-    }
-    for (const [key, seen] of versions) {
-        const sorted = [...seen].sort((a, b) => a - b);
-        if (sorted.some((v, i) => v !== i + 1)) {
-            throw new Error(
-                `${gradesPath}: ${key} versions ${seen.join(",")} are not 1..${seen.length} once each`,
-            );
-        }
-    }
-    const grades = log.latest();
     const order = manifest.order as string[];
     requireOrder(order, prereg.arms.run, prereg.aa_controls?.pairs ?? []);
     const count: unknown = manifest.events;
@@ -132,7 +105,56 @@ function report(dir: string) {
         }),
         ...scenario.probes.filter((p) => p.type === "P14" && ended.has(p.session)).map((p) => p.id),
     ];
-    requireComplete(readJournal(join(dir, "journal.jsonl")), order, scheduled);
+    const journalPath = join(dir, "journal.jsonl");
+    const entries = readJournal(journalPath);
+    // readJournal drops a terminated line it cannot parse; a completed run's journal has none.
+    const terminated = existsSync(journalPath)
+        ? readFileSync(journalPath, "utf8").split("\n").length - 1
+        : 0;
+    if (terminated !== entries.length) {
+        throw new Error(`${journalPath}: a terminated line is corrupt`);
+    }
+    requireComplete(entries, order, scheduled);
+    // GradeLog repairs a cut last line in place, so only a file that is nobody else's may be opened.
+    const gradesPath = join(dir, "grades.jsonl");
+    const stat = lstatSync(gradesPath);
+    if (!stat.isFile() || stat.nlink !== 1) {
+        throw new Error(`${gradesPath} is not a regular file with one link`);
+    }
+    const log = new GradeLog(gradesPath);
+    // Only a P7 grade names an opponent, and each item/arm sequence runs 1..n once.
+    const versions = new Map<string, number[]>();
+    for (const g of log.all()) {
+        if ((g.probe_type === "P7") !== (typeof g.against === "string")) {
+            throw new Error(
+                `${gradesPath}: ${g.arm}/${g.item} has an against value only P7 carries`,
+            );
+        }
+        const key = `${g.arm}/${g.item}/${g.against ?? ""}`;
+        versions.set(key, [...(versions.get(key) ?? []), g.version]);
+    }
+    for (const [key, seen] of versions) {
+        const sorted = [...seen].sort((a, b) => a - b);
+        if (sorted.some((v, i) => v !== i + 1)) {
+            throw new Error(
+                `${gradesPath}: ${key} versions ${seen.join(",")} are not 1..${seen.length} once each`,
+            );
+        }
+    }
+    const grades = log.latest();
+    // grade-run grades an item from the arm's first journaled snapshot, when its turn ended ok.
+    const endedOk = new Set(
+        entries
+            .filter((e) => e.kind === "EndTurn" && e.outcome === "ok")
+            .map((e) => String(e.snapshot)),
+    );
+    const okSnapshot = new Map<string, string>();
+    for (const e of entries.filter((e) => e.kind === "SnapshotArtefacts")) {
+        const key = `${String(e.arm)}/${String(e.item)}`;
+        if (!okSnapshot.has(key) && endedOk.has(String(e.snapshot))) {
+            okSnapshot.set(key, String(e.snapshot));
+        }
+    }
     const typeOf = new Map(scenario.probes.map((p) => [p.id, p.type]));
     for (const g of grades) {
         const sound =
@@ -151,6 +173,11 @@ function report(dir: string) {
         }
         if (!sound)
             throw new Error(`${dir}/grades.jsonl: ${g.arm}/${g.item} is not a grade of this run`);
+        if (g.probe_type !== "P7" && g.snapshot !== okSnapshot.get(`${g.arm}/${g.item}`)) {
+            throw new Error(
+                `${dir}/grades.jsonl: ${g.arm}/${g.item} snapshot ${g.snapshot} is not the journaled first snapshot of a turn that ended ok`,
+            );
+        }
     }
     const pairing = readPairing(join(dir, "pairing.jsonl"), order);
     // Each pairing row names a scheduled event and sits at that event's session and index.
@@ -229,6 +256,17 @@ function report(dir: string) {
     const report = controls.map((control) => {
         const arm = armBase(control);
         for (const a of [arm, control]) {
+            // Each paired turn is one journaled UserTurn of the same delivery, as pairing-check requires.
+            const users = entries.filter((e) => e.kind === "UserTurn" && e.arm === a);
+            for (const r of pairing) {
+                if (r.kind !== "turn" || r.arm !== a) continue;
+                const mine = users.filter((e) => String(e.event) === r.event);
+                if (mine.length !== 1 || mine[0]?.delivered !== r.delivered) {
+                    throw new Error(
+                        `${dir}: ${a} ${r.event} has ${mine.length} journaled UserTurn entries matching its pairing record`,
+                    );
+                }
+            }
             const delivered = new Set(
                 pairing.filter((r) => r.kind === "turn" && r.arm === a).map((r) => r.event),
             );
@@ -278,6 +316,7 @@ function report(dir: string) {
             const odd = [
                 ...kx.filter((k) => !ky.includes(k)),
                 ...ky.filter((k) => !kx.includes(k)),
+                ...kx.filter((k) => ky.includes(k) && typeof x.metrics[k] !== typeof y.metrics[k]),
             ];
             if (odd.length > 0) {
                 throw new Error(

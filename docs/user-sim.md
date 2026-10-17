@@ -122,7 +122,8 @@ replayed reply makes no model call.
 ## A/A control
 
 An arm label `<arm>~<tag>`, with a lowercase alphanumeric tag such as
-`host~aa`, runs as `<arm>` under its own label, with its own directories,
+`host~aa`, runs as `<arm>` under its own label, with its own directories
+(the sandbox launcher admits `~` in its paths and clock file),
 journal entries, and call records (`armBase` and `CONTROL_LABEL` in
 `src/hosts/arms.ts`). `--arms host,host~aa` runs it right after its arm,
 one control per arm, and only for a pair the tier pre-registers in
@@ -142,7 +143,9 @@ a real directory (a symlink anywhere in the path is refused), holds the run's le
 it reads, opens `grades.jsonl` only as a regular file with one link
 (`GradeLog` repairs a cut last line in place), requires a manifest event
 count inside the scenario and the journal complete for the manifest order
-and the scheduled events (`requireComplete`, as `grade-run.ts` does), checks each
+and the scheduled events with no corrupt terminated line (`requireComplete`,
+as `grade-run.ts` does), requires each paired turn to match one journaled
+`UserTurn` of the same delivery, checks each
 pairing record's shape and arm (`readPairing`, which
 `pairing-check.ts` shares, refusing a corrupt terminated line), binds each
 record to its scheduled turn's session and index, admits one turn per arm
@@ -156,8 +159,10 @@ control whose delivered text differed from its arm's before its recorded
 divergence (`pairingMismatches`, the check `pairing-check.ts` runs), checks each
 grade log's identities (an opponent only on P7, versions 1..n once per item
 and arm) and each latest grade's arm, item, probe type, version, verdict, and
-finite metrics against the run and its reached probes, requires both grades
-of a paired item to carry the same metric keys, refuses a run whose order
+finite metrics against the run and its reached probes, requires each grade
+to name the arm's journaled first snapshot of its item from a turn that ended
+ok, requires both grades of a paired item to carry the same metric keys and
+value types, refuses a run whose order
 names no control, refuses
 a run graded under another pre-registration or whose scenario no longer
 hashes to the manifest's digest, requires the manifest's tier and seed to
