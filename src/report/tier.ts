@@ -16,7 +16,14 @@ import type { PairingRecord } from "../usersim/usersim";
 import { costPanel, judgeCost } from "./cost";
 import { falsificationPairs } from "./falsify";
 import { intrusiveness } from "./intrusive";
-import { type GradedRun, judgmentKey, ordered, type RunIdentity, tierInput } from "./observe";
+import {
+    controlArmsOf,
+    type GradedRun,
+    judgmentKey,
+    ordered,
+    type RunIdentity,
+    tierInput,
+} from "./observe";
 import type { TierReport } from "./render";
 import { soak } from "./soak";
 
@@ -27,9 +34,10 @@ export function loadGraded(dir: string, prereg: Preregistration): GradedRun {
         scenario_hash: string;
         fault_override: Scenario["faults"] | null;
         preflight?: { distortions?: string[]; hosts?: { host: string; version: string }[] };
+        tapes?: string[];
     } & Omit<
         RunIdentity,
-        "distortions" | "host_versions" | "scenario_provenance" | "fault_override"
+        "distortions" | "host_versions" | "scenario_provenance" | "fault_override" | "tapes"
     >;
     const current = preregistrationHash(prereg);
     if (manifest.prereg_sha256 !== current) {
@@ -97,6 +105,9 @@ export function loadGraded(dir: string, prereg: Preregistration): GradedRun {
                 manifest.fault_override == null
                     ? null
                     : sha256Hex(canonicalJson(manifest.fault_override)),
+            tapes: (manifest.tapes ?? []).map((t) =>
+                existsSync(t) ? sha256Hex(readFileSync(t, "utf8")) : `missing:${t}`,
+            ),
         },
         witnesses: reports === null ? null : [...witnesses.values()],
         pairing,
@@ -113,14 +124,7 @@ const sd = (xs: number[]) => {
 
 export type CusumScale = NonNullable<TierInput["cusum_sd"]>;
 
-const controlArms = (runs: GradedRun[]) => [
-    ...new Set(
-        runs
-            .flatMap((g) => g.run.arms)
-            .filter((a) => a.arm.includes("~") && a.journal.some((e) => e.kind === "EndArm"))
-            .map((a) => a.arm),
-    ),
-];
+const controlArms = (runs: GradedRun[]) => [...new Set(runs.flatMap(controlArmsOf))];
 
 /** The scale each CUSUM rule's `sd_source` names, lent by a tier only when its campaign is complete. */
 export function cusumScale(

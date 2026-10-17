@@ -43,6 +43,8 @@ export interface RunIdentity {
     scenario_provenance: string;
     /** The digest of `manifest.fault_override`, or `null` for the scenario's own schedule. */
     fault_override: string | null;
+    /** `manifest.tapes`, each as the digest of its file or `missing:<path>`. */
+    tapes: string[];
 }
 
 const ALIASES: Record<string, string> = {
@@ -65,6 +67,20 @@ export const judgmentKey = (r: GradeRecord) =>
     ].join("|");
 
 const probeIds = (g: GradedRun) => new Set(g.scenario.probes.map((p) => p.id));
+
+/** The arm's `~` controls that reached `EndArm`. */
+export const controlArmsOf = (g: GradedRun) =>
+    g.run.arms
+        .filter((a) => a.arm.includes("~") && a.journal.some((e) => e.kind === "EndArm"))
+        .map((a) => a.arm);
+
+/** Whether every turn that ended `ok` has a call record, the capture the F7 scan reads. */
+function callsCoverTurns(arm: ArmLogs): boolean {
+    const called = new Set(arm.calls.map((c) => c.turn));
+    return arm.journal
+        .filter((e) => e.kind === "EndTurn" && e.outcome === "ok")
+        .every((e) => called.has(String(e.event)));
+}
 
 /** The prefix that keeps one seed's items apart across the tier's hosts: `<host>/<seed>`. */
 const runKey = (g: GradedRun) => `${g.host}/${g.scenario.manifest.seed}`;
@@ -151,7 +167,9 @@ const RUN_VALUES: Record<string, { value: RunValue; delta: boolean; hostless?: t
     store_growth_bytes_per_session: { value: slope("store_bytes"), delta: true, hostless: true },
     internal_string_hits: {
         value: (g, arm) =>
-            g.captured ? (panelOf(g, arm).internal_string_hits?.length ?? null) : null,
+            g.captured && callsCoverTurns(arm)
+                ? (panelOf(g, arm).internal_string_hits?.length ?? null)
+                : null,
         delta: false,
     },
     user_corrections_referencing_injected_text: {
@@ -202,7 +220,7 @@ function itemPairs(
                     known.has(r.item) &&
                     r.verdict !== "excluded" &&
                     typeof r.metrics[source] === "boolean" &&
-                    r.metrics.gate_eligible !== false,
+                    (!p7 || r.metrics.gate_eligible === true),
             );
         const value = (r: GradeRecord) => Number(r.metrics[source] === true);
         const theirs = records(treatment);
@@ -335,6 +353,19 @@ function incomplete(
     const pairing = runs.flatMap((g) => {
         if (g.pairing === null) return [`run ${runKey(g)}: pairing records missing`];
         const order = g.run.arms.map((a) => a.arm);
+        const scripted = g.scenario.events
+            .filter((e) => (e as { kind?: string }).kind === "user_turn")
+            .map((e) => String(e.id));
+        const recorded = new Set(
+            g.pairing.flatMap((r) => (r.kind === "turn" ? [`${r.arm}/${r.event}`] : [])),
+        );
+        const gaps = [control, treatment].flatMap((a) => {
+            const missing = scripted.filter((id) => !recorded.has(`${a}/${id}`));
+            return missing.length ? [`${a}: ${missing.join(" ")}`] : [];
+        });
+        const uncovered = gaps.length
+            ? [`run ${runKey(g)}: pairing records missing for ${gaps.join("; ")}`]
+            : [];
         const failures = pairingFailures(g.pairing, g.scenario, referenceArm(order));
         const out = Object.entries(failures).flatMap(([kind, list]) =>
             list.length
@@ -349,7 +380,7 @@ function incomplete(
                         `run ${runKey(g)}: ${a.arm} user-sim rates outside band: ${(e.outside as string[]).join(", ")}`,
                 ),
         );
-        return [...out, ...outside];
+        return [...uncovered, ...out, ...outside];
     });
     const sequential = p.load_stress?.arms_concurrent
         ? runs.flatMap((g) => {
@@ -396,6 +427,35 @@ function incomplete(
         const want = p.aa_controls?.repeats ?? 0;
         return have === want ? [] : [`A/A ${a}: ${have} of ${want} control runs`];
     });
+    const coverage = runs.flatMap((g) => {
+        const byType = new Map<string, string[]>();
+        for (const pr of g.scenario.probes) {
+            if (/^P([1-9]|1[0-2])$/.test(pr.type))
+                byType.set(pr.type, [...(byType.get(pr.type) ?? []), pr.id]);
+        }
+        return controlArmsOf(g).flatMap((c) => {
+            const graded = (arm: string, type: string) =>
+                new Set(
+                    g.grades
+                        .filter(
+                            (r) =>
+                                r.arm === arm &&
+                                r.verdict !== "excluded" &&
+                                typeof r.metrics[`${type}.pass`] === "boolean",
+                        )
+                        .map((r) => r.item),
+                );
+            return [...byType].flatMap(([type, ids]) => {
+                const [mine, theirs] = [graded(c, type), graded(armBase(c), type)];
+                const both = ids.filter((id) => mine.has(id) && theirs.has(id)).length;
+                return both === ids.length
+                    ? []
+                    : [
+                          `run ${runKey(g)}: control ${c} covers ${both} of ${ids.length} ${type} probes`,
+                      ];
+            });
+        });
+    });
     const shared: (keyof RunIdentity)[] = [
         "eidnara_commit",
         "models",
@@ -403,6 +463,7 @@ function incomplete(
         "distortions",
         "host_versions",
         "scenario_provenance",
+        "tapes",
     ];
     const settings = shared.flatMap((field) => {
         const values = [...new Set(runs.map((g) => JSON.stringify(g.identity[field])))];
@@ -444,6 +505,7 @@ function incomplete(
         ...sequential,
         ...settings,
         ...controls,
+        ...coverage,
         ...unavailable,
         ...short,
     ];

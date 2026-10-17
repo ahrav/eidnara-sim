@@ -93,6 +93,7 @@ const identity = (commit = "abc") => ({
     host_versions: ["pi@1", "opencode@1"],
     scenario_provenance: "gen1/1/abc",
     fault_override: null as string | null,
+    tapes: [] as string[],
 });
 
 function fixture(status = (_: number) => 200, opts: FixtureOptions = {}): GradedRun {
@@ -1288,6 +1289,54 @@ describe("tier report", () => {
         );
         writeFileSync(join(dir, "scenario.json"), canonicalJson({ ...body, scenario_hash }));
         expect(loadGraded(dir, prereg).identity.scenario_provenance).toBe("g/1/c/emb");
+    });
+
+    test("every scripted user turn needs a pairing record in each analysed arm", () => {
+        const g = loadPairing(fixture());
+        g.scenario.events = [
+            { id: "t-0-0", kind: "user_turn" },
+            { id: "t-99", kind: "user_turn" },
+        ] as never;
+        expect(tierInput(prereg, [g]).incomplete).toContain(
+            "run pi/101: pairing records missing for host: t-99; eidnara: t-99",
+        );
+    });
+
+    test("an A/A control counts and lends its scale only with full probe coverage", () => {
+        const g = fixture();
+        g.grades = g.grades.filter((r) => !(r.arm === "host~aa" && r.item === "q-p1-3"));
+        expect(tierInput(prereg, [g]).incomplete).toContain(
+            "run pi/101: control host~aa covers 7 of 8 P1 probes",
+        );
+    });
+
+    test("call capture must cover every completed turn for the F7 count to stand", () => {
+        const g = fixture();
+        arm(g, "eidnara").calls.splice(0, 1);
+        expect(observation([g], "internal_string_hits")?.runs).toEqual([]);
+    });
+
+    test("a P7 judgment pairs only with gate_eligible recorded true", () => {
+        const g = fixture();
+        probe(g, "q-7", "P7");
+        g.judged.push({
+            ...judgment("q-7", "host", true, ["e", "h"]),
+            metrics: { "P7.pass": true },
+        });
+        g.judged.push({
+            ...judgment("q-7", "eidnara", true, ["e", "h"]),
+            metrics: { "P7.pass": true },
+        });
+        expect(observation([g], "P7.pass")?.items).toEqual([]);
+    });
+
+    test("tape sources are part of the compared identity", () => {
+        const a = fixture(undefined, { host: "pi" });
+        const b = fixture(undefined, { host: "opencode" });
+        b.identity.tapes = ["sha:abc"];
+        expect(
+            tierInput(prereg, [a, b]).incomplete?.find((x) => x.startsWith("runs differ in tapes")),
+        ).toBeDefined();
     });
 
     test("a planted 4xx difference between the A/A arms fails that falsification check", () => {
