@@ -125,6 +125,9 @@ The run-level checks cover:
   context digest differs
   from its reference arm's without a divergence record;
 - SIM-P04: a divergence occurred;
+- SIM-P74: a sampled P1 item the memory arm passed fails in the
+  counterfactual arm after a verified deletion; a campaign without one
+  reads `unreached`;
 - SIM-P10: user-sim rates recomputed from the journaled turn labels
   inside their bands, with the journaled `UserSimRates` summary equal to
   the recomputation, over the completed arms (those with that entry) of

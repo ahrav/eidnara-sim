@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { GradeLog, type GradeRecord } from "../grade/probes";
 import { canonicalJson, sha256Hex } from "../prereg/canonical";
 import { TARGET } from "../proxy/inject";
-import { type Entry, readJournal } from "../run/journal";
+import type { Entry } from "../run/journal";
 import { checkJournal } from "../run/journal-check";
 import { referenceArm } from "../run/run";
 import type { FaultEpisode } from "../scenario/faults";
@@ -50,8 +50,45 @@ const outcome = (instances: number, bad: string[], what: string) =>
           ? { status: "unreached" as const, detail: `no ${what}` }
           : { status: "witnessed" as const, detail: `${instances} ${what}` };
 
+/** jsonl reads a record as complete once a newline terminates it. */
 const jsonl = <T>(path: string): T[] =>
-    existsSync(path) ? (readJournal(path) as unknown as T[]) : [];
+    existsSync(path)
+        ? readFileSync(path, "utf8")
+              .split("\n")
+              .slice(0, -1)
+              .filter(Boolean)
+              .map((line) => JSON.parse(line) as T)
+        : [];
+
+/** The count measures paired pass-to-fail outcomes for probes of `type` with verified deletions. */
+function counterfactualFlips(
+    g: GradedRun,
+    type: string,
+    memory = "eidnara",
+    cf = "eidnara-cf",
+): number {
+    const arm = g.run.arms.find((a) => a.arm === cf);
+    if (!arm || !g.run.arms.some((a) => a.arm === memory)) return 0;
+    const verified = new Set(
+        arm.journal
+            .filter(
+                (e) =>
+                    e.kind === "CounterfactualDeletion" &&
+                    e.skipped === undefined &&
+                    Array.isArray(e.deleted) &&
+                    e.deleted.length > 0 &&
+                    e.remaining === 0,
+            )
+            .map((e) => String(e.probe)),
+    );
+    const typed = new Set(g.scenario.probes.filter((p) => p.type === type).map((p) => p.id));
+    const verdict = (a: string, item: string) =>
+        g.grades.find((r) => r.arm === a && r.item === item)?.verdict;
+    return (g.scenario.cf_deletions ?? [])
+        .map((d) => d.probe)
+        .filter((p) => typed.has(p) && verified.has(p))
+        .filter((p) => verdict(memory, p) === "pass" && verdict(cf, p) === "fail").length;
+}
 
 function context(g: GradedRun): Ctx {
     const grades = join(g.run.dir, "grades.jsonl");
@@ -204,6 +241,10 @@ const CHECKS: Record<string, Check> = {
             0,
         );
         return outcome(n, [], "divergences");
+    },
+    "SIM-P74": (runs) => {
+        const flips = runs.reduce((s, c) => s + counterfactualFlips(c.g, "P1"), 0);
+        return outcome(flips, [], "sampled P1 passes flipped by deletion");
     },
     "SIM-P10": (runs) => {
         const full = runs.filter((c) => c.manifest.events >= c.g.scenario.events.length);

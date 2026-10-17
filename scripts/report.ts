@@ -122,6 +122,13 @@ const recorded = (tier: Tier, dirs: string[], runs: GradedRun[]) => {
         );
         process.exit(2);
     }
+    const scales = Object.values(record.cusum_sd ?? {});
+    if (scales.some((v) => v !== undefined && !(Number.isFinite(v) && v > 0))) {
+        console.error(
+            `the ${tier}-resizing.json beside the runs records a CUSUM scale that is not a positive number`,
+        );
+        process.exit(2);
+    }
     if (record.target_prereg_sha256 !== preregistrationHash(prereg)) {
         console.error(
             `the ${tier}-resizing.json beside the runs was recorded under another ${tier} pre-registration`,
