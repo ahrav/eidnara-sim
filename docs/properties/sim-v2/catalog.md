@@ -1419,8 +1419,9 @@ Reconstructed from spec #1007. The M7 gate (`src/stats/gate.ts`) records a
 stop's kind, metric, signal index, window, and the journal sequence, and
 withholds the pass; its tests check a harm and a futility stop. Issued items
 continuing to terminal state is the scheduler's part and is unexercised.
-Existing check: `src/stats/gate.test.ts`: a harm CUSUM stop records its kind,
-signal index, and window and withholds the pass; status unaudited
+Existing check: `src/stats/gate.test.ts`: a harm and a futility CUSUM stop each
+record their kind, metric, signal index, and exact window and withhold the
+pass; status unaudited
 Impact: An early stop hides its cause or abandons issued items.
 Open questions: None.
 

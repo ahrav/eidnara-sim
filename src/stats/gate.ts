@@ -310,9 +310,11 @@ function bound(f: Family, metric: string, s: Stats, obs: Observation): Judgement
     if (s.n === 0) return ["inconclusive", false];
     const bad =
         obs.unit === "item"
-            ? mean((obs.items ?? []).map((x) => x.treatment)) < margin
-                ? (obs.items ?? []).filter((x) => x.treatment === 0).map((x) => x.item)
-                : []
+            ? f.direction === "zero-tolerance"
+                ? (obs.items ?? []).filter((x) => x.treatment !== 0).map((x) => x.item)
+                : mean((obs.items ?? []).map((x) => x.treatment)) < margin
+                  ? (obs.items ?? []).filter((x) => x.treatment === 0).map((x) => x.item)
+                  : []
             : (obs.runs ?? [])
                   .filter((r) =>
                       f.direction === "zero-tolerance" ? r.treatment !== 0 : r.treatment > margin,
@@ -378,16 +380,34 @@ function statsOf(f: Family, o: Observation, p: Preregistration): Stats {
     return f.outcome === "count" ? counts(f, o.runs ?? []) : graded(f, o.runs ?? [], p);
 }
 
-/** eval-core's `bootstrap_replicates` range starts at 40; below it a BCa interval degenerates. */
+/** eval-core's `bootstrap_replicates` range is 40 to 10,000; below it a BCa interval degenerates. */
 const MIN_BOOTSTRAP_REPLICATES = 40;
+const MAX_BOOTSTRAP_REPLICATES = 10_000;
+const checkBootstrap = (p: Preregistration) => {
+    const r = p.bootstrap.replicates;
+    if (r < MIN_BOOTSTRAP_REPLICATES) {
+        throw new StatsRefusal(
+            `bootstrap.replicates ${r} is below the floor of ${MIN_BOOTSTRAP_REPLICATES}`,
+        );
+    }
+    if (r > MAX_BOOTSTRAP_REPLICATES) {
+        throw new StatsRefusal(
+            `bootstrap.replicates ${r} is above the ceiling of ${MAX_BOOTSTRAP_REPLICATES}`,
+        );
+    }
+};
 /** The incomplete beta in `dist.ts` converges for shapes to a few hundred million. */
 const MAX_EVENTS = 1e8;
 
 function check(p: Preregistration, input: TierInput): void {
-    if (p.bootstrap.replicates < MIN_BOOTSTRAP_REPLICATES) {
-        throw new StatsRefusal(
-            `bootstrap.replicates ${p.bootstrap.replicates} is below the floor of ${MIN_BOOTSTRAP_REPLICATES}`,
-        );
+    checkBootstrap(p);
+    for (const rule of p.stopping_rule.cusum) {
+        const [k, h] = [num(rule.k), num(rule.h)];
+        if (!Number.isFinite(k) || k < 0 || !Number.isFinite(h) || h <= 0) {
+            throw new StatsRefusal(
+                `cusum ${rule.kind}: k is finite and at least 0, h finite and positive`,
+            );
+        }
     }
     const seq = input.journal_seq_at_eval;
     if (!Number.isSafeInteger(seq) || seq < 0) {
@@ -417,6 +437,17 @@ function check(p: Preregistration, input: TierInput): void {
             ![f.margin.value, f.mde.value, f.alpha, f.power].every((v) => Number.isFinite(num(v)))
         ) {
             throw new StatsRefusal(`${f.id}: margin, MDE, alpha, and power are finite numbers`);
+        }
+        if (f.multiplicity === "holm" && f.outcome !== "binary" && f.outcome !== "count") {
+            throw new StatsRefusal(
+                `${f.id}: Holm needs a p-value, which a ${f.outcome} outcome has none of`,
+            );
+        }
+        const key = f.analysis_unit === "run" ? "run" : "ledger_fact_id";
+        if (f.cluster_key !== key) {
+            throw new StatsRefusal(
+                `${f.id}: ${f.analysis_unit === "run" ? "a run" : "an item"} family clusters by ${key}`,
+            );
         }
         const bound = BOUND_DIRECTIONS.includes(f.direction);
         if (bound && f.outcome === "binary" && !isShare(num(f.margin.value))) {
@@ -785,11 +816,7 @@ export function falsificationSet(
     p: Preregistration,
     pairs: Partial<Record<string, { control: number; treatment: number }[]>>,
 ): ZeroEffect[] {
-    if (p.bootstrap.replicates < MIN_BOOTSTRAP_REPLICATES) {
-        throw new StatsRefusal(
-            `bootstrap.replicates ${p.bootstrap.replicates} is below the floor of ${MIN_BOOTSTRAP_REPLICATES}`,
-        );
-    }
+    checkBootstrap(p);
     for (const name of Object.keys(pairs)) {
         if (!(FALSIFICATION as readonly string[]).includes(name)) {
             throw new StatsRefusal(`${name} is not in the falsification set`);

@@ -68,23 +68,29 @@ metric.
 
 A metric with no pre-registration entry is refused by name, and so is a metric
 registered in two families, a metric observed twice, a binary threshold outside
-[0, 1], an observation whose unit or cluster key differs from its family's, an
-observation whose collection is not an array of pair records or that carries
-runs for an item unit or items for a run unit, a control or treatment value that
-is not finite, a binary family's value other than 0 or 1, a negative count, a
-fractional event count (a count family whose margin has a scale; the cost
-family's amounts are unrestricted), a `pp`-scale graded value outside [0, 1], an
-item whose issue order is not a non-negative safe integer or whose ledger-fact
-cluster differs between observations, an item or run identity repeated within an
-observation, an issue order shared by two items or an item with two orders, an
-exclusion listed twice for one arm (an item both arms failed is excluded once
-per arm), an asymmetric id listed twice or also excluded, an exclusion
-attributed to an arm other than the two compared, a run-level family whose
-metrics come from different run sets, a bootstrap plan below 40 replicates
-(eval-core's floor), a bootstrap interval or detectable size that is not finite, and event totals, per arm or combined, beyond the exact integer range. A metric whose
-name ends in `_delta_ms` or names a growth per session arrives as the paired
-delta in the treatment value with 0 as control, so a bound on it is a bound on
-the delta.
+[0, 1], an at-most count family whose margin is not a ratio, a family whose
+margin, MDE, alpha, or power is not a finite number, a Holm family whose outcome
+yields no p-value (graded or slope), a family whose cluster key does not match
+its unit (`run` for runs, `ledger_fact_id` for items), a CUSUM rule whose k is
+not finite and at least 0 or whose h is not finite and positive, an observation
+whose unit or cluster key differs from its family's, an observation whose
+collection is not an array of pair records or that carries runs for an item unit
+or items for a run unit, a control or treatment value that is not finite, a
+binary family's value other than 0 or 1, a negative count, a fractional event
+count (a count family whose margin has a scale; the cost family's amounts are
+unrestricted), a `pp`-scale graded value outside [0, 1], an item whose issue
+order is not a non-negative safe integer or whose ledger-fact cluster differs
+between observations, an item or run identity repeated within an observation, an
+issue order shared by two items or an item with two orders, an exclusion listed
+twice for one arm (an item both arms failed is excluded once per arm), an
+asymmetric id listed twice or also excluded, an exclusion attributed to an arm
+other than the two compared, a run-level family whose metrics come from
+different run sets, a bootstrap plan outside eval-core's 40 to 10,000
+replicates, a bootstrap interval or detectable size that is not finite, and
+event totals beyond the exact integer range or above the 100,000,000 the
+incomplete beta converges for. A metric whose name ends in `_delta_ms` or names
+a growth per session arrives as the paired delta in the treatment value with 0
+as control, so a bound on it is a bound on the delta.
 The input names the compared arms, which are `host` against the
 pre-registration's default arm (D1), and the journal sequence whose
 completed pairs it was built from, a non-negative integer; the verdict
@@ -97,7 +103,7 @@ family with such a metric fails.
 | Binary items | Exact McNemar p on the discordant pairs; the interval is the wider of the Newcombe method 10 interval and a ledger-fact cluster bootstrap, in percentage points; items that all share one ledger-fact cluster are one observation and the result is `inconclusive` |
 | Graded runs | Paired BCa bootstrap over runs for `paired-bca-bootstrap` or under ten runs, else percentile; a family on the `pp` scale takes proportions and reports percentage points; a single run keeps its difference with no interval |
 | Count runs | The registered method at any run count: `paired-sign-test` is the paired sign test, one-sided for `at-most`; `negative-binomial-glm` is a negative-binomial GLM with an arm term and a term per run over the runs with any events, reporting the rate ratio, with the sign test standing in when an arm has no events or the fit does not converge (the spec's "sign test at eight runs or fewer" is the rule for choosing the method at registration; every checked-in tier registers the sign test) |
-| Bound families | No statistic; each run's treatment value, or a binary metric's treatment rate, is checked against the margin; a failed item rate names the items whose treatment value is 0 |
+| Bound families | No statistic; each run's treatment value, or a binary metric's treatment rate, is checked against the margin (an item-level zero-tolerance bound names every item whose treatment value is not 0); a failed item rate names the items whose treatment value is 0 |
 | `interval_method: none`, paired | The paired mean difference and n, no interval, p, or detectable size; the verdict is `descriptive` (the cost families, XL's latency) |
 
 Each paired metric gets a verdict: `better` or `worse` when the test is
@@ -137,10 +143,11 @@ sign test, no `worse` and the Clopper-Pearson upper limit (at half the
 alpha) of the treatment-to-control ratio of event totals at or below a
 ratio margin; with treatment events and no control events the limit is
 recorded as `unbounded` and the component fails. With no events in either arm there is no ratio to bound and
-the component rests on the sign test. At six to eight runs
-that limit stays above 1.5 unless the treatment arm has far fewer events:
-one control event and none in treatment bounds the ratio near 66, and
-five control events and none in treatment near 1.3. The tier passes by
+the component rests on the sign test. The limit depends on the event
+totals, not the run count: with few events it stays above 1.5 unless the
+treatment arm has far fewer (one control event and none in treatment
+bounds the ratio near 66, five control events and none in treatment near
+1.3), while 100 events in each arm over six runs bound it near 1.14. The tier passes by
 intersection-union:
 every gate component passes at its own alpha, which the verdict lists,
 every CUSUM rule was evaluated, and none stopped the tier. A noninferiority
@@ -177,5 +184,5 @@ idle gap): each check's paired differences get a bootstrap interval, and
 a zero effect is an interval that covers zero. With fewer than two pairs
 a check has no result. A name outside the set, a value that is not finite
 or outside the check's domain (the three rates lie in [0, 1], the idle-gap
-wall time is non-negative), a bootstrap plan below 40 replicates, or an
+wall time is non-negative), a bootstrap plan outside 40 to 10,000 replicates, or an
 interval that is not finite is refused.

@@ -135,8 +135,12 @@ describe("tier gates", () => {
         );
         expect(good.stops).toEqual([]);
         const futile: [number, number][] = repeat(12, [1, 0] as [number, number]);
-        const f = evaluate([binary("P1.pass", futile)], { cusum_sd: { harm: 0.5, futility: 0.5 } });
-        expect(f.stops.map((s) => s.kind)).toEqual(["futility"]);
+        const futileObs = binary("P1.pass", futile);
+        const f = evaluate([futileObs], { cusum_sd: { harm: 0.5, futility: 0.5 } });
+        expect(f.stops.map((s) => [s.kind, s.metric, s.signal_index])).toEqual([
+            ["futility", "probe-P1", 3],
+        ]);
+        expect(f.stops[0]?.window).toEqual((futileObs.items ?? []).slice(0, 4).map((x) => x.item));
         expect(f.pass.passed).toBe(false);
         expect(evaluate([binary("P1.pass", futile)]).cusum_unavailable).toEqual([
             "harm: no A/A standard deviation",
@@ -1343,5 +1347,81 @@ describe("tier gate review findings, fourteenth Codex round", () => {
         expect(() =>
             evaluateTier(wide, { observations: [], excluded: [], asymmetric: [], ...seq }),
         ).toThrow("resources: margin, MDE, alpha, and power are finite numbers");
+    });
+});
+
+describe("tier gate review findings, fifteenth Codex round", () => {
+    const seq = { journal_seq_at_eval: 7, arms: { control: "host", treatment: "eidnara" } };
+    const input = { observations: [], excluded: [], asymmetric: [], ...seq };
+    const withFamily = (id: string, patch: object) => ({
+        ...M,
+        families: M.families.map((f) => (f.id === id ? { ...f, ...patch } : f)),
+    });
+
+    test("CUSUM k and h are finite and positive", () => {
+        const huge = `1${"0".repeat(400)}`;
+        const rules = (patch: object) => ({
+            ...M,
+            stopping_rule: {
+                ...M.stopping_rule,
+                cusum: M.stopping_rule.cusum.map((r) =>
+                    r.kind === "harm" ? { ...r, ...patch } : r,
+                ),
+            },
+        });
+        expect(() => evaluateTier(rules({ h: huge }), input)).toThrow(StatsRefusal);
+        expect(() => evaluateTier(rules({ h: "0" }), input)).toThrow(StatsRefusal);
+        expect(() => evaluateTier(rules({ k: "-1" }), input)).toThrow(StatsRefusal);
+    });
+
+    test("a bootstrap plan above eval-core's ceiling is refused on both paths", () => {
+        const fat = { ...M, bootstrap: { ...M.bootstrap, replicates: 10_001 } };
+        expect(() => evaluateTier(fat, input)).toThrow(
+            "bootstrap.replicates 10001 is above the ceiling of 10000",
+        );
+        expect(() => falsificationSet(fat, {})).toThrow(
+            "bootstrap.replicates 10001 is above the ceiling of 10000",
+        );
+    });
+
+    test("an item-level zero-tolerance bound names every item with a nonzero treatment value", () => {
+        const zero = {
+            ...S,
+            families: S.families.map((f) =>
+                f.id === "probe-P8"
+                    ? {
+                          ...f,
+                          direction: "zero-tolerance" as const,
+                          margin: { value: "0", scale: "count" as const },
+                      }
+                    : f,
+            ),
+        };
+        const obs = binary("P8.cross_session_pass_rate", [
+            [0, 0],
+            [0, 1],
+            [0, 0],
+        ]);
+        const hit = obs.items?.[1]?.item ?? "";
+        const m = evaluateTier(zero, { ...input, observations: [obs] }).families.find(
+            (f) => f.family === "probe-P8",
+        )?.metrics[0];
+        expect(m?.verdict).toBe(`failed-gate(P8.cross_session_pass_rate, ${hit})`);
+        expect(m?.failed_items).toEqual([hit]);
+    });
+
+    test("Holm is registered only where the statistic yields a p-value", () => {
+        expect(() => evaluateTier(withFamily("latency", { multiplicity: "holm" }), input)).toThrow(
+            "latency: Holm needs a p-value, which a graded outcome has none of",
+        );
+    });
+
+    test("a family's cluster key matches its unit", () => {
+        expect(() =>
+            evaluateTier(withFamily("latency", { cluster_key: "ledger_fact_id" }), input),
+        ).toThrow("latency: a run family clusters by run");
+        expect(() => evaluateTier(withFamily("probe-P1", { cluster_key: "run" }), input)).toThrow(
+            "probe-P1: an item family clusters by ledger_fact_id",
+        );
     });
 });
