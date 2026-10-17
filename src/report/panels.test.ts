@@ -65,6 +65,7 @@ describe("soak verdict", () => {
     test("a planted linear RSS growth is a leak with its slope, R squared, and bound", () => {
         const { kinds, journal, resources } = sessions(20, (s) => 100 * MB + s * 30 * MB);
         const v = soak(run([], "", kinds), arm({ journal, resources }), "rss");
+        if (v === null) throw new Error("rss is sampled");
         expect(v.verdict).toBe("leak");
         expect(v.slope_per_session).toBeCloseTo(30 * MB, -3);
         expect(v.r2).toBeGreaterThan(0.95);
@@ -79,7 +80,7 @@ describe("soak verdict", () => {
         const verdict = (f: (s: number, i: number) => number) => {
             const { kinds, journal, resources } = sessions(20, f);
             const v = soak(run([], "", kinds), arm({ journal, resources }), "rss");
-            return [v.verdict, v.slope_over_bound, v.bound.holds, v.returned_to_baseline];
+            return [v?.verdict, v?.slope_over_bound, v?.bound.holds, v?.returned_to_baseline];
         };
         const GB = 1024 * MB;
         expect(verdict((s) => (s < 2 || s > 17 ? GB : GB + s * 12 * MB))).toEqual([
@@ -105,15 +106,19 @@ describe("soak verdict", () => {
     test("flat RSS with noise is no leak, and too few samples decide nothing", () => {
         const { kinds, journal, resources } = sessions(20, (_, i) => 100 * MB + (i % 2) * MB);
         const v = soak(run([], "", kinds), arm({ journal, resources }), "rss");
-        expect([v.verdict, v.bound.holds, v.returned_to_baseline]).toEqual(["no leak", true, true]);
+        expect([v?.verdict, v?.bound.holds, v?.returned_to_baseline]).toEqual([
+            "no leak",
+            true,
+            true,
+        ]);
         const store = soak(run([], "", kinds), arm({ journal, resources }), "store_bytes");
-        expect([store.verdict, store.returned_to_baseline]).toEqual(["no leak", null]);
+        expect([store?.verdict, store?.returned_to_baseline]).toEqual(["no leak", null]);
         const few = soak(
             run([], "", kinds),
             arm({ journal, resources: resources.slice(0, 2) }),
             "rss",
         );
-        expect(few.verdict).toBe("insufficient samples");
+        expect(few?.verdict).toBe("insufficient samples");
     });
 
     test("a broken bound or a missed return is a leak with no fittable slope", () => {
@@ -128,18 +133,19 @@ describe("soak verdict", () => {
         const jump = flat(100 * MB);
         (jump[5] as { rss: number }).rss = 300 * MB;
         const v = soak(run([], "", kinds), arm({ journal, resources: jump }), "rss");
-        expect([v.verdict, v.slope_per_session, v.bound.holds, v.returned_to_baseline]).toEqual([
-            "leak",
-            null,
-            false,
-            true,
-        ]);
+        expect([v?.verdict, v?.slope_per_session, v?.bound.holds, v?.returned_to_baseline]).toEqual(
+            ["leak", null, false, true],
+        );
         const drift = flat(100 * MB);
         (drift[9] as { rss: number }).rss = 120 * MB;
         const d = soak(run([], "", kinds), arm({ journal, resources: drift }), "rss");
-        expect([d.verdict, d.bound.holds, d.returned_to_baseline]).toEqual(["leak", true, false]);
+        expect([d?.verdict, d?.bound.holds, d?.returned_to_baseline]).toEqual([
+            "leak",
+            true,
+            false,
+        ]);
         const steady = soak(run([], "", kinds), arm({ journal, resources: flat(100 * MB) }), "rss");
-        expect(steady.verdict).toBe("insufficient samples");
+        expect(steady?.verdict).toBe("insufficient samples");
     });
 
     test("the bound counts sessions completed after the baseline sample", () => {
@@ -158,7 +164,7 @@ describe("soak verdict", () => {
             { scenario_ms: 500, wall_ms: 500, rss: 100 * MB, store_bytes: 0 },
         ];
         const v = soak(run([], "", kinds), arm({ journal, resources }), "rss");
-        expect([v.sessions, v.bound.holds, v.bound.c, v.bound.worst]).toEqual([
+        expect([v?.sessions, v?.bound.holds, v?.bound.c, v?.bound.worst]).toEqual([
             2,
             false,
             8 * MB,
@@ -178,6 +184,7 @@ describe("soak verdict", () => {
             })),
         ).flat();
         const v = soak(run([], "", kinds), arm({ journal, resources }), "rss");
+        if (v === null) throw new Error("rss is sampled");
         expect([v.verdict, v.slope_over_bound, v.generations, v.generation]).toEqual([
             "leak",
             true,
@@ -186,7 +193,27 @@ describe("soak verdict", () => {
         ]);
         expect(v.slope_per_session).toBeCloseTo(12 * MB, -3);
         const store = soak(run([], "", kinds), arm({ journal, resources }), "store_bytes");
-        expect([store.verdict, store.generations]).toEqual(["no leak", 1]);
+        expect([store?.verdict, store?.generations]).toEqual(["no leak", 1]);
+        const reused: ArmLogs["resources"] = resources.map((r) => ({ ...r, pid: 100 }));
+        reused.splice(50, 0, {
+            scenario_ms: 9950,
+            wall_ms: 9950,
+            pid: null,
+            rss: null,
+            store_bytes: 10 * MB,
+        });
+        const again = soak(run([], "", kinds), arm({ journal, resources: reused }), "rss");
+        expect([again?.verdict, again?.generations, again?.generation]).toEqual(["leak", 2, 1]);
+    });
+
+    test("heap evidence is unavailable when samples from before the field remain", () => {
+        const { kinds, journal, resources } = sessions(20, () => 100 * MB);
+        const withHeap = resources.map((r) => ({ ...r, heap: 50 * MB }));
+        expect(
+            soak(run([], "", kinds), arm({ journal, resources: withHeap }), "heap")?.verdict,
+        ).toBe("no leak");
+        const mixed = [...resources.slice(0, 3), ...withHeap.slice(3)];
+        expect(soak(run([], "", kinds), arm({ journal, resources: mixed }), "heap")).toBeNull();
     });
 
     test("an arm with no daemon samples gets the insufficient-samples shape", () => {
@@ -195,6 +222,7 @@ describe("soak verdict", () => {
             { scenario_ms: 0, wall_ms: 0, pid: null, rss: null, store_bytes: 5 * MB },
         ];
         const v = soak(run([], "", kinds), arm({ journal, resources }), "rss");
+        if (v === null) throw new Error("rss is sampled");
         expect([v.verdict, v.samples, v.baseline, v.generations, v.generation]).toEqual([
             "insufficient samples",
             0,
@@ -216,7 +244,7 @@ describe("soak verdict", () => {
             { scenario_ms: 999, wall_ms: 2_000, rss: 100 * MB, store_bytes: 0 },
         ];
         const v = soak(run([], "", kinds), arm({ journal, resources }), "rss");
-        expect(v.bound.worst).toEqual({
+        expect(v?.bound.worst).toEqual({
             value: 300 * MB,
             limit: 200 * MB,
             sessions: 0,
@@ -236,11 +264,23 @@ describe("intrusiveness panel", () => {
             run(mutant.arms),
             mutant.arms[0] as ArmLogs,
         ).internal_string_hits;
-        expect(hits.map((h) => h.source)).toEqual([
+        expect(hits?.map((h) => h.source)).toEqual([
             "agent-response",
             "agent-response",
             "agent-response",
         ]);
+        const first = mutant.arms[0] as ArmLogs;
+        const truncated = {
+            ...first,
+            calls: [
+                ...first.calls,
+                {
+                    ...(first.calls[0] as ArmLogs["calls"][number]),
+                    response_text: "x".repeat(32_768),
+                },
+            ],
+        };
+        expect(intrusiveness(run([truncated]), truncated).internal_string_hits).toBeNull();
     });
 
     test("a correction counts only when it quotes a note delivered earlier that the user never wrote", () => {
@@ -431,6 +471,8 @@ describe("intrusiveness panel", () => {
                 turn: "e-2",
             },
             { command: "echo $(git restore nonexistent)", exit: 0, scenario_ms: 3, turn: "e-2" },
+            { command: 'git restore "-S" p.rs', exit: 0, scenario_ms: 3, turn: "e-2" },
+            { command: 'git reset "--hard"', exit: 0, scenario_ms: 3, turn: "e-2" },
             { command: "cargo test", exit: 0, scenario_ms: 4, turn: "e-2" },
         ];
         const panel = intrusiveness(run([], dir, new Map(), BASE), arm({ journal, tools }));
@@ -455,6 +497,7 @@ describe("intrusiveness panel", () => {
             "env FOO=1 git reset --hard",
             "git restore k.rs 2>&1",
             "git restore l.rs >/dev/null 2>&1 && echo ok",
+            'git reset "--hard"',
         ]);
         expect(panel.latency_ms).toEqual({ n: 7, p50: 500, p95: 5000 });
         expect(panel.tool_output_hits).toBeNull();
@@ -470,6 +513,27 @@ describe("intrusiveness panel", () => {
             }),
         );
         expect(skipped.latency_ms).toEqual({ n: 7, p50: 500, p95: 5000 });
+        const crashWindow = intrusiveness(
+            run([], dir, new Map(), BASE),
+            arm({
+                journal: [
+                    ...journal,
+                    entry("BeginTurn", 8000, { event: "e-13" }),
+                    entry("EndTurn", 9000, { event: "e-13", outcome: "ok", prompt_ms: 700 }),
+                ],
+            }),
+        );
+        expect(crashWindow.latency_ms).toEqual({ n: 8, p50: 500, p95: 5000 });
+        const ambiguous = intrusiveness(
+            run([], dir, new Map(), BASE),
+            arm({
+                journal: [
+                    ...journal,
+                    entry("EndTurn", 9000, { event: "e-14", outcome: "ok", prompt_ms: null }),
+                ],
+            }),
+        );
+        expect(ambiguous.latency_ms).toBeNull();
         const partial = intrusiveness(
             run([], dir, new Map(), BASE),
             arm({
@@ -527,8 +591,14 @@ describe("intrusiveness panel", () => {
                 cache_write_tokens: 0,
             })}\n`,
         );
+        const ungraded = costPanel(run([], dir), arm({ calls }), grades);
+        expect([ungraded?.passes, ungraded?.usd_per_pass, ungraded?.usd]).toEqual([null, null, 31]);
+        writeFileSync(join(dir, "grade-summary.json"), JSON.stringify({ judge_errors: 1 }));
+        expect(costPanel(run([], dir), arm({ calls }), grades)?.passes).toBeNull();
+        writeFileSync(join(dir, "grade-summary.json"), JSON.stringify({ judge_errors: 0 }));
         const cost = costPanel(run([], dir), arm({ calls }), grades);
         if (cost === null) throw new Error("the run records a price table");
+        expect(cost.tokens).toEqual({ input: 2e6, output: 1e6, cache_read: 2e6, cache_write: 0 });
         expect(judgeCost(run([], dir))).toEqual({
             component: "judge",
             calls: 1,
@@ -556,6 +626,11 @@ describe("intrusiveness panel", () => {
             "v1",
         ]);
 
+        const hostArm = intrusiveness(run([], dir, new Map(), BASE), {
+            ...arm({ journal, tools }),
+            arm: "host",
+        });
+        expect(hostArm.corrections_referencing_injected_text).toEqual([]);
         const legacy = pairing.map(({ tape_key, ...r }, i) => (i === 1 ? r : { ...r, tape_key }));
         writeFileSync(
             join(dir, "pairing.jsonl"),

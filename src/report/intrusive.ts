@@ -1,15 +1,21 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { armBase } from "../hosts/arms";
 import type { MemoryNote } from "../hosts/storecheck";
 import type { ArmLogs, RunLogs } from "../oracle/logs";
 import { runOracles } from "../oracle/oracles";
+import { RESPONSE_TEXT_LIMIT } from "../proxy/records";
 import { readJournal } from "../run/journal";
 import type { Scenario } from "../scenario/compile";
 import type { PairingRecord } from "../usersim/usersim";
 
 export interface Intrusiveness {
     arm: string;
-    internal_string_hits: { source: "agent-response"; at: string; evidence: string }[];
+    /**
+     * `null` when an agent response reached the proxy's `RESPONSE_TEXT_LIMIT`, since the recorded
+     * text may lack the suffix the user saw and a scan of it cannot clear the arm.
+     */
+    internal_string_hits: { source: "agent-response"; at: string; evidence: string }[] | null;
     /**
      * Internal strings in tool output the agent saw. `null`: the hosts record each tool run's
      * command and exit status, so there is no tool output to scan and SIM-P59's second source
@@ -20,8 +26,8 @@ export interface Intrusiveness {
     corrections_referencing_injected_text: { event: string; label: string; quote: string }[] | null;
     reverted_edits: { turn: string | null; command: string }[];
     /**
-     * `null` when a delivered, completed turn has no `prompt_ms`: a journal begun before the field
-     * existed.
+     * `null` when a completed, unskipped turn has no `prompt_ms`: a journal begun before the
+     * field existed.
      */
     latency_ms: { n: number; p50: number | null; p95: number | null } | null;
 }
@@ -39,6 +45,8 @@ const COMMENT = /(^|[ \t])#.*$/g;
 const REDIRECT = /[ \t]*(?:\d*[<>]{1,2}&?\d*|&>>?)[ \t]*[^ \t\n;&|)]*/g;
 const HEREDOC = /<<-?[ \t]*(['"]?)(\w+)\1/g;
 const QUOTED = /'[^'\n]*'|"(?:[^"\\\n]|\\.)*"/g;
+/** A quoted string as one shell word: its text with every shell-significant character made plain. */
+const unquote = (q: string) => q.slice(1, -1).replace(/[\s;&|()<>$#'"\\`]/g, "_") || "_";
 const SEPARATOR = /&&|\|\||[;|&\n]/g;
 const SHINGLE = 5;
 /** Clock slack between a note's delivery stamp and the harness's nominal turn boundary. */
@@ -57,6 +65,17 @@ export function notesOf(dir: string, arm: string): MemoryNote[] | null | undefin
     return existsSync(path)
         ? (JSON.parse(readFileSync(path, "utf8")) as MemoryNote[] | null)
         : undefined;
+}
+
+/**
+ * The notes a correction can quote: `[]` for the host arm, which keeps no store, and `null` for
+ * a memory arm with no readable `memory.json`, whether it wrote `null` or finished before the
+ * driver wrote the file.
+ */
+function quotableNotes(dir: string, arm: string): MemoryNote[] | null {
+    const written = notesOf(dir, arm);
+    if (written === undefined) return armBase(arm) === "host" ? [] : null;
+    return written;
 }
 
 /** The scenario's events in order, with the text of each scripted user turn. */
@@ -93,8 +112,9 @@ const checksOutPaths = (args: string[]) => {
 };
 
 /**
- * The command's lines as the shell runs them: each quoted string becomes one plain word, so later
- * words keep their positions; a comment (`#` at a word start outside quotes), redirections, and
+ * The command's lines as the shell runs them: each quoted string becomes the one word the shell
+ * passes (`"-S"` is `-S`, `"my file"` is `my_file`), so options keep their meaning and later
+ * words their positions; a comment (`#` at a word start outside quotes), redirections, and
  * the body lines of a heredoc whose `<<` sits outside quotes are dropped.
  */
 function executable(command: string): string {
@@ -114,7 +134,7 @@ function executable(command: string): string {
             (m) => !inQuotes(m.index + (m[1] as string).length),
         );
         const code = comment ? line.slice(0, comment.index) : line;
-        lines.push(code.replace(QUOTED, "_").replace(REDIRECT, " "));
+        lines.push(code.replace(QUOTED, unquote).replace(REDIRECT, " "));
     }
     return lines.join("\n");
 }
@@ -188,23 +208,25 @@ export function percentile(values: number[], q: number): number | null {
 /**
  * Each completed turn's `prompt_ms` from `EndTurn`: the host's prompt call, after the user-sim
  * delivered. A failed turn is dependability's, counted there as a failed turn or hang, and a
- * turn the user-sim skipped (`UserTurn` with `delivered: false`) ran no prompt. `null` when a
- * delivered, completed turn carries no `prompt_ms`, so a journal from before the field never
- * yields a sample over part of its turns.
+ * turn the user-sim skipped (`UserTurn` with `delivered: false`) ran no prompt. A completed turn
+ * with a `prompt_ms` counts whether or not its `UserTurn` was journaled, since a kill between
+ * the two writes loses only the delivery record. `null` when a completed turn has no `prompt_ms`
+ * and no skip record, so a journal from before the field never yields a sample over part of its
+ * turns.
  */
 export function turnLatencies(arm: ArmLogs): number[] | null {
-    const delivered = new Set(
+    const skipped = new Set(
         arm.journal
-            .filter((e) => e.kind === "UserTurn" && e.delivered === true)
+            .filter((e) => e.kind === "UserTurn" && e.delivered === false)
             .map((e) => String(e.event)),
     );
-    const completed = arm.journal.filter(
-        (e) => e.kind === "EndTurn" && e.outcome === "ok" && delivered.has(String(e.event)),
-    );
-    const latencies = completed
-        .map((e) => e.prompt_ms)
-        .filter((ms): ms is number => typeof ms === "number");
-    return latencies.length === completed.length ? latencies : null;
+    const latencies: number[] = [];
+    for (const e of arm.journal) {
+        if (e.kind !== "EndTurn" || e.outcome !== "ok") continue;
+        if (typeof e.prompt_ms === "number") latencies.push(e.prompt_ms);
+        else if (!skipped.has(String(e.event))) return null;
+    }
+    return latencies;
 }
 
 /**
@@ -227,10 +249,10 @@ function corrections(run: RunLogs, arm: ArmLogs) {
         const words = s.split(" ");
         return own.has(words.slice(1).join(" ")) || own.has(words.slice(0, -1).join(" "));
     };
-    const written = notesOf(run.dir, arm.arm);
+    const written = quotableNotes(run.dir, arm.arm);
     const replies = userSimReplies(run.dir, arm.arm);
     if (written === null || replies === null) return null;
-    const notes = (written ?? []).filter((n) => n.first_delivery_ms !== null);
+    const notes = written.filter((n) => n.first_delivery_ms !== null);
     const began = new Map(
         arm.journal
             .filter((e) => e.kind === "BeginTurn")
@@ -260,11 +282,20 @@ function corrections(run: RunLogs, arm: ArmLogs) {
 
 export function intrusiveness(run: RunLogs, arm: ArmLogs): Intrusiveness {
     const latencies = turnLatencies(arm);
+    const cut = arm.calls.some(
+        (c) => c.component === "agent" && (c.response_text?.length ?? 0) >= RESPONSE_TEXT_LIMIT,
+    );
     return {
         arm: arm.arm,
-        internal_string_hits: runOracles({ ...run, arms: [arm] })
-            .filter((a) => a.oracle === "F7")
-            .map((a) => ({ source: "agent-response" as const, at: a.at, evidence: a.evidence })),
+        internal_string_hits: cut
+            ? null
+            : runOracles({ ...run, arms: [arm] })
+                  .filter((a) => a.oracle === "F7")
+                  .map((a) => ({
+                      source: "agent-response" as const,
+                      at: a.at,
+                      evidence: a.evidence,
+                  })),
         tool_output_hits: null,
         corrections_referencing_injected_text: corrections(run, arm),
         reverted_edits: arm.tools

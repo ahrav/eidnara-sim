@@ -50,7 +50,10 @@ const median = (xs: number[]) => {
     return s.length % 2 ? (s[m] as number) : ((s[m - 1] as number) + (s[m] as number)) / 2;
 };
 
-/** Consecutive samples from one daemon process. */
+/**
+ * Consecutive samples from one daemon process. A sample with no process (`pid: null`) is a
+ * boundary of its own, so a replacement that reuses the number still starts a new run.
+ */
 function byPid(samples: ArmLogs["resources"]): ArmLogs["resources"][] {
     const runs: ArmLogs["resources"][] = [];
     for (const s of samples) {
@@ -61,16 +64,23 @@ function byPid(samples: ArmLogs["resources"]): ArmLogs["resources"][] {
     return runs;
 }
 
-export function soak(run: RunLogs, arm: ArmLogs, resource: Resource): SoakVerdict {
+/**
+ * `null` when a sample lacks the resource's field altogether (a `resources.jsonl` begun before
+ * the sampler recorded it), so the verdict never rests on the suffix that has it.
+ */
+export function soak(run: RunLogs, arm: ArmLogs, resource: Resource): SoakVerdict | null {
+    if (arm.resources.some((s) => !(resource in s))) return null;
     const ends = arm.journal
         .filter((e) => e.kind === "Event" && run.kinds.get(String(e.event)) === "session_end")
         .map((e) => e.wall_ms);
-    const all = arm.resources.filter(
-        (s) => typeof s[resource] === "number" && typeof s.wall_ms === "number",
-    );
+    const sampled = (s: ArmLogs["resources"][number]) =>
+        typeof s[resource] === "number" && typeof s.wall_ms === "number";
+    const all = arm.resources.filter(sampled);
     const walls = all.map((s) => s.wall_ms as number);
     const gaps = walls.slice(1).map((w, i) => w - (walls[i] as number));
-    const generations = resource === "store_bytes" ? [all] : byPid(all);
+    const generations = (resource === "store_bytes" ? [arm.resources] : byPid(arm.resources))
+        .map((g) => g.filter(sampled))
+        .filter((g) => g.length > 0);
     const verdicts = (generations.length === 0 ? [[]] : generations).map((g) =>
         evaluate(run, resource, ends, g),
     );

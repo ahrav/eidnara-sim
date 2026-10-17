@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { loadConfig } from "../src/config/config";
 import type { Snapshot } from "../src/grade/artefacts";
@@ -130,11 +130,11 @@ const p11 = Object.fromEntries(
     }),
 );
 const delta = memoryArms.map((arm) => ({ arm, delta_mem: deltaMem(log.latest(), arm) }));
-console.log(
-    JSON.stringify(
-        { verdicts: summary, skipped, p11, p3: delta, judge_errors: judgeErrors },
-        null,
-        2,
-    ),
+const report = JSON.stringify(
+    { verdicts: summary, skipped, p11, p3: delta, judge_errors: judgeErrors },
+    null,
+    2,
 );
+writeFileSync(join(dir, "grade-summary.json"), `${report}\n`);
+console.log(report);
 if (judgeErrors > 0) process.exit(1);

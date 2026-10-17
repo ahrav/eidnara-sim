@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { GradeRecord } from "../grade/probes";
 import type { ArmLogs, RunLogs } from "../oracle/logs";
@@ -22,9 +22,16 @@ export interface CostPanel {
     arm: string;
     price_table: string;
     components: ComponentCost[];
+    /** The arm's token totals summed over its calls directly, for SIM-P38's conservation check. */
+    tokens: { input: number; output: number; cache_read: number; cache_write: number };
     usd: number;
     harness_usd: number;
-    passes: number;
+    /**
+     * Passing P1 to P12 items at their latest version. `null` until `grade-summary.json` shows a
+     * grading pass that finished with no judge error, since a prefix of `grades.jsonl` would
+     * count as a verified total.
+     */
+    passes: number | null;
     usd_per_pass: number | null;
     memory_writes: number | null;
     writes_with_zero_reads: number | null;
@@ -77,30 +84,47 @@ export function judgeCost(run: RunLogs): ComponentCost | null {
     return componentCosts(calls, run.price.rates).find((c) => c.component === "judge") ?? null;
 }
 
+/** Whether `scripts/grade-run.ts` finished over the run with every judge call answered. */
+function gradingComplete(dir: string): boolean {
+    const path = join(dir, "grade-summary.json");
+    if (!existsSync(path)) return false;
+    const summary = JSON.parse(readFileSync(path, "utf8")) as { judge_errors?: number };
+    return summary.judge_errors === 0;
+}
+
 /** The arm's cost at the price table its run recorded; `null` for a run that recorded none. */
 export function costPanel(run: RunLogs, arm: ArmLogs, grades: GradeRecord[]): CostPanel | null {
     if (run.price === null) return null;
     const components = componentCosts(arm.calls, run.price.rates);
     const sum = (rows: ComponentCost[]) => rows.reduce((s, c) => s + c.usd, 0);
     const usd = sum(components.filter((c) => !HARNESS.has(c.component)));
+    const total = (field: keyof Tokens & `${string}_tokens`) =>
+        arm.calls.reduce((n, c) => n + c[field], 0);
     const latest = new Map<string, GradeRecord>();
     for (const g of grades) {
         if (g.arm !== arm.arm) continue;
         const seen = latest.get(g.item);
         if (seen === undefined || g.version > seen.version) latest.set(g.item, g);
     }
-    const passes = [...latest.values()].filter(
-        (g) => g.verdict === "pass" && USEFUL.test(g.probe_type),
-    ).length;
+    const passes = gradingComplete(run.dir)
+        ? [...latest.values()].filter((g) => g.verdict === "pass" && USEFUL.test(g.probe_type))
+              .length
+        : null;
     const notes = notesOf(run.dir, arm.arm);
     return {
         arm: arm.arm,
         price_table: run.price.version,
         components,
+        tokens: {
+            input: total("input_tokens"),
+            output: total("output_tokens"),
+            cache_read: total("cache_read_tokens"),
+            cache_write: total("cache_write_tokens"),
+        },
         usd,
         harness_usd: sum(components.filter((c) => HARNESS.has(c.component))),
         passes,
-        usd_per_pass: passes === 0 ? null : usd / passes,
+        usd_per_pass: passes === null || passes === 0 ? null : usd / passes,
         memory_writes: notes?.length ?? null,
         writes_with_zero_reads: notes ? notes.filter((n) => n.deliveries === 0).length : null,
     };
