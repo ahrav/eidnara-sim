@@ -164,7 +164,40 @@ const TOKEN_FIELDS = [
 function samplesOf(path: string): Sample[] {
     const samples = shaped<Sample>(path, SAMPLE_FIELDS);
     requirePidShape(path, samples);
+    samples.forEach((s, i) => {
+        const prev = samples[i - 1];
+        if (prev && s.scenario_ms < prev.scenario_ms) {
+            throw new Error(
+                `${path}: line ${i + 1}: scenario_ms ${s.scenario_ms} precedes ${prev.scenario_ms}`,
+            );
+        }
+    });
     return samples;
+}
+
+/** A call attributed to a turn started while that turn was open: between its `BeginTurn` and its `EndTurn`. */
+function requireCallsInTurns(calls: CallRecord[], journal: Entry[]): void {
+    const bounds = new Map<string, { from: number; to: number }>();
+    for (const e of journal) {
+        if (e.kind !== "BeginTurn" && e.kind !== "EndTurn") continue;
+        const key = `${e.arm}/${String(e.event)}`;
+        const b = bounds.get(key) ?? {
+            from: Number.NEGATIVE_INFINITY,
+            to: Number.POSITIVE_INFINITY,
+        };
+        if (e.kind === "BeginTurn") b.from = e.scenario_ms;
+        else b.to = e.scenario_ms;
+        bounds.set(key, b);
+    }
+    for (const c of calls) {
+        if (c.turn === null) continue;
+        const b = bounds.get(`${c.arm}/${c.turn}`);
+        if (b && (c.scenario_ms < b.from || c.scenario_ms > b.to)) {
+            throw new Error(
+                `call ${c.seq}: starts at ${c.scenario_ms}, outside turn ${c.turn} (${b.from} to ${b.to})`,
+            );
+        }
+    }
 }
 
 function toolsOf(path: string, turns: Set<string>): (Command & { turn: string | null })[] {
@@ -253,6 +286,7 @@ export function loadRun(dir: string, prereg: Preregistration): RunLogs {
     const scheduled = planned.map((e) => String(e.id));
     requireComplete(journal, order, scheduled);
     requireTurnEnds(journal, order, planned);
+    requireCallsInTurns(calls, journal);
     const arms = order.map((arm) => ({
         arm,
         calls: calls.filter((c) => c.arm === arm),

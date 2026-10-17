@@ -320,3 +320,40 @@ test("a Pi turn whose abort never drains kills the Pi process, and later prompts
     expect(second.error).toContain("killed after an undrained abort");
     expect(reported).toEqual([]);
 });
+
+test("a prompt that fails after its agent_end already arrived drains at once and keeps the Pi process", async () => {
+    const host = new PiSimHost({
+        ...({} as HostContext),
+        config: loadConfig(),
+        root: "/x",
+        launcher: "/x/sandbox.sh",
+        now: () => 1,
+    });
+    const stopped: number[] = [];
+    let waits = 0;
+    const rpc = {
+        child: { pid: 4242, stdin: { end: () => {} } },
+        sendCommand: async (name: string) => {
+            if (name === "prompt") throw new Error("prompt rejected after the turn ended");
+            return {};
+        },
+        waitForEvent: (_match: unknown, o: { timeoutMs: number }) => {
+            waits += 1;
+            if (waits === 1) return Promise.resolve({ type: "agent_end", messages: [] });
+            return new Promise((_resolve, reject) =>
+                setTimeout(() => reject(new Error("agent_end timed out")), o.timeoutMs),
+            );
+        },
+        shutdown: async () => {},
+        onEvent: () => {},
+    };
+    Object.assign(host as unknown as Record<string, unknown>, {
+        rpc,
+        stopTree: async (pid: number) => void stopped.push(pid),
+        drainWaitMs: 10,
+    });
+    const result = await host.prompt("go", 100);
+    expect(result.error).toContain("prompt rejected");
+    expect(result.error).not.toContain("killed");
+    expect(stopped).toEqual([]);
+});

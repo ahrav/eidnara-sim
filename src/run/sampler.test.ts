@@ -130,3 +130,8 @@ test("RSS is read in bytes using the host's page size", () => {
     expect((stats?.rss ?? 0) % page).toBe(0);
     expect(stats?.rss ?? 0).toBeGreaterThan(page);
 });
+
+test("procStats reads the process start time from the same /proc snapshot as RSS", () => {
+    const stats = procStats(process.pid);
+    expect(stats?.start ?? null).toBe(processStart(process.pid) ?? "");
+});

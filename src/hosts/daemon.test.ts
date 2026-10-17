@@ -3,6 +3,7 @@ import {
     appendFileSync,
     chmodSync,
     existsSync,
+    linkSync,
     mkdirSync,
     mkdtempSync,
     readFileSync,
@@ -349,4 +350,20 @@ test("a stop rolls back and saves a copy that failed mid-way before the live log
     expect(readFileSync(logFile, "utf8")).toBe("earlier\nheld lifetime\nlive lifetime\n");
     expect(existsSync(held)).toBe(false);
     expect(existsSync(`${logFile}.source`)).toBe(false);
+});
+
+test("recovery saves two names of one inode once", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "sim-daemon-"));
+    const logPath = join(dir, "direct-host.log");
+    const held = join(dir, "daemon.log.held");
+    writeFileSync(logPath, "one lifetime\n");
+    linkSync(logPath, held);
+    writeFileSync(
+        join(dir, "daemon.log.source"),
+        JSON.stringify({ pending: [held, logPath], copying: null }),
+    );
+    await new DaemonStack(stackCtx(dir)).recoverLog();
+    expect(readFileSync(join(dir, "daemon.log"), "utf8")).toBe("one lifetime\n");
+    expect(existsSync(held)).toBe(false);
+    expect(existsSync(logPath)).toBe(false);
 });

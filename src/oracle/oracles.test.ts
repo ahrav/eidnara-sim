@@ -1063,3 +1063,60 @@ describe("oracle round thirteen", () => {
         expect(() => loadRun(dir, prereg)).toThrow("manifest tier S differs from the scenario's M");
     });
 });
+
+describe("oracle round fourteen", () => {
+    test("resource samples run forward in scenario time, and a turn's call starts inside its journaled interval", () => {
+        const { dir, line } = completeDir(["eidnara"]);
+        const rs = join(dir, "eidnara", "resources.jsonl");
+        writeFileSync(
+            rs,
+            line({ scenario_ms: 5, rss: 100, pid: 1 }) + line({ scenario_ms: 4, rss: 110, pid: 1 }),
+        );
+        expect(() => loadRun(dir, prereg)).toThrow(
+            /resources\.jsonl: line 2: scenario_ms 4 precedes 5/,
+        );
+        writeFileSync(rs, line({ scenario_ms: 0, rss: 100, pid: 1 }));
+        const journal = [
+            { kind: "StartRun", arm: null, order: ["eidnara"], scenario_ms: 0 },
+            { kind: "BeginTurn", arm: "eidnara", event: "e-1", scenario_ms: 10 },
+            { kind: "EndTurn", arm: "eidnara", event: "e-1", outcome: "ok", scenario_ms: 20 },
+            { kind: "Event", arm: "eidnara", event: "e-1", outcome: "ok", scenario_ms: 20 },
+            { kind: "EndArm", arm: "eidnara", scenario_ms: 20 },
+            { kind: "EndRun", arm: null, scenario_ms: 20 },
+        ];
+        writeFileSync(join(dir, "journal.jsonl"), journal.map(line).join(""));
+        writeFileSync(join(dir, "calls.jsonl"), line(call({ seq: 0, scenario_ms: 25 })));
+        expect(() => loadRun(dir, prereg)).toThrow(
+            "call 0: starts at 25, outside turn e-1 (10 to 20)",
+        );
+        writeFileSync(join(dir, "calls.jsonl"), line(call({ seq: 0, scenario_ms: 15 })));
+        expect(loadRun(dir, prereg).arms[0]?.calls).toHaveLength(1);
+    });
+
+    test("only the harness's turn-deadline wording puts a no-call turn in the deadline branch", () => {
+        const quick = runWith(
+            armOf("eidnara", {
+                journal: [
+                    {
+                        kind: "BeginTurn",
+                        arm: "eidnara",
+                        event: "e-1",
+                        seq: 0,
+                        wall_ms: 0,
+                        scenario_ms: 0,
+                    },
+                    endTurn("eidnara", "e-1", 2_000, "provider error: deadline exceeded"),
+                ],
+            }),
+        );
+        expect(oracle(quick, "F4")).toEqual([]);
+        const hit = runWith(
+            armOf("eidnara", {
+                journal: [endTurn("eidnara", "e-1", 900_000, "turn deadline 900000 ms")],
+            }),
+        );
+        expect(oracle(hit, "F4").map((a) => a.evidence)).toEqual([
+            "turn deadline with no model call",
+        ]);
+    });
+});

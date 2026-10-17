@@ -231,7 +231,9 @@ export class DaemonStack {
     /**
      * Saves every log the marker lists that still exists, in order, then the `extra` ones: a
      * copy an earlier kill cut short is rolled back to the length the marker recorded before
-     * it runs again, so each log is appended once. The marker is removed at the end.
+     * it runs again, and two names of one inode (the held link before a restart replaced the
+     * live path) are saved once, so each lifetime is appended once. The marker is removed at
+     * the end.
      */
     private drain(marker: LogMarker | null, extra: string[]): void {
         let pending = [...(marker?.pending ?? [])];
@@ -242,6 +244,18 @@ export class DaemonStack {
             pending = [marker.copying.source, ...pending];
         }
         pending = [...new Set([...pending, ...extra])].filter((p) => p !== "");
+        const seenInodes = new Set<string>();
+        pending = pending.filter((p) => {
+            if (!existsSync(p)) return true;
+            const st = statSync(p);
+            const key = `${st.dev}:${st.ino}`;
+            if (seenInodes.has(key)) {
+                rmSync(p, { force: true });
+                return false;
+            }
+            seenInodes.add(key);
+            return true;
+        });
         while (pending.length > 0) {
             const [source, ...rest] = pending as [string, ...string[]];
             if (existsSync(source)) this.absorb(source, rest);
@@ -557,7 +571,7 @@ export class PiSimHost extends SimHost {
                 ? { error: String(last.errorMessage ?? "error") }
                 : {};
         } catch (caught) {
-            const drained = this.agentEnd(this.drainWaitMs);
+            const drained = Promise.race([end, this.agentEnd(this.drainWaitMs)]);
             await this.rpc.sendCommand("abort", {}, { timeoutMs: 60_000 }).catch(() => undefined);
             const settled = await drained.then(
                 () => true,

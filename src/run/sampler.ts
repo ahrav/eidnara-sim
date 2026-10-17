@@ -1,7 +1,6 @@
 import { appendFileSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { keepCompleteLines } from "./journal";
-import { processStart } from "./procs";
 
 const TICKS_PER_SECOND = 100;
 
@@ -16,12 +15,17 @@ export function pageBytes(): number {
     return pageSize;
 }
 
-export function procStats(pid: number): { rss: number; cpuMs: number } | null {
+/** One `/proc/<pid>/stat` read: RSS in bytes, CPU time, and the process start time that names the lifetime. */
+export function procStats(pid: number): { rss: number; cpuMs: number; start: string } | null {
     try {
         const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
         const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
         const ticks = Number(fields[11]) + Number(fields[12]);
-        return { rss: Number(fields[21]) * pageBytes(), cpuMs: (ticks * 1000) / TICKS_PER_SECOND };
+        return {
+            rss: Number(fields[21]) * pageBytes(),
+            cpuMs: (ticks * 1000) / TICKS_PER_SECOND,
+            start: fields[19] ?? "",
+        };
     } catch {
         return null;
     }
@@ -96,7 +100,7 @@ export class ResourceSampler {
             wall_ms: wall,
             scenario_ms: this.o.scenarioMs(),
             pid,
-            start: pid === null ? null : processStart(pid),
+            start: stats?.start ?? null,
             rss: stats?.rss ?? null,
             cpu_ms: stats?.cpuMs ?? null,
             cpu_fraction: fraction === null ? null : Math.round(fraction * 1e4) / 1e4,
