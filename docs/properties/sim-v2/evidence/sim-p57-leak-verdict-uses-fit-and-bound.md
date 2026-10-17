@@ -15,7 +15,11 @@ The leak verdict reports slope, R squared, and the inequality `RSS(T) < 2 *
 RSS(0) + N_sessions * c` with `c` from the pre-registration, and samples every
 10 seconds of wall time carry scenario and wall time.
 
-M7 (#1033) `soak` reports the steady-window slope per session, R squared, the bound `value(T) < 2 * value(0) + sessions(T) * c` at its worst sample, and the return to baseline; the sampler records RSS, anonymous memory, and store bytes every pre-registered interval with scenario and wall time. A planted linear-growth fixture is a leak and a flat one is not.
+M7 (#1033) `soak` reports the steady-window slope per session, R squared, the
+bound `value(T) < 2 * value(0) + sessions(T) * c` at its worst sample, and the
+return to baseline; the sampler records RSS, anonymous memory, and store bytes
+every pre-registered interval with scenario and wall time. A planted linear-
+growth fixture is a leak and a flat one is not.
 
 ## Failure scenario
 

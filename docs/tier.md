@@ -12,10 +12,12 @@ the plan and `<dir>/tier-result.json` the outcome of each run, with the
 run's own wall time and whether it exceeded the tier's wall budget; each
 run directory keeps its `tier.log`. The command exits 1 when any run,
 grading, A/A report, or the tier report fails or any run exceeded
-`liveness_bounds.tier_wall_budget_ms` (SIM-L03), and 2 on a malformed
-flag, a plan where no session fits the budget, a `--turn-ms` whose
-prefix differs from one a run with a manifest ran, or an output directory
-another invocation holds (`<dir>/lease.json`). SIGINT, SIGTERM, or
+`liveness_bounds.tier_wall_budget_ms` (SIM-L03) or the report's
+property witness holds a violated record, and 2 on a malformed flag, a
+plan where no session fits the budget, a `--turn-ms` whose prefix differs
+from one a run with a manifest ran, an unreadable `tier-plan.json` with
+no `--turn-ms` to replace it, or an output directory another invocation
+holds (`<dir>/lease.json`). SIGINT, SIGTERM, or
 SIGHUP to the command reaches every child it started, SIGKILLs any still
 live a minute later together with its descendants, and starts no further
 grading or report; each run tears down and stays resumable.
@@ -87,25 +89,32 @@ The panel lists records by id, without their catalog names.
 
 The run-level checks cover:
 
-- SIM-P02 and SIM-P03: pairing before divergence over turns that have a
-  reference counterpart, divergence records ahead of their turn carrying
-  the two turns' digests, and no turn whose context digest differs from
-  its reference arm's without a divergence record;
+- SIM-P02 and SIM-P03: pairing before divergence over turns below their
+  arm's divergence that have a reference counterpart, each delivered as
+  its counterpart was, divergence records
+  ahead of their turn carrying
+  the two turns' digests (a replayed run's against the digest its source
+  tape's pairing log recorded), and no turn whose context digest differs
+  from its reference arm's without a divergence record;
 - SIM-P04: a divergence occurred;
 - SIM-P10: user-sim rates recomputed from the journaled turn labels
-  inside their bands, agreeing with the journaled summary, over the
-  completed arms (those with a `UserSimRates` entry) of uncapped runs;
+  inside their bands, with the journaled `UserSimRates` summary equal to
+  the recomputation, over the completed arms (those with that entry) of
+  uncapped runs;
 - SIM-P11, SIM-P12, and SIM-P14: the journal's order, idle jumps, and
-  scheduled jumps, from `checkJournal`;
+  scheduled jumps (each from the arm's clock before it), from
+  `checkJournal`;
 - SIM-P15: proxy records carry both times, with wall time in `seq` order
   per arm;
 - SIM-P25: every user turn has a label;
 - SIM-P30: every observed fault was scheduled, and every injected call
-  names a scheduled fault fired before it, before its trigger session
-  ended, and within a bounded fault's count;
-- SIM-P41: every reached probe has a snapshot, set once, right after the
-  probe's first `EndTurn`, and every grade cites a journaled snapshot of
-  its item;
+  names a scheduled fault (from the manifest's `fault_override` when the
+  run had one) fired before it, before its trigger session ended, and
+  within a bounded fault's count; the injected calls are the instances,
+  so a run with scheduler faults alone is unreached;
+- SIM-P41: every reached probe has a snapshot, set once, after the
+  probe's first `EndTurn` and before any later turn, and every grade
+  cites a journaled snapshot of its item;
 - SIM-P42: grade versions only increase, the report grades at the latest
   version, and the panel names the versions used;
 - SIM-L03: each completed run's wall time from `StartRun` to `EndRun` is

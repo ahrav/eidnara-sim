@@ -57,8 +57,9 @@ journal names into `grades.jsonl` and judges each P7 item for each memory
 arm against the host arm, through a gateway it starts for the judge. An
 item whose latest grade already cites its snapshot is skipped as `already
 graded`, so grading a run again is free of judge calls and leaves earlier
-judgments as they stand; `--regrade` grades every item anew as a further
-version. The printed summary covers the run's latest grades, and
+judgments as they stand; a P7 pair's two grades land in one write, and
+one graded side means the pair stands. `--regrade` grades every item
+anew as a further version. The printed summary covers the run's latest grades, and
 `graded` counts the ones this invocation added. It prints the verdict
 counts per arm and probe type, the skipped items by reason, the summed
 `P11.weighted_score` per arm, Δmem per memory arm, and the judge errors,

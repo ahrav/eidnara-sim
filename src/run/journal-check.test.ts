@@ -54,6 +54,24 @@ describe("checkJournal", () => {
         expect(report.events_inside_sleep).toEqual([3]);
     });
 
+    test("an entry without a finite scenario time breaks the order", () => {
+        const { entries, at } = journal();
+        at("Event", 10, { event: "e-0" });
+        at("Event", Number.NaN, { event: "e-1" });
+        at("Event", 5, { event: "e-2" });
+        expect(checkJournal(entries, schedule({})).decreasing_scenario_ms).toEqual([1, 2]);
+    });
+
+    test("a jump whose from_ms is not the arm's clock before it is off schedule", () => {
+        const { entries, at } = journal();
+        at("Event", 0, { event: "e-0" });
+        at("AdvanceClock", 200, { from_ms: 100, next_event: "e-2" });
+        expect(
+            checkJournal(entries, schedule({ "e-0": 0, "e-1": 100, "e-2": 200 }))
+                .off_schedule_jumps,
+        ).toEqual([1]);
+    });
+
     test("a jump past an earlier pending event is off schedule", () => {
         const { entries, at } = journal();
         at("AdvanceClock", 500, { from_ms: 0, next_event: "e-2" });

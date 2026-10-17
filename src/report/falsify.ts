@@ -50,11 +50,11 @@ export function falsificationPairs(
     // SAFETY: This assertion requires every pairing.jsonl record to match PairingRecord.
     const pairing = existsSync(path) ? (readJournal(path) as unknown as PairingRecord[]) : [];
     const pushback = (a: string) => {
-        const cut = new Map(
-            pairing
-                .filter((r) => r.kind === "divergedAt" && r.arm === treatment)
-                .map((r) => [r.session, r.index]),
-        );
+        const cut = new Map<string, number>();
+        for (const r of pairing) {
+            if (r.kind !== "divergedAt" || (r.arm !== control && r.arm !== treatment)) continue;
+            cut.set(r.session, Math.min(cut.get(r.session) ?? Infinity, r.index));
+        }
         const turns = pairing.filter(
             (r) =>
                 r.kind === "turn" &&

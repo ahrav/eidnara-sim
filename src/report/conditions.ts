@@ -15,10 +15,33 @@ export const V1_CONTINUITY: Record<string, [number, number]> = {
 
 const TRANSCRIPT_PATH =
     /\.pi\/agent\/sessions|PI_CODING_AGENT_DIR\}?\/sessions|XDG_DATA_HOME\}?\/opencode|opencode\.db|opencode\/storage|\/sessions\/\S*\.jsonl/;
-const READ_OP =
-    /\b(cat|less|more|head|tail|sed|awk|grep|rg|find|ls|jq|sqlite3|strings|bat|view)\b|^read /;
+const READERS = new Set([
+    "cat",
+    "less",
+    "more",
+    "head",
+    "tail",
+    "sed",
+    "awk",
+    "grep",
+    "rg",
+    "find",
+    "ls",
+    "jq",
+    "sqlite3",
+    "strings",
+    "bat",
+    "view",
+    "read",
+]);
+const SEPARATOR = /&&|\|\||[;|&\n]/;
+/** Whether one of the command's simple commands runs a reader on a transcript path. */
 const readsTranscripts = (command: string) =>
-    TRANSCRIPT_PATH.test(command) && READ_OP.test(command);
+    command.split(SEPARATOR).some((simple) => {
+        const words = simple.trim().split(/\s+/);
+        const program = words.find((w) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(w)) ?? "";
+        return READERS.has(program.split("/").at(-1) ?? "") && TRANSCRIPT_PATH.test(simple);
+    });
 
 export interface TranscriptOrder {
     arm: string;
@@ -88,7 +111,7 @@ export function parseContinuity(value: unknown): Continuity[] {
 }
 
 function files(dir: string): string[] {
-    if (!existsSync(dir)) return [];
+    if (!existsSync(dir) || lstatSync(dir).isSymbolicLink()) return [];
     return readdirSync(dir).flatMap((f) => {
         const p = join(dir, f);
         const stat = lstatSync(p);

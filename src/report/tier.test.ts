@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { GradeRecord } from "../grade/probes";
 import type { ArmLogs } from "../oracle/logs";
 import { canonicalJson, sha256Hex } from "../prereg/canonical";
+import type { Preregistration } from "../prereg/schema";
 import { preregistrationHash } from "../prereg/validate";
 import type { CallRecord } from "../proxy/records";
 import type { Entry } from "../run/journal";
@@ -15,6 +16,7 @@ import { falsificationPairs } from "./falsify";
 import { percentile } from "./intrusive";
 import { type GradedRun, tierInput } from "./observe";
 import { counterfactualText, renderTier } from "./render";
+import * as tier from "./tier";
 import { aaScale, counterfactual, cusumScale, loadGraded, tierReport } from "./tier";
 
 const prereg = loadPrereg("S");
@@ -79,7 +81,16 @@ interface FixtureOptions {
     host?: "pi" | "opencode";
     seed?: number;
     hostJitter?: (i: number) => number;
+    commit?: string;
 }
+const identity = (commit = "abc") => ({
+    eidnara_commit: commit,
+    models: ["m"],
+    context_limit: 1,
+    events: 36,
+    distortions: [] as string[],
+    host_versions: ["pi@1", "opencode@1"],
+});
 
 function fixture(status = (_: number) => 200, opts: FixtureOptions = {}): GradedRun {
     const dir = mkdtempSync(join(tmpdir(), "sim-report-"));
@@ -187,8 +198,34 @@ function fixture(status = (_: number) => 200, opts: FixtureOptions = {}): Graded
         scenario,
         grades,
         host: opts.host ?? "pi",
+        judged: [],
+        witnesses: [] as GradedRun["witnesses"],
+        identity: identity(opts.commit),
     };
 }
+
+const judgment = (
+    item: string,
+    arm: string,
+    pass: boolean,
+    inputs: string[],
+    eligible = true,
+): GradeRecord => ({
+    item,
+    arm,
+    probe_type: "P7",
+    version: 1,
+    snapshot: `${arm}:${item}`,
+    inputs,
+    later_attempts_logged: 0,
+    verdict: pass ? "pass" : "fail",
+    metrics: { "P7.pass": pass, gate_eligible: eligible },
+});
+
+declare const cusumScaleShape: (
+    p: Preregistration,
+    scales: Map<string, { scale: Record<string, number | undefined>; complete: boolean }>,
+) => Record<string, number | undefined>;
 
 const arm = (g: GradedRun, name: string) => g.run.arms.find((a) => a.arm === name) as ArmLogs;
 const observation = (g: GradedRun[], metric: string) =>
@@ -437,7 +474,7 @@ describe("tier report", () => {
 
     test("a tier whose CUSUM scale comes from another tier's A/A pairs takes that scale", () => {
         const L = loadPrereg("L");
-        const g = fixture();
+        const g = fixture(undefined, { seed: 301 });
         g.run.arms = g.run.arms.filter((a) => a.arm !== "host~aa");
         g.grades = g.grades.filter((r) => r.arm !== "host~aa");
         expect(tierReport(L, [g], boundary).verdict.cusum_unavailable).toHaveLength(2);
@@ -531,10 +568,14 @@ describe("tier report", () => {
     test("a run whose analysed arm has no EndArm leaves the campaign incomplete", () => {
         const g = fixture();
         const complete = tierInput(prereg, [g]).incomplete ?? [];
-        expect(complete.filter((x) => x.includes("EndArm"))).toEqual([]);
+        expect(complete.filter((x) => x.includes("EndArm"))).toEqual([
+            "run pi/101: eidnara-kl without EndArm",
+        ]);
         const host = arm(g, "host");
         host.journal = host.journal.filter((e) => e.kind !== "EndArm");
-        expect(tierInput(prereg, [g]).incomplete).toContain("run pi/101: host without EndArm");
+        expect(tierInput(prereg, [g]).incomplete).toContain(
+            "run pi/101: host, eidnara-kl without EndArm",
+        );
     });
 
     test("the fixed-N count is the population the verdict analyses", () => {
@@ -604,7 +645,7 @@ describe("tier report", () => {
         );
         const report = tierReport(prereg, [g], boundary);
         expect(report.judge.map((j) => [j.run, j.cost?.usd])).toEqual([[g.run.dir, 5]]);
-        expect(renderTier(report)).toMatch(/\| judge \| judge \| 1 \| 1000000 \|/);
+        expect(renderTier(report)).toContain(`| ${g.run.dir} | judge | 1 | 1000000 |`);
     });
 
     test("the report script refuses --out without a destination", () => {
@@ -616,6 +657,352 @@ describe("tier report", () => {
             stdout: "pipe",
         });
         expect([r.exitCode, r.stderr.toString().includes("usage:")]).toEqual([2, true]);
+    });
+
+    test("a P7 judgment outside the gate's eligibility leaves its pair out", () => {
+        const g = fixture();
+        g.judged.push(judgment("q-7", "host", false, ["h", "e"], false));
+        g.judged.push(judgment("q-7", "eidnara", true, ["h", "e"], false));
+        expect(observation([g], "P7.pass")?.items).toEqual([]);
+        for (const r of g.judged) r.metrics.gate_eligible = true;
+        expect(observation([g], "P7.pass")?.items).toHaveLength(1);
+    });
+
+    test("a P7 pair takes the host grade from the same judgment", () => {
+        const g = fixture();
+        g.judged.push(judgment("q-7", "host", true, ["e", "h"]));
+        g.judged.push(judgment("q-7", "eidnara", true, ["e", "h"]));
+        g.judged.push(judgment("q-7", "host", false, ["h", "kl"]));
+        g.judged.push(judgment("q-7", "eidnara-kl", true, ["h", "kl"]));
+        expect(observation([g], "P7.pass")?.items?.map((x) => [x.control, x.treatment])).toEqual([
+            [1, 1],
+        ]);
+    });
+
+    test("a run without a gate metric's value keeps the campaign incomplete", () => {
+        const g = fixture();
+        const host = arm(g, "host");
+        host.journal = host.journal.filter((e) => e.kind !== "EndTurn");
+        expect(tierInput(prereg, [g]).incomplete).toContain(
+            "turn_latency_p95_delta_ms: run S-pi-101 unavailable",
+        );
+    });
+
+    test("loadGraded applies the manifest's fault override", () => {
+        const dir = mkdtempSync(join(tmpdir(), "sim-report-"));
+        const body = { manifest: { seed: 101 }, events: [], probes: [], faults: [] };
+        const scenario_hash = sha256Hex(canonicalJson(body));
+        const fault = {
+            id: "f-x",
+            trigger: { session: "s-0" },
+        } as unknown as Scenario["faults"][number];
+        writeFileSync(
+            join(dir, "manifest.json"),
+            JSON.stringify({
+                tier: "S",
+                seed: 101,
+                host: "pi",
+                order: [],
+                base_wall_ms: 0,
+                prereg_sha256: preregistrationHash(prereg),
+                scenario_hash,
+                fault_override: [fault],
+            }),
+        );
+        writeFileSync(join(dir, "scenario.json"), canonicalJson({ ...body, scenario_hash }));
+        writeFileSync(
+            join(dir, "faults.jsonl"),
+            `${JSON.stringify([{ fault: "f-x", status: "untriggered" }])}\n`,
+        );
+        const loaded = loadGraded(dir, prereg);
+        expect(loaded.scenario.faults).toEqual([fault]);
+        expect(loaded.witnesses?.map((w) => [w.fault, w.status])).toEqual([["f-x", "untriggered"]]);
+    });
+
+    test("runs of one tier with different live settings keep the campaign incomplete", () => {
+        const a = fixture(undefined, { host: "pi" });
+        const b = fixture(undefined, { host: "opencode", commit: "def" });
+        expect(tierInput(prereg, [a, b]).incomplete).toContain(
+            "runs differ in eidnara_commit: abc, def",
+        );
+    });
+
+    test("soak rows name their run", () => {
+        const g = fixture();
+        const report = tierReport(prereg, [g], boundary);
+        expect(new Set(report.soak.map((s) => s.run))).toEqual(new Set([g.run.dir]));
+        expect(renderTier(report)).toContain(`| ${g.run.dir} | eidnara | rss | no leak |`);
+    });
+
+    test("a run that stopped before the scenario's last event keeps the campaign incomplete", () => {
+        const g = fixture();
+        g.scenario.events = Array.from({ length: 36 }, (_, i) => ({ id: `e-${i}` })) as never;
+        expect(tierInput(prereg, [g]).incomplete?.filter((x) => x.includes("events"))).toEqual([]);
+        g.identity.events = 30;
+        expect(tierInput(prereg, [g]).incomplete).toContain("run pi/101: 30 of 36 events");
+    });
+
+    test("the registered A/A pairs and repeats are part of completeness", () => {
+        const g = fixture();
+        expect(tierInput(prereg, [g]).incomplete).toContain("A/A eidnara: 0 of 1 control runs");
+        expect(
+            tierInput(prereg, [g]).incomplete?.find((x) => x.startsWith("A/A host")),
+        ).toBeUndefined();
+    });
+
+    test("judge cost rows name their run", () => {
+        const g = fixture();
+        writeFileSync(
+            join(g.run.dir, "judge-calls.jsonl"),
+            `${JSON.stringify({
+                component: "judge",
+                input_tokens: 1_000_000,
+                output_tokens: 0,
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
+            })}\n`,
+        );
+        expect(renderTier(tierReport(prereg, [g], boundary))).toContain(
+            `| ${g.run.dir} | judge | 1 | 1000000 |`,
+        );
+    });
+
+    test("a run outside the pre-registered hosts and seeds is refused", () => {
+        expect(() => tierInput(prereg, [fixture(undefined, { seed: 999 })])).toThrow(/pi\/999/);
+    });
+
+    test("every pre-registered arm needs its EndArm for the campaign to be complete", () => {
+        const g = fixture();
+        expect(tierInput(prereg, [g]).incomplete).toContain(
+            "run pi/101: eidnara-kl without EndArm",
+        );
+        g.run.arms.push(armLogs("eidnara-kl", () => 0));
+        expect(tierInput(prereg, [g]).incomplete?.filter((x) => x.includes("EndArm"))).toEqual([]);
+    });
+
+    test("cost and intrusiveness rows name their run", () => {
+        const g = fixture();
+        const report = tierReport(prereg, [g], boundary);
+        expect(new Set(report.cost.map((c) => c.run))).toEqual(new Set([g.run.dir]));
+        const text = renderTier(report);
+        expect(text).toContain(`| ${g.run.dir} | eidnara | agent | 12 |`);
+        expect(text).toContain(`| ${g.run.dir} | eidnara | 0 | 0 | 0 |`);
+    });
+
+    test("the pushback check stops at the first divergence in either arm", () => {
+        const g = fixture();
+        const path = join(g.run.dir, "pairing.jsonl");
+        const rows = readFileSync(path, "utf8")
+            .split("\n")
+            .filter(Boolean)
+            .map(
+                (l) =>
+                    JSON.parse(l) as { arm: string; session: string; index: number; label: string },
+            );
+        for (const r of rows)
+            if (r.arm === "host~aa" && r.session === "s-0" && r.index === 2) r.label = "pushback";
+        const cut = { kind: "divergedAt", arm: "host", session: "s-0", index: 1 };
+        writeFileSync(path, `${[...rows, cut].map((r) => JSON.stringify(r)).join("\n")}\n`);
+        const rates = falsificationPairs(g, "host", "host~aa").pre_divergence_pushback_rate;
+        expect(rates).toHaveLength(SESSIONS);
+        expect(rates.filter((r) => r.control !== r.treatment)).toEqual([]);
+    });
+
+    test("seeds with scenarios of different lengths share one campaign", () => {
+        const a = fixture(undefined, { seed: 101 });
+        const b = fixture(undefined, { seed: 102 });
+        b.identity.events = 40;
+        b.scenario.events = Array.from({ length: 40 }, (_, i) => ({ id: `e-${i}` })) as never;
+        a.scenario.events = Array.from({ length: 36 }, (_, i) => ({ id: `e-${i}` })) as never;
+        const open = tierInput(prereg, [a, b]).incomplete ?? [];
+        expect(open.filter((x) => x.includes("events"))).toEqual([]);
+    });
+
+    test("an A/A control counts toward the registered repeats once it has its EndArm", () => {
+        const g = fixture();
+        const control = arm(g, "host~aa");
+        control.journal = control.journal.filter((e) => e.kind !== "EndArm");
+        expect(tierInput(prereg, [g]).incomplete).toContain("A/A host: 0 of 1 control runs");
+    });
+
+    test("a run whose scheduled fault never fired leaves the fault metrics", () => {
+        const g = fixture();
+        g.witnesses?.push({
+            fault: "f-miss",
+            type: "provider_5xx",
+            armed: true,
+            injected_seq: [],
+            host_observed_seq: [],
+            proxy_retried: false,
+            status: "untriggered",
+        });
+        const report = tierReport(prereg, [g], boundary);
+        expect(report.missed_faults).toEqual([{ run: g.run.dir, faults: ["f-miss"] }]);
+        expect(renderTier(report)).toContain(`${g.run.dir}: f-miss`);
+    });
+
+    test("the cost TOTAL row conserves calls and tokens over every component", () => {
+        const g = fixture();
+        arm(g, "eidnara").calls.push({
+            ...(arm(g, "eidnara").calls[0] as CallRecord),
+            component: "user-sim",
+            input_tokens: 7,
+            output_tokens: 3,
+        });
+        const text = renderTier(tierReport(prereg, [g], boundary));
+        expect(text).toContain(`| ${g.run.dir} | eidnara | TOTAL | 13 | 12007 | 1203 | 0 | 0 |`);
+    });
+
+    test("more A/A controls than registered repeats keep the campaign incomplete", () => {
+        const g = fixture();
+        g.run.arms.push(armLogs("host~bb", () => 0));
+        expect(tierInput(prereg, [g]).incomplete).toContain("A/A host: 2 of 1 control runs");
+    });
+
+    test("fault witnesses merge across resumed attempts, a fired fault staying fired", () => {
+        const dir = mkdtempSync(join(tmpdir(), "sim-report-"));
+        const body = { manifest: { seed: 101 }, events: [], probes: [], faults: [] };
+        const scenario_hash = sha256Hex(canonicalJson(body));
+        writeFileSync(
+            join(dir, "manifest.json"),
+            JSON.stringify({
+                tier: "S",
+                seed: 101,
+                host: "pi",
+                order: [],
+                base_wall_ms: 0,
+                prereg_sha256: preregistrationHash(prereg),
+                scenario_hash,
+                preflight: { distortions: ["x reads wall-clock time"] },
+            }),
+        );
+        writeFileSync(join(dir, "scenario.json"), canonicalJson({ ...body, scenario_hash }));
+        const line = (status: string) => JSON.stringify([{ fault: "f-1", status }]);
+        writeFileSync(join(dir, "faults.jsonl"), `${line("fired")}\n${line("untriggered")}\n`);
+        const loaded = loadGraded(dir, prereg);
+        expect(loaded.witnesses?.map((w) => [w.fault, w.status])).toEqual([["f-1", "fired"]]);
+        expect(loaded.identity.distortions).toEqual(["x reads wall-clock time"]);
+    });
+
+    test("each run's clock distortions are rendered and must agree across the campaign", () => {
+        const a = fixture(undefined, { host: "pi" });
+        const b = fixture(undefined, { host: "opencode" });
+        b.identity.distortions = ["opencode reads wall-clock time"];
+        const report = tierReport(prereg, [a, b], boundary);
+        expect(report.verdict.pass.incomplete).toContain(
+            "runs differ in distortions: , opencode reads wall-clock time",
+        );
+        expect(renderTier(report)).toContain(`${b.run.dir}: opencode reads wall-clock time`);
+    });
+
+    test("runs made with different host releases keep the campaign incomplete", () => {
+        const a = fixture(undefined, { host: "pi" });
+        const b = fixture(undefined, { host: "opencode" });
+        b.identity.host_versions = ["pi@2", "opencode@1"];
+        expect(tierInput(prereg, [a, b]).incomplete).toContain(
+            "runs differ in host_versions: pi@1,opencode@1, pi@2,opencode@1",
+        );
+    });
+
+    test("the A/A scale takes only controls that reached EndArm", () => {
+        const g = fixture();
+        const complete = aaScale(prereg, [g]);
+        const extra = armLogs("host~bb", (i) => i * 3);
+        extra.journal = extra.journal.filter((e) => e.kind !== "EndArm");
+        g.run.arms.push(extra);
+        for (let i = 0; i < 8; i++) {
+            g.grades.push({
+                ...(g.grades.find(
+                    (r) => r.item === `q-p1-${i}` && r.arm === "host~aa",
+                ) as GradeRecord),
+                arm: "host~bb",
+                metrics: { "P1.pass": i % 7 === 0 },
+            });
+        }
+        expect(aaScale(prereg, [g])).toEqual(complete);
+    });
+
+    test("a run with scheduled proxy faults and no witness file is incomplete", () => {
+        const g = fixture();
+        g.scenario.faults.push({
+            id: "f1",
+            type: "provider_5xx",
+            strategy: "single",
+            trigger: { kind: "user_turn", session: "s-0", n: 1 },
+            params: {},
+            seam: { layer: "proxy-sink", legal_outcomes: [] },
+        } as unknown as Scenario["faults"][number]);
+        g.witnesses = null;
+        expect(tierInput(prereg, [g]).incomplete).toContain("run pi/101: fault witnesses missing");
+    });
+
+    test("the host's P7 row comes from its judgment against the default arm", () => {
+        const dir = mkdtempSync(join(tmpdir(), "sim-report-"));
+        const body = { manifest: { seed: 101 }, events: [], probes: [], faults: [] };
+        const scenario_hash = sha256Hex(canonicalJson(body));
+        writeFileSync(
+            join(dir, "manifest.json"),
+            JSON.stringify({
+                tier: "S",
+                seed: 101,
+                host: "pi",
+                order: [],
+                base_wall_ms: 0,
+                prereg_sha256: preregistrationHash(prereg),
+                scenario_hash,
+            }),
+        );
+        writeFileSync(join(dir, "scenario.json"), canonicalJson({ ...body, scenario_hash }));
+        const rows = [
+            judgment("q-7", "host", true, ["e", "h"]),
+            judgment("q-7", "eidnara", true, ["e", "h"]),
+            { ...judgment("q-7", "host", false, ["h", "kl"]), version: 2 },
+            judgment("q-7", "eidnara-kl", true, ["h", "kl"]),
+        ];
+        writeFileSync(
+            join(dir, "grades.jsonl"),
+            `${rows.map((r) => JSON.stringify(r)).join("\n")}\n`,
+        );
+        const loaded = loadGraded(dir, prereg);
+        expect(loaded.grades.filter((r) => r.arm === "host").map((r) => r.verdict)).toEqual([
+            "pass",
+        ]);
+        expect(loaded.judged).toHaveLength(4);
+    });
+
+    test("a P7 exclusion counts only against its own judgment", () => {
+        const g = fixture();
+        g.judged.push(judgment("q-7", "host", true, ["e", "h"]));
+        g.judged.push(judgment("q-7", "eidnara", true, ["e", "h"]));
+        g.judged.push({ ...judgment("q-7", "host", false, ["h", "kl"]), verdict: "excluded" });
+        g.judged.push({
+            ...judgment("q-7", "eidnara-kl", false, ["h", "kl"]),
+            verdict: "excluded",
+        });
+        g.grades.push({ ...judgment("q-7", "host", false, ["h", "kl"]), verdict: "excluded" });
+        const input = tierInput(prereg, [g]);
+        expect(input.excluded.filter((e) => e.id.endsWith("/q-7"))).toEqual([]);
+        expect(input.observations.find((o) => o.metric === "P7.pass")?.items).toHaveLength(1);
+    });
+
+    test("a source tier lends its CUSUM scale only when its own campaign is complete", () => {
+        const L = loadPrereg("L");
+        const g = fixture();
+        const scale = { harm: 0.5, futility: 0.5 };
+        const cusumScale =
+            (tier as { cusumScale?: typeof cusumScaleShape }).cusumScale ?? (() => undefined);
+        expect(cusumScale(L, new Map([["M", { scale, complete: false }]]))).toEqual({});
+        expect(cusumScale(L, new Map([["M", { scale, complete: true }]]))).toEqual(scale);
+        expect(cusumScale(prereg, new Map([["S", { scale, complete: true }]]))).toEqual(scale);
+        expect(g.host).toBe("pi");
+    });
+
+    test("A/A reports name their run", () => {
+        const g = fixture();
+        const report = tierReport(prereg, [g], boundary);
+        expect(report.aa).toEqual([
+            { run: g.run.dir, arm: "host", control: "host~aa", disagreement_rate: 0 },
+        ]);
     });
 
     test("a planted 4xx difference between the A/A arms fails that falsification check", () => {
@@ -762,10 +1149,14 @@ describe("CUSUM scale", () => {
         const L = loadPrereg("L");
         const recorded = { harm: 0.5, futility: 0.25 };
         expect(cusumScale(L, new Map(), recorded)).toEqual(recorded);
-        expect(cusumScale(L, new Map([["M", { harm: 0.7 }]]), recorded)).toEqual({
+        const m = { scale: { harm: 0.7 }, complete: true };
+        expect(cusumScale(L, new Map([["M", m]]), recorded)).toEqual({
             harm: 0.7,
-            futility: 0.25,
+            futility: undefined,
         });
+        expect(cusumScale(L, new Map([["M", { ...m, complete: false }]]), recorded)).toEqual(
+            recorded,
+        );
         expect(cusumScale(L, new Map())).toEqual({ harm: undefined, futility: undefined });
     });
 });
