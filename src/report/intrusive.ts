@@ -12,10 +12,12 @@ import type { PairingRecord } from "../usersim/usersim";
 export interface Intrusiveness {
     arm: string;
     /**
-     * `null` when an agent response reached the proxy's `RESPONSE_TEXT_LIMIT`, or a turn was
-     * interrupted (`ItemState` `failed(interrupted)` naming the turn's `event`; a fault's record
-     * precedes any turn): the recorded text may lack the suffix the user saw, or a streamed
-     * response has no record at all, so a scan of the records cannot clear the arm.
+     * `null` when an agent response reached the proxy's `RESPONSE_TEXT_LIMIT`, an agent record
+     * has no `response_text` field (the proxy writes one, empty when nothing was relayed, so its
+     * absence marks a record from before the capture), or a turn was interrupted (`ItemState`
+     * `failed(interrupted)` naming the turn's `event`; a fault's record precedes any turn): the
+     * recorded text may lack the suffix the user saw, or a streamed response has no record at
+     * all, so a scan of the records cannot clear the arm.
      */
     internal_string_hits: { source: "agent-response"; at: string; evidence: string }[] | null;
     /**
@@ -26,7 +28,11 @@ export interface Intrusiveness {
     tool_output_hits: { source: "tool-output"; at: string; evidence: string }[] | null;
     /** `null` when the arm's `memory.json` records that its notes could not be read. */
     corrections_referencing_injected_text: { event: string; label: string; quote: string }[] | null;
-    reverted_edits: { turn: string | null; command: string }[];
+    /**
+     * `null` when a turn was interrupted: the host drains a turn's tool runs into `tools.jsonl`
+     * when the turn ends, so a kill mid-turn loses the runs it had observed.
+     */
+    reverted_edits: { turn: string | null; command: string }[] | null;
     /**
      * `null` when a completed, unskipped turn has no `prompt_ms`: a journal begun before the
      * field existed.
@@ -259,7 +265,8 @@ export function turnLatencies(arm: ArmLogs): number[] | null {
  * five-word run with a memory note whose `first_delivery_ms` is at least `CLOCK_SLACK_MS` before
  * the turn's `BeginTurn` time (`base_wall_ms + scenario_ms`), and neither four-word half of the
  * run is in the user's own text up to that turn, the scripted text through the turn itself and
- * the user-sim's delivered replies before it: a user restating a rule it gave is quoting itself. The journal must hold the turn's `BeginTurn` and evidence of delivery:
+ * the user-sim's replies before it that the journal shows delivered: a user restating a rule it
+ * gave is quoting itself. The journal must hold the turn's `BeginTurn` and evidence of delivery:
  * a `UserTurn` with `delivered: true`, or an `EndTurn` with outcome `ok` and a `prompt_ms`, which
  * a kill between the two writes leaves as the only record of a prompt that ran. A pairing record
  * alone is the user-sim's intent, which a kill before the turn ends leaves undelivered. `null`
@@ -270,7 +277,18 @@ function corrections(run: RunLogs, arm: ArmLogs) {
     const written = quotableNotes(run.dir, arm.arm);
     const replies = userSimReplies(run.dir, arm.arm);
     if (written === null || replies === null) return null;
-    const said = new Map(replies.map((r) => [r.event, r.text]));
+    const delivered = new Set(
+        arm.journal
+            .filter(
+                (e) =>
+                    (e.kind === "UserTurn" && e.delivered === true) ||
+                    (e.kind === "EndTurn" && e.outcome === "ok" && typeof e.prompt_ms === "number"),
+            )
+            .map((e) => String(e.event)),
+    );
+    const said = new Map(
+        replies.filter((r) => delivered.has(r.event)).map((r) => [r.event, r.text]),
+    );
     const ownBy = (event: string) => {
         const at = script.findIndex((t) => t.id === event);
         const scripted = script.slice(0, at + 1).flatMap((t) => (t.text === null ? [] : [t.text]));
@@ -286,15 +304,6 @@ function corrections(run: RunLogs, arm: ArmLogs) {
         arm.journal
             .filter((e) => e.kind === "BeginTurn")
             .map((e) => [String(e.event), run.base_wall_ms + e.scenario_ms]),
-    );
-    const delivered = new Set(
-        arm.journal
-            .filter(
-                (e) =>
-                    (e.kind === "UserTurn" && e.delivered === true) ||
-                    (e.kind === "EndTurn" && e.outcome === "ok" && typeof e.prompt_ms === "number"),
-            )
-            .map((e) => String(e.event)),
     );
     return replies
         .filter((r) => r.label === "pushback" || r.label === "redirect")
@@ -332,24 +341,29 @@ function internalStrings(arm: ArmLogs) {
 
 export function intrusiveness(run: RunLogs, arm: ArmLogs): Intrusiveness {
     const latencies = turnLatencies(arm);
+    const interrupted = arm.journal.some(
+        (e) =>
+            e.kind === "ItemState" &&
+            e.state === "failed(interrupted)" &&
+            typeof e.event === "string",
+    );
     const cut =
+        interrupted ||
         arm.calls.some(
-            (c) => c.component === "agent" && (c.response_text?.length ?? 0) >= RESPONSE_TEXT_LIMIT,
-        ) ||
-        arm.journal.some(
-            (e) =>
-                e.kind === "ItemState" &&
-                e.state === "failed(interrupted)" &&
-                typeof e.event === "string",
+            (c) =>
+                c.component === "agent" &&
+                (c.response_text === undefined || c.response_text.length >= RESPONSE_TEXT_LIMIT),
         );
     return {
         arm: arm.arm,
         internal_string_hits: cut ? null : internalStrings(arm),
         tool_output_hits: null,
         corrections_referencing_injected_text: corrections(run, arm),
-        reverted_edits: arm.tools
-            .filter((t) => t.exit === 0 && isRevert(t.command))
-            .map((t) => ({ turn: t.turn, command: t.command.slice(0, 200) })),
+        reverted_edits: interrupted
+            ? null
+            : arm.tools
+                  .filter((t) => t.exit === 0 && isRevert(t.command))
+                  .map((t) => ({ turn: t.turn, command: t.command.slice(0, 200) })),
         latency_ms:
             latencies === null
                 ? null

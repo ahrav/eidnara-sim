@@ -349,6 +349,11 @@ describe("intrusiveness panel", () => {
             journal: [entry("ItemState", 1, { fault: "f-1", state: "failed(interrupted)" })],
         };
         expect(intrusiveness(run([faultOnly]), faultOnly).internal_string_hits).toHaveLength(5);
+        expect(intrusiveness(run([interrupted]), interrupted).reverted_edits).toBeNull();
+        expect(intrusiveness(run([faultOnly]), faultOnly).reverted_edits).toEqual([]);
+        const { response_text, ...bare } = first.calls[0] as ArmLogs["calls"][number];
+        const legacy = { ...first, calls: [...first.calls, { ...bare, seq: 901 }] };
+        expect(intrusiveness(run([legacy]), legacy).internal_string_hits).toBeNull();
     });
 
     test("a correction counts only when it quotes a note delivered earlier that the user never wrote", () => {
@@ -398,6 +403,13 @@ describe("intrusiveness panel", () => {
                 deliveries: 1,
                 first_delivery_ms: BASE + 100,
             },
+            {
+                id: 7,
+                content: "Observed: tests run under /srv/ci/runner for isolation.",
+                status: "active",
+                deliveries: 1,
+                first_delivery_ms: BASE + 100,
+            },
         ];
         writeFileSync(join(dir, "eidnara", "memory.json"), JSON.stringify(notes));
         const replies = [
@@ -409,6 +421,13 @@ describe("intrusiveness panel", () => {
                 "e-17",
                 "pushback",
                 "I told you alpha 中文 beta gamma delta epsilon zeta matters!",
+                [],
+            ],
+            ["e-18", "task", "Also, tests run under /srv/ci/runner for isolation.", []],
+            [
+                "e-19",
+                "pushback",
+                "Why ignore that tests run under /srv/ci/runner for isolation?",
                 [],
             ],
             ["e-4", "pushback", "Who said retries stop after nine attempts in the client?", []],
@@ -479,6 +498,7 @@ describe("intrusiveness panel", () => {
             ["e-8", 5000, 6000],
             ["e-16", 5000, 6000],
             ["e-17", 5000, 6000],
+            ["e-19", 5000, 6000],
         ];
         const journal = turns.flatMap(([event, begin, end]) => [
             entry("BeginTurn", begin, { event }),
@@ -486,6 +506,8 @@ describe("intrusiveness panel", () => {
             entry("UserTurn", end, { event, delivered: true }),
         ]);
         journal.push(
+            entry("BeginTurn", 5000, { event: "e-18" }),
+            entry("ItemState", 5001, { event: "e-18", state: "failed(interrupted)" }),
             entry("BeginTurn", 5000, { event: "e-15" }),
             entry("EndTurn", 6000, { event: "e-15", outcome: "ok", prompt_ms: 800 }),
             entry("BeginTurn", 5000, { event: "e-10" }),
@@ -589,11 +611,17 @@ describe("intrusiveness panel", () => {
             { command: "cargo test", exit: 0, scenario_ms: 4, turn: "e-2" },
         ];
         const panel = intrusiveness(run([], dir, new Map(), BASE), arm({ journal, tools }));
+        const uninterrupted = intrusiveness(
+            run([], dir, new Map(), BASE),
+            arm({ journal: journal.filter((e) => e.kind !== "ItemState"), tools }),
+        );
         expect(panel.corrections_referencing_injected_text).toEqual([
             { event: "e-2", label: "pushback", quote: "the daemon port is 7780" },
+            { event: "e-19", label: "pushback", quote: "tests run under srv ci" },
             { event: "e-15", label: "redirect", quote: "builds cache under opt sim" },
         ]);
-        expect(panel.reverted_edits.map((r) => r.command)).toEqual([
+        expect(panel.reverted_edits).toBeNull();
+        expect(uninterrupted.reverted_edits?.map((r) => r.command)).toEqual([
             "git restore src/db.rs",
             "git checkout -- src/lib.rs",
             "git restore --staged --worktree src/lib.rs",
@@ -623,8 +651,8 @@ describe("intrusiveness panel", () => {
             "git restore cc.rs;# done",
             'git reset "--hard"',
         ]);
-        expect(panel.latency_ms).toEqual({ n: 10, p50: 500, p95: 5000 });
-        expect(panel.tool_output_hits).toBeNull();
+        expect(uninterrupted.latency_ms).toEqual({ n: 11, p50: 500, p95: 5000 });
+        expect(uninterrupted.tool_output_hits).toBeNull();
         const skipped = intrusiveness(
             run([], dir, new Map(), BASE),
             arm({
@@ -636,7 +664,7 @@ describe("intrusiveness panel", () => {
                 ],
             }),
         );
-        expect(skipped.latency_ms).toEqual({ n: 10, p50: 500, p95: 5000 });
+        expect(skipped.latency_ms).toEqual({ n: 11, p50: 500, p95: 5000 });
         const crashWindow = intrusiveness(
             run([], dir, new Map(), BASE),
             arm({
@@ -647,7 +675,7 @@ describe("intrusiveness panel", () => {
                 ],
             }),
         );
-        expect(crashWindow.latency_ms).toEqual({ n: 11, p50: 500, p95: 5000 });
+        expect(crashWindow.latency_ms).toEqual({ n: 12, p50: 500, p95: 5000 });
         const ambiguous = intrusiveness(
             run([], dir, new Map(), BASE),
             arm({
@@ -680,6 +708,46 @@ describe("intrusiveness panel", () => {
             { arm: "eidnara", item: "i-5", version: 1, verdict: "fail", probe_type: "P5" },
             { arm: "eidnara", item: "i-5", version: 3, verdict: "pass", probe_type: "P5" },
             { arm: "eidnara", item: "i-5", version: 2, verdict: "pass", probe_type: "P5" },
+            {
+                arm: "host",
+                item: "i-7",
+                version: 1,
+                verdict: "pass",
+                probe_type: "P7",
+                pair: "eidnara",
+            },
+            {
+                arm: "host",
+                item: "i-7",
+                version: 2,
+                verdict: "fail",
+                probe_type: "P7",
+                pair: "eidnara-cf",
+            },
+            {
+                arm: "host",
+                item: "i-7",
+                version: 3,
+                verdict: "pass",
+                probe_type: "P7",
+                pair: "eidnara",
+            },
+            {
+                arm: "host",
+                item: "i-8",
+                version: 1,
+                verdict: "pass",
+                probe_type: "P7",
+                pair: "eidnara",
+            },
+            {
+                arm: "host",
+                item: "i-8",
+                version: 2,
+                verdict: "pass",
+                probe_type: "P7",
+                pair: "eidnara-cf",
+            },
         ] as GradeRecord[];
         const calls = [
             {
@@ -717,6 +785,7 @@ describe("intrusiveness panel", () => {
         );
         const ungraded = costPanel(run([], dir), arm({ calls }), grades);
         expect([ungraded?.passes, ungraded?.usd_per_pass, ungraded?.usd]).toEqual([null, null, 31]);
+        expect(judgeCost(run([], dir))).toBeNull();
         writeFileSync(
             join(dir, "grade-summary.json"),
             JSON.stringify({ judge_errors: 1, journal_seq: 7 }),
@@ -752,6 +821,8 @@ describe("intrusiveness panel", () => {
         expect(costPanel(run([], dir), interruptedArm, grades)).toBeNull();
         const cost = costPanel(run([], dir), arm({ calls }), grades);
         if (cost === null) throw new Error("the run records a price table");
+        const hostCost = costPanel(run([], dir), { ...arm({ calls }), arm: "host" }, grades);
+        expect(hostCost?.passes).toBe(2);
         expect(cost.tokens).toEqual({ input: 2e6, output: 1e6, cache_read: 2e6, cache_write: 0 });
         expect(judgeCost(run([], dir))).toEqual({
             component: "judge",
@@ -775,7 +846,7 @@ describe("intrusiveness panel", () => {
             31, 5, 2, 15.5,
         ]);
         expect([cost.memory_writes, cost.writes_with_zero_reads, cost.price_table]).toEqual([
-            6,
+            7,
             1,
             "v1",
         ]);

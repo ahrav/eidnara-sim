@@ -27,10 +27,11 @@ export interface CostPanel {
     usd: number;
     harness_usd: number;
     /**
-     * Passing P1 to P12 items at their latest version. `null` until `grade-summary.json` shows a
-     * grading pass that finished with no judge error over the journal as it stands, since a
-     * prefix of `grades.jsonl`, or a pass over a run later resumed, would count as a verified
-     * total.
+     * Passing P1 to P12 items at their latest version; an item judged in several pairs (the host
+     * arm's P7 against each memory arm) passes when its latest grade in every pair passes. `null`
+     * until `grade-summary.json` shows a grading pass that finished with no judge error over the
+     * journal as it stands, since a prefix of `grades.jsonl`, or a pass over a run later resumed,
+     * would count as a verified total.
      */
     passes: number | null;
     usd_per_pass: number | null;
@@ -75,12 +76,13 @@ function componentCosts(calls: readonly Tokens[], price: Price): ComponentCost[]
 
 /**
  * The run's P7 judge spend from `judge-calls.jsonl`, which the grader writes under its own arm
- * `judge`; a judge call compares two arms, so it belongs to the run. `null` when none was written
- * or the run recorded no price table.
+ * `judge`; a judge call compares two arms, so it belongs to the run. `null` when none was written,
+ * the run recorded no price table, or grading did not finish (a request in flight at a kill may
+ * be billed with no record).
  */
 export function judgeCost(run: RunLogs): ComponentCost | null {
     const path = join(run.dir, "judge-calls.jsonl");
-    if (run.price === null || !existsSync(path)) return null;
+    if (run.price === null || !existsSync(path) || !gradingComplete(run)) return null;
     const calls = readJournal(path) as unknown as Tokens[];
     return componentCosts(calls, run.price.rates).find((c) => c.component === "judge") ?? null;
 }
@@ -130,12 +132,18 @@ export function costPanel(run: RunLogs, arm: ArmLogs, grades: GradeRecord[]): Co
     const latest = new Map<string, GradeRecord>();
     for (const g of grades) {
         if (g.arm !== arm.arm) continue;
-        const seen = latest.get(g.item);
-        if (seen === undefined || g.version > seen.version) latest.set(g.item, g);
+        const key = `${g.item}\u0000${g.pair ?? ""}`;
+        const seen = latest.get(key);
+        if (seen === undefined || g.version > seen.version) latest.set(key, g);
     }
+    const byItem = new Map<string, GradeRecord[]>();
+    for (const g of latest.values()) byItem.set(g.item, [...(byItem.get(g.item) ?? []), g]);
     const passes = gradingComplete(run)
-        ? [...latest.values()].filter((g) => g.verdict === "pass" && USEFUL.test(g.probe_type))
-              .length
+        ? [...byItem.values()].filter(
+              (gs) =>
+                  gs.every((g) => g.verdict === "pass") &&
+                  USEFUL.test((gs[0] as GradeRecord).probe_type),
+          ).length
         : null;
     const notes = notesOf(run.dir, arm.arm);
     return {

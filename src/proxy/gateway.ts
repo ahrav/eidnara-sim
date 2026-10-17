@@ -377,7 +377,7 @@ export class Gateway {
         const relayed = text.join("").slice(0, RESPONSE_TEXT_LIMIT);
         return {
             ...done,
-            ...(relayed && RELAYED_TEXT.has(done.component) ? { response_text: relayed } : {}),
+            ...(RELAYED_TEXT.has(done.component) ? { response_text: relayed } : {}),
             proxy_retries: retries,
             input_tokens: usage.inputTokens ?? 0,
             output_tokens: usage.outputTokens ?? 0,

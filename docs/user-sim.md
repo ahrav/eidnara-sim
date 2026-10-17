@@ -52,7 +52,9 @@ seed, event, label, and the digest of the agent's last reply (the last
 agent call of the session whose response carried text) after the
 pre-registered normalisation (`divergence_policy.normalisation`: ISO-8601
 timestamps, durations, pids, temp paths, run ids). `<run>/tape.jsonl`
-records every reply the run delivered, replayed ones included; `--tapes`
+records every reply the run delivered, replayed ones included, and is
+read like the journal: a final record cut by a kill is dropped and
+truncated away on the next start; `--tapes`
 adds earlier runs' tapes to replay from. A reply whose key is on the tape
 is replayed with no model call.
 

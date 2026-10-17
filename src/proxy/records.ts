@@ -38,7 +38,11 @@ export interface CallRecord {
     error: string | null;
     /** Request fields the proxy removed before forwarding, keyed by field path. */
     stripped?: Record<string, unknown>;
-    /** The response text the proxy relayed for agent, user-sim, and judge calls, first `RESPONSE_TEXT_LIMIT` characters. */
+    /**
+     * The response text the proxy relayed for agent, user-sim, and judge calls, first
+     * `RESPONSE_TEXT_LIMIT` characters, empty when the response carried no text; absent on other
+     * components and on records from before the capture.
+     */
     response_text?: string;
 }
 

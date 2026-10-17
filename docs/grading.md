@@ -131,7 +131,9 @@ cannot call, and the divergences are listed below.
 4. The judgment records each answer's length after normalisation, and
    `longer_recalled_alone` records whether the longer answer was the one
    recalled alone, for the verbosity audit.
-5. `gradeP7` writes one grade per arm. Each grade carries the judge model,
+5. `gradeP7` writes one grade per arm, each naming the other arm of the
+   comparison as its `pair`, so the host arm's grades against several
+   memory arms stay distinct. Each grade carries the judge model,
    the prompt and rubric digests, both order verdicts, both answer lengths
    and `longer_recalled_alone`, the calibration digest, and the permutation
    check's result and counts. It computes the digest and runs the check
