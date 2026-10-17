@@ -1,5 +1,13 @@
-import { existsSync, lstatSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import {
+    existsSync,
+    lstatSync,
+    readFileSync,
+    realpathSync,
+    renameSync,
+    rmSync,
+    writeFileSync,
+} from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { GradeLog } from "../src/grade/probes";
 import { armBase, requireOrder } from "../src/hosts/arms";
 import { sha256Hex } from "../src/prereg/canonical";
@@ -27,6 +35,9 @@ const CLAIM_BOUNDARY = "sim-claim-boundary/v1";
 export function aaReport(dir: string) {
     // The lease, the staging file, and aa.json land in `dir` itself, never through a link.
     if (!lstatSync(dir).isDirectory()) throw new Error(`${dir} is not a directory`);
+    if (realpathSync(dir) !== dir) {
+        throw new Error(`${dir} is not a real path; pass ${realpathSync(dir)}`);
+    }
     takeLease(dir);
     try {
         return report(dir);
@@ -73,7 +84,27 @@ function report(dir: string) {
     if (!stat.isFile() || stat.nlink !== 1) {
         throw new Error(`${gradesPath} is not a regular file with one link`);
     }
-    const grades = new GradeLog(gradesPath).latest();
+    const log = new GradeLog(gradesPath);
+    // Only a P7 grade names an opponent, and each item/arm sequence runs 1..n once.
+    const versions = new Map<string, number[]>();
+    for (const g of log.all()) {
+        if ((g.probe_type === "P7") !== (typeof g.against === "string")) {
+            throw new Error(
+                `${gradesPath}: ${g.arm}/${g.item} has an against value only P7 carries`,
+            );
+        }
+        const key = `${g.arm}/${g.item}/${g.against ?? ""}`;
+        versions.set(key, [...(versions.get(key) ?? []), g.version]);
+    }
+    for (const [key, seen] of versions) {
+        const sorted = [...seen].sort((a, b) => a - b);
+        if (sorted.some((v, i) => v !== i + 1)) {
+            throw new Error(
+                `${gradesPath}: ${key} versions ${seen.join(",")} are not 1..${seen.length} once each`,
+            );
+        }
+    }
+    const grades = log.latest();
     const order = manifest.order as string[];
     requireOrder(order, prereg.arms.run, prereg.aa_controls?.pairs ?? []);
     const count: unknown = manifest.events;
@@ -144,6 +175,13 @@ function report(dir: string) {
         }
     }
     const reference = referenceArm(order);
+    const tapes = (manifest.tapes ?? []) as string[];
+    const recordedDigest = new Map<string, string>();
+    for (const tape of tapes) {
+        for (const r of readPairing(join(dirname(tape), "pairing.jsonl"))) {
+            if (r.kind === "turn") recordedDigest.set(`${r.arm}/${r.event}`, r.digest);
+        }
+    }
     const turnDigest = new Map(
         pairing.filter((r) => r.kind === "turn").map((r) => [`${r.arm}/${r.event}`, r]),
     );
@@ -153,10 +191,13 @@ function report(dir: string) {
         // reference arm's differing digest at the same event; the record is the evidence.
         const mine = turnDigest.get(`${r.arm}/${r.event}`);
         const theirs = turnDigest.get(`${reference(r.arm)}/${r.event}`);
+        const cited =
+            r.against === "recorded" ? recordedDigest.get(`${r.arm}/${r.event}`) : theirs?.digest;
         const sound =
             mine?.digest === r.digest &&
+            mine.context_sha256 === r.context_sha256 &&
             r.reference_digest !== r.digest &&
-            (r.against === "recorded" || theirs?.digest === r.reference_digest);
+            cited === r.reference_digest;
         if (!sound) {
             throw new Error(
                 `${dir}/pairing.jsonl: ${r.arm} divergence at ${r.event} does not match the turns it cites`,

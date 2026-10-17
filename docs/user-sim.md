@@ -138,7 +138,7 @@ judgments against the host arm, stay out of the A/A pairing.
 
 `scripts/aa-report.ts <run>` reads the run's graded items and, for each
 control, pairs every item both arms graded. It takes the run path only as
-a directory itself (a symlink is refused), holds the run's lease while
+a real directory (a symlink anywhere in the path is refused), holds the run's lease while
 it reads, opens `grades.jsonl` only as a regular file with one link
 (`GradeLog` repairs a cut last line in place), requires a manifest event
 count inside the scenario and the journal complete for the manifest order
@@ -147,13 +147,16 @@ pairing record's shape and arm (`readPairing`, which
 `pairing-check.ts` shares, refusing a corrupt terminated line), binds each
 record to its scheduled turn's session and index, admits one turn per arm
 and event and one divergence per arm and session, requires each divergence
-to cite its control turn's digest and a differing reference digest, each
+to cite its control turn's digest and context and a differing digest the
+reference arm's turn (or, against a recorded run, a manifest tape's pairing
+log) carries, each
 probe or paste turn to carry the compiled text, and a turn record from
 each arm of the pair for every scheduled user turn, refuses a
 control whose delivered text differed from its arm's before its recorded
 divergence (`pairingMismatches`, the check `pairing-check.ts` runs), checks each
-latest grade's arm, item, probe type, version, verdict, and finite metrics
-against the run and its reached probes, refuses
+grade log's identities (an opponent only on P7, versions 1..n once per item
+and arm) and each latest grade's arm, item, probe type, version, verdict, and
+finite metrics against the run and its reached probes, refuses
 a run graded under another pre-registration or whose scenario no longer
 hashes to the manifest's digest, requires the manifest's tier and seed to
 match the compiled scenario's, and records the pre-registration hash it

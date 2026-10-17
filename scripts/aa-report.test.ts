@@ -11,7 +11,7 @@ import {
     writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import type { GradeRecord } from "../src/grade/probes";
 import { preregistrationHash } from "../src/prereg/validate";
 import { scenarioHash } from "../src/scenario/compile";
@@ -340,7 +340,7 @@ describe("aa-report", () => {
 
     test("P7 grades, judged against the host arm, stay out of the missingness diagnostics", () => {
         const dir = gradedRun("S", preregistrationHash(loadPrereg("S")));
-        const judged = grade("host", "j-1", "P7", "P7.score", 1);
+        const judged = { ...grade("host", "j-1", "P7", "P7.score", 1), against: "eidnara" };
         appendFileSync(join(dir, "grades.jsonl"), `${JSON.stringify(judged)}\n`);
         const [report] = aaReport(dir);
         expect(report?.unpaired_items).toEqual([]);
@@ -502,6 +502,80 @@ describe("aa-report", () => {
         );
         writeFileSync(join(dir, "pairing.jsonl"), rows.map(line).join(""));
         expect(() => aaReport(dir)).toThrow(/e-1.*compiled/);
+    });
+
+    test("a divergence against a recorded run must cite a turn in a manifest tape's pairing log", () => {
+        const line = (o: unknown) => `${JSON.stringify(o)}\n`;
+        const recorded = (dir: string, reference_digest: string) => ({
+            kind: "divergedAt",
+            arm: "host~aa",
+            session: "s-1",
+            event: "e-2",
+            index: 1,
+            digest: "d",
+            context_sha256: "c",
+            reference_digest,
+            against: "recorded",
+        });
+        const base = [...allTurns("host"), ...allTurns("host~aa")];
+        const noTape = gradedRun("S", preregistrationHash(loadPrereg("S")));
+        writeFileSync(
+            join(noTape, "pairing.jsonl"),
+            [...base, recorded(noTape, "old")].map(line).join(""),
+        );
+        expect(() => aaReport(noTape)).toThrow(/divergence at e-2/);
+        const taped = gradedRun("S", preregistrationHash(loadPrereg("S")));
+        const source = mkdtempSync(join(tmpdir(), "sim-aa-source-"));
+        writeFileSync(join(source, "tape.jsonl"), "");
+        writeFileSync(
+            join(source, "pairing.jsonl"),
+            line(turn("host~aa", "e-2", "same", 1)).replace('"digest":"d"', '"digest":"old"'),
+        );
+        const m = JSON.parse(readFileSync(join(taped, "manifest.json"), "utf8"));
+        writeFileSync(
+            join(taped, "manifest.json"),
+            JSON.stringify({ ...m, tapes: [join(source, "tape.jsonl")] }),
+        );
+        writeFileSync(
+            join(taped, "pairing.jsonl"),
+            [...base, recorded(taped, "other")].map(line).join(""),
+        );
+        expect(() => aaReport(taped)).toThrow(/divergence at e-2/);
+        writeFileSync(
+            join(taped, "pairing.jsonl"),
+            [...base, recorded(taped, "old")].map(line).join(""),
+        );
+        expect(aaReport(taped)[0]?.sessions_diverged).toBe(1);
+    });
+
+    test("refuses a grade log whose identities or version sequences are malformed", () => {
+        const line = (o: unknown) => `${JSON.stringify(o)}\n`;
+        const vs = gradedRun("S", preregistrationHash(loadPrereg("S")));
+        const stray = { ...grade("host", "p-1", "P3", "P3.delta_mem", 0), against: "eidnara" };
+        appendFileSync(join(vs, "grades.jsonl"), line(stray));
+        expect(() => aaReport(vs)).toThrow(/against/);
+        const gap = gradedRun("S", preregistrationHash(loadPrereg("S")));
+        appendFileSync(
+            join(gap, "grades.jsonl"),
+            line({ ...grade("host", "p-1", "P3", "P3.delta_mem", 0), version: 3 }),
+        );
+        expect(() => aaReport(gap)).toThrow(/version/);
+        const dup = gradedRun("S", preregistrationHash(loadPrereg("S")));
+        appendFileSync(
+            join(dup, "grades.jsonl"),
+            line(grade("host", "p-1", "P3", "P3.delta_mem", 5)),
+        );
+        expect(() => aaReport(dup)).toThrow(/version/);
+    });
+
+    test("a run path reached through a symlinked ancestor is refused before any write", () => {
+        const real = gradedRun("S", preregistrationHash(loadPrereg("S")));
+        const parentLink = `${real}-parent`;
+        symlinkSync(dirname(real), parentLink);
+        const viaLink = join(parentLink, basename(real));
+        expect(lstatSync(viaLink).isDirectory()).toBe(true);
+        expect(() => aaReport(viaLink)).toThrow(/real path/);
+        expect(existsSync(join(real, "lease.json"))).toBe(false);
     });
 
     test("a run-level family forms one cluster per run, so one run leaves it uninformative", () => {
