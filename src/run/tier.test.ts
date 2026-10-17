@@ -39,8 +39,9 @@ describe("tier plan", () => {
         const plan = tierPlan(prereg, scenarios, ["pi", "opencode"], "/out", 60_000);
         // S registers one A/A repeat per pair, so one job carries the controls; every job
         // shares the prefix that fits the control-carrying job.
+        // Each control follows its arm, the order armOrder() persists in the manifest.
         expect(plan.map((j) => [j.host, j.seed, j.arms.join(","), j.dir])).toEqual([
-            ["pi", 101, "host,eidnara,eidnara-kl,host~aa,eidnara~aa", "/out/S-101-pi"],
+            ["pi", 101, "host,host~aa,eidnara,eidnara~aa,eidnara-kl", "/out/S-101-pi"],
             ["pi", 102, "eidnara-kl,eidnara,host", "/out/S-102-pi"],
             ["opencode", 101, "host,eidnara,eidnara-kl", "/out/S-101-opencode"],
             ["opencode", 102, "eidnara-kl,eidnara,host", "/out/S-102-opencode"],

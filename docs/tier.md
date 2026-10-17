@@ -30,8 +30,9 @@ grading or report; each run tears down and stays resumable.
 A seed's scenario is compiled once into `<dir>/scenarios-<seed>/` and
 copied into each new run directory. A cached scenario whose body no
 longer hashes to its `scenario_hash`, or compiled from another generator
-version, corpus manifest, fact bank, repository list, or pre-registration,
-is refused for a new run; a run that already has a manifest keeps the
+version, pre-registration, or corpus (the bytes of the manifest, fact
+bank, repository list, distributions, and tool outputs), is refused for a
+new run; a run that already has a manifest keeps the
 scenario it ran. The libfaketime build's download,
 extraction, and compilation each end within ten minutes; invocations
 serialise on a lease over `vendor/build`, and the finished tree is
@@ -42,7 +43,8 @@ renamed into place, so another command sees a complete library or none.
 Each run gets its seed's pre-registered arm order. The A/A controls
 (`<arm>~aa` for every pair in `aa_controls` whose arm is in the order)
 ride on exactly `aa_controls.repeats` of the runs, seeds varying first so
-they spread across hosts, which is the count the report's completeness
+they spread across hosts, each control right after its arm as the run's
+manifest orders them, which is the count the report's completeness
 check wants; a host and seed selection planning fewer runs than that
 exits 2. Every arm of every run runs the same prefix of the scenario: the
 longest one that ends on a session end and whose user turns, at

@@ -271,3 +271,9 @@ test("an OpenCode store that cannot be opened or queried reads as missing transc
         missing: ["s-1", "s-2"],
     });
 });
+
+test("a transcripts.json holding null reads as an unchecked arm", () => {
+    const g = fixture();
+    writeFileSync(join(g.run.dir, "eidnara/transcripts.json"), "null");
+    expect(runConditions(g).transcripts[1]).toEqual({ arm: "eidnara", paths: [], missing: null });
+});

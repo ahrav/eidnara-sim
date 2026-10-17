@@ -179,7 +179,13 @@ export function runConditions(g: GradedRun): RunConditions {
             t = unchecked;
         }
         const strings = (x: unknown) => Array.isArray(x) && x.every((v) => typeof v === "string");
-        if (!strings(t.paths) || !(t.missing === null || strings(t.missing))) t = unchecked;
+        if (
+            t === null ||
+            typeof t !== "object" ||
+            !strings(t.paths) ||
+            !(t.missing === null || strings(t.missing))
+        )
+            t = unchecked;
         return { arm: arm.arm, paths: t.paths, missing: t.missing };
     });
     const probes = (manifest.preflight?.time_injection ?? []) as RunConditions["interception"];

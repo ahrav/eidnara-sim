@@ -19,10 +19,17 @@ export function loadPrereg(tier: Tier) {
 
 export const corpusManifestHash = () => sha256Hex(read("manifest.json"));
 
-/** The corpus files compile reads beyond those the manifest hashes. */
-const DIRECT_INPUTS = ["manifest.json", "fact-bank.json", "repos.json"];
+/** Every corpus file the compiler reads, hashed by its bytes as they are. */
+const DIRECT_INPUTS = [
+    "manifest.json",
+    "fact-bank.json",
+    "repos.json",
+    "distributions.json",
+    "tool-outputs/samples.jsonl",
+    "tool-outputs/error-codes.jsonl",
+];
 
-/** One digest over every corpus file the compiler reads, through the manifest's own hashes. */
+/** One digest over the bytes of every corpus file the compiler reads. */
 export const compileInputsHash = () =>
     sha256Hex(DIRECT_INPUTS.map((f) => `${f}:${sha256Hex(read(f))}`).join("\n"));
 
