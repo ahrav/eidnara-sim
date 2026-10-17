@@ -15,8 +15,9 @@ outside 1 to the scenario's length, a scheduled user turn without one
 unscheduled event, a call or tool run naming a turn outside the schedule, a
 call with a token count that is not a non-negative safe integer, a
 `response_text` that is not a string, or a `response_text_truncated` other
-than `true`, resource samples whose pid is not a positive integer, that name
-a pid on some rows and not others, that open a daemon lifetime without a
+than `true`, resource samples whose pid is not a positive integer, whose `scenario_ms` is
+not a non-negative integer, whose `start` is not a decimal clock tick, that
+name a pid on some rows and not others, that open a daemon lifetime without a
 reading, whose process identity returns after a later lifetime, or whose
 reading is not a byte count, name a process start time on some rows and not others
 or null against a pid, pair a reading with a null pid, or carry a negative
@@ -33,8 +34,8 @@ the file's `0..n-1` order, an arm with no `tools.jsonl` (the recorder creates
 it when the arm starts), a call record that fails the proxy's
 record contract (`recordProblems`), names an arm outside the manifest, or
 repeats a sequence number, a journal entry, resource sample, or tool run
-missing a field (an `EndTurn` needs its `outcome`), or an evidence file with
-a line that does not parse. It gathers, per arm, the call records, journal entries,
+missing a field (an `EndTurn` needs its `outcome`), or an evidence file (the
+journal included) with a line that does not parse. It gathers, per arm, the call records, journal entries,
 plugin log (`<arm>/r/eidnara.log`), daemon log (`<arm>/daemon.log`),
 resource samples, and tool runs (`<arm>/tools.jsonl`, one line per tool
 report with its turn; a Pi run with a `call` id is reported at its start with

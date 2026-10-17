@@ -3,7 +3,7 @@ import { join } from "node:path";
 import type { Command } from "../grade/artefacts";
 import { ARMS, type Preregistration } from "../prereg/schema";
 import { type CallRecord, recordProblems } from "../proxy/records";
-import { type Entry, readJournal, requireComplete } from "../run/journal";
+import { type Entry, requireComplete } from "../run/journal";
 import type { Sample as ResourceSample } from "../run/sampler";
 import { type Scenario, scenarioHash } from "../scenario/compile";
 
@@ -195,6 +195,12 @@ function samplesOf(path: string): Sample[] {
         }
     });
     samples.forEach((s, i) => {
+        if (!Number.isSafeInteger(s.scenario_ms) || s.scenario_ms < 0) {
+            throw new Error(`${path}: line ${i + 1}: scenario_ms is not a count`);
+        }
+        if (typeof s.start === "string" && !/^\d+$/.test(s.start)) {
+            throw new Error(`${path}: line ${i + 1}: start is not a clock tick`);
+        }
         const prev = samples[i - 1];
         if (prev && s.scenario_ms < prev.scenario_ms) {
             throw new Error(
@@ -338,7 +344,7 @@ export function loadRun(dir: string, prereg: Preregistration): RunLogs {
         }
     });
     const journalPath = join(dir, "journal.jsonl");
-    const journal = readJournal(journalPath);
+    const journal = jsonl<Entry>(journalPath);
     const lastMs = new Map<string | null, number>();
     journal.forEach((e, i) => {
         const fields: Record<string, FieldCheck> = { kind: str, arm: strOrNull, scenario_ms: num };

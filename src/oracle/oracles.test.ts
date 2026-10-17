@@ -1,5 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+    appendFileSync,
+    mkdirSync,
+    mkdtempSync,
+    readdirSync,
+    readFileSync,
+    rmSync,
+    writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { scenarioHash } from "../scenario/compile";
@@ -1463,5 +1471,23 @@ describe("oracle round nineteen", () => {
         ];
         writeFileSync(join(dir, "journal.jsonl"), journal.map(line).join(""));
         expect(() => loadRun(dir, prereg)).toThrow("arm eidnara: turn e-1 markers out of order");
+    });
+});
+
+describe("oracle round twenty", () => {
+    test("sample timestamps and start ticks have the sampler's shapes, and the journal tail parses", () => {
+        const { dir, line } = completeDir(["eidnara"]);
+        const rs = join(dir, "eidnara", "resources.jsonl");
+        writeFileSync(rs, line({ scenario_ms: 1e308, rss: 100, pid: 1, start: "1" }));
+        expect(() => loadRun(dir, prereg)).toThrow(
+            /resources\.jsonl: line 1: scenario_ms is not a count/,
+        );
+        writeFileSync(rs, line({ scenario_ms: 0, rss: 100, pid: 1, start: "-1" }));
+        expect(() => loadRun(dir, prereg)).toThrow(
+            /resources\.jsonl: line 1: start is not a clock tick/,
+        );
+        writeFileSync(rs, line({ scenario_ms: 0, rss: 100, pid: 1, start: "1" }));
+        appendFileSync(join(dir, "journal.jsonl"), '{"kind": \n');
+        expect(() => loadRun(dir, prereg)).toThrow(/journal\.jsonl: line \d+ is corrupt/);
     });
 });

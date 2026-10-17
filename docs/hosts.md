@@ -71,7 +71,8 @@ root-owned `sudo` and `unshare`, so closing a host walks the launcher's
 process tree and signals every process the user owns, with SIGKILL after
 10 s; a process that survives SIGKILL stops the run. A user turn is one prompt with the turn deadline, and the host's error
 becomes a failed turn. After a Pi turn fails, the host aborts it and waits up
-to 30 s for its `agent_end` (an end that arrived before the failure counts),
+to 30 s for its `agent_end` (an end that arrived before the failure counts,
+and the fresh waiter is armed before the check so no end falls between),
 so a late end cannot finish the next turn; a Pi that reports no `agent_end`
 in that wait (the abort call itself is not waited on past it) is still
 running the old turn, so

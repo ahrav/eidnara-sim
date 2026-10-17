@@ -555,7 +555,8 @@ export class PiSimHost extends SimHost {
     /**
      * Runs one turn. A turn that fails or times out is aborted; an `agent_end` that already
      * arrived (checked after one event-loop tick, so a same-tick end counts) settles the drain,
-     * otherwise a fresh waiter runs for the drain wait. A Pi that
+     * otherwise a fresh waiter, armed before that tick so no end falls between listeners, runs
+     * for the drain wait. A Pi that
      * reports no `agent_end` in that time is still running the old turn, so its process is
      * killed and the session's later prompts fail at once. A tool event from that turn can
      * then never land on a later turn's record.
@@ -582,8 +583,9 @@ export class PiSimHost extends SimHost {
                 ? { error: String(last.errorMessage ?? "error") }
                 : {};
         } catch (caught) {
+            const fresh = this.agentEnd(this.drainWaitMs);
             await Bun.sleep(0);
-            const drained = ended ? Promise.resolve() : this.agentEnd(this.drainWaitMs);
+            const drained = ended ? Promise.resolve() : fresh;
             this.rpc.sendCommand("abort", {}, { timeoutMs: 60_000 }).catch(() => undefined);
             const settled = await drained.then(
                 () => true,

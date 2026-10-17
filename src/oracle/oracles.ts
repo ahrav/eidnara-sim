@@ -75,15 +75,33 @@ function f1(arm: ArmLogs): Activation[] {
     return [...calls, ...turns];
 }
 
+/** Groups records by the key `by` yields, so each turn's evidence is one lookup rather than a scan. */
+function byKey<T>(items: T[], by: (item: T) => string | null): Map<string, T[]> {
+    const groups = new Map<string, T[]>();
+    for (const item of items) {
+        const key = by(item);
+        if (key === null) continue;
+        const group = groups.get(key);
+        if (group) group.push(item);
+        else groups.set(key, [item]);
+    }
+    return groups;
+}
+
 function f4(arm: ArmLogs, quietMs: number): Activation[] {
     const out: Activation[] = [];
+    const callsByTurn = byKey(arm.calls, (c) => c.turn);
+    const toolsByTurn = byKey(arm.tools, (t) => t.turn);
+    const begins = new Map(
+        arm.journal.filter((b) => b.kind === "BeginTurn").map((b) => [String(b.event), b]),
+    );
     for (const e of arm.journal) {
         if (e.kind !== "EndTurn") continue;
         const turn = String(e.event);
-        const turnCalls = arm.calls.filter((c) => c.turn === turn);
+        const turnCalls = callsByTurn.get(turn) ?? [];
         const calls = turnCalls.filter((c) => c.component === "agent");
-        const tools = arm.tools.filter((t) => t.turn === turn).map((t) => t.scenario_ms);
-        const began = arm.journal.find((b) => b.kind === "BeginTurn" && b.event === e.event);
+        const tools = (toolsByTurn.get(turn) ?? []).map((t) => t.scenario_ms);
+        const began = begins.get(turn);
         if (DEADLINE.test(String(e.outcome))) {
             const end = e.scenario_ms;
             const spans = [
