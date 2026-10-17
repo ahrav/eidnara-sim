@@ -1579,3 +1579,44 @@ describe("tier gate review findings, eighteenth Codex round", () => {
         expect(() => evaluateTier(twice, input)).toThrow("cusum harm: one rule per kind");
     });
 });
+
+describe("tier gate review findings, nineteenth Codex round", () => {
+    const seq = { journal_seq_at_eval: 7, arms: { control: "host", treatment: "eidnara" } };
+    const input = { observations: [], excluded: [], asymmetric: [], ...seq };
+    const withFamily = (id: string, patch: object) => ({
+        ...M,
+        families: M.families.map((f) => (f.id === id ? { ...f, ...patch } : f)),
+    });
+
+    test("the falsification input is a record of collections", () => {
+        type Pairs = Partial<Record<string, { control: number; treatment: number }[]>>;
+        expect(() => falsificationSet(S, null as unknown as Pairs)).toThrow(StatsRefusal);
+        expect(() => falsificationSet(S, [] as unknown as Pairs)).toThrow(StatsRefusal);
+    });
+
+    test("an item threshold bounds a higher-is-better rate", () => {
+        expect(() =>
+            evaluateTier(
+                withFamily("harm", {
+                    direction: "threshold",
+                    margin: { value: "0.1", scale: "ratio" },
+                    interval_method: "none",
+                    multiplicity: "none",
+                }),
+                input,
+            ),
+        ).toThrow("harm: an item threshold bounds a higher-is-better rate");
+    });
+
+    test("a count family with unrestricted amounts registers no interval method", () => {
+        expect(() =>
+            evaluateTier(withFamily("cost", { interval_method: "negative-binomial-glm" }), input),
+        ).toThrow("cost: a count family without a margin scale registers no interval method");
+    });
+
+    test("a graded or slope family registers its margin and MDE on one scale", () => {
+        expect(() =>
+            evaluateTier(withFamily("latency", { margin: { value: "10", scale: "pp" } }), input),
+        ).toThrow("latency: margin and MDE share one scale");
+    });
+});

@@ -459,6 +459,21 @@ function check(p: Preregistration, input: TierInput): void {
         if (f.direction === "noninferiority" && f.metrics.some(higherIsBetter)) {
             throw new StatsRefusal(`${f.id}: noninferiority bounds a lower-is-better metric`);
         }
+        if (
+            f.direction === "threshold" &&
+            f.analysis_unit === "item" &&
+            !f.metrics.every(higherIsBetter)
+        ) {
+            throw new StatsRefusal(`${f.id}: an item threshold bounds a higher-is-better rate`);
+        }
+        if (f.outcome === "count" && f.margin.scale === "none" && f.interval_method !== "none") {
+            throw new StatsRefusal(
+                `${f.id}: a count family without a margin scale registers no interval method`,
+            );
+        }
+        if ((f.outcome === "graded" || f.outcome === "slope") && f.margin.scale !== f.mde.scale) {
+            throw new StatsRefusal(`${f.id}: margin and MDE share one scale`);
+        }
         for (const m of f.metrics) {
             if (!hasPolarity(m)) throw new StatsRefusal(`${f.id}: ${m} has no registered polarity`);
         }
@@ -874,6 +889,9 @@ export function falsificationSet(
     pairs: Partial<Record<string, { control: number; treatment: number }[]>>,
 ): ZeroEffect[] {
     checkBootstrap(p);
+    if (typeof pairs !== "object" || pairs === null || Array.isArray(pairs)) {
+        throw new StatsRefusal("the falsification pairs are a record of collections by check name");
+    }
     for (const name of Object.keys(pairs)) {
         if (!(FALSIFICATION as readonly string[]).includes(name)) {
             throw new StatsRefusal(`${name} is not in the falsification set`);

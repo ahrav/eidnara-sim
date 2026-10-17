@@ -1303,8 +1303,9 @@ fault-asymmetric ids, counts exclusions per arm and asymmetric pairs per
 metric, and requires the journal sequence; its tests exercise that. The report path that supplies the completed pairs is
 #1033 work, and no tier run has reached the gate.
 Existing check: `src/stats/gate.test.ts`: excluded and fault-asymmetric pairs
-leave the analysis and are counted per arm, and an evaluation without a
-journal sequence is refused; status unaudited
+leave the analysis, exclusions are counted per arm and asymmetric pairs per
+metric, and an evaluation without a journal sequence is refused; status
+unaudited
 Impact: A gate passes on a selected subset of pairs.
 Open questions: None.
 
@@ -1404,8 +1405,9 @@ Type: safety
 Reachability: default-production
 Status: active
 Exercised: partial - `src/stats/gate.test.ts` constructs a harm and a futility
-stop with their windows; the scheduler's continuation of issued items is
-unreached
+stop with their windows from the pure `evaluateTier`; journaling the stop with
+`journal_seq_at_eval` (the #1033 report path) and the scheduler's continuation
+of issued items are unreached
 Guarantee: SIM-P55: A CUSUM early stop journals the metric, the item ids in the
 stopping window, and `journal_seq_at_eval`, and items already issued continue to
 terminal state.

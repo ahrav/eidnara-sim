@@ -70,33 +70,36 @@ A metric with no pre-registration entry is refused by name, and so is a metric
 registered in two families, a metric observed twice, a binary threshold outside
 [0, 1], an at-most count family whose margin is not a ratio, a paired binary
 family whose margin is not 0 to 100 pp, a noninferiority family whose outcome is
-not binary or whose metric is higher-is-better, two CUSUM rules of one kind, a
-metric name without a registered polarity (pass rates and fidelity scores are
-higher-is-better; harms, counts, latency and growth deltas, and costs
-lower-is-better), a CUSUM rule whose registered statistic is not one of the two
-the gate computes, an observations, excluded, or asymmetric field that is not an
-array of records, a family whose margin, MDE, alpha, or power is not a finite
-number, a Holm family whose outcome yields no p-value (graded or slope), a
-family whose cluster key does not match its unit (`run` for runs,
-`ledger_fact_id` for items), a CUSUM rule whose k is not finite and at least 0
-or whose h is not finite and positive, an observation whose unit or cluster key
-differs from its family's, an observation whose collection is not an array of
-pair records or that carries runs for an item unit or items for a run unit, a
-control or treatment value that is not finite, a binary family's value other
-than 0 or 1, a negative count, a fractional event count (a count family whose
-margin has a scale; the cost family's amounts are unrestricted), a `pp`-scale
-graded value outside [0, 1], an item whose issue order is not a non-negative
-safe integer or whose ledger-fact cluster differs between observations, an item
-or run identity repeated within an observation, an issue order shared by two
-items or an item with two orders, an exclusion listed twice for one arm (an item
-both arms failed is excluded once per arm), an asymmetric id listed twice or
-also excluded, an exclusion attributed to an arm other than the two compared, a
-run-level family whose metrics come from different run sets, a bootstrap plan
-outside eval-core's 40 to 10,000 replicates, a bootstrap interval or detectable
-size that is not finite, and event totals beyond the exact integer range or
-above the 100,000,000 the incomplete beta converges for. A metric whose name
-ends in `_delta_ms` or names a growth per session arrives as the paired delta in
-the treatment value with 0 as control, so a bound on it is a bound on the delta.
+not binary or whose metric is higher-is-better, two CUSUM rules of one kind, an
+item threshold on a lower-is-better metric, a count family without a margin
+scale (cost) that registers an interval method, a graded or slope family whose
+margin and MDE scales differ, a metric name without a registered polarity (pass
+rates and fidelity scores are higher-is-better; harms, counts, latency and
+growth deltas, and costs lower-is-better), a CUSUM rule whose registered
+statistic is not one of the two the gate computes, an observations, excluded, or
+asymmetric field that is not an array of records, a family whose margin, MDE,
+alpha, or power is not a finite number, a Holm family whose outcome yields no
+p-value (graded or slope), a family whose cluster key does not match its unit
+(`run` for runs, `ledger_fact_id` for items), a CUSUM rule whose k is not finite
+and at least 0 or whose h is not finite and positive, an observation whose unit
+or cluster key differs from its family's, an observation whose collection is not
+an array of pair records or that carries runs for an item unit or items for a
+run unit, a control or treatment value that is not finite, a binary family's
+value other than 0 or 1, a negative count, a fractional event count (a count
+family whose margin has a scale; the cost family's amounts are unrestricted), a
+`pp`-scale graded value outside [0, 1], an item whose issue order is not a
+non-negative safe integer or whose ledger-fact cluster differs between
+observations, an item or run identity repeated within an observation, an issue
+order shared by two items or an item with two orders, an exclusion listed twice
+for one arm (an item both arms failed is excluded once per arm), an asymmetric
+id listed twice or also excluded, an exclusion attributed to an arm other than
+the two compared, a run-level family whose metrics come from different run sets,
+a bootstrap plan outside eval-core's 40 to 10,000 replicates, a bootstrap
+interval or detectable size that is not finite, and event totals beyond the
+exact integer range or above the 100,000,000 the incomplete beta converges for.
+A metric whose name ends in `_delta_ms` or names a growth per session arrives as
+the paired delta in the treatment value with 0 as control, so a bound on it is a
+bound on the delta.
 The input names the compared arms, which are `host` against the
 pre-registration's default arm (D1), and the journal sequence whose
 completed pairs it was built from, a non-negative integer; the verdict
@@ -113,8 +116,10 @@ family with such a metric fails.
 | `interval_method: none`, paired | The paired mean difference and n, no interval, p, or detectable size; the verdict is `descriptive` (the cost families, XL's latency) |
 
 Each paired metric gets a verdict: `better` or `worse` when the test is
-significant at the family's alpha (`p <= alpha`, after Holm over all of a
-`holm` family's registered metrics, a missing one at p = 1) in the
+significant at the family's alpha (`p <= alpha` for binary items and
+counts, after Holm over all of a `holm` family's registered metrics, a
+missing one at p = 1; for graded and slope runs, which carry no p-value,
+when the bootstrap interval excludes zero) in the
 direction the metric favours (pass rates and fidelity up, harms, counts,
 latency, and resources down), and otherwise
 `no-difference-above-X<scale>-detectable-at-n`. Holm governs these
@@ -135,8 +140,9 @@ for the GLM the rate ratio. The resolution ratio is X over the
 pre-registered MDE, or over the margin for a family whose MDE is zero (the
 noninferiority harm family and L's at-most resources family register the
 planned true value 0); the sign test has none, and its result says why. A run-level
-gate with fewer paired runs than its family's registered floor (six at
-least) says `insufficient-runs(k)`. Bound
+gate with a paired claim and fewer paired runs than its family's
+registered floor (six at least) says `insufficient-runs(k)`; a bound gate
+has no floor and decides at any run count. Bound
 families say `within-bound` or `failed-gate(metric, ids)`.
 
 A gate component passes as follows: `superiority-two-sided` needs
@@ -188,8 +194,8 @@ word parity is refused.
 scheduled faults, pre-divergence pushback rate, wall time per scripted
 idle gap): each check's paired differences get a bootstrap interval, and
 a zero effect is an interval that covers zero. With fewer than two pairs
-a check has no result. A name outside the set, a collection that is not an
-array of pair records, a value that is not finite
+a check has no result. An input that is not a record of collections, a name
+outside the set, a collection that is not an array of pair records, a value that is not finite
 or outside the check's domain (the three rates lie in [0, 1], the idle-gap
 wall time is non-negative), a bootstrap plan outside 40 to 10,000 replicates, or an
 interval that is not finite is refused.
