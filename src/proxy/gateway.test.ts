@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import * as fs from "node:fs";
 import { appendFileSync, mkdtempSync, readFileSync } from "node:fs";
+import { connect as http2Connect } from "node:http2";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { decodeMessages } from "../../tests/eventstream-decode";
@@ -746,6 +747,55 @@ describe("every request yields one record", () => {
         gateways.push(gateway);
         await hostCall(gateway.urls[0] as string, AGENT_BODY, 2_000);
         expect(records.records[0]?.scenario_ms).toBe(100);
+    });
+
+    test("text streamed after the client left is recorded as a cut, not as delivered answer", async () => {
+        let release: () => void = () => undefined;
+        const gate = new Promise<void>((resolve) => {
+            release = resolve;
+        });
+        const slow: Upstream = {
+            async converse() {
+                async function* events() {
+                    yield { messageStart: { role: "assistant" } };
+                    yield { contentBlockDelta: { contentBlockIndex: 0, delta: { text: "seen " } } };
+                    await gate;
+                    yield {
+                        contentBlockDelta: { contentBlockIndex: 0, delta: { text: "unseen" } },
+                    };
+                    yield { messageStop: { stopReason: "end_turn" } };
+                    yield {
+                        metadata: {
+                            usage: { inputTokens: 1, outputTokens: 1 },
+                            metrics: { latencyMs: 1 },
+                        },
+                    };
+                }
+                return { events: events() };
+            },
+        };
+        const { gateway, records } = await start(null, slow);
+        const client = http2Connect(gateway.urls[1] as string);
+        try {
+            const request = client.request({
+                ":method": "POST",
+                ":path": "/model/m/converse-stream",
+            });
+            request.end(JSON.stringify(AGENT_BODY));
+            await new Promise<void>((resolve) => request.once("data", () => resolve()));
+            request.close(8);
+            await Bun.sleep(50);
+            release();
+            while (gateway.inFlight > 0) await Bun.sleep(10);
+        } finally {
+            client.close();
+        }
+        expect(records.records[0]).toMatchObject({
+            status: 200,
+            finish_reason: "stream_cut",
+            error: "client disconnected before the stream ended",
+        });
+        expect(records.records[0]?.response_text ?? "").not.toContain("unseen");
     });
 
     test("a forwarded stream without messageStop is recorded as stream_cut", async () => {

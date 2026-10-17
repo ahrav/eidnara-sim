@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { appendFileSync, mkdtempSync, readdirSync, readFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ProbeItem } from "../scenario/compile";
@@ -229,4 +229,15 @@ test("a command log whose entries lack command text or a time is refused", () =>
         a.class === "command-log" ? { ...a, commands: [{}] } : a,
     ) as Snapshot["artefacts"];
     expect(() => gradeItem(p5.probe, [snap], rules)).toThrow("has no commands");
+});
+
+test("a grade log whose restored versions skip or repeat is refused", () => {
+    const dir = mkdtempSync(join(tmpdir(), "grade-log-"));
+    const path = join(dir, "grades.jsonl");
+    const row = (version: number) =>
+        JSON.stringify({ arm: "a", item: "P5-a", probe: "P5", version, verdict: "pass" });
+    writeFileSync(path, `${row(1)}\n${row(3)}\n`);
+    expect(() => new GradeLog(path)).toThrow(/version 3 of .* where version 2 belongs/);
+    writeFileSync(path, `${row(1)}\n${row(1)}\n`);
+    expect(() => new GradeLog(path)).toThrow("where version 2 belongs");
 });

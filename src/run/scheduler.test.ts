@@ -691,6 +691,80 @@ test("quiescing jobs waits through a gap between one background job ending and t
     );
 });
 
+test("a background job that starts and ends between two polls still resets the quiet window", async () => {
+    const j = new Journal(join(dir(), "j.jsonl"));
+    let scheduler: Scheduler | null = null;
+    const driver: ArmDriver = {
+        reset: async () => undefined,
+        event: async (e) => {
+            if (e.kind !== "user_turn") return {};
+            setTimeout(() => {
+                scheduler?.jobStart("history_summarizer-0");
+                scheduler?.jobEnd("history_summarizer-0");
+            }, 130);
+            setTimeout(() => scheduler?.jobStart("native_compaction-0"), 170);
+            setTimeout(() => scheduler?.jobEnd("native_compaction-0"), 260);
+            await scheduler?.quiesceJobs();
+            return {};
+        },
+        fault: async () => ({}),
+    };
+    scheduler = new Scheduler({
+        events: fixtureEvents(1),
+        faults: [],
+        journal: j,
+        settleMs: 100,
+        jobPollMs: 40,
+        order: ["a"],
+        drivers: { a: driver },
+    });
+    await scheduler.run();
+    const kinds = j.entries.map((e) => `${e.kind}:${e.job ?? e.event ?? ""}`);
+    expect(kinds.indexOf("EndJob:native_compaction-0")).toBeLessThan(
+        kinds.indexOf("EndTurn:e-000001"),
+    );
+});
+
+test("quiet-window retries share one liveness deadline", async () => {
+    const j = new Journal(join(dir(), "j.jsonl"));
+    let scheduler: Scheduler | null = null;
+    let n = 0;
+    const timers: Timer[] = [];
+    const driver: ArmDriver = {
+        reset: async () => undefined,
+        event: async (e) => {
+            if (e.kind !== "user_turn") return {};
+            const chain = () => {
+                const id = `history_summarizer-${n++}`;
+                scheduler?.jobStart(id);
+                timers.push(setTimeout(() => scheduler?.jobEnd(id), 30));
+                timers.push(setTimeout(chain, 60));
+            };
+            timers.push(setTimeout(chain, 10));
+            try {
+                await scheduler?.quiesceJobs();
+            } finally {
+                for (const t of timers) clearTimeout(t);
+            }
+            return {};
+        },
+        fault: async () => ({}),
+    };
+    scheduler = new Scheduler({
+        events: fixtureEvents(1),
+        faults: [],
+        journal: j,
+        settleMs: 50,
+        jobPollMs: 5,
+        idleLimitMs: 400,
+        order: ["a"],
+        drivers: { a: driver },
+    });
+    const started = Date.now();
+    await expect(scheduler.run()).rejects.toThrow("busy set held the clock past 400 ms");
+    expect(Date.now() - started).toBeLessThan(2_000);
+});
+
 test("recording failures found before EndArm leave the arm open", async () => {
     const j = new Journal(join(dir(), "j.jsonl"));
     const driver: ArmDriver = {

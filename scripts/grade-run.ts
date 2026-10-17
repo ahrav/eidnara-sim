@@ -104,6 +104,7 @@ function requireComplete(entries: Entry[], arms: string[], scheduled: string[]):
 
 /** Yields a JSONL file's non-empty lines one at a time, so a log of large records costs one record of memory. */
 async function* jsonlLines(path: string): AsyncGenerator<string> {
+    requireAppendable(path);
     const decoder = new TextDecoder();
     const pending: string[] = [];
     for await (const chunk of Bun.file(path).stream()) {
@@ -162,9 +163,36 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
     }
     const journaled = new Set(named.keys());
     const turnEnds = new Map<string, string>();
-    for (const e of entries.filter((e) => e.kind === "EndTurn" && typeof e.snapshot === "string")) {
-        turnEnds.set(String(e.snapshot), String(e.outcome));
+    const probeTurns = new Map<string, Array<{ outcome: string; snapshot: string | null }>>();
+    for (const e of entries.filter((e) => e.kind === "EndTurn")) {
+        if (typeof e.snapshot === "string") turnEnds.set(e.snapshot, String(e.outcome));
+        if (typeof e.probe !== "string") continue;
+        const key = `${String(e.arm)}/${e.probe}`;
+        const snapshot = typeof e.snapshot === "string" ? e.snapshot : null;
+        probeTurns.set(key, [
+            ...(probeTurns.get(key) ?? []),
+            { outcome: String(e.outcome), snapshot },
+        ]);
     }
+    /**
+     * Why an arm has no journaled snapshot for an item: a turn that ended `failed` with no
+     * snapshot is a failed capture; a turn that ended `ok`, or named a snapshot the journal
+     * never entered, makes the journal invalid; no ended turn at all is an interrupted or
+     * absent turn.
+     */
+    const unjournaled = (arm: string, item: string): string => {
+        const turns = probeTurns.get(`${arm}/${item}`) ?? [];
+        const named = turns.find((t) => t.snapshot !== null);
+        if (named) {
+            throw new Error(
+                `the journal ends a turn for ${item} (${arm}) naming snapshot ${named.snapshot} but has no SnapshotArtefacts entry for it`,
+            );
+        }
+        if (turns.some((t) => t.outcome === "ok")) {
+            throw new Error(`the journal ends a turn for ${item} (${arm}) ok without a snapshot`);
+        }
+        return turns.length > 0 ? "probe turn failed" : "no journaled snapshot";
+    };
     const probes = new Map(scenario.probes.map((p) => [p.id, p]));
     const snapshots = new Map<string, Snapshot[]>();
     for (const arm of arms) {
@@ -228,22 +256,32 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
             `journaled snapshots have more than one row in snapshots.jsonl: ${doubled.join(", ")}`,
         );
     }
-    const wanted = new Map<string, Array<{ snapshot: string; call: CallView }>>();
+    /**
+     * A snapshot's calls are the session's call records so far, in log order, each with the turn
+     * index capture derived from the scenario. Every journaled snapshot is therefore checked as a
+     * prefix of its session's records while `calls.jsonl` streams by: content, order, and index.
+     */
+    const turnIndex = new Map(
+        scenario.events
+            .filter((e) => e.index !== undefined)
+            .map((e) => [e.id, e.index as number] as const),
+    );
+    const cursors = new Map<string, Array<{ snapshot: string; calls: CallView[]; at: number }>>();
     for (const rows of snapshots.values()) {
         for (const s of rows) {
             if (!journaled.has(s.id)) continue;
             const calls = s.artefacts.find((a) => a.class === "proxy-call");
             if (calls?.class !== "proxy-call") continue;
-            for (const c of calls.calls) {
-                wanted.set(`${s.arm}/${c.seq}`, [
-                    ...(wanted.get(`${s.arm}/${c.seq}`) ?? []),
-                    { snapshot: s.id, call: c },
-                ]);
-            }
+            const key = `${s.arm}/${String(s.session)}`;
+            cursors.set(key, [
+                ...(cursors.get(key) ?? []),
+                { snapshot: s.id, calls: calls.calls, at: 0 },
+            ]);
         }
     }
     const agentModels = new Set<string>();
     const callsPath = join(dir, "calls.jsonl");
+    const lastTurn = new Map<string, number>();
     if (existsSync(callsPath)) {
         for await (const line of jsonlLines(callsPath)) {
             const r = JSON.parse(line) as CallRecord;
@@ -251,18 +289,23 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
                 throw new Error(`calls.jsonl record ${String(r.seq)} names no model`);
             }
             if (r.component === "agent") agentModels.add(r.model);
-            const copies = wanted.get(`${r.arm}/${r.seq}`);
-            if (!copies) continue;
-            const expected = canonicalJson(projectCall(r));
-            for (const held of copies) {
-                const { turn_index: _turn, ...stored } = held.call;
-                if (canonicalJson(stored) !== expected) {
+            const key = `${r.arm}/${String(r.session)}`;
+            const turn = (r.turn ? turnIndex.get(r.turn) : undefined) ?? lastTurn.get(key);
+            if (turn !== undefined) lastTurn.set(key, turn);
+            const view = projectCall(r);
+            const expected = canonicalJson(
+                turn === undefined ? view : { ...view, turn_index: turn },
+            );
+            for (const cursor of cursors.get(key) ?? []) {
+                const held = cursor.calls[cursor.at];
+                if (held === undefined) continue;
+                if (canonicalJson(held) !== expected) {
                     throw new Error(
-                        `snapshot ${held.snapshot} holds call ${r.seq} with content that differs from calls.jsonl`,
+                        `snapshot ${cursor.snapshot} holds call ${held.seq} where calls.jsonl records call ${r.seq} with content that differs from calls.jsonl`,
                     );
                 }
+                cursor.at++;
             }
-            wanted.delete(`${r.arm}/${r.seq}`);
         }
     }
     const unrecorded = [...agentModels].filter((m) => !models.includes(m));
@@ -271,13 +314,14 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
             `agent calls used models the manifest does not record: ${unrecorded.join(", ")}`,
         );
     }
-    const [orphan] = wanted;
-    if (orphan) {
-        const [key, copies] = orphan;
-        const snapshot = copies[0]?.snapshot ?? "?";
-        throw new Error(
-            `snapshot ${snapshot} holds call ${key.split("/").pop()}, which calls.jsonl does not record for arm ${key.split("/")[0]}`,
-        );
+    for (const [key, list] of cursors) {
+        for (const cursor of list) {
+            const missing = cursor.calls[cursor.at];
+            if (missing === undefined) continue;
+            throw new Error(
+                `snapshot ${cursor.snapshot} holds call ${missing.seq}, which calls.jsonl does not record for arm ${key.split("/")[0]}`,
+            );
+        }
     }
     const attempts = (arm: string, item: string): Snapshot[] | undefined => {
         const rows = snapshots.get(`${arm}/${item}`) ?? [];
@@ -319,7 +363,7 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
             const sides = { [arm]: attempts(arm, probe.id), host: attempts("host", probe.id) };
             const lost = new Set<string>();
             for (const [side, rows] of Object.entries(sides)) {
-                if (!rows) skip(side, "no journaled snapshot");
+                if (!rows) skip(side, unjournaled(side, probe.id));
                 else if (rows[0]?.turn_outcome !== "ok") skip(side, "P7 probe turn failed");
                 else continue;
                 lost.add(side);
@@ -355,7 +399,7 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
             }
             const mine = attempts(arm, probe.id);
             if (!mine) {
-                skip(arm, "no journaled snapshot");
+                skip(arm, unjournaled(arm, probe.id));
                 continue;
             }
             let grade: GradeRecord | null;
