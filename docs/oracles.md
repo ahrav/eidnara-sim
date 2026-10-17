@@ -10,13 +10,14 @@ is a run with no `calls.jsonl` (the proxy's record writer creates it at
 start), a manifest tier other than the scenario's, a manifest arm outside the
 pre-registered names or outside the tier's `arms.run`, a manifest event count
 outside 1 to the scenario's length, a scheduled user turn without one
-`BeginTurn` and one `EndTurn` per arm (a turn the resume path closed as
+`BeginTurn` and one `EndTurn` per arm in that order before its `Event` (a turn the resume path closed as
 `failed(interrupted)` has no `EndTurn`), a `BeginTurn` or `EndTurn` for an
 unscheduled event, a call or tool run naming a turn outside the schedule, a
 call with a token count that is not a non-negative safe integer, a
 `response_text` that is not a string, or a `response_text_truncated` other
-than `true`, resource samples whose pid is not a positive integer, that name
-a pid on some rows and not others, that open a daemon lifetime without a
+than `true`, resource samples whose pid is not a positive integer, whose `scenario_ms` is
+not a non-negative integer, whose `start` is not a canonical decimal clock tick or appears without a pid, that
+name a pid on some rows and not others, that open a daemon lifetime without a
 reading, whose process identity returns after a later lifetime, or whose
 reading is not a byte count, name a process start time on some rows and not others
 or null against a pid, pair a reading with a null pid, or carry a negative
@@ -33,12 +34,13 @@ the file's `0..n-1` order, an arm with no `tools.jsonl` (the recorder creates
 it when the arm starts), a call record that fails the proxy's
 record contract (`recordProblems`), names an arm outside the manifest, or
 repeats a sequence number, a journal entry, resource sample, or tool run
-missing a field (an `EndTurn` needs its `outcome`), or an evidence file with
-a line that does not parse. It gathers, per arm, the call records, journal entries,
+missing a field (an `EndTurn` needs its `outcome`), or an evidence file (the
+journal included) with a line that does not parse. It gathers, per arm, the call records, journal entries,
 plugin log (`<arm>/r/eidnara.log`), daemon log (`<arm>/daemon.log`),
 resource samples, and tool runs (`<arm>/tools.jsonl`, one line per tool
 report with its turn; a Pi run with a `call` id is reported at its start with
-a null exit and again at its end, so it has two lines with one start time). `runOracles` returns every activation with its arm, where it
+a null exit and again at its end, so it has two lines with one start time; a
+run OpenCode recovered after its turn carries `recovered: true` and no turn). `runOracles` returns every activation with its arm, where it
 happened, and the evidence.
 
 | Oracle | Fires on |
@@ -46,7 +48,7 @@ happened, and the evidence.
 | F1 fold-lag overflow | An HTTP 4xx call whose error says the prompt exceeds the context (`prompt is too long`, `ContextOverflow`, `input is too long`), or a failed turn whose outcome says so and whose agent calls carry no overflow wording of their own, at any status (an auxiliary call's overflow in the same turn leaves the turn's activation in place; an agent call with overflow wording at a 5xx, `0`, or 2xx status keeps the turn out of F1) |
 | F2 array-shape 400 | An HTTP 4xx call whose error names a message-array shape fault: roles that fail to alternate, an assistant prefill, a final assistant message, modified thinking blocks, or empty or non-list content |
 | F3 raw-history fallback | A plugin `rust pass` line with `served_from=raw`, one per transform pass that served its input unchanged; the warning the plugin logs before a failed pass is not counted again; a pass the daemon declined by policy (`declined:invocation_budget`) also serves raw and counts |
-| F4 hang | A turn that hit its deadline (the harness's own wording: OpenCode's `turn deadline <N> ms` or Pi's `Timed out after <N>ms`) with no agent call, or whose recorded activity up to the turn end (turn start, call starts and ends, tool starts, turn end; a call that completed after the end counts to the end) has a gap above `oracles.hang_quiet_ms`, so a turn active to its deadline is a long turn and a tool that waited on until the deadline is a hang; a turn that began and saw no agent call, tool start, or turn end within `oracles.hang_quiet_ms` (five minutes, SIM-P39), whatever its outcome (an auxiliary call alone is not agent activity); or an agent call that completed, whatever its status, and was followed by no tool start, other same-turn call starting at or after its end (a persistence call counts), or turn end within that bound: one activation per turn, its evidence naming every silent window; a tool that starts within a second of the call's end counts as progress however long it runs in a turn that completed, and its silence counts in a turn that hit the deadline |
+| F4 hang | A turn that hit its deadline (the harness's own wording: OpenCode's `turn deadline <N> ms` or Pi's `Timed out after <N>ms`) with no agent call, or whose recorded activity up to the turn end (the turn start, each call's span from start to completion clamped to the end, tool starts, the turn end) leaves a gap above `oracles.hang_quiet_ms`, so a turn active to its deadline is a long turn and a tool that waited on until the deadline is a hang; a turn that began and saw no agent call or turn end within `oracles.hang_quiet_ms` (five minutes, SIM-P39), whatever its outcome (an auxiliary call or a tool start alone is not agent activity); or an agent call that completed, whatever its status, and was followed by no tool start, other same-turn model or persistence call starting at or after its end (a `title` call is neither), or turn end within that bound: one activation per turn, its evidence naming every silent window; a tool that starts within a second of the call's end counts as progress however long it runs in a turn that completed, and its silence counts in a turn that hit the deadline |
 | F5 RSS growth | A daemon lifetime's final RSS sample at or above `2 x RSS(0) + sessions x leak_bound.c_bytes_per_session` (SIM-P57's `RSS(T)` bound; a spike freed before the end is not a leak), or an RSS-per-session slope above that bound with a fit at or above `leak_bound.r2_threshold` over at least three distinct session counts; each daemon lifetime (the samples sharing a pid and process start time) is read on its own, with its first sample as RSS(0) and sessions counted from its start, so a restart hides no leak. The sampler records a sample when each daemon process is up (reset, resume, and after a fault's restart), one before a fault takes a daemon down, and a final sample when the arm finishes; a run whose daemon arm has no numeric RSS sample is refused by `loadRun` rather than read as leak-free |
 | F6 cost | An arm whose total tokens exceed `oracles.cost_ratio_max` (1.5) times the host arm's, or that makes more title calls than the host arm: one activation per arm and run, its evidence naming each exceeded bound; until the report prices tokens (M7) this is a token ratio |
 | F7 visible internal text | An agent response carrying plugin markup or diagnostics: history-segment tags, `eidnara` tags, context-researcher augmentation, `[eidnara]` log prefixes, or pass fields such as `row_version` and `served_from`; read from the recorded response text, the first 262,144 characters; a call whose text ran past that cap carries `response_text_truncated` |
@@ -66,7 +68,9 @@ F1 and F2, `transform` for F3, `memory_capture` for F8), and
 recoveries,
 and the pre-registration digest it used to `<run>/oracles.json`, warns when
 that digest differs from the one the run's manifest recorded, and prints the
-report. A run directory named more than once, by any path, counts once;
+report. It holds each run directory's lease while it reads, so a run still
+finishing is refused rather than read half-written. A run directory named
+more than once, by any path, counts once;
 `oracles.json` is written through a rename, so a symlink at that name is
 replaced, never followed.
 

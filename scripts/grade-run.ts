@@ -4,6 +4,7 @@ import { loadConfig, type SimConfig } from "../src/config/config";
 import {
     AnswerRefused,
     assertArtefactsOnly,
+    type CallView,
     GradeRefused,
     type Snapshot,
 } from "../src/grade/artefacts";
@@ -23,9 +24,11 @@ import {
     gradeItem,
     verdictCounts,
 } from "../src/grade/probes";
+import { canonicalJson } from "../src/prereg/canonical";
 import { preregistrationHash } from "../src/prereg/validate";
 import { bedrockUpstream, Gateway } from "../src/proxy/gateway";
 import { FaultInjector } from "../src/proxy/inject";
+import type { CallRecord } from "../src/proxy/records";
 import { RecordWriter } from "../src/proxy/records";
 import { Rng } from "../src/rng";
 import {
@@ -35,6 +38,7 @@ import {
     requireComplete,
     takeLease,
 } from "../src/run/journal";
+import { projectCall } from "../src/run/run";
 import { type Scenario, scenarioHash } from "../src/scenario/compile";
 import { loadPrereg } from "../src/scenario/inputs";
 
@@ -115,6 +119,10 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
         firstOf.add(key);
     }
     const journaled = new Set(named.keys());
+    const turnEnds = new Map<string, string>();
+    for (const e of entries.filter((e) => e.kind === "EndTurn" && typeof e.snapshot === "string")) {
+        turnEnds.set(String(e.snapshot), String(e.outcome));
+    }
     const probes = new Map(scenario.probes.map((p) => [p.id, p]));
     const snapshots = new Map<string, Snapshot[]>();
     for (const arm of arms) {
@@ -137,10 +145,20 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
             const probe = entry ? probes.get(s.item) : undefined;
             if (entry && probe) {
                 const turnOk = probe.event === undefined || s.turn === probe.event;
-                const sessionOk = s.session === undefined || s.session === probe.session;
+                const sessionOk = s.session === probe.session;
                 if (!turnOk || !sessionOk) {
                     throw new Error(
                         `snapshot ${s.id} is of turn ${s.turn} in session ${String(s.session)}, not the probe's event ${String(probe.event)} in session ${probe.session}`,
+                    );
+                }
+                const ended = turnEnds.get(s.id);
+                if (!ended) {
+                    throw new Error(`snapshot ${s.id} has no EndTurn naming it in the journal`);
+                }
+                const expected = ended === "ok" ? "ok" : "failed";
+                if (s.turn_outcome !== expected) {
+                    throw new Error(
+                        `snapshot ${s.id} records turn_outcome ${String(s.turn_outcome)}, but its EndTurn ended ${ended}`,
                     );
                 }
             }
@@ -149,42 +167,70 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
             snapshots.set(key, [...(snapshots.get(key) ?? []), kept]);
         }
     }
-    const present = new Set([...snapshots.values()].flat().map((s) => s.id));
-    const lost = [...named.keys()].filter((id) => !present.has(id));
+    const occurrences = new Map<string, number>();
+    for (const s of [...snapshots.values()].flat()) {
+        occurrences.set(s.id, (occurrences.get(s.id) ?? 0) + 1);
+    }
+    const lost = [...named.keys()].filter((id) => !occurrences.has(id));
     if (lost.length > 0) {
         throw new Error(`journaled snapshots have no row in snapshots.jsonl: ${lost.join(", ")}`);
     }
-    const recorded = new Map<string, { arm: string; model: string }>();
-    for (const r of readJournal(join(dir, "calls.jsonl"))) {
-        if (r.component !== "agent") continue;
-        if (typeof r.model !== "string" || typeof r.seq !== "number") {
-            throw new Error(`calls.jsonl record ${String(r.seq)} names no model`);
-        }
-        recorded.set(`${String(r.arm)}/${r.seq}`, { arm: String(r.arm), model: r.model });
-    }
-    const unrecorded = [...new Set([...recorded.values()].map((c) => c.model))].filter(
-        (m) => !models.includes(m),
-    );
-    if (unrecorded.length > 0) {
+    const doubled = [...named.keys()].filter((id) => (occurrences.get(id) ?? 0) > 1);
+    if (doubled.length > 0) {
         throw new Error(
-            `agent calls used models the manifest does not record: ${unrecorded.join(", ")}`,
+            `journaled snapshots have more than one row in snapshots.jsonl: ${doubled.join(", ")}`,
         );
     }
+    const wanted = new Map<string, Array<{ snapshot: string; call: CallView }>>();
     for (const rows of snapshots.values()) {
         for (const s of rows) {
             if (!journaled.has(s.id)) continue;
             const calls = s.artefacts.find((a) => a.class === "proxy-call");
             if (calls?.class !== "proxy-call") continue;
             for (const c of calls.calls) {
-                if (c.component !== "agent") continue;
-                const record = recorded.get(`${s.arm}/${c.seq}`);
-                if (!record) {
+                wanted.set(`${s.arm}/${c.seq}`, [
+                    ...(wanted.get(`${s.arm}/${c.seq}`) ?? []),
+                    { snapshot: s.id, call: c },
+                ]);
+            }
+        }
+    }
+    const agentModels = new Set<string>();
+    const callsPath = join(dir, "calls.jsonl");
+    if (existsSync(callsPath)) {
+        for await (const line of jsonlLines(callsPath)) {
+            const r = JSON.parse(line) as CallRecord;
+            if (typeof r.model !== "string" || typeof r.seq !== "number") {
+                throw new Error(`calls.jsonl record ${String(r.seq)} names no model`);
+            }
+            if (r.component === "agent") agentModels.add(r.model);
+            const copies = wanted.get(`${r.arm}/${r.seq}`);
+            if (!copies) continue;
+            const expected = canonicalJson(projectCall(r));
+            for (const held of copies) {
+                const { turn_index: _turn, ...stored } = held.call;
+                if (canonicalJson(stored) !== expected) {
                     throw new Error(
-                        `snapshot ${s.id} holds agent call ${c.seq}, which calls.jsonl does not record for arm ${s.arm}`,
+                        `snapshot ${held.snapshot} holds call ${r.seq} with content that differs from calls.jsonl`,
                     );
                 }
             }
+            wanted.delete(`${r.arm}/${r.seq}`);
         }
+    }
+    const unrecorded = [...agentModels].filter((m) => !models.includes(m));
+    if (unrecorded.length > 0) {
+        throw new Error(
+            `agent calls used models the manifest does not record: ${unrecorded.join(", ")}`,
+        );
+    }
+    const [orphan] = wanted;
+    if (orphan) {
+        const [key, copies] = orphan;
+        const snapshot = copies[0]?.snapshot ?? "?";
+        throw new Error(
+            `snapshot ${snapshot} holds call ${key.split("/").pop()}, which calls.jsonl does not record for arm ${key.split("/")[0]}`,
+        );
     }
     const attempts = (arm: string, item: string): Snapshot[] | undefined => {
         const rows = snapshots.get(`${arm}/${item}`) ?? [];

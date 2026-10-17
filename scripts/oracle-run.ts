@@ -5,6 +5,7 @@ import { ledger, oracleReport, runOracles } from "../src/oracle/oracles";
 import { recoveries } from "../src/oracle/recovery";
 import { TIERS, type Tier } from "../src/prereg/schema";
 import { preregistrationHash } from "../src/prereg/validate";
+import { releaseLease, takeLease } from "../src/run/journal";
 import { loadPrereg } from "../src/scenario/inputs";
 
 /** A run directory named more than once, by any path, is one run; the tier report counts it once. */
@@ -18,6 +19,19 @@ export function runDirs(args: string[]): string[] {
  */
 export function oracleRun(dirs: string[]) {
     const runs = dirs.map((dir) => {
+        takeLease(dir);
+        try {
+            return oracleOne(dir);
+        } finally {
+            releaseLease(dir);
+        }
+    });
+    return oracleReport(runs);
+}
+
+/** Loads and evaluates one run while holding its lease, so a run still finishing is refused rather than read half-written. */
+function oracleOne(dir: string) {
+    {
         const manifest = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8"));
         const tier = manifest.tier as Tier;
         if (!TIERS.includes(tier)) throw new Error(`${dir}: unknown tier ${tier}`);
@@ -40,8 +54,7 @@ export function oracleRun(dirs: string[]) {
         writeFileSync(`${out}.tmp`, `${JSON.stringify(result, null, 2)}\n`);
         renameSync(`${out}.tmp`, out);
         return run;
-    });
-    return oracleReport(runs);
+    }
 }
 
 /** Every run's recovery rows from the `oracles.json` files `oracleRun` wrote, each with its run. */

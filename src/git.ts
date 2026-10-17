@@ -2,7 +2,8 @@ import { spawnSync } from "node:child_process";
 
 /**
  * The environment for a harness git child: the parent's variables minus every `GIT_*`
- * variable, with global and system config disabled, then `extra`. A git hook or shell that
+ * variable, with global and system config disabled and the per-user excludes file
+ * (`$XDG_CONFIG_HOME/git/ignore`) pointed at `/dev/null`, then `extra`. A git hook or shell that
  * launched the harness can set `GIT_DIR`, `GIT_INDEX_FILE`, or `GIT_CONFIG_*`, and any of
  * them would redirect or reconfigure the child.
  */
@@ -11,7 +12,15 @@ export function gitEnv(extra: Record<string, string> = {}): Record<string, strin
     for (const [key, value] of Object.entries(process.env)) {
         if (value !== undefined && !key.startsWith("GIT_")) env[key] = value;
     }
-    return { ...env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", ...extra };
+    return {
+        ...env,
+        GIT_CONFIG_GLOBAL: "/dev/null",
+        GIT_CONFIG_NOSYSTEM: "1",
+        GIT_CONFIG_COUNT: "1",
+        GIT_CONFIG_KEY_0: "core.excludesFile",
+        GIT_CONFIG_VALUE_0: "/dev/null",
+        ...extra,
+    };
 }
 
 /** A git run that hit one of the harness's bounds: its time limit or its output cap. */

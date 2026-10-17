@@ -20,7 +20,8 @@ A snapshot holds the artefacts the harness captured at a probe turn's first
 
 `gradeItem` refuses a snapshot with an artefact of any other class, such as
 an agent transcript or self-report (SIM-P40), an artefact whose class payload is missing (a diff without its `patch`, a
-command log or proxy-call artefact without its array), a snapshot without an artefact
+command log or proxy-call artefact without its array, a test result without
+its command, exit, and summary, a workspace state without its files), a snapshot without an artefact
 its grader reads (the turn diff for the diff graders and for a P13 item whose
 check names no commands, the turn command log for P5 and P6, the
 prior-session diff for P6, whose item opens a later session of its project,
@@ -47,7 +48,9 @@ with the item and snapshot id once per item and arm, right after the turn's
 first `EndTurn` (SIM-P41). The `EndTurn` entry names the snapshot too, so a
 resume after a kill between the two entries journals the snapshot from it.
 Snapshots append to `<arm>/snapshots.jsonl`, and a recorder rebuilt after a
-kill drops a cut last line, found by scanning the file's tail in chunks; a
+kill drops a cut last line, found by scanning the file's tail in chunks (the
+run's call-record writer reopens `calls.jsonl` the same way, reading only the
+tail); a
 snapshot id is `<arm>:<item>:<turn event>`, so each attempt has its own id,
 and each snapshot names its session, which the P7 grader checks against the
 probe's.
@@ -57,9 +60,12 @@ summarizer or compaction call the turn started) have ended, so the
 workspace is bounded by the turn deadline; a run past it fails the probe turn
 with `snapshot: git ... timed out` and the item has no snapshot; a run past the
 bound at a session boundary leaves that session without a start or end tree,
-so the next session carries no prior-session diff. The recorder removes the
-index lock a killed git leaves, after a timeout and when rebuilt after a
-kill; on rebuild it first waits up to the bound for a still-running holder.
+so the next session carries no prior-session diff. The recorder refuses a
+restored state whose tree ids are not 40-hex object ids before any git run.
+The recorder removes the index lock a killed git leaves after a timeout; a recorder rebuilt after a
+kill that finds a workspace index lock moves that workspace to a fresh,
+numbered index file and leaves the lock and its index to the orphaned git
+child that may still hold them.
 The nested-repository check and the recorder's workspace path check run
 before any walk of the workspace, and the walk itself stops at the bound or
 at 200,000 entries, failing the probe turn. A `git diff` past the 256 MiB
@@ -73,17 +79,23 @@ rewrite the content git indexes. The baseline is the source's `.gitignore` and
 recorded at reset. The rule files are found by name in the workspace walk and
 hashed from disk, so a rule that ignores its own file still surfaces it; a rule
 path that is a symlink, FIFO, or directory, or larger than 1 MiB, reads as a
-changed rule. A workspace with more than 1,000 nested
-repositories fails the probe turn before git runs. Each probe snapshot reads its session's call records by position from an
+changed rule, a workspace with more than 1,000 rule files fails the probe
+turn during the walk, and hashing them runs under the recorder bound. A
+workspace with more than 1,000 nested repositories fails the probe turn
+before git runs. Each probe snapshot reads its session's call records by position from an
 index the proxy's writer keeps (seeded once from `calls.jsonl` on resume), so
-capture cost grows with the session, not the run. The workspace walk reads
+capture cost grows with the session, not the run; the run's writer keeps no
+record in memory once it is on disk. The workspace walk reads
 each directory one entry at a time, so its entry cap and deadline hold inside
 a wide directory too. The driver waits the scheduler's settle window and then its background
 jobs before it takes a probe snapshot, and checks the daemon is alive after
 the prompt and again after the snapshot, reporting an exit once with the
 turn's id. A proxy call record the gateway failed to write stops the run at
-the next snapshot or at the run's end, so `calls.jsonl` never silently lacks a
-call the host made. The grade, judge-call, and judgment logs must be regular
+the next snapshot or before `EndArm` and `EndRun` are journaled, so the run
+stays open for a resume and `calls.jsonl` never silently lacks a call the host
+made. Recorder git children run with global and system config disabled and
+the per-user excludes file (`$XDG_CONFIG_HOME/git/ignore`) pointed at
+`/dev/null`, so the workspace's own rules are the only ignore rules. The grade, judge-call, and judgment logs must be regular
 files or absent; a symlink at any of those paths stops grading before a
 write.
 The snapshot tree adds, with `--force`, the paths the project's source
@@ -96,19 +108,22 @@ is excluded (SIM-P46) instead of graded on a diff that lacks that content.
 The recorder's git refuses a workspace path that is a symlink or lies behind
 one, and a tracked-but-ignored path whose parent became a symlink is left out
 of the tree. Nested repositories are found by their `.git` entries, with the
-ones the workspace's ignore rules match left alone. Snapshot diffs run with
+ones the workspace's ignore rules match left alone; a nested repository is
+also removed from the recorder's index, so a directory it replaced reads as
+deleted in the tree. Snapshot diffs run with
 `--text`, so a NUL byte or a `-diff` attribute hides no added line.
 
 | Artefact | Source |
 |---|---|
 | `diff` (`turn`) | A git tree of the workspace's files that its `.gitignore` rules leave in, untracked files included, taken before the prompt and after it, and diffed |
 | `diff` (`prior-session`) | The same trees at the start and end of the project's previous session |
-| `command-log` | The host's tool runs, each a bash command or the tool name, its path, and its scalar arguments as `name=value` (a `read`'s offset and limit) followed by the text and structured arguments it was given (a `write`'s content, an `edit`'s edits), with a 0 or 1 error flag (null for a run that never finished) and the scenario time the run started. The recorder saves each run as the host logs it, so a harness kill mid-turn keeps the runs logged so far in the session log. Pi reports `tool_execution_start` and `tool_execution_end` events as they happen, and a run is timed from its start event and reaches the recorder at that start with a null exit, which its end report replaces, so a harness kill mid-run keeps the run on record; OpenCode's tool parts come from the session messages the turn added, read after the turn whatever its outcome, each timed from its start relative to the turn's first new message, both in OpenCode's own clock, with a pending or running part's exit null, and keyed by the part's id; on reattaching to a session after a kill, the host reports every tool part the session's messages hold, so a turn that was running at the kill still contributes its runs, timed at the resume when the recorder has no earlier record of them; the listings and the turn share one turn deadline, and a listing that stalls fails the turn as a capture gap |
+| `command-log` | The host's tool runs, each a bash command or the tool name, its path, and its scalar arguments as `name=value` (a `read`'s offset and limit) followed by the text and structured arguments it was given (a `write`'s content, an `edit`'s edits), with a 0 or 1 error flag (null for a run that never finished) and the scenario time the run started. The recorder saves each run as the host logs it, so a harness kill mid-turn keeps the runs logged so far in the session log. Pi reports `tool_execution_start` and `tool_execution_end` events as they happen, and a run is timed from its start event and reaches the recorder at that start with a null exit, which its end report replaces, so a harness kill mid-run keeps the run on record; OpenCode's tool parts come from the session messages the turn added, read after the turn whatever its outcome, each timed from its start relative to the turn's first new message, both in OpenCode's own clock, with a pending or running part's exit null, and keyed by the part's id; on reattaching to a session after a kill, the host reports every tool part the session's messages hold, so a turn that was running at the kill still contributes its runs, timed at the resume when the recorder has no earlier record of them; the listings and the turn share one turn deadline, a listing that stalls is aborted and fails the turn as a capture gap, and the tool parts a failed post-turn listing missed are reported before the next turn |
 | `proxy-call` | The session's call records from `calls.jsonl`, each with the index of the user turn it belongs to (a background call takes the preceding turn's), a `failed` flag on a call that ended in an error status, a recorded error, or a cut stream (such a call is no fold for P13), and the response text the proxy records for agent, user-sim, and judge calls (the first 262,144 characters, with `response_text_truncated` on a longer reply) |
 
 The recorder keeps each project's session-start tree, the last session's
 tree pair, the last ended session, and the open session's commands in
-`<arm>/snapshot-state.json`, so a resumed arm reopens its session with the
+`<arm>/snapshot-state.json` (written through a freshly created staging file
+and renamed into place), so a resumed arm reopens its session with the
 same start tree and commands, and a `session_start` and `session_end` that a
 resume replays for a session that already ended leave its trees as recorded.
 
@@ -127,14 +142,18 @@ the graders read neither.
 `scripts/grade-run.ts <run dir>` takes the run's lease, so one grader at a
 time allocates versions, refuses a run whose pre-registration or scenario no
 longer hashes to the digests in its manifest or whose journal lacks `EndRun`
-or an arm's `EndArm` and one terminal `Event` per scheduled event (SIM-P67),
-drops a cut last line of `grades.jsonl`, requires one `SnapshotArtefacts` entry per arm and item, a row for every
-journaled snapshot id, every snapshot row to name its directory's arm and
+or an arm's `EndArm` and one terminal `Event` per scheduled event, in the
+scheduled order (SIM-P67),
+drops a cut last line of `grades.jsonl`, requires one `SnapshotArtefacts` entry per arm and item, exactly one row for
+every journaled snapshot id, every snapshot row to name its directory's arm and
 carry grade-class artefacts only, every journaled row to match its journal
-entry's arm and item and the compiled probe's event and session, every
+entry's arm and item and the compiled probe's event and session, to be named
+by an `EndTurn` whose outcome agrees with its `turn_outcome`, every
 agent call's model in `calls.jsonl` to be one
-the manifest records, and every agent call a journaled snapshot holds to be
-recorded in `calls.jsonl` under the snapshot's arm, reads each arm's snapshot log one row at a time and
+the manifest records, and every call a journaled snapshot holds, whatever its
+component, to be recorded in `calls.jsonl` under the snapshot's arm with the
+same content in every snapshot that holds it (`calls.jsonl` is read one record at a time,
+keeping only the records the snapshots name), reads each arm's snapshot log one row at a time and
 keeps the artefacts of journaled rows only, computes every grade before it
 appends any (an item whose answer the proxy truncated is skipped as `answer
 refused`; a structural artefact violation aborts with nothing appended),

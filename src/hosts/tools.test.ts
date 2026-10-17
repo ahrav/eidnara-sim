@@ -285,7 +285,7 @@ test("reattaching to an OpenCode session reports the tool parts its messages alr
     });
     await host.recoverTools(1_000);
     expect(reported).toEqual([
-        { command: "cargo build", exit: 0, scenario_ms: 700, call: "oc:prt-1" },
+        { command: "cargo build", exit: 0, scenario_ms: 700, call: "oc:prt-1", recovered: true },
     ]);
 });
 
@@ -327,6 +327,78 @@ test("a slow pre-turn listing leaves the turn only the remaining deadline", asyn
     await host.prompt("go", 1_600);
     expect(turnDeadline).toBeGreaterThanOrEqual(1_000);
     expect(turnDeadline).toBeLessThan(1_100);
+});
+
+test("a timed-out message listing aborts its request", async () => {
+    let signal: AbortSignal | undefined;
+    const client = {
+        session: {
+            messages: (o: { signal?: AbortSignal }) => {
+                signal = o.signal;
+                return new Promise(() => undefined);
+            },
+            prompt: async () => ({ data: { info: {} } }),
+            abort: async () => ({}),
+        },
+    };
+    const host = new OpencodeSimHost({
+        ...({} as HostContext),
+        config: loadConfig(),
+        root: "/x",
+        launcher: "/x/sandbox.sh",
+        now: () => 100,
+    });
+    Object.assign(host as unknown as Record<string, unknown>, {
+        client,
+        sid: "s",
+        oc: { stderr: () => "" },
+    });
+    const result = await host.prompt("go", 1_000);
+    expect(result.error).toContain("timed out");
+    expect(signal?.aborted).toBe(true);
+});
+
+test("tool parts a failed post-turn listing missed are reported before the next turn", async () => {
+    const reported: unknown[] = [];
+    const part = (id: string, command: string) => ({
+        type: "tool",
+        id,
+        tool: "bash",
+        state: { input: { command }, status: "completed", time: { start: 5 } },
+    });
+    const m1 = { info: { id: "m1", time: { created: 1 } }, parts: [part("p1", "cargo build")] };
+    let listings = 0;
+    const client = {
+        session: {
+            messages: async () => {
+                listings++;
+                if (listings === 1) return { data: [] };
+                if (listings === 2) throw new Error("serve gone");
+                return { data: [m1] };
+            },
+            prompt: async () => ({ data: { info: {} } }),
+            abort: async () => ({}),
+        },
+    };
+    const host = new OpencodeSimHost({
+        ...({} as HostContext),
+        config: loadConfig(),
+        root: "/x",
+        launcher: "/x/sandbox.sh",
+        now: () => 100,
+        onTool: (run) => void reported.push(run),
+    });
+    Object.assign(host as unknown as Record<string, unknown>, {
+        client,
+        sid: "s",
+        oc: { stderr: () => "" },
+    });
+    expect((await host.prompt("first", 1_000)).error).toContain("tool capture");
+    expect(reported).toEqual([]);
+    await host.prompt("second", 1_000);
+    expect(reported).toEqual([
+        { command: "cargo build", exit: 0, scenario_ms: 100, call: "oc:p1", recovered: true },
+    ]);
 });
 
 test("a Pi turn whose abort never drains kills the Pi process, and later prompts in the session fail fast", async () => {
@@ -485,6 +557,82 @@ test("an agent_end emitted in the same tick as the prompt failure still settles 
     });
     const result = await host.prompt("go", 1_000);
     expect(result.error).toContain("prompt failed");
+    expect(result.error).not.toContain("killed");
+    expect(stopped).toEqual([]);
+});
+
+test("a stalled abort RPC does not delay the drain verdict past the drain wait", async () => {
+    const host = new PiSimHost({
+        ...({} as HostContext),
+        config: loadConfig(),
+        root: "/x",
+        launcher: "/x/sandbox.sh",
+        now: () => 1,
+    });
+    const stopped: number[] = [];
+    const rpc = {
+        child: { pid: 4242, stdin: { end: () => {} } },
+        sendCommand: (name: string) => {
+            if (name === "prompt") return Promise.reject(new Error("Timed out after 100ms"));
+            return new Promise(() => {});
+        },
+        waitForEvent: (_match: unknown, o: { timeoutMs: number }) =>
+            new Promise((_resolve, reject) =>
+                setTimeout(() => reject(new Error("agent_end timed out")), o.timeoutMs),
+            ),
+        shutdown: async () => {},
+        onEvent: () => {},
+    };
+    Object.assign(host as unknown as Record<string, unknown>, {
+        rpc,
+        stopTree: async (pid: number) => void stopped.push(pid),
+        drainWaitMs: 50,
+    });
+    const started = Date.now();
+    const result = await host.prompt("go", 100);
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(result.error).toContain("killed");
+    expect(stopped).toEqual([4242]);
+});
+
+test("an agent_end arriving in the tick after the first waiter expired still settles the drain", async () => {
+    const host = new PiSimHost({
+        ...({} as HostContext),
+        config: loadConfig(),
+        root: "/x",
+        launcher: "/x/sandbox.sh",
+        now: () => 1,
+    });
+    const stopped: number[] = [];
+    const waiters: Array<(v: unknown) => void> = [];
+    const rpc = {
+        child: { pid: 4242, stdin: { end: () => {} } },
+        sendCommand: (name: string) => {
+            if (name !== "prompt") return Promise.resolve({});
+            return new Promise((_resolve, reject) => {
+                setTimeout(() => {
+                    reject(new Error("Timed out after 20ms"));
+                    setTimeout(() => {
+                        for (const w of waiters.splice(0)) w({ type: "agent_end" });
+                    }, 0);
+                }, 20);
+            });
+        },
+        waitForEvent: (_match: unknown, o: { timeoutMs: number }) =>
+            new Promise((resolve, reject) => {
+                waiters.push(resolve);
+                setTimeout(() => reject(new Error("agent_end timed out")), o.timeoutMs);
+            }),
+        shutdown: async () => {},
+        onEvent: () => {},
+    };
+    Object.assign(host as unknown as Record<string, unknown>, {
+        rpc,
+        stopTree: async (pid: number) => void stopped.push(pid),
+        drainWaitMs: 200,
+    });
+    const result = await host.prompt("go", 20);
+    expect(result.error).toContain("Timed out");
     expect(result.error).not.toContain("killed");
     expect(stopped).toEqual([]);
 });

@@ -50,7 +50,9 @@ list. For each arm, it resets the driver, then walks the events:
 
 1. Wait one settle interval after each answered turn (`settleMs`, 1 s by
    default), so a background job the host starts after its answer registers
-   before the clock moves, then wait until the busy set is empty.
+   before the clock moves, then wait until the busy set is empty and stays
+   empty for a further settle interval, so a job that starts another after
+   it ends is waited for too.
 2. Close any outage window from the previous event.
 3. For each laptop sleep keyed on the event, jump by its `duration_ms`, one
    `AdvanceClock` each; then jump to the event's scheduled time if it is still
