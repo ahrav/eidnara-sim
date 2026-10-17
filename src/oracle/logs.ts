@@ -109,36 +109,38 @@ const lines = (path: string) =>
  */
 function requireTurnEnds(journal: Entry[], arms: string[], events: Scenario["events"]): void {
     const turns = new Set(events.filter((e) => e.kind === "user_turn").map((e) => String(e.id)));
+    const rank: Record<string, number> = { BeginTurn: 0, EndTurn: 1, Event: 2 };
     for (const arm of arms) {
-        const mine = journal.filter((e) => e.arm === arm);
-        for (const e of mine) {
-            if ((e.kind === "EndTurn" || e.kind === "BeginTurn") && !turns.has(String(e.event))) {
-                throw new Error(`arm ${arm}: ${e.kind} for unscheduled event ${String(e.event)}`);
+        const markers = new Map<
+            string,
+            { kinds: string[]; begins: number; ends: number; closed?: Entry }
+        >();
+        for (const e of journal) {
+            if (e.arm !== arm || !(String(e.kind) in rank)) continue;
+            const id = String(e.event);
+            if ((e.kind === "EndTurn" || e.kind === "BeginTurn") && !turns.has(id)) {
+                throw new Error(`arm ${arm}: ${e.kind} for unscheduled event ${id}`);
             }
+            const m = markers.get(id) ?? { kinds: [], begins: 0, ends: 0 };
+            m.kinds.push(String(e.kind));
+            if (e.kind === "BeginTurn") m.begins += 1;
+            if (e.kind === "EndTurn") m.ends += 1;
+            if (e.kind === "Event") m.closed = e;
+            markers.set(id, m);
         }
         for (const id of turns) {
-            const order = mine
-                .filter(
-                    (e) =>
-                        ["BeginTurn", "EndTurn", "Event"].includes(String(e.kind)) &&
-                        e.event === id,
-                )
-                .map((e) => String(e.kind));
-            const rank: Record<string, number> = { BeginTurn: 0, EndTurn: 1, Event: 2 };
-            const sorted = order.every(
-                (k, i) => i === 0 || (rank[k] ?? 9) >= (rank[order[i - 1] ?? ""] ?? 9),
+            const m = markers.get(id) ?? { kinds: [], begins: 0, ends: 0 };
+            const sorted = m.kinds.every(
+                (k, i) => i === 0 || (rank[k] ?? 9) >= (rank[m.kinds[i - 1] ?? ""] ?? 9),
             );
             if (!sorted) throw new Error(`arm ${arm}: turn ${id} markers out of order`);
-            const begins = mine.filter((e) => e.kind === "BeginTurn" && e.event === id).length;
-            if (begins !== 1) {
-                const what = begins === 0 ? "no BeginTurn" : `${begins} BeginTurn entries`;
+            if (m.begins !== 1) {
+                const what = m.begins === 0 ? "no BeginTurn" : `${m.begins} BeginTurn entries`;
                 throw new Error(`arm ${arm}: turn ${id} has ${what}`);
             }
-            const ends = mine.filter((e) => e.kind === "EndTurn" && e.event === id).length;
-            const closed = mine.find((e) => e.kind === "Event" && e.event === id);
-            if (ends === 0 && String(closed?.outcome) === "failed(interrupted)") continue;
-            if (ends === 0) throw new Error(`arm ${arm}: turn ${id} has no EndTurn`);
-            if (ends > 1) throw new Error(`arm ${arm}: turn ${id} has ${ends} EndTurn entries`);
+            if (m.ends === 0 && String(m.closed?.outcome) === "failed(interrupted)") continue;
+            if (m.ends === 0) throw new Error(`arm ${arm}: turn ${id} has no EndTurn`);
+            if (m.ends > 1) throw new Error(`arm ${arm}: turn ${id} has ${m.ends} EndTurn entries`);
         }
     }
 }
