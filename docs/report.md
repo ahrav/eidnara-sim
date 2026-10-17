@@ -7,7 +7,9 @@
 `soak(run, arm, resource)` reads an arm's resource samples (`rss`, `heap`,
 or `store_bytes`) from its first nonzero sample on, and the journal's
 session ends; it reports the longest wall-time gap between samples beside
-the pre-registered `leak_bound.sample_interval_ms`. That first sample is
+the pre-registered `leak_bound.sample_interval_ms`; the sampler takes a
+last sample when the arm finishes, after its final session end. That
+first sample is
 the baseline, `value(0)`, and a sample's `sessions` counts the session
 ends completed after it, so growth before the baseline is in the
 baseline and is granted no allowance twice. The `heap` is the
