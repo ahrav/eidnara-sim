@@ -18,7 +18,7 @@ export interface TierReport {
     verdict: TierVerdict;
     oracles: Record<string, OracleCount>;
     recoveries: (Recovery & { run: string })[];
-    soak: SoakVerdict[];
+    soak: (SoakVerdict & { run: string })[];
     intrusiveness: (Intrusiveness & { run: string })[];
     cost: CostPanel[];
     judge: { run: string; cost: ComponentCost | null }[];
@@ -155,6 +155,7 @@ function panels(r: TierReport): string[] {
         "",
         ...table(
             [
+                "run",
                 "arm",
                 "resource",
                 "verdict",
@@ -168,6 +169,7 @@ function panels(r: TierReport): string[] {
                 "max gap s",
             ],
             r.soak.map((s) => [
+                s.run,
                 s.arm,
                 s.resource,
                 s.verdict,

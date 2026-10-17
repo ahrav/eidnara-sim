@@ -413,7 +413,7 @@ export function evaluateTier(p: Preregistration, input: TierInput): TierVerdict 
         .find((f) => f.family === "harm")
         ?.metrics.filter((m) => m.verdict === "worse")
         .map((m) => ({ metric: m.metric, interval: m.interval }));
-    const incomplete = input.incomplete ?? [];
+    const incomplete = [...(input.incomplete ?? []), ...unavailable.map((u) => `CUSUM ${u}`)];
     const verdict: TierVerdict = {
         prereg_sha256: preregistrationHash(p),
         journal_seq_at_eval: input.journal_seq_at_eval ?? null,
@@ -428,7 +428,7 @@ export function evaluateTier(p: Preregistration, input: TierInput): TierVerdict 
             components: gates.map((f) => f.family),
             per_component_alpha: Object.fromEntries(gates.map((f) => [f.family, f.alpha])),
             incomplete,
-            rule: "intersection-union: the tier passes when every gate component passes at its own alpha, no CUSUM rule stopped it, and the pre-registered campaign is complete; a noninferiority or at-most component decides on the upper end of its two-sided interval, a one-sided test at half its alpha",
+            rule: "intersection-union: the tier passes when every gate component passes at its own alpha, no CUSUM rule stopped it, every CUSUM rule had its A/A scale, and the pre-registered campaign is complete; a noninferiority or at-most component decides on the upper end of its two-sided interval, a one-sided test at half its alpha",
         },
         stops: halts,
         cusum_unavailable: unavailable,

@@ -78,7 +78,14 @@ interface FixtureOptions {
     host?: "pi" | "opencode";
     seed?: number;
     hostJitter?: (i: number) => number;
+    commit?: string;
 }
+const identity = (commit = "abc") => ({
+    eidnara_commit: commit,
+    models: ["m"],
+    context_limit: 1,
+    events: 36,
+});
 
 function fixture(status = (_: number) => 200, opts: FixtureOptions = {}): GradedRun {
     const dir = mkdtempSync(join(tmpdir(), "sim-report-"));
@@ -186,8 +193,28 @@ function fixture(status = (_: number) => 200, opts: FixtureOptions = {}): Graded
         scenario,
         grades,
         host: opts.host ?? "pi",
+        judged: [],
+        identity: identity(opts.commit),
     };
 }
+
+const judgment = (
+    item: string,
+    arm: string,
+    pass: boolean,
+    inputs: string[],
+    eligible = true,
+): GradeRecord => ({
+    item,
+    arm,
+    probe_type: "P7",
+    version: 1,
+    snapshot: `${arm}:${item}`,
+    inputs,
+    later_attempts_logged: 0,
+    verdict: pass ? "pass" : "fail",
+    metrics: { "P7.pass": pass, gate_eligible: eligible },
+});
 
 const arm = (g: GradedRun, name: string) => g.run.arms.find((a) => a.arm === name) as ArmLogs;
 const observation = (g: GradedRun[], metric: string) =>
@@ -612,6 +639,75 @@ describe("tier report", () => {
             stdout: "pipe",
         });
         expect([r.exitCode, r.stderr.toString().includes("usage:")]).toEqual([2, true]);
+    });
+
+    test("a P7 judgment outside the gate's eligibility leaves its pair out", () => {
+        const g = fixture();
+        g.judged.push(judgment("q-7", "host", false, ["h", "e"], false));
+        g.judged.push(judgment("q-7", "eidnara", true, ["h", "e"], false));
+        expect(observation([g], "P7.pass")?.items).toEqual([]);
+        for (const r of g.judged) r.metrics.gate_eligible = true;
+        expect(observation([g], "P7.pass")?.items).toHaveLength(1);
+    });
+
+    test("a P7 pair takes the host grade from the same judgment", () => {
+        const g = fixture();
+        g.judged.push(judgment("q-7", "host", true, ["e", "h"]));
+        g.judged.push(judgment("q-7", "eidnara", true, ["e", "h"]));
+        g.judged.push(judgment("q-7", "host", false, ["h", "kl"]));
+        g.judged.push(judgment("q-7", "eidnara-kl", true, ["h", "kl"]));
+        expect(observation([g], "P7.pass")?.items?.map((x) => [x.control, x.treatment])).toEqual([
+            [1, 1],
+        ]);
+    });
+
+    test("a run without a gate metric's value keeps the campaign incomplete", () => {
+        const g = fixture();
+        const host = arm(g, "host");
+        host.journal = host.journal.filter((e) => e.kind !== "EndTurn");
+        expect(tierInput(prereg, [g]).incomplete).toContain(
+            "turn_latency_p95_delta_ms: run S-pi-101 unavailable",
+        );
+    });
+
+    test("loadGraded applies the manifest's fault override", () => {
+        const dir = mkdtempSync(join(tmpdir(), "sim-report-"));
+        const body = { manifest: { seed: 101 }, events: [], probes: [], faults: [] };
+        const scenario_hash = sha256Hex(canonicalJson(body));
+        const fault = {
+            id: "f-x",
+            trigger: { session: "s-0" },
+        } as unknown as Scenario["faults"][number];
+        writeFileSync(
+            join(dir, "manifest.json"),
+            JSON.stringify({
+                tier: "S",
+                seed: 101,
+                host: "pi",
+                order: [],
+                base_wall_ms: 0,
+                prereg_sha256: preregistrationHash(prereg),
+                scenario_hash,
+                fault_override: [fault],
+            }),
+        );
+        writeFileSync(join(dir, "scenario.json"), canonicalJson({ ...body, scenario_hash }));
+        expect(loadGraded(dir, prereg).scenario.faults).toEqual([fault]);
+    });
+
+    test("runs of one tier with different live settings keep the campaign incomplete", () => {
+        const a = fixture(undefined, { host: "pi" });
+        const b = fixture(undefined, { host: "opencode", commit: "def" });
+        expect(tierInput(prereg, [a, b]).incomplete).toContain(
+            "runs differ in eidnara_commit: abc, def",
+        );
+    });
+
+    test("soak rows name their run", () => {
+        const g = fixture();
+        const report = tierReport(prereg, [g], boundary);
+        expect(new Set(report.soak.map((s) => s.run))).toEqual(new Set([g.run.dir]));
+        expect(renderTier(report)).toContain(`| ${g.run.dir} | eidnara | rss | no leak |`);
     });
 
     test("a planted 4xx difference between the A/A arms fails that falsification check", () => {

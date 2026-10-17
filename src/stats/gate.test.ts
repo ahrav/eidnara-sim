@@ -127,9 +127,14 @@ describe("tier gates", () => {
         const f = evaluate([binary("P1.pass", futile)], { cusum_sd: { harm: 0.5, futility: 0.5 } });
         expect(f.stops.map((s) => s.kind)).toEqual(["futility"]);
         expect(f.pass.passed).toBe(false);
-        expect(evaluate([binary("P1.pass", futile)]).cusum_unavailable).toEqual([
+        const bare = evaluate([binary("P1.pass", futile)]);
+        expect(bare.cusum_unavailable).toEqual([
             "harm: no A/A standard deviation",
             "futility: no A/A standard deviation",
+        ]);
+        expect(bare.pass.incomplete).toEqual([
+            "CUSUM harm: no A/A standard deviation",
+            "CUSUM futility: no A/A standard deviation",
         ]);
     });
 

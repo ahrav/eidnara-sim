@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { GradeLog } from "../grade/probes";
+import { GradeLog, type GradeRecord } from "../grade/probes";
 import { armBase } from "../hosts/arms";
 import { loadRun } from "../oracle/logs";
 import { oracleReport } from "../oracle/oracles";
@@ -13,7 +13,7 @@ import { evaluateTier, falsificationSet, type TierInput } from "../stats/gate";
 import { costPanel, judgeCost } from "./cost";
 import { falsificationPairs } from "./falsify";
 import { intrusiveness } from "./intrusive";
-import { type GradedRun, tierInput } from "./observe";
+import { type GradedRun, type RunIdentity, tierInput } from "./observe";
 import type { TierReport } from "./render";
 import { soak } from "./soak";
 
@@ -22,7 +22,8 @@ export function loadGraded(dir: string, prereg: Preregistration): GradedRun {
         host: string;
         prereg_sha256: string;
         scenario_hash: string;
-    };
+        fault_override: Scenario["faults"] | null;
+    } & RunIdentity;
     const current = preregistrationHash(prereg);
     if (manifest.prereg_sha256 !== current) {
         throw new Error(
@@ -37,12 +38,21 @@ export function loadGraded(dir: string, prereg: Preregistration): GradedRun {
             `${dir}: scenario.json hashes to ${actual}; the manifest ran scenario ${manifest.scenario_hash}`,
         );
     }
-    const grades = join(dir, "grades.jsonl");
+    const log = new GradeLog(join(dir, "grades.jsonl"));
+    const all = log.all();
+    const judged = new Map<string, GradeRecord>();
+    for (const g of all.filter((r) => r.probe_type === "P7")) {
+        const key = `${g.item}/${g.arm}/${g.inputs.join("\n")}`;
+        if ((judged.get(key)?.version ?? 0) < g.version) judged.set(key, g);
+    }
+    const { eidnara_commit, models, context_limit, events } = manifest;
     return {
         run: loadRun(dir, prereg),
-        scenario,
-        grades: existsSync(grades) ? new GradeLog(grades).latest() : [],
+        scenario: { ...scenario, faults: manifest.fault_override ?? scenario.faults },
+        grades: log.latest(),
+        judged: [...judged.values()],
         host: manifest.host,
+        identity: { eidnara_commit, models, context_limit, events },
     };
 }
 
@@ -129,7 +139,10 @@ export function tierReport(
         soak: perArm
             .filter(({ arm }) => armBase(arm.arm) !== "host")
             .flatMap(({ g, arm }) =>
-                (["rss", "heap", "store_bytes"] as const).map((r) => soak(g.run, arm, r)),
+                (["rss", "heap", "store_bytes"] as const).map((r) => ({
+                    ...soak(g.run, arm, r),
+                    run: g.run.dir,
+                })),
             ),
         intrusiveness: perArm.map(({ g, arm }) => ({
             ...intrusiveness(g.run, arm),

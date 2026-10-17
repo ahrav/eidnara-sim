@@ -73,7 +73,12 @@ prints the Markdown. `loadGraded` refuses a run directory whose manifest
 records a `prereg_sha256` other than the hash of the tier's current
 pre-registration, or whose `scenario.json` hashes to other than the
 manifest's `scenario_hash`, so a verdict carries the registration and the
-scenario its runs were made under. Each run directory needs `grades.jsonl` from
+scenario its runs were made under; a run started with `--faults` takes the
+manifest's `fault_override` as its fault schedule. `grades.jsonl` gives the
+run its latest grade per item and arm, and every P7 judgment (latest per
+item, arm, and `inputs`), so a P7 pair takes the host grade from the same
+judgment as the treatment's; a judgment whose `gate_eligible` is false
+pairs nothing. Each run directory needs `grades.jsonl` from
 `scripts/grade-run.ts` for its probe items; a run without one reports its
 run-level metrics alone.
 
@@ -97,11 +102,13 @@ only form the fault-asymmetric stratum; a fault landed where the
 scheduler recorded `FaultObserved` or the proxy stamped a call's
 `fault_ref`, which is how provider faults show. The input's `incomplete`
 list names each pre-registered host and seed without a run, each run whose
-`host` or treatment arm has no `EndArm` entry, and each probe type, P13 and
-P14 included, with fewer paired items outside the excluded and
-fault-asymmetric sets than `stopping_rule.paired_items_per_probe_type`;
-the tier passes only with an empty list. Two runs with one host and seed
-are refused. The input's `journal_seq_at_eval` records, per run id, the
+`host` or treatment arm has no `EndArm` entry, each manifest setting
+(`eidnara_commit`, `models`, `context_limit`, `events`) the runs disagree
+on, each run-unit gate metric a run has no value for, each probe type,
+P13 and P14 included, with fewer paired items outside the excluded and
+fault-asymmetric sets than `stopping_rule.paired_items_per_probe_type`,
+and each CUSUM rule without its A/A scale; the tier passes only with an
+empty list. Two runs with one host and seed are refused. The input's `journal_seq_at_eval` records, per run id, the
 last journal `seq` the observations read. `tierInput` orders the runs by
 the pre-registration's hosts then seeds, so items tied in issue order
 across runs keep one order whatever order the directories arrive in.
@@ -136,7 +143,7 @@ result (a bound family shows its observed per-run values, or a binary
 metric's treatment rate over the pairs the verdict kept), the campaign's
 open requirements, the harm
 panel, oracle activations with the uncovered list, recovery, soak for the
-daemon arms with the longest sampling gap, intrusiveness with each arm's latency delta against its run's `host`,
+daemon arms per run with the longest sampling gap, intrusiveness with each arm's latency delta against its run's `host`,
 cost with the run's judge calls priced once (`judgeCost`), the
 falsification set with the pairs it used, the A/A reports (`<run>/aa.json`, or a note
 that control arms ran without one), the claim boundary, and the
