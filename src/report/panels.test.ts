@@ -6,7 +6,7 @@ import type { GradeRecord } from "../grade/probes";
 import type { ArmLogs, RunLogs } from "../oracle/logs";
 import type { Entry } from "../run/journal";
 import { loadPrereg } from "../scenario/inputs";
-import { costPanel, V1_PRICE } from "./cost";
+import { costPanel, judgeCost, V1_PRICE } from "./cost";
 import { intrusiveness, percentile } from "./intrusive";
 import { soak } from "./soak";
 
@@ -113,6 +113,72 @@ describe("soak verdict", () => {
         );
         expect(few.verdict).toBe("insufficient samples");
     });
+
+    test("a broken bound or a missed return is a leak with no fittable slope", () => {
+        const { kinds, journal } = sessions(1, () => 0);
+        const flat = (rss: number) =>
+            Array.from({ length: 10 }, (_, i) => ({
+                scenario_ms: i * 100,
+                wall_ms: i * 100,
+                rss,
+                store_bytes: 0,
+            }));
+        const jump = flat(100 * MB);
+        (jump[5] as { rss: number }).rss = 300 * MB;
+        const v = soak(run([], "", kinds), arm({ journal, resources: jump }), "rss");
+        expect([v.verdict, v.slope_per_session, v.bound.holds, v.returned_to_baseline]).toEqual([
+            "leak",
+            null,
+            false,
+            true,
+        ]);
+        const drift = flat(100 * MB);
+        (drift[9] as { rss: number }).rss = 120 * MB;
+        const d = soak(run([], "", kinds), arm({ journal, resources: drift }), "rss");
+        expect([d.verdict, d.bound.holds, d.returned_to_baseline]).toEqual(["leak", true, false]);
+        const steady = soak(run([], "", kinds), arm({ journal, resources: flat(100 * MB) }), "rss");
+        expect(steady.verdict).toBe("insufficient samples");
+    });
+
+    test("the bound counts sessions completed after the baseline sample", () => {
+        seq = 0;
+        const kinds = new Map([
+            ["end-0", "session_end"],
+            ["end-1", "session_end"],
+        ]);
+        const journal = [
+            entry("Event", 100, { event: "end-0", wall_ms: 100 }),
+            entry("Event", 200, { event: "end-1", wall_ms: 200 }),
+        ];
+        const resources = [
+            { scenario_ms: 300, wall_ms: 300, rss: 100 * MB, store_bytes: 0 },
+            { scenario_ms: 400, wall_ms: 400, rss: 210 * MB, store_bytes: 0 },
+            { scenario_ms: 500, wall_ms: 500, rss: 100 * MB, store_bytes: 0 },
+        ];
+        const v = soak(run([], "", kinds), arm({ journal, resources }), "rss");
+        expect([v.sessions, v.bound.holds, v.bound.worst]).toEqual([
+            2,
+            false,
+            { value: 210 * MB, limit: 200 * MB, sessions: 0 },
+        ]);
+    });
+
+    test("a sample taken while a session end is still closing belongs to the open session", () => {
+        seq = 0;
+        const kinds = new Map([["end-0", "session_end"]]);
+        const journal = [entry("Event", 999, { event: "end-0", wall_ms: 1_500 })];
+        const resources = [
+            { scenario_ms: 0, wall_ms: 0, rss: 100 * MB, store_bytes: 0 },
+            { scenario_ms: 999, wall_ms: 1_000, rss: 300 * MB, store_bytes: 0 },
+            { scenario_ms: 999, wall_ms: 2_000, rss: 100 * MB, store_bytes: 0 },
+        ];
+        const v = soak(run([], "", kinds), arm({ journal, resources }), "rss");
+        expect(v.bound.worst).toEqual({
+            value: 300 * MB,
+            limit: 200 * MB,
+            sessions: 0,
+        });
+    });
 });
 
 describe("intrusiveness panel", () => {
@@ -165,7 +231,14 @@ describe("intrusiveness panel", () => {
                 content: "Observed: retries stop after nine attempts in the client.",
                 status: "active",
                 deliveries: 1,
-                first_delivery_ms: BASE + 9_000,
+                first_delivery_ms: BASE + 4_600,
+            },
+            {
+                id: 5,
+                content: "Observed: alpha 中文 beta gamma delta epsilon zeta.",
+                status: "active",
+                deliveries: 1,
+                first_delivery_ms: BASE + 100,
             },
         ];
         writeFileSync(join(dir, "eidnara", "memory.json"), JSON.stringify(notes));
@@ -176,14 +249,30 @@ describe("intrusiveness panel", () => {
             ["e-4", "pushback", "Who said retries stop after nine attempts in the client?", []],
             ["e-5", "task", "Note that the daemon port is 7780 here.", []],
             ["e-6", "pushback", "Is the daemon port is 7780 right?", ["P1"]],
+            ["e-7", "pushback", "Who says the daemon port is 7780 on every host?", []],
+            ["e-8", "pushback", "Is it alpha beta gamma delta epsilon now?", []],
         ] as const;
-        const tape = replies.map(([event, label, text]) => ({
-            key: event,
-            event,
-            label,
-            digest: "d",
-            text,
-        }));
+        writeFileSync(
+            join(dir, "scenario.json"),
+            JSON.stringify({
+                events: [
+                    { id: "e-1", kind: "user_turn", text: `Remember: ${rule}` },
+                    ...replies.slice(1).map(([id]) => ({ id, kind: "user_turn", text: "Go on." })),
+                    { id: "e-9", kind: "user_turn", text: "Keep the daemon port is 7780 as is." },
+                    { id: "end-1", kind: "session_end" },
+                ],
+            }),
+        );
+        const tape = [
+            { key: "e-2/other-arm", event: "e-2", label: "pushback", digest: "d", text: "Fine." },
+            ...replies.map(([event, label, text]) => ({
+                key: event,
+                event,
+                label,
+                digest: "d",
+                text,
+            })),
+        ];
         writeFileSync(
             join(dir, "tape.jsonl"),
             `${tape.map((t) => JSON.stringify(t)).join("\n")}\n`,
@@ -200,6 +289,7 @@ describe("intrusiveness panel", () => {
             prefix_sha256: "p",
             text_sha256: "t",
             source: "live",
+            tape_key: event,
             ...(fallback.length ? { fallback } : {}),
         }));
         writeFileSync(
@@ -207,33 +297,79 @@ describe("intrusiveness panel", () => {
             `${pairing.map((t) => JSON.stringify(t)).join("\n")}\n`,
         );
         seq = 0;
-        const journal = [
-            entry("BeginTurn", 0, { event: "e-1" }),
-            entry("EndTurn", 4000, { event: "e-1" }),
-            entry("BeginTurn", 5000, { event: "e-2" }),
-            entry("EndTurn", 15000, { event: "e-2" }),
-            ...replies.map(([event]) =>
-                entry("UserTurn", event === "e-4" ? 5000 : 15000, { event }),
-            ),
+        const turns: [string, number, number][] = [
+            ["e-1", 1000, 4000],
+            ["e-2", 5000, 15000],
+            ["e-3", 5000, 6000],
+            ["e-4", 5000, 6000],
+            ["e-5", 5000, 6000],
+            ["e-6", 5000, 6000],
+            ["e-8", 5000, 6000],
         ];
+        const journal = turns.flatMap(([event, begin, end]) => [
+            entry("BeginTurn", begin, { event }),
+            entry("EndTurn", end, { event, prompt_ms: (end - begin) / 2 }),
+            entry("UserTurn", end, { event }),
+        ]);
         const tools = [
             { command: "git restore src/db.rs", exit: 0, scenario_ms: 1, turn: "e-2" },
             { command: "git checkout -- src/lib.rs", exit: 0, scenario_ms: 2, turn: "e-2" },
             { command: "git restore --staged src/lib.rs", exit: 0, scenario_ms: 3, turn: "e-2" },
+            {
+                command: "git restore --quiet --staged src/lib.rs",
+                exit: 0,
+                scenario_ms: 3,
+                turn: "e-2",
+            },
+            {
+                command: "git restore --source=HEAD -S src/lib.rs",
+                exit: 0,
+                scenario_ms: 3,
+                turn: "e-2",
+            },
+            {
+                command: "git restore --staged --worktree src/lib.rs",
+                exit: 0,
+                scenario_ms: 3,
+                turn: "e-2",
+            },
             { command: "git checkout main && echo -- x", exit: 0, scenario_ms: 3, turn: "e-2" },
+            { command: "git restore -Sq src/lib.rs", exit: 0, scenario_ms: 3, turn: "e-2" },
+            { command: "git restore -qS src/lib.rs", exit: 0, scenario_ms: 3, turn: "e-2" },
+            { command: "git restore -SW src/lib.rs", exit: 0, scenario_ms: 3, turn: "e-2" },
+            { command: "git restore missing.rs", exit: 1, scenario_ms: 3, turn: "e-2" },
+            { command: "git reset --hard", exit: null, scenario_ms: 3, turn: "e-2" },
+            { command: "git reset -q --hard HEAD~1", exit: 0, scenario_ms: 3, turn: "e-2" },
+            { command: "echo 'git restore src/x.rs'", exit: 0, scenario_ms: 3, turn: "e-2" },
+            {
+                command: "cat > notes.md <<'EOF'\nRun git reset --hard to start over.\nEOF",
+                exit: 0,
+                scenario_ms: 3,
+                turn: "e-2",
+            },
+            { command: 'git checkout -- "my file.rs"', exit: 0, scenario_ms: 3, turn: "e-2" },
+            { command: 'git -C "/tmp/my repo" restore a.rs', exit: 0, scenario_ms: 3, turn: "e-2" },
+            { command: "git restore missing.rs || true", exit: 0, scenario_ms: 3, turn: "e-2" },
+            { command: "git restore b.rs; false", exit: 1, scenario_ms: 3, turn: "e-2" },
+            { command: "git restore c.rs && cargo test", exit: 0, scenario_ms: 3, turn: "e-2" },
+            { command: "git restore d.rs | tee log", exit: 0, scenario_ms: 3, turn: "e-2" },
             { command: "cargo test", exit: 0, scenario_ms: 4, turn: "e-2" },
         ];
-        const panel = intrusiveness(run([], dir, new Map(), BASE), arm({ journal, tools }), [
-            `Remember: ${rule}`,
-        ]);
+        const panel = intrusiveness(run([], dir, new Map(), BASE), arm({ journal, tools }));
         expect(panel.corrections_referencing_injected_text).toEqual([
             { event: "e-2", label: "pushback", quote: "the daemon port is 7780" },
         ]);
         expect(panel.reverted_edits.map((r) => r.command)).toEqual([
             "git restore src/db.rs",
             "git checkout -- src/lib.rs",
+            "git restore --staged --worktree src/lib.rs",
+            "git restore -SW src/lib.rs",
+            "git reset -q --hard HEAD~1",
+            'git checkout -- "my file.rs"',
+            'git -C "/tmp/my repo" restore a.rs',
+            "git restore c.rs && cargo test",
         ]);
-        expect(panel.latency_ms).toEqual({ n: 2, p50: 4000, p95: 10000 });
+        expect(panel.latency_ms).toEqual({ n: 7, p50: 500, p95: 5000 });
         expect(percentile([5, 1, 3, 2, 4], 0.5)).toBe(3);
 
         const grades = [
@@ -264,7 +400,28 @@ describe("intrusiveness panel", () => {
                 cache_write_tokens: 0,
             },
         ] as ArmLogs["calls"];
+        writeFileSync(
+            join(dir, "judge-calls.jsonl"),
+            `${JSON.stringify({
+                component: "judge",
+                arm: "judge",
+                input_tokens: 2e6,
+                output_tokens: 1e6,
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
+            })}\n`,
+        );
         const cost = costPanel(run([], dir), arm({ calls }), grades);
+        expect(judgeCost(run([], dir))).toEqual({
+            component: "judge",
+            calls: 1,
+            input: 2e6,
+            output: 1e6,
+            cache_read: 0,
+            cache_write: 0,
+            usd: 2 * V1_PRICE.input + V1_PRICE.output,
+        });
+        expect(judgeCost(run([], mkdtempSync(join(tmpdir(), "sim-panel-"))))).toBeNull();
         expect(cost.components.map((c) => [c.component, c.usd])).toEqual([
             ["history_summarizer", V1_PRICE.output + 2 * V1_PRICE.cache_read],
             ["agent", V1_PRICE.input],
@@ -274,9 +431,13 @@ describe("intrusiveness panel", () => {
             31, 5, 1, 31,
         ]);
         expect([cost.memory_writes, cost.writes_with_zero_reads, cost.price_table]).toEqual([
-            4,
+            5,
             1,
             "v1",
         ]);
+
+        writeFileSync(join(dir, "eidnara", "memory.json"), "null\n");
+        const unavailable = intrusiveness(run([], dir, new Map(), BASE), arm({ journal, tools }));
+        expect(unavailable.corrections_referencing_injected_text).toBeNull();
     });
 });

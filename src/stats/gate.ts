@@ -45,7 +45,8 @@ export interface TierInput {
     /** The fixed-N campaign requirements still open; the tier passes only with an empty list. */
     incomplete?: string[];
     cusum_sd?: Partial<Record<"harm" | "futility", number>>;
-    journal_seq_at_eval?: number;
+    /** Per run id, the last journal `seq` the observations read. */
+    journal_seq_at_eval?: Record<string, number>;
 }
 
 export class StatsRefusal extends Error {}
@@ -87,7 +88,7 @@ export interface CusumStop {
 
 export interface TierVerdict {
     prereg_sha256: string;
-    journal_seq_at_eval: number | null;
+    journal_seq_at_eval: Record<string, number> | null;
     families: FamilyResult[];
     memory_made_it_worse: { metric: string; interval: [number, number] | null }[];
     pass: {

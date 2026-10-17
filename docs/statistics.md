@@ -100,7 +100,7 @@ stop, recorded with the metric, the signal index, and the item ids since
 the sum last stood at zero, and a stop withholds the pass; a benefit,
 which moves only the lower sum, stops nothing. A rule without an A/A
 standard deviation is listed as unavailable. The verdict also carries the
-pre-registration digest, the journal sequence it was evaluated at, the
+pre-registration digest, the last journal sequence read per run id, the
 families with their MDE and margin, and the harm metrics whose verdict is
 `worse` ("memory made it worse"). An evaluation whose output contains the
 word parity is refused.

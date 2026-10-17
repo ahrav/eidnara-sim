@@ -107,9 +107,13 @@ export class ResourceSampler {
         this.timer ??= setInterval(() => this.sample(), this.o.intervalMs);
     }
 
+    /** Takes one last sample when the interval was running, so the final session end has a sample after it. */
     stop(): void {
-        if (this.timer) clearInterval(this.timer);
-        this.timer = null;
+        if (this.timer) {
+            clearInterval(this.timer);
+            this.timer = null;
+            this.sample();
+        }
         if (this.busy) this.o.onBusy(false);
         this.busy = false;
     }

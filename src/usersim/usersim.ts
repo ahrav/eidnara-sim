@@ -78,13 +78,18 @@ interface Taped {
 /** User-sim replies keyed by seed, event, label, and the normalised agent-output digest. */
 export class Tape {
     private readonly entries = new Map<string, Taped>();
+    private readonly own = new Set<string>();
 
     constructor(
         private readonly path: string,
         sources: readonly string[] = [],
     ) {
-        for (const p of [...sources, path]) {
+        for (const p of sources) {
             for (const e of jsonl<TapeEntry>(p)) this.entries.set(e.key, e);
+        }
+        for (const e of jsonl<TapeEntry>(path)) {
+            this.entries.set(e.key, e);
+            this.own.add(e.key);
         }
     }
 
@@ -92,9 +97,11 @@ export class Tape {
         return this.entries.get(key);
     }
 
+    /** Appends the entry to this run's tape unless that file already holds its key. */
     put(entry: TapeEntry): void {
-        if (this.entries.has(entry.key)) return;
+        if (this.own.has(entry.key)) return;
         this.entries.set(entry.key, entry);
+        this.own.add(entry.key);
         appendFileSync(this.path, `${JSON.stringify(entry)}\n`);
     }
 }
@@ -111,6 +118,8 @@ export interface TurnRecord {
     prefix_sha256: string;
     text_sha256: string;
     source: "script" | "tape" | "live";
+    /** The tape key of a `tape` or `live` reply, which `<run>/tape.jsonl` holds. */
+    tape_key?: string;
     fallback?: string[];
 }
 
@@ -317,6 +326,7 @@ export class UserSim {
             prefix_sha256: prefix,
             text_sha256: sha256Hex(text),
             source: reply?.source ?? "script",
+            ...(reply ? { tape_key: reply.key } : {}),
             ...(reply?.fallback ? { fallback: reply.fallback } : {}),
         });
         const interruptMs = plan.interruptMs.get(t.id);
@@ -345,15 +355,15 @@ export class UserSim {
             const script = label === "abandon" || FACT_ROLES.has(t.role) ? null : t.text;
             const live = await this.o.llm(persona(label, script, lastAgent));
             got = { text: live.text.trim(), stop: live.stop };
-            this.o.tape.put({ key, event: t.id, label, digest, ...got });
         }
+        this.o.tape.put({ key, event: t.id, label, digest, ...got });
         const source: "tape" | "live" = taped === undefined ? "live" : "tape";
         const hits = markerHits(got.text, this.o.keys);
         const cut = got.stop === "max_tokens" ? ["max_tokens"] : [];
         const empty = got.text === "" ? ["empty"] : [];
         const fallback = [...empty, ...cut, ...hits];
-        if (fallback.length === 0) return { text: got.text, source };
-        return { text: FALLBACK[label] ?? "", source, fallback };
+        if (fallback.length === 0) return { key, text: got.text, source };
+        return { key, text: FALLBACK[label] ?? "", source, fallback };
     }
 }
 
