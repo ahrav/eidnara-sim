@@ -664,13 +664,15 @@ describe("HostDriver faults", () => {
                 model: 0,
                 daemon: null,
                 host: null,
-                second: { pid: dead, start: null },
+                second: { pid: dead, start: null, session: "s-0000" },
             }),
         );
         const inner = driver as unknown as Record<string, unknown>;
         const noop = () => undefined;
         inner.snapshots = { sessionStart: noop, sessionEnd: noop, addTools: noop };
-        await driver.resume(ev("session_start", { project: "p" }));
+        await driver.resume(null);
+        expect(hosts.map((h) => h.opened[0])).not.toContain(`s-0000-b@${driver.workspace("p")}`);
+        await driver.event(ev("session_start", { project: "p" }));
         expect(hosts.map((h) => h.opened[0])).toContain(`s-0000-b@${driver.workspace("p")}`);
         expect(inner.second).not.toBeNull();
         const state = JSON.parse(readFileSync(join(armDir, "state.json"), "utf8"));
@@ -690,6 +692,30 @@ describe("HostDriver faults", () => {
         const state = JSON.parse(readFileSync(join(armDir, "state.json"), "utf8"));
         expect(state.store_faults).toEqual(["f-daemon_restart"]);
         await driver.stop();
+        const stopped = JSON.parse(readFileSync(join(armDir, "state.json"), "utf8"));
+        expect(stopped.store_faults).toEqual(["f-daemon_restart"]);
+    });
+
+    test("the first session after a host upgrade must leave a new transcript in the store", async () => {
+        const { driver, transcripts } = fixture("host", { p: gitRepo() });
+        const o = (driver as unknown as { o: DriverOptions }).o;
+        o.hostVersions = {
+            from: "0.80.2",
+            to: "0.87.1",
+            upgradeTranscriptPaths: o.transcriptPaths,
+        };
+        o.config = { ...o.config, upgrade: { pi_install: "/next/pi" } };
+        await driver.reset();
+        const sessions = join(transcripts, "sessions");
+        mkdirSync(sessions, { recursive: true });
+        writeFileSync(join(sessions, "old.jsonl"), "{}");
+        await driver.event(ev("session_end"));
+        await driver.fault(episode("host_upgrade"));
+        await driver.event(ev("session_start"));
+        await expect(driver.event(ev("session_end"))).rejects.toThrow("no new transcript");
+        await driver.event(ev("session_start"));
+        writeFileSync(join(sessions, "new.jsonl"), "{}");
+        await driver.event(ev("session_end"));
     });
 
     test("the store checks a daemon restart owes survive a resume through the arm state", async () => {

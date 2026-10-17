@@ -337,12 +337,16 @@ export interface RecallDrift {
 /**
  * Each host, arm, and probe's pass rate against the reference tier's 95% Clopper-Pearson
  * interval for the same row; a rate outside it is drift. A row either side lacks is null: a
- * reference row for an arm the campaign ran appears with no rate, and a reference-only arm is
- * left out.
+ * reference row for a host and arm in `armsRan` (`<host>/<arm>`, the campaign's arms) appears
+ * with no rate, and a reference-only arm is left out.
  */
-export function recallDrift(current: Continuity[], reference: Continuity[]): RecallDrift[] {
+export function recallDrift(
+    current: Continuity[],
+    reference: Continuity[],
+    armsRan: Iterable<string> = current.map((x) => `${x.host}/${x.arm}`),
+): RecallDrift[] {
     const key = (x: Continuity) => `${x.host}/${x.arm}/${x.probe}`;
-    const ran = new Set(current.map((x) => `${x.host}/${x.arm}`));
+    const ran = new Set(armsRan);
     const seen = new Set(current.map(key));
     const missing = reference
         .filter((r) => ran.has(`${r.host}/${r.arm}`) && !seen.has(key(r)))

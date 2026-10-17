@@ -3,9 +3,11 @@ import {
     existsSync,
     lstatSync,
     mkdirSync,
+    readdirSync,
     readFileSync,
     realpathSync,
     rmSync,
+    statSync,
     writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -25,7 +27,7 @@ import { checkStore, type Deletion, deleteFactNotes, memoryNotes } from "./store
 interface ArmState {
     model: number;
     upgraded?: boolean;
-    second?: { pid: number; start: string | null } | null;
+    second?: { pid: number; start: string | null; session?: string } | null;
     /** Daemon restarts whose post-crash store check is still owed. */
     store_faults?: string[];
     daemon: { pid: number; start: string | null } | null;
@@ -97,10 +99,18 @@ export class HostDriver implements ArmDriver {
     private storeMount: string | null = null;
     private sessionProject: string | null = null;
     private transcriptsChecked = false;
+    /** The transcript store's newest mtime when an upgraded host's first session opened. */
+    private storeMarkAtOpen: number | null = null;
 
     private readonly snapshots: SnapshotRecorder;
     private upgraded = false;
     private second: SimHost | null = null;
+    /** The session the second client is attached to, kept in `state.json` for a resume. */
+    private secondSession: string | null = null;
+    /** A session a stopped run had a second client on, owed one again when it reopens. */
+    private secondOwed: string | null = null;
+    /** Store checks the last turn returned; held in `state.json` until the next turn begins. */
+    private justChecked: string[] = [];
     /** A host open or daemon start or restart in flight, which `stop` awaits before closing either. */
     private inflight: Promise<void> | null = null;
     private stopping = false;
@@ -179,8 +189,11 @@ export class HostDriver implements ArmDriver {
             upgraded: this.upgraded,
             daemon: proc(this.daemonPid()),
             host: proc(this.sessionProject === null ? null : (this.host?.hostPid() ?? null)),
-            second: proc(this.second?.hostPid() ?? null),
-            store_faults: this.storeFaults,
+            second: ((): ArmState["second"] => {
+                const p = proc(this.second?.hostPid() ?? null);
+                return p && this.secondSession ? { ...p, session: this.secondSession } : p;
+            })(),
+            store_faults: [...this.storeFaults, ...this.justChecked],
         };
         mkdirSync(this.armDir, { recursive: true });
         writeFileSync(this.stateFile, JSON.stringify(state));
@@ -239,18 +252,16 @@ export class HostDriver implements ArmDriver {
             record !== null &&
             record.missing.length === 0 &&
             JSON.stringify(record.templates ?? null) === JSON.stringify(this.transcriptPaths());
+        this.secondOwed = state?.second?.session ?? null;
         await this.reapStale();
         await this.startArm(false);
-        if (!open) return;
-        // A second client the stopped run had attached to this session is attached again, so
-        // the session keeps both clients on the daemon; its fixed turn already ran.
-        if (state?.second && this.daemon) await this.attachSecond(open);
-        await this.event(open);
+        if (open) await this.event(open);
     }
 
     private async attachSecond(at: ScenarioEvent): Promise<SimHost> {
         const second = this.newHost();
         this.second = second;
+        this.secondSession = at.session;
         await this.open(
             second,
             this.workspace(this.project(at)),
@@ -276,9 +287,15 @@ export class HostDriver implements ArmDriver {
     }
 
     private async openSession(e: ScenarioEvent, host: SimHost): Promise<void> {
+        // A second client the stopped run had on this session is attached again before the
+        // primary reopens, so the session keeps both clients on the daemon; its fixed turn ran.
+        if (this.secondOwed === e.session && this.daemon && !this.second)
+            await this.attachSecond(e);
+        this.secondOwed = null;
         this.sessionProject = this.project(e);
         const connection = this.daemon?.connectionFile ?? null;
         const dir = this.workspace(this.sessionProject);
+        if (this.upgraded && !this.transcriptsChecked) this.storeMarkAtOpen = this.storeMark(host);
         await this.open(host, dir, e.session, connection);
         this.snapshots.sessionStart(e.session, this.sessionProject, dir);
         this.recordState();
@@ -332,6 +349,8 @@ export class HostDriver implements ArmDriver {
         const dir = this.workspace(project);
         const before = e.probe ? this.snapshots.tree(dir) : "";
         const interruptMs = typeof e.interrupt_ms === "number" ? e.interrupt_ms : undefined;
+        // The previous turn's StoreChecked entries are journaled before this turn begins.
+        this.justChecked = [];
         const started = performance.now();
         const result = await host.prompt(String(e.text), this.o.turnDeadlineMs, interruptMs);
         const prompt_ms = Math.round(performance.now() - started);
@@ -346,6 +365,7 @@ export class HostDriver implements ArmDriver {
         if (this.storeFaults.length > 0 && this.daemon) {
             const store = checkStore(this.storeDb);
             outcome.stores = this.storeFaults.map((fault) => ({ fault, store }));
+            this.justChecked = this.storeFaults;
             this.storeFaults = [];
         }
         if (e.probe) {
@@ -393,6 +413,18 @@ export class HostDriver implements ArmDriver {
         return this.upgraded && upgraded ? upgraded : this.o.transcriptPaths;
     }
 
+    /** The newest modification time under the store paths, so a new transcript shows as a change. */
+    private storeMark(host: SimHost): number {
+        const env = host.transcriptEnv();
+        const newest = (path: string): number => {
+            if (!existsSync(path)) return 0;
+            const st = statSync(path);
+            if (!st.isDirectory()) return st.mtimeMs;
+            return Math.max(st.mtimeMs, ...readdirSync(path).map((f) => newest(join(path, f))));
+        };
+        return Math.max(0, ...this.transcriptPaths().map((t) => newest(expandTemplate(t, env))));
+    }
+
     private checkTranscripts(host: SimHost): void {
         const env = host.transcriptEnv();
         const templates = this.transcriptPaths();
@@ -402,6 +434,12 @@ export class HostDriver implements ArmDriver {
         const record = { checked_after: after, templates, paths, missing };
         writeFileSync(join(this.armDir, "transcripts.json"), JSON.stringify(record));
         if (missing.length > 0) throw new Error(`transcript store missing: ${missing.join(", ")}`);
+        // An upgraded host shares its store path with the version before it, so the check also
+        // requires the session that just ended to have changed the store.
+        if (this.storeMarkAtOpen !== null && this.storeMark(host) <= this.storeMarkAtOpen) {
+            throw new Error(`no new transcript in ${paths.join(", ")} after the upgraded session`);
+        }
+        this.storeMarkAtOpen = null;
         this.transcriptsChecked = true;
     }
 
@@ -465,6 +503,7 @@ export class HostDriver implements ArmDriver {
         if (!second) return;
         await this.releaseSecond(second);
         this.second = null;
+        this.secondSession = null;
         if (record) this.recordState();
     }
 

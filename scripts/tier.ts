@@ -65,7 +65,7 @@ const config = loadConfig();
 const prereg = loadPrereg(tier);
 const hosts = (arg("hosts") ?? prereg.hosts.join(",")).split(",") as ("pi" | "opencode")[];
 const priorPlan = join(out, "tier-plan.json");
-const prior = ((): { turn_ms?: number; restart_at?: number } | null => {
+const prior = ((): { turn_ms?: number; restart_at?: number; plan?: TierJob[] } | null => {
     if (!existsSync(priorPlan)) return null;
     try {
         return JSON.parse(readFileSync(priorPlan, "utf8"));
@@ -181,7 +181,12 @@ if (conflicts.length > 0) {
 const uncuttable = uncuttableRuns(plan, restartAt);
 if (uncuttable.length > 0)
     refuse(`--restart-at ${restartAt} first stops at the last event of ${uncuttable.join(", ")}`);
-const rethreshold = restartConflicts(plan, prior?.restart_at, restartAt);
+// Begun runs of every host the saved plan listed, not only those this invocation's --hosts keeps.
+const rethreshold = restartConflicts(
+    [...plan, ...(prior?.plan ?? []).filter((j) => !plan.some((p) => p.dir === j.dir))],
+    prior?.restart_at,
+    restartAt,
+);
 if (rethreshold.length > 0)
     refuse(
         `${rethreshold.join("\n")}\n--restart-at must keep the fraction a begun run started under`,

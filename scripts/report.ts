@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import type { Tier } from "../src/prereg/schema";
+import { TIERS, type Tier } from "../src/prereg/schema";
 import { preregistrationHash } from "../src/prereg/validate";
 import { parseContinuity } from "../src/report/conditions";
 import type { GradedRun } from "../src/report/observe";
@@ -30,9 +30,19 @@ if (dirs.length === 0 || dirs.some((d) => !existsSync(join(d, "manifest.json")))
     console.error(USAGE);
     process.exit(2);
 }
-const reference = refPath
-    ? { source: refPath, continuity: parseContinuity(JSON.parse(readFileSync(refPath, "utf8"))) }
-    : undefined;
+// The reference is read when the XL report needs it, after any earlier tier in this invocation
+// has written or removed its own continuity file; an absent file is no reference.
+const reference = () => {
+    if (!refPath) return undefined;
+    if (!existsSync(refPath)) {
+        console.error(`${refPath}: no such recall reference; the XL report has no drift table`);
+        return undefined;
+    }
+    return {
+        source: refPath,
+        continuity: parseContinuity(JSON.parse(readFileSync(refPath, "utf8"))),
+    };
+};
 const boundary = readFileSync(join(import.meta.dir, "../docs/claim-boundary.md"), "utf8");
 const catalog = readFileSync(join(import.meta.dir, "../docs/properties/sim-v2/catalog.md"), "utf8");
 const byTier = new Map<Tier, string[]>();
@@ -40,11 +50,14 @@ for (const dir of dirs) {
     const tier = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8")).tier as Tier;
     byTier.set(tier, [...(byTier.get(tier) ?? []), dir]);
 }
+// Tiers report in size order, so an L report settles its continuity file before XL reads it.
 const loaded = new Map(
-    [...byTier].map(([tier, list]) => {
-        const prereg = loadPrereg(tier);
-        return [tier, { prereg, runs: list.map((d) => loadGraded(d, prereg)) }] as const;
-    }),
+    [...byTier]
+        .sort(([a], [b]) => TIERS.indexOf(a) - TIERS.indexOf(b))
+        .map(([tier, list]) => {
+            const prereg = loadPrereg(tier);
+            return [tier, { prereg, runs: list.map((d) => loadGraded(d, prereg)) }] as const;
+        }),
 );
 const scales = new Map(
     [...loaded].map(([tier, t]) => {
@@ -106,7 +119,7 @@ for (const [tier, { prereg, runs }] of loaded) {
         scale,
         catalog,
         resizing?.paired_items_per_probe_type,
-        tier === "XL" ? reference : undefined,
+        tier === "XL" ? reference() : undefined,
     );
     violated += report.witness.filter((w) => w.status === "violated").length;
     const text = renderTier(report);

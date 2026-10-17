@@ -185,6 +185,11 @@ describe("recall drift", () => {
             ["eidnara", "P9", null, null],
         ]);
         expect(renderDrift(drift, "L").join("\n")).toContain("| pi | eidnara | P9 | 0/0 | - |");
+        const allExcluded = recallDrift([], reference, ["pi/eidnara"]);
+        expect(allExcluded.map((d) => [d.arm, d.probe, d.rate])).toEqual([
+            ["eidnara", "P8", null],
+            ["eidnara", "P9", null],
+        ]);
     });
 });
 

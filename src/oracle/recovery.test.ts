@@ -204,6 +204,7 @@ describe("recovery oracles", () => {
         const journal = [
             entry("FaultFired", 0, { fault: "r", type: "daemon_restart", layer: "scheduler" }),
             entry("ItemState", 1, { fault: "r", state: "failed(interrupted)" }),
+            entry("ItemState", 2, { fault: "r", state: "failed(interrupted)" }),
             entry("BeginTurn", 10, { event: "e-1" }),
             entry("EndTurn", 20, { event: "e-1", outcome: "ok" }),
         ];

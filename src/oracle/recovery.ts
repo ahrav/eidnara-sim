@@ -108,14 +108,18 @@ function interrupted(arm: ArmLogs): Recovery[] {
             .filter((e) => e.kind === "FaultFired")
             .map((e) => [String(e.fault), String(e.type)] as const),
     );
-    return arm.journal
-        .filter(
-            (e) =>
-                e.kind === "ItemState" &&
-                e.fault !== undefined &&
-                e.state === "failed(interrupted)",
-        )
-        .map((e) => ({ fault: String(e.fault), type: types.get(String(e.fault)) ?? "" }))
+    const faults = new Set(
+        arm.journal
+            .filter(
+                (e) =>
+                    e.kind === "ItemState" &&
+                    e.fault !== undefined &&
+                    e.state === "failed(interrupted)",
+            )
+            .map((e) => String(e.fault)),
+    );
+    return [...faults]
+        .map((fault) => ({ fault, type: types.get(fault) ?? "" }))
         .filter((f) => INFRA.has(f.type))
         .map((f) => ({
             arm: arm.arm,

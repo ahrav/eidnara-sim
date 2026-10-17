@@ -89,13 +89,20 @@ export class Children {
                 done(code);
             };
             // The run settles once the child's whole process group is gone: a descendant that
-            // outlives the leader gets the rest of the grace period, then SIGKILL.
+            // outlives the leader gets the rest of the grace period, then SIGKILL, then one more
+            // grace period to leave; a survivor past that is named in the log.
+            const linger = async (pid: number) => {
+                const deadline = Date.now() + this.graceMs;
+                while (groupAlive(pid) && Date.now() < deadline) await Bun.sleep(50);
+                return groupAlive(pid);
+            };
             const settle = async (code: number) => {
                 const pid = child.pid;
-                if (pid !== undefined) {
-                    const deadline = Date.now() + this.graceMs;
-                    while (groupAlive(pid) && Date.now() < deadline) await Bun.sleep(50);
-                    if (groupAlive(pid)) kill(child);
+                if (pid !== undefined && (await linger(pid))) {
+                    kill(child);
+                    if (await linger(pid)) {
+                        appendFileSync(log, `process group ${pid} survived SIGKILL\n`);
+                    }
                 }
                 finish(code);
             };

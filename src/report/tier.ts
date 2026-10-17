@@ -249,7 +249,11 @@ export function tierReport(
         continuity: continuity(runs),
         drift:
             reference && prereg.tier === "XL"
-                ? recallDrift(continuity(runs), reference.continuity)
+                ? recallDrift(
+                      continuity(runs),
+                      reference.continuity,
+                      runs.flatMap((g) => g.run.arms.map((a) => `${g.host}/${a.arm}`)),
+                  )
                 : null,
         drift_source: reference?.source ?? null,
         soak_by_month: perArm
