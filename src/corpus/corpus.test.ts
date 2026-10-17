@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { Rng } from "../rng";
 import type { CdfTable } from "./cdf";
 import { checkCorpus } from "./check";
@@ -12,7 +14,9 @@ import {
     table,
     waived,
 } from "./distributions";
+import { bankProblems } from "./fact-bank";
 import { type SampledSession, sampleSession } from "./sampler";
+import { CORPUS_DIR } from "./sources";
 
 interface Rate {
     value: number | null;
@@ -76,6 +80,87 @@ function dkw(n: number): number {
 describe("committed corpus", () => {
     test("checkCorpus finds no problems", () => {
         expect(checkCorpus().problems).toEqual([]);
+    });
+
+    test("the fact bank gate names a template without a probe and an unknown check key", () => {
+        const bank = JSON.parse(readFileSync(join(CORPUS_DIR, "fact-bank.json"), "utf8"));
+        expect(bankProblems(bank)).toEqual([]);
+        const broken = structuredClone(bank);
+        delete broken.rust.plan[0].probe;
+        broken.any.lookup[0].check.musts = ["x"];
+        broken.typescript.filler = "not a list";
+        broken.rust.filler = [];
+        broken.schema = "sim-fact-bank/v0";
+        broken.python = {};
+        broken.rust.rationale = [];
+        broken.typescript.scoped_update[0].check.quote_style_must = "backtick";
+        broken.any.anchor[0].check.must_not = ["[unclosed"];
+        broken.any.anchor[1].id = "lookup-port";
+        delete broken.any.never_settled;
+        expect(bankProblems(broken)).toEqual([
+            "fact-bank schema: sim-fact-bank/v0 is not sim-fact-bank/v1",
+            "fact-bank rust/plan[0] rs-plan-field: probe missing",
+            "fact-bank rust/rationale: expected at least one template",
+            "fact-bank rust/filler: expected a non-empty list of non-blank strings",
+            "fact-bank typescript/scoped_update[0] ts-scope-quotes: check key quote_style_must is not double or single",
+            "fact-bank typescript/filler: expected a non-empty list of non-blank strings",
+            "fact-bank any/never_settled: kind missing",
+            "fact-bank any/lookup[0] lookup-staging-alias: check key musts is not a check kind",
+            "fact-bank any/anchor[0] anchor-ticket: check key must_not pattern [unclosed is not a regular expression",
+            "fact-bank any/anchor[1] lookup-port: duplicate template id",
+            "fact-bank python: unknown language",
+        ]);
+    });
+
+    test("the fact bank gate names kind-specific omissions and unusable patterns", () => {
+        const bank = JSON.parse(readFileSync(join(CORPUS_DIR, "fact-bank.json"), "utf8"));
+        const broken = structuredClone(bank);
+        delete broken.rust.scoped_update[0].update;
+        delete broken.rust.decision[0].authority;
+        broken.rust.plan[0].check.must = ["{tokne}"];
+        broken.rust.rationale[0].check.judge = "  ";
+        broken.any.lookup[0].check.answer = "";
+        broken.any.anchor[0].check.must_not = [""];
+        delete broken.typescript.scoped_update[0].out_probe;
+        delete broken.typescript.scoped_update[0].out_check;
+        delete broken.any;
+        broken.rust.constraint[0].statement = "   ";
+        delete broken.rust.constraint[1].out_probe;
+        broken.rust.plan[1].check = { must: ["{code}"] };
+        broken.rust.rejected[0].check = { answer: "x" };
+        broken.typescript.rationale[0].check = { judge: "{codenam}" };
+        broken.rust.constraint[2].statement = "helpers use {tokne}";
+        broken.rust.constraint[3].check = { must_not: ["DO_NOT"] };
+        broken.rust.decision[1].authority.content = "// unrelated authority\n";
+        broken.typescript.decision[0].check = { must_not: ["{value}"] };
+        broken.typescript.scoped_update[0].update = "   ";
+        broken.typescript.constraint[0].check = { first_line_must: ["^x"] };
+        broken.typescript.decision[1].authority.path = "  ";
+        broken.rust.constraint[1].example.path = "../../outside.rs";
+        broken.rust.constraint[0].example.content = "pub const WRONG = 1;";
+        expect(bankProblems(broken)).toEqual([
+            "fact-bank any: language missing",
+            "fact-bank rust/constraint[0] rs-cmd-const-prefix: statement missing",
+            "fact-bank rust/constraint[0] rs-cmd-const-prefix: example content does not satisfy the check",
+            "fact-bank rust/constraint[1] rs-cmd-error-tag: example path escapes the project",
+            "fact-bank rust/constraint[1] rs-cmd-error-tag: out_probe missing",
+            "fact-bank rust/constraint[2] rs-db-helper-prefix: statement names an unknown placeholder",
+            "fact-bank rust/constraint[3] rs-test-suffix: check needs must or paths_must",
+            "fact-bank rust/decision[0] rs-scan-page: authority missing",
+            "fact-bank rust/decision[1] rs-conn-buffer: authority content does not satisfy the check",
+            "fact-bank rust/plan[0] rs-plan-field: check key must pattern {tokne} names an unknown placeholder",
+            "fact-bank rust/plan[1] rs-plan-cmd: check key must pattern {code} names an unknown placeholder",
+            "fact-bank rust/rationale[0] rs-why-noalloc: check key judge is blank",
+            "fact-bank rust/rejected[0] rs-no-global-mutex: check key answer is not graded for rejected facts",
+            "fact-bank rust/scoped_update[0] rs-scope-log-level: update missing",
+            "fact-bank typescript/constraint[0] ts-const-prefix: check needs must or paths_must",
+            "fact-bank typescript/decision[0] ts-body-limit: check needs must",
+            "fact-bank typescript/decision[1] ts-cookie-age: authority path is blank",
+            "fact-bank typescript/rationale[0] ts-why-aot: check key judge names an unknown placeholder",
+            "fact-bank typescript/scoped_update[0] ts-scope-quotes: update missing",
+            "fact-bank typescript/scoped_update[0] ts-scope-quotes: out_probe missing",
+            "fact-bank typescript/scoped_update[0] ts-scope-quotes: out_check missing",
+        ]);
     });
 
     test("every quantity names its source and sample size", () => {

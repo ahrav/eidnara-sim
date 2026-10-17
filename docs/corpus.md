@@ -8,7 +8,10 @@ network access.
 ## Sources
 
 `corpus/sources.json` pins each dataset to a Hugging Face revision and records
-the sha256 of every file the build reads.
+the sha256 of every file the build reads. `corpus/manifest.json` records the
+dataset revisions and the sha256 of every corpus file the scenario compiler
+reads: the derived `distributions.json` and tool-output files, and the
+hand-authored `fact-bank.json` and `repos.json`.
 
 | Dataset | Revision | License | Use |
 |---|---|---|---|
@@ -133,7 +136,7 @@ copied to `corpus/repos/<id>.LICENSE`, which git tracks.
 | `bun run corpus:fetch` | Downloads every public dataset file to `corpus/cache/` and checks its sha256 |
 | `bun run corpus:build` | Fetches, then rebuilds the derived files and `corpus/manifest.json` |
 | `bun run corpus:verify` | Fetches, rebuilds the derived files in place, and fails when `git status` shows any change under `corpus/` |
-| `bun run corpus:check` | Checks the committed files offline; part of `bun run check` |
+| `bun run corpus:check` | Checks the committed files offline, including the fact bank's template and check shapes; part of `bun run check` |
 | `bun run corpus:repos` | Clones each repository, rebuilds its twin, and runs both suites offline |
 
 `corpus:repos` runs each suite under `unshare -rn` with only loopback up, after

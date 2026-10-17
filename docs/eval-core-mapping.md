@@ -192,3 +192,22 @@ The live-slice report (`eval-live-slice/v1`) and the residual report
 (`eval-residual-report/v1`) are consumed unchanged by the P7 judge path in M5;
 their settings need the host and divergence additions noted above in
 `eval-live-settings/v2`.
+
+## Scenario fault schedule
+
+The scenario file's `faults` list (`src/scenario/faults.ts`, `FaultEpisode`)
+is a scenario-local schedule: fault type, strategy, compiler-chosen trigger,
+parameters, and the seam-table entry for the proxy sink, scheduler, or clock
+layer the harness injects through. eval-core's `FaultEpisode` is the Suite C
+record `(trigger, scope, action, heal)` over the daemon's own store seams,
+whose `FaultAction` is a closed set of in-process hooks. The two share the
+type name and a `trigger` field name; the scenario trigger is a compiler-owned
+event (session start, Nth user turn, first summarizer call of a session) and
+eval-core's is a drive step, so a conversion translates or rejects the shape,
+and the remaining fields have no counterpart. The harness seams have no
+eval-core counterpart; the
+runner (M4) journals each scenario episode with its trigger event, both
+times, and fired and observed evidence (SIM-P31), and the report (M7) reads
+that journal. An eval-core counterpart would need a `FaultAction` family for
+harness seams and a scope outside `StoreFamily` in the Suite C fault contract
+(`eval-suite-c-fault-report/v3`); no extension is made here.

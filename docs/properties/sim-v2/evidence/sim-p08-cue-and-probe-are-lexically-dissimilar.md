@@ -14,9 +14,6 @@ v2 harness before any harness code existed.
 For every cue and probe pair, the pre-registered BM25 and embedding similarity
 are below threshold at compile, and the scores are journaled.
 
-No harness code, test, or run exists yet. The surface lands in M2
-(#1026).
-
 M2 (#1026) computes a BM25 ratio and an embedding cosine for every cue and
 probe pair, journals both in the scenario's `similarity` list, and refuses the
 compile when either exceeds the revision 2 pre-registered threshold (`bm25_max`

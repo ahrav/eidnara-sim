@@ -1,7 +1,9 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { sha256Hex } from "../prereg/canonical";
 import { loadRates } from "./distributions";
 import { fitTraceLab } from "./fit";
-import type { Dataset } from "./sources";
+import { CORPUS_DIR, type Dataset } from "./sources";
 import { extractToolOutputs } from "./tool-outputs";
 
 export function renderJson(value: unknown): string {
@@ -30,6 +32,9 @@ function render(value: unknown, depth: number): string {
     return JSON.stringify(value);
 }
 
+/** Hand-authored corpus inputs the scenario compiler reads; the manifest digests them beside the derived files. */
+const AUTHORED_FILES = ["fact-bank.json", "repos.json"] as const;
+
 const jsonl = (entries: readonly unknown[]) =>
     entries.map((e) => `${JSON.stringify(e)}\n`).join("");
 
@@ -57,6 +62,9 @@ export async function buildCorpus(datasets: Dataset[]): Promise<Map<string, stri
     files.set("tool-outputs/samples.jsonl", jsonl(extraction.samples));
     files.set("tool-outputs/error-codes.jsonl", jsonl(extraction.error_codes));
     const digests = Object.fromEntries([...files].map(([path, text]) => [path, sha256Hex(text)]));
+    for (const authored of AUTHORED_FILES) {
+        digests[authored] = sha256Hex(readFileSync(join(CORPUS_DIR, authored), "utf8"));
+    }
     files.set(
         "manifest.json",
         renderJson({

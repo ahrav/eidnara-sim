@@ -21,7 +21,10 @@ export interface Check {
     commands_must?: string[];
     answer?: string;
     abstain?: boolean;
-    scope?: "in" | "out";
+    /** A directory prefix ending in `/`; the diff-channel keys read only files under it. */
+    scope?: string;
+    /** Which side of a P4 scoped update the item probes: inside the narrowed scope or outside it. */
+    side?: "in" | "out";
     window_from_turn?: number;
     turns?: [number, number];
 }
@@ -74,7 +77,7 @@ const REQUIRED: Record<string, (keyof Check)[]> = {
     "P1-control": ["must"],
     P2: ["must_not"],
     P3: ["must", "must_not"],
-    P4: ["must", "must_not", "scope"],
+    P4: ["must", "must_not", "side"],
     P5: ["must_not"],
     P6: ["must"],
     P8: ["answer"],
@@ -116,7 +119,7 @@ function p4(r: ArtefactReader, c: Check): Outcome {
     const added = addedLines(r.diff());
     const kept = matchesAll(added, c.must ?? []);
     const wrong = matchesAny(added, c.must_not ?? []);
-    const collapsed = wrong && c.scope === "out";
+    const collapsed = wrong && c.side === "out";
     const reason = !wrong
         ? "missing the expected rule"
         : collapsed
