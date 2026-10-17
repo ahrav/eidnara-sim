@@ -106,8 +106,10 @@ function values(
 const total = (xs: number[]) => xs.reduce((s, x) => s + x, 0);
 const latency =
     (q: number): RunValue =>
-    (_, arm) =>
-        percentile(turnLatencies(arm), q);
+    (_, arm) => {
+        const latencies = turnLatencies(arm);
+        return latencies === null ? null : percentile(latencies, q);
+    };
 const slope =
     (resource: "rss" | "heap" | "store_bytes"): RunValue =>
     ({ run }, arm) =>
