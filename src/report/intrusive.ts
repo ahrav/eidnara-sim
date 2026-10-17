@@ -19,17 +19,21 @@ export interface Intrusiveness {
     /** `null` when the arm's `memory.json` records that its notes could not be read. */
     corrections_referencing_injected_text: { event: string; label: string; quote: string }[] | null;
     reverted_edits: { turn: string | null; command: string }[];
-    /** `null` when a completed turn has no `prompt_ms`: a journal begun before the field existed. */
+    /**
+     * `null` when a delivered, completed turn has no `prompt_ms`: a journal begun before the field
+     * existed.
+     */
     latency_ms: { n: number; p50: number | null; p95: number | null } | null;
 }
 
 /**
  * Each `git` invocation at a command position on one line of a shell command: at the line start or
- * after a separator or `(`, past any `VAR=value` assignments and `sudo`, `env`, `time`, `nice`,
- * `nohup`, or `exec` prefixes; its subcommand and arguments run up to the next separator.
+ * after a separator or a grouping `(` (a `$(` substitution's status is the outer command's, so it
+ * is no position), past any `VAR=value` assignments and `sudo`, `env`, `time`, `nice`, `nohup`,
+ * or `exec` prefixes with their options; its subcommand and arguments run up to the next separator.
  */
 const GIT =
-    /(?:^|[;&|(][ \t]*)[ \t]*(?:\w+=[^ \t\n]*[ \t]+)*(?:(?:sudo|env|time|nice|nohup|exec)(?:[ \t]+(?:-[^ \t\n]*|\w+=[^ \t\n]*))*[ \t]+)*git[ \t]+(?:-[Cc][ \t]+[^ \t\n]+[ \t]+)*([a-z-]+)((?:[ \t]+[^ \t\n;&|)]+)*)/gm;
+    /(?:^|[;&|][ \t]*|(?<!\$)\([ \t]*)[ \t]*(?:\w+=[^ \t\n]*[ \t]+)*(?:(?:sudo|env|time|nice|nohup|exec)(?:[ \t]+(?:-[^ \t\n]*|\w+=[^ \t\n]*))*[ \t]+)*git[ \t]+(?:-[Cc][ \t]+[^ \t\n]+[ \t]+)*([a-z-]+)((?:[ \t]+[^ \t\n;&|)]+)*)/gm;
 const COMMENT = /(^|[ \t])#.*$/g;
 /** Redirections (`2>&1`, `&>f`, `>f`, `<f`), which are part of a command rather than separators. */
 const REDIRECT = /[ \t]*(?:\d*[<>]{1,2}&?\d*|&>>?)[ \t]*[^ \t\n;&|)]*/g;
@@ -148,16 +152,28 @@ const shingles = (text: string, size = SHINGLE) => {
         .map((_, i) => words.slice(i, i + size).join(" "));
 };
 
+/**
+ * The arm's delivered user-sim replies with their tape text. `null` when a delivered reply's
+ * pairing record has no `tape_key`: a run begun before the key was recorded, whose tape entry
+ * this join cannot name.
+ */
 export function userSimReplies(
     dir: string,
     arm: string,
-): { event: string; label: string; text: string }[] {
+): { event: string; label: string; text: string }[] | null {
     const tape = jsonl<{ key: string; event: string; label: string; digest: string; text: string }>(
         join(dir, "tape.jsonl"),
     );
-    return jsonl<PairingRecord>(join(dir, "pairing.jsonl")).flatMap((r) => {
-        if (r.kind !== "turn" || r.arm !== arm || r.source === "script") return [];
-        if (!r.delivered || (r.fallback?.length ?? 0) > 0) return [];
+    const replies = jsonl<PairingRecord>(join(dir, "pairing.jsonl")).filter(
+        (r) =>
+            r.kind === "turn" &&
+            r.arm === arm &&
+            r.source !== "script" &&
+            r.delivered &&
+            (r.fallback?.length ?? 0) === 0,
+    ) as Extract<PairingRecord, { kind: "turn" }>[];
+    if (replies.some((r) => r.tape_key === undefined)) return null;
+    return replies.flatMap((r) => {
         const hit = tape.find((t) => t.key === r.tape_key);
         return hit ? [{ event: r.event, label: r.label, text: hit.text }] : [];
     });
@@ -171,12 +187,20 @@ export function percentile(values: number[], q: number): number | null {
 
 /**
  * Each completed turn's `prompt_ms` from `EndTurn`: the host's prompt call, after the user-sim
- * delivered. A failed turn is dependability's, counted there as a failed turn or hang. `null`
- * when a completed turn carries no `prompt_ms`, so a journal from before the field never yields
- * a sample over part of its turns.
+ * delivered. A failed turn is dependability's, counted there as a failed turn or hang, and a
+ * turn the user-sim skipped (`UserTurn` with `delivered: false`) ran no prompt. `null` when a
+ * delivered, completed turn carries no `prompt_ms`, so a journal from before the field never
+ * yields a sample over part of its turns.
  */
 export function turnLatencies(arm: ArmLogs): number[] | null {
-    const completed = arm.journal.filter((e) => e.kind === "EndTurn" && e.outcome === "ok");
+    const delivered = new Set(
+        arm.journal
+            .filter((e) => e.kind === "UserTurn" && e.delivered === true)
+            .map((e) => String(e.event)),
+    );
+    const completed = arm.journal.filter(
+        (e) => e.kind === "EndTurn" && e.outcome === "ok" && delivered.has(String(e.event)),
+    );
     const latencies = completed
         .map((e) => e.prompt_ms)
         .filter((ms): ms is number => typeof ms === "number");
@@ -190,7 +214,7 @@ export function turnLatencies(arm: ArmLogs): number[] | null {
  * run is in the scripted user text up to and including that turn: a user restating a rule it
  * gave is quoting itself. The journal must hold the turn's `BeginTurn` and a delivered `UserTurn`;
  * a pairing record alone is the user-sim's intent, which a kill before the turn ends leaves
- * undelivered.
+ * undelivered. `null` when the notes or the replies are unavailable.
  */
 function corrections(run: RunLogs, arm: ArmLogs) {
     const script = scriptedTurns(run.dir);
@@ -204,7 +228,8 @@ function corrections(run: RunLogs, arm: ArmLogs) {
         return own.has(words.slice(1).join(" ")) || own.has(words.slice(0, -1).join(" "));
     };
     const written = notesOf(run.dir, arm.arm);
-    if (written === null) return null;
+    const replies = userSimReplies(run.dir, arm.arm);
+    if (written === null || replies === null) return null;
     const notes = (written ?? []).filter((n) => n.first_delivery_ms !== null);
     const began = new Map(
         arm.journal
@@ -216,7 +241,7 @@ function corrections(run: RunLogs, arm: ArmLogs) {
             .filter((e) => e.kind === "UserTurn" && e.delivered === true)
             .map((e) => String(e.event)),
     );
-    return userSimReplies(run.dir, arm.arm)
+    return replies
         .filter((r) => r.label === "pushback" || r.label === "redirect")
         .flatMap((r) => {
             const at = began.get(r.event);

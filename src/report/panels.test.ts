@@ -189,6 +189,23 @@ describe("soak verdict", () => {
         expect([store.verdict, store.generations]).toEqual(["no leak", 1]);
     });
 
+    test("an arm with no daemon samples gets the insufficient-samples shape", () => {
+        const { kinds, journal } = sessions(2, () => 0);
+        const resources = [
+            { scenario_ms: 0, wall_ms: 0, pid: null, rss: null, store_bytes: 5 * MB },
+        ];
+        const v = soak(run([], "", kinds), arm({ journal, resources }), "rss");
+        expect([v.verdict, v.samples, v.baseline, v.generations, v.generation]).toEqual([
+            "insufficient samples",
+            0,
+            null,
+            0,
+            1,
+        ]);
+        expect(v.bound).toEqual({ c: 8 * MB, holds: true, worst: null });
+        expect(v.windows).toEqual({ warmup: 0, steady: 0, cooldown: 0 });
+    });
+
     test("a sample taken while a session end is still closing belongs to the open session", () => {
         seq = 0;
         const kinds = new Map([["end-0", "session_end"]]);
@@ -413,6 +430,7 @@ describe("intrusiveness panel", () => {
                 scenario_ms: 3,
                 turn: "e-2",
             },
+            { command: "echo $(git restore nonexistent)", exit: 0, scenario_ms: 3, turn: "e-2" },
             { command: "cargo test", exit: 0, scenario_ms: 4, turn: "e-2" },
         ];
         const panel = intrusiveness(run([], dir, new Map(), BASE), arm({ journal, tools }));
@@ -440,10 +458,26 @@ describe("intrusiveness panel", () => {
         ]);
         expect(panel.latency_ms).toEqual({ n: 7, p50: 500, p95: 5000 });
         expect(panel.tool_output_hits).toBeNull();
+        const skipped = intrusiveness(
+            run([], dir, new Map(), BASE),
+            arm({
+                journal: [
+                    ...journal,
+                    entry("BeginTurn", 8000, { event: "e-11" }),
+                    entry("EndTurn", 8000, { event: "e-11", outcome: "ok", prompt_ms: null }),
+                    entry("UserTurn", 8000, { event: "e-11", label: "abandon", delivered: false }),
+                ],
+            }),
+        );
+        expect(skipped.latency_ms).toEqual({ n: 7, p50: 500, p95: 5000 });
         const partial = intrusiveness(
             run([], dir, new Map(), BASE),
             arm({
-                journal: [...journal, entry("EndTurn", 8000, { event: "e-11", outcome: "ok" })],
+                journal: [
+                    ...journal,
+                    entry("EndTurn", 8000, { event: "e-12", outcome: "ok" }),
+                    entry("UserTurn", 8000, { event: "e-12", delivered: true }),
+                ],
             }),
         );
         expect(partial.latency_ms).toBeNull();
@@ -522,6 +556,13 @@ describe("intrusiveness panel", () => {
             "v1",
         ]);
 
+        const legacy = pairing.map(({ tape_key, ...r }, i) => (i === 1 ? r : { ...r, tape_key }));
+        writeFileSync(
+            join(dir, "pairing.jsonl"),
+            `${legacy.map((t) => JSON.stringify(t)).join("\n")}\n`,
+        );
+        const unkeyed = intrusiveness(run([], dir, new Map(), BASE), arm({ journal, tools }));
+        expect(unkeyed.corrections_referencing_injected_text).toBeNull();
         writeFileSync(join(dir, "eidnara", "memory.json"), "null\n");
         const unavailable = intrusiveness(run([], dir, new Map(), BASE), arm({ journal, tools }));
         expect(unavailable.corrections_referencing_injected_text).toBeNull();

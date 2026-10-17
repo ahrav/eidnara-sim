@@ -26,7 +26,8 @@ export interface SoakVerdict {
     /**
      * Daemon processes the samples span: each `pid` run is its own memory trajectory, and the
      * verdict is the most decisive generation's (`leak`, then `no leak`, then `insufficient
-     * samples`), `generation` naming it from 1. `store_bytes` is one trajectory.
+     * samples`), `generation` naming it from 1. `store_bytes` is one trajectory. An arm with no
+     * sample of the resource has `generations: 0` and the insufficient-samples verdict.
      */
     generations: number;
     generation: number;
@@ -70,7 +71,9 @@ export function soak(run: RunLogs, arm: ArmLogs, resource: Resource): SoakVerdic
     const walls = all.map((s) => s.wall_ms as number);
     const gaps = walls.slice(1).map((w, i) => w - (walls[i] as number));
     const generations = resource === "store_bytes" ? [all] : byPid(all);
-    const verdicts = generations.map((g) => evaluate(run, resource, ends, g));
+    const verdicts = (generations.length === 0 ? [[]] : generations).map((g) =>
+        evaluate(run, resource, ends, g),
+    );
     const chosen = verdicts.reduce<number>((best, v, i) => {
         const b = verdicts[best] as Evaluated;
         const better =
