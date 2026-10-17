@@ -287,6 +287,8 @@ export function negativeBinomial(x: number[][], y: number[], iterations = 200): 
         throw new RangeError("negativeBinomial: an empty design has no fit");
     if (x.length !== y.length)
         throw new RangeError("negativeBinomial: the design and the response differ in length");
+    if (x.some((row) => row.length !== p || !row.every(Number.isFinite)))
+        throw new RangeError("negativeBinomial: every design row needs the same finite columns");
     counts("negativeBinomial", y);
     let beta = new Array<number>(p).fill(0);
     let m = y.map((v) => v + 0.1);

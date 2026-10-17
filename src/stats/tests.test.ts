@@ -230,7 +230,21 @@ describe("statistics against published references", () => {
             [0, 10_000_000],
         );
         expect(fit.converged).toBe(false);
+        const wide = negativeBinomial([[1], [1]], [0, 10_000_000]);
+        expect(wide.converged).toBe(true);
+        expect(wide.theta).toBeGreaterThan(0);
+        expect(wide.theta).toBeLessThan(1);
         expect(performance.now() - started).toBeLessThan(2000);
+        expect(() => negativeBinomial([[1, 0], [1]], [1, 2])).toThrow(RangeError);
+        expect(() =>
+            negativeBinomial(
+                [
+                    [1, Number.NaN],
+                    [1, 1],
+                ],
+                [1, 2],
+            ),
+        ).toThrow(RangeError);
         expect(() => negativeBinomial([], [])).toThrow(RangeError);
         expect(() => negativeBinomial([[1], [1], [1]], [-1, 2, 3])).toThrow(RangeError);
         expect(() => negativeBinomial([[1], [1], [1]], [0.5, 2, 3])).toThrow(RangeError);
