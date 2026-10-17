@@ -136,7 +136,8 @@ judges a control of `host` against nothing, and P7 grades, which come from
 judgments against the host arm, stay out of the A/A pairing.
 
 `scripts/aa-report.ts <run>` reads the run's graded items and, for each
-control, pairs every item both arms graded. It holds the run's lease while
+control, pairs every item both arms graded. It takes the run path only as
+a directory itself (a symlink is refused), holds the run's lease while
 it reads, opens `grades.jsonl` only as a regular file (`GradeLog` repairs a
 cut last line in place), requires the journal complete for the manifest order and the
 scheduled events (`requireComplete`, as `grade-run.ts` does), checks each

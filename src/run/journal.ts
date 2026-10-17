@@ -3,6 +3,7 @@ import {
     existsSync,
     fstatSync,
     linkSync,
+    lstatSync,
     openSync,
     readFileSync,
     readSync,
@@ -75,12 +76,22 @@ function readLease(path: string): Lease | null {
  * on this host has exited, or that a kill left unreadable, is moved aside by one atomic rename
  * and replaced, which is how a killed run resumes.
  */
+function isRegularFile(path: string): boolean {
+    try {
+        return lstatSync(path).isFile();
+    } catch {
+        return false;
+    }
+}
+
 export function takeLease(dir: string): Lease {
     const path = join(dir, "lease.json");
     const mine: Lease = { pid: process.pid, host: hostname(), started_wall_ms: Date.now() };
     for (let attempt = 0; attempt < 3; attempt++) {
         const staged = join(dir, `lease.${process.pid}.tmp`);
-        // An exclusive create refuses an existing path, a symlink included.
+        // A regular file at the staging name is a killed holder's leftover under a reused pid and
+        // is replaced; the exclusive create refuses anything else there, a symlink included.
+        if (isRegularFile(staged)) rmSync(staged);
         writeFileSync(staged, JSON.stringify(mine), { flag: "wx" });
         try {
             linkSync(staged, path);

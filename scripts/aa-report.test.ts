@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
     appendFileSync,
+    existsSync,
     lstatSync,
     mkdtempSync,
     readFileSync,
@@ -254,6 +255,15 @@ describe("aa-report", () => {
         symlinkSync(target, join(dir, "grades.jsonl"));
         expect(() => aaReport(dir)).toThrow(/grades\.jsonl is not a regular file/);
         expect(readFileSync(target, "utf8")).toBe(body);
+    });
+
+    test("a run path that is a symlink is refused before any file is written", () => {
+        const real = gradedRun("S", preregistrationHash(loadPrereg("S")));
+        const link = `${real}-link`;
+        symlinkSync(real, link);
+        expect(() => aaReport(link)).toThrow(/is not a directory/);
+        expect(existsSync(join(real, "lease.json"))).toBe(false);
+        expect(existsSync(join(real, "aa.json"))).toBe(false);
     });
 
     test("a run-level family forms one cluster per run, so one run leaves it uninformative", () => {

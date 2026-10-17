@@ -166,6 +166,14 @@ describe("Journal and lease", () => {
         expect(readFileSync(target, "utf8")).toBe("keep me\n");
     });
 
+    test("a killed holder's staging file under the same pid is replaced, so the run resumes", () => {
+        const d = dir();
+        writeFileSync(join(d, `lease.${process.pid}.tmp`), "{}");
+        expect(takeLease(d).pid).toBe(process.pid);
+        expect(existsSync(join(d, `lease.${process.pid}.tmp`))).toBe(false);
+        releaseLease(d);
+    });
+
     test("a corrupt line before the last refuses the journal", () => {
         const path = join(dir(), "j.jsonl");
         writeFileSync(path, '{"seq":0}\nnot json\n{"seq":2}\n');

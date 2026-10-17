@@ -15,6 +15,8 @@ import { pairingMismatches, readPairing } from "../src/usersim/usersim";
 const MIN_CLUSTERS = 5;
 
 export function aaReport(dir: string) {
+    // The lease, the staging file, and aa.json land in `dir` itself, never through a link.
+    if (!lstatSync(dir).isDirectory()) throw new Error(`${dir} is not a directory`);
     takeLease(dir);
     try {
         return report(dir);
