@@ -9,24 +9,67 @@ function statFields(pid: number): string[] | null {
     }
 }
 
-function childrenOf(pid: number): number[] {
+/** A kernel without `CONFIG_PROC_CHILDREN` has no `children` files; the parent field of every `stat` is the fallback. */
+export function childrenByParent(pid: number): number[] {
+    return parentIndex().get(pid) ?? [];
+}
+
+/** One pass over `/proc` grouping every process under its parent, so a walk reads each process once. */
+function parentIndex(): Map<number, number[]> {
+    const index = new Map<number, number[]>();
+    for (const entry of readdirSync("/proc")) {
+        if (!/^\d+$/.test(entry)) continue;
+        const ppid = statFields(Number(entry))?.[1];
+        if (ppid === undefined) continue;
+        const siblings = index.get(Number(ppid)) ?? [];
+        siblings.push(Number(entry));
+        index.set(Number(ppid), siblings);
+    }
+    return index;
+}
+
+/** Reads one task's `children` file; null when the kernel offers none. Tests substitute a reader. */
+export type ChildrenReader = (pid: number, tid: string) => string | null;
+
+const readChildren: ChildrenReader = (pid, tid) => {
+    try {
+        return readFileSync(`/proc/${pid}/task/${tid}/children`, "utf8");
+    } catch {
+        return null;
+    }
+};
+
+function childrenOf(
+    pid: number,
+    read: ChildrenReader,
+    fallback: () => Map<number, number[]>,
+): number[] {
     let tasks: string[];
     try {
         tasks = readdirSync(`/proc/${pid}/task`);
     } catch {
         return [];
     }
-    return tasks.flatMap((tid) => {
-        try {
-            const listed = readFileSync(`/proc/${pid}/task/${tid}/children`, "utf8");
-            return listed
-                .split(" ")
-                .filter((c) => c.trim() !== "")
-                .map(Number);
-        } catch {
-            return [];
-        }
+    let listedAny = false;
+    const found = tasks.flatMap((tid) => {
+        const listed = read(pid, tid);
+        if (listed === null) return [];
+        listedAny = true;
+        return listed
+            .split(" ")
+            .filter((c) => c.trim() !== "")
+            .map(Number);
     });
+    return listedAny ? found : (fallback().get(pid) ?? []);
+}
+
+/** Builds the parent index on first use, so a walk with `children` files reads `/proc` once at most. */
+function lazyIndex(): () => Map<number, number[]> {
+    let index: Map<number, number[]> | null = null;
+    return () => {
+        index ??= parentIndex();
+        return index;
+    };
 }
 
 function ownedBy(pid: number, uid: number | undefined): boolean {
@@ -37,13 +80,14 @@ function ownedBy(pid: number, uid: number | undefined): boolean {
     }
 }
 
-export function ownedProcesses(rootPid: number): number[] {
+export function ownedProcesses(rootPid: number, read: ChildrenReader = readChildren): number[] {
     const uid = process.getuid?.();
     const out: number[] = [];
     const queue = [rootPid];
+    const fallback = lazyIndex();
     for (let next = queue.shift(); next !== undefined; next = queue.shift()) {
         if (ownedBy(next, uid)) out.push(next);
-        queue.push(...childrenOf(next));
+        queue.push(...childrenOf(next, read, fallback));
     }
     return out;
 }
@@ -100,26 +144,48 @@ export async function stopOwnedTree(
     graceMs: number,
     rootStart?: string,
 ): Promise<boolean> {
-    if (rootStart !== undefined && !running(rootPid, rootStart)) return true;
-    const targets = ownedProcesses(rootPid).map((pid) => ({ pid, start: processStart(pid) }));
-    // The root keeps its launch identity throughout; a pid reused between the check above and
-    // the walk gives a tree that belongs to another process, which is left alone.
     const root = { pid: rootPid, start: rootStart ?? processStart(rootPid) };
-    if (rootStart !== undefined && !running(rootPid, rootStart)) return true;
-    const all = [...targets, root];
-    signal(targets, "SIGTERM");
-    if (await stopped(all, graceMs)) return true;
-    signal(targets, "SIGKILL");
-    if (await stopped(all, 2_000)) return true;
-    if (rootStart === undefined) return false;
-    // The launch-identity check protects processes that reuse rootPid before privileged tree traversal.
-    if (!running(rootPid, rootStart)) return false;
+    if (!alive(root)) return true;
+    // Descendants keep being discovered while the root lives: a root-owned launcher still in
+    // its privileged setup starts the user-owned command later, and that command is the target.
+    const seen = new Map<number, Target>();
+    // Discovery walks the root only while the pinned identity still holds the pid, so a pid the
+    // kernel reused after the launcher exited is never adopted; the descendants already seen
+    // still receive the signal.
+    const sweep = (name: NodeJS.Signals) => {
+        if (alive(root)) {
+            const walked = ownedProcesses(rootPid).map((pid) => ({
+                pid,
+                start: processStart(pid),
+            }));
+            // A walk during which the root changed hands belongs to another process and is dropped.
+            if (alive(root)) for (const t of walked) if (!seen.has(t.pid)) seen.set(t.pid, t);
+        }
+        signal([...seen.values()], name);
+    };
+    const settled = () => !alive(root) && [...seen.values()].every((t) => !alive(t));
+    const phase = async (name: NodeJS.Signals, ms: number) => {
+        const deadline = Date.now() + ms;
+        while (Date.now() < deadline) {
+            sweep(name);
+            if (settled()) return true;
+            await Bun.sleep(50);
+        }
+        return settled();
+    };
+    if (await phase("SIGTERM", graceMs)) return true;
+    if (await phase("SIGKILL", 2_000)) return true;
+    // The privileged fallback walks the root only while the pinned identity still holds it; a
+    // root already gone leaves the verdict to the descendants seen.
+    if (rootStart === undefined || !alive(root)) return settled();
     // The launcher is root-owned until its sandbox drops privileges, so what is left of a pinned
-    // launch is killed through the same passwordless sudo the launcher runs under.
-    const privileged = treeProcesses(rootPid)
-        .map((pid) => ({ pid, start: processStart(pid) }))
-        .filter(alive);
-    if (privileged.length === 0) return true;
+    // launch is killed through the same passwordless sudo the launcher runs under. The walk is
+    // taken only while the pinned root still holds its pid, and discarded when that changes
+    // during the walk, so a pid reused in between is never signalled.
+    const walked = treeProcesses(rootPid).map((pid) => ({ pid, start: processStart(pid) }));
+    if (!alive(root)) return settled();
+    const privileged = walked.filter(alive);
+    if (privileged.length === 0) return settled();
     Bun.spawnSync([
         "sudo",
         "-n",
@@ -127,15 +193,16 @@ export async function stopOwnedTree(
         "-KILL",
         ...privileged.filter(alive).map((t) => String(t.pid)),
     ]);
-    return stopped([...all, ...privileged], 2_000);
+    return stopped([...seen.values(), root, ...privileged], 2_000);
 }
 
 function treeProcesses(rootPid: number): number[] {
     const out: number[] = [];
     const queue = [rootPid];
+    const fallback = lazyIndex();
     for (let next = queue.shift(); next !== undefined; next = queue.shift()) {
         if (statFields(next) !== null) out.push(next);
-        queue.push(...childrenOf(next));
+        queue.push(...childrenOf(next, readChildren, fallback));
     }
     return out;
 }

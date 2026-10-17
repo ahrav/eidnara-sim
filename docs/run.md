@@ -55,9 +55,7 @@ last journaled `scenario_ms`.
 `Scheduler` runs the arms in the given order, one at a time, over one event
 list. A scheduler whose scenario holds provider faults requires proxy
 control at construction, so a journaled `FaultFired` always armed the proxy.
-For each arm, it resets the driver, then walks the events, and before `EndArm`
-waits for a pending kill and for the busy set to empty, then closes any
-outage window and the current session:
+For each arm, it resets the driver, then walks the events:
 
 1. Wait one settle interval after each answered turn (`settleMs`, 1 s by
    default), so a background job the host starts after its answer registers
@@ -80,6 +78,17 @@ outage window and the current session:
 7. Wait for a mid-fold kill fired during the event, then journal `Event` for
    the event.
 
+After the arm's last event, the scheduler waits for a mid-fold SIGKILL still
+restarting the daemon and for the busy set to empty, calls the driver's
+`finish`, waits for the busy set again (a job the shutdown itself started
+ends before the arm does, and before a failed finish surfaces), closes any
+outage window and the current session,
+and journals `EndArm`, so nothing an arm started runs into the next arm. When `reset`, the
+`StartArm` append, an event, or a fault throws, the scheduler waits for a
+mid-fold restart still in flight, calls `finish`, waits for every job the
+finish itself started (a job the failed work left open is the resume's to
+close), then fails with the original error; the arm's journal ends before `EndArm`, so a resume takes it up again.
+
 `observe("history_summarizer", driver)` fires the session's mid-fold SIGKILL
 on the first observed summarizer call. `daemonExited` inside an outage window
 is journaled as expected; outside one, it throws `HarnessFailure`.
@@ -101,6 +110,13 @@ without `EndArm`:
   whose session has not ended and a one-shot provider fault whose turn has not
   begun, and journals `ItemState failed(interrupted)` for a scheduler fault
   with no `FaultObserved`;
+- calls the driver's `reap` before any fault is armed again, so a host the
+  killed harness left running cannot reach a re-armed proxy, then its
+  `resume` with the `session_start` of the session the next event belongs to,
+  or null between sessions and when the next event is a `session_end`, and
+  with the ids of the scheduler faults fired without `FaultObserved`, so the
+  driver restarts what the killed process ran, reopens nothing a replayed
+  end would close, and clears a fault the journal records as interrupted; an arm with no event left is finished without a `resume`;
 - continues with the first event that has no `Event` entry, with the arm's
   clock restored.
 

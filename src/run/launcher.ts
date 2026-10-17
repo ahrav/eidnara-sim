@@ -59,6 +59,7 @@ SIM_PATH="$PATH" exec sudo -n --preserve-env unshare ${UNSHARE_ARGS.join(" ")} /
 set -e
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
 cd /
+cwd="$1"; shift
 keep=""
 while [ "$1" != "--ro" ]; do keep="$keep $1"; shift; done
 shift
@@ -76,7 +77,7 @@ for p in $keep; do mkdir -p "$p"; mount --rbind "$st$p" "$p"; done
 for p in $keep; do umount -R "$st$p" || true; done
 for p in $ro; do findmnt -ln -o TARGET -R "$p" | while IFS= read -r m; do mount -o remount,bind,ro "$m"; done; done
 find "$st" -depth -type d -empty -delete || true
-setpriv ${ids} --init-groups --no-new-privs --inh-caps=-all --bounding-set=-all -- env --default-signal=INT,TERM PATH="$SIM_PATH" $envs "$@"
+setpriv ${ids} --init-groups --no-new-privs --inh-caps=-all --bounding-set=-all -- env --default-signal=INT,TERM --chdir="$cwd" PATH="$SIM_PATH" $envs "$@"
 exit 0' sh "$@"
 `;
 }
@@ -90,12 +91,14 @@ export function writeLauncher(runRoot: string): string {
     return path;
 }
 
+/** `cwd` is where the command starts after the privilege drop; the default is `/`. */
 export function launch(
     launcher: string,
     keep: readonly string[],
     env: Record<string, string>,
     command: readonly string[],
     readOnly: readonly string[] = [],
+    cwd = "/",
 ): string[] {
     const pairs = Object.entries(env).map(([k, v]) => {
         if (!ENV_KEY.test(k) || !PLAIN_VALUE.test(v)) {
@@ -130,7 +133,8 @@ export function launch(
         if (parent)
             throw new Error(`sandbox path ${path} is kept writable under read-only ${parent}`);
     }
-    return [launcher, ...kept, "--ro", ...ro, "--env", ...pairs, "--", ...command];
+    const start = plainPath(cwd);
+    return [launcher, start, ...kept, "--ro", ...ro, "--env", ...pairs, "--", ...command];
 }
 
 export function sandboxAvailable(): boolean {
