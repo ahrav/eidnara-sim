@@ -104,8 +104,8 @@ treatment arm (`arms.default`, `eidnara`) against `host`:
 | `failed_turns`, `hangs` | Per run (`<tier>-<host>-<seed>`), the distinct turns with an `EndTurn` outcome other than `ok` or an `Event` outcome `failed(interrupted)` (which a resume records for a turn without an `EndTurn`), and F4 activations |
 | `turn_latency_p50_delta_ms`, `turn_latency_p95_delta_ms` | Per run, the treatment minus control percentile of turn wall time; a control arm without turn latencies leaves the run out |
 | `daemon_rss_growth_bytes_per_session`, `daemon_heap_growth_bytes_per_session`, `store_growth_bytes_per_session` | Per run, the treatment minus control soak slope, with a `host` control that runs no daemon counted as zero; the heap is the daemon's anonymous resident memory (`RssAnon`), which the sampler records as `heap` |
-| `internal_string_hits`, `user_corrections_referencing_injected_text` | Per run, the panel's counts; a run without `calls.jsonl`, or with a completed turn no call record covers, has no hit count, and a daemon arm without `memory.json`, or whose notes could not be read, has no corrections count; either leaves the observation |
-| `reverted_memory_edits` | Per run, the treatment's reverted edits minus the control's; the zero-tolerance bound fails a run whose difference is above zero |
+| `internal_string_hits`, `user_corrections_referencing_injected_text` | Per run, the panel's counts; a run without `calls.jsonl`, or with a completed turn no call record covers, has no hit count, and a daemon arm without `memory.json`, whose notes could not be read, or whose replies name a `tape_key` with no `tape.jsonl` has no corrections count; either leaves the observation |
+| `reverted_memory_edits` | Per run, the treatment's reverted edits minus the control's; an arm without `tools.jsonl` has no count and leaves the observation; the zero-tolerance bound fails a run whose difference is above zero |
 | `usd_per_component`, `usd_per_useful_retrieval` | Per run, the cost panel's total and cost per pass |
 | `P13.fold_fidelity_score`, `P14.post_compaction_correction_count` | Per run, the mean (in percentage points, the family's scale) and the sum of the item metric over the items both arms graded without exclusion and outside the fault-asymmetric stratum |
 
@@ -123,8 +123,10 @@ schema, corpus manifest, and embedding model, and the tapes it replayed)
 the runs disagree on, each run with
 scheduled proxy faults and no complete `faults.jsonl` line, each run made
 with a fault override, each run with grades for
-items outside its scenario's probes or with a binary metric recorded as
-other than a boolean (either pairs nothing), each run without
+items outside its scenario's probes, for a metric of another probe type
+than the item's, with a binary metric recorded as other than a boolean,
+or with a P13 score outside `[0, 1]` or a P14 count that is not a
+non-negative integer (any of which pairs nothing), each run without
 `pairing.jsonl`, without a pairing record for a scripted user turn in an
 analysed arm, or whose records fail the checks of
 `scripts/pairing-check.ts` (`pairingFailures`: a pre-divergence reply

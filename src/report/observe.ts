@@ -27,6 +27,10 @@ export interface GradedRun {
     pairing: PairingRecord[] | null;
     /** Whether `calls.jsonl` is present, the capture the F7 scan reads. */
     captured: boolean;
+    /** Whether `tape.jsonl` is present, which the corrections scan reads replies from. */
+    tape: boolean;
+    /** The arms with a `tools.jsonl`, the capture the revert scan reads. */
+    tooled: Set<string>;
 }
 
 /** The manifest fields a tier's runs share for their evidence to pool. */
@@ -67,6 +71,18 @@ export const judgmentKey = (r: GradeRecord) =>
     ].join("|");
 
 const probeIds = (g: GradedRun) => new Set(g.scenario.probes.map((p) => p.id));
+const probeTypes = (g: GradedRun) => new Map(g.scenario.probes.map((p) => [p.id, p.type]));
+
+/** Whether `metric`, a `<type>.<name>` grade metric, belongs to a probe of `type`. */
+const ofType = (metric: string, type: string | undefined) => metric.split(".")[0] === type;
+
+/** The registered domain of a numeric grade metric. */
+const inDomain = (metric: string, v: number) =>
+    metric === "P13.fold_fidelity_score"
+        ? v >= 0 && v <= 1
+        : metric === "P14.post_compaction_correction_count"
+          ? Number.isInteger(v) && v >= 0
+          : Number.isFinite(v);
 
 /** The arm's `~` controls that reached `EndArm`. */
 export const controlArmsOf = (g: GradedRun) =>
@@ -108,10 +124,17 @@ function values(
     const of = (a: string) =>
         new Map(
             g.grades
-                .filter((r) => r.arm === a && r.verdict !== "excluded" && probeIds(g).has(r.item))
+                .filter(
+                    (r) =>
+                        r.arm === a &&
+                        r.verdict !== "excluded" &&
+                        ofType(metric, probeTypes(g).get(r.item)),
+                )
                 .flatMap((r) => {
                     const v = r.metrics[metric];
-                    return typeof v === "number" && !dropped.has(`${runKey(g)}/${r.item}`)
+                    return typeof v === "number" &&
+                        inDomain(metric, v) &&
+                        !dropped.has(`${runKey(g)}/${r.item}`)
                         ? [[r.item, v] as const]
                         : [];
                 }),
@@ -174,13 +197,15 @@ const RUN_VALUES: Record<string, { value: RunValue; delta: boolean; hostless?: t
     },
     user_corrections_referencing_injected_text: {
         value: (g, arm) =>
-            armBase(arm.arm) !== "host" && notesOf(g.run.dir, arm.arm) === undefined
+            (armBase(arm.arm) !== "host" && notesOf(g.run.dir, arm.arm) === undefined) ||
+            (!g.tape &&
+                (g.pairing ?? []).some((r) => r.kind === "turn" && r.arm === arm.arm && r.tape_key))
                 ? null
                 : (panelOf(g, arm).corrections_referencing_injected_text?.length ?? null),
         delta: false,
     },
     reverted_memory_edits: {
-        value: (g, arm) => panelOf(g, arm).reverted_edits.length,
+        value: (g, arm) => (g.tooled.has(arm.arm) ? panelOf(g, arm).reverted_edits.length : null),
         delta: true,
     },
     usd_per_component: {
@@ -212,12 +237,12 @@ function itemPairs(
     return runs.flatMap((g) => {
         const seed = String(g.scenario.manifest.seed);
         const key = runKey(g);
-        const known = probeIds(g);
+        const types = probeTypes(g);
         const records = (arm: string) =>
             (p7 ? g.judged : g.grades).filter(
                 (r) =>
                     r.arm === arm &&
-                    known.has(r.item) &&
+                    ofType(source, types.get(r.item)) &&
                     r.verdict !== "excluded" &&
                     typeof r.metrics[source] === "boolean" &&
                     (!p7 || r.metrics.gate_eligible === true),
@@ -335,13 +360,29 @@ function incomplete(
             .filter((f) => f.analysis_unit === "item")
             .flatMap((f) => f.metrics.map((m) => ALIASES[m] ?? m)),
     );
+    const numeric = new Set(
+        p.families
+            .filter((f) => f.analysis_unit === "run")
+            .flatMap((f) => f.metrics.filter((m) => /^P\d+\./.test(m))),
+    );
     const unknown = runs.flatMap((g) => {
         const known = probeIds(g);
         const items = [...new Set(g.grades.filter((r) => !known.has(r.item)).map((r) => r.item))];
+        const types = probeTypes(g);
         const malformed = [...g.grades, ...g.judged].flatMap((r) =>
-            Object.entries(r.metrics)
-                .filter(([k, v]) => binary.has(k) && typeof v !== "boolean")
-                .map(([k]) => `run ${runKey(g)}: ${k} is not a boolean for ${r.arm} ${r.item}`),
+            Object.entries(r.metrics).flatMap(([k, v]) => {
+                if (!(binary.has(k) || numeric.has(k))) return [];
+                const type = types.get(r.item);
+                if (type && !ofType(k, type))
+                    return [
+                        `run ${runKey(g)}: ${k} recorded for ${r.arm} ${r.item}, a ${type} probe`,
+                    ];
+                if (binary.has(k) && typeof v !== "boolean")
+                    return [`run ${runKey(g)}: ${k} is not a boolean for ${r.arm} ${r.item}`];
+                if (numeric.has(k) && (typeof v !== "number" || !inDomain(k, v)))
+                    return [`run ${runKey(g)}: ${k} out of range for ${r.arm} ${r.item}`];
+                return [];
+            }),
         );
         return [
             ...(items.length

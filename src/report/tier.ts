@@ -87,8 +87,9 @@ export function loadGraded(dir: string, prereg: Preregistration): GradedRun {
         ...log.latest().filter((r) => !hostP7(r)),
         ...[...judged.values()].filter((r) => hostP7(r) && counterpart(r, prereg.arms.default)),
     ];
+    const run = loadRun(dir, prereg);
     return {
-        run: loadRun(dir, prereg),
+        run,
         scenario: { ...scenario, faults: manifest.fault_override ?? scenario.faults },
         grades,
         judged: [...judged.values()],
@@ -112,6 +113,10 @@ export function loadGraded(dir: string, prereg: Preregistration): GradedRun {
         witnesses: reports === null ? null : [...witnesses.values()],
         pairing,
         captured: existsSync(join(dir, "calls.jsonl")),
+        tape: existsSync(join(dir, "tape.jsonl")),
+        tooled: new Set(
+            run.arms.filter((a) => existsSync(join(dir, a.arm, "tools.jsonl"))).map((a) => a.arm),
+        ),
     };
 }
 
