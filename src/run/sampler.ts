@@ -4,12 +4,17 @@ import { join } from "node:path";
 const TICKS_PER_SECOND = 100;
 const PAGE_BYTES = 4096;
 
-export function procStats(pid: number): { rss: number; cpuMs: number } | null {
+/** `started` is the process's start time in clock ticks since boot, which tells one process from a later one with the same pid. */
+export function procStats(pid: number): { rss: number; cpuMs: number; started: number } | null {
     try {
         const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
         const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
         const ticks = Number(fields[11]) + Number(fields[12]);
-        return { rss: Number(fields[21]) * PAGE_BYTES, cpuMs: (ticks * 1000) / TICKS_PER_SECOND };
+        return {
+            rss: Number(fields[21]) * PAGE_BYTES,
+            cpuMs: (ticks * 1000) / TICKS_PER_SECOND,
+            started: Number(fields[19]),
+        };
     } catch {
         return null;
     }
@@ -51,6 +56,8 @@ export interface Sample {
     wall_ms: number;
     scenario_ms: number;
     pid: number | null;
+    /** The process's start time in clock ticks since boot; a resumed or restarted daemon that reuses the pid differs here. */
+    pid_started?: number | null;
     rss: number | null;
     heap?: number | null;
     cpu_ms: number | null;
@@ -93,6 +100,7 @@ export class ResourceSampler {
             wall_ms: wall,
             scenario_ms: this.o.scenarioMs(),
             pid,
+            pid_started: stats?.started ?? null,
             rss: stats?.rss ?? null,
             heap: pid === null ? null : anonBytes(pid),
             cpu_ms: stats?.cpuMs ?? null,

@@ -1,6 +1,7 @@
-import { appendFileSync, existsSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, truncateSync } from "node:fs";
 import { sha256Hex } from "../prereg/canonical";
 import { COMPONENT_HEADER } from "../proxy/classify";
+import { readJournal } from "../run/journal";
 import { HarnessFailure } from "../run/scheduler";
 import { markerHits } from "../scenario/compile";
 import type { Label, Plan } from "./plan";
@@ -75,7 +76,10 @@ interface Taped {
     stop: string;
 }
 
-/** User-sim replies keyed by seed, event, label, and the normalised agent-output digest. */
+/**
+ * User-sim replies keyed by seed, event, label, and the normalised agent-output digest. The run's
+ * own file is read like a journal: a final record cut by a kill is dropped and truncated away.
+ */
 export class Tape {
     private readonly entries = new Map<string, Taped>();
     private readonly own = new Set<string>();
@@ -87,7 +91,9 @@ export class Tape {
         for (const p of sources) {
             for (const e of jsonl<TapeEntry>(p)) this.entries.set(e.key, e);
         }
-        for (const e of jsonl<TapeEntry>(path)) {
+        const own = readJournal(path) as unknown as TapeEntry[] & { bytes?: number };
+        if (existsSync(path)) truncateSync(path, own.bytes ?? 0);
+        for (const e of own) {
             this.entries.set(e.key, e);
             this.own.add(e.key);
         }

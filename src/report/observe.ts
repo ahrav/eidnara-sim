@@ -211,7 +211,8 @@ const RUN_VALUES: Record<string, { value: RunValue; delta: boolean; hostless?: t
         delta: false,
     },
     reverted_memory_edits: {
-        value: (g, arm) => (g.tooled.has(arm.arm) ? panelOf(g, arm).reverted_edits.length : null),
+        value: (g, arm) =>
+            g.tooled.has(arm.arm) ? (panelOf(g, arm).reverted_edits?.length ?? null) : null,
         delta: true,
     },
     usd_per_component: {
