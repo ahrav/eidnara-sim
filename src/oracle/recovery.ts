@@ -267,7 +267,7 @@ function storeReasons(checks: Checks): string[] {
 
 export function recoveries(run: RunLogs): Recovery[] {
     return run.arms.flatMap((arm) => {
-        const tl = timeline(arm, run.base_wall_ms);
+        const tl = timeline(arm, run.base_wall_ms ?? Number.NaN);
         const indexed = indexEvidence(arm, tl);
         const observations = new Map(
             arm.journal.filter((e) => e.kind === "FaultObserved").map((e) => [e.fault, e]),

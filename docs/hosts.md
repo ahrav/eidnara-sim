@@ -58,7 +58,8 @@ live file otherwise), the copy in progress with `daemon.log`'s length before
 it, and the pid and start time of the daemon writing the live log, so a
 `start` after a harness kill stops a daemon that outlived the harness, then
 saves every dead lifetime's stderr once, rolling back a copy an earlier kill
-cut short; a stop after a failed restart saves every listed log too.
+cut short; a stop saves every listed log the same way, the copy in progress
+included, before the live one.
 The run's resource sampler takes a sample when each daemon process is up and
 before a fault takes one down; a final sample that cannot be written fails
 the arm's finish after the arm is shut down, so the run is not complete

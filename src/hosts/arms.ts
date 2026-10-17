@@ -225,19 +225,29 @@ export class DaemonStack {
                 throw new Error(`daemon ${owner.pid} from the last lifetime survived SIGKILL`);
             }
         }
-        let pending = [...marker.pending];
-        if (marker.copying) {
+        this.drain(marker, []);
+    }
+
+    /**
+     * Saves every log the marker lists that still exists, in order, then the `extra` ones: a
+     * copy an earlier kill cut short is rolled back to the length the marker recorded before
+     * it runs again, so each log is appended once. The marker is removed at the end.
+     */
+    private drain(marker: LogMarker | null, extra: string[]): void {
+        let pending = [...(marker?.pending ?? [])];
+        if (marker?.copying) {
             if (existsSync(this.ctx.logFile)) {
                 truncateSync(this.ctx.logFile, marker.copying.target_bytes);
             }
             pending = [marker.copying.source, ...pending];
         }
+        pending = [...new Set([...pending, ...extra])].filter((p) => p !== "");
         // The held log and the live log are one inode until the replacement daemon starts, so a
         // kill between the kill and the start lists one lifetime under two names; it is saved once.
         const saved = new Set<number>();
         while (pending.length > 0) {
             const [source, ...rest] = pending as [string, ...string[]];
-            const ino = source !== "" && existsSync(source) ? statSync(source).ino : null;
+            const ino = existsSync(source) ? statSync(source).ino : null;
             if (ino !== null && !saved.has(ino)) {
                 saved.add(ino);
                 this.absorb(source, rest);
@@ -346,15 +356,7 @@ export class DaemonStack {
         this.stack = null;
         const { stdout } = this.hh.__hermeticHostTest.diagnostics(stack);
         appendFileSync(this.ctx.logFile, stdout);
-        const live = String(stack.logPath ?? "");
-        const listed = this.readMarker()?.pending ?? [];
-        const sources = [...new Set([...listed, live])].filter((p) => p !== "");
-        while (sources.length > 0) {
-            const [source, ...rest] = sources as [string, ...string[]];
-            if (existsSync(source)) this.absorb(source, rest);
-            sources.shift();
-        }
-        rmSync(this.logSourceFile, { force: true });
+        this.drain(this.readMarker(), [String(stack.logPath ?? "")]);
     }
 }
 

@@ -3,15 +3,18 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import {
     appendFileSync,
+    closeSync,
     existsSync,
     mkdirSync,
     mkdtempSync,
+    openSync,
     readdirSync,
     readFileSync,
     rmSync,
     statSync,
     symlinkSync,
     writeFileSync,
+    writeSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -944,6 +947,39 @@ describe("probe snapshots", () => {
         );
         expect(stillChanged.failed).toContain(".git/info/exclude (changed)");
         expect(stillChanged.failed).not.toContain(".gitignore");
+    });
+
+    test("a .gitignore that ignores itself still fails the probe turn as a rule change", async () => {
+        const { driver, hosts } = fixture("host", { p: gitRepo() });
+        const fresh = new HostDriver((driver as unknown as { o: DriverOptions }).o);
+        await fresh.reset();
+        const host = hosts.at(-1) as FakeHost;
+        const ws = fresh.workspace("p");
+        await fresh.event(ev("session_start", { session: "s-0" }));
+        host.onPrompt = () => {
+            writeFileSync(join(ws, "cache.rs"), "static STORE: Mutex<u8>;\n");
+            writeFileSync(join(ws, ".gitignore"), "*\n");
+            mkdirSync(join(ws, "deep", "er"), { recursive: true });
+            writeFileSync(join(ws, "deep", "er", ".gitignore"), "*\n");
+        };
+        const outcome = await fresh.event(
+            ev("user_turn", { id: "e-1", session: "s-0", text: "go", probe: "q-1" }),
+        );
+        expect(outcome.failed).toBe(
+            "ignore rules changed: .gitignore (added), deep/er/.gitignore (added)",
+        );
+    });
+
+    test("an exclude or ignore file past the size cap reads as a changed rule", () => {
+        const repo = gitRepo();
+        const armDir = tmp();
+        const recorder = new SnapshotRecorder(armDir, "eidnara", () => []);
+        const info = join(repo, ".git", "info");
+        mkdirSync(info, { recursive: true });
+        const fd = openSync(join(info, "exclude"), "w");
+        writeSync(fd, "x", 2 << 20);
+        closeSync(fd);
+        expect(recorder.excludeDigest(repo)).toBe("unreadable");
     });
 
     test("an exclude file that is a directory, symlink, or FIFO reads as a changed rule without blocking", () => {

@@ -9,7 +9,10 @@ import type { Sample as ResourceSample } from "../run/sampler";
 import { type Scenario, scenarioHash } from "../scenario/compile";
 
 /** `pid` tells daemon lifetimes apart; a record without one is read as a single lifetime. */
-export type Sample = Pick<ResourceSample, "scenario_ms" | "rss"> & { pid?: number | null };
+export type Sample = Pick<ResourceSample, "scenario_ms" | "rss"> & {
+    pid?: number | null;
+    start?: string | null;
+};
 
 export interface ArmLogs {
     arm: string;
@@ -26,8 +29,12 @@ export interface ArmLogs {
 export interface RunLogs {
     dir: string;
     tier: string;
-    /** Wall time at scenario time 0; hosts and their plugins log in `base_wall_ms + scenario_ms`. */
-    base_wall_ms: number;
+    /**
+     * Wall time at scenario time 0, from the manifest; a journal without clock offsets places
+     * plugin log stamps as `base_wall_ms + scenario_ms`. Absent in a run recorded before the
+     * harness wrote it, which the recovery oracle refuses when it has stamps to place.
+     */
+    base_wall_ms?: number;
     prereg: Preregistration;
     kinds: Map<string, string>;
     arms: ArmLogs[];
@@ -72,6 +79,9 @@ function shaped<T>(path: string, fields: Record<string, FieldCheck>): T[] {
         }
         if ("pid" in row && !numOrNull(row.pid))
             throw new Error(`${path}: line ${i + 1}: pid missing`);
+        if ("start" in row && !strOrNull(row.start)) {
+            throw new Error(`${path}: line ${i + 1}: start missing`);
+        }
     });
     // SAFETY: every row carries each field in `fields` with its checked shape, which is the record type `T` names.
     return rows as unknown as T[];
@@ -198,13 +208,17 @@ export function loadRun(dir: string, prereg: Preregistration): RunLogs {
     const turns = new Set(planned.filter((e) => e.kind === "user_turn").map((e) => String(e.id)));
     const calls = jsonl<CallRecord>(join(dir, "calls.jsonl"));
     const seen = new Set<number>();
-    for (const c of calls) {
+    calls.forEach((c, i) => {
         const problems = recordProblems({ ...c });
         if (problems.length > 0) throw new Error(`call ${c.seq}: ${problems.join(", ")}`);
         if (!order.includes(c.arm))
             throw new Error(`call ${c.seq}: arm ${c.arm} is not in the manifest`);
         if (seen.has(c.seq)) throw new Error(`call ${c.seq}: sequence number repeated`);
+        if (c.seq !== i) throw new Error(`call ${c.seq}: expected sequence number ${i}`);
         seen.add(c.seq);
+        if (c.wall_ms < c.started_wall_ms) {
+            throw new Error(`call ${c.seq}: wall_ms precedes started_wall_ms`);
+        }
         if (c.turn !== null && !turns.has(c.turn)) {
             throw new Error(`call ${c.seq}: turn ${c.turn} is not a scheduled user turn`);
         }
@@ -215,7 +229,7 @@ export function loadRun(dir: string, prereg: Preregistration): RunLogs {
         if (c.status !== 0 && !http) {
             throw new Error(`call ${c.seq}: status ${c.status} is not an HTTP status`);
         }
-    }
+    });
     const journalPath = join(dir, "journal.jsonl");
     const journal = readJournal(journalPath);
     journal.forEach((e, i) => {
@@ -258,6 +272,5 @@ export function loadRun(dir: string, prereg: Preregistration): RunLogs {
             throw new Error(`arm ${arm.arm} has no daemon.log`);
         }
     }
-    const base_wall_ms = manifest.base_wall_ms as number;
-    return { dir, tier: manifest.tier, base_wall_ms, prereg, kinds, arms };
+    return { dir, tier: manifest.tier, base_wall_ms: manifest.base_wall_ms, prereg, kinds, arms };
 }
