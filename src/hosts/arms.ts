@@ -203,10 +203,16 @@ export class DaemonStack {
             }
             pending = [marker.copying.source, ...pending];
         }
+        // The held log and the live log are one inode until the replacement daemon starts, so a
+        // kill between the kill and the start lists one lifetime under two names; it is saved once.
+        const saved = new Set<number>();
         while (pending.length > 0) {
             const [source, ...rest] = pending as [string, ...string[]];
-            if (source !== "" && existsSync(source)) this.absorb(source, rest);
-            else this.writeMarker({ pending: rest, copying: null });
+            const ino = source !== "" && existsSync(source) ? statSync(source).ino : null;
+            if (ino !== null && !saved.has(ino)) {
+                saved.add(ino);
+                this.absorb(source, rest);
+            } else this.writeMarker({ pending: rest, copying: null });
             pending = rest;
         }
         rmSync(this.logSourceFile, { force: true });

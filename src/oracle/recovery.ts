@@ -147,18 +147,83 @@ function turnsAfter(arm: ArmLogs, fault: Entry, tl: Timeline): Turn[] {
     return turns;
 }
 
-export function dirtyReasons(arm: ArmLogs, turn: Turn, tl: Timeline): string[] {
+/** A fail-open line placed on the timeline; a stamp two offset spans claim appears once per span. */
+interface FailOpen {
+    at: number;
+    /** Log order, so a record pairs with the warning the same pass logged before it. */
+    line: number;
+    record: boolean;
+}
+
+/**
+ * The arm's evidence indexed once per arm: calls by turn, and fail-open lines sorted by position,
+ * so each turn reads a slice instead of rescanning the run.
+ */
+interface Evidence {
+    callsByTurn: Map<string, Call[]>;
+    failOpen: FailOpen[];
+}
+
+function indexEvidence(arm: ArmLogs, tl: Timeline): Evidence {
+    const callsByTurn = new Map<string, Call[]>();
+    for (const c of arm.calls) {
+        const turn = String(c.turn);
+        callsByTurn.set(turn, [...(callsByTurn.get(turn) ?? []), c]);
+    }
+    const failOpen: FailOpen[] = [];
+    arm.pluginLog.forEach((l, line) => {
+        const record = FAIL_OPEN_RECORD.test(l);
+        if (!record && !FAIL_OPEN_WARNING.test(l)) return;
+        for (const at of tl.stamps(l)) failOpen.push({ at, line, record });
+    });
+    failOpen.sort((a, b) => a.at - b.at || a.line - b.line);
+    return { callsByTurn, failOpen };
+}
+
+/** The first index in `sorted` whose position is at or past `at`. */
+function lowerBound(sorted: FailOpen[], at: number): number {
+    let lo = 0;
+    let hi = sorted.length;
+    while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if ((sorted[mid] as FailOpen).at < at) lo = mid + 1;
+        else hi = mid;
+    }
+    return lo;
+}
+
+/**
+ * Fail-open publications in a window: each pass logs a warning and then its record, so a record
+ * pairs with the latest unpaired warning before it, and a warning left unpaired (a pass cut off
+ * before its record) counts on its own.
+ */
+function failOpenCount(evidence: Evidence, from: number, to: number): number {
+    const lines = evidence.failOpen
+        .slice(lowerBound(evidence.failOpen, from), lowerBound(evidence.failOpen, to))
+        .sort((a, b) => a.line - b.line);
+    let records = 0;
+    let unpaired = 0;
+    for (const l of lines) {
+        if (!l.record) unpaired++;
+        else {
+            records++;
+            if (unpaired > 0) unpaired--;
+        }
+    }
+    return records + unpaired;
+}
+
+export function dirtyReasons(evidence: Evidence, turn: Turn, tl: Timeline): string[] {
     const reasons: string[] = [];
     if (String(turn.end.outcome) !== "ok")
         reasons.push(`turn ended ${String(turn.end.outcome).slice(0, 80)}`);
     // The turn's calls, from where its window opens: a mid-turn fault excludes the calls before it.
-    const calls = arm.calls.filter((c) => c.turn === turn.event && tl.done(c) >= turn.from);
+    const calls = (evidence.callsByTurn.get(turn.event) ?? []).filter(
+        (c) => tl.done(c) >= turn.from,
+    );
     if (calls.some((c) => c.status >= 400 && c.status < 500)) reasons.push("gateway 4xx");
     if (calls.some((c) => OVERFLOW.test(c.error ?? ""))) reasons.push("overflow");
-    const inWindow = (l: string) => tl.stamps(l).some((t) => t >= turn.from && t < turn.next);
-    const records = arm.pluginLog.filter((l) => FAIL_OPEN_RECORD.test(l) && inWindow(l)).length;
-    const warnings = arm.pluginLog.filter((l) => FAIL_OPEN_WARNING.test(l) && inWindow(l)).length;
-    const failOpen = records > 0 ? records : warnings;
+    const failOpen = failOpenCount(evidence, turn.from, turn.next);
     if (failOpen > 0) reasons.push(`${failOpen} fail-open publications`);
     return reasons;
 }
@@ -203,6 +268,7 @@ function storeReasons(checks: Checks): string[] {
 export function recoveries(run: RunLogs): Recovery[] {
     return run.arms.flatMap((arm) => {
         const tl = timeline(arm, run.base_wall_ms);
+        const indexed = indexEvidence(arm, tl);
         const observations = new Map(
             arm.journal.filter((e) => e.kind === "FaultObserved").map((e) => [e.fault, e]),
         );
@@ -215,10 +281,19 @@ export function recoveries(run: RunLogs): Recovery[] {
                 anchors.set(e.fault, e);
         }
         return [...anchors.values()].map((fired): Recovery => {
-            // A sleep's evidence is its clock jump; the scheduler observes it in the same tick.
+            // A sleep's evidence is its recorded clock jump: a fault-tagged AdvanceClock that moved
+            // the clock forward with the busy set empty.
+            const jumped = arm.journal.some(
+                (e) =>
+                    e.kind === "AdvanceClock" &&
+                    e.fault === fired.fault &&
+                    e.scenario_ms - Number(e.from_ms) > 0 &&
+                    Array.isArray(e.busy) &&
+                    e.busy.length === 0,
+            );
             const observed =
                 observations.get(fired.fault) ??
-                (fired.type === "laptop_sleep" ? fired : undefined);
+                (fired.type === "laptop_sleep" && jumped ? fired : undefined);
             const evidence = (observed?.evidence ?? {}) as {
                 skipped?: unknown;
                 store?: StoreCheck;
@@ -229,7 +304,7 @@ export function recoveries(run: RunLogs): Recovery[] {
                 return { ...base, turns_to_first_clean: null, recovered: null, reasons };
             }
             const turns = turnsAfter(arm, fired, tl);
-            const dirty = turns.map((t) => dirtyReasons(arm, t, tl));
+            const dirty = turns.map((t) => dirtyReasons(indexed, t, tl));
             const index = dirty.findIndex((r) => r.length === 0);
             const reasons =
                 index < 0

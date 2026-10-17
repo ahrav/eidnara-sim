@@ -164,14 +164,34 @@ describe("recovery oracles", () => {
             entry("BeginTurn", 10, { event: "e-1" }),
             entry("EndTurn", 20, { event: "e-1", outcome: "ok" }),
         ];
-        const log = [
-            `${stamp(15)} [eidnara][s-1] rust transform failed; serving the input unchanged: x`,
-            `${stamp(15)} [eidnara][s-1] rust pass: decision=error reason=none served_from=raw`,
-        ];
-        const [r] = recoveries(run([arm(journal, log)]));
+        const warning = (ms: number) =>
+            `${stamp(ms)} [eidnara][s-1] rust transform failed; serving the input unchanged: x`;
+        const record = (ms: number) =>
+            `${stamp(ms)} [eidnara][s-1] rust pass: decision=error reason=none served_from=raw`;
+        const [r] = recoveries(run([arm(journal, [warning(15), record(15)])]));
         expect(r?.reasons).toEqual(["e-1: 1 fail-open publications"]);
-        const [warned] = recoveries(run([arm(journal, [log[0] as string])]));
+        const [warned] = recoveries(run([arm(journal, [warning(15)])]));
         expect(warned?.reasons).toEqual(["e-1: 1 fail-open publications"]);
+        // A pass cut off after its warning, then a pass that logged both: two publications.
+        const [mixed] = recoveries(run([arm(journal, [warning(12), warning(15), record(15)])]));
+        expect(mixed?.reasons).toEqual(["e-1: 2 fail-open publications"]);
+    });
+
+    test("a sleep fired without its recorded clock jump is unobserved", () => {
+        seq = 0;
+        const journal = [
+            entry("FaultFired", 0, { fault: "z", type: "laptop_sleep", layer: "clock" }),
+            entry("BeginTurn", 10, { event: "e-1" }),
+            entry("EndTurn", 20, { event: "e-1", outcome: "ok" }),
+        ];
+        const [r] = recoveries(run([arm(journal)]));
+        expect([r?.recovered, r?.reasons]).toEqual([
+            false,
+            ["fault not observed: harness interrupted"],
+        ]);
+        const jumped = [entry("AdvanceClock", 5, { fault: "z", from_ms: 0, busy: [] }), ...journal];
+        const [ok] = recoveries(run([arm(jumped)]));
+        expect([ok?.recovered, ok?.reasons]).toEqual([true, []]);
     });
 
     test("a fail-open publication in every later turn prevents a recovered verdict", () => {
