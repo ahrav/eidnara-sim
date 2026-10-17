@@ -66,6 +66,9 @@ export async function buildFaketime(): Promise<string> {
             ]);
             if (code !== 0) throw new Error(`${argv.join(" ")}: ${stderr || `exit ${code}`}`);
         }
+        // An earlier build that stopped short leaves the target without its library; the lease
+        // held here makes removing it safe.
+        rmSync(join(VENDOR, tree), { recursive: true, force: true });
         renameSync(join(stage, tree), join(VENDOR, tree));
         rmSync(stage, { recursive: true, force: true });
         return FAKETIME_LIB;

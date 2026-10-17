@@ -19,32 +19,38 @@ grading, A/A report, or the tier report fails or any run exceeded
 property witness holds a violated record, and 2 on a malformed flag, a
 plan where no session fits the budget, a `--turn-ms` whose prefix differs
 from one a run with a manifest ran, an unreadable `tier-plan.json` with
-no `--turn-ms` to replace it, or an output directory another invocation
-holds (`<dir>/lease.json`). Every exit, a thrown setup error included,
-releases that lease. SIGINT, SIGTERM, or
+no `--turn-ms` to replace it, an `--out` inside the Eidnara checkout, or
+an output directory another invocation holds (`<dir>/lease.json`). Every
+exit, a thrown setup error included, releases that lease. SIGINT, SIGTERM, or
 SIGHUP to the command reaches every child it started, SIGKILLs any still
 live a minute later together with its descendants, and starts no further
 grading or report; each run tears down and stays resumable.
 
 A seed's scenario is compiled once into `<dir>/scenarios-<seed>/` and
-copied into each new run directory. A cached scenario compiled from
-another generator version, corpus manifest, fact bank, repository list,
-or pre-registration is refused for a new run; a run that already has a
-manifest keeps the scenario it ran. The libfaketime build's download,
+copied into each new run directory. A cached scenario whose body no
+longer hashes to its `scenario_hash`, or compiled from another generator
+version, corpus manifest, fact bank, repository list, or pre-registration,
+is refused for a new run; a run that already has a manifest keeps the
+scenario it ran. The libfaketime build's download,
 extraction, and compilation each end within ten minutes; invocations
 serialise on a lease over `vendor/build`, and the finished tree is
 renamed into place, so another command sees a complete library or none.
 
 ## Plan
 
-Each run gets its seed's pre-registered arm order plus an A/A control
-(`<arm>~aa`) for every pair in `aa_controls` whose arm is in the order.
-Every arm runs the same prefix of the scenario: the longest one that ends
-on a session end and whose user turns, at `--turn-ms` each (45 to 75 s on
-Pi with Opus 5.5 in the S smoke runs), fit 85% of the tier's
-`liveness_bounds.tier_wall_budget_ms` once per arm. The rest of the
-budget covers setup and the turns' spread. A run's wall time counts from
-its journaled `StartRun`, across resumptions. A run that finishes past
+Each run gets its seed's pre-registered arm order. The A/A controls
+(`<arm>~aa` for every pair in `aa_controls` whose arm is in the order)
+ride on exactly `aa_controls.repeats` of the runs, seeds varying first so
+they spread across hosts, which is the count the report's completeness
+check wants; a host and seed selection planning fewer runs than that
+exits 2. Every arm of every run runs the same prefix of the scenario: the
+longest one that ends on a session end and whose user turns, at
+`--turn-ms` each (45 to 75 s on Pi with Opus 5.5 in the S smoke runs),
+fit 85% of the tier's `liveness_bounds.tier_wall_budget_ms` once per arm
+of the run with the most arms. The rest of the
+budget covers setup and the turns' spread. A run's wall time is its
+journaled `StartRun` to `EndRun`, read after the run child exits, across
+resumptions. A run that finishes past
 the budget fails the command; one still going at 125% of the budget is
 stopped with SIGTERM, and with SIGKILL a minute later if its teardown
 stalls; it stays resumable, with what remains of the limit. Grading and the A/A report run under the same

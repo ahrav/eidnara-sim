@@ -165,6 +165,8 @@ test("a transcript path in a command counts as a read only with a reading or sea
             exit: 0,
             scenario_ms: 0,
         },
+        { turn: "e-1", command: "cat ./opencode.db", exit: 0, scenario_ms: 0 },
+        { turn: "e-1", command: "cat notes/sessions/today.jsonl", exit: 0, scenario_ms: 0 },
         {
             turn: "e-3",
             command: "cd /tmp && sqlite3 ~/.local/share/opencode/opencode.db 'select 1'",
@@ -250,4 +252,13 @@ test("a transcript with no usable creation time counts as missing, not as ordere
         max_lead_ms: 40,
         max_lag_ms: 0,
     });
+});
+
+test("a transcripts.json of the wrong shape reads as an unchecked arm", () => {
+    const g = fixture();
+    writeFileSync(
+        join(g.run.dir, "eidnara/transcripts.json"),
+        JSON.stringify({ paths: {}, missing: [] }),
+    );
+    expect(runConditions(g).transcripts[1]).toEqual({ arm: "eidnara", paths: [], missing: null });
 });

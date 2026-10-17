@@ -267,7 +267,7 @@ const CHECKS: Record<string, Check> = {
                 const calls = [...a.calls].sort((x, y) => x.seq - y.seq);
                 // The injector spends a bounded fault's count on every eligible agent call after
                 // it fired, whether or not that call was injected.
-                const eligible = (id: string, firedAt: number) =>
+                const eligible = (firedAt: number) =>
                     calls.filter((x) => x.component === TARGET && x.started_wall_ms >= firedAt);
                 for (const call of calls.filter((x) => typeof x.fault_ref === "string")) {
                     n++;
@@ -289,7 +289,7 @@ const CHECKS: Record<string, Check> = {
                         fault.strategy === "persistent"
                             ? Number.POSITIVE_INFINITY
                             : (fault.params.count ?? fault.params.calls ?? 1);
-                    const position = eligible(id, firedAt).findIndex((x) => x.seq === call.seq) + 1;
+                    const position = eligible(firedAt).findIndex((x) => x.seq === call.seq) + 1;
                     if (position > limit) bad.push(`call ${call.seq} names ${id} beyond its count`);
                 }
             }

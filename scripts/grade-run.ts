@@ -137,7 +137,13 @@ if (pairs.length > 0) {
                     calibration: null,
                     permutation: null,
                 };
-                append(...gradeP7(judgment, context, rules));
+                // Host side first: a write cut after one record leaves the memory arm ungraded,
+                // which is what makes the pair stand or fall on the next grading.
+                const sides = gradeP7(judgment, context, rules);
+                append(
+                    ...sides.filter((g) => g.arm === "host"),
+                    ...sides.filter((g) => g.arm !== "host"),
+                );
             } catch (caught) {
                 judgeErrors++;
                 console.error(`${probe.id} (${arm}): ${String(caught)}`);

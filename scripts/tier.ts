@@ -58,6 +58,11 @@ const turnMs = Number(arg("turn-ms") ?? priorTurnMs());
 if (!Number.isInteger(turnMs) || turnMs <= 0) fail("--turn-ms must be a positive integer");
 if (new Set(hosts).size !== hosts.length || !hosts.every((h) => prereg.hosts.includes(h)))
     fail(`--hosts must name distinct hosts from ${prereg.hosts.join(",")}`);
+// The tier never writes under the Eidnara checkout (AGENTS.md); the check precedes the first
+// directory it would create.
+const inside = (path: string, root: string) => path === root || path.startsWith(`${root}/`);
+if (inside(out, resolve(config.eidnara_checkout)))
+    fail(`--out ${out} is inside the Eidnara checkout ${config.eidnara_checkout}`);
 mkdirSync(out, { recursive: true });
 // One invocation per output directory: a second would resume runs the first still drives and
 // grade their directories while they change.
@@ -89,6 +94,13 @@ for (const seed of prereg.seeds) {
     scenarios.set(seed, await loadScenario({ config, tier, seed, out: dir }));
 }
 const plan = tierPlan(prereg, scenarios, hosts, out, turnMs);
+const repeats = prereg.aa_controls?.repeats ?? 0;
+if (plan.length < repeats) {
+    console.error(
+        `${repeats} A/A repeats are registered, and these hosts and seeds plan ${plan.length} runs\n${USAGE}`,
+    );
+    exit(2);
+}
 const conflicts = planConflicts(plan);
 if (conflicts.length > 0) {
     console.error(
@@ -185,7 +197,10 @@ const results = await supervised(() =>
                           log,
                           Math.max(1, limit - (started - runStarted)),
                       );
-            const run_wall_ms = (span.ended ?? Date.now()) - runStarted;
+            // The child's journal has the run's own StartRun and EndRun once it exits; the span
+            // is read again so preflight before StartRun and teardown after EndRun stay out.
+            const after = runSpan(job.dir, started);
+            const run_wall_ms = (after.ended ?? Date.now()) - after.started;
             const ran = existsSync(join(job.dir, "manifest.json")) && !held;
             const graded = ran ? await run(["grade-run.ts", job.dir], log, limit) : null;
             const aa =

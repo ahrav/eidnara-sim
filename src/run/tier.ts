@@ -43,25 +43,35 @@ export function tierPlan(
     out: string,
     turnMs: number,
 ): TierJob[] {
-    return hosts.flatMap((host) =>
-        prereg.seeds.map((seed, i) => {
-            const order = prereg.arms.order_by_seed[i] ?? prereg.arms.run;
-            const controls = (prereg.aa_controls?.pairs ?? [])
-                .filter(([arm, twin]) => arm === twin)
-                .map(([arm]) => arm as string)
-                .filter((arm) => order.includes(arm as never))
-                .map((arm) => `${arm}~aa`);
-            const arms = [...order, ...controls];
-            const scenario = scenarios.get(seed) as Scenario;
-            const cap = capEvents(
-                scenario,
-                arms.length,
-                prereg.liveness_bounds.tier_wall_budget_ms,
-                turnMs,
-            );
-            return { host, seed, arms, ...cap, dir: `${out}/${prereg.tier}-${seed}-${host}` };
-        }),
+    // The A/A controls ride on exactly `aa_controls.repeats` runs, which is what the campaign's
+    // completeness check counts; seeds vary first so the controls spread across hosts.
+    const repeats = prereg.aa_controls?.repeats ?? 0;
+    const jobs = prereg.seeds.flatMap((seed, i) =>
+        hosts.map((host) => ({
+            host,
+            seed,
+            order: prereg.arms.order_by_seed[i] ?? prereg.arms.run,
+        })),
     );
+    const planned = jobs.map((job, n) => {
+        const controls =
+            n < repeats
+                ? (prereg.aa_controls?.pairs ?? [])
+                      .filter(([arm, twin]) => arm === twin)
+                      .map(([arm]) => arm as string)
+                      .filter((arm) => job.order.includes(arm as never))
+                      .map((arm) => `${arm}~aa`)
+                : [];
+        return { ...job, arms: [...job.order, ...controls] };
+    });
+    // Every run shares the prefix that fits the run with the most arms.
+    const widest = Math.max(...planned.map((j) => j.arms.length));
+    const byHost = hosts.flatMap((host) => planned.filter((j) => j.host === host));
+    return byHost.map(({ host, seed, arms }) => {
+        const scenario = scenarios.get(seed) as Scenario;
+        const cap = capEvents(scenario, widest, prereg.liveness_bounds.tier_wall_budget_ms, turnMs);
+        return { host, seed, arms, ...cap, dir: `${out}/${prereg.tier}-${seed}-${host}` };
+    });
 }
 
 /**

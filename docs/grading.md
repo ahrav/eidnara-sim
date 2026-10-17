@@ -62,9 +62,10 @@ derive from, or when `scenario.json` hashes to other than the manifest's
 `scenario_hash`, whose checks they derive from. An
 item whose latest grade already cites its snapshot is skipped as `already
 graded`, so grading a run again is free of judge calls and leaves earlier
-judgments as they stand; a P7 pair's two grades land in one write, and
-the memory arm's grade means its pair stands (the host snapshot is shared
-by every memory arm's pair). `--regrade` grades every item
+judgments as they stand; a P7 pair's two grades land in one write, host
+side first, and the memory arm's grade means its pair stands (the host
+snapshot is shared by every memory arm's pair). A grade record a kill cut
+short at the end of the log is dropped on read and before the next write. `--regrade` grades every item
 anew as a further version. The printed summary covers the run's latest grades, and
 `graded` counts the ones this invocation added. It prints the verdict
 counts per arm and probe type, the skipped items by reason, the summed

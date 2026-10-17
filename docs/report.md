@@ -183,7 +183,7 @@ scenario's total when it is a capped prefix; the time
 interception outcome per binary from the preflight; and any transcript
 store path the driver found missing after the first `session_end`, or
 `<arm> unchecked` for an arm that never reached that check or whose
-`transcripts.json` a stop cut short. It then
+`transcripts.json` a stop cut short or left in another shape. It then
 reads each host's transcripts back, Pi's session files under
 `.pi/agent/sessions` (regular files under a real directory that resolves
 inside the arm's directory; a symlinked root or entry, or a path that
@@ -203,5 +203,7 @@ non-excluded items, beside the v1
 harness's cross-session recall (host 0 to 3%, Eidnara 99 to 100%). For
 every pass it counts the passes whose turn ran a simple command whose
 program is a reader or searcher (`cat`, `grep`, `rg`, `find`, `sqlite3`,
-Pi's `read`, and the like) with the host's transcript store among its
-words, so a `host` pass is split between transcript search and the rest.
+Pi's `read`, and the like) with the host's transcript store, as the
+sandboxed agent names it (Pi's `agent/sessions`, OpenCode's
+`opencode/opencode.db` or `opencode/storage`), among its words, so a
+`host` pass is split between transcript search and the rest.

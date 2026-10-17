@@ -12,8 +12,9 @@ export const V1_CONTINUITY: Record<string, [number, number]> = {
     eidnara: [0.99, 1],
 };
 
+/** The hosts' transcript stores as the sandboxed agent names them: Pi's sessions directory and OpenCode's data directory. */
 const TRANSCRIPT_PATH =
-    /\.pi\/agent\/sessions|PI_CODING_AGENT_DIR\}?\/sessions|XDG_DATA_HOME\}?\/opencode|opencode\.db|opencode\/storage|\/sessions\/\S*\.jsonl/;
+    /\.pi\/agent\/sessions|PI_CODING_AGENT_DIR\}?\/sessions|XDG_DATA_HOME\}?\/opencode|\/opencode\/opencode\.db|\/opencode\/storage|agent\/sessions\/\S*\.jsonl/;
 const READERS = new Set([
     "cat",
     "less",
@@ -165,12 +166,15 @@ export function runConditions(g: GradedRun): RunConditions {
         const p = join(g.run.dir, arm.arm, "transcripts.json");
         // An absent or cut file (the driver writes it in one call a kill can interrupt) is an
         // unchecked arm.
-        let t = { paths: [] as string[], missing: null as string[] | null };
+        const unchecked = { paths: [] as string[], missing: null as string[] | null };
+        let t = unchecked;
         try {
             if (existsSync(p)) t = JSON.parse(readFileSync(p, "utf8"));
         } catch {
-            t = { paths: [], missing: null };
+            t = unchecked;
         }
+        const strings = (x: unknown) => Array.isArray(x) && x.every((v) => typeof v === "string");
+        if (!strings(t.paths) || !(t.missing === null || strings(t.missing))) t = unchecked;
         return { arm: arm.arm, paths: t.paths, missing: t.missing };
     });
     const probes = (manifest.preflight?.time_injection ?? []) as RunConditions["interception"];
