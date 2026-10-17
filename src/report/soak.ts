@@ -36,10 +36,10 @@ export function soak(run: RunLogs, arm: ArmLogs, resource: Resource): SoakVerdic
     );
     const first = all.findIndex((s) => (s[resource] as number) > 0);
     const samples = first < 0 ? [] : all.slice(first);
-    const points = samples.map((s) => ({
-        x: ends.filter((ms) => ms <= (s.wall_ms as number)).length,
-        y: s[resource] as number,
-    }));
+    const completed = (s: (typeof samples)[number]) =>
+        ends.filter((ms) => ms <= (s.wall_ms as number)).length;
+    const before = samples[0] === undefined ? 0 : completed(samples[0]);
+    const points = samples.map((s) => ({ x: completed(s) - before, y: s[resource] as number }));
     const walls = samples.map((s) => s.wall_ms as number);
     const gaps = walls.slice(1).map((w, i) => w - (walls[i] as number));
     const tenth = Math.max(1, Math.floor(points.length / 10));

@@ -140,6 +140,29 @@ describe("soak verdict", () => {
         expect(steady.verdict).toBe("insufficient samples");
     });
 
+    test("the bound counts sessions completed after the baseline sample", () => {
+        seq = 0;
+        const kinds = new Map([
+            ["end-0", "session_end"],
+            ["end-1", "session_end"],
+        ]);
+        const journal = [
+            entry("Event", 100, { event: "end-0", wall_ms: 100 }),
+            entry("Event", 200, { event: "end-1", wall_ms: 200 }),
+        ];
+        const resources = [
+            { scenario_ms: 300, wall_ms: 300, rss: 100 * MB, store_bytes: 0 },
+            { scenario_ms: 400, wall_ms: 400, rss: 210 * MB, store_bytes: 0 },
+            { scenario_ms: 500, wall_ms: 500, rss: 100 * MB, store_bytes: 0 },
+        ];
+        const v = soak(run([], "", kinds), arm({ journal, resources }), "rss");
+        expect([v.sessions, v.bound.holds, v.bound.worst]).toEqual([
+            2,
+            false,
+            { value: 210 * MB, limit: 200 * MB, sessions: 0 },
+        ]);
+    });
+
     test("a sample taken while a session end is still closing belongs to the open session", () => {
         seq = 0;
         const kinds = new Map([["end-0", "session_end"]]);
@@ -208,7 +231,7 @@ describe("intrusiveness panel", () => {
                 content: "Observed: retries stop after nine attempts in the client.",
                 status: "active",
                 deliveries: 1,
-                first_delivery_ms: BASE + 5_500,
+                first_delivery_ms: BASE + 4_600,
             },
             {
                 id: 5,
@@ -325,6 +348,11 @@ describe("intrusiveness panel", () => {
                 turn: "e-2",
             },
             { command: 'git checkout -- "my file.rs"', exit: 0, scenario_ms: 3, turn: "e-2" },
+            { command: 'git -C "/tmp/my repo" restore a.rs', exit: 0, scenario_ms: 3, turn: "e-2" },
+            { command: "git restore missing.rs || true", exit: 0, scenario_ms: 3, turn: "e-2" },
+            { command: "git restore b.rs; false", exit: 1, scenario_ms: 3, turn: "e-2" },
+            { command: "git restore c.rs && cargo test", exit: 0, scenario_ms: 3, turn: "e-2" },
+            { command: "git restore d.rs | tee log", exit: 0, scenario_ms: 3, turn: "e-2" },
             { command: "cargo test", exit: 0, scenario_ms: 4, turn: "e-2" },
         ];
         const panel = intrusiveness(run([], dir, new Map(), BASE), arm({ journal, tools }));
@@ -338,6 +366,8 @@ describe("intrusiveness panel", () => {
             "git restore -SW src/lib.rs",
             "git reset -q --hard HEAD~1",
             'git checkout -- "my file.rs"',
+            'git -C "/tmp/my repo" restore a.rs',
+            "git restore c.rs && cargo test",
         ]);
         expect(panel.latency_ms).toEqual({ n: 7, p50: 500, p95: 5000 });
         expect(percentile([5, 1, 3, 2, 4], 0.5)).toBe(3);

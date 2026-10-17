@@ -20,7 +20,10 @@ export interface Intrusiveness {
 const GIT = /\bgit\s+(?:-[Cc]\s+\S+\s+)*([a-z-]+)((?:\s+[^\s;&|]+)*)/g;
 const HEREDOC = /<<-?\s*(['"]?)(\w+)\1[^\n]*\n[\s\S]*?\n\s*\2(?=\n|$)/g;
 const QUOTED = /'[^']*'|"(?:[^"\\]|\\.)*"/g;
+const SEPARATOR = /&&|\|\||[;|&\n]/g;
 const SHINGLE = 5;
+/** Clock slack between a note's delivery stamp and the harness's nominal turn boundary. */
+const CLOCK_SLACK_MS = 1_000;
 
 function jsonl<T>(path: string): T[] {
     return existsSync(path) ? (readJournal(path) as unknown as T[]) : [];
@@ -58,19 +61,34 @@ const hasFlag = (args: string[], long: string, short: string) =>
 const restoresWorktree = (args: string[]) =>
     hasFlag(args, "--worktree", "W") || !hasFlag(args, "--staged", "S");
 
-/** The command with heredoc bodies and quoted strings removed, leaving the words the shell runs. */
-const executable = (command: string) => command.replace(HEREDOC, " ").replace(QUOTED, " ");
+/**
+ * The command with heredoc bodies removed and each quoted string replaced by one plain word, so
+ * the words the shell runs keep their positions.
+ */
+const executable = (command: string) => command.replace(HEREDOC, " ").replace(QUOTED, "_");
 
+const reverts = (sub: string, args: string[]) =>
+    sub === "revert" ||
+    (sub === "reset" && args.includes("--hard")) ||
+    (sub === "checkout" && args.includes("--")) ||
+    (sub === "restore" && restoresWorktree(args));
+
+/**
+ * Whether a zero exit status of the whole command establishes that a reverting `git` invocation
+ * in it succeeded: every command after that invocation is joined by `&&`, so the shell ran them
+ * only after the revert exited 0 and the final status is theirs only when all succeeded.
+ */
 export function isRevert(command: string): boolean {
-    for (const [, sub, rest] of executable(command).matchAll(GIT)) {
+    const shell = executable(command);
+    for (const m of shell.matchAll(GIT)) {
+        const [, sub, rest] = m;
         const args = (rest ?? "")
             .trim()
             .split(/\s+/)
             .filter((a) => a !== "");
-        if (sub === "revert") return true;
-        if (sub === "reset" && args.includes("--hard")) return true;
-        if (sub === "checkout" && args.includes("--")) return true;
-        if (sub === "restore" && restoresWorktree(args)) return true;
+        if (!reverts(sub ?? "", args)) continue;
+        const after = shell.slice(m.index + m[0].length).match(SEPARATOR) ?? [];
+        if (after.every((sep) => sep === "&&")) return true;
     }
     return false;
 }
@@ -113,10 +131,10 @@ export function turnLatencies(arm: ArmLogs): number[] {
 
 /**
  * A correction references injected text when a pushback or redirect the agent received shares a
- * five-word run with a memory note whose `first_delivery_ms` is at or before the turn's
- * `BeginTurn` time (`base_wall_ms + scenario_ms`), and neither four-word half of the run is in
- * the scripted user text up to and including that turn: a user restating a rule it gave is
- * quoting itself.
+ * five-word run with a memory note whose `first_delivery_ms` is at least `CLOCK_SLACK_MS` before
+ * the turn's `BeginTurn` time (`base_wall_ms + scenario_ms`), and neither four-word half of the
+ * run is in the scripted user text up to and including that turn: a user restating a rule it
+ * gave is quoting itself.
  */
 function corrections(run: RunLogs, arm: ArmLogs) {
     const script = scriptedTurns(run.dir);
@@ -145,7 +163,7 @@ function corrections(run: RunLogs, arm: ArmLogs) {
             const own = ownBy(r.event);
             const injected = new Set(
                 notes
-                    .filter((n) => (n.first_delivery_ms as number) <= at)
+                    .filter((n) => (n.first_delivery_ms as number) <= at - CLOCK_SLACK_MS)
                     .flatMap((n) => shingles(n.content))
                     .filter((s) => !quoted(own, s)),
             );
