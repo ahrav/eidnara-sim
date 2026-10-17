@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Children, SIGTERM_EXIT } from "./children";
@@ -97,4 +97,15 @@ test("a log that cannot be written ends the child and settles the run with a fai
 test("a spawn that fails while its log cannot be written still settles the run", async () => {
     const children = new Children({ PATH: "/nonexistent" }, 300);
     expect(await children.run(["-e", "1"], "/nonexistent/dir/log")).toBe(127);
+});
+
+test("a log path that is a symlink is refused before the child starts, and its target stays untouched", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "sim-children-"));
+    const target = join(dir, "target");
+    writeFileSync(target, "kept\n");
+    const link = join(dir, "log");
+    symlinkSync(target, link);
+    const children = new Children(process.env, 300);
+    expect(await children.run(["-e", "console.log('x')"], link)).toBe(127);
+    expect(readFileSync(target, "utf8")).toBe("kept\n");
 });

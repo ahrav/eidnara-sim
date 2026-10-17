@@ -35,6 +35,8 @@ interface Ctx {
     recorded: Map<string, string>;
     /** Tapes whose sibling pairing log differs from the digest the run recorded. */
     changedSources: string[];
+    /** `arm/id` of every complete record on the arms' snapshot logs. */
+    snapshots: Set<string>;
     entries: Entry[];
     grades: GradeRecord[];
 }
@@ -78,6 +80,13 @@ function context(g: GradedRun): Ctx {
         manifest: read,
         recorded,
         changedSources,
+        snapshots: new Set(
+            g.run.arms.flatMap((a) =>
+                jsonl<{ id: string }>(join(g.run.dir, a.arm, "snapshots.jsonl")).map(
+                    (snap) => `${a.arm}/${snap.id}`,
+                ),
+            ),
+        ),
         entries: jsonl<Entry>(join(g.run.dir, "journal.jsonl")),
         grades: existsSync(grades) ? new GradeLog(grades).all() : [],
     };
@@ -245,38 +254,35 @@ const CHECKS: Record<string, Check> = {
         const bad: string[] = [];
         let n = 0;
         for (const c of runs) {
-            for (const a of c.g.run.arms) {
-                const clock = journalClock(a.journal);
-                let wall = Number.NEGATIVE_INFINITY;
-                const seqs = new Set<number>();
-                for (const call of [...a.calls].sort((x, y) => x.seq - y.seq)) {
-                    n++;
-                    if (!Number.isInteger(call.seq) || seqs.has(call.seq)) {
-                        bad.push(`call seq ${JSON.stringify(call.seq)} is not a fresh integer`);
-                        continue;
-                    }
-                    seqs.add(call.seq);
-                    if (!Number.isFinite(call.scenario_ms) || !Number.isFinite(call.wall_ms)) {
-                        bad.push(`call ${call.seq} lacks a time`);
-                        continue;
-                    }
-                    if (call.wall_ms < wall) bad.push(`call ${call.seq} wall time decreases`);
-                    wall = Math.max(wall, call.wall_ms);
-                    if (
-                        !Number.isFinite(call.started_wall_ms) ||
-                        call.started_wall_ms > call.wall_ms
-                    ) {
-                        bad.push(`call ${call.seq} has no usable receipt time`);
-                        continue;
-                    }
-                    const expected = clock(call.started_wall_ms);
-                    if (expected === undefined)
-                        bad.push(`call ${call.seq} starts before the journal`);
-                    else if (Math.abs(call.scenario_ms - expected) > CLOCK_SLACK_MS)
-                        bad.push(
-                            `call ${call.seq} at scenario ${call.scenario_ms} ms, the journal's clock says ${expected}`,
-                        );
+            // One sequence and one wall clock span the run's arms, as one RecordWriter wrote them.
+            const clocks = new Map(c.g.run.arms.map((a) => [a.arm, journalClock(a.journal)]));
+            const all = c.g.run.arms.flatMap((a) => a.calls.map((call) => ({ a, call })));
+            let wall = Number.NEGATIVE_INFINITY;
+            const seqs = new Set<number>();
+            for (const { a, call } of all.sort((x, y) => x.call.seq - y.call.seq)) {
+                const clock = clocks.get(a.arm) as ReturnType<typeof journalClock>;
+                n++;
+                if (!Number.isInteger(call.seq) || seqs.has(call.seq)) {
+                    bad.push(`call seq ${JSON.stringify(call.seq)} is not a fresh integer`);
+                    continue;
                 }
+                seqs.add(call.seq);
+                if (!Number.isFinite(call.scenario_ms) || !Number.isFinite(call.wall_ms)) {
+                    bad.push(`call ${call.seq} lacks a time`);
+                    continue;
+                }
+                if (call.wall_ms < wall) bad.push(`call ${call.seq} wall time decreases`);
+                wall = Math.max(wall, call.wall_ms);
+                if (!Number.isFinite(call.started_wall_ms) || call.started_wall_ms > call.wall_ms) {
+                    bad.push(`call ${call.seq} has no usable receipt time`);
+                    continue;
+                }
+                const expected = clock(call.started_wall_ms);
+                if (expected === undefined) bad.push(`call ${call.seq} starts before the journal`);
+                else if (Math.abs(call.scenario_ms - expected) > CLOCK_SLACK_MS)
+                    bad.push(
+                        `call ${call.seq} at scenario ${call.scenario_ms} ms, the journal's clock says ${expected}`,
+                    );
             }
         }
         return outcome(
@@ -370,6 +376,10 @@ const CHECKS: Record<string, Check> = {
                 if (!s) bad.push(`${r.arm}/${r.item} graded without a journaled snapshot`);
                 else if (s.snapshot !== undefined && s.snapshot !== r.snapshot)
                     bad.push(`${r.arm}/${r.item} v${r.version} grades ${r.snapshot}`);
+                else if (!c.snapshots.has(`${r.arm}/${r.snapshot}`))
+                    bad.push(
+                        `${r.arm}/${r.item} v${r.version} cites ${r.snapshot}, absent from the snapshot log`,
+                    );
             }
         }
         bad.unshift(...[...seen].filter(([, s]) => s.n > 1).map(([k]) => `${k} set twice`));

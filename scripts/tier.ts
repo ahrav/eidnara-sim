@@ -315,12 +315,15 @@ const runJob = async (job: TierJob) => {
     const after = runSpan(job.dir, launched);
     const run_wall_ms = (after.ended ?? Date.now()) - after.started;
     const start_ms = existsSync(join(job.dir, "journal.jsonl")) ? after.started : null;
+    // A standalone run may have taken the directory while the child ran; the lease is
+    // read again before grading.
+    const heldNow = held || leaseHeld(job.dir);
     return {
         ...job,
         log,
         start_ms,
         run_exit: code,
-        leased_elsewhere: held,
+        leased_elsewhere: heldNow,
         run_wall_ms,
         over_budget: run_wall_ms > budget,
     };
