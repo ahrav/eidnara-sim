@@ -153,7 +153,9 @@ the graders read neither.
 `scripts/grade-run.ts <run dir>` takes the run's lease, so one grader at a
 time allocates versions, refuses a run whose pre-registration or scenario no
 longer hashes to the digests in its manifest, whose `scenario.json` names a
-seed or tier other than the manifest's, or whose journal lacks `EndRun`
+seed or tier other than the manifest's, whose manifest schedules more events
+than the scenario compiles or names arms that are not a nonempty subsequence
+of the tier's registered order for its seed, or whose journal lacks `EndRun`
 or an arm's `EndArm` and one terminal `Event` per scheduled event, in the
 scheduled order (SIM-P67),
 drops a cut last line of `grades.jsonl`, requires one `SnapshotArtefacts` entry per arm and item, exactly one row for
@@ -162,20 +164,25 @@ carry grade-class artefacts only (a command log's entries each carry command
 text, a numeric or null exit, and a scenario time), every journaled row to
 name an item the scenario compiles and match its journal entry's arm and item
 and the compiled probe's event and session, to be named
-by an `EndTurn` whose outcome agrees with its `turn_outcome`, every
+by an `EndTurn` of the same arm, item, and event whose outcome agrees with its
+`turn_outcome`, every
 agent call's model in `calls.jsonl` to be one
 the manifest records, and every journaled snapshot's calls, whatever their
 component, to be a prefix of its session's `calls.jsonl` records under the
 snapshot's arm, in log order, each with the same content and the turn index
-capture derives from the scenario (`calls.jsonl` is read one record at a time,
-keeping one cursor per snapshot; every log it streams must be a regular file),
+capture derives from the scenario (each snapshot row is read back on its own
+from its byte position and compared with its session's records through the
+call index, so memory holds one snapshot and one session's records at most;
+every log grading streams must be a regular file),
 an item with no journaled snapshot to have a turn that ended `failed` with no
 snapshot (reported as `probe turn failed`) or no ended turn at all (`no
 journaled snapshot`), since a turn that ended `ok` or named a snapshot the
 journal never entered makes the journal invalid, reads each arm's snapshot log one row at a time and
 keeps the artefacts of journaled rows only, computes every grade before it
 appends any (an item whose answer the proxy truncated is skipped as `answer
-refused`; a structural artefact violation aborts with nothing appended),
+refused`, and a P7 pair with an empty answer on either side as `P7 refused`;
+a turn with no agent call has no answer and aborts grading, as does any other
+structural artefact violation, with nothing appended),
 holds P7 grades until the judge gateway has stopped and reports no failed
 `judge-calls.jsonl` write, writes one `judgments.jsonl` row per judged
 pairing (after dropping a cut last line, as for the other logs), where a

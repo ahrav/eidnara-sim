@@ -205,7 +205,7 @@ const p7snapshot = (item: string, turn = "e-1"): Snapshot => ({
                 {
                     seq: 1,
                     component: "agent",
-                    turn: "e-1",
+                    turn,
                     scenario_ms: 0,
                     input_tokens: 1,
                     output_tokens: 1,
@@ -436,6 +436,87 @@ describe("grade-run", () => {
         expect((await gradeRun(failed, null)).skipped).toEqual({
             host: { "probe turn failed": 1 },
         });
+    });
+
+    test("a manifest scheduling more events than the scenario compiles is refused", async () => {
+        const dir = run({ probes: [p5.probe] });
+        snapshot(dir, "eidnara", snap);
+        const path = join(dir, "manifest.json");
+        const manifest = JSON.parse(readFileSync(path, "utf8"));
+        manifest.events = 99;
+        writeFileSync(path, JSON.stringify(manifest));
+        await expect(gradeRun(dir, null)).rejects.toThrow(
+            "manifest schedules 99 events; the scenario compiles 3",
+        );
+    });
+
+    test("a manifest whose arms are not a subsequence of the tier's order is refused", async () => {
+        const dir = run({ probes: [p5.probe] });
+        snapshot(dir, "eidnara", snap);
+        const manifestPath = join(dir, "manifest.json");
+        const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+        manifest.order = ["../other/host", "eidnara"];
+        writeFileSync(manifestPath, JSON.stringify(manifest));
+        const journal = join(dir, "journal.jsonl");
+        const lines = readFileSync(journal, "utf8")
+            .trim()
+            .split("\n")
+            .map((l) => {
+                const e = JSON.parse(l);
+                if (e.kind === "StartRun") e.order = manifest.order;
+                return JSON.stringify(e);
+            });
+        writeFileSync(journal, `${lines.join("\n")}\n`);
+        await expect(gradeRun(dir, null)).rejects.toThrow("is not a nonempty subsequence");
+    });
+
+    test("a snapshot named by an EndTurn of another arm, item, or event is refused", async () => {
+        const dir = run({ probes: [p5.probe, { ...p5.probe, id: "P5-b" }] });
+        snapshot(dir, "eidnara", snap);
+        const journal = join(dir, "journal.jsonl");
+        const lines = readFileSync(journal, "utf8")
+            .trim()
+            .split("\n")
+            .map((l) => {
+                const e = JSON.parse(l);
+                if (e.kind === "EndTurn") e.event = "e-2";
+                return JSON.stringify(e);
+            });
+        writeFileSync(journal, `${lines.join("\n")}\n`);
+        await expect(gradeRun(dir, null)).rejects.toThrow("is named by an EndTurn of eidnara/");
+    });
+
+    test("an empty P7 answer is charged to both sides as a refusal, with the other grades kept", async () => {
+        const p7 = fixture("P7-pass");
+        const dir = run({ probes: [p5.probe, p7.probe] });
+        snapshot(dir, "eidnara", snap);
+        snapshot(dir, "host", snap);
+        const empty = p7snapshot(p7.probe.id, "e-2");
+        for (const a of empty.artefacts) {
+            if (a.class === "proxy-call") for (const c of a.calls) delete c.response_text;
+        }
+        snapshot(dir, "eidnara", { ...empty, turn: "e-2" });
+        snapshot(dir, "host", { ...p7snapshot(p7.probe.id, "e-2"), turn: "e-2" });
+        const config = { bedrock: { region: "us-east-1", aws_profile: "none" } } as SimConfig;
+        const summary = await gradeRun(dir, config);
+        expect(summary.skipped).toEqual({
+            host: { "P7 refused": 1 },
+            eidnara: { "P7 refused": 1 },
+        });
+        expect(summary.verdicts).toEqual({ "eidnara/P5": { pass: 1 }, "host/P5": { pass: 1 } });
+    });
+
+    test("a P10 snapshot whose turn has no agent call aborts grading instead of grading an empty answer", async () => {
+        const p10 = fixture("P10-pass");
+        const base = p10.snapshots[0] as Snapshot;
+        const dir = run({ probes: [p10.probe] });
+        snapshot(dir, "eidnara", {
+            ...base,
+            artefacts: base.artefacts.map((a) =>
+                a.class === "proxy-call" ? { ...a, calls: [] } : a,
+            ) as Snapshot["artefacts"],
+        });
+        await expect(gradeRun(dir, null)).rejects.toThrow("holds no agent call for turn e-1");
     });
 
     test("an interrupted run is refused, naming the arm and its event counts", async () => {

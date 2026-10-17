@@ -2,7 +2,13 @@ import { canonicalJson, sha256Hex } from "../prereg/canonical";
 import { COMPONENT_HEADER } from "../proxy/classify";
 import type { Rng } from "../rng";
 import type { ProbeItem } from "../scenario/compile";
-import { ArtefactReader, assertArtefactsOnly, GradeRefused, type Snapshot } from "./artefacts";
+import {
+    AnswerRefused,
+    ArtefactReader,
+    assertArtefactsOnly,
+    GradeRefused,
+    type Snapshot,
+} from "./artefacts";
 import type { GradeRecord, Rules } from "./probes";
 
 export const ARM_TOKENS = [
@@ -416,7 +422,7 @@ export function p7Pair(item: string, a: Snapshot, b: Snapshot): P7Inputs | null 
         ["b", pair.b],
     ] as const) {
         if (foldWords(normalise(text)).trim() === "")
-            throw new GradeRefused(`P7 item ${item}: answer ${side} is empty`);
+            throw new AnswerRefused(`P7 item ${item}: answer ${side} is empty`);
     }
     return {
         pair,

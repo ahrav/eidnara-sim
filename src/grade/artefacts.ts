@@ -173,11 +173,17 @@ export class ArtefactReader {
         return this.calls().filter((c) => c.component === "agent" && c.turn === turn);
     }
 
+    /** The turn's answer: the text of its last agent call. A turn with no agent call has no answer to grade. */
     answer(): string {
         const last = this.turnCalls().at(-1);
-        if (last?.response_text_truncated) {
+        if (!last) {
+            throw new GradeRefused(
+                `snapshot ${this.snapshot.id} holds no agent call for turn ${String(this.snapshot.turn)}`,
+            );
+        }
+        if (last.response_text_truncated) {
             throw new AnswerRefused(`call ${last.seq}: the proxy truncated the answer at its cap`);
         }
-        return last?.response_text ?? "";
+        return last.response_text ?? "";
     }
 }

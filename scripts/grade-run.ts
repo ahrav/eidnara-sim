@@ -1,10 +1,9 @@
-import { appendFileSync, existsSync, readFileSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, openSync, readFileSync, readSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { loadConfig, type SimConfig } from "../src/config/config";
 import {
     AnswerRefused,
     assertArtefactsOnly,
-    type CallView,
     GradeRefused,
     type Snapshot,
 } from "../src/grade/artefacts";
@@ -40,7 +39,7 @@ import {
     requireComplete,
     takeLease,
 } from "../src/run/journal";
-import { projectCall } from "../src/run/run";
+import { CallIndex, callsOf } from "../src/run/run";
 import { type Scenario, scenarioHash } from "../src/scenario/compile";
 import { loadPrereg } from "../src/scenario/inputs";
 
@@ -69,25 +68,76 @@ export async function gradeRun(dir: string, config: SimConfig | null): Promise<S
     }
 }
 
-/** Yields a JSONL file's non-empty lines one at a time, so a log of large records costs one record of memory. */
-async function* jsonlLines(path: string): AsyncGenerator<string> {
+/** One JSONL record and where its bytes lie, so a row can be read back on its own later. */
+interface Placed {
+    text: string;
+    offset: number;
+    length: number;
+}
+
+/**
+ * Yields a JSONL file's non-empty records one at a time with their byte positions, so a log of
+ * large records costs one record of memory. The file must be a regular file or absent.
+ */
+async function* jsonlRecords(path: string): AsyncGenerator<Placed> {
     requireAppendable(path);
-    const decoder = new TextDecoder();
-    const pending: string[] = [];
+    const pending: Buffer[] = [];
+    let offset = 0;
+    let lineStart = 0;
     for await (const chunk of Bun.file(path).stream()) {
-        let piece = decoder.decode(chunk, { stream: true });
-        for (let at = piece.indexOf("\n"); at !== -1; at = piece.indexOf("\n")) {
-            pending.push(piece.slice(0, at));
-            const line = pending.join("");
+        let buf = Buffer.from(chunk);
+        let at = buf.indexOf(0x0a);
+        while (at !== -1) {
+            const line = Buffer.concat([...pending, buf.subarray(0, at)]);
             pending.length = 0;
-            if (line) yield line;
-            piece = piece.slice(at + 1);
+            const end = offset + at + 1;
+            if (line.length > 0) {
+                yield { text: line.toString("utf8"), offset: lineStart, length: end - lineStart };
+            }
+            lineStart = end;
+            offset = end;
+            buf = buf.subarray(at + 1);
+            at = buf.indexOf(0x0a);
         }
-        if (piece) pending.push(piece);
+        if (buf.length > 0) {
+            pending.push(Buffer.from(buf));
+            offset += buf.length;
+        }
     }
-    pending.push(decoder.decode());
-    const rest = pending.join("");
-    if (rest) yield rest;
+    const rest = Buffer.concat(pending);
+    if (rest.length > 0) {
+        yield { text: rest.toString("utf8"), offset: lineStart, length: offset - lineStart };
+    }
+}
+
+async function* jsonlLines(path: string): AsyncGenerator<string> {
+    for await (const record of jsonlRecords(path)) yield record.text;
+}
+
+/** Reads one placed record back from its file. */
+function readPlaced(path: string, offset: number, length: number): string {
+    const fd = openSync(path, "r");
+    try {
+        const buf = Buffer.alloc(length);
+        readSync(fd, buf, 0, length, offset);
+        return buf.toString("utf8").trimEnd();
+    } finally {
+        closeSync(fd);
+    }
+}
+
+/** What grading keeps of a snapshot row between passes: its identity and where to read it back. */
+interface RowMeta {
+    id: string;
+    item: string;
+    arm: string;
+    session: string | null;
+    turn: string;
+    turn_outcome: Snapshot["turn_outcome"];
+    journaled: boolean;
+    path: string;
+    offset: number;
+    length: number;
 }
 
 async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
@@ -108,10 +158,37 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
             `scenario.json is ${String(identity.tier)} seed ${String(identity.seed)}, not the manifest's ${String(manifest.tier)} seed ${String(manifest.seed)}`,
         );
     }
-    const rules = loadPrereg(manifest.tier).grading;
+    const prereg = loadPrereg(manifest.tier);
+    const rules = prereg.grading;
     const arms = manifest.order as string[];
+    const seedIndex = prereg.seeds.indexOf(manifest.seed);
+    const permitted = (prereg.arms.order_by_seed[seedIndex] ?? prereg.arms.run) as string[];
+    const subsequence = (() => {
+        let at = 0;
+        for (const arm of arms) {
+            at = permitted.indexOf(arm, at);
+            if (at === -1) return false;
+            at++;
+        }
+        return true;
+    })();
+    if (!Array.isArray(arms) || arms.length === 0 || !subsequence) {
+        throw new Error(
+            `manifest order ${JSON.stringify(arms)} is not a nonempty subsequence of the ${String(manifest.tier)} order ${JSON.stringify(permitted)}`,
+        );
+    }
     const models = manifest.models as string[];
     const entries = readJournal(join(dir, "journal.jsonl"));
+    const events = manifest.events as unknown;
+    if (
+        !Number.isSafeInteger(events) ||
+        (events as number) < 1 ||
+        (events as number) > scenario.events.length
+    ) {
+        throw new Error(
+            `manifest schedules ${String(events)} events; the scenario compiles ${scenario.events.length}`,
+        );
+    }
     const scheduled = scenario.events.slice(0, manifest.events).map((e) => String(e.id));
     requireComplete(entries, arms, scheduled);
     const log = new GradeLog(join(dir, "grades.jsonl"));
@@ -128,10 +205,20 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
         firstOf.add(key);
     }
     const journaled = new Set(named.keys());
-    const turnEnds = new Map<string, string>();
+    const turnEnds = new Map<
+        string,
+        { outcome: string; arm: string; probe: string; event: string }
+    >();
     const probeTurns = new Map<string, Array<{ outcome: string; snapshot: string | null }>>();
     for (const e of entries.filter((e) => e.kind === "EndTurn")) {
-        if (typeof e.snapshot === "string") turnEnds.set(e.snapshot, String(e.outcome));
+        if (typeof e.snapshot === "string") {
+            turnEnds.set(e.snapshot, {
+                outcome: String(e.outcome),
+                arm: String(e.arm),
+                probe: String(e.probe),
+                event: String(e.event),
+            });
+        }
         if (typeof e.probe !== "string") continue;
         const key = `${String(e.arm)}/${e.probe}`;
         const snapshot = typeof e.snapshot === "string" ? e.snapshot : null;
@@ -160,12 +247,20 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
         return turns.length > 0 ? "probe turn failed" : "no journaled snapshot";
     };
     const probes = new Map(scenario.probes.map((p) => [p.id, p]));
-    const snapshots = new Map<string, Snapshot[]>();
+    const snapshots = new Map<string, RowMeta[]>();
+    const metas = new Map<string, RowMeta>();
+    const readRow = (meta: RowMeta): Snapshot => {
+        const row = JSON.parse(readPlaced(meta.path, meta.offset, meta.length)) as Snapshot;
+        if (row.id !== meta.id) {
+            throw new Error(`snapshot log ${meta.path} changed under grading at ${meta.id}`);
+        }
+        return meta.journaled ? row : { ...row, artefacts: [] };
+    };
     for (const arm of arms) {
         const path = join(dir, arm, "snapshots.jsonl");
         if (!existsSync(path)) continue;
-        for await (const line of jsonlLines(path)) {
-            const s = JSON.parse(line) as Snapshot;
+        for await (const placed of jsonlRecords(path)) {
+            const s = JSON.parse(placed.text) as Snapshot;
             if (s.arm !== arm || !Array.isArray(s.artefacts) || s.artefacts.length === 0) {
                 throw new Error(
                     `snapshot ${s.id} in ${arm}/snapshots.jsonl names arm ${s.arm} or has no artefacts`,
@@ -196,16 +291,33 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
                 if (!ended) {
                     throw new Error(`snapshot ${s.id} has no EndTurn naming it in the journal`);
                 }
-                const expected = ended === "ok" ? "ok" : "failed";
+                if (ended.arm !== arm || ended.probe !== s.item || ended.event !== s.turn) {
+                    throw new Error(
+                        `snapshot ${s.id} is named by an EndTurn of ${ended.arm}/${ended.probe} at ${ended.event}, not ${arm}/${s.item} at ${s.turn}`,
+                    );
+                }
+                const expected = ended.outcome === "ok" ? "ok" : "failed";
                 if (s.turn_outcome !== expected) {
                     throw new Error(
-                        `snapshot ${s.id} records turn_outcome ${String(s.turn_outcome)}, but its EndTurn ended ${ended}`,
+                        `snapshot ${s.id} records turn_outcome ${String(s.turn_outcome)}, but its EndTurn ended ${ended.outcome}`,
                     );
                 }
             }
             const key = `${arm}/${s.item}`;
-            const kept = entry ? s : { ...s, artefacts: [] };
-            snapshots.set(key, [...(snapshots.get(key) ?? []), kept]);
+            const meta: RowMeta = {
+                id: s.id,
+                item: s.item,
+                arm,
+                session: s.session ?? null,
+                turn: s.turn,
+                turn_outcome: s.turn_outcome,
+                journaled: entry !== undefined,
+                path,
+                offset: placed.offset,
+                length: placed.length,
+            };
+            snapshots.set(key, [...(snapshots.get(key) ?? []), meta]);
+            if (entry) metas.set(s.id, meta);
         }
     }
     const occurrences = new Map<string, number>();
@@ -224,55 +336,23 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
     }
     /**
      * A snapshot's calls are the session's call records so far, in log order, each with the turn
-     * index capture derived from the scenario. Every journaled snapshot is therefore checked as a
-     * prefix of its session's records while `calls.jsonl` streams by: content, order, and index.
+     * index capture derived from the scenario. Each journaled snapshot is read back on its own
+     * and checked as a prefix of its session's records (read through the call index, one
+     * session at a time), so memory holds one snapshot and one session's records at most.
      */
     const turnIndex = new Map(
         scenario.events
             .filter((e) => e.index !== undefined)
             .map((e) => [e.id, e.index as number] as const),
     );
-    const cursors = new Map<string, Array<{ snapshot: string; calls: CallView[]; at: number }>>();
-    for (const rows of snapshots.values()) {
-        for (const s of rows) {
-            if (!journaled.has(s.id)) continue;
-            const calls = s.artefacts.find((a) => a.class === "proxy-call");
-            if (calls?.class !== "proxy-call") continue;
-            const key = `${s.arm}/${String(s.session)}`;
-            cursors.set(key, [
-                ...(cursors.get(key) ?? []),
-                { snapshot: s.id, calls: calls.calls, at: 0 },
-            ]);
-        }
-    }
     const agentModels = new Set<string>();
     const callsPath = join(dir, "calls.jsonl");
-    const lastTurn = new Map<string, number>();
-    if (existsSync(callsPath)) {
-        for await (const line of jsonlLines(callsPath)) {
-            const r = JSON.parse(line) as CallRecord;
-            if (typeof r.model !== "string" || typeof r.seq !== "number") {
-                throw new Error(`calls.jsonl record ${String(r.seq)} names no model`);
-            }
-            if (r.component === "agent") agentModels.add(r.model);
-            const key = `${r.arm}/${String(r.session)}`;
-            const turn = (r.turn ? turnIndex.get(r.turn) : undefined) ?? lastTurn.get(key);
-            if (turn !== undefined) lastTurn.set(key, turn);
-            const view = projectCall(r);
-            const expected = canonicalJson(
-                turn === undefined ? view : { ...view, turn_index: turn },
-            );
-            for (const cursor of cursors.get(key) ?? []) {
-                const held = cursor.calls[cursor.at];
-                if (held === undefined) continue;
-                if (canonicalJson(held) !== expected) {
-                    throw new Error(
-                        `snapshot ${cursor.snapshot} holds call ${held.seq} where calls.jsonl records call ${r.seq} with content that differs from calls.jsonl`,
-                    );
-                }
-                cursor.at++;
-            }
+    for await (const line of existsSync(callsPath) ? jsonlLines(callsPath) : []) {
+        const r = JSON.parse(line) as CallRecord;
+        if (typeof r.model !== "string" || typeof r.seq !== "number") {
+            throw new Error(`calls.jsonl record ${String(r.seq)} names no model`);
         }
+        if (r.component === "agent") agentModels.add(r.model);
     }
     const unrecorded = [...agentModels].filter((m) => !models.includes(m));
     if (unrecorded.length > 0) {
@@ -280,19 +360,34 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
             `agent calls used models the manifest does not record: ${unrecorded.join(", ")}`,
         );
     }
-    for (const [key, list] of cursors) {
-        for (const cursor of list) {
-            const missing = cursor.calls[cursor.at];
-            if (missing === undefined) continue;
-            throw new Error(
-                `snapshot ${cursor.snapshot} holds call ${missing.seq}, which calls.jsonl does not record for arm ${key.split("/")[0]}`,
-            );
-        }
+    const callIndex = new CallIndex(callsPath);
+    for (const meta of metas.values()) {
+        const row = readRow(meta);
+        const calls = row.artefacts.find((a) => a.class === "proxy-call");
+        if (calls?.class !== "proxy-call") continue;
+        const recorded = callsOf(callIndex, meta.arm, String(meta.session), turnIndex);
+        calls.calls.forEach((held, i) => {
+            const record = recorded[i];
+            if (record === undefined) {
+                throw new Error(
+                    `snapshot ${meta.id} holds call ${held.seq}, which calls.jsonl does not record for arm ${meta.arm}`,
+                );
+            }
+            if (canonicalJson(held) !== canonicalJson(record)) {
+                throw new Error(
+                    `snapshot ${meta.id} holds call ${held.seq} where calls.jsonl records call ${record.seq} with content that differs from calls.jsonl`,
+                );
+            }
+        });
     }
+    /** The arm's attempts at an item from its journaled first snapshot on: the first read in full, the rest as counted rows. */
     const attempts = (arm: string, item: string): Snapshot[] | undefined => {
         const rows = snapshots.get(`${arm}/${item}`) ?? [];
         const first = rows.findIndex((s) => journaled.has(s.id));
-        return first === -1 ? undefined : rows.slice(first);
+        if (first === -1) return undefined;
+        return rows
+            .slice(first)
+            .map((meta, i) => (i === 0 ? readRow(meta) : readRow({ ...meta, journaled: false })));
     };
     const ran = new Set(
         scenario.events

@@ -31,7 +31,18 @@
         {
           "id": "s-P10-b:calls",
           "class": "proxy-call",
-          "calls": []
+          "calls": [
+            {
+              "seq": 1,
+              "component": "agent",
+              "turn": "e-1",
+              "scenario_ms": 0,
+              "input_tokens": 5,
+              "output_tokens": 2,
+              "response_text": "Done; the entry point is documented.",
+              "turn_index": 0
+            }
+          ]
         }
       ]
     }

@@ -133,6 +133,11 @@ const sameJson = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringif
 
 async function loadManifest(o: RunOptions, scenario: Scenario): Promise<Manifest> {
     const path = join(o.out, "manifest.json");
+    if (o.events !== undefined && o.events > scenario.events.length) {
+        throw new HarnessFailure(
+            `--events ${o.events} exceeds the scenario's ${scenario.events.length} events`,
+        );
+    }
     const checks = await preflight(o.config, o.out);
     const wanted = {
         tier: o.tier,
