@@ -49,6 +49,7 @@ function armLogs(
         push("BeginTurn", { event: `e-${s}` });
         wall += 5_000 + jitter(s) * 10;
         push("EndTurn", { event: `e-${s}`, outcome: "ok", prompt_ms: 5_000 + jitter(s) * 10 });
+        push("UserTurn", { event: `e-${s}`, delivered: true });
         push("Event", { event: `end-${s}` });
         calls.push({
             seq: s,
