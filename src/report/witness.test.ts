@@ -7,7 +7,7 @@ import type { Entry } from "../run/journal";
 import type { Scenario } from "../scenario/compile";
 import { loadPrereg } from "../scenario/inputs";
 import type { GradedRun } from "./observe";
-import { propertyWitness } from "./witness";
+import { type PropertyWitness, propertyWitness } from "./witness";
 
 const prereg = loadPrereg("S");
 const CATALOG = ["P02", "P03", "P11", "P25", "P41", "P42", "P99"]
@@ -40,7 +40,7 @@ function run(broken: boolean): GradedRun {
         session: "s-1",
         event: "e-2",
         index: 1,
-        digest: "a",
+        digest: "d",
         reference_digest: "b",
         against: "reference",
     };
@@ -198,3 +198,167 @@ function second(broken: boolean, busy = false): GradedRun {
         grades: [grade(1, cited)],
     } as unknown as GradedRun;
 }
+
+interface Parts {
+    pairing?: object[];
+    journal?: object[];
+    grades?: object[];
+    used?: object[];
+    calls?: object[];
+    faults?: object[];
+}
+
+/** A run from its parts alone; every omitted artefact is empty. */
+function made(p: Parts): GradedRun {
+    const dir = mkdtempSync(join(tmpdir(), "sim-witness-"));
+    writeFileSync(
+        join(dir, "manifest.json"),
+        JSON.stringify({ order: ["host", "eidnara"], events: 3 }),
+    );
+    writeFileSync(join(dir, "pairing.jsonl"), lines(p.pairing ?? []));
+    const journal = (p.journal ?? []).map(
+        (e, seq) => ({ arm: "eidnara", wall_ms: seq, seq, ...e }) as Entry,
+    );
+    writeFileSync(join(dir, "journal.jsonl"), lines(journal));
+    writeFileSync(join(dir, "grades.jsonl"), lines(p.grades ?? []));
+    const arm = { arm: "eidnara", journal, calls: p.calls ?? [], tools: [] } as unknown as ArmLogs;
+    const scenario = {
+        events: [{ id: "e-1", scenario_ms: 10 }],
+        faults: p.faults ?? [],
+        probes: [],
+    } as unknown as Scenario;
+    return {
+        run: { dir, tier: "S", base_wall_ms: 0, prereg, kinds: new Map(), arms: [arm] },
+        scenario,
+        grades: p.used ?? p.grades ?? [],
+    } as unknown as GradedRun;
+}
+
+const one = (id: string, run: GradedRun) =>
+    propertyWitness(`| SIM-${id} | [x](#x) | safety |`, [run])[0] as PropertyWitness;
+
+describe("property witness evidence", () => {
+    const turn = (arm: string, digest: string, extra: object = {}) => ({
+        kind: "turn",
+        arm,
+        session: "s-1",
+        event: "e-1",
+        index: 0,
+        delivered: true,
+        digest,
+        text_sha256: "t",
+        ...extra,
+    });
+
+    test("SIM-P02 needs a reference turn and its counterpart; reference turns alone are unreached", () => {
+        expect(one("P02", made({ pairing: [turn("host", "a")] }))).toMatchObject({
+            status: "unreached",
+        });
+        expect(
+            one("P02", made({ pairing: [turn("host", "a"), turn("eidnara", "a")] })),
+        ).toMatchObject({ status: "witnessed", detail: "1 paired user turns" });
+    });
+
+    test("SIM-P03 needs the divergence record's hashes to be the turns' digests", () => {
+        const diverged = (digest: string, reference_digest: string) => ({
+            kind: "divergedAt",
+            arm: "eidnara",
+            session: "s-1",
+            event: "e-1",
+            index: 0,
+            digest,
+            reference_digest,
+            against: "reference",
+        });
+        const run = (d: string, r: string) =>
+            made({ pairing: [turn("host", "a"), diverged(d, r), turn("eidnara", "b")] });
+        expect(one("P03", run("b", "a")).status).toBe("witnessed");
+        expect(one("P03", run("a", "b")).status).toBe("violated");
+        expect(one("P03", run("b", "x")).status).toBe("violated");
+    });
+
+    test("SIM-P10 recomputes the rates from the turn labels and holds the journaled summary to them", () => {
+        // 40 turns over 10 sessions: 18 pushbacks, 2 interrupts, 1 redirect, 1 abandon sit in band.
+        const turns = (extra: string) =>
+            Array.from({ length: 40 }, (_, i) => ({
+                kind: "UserTurn",
+                scenario_ms: i,
+                event: `e-${i}`,
+                session: `s-${i % 10}`,
+                label:
+                    i < 18
+                        ? "pushback"
+                        : i < 20
+                          ? "interrupt"
+                          : i === 20
+                            ? "redirect"
+                            : i === 21
+                              ? "abandon"
+                              : extra,
+                delivered: true,
+            }));
+        const rates = (outside: string[]) => ({ kind: "UserSimRates", scenario_ms: 99, outside });
+        const inBand = { journal: [...turns("task"), rates([])] };
+        expect(one("P10", made(inBand))).toMatchObject({ status: "witnessed" });
+        const nagging = { journal: [...turns("pushback"), rates([])] };
+        expect(one("P10", made(nagging))).toMatchObject({ status: "violated" });
+        const disagree = { journal: [...turns("task"), rates(["pushback_per_turn"])] };
+        expect(one("P10", made(disagree))).toMatchObject({ status: "violated" });
+    });
+
+    test("SIM-P30 checks every injected call against a fault fired before it", () => {
+        const fired = { kind: "FaultFired", scenario_ms: 5, wall_ms: 50, fault: "f-1" };
+        const call = (fault_ref: string, started_wall_ms: number) => ({
+            seq: 1,
+            arm: "eidnara",
+            fault_ref,
+            started_wall_ms,
+            wall_ms: started_wall_ms + 1,
+            scenario_ms: 5,
+        });
+        const faults = [{ id: "f-1", type: "proxy_timeout", params: {} }];
+        expect(
+            one("P30", made({ faults, journal: [fired], calls: [call("f-1", 60)] })),
+        ).toMatchObject({ status: "witnessed" });
+        expect(
+            one("P30", made({ faults, journal: [fired], calls: [call("f-1", 40)] })),
+        ).toMatchObject({ status: "violated" });
+        expect(one("P30", made({ faults, journal: [], calls: [call("f-9", 60)] }))).toMatchObject({
+            status: "violated",
+        });
+    });
+
+    test("SIM-P41 treats a grade without a journaled snapshot as a violation", () => {
+        const snap = { kind: "SnapshotArtefacts", scenario_ms: 1, item: "q-1", snapshot: "s1" };
+        const grade = (item: string) => ({ item, arm: "eidnara", version: 1, snapshot: "s1" });
+        expect(one("P41", made({ journal: [snap], grades: [grade("q-1")] })).status).toBe(
+            "witnessed",
+        );
+        expect(
+            one("P41", made({ journal: [snap], grades: [grade("q-1"), grade("q-2")] })),
+        ).toMatchObject({ status: "violated", detail: expect.stringContaining("q-2") });
+    });
+
+    test("SIM-P42 requires the report to grade at the latest version and names the versions it used", () => {
+        const grade = (version: number) => ({
+            item: "q-1",
+            arm: "eidnara",
+            version,
+            snapshot: "s1",
+        });
+        const grades = [grade(1), grade(2)];
+        expect(one("P42", made({ grades, used: [grade(2)] }))).toMatchObject({
+            status: "witnessed",
+            detail: expect.stringContaining("v2"),
+        });
+        expect(one("P42", made({ grades, used: [grade(1)] })).status).toBe("violated");
+    });
+
+    test("liveness records appear in the panel, unchecked", () => {
+        const catalog = "| SIM-P02 | [x](#x) | safety |\n| SIM-L01 | [x](#x) | liveness |";
+        expect(propertyWitness(catalog, [made({})]).map((w) => [w.id, w.status])).toEqual([
+            ["SIM-P02", "unreached"],
+            ["SIM-L01", "unchecked"],
+        ]);
+    });
+});

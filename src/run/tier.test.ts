@@ -1,4 +1,8 @@
 import { describe, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { Scenario } from "../scenario/compile";
 import { loadPrereg } from "../scenario/inputs";
 import { capEvents, tierPlan } from "./tier";
@@ -42,4 +46,16 @@ describe("tier plan", () => {
         const one = tierPlan(xl, new Map([[401, scenario([5])]]), ["pi"], "/out", 60_000);
         expect(one[0]?.arms).toEqual(xl.arms.order_by_seed[0] ?? xl.arms.run);
     });
+});
+
+test("the tier command refuses an unknown flag before it plans anything", () => {
+    const out = mkdtempSync(join(tmpdir(), "sim-tier-"));
+    const r = spawnSync(
+        "bun",
+        ["scripts/tier.ts", "--tier", "S", "--out", out, "--host", "pi", "--plan-only"],
+        { encoding: "utf8" },
+    );
+    expect(r.status).toBe(2);
+    expect(r.stderr).toContain("--host");
+    expect(existsSync(join(out, "tier-plan.json"))).toBe(false);
 });
