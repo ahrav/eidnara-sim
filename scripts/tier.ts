@@ -3,7 +3,7 @@ import { dirname, join, resolve } from "node:path";
 import { loadConfig } from "../src/config/config";
 import { TIERS, type Tier } from "../src/prereg/schema";
 import { Children, SIGTERM_EXIT } from "../src/run/children";
-import { releaseLease, takeLease } from "../src/run/journal";
+import { leaseHeld, releaseLease, takeLease } from "../src/run/journal";
 import { loadScenario, writeAtomic } from "../src/run/run";
 import { planConflicts, runSpan, tierPlan } from "../src/run/tier";
 import { buildFaketime } from "../src/run/timeinject";
@@ -167,7 +167,10 @@ const results = await supervised(() =>
                           Math.max(1, limit - (started - runStarted)),
                       );
             const run_wall_ms = (span.ended ?? Date.now()) - runStarted;
-            const ran = existsSync(join(job.dir, "manifest.json"));
+            // A run another process still holds is left ungraded: its journal and snapshots
+            // are changing under it.
+            const held = leaseHeld(job.dir);
+            const ran = existsSync(join(job.dir, "manifest.json")) && !held;
             const graded = ran ? await run(["grade-run.ts", job.dir], log, limit) : null;
             const aa =
                 graded === 0 && job.arms.some((a) => a.includes("~"))
@@ -176,6 +179,7 @@ const results = await supervised(() =>
             return {
                 ...job,
                 run_exit: code,
+                leased_elsewhere: held,
                 run_wall_ms,
                 over_budget: run_wall_ms > budget,
                 grade_exit: graded,
@@ -201,6 +205,11 @@ console.log(
     }),
 );
 const failed = results.some(
-    (r) => r.run_exit !== 0 || r.over_budget || r.grade_exit !== 0 || (r.aa_exit ?? 0) !== 0,
+    (r) =>
+        r.run_exit !== 0 ||
+        r.over_budget ||
+        r.leased_elsewhere ||
+        r.grade_exit !== 0 ||
+        (r.aa_exit ?? 0) !== 0,
 );
 exit(failed || report !== 0 ? 1 : 0);

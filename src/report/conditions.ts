@@ -44,6 +44,8 @@ const readsTranscripts = (command: string) =>
 
 export interface TranscriptOrder {
     arm: string;
+    /** False for an arm whose transcript check never ran, so nothing below was measured. */
+    checked: boolean;
     sessions: number;
     /** Sessions the arm reached whose transcript the store lacks. */
     missing: string[];
@@ -129,6 +131,7 @@ function order(g: GradedRun, arm: ArmLogs, paths: string[]): TranscriptOrder {
     const d = pairs.map((p) => p.d);
     return {
         arm: arm.arm,
+        checked: true,
         sessions: pairs.length,
         missing,
         in_order: pairs.length
@@ -171,7 +174,19 @@ export function runConditions(g: GradedRun): RunConditions {
             wall_clock_only,
         })),
         transcripts,
-        transcript_order: g.run.arms.map((arm, i) => order(g, arm, transcripts[i]?.paths ?? [])),
+        transcript_order: g.run.arms.map((arm, i) =>
+            transcripts[i]?.missing === null
+                ? {
+                      arm: arm.arm,
+                      checked: false,
+                      sessions: 0,
+                      missing: [],
+                      in_order: null,
+                      max_lead_ms: null,
+                      max_lag_ms: null,
+                  }
+                : order(g, arm, transcripts[i]?.paths ?? []),
+        ),
     };
 }
 
@@ -252,7 +267,7 @@ export function renderConditions(conditions: RunConditions[], recall: Continuity
                 row([
                     c.run,
                     o.arm,
-                    o.sessions,
+                    o.checked ? o.sessions : "unchecked",
                     o.missing.join(", ") || "none",
                     o.in_order === null ? "-" : o.in_order ? "yes" : "no",
                     o.max_lead_ms ?? "-",

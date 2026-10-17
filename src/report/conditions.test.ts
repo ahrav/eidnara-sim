@@ -99,6 +99,7 @@ describe("run conditions", () => {
         expect(c.transcript_order).toEqual([
             {
                 arm: "host",
+                checked: true,
                 sessions: 2,
                 missing: [],
                 in_order: true,
@@ -107,6 +108,7 @@ describe("run conditions", () => {
             },
             {
                 arm: "eidnara",
+                checked: true,
                 sessions: 2,
                 missing: [],
                 in_order: false,
@@ -182,8 +184,10 @@ test("an arm that never reached its transcript check renders as unchecked, apart
     rmSync(join(g.run.dir, "eidnara/transcripts.json"));
     const c = runConditions(g);
     expect(c.transcripts[1]).toEqual({ arm: "eidnara", paths: [], missing: null });
+    expect(c.transcript_order[1]).toMatchObject({ arm: "eidnara", checked: false, missing: [] });
     const text = renderConditions([c], []).join("\n");
     expect(text).toContain("eidnara unchecked");
+    expect(text).toContain("| eidnara | unchecked |");
 });
 
 test("a reached session with no transcript in the store is named as missing", () => {

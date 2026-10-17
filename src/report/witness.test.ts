@@ -161,13 +161,14 @@ function second(broken: boolean, busy = false): GradedRun {
     const begin = at("BeginTurn", 10, { event: "e-1" });
     const end = at("EndTurn", 20, { event: "e-1", outcome: "ok" });
     const jump = at("AdvanceClock", broken ? 150 : 100, { from_ms: broken || busy ? 10 : 20 });
+    // seq follows the journal's order, which is what the checks read.
     const journal = [
         begin,
         ...(broken || busy ? [jump, end] : [end, jump]),
         at("Event", 20, { event: "e-1" }),
         at("FaultObserved", 100, { fault: broken ? "f-9" : "f-1" }),
         at("SnapshotArtefacts", 100, { item: "q-1", snapshot: "eidnara:q-1:e-1" }),
-    ];
+    ].map((e, i) => ({ ...e, seq: i }));
     writeFileSync(join(dir, "journal.jsonl"), lines(journal));
     const grade = (version: number, snapshot: string) => ({
         item: "q-1",
@@ -229,7 +230,7 @@ function made(p: Parts): GradedRun {
     );
     writeFileSync(join(dir, "pairing.jsonl"), lines(p.pairing ?? []));
     const journal = (p.journal ?? []).map(
-        (e, seq) => ({ arm: "eidnara", wall_ms: seq, seq, ...e }) as Entry,
+        (e, i) => ({ arm: "eidnara", wall_ms: i, seq: i, ...e }) as Entry,
     );
     writeFileSync(join(dir, "journal.jsonl"), lines(journal));
     writeFileSync(join(dir, "grades.jsonl"), lines(p.grades ?? []));
@@ -483,6 +484,30 @@ describe("property witness evidence", () => {
         expect(
             one("P41", made({ journal: [snap], grades: [grade("q-1"), grade("q-2")] })),
         ).toMatchObject({ status: "violated", detail: expect.stringContaining("q-2") });
+        const stale = { ...grade("q-1"), snapshot: "s0" };
+        const regraded = { ...grade("q-1"), version: 2 };
+        expect(
+            one("P41", made({ journal: [snap], grades: [stale, regraded], used: [regraded] })),
+        ).toMatchObject({ status: "violated", detail: expect.stringContaining("v1") });
+    });
+
+    test("SIM-P11 reads the journal in seq order and refuses a repeated seq", () => {
+        const entry = (seq: number, scenario_ms: number) => ({
+            kind: "Event",
+            seq,
+            scenario_ms,
+            event: `e-${seq}`,
+        });
+        expect(one("P11", made({ journal: [entry(1, 0), entry(0, 10)] }))).toMatchObject({
+            status: "violated",
+        });
+        expect(one("P11", made({ journal: [entry(0, 0), entry(0, 10)] }))).toMatchObject({
+            status: "violated",
+            detail: expect.stringContaining("seq 0 twice"),
+        });
+        expect(one("P11", made({ journal: [entry(0, 0), entry(1, 10)] }))).toMatchObject({
+            status: "witnessed",
+        });
     });
 
     test("SIM-P41 wants a snapshot right after the first EndTurn of every reached probe", () => {

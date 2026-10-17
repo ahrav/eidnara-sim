@@ -47,8 +47,11 @@ export class Children {
                 timers.push(setTimeout(() => kill(child), this.graceMs));
             };
             if (limitMs !== undefined && limitMs > 0) timers.push(setTimeout(stop, limitMs));
+            // The run tears its own tree down before it exits; whatever is left in its process
+            // group afterwards is an orphan, so the group is killed on every exit.
             const finish = (code: number) => {
                 for (const t of timers) clearTimeout(t);
+                kill(child);
                 this.live.delete(child);
                 done(code);
             };

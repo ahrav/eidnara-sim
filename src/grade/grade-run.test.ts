@@ -1,19 +1,21 @@
 import { expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { preregistrationHash } from "../prereg/validate";
+import { loadPrereg } from "../scenario/inputs";
 
 const FIXTURE = join(import.meta.dir, "../../tests/fixtures/grade/P1-pass.json");
 
 /** A run directory holding one journaled P1 snapshot for the eidnara arm. */
-function runDir(): string {
+function runDir(prereg_sha256 = preregistrationHash(loadPrereg("S"))): string {
     const { probe, snapshots } = JSON.parse(readFileSync(FIXTURE, "utf8"));
     const dir = mkdtempSync(join(tmpdir(), "sim-grade-run-"));
     mkdirSync(join(dir, "eidnara"));
     writeFileSync(
         join(dir, "manifest.json"),
-        JSON.stringify({ tier: "S", seed: 101, order: ["eidnara"] }),
+        JSON.stringify({ tier: "S", seed: 101, order: ["eidnara"], prereg_sha256 }),
     );
     writeFileSync(join(dir, "scenario.json"), JSON.stringify({ probes: [probe] }));
     writeFileSync(
@@ -44,4 +46,12 @@ test("grading a run again leaves the grades that already cite their snapshot; --
     expect(summary.skipped).toEqual({ "already graded": 1 });
     expect(grade(dir, "--regrade").status).toBe(0);
     expect(versions(dir)).toEqual([1, 2]);
+});
+
+test("a run made under another pre-registration is refused before any grade is written", () => {
+    const dir = runDir("0".repeat(64));
+    const r = grade(dir);
+    expect(r.status).toBe(2);
+    expect(r.stderr).toContain("pre-registration");
+    expect(existsSync(join(dir, "grades.jsonl"))).toBe(false);
 });

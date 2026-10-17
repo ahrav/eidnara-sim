@@ -5,6 +5,7 @@ import type { Snapshot } from "../src/grade/artefacts";
 import { gradeP7, judgePair, p7Pair, proxyJudge } from "../src/grade/judge";
 import { deltaMem, GradeLog, type GradeRecord, gradeItem } from "../src/grade/probes";
 import { armBase } from "../src/hosts/arms";
+import { preregistrationHash } from "../src/prereg/validate";
 import { bedrockUpstream, Gateway } from "../src/proxy/gateway";
 import { FaultInjector } from "../src/proxy/inject";
 import { RecordWriter } from "../src/proxy/records";
@@ -22,7 +23,16 @@ if (!process.argv[2] || !existsSync(join(dir, "manifest.json"))) {
 const config = loadConfig();
 const manifest = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8"));
 const scenario = JSON.parse(readFileSync(join(dir, "scenario.json"), "utf8")) as Scenario;
-const rules = loadPrereg(manifest.tier).grading;
+const prereg = loadPrereg(manifest.tier);
+// Grades derive from the registration's rules, so a run made under another one is refused
+// before the log changes.
+if (manifest.prereg_sha256 !== preregistrationHash(prereg)) {
+    console.error(
+        `${dir} ran under pre-registration ${manifest.prereg_sha256}; the grader's is ${preregistrationHash(prereg)}`,
+    );
+    process.exit(2);
+}
+const rules = prereg.grading;
 const log = new GradeLog(join(dir, "grades.jsonl"));
 const arms = manifest.order as string[];
 
@@ -85,8 +95,9 @@ const pairs = p7.flatMap((probe) =>
             skip("P7 without two completed snapshots");
             return [];
         }
-        // The pair lands in one write, so one graded side means the pair stands.
-        if (gradedBefore(probe.id, arm, a.id) || gradedBefore(probe.id, "host", b.id)) {
+        // The pair lands in one write, so the memory arm's grade means its pair stands; the host
+        // snapshot is shared by every memory arm's pair and says nothing about this one.
+        if (gradedBefore(probe.id, arm, a.id)) {
             skip("already graded");
             return [];
         }

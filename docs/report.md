@@ -184,7 +184,8 @@ root or entry is left unread) and OpenCode's `session` table in
 compares each `sim-<session>` creation time with the session's scheduled
 wall time (`base_wall_ms` plus the `session_start` event's scenario time). The table
 names the reached sessions the store lacks, says whether the creation
-times follow scenario order, and gives the largest lead and lag. Hosts run at wall pace between clock jumps, so a
+times follow scenario order, and gives the largest lead and lag; an arm
+whose transcript check never ran reads `unchecked` there too. Hosts run at wall pace between clock jumps, so a
 lead up to the idle wall time since the last jump is expected; a lag, or
 an order break, is a D2 caveat for that host.
 

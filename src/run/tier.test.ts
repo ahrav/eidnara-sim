@@ -5,6 +5,7 @@ import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Scenario } from "../scenario/compile";
 import { loadPrereg } from "../scenario/inputs";
+import { leaseHeld } from "./journal";
 import { capEvents, planConflicts, runSpan, type TierJob, tierPlan } from "./tier";
 
 const event = (kind: string, i: number) => ({
@@ -99,4 +100,19 @@ describe("tier resume", () => {
         writeFileSync(join(job.dir, "manifest.json"), JSON.stringify({ events: 5 }));
         expect(planConflicts([job])).toEqual([`${job.dir} ran 5 events, the plan says 7`]);
     });
+});
+
+test("a run directory with a live lease is being written by another process", () => {
+    const dir = mkdtempSync(join(tmpdir(), "sim-tier-"));
+    expect(leaseHeld(dir)).toBe(false);
+    writeFileSync(
+        join(dir, "lease.json"),
+        JSON.stringify({ pid: process.pid, host: hostname(), started_wall_ms: Date.now() }),
+    );
+    expect(leaseHeld(dir)).toBe(true);
+    writeFileSync(
+        join(dir, "lease.json"),
+        JSON.stringify({ pid: 2 ** 22 - 1, host: hostname(), started_wall_ms: 0 }),
+    );
+    expect(leaseHeld(dir)).toBe(false);
 });

@@ -302,11 +302,12 @@ const CHECKS: Record<string, Check> = {
                         bad.push(`${a.arm}/${probe} snapshot after a later turn`);
                 }
             }
-            for (const r of c.g.grades) {
+            // Every persisted grade, earlier versions included, cites the item's one snapshot.
+            for (const r of c.grades.length > 0 ? c.grades : c.g.grades) {
                 const s = seen.get(`${c.g.run.dir}/${r.arm}/${r.item}`);
                 if (!s) bad.push(`${r.arm}/${r.item} graded without a journaled snapshot`);
                 else if (s.snapshot !== undefined && s.snapshot !== r.snapshot)
-                    bad.push(`${r.arm}/${r.item} grades ${r.snapshot}`);
+                    bad.push(`${r.arm}/${r.item} v${r.version} grades ${r.snapshot}`);
             }
         }
         bad.unshift(...[...seen].filter(([, s]) => s.n > 1).map(([k]) => `${k} set twice`));
@@ -374,7 +375,14 @@ function journalCheck(
 ) {
     let n = 0;
     const bad: string[] = [];
-    for (const { g, entries } of runs) {
+    for (const { g, entries: written } of runs) {
+        // The checks read the journal in seq order; a repeated or non-integer seq is a break.
+        const entries = [...written].sort((a, b) => a.seq - b.seq);
+        entries.forEach((e, i) => {
+            if (!Number.isInteger(e.seq)) bad.push(`${g.run.dir} seq ${JSON.stringify(e.seq)}`);
+            else if (i > 0 && entries[i - 1]?.seq === e.seq)
+                bad.push(`${g.run.dir} seq ${e.seq} twice`);
+        });
         const events = new Map(g.scenario.events.map((e) => [e.id, e.scenario_ms as number]));
         const sleeps = new Map(
             g.scenario.faults

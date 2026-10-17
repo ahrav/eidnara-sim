@@ -7,7 +7,8 @@ libfaketime once, starts the runs in parallel, grades each one, reports
 its A/A pairs, and writes the tier report. A run whose journal already
 holds `EndRun` is complete and is graded and reported as it finished. A
 job that fails in orchestration stops the sibling runs before the command
-exits. `<dir>/tier-plan.json` holds
+exits. A run whose directory another process holds (`lease.json` with a
+live pid) is left ungraded and fails the command. `<dir>/tier-plan.json` holds
 the plan and `<dir>/tier-result.json` the outcome of each run, with the
 run's own wall time and whether it exceeded the tier's wall budget; each
 run directory keeps its `tier.log`. The command exits 1 when any run,
@@ -86,7 +87,8 @@ The run-level checks cover:
   uncapped runs;
 - SIM-P11, SIM-P12, and SIM-P14: the journal's order, idle jumps, and
   scheduled jumps (each from the arm's clock before it), from
-  `checkJournal`;
+  `checkJournal` over the entries in `seq` order, a repeated or
+  non-integer `seq` counting as a break;
 - SIM-P15: proxy records carry both times, with wall time in `seq` order
   per arm;
 - SIM-P25: every user turn has a label;
@@ -96,8 +98,9 @@ The run-level checks cover:
   within a bounded fault's count; the injected calls are the instances,
   so a run with scheduler faults alone is unreached;
 - SIM-P41: every reached probe has a snapshot, set once, after the
-  probe's first `EndTurn` and before any later turn, and every grade
-  cites a journaled snapshot of its item;
+  probe's first `EndTurn` and before any later turn, and every persisted
+  grade, earlier versions included, cites a journaled snapshot of its
+  item;
 - SIM-P42: grade versions only increase, the report grades at the latest
   version, and the panel names the versions used;
 - SIM-L03: each completed run's wall time from `StartRun` to `EndRun` is
