@@ -5,17 +5,8 @@ import type { ArmLogs, RunLogs } from "../oracle/logs";
 import { HARNESS } from "../oracle/oracles";
 import type { CallRecord } from "../proxy/records";
 import { readJournal } from "../run/journal";
+import type { Price } from "../run/price";
 import { notesOf } from "./intrusive";
-
-export interface Price {
-    input: number;
-    output: number;
-    cache_read: number;
-    cache_write: number;
-}
-
-/** Default rates in USD per million tokens, applied to every model. */
-export const V1_PRICE: Price = { input: 5, output: 25, cache_read: 0.5, cache_write: 6.25 };
 
 export interface ComponentCost {
     component: string;
@@ -26,8 +17,6 @@ export interface ComponentCost {
     cache_write: number;
     usd: number;
 }
-
-export const PRICE_TABLE = "v1";
 
 export interface CostPanel {
     arm: string;
@@ -48,8 +37,7 @@ type Tokens = Pick<
     "component" | "input_tokens" | "output_tokens" | "cache_read_tokens" | "cache_write_tokens"
 >;
 
-function componentCosts(calls: readonly Tokens[]): ComponentCost[] {
-    const price = V1_PRICE;
+function componentCosts(calls: readonly Tokens[], price: Price): ComponentCost[] {
     const byComponent = new Map<string, ComponentCost>();
     for (const c of calls) {
         const row = byComponent.get(c.component) ?? {
@@ -79,17 +67,20 @@ function componentCosts(calls: readonly Tokens[]): ComponentCost[] {
 
 /**
  * The run's P7 judge spend from `judge-calls.jsonl`, which the grader writes under its own arm
- * `judge`; a judge call compares two arms, so it belongs to the run. `null` when none was written.
+ * `judge`; a judge call compares two arms, so it belongs to the run. `null` when none was written
+ * or the run recorded no price table.
  */
 export function judgeCost(run: RunLogs): ComponentCost | null {
     const path = join(run.dir, "judge-calls.jsonl");
-    if (!existsSync(path)) return null;
+    if (run.price === null || !existsSync(path)) return null;
     const calls = readJournal(path) as unknown as Tokens[];
-    return componentCosts(calls).find((c) => c.component === "judge") ?? null;
+    return componentCosts(calls, run.price.rates).find((c) => c.component === "judge") ?? null;
 }
 
-export function costPanel(run: RunLogs, arm: ArmLogs, grades: GradeRecord[]): CostPanel {
-    const components = componentCosts(arm.calls);
+/** The arm's cost at the price table its run recorded; `null` for a run that recorded none. */
+export function costPanel(run: RunLogs, arm: ArmLogs, grades: GradeRecord[]): CostPanel | null {
+    if (run.price === null) return null;
+    const components = componentCosts(arm.calls, run.price.rates);
     const sum = (rows: ComponentCost[]) => rows.reduce((s, c) => s + c.usd, 0);
     const usd = sum(components.filter((c) => !HARNESS.has(c.component)));
     const latest = new Map<string, GradeRecord>();
@@ -104,7 +95,7 @@ export function costPanel(run: RunLogs, arm: ArmLogs, grades: GradeRecord[]): Co
     const notes = notesOf(run.dir, arm.arm);
     return {
         arm: arm.arm,
-        price_table: PRICE_TABLE,
+        price_table: run.price.version,
         components,
         usd,
         harness_usd: sum(components.filter((c) => HARNESS.has(c.component))),

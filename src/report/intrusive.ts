@@ -166,7 +166,9 @@ export function turnLatencies(arm: ArmLogs): number[] {
  * five-word run with a memory note whose `first_delivery_ms` is at least `CLOCK_SLACK_MS` before
  * the turn's `BeginTurn` time (`base_wall_ms + scenario_ms`), and neither four-word half of the
  * run is in the scripted user text up to and including that turn: a user restating a rule it
- * gave is quoting itself.
+ * gave is quoting itself. The journal must hold the turn's `BeginTurn` and a delivered `UserTurn`;
+ * a pairing record alone is the user-sim's intent, which a kill before the turn ends leaves
+ * undelivered.
  */
 function corrections(run: RunLogs, arm: ArmLogs) {
     const script = scriptedTurns(run.dir);
@@ -187,11 +189,16 @@ function corrections(run: RunLogs, arm: ArmLogs) {
             .filter((e) => e.kind === "BeginTurn")
             .map((e) => [String(e.event), run.base_wall_ms + e.scenario_ms]),
     );
+    const delivered = new Set(
+        arm.journal
+            .filter((e) => e.kind === "UserTurn" && e.delivered === true)
+            .map((e) => String(e.event)),
+    );
     return userSimReplies(run.dir, arm.arm)
         .filter((r) => r.label === "pushback" || r.label === "redirect")
         .flatMap((r) => {
             const at = began.get(r.event);
-            if (at === undefined) return [];
+            if (at === undefined || !delivered.has(r.event)) return [];
             const own = ownBy(r.event);
             const injected = new Set(
                 notes

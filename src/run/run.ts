@@ -27,6 +27,7 @@ import { normaliser, Pairing, proxyUserSim, Tape, UserSim } from "../usersim/use
 import { Journal, readJournal, releaseLease, takeLease } from "./journal";
 import { plainPath } from "./launcher";
 import { type Preflight, preflight } from "./preflight";
+import { PRICE_TABLE, type PriceTable } from "./price";
 import { ResourceSampler } from "./sampler";
 import { type ArmDriver, HarnessFailure, type ScenarioEvent, Scheduler } from "./scheduler";
 import { writeOffset } from "./timeinject";
@@ -61,6 +62,8 @@ interface Manifest {
     tapes: string[];
     prereg_sha256: string;
     base_wall_ms: number;
+    /** The rates the cost panel prices this run's calls at, fixed when the run starts. */
+    price_table: PriceTable;
     preflight: Preflight;
 }
 
@@ -209,6 +212,7 @@ async function loadManifest(o: RunOptions, scenario: Scenario): Promise<Manifest
         eidnara_commit: gitHead(o.config.eidnara_checkout),
         prereg_sha256: preregistrationHash(loadPrereg(o.tier)),
         base_wall_ms: Date.now(),
+        price_table: PRICE_TABLE,
         preflight: checks,
     };
     writeAtomic(path, `${JSON.stringify(manifest, null, 2)}\n`);

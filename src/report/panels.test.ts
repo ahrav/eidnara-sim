@@ -5,8 +5,9 @@ import { join } from "node:path";
 import type { GradeRecord } from "../grade/probes";
 import type { ArmLogs, RunLogs } from "../oracle/logs";
 import type { Entry } from "../run/journal";
+import { PRICE_TABLE } from "../run/price";
 import { loadPrereg } from "../scenario/inputs";
-import { costPanel, judgeCost, V1_PRICE } from "./cost";
+import { costPanel, judgeCost } from "./cost";
 import { intrusiveness, percentile } from "./intrusive";
 import { soak } from "./soak";
 
@@ -41,6 +42,7 @@ const run = (
     prereg,
     kinds,
     arms,
+    price: PRICE_TABLE,
 });
 
 function sessions(n: number, rss: (session: number, i: number) => number) {
@@ -156,9 +158,10 @@ describe("soak verdict", () => {
             { scenario_ms: 500, wall_ms: 500, rss: 100 * MB, store_bytes: 0 },
         ];
         const v = soak(run([], "", kinds), arm({ journal, resources }), "rss");
-        expect([v.sessions, v.bound.holds, v.bound.worst]).toEqual([
+        expect([v.sessions, v.bound.holds, v.bound.c, v.bound.worst]).toEqual([
             2,
             false,
+            8 * MB,
             { value: 210 * MB, limit: 200 * MB, sessions: 0 },
         ]);
     });
@@ -251,6 +254,7 @@ describe("intrusiveness panel", () => {
             ["e-6", "pushback", "Is the daemon port is 7780 right?", ["P1"]],
             ["e-7", "pushback", "Who says the daemon port is 7780 on every host?", []],
             ["e-8", "pushback", "Is it alpha beta gamma delta epsilon now?", []],
+            ["e-10", "pushback", "Again: the daemon port is 7780 on every host?", []],
         ] as const;
         writeFileSync(
             join(dir, "scenario.json"),
@@ -309,9 +313,10 @@ describe("intrusiveness panel", () => {
         const journal = turns.flatMap(([event, begin, end]) => [
             entry("BeginTurn", begin, { event }),
             entry("EndTurn", end, { event, outcome: "ok", prompt_ms: (end - begin) / 2 }),
-            entry("UserTurn", end, { event }),
+            entry("UserTurn", end, { event, delivered: true }),
         ]);
         journal.push(
+            entry("BeginTurn", 5000, { event: "e-10" }),
             entry("BeginTurn", 7000, { event: "e-9" }),
             entry("EndTurn", 907_000, {
                 event: "e-9",
@@ -436,6 +441,7 @@ describe("intrusiveness panel", () => {
             })}\n`,
         );
         const cost = costPanel(run([], dir), arm({ calls }), grades);
+        if (cost === null) throw new Error("the run records a price table");
         expect(judgeCost(run([], dir))).toEqual({
             component: "judge",
             calls: 1,
@@ -443,13 +449,16 @@ describe("intrusiveness panel", () => {
             output: 1e6,
             cache_read: 0,
             cache_write: 0,
-            usd: 2 * V1_PRICE.input + V1_PRICE.output,
+            usd: 2 * PRICE_TABLE.rates.input + PRICE_TABLE.rates.output,
         });
         expect(judgeCost(run([], mkdtempSync(join(tmpdir(), "sim-panel-"))))).toBeNull();
+        const unpriced = { ...run([], dir), price: null };
+        expect(costPanel(unpriced, arm({ calls }), grades)).toBeNull();
+        expect(judgeCost(unpriced)).toBeNull();
         expect(cost.components.map((c) => [c.component, c.usd])).toEqual([
-            ["history_summarizer", V1_PRICE.output + 2 * V1_PRICE.cache_read],
-            ["agent", V1_PRICE.input],
-            ["user-sim", V1_PRICE.input],
+            ["history_summarizer", PRICE_TABLE.rates.output + 2 * PRICE_TABLE.rates.cache_read],
+            ["agent", PRICE_TABLE.rates.input],
+            ["user-sim", PRICE_TABLE.rates.input],
         ]);
         expect([cost.usd, cost.harness_usd, cost.passes, cost.usd_per_pass]).toEqual([
             31, 5, 2, 15.5,
