@@ -245,6 +245,17 @@ describe("aa-report", () => {
         expect(() => aaReport(swapped)).toThrow(/journaled order/);
     });
 
+    test("a symlinked grade log is refused before GradeLog could repair its target", () => {
+        const dir = gradedRun("S", preregistrationHash(loadPrereg("S")));
+        const target = join(dir, "elsewhere.jsonl");
+        const body = readFileSync(join(dir, "grades.jsonl"), "utf8").trimEnd();
+        writeFileSync(target, body);
+        rmSync(join(dir, "grades.jsonl"));
+        symlinkSync(target, join(dir, "grades.jsonl"));
+        expect(() => aaReport(dir)).toThrow(/grades\.jsonl is not a regular file/);
+        expect(readFileSync(target, "utf8")).toBe(body);
+    });
+
     test("a run-level family forms one cluster per run, so one run leaves it uninformative", () => {
         const dir = gradedRun("S", preregistrationHash(loadPrereg("S")));
         const [report] = aaReport(dir);

@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { GradeLog } from "../src/grade/probes";
 import { armBase, requireOrder } from "../src/hosts/arms";
@@ -49,7 +49,10 @@ function report(dir: string) {
     );
     const clusterOf = (metric: string) => (item: string) =>
         runLevel.has(probeType(metric)) ? "run" : (fact.get(item) ?? item);
-    const grades = new GradeLog(join(dir, "grades.jsonl")).latest();
+    // GradeLog repairs a cut last line in place, so only a regular file may be opened.
+    const gradesPath = join(dir, "grades.jsonl");
+    if (!lstatSync(gradesPath).isFile()) throw new Error(`${gradesPath} is not a regular file`);
+    const grades = new GradeLog(gradesPath).latest();
     const order = manifest.order as string[];
     requireOrder(order, ARMS, prereg.aa_controls?.pairs ?? []);
     const scheduled = scenario.events.slice(0, manifest.events).map((e) => String(e.id));
