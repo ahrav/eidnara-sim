@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { GradeRecord } from "../grade/probes";
 import { armBase } from "../hosts/arms";
 import type { ArmLogs } from "../oracle/logs";
+import { clopperPearson } from "../stats/tests";
 import type { GradedRun } from "./observe";
 
 /** The v1 harness measured cross-session recall of 0 to 3% for host and 99 to 100% for Eidnara. */
@@ -76,6 +77,62 @@ export interface Continuity {
     pass: number;
     pass_with_transcript_read: number;
     v1: [number, number] | null;
+}
+
+const count = (x: unknown): x is number => Number.isSafeInteger(x) && (x as number) >= 0;
+
+export const CONTINUITY_SCHEMA = "sim-continuity/v1";
+
+/** The continuity file a report writes: its rows with the tier and pre-registration they came from. */
+export interface ContinuityFile {
+    schema: typeof CONTINUITY_SCHEMA;
+    tier: string;
+    prereg_sha256: string;
+    rows: Continuity[];
+}
+
+/** Parses a continuity file as a recall reference from `tier` under the pre-registration hash. */
+export function parseContinuity(value: unknown, tier: string, prereg_sha256: string): Continuity[] {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) {
+        throw new Error("continuity: expected an object with schema, tier, prereg_sha256, rows");
+    }
+    const f = value as Record<string, unknown>;
+    if (f.schema !== CONTINUITY_SCHEMA)
+        throw new Error(`continuity.schema: expected ${CONTINUITY_SCHEMA}`);
+    if (f.tier !== tier)
+        throw new Error(`continuity.tier: expected ${tier}, found ${String(f.tier)}`);
+    if (f.prereg_sha256 !== prereg_sha256) {
+        throw new Error(`continuity.prereg_sha256: expected ${prereg_sha256}`);
+    }
+    if (!Array.isArray(f.rows)) throw new Error("continuity.rows: expected an array of rows");
+    const seen = new Set<string>();
+    return f.rows.map((raw, i) => {
+        const at = `continuity[${i}]`;
+        if (typeof raw !== "object" || raw === null) throw new Error(`${at}: expected an object`);
+        const r = raw as Record<string, unknown>;
+        for (const field of ["host", "arm"]) {
+            if (typeof r[field] !== "string") throw new Error(`${at}.${field}: expected a string`);
+        }
+        if (r.probe !== "P8" && r.probe !== "P9") throw new Error(`${at}.probe: expected P8 or P9`);
+        if (!count(r.n)) throw new Error(`${at}.n: expected a count`);
+        if (!count(r.pass) || r.pass > r.n) throw new Error(`${at}.pass: expected a count up to n`);
+        if (!count(r.pass_with_transcript_read) || r.pass_with_transcript_read > r.pass) {
+            throw new Error(`${at}.pass_with_transcript_read: expected a count up to pass`);
+        }
+        const key = `${r.host}/${r.arm}/${r.probe}`;
+        if (seen.has(key)) throw new Error(`${at}: duplicates ${key}`);
+        seen.add(key);
+        const v1 = Array.isArray(r.v1) ? (r.v1 as [number, number]) : null;
+        return {
+            host: r.host as string,
+            arm: r.arm as string,
+            probe: r.probe,
+            n: r.n,
+            pass: r.pass,
+            pass_with_transcript_read: r.pass_with_transcript_read,
+            v1,
+        };
+    });
 }
 
 /** Whether `path` resolves to a real location inside `root`. */
@@ -327,6 +384,84 @@ export function renderConditions(conditions: RunConditions[], recall: Continuity
                 pct(c.pass, c.n),
                 c.pass_with_transcript_read,
                 c.v1 ? `${c.v1[0] * 100}% to ${c.v1[1] * 100}%` : "-",
+            ]),
+        ),
+        "",
+    ];
+}
+
+export interface RecallDrift {
+    host: string;
+    arm: string;
+    probe: "P8" | "P9";
+    pass: number;
+    n: number;
+    rate: number | null;
+    reference: [number, number] | null;
+    reference_counts: [number, number] | null;
+    drift: boolean | null;
+}
+
+/**
+ * Each host, arm, and probe's pass rate against the reference tier's 95% Clopper-Pearson
+ * interval for the same row; a rate outside it is drift. A row either side lacks is null: a
+ * reference row for a host and arm in `armsRan` (`<host>/<arm>`, the campaign's arms) appears
+ * with no rate, and a reference-only arm is left out.
+ */
+export function recallDrift(
+    current: Continuity[],
+    reference: Continuity[],
+    armsRan: Iterable<string> = current.map((x) => `${x.host}/${x.arm}`),
+): RecallDrift[] {
+    const key = (x: Continuity) => `${x.host}/${x.arm}/${x.probe}`;
+    const ran = new Set(armsRan);
+    const seen = new Set(current.map(key));
+    const missing = reference
+        .filter((r) => ran.has(`${r.host}/${r.arm}`) && !seen.has(key(r)))
+        .map((r) => ({ ...r, n: 0, pass: 0, pass_with_transcript_read: 0 }));
+    return [...current, ...missing].map((c) => {
+        const r = reference.find(
+            (x) => x.host === c.host && x.arm === c.arm && x.probe === c.probe,
+        );
+        const rate = c.n ? c.pass / c.n : null;
+        const interval = r?.n ? clopperPearson(r.pass, r.n) : null;
+        const drift =
+            rate === null || interval === null ? null : rate < interval[0] || rate > interval[1];
+        return {
+            host: c.host,
+            arm: c.arm,
+            probe: c.probe,
+            pass: c.pass,
+            n: c.n,
+            rate,
+            reference: interval,
+            reference_counts: r ? [r.pass, r.n] : null,
+            drift,
+        };
+    });
+}
+
+export function renderDrift(rows: RecallDrift[] | null, source: string | null): string[] {
+    if (rows === null) return [];
+    const f = (x: number | null | undefined) =>
+        x === null || x === undefined ? "-" : x.toFixed(4);
+    return [
+        "## Recall against the reference tier",
+        "",
+        `Reference: ${source ?? "-"}. Rates and the 95% interval to four decimals.`,
+        "",
+        ...head(["host", "arm", "probe", "pass/n", "rate", "reference pass/n [interval]", "drift"]),
+        ...rows.map((d) =>
+            row([
+                d.host,
+                d.arm,
+                d.probe,
+                `${d.pass}/${d.n}`,
+                f(d.rate),
+                d.reference && d.reference_counts
+                    ? `${d.reference_counts[0]}/${d.reference_counts[1]} [${f(d.reference[0])}, ${f(d.reference[1])}]`
+                    : "-",
+                d.drift === null ? "-" : d.drift ? "drift" : "within",
             ]),
         ),
         "",

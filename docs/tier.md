@@ -264,3 +264,51 @@ P1, P3, and P5 items, where nothing was deleted. Deletions accumulate
 over a run, so a later item's flip can follow an earlier deletion as
 well. Memory the store keeps outside notes, such as user memories or
 history summaries, stays in place.
+
+## XL
+
+XL runs one seed per host with `host` and `eidnara`. Its scenario's fault
+schedule adds `host_upgrade` and `two_hosts_one_daemon` (`docs/hosts.md`).
+Each XL paired run is stopped once with SIGTERM when its journal holds
+`--restart-at` (0.4 by default at XL, a decimal fraction in [0, 1); an
+empty or non-numeric value is refused; recorded in `tier-plan.json` as
+`restart_at` and reused by a rerun without the flag, like `turn_ms`; a
+fraction whose first reachable event count is a run's last event is refused
+before the plan is saved, since that stop could not land before the run ends;
+an explicit fraction that differs from the saved one is refused once a paired
+run of any host the saved plan listed has begun; a cut one event before
+the end can still miss when the run finishes within that second) of its
+planned events across its arms, checked every second,
+and resumed from its journal within the rest of its wall limit. The restart writes `<run>/restarted` only when the journal check requested
+the stop (an outside SIGTERM at the same point leaves no marker),
+so a rerun of the command neither restarts that run again nor reports it
+unrestarted; `tier-result.json` records `restarted` per run, and the
+command exits 1 naming any paired run without a restart and leaves the main
+report unpublished for it. A saved `tier-plan.json` from another tier is
+refused; an unreadable one is replaced when `--turn-ms` (and `--restart-at`
+at XL) are given.
+The stop lands wherever the run is when the check fires: a run stopped by
+the scheduled restart logs no `EndTurn` for the turn, or no `FaultObserved`
+for the scheduler fault, the stop cut, so the resumed run marks that item
+`failed(interrupted)`; an interrupted turn counts in `failed_turns`, and an
+interrupted fault counts as landed in its arm, so its session's probes leave
+the pairing as asymmetric.
+
+The XL report adds a within-month RSS soak verdict per month of scenario
+time for each run's daemon arm, the last month partial: each
+month's slope, bound, and return-to-baseline use that month's samples and
+sessions alone, and the whole-span soak verdict stays the gate's input.
+
+`scripts/report.ts --recall-reference <dir>/continuity-L.json` (shape-checked
+row by row: counts with `pass_with_transcript_read <= pass <= n`, one row per
+host, arm, and probe) adds a recall
+drift table to the XL report alone, read when the XL report is built so an L
+report in the same invocation settles its file first, with counts and
+four-decimal rates (a reference row for an arm XL ran but has no row for
+appears with no rate; a reference-only arm is left out): each host, arm, and probe's P8 or P9 pass
+rate against the L tier's 95% Clopper-Pearson interval for the same row,
+`drift` when outside it. A report of a complete campaign with no violated
+property witness writes its continuity rows to `continuity-<tier>.json` beside
+`report-<tier>.json` for this use; an incomplete or unsound one writes none
+and removes a stale one; the previous reference is removed before the new
+report files land.

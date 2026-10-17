@@ -15,7 +15,14 @@ import { falsificationPairs } from "./falsify";
 import { percentile } from "./intrusive";
 import { type GradedRun, tierInput } from "./observe";
 import { counterfactualText, renderTier } from "./render";
-import { aaScale, counterfactual, cusumScale, loadGraded, tierReport } from "./tier";
+import {
+    aaScale,
+    counterfactual,
+    cusumScale,
+    identityVersions,
+    loadGraded,
+    tierReport,
+} from "./tier";
 
 const prereg = loadPrereg("S");
 const boundary = readFileSync(join(import.meta.dir, "../../docs/claim-boundary.md"), "utf8");
@@ -489,6 +496,44 @@ describe("tier report", () => {
         const report = tierReport(prereg, [g], boundary);
         expect(report.verdict.asymmetric_stratum).toEqual(["pi/101/q-0", "pi/101/q-p8-0"]);
         expect(report.observed["P8.cross_session_pass_rate"]).toEqual([1]);
+    });
+
+    test("a scheduler fault a restart interrupted in one arm puts its session's probes in the asymmetric stratum", () => {
+        const g = asymmetricFixture(() => undefined);
+        const push = (name: string, extra: Record<string, unknown>) =>
+            arm(g, name).journal.push({
+                arm: name,
+                scenario_ms: 0,
+                seq: 9_000,
+                wall_ms: 0,
+                ...extra,
+            } as Entry);
+        push("host", {
+            kind: "FaultObserved",
+            fault: "f1",
+            type: "daemon_restart",
+            evidence: { skipped: "arm runs no daemon" },
+        });
+        push("eidnara", {
+            kind: "FaultFired",
+            fault: "f1",
+            type: "daemon_restart",
+            layer: "scheduler",
+        });
+        push("eidnara", { kind: "ItemState", fault: "f1", state: "failed(interrupted)" });
+        const report = tierReport(prereg, [g], boundary);
+        expect(report.verdict.asymmetric_stratum).toEqual(["pi/101/q-0", "pi/101/q-p8-0"]);
+    });
+
+    test("the recall drift table is an XL report's alone", () => {
+        const g = fixture();
+        const reference = { source: "L", continuity: tierReport(prereg, [g], boundary).continuity };
+        const l = { ...prereg, tier: "L" as const };
+        expect(tierReport(l, [g], boundary, undefined, "", undefined, reference).drift).toBeNull();
+        const xl = { ...prereg, tier: "XL" as const };
+        expect(
+            tierReport(xl, [g], boundary, undefined, "", undefined, reference).drift,
+        ).not.toBeNull();
     });
 
     test("a proxy fault that landed in one arm's calls alone puts its session's probes in the asymmetric stratum", () => {
@@ -1600,6 +1645,38 @@ describe("tier report", () => {
         );
         expect([fourxx?.zero_effect, fourxx?.difference]).toEqual([false, 0.5]);
     });
+
+    test("failed turns count a turn the resumed run marked interrupted, once per turn", () => {
+        const g = fixture();
+        const eidnara = g.run.arms.find((a) => a.arm === "eidnara") as ArmLogs;
+        const last = eidnara.journal.at(-1) as Entry;
+        for (let i = 0; i < 2; i++) {
+            eidnara.journal.push({
+                ...last,
+                seq: last.seq + 1 + i,
+                kind: "ItemState",
+                event: "e-cut",
+                state: "failed(interrupted)",
+            } as Entry);
+        }
+        const report = tierReport(prereg, [g], boundary);
+        expect(report.observed.failed_turns).toEqual([1]);
+    });
+
+    test("monthly soak rows name their run and show return to baseline", () => {
+        const g = fixture();
+        const xl = { ...prereg, tier: "XL" as const };
+        const report = tierReport(xl, [g], boundary);
+        expect(report.soak_by_month.map((s) => [s.run, s.arm, s.month])).toEqual([
+            [g.run.dir, "eidnara", 1],
+        ]);
+        const text = renderTier(report);
+        expect(text).toContain(
+            "| run | arm | month | verdict | samples | sessions | slope MB/session | R2 | bound | returned |",
+        );
+        expect(text).toContain(`| ${g.run.dir} | eidnara | 1 | no leak | 48 | 12 |`);
+        expect(text).toContain("| holds | true |");
+    });
 });
 
 describe("counterfactual attribution", () => {
@@ -1716,5 +1793,29 @@ describe("CUSUM scale", () => {
             futility: undefined,
         });
         expect(cusumScale(L, new Map())).toEqual({ harm: undefined, futility: undefined });
+    });
+});
+
+describe("run identity", () => {
+    test("the pooled identity names the current host versions and, apart, the upgrade versions", () => {
+        const row = (host: "pi" | "opencode", version: string, path?: string) => ({
+            host,
+            version,
+            ...(path ? { path } : {}),
+            transcript_paths: [],
+        });
+        const preflight = {
+            hosts: [row("pi", "0.80.2", "/i/pi"), row("opencode", "1.14.0")],
+            upgrade: [row("pi", "0.87.1", "/i/pi-next")],
+        };
+        expect(identityVersions(preflight)).toEqual([
+            "pi@0.80.2 /i/pi",
+            "opencode@1.14.0",
+            "upgrade:pi@0.87.1 /i/pi-next",
+        ]);
+        expect(identityVersions({ hosts: preflight.hosts })).toEqual([
+            "pi@0.80.2 /i/pi",
+            "opencode@1.14.0",
+        ]);
     });
 });

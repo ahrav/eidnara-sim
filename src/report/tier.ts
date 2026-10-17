@@ -13,7 +13,7 @@ import type { Scenario } from "../scenario/compile";
 import { evaluateTier, falsificationSet, type TierInput } from "../stats/gate";
 import { clopperPearson } from "../stats/tests";
 import type { PairingRecord } from "../usersim/usersim";
-import { continuity, runConditions } from "./conditions";
+import { type Continuity, continuity, recallDrift, runConditions } from "./conditions";
 import { costPanel, judgeCost } from "./cost";
 import { falsificationPairs } from "./falsify";
 import { intrusiveness } from "./intrusive";
@@ -28,8 +28,25 @@ import {
     tierInput,
 } from "./observe";
 import type { TierReport } from "./render";
-import { soak } from "./soak";
+import { soak, soakByMonth } from "./soak";
 import { propertyWitness } from "./witness";
+
+type VersionRow = { host: string; version: string; path?: string };
+
+/**
+ * `<host>@<version> <path>` for each current host, then `upgrade:<host>@<version> <path>` for
+ * each next one; the path is the probed install, so two artifacts of one version stay apart.
+ */
+export function identityVersions(preflight: {
+    hosts?: VersionRow[];
+    upgrade?: VersionRow[];
+}): string[] {
+    const name = (h: VersionRow) => `${h.host}@${h.version}${h.path ? ` ${h.path}` : ""}`;
+    return [
+        ...(preflight.hosts ?? []).map(name),
+        ...(preflight.upgrade ?? []).map((h) => `upgrade:${name(h)}`),
+    ];
+}
 
 /** Complete lines of a JSONL file; a cut final line, with no newline after it, is left out. */
 const jsonl = <T>(path: string): T[] =>
@@ -128,7 +145,7 @@ export function loadGraded(dir: string, prereg: Preregistration): GradedRun {
             context_limit,
             events,
             distortions: manifest.preflight?.distortions ?? [],
-            host_versions: (manifest.preflight?.hosts ?? []).map((h) => `${h.host}@${h.version}`),
+            host_versions: identityVersions(manifest.preflight ?? {}),
             side_model: side_model ?? null,
             user_sim_model: user_sim_model ?? prereg.user_sim.model,
             scenario_provenance: `${sm.generator_version}/${sm.random_schema_version}/${sm.corpus_manifest_sha256}/${sm.compile_inputs_sha256}/${sm.embedding_model}`,
@@ -212,6 +229,7 @@ export function tierReport(
     scale: CusumScale | undefined = aaScale(prereg, given),
     catalog = "",
     items?: number,
+    reference?: { source: string; continuity: Continuity[] },
 ): TierReport {
     const runs = ordered(prereg, given);
     const arms = [...new Set(runs.flatMap((g) => g.run.arms.map((a) => a.arm)))];
@@ -288,6 +306,20 @@ export function tierReport(
         witness: propertyWitness(catalog, runs),
         conditions: runs.map(runConditions),
         continuity: continuity(runs),
+        drift:
+            reference && prereg.tier === "XL"
+                ? recallDrift(
+                      continuity(runs),
+                      reference.continuity,
+                      runs.flatMap((g) => g.run.arms.map((a) => `${g.host}/${a.arm}`)),
+                  )
+                : null,
+        drift_source: reference?.source ?? null,
+        soak_by_month: perArm
+            .filter(({ arm }) => prereg.tier === "XL" && armBase(arm.arm) !== "host")
+            .flatMap(({ g, arm }) =>
+                soakByMonth(g.run, arm, "rss").map((s) => ({ run: g.run.dir, ...s })),
+            ),
         counterfactual: counterfactual(runs, undefined, undefined, items),
     };
 }

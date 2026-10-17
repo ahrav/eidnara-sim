@@ -1,11 +1,19 @@
-import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
+import {
+    existsSync,
+    lstatSync,
+    mkdirSync,
+    readFileSync,
+    realpathSync,
+    rmSync,
+    writeFileSync,
+} from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { loadConfig } from "../src/config/config";
 import { TIERS, type Tier } from "../src/prereg/schema";
 import { preregistrationHash } from "../src/prereg/validate";
 import { tierInput } from "../src/report/observe";
 import { aaScale, loadGraded } from "../src/report/tier";
-import { Children, SIGTERM_EXIT } from "../src/run/children";
+import { Children, SIGTERM_EXIT, type StopReason } from "../src/run/children";
 import { leaseHeld, releaseLease, takeLease } from "../src/run/journal";
 import { gradedMainRuns, resizeFromM } from "../src/run/resize";
 import { loadScenario, writeAtomic } from "../src/run/run";
@@ -13,15 +21,20 @@ import {
     compressFaults,
     planConflicts,
     profileJobs,
+    restartConflicts,
+    restartCut,
+    restartFraction,
     runSpan,
+    scheduleConflicts,
     type TierJob,
     tierPlan,
+    uncuttableRuns,
 } from "../src/run/tier";
 import type { Scenario } from "../src/scenario/compile";
 import { loadPrereg } from "../src/scenario/inputs";
 
 const USAGE =
-    "usage: bun scripts/tier.ts --tier S --out <dir> [--hosts pi,opencode] [--turn-ms N] [--resize-from <M tier dir>] [--models a,b] [--plan-only]";
+    "usage: bun scripts/tier.ts --tier S --out <dir> [--hosts pi,opencode] [--turn-ms N] [--resize-from <M tier dir>] [--models a,b] [--restart-at <fraction>] [--plan-only]";
 const fail = (why: string): never => {
     console.error(`${why}\n${USAGE}`);
     process.exit(2);
@@ -33,6 +46,7 @@ const FLAGS: Record<string, boolean> = {
     "turn-ms": true,
     "resize-from": true,
     models: true,
+    "restart-at": true,
     "plan-only": false,
 };
 const flags = new Map<string, string>();
@@ -59,16 +73,31 @@ const config = loadConfig();
 const prereg = loadPrereg(tier);
 const hosts = (arg("hosts") ?? prereg.hosts.join(",")).split(",") as ("pi" | "opencode")[];
 const priorPlan = join(out, "tier-plan.json");
-const priorTurnMs = (): number => {
-    if (!existsSync(priorPlan)) return 75_000;
+type PriorPlan = { tier?: Tier; turn_ms?: number; restart_at?: number; plan?: TierJob[] };
+// The saved plan supplies turn_ms and restart_at. Explicit flags for both (restart_at only
+// matters at XL) replace an unreadable plan; a plan from another tier is refused.
+const prior = ((): PriorPlan | null => {
+    if (!existsSync(priorPlan)) return null;
+    const replaced =
+        arg("turn-ms") !== undefined && (tier !== "XL" || arg("restart-at") !== undefined);
+    let parsed: PriorPlan;
     try {
-        return Number(JSON.parse(readFileSync(priorPlan, "utf8")).turn_ms);
+        parsed = JSON.parse(readFileSync(priorPlan, "utf8"));
     } catch {
-        return fail(`${priorPlan} is unreadable; pass --turn-ms to replace it`);
+        if (replaced) return null;
+        return fail(
+            `${priorPlan} is unreadable; pass --turn-ms${tier === "XL" ? " and --restart-at" : ""} to replace it`,
+        );
     }
-};
-const turnMs = Number(arg("turn-ms") ?? priorTurnMs());
+    if (parsed.tier !== undefined && parsed.tier !== tier) {
+        return fail(`${priorPlan} belongs to tier ${parsed.tier}; use another --out for ${tier}`);
+    }
+    return parsed;
+})();
+const turnMs = Number(arg("turn-ms") ?? prior?.turn_ms ?? 75_000);
 if (!Number.isInteger(turnMs) || turnMs <= 0) fail("--turn-ms must be a positive integer");
+const restartAt = restartFraction(arg("restart-at"), prior, tier);
+if (!(restartAt >= 0 && restartAt < 1)) fail("--restart-at must be a fraction in [0, 1)");
 if (new Set(hosts).size !== hosts.length || !hosts.every((h) => prereg.hosts.includes(h)))
     fail(`--hosts must name distinct hosts from ${prereg.hosts.join(",")}`);
 // The tier never writes under the Eidnara checkout (AGENTS.md); the check precedes the first
@@ -228,16 +257,55 @@ const modelConflicts = plan.flatMap((job) => {
         : [`${job.dir} ran on ${ran.join(",")}; this invocation's models are ${models.join(",")}`];
 });
 if (modelConflicts.length > 0) refuse(modelConflicts.join("\n"));
-const conflicts = planConflicts(plan);
+const conflicts = [
+    ...planConflicts(plan),
+    ...scheduleConflicts(
+        plan.map((j) => {
+            const scenario = scenarios.get(j.seed) as Scenario;
+            const faults = compressFaults(scenario, j.events);
+            const moved = JSON.stringify(faults) !== JSON.stringify(scenario.faults);
+            return [j, moved ? faults : null];
+        }),
+    ),
+];
 if (conflicts.length > 0) {
     console.error(
         `${conflicts.join("\n")}\n--turn-ms must keep the prefix of a run that has a manifest`,
     );
     exit(2);
 }
+const uncuttable = uncuttableRuns(plan, restartAt);
+if (uncuttable.length > 0)
+    refuse(`--restart-at ${restartAt} first stops at the last event of ${uncuttable.join(", ")}`);
+// Begun runs of every host the saved plan listed, not only those this invocation's --hosts keeps.
+const rethreshold = restartConflicts(
+    [...plan, ...(prior?.plan ?? []).filter((j) => !plan.some((p) => p.dir === j.dir))],
+    prior?.restart_at,
+    restartAt,
+);
+if (rethreshold.length > 0)
+    refuse(
+        `${rethreshold.join("\n")}\n--restart-at must keep the fraction a begun run started under`,
+    );
 writeAtomic(
     priorPlan,
-    `${JSON.stringify({ tier, turn_ms: turnMs, items_per_type: items ?? null, models, plan }, null, 2)}\n`,
+    `${JSON.stringify(
+        {
+            tier,
+            turn_ms: turnMs,
+            restart_at: restartAt,
+            items_per_type: items ?? null,
+            models,
+            // Jobs of hosts a previous invocation planned stay in the saved plan, so a later
+            // fraction change is checked against every run that may have begun.
+            plan: [
+                ...plan,
+                ...(prior?.plan ?? []).filter((j) => !plan.some((p) => p.dir === j.dir)),
+            ],
+        },
+        null,
+        2,
+    )}\n`,
 );
 console.log(
     JSON.stringify(plan.map((j) => [j.group, j.dir, j.events, j.user_turns, j.arms.join(",")])),
@@ -253,8 +321,13 @@ const bin = resolve(dirname(config.opencode_binary), "../../.bin");
 const env = { ...process.env, PATH: `${bin}:${process.env.PATH}` };
 const children = new Children(env);
 const script = (name: string) => join(import.meta.dir, name);
-const run = (args: string[], log: string, limitMs?: number) =>
-    children.run([script(args[0] as string), ...args.slice(1)], log, limitMs);
+const run = (
+    args: string[],
+    log: string,
+    limitMs?: number,
+    stopWhen?: () => boolean,
+    onStop?: (reason: StopReason) => void,
+) => children.run([script(args[0] as string), ...args.slice(1)], log, limitMs, stopWhen, onStop);
 stopChildren = (signal) => children.stopAll(signal);
 
 // Every run's preflight wants the vendored libfaketime; one supervised build here keeps the
@@ -267,6 +340,13 @@ if (built !== 0) {
 const budget = prereg.liveness_bounds.tier_wall_budget_ms;
 const limit = Math.round(budget * 1.25);
 const started = Date.now();
+const eventsRun = (dir: string) => {
+    const path = join(dir, "journal.jsonl");
+    if (!existsSync(path)) return 0;
+    return readFileSync(path, "utf8")
+        .split("\n")
+        .filter((l) => l.includes('"kind":"Event"')).length;
+};
 // A job that throws in orchestration stops the sibling runs before the command exits, so no
 // run outlives the lease on this directory.
 const supervised = async <T>(work: () => Promise<T>): Promise<T> => {
@@ -296,22 +376,55 @@ const runJob = async (job: TierJob) => {
     const moved = JSON.stringify(faults) !== JSON.stringify(scenario.faults);
     if (moved && !held && span.ended === undefined)
         writeAtomic(join(job.dir, "faults.json"), `${JSON.stringify(faults)}\n`);
-    const code = held
+    const args = [
+        "run-tier.ts",
+        ...["--tier", tier, "--seed", String(job.seed), "--out", job.dir],
+        ...["--host", job.host, "--arms", job.arms.join(",")],
+        ...["--events", String(job.events), ...job.extra],
+        ...(arg("models") ? ["--models", models.join(",")] : []),
+        ...(moved ? ["--faults", join(job.dir, "faults.json")] : []),
+    ];
+    const marker = join(job.dir, "restarted");
+    // A marker counts only beside the journal of the run it stopped; one left in a cleaned
+    // directory, or a symlink in its place, is removed before the run begins.
+    const journaled = existsSync(join(job.dir, "journal.jsonl"));
+    const markerEntry = ((): "file" | "link" | "other" | null => {
+        try {
+            const st = lstatSync(marker);
+            return st.isSymbolicLink() ? "link" : st.isFile() ? "file" : "other";
+        } catch {
+            return null;
+        }
+    })();
+    if (markerEntry === "other") throw new Error(`${marker} is not a regular file`);
+    if (markerEntry === "link" || (markerEntry === "file" && !journaled)) rmSync(marker);
+    const marked = markerEntry === "file" && journaled;
+    const due = job.group === "main" ? restartCut(restartAt, job.events, job.arms.length) : null;
+    const cut = due !== null && !marked ? due : null;
+    const remaining = () => Math.max(1, limit - (Date.now() - span.started));
+    let requested = false;
+    let code = held
         ? SIGTERM_EXIT
         : span.ended !== undefined
           ? 0
           : await run(
-                [
-                    "run-tier.ts",
-                    ...["--tier", tier, "--seed", String(job.seed), "--out", job.dir],
-                    ...["--host", job.host, "--arms", job.arms.join(",")],
-                    ...["--events", String(job.events), ...job.extra],
-                    ...(arg("models") ? ["--models", models.join(",")] : []),
-                    ...(moved ? ["--faults", join(job.dir, "faults.json")] : []),
-                ],
+                args,
                 log,
-                Math.max(1, limit - (launched - span.started)),
+                remaining(),
+                cut === null ? undefined : () => eventsRun(job.dir) >= cut,
+                (reason) => {
+                    if (reason !== "stopWhen") return;
+                    // The marker lands as the stop goes out, so a parent that dies before the
+                    // child exits leaves a run the next invocation resumes rather than cuts
+                    // again; the rerun follows only a marker that was written.
+                    writeFileSync(marker, `${new Date().toISOString()}\n`, { flag: "wx" });
+                    requested = true;
+                },
             );
+    if (requested && code === SIGTERM_EXIT && remaining() > 1) {
+        code = await run(args, log, remaining());
+    }
+    const restarted = marked || requested;
     const after = runSpan(job.dir, launched);
     const run_wall_ms = (after.ended ?? Date.now()) - after.started;
     const start_ms = existsSync(join(job.dir, "journal.jsonl")) ? after.started : null;
@@ -322,6 +435,7 @@ const runJob = async (job: TierJob) => {
         ...job,
         log,
         start_ms,
+        restarted,
         run_exit: code,
         leased_elsewhere: heldNow,
         run_wall_ms,
@@ -361,6 +475,7 @@ const sourceFailed = (job: TierJob) => {
 const skipped = (job: TierJob, why: string): Result => ({
     ...job,
     start_ms: null,
+    restarted: false,
     run_exit: null,
     leased_elsewhere: false,
     run_wall_ms: 0,
@@ -395,6 +510,19 @@ const skew = (group: string) => {
         .map((r) => r.start_ms as number);
     return starts.length ? Math.max(...starts) - Math.min(...starts) : null;
 };
+// A paired run that missed its scheduled restart leaves the main report unpublished: the
+// campaign did not exercise the restart it pre-registered.
+const unrestarted = results
+    .filter(
+        (r) =>
+            restartAt > 0 &&
+            r.group === "main" &&
+            r.skipped === undefined &&
+            !r.leased_elsewhere &&
+            !r.restarted,
+    )
+    .map((r) => r.dir);
+if (unrestarted.length > 0) console.error(`no harness restart in ${unrestarted.join(", ")}`);
 const reports: Record<string, number | null> = {};
 const reported: string[] = [];
 for (const group of groups) {
@@ -412,8 +540,9 @@ for (const group of groups) {
     const paired = identities.size === dirs.length;
     if (paired) reported.push(...dirs);
     const target = group === "main" ? out : join(out, group);
+    const restartMissing = group === "main" && unrestarted.length > 0;
     reports[group] =
-        dirs.length && paired
+        dirs.length && paired && !restartMissing
             ? await run(["report.ts", ...dirs, "--out", target], join(out, "report.log"))
             : null;
 }
@@ -436,12 +565,14 @@ console.log(
         unreported: plan.map((j) => j.dir).filter((d) => !reported.includes(d)),
     }),
 );
-const failed = results.some(
-    (r) =>
-        r.run_exit !== 0 ||
-        r.over_budget ||
-        r.leased_elsewhere ||
-        r.grade_exit !== 0 ||
-        (r.aa_exit ?? 0) !== 0,
-);
+const failed =
+    unrestarted.length > 0 ||
+    results.some(
+        (r) =>
+            r.run_exit !== 0 ||
+            r.over_budget ||
+            r.leased_elsewhere ||
+            r.grade_exit !== 0 ||
+            (r.aa_exit ?? 0) !== 0,
+    );
 exit(failed || Object.values(reports).some((r) => r !== null && r !== 0) ? 1 : 0);

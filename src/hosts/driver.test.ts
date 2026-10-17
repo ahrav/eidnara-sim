@@ -34,15 +34,23 @@ const tmp = () => {
 
 class FakeHost {
     opened: string[] = [];
+    connections: (string | null)[] = [];
     closed = 0;
     onPrompt: () => void = () => undefined;
     constructor(
         readonly ctx: HostContext,
         private readonly transcripts: string,
     ) {}
-    async openSession(cwd: string, session: string) {
+    async openSession(cwd: string, session: string, connection: string | null = null) {
+        this.opening = true;
+        await this.gate;
+        this.opening = false;
         this.opened.push(`${session}@${cwd}`);
+        this.connections.push(connection);
     }
+    gate: Promise<void> = Promise.resolve();
+    opening = false;
+    closedWhileOpening = 0;
     failNext = false;
     interrupts: (number | undefined)[] = [];
     async prompt(_text: string, _timeoutMs: number, interruptMs?: number): Promise<PromptResult> {
@@ -55,6 +63,7 @@ class FakeHost {
     }
     failClose = false;
     async closeSession() {
+        if (this.opening) this.closedWhileOpening++;
         this.closed++;
         if (this.failClose) throw new Error("host survived");
     }
@@ -62,8 +71,9 @@ class FakeHost {
         return { PI_CODING_AGENT_DIR: this.transcripts };
     }
     hostPid() {
-        return null;
+        return this.pid;
     }
+    pid: number | null = null;
     tools: { command: string; exit: number | null; scenario_ms: number }[] = [];
     drainTools() {
         return this.tools.splice(0);
@@ -106,11 +116,30 @@ function fakeDaemon(pid: number | null) {
     const d = {
         current: pid,
         pid: () => d.current,
+        gate: Promise.resolve() as Promise<void>,
+        restarting: false,
+        stoppedWhileRestarting: 0,
+        stops: 0,
         restart: async () => {
+            d.restarting = true;
+            await d.gate;
+            d.restarting = false;
             d.current = (d.current ?? 0) + 1;
         },
-        stop: async () => undefined,
+        stop: async () => {
+            if (d.restarting) d.stoppedWhileRestarting++;
+            if (d.starting) d.stoppedWhileStarting++;
+            d.stops++;
+        },
         connectionFile: "/run/conn",
+        starting: false,
+        stoppedWhileStarting: 0,
+        start: async () => {
+            d.starting = true;
+            await d.gate;
+            d.starting = false;
+            d.current = d.current ?? 10;
+        },
     };
     return d;
 }
@@ -375,6 +404,442 @@ describe("HostDriver faults", () => {
         expect(plain.host?.ctx.keep).not.toContain(plain.storeRoot);
     });
 
+    test("a host upgrade moves later sessions to the configured next version, or is skipped", async () => {
+        const { driver } = fixture("host");
+        const o = (driver as unknown as { o: DriverOptions }).o;
+        o.hostVersions = { from: "0.80.2", to: "0.87.1" };
+        o.config = { ...o.config, upgrade: undefined };
+        expect(await driver.fault(episode("host_upgrade"))).toEqual({
+            skipped: "no next pi version is configured (config.upgrade.pi_install)",
+        });
+        o.config = { ...o.config, upgrade: { pi_install: "/next/pi" } };
+        expect(await driver.fault(episode("host_upgrade"))).toEqual({
+            host: "pi",
+            from: o.config.pi_install,
+            to: "/next/pi",
+            from_version: "0.80.2",
+            to_version: "0.87.1",
+            takes_effect: "next session_start",
+        });
+        expect(driver.host?.ctx.config.pi_install).toBe("/next/pi");
+        await driver.fault(episode("model_switch"));
+        expect(driver.host?.ctx.config.pi_install).toBe("/next/pi");
+        const resumed = new HostDriver(o);
+        await resumed.resume(null);
+        expect(resumed.host?.ctx.config.pi_install).toBe("/next/pi");
+        await resumed.stop();
+    });
+
+    test("a host upgrade asks for the upgraded version's transcript store at its next session end", async () => {
+        const { driver, armDir } = fixture("host", { p: gitRepo() });
+        const o = (driver as unknown as { o: DriverOptions }).o;
+        o.hostVersions = {
+            from: "0.80.2",
+            to: "0.87.1",
+            upgradeTranscriptPaths: ["$PI_CODING_AGENT_DIR/sessions-next"],
+        };
+        o.config = { ...o.config, upgrade: { pi_install: "/next/pi" } };
+        const inner = driver as unknown as { transcriptsChecked: boolean };
+        await driver.reset();
+        inner.transcriptsChecked = true;
+        await driver.fault(episode("host_upgrade"));
+        expect(inner.transcriptsChecked).toBe(false);
+        writeFileSync(
+            join(armDir, "transcripts.json"),
+            JSON.stringify({
+                checked_after: "first session_end",
+                templates: ["$PI_CODING_AGENT_DIR/sessions"],
+                paths: ["/t/sessions"],
+                missing: [],
+            }),
+        );
+        const resumed = new HostDriver(o);
+        await resumed.resume(null);
+        expect((resumed as unknown as { transcriptsChecked: boolean }).transcriptsChecked).toBe(
+            false,
+        );
+        await resumed.stop();
+    });
+
+    test("a second host client runs one turn on the arm's daemon at the session's start", async () => {
+        const { driver, hosts } = fixture("eidnara", { p: "/repo" });
+        driver.daemon = fakeDaemon(10) as unknown as DaemonStack;
+        const at = ev("session_start", { project: "p" });
+        const evidence = await driver.fault(episode("two_hosts_one_daemon"), at);
+        expect(evidence).toMatchObject({
+            second_session: "s-0000-b",
+            daemon_pid: 10,
+            outcome: "ok",
+        });
+        const second = hosts.at(-1) as FakeHost;
+        second.pid = process.pid;
+        expect(second.opened).toEqual([`s-0000-b@${driver.workspace("p")}`]);
+        expect(second.connections).toEqual([driver.daemon.connectionFile]);
+        expect(second.closed).toBe(0);
+        const inner = driver as unknown as Record<string, unknown> & { newHost(): SimHost };
+        driver.host = inner.newHost();
+        const noop = () => undefined;
+        inner.snapshots = { sessionStart: noop, sessionEnd: noop, addTools: noop };
+        inner.transcriptsChecked = true;
+        await driver.event(at);
+        expect(second.closed).toBe(0);
+        await driver.event(ev("session_end", { project: "p" }));
+        expect(second.closed).toBe(1);
+        await expect(driver.fault(episode("two_hosts_one_daemon"))).rejects.toThrow(
+            "session_start",
+        );
+        const plain = fixture("host").driver;
+        expect(await plain.fault(episode("two_hosts_one_daemon"), at)).toEqual({
+            skipped: "arm runs no daemon",
+        });
+    });
+
+    test("a second client that exits before the primary's session_end fails the arm", async () => {
+        const { driver, hosts, armDir } = fixture("eidnara", { p: "/repo" });
+        driver.daemon = fakeDaemon(10) as unknown as DaemonStack;
+        const at = ev("session_start", { project: "p" });
+        await driver.fault(episode("two_hosts_one_daemon"), at);
+        const second = hosts.at(-1) as FakeHost;
+        const inner = driver as unknown as Record<string, unknown> & { newHost(): SimHost };
+        driver.host = inner.newHost();
+        const noop = () => undefined;
+        inner.snapshots = { sessionStart: noop, sessionEnd: noop, addTools: noop };
+        inner.transcriptsChecked = true;
+        await driver.event(at);
+        second.pid = Bun.spawnSync(["true"]).pid;
+        await expect(driver.event(ev("session_end", { project: "p" }))).rejects.toThrow(
+            "second client exited before the primary session's session_end",
+        );
+        await driver.stop().catch(() => undefined);
+        const o = (driver as unknown as { o: DriverOptions }).o;
+        o.daemonFactory = () => fakeDaemon(10) as unknown as DaemonStack;
+        const orphan = Bun.spawn(["sleep", "300"]);
+        const start = readFileSync(`/proc/${orphan.pid}/stat`, "utf8")
+            .split(") ")[1]
+            ?.split(" ")[19];
+        const recorded = JSON.parse(readFileSync(join(armDir, "state.json"), "utf8"));
+        writeFileSync(
+            join(armDir, "state.json"),
+            JSON.stringify({ ...recorded, daemon: { pid: orphan.pid, start } }),
+        );
+        await expect(new HostDriver(o).resume(null)).rejects.toThrow(
+            "second client exited before the primary session's session_end",
+        );
+        await orphan.exited;
+        expect(orphan.signalCode).toBe("SIGTERM");
+    });
+
+    test("stopping while the second client opens waits for the open, then closes it", async () => {
+        const { driver, hosts } = fixture("eidnara", { p: "/repo" });
+        driver.daemon = fakeDaemon(10) as unknown as DaemonStack;
+        let release: () => void = () => undefined;
+        const gate = new Promise<void>((r) => {
+            release = r;
+        });
+        const o = (driver as unknown as { o: DriverOptions }).o;
+        const factory = o.hostFactory as (ctx: HostContext) => SimHost;
+        o.hostFactory = (ctx) => {
+            const h = factory(ctx) as unknown as FakeHost;
+            h.gate = gate;
+            h.pid = process.pid;
+            return h as unknown as SimHost;
+        };
+        const fault = driver.fault(
+            episode("two_hosts_one_daemon"),
+            ev("session_start", { project: "p" }),
+        );
+        fault.catch(() => undefined);
+        await Bun.sleep(5);
+        const second = hosts.at(-1) as FakeHost;
+        expect(second.opening).toBe(true);
+        let stopped = false;
+        const stop = driver.stop().then(() => {
+            stopped = true;
+        });
+        await Bun.sleep(20);
+        expect([stopped, second.closedWhileOpening]).toEqual([false, 0]);
+        release();
+        await stop;
+        await expect(fault).rejects.toThrow("the arm stopped while the second client opened");
+        expect([second.closed, second.closedWhileOpening]).toEqual([1, 0]);
+    });
+
+    test("the second client's tool runs are recorded under its session", async () => {
+        const { driver, hosts, armDir } = fixture("eidnara", { p: "/repo" });
+        driver.daemon = fakeDaemon(10) as unknown as DaemonStack;
+        const at = ev("session_start", { project: "p" });
+        const o = (driver as unknown as { o: DriverOptions }).o;
+        const factory = o.hostFactory as (ctx: HostContext) => SimHost;
+        o.hostFactory = (ctx) => {
+            const h = factory(ctx) as unknown as FakeHost;
+            h.onPrompt = () => h.tools.push({ command: "ls -la", exit: 0, scenario_ms: 7 });
+            return h as unknown as SimHost;
+        };
+        await driver.fault(episode("two_hosts_one_daemon"), at);
+        expect(hosts.at(-1)?.tools).toEqual([]);
+        const lines = readFileSync(join(armDir, "tools.jsonl"), "utf8").trim().split("\n");
+        expect(lines.map((l) => JSON.parse(l))).toEqual([
+            { turn: "s-0000-b", command: "ls -la", exit: 0, scenario_ms: 7 },
+        ]);
+    });
+
+    test("stopping while the daemon restarts waits for the restart, then stops it", async () => {
+        const { driver } = fixture("eidnara");
+        const daemon = fakeDaemon(10);
+        let release: () => void = () => undefined;
+        daemon.gate = new Promise<void>((r) => {
+            release = r;
+        });
+        driver.daemon = daemon as unknown as DaemonStack;
+        const fault = driver.fault(episode("daemon_restart"));
+        fault.catch(() => undefined);
+        await Bun.sleep(5);
+        expect(daemon.restarting).toBe(true);
+        let stopped = false;
+        const stop = driver.stop().then(() => {
+            stopped = true;
+        });
+        await Bun.sleep(20);
+        expect([stopped, daemon.stoppedWhileRestarting]).toEqual([false, 0]);
+        release();
+        await stop;
+        await fault;
+        expect([daemon.stops, daemon.stoppedWhileRestarting]).toEqual([1, 0]);
+    });
+
+    test("stopping while the daemon starts waits for the start, then stops it", async () => {
+        const { driver } = fixture("eidnara");
+        const daemon = fakeDaemon(null);
+        let release: () => void = () => undefined;
+        daemon.gate = new Promise<void>((r) => {
+            release = r;
+        });
+        const o = (driver as unknown as { o: DriverOptions }).o;
+        o.daemonFactory = () => daemon as unknown as DaemonStack;
+        const reset = driver.reset();
+        reset.catch(() => undefined);
+        await Bun.sleep(20);
+        expect(daemon.starting).toBe(true);
+        let stopped = false;
+        const stop = driver.stop().then(() => {
+            stopped = true;
+        });
+        await Bun.sleep(20);
+        expect([stopped, daemon.stoppedWhileStarting]).toEqual([false, 0]);
+        release();
+        await stop;
+        await reset;
+        expect([daemon.stops, daemon.stoppedWhileStarting]).toEqual([1, 0]);
+        expect(driver.host).toBeNull();
+    });
+
+    test("a stop whose daemon refuses to die keeps the replacement daemon's pid in the arm state", async () => {
+        const { driver, armDir } = fixture("eidnara");
+        const daemon = fakeDaemon(10);
+        let release: () => void = () => undefined;
+        daemon.gate = new Promise<void>((r) => {
+            release = r;
+        });
+        daemon.stop = async () => {
+            throw new Error("daemon survived SIGKILL");
+        };
+        driver.daemon = daemon as unknown as DaemonStack;
+        const fault = driver.fault(episode("daemon_restart"));
+        fault.catch(() => undefined);
+        await Bun.sleep(5);
+        const stop = driver.stop();
+        stop.catch(() => undefined);
+        release();
+        await expect(stop).rejects.toThrow("daemon survived SIGKILL");
+        await fault.catch(() => undefined);
+        const state = JSON.parse(readFileSync(join(armDir, "state.json"), "utf8"));
+        expect(state.daemon?.pid).toBe(11);
+    });
+
+    test("a fresh driver's stop leaves a recorded arm state for reapStale to read", async () => {
+        const { driver, armDir } = fixture("host");
+        mkdirSync(armDir, { recursive: true });
+        const recorded = { model: 0, daemon: { pid: 4242, start: "7" }, host: null, second: null };
+        writeFileSync(join(armDir, "state.json"), JSON.stringify(recorded));
+        await driver.stop();
+        expect(JSON.parse(readFileSync(join(armDir, "state.json"), "utf8"))).toEqual(recorded);
+    });
+
+    test("a second client that lost its process still leaves its session owed after a stop", async () => {
+        const { driver, hosts, armDir } = fixture("eidnara", { p: "/repo" });
+        driver.daemon = fakeDaemon(10) as unknown as DaemonStack;
+        const at = ev("session_start", { project: "p" });
+        await driver.fault(episode("two_hosts_one_daemon"), at);
+        const second = hosts.at(-1) as FakeHost;
+        second.pid = null;
+        await driver.stop();
+        const state = JSON.parse(readFileSync(join(armDir, "state.json"), "utf8"));
+        expect(state.second_owed).toBe("s-0000");
+    });
+
+    test("a resume into a session whose second client was recorded reattaches one", async () => {
+        const { driver, hosts, armDir } = fixture("eidnara", { p: "/repo" });
+        const o = (driver as unknown as { o: DriverOptions }).o;
+        o.daemonFactory = () => fakeDaemon(10) as unknown as DaemonStack;
+        const dead = Bun.spawnSync(["true"]).pid;
+        const factory = o.hostFactory as (ctx: HostContext) => SimHost;
+        o.hostFactory = (ctx) => {
+            const h = factory(ctx) as unknown as FakeHost;
+            h.pid = dead;
+            return h as unknown as SimHost;
+        };
+        mkdirSync(armDir, { recursive: true });
+        writeFileSync(
+            join(armDir, "state.json"),
+            JSON.stringify({
+                model: 0,
+                daemon: null,
+                host: null,
+                second: { pid: dead, start: null, session: "s-0000" },
+            }),
+        );
+        const inner = driver as unknown as Record<string, unknown>;
+        const noop = () => undefined;
+        inner.snapshots = { sessionStart: noop, sessionEnd: noop, addTools: noop };
+        await driver.resume(null);
+        expect(hosts.map((h) => h.opened[0])).not.toContain(`s-0000-b@${driver.workspace("p")}`);
+        await driver.stop();
+        const again = new HostDriver(o);
+        (again as unknown as Record<string, unknown>).snapshots = inner.snapshots;
+        await again.resume(null);
+        await again.event(ev("session_start", { project: "p" }));
+        expect(hosts.map((h) => h.opened[0])).toContain(`s-0000-b@${driver.workspace("p")}`);
+        await again.stop();
+        hosts.length = 0;
+        await driver.resume(null);
+        await driver.event(ev("session_start", { project: "p" }));
+        expect(hosts.map((h) => h.opened[0])).toContain(`s-0000-b@${driver.workspace("p")}`);
+        expect(inner.second).not.toBeNull();
+        const state = JSON.parse(readFileSync(join(armDir, "state.json"), "utf8"));
+        expect(state.second).not.toBeNull();
+        await driver.stop();
+    });
+
+    test("the store faults a turn checked stay recorded until the journal has the checks", async () => {
+        const { driver, armDir } = fixture("eidnara", { p: gitRepo() });
+        const o = (driver as unknown as { o: DriverOptions }).o;
+        o.daemonFactory = () => fakeDaemon(10) as unknown as DaemonStack;
+        await driver.reset();
+        await driver.event(ev("session_start", { project: "p" }));
+        await driver.fault(episode("daemon_restart"));
+        const out = await driver.event(ev("user_turn", { project: "p", text: "go", index: 0 }));
+        expect(out.stores?.map((s) => s.fault)).toEqual(["f-daemon_restart"]);
+        const state = JSON.parse(readFileSync(join(armDir, "state.json"), "utf8"));
+        expect(state.store_faults).toEqual(["f-daemon_restart"]);
+        await driver.stop();
+        const stopped = JSON.parse(readFileSync(join(armDir, "state.json"), "utf8"));
+        expect(stopped.store_faults).toEqual(["f-daemon_restart"]);
+        await driver.resume(null);
+        await driver.event(ev("session_start", { project: "p" }));
+        await driver.fault(episode("daemon_restart"));
+        const again = await driver.event(ev("user_turn", { project: "p", text: "go", index: 1 }));
+        expect(again.stores?.map((s) => s.fault)).toEqual(["f-daemon_restart"]);
+        driver.storeChecked(["f-daemon_restart"]);
+        await driver.stop();
+        const acked = JSON.parse(readFileSync(join(armDir, "state.json"), "utf8"));
+        expect(acked.store_faults).toEqual([]);
+    });
+
+    test("the first session after a host upgrade must leave a new transcript in the store", async () => {
+        const { driver, transcripts } = fixture("host", { p: gitRepo() });
+        const o = (driver as unknown as { o: DriverOptions }).o;
+        o.hostVersions = {
+            from: "0.80.2",
+            to: "0.87.1",
+            upgradeTranscriptPaths: o.transcriptPaths,
+        };
+        o.config = { ...o.config, upgrade: { pi_install: "/next/pi" } };
+        await driver.reset();
+        const sessions = join(transcripts, "sessions");
+        mkdirSync(sessions, { recursive: true });
+        writeFileSync(join(sessions, "old.jsonl"), "{}");
+        await driver.event(ev("session_end"));
+        await driver.fault(episode("host_upgrade"));
+        const preUpgrade = new HostDriver(o);
+        await preUpgrade.resume(null);
+        expect((preUpgrade as unknown as { transcriptsChecked: boolean }).transcriptsChecked).toBe(
+            false,
+        );
+        await preUpgrade.stop();
+        await driver.event(ev("session_start"));
+        await expect(driver.event(ev("session_end"))).rejects.toThrow("no new transcript");
+        const resumed = new HostDriver(o);
+        await resumed.resume(null);
+        expect((resumed as unknown as { transcriptsChecked: boolean }).transcriptsChecked).toBe(
+            false,
+        );
+        await resumed.stop();
+        await driver.event(ev("session_start"));
+        await Bun.sleep(20);
+        writeFileSync(join(sessions, "new.jsonl"), "{}");
+        await driver.stop();
+        const reopened = new HostDriver(o);
+        await reopened.resume(ev("session_start"));
+        await reopened.event(ev("session_end"));
+        await reopened.stop();
+        await driver.resume(null);
+        await driver.event(ev("session_start"));
+        await Bun.sleep(20);
+        writeFileSync(join(sessions, "again.jsonl"), "{}");
+        await driver.event(ev("session_end"));
+        symlinkSync("/", join(sessions, "escape"));
+        await driver.fault(episode("host_upgrade"));
+        await driver.event(ev("session_start"));
+        await Bun.sleep(20);
+        writeFileSync(join(sessions, "newer.jsonl"), "{}");
+        await driver.event(ev("session_end"));
+    });
+
+    test("the store checks a daemon restart owes survive a resume through the arm state", async () => {
+        const { driver, armDir } = fixture("eidnara");
+        driver.daemon = fakeDaemon(10) as unknown as DaemonStack;
+        await driver.fault(episode("daemon_restart"));
+        const state = JSON.parse(readFileSync(join(armDir, "state.json"), "utf8"));
+        expect(state.store_faults).toEqual(["f-daemon_restart"]);
+        const plain = fixture("host", { p: gitRepo() });
+        await plain.driver.reset();
+        const written = JSON.parse(readFileSync(join(plain.armDir, "state.json"), "utf8"));
+        writeFileSync(
+            join(plain.armDir, "state.json"),
+            JSON.stringify({ ...written, store_faults: ["f-daemon_restart"] }),
+        );
+        const fresh = new HostDriver((plain.driver as unknown as { o: DriverOptions }).o);
+        await fresh.resume(null);
+        expect((fresh as unknown as { storeFaults: string[] }).storeFaults).toEqual([
+            "f-daemon_restart",
+        ]);
+        await fresh.stop();
+    });
+
+    test("a second client whose close fails keeps its pid in the arm state", async () => {
+        const { driver, hosts, armDir } = fixture("eidnara", { p: "/repo" });
+        driver.daemon = fakeDaemon(10) as unknown as DaemonStack;
+        const at = ev("session_start", { project: "p" });
+        await driver.fault(episode("two_hosts_one_daemon"), at);
+        const second = hosts.at(-1) as FakeHost;
+        second.pid = process.pid;
+        second.failClose = true;
+        const inner = driver as unknown as Record<string, unknown> & { newHost(): SimHost };
+        driver.host = inner.newHost();
+        const noop = () => undefined;
+        inner.snapshots = { sessionStart: noop, sessionEnd: noop, addTools: noop };
+        inner.transcriptsChecked = true;
+        await driver.event(at);
+        await expect(driver.event(ev("session_end", { project: "p" }))).rejects.toThrow(
+            "host survived",
+        );
+        const state = JSON.parse(readFileSync(join(armDir, "state.json"), "utf8"));
+        expect(state.second?.pid).toBe(process.pid);
+        await expect(driver.stop()).rejects.toThrow("host survived");
+        const after = JSON.parse(readFileSync(join(armDir, "state.json"), "utf8"));
+        expect(after.second?.pid).toBe(process.pid);
+    });
+
     test("a model switch moves later sessions to the next model and keeps the daemon", async () => {
         const { driver } = fixture("eidnara");
         const daemon = fakeDaemon(10) as unknown as DaemonStack;
@@ -391,7 +856,7 @@ describe("HostDriver faults", () => {
         await driver.reset();
         await driver.event(ev("session_start"));
         await expect(driver.fault(episode("model_switch"))).rejects.toThrow("between sessions");
-        await expect(driver.fault(episode("host_upgrade"))).rejects.toThrow("no mechanism");
+        await expect(driver.fault(episode("provider_429"))).rejects.toThrow("no mechanism");
     });
 });
 

@@ -31,7 +31,7 @@ import { behaviourPlan, type Label, realisedRates } from "../usersim/plan";
 import { normaliser, Pairing, proxyUserSim, Tape, UserSim } from "../usersim/usersim";
 import { Journal, releaseLease, takeLease } from "./journal";
 import { plainPath } from "./launcher";
-import { type Preflight, preflight } from "./preflight";
+import { type Preflight, preflight, preflightDrift } from "./preflight";
 import { PRICE_TABLE, type PriceTable } from "./price";
 import { ResourceSampler } from "./sampler";
 import { type ArmDriver, HarnessFailure, type ScenarioEvent, Scheduler } from "./scheduler";
@@ -222,6 +222,24 @@ export const referenceArm = (order: string[]) => (arm: string) => {
 
 const sameJson = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 
+export interface ProxyScope {
+    session: string | null;
+    turn: string | null;
+}
+
+export function faultScope(
+    prior: ProxyScope,
+    f: Pick<FaultEpisode, "type">,
+    at: ScenarioEvent | undefined,
+): { during: ProxyScope; after: ProxyScope } {
+    if (f.type !== "two_hosts_one_daemon" || at === undefined)
+        return { during: prior, after: prior };
+    return {
+        during: { session: `${at.session}-b`, turn: null },
+        after: { session: at.session, turn: null },
+    };
+}
+
 async function loadManifest(o: RunOptions, scenario: Scenario): Promise<Manifest> {
     const path = join(o.out, "manifest.json");
     const checks = await preflight(o.config, o.out);
@@ -277,9 +295,9 @@ async function loadManifest(o: RunOptions, scenario: Scenario): Promise<Manifest
             const names = changed.map(([k]) => k).join(", ");
             throw new HarnessFailure(`inputs changed since the run started: ${names}`);
         }
-        const intercepted = (p: Preflight) => p.time_injection.map((t) => [t.name, t.intercepted]);
-        if (!sameJson(intercepted(manifest.preflight), intercepted(checks))) {
-            throw new HarnessFailure("time interception changed since the run started");
+        const drift = preflightDrift(manifest.preflight, checks);
+        if (drift.length > 0) {
+            throw new HarnessFailure(`${drift.join(", ")} changed since the run started`);
         }
         appendFileSync(join(o.out, "preflight.jsonl"), `${JSON.stringify(checks)}\n`);
         return manifest;
@@ -388,6 +406,7 @@ async function runArms(
     const events = scenario.events.slice(0, manifest.events) as ScenarioEvent[];
     const hostRow = manifest.preflight.hosts.find((h) => h.host === o.host);
     if (!hostRow) throw new Error(`preflight lists no ${o.host} host`);
+    const upgradeRow = manifest.preflight.upgrade?.find((h) => h.host === o.host);
 
     const drivers: Record<string, ArmDriver> = {};
     const proxyFaults = scenario.faults.filter((f) => f.seam.layer === "proxy-sink");
@@ -565,6 +584,11 @@ async function runArms(
             ...(manifest.side_model ? { sideModel: manifest.side_model } : {}),
             turnDeadlineMs: prereg.liveness_bounds.turn_deadline_ms,
             transcriptPaths: hostRow.transcript_paths,
+            hostVersions: {
+                from: hostRow.version,
+                to: upgradeRow?.version ?? null,
+                ...(upgradeRow ? { upgradeTranscriptPaths: upgradeRow.transcript_paths } : {}),
+            },
             loopStore,
             onDaemonExit: (detail) => scheduler.daemonExited(detail),
             callsFor: (session) => [
@@ -627,10 +651,15 @@ async function runArms(
                 scope.session = e.session;
                 scope.turn = e.kind === "user_turn" ? e.id : null;
                 try {
-                    if (e.kind !== "user_turn") return await driver.event(e);
+                    if (e.kind !== "user_turn") {
+                        const out = await driver.event(e);
+                        guard();
+                        return out;
+                    }
                     const turn = scripted.find((t) => t.id === e.id);
                     if (!turn) throw new HarnessFailure(`${e.id}: no scripted user turn`);
                     const d = await userSim.deliver(arm, turn, lastAgent(arm, e.session));
+                    guard();
                     const user = { session: e.session, label: d.label, delivered: d.delivered };
                     if (!d.delivered) return { user };
                     const out = await driver.event({
@@ -638,6 +667,7 @@ async function runArms(
                         text: d.text,
                         interrupt_ms: d.interruptMs,
                     });
+                    guard();
                     const cut = d.label !== "interrupt" || out.user?.interrupted === true;
                     const label = cut ? d.label : "task";
                     const scheduled = cut ? {} : { scheduled: "interrupt" };
@@ -679,17 +709,31 @@ async function runArms(
                             }
                         },
                     });
+                    // A stop that landed during the deletion leaves its result unjournaled, so
+                    // the resumed run completes the planned deletion instead of recording a
+                    // killed attempt as done.
+                    guard();
                     log({ probe: c.probe, fact: c.fact, ...result });
                 }
             },
-            fault: (f) => {
+            fault: async (f, at) => {
                 guard();
-                return driver.fault(f);
+                const prior = { session: scope.session, turn: scope.turn };
+                const scopes = faultScope(prior, f, at);
+                Object.assign(scope, scopes.during);
+                try {
+                    const evidence = await driver.fault(f, at);
+                    guard();
+                    return evidence;
+                } finally {
+                    Object.assign(scope, scopes.after);
+                }
             },
             finish: async () => {
                 sampler.stop();
                 await driver.finish();
             },
+            storeChecked: (faults) => driver.storeChecked(faults),
         };
     }
     await scheduler.run();

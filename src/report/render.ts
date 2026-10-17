@@ -3,7 +3,13 @@ import type { OracleCount } from "../oracle/oracles";
 import type { Recovery } from "../oracle/recovery";
 import type { Preregistration } from "../prereg/schema";
 import type { TierVerdict, ZeroEffect } from "../stats/gate";
-import { type Continuity, type RunConditions, renderConditions } from "./conditions";
+import {
+    type Continuity,
+    type RecallDrift,
+    type RunConditions,
+    renderConditions,
+    renderDrift,
+} from "./conditions";
 import type { ComponentCost, CostPanel } from "./cost";
 import type { Intrusiveness } from "./intrusive";
 import type { SoakVerdict } from "./soak";
@@ -34,7 +40,10 @@ export interface TierReport {
     witness: PropertyWitness[];
     conditions: RunConditions[];
     continuity: Continuity[];
+    drift: RecallDrift[] | null;
+    drift_source: string | null;
     counterfactual: Counterfactual | null;
+    soak_by_month: (SoakVerdict & { run: string; month: number })[];
 }
 
 const fmt = (x: number | null | undefined, digits = 2) =>
@@ -198,6 +207,38 @@ function panels(r: TierReport): string[] {
                 fmt(s.max_gap_ms === null ? null : s.max_gap_ms / 1000, 0),
             ]),
         ),
+        ...(r.soak_by_month.length === 0
+            ? []
+            : [
+                  "### Within-month RSS soak, by month of scenario time",
+                  "",
+                  ...table(
+                      [
+                          "run",
+                          "arm",
+                          "month",
+                          "verdict",
+                          "samples",
+                          "sessions",
+                          "slope MB/session",
+                          "R2",
+                          "bound",
+                          "returned",
+                      ],
+                      r.soak_by_month.map((s) => [
+                          s.run,
+                          s.arm,
+                          s.month,
+                          s.verdict,
+                          s.samples,
+                          s.sessions,
+                          mb(s.slope_per_session),
+                          fmt(s.r2),
+                          s.bound.holds ? "holds" : `broken at ${s.bound.worst?.sessions} sessions`,
+                          String(s.returned_to_baseline),
+                      ]),
+                  ),
+              ]),
         "## Intrusiveness",
         "",
         ...table(
@@ -364,6 +405,7 @@ export function renderTier(r: TierReport): string {
         `Runs: ${r.runs.join(", ")}. Arms: ${r.arms.join(", ")}.`,
         "",
         ...renderConditions(r.conditions, r.continuity),
+        ...renderDrift(r.drift, r.drift_source),
         `Clock distortions: ${
             r.distortions.some((d) => d.distortions.length)
                 ? r.distortions

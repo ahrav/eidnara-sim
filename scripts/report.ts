@@ -5,30 +5,60 @@ import {
     readFileSync,
     realpathSync,
     renameSync,
+    rmSync,
     writeFileSync,
 } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { defaultConfigPath } from "../src/config/config";
-import { TIERS, type Tier } from "../src/prereg/schema";
+import { type Preregistration, TIERS, type Tier } from "../src/prereg/schema";
 import { preregistrationHash } from "../src/prereg/validate";
+import { CONTINUITY_SCHEMA, type ContinuityFile, parseContinuity } from "../src/report/conditions";
 import type { GradedRun } from "../src/report/observe";
 import { renderTier } from "../src/report/render";
 import { aaScale, type CusumScale, cusumScale, loadGraded, tierReport } from "../src/report/tier";
 import { loadPrereg } from "../src/scenario/inputs";
 
 const args = process.argv.slice(2);
-const at = args.indexOf("--out");
-const dest = at < 0 ? undefined : args[at + 1];
-const out = dest === undefined ? null : resolve(dest);
-const dirs = args.filter((_, i) => at < 0 || (i !== at && i !== at + 1)).map((d) => resolve(d));
-if (
-    (at >= 0 && dest === undefined) ||
-    dirs.length === 0 ||
-    dirs.some((d) => !existsSync(join(d, "manifest.json")))
-) {
-    console.error("usage: bun scripts/report.ts <run dir>... [--out <dir>]");
+const USAGE =
+    "usage: bun scripts/report.ts <run dir>... [--out <dir>] [--recall-reference <continuity json>]";
+const flagged = new Set<number>();
+const flag = (name: string): string | null => {
+    const i = args.indexOf(`--${name}`);
+    if (i < 0) return null;
+    const value = args[i + 1];
+    if (value === undefined || value.startsWith("--")) {
+        console.error(USAGE);
+        process.exit(2);
+    }
+    flagged.add(i).add(i + 1);
+    return resolve(value);
+};
+const out = flag("out");
+const refPath = flag("recall-reference");
+const dirs = args.filter((_, i) => !flagged.has(i)).map((d) => resolve(d));
+if (dirs.length === 0 || dirs.some((d) => !existsSync(join(d, "manifest.json")))) {
+    console.error(USAGE);
     process.exit(2);
 }
+// The reference is read when the XL report needs it, after any earlier tier in this invocation
+// has written or removed its own continuity file; an absent file is no reference.
+const reference = (prereg: Preregistration) => {
+    if (!refPath) return undefined;
+    if (!existsSync(refPath)) {
+        console.error(`${refPath}: no such recall reference; the XL report has no drift table`);
+        return undefined;
+    }
+    // The documented reference is the tier XL resizes from, under that tier's registration.
+    const source = prereg.resizing?.source_tier ?? "L";
+    return {
+        source: refPath,
+        continuity: parseContinuity(
+            JSON.parse(readFileSync(refPath, "utf8")),
+            source,
+            preregistrationHash(loadPrereg(source)),
+        ),
+    };
+};
 /** The path with its nearest existing ancestor resolved through symlinks. */
 function canonical(path: string): string {
     let base = path;
@@ -68,11 +98,14 @@ for (const dir of dirs) {
     }
     byTier.set(tier as Tier, [...(byTier.get(tier as Tier) ?? []), dir]);
 }
+// Tiers report in size order, so an L report settles its continuity file before XL reads it.
 const loaded = new Map(
-    [...byTier].map(([tier, list]) => {
-        const prereg = loadPrereg(tier);
-        return [tier, { prereg, runs: list.map((d) => loadGraded(d, prereg)) }] as const;
-    }),
+    [...byTier]
+        .sort(([a], [b]) => TIERS.indexOf(a) - TIERS.indexOf(b))
+        .map(([tier, list]) => {
+            const prereg = loadPrereg(tier);
+            return [tier, { prereg, runs: list.map((d) => loadGraded(d, prereg)) }] as const;
+        }),
 );
 const scales = new Map(
     [...loaded].map(([tier, t]) => {
@@ -158,11 +191,16 @@ for (const [tier, { prereg, runs }] of loaded) {
         scale,
         catalog,
         resizing?.paired_items_per_probe_type,
+        tier === "XL" ? reference(prereg) : undefined,
     );
     violated += report.witness.filter((w) => w.status === "violated").length;
     const text = renderTier(report);
     if (out) {
         mkdirSync(out, { recursive: true });
+        // The previous continuity reference goes first, so a failure while the new report
+        // files land leaves no stale reference beside them.
+        const continuityPath = join(out, `continuity-${tier}.json`);
+        rmSync(continuityPath, { force: true });
         const staged = [
             [join(out, `report-${tier}.md`), text],
             [
@@ -175,6 +213,24 @@ for (const [tier, { prereg, runs }] of loaded) {
             writeFileSync(tmp[i] as string, body, { flag: "wx" });
         }
         for (const [i, [path]] of staged.entries()) renameSync(tmp[i] as string, path);
+        // Only a complete, sound campaign's continuity rows serve as another tier's recall
+        // reference: no violated property witness and nothing incomplete beyond a CUSUM scale.
+        const sound = report.witness.every((w) => w.status !== "violated");
+        if (sound && report.verdict.pass.incomplete.every((x) => x.startsWith("CUSUM "))) {
+            const tmpPath = `${continuityPath}.${randomUUID()}.tmp`;
+            const file: ContinuityFile = {
+                schema: CONTINUITY_SCHEMA,
+                tier,
+                prereg_sha256: preregistrationHash(prereg),
+                rows: report.continuity,
+            };
+            writeFileSync(tmpPath, `${JSON.stringify(file, null, 2)}\n`, { flag: "wx" });
+            renameSync(tmpPath, continuityPath);
+        } else {
+            console.error(
+                `${tier}: campaign ${sound ? "incomplete" : "unsound"}; no continuity-${tier}.json written`,
+            );
+        }
     } else console.log(text);
 }
 // A violated property means the runs broke an invariant the verdict rests on; the report stays

@@ -34,7 +34,7 @@ export function falsificationPairs(
     const faulted = new Set(g.scenario.faults.map((f) => f.trigger.session));
     const fourxx = (a: string) => {
         const calls = (arm(a)?.calls ?? []).filter(
-            (c) => c.session && !faulted.has(c.session.replace(/^sim-/, "")),
+            (c) => c.session && !faulted.has(c.session.replace(/^sim-/, "").replace(/-b$/, "")),
         );
         const sessions = [...new Set(calls.map((c) => c.session as string))];
         return byKey(

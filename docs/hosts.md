@@ -40,7 +40,15 @@ workspace, and, on an Eidnara arm, starts a fresh daemon through the v1
 arm's last event, before `EndArm`: it closes the host, stops the daemon with
 SIGTERM so its store stays on disk, appends the daemon's output to
 `<arm>/daemon.log`, and unmounts the store. The daemon also appends its output
-there before each restart.
+there before each restart. `stop` first waits for a host `openSession` or a daemon
+start or restart still in flight, so a process spawned moments before a stop is closed
+rather than leaked, and a host whose process survives its close keeps
+reporting that process so the stop's `state.json` record names it; concurrent
+closes of one host share a single shutdown; `state.json`
+also carries the daemon restarts whose store check the next turn still owes,
+and keeps the ids a turn just checked until the next turn begins, so a stop
+before the journal has those checks re-checks them on resume; a fresh driver's `stop` leaves a recorded
+state alone for `reapStale`.
 
 `DaemonStack` starts the daemon through the v1 `HermeticHostStack` with the
 interposer environment, restarts it with SIGKILL against the same store, and
@@ -155,10 +163,12 @@ against the same store (OQ-10).
 | `plugin_reload` | The host process and its plugin start afresh at every `session_start` | The reload note |
 | `model_switch` | Later sessions use the next configured model; the daemon keeps running with its summarizer model | The new model id |
 | `laptop_sleep` | One event-free clock jump (`docs/run.md`) | The `AdvanceClock` entry, and `clock_advanced_ms` |
+| `host_upgrade` | Later sessions run the next pinned version of the arm's host, `config.upgrade.pi_install` or `config.upgrade.opencode_binary` (Pi 0.87.1 and OpenCode 1.18.23 in `sim.config.json`); the daemon's harness closures keep the pinned versions; preflight records each configured version and its transcript store paths, refusing a target that resolves to the current version, which the fault's evidence reports and the next `session_end` checks again for the upgraded host, requiring the store to have changed during that session (symlinks in the store are skipped), with `transcripts.json` recording that result so a resume repeats a failed check and accepts only the upgraded host's own fresh check once upgraded, and `state.json` keeping the session's opening mark across a stop, and probes the next OpenCode binary's time interception as `opencode-upgrade`; without a configured version the fault is skipped | `from`, `to`, both `--version` strings, and `takes_effect` |
+| `two_hosts_one_daemon` | At its `session_start`, a second host client opens session `<session>-b` in the same workspace on the arm's daemon and runs one fixed turn, with the proxy's scope on `<session>-b` and its tool runs in `tools.jsonl` under turn `<session>-b`; after the turn the proxy's scope is the primary session with no turn; it stays attached while the primary session opens and runs, and closes at the primary's `session_end`, which first requires its host process to be running, so both clients are registered on the daemon together; `state.json` holds its pid for a resumed arm to reap, and keeps it when the close fails; a run stopped inside that session reaps it and attaches a fresh second client when that session next opens on resume (`state.json` names the session, with or without a live pid, and keeps naming it across further stops until the client is attached or the session ends), its fixed turn already run; daemon calls made for the second client after its turn carry the primary session's scope | The second session, its host pid, the daemon pid, the turn's outcome, and `attached_until` |
 
-`plugin_reload` and `model_switch` fire between sessions; one fired inside a
-session stops the run, and so does a fault type with no mechanism here
-(`host_upgrade`, `two_hosts_one_daemon`). A daemon that exits outside an
+`plugin_reload`, `model_switch`, `host_upgrade`, and `two_hosts_one_daemon`
+fire between sessions; one fired inside a session stops the run, and so
+does a fault type with no mechanism here. A daemon that exits outside an
 outage window stops the run with `HarnessFailure`; the driver checks the
 daemon after every turn.
 

@@ -202,7 +202,17 @@ export abstract class SimHost {
 
     abstract openSession(cwd: string, session: string, connection: string | null): Promise<void>;
     abstract prompt(text: string, timeoutMs: number, interruptMs?: number): Promise<PromptResult>;
-    abstract closeSession(): Promise<void>;
+    private closing: Promise<void> | null = null;
+
+    /** Closes the session; concurrent callers share one in-progress close. */
+    closeSession(): Promise<void> {
+        this.closing ??= this.shutdownSession().finally(() => {
+            this.closing = null;
+        });
+        return this.closing;
+    }
+
+    protected abstract shutdownSession(): Promise<void>;
     abstract transcriptEnv(): Record<string, string>;
     abstract hostPid(): number | null;
 
@@ -376,9 +386,8 @@ export class PiSimHost extends SimHost {
         }
     }
 
-    async closeSession(): Promise<void> {
+    protected async shutdownSession(): Promise<void> {
         const rpc = this.rpc;
-        this.rpc = null;
         if (!rpc) return;
         rpc.child.stdin?.end();
         try {
@@ -386,6 +395,7 @@ export class PiSimHost extends SimHost {
         } finally {
             await rpc.shutdown(10_000);
         }
+        this.rpc = null;
     }
 
     transcriptEnv(): Record<string, string> {
@@ -567,17 +577,17 @@ export class OpencodeSimHost extends SimHost {
         return { error: `the turn returned before its last assistant step finished (${finish})` };
     }
 
-    async closeSession(): Promise<void> {
+    protected async shutdownSession(): Promise<void> {
         const oc = this.oc;
-        const pid = this.hostPid();
-        this.oc = null;
-        this.client = null;
         if (!oc) return;
+        const pid = this.hostPid();
         try {
             await this.stopTree(pid);
         } finally {
             await oc.kill();
         }
+        this.oc = null;
+        this.client = null;
     }
 
     transcriptEnv(): Record<string, string> {

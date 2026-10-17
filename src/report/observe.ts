@@ -180,7 +180,10 @@ const RUN_VALUES: Record<string, { value: RunValue; delta: boolean; hostless?: t
                     .filter(
                         (e) =>
                             (e.kind === "EndTurn" && e.outcome !== "ok") ||
-                            (e.kind === "Event" && e.outcome === "failed(interrupted)"),
+                            (e.kind === "Event" && e.outcome === "failed(interrupted)") ||
+                            (e.kind === "ItemState" &&
+                                e.event !== undefined &&
+                                e.state === "failed(interrupted)"),
                     )
                     .map((e) => String(e.event)),
             ).size,
@@ -308,8 +311,8 @@ function runPairs(
 }
 
 /**
- * The faults that landed in an arm: those the scheduler observed, and those the proxy
- * recorded on the arm's calls as `fault_ref`.
+ * The faults that landed in an arm: those the scheduler observed or a restart interrupted after
+ * firing, and those the proxy recorded on the arm's calls as `fault_ref`.
  */
 export function asymmetric(runs: GradedRun[], control: string, treatment: string): string[] {
     return runs.flatMap((g) => {
@@ -318,8 +321,12 @@ export function asymmetric(runs: GradedRun[], control: string, treatment: string
             const observed = (arm?.journal ?? [])
                 .filter(
                     (e) =>
-                        e.kind === "FaultObserved" &&
-                        (e.evidence as { skipped?: unknown } | undefined)?.skipped === undefined,
+                        (e.kind === "FaultObserved" &&
+                            (e.evidence as { skipped?: unknown } | undefined)?.skipped ===
+                                undefined) ||
+                        (e.kind === "ItemState" &&
+                            e.fault !== undefined &&
+                            e.state === "failed(interrupted)"),
                 )
                 .map((e) => String(e.fault));
             const injected = (arm?.calls ?? []).flatMap((c) =>

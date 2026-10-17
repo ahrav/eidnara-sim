@@ -138,7 +138,7 @@ treatment arm (`arms.default`, `eidnara`) against `host`:
 | Family metrics | Observation |
 |---|---|
 | `<type>.pass`, `<type>.harm` | Per probe item, both arms' grade metric joined by item id across runs (`<host>/<seed>/<item>`), clustered by `<seed>/<ledger fact>`, in issue order; `P8` and `P9` cross-session rates read `P8.pass` and `P9.pass` |
-| `failed_turns`, `hangs` | Per run (`<tier>-<host>-<seed>`), the distinct turns with an `EndTurn` outcome other than `ok` or an `Event` outcome `failed(interrupted)` (which a resume records for a turn without an `EndTurn`), and F4 activations |
+| `failed_turns`, `hangs` | Per run (`<tier>-<host>-<seed>`), the distinct turns with an `EndTurn` outcome other than `ok` or marked `failed(interrupted)` on resume (`Event` outcome or `ItemState`, recorded for a turn without an `EndTurn`), and F4 activations |
 | `turn_latency_p50_delta_ms`, `turn_latency_p95_delta_ms` | Per run, the treatment minus control percentile of turn wall time; a control arm without turn latencies leaves the run out |
 | `daemon_rss_growth_bytes_per_session`, `daemon_heap_growth_bytes_per_session`, `store_growth_bytes_per_session` | Per run, the treatment minus control soak slope, with a `host` control that runs no daemon counted as zero; the heap is the daemon's anonymous resident memory (`RssAnon`), which the sampler records as `heap` |
 | `internal_string_hits`, `user_corrections_referencing_injected_text` | Per run, the panel's counts; a run without `calls.jsonl`, or with a completed turn no agent call with a response covers, has no hit count, and a daemon arm without `memory.json`, whose notes could not be read, or whose replies name a `tape_key` with no `tape.jsonl` has no corrections count; either leaves the observation |

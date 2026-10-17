@@ -5,7 +5,7 @@ export interface TranscriptStore {
 }
 
 export const TRANSCRIPT_STORES: TranscriptStore[] = [
-    { host: "pi", versions: /^0\.80\./, paths: ["$PI_CODING_AGENT_DIR/sessions"] },
+    { host: "pi", versions: /^0\.8[07]\./, paths: ["$PI_CODING_AGENT_DIR/sessions"] },
     {
         host: "opencode",
         versions: /^1\.1[89]\./,
@@ -23,8 +23,13 @@ export function transcriptPaths(host: "pi" | "opencode", version: string): strin
     return row.paths;
 }
 
-export function hostVersion(argv: string[]): string {
-    const r = Bun.spawnSync(argv, { stdout: "pipe", stderr: "pipe", timeout: 60_000 });
+export function hostVersion(argv: string[], env?: Record<string, string>): string {
+    const r = Bun.spawnSync(argv, {
+        stdout: "pipe",
+        stderr: "pipe",
+        timeout: 60_000,
+        ...(env ? { env } : {}),
+    });
     const text = `${r.stdout}${r.stderr}`;
     const version = /\b(\d+\.\d+\.\d+)\b/.exec(text)?.[1];
     if (r.exitCode !== 0 || !version)

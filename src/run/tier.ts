@@ -20,6 +20,50 @@ export interface TierJob {
 /** Room left in the wall budget for setup, grading, and the turns' variance. */
 const BUDGET_SHARE = 0.85;
 
+export function restartFraction(
+    flag: string | undefined,
+    prior: { restart_at?: number } | null,
+    tier: Preregistration["tier"],
+): number {
+    if (flag !== undefined) return /^\d*\.?\d+$/.test(flag) ? Number(flag) : Number.NaN;
+    const saved = prior?.restart_at;
+    if (saved === undefined) return tier === "XL" ? 0.4 : 0;
+    return typeof saved === "number" && Number.isFinite(saved) ? saved : Number.NaN;
+}
+
+/**
+ * The journal `Event` threshold for requesting a paired run's restart: the first count at or past
+ * `restartAt` of the planned events across `arms`. Null when that count is the run's last event
+ * or `restartAt` is 0.
+ */
+export function restartCut(restartAt: number, events: number, arms: number): number | null {
+    const total = events * arms;
+    const cut = Math.ceil(restartAt * total);
+    return restartAt > 0 && cut < total ? cut : null;
+}
+
+/** The paired runs that began under a saved restart fraction the chosen one would change. */
+export function restartConflicts(
+    plan: TierJob[],
+    saved: number | undefined,
+    chosen: number,
+): string[] {
+    if (saved === undefined || saved === chosen) return [];
+    return plan
+        .filter((j) => j.group === "main" && existsSync(join(j.dir, "journal.jsonl")))
+        .map((j) => `${j.dir} began under --restart-at ${saved}; the plan now says ${chosen}`);
+}
+
+/** The paired runs a positive `restartAt` has no cut for, named before the plan is saved. */
+export function uncuttableRuns(plan: TierJob[], restartAt: number): string[] {
+    if (!(restartAt > 0)) return [];
+    return plan
+        .filter(
+            (j) => j.group === "main" && restartCut(restartAt, j.events, j.arms.length) === null,
+        )
+        .map((j) => j.dir);
+}
+
 /**
  * The longest prefix of the scenario that ends on a session end and whose user turns, run once
  * per arm at `turnMs` each, fit inside the tier's wall budget.
@@ -219,6 +263,21 @@ export function runSpan(dir: string, now: number): { started: number; ended?: nu
     if (ended !== undefined && ended < started)
         throw new Error(`${path}: EndRun at ${ended} is before StartRun at ${started}`);
     return ended === undefined ? { started } : { started, ended };
+}
+
+/**
+ * Completed or begun runs whose manifest records another fault schedule than the plan compresses
+ * their prefix to; `null` faults means the scenario's own schedule.
+ */
+export function scheduleConflicts(plan: [TierJob, FaultEpisode[] | null][]): string[] {
+    return plan.flatMap(([job, faults]) => {
+        const path = join(job.dir, "manifest.json");
+        if (!existsSync(path)) return [];
+        const ran = JSON.parse(readFileSync(path, "utf8")).fault_override ?? null;
+        return JSON.stringify(ran) === JSON.stringify(faults)
+            ? []
+            : [`${job.dir} ran another fault schedule than the plan compresses to`];
+    });
 }
 
 /** Jobs whose planned prefix differs from the events their existing manifest ran. */
