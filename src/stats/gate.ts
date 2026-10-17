@@ -228,7 +228,7 @@ function glm(f: Family, runs: RunPair[]): Stats | null {
 function counts(f: Family, runs: RunPair[]): Stats {
     const n = runs.length;
     if (n === 0) return empty(f.interval_method);
-    if (f.interval_method === "negative-binomial-glm" || n > 8) {
+    if (f.interval_method === "negative-binomial-glm") {
         const fitted = glm(f, runs);
         if (fitted) return fitted;
     }
@@ -243,7 +243,7 @@ function counts(f: Family, runs: RunPair[]): Stats {
     );
     const t = runs.reduce((s, r) => s + r.treatment, 0);
     const c = runs.reduce((s, r) => s + r.control, 0);
-    if (!Number.isSafeInteger(t) || !Number.isSafeInteger(c)) {
+    if (!Number.isSafeInteger(t) || !Number.isSafeInteger(c) || !Number.isSafeInteger(t + c)) {
         throw new StatsRefusal(
             `${f.id}: the event totals ${t} and ${c} exceed exact integer range`,
         );
@@ -575,7 +575,7 @@ const METHODS: Record<string, readonly string[]> = {
     "run slope": ["slope-paired-bootstrap"],
 };
 const isShare = (v: number) => v >= 0 && v <= 1;
-const isIndex = (v: number) => Number.isInteger(v) && v >= 0;
+const isIndex = (v: number) => Number.isSafeInteger(v) && v >= 0;
 
 function stops(
     p: Preregistration,

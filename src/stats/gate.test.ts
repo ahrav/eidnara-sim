@@ -175,7 +175,7 @@ describe("tier gates", () => {
         expect(v.asymmetric_stratum).toEqual([ids[1], ids[2]] as string[]);
     });
 
-    test("run-level gates need six paired runs, counts use the sign test up to eight and the GLM above", () => {
+    test("run-level gates need six paired runs, counts use the registered sign test or GLM", () => {
         const few = metric(
             evaluate([runs("failed_turns", repeat(4, [0, 3] as [number, number]))]),
             "dependability",
@@ -239,7 +239,25 @@ describe("tier gates", () => {
             false,
         ]);
         expect(worseFive?.rate_ratio_upper).toBeGreaterThan(1.5);
-        const glm = metric(evaluate([runs("hangs", many)]), "dependability", "hangs");
+        const glmPrereg = {
+            ...M,
+            families: M.families.map((f) =>
+                f.id === "dependability"
+                    ? { ...f, interval_method: "negative-binomial-glm" as const }
+                    : f,
+            ),
+        };
+        const glm = metric(
+            evaluateTier(glmPrereg, {
+                observations: [runs("hangs", many)],
+                excluded: [],
+                asymmetric: [],
+                journal_seq_at_eval: 7,
+                arms: { control: "host", treatment: "eidnara" },
+            }),
+            "dependability",
+            "hangs",
+        );
         expect(glm?.method).toStartWith("negative-binomial GLM");
         expect(glm?.difference).toBeCloseTo(1, 4);
         expect(glm?.interval?.[0]).toBeCloseTo(0.5996, 3);
@@ -277,7 +295,10 @@ describe("tier gates", () => {
             "dependability",
             "hangs",
         );
-        expect(tripled?.difference).toBeCloseTo(3, 3);
+        expect([tripled?.method, tripled?.difference]).toEqual([
+            "one-sided paired sign test with run as unit",
+            4,
+        ]);
         expect([tripled?.verdict, tripled?.passed]).toEqual(["worse", false]);
         const latency = metric(
             evaluate([
@@ -1157,5 +1178,51 @@ describe("tier gate review findings, eleventh Codex round", () => {
         const m = metric(v, "probe-P13", "P13.fold_fidelity_score");
         expect([m?.n, m?.interval]).toEqual([1, null]);
         expect(m?.difference).toBeCloseTo(60, 9);
+    });
+});
+
+describe("tier gate review findings, twelfth Codex round", () => {
+    test("a count family uses the method it registered at any run count", () => {
+        const many: [number, number][] = Array.from({ length: 12 }, (_, i) => [
+            2 + (i % 3),
+            2 + ((i + 1) % 3),
+        ]);
+        const sign = metric(evaluate([runs("hangs", many)]), "dependability", "hangs");
+        expect(sign?.method).toBe("one-sided paired sign test with run as unit");
+        const glmPrereg = {
+            ...M,
+            families: M.families.map((f) =>
+                f.id === "dependability"
+                    ? { ...f, interval_method: "negative-binomial-glm" as const }
+                    : f,
+            ),
+        };
+        const fit = metric(
+            evaluateTier(glmPrereg, {
+                observations: [runs("hangs", many)],
+                excluded: [],
+                asymmetric: [],
+                journal_seq_at_eval: 7,
+                arms: { control: "host", treatment: "eidnara" },
+            }),
+            "dependability",
+            "hangs",
+        );
+        expect(fit?.method).toStartWith("negative-binomial GLM");
+    });
+
+    test("the combined event total stays exact", () => {
+        const perRun = 750599937895083;
+        expect(Number.isSafeInteger(6 * perRun)).toBe(true);
+        expect(Number.isSafeInteger(12 * perRun)).toBe(false);
+        expect(() =>
+            evaluate([runs("failed_turns", repeat(6, [perRun, perRun] as [number, number]))]),
+        ).toThrow(StatsRefusal);
+    });
+
+    test("an issue order is a safe integer", () => {
+        const obs = binary("P1.pass", [[0, 1]]);
+        obs.items = obs.items?.map((x) => ({ ...x, order: 2 ** 53 }));
+        expect(() => evaluate([obs])).toThrow(StatsRefusal);
     });
 });
