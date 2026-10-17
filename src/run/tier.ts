@@ -101,9 +101,26 @@ export function planConflicts(plan: TierJob[]): string[] {
     return plan.flatMap((job) => {
         const path = join(job.dir, "manifest.json");
         if (!existsSync(path)) return [];
-        const ran = Number(JSON.parse(readFileSync(path, "utf8")).events);
-        return ran === job.events
-            ? []
-            : [`${job.dir} ran ${ran} events, the plan says ${job.events}`];
+        const m = JSON.parse(readFileSync(path, "utf8")) as {
+            events: number;
+            order?: string[];
+            host?: string;
+            seed?: number;
+        };
+        const out: string[] = [];
+        if (Number(m.events) !== job.events)
+            out.push(`${job.dir} ran ${m.events} events, the plan says ${job.events}`);
+        if (m.order && m.order.join(",") !== job.arms.join(","))
+            out.push(
+                `${job.dir} ran arms ${m.order.join(",")}, the plan says ${job.arms.join(",")}`,
+            );
+        if (
+            (m.host !== undefined && m.host !== job.host) ||
+            (m.seed !== undefined && m.seed !== job.seed)
+        )
+            out.push(
+                `${job.dir} ran host ${m.host} seed ${m.seed}, the plan says ${job.host} ${job.seed}`,
+            );
+        return out;
     });
 }

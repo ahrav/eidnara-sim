@@ -1,5 +1,5 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
 import { loadConfig } from "../src/config/config";
 import { TIERS, type Tier } from "../src/prereg/schema";
 import { Children, SIGTERM_EXIT } from "../src/run/children";
@@ -61,7 +61,17 @@ if (new Set(hosts).size !== hosts.length || !hosts.every((h) => prereg.hosts.inc
 // The tier never writes under the Eidnara checkout (AGENTS.md); the check precedes the first
 // directory it would create.
 const inside = (path: string, root: string) => path === root || path.startsWith(`${root}/`);
-if (inside(out, resolve(config.eidnara_checkout)))
+// Symlinks resolve too: the deepest existing ancestor of each path gives its real location.
+const real = (path: string): string => {
+    let existing = path;
+    const rest: string[] = [];
+    while (!existsSync(existing)) {
+        rest.unshift(basename(existing));
+        existing = dirname(existing);
+    }
+    return join(realpathSync(existing), ...rest);
+};
+if (inside(real(out), real(resolve(config.eidnara_checkout))))
     fail(`--out ${out} is inside the Eidnara checkout ${config.eidnara_checkout}`);
 mkdirSync(out, { recursive: true });
 // One invocation per output directory: a second would resume runs the first still drives and
@@ -86,6 +96,15 @@ process.on("unhandledRejection", (caught) => {
     console.error(caught);
     exit(1);
 });
+// A signal during setup releases the lease too; once the runs start, the handlers below stop
+// the children first.
+let stopChildren: ((signal: NodeJS.Signals) => Promise<void>) | null = null;
+for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
+    process.on(signal, async () => {
+        await stopChildren?.(signal);
+        exit(signal === "SIGINT" ? 130 : SIGTERM_EXIT);
+    });
+}
 
 const scenarios = new Map<number, Scenario>();
 for (const seed of prereg.seeds) {
@@ -123,12 +142,7 @@ const children = new Children(env);
 const script = (name: string) => join(import.meta.dir, name);
 const run = (args: string[], log: string, limitMs?: number) =>
     children.run([script(args[0] as string), ...args.slice(1)], log, limitMs);
-for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
-    process.on(signal, async () => {
-        await children.stopAll(signal);
-        exit(signal === "SIGINT" ? 130 : SIGTERM_EXIT);
-    });
-}
+stopChildren = (signal) => children.stopAll(signal);
 
 // Every run's preflight wants the vendored libfaketime; one supervised build here keeps the
 // parallel runs from each compiling it, and a signal to the command ends the build with them.

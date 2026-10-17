@@ -17,11 +17,12 @@ run directory keeps its `tier.log`. The command exits 1 when any run,
 grading, A/A report, or the tier report fails or any run exceeded
 `liveness_bounds.tier_wall_budget_ms` (SIM-L03) or the report's
 property witness holds a violated record, and 2 on a malformed flag, a
-plan where no session fits the budget, a `--turn-ms` whose prefix differs
-from one a run with a manifest ran, an unreadable `tier-plan.json` with
-no `--turn-ms` to replace it, an `--out` inside the Eidnara checkout, or
-an output directory another invocation holds (`<dir>/lease.json`). Every
-exit, a thrown setup error included, releases that lease. SIGINT, SIGTERM, or
+plan where no session fits the budget, a plan whose prefix, arms, host,
+or seed differ from what a run with a manifest ran, an unreadable
+`tier-plan.json` with no `--turn-ms` to replace it, an `--out` resolving
+(symlinks included) inside the Eidnara checkout, or an output directory
+another invocation holds (`<dir>/lease.json`). Every exit, a thrown setup
+error or a signal during setup included, releases that lease. SIGINT, SIGTERM, or
 SIGHUP to the command reaches every child it started, SIGKILLs any still
 live a minute later together with its descendants, and starts no further
 grading or report; each run tears down and stays resumable.
@@ -86,8 +87,8 @@ The run-level checks cover:
 
 - SIM-P02 and SIM-P03: pairing before divergence over turns below their
   arm's divergence that have a reference counterpart, each delivered as
-  its counterpart was, divergence records
-  ahead of their turn carrying
+  its counterpart was and both journaled as sent, divergence records
+  (those whose turns are on the log) ahead of their turn carrying
   the two turns' digests (a replayed run's against the digest its source
   tape's pairing log recorded, which must be present), and no turn whose
   context digest differs
@@ -102,9 +103,12 @@ The run-level checks cover:
   `checkJournal` over the entries in `seq` order, a repeated or
   non-integer `seq` counting as a break;
 - SIM-P15: proxy records carry both times, with wall time in `seq` order
-  per arm, and each call's scenario time within 5 s of the clock the
-  arm's journal implies at the call's start (wall pace while a turn or job
-  is open, held while idle, jumping where an entry says);
+  per arm, a receipt time that is finite and at or before completion and
+  that the journal has begun by, and each call's scenario time within 5 s
+  of the clock the arm's journal implies at the call's start (wall pace
+  while a turn or job is open, closed by `EndTurn`, `EndJob`, or the
+  interrupted `ItemState` a resume writes, held while idle, jumping where
+  an entry says);
 - SIM-P25: every user turn has a label;
 - SIM-P30: every observed fault was scheduled, and every injected call
   names a scheduled fault (from the manifest's `fault_override` when the
@@ -118,8 +122,8 @@ The run-level checks cover:
   grade, earlier versions included, cites a journaled snapshot of its
   item;
 - SIM-P42: grade versions are positive integers that only increase, the
-  report grades at the latest version, and the panel names the versions
-  used;
+  report grades at the latest version (for a P7 row, the latest of its
+  judgment, by inputs), and the panel names the versions used;
 - SIM-L03: each completed run's wall time from `StartRun` to `EndRun`,
   both finite and in order, is inside the tier's wall budget.
 

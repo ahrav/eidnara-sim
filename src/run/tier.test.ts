@@ -124,6 +124,27 @@ describe("tier resume", () => {
         expect(planConflicts([job])).toEqual([]);
         writeFileSync(join(job.dir, "manifest.json"), JSON.stringify({ events: 5 }));
         expect(planConflicts([job])).toEqual([`${job.dir} ran 5 events, the plan says 7`]);
+        const full = {
+            ...job,
+            host: "pi",
+            seed: 101,
+            arms: ["host", "eidnara", "host~aa"],
+        } as TierJob;
+        const manifest = (order: string[], host = "pi", seed = 101) =>
+            writeFileSync(
+                join(job.dir, "manifest.json"),
+                JSON.stringify({ events: 7, order, host, seed }),
+            );
+        manifest(["host", "eidnara", "host~aa"]);
+        expect(planConflicts([full])).toEqual([]);
+        manifest(["host", "eidnara"]);
+        expect(planConflicts([full])).toEqual([
+            `${job.dir} ran arms host,eidnara, the plan says host,eidnara,host~aa`,
+        ]);
+        manifest(["host", "eidnara", "host~aa"], "opencode");
+        expect(planConflicts([full])).toEqual([
+            `${job.dir} ran host opencode seed 101, the plan says pi 101`,
+        ]);
     });
 });
 

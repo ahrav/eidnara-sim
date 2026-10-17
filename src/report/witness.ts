@@ -116,11 +116,23 @@ const CHECKS: Record<string, Check> = {
                     .filter((r) => r.kind === "divergedAt")
                     .map((r) => [`${r.arm}/${r.session}`, r.index]),
             );
+            // A pairing record precedes the prompt, so a pair counts once both arms journaled
+            // the turn as sent.
+            const sent = new Set(
+                c.g.run.arms.flatMap((a) =>
+                    a.journal
+                        .filter((e) => e.kind === "UserTurn" && e.delivered === true)
+                        .map((e) => `${a.arm}/${String(e.event)}`),
+                ),
+            );
             // The property covers indices below the arm's divergence, as the mismatch check does.
             n += turns.filter(
                 (r) =>
                     r.arm !== reference(r.arm) &&
                     keys.has(`${reference(r.arm)}/${r.event}`) &&
+                    (!r.delivered ||
+                        (sent.has(`${r.arm}/${r.event}`) &&
+                            sent.has(`${reference(r.arm)}/${r.event}`))) &&
                     r.index < (diverged.get(`${r.arm}/${r.session}`) ?? Number.POSITIVE_INFINITY),
             ).length;
         }
@@ -135,22 +147,22 @@ const CHECKS: Record<string, Check> = {
                 c.pairing.find((x) => x.kind === "turn" && x.arm === arm && x.event === event);
             c.pairing.forEach((r, i) => {
                 if (r.kind !== "divergedAt") return;
-                n++;
-                const turn = c.pairing.findIndex(
-                    (x) => x.kind === "turn" && x.arm === r.arm && x.event === r.event,
-                );
-                if (turn >= 0 && turn < i) bad.push(`${r.arm} ${r.event}`);
                 const own = turnOf(r.arm, r.event);
                 const other =
                     r.against === "reference"
                         ? turnOf(reference(r.arm), r.event)?.digest
                         : c.recorded.get(`${r.arm}/${r.event}`);
+                // A record whose turns a kill left unwritten describes nothing yet; it is no
+                // instance. A replayed record's source digest must exist.
+                if (!own || (r.against === "reference" && other === undefined)) return;
+                n++;
+                const turn = c.pairing.findIndex(
+                    (x) => x.kind === "turn" && x.arm === r.arm && x.event === r.event,
+                );
+                if (turn >= 0 && turn < i) bad.push(`${r.arm} ${r.event}`);
                 if (r.against === "recorded" && other === undefined)
                     bad.push(`${r.arm} ${r.event} has no source digest to compare with`);
-                else if (
-                    (own && own.digest !== r.digest) ||
-                    (other !== undefined && other !== r.reference_digest)
-                )
+                else if (own.digest !== r.digest || other !== r.reference_digest)
                     bad.push(`${r.arm} ${r.event} hashes differ from its turns'`);
             });
             bad.push(...hiddenDivergences(c));
@@ -228,11 +240,17 @@ const CHECKS: Record<string, Check> = {
                     }
                     if (call.wall_ms < wall) bad.push(`call ${call.seq} wall time decreases`);
                     wall = Math.max(wall, call.wall_ms);
-                    const expected = clock(call.started_wall_ms);
                     if (
-                        expected !== undefined &&
-                        Math.abs(call.scenario_ms - expected) > CLOCK_SLACK_MS
-                    )
+                        !Number.isFinite(call.started_wall_ms) ||
+                        call.started_wall_ms > call.wall_ms
+                    ) {
+                        bad.push(`call ${call.seq} has no usable receipt time`);
+                        continue;
+                    }
+                    const expected = clock(call.started_wall_ms);
+                    if (expected === undefined)
+                        bad.push(`call ${call.seq} starts before the journal`);
+                    else if (Math.abs(call.scenario_ms - expected) > CLOCK_SLACK_MS)
                         bad.push(
                             `call ${call.seq} at scenario ${call.scenario_ms} ms, the journal's clock says ${expected}`,
                         );
@@ -357,7 +375,22 @@ const CHECKS: Record<string, Check> = {
             }
             for (const r of c.g.grades) {
                 used.set(r.version, (used.get(r.version) ?? 0) + 1);
-                if (r.version !== versions.get(`${r.arm}/${r.item}`))
+                // A P7 host row follows the judgment the report pairs it with, so its latest is
+                // the latest among the rows of that judgment, keyed by their inputs.
+                const latest =
+                    r.probe_type === "P7"
+                        ? Math.max(
+                              ...c.grades
+                                  .filter(
+                                      (g) =>
+                                          g.arm === r.arm &&
+                                          g.item === r.item &&
+                                          g.inputs.join("\n") === r.inputs.join("\n"),
+                                  )
+                                  .map((g) => g.version),
+                          )
+                        : versions.get(`${r.arm}/${r.item}`);
+                if (r.version !== latest)
                     bad.push(`${r.arm}/${r.item} reported at v${r.version}, not the latest`);
             }
         }
@@ -404,7 +437,8 @@ function journalClock(journal: Entry[]): (wallMs: number) => number | undefined 
     const open = new Set<string>();
     for (const e of entries) {
         if (e.kind === "BeginTurn") open.add(`turn:${String(e.event)}`);
-        if (e.kind === "EndTurn") open.delete(`turn:${String(e.event)}`);
+        if (e.kind === "EndTurn" || e.state === "failed(interrupted)")
+            open.delete(`turn:${String(e.event)}`);
         if (e.kind === "RegisterJob") open.add(`job:${String(e.job)}`);
         if (e.kind === "EndJob") open.delete(`job:${String(e.job)}`);
         busyAfter.push(open.size > 0);

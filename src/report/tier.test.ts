@@ -1258,7 +1258,7 @@ describe("tier report", () => {
         );
     });
 
-    test("the scenario provenance includes the embedding model", () => {
+    test("the scenario provenance includes the compile inputs and the embedding model", () => {
         const dir = mkdtempSync(join(tmpdir(), "sim-report-"));
         const body = {
             manifest: {
@@ -1266,6 +1266,7 @@ describe("tier report", () => {
                 generator_version: "g",
                 random_schema_version: 1,
                 corpus_manifest_sha256: "c",
+                compile_inputs_sha256: "i",
                 embedding_model: "emb",
             },
             events: [],
@@ -1286,7 +1287,7 @@ describe("tier report", () => {
             }),
         );
         writeFileSync(join(dir, "scenario.json"), canonicalJson({ ...body, scenario_hash }));
-        expect(loadGraded(dir, prereg).identity.scenario_provenance).toBe("g/1/c/emb");
+        expect(loadGraded(dir, prereg).identity.scenario_provenance).toBe("g/1/c/i/emb");
     });
 
     test("a planted 4xx difference between the A/A arms fails that falsification check", () => {
