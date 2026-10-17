@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
+    betaQuantile,
     binomialCdf,
     binomialPmf,
     digamma,
@@ -63,8 +64,8 @@ describe("statistics against published references", () => {
         });
         expect(holm([0.5, 0.001, 0.04, 0.2, 0.01])).toEqual([0.5, 0.005, 0.12, 0.4, 0.04]);
         expect(holm([0.04, 0.04])).toEqual([0.08, 0.08]);
-        expect(holm([0.01, Number.NaN, 0.02])).toEqual([0.02, Number.NaN, 0.02]);
-        expect(holm([0.01, 0.02, Number.NaN])).toEqual([0.02, 0.02, Number.NaN]);
+        expect(holm([0.01, Number.NaN, 0.02])).toEqual([0.03, Number.NaN, 0.04]);
+        expect(holm([0.01, 0.02, Number.NaN])).toEqual([0.03, 0.04, Number.NaN]);
     });
 
     test("the tabular CUSUM reproduces Hawkins's upward and downward sums and its signal", () => {
@@ -210,6 +211,41 @@ describe("statistics against published references", () => {
         near(fit.theta / 15113.7489, 1, 1e-4);
     });
 
+    test("the negative-binomial theta score stays accurate for counts above the harmonic cutoff", () => {
+        const y = [962, 1040, 952, 1019, 1041, 1033, 1006, 983, 990, 1040];
+        const fit = negativeBinomial(
+            y.map(() => [1]),
+            y,
+        );
+        expect(fit.converged).toBe(true);
+        near(fit.theta / 4181996.5, 1, 1e-3);
+    });
+
+    test("the negative-binomial theta prefers a finite maximum over the Poisson limit", () => {
+        const fit = negativeBinomial(
+            [
+                [1, 0],
+                [1, 1],
+                [1, 1],
+                [1, 0],
+            ],
+            [38, 12, 0, 41],
+        );
+        expect(fit.converged).toBe(true);
+        near(fit.theta, 1.572677220055287, 1e-6);
+        expect(() =>
+            negativeBinomial(
+                [
+                    [1, 0],
+                    [1, 1],
+                ],
+                [1, 2],
+                Number.POSITIVE_INFINITY,
+            ),
+        ).toThrow(RangeError);
+        expect(() => negativeBinomial([[1], [1]], [1, 2], 0)).toThrow(RangeError);
+    });
+
     test("the negative-binomial separation check is invariant to predictor units", () => {
         const rows = readFileSync(join(FIXTURES, "quine.csv"), "utf8")
             .trim()
@@ -310,6 +346,12 @@ describe("statistics against published references", () => {
         expect(() => bootstrap([], (s) => s.length, { replicates: 100, seed: 1 })).toThrow(
             RangeError,
         );
+        expect(() => bootstrap([1, 2], (s) => s.length, { replicates: 0, seed: 1 })).toThrow(
+            RangeError,
+        );
+        expect(() => bootstrap([1, 2], (s) => s.length, { replicates: 1.5, seed: 1 })).toThrow(
+            RangeError,
+        );
         expect(() => digamma(0)).toThrow(RangeError);
         expect(() => digamma(-1_000_000_000.5)).toThrow(RangeError);
         near(digamma(1), -0.5772156649015329, 1e-9);
@@ -335,11 +377,22 @@ describe("statistics against published references", () => {
         const started = performance.now();
         near(signTest(50_000_000, 100_000_000), 1, 1e-3);
         expect(performance.now() - started).toBeLessThan(1000);
+        expect(() => signTest(5_000_000_000, 10_000_000_000)).toThrow(/at most/);
+        expect(() => mcnemarExact(5_000_000_000, 5_000_000_000)).toThrow(/at most/);
     });
 
     test("the normal distribution functions invert each other", () => {
         for (const p of [0.001, 0.025, 0.5, 0.8, 0.975, 0.999])
             near(normalCdf(normalQuantile(p)), p, 1e-12);
         near(normalQuantile(0.975), 1.959963984540054, 1e-12);
+        near(normalQuantile(1e-320), -38.27, 0.05);
+    });
+
+    test("the beta quantile returns its endpoints exactly and rejects a probability outside [0, 1]", () => {
+        expect(betaQuantile(0, 1, 100)).toBe(0);
+        expect(betaQuantile(1, 1, 100)).toBe(1);
+        expect(() => betaQuantile(Number.NaN, 2, 2)).toThrow(RangeError);
+        expect(() => betaQuantile(1.5, 2, 2)).toThrow(RangeError);
+        expect(() => mcnemarExact(150, 86, Number.NaN)).toThrow(RangeError);
     });
 });

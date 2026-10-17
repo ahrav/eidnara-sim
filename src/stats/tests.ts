@@ -1,14 +1,21 @@
 import { Rng } from "../rng";
-import { betaQuantile, binomialCdf, digamma, normalCdf, normalQuantile } from "./dist";
+import { betaQuantile, binomialCdf, digamma, logGamma, normalCdf, normalQuantile } from "./dist";
 
 function counts(fn: string, values: readonly number[]): void {
     if (!values.every((v) => Number.isInteger(v) && v >= 0))
         throw new RangeError(`${fn}: counts must be nonnegative integers`);
 }
 
+const TRIALS_MAX = 1e8;
+
+function trials(fn: string, n: number): void {
+    if (n > TRIALS_MAX) throw new RangeError(`${fn}: at most ${TRIALS_MAX} trials`);
+}
+
 /** Two-sided exact binomial test of `x` successes in `n` at one half: the sign test. */
 export function signTest(x: number, n: number): number {
     counts("signTest", [x, n]);
+    trials("signTest", n);
     if (x > n) throw new RangeError("signTest: more successes than trials");
     if (n === 0) return 1;
     return Math.min(1, 2 * binomialCdf(Math.min(x, n - x), n, 0.5));
@@ -26,6 +33,7 @@ export interface McNemar {
 /** The exact McNemar test on the discordant counts, with R `exact2x2::mcnemar.exact` limits. */
 export function mcnemarExact(b: number, c: number, alpha = 0.05): McNemar {
     counts("mcnemarExact", [b, c]);
+    trials("mcnemarExact", b + c);
     const n = b + c;
     const lo = b === 0 ? 0 : betaQuantile(alpha / 2, b, c + 1);
     const hi = c === 0 ? 1 : betaQuantile(1 - alpha / 2, b + 1, c);
@@ -74,8 +82,8 @@ export function newcombe(
 }
 
 /**
- * Holm's step-down adjusted p-values, in the input order. A NaN input stays NaN and the
- * remaining inputs are adjusted among themselves.
+ * Holm's step-down adjusted p-values, in the input order. A NaN input stays NaN and still
+ * counts toward the family size, preserving the correction strength for observed hypotheses.
  */
 export function holm(ps: readonly number[]): number[] {
     const order = ps
@@ -85,7 +93,7 @@ export function holm(ps: readonly number[]): number[] {
     const out = new Array<number>(ps.length).fill(Number.NaN);
     let running = 0;
     order.forEach(([p, i], k) => {
-        running = Math.max(running, Math.min(1, (order.length - k) * p));
+        running = Math.max(running, Math.min(1, (ps.length - k) * p));
         out[i] = running;
     });
     return out;
@@ -158,6 +166,8 @@ export function bootstrap<T>(
     o: { replicates: number; seed: number; alpha?: number; bca?: boolean },
 ): Interval & { z0?: number; a?: number } {
     if (xs.length === 0) throw new RangeError("bootstrap: an empty sample has no interval");
+    if (!(Number.isInteger(o.replicates) && o.replicates > 0))
+        throw new RangeError("bootstrap: replicates must be a positive integer");
     const alpha = o.alpha ?? 0.05;
     const estimate = stat([...xs]);
     const rng = new Rng(o.seed);
@@ -236,6 +246,25 @@ const THETA_MIN = 1e-8;
 
 const HARMONIC_MAX = 1000;
 
+/**
+ * `digamma(t + y) - digamma(t)` for a count `y`: the harmonic sum up to `HARMONIC_MAX`, and
+ * above it the difference of the asymptotic expansions, whose leading term is `log1p(y / t)`,
+ * when `t >= 6`.
+ */
+function psiDiff(y: number, t: number): number {
+    if (y <= HARMONIC_MAX) {
+        let sum = 0;
+        for (let k = 0; k < y; k++) sum += 1 / (t + k);
+        return sum;
+    }
+    if (t < 6) return digamma(y + t) - digamma(t);
+    const tail = (x: number) => {
+        const f = 1 / (x * x);
+        return -0.5 / x - f * (1 / 12 - f * (1 / 120 - f * (1 / 252 - f / 240)));
+    };
+    return Math.log1p(y / t) + tail(t + y) - tail(t);
+}
+
 function weightedCross(x: number[][], w: number[], v?: number[]): number[][] {
     const p = (x[0] ?? []).length;
     const column = (a: number, b: (row: number[], i: number) => number) =>
@@ -254,29 +283,54 @@ function weightedCross(x: number[][], w: number[], v?: number[]): number[][] {
 function thetaScore(y: number[], m: number[], t: number): number {
     return y.reduce((s, yi, j) => {
         const u = m[j] as number;
-        let psi = 0;
-        if (yi <= HARMONIC_MAX) for (let k = 0; k < yi; k++) psi += 1 / (t + k);
-        else psi = digamma(yi + t) - digamma(t);
-        return s + psi - Math.log1p(u / t) + (u - yi) / (t + u);
+        return s + psiDiff(yi, t) - Math.log1p(u / t) + (u - yi) / (t + u);
     }, 0);
 }
 
+/** The log-likelihood at fixed means `m`, up to terms free of theta. */
+function thetaLogLik(y: number[], m: number[], t: number): number {
+    return y.reduce((s, yi, j) => {
+        const u = m[j] as number;
+        return (
+            s + logGamma(yi + t) - logGamma(t) - t * Math.log1p(u / t) + yi * Math.log(u / (t + u))
+        );
+    }, 0);
+}
+
+const THETA_GRID = 65;
+
 /**
- * `thetaAt` estimates the score's root at fixed means `m` by bisection in log theta. The sign
- * at `THETA_MAX` comes from the score's large-theta limit, `-sum((y - m)^2 - y) / (2 theta^2)`,
- * because the direct sum is rounding noise there.
+ * `thetaAt` selects the highest-likelihood candidate at fixed means `m`. The score can cross
+ * zero more than once, so every downward crossing on a log-theta grid is bisected; `THETA_MAX`
+ * joins the candidates when the large-theta limit `-sum((y - m)^2 - y) / (2 theta^2)` is
+ * nonnegative, and `THETA_MIN` when the score starts nonpositive.
  */
 function thetaAt(y: number[], m: number[]): number {
+    const [lo, hi] = [Math.log(THETA_MIN), Math.log(THETA_MAX)];
+    const grid = Array.from(
+        { length: THETA_GRID },
+        (_, i) => lo + ((hi - lo) * i) / (THETA_GRID - 1),
+    );
+    const scores = grid.map((g) => thetaScore(y, m, Math.exp(g)));
+    const root = (a: number, b: number) => {
+        let [l, h] = [a, b];
+        for (let i = 0; i < 100 && h - l > 1e-12; i++) {
+            const mid = (l + h) / 2;
+            if (thetaScore(y, m, Math.exp(mid)) > 0) l = mid;
+            else h = mid;
+        }
+        return Math.exp((l + h) / 2);
+    };
+    const candidates: number[] = [];
+    if ((scores[0] as number) <= 0) candidates.push(THETA_MIN);
+    for (let i = 0; i + 1 < THETA_GRID; i++)
+        if ((scores[i] as number) > 0 && (scores[i + 1] as number) <= 0)
+            candidates.push(root(grid[i] as number, grid[i + 1] as number));
     const excess = y.reduce((s, yi, j) => s + (yi - (m[j] as number)) ** 2 - yi, 0);
-    if (excess <= 0) return THETA_MAX;
-    if (thetaScore(y, m, THETA_MIN) <= 0) return THETA_MIN;
-    let [lo, hi] = [Math.log(THETA_MIN), Math.log(THETA_MAX)];
-    for (let i = 0; i < 100 && hi - lo > 1e-12; i++) {
-        const mid = (lo + hi) / 2;
-        if (thetaScore(y, m, Math.exp(mid)) > 0) lo = mid;
-        else hi = mid;
-    }
-    return Math.exp((lo + hi) / 2);
+    if (excess <= 0 || candidates.length === 0) candidates.push(THETA_MAX);
+    return candidates.reduce((best, t) =>
+        thetaLogLik(y, m, t) > thetaLogLik(y, m, best) ? t : best,
+    );
 }
 
 /**
@@ -292,6 +346,8 @@ export function negativeBinomial(x: number[][], y: number[], iterations = 200): 
         throw new RangeError("negativeBinomial: the design and the response differ in length");
     if (x.some((row) => row.length !== p || !row.every(Number.isFinite)))
         throw new RangeError("negativeBinomial: every design row needs the same finite columns");
+    if (!(Number.isInteger(iterations) && iterations > 0))
+        throw new RangeError("negativeBinomial: iterations must be a positive integer");
     counts("negativeBinomial", y);
     let beta = new Array<number>(p).fill(0);
     let m = y.map((v) => v + 0.1);
@@ -313,7 +369,8 @@ export function negativeBinomial(x: number[][], y: number[], iterations = 200): 
             stable = moved < 1e-10;
         }
         const t = thetaAt(y, m);
-        const done = stable && Math.abs(t - theta) < 1e-8 * theta;
+        const done =
+            stable && (Math.abs(t - theta) < 1e-8 * theta || Math.abs(1 / t - 1 / theta) < 1e-12);
         theta = t;
         if (done) {
             settled = true;
