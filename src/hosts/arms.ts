@@ -678,7 +678,9 @@ export class PiSimHost extends SimHost {
      * then never land on a later turn's record.
      */
     async prompt(text: string, timeoutMs: number, interruptMs?: number): Promise<PromptResult> {
-        if (!this.rpc) return { error: "Pi process killed after an undrained abort" };
+        if (!this.rpc) {
+            return { error: "Pi process killed after an undrained abort", undelivered: true };
+        }
         const end = this.agentEnd(timeoutMs);
         let ended = false;
         end.then(

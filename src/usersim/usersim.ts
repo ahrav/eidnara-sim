@@ -242,15 +242,27 @@ export function checkTapeSources(
             if (run.scripted !== undefined) {
                 // A recorded reactive turn replays only through its tape entry; a dropped entry
                 // would send the replay live under a matching context.
-                const keys = new Set(readJournal(tape).map((e) => (e as { key?: unknown }).key));
+                const entries = new Map(
+                    readJournal(tape).map((e) => {
+                        const t = e as unknown as TapeEntry;
+                        return [t.key, t];
+                    }),
+                );
                 const unkeyed = rows
                     .filter((r) => r.kind === "turn" && r.source !== "script" && r.delivered)
                     .filter((r) => {
                         const text = run.scripted?.get(r.event);
-                        if (text === undefined) return false;
-                        return !keys.has(
+                        if (text === undefined || r.kind !== "turn") return false;
+                        const entry = entries.get(
                             tapeKey(run.seed, r.event, r.label, r.context_sha256, text),
                         );
+                        if (!entry || entry.event !== r.event || entry.label !== r.label)
+                            return true;
+                        // The row's delivered text is the taped reply ahead of the script, or
+                        // the label's fixed line when the reply fell back.
+                        const reply = r.fallback ? (FALLBACK[r.label] ?? "") : entry.text;
+                        const delivered = r.label === "abandon" ? reply : `${reply}\n\n${text}`;
+                        return sha256Hex(delivered) !== r.text_sha256;
                     })
                     .map((r) => `${r.arm} ${r.event}`);
                 if (unkeyed.length > 0) {

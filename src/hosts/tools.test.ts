@@ -875,6 +875,20 @@ test("a Pi abort that stalls is left behind once the agent's own ending arrives"
     expect(Date.now() - started).toBeLessThan(2_000);
 });
 
+test("a prompt to a Pi killed after an undrained abort is undelivered", async () => {
+    const host = new PiSimHost({
+        ...({} as HostContext),
+        config: loadConfig(),
+        root: "/x",
+        launcher: "/x/sandbox.sh",
+        now: () => 100,
+    });
+    Object.assign(host as unknown as Record<string, unknown>, { rpc: null });
+    const result = await host.prompt("go", 5_000);
+    expect(result.error).toContain("killed after an undrained abort");
+    expect(result.undelivered).toBe(true);
+});
+
 test("a Pi interrupt counts only when the agent's last message was aborted", async () => {
     const run = (stopReason: string) => {
         const host = new PiSimHost({

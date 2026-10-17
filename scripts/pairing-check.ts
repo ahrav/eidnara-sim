@@ -142,6 +142,18 @@ const unsent = turns
     .filter((r) => script.get(r.event)?.role !== "filler")
     .filter((r) => !r.delivered || !journalDelivered.has(`${r.arm} ${r.event}`))
     .map((r) => `${r.arm} ${r.event}`);
+// A filler the user-sim queued but the host never received is a pairing break too; only a
+// filler the plan skipped is undelivered by design.
+const undeliveredTurns = turns
+    .filter((r) => script.get(r.event)?.role === "filler" && r.delivered)
+    .filter((r) => !journalDelivered.has(`${r.arm} ${r.event}`))
+    .map((r) => `${r.arm} ${r.event}`);
+// A reactive label's text comes from the tape or a live call; a scripted label's from the script.
+const REACTIVE = new Set(["pushback", "redirect", "abandon", "clarify"]);
+const sourceLabelMismatch = turns
+    .filter((r) => r.delivered)
+    .filter((r) => (REACTIVE.has(r.label) ? r.source === "script" : r.source !== "script"))
+    .map((r) => `${r.arm} ${r.event}`);
 const prereg = loadPrereg(manifest.tier);
 if (preregistrationHash(prereg) !== manifest.prereg_sha256) {
     console.error(`the ${manifest.tier} pre-registration differs from the manifest's`);
@@ -161,6 +173,7 @@ const invalidDivergences = records
         const bound =
             ahead &&
             own?.digest === r.digest &&
+            own?.context_sha256 === r.context_sha256 &&
             (r.against === "recorded" || ref?.digest === r.reference_digest);
         const differs =
             bound &&
@@ -204,9 +217,25 @@ const journalPairingMismatch = (manifest.order as string[]).flatMap((arm) => {
         if (u.session !== row.session || (u.label !== row.label && !relabel))
             off.add(String(u.event));
         if (u.delivered === true && !row.delivered) off.add(String(u.event));
+        if (u.label === "interrupt" && u.interrupted !== true) off.add(String(u.event));
     }
     return [...off].sort().map((event) => `${arm} ${event}`);
 });
+// A sibling arm still paired with the reference reads the reference's taped reply; a live
+// reply before its divergence is a replay miss. With replay sources, the reference arm's own
+// live replies before its recorded divergence are misses too.
+const divergenceAt = new Map(
+    records
+        .filter((r) => r.kind === "divergedAt")
+        .map((r) => [`${r.arm}/${r.session}`, r.index] as const),
+);
+const replaying = Array.isArray(manifest.tapes) && manifest.tapes.length > 0;
+const liveBeforeDivergence = turns
+    .filter((r) => r.source === "live" && (r.arm !== reference() || replaying))
+    .filter(
+        (r) => r.index < (divergenceAt.get(`${r.arm}/${r.session}`) ?? Number.POSITIVE_INFINITY),
+    )
+    .map((r) => `${r.arm} ${r.event}`);
 const prefix = new Set(allScheduled.map((e) => e.id));
 const outOfPrefix = [
     ...new Set([
@@ -268,6 +297,9 @@ const report = {
     fallbacks: turns.filter((r) => r.fallback).map((r) => `${r.arm} ${r.event} ${r.fallback}`),
     probe_or_paste_text_altered: altered,
     non_filler_unsent: unsent,
+    undelivered_turns: undeliveredTurns,
+    source_label_mismatch: sourceLabelMismatch,
+    live_before_divergence: liveBeforeDivergence,
     paste_provenance: provenance,
     script_text_altered: scriptAltered,
     out_of_prefix: outOfPrefix,
@@ -304,6 +336,9 @@ const failed =
     report.mismatches_before_divergence.length +
     altered.length +
     unsent.length +
+    undeliveredTurns.length +
+    sourceLabelMismatch.length +
+    liveBeforeDivergence.length +
     provenance.length +
     scriptAltered.length +
     outOfPrefix.length +
