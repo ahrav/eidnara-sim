@@ -148,8 +148,8 @@ pairing record's shape and arm (`readPairing`, which
 record to its scheduled turn's session and index, admits one turn per arm
 and event and one divergence per arm and session, requires each divergence
 to cite its control turn's digest and context and a differing digest the
-reference arm's turn (or, against a recorded run, a manifest tape's pairing
-log) carries, each
+reference arm's turn (or, against a recorded run, any manifest tape's
+pairing log) carries, each
 probe or paste turn to carry the compiled text, and a turn record from
 each arm of the pair for every scheduled user turn, refuses a
 control whose delivered text differed from its arm's before its recorded
@@ -171,8 +171,9 @@ mean difference with a percentile bootstrap interval that resamples the
 family's pre-registered `cluster_key`: ledger facts for item-level
 families, and the run itself for run-level families (P13, P14), which one
 run therefore leaves uninformative. The bootstrap uses the pre-registered
-`bootstrap` replicates and seed. A metric over fewer than five clusters
-is listed as uninformative and decides nothing. Over the rest it
+`bootstrap` replicates and seed; a metric whose differences overflow is
+refused. A metric over fewer than five clusters is listed as uninformative
+and decides nothing. Over the rest it
 reports whether every interval covers zero (`null` when no metric is
 informative) and the metrics whose interval misses it against the five
 percent expected by chance, the share of paired items whose verdicts

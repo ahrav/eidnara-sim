@@ -82,6 +82,20 @@ describe("A/A pairing", () => {
         expect(clustered.covers_zero).toBe(true);
     });
 
+    test("the disagreement rate compares verdicts, whatever other metric ends in .pass", () => {
+        const extra = (arm: string, retry: number): GradeRecord => ({
+            ...grade(arm, "q-1", "pass"),
+            metrics: { "P3.pass": true, "P3.retry.pass": retry },
+        });
+        const grades = [
+            extra("host", 0),
+            extra("host~aa", 1),
+            grade("host", "q-2", "pass"),
+            grade("host~aa", "q-2", "fail"),
+        ];
+        expect(disagreementRate(grades, "host", "host~aa")).toBe(0.5);
+    });
+
     test("an A/A control runs beside its pre-registered pair, once, and diverges from its own arm", () => {
         expect(armOrder({ tier: "S", seed: 101, arms: ["host", "host~aa"] })).toEqual([
             "host",

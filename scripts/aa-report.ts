@@ -176,10 +176,13 @@ function report(dir: string) {
     }
     const reference = referenceArm(order);
     const tapes = (manifest.tapes ?? []) as string[];
-    const recordedDigest = new Map<string, string>();
+    // Every replay source's digest for an arm's event is a digest the runner may have recorded.
+    const recordedDigests = new Map<string, Set<string>>();
     for (const tape of tapes) {
         for (const r of readPairing(join(dirname(tape), "pairing.jsonl"))) {
-            if (r.kind === "turn") recordedDigest.set(`${r.arm}/${r.event}`, r.digest);
+            if (r.kind !== "turn") continue;
+            const key = `${r.arm}/${r.event}`;
+            recordedDigests.set(key, new Set([...(recordedDigests.get(key) ?? []), r.digest]));
         }
     }
     const turnDigest = new Map(
@@ -192,12 +195,14 @@ function report(dir: string) {
         const mine = turnDigest.get(`${r.arm}/${r.event}`);
         const theirs = turnDigest.get(`${reference(r.arm)}/${r.event}`);
         const cited =
-            r.against === "recorded" ? recordedDigest.get(`${r.arm}/${r.event}`) : theirs?.digest;
+            r.against === "recorded"
+                ? recordedDigests.get(`${r.arm}/${r.event}`)?.has(r.reference_digest) === true
+                : theirs?.digest === r.reference_digest;
         const sound =
             mine?.digest === r.digest &&
             mine.context_sha256 === r.context_sha256 &&
             r.reference_digest !== r.digest &&
-            cited === r.reference_digest;
+            cited;
         if (!sound) {
             throw new Error(
                 `${dir}/pairing.jsonl: ${r.arm} divergence at ${r.event} does not match the turns it cites`,
@@ -257,6 +262,13 @@ function report(dir: string) {
         const metrics = [...pairedDiffs(grades, arm, control)].map(([m, d]) =>
             bootstrapMean(m, d, clusterOf(m), prereg.bootstrap.replicates, prereg.bootstrap.seed),
         );
+        for (const m of metrics) {
+            if (![m.mean, m.lo, m.hi].every(Number.isFinite)) {
+                throw new Error(
+                    `${dir}: ${m.metric} differences overflow; its statistics are not finite`,
+                );
+            }
+        }
         const informative = metrics.filter((m) => m.clusters >= MIN_CLUSTERS);
         const sessions = new Set(
             pairing.filter((r) => r.kind === "turn" && r.arm === control).map((r) => r.session),

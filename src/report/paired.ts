@@ -79,12 +79,17 @@ export function bootstrapMean(
     return { metric, n, clusters: clusters.length, mean, lo, hi, covers_zero: lo <= 0 && hi >= 0 };
 }
 
-/** The share of items both arms graded whose verdicts differ. */
+/** The share of items both arms graded whose verdicts differ; P7 grades stay out as in `pairedDiffs`. */
 export function disagreementRate(grades: GradeRecord[], a: string, b: string): number | null {
-    const verdicts = [...pairedDiffs(grades, a, b)]
-        .filter(([k]) => k.endsWith(".pass"))
-        .flatMap(([, d]) => d);
-    return verdicts.length === 0
+    const verdicts = (arm: string) =>
+        new Map(
+            grades
+                .filter((g) => g.arm === arm && g.verdict !== "excluded" && g.probe_type !== "P7")
+                .map((g) => [g.item, g.verdict]),
+        );
+    const [left, right] = [verdicts(a), verdicts(b)];
+    const items = [...left.keys()].filter((i) => right.has(i));
+    return items.length === 0
         ? null
-        : verdicts.filter((x) => x.d !== 0).length / verdicts.length;
+        : items.filter((i) => left.get(i) !== right.get(i)).length / items.length;
 }

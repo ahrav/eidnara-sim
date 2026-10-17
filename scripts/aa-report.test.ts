@@ -578,6 +578,51 @@ describe("aa-report", () => {
         expect(existsSync(join(real, "lease.json"))).toBe(false);
     });
 
+    test("a divergence may cite any manifest tape's recorded digest, in source order", () => {
+        const line = (o: unknown) => `${JSON.stringify(o)}\n`;
+        const dir = gradedRun("S", preregistrationHash(loadPrereg("S")));
+        const sources = ["first", "second"].map((digest) => {
+            const src = mkdtempSync(join(tmpdir(), `sim-aa-${digest}-`));
+            writeFileSync(join(src, "tape.jsonl"), "");
+            writeFileSync(
+                join(src, "pairing.jsonl"),
+                line({ ...turn("host~aa", "e-2", "same", 1), digest }),
+            );
+            return join(src, "tape.jsonl");
+        });
+        const m = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8"));
+        writeFileSync(join(dir, "manifest.json"), JSON.stringify({ ...m, tapes: sources }));
+        const d = {
+            kind: "divergedAt",
+            arm: "host~aa",
+            session: "s-1",
+            event: "e-2",
+            index: 1,
+            digest: "d",
+            context_sha256: "c",
+            reference_digest: "first",
+            against: "recorded",
+        };
+        writeFileSync(
+            join(dir, "pairing.jsonl"),
+            [...allTurns("host"), ...allTurns("host~aa"), d].map(line).join(""),
+        );
+        expect(aaReport(dir)[0]?.sessions_diverged).toBe(1);
+    });
+
+    test("refuses a metric whose paired differences or interval overflow", () => {
+        const dir = gradedRun("S", preregistrationHash(loadPrereg("S")));
+        const wide = [
+            { ...grade("host", "p-1", "P3", "P3.delta_mem", -1e308), version: 2 },
+            { ...grade("host~aa", "p-1", "P3", "P3.delta_mem", 1e308), version: 2 },
+        ];
+        appendFileSync(
+            join(dir, "grades.jsonl"),
+            wide.map((g) => `${JSON.stringify(g)}\n`).join(""),
+        );
+        expect(() => aaReport(dir)).toThrow(/P3\.delta_mem.*finite/);
+    });
+
     test("a run-level family forms one cluster per run, so one run leaves it uninformative", () => {
         const dir = gradedRun("S", preregistrationHash(loadPrereg("S")));
         const [report] = aaReport(dir);
