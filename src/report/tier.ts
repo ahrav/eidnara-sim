@@ -20,9 +20,12 @@ import { propertyWitness } from "./witness";
 
 export function loadGraded(dir: string, prereg: Preregistration): GradedRun {
     const grades = join(dir, "grades.jsonl");
+    const read = (name: string) => JSON.parse(readFileSync(join(dir, name), "utf8"));
+    const scenario = read("scenario.json") as Scenario;
+    const override = read("manifest.json").fault_override as Scenario["faults"] | null;
     return {
         run: loadRun(dir, prereg),
-        scenario: JSON.parse(readFileSync(join(dir, "scenario.json"), "utf8")) as Scenario,
+        scenario: { ...scenario, faults: override ?? scenario.faults },
         grades: existsSync(grades) ? new GradeLog(grades).latest() : [],
     };
 }

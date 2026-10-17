@@ -139,6 +139,13 @@ export function profileJobs(
  */
 export function compressFaults(scenario: Scenario, events: number): FaultEpisode[] {
     const prefix = scenario.events.slice(0, events);
+    const gap = new Map<string, number>();
+    prefix.forEach((e, i) => {
+        const before = prefix[i - 1];
+        if (e.kind === "session_start" && before) {
+            gap.set(String(e.session), Number(e.scenario_ms) - Number(before.scenario_ms));
+        }
+    });
     const ended = new Set(
         prefix.filter((e) => e.kind === "session_end").map((e) => String(e.session)),
     );
@@ -159,13 +166,17 @@ export function compressFaults(scenario: Scenario, events: number): FaultEpisode
     return scenario.faults.map((f, i) => {
         if (sessions.includes(f.trigger.session)) return f;
         const n = f.trigger.kind === "user_turn" ? (f.trigger.n ?? 1) : 0;
+        const sleep = f.type === "laptop_sleep";
         const fits = (s: string) =>
             (f.trigger.kind !== "session_start" || s !== sessions[0]) &&
             (turns.get(s) ?? 0) >= Math.max(1, n) &&
-            (f.trigger.kind !== "first_summarizer_call" || p90.has(s));
+            (f.trigger.kind !== "first_summarizer_call" || p90.has(s)) &&
+            (!sleep || (gap.get(s) ?? 0) > 0);
         const start = Math.floor(((i + 1) * sessions.length) / (scenario.faults.length + 1));
         const order = [...sessions.slice(start), ...sessions.slice(0, start)];
         const session = order.find(fits);
-        return session ? { ...f, trigger: { ...f.trigger, session } } : f;
+        if (!session) return f;
+        const params = sleep ? { ...f.params, duration_ms: gap.get(session) ?? 0 } : f.params;
+        return { ...f, trigger: { ...f.trigger, session }, params };
     });
 }

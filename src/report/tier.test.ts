@@ -7,10 +7,11 @@ import type { ArmLogs } from "../oracle/logs";
 import type { CallRecord } from "../proxy/records";
 import type { Entry } from "../run/journal";
 import type { Scenario } from "../scenario/compile";
+import type { FaultEpisode } from "../scenario/faults";
 import { loadPrereg } from "../scenario/inputs";
 import type { GradedRun } from "./observe";
 import { renderTier } from "./render";
-import { counterfactual, tierReport } from "./tier";
+import { counterfactual, loadGraded, tierReport } from "./tier";
 
 const prereg = loadPrereg("S");
 const boundary = readFileSync(join(import.meta.dir, "../../docs/claim-boundary.md"), "utf8");
@@ -292,5 +293,33 @@ describe("counterfactual attribution", () => {
     test("runs that hold the counterfactual arm without the memory arm give no panel", () => {
         const alone = { ...g, run: { ...g.run, arms: [g.run.arms[1]] } } as unknown as GradedRun;
         expect(counterfactual([alone])).toBeNull();
+    });
+});
+
+describe("graded run loading", () => {
+    test("a run's fault schedule is the manifest's override when it has one", () => {
+        const dir = mkdtempSync(join(tmpdir(), "sim-graded-"));
+        const fault = (session: string) =>
+            ({
+                id: "fault-000",
+                type: "daemon_restart",
+                trigger: { kind: "session_start", session },
+            }) as unknown as FaultEpisode;
+        const manifest = { tier: "S", order: [], base_wall_ms: 0, fault_override: [fault("s-1")] };
+        writeFileSync(join(dir, "manifest.json"), JSON.stringify(manifest));
+        writeFileSync(
+            join(dir, "scenario.json"),
+            JSON.stringify({
+                manifest: { seed: 101, tier: "S" },
+                events: [],
+                faults: [fault("s-9")],
+            }),
+        );
+        expect(loadGraded(dir, prereg).scenario.faults).toEqual([fault("s-1")]);
+        writeFileSync(
+            join(dir, "manifest.json"),
+            JSON.stringify({ ...manifest, fault_override: null }),
+        );
+        expect(loadGraded(dir, prereg).scenario.faults).toEqual([fault("s-9")]);
     });
 });

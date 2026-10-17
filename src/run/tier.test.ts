@@ -81,4 +81,23 @@ describe("tier plan", () => {
             "s-1",
         ]);
     });
+
+    test("a moved laptop sleep lasts the idle gap before the session it lands on", () => {
+        const at = { "s-1": 0, "s-2": 50_000, "s-3": 400_000 };
+        const events = Object.entries(at).flatMap(([session, start]) => [
+            { id: `${session}-start`, kind: "session_start", session, scenario_ms: start },
+            { id: `${session}-0`, kind: "user_turn", session, scenario_ms: start + 1_000 },
+            { id: `${session}-end`, kind: "session_end", session, scenario_ms: start + 2_000 },
+        ]);
+        const sleep = {
+            id: "sleep",
+            type: "laptop_sleep",
+            trigger: { kind: "session_start", session: "s-far" },
+            params: { duration_ms: 9_999_999 },
+        } as unknown as FaultEpisode;
+        const s = { events, sessions: [], faults: [sleep] } as unknown as Scenario;
+        const [moved] = compressFaults(s, events.length);
+        expect(moved?.trigger.session).toBe("s-2");
+        expect(moved?.params.duration_ms).toBe(50_000 - 2_000);
+    });
 });

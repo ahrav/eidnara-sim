@@ -5,7 +5,7 @@ import { TIERS, type Tier } from "../src/prereg/schema";
 import { tierInput } from "../src/report/observe";
 import { loadGraded } from "../src/report/tier";
 import { Children, SIGTERM_EXIT } from "../src/run/children";
-import { resizeFromM } from "../src/run/resize";
+import { gradedMainRuns, resizeFromM } from "../src/run/resize";
 import { loadScenario } from "../src/run/run";
 import { compressFaults, profileJobs, type TierJob, tierPlan } from "../src/run/tier";
 import type { Scenario } from "../src/scenario/compile";
@@ -45,12 +45,11 @@ const resizing = join(out, `${tier}-resizing.json`);
 const from = arg("resize-from");
 if (prereg.resizing && from && !existsSync(resizing)) {
     const m = loadPrereg(prereg.resizing.source_tier);
-    const mPlan = join(resolve(from), "tier-plan.json");
-    if (!existsSync(mPlan)) fail(`${from} holds no tier-plan.json`);
-    const main = (JSON.parse(readFileSync(mPlan, "utf8")).plan as TierJob[])
-        .filter((j) => j.group === "main")
-        .map((j) => j.dir);
-    const ungraded = main.filter((d) => !existsSync(join(d, "grades.jsonl")));
+    for (const name of ["tier-plan.json", "tier-result.json"]) {
+        if (!existsSync(join(resolve(from), name)))
+            fail(`${from} holds no ${name}; the ${m.tier} tier has not finished`);
+    }
+    const { main, ungraded } = gradedMainRuns(resolve(from));
     if (main.length === 0 || ungraded.length > 0)
         fail(`the ${m.tier} paired runs are not all graded: ${ungraded.join(", ") || "none"}`);
     const runs = main.map((d) => loadGraded(d, m));

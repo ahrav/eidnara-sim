@@ -1,13 +1,13 @@
 import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { deleteFactNotes, factMatcher } from "../hosts/storecheck";
 import type { Scenario } from "../scenario/compile";
 import { loadPrereg } from "../scenario/inputs";
 import type { ItemPair, TierInput } from "../stats/gate";
-import { icc, resizeFromM } from "./resize";
+import { gradedMainRuns, icc, resizeFromM } from "./resize";
 import { profileJobs } from "./tier";
 
 const pairs = (n: number, discordant: number, facts: number): ItemPair[] =>
@@ -89,6 +89,48 @@ describe("L resizing from M", () => {
             ],
         });
         expect(clustered.per_type[0]?.design_effect).toBeGreaterThan(1);
+    });
+
+    test("only main runs with a recorded zero grade exit in a finished tier count as graded", () => {
+        const dir = mkdtempSync(join(tmpdir(), "sim-m-"));
+        const [a, b, c] = [`${dir}/M-201-pi`, `${dir}/M-202-pi`, `${dir}/M-201-pi-side-haiku`];
+        const plan = [
+            { group: "main", dir: a },
+            { group: "main", dir: b },
+            { group: "side-haiku", dir: c },
+        ];
+        writeFileSync(join(dir, "tier-plan.json"), JSON.stringify({ plan }));
+        for (const j of plan) {
+            mkdirSync(j.dir);
+            writeFileSync(join(j.dir, "grades.jsonl"), "");
+        }
+        expect(() => gradedMainRuns(dir)).toThrow(/tier-result\.json/);
+        const results = [
+            { dir: a, grade_exit: 0 },
+            { dir: b, grade_exit: 1 },
+            { dir: c, grade_exit: 0 },
+        ];
+        writeFileSync(join(dir, "tier-result.json"), JSON.stringify({ results }));
+        expect(gradedMainRuns(dir)).toEqual({ main: [a, b], ungraded: [b] });
+    });
+
+    test("a type M never saw discordant keeps the planning count, so L's count never falls below it", () => {
+        const L = loadPrereg("L");
+        const r = resizeFromM(L, {
+            observations: [
+                {
+                    metric: "P1.pass",
+                    unit: "item",
+                    cluster_key: "ledger_fact_id",
+                    items: pairs(100, 10, 100),
+                },
+            ],
+            excluded: [],
+            asymmetric: [],
+        });
+        expect(r.per_type.find((t) => t.metric === "P1.pass")?.n).toBeLessThan(r.planning);
+        expect(r.per_type.some((t) => t.n === null)).toBe(true);
+        expect(r.paired_items_per_probe_type).toBe(r.planning);
     });
 });
 
@@ -179,6 +221,15 @@ describe("counterfactual deletion", () => {
         expect(carries("we keep adding a lark_count column")).toBe(true);
         expect(carries("Plan: a lark_count field to the cache layer")).toBe(true);
         expect(carries("the next step is adding retries")).toBe(false);
+        const bracketed = "the release codename is [ember_magpie]";
+        expect(factMatcher(bracketed, [], 4)("codename ember_magpie noted")).toBe(true);
+        expect(
+            factMatcher(
+                bracketed,
+                ["the ember_magpie service restarts nightly"],
+                4,
+            )("codename ember_magpie noted"),
+        ).toBe(false);
         const plain = factMatcher("page size for the listing view is fifty", [], 4);
         expect(plain("the listing view is fifty rows")).toBe(true);
         expect(plain("the listing view has paging")).toBe(false);

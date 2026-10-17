@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { Preregistration } from "../prereg/schema";
 import { normalQuantile } from "../stats/dist";
 import type { TierInput } from "../stats/gate";
@@ -20,6 +22,18 @@ export interface Resizing {
     paired_items_per_probe_type: number;
 }
 
+export function gradedMainRuns(dir: string): { main: string[]; ungraded: string[] } {
+    const read = (name: string) => JSON.parse(readFileSync(join(dir, name), "utf8"));
+    const plan = read("tier-plan.json").plan as { group: string; dir: string }[];
+    const main = plan.filter((j) => j.group === "main").map((j) => j.dir);
+    const results = read("tier-result.json").results as {
+        dir: string;
+        grade_exit: number | null;
+    }[];
+    const graded = new Set(results.filter((r) => r.grade_exit === 0).map((r) => r.dir));
+    return { main, ungraded: main.filter((d) => !graded.has(d)) };
+}
+
 /** One-way ANOVA intraclass correlation of item differences within ledger facts, in [0, 1]. */
 export function icc(groups: number[][]): number {
     const sizes = groups.map((g) => g.length);
@@ -40,7 +54,11 @@ export function icc(groups: number[][]): number {
     return denom <= 0 ? 0 : Math.min(1, Math.max(0, (msb - msw) / denom));
 }
 
-/** L's paired items per probe type from M's observed discordance, by the pre-registered rule. */
+/**
+ * L's paired items per probe type from M's observed discordance, by the pre-registered rule: the
+ * largest n over the item metrics, where a metric M never saw discordant counts as the planning
+ * size.
+ */
 export function resizeFromM(l: Preregistration, m: TierInput): Resizing {
     const planning =
         l.resizing?.planning_paired_items_per_probe_type ??
@@ -84,7 +102,7 @@ export function resizeFromM(l: Preregistration, m: TierInput): Resizing {
                 };
             }),
         );
-    const sized = per_type.map((t) => t.n).filter((n): n is number => n !== null);
+    const sized = per_type.map((t) => t.n ?? planning);
     return {
         source_tier: l.resizing?.source_tier ?? "M",
         planning,

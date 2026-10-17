@@ -105,13 +105,21 @@ function gitHead(dir: string): string {
     return r.stdout.toString().trim();
 }
 
-/** `items` overrides the pre-registered paired items per probe type, as L's resizing sets it. */
+/**
+ * `items` supplies L's resized paired-item count per probe type. A tier that pre-registers
+ * resizing compiles only with that count.
+ */
 export async function loadScenario(
     o: Pick<RunOptions, "config" | "tier" | "seed" | "out">,
     items?: number,
 ): Promise<Scenario> {
     const path = join(o.out, "scenario.json");
     if (!existsSync(path)) {
+        if (items === undefined && loadPrereg(o.tier).resizing) {
+            throw new HarnessFailure(
+                `${o.tier} compiles only with the resizing scripts/tier.ts --resize-from records`,
+            );
+        }
         const { aws_profile, region } = o.config.bedrock;
         const cache = join(ROOT, "runs/scenarios/embeddings.jsonl");
         const embedder = bedrockEmbedder(aws_profile, region, cache);
@@ -428,7 +436,7 @@ async function runArms(
         deletions.set(at, [...(deletions.get(at) ?? []), { probe: c.probe, fact, statement }]);
     }
     const statements = scenario.facts.map((f) => f.statement);
-    if (o.arms?.some((a) => armBase(a) === "eidnara-cf") && !Bun.which("python3")) {
+    if (manifest.order.some((a) => armBase(a) === "eidnara-cf") && !Bun.which("python3")) {
         throw new HarnessFailure(
             "the eidnara-cf arm deletes through python3, which is not on PATH",
         );
