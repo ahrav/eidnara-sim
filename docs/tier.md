@@ -232,8 +232,9 @@ command exits 1 naming any paired run without a restart.
 The stop lands wherever the run is when the check fires: a run stopped by
 the scheduled restart logs no `EndTurn` for the turn, or no `FaultObserved`
 for the scheduler fault, the stop cut, so the resumed run marks that item
-`failed(interrupted)`; an interrupted turn counts in `failed_turns`, and a
-fault's probes in that session leave the pairing as asymmetric.
+`failed(interrupted)`; an interrupted turn counts in `failed_turns`, and an
+interrupted fault counts as landed in its arm, so its session's probes leave
+the pairing as asymmetric.
 
 The XL report adds a within-month RSS soak verdict per month of scenario
 time for each run's daemon arm, the last month partial: each
@@ -243,7 +244,8 @@ sessions alone, and the whole-span soak verdict stays the gate's input.
 `scripts/report.ts --recall-reference <dir>/continuity-L.json` (shape-checked
 row by row: counts with `pass_with_transcript_read <= pass <= n`, one row per
 host, arm, and probe) adds a recall
-drift table to the XL report: each host, arm, and probe's P8 or P9 pass
+drift table to the XL report alone, with counts and four-decimal rates: each host, arm, and probe's P8 or P9 pass
 rate against the L tier's 95% Clopper-Pearson interval for the same row,
-`drift` when outside it. Every report writes its continuity rows to
-`continuity-<tier>.json` beside `report-<tier>.json` for this use.
+`drift` when outside it. A report of a complete campaign writes its
+continuity rows to `continuity-<tier>.json` beside `report-<tier>.json` for
+this use; an incomplete one writes none.

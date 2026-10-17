@@ -22,6 +22,19 @@ import type { TierReport } from "./render";
 import { soak, soakByMonth } from "./soak";
 import { propertyWitness } from "./witness";
 
+type VersionRow = { host: string; version: string };
+
+/** `<host>@<version>` for each current host, then `upgrade:<host>@<version>` for each next one. */
+export function identityVersions(preflight: {
+    hosts?: VersionRow[];
+    upgrade?: VersionRow[];
+}): string[] {
+    return [
+        ...(preflight.hosts ?? []).map((h) => `${h.host}@${h.version}`),
+        ...(preflight.upgrade ?? []).map((h) => `upgrade:${h.host}@${h.version}`),
+    ];
+}
+
 export function loadGraded(dir: string, prereg: Preregistration): GradedRun {
     const read = (name: string) => JSON.parse(readFileSync(join(dir, name), "utf8"));
     const manifest = read("manifest.json") as {
@@ -84,7 +97,7 @@ export function loadGraded(dir: string, prereg: Preregistration): GradedRun {
             context_limit,
             events,
             distortions: manifest.preflight?.distortions ?? [],
-            host_versions: (manifest.preflight?.hosts ?? []).map((h) => `${h.host}@${h.version}`),
+            host_versions: identityVersions(manifest.preflight ?? {}),
         },
         witnesses: reports === null ? null : [...witnesses.values()],
     };
@@ -230,7 +243,10 @@ export function tierReport(
         witness: propertyWitness(catalog, runs),
         conditions: runs.map(runConditions),
         continuity: continuity(runs),
-        drift: reference ? recallDrift(continuity(runs), reference.continuity) : null,
+        drift:
+            reference && prereg.tier === "XL"
+                ? recallDrift(continuity(runs), reference.continuity)
+                : null,
         drift_source: reference?.source ?? null,
         soak_by_month: perArm
             .filter(({ arm }) => prereg.tier === "XL" && armBase(arm.arm) !== "host")

@@ -17,7 +17,14 @@ import { percentile } from "./intrusive";
 import { type GradedRun, tierInput } from "./observe";
 import { counterfactualText, renderTier } from "./render";
 import * as tier from "./tier";
-import { aaScale, counterfactual, cusumScale, loadGraded, tierReport } from "./tier";
+import {
+    aaScale,
+    counterfactual,
+    cusumScale,
+    identityVersions,
+    loadGraded,
+    tierReport,
+} from "./tier";
 
 const prereg = loadPrereg("S");
 const boundary = readFileSync(join(import.meta.dir, "../../docs/claim-boundary.md"), "utf8");
@@ -438,6 +445,44 @@ describe("tier report", () => {
         const report = tierReport(prereg, [g], boundary);
         expect(report.verdict.asymmetric_stratum).toEqual(["pi/101/q-0", "pi/101/q-p8-0"]);
         expect(report.observed["P8.cross_session_pass_rate"]).toEqual([1]);
+    });
+
+    test("a scheduler fault a restart interrupted in one arm puts its session's probes in the asymmetric stratum", () => {
+        const g = asymmetricFixture(() => undefined);
+        const push = (name: string, extra: Record<string, unknown>) =>
+            arm(g, name).journal.push({
+                arm: name,
+                scenario_ms: 0,
+                seq: 9_000,
+                wall_ms: 0,
+                ...extra,
+            } as Entry);
+        push("host", {
+            kind: "FaultObserved",
+            fault: "f1",
+            type: "daemon_restart",
+            evidence: { skipped: "arm runs no daemon" },
+        });
+        push("eidnara", {
+            kind: "FaultFired",
+            fault: "f1",
+            type: "daemon_restart",
+            layer: "scheduler",
+        });
+        push("eidnara", { kind: "ItemState", fault: "f1", state: "failed(interrupted)" });
+        const report = tierReport(prereg, [g], boundary);
+        expect(report.verdict.asymmetric_stratum).toEqual(["pi/101/q-0", "pi/101/q-p8-0"]);
+    });
+
+    test("the recall drift table is an XL report's alone", () => {
+        const g = fixture();
+        const reference = { source: "L", continuity: tierReport(prereg, [g], boundary).continuity };
+        const l = { ...prereg, tier: "L" as const };
+        expect(tierReport(l, [g], boundary, undefined, "", undefined, reference).drift).toBeNull();
+        const xl = { ...prereg, tier: "XL" as const };
+        expect(
+            tierReport(xl, [g], boundary, undefined, "", undefined, reference).drift,
+        ).not.toBeNull();
     });
 
     test("a proxy fault that landed in one arm's calls alone puts its session's probes in the asymmetric stratum", () => {
@@ -1195,5 +1240,28 @@ describe("graded run loading", () => {
             JSON.stringify({ ...manifest, fault_override: null }),
         );
         expect(loadGraded(dir, prereg).scenario.faults).toEqual([fault("s-9")]);
+    });
+});
+
+describe("run identity", () => {
+    test("the pooled identity names the current host versions and, apart, the upgrade versions", () => {
+        const row = (host: "pi" | "opencode", version: string) => ({
+            host,
+            version,
+            transcript_paths: [],
+        });
+        const preflight = {
+            hosts: [row("pi", "0.80.2"), row("opencode", "1.14.0")],
+            upgrade: [row("pi", "0.87.1")],
+        };
+        expect(identityVersions(preflight)).toEqual([
+            "pi@0.80.2",
+            "opencode@1.14.0",
+            "upgrade:pi@0.87.1",
+        ]);
+        expect(identityVersions({ hosts: preflight.hosts })).toEqual([
+            "pi@0.80.2",
+            "opencode@1.14.0",
+        ]);
     });
 });

@@ -33,7 +33,8 @@ const kill = (child: ChildProcess) => {
 export type StopReason = "limit" | "stopWhen";
 
 export class Children {
-    private readonly live = new Set<ChildProcess>();
+    /** Each live child with the promise that settles once its run has finished. */
+    private readonly live = new Map<ChildProcess, Promise<void>>();
     private stopping = false;
 
     constructor(
@@ -56,7 +57,13 @@ export class Children {
                 stdio: ["ignore", "pipe", "pipe"],
                 detached: true,
             });
-            this.live.add(child);
+            let settled: () => void = () => undefined;
+            this.live.set(
+                child,
+                new Promise<void>((r) => {
+                    settled = r;
+                }),
+            );
             const sink = (chunk: Buffer) => appendFileSync(log, chunk);
             child.stdout?.on("data", sink);
             child.stderr?.on("data", sink);
@@ -78,6 +85,7 @@ export class Children {
                 if (poll) clearInterval(poll);
                 for (const t of timers) clearTimeout(t);
                 this.live.delete(child);
+                settled();
                 done(code);
             };
             // The run settles once the child's whole process group is gone: a descendant that
@@ -105,10 +113,8 @@ export class Children {
     async stopAll(signal: NodeJS.Signals): Promise<void> {
         this.stopping = true;
         const sent = signal === "SIGHUP" ? "SIGTERM" : signal;
-        const children = [...this.live];
-        const exits = children.map(
-            (child) => new Promise<void>((done) => child.once("close", () => done())),
-        );
+        const children = [...this.live.keys()];
+        const exits = children.map((child) => this.live.get(child) as Promise<void>);
         for (const child of children) child.kill(sent);
         const backstop = setTimeout(() => {
             for (const child of children) kill(child);

@@ -443,9 +443,9 @@ export class HostDriver implements ArmDriver {
 
     private async closeSecond(record = true): Promise<void> {
         const second = this.second;
-        this.second = null;
         if (!second) return;
         await this.releaseSecond(second);
+        this.second = null;
         if (record) this.recordState();
     }
 

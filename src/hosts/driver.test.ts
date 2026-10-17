@@ -678,6 +678,9 @@ describe("HostDriver faults", () => {
         );
         const state = JSON.parse(readFileSync(join(armDir, "state.json"), "utf8"));
         expect(state.second?.pid).toBe(process.pid);
+        await expect(driver.stop()).rejects.toThrow("host survived");
+        const after = JSON.parse(readFileSync(join(armDir, "state.json"), "utf8"));
+        expect(after.second?.pid).toBe(process.pid);
     });
 
     test("a model switch moves later sessions to the next model and keeps the daemon", async () => {

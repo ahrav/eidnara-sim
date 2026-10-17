@@ -171,7 +171,9 @@ describe("recall drift", () => {
             ["host", false],
             ["x", null],
         ]);
-        expect(renderDrift(drift, "L").join("\n")).toContain("| pi | eidnara | P8 | 0.50 |");
+        expect(renderDrift(drift, "L").join("\n")).toContain(
+            "| pi | eidnara | P8 | 10/20 | 0.5000 | 38/40 [0.8308, 0.9939] | drift |",
+        );
     });
 });
 

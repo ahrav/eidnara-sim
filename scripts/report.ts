@@ -86,7 +86,7 @@ for (const [tier, { prereg, runs }] of loaded) {
         scale,
         catalog,
         resizing?.paired_items_per_probe_type,
-        reference,
+        tier === "XL" ? reference : undefined,
     );
     violated += report.witness.filter((w) => w.status === "violated").length;
     const text = renderTier(report);
@@ -97,10 +97,13 @@ for (const [tier, { prereg, runs }] of loaded) {
             join(out, `report-${tier}.json`),
             `${JSON.stringify(report.verdict, null, 2)}\n`,
         );
-        writeFileSync(
-            join(out, `continuity-${tier}.json`),
-            `${JSON.stringify(report.continuity, null, 2)}\n`,
-        );
+        // Only a complete campaign's continuity rows serve as another tier's recall reference.
+        if (report.verdict.pass.incomplete.every((x) => x.startsWith("CUSUM "))) {
+            writeFileSync(
+                join(out, `continuity-${tier}.json`),
+                `${JSON.stringify(report.continuity, null, 2)}\n`,
+            );
+        } else console.error(`${tier}: campaign incomplete; no continuity-${tier}.json written`);
     } else console.log(text);
 }
 // A violated property means the runs broke an invariant the verdict rests on; the report stays

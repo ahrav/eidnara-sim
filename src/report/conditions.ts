@@ -326,8 +326,11 @@ export interface RecallDrift {
     host: string;
     arm: string;
     probe: "P8" | "P9";
+    pass: number;
+    n: number;
     rate: number | null;
     reference: [number, number] | null;
+    reference_counts: [number, number] | null;
     drift: boolean | null;
 }
 
@@ -344,27 +347,40 @@ export function recallDrift(current: Continuity[], reference: Continuity[]): Rec
         const interval = r?.n ? clopperPearson(r.pass, r.n) : null;
         const drift =
             rate === null || interval === null ? null : rate < interval[0] || rate > interval[1];
-        return { host: c.host, arm: c.arm, probe: c.probe, rate, reference: interval, drift };
+        return {
+            host: c.host,
+            arm: c.arm,
+            probe: c.probe,
+            pass: c.pass,
+            n: c.n,
+            rate,
+            reference: interval,
+            reference_counts: r ? [r.pass, r.n] : null,
+            drift,
+        };
     });
 }
 
 export function renderDrift(rows: RecallDrift[] | null, source: string | null): string[] {
     if (rows === null) return [];
     const f = (x: number | null | undefined) =>
-        x === null || x === undefined ? "-" : x.toFixed(2);
+        x === null || x === undefined ? "-" : x.toFixed(4);
     return [
         "## Recall against the reference tier",
         "",
-        `Reference: ${source ?? "-"}.`,
+        `Reference: ${source ?? "-"}. Rates and the 95% interval to four decimals.`,
         "",
-        ...head(["host", "arm", "probe", "rate", "reference interval", "drift"]),
+        ...head(["host", "arm", "probe", "pass/n", "rate", "reference pass/n [interval]", "drift"]),
         ...rows.map((d) =>
             row([
                 d.host,
                 d.arm,
                 d.probe,
+                `${d.pass}/${d.n}`,
                 f(d.rate),
-                d.reference ? `[${f(d.reference[0])}, ${f(d.reference[1])}]` : "-",
+                d.reference && d.reference_counts
+                    ? `${d.reference_counts[0]}/${d.reference_counts[1]} [${f(d.reference[0])}, ${f(d.reference[1])}]`
+                    : "-",
                 d.drift === null ? "-" : d.drift ? "drift" : "within",
             ]),
         ),

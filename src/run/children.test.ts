@@ -107,3 +107,20 @@ test("a stop this run issued settles only once the child's process group is gone
     const grandchild = Number(readFileSync(path, "utf8").trim());
     expect(running(grandchild)).toBe(false);
 });
+
+test("stopAll settles a run whose leader exited while a descendant kept the group alive", async () => {
+    const children = new Children(process.env, 300);
+    const path = log();
+    const run = children.run(
+        ["-e", "const p = Bun.spawn(['sleep', '60']); console.log(p.pid)"],
+        path,
+    );
+    await Bun.sleep(150);
+    const stopped = children.stopAll("SIGTERM");
+    expect(
+        await Promise.race([stopped.then(() => "settled"), Bun.sleep(2_000).then(() => "hung")]),
+    ).toBe("settled");
+    expect([0, SIGTERM_EXIT]).toContain(await run);
+    const grandchild = Number(readFileSync(path, "utf8").trim());
+    expect(running(grandchild)).toBe(false);
+});
