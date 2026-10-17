@@ -8,13 +8,21 @@ import { buildFaketime } from "./timeinject";
 import { type ToolchainProbe, toolchainProbe } from "./toolchain";
 import { hostVersion, transcriptPaths } from "./transcripts";
 
+/** A probed host: its version and the real path of the install the version came from. */
+export interface HostRow {
+    host: "pi" | "opencode";
+    version: string;
+    path?: string;
+    transcript_paths: string[];
+}
+
 export interface Preflight {
     launcher: string;
     time_injection: Interception[];
     distortions: string[];
-    hosts: { host: "pi" | "opencode"; version: string; transcript_paths: string[] }[];
+    hosts: HostRow[];
     /** The `config.upgrade` versions a `host_upgrade` fault moves to, probed before the run. */
-    upgrade: { host: "pi" | "opencode"; version: string; transcript_paths: string[] }[];
+    upgrade: HostRow[];
     toolchain: ToolchainProbe[];
 }
 
@@ -42,7 +50,7 @@ export function requireUpgradeMoves(hosts: VersionRow[], upgrade: VersionRow[]):
 export function preflightDrift(before: Preflight, now: Preflight): string[] {
     const intercepted = (p: Preflight) => p.time_injection.map((t) => [t.name, t.intercepted]);
     const versions = (p: Preflight) =>
-        [...p.hosts, ...(p.upgrade ?? [])].map((h) => [h.host, h.version]);
+        [...p.hosts, ...(p.upgrade ?? [])].map((h) => [h.host, h.version, h.path ?? null]);
     const drift: string[] = [];
     if (!sameJson(intercepted(before), intercepted(now))) drift.push("time interception");
     if (!sameJson(versions(before), versions(now))) drift.push("host versions");
@@ -97,9 +105,10 @@ export async function preflight(config: SimConfig, runRoot: string): Promise<Pre
     distortions.push(
         "toolchain caches are read-only, so a dependency missing from them fails to fetch",
     );
-    const row = (c: SimConfig, host: "pi" | "opencode") => {
+    const row = (c: SimConfig, host: "pi" | "opencode"): HostRow => {
         const version = versionOf(c, host, launcher);
-        return { host, version, transcript_paths: transcriptPaths(host, version) };
+        const path = realpathSync(host === "pi" ? c.pi_install : c.opencode_binary);
+        return { host, version, path, transcript_paths: transcriptPaths(host, version) };
     };
     const hosts = (["pi", "opencode"] as const).map((h) => row(config, h));
     const fields = { pi: "pi_install", opencode: "opencode_binary" } as const;

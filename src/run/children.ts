@@ -64,6 +64,14 @@ export class Children {
                     settledRun = r;
                 }),
             );
+            // A note the run log cannot take goes to stderr; recording never throws.
+            const note = (line: string) => {
+                try {
+                    appendFileSync(log, `${line}\n`);
+                } catch {
+                    console.error(`${log}: ${line}`);
+                }
+            };
             // A log the command cannot write ends the child and settles the run as a failure,
             // instead of throwing out of the stream callback past the supervisor.
             const sink = (chunk: Buffer) => {
@@ -88,7 +96,7 @@ export class Children {
                 try {
                     onStop?.(reason);
                 } catch (caught) {
-                    appendFileSync(log, `stop callback failed: ${(caught as Error).message}\n`);
+                    note(`stop callback failed: ${(caught as Error).message}`);
                 }
             };
             if (limitMs !== undefined && limitMs > 0)
@@ -109,6 +117,8 @@ export class Children {
             // The run tears its own tree down before it exits, so the process group is killed
             // on every exit and the run settles once the group is gone; a survivor past the
             // grace period is named in the log.
+            // A group that survives SIGKILL settles the run as killed (137), so a scheduled
+            // restart does not relaunch beside it.
             const settle = async (code: number) => {
                 const pid = child.pid;
                 if (pid !== undefined) {
@@ -116,7 +126,8 @@ export class Children {
                     const deadline = Date.now() + this.graceMs;
                     while (groupAlive(pid) && Date.now() < deadline) await Bun.sleep(50);
                     if (groupAlive(pid)) {
-                        appendFileSync(log, `process group ${pid} survived SIGKILL\n`);
+                        note(`process group ${pid} survived SIGKILL`);
+                        return finish(137);
                     }
                 }
                 finish(code);

@@ -510,6 +510,12 @@ describe("HostDriver faults", () => {
         await expect(driver.event(ev("session_end", { project: "p" }))).rejects.toThrow(
             "second client exited before the primary session's session_end",
         );
+        await driver.stop().catch(() => undefined);
+        const o = (driver as unknown as { o: DriverOptions }).o;
+        o.daemonFactory = () => fakeDaemon(10) as unknown as DaemonStack;
+        await expect(new HostDriver(o).resume(null)).rejects.toThrow(
+            "second client exited before the primary session's session_end",
+        );
     });
 
     test("stopping while the second client opens waits for the open, then closes it", async () => {

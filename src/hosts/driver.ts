@@ -37,6 +37,8 @@ interface ArmState {
     second_owed?: string | null;
     /** The transcript store's newest mtime when an upgraded host's first session opened. */
     transcript_mark?: number | null;
+    /** The session whose second client exited before its end; the arm stays failed. */
+    second_exited?: string | null;
     /** Daemon restarts whose post-crash store check is still owed. */
     store_faults?: string[];
     daemon: { pid: number; start: string | null } | null;
@@ -120,6 +122,7 @@ export class HostDriver implements ArmDriver {
     private secondOwed: string | null = null;
     /** Store checks the last turn returned; held in `state.json` until the next turn begins. */
     private justChecked: string[] = [];
+    private secondExited: string | null = null;
     /** A host open or daemon start or restart in flight, which `stop` awaits before closing either. */
     private inflight: Promise<void> | null = null;
     private stopping = false;
@@ -205,6 +208,7 @@ export class HostDriver implements ArmDriver {
             store_faults: [...this.storeFaults, ...this.justChecked],
             second_owed: this.secondOwed ?? this.secondSession,
             transcript_mark: this.storeMarkAtOpen,
+            second_exited: this.secondExited,
         };
         mkdirSync(this.armDir, { recursive: true });
         writeFileSync(this.stateFile, JSON.stringify(state));
@@ -267,6 +271,12 @@ export class HostDriver implements ArmDriver {
             JSON.stringify(record.templates ?? null) === JSON.stringify(this.transcriptPaths());
         this.secondOwed = state?.second?.session ?? state?.second_owed ?? null;
         this.storeMarkAtOpen = state?.transcript_mark ?? null;
+        this.secondExited = state?.second_exited ?? null;
+        if (this.secondExited !== null) {
+            throw new HarnessFailure(
+                `the second client exited before the primary session's session_end in ${this.secondExited}`,
+            );
+        }
         await this.reapStale();
         await this.startArm(false);
         if (open) await this.event(open);
@@ -539,6 +549,9 @@ export class HostDriver implements ArmDriver {
         if (!this.second) return;
         const pid = this.second.hostPid();
         if (pid === null || !running(pid)) {
+            // The violation is recorded before the throw, so a resumed arm fails the same way.
+            this.secondExited = this.secondSession;
+            this.writeState();
             throw new HarnessFailure(
                 `the second client exited before the primary session's session_end (pid ${pid})`,
             );

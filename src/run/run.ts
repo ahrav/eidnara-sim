@@ -659,6 +659,7 @@ async function runArms(
                     const turn = scripted.find((t) => t.id === e.id);
                     if (!turn) throw new HarnessFailure(`${e.id}: no scripted user turn`);
                     const d = await userSim.deliver(arm, turn, lastAgent(arm, e.session));
+                    guard();
                     const user = { session: e.session, label: d.label, delivered: d.delivered };
                     if (!d.delivered) return { user };
                     const out = await driver.event({

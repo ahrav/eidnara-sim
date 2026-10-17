@@ -4,6 +4,7 @@ import {
     mkdirSync,
     readFileSync,
     realpathSync,
+    rmSync,
     writeFileSync,
 } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
@@ -384,8 +385,20 @@ const runJob = async (job: TierJob) => {
         ...(moved ? ["--faults", join(job.dir, "faults.json")] : []),
     ];
     const marker = join(job.dir, "restarted");
+    // A marker counts only beside the journal of the run it stopped; one left in a cleaned
+    // directory, or a symlink in its place, is removed before the run begins.
+    const journaled = existsSync(join(job.dir, "journal.jsonl"));
+    const markerEntry = ((): "file" | "link" | null => {
+        try {
+            return lstatSync(marker).isSymbolicLink() ? "link" : "file";
+        } catch {
+            return null;
+        }
+    })();
+    if (markerEntry === "link" || (markerEntry === "file" && !journaled)) rmSync(marker);
+    const marked = markerEntry === "file" && journaled;
     const due = job.group === "main" ? restartCut(restartAt, job.events, job.arms.length) : null;
-    const cut = due !== null && !existsSync(marker) ? due : null;
+    const cut = due !== null && !marked ? due : null;
     const remaining = () => Math.max(1, limit - (Date.now() - span.started));
     let requested = false;
     let code = held
@@ -402,14 +415,14 @@ const runJob = async (job: TierJob) => {
                     // The marker lands as the stop goes out, so a parent that dies before the
                     // child exits leaves a run the next invocation resumes rather than cuts
                     // again; the rerun follows only a marker that was written.
-                    writeFileSync(marker, `${new Date().toISOString()}\n`);
+                    writeFileSync(marker, `${new Date().toISOString()}\n`, { flag: "wx" });
                     requested = true;
                 },
             );
     if (requested && code === SIGTERM_EXIT && remaining() > 1) {
         code = await run(args, log, remaining());
     }
-    const restarted = existsSync(marker);
+    const restarted = marked || requested;
     const after = runSpan(job.dir, launched);
     const run_wall_ms = (after.ended ?? Date.now()) - after.started;
     const start_ms = existsSync(join(job.dir, "journal.jsonl")) ? after.started : null;
