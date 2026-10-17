@@ -84,7 +84,9 @@ ratio margin; a treatment arm with no events passes. At six to eight runs
 that limit stays above 1.5 unless the treatment arm has far fewer events,
 so the sign-test gates at M and L pass with zero or few treatment events. The tier passes by intersection-union:
 every gate component passes at its own alpha, which the verdict lists,
-and no CUSUM rule stopped the tier. A noninferiority or at-most component
+no CUSUM rule stopped the tier, and the input's `incomplete` list, the
+fixed-N campaign requirements still open, is empty; the verdict carries
+that list under `pass.incomplete`. A noninferiority or at-most component
 decides on the upper end of a two-sided interval, a one-sided test at
 half its alpha, and the verdict says so.
 

@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { type Entry, readJournal } from "../run/journal";
+import { readJournal } from "../run/journal";
 import type { FALSIFICATION } from "../stats/gate";
 import type { PairingRecord } from "../usersim/usersim";
 import type { GradedRun } from "./observe";
@@ -47,6 +47,7 @@ export function falsificationPairs(
         );
     };
     const path = join(g.run.dir, "pairing.jsonl");
+    // SAFETY: This assertion requires every pairing.jsonl record to match PairingRecord.
     const pairing = existsSync(path) ? (readJournal(path) as unknown as PairingRecord[]) : [];
     const pushback = (a: string) => {
         const cut = new Map(
@@ -76,16 +77,14 @@ export function falsificationPairs(
     };
     const gaps = (a: string) => {
         const journal = arm(a)?.journal ?? [];
-        const jumps = journal.flatMap((e, i) =>
-            e.kind === "AdvanceClock" && e.next_event && i > 0
-                ? [
-                      {
-                          next: String(e.next_event),
-                          gap: e.wall_ms - (journal[i - 1] as Entry).wall_ms,
-                      },
-                  ]
-                : [],
-        );
+        let completed: number | null = null;
+        const jumps: { next: string; gap: number }[] = [];
+        for (const e of journal) {
+            if (e.kind === "AdvanceClock" && e.next_event && completed !== null) {
+                jumps.push({ next: String(e.next_event), gap: e.wall_ms - completed });
+            }
+            if (e.kind === "Event") completed = e.wall_ms;
+        }
         return byKey(
             jumps,
             (j) => j.next,

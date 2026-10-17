@@ -42,6 +42,8 @@ export interface TierInput {
     observations: Observation[];
     excluded: { id: string; arm: string; reason: string }[];
     asymmetric: string[];
+    /** The fixed-N campaign requirements still open; the tier passes only with an empty list. */
+    incomplete?: string[];
     cusum_sd?: Partial<Record<"harm" | "futility", number>>;
     journal_seq_at_eval?: number;
 }
@@ -92,6 +94,7 @@ export interface TierVerdict {
         passed: boolean;
         components: string[];
         per_component_alpha: Record<string, number>;
+        incomplete: string[];
         rule: string;
     };
     stops: CusumStop[];
@@ -252,11 +255,7 @@ function bound(f: Family, metric: string, s: Stats, obs: Observation): [string, 
             ? mean((obs.items ?? []).map((x) => x.treatment)) < margin
                 ? ["all"]
                 : []
-            : (obs.runs ?? [])
-                  .filter((r) =>
-                      f.direction === "zero-tolerance" ? r.treatment !== 0 : r.treatment > margin,
-                  )
-                  .map((r) => r.run);
+            : (obs.runs ?? []).filter((r) => r.treatment > margin).map((r) => r.run);
     return bad.length === 0
         ? ["within-bound", true]
         : [`failed-gate(${metric}, ${bad.join(" ")})`, false];
@@ -413,16 +412,22 @@ export function evaluateTier(p: Preregistration, input: TierInput): TierVerdict 
         .find((f) => f.family === "harm")
         ?.metrics.filter((m) => m.verdict === "worse")
         .map((m) => ({ metric: m.metric, interval: m.interval }));
+    const incomplete = input.incomplete ?? [];
     const verdict: TierVerdict = {
         prereg_sha256: preregistrationHash(p),
         journal_seq_at_eval: input.journal_seq_at_eval ?? null,
         families,
         memory_made_it_worse: worse ?? [],
         pass: {
-            passed: halts.length === 0 && gates.length > 0 && gates.every((f) => f.passed === true),
+            passed:
+                halts.length === 0 &&
+                incomplete.length === 0 &&
+                gates.length > 0 &&
+                gates.every((f) => f.passed === true),
             components: gates.map((f) => f.family),
             per_component_alpha: Object.fromEntries(gates.map((f) => [f.family, f.alpha])),
-            rule: "intersection-union: the tier passes when every gate component passes at its own alpha and no CUSUM rule stopped it; a noninferiority or at-most component decides on the upper end of its two-sided interval, a one-sided test at half its alpha",
+            incomplete,
+            rule: "intersection-union: the tier passes when every gate component passes at its own alpha, no CUSUM rule stopped it, and the pre-registered campaign is complete; a noninferiority or at-most component decides on the upper end of its two-sided interval, a one-sided test at half its alpha",
         },
         stops: halts,
         cusum_unavailable: unavailable,
