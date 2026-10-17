@@ -9,8 +9,10 @@ its A/A pairs, and writes the tier report. A run whose journal already
 holds `EndRun` is complete and is graded and reported as it finished. A
 job that fails in orchestration stops the sibling runs before the command
 exits. A run whose directory another process holds (`lease.json` with a
-live pid) is left ungraded, kept out of the report, and fails the
-command. `<dir>/tier-plan.json` holds
+live pid, read before the run and again after it) is left ungraded, kept
+out of the report, and fails the command. A child's log (`tier.log`,
+`faketime.log`, `report.log`) that exists as a symlink is refused before
+the child starts. `<dir>/tier-plan.json` holds
 the plan and `<dir>/tier-result.json` the outcome of each run, with the
 run's own wall time and whether it exceeded the tier's wall budget; each
 run directory keeps its `tier.log`. The command exits 1 when any run,
@@ -38,8 +40,9 @@ bank, repository list, distributions, and tool outputs), is refused for a
 new run; a run that already has a manifest keeps the
 scenario it ran. The libfaketime build's download,
 extraction, and compilation each end within ten minutes; invocations
-serialise on a lease over `vendor/build`, and the finished tree is
-renamed into place, so another command sees a complete library or none.
+serialise on a lease over `vendor/build`, which a signal to the build
+releases when this process holds it, and the finished tree is renamed
+into place, so another command sees a complete library or none.
 
 ## Plan
 
@@ -110,7 +113,8 @@ The run-level checks cover:
   `checkJournal` over the entries in `seq` order, a repeated or
   non-integer `seq` counting as a break;
 - SIM-P15: proxy records carry both times, each with a fresh integer
-  `seq`, with wall time in `seq` order per arm, a receipt time that is finite and at or before completion and
+  `seq` across the run, with wall time in `seq` order across the run, a
+  receipt time that is finite and at or before completion and
   that the journal has begun by, and each call's scenario time within 5 s
   of the clock the arm's journal implies at the call's start (wall pace
   while a turn or job is open, closed by `EndTurn`, `EndJob`, or the
@@ -127,7 +131,7 @@ The run-level checks cover:
   probe's first `EndTurn` and before any later turn, every snapshot
   belongs to a reached probe, and every persisted
   grade, earlier versions included, cites a journaled snapshot of its
-  item;
+  item whose record is still on the arm's `snapshots.jsonl`;
 - SIM-P42: grade versions are positive integers that only increase, the
   report grades at the latest version (for a P7 row, the latest of its
   judgment, by inputs), and the panel names the versions used;

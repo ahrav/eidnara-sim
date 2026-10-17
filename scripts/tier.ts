@@ -226,7 +226,10 @@ const results = await supervised(() =>
             // is read again so preflight before StartRun and teardown after EndRun stay out.
             const after = runSpan(job.dir, started);
             const run_wall_ms = (after.ended ?? Date.now()) - after.started;
-            const ran = existsSync(join(job.dir, "manifest.json")) && !held;
+            // A standalone run may have taken the directory while the child ran; the lease is
+            // read again before grading.
+            const heldNow = held || leaseHeld(job.dir);
+            const ran = existsSync(join(job.dir, "manifest.json")) && !heldNow;
             const graded = ran ? await run(["grade-run.ts", job.dir], log, limit) : null;
             const aa =
                 graded === 0 && job.arms.some((a) => a.includes("~"))
@@ -235,7 +238,7 @@ const results = await supervised(() =>
             return {
                 ...job,
                 run_exit: code,
-                leased_elsewhere: held,
+                leased_elsewhere: heldNow,
                 run_wall_ms,
                 over_budget: run_wall_ms > budget,
                 grade_exit: graded,

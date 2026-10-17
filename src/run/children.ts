@@ -1,5 +1,5 @@
 import { type ChildProcess, spawn } from "node:child_process";
-import { appendFileSync } from "node:fs";
+import { appendFileSync, existsSync, lstatSync } from "node:fs";
 import { constants } from "node:os";
 import { killOwnedTree } from "./procs";
 
@@ -31,6 +31,12 @@ export class Children {
 
     run(argv: string[], log: string, limitMs?: number): Promise<number> {
         if (this.stopping) return Promise.resolve(SIGTERM_EXIT);
+        // The log is a file of the run's own; a symlink standing there is refused before the
+        // child starts, so nothing is appended through it.
+        if (existsSync(log) && lstatSync(log).isSymbolicLink()) {
+            console.error(`${log} is a symlink; a child's log is a file of its own`);
+            return Promise.resolve(127);
+        }
         return new Promise<number>((done) => {
             const child = spawn("bun", argv, {
                 env: this.env,

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ArmLogs } from "../oracle/logs";
@@ -198,6 +198,11 @@ function second(broken: boolean, busy = false): GradedRun {
     const cited = broken ? "eidnara:q-1:e-2" : "eidnara:q-1:e-1";
     const grades = broken ? [grade(1, cited), grade(1, cited)] : [grade(1, cited)];
     writeFileSync(join(dir, "grades.jsonl"), lines(grades));
+    mkdirSync(join(dir, "eidnara"), { recursive: true });
+    writeFileSync(
+        join(dir, "eidnara", "snapshots.jsonl"),
+        lines([{ id: "eidnara:q-1:e-1", arm: "eidnara", item: "q-1" }]),
+    );
     const call = (s: number, wall_ms: number) => ({
         seq: s,
         scenario_ms: 10,
@@ -228,6 +233,8 @@ function second(broken: boolean, busy = false): GradedRun {
 
 interface Parts {
     arms?: string[];
+    /** Snapshot ids on each arm's `snapshots.jsonl`; by default every journaled snapshot. */
+    snapshots?: string[];
     tape_pairing_sha256?: Record<string, string>;
     capped?: boolean;
     fault_override?: object[];
@@ -260,12 +267,23 @@ function made(p: Parts): GradedRun {
     );
     writeFileSync(join(dir, "journal.jsonl"), lines(journal));
     writeFileSync(join(dir, "grades.jsonl"), lines(p.grades ?? []));
+    const snapshotIds =
+        p.snapshots ??
+        journal.filter((e) => e.kind === "SnapshotArtefacts").map((e) => String(e.snapshot));
+    for (const name of p.arms ?? ["eidnara"]) {
+        mkdirSync(join(dir, name), { recursive: true });
+        writeFileSync(
+            join(dir, name, "snapshots.jsonl"),
+            lines(snapshotIds.map((id) => ({ id, arm: name }))),
+        );
+    }
+    const calls = (p.calls ?? []).map((c) => ({ arm: "eidnara", ...c }) as { arm: string });
     const arms = (p.arms ?? ["eidnara"]).map(
         (name) =>
             ({
                 arm: name,
                 journal: journal.filter((e) => e.arm === name),
-                calls: name === "eidnara" ? (p.calls ?? []) : [],
+                calls: calls.filter((c) => c.arm === name),
                 tools: [],
             }) as unknown as ArmLogs,
     );
@@ -616,6 +634,10 @@ describe("property witness evidence", () => {
         expect(one("P41", made({ journal: [probe, snap], grades: [grade("q-1")] })).status).toBe(
             "witnessed",
         );
+        // The grade's snapshot record must still be on the arm's snapshot log.
+        expect(
+            one("P41", made({ journal: [probe, snap], grades: [grade("q-1")], snapshots: [] })),
+        ).toMatchObject({ status: "violated", detail: expect.stringContaining("snapshot log") });
         expect(
             one("P41", made({ journal: [probe, snap], grades: [grade("q-1"), grade("q-2")] })),
         ).toMatchObject({ status: "violated", detail: expect.stringContaining("q-2") });
@@ -782,6 +804,36 @@ describe("property witness evidence", () => {
             one("P15", made({ journal, calls: [{ ...call(100, 1_200), started_wall_ms: "x" }] })),
         ).toMatchObject({
             status: "violated",
+        });
+        // The sequence is one per run: a seq reused in another arm, or a wall time that falls
+        // back at an arm boundary, breaks it.
+        const twoArms = {
+            arms: ["host", "eidnara"],
+            journal: [...journal, ...journal.map((e) => ({ ...e, arm: "host" }))],
+        };
+        expect(
+            one(
+                "P15",
+                made({
+                    ...twoArms,
+                    calls: [call(300, 1_200), { ...call(300, 1_210), arm: "host" }],
+                }),
+            ),
+        ).toMatchObject({ status: "violated", detail: expect.stringContaining("seq") });
+        expect(
+            one(
+                "P15",
+                made({
+                    ...twoArms,
+                    calls: [
+                        { ...call(300, 1_200), seq: 2 },
+                        { ...call(300, 1_100), seq: 3, arm: "host" },
+                    ],
+                }),
+            ),
+        ).toMatchObject({
+            status: "violated",
+            detail: expect.stringContaining("wall time decreases"),
         });
         // The order is by seq, so a seq that is missing or repeated leaves it unestablished.
         expect(
