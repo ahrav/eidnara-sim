@@ -157,12 +157,18 @@ const readNotes = (path: string) => {
  * supplies the store's caller-scope functions so its ownership triggers admit the delete, then
  * reads back how many notes still match the fact by three-word runs or values.
  */
+export interface DeletionPlan {
+    planned?: number[];
+    onPlanned?: (ids: number[]) => void;
+}
+
 export async function deleteFactNotes(
     path: string,
     statement: string,
     others: readonly string[] = [],
     onSpawn: (child: ReturnType<typeof Bun.spawn>) => void = () => undefined,
     within?: string,
+    plan: DeletionPlan = {},
 ): Promise<Deletion> {
     if (lstatSync(path).isSymbolicLink()) {
         throw new Error(`${path} is a symlink; the deletion opens only the arm's own store file`);
@@ -176,9 +182,12 @@ export async function deleteFactNotes(
         );
     }
     const carries = factMatcher(statement, others, 4);
-    const ids = readNotes(path)
-        .filter((n) => carries(n.content))
-        .map((n) => n.id);
+    const ids =
+        plan.planned ??
+        readNotes(path)
+            .filter((n) => carries(n.content))
+            .map((n) => n.id);
+    if (plan.planned === undefined) plan.onPlanned?.(ids);
     if (ids.length > 0) {
         const p = Bun.spawn(["python3", "-c", DELETE, path, JSON.stringify(ids)], {
             stderr: "pipe",

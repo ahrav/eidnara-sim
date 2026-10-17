@@ -236,9 +236,11 @@ the note's own project and report no facade authority drain, so the
 authority triggers stay inactive for the delete; a failed delete is
 journaled as skipped, as is a store path that is a symlink or resolves
 outside the arm's data directory, and the child is stopped with the arm
-when the run is torn down. Each deleted note is journaled first as its own
+when the run is torn down. Each chosen note is journaled as its own
 `DeleteMemoryObject` entry with the object id, its kind, the target probe,
-and the scenario time. The grader marks the arm's grade for a sampled probe whose
+and the scenario time before the store changes, so a run resumed after
+the delete and before its `CounterfactualDeletion` entry repeats the
+delete on the journaled ids and records them as deleted. The grader marks the arm's grade for a sampled probe whose
 deletion was skipped, deleted nothing, or left matching notes as
 `excluded(cf-unverified)`, so the gates never read an outcome from an
 intervention of unknown effect. A run with an `eidnara-cf` arm stops at start when
