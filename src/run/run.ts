@@ -172,6 +172,21 @@ export function armOrder(o: Pick<RunOptions, "tier" | "seed" | "arms">): string[
     return kept;
 }
 
+/**
+ * A persisted order is one `armOrder` would schedule for the tier and seed: pre-registered arms
+ * in the seed's relative order, each control right after its arm, once, for a registered pair.
+ */
+export function requireAdmittedOrder(
+    o: Pick<RunOptions, "tier" | "seed">,
+    order: readonly string[],
+): void {
+    if (!sameJson(armOrder({ ...o, arms: [...order] }), order)) {
+        throw new HarnessFailure(
+            `manifest order ${order.join(",")} is not an order ${o.tier} seed ${o.seed} admits`,
+        );
+    }
+}
+
 /** The arm a user-sim divergence is measured against: an A/A control's own arm, else the first. */
 export const referenceArm = (order: string[]) => (arm: string) =>
     arm.includes("~") ? armBase(arm) : (order[0] as string);
@@ -217,6 +232,7 @@ async function loadManifest(o: RunOptions, scenario: Scenario): Promise<Manifest
         });
     if (existsSync(path)) {
         const manifest = JSON.parse(readFileSync(path, "utf8")) as Manifest;
+        requireAdmittedOrder(o, manifest.order);
         // A resume checks the sources against the run it continues, whose event count and arm
         // order the manifest holds whether or not this invocation restates them.
         sources(manifest.tapes, manifest.events, manifest.order, manifest.fault_override);

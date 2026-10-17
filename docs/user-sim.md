@@ -127,8 +127,9 @@ An arm label `<arm>~<tag>`, with a lowercase alphanumeric tag such as
 journal entries, and call records (`armBase` and `CONTROL_LABEL` in
 `src/hosts/arms.ts`). `--arms host,host~aa` runs it right after its arm,
 one control per arm, and only for a pair the tier pre-registers in
-`aa_controls.pairs` (S and M); the oracle loader and the A/A report hold a
-manifest order to the same rule, adjacency and the tier's arms included
+`aa_controls.pairs` (S and M); a resumed run's persisted order is held to
+the same rule (`requireAdmittedOrder`), the oracle loader and the A/A
+report hold a manifest order to it, adjacency and the tier's arms included
 (`requireOrder`), and `pairing-check.ts` holds it to the control structure. A control's reference arm is its own arm,
 so its divergence records and tape replies pair it with that arm; every
 other arm's reference is the first of the order. Both arms of a pair share
@@ -144,8 +145,8 @@ it reads, opens `grades.jsonl` only as a regular file with one link
 (`GradeLog` repairs a cut last line in place), requires a manifest event
 count inside the scenario and the journal complete for the manifest order
 and the scheduled events with no corrupt terminated line (`requireComplete`,
-as `grade-run.ts` does), requires the run arms to keep the seed's
-pre-registered relative order, requires each paired turn to match one
+as `grade-run.ts` does), requires a pre-registered seed and the run arms
+in the seed's relative order, requires each paired turn to match one
 journaled, unrecovered `UserTurn` of the same delivery, checks each
 pairing record's shape and arm (`readPairing`, which
 `pairing-check.ts` shares, refusing a corrupt terminated line), binds each
@@ -154,14 +155,17 @@ and event and one divergence per arm and session, requires each divergence
 to cite its control turn's digest and context and a differing digest the
 reference arm's turn carries, or, against a recorded run, a context no
 manifest tape's pairing log holds together with a source's digest and
-context (the tapes still hashing to the manifest's digests), each
-probe or paste turn to carry the compiled text, and a turn record from
+context (the tapes still hashing to the manifest's digests), a divergence
+row at or before any control turn whose digest differs from its arm's, each
+probe or paste turn and each turn delivered from the script alone to carry
+the compiled text, and a turn record from
 each arm of the pair for every scheduled user turn, refuses a
 control whose delivered text differed from its arm's before its recorded
 divergence (`pairingMismatches`, the check `pairing-check.ts` runs), checks each
 grade log's identities (an opponent only on P7, versions 1..n once per item
 and arm) and each latest grade's arm, item, probe type, version, verdict, and
-finite metrics against the run and its reached probes, requires each grade
+metrics (booleans or finite numbers, `<type>.pass` stating the verdict)
+against the run and its reached probes, requires each grade
 to name the arm's journaled first snapshot of its item from that arm's turn
 at the probe's event that ended ok, requires both grades of a paired item to carry the same metric keys and
 value types, refuses a run whose order

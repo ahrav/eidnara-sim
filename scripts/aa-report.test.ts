@@ -13,6 +13,7 @@ import {
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import type { GradeRecord } from "../src/grade/probes";
+import { sha256Hex } from "../src/prereg/canonical";
 import { preregistrationHash } from "../src/prereg/validate";
 import { scenarioHash } from "../src/scenario/compile";
 import { loadPrereg } from "../src/scenario/inputs";
@@ -31,7 +32,9 @@ const grade = (arm: string, item: string, type: string, metric: string, value: n
     metrics: { [`${type}.pass`]: true, [metric]: value },
 });
 
-const turn = (arm: string, event: string, text_sha256: string, index = 0) => ({
+const SCRIPT_TEXT = "go";
+/** A delivered turn; `text` other than the compiled script marks a live reply in front of it. */
+const turn = (arm: string, event: string, text: string, index = 0) => ({
     kind: "turn",
     arm,
     session: "s-1",
@@ -40,10 +43,10 @@ const turn = (arm: string, event: string, text_sha256: string, index = 0) => ({
     digest: "d",
     context_sha256: "c",
     prefix_sha256: "p",
-    text_sha256,
-    label: "task",
+    text_sha256: sha256Hex(text === "same" ? SCRIPT_TEXT : text),
+    label: text === "same" ? "task" : "pushback",
     delivered: true,
-    source: "script",
+    source: text === "same" ? "script" : "live",
 });
 
 const journal = (order: string[], events: number): Record<string, unknown>[] => [
@@ -81,6 +84,7 @@ function gradedRun(
     items = [1, 2, 3, 4, 5, 6],
     scenario_hash?: string,
 ): string {
+    const seed = loadPrereg(tier as "S" | "M").seeds[0] as number;
     const dir = mkdtempSync(join(tmpdir(), "sim-aa-report-"));
     const line = (o: unknown) => `${JSON.stringify(o)}\n`;
     const probes: Record<string, unknown>[] = items.flatMap((i) => [
@@ -100,6 +104,8 @@ function gradedRun(
             session: "s-1",
             index: i,
             probe,
+            role: "task",
+            text: SCRIPT_TEXT,
         })),
         { id: `e-${N_EVENTS}`, kind: "session_end", session: "s-1" },
     ];
@@ -107,10 +113,10 @@ function gradedRun(
         { id: "j-1", type: "P7", fact: "fact-1" },
         { id: "k-1", type: "P14", session: "s-1" },
     );
-    const scenario = { manifest: { tier, seed: 101 }, probes, events };
+    const scenario = { manifest: { tier, seed }, probes, events };
     const manifest = {
         tier,
-        seed: 101,
+        seed,
         order: ["host", "host~aa"],
         events: N_EVENTS,
         prereg_sha256,
@@ -508,7 +514,9 @@ describe("aa-report", () => {
             JSON.stringify({ ...manifest, scenario_hash: scenarioHash(scenario) }),
         );
         const rows = ["host", "host~aa"].flatMap((a) =>
-            allTurns(a).map((t) => (t.event === "e-1" ? { ...t, text_sha256: "altered" } : t)),
+            allTurns(a).map((t) =>
+                t.event === "e-1" ? { ...t, text_sha256: sha256Hex("altered") } : t,
+            ),
         );
         writeFileSync(join(dir, "pairing.jsonl"), rows.map(line).join(""));
         expect(() => aaReport(dir)).toThrow(/e-1.*compiled/);
@@ -822,6 +830,54 @@ describe("aa-report", () => {
         writeFileSync(join(dir, "manifest.json"), JSON.stringify({ ...m, order }));
         writeFileSync(join(dir, "journal.jsonl"), journal(order, N_EVENTS).map(line).join(""));
         expect(() => aaReport(dir)).toThrow(/seed 101/);
+    });
+
+    test("a script-sourced turn of any role must carry the compiled text", () => {
+        const line = (o: unknown) => `${JSON.stringify(o)}\n`;
+        const dir = gradedRun("S", preregistrationHash(loadPrereg("S")));
+        const rows = ["host", "host~aa"].flatMap((a) =>
+            allTurns(a).map((t) =>
+                t.event === "e-2" ? { ...t, text_sha256: sha256Hex("edited") } : t,
+            ),
+        );
+        writeFileSync(join(dir, "pairing.jsonl"), rows.map(line).join(""));
+        expect(() => aaReport(dir)).toThrow(/e-2.*compiled/);
+    });
+
+    test("a metric value is a boolean or a finite number, and <type>.pass is the verdict", () => {
+        const dir = gradedRun("S", preregistrationHash(loadPrereg("S")));
+        const text = { ...grade("host", "p-1", "P3", "P3.delta_mem", 0), version: 2 };
+        (text.metrics as Record<string, unknown>)["P3.delta_mem"] = "7";
+        appendFileSync(join(dir, "grades.jsonl"), `${JSON.stringify(text)}\n`);
+        expect(() => aaReport(dir)).toThrow(/P3\.delta_mem/);
+        const lying = gradedRun("S", preregistrationHash(loadPrereg("S")));
+        const g = { ...grade("host", "p-1", "P3", "P3.delta_mem", 0), version: 2, verdict: "fail" };
+        appendFileSync(join(lying, "grades.jsonl"), `${JSON.stringify(g)}\n`);
+        expect(() => aaReport(lying)).toThrow(/P3\.pass/);
+    });
+
+    test("a seed the tier does not pre-register is refused", () => {
+        const dir = gradedRun("S", preregistrationHash(loadPrereg("S")));
+        const m = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8"));
+        const scenario = JSON.parse(readFileSync(join(dir, "scenario.json"), "utf8"));
+        scenario.manifest.seed = 999;
+        writeFileSync(join(dir, "scenario.json"), JSON.stringify(scenario));
+        writeFileSync(
+            join(dir, "manifest.json"),
+            JSON.stringify({ ...m, seed: 999, scenario_hash: scenarioHash(scenario) }),
+        );
+        expect(() => aaReport(dir)).toThrow(/seed 999/);
+    });
+
+    test("digests that differ at a control turn require a divergence row at or before it", () => {
+        const line = (o: unknown) => `${JSON.stringify(o)}\n`;
+        const dir = gradedRun("S", preregistrationHash(loadPrereg("S")));
+        const rows = [
+            ...allTurns("host"),
+            ...allTurns("host~aa").map((t) => (t.event === "e-3" ? { ...t, digest: "d3" } : t)),
+        ];
+        writeFileSync(join(dir, "pairing.jsonl"), rows.map(line).join(""));
+        expect(() => aaReport(dir)).toThrow(/e-3.*divergence/);
     });
 
     test("a run-level family forms one cluster per run, so one run leaves it uninformative", () => {

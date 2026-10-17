@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { GradeRecord, Verdict } from "../grade/probes";
-import { armOrder, referenceArm } from "../run/run";
+import { armOrder, referenceArm, requireAdmittedOrder } from "../run/run";
 import { bootstrapMean, disagreementRate, pairedDiffs } from "./paired";
 
 const grade = (
@@ -94,6 +94,22 @@ describe("A/A pairing", () => {
             grade("host~aa", "q-2", "fail"),
         ];
         expect(disagreementRate(grades, "host", "host~aa")).toBe(0.5);
+    });
+
+    test("a persisted order is admitted only as armOrder would schedule it", () => {
+        expect(() =>
+            requireAdmittedOrder({ tier: "S", seed: 101 }, ["host", "host~aa"]),
+        ).not.toThrow();
+        for (const order of [
+            ["eidnara", "host", "host~aa"],
+            ["host~aa"],
+            ["host", "host~aa", "host~bb"],
+        ]) {
+            expect(() => requireAdmittedOrder({ tier: "S", seed: 101 }, order)).toThrow();
+        }
+        expect(() => requireAdmittedOrder({ tier: "L", seed: 301 }, ["host", "host~aa"])).toThrow(
+            "not in the L order",
+        );
     });
 
     test("an A/A control runs beside its pre-registered pair, once, and diverges from its own arm", () => {

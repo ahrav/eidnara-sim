@@ -81,8 +81,11 @@ function report(dir: string) {
     const order = manifest.order as string[];
     requireOrder(order, prereg.arms.run, prereg.aa_controls?.pairs ?? []);
     // The run arms keep the seed's pre-registered relative order, as the run command schedules them.
-    const seedOrder: string[] =
-        prereg.arms.order_by_seed[prereg.seeds.indexOf(manifest.seed)] ?? prereg.arms.run;
+    const seedIndex = prereg.seeds.indexOf(manifest.seed);
+    if (seedIndex < 0) {
+        throw new Error(`${dir}: seed ${manifest.seed} is not pre-registered for ${manifest.tier}`);
+    }
+    const seedOrder: string[] = prereg.arms.order_by_seed[seedIndex] ?? prereg.arms.run;
     const runArms = order.filter((a) => a === armBase(a));
     const kept = seedOrder.filter((a) => runArms.includes(a));
     if (JSON.stringify(kept) !== JSON.stringify(runArms)) {
@@ -182,11 +185,21 @@ function report(dir: string) {
             VERDICTS.includes(g.verdict) &&
             typeof g.metrics === "object" &&
             g.metrics !== null;
-        const infinite = Object.entries(g.metrics ?? {}).find(
-            ([, v]) => typeof v === "number" && !Number.isFinite(v),
+        // A metric is a boolean or a finite number, which is all pairedDiffs pairs; the verdict
+        // metric states the verdict.
+        const odd = Object.entries(g.metrics ?? {}).find(
+            ([, v]) => typeof v !== "boolean" && !(typeof v === "number" && Number.isFinite(v)),
         );
-        if (infinite) {
-            throw new Error(`${dir}/grades.jsonl: ${g.arm}/${g.item} ${infinite[0]} is not finite`);
+        if (odd) {
+            throw new Error(
+                `${dir}/grades.jsonl: ${g.arm}/${g.item} ${odd[0]} is not a boolean or a finite number`,
+            );
+        }
+        const pass = g.metrics?.[`${g.probe_type}.pass`];
+        if (g.verdict !== "excluded" && pass !== undefined && pass !== (g.verdict === "pass")) {
+            throw new Error(
+                `${dir}/grades.jsonl: ${g.arm}/${g.item} ${g.probe_type}.pass contradicts its verdict`,
+            );
         }
         if (!sound)
             throw new Error(`${dir}/grades.jsonl: ${g.arm}/${g.item} is not a grade of this run`);
@@ -261,15 +274,37 @@ function report(dir: string) {
             );
         }
     }
-    // A probe or paste turn delivers the compiled text verbatim, on every arm.
+    // A probe or paste turn, and any turn delivered from the script alone, carries the compiled
+    // text verbatim, on every arm.
     for (const r of pairing) {
         if (r.kind !== "turn") continue;
         const e = turnOf.get(r.event) as { role?: string; text?: unknown } | undefined;
-        if (e?.role !== "probe" && e?.role !== "paste") continue;
+        const verbatim = e?.role === "probe" || e?.role === "paste" || r.source === "script";
+        if (!e || !verbatim) continue;
         if (r.text_sha256 !== sha256Hex(String(e.text))) {
             throw new Error(
                 `${dir}/pairing.jsonl: ${r.arm} ${r.event} differs from the compiled text`,
             );
+        }
+    }
+    // A control turn whose digest differs from its reference arm's is a divergence the runner
+    // recorded at or before that index; a session with no row for it has lost evidence.
+    const divergedBy = new Map<string, number>();
+    for (const r of pairing) {
+        if (r.kind !== "divergedAt") continue;
+        const key = `${r.arm}/${r.session}`;
+        divergedBy.set(key, Math.min(divergedBy.get(key) ?? Number.POSITIVE_INFINITY, r.index));
+    }
+    for (const r of pairing) {
+        if (r.kind !== "turn" || r.arm === reference(r.arm)) continue;
+        const theirs = turnDigest.get(`${reference(r.arm)}/${r.event}`);
+        if (theirs && theirs.digest !== r.digest) {
+            const at = divergedBy.get(`${r.arm}/${r.session}`) ?? Number.POSITIVE_INFINITY;
+            if (at > r.index) {
+                throw new Error(
+                    `${dir}/pairing.jsonl: ${r.arm} ${r.event} differs from ${reference(r.arm)} with no divergence recorded at or before index ${r.index}`,
+                );
+            }
         }
     }
     const mismatched = pairingMismatches(pairing, reference);
