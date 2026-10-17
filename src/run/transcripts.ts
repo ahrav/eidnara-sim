@@ -13,6 +13,15 @@ export const TRANSCRIPT_STORES: TranscriptStore[] = [
     },
 ];
 
+/** The entries that are single files; every other store is a directory. */
+const TRANSCRIPT_FILES = new Set(["$XDG_DATA_HOME/opencode/opencode.db"]);
+
+export type TranscriptKind = "file" | "directory";
+
+export function transcriptKind(template: string): TranscriptKind {
+    return TRANSCRIPT_FILES.has(template) ? "file" : "directory";
+}
+
 export function transcriptPaths(host: "pi" | "opencode", version: string): string[] {
     const row = TRANSCRIPT_STORES.find((t) => t.host === host && t.versions.test(version));
     if (!row) {

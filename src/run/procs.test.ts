@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { launch, sandboxAvailable, writeLauncher } from "./launcher";
-import { ownedProcesses, processStart, running, stopOwnedTree } from "./procs";
+import { childrenByParent, ownedProcesses, processStart, running, stopOwnedTree } from "./procs";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -83,6 +83,71 @@ test.skipIf(!sandboxAvailable())(
 test("a process start time identifies one process across pid reuse", () => {
     expect(processStart(process.pid)).toMatch(/^\d+$/);
     expect(processStart(2 ** 22 + 7)).toBeNull();
+});
+
+test.skipIf(!sandboxAvailable())(
+    "stopping the launcher's tree during its privileged setup still ends the command it starts",
+    async () => {
+        const r = root();
+        const argv = launch(writeLauncher(r), [], {}, ["/bin/sh", "-c", "exec /bin/sleep 300"]);
+        const child = spawn(argv[0] as string, argv.slice(1), { stdio: "ignore" });
+        const pid = child.pid as number;
+        const stopping = stopOwnedTree(pid, 5_000);
+        expect(await stopping).toBe(true);
+        await Bun.sleep(200);
+        const sleepers = Bun.spawnSync(["pgrep", "-f", "^/bin/sleep 300$"])
+            .stdout.toString()
+            .trim();
+        expect(sleepers).toBe("");
+    },
+);
+
+test("a pinned root whose pid now belongs to another process is left alone, with nothing walked under it", async () => {
+    const child = spawn("/bin/sh", ["-c", "sleep 300; true"], { stdio: "ignore" });
+    const pid = child.pid as number;
+    let grandchild: number | undefined;
+    for (let i = 0; i < 100 && grandchild === undefined; i++) {
+        await Bun.sleep(20);
+        grandchild = childrenByParent(pid)[0];
+    }
+    try {
+        expect(await stopOwnedTree(pid, 500, "1")).toBe(true);
+        expect(running(pid)).toBe(true);
+        expect(running(grandchild as number)).toBe(true);
+    } finally {
+        child.kill("SIGKILL");
+        if (grandchild) process.kill(grandchild, "SIGKILL");
+    }
+});
+
+test("descendants are found by parent pid when the task children files are unavailable", async () => {
+    const child = spawn("/bin/sh", ["-c", "sleep 300; true"], { stdio: "ignore" });
+    const pid = child.pid as number;
+    let grandchild: number | undefined;
+    for (let i = 0; i < 100 && grandchild === undefined; i++) {
+        await Bun.sleep(20);
+        grandchild = childrenByParent(pid)[0];
+    }
+    try {
+        expect(grandchild).toBeGreaterThan(0);
+        expect(ownedProcesses(pid)).toContain(grandchild as number);
+        expect(ownedProcesses(pid, () => null)).toContain(grandchild as number);
+    } finally {
+        child.kill("SIGKILL");
+        if (grandchild) process.kill(grandchild, "SIGKILL");
+    }
+});
+
+test.skipIf(!sandboxAvailable())("a launch with a kept cwd starts the command there", () => {
+    const r = root();
+    const kept = realpathSync(mkdtempSync("/var/tmp/sim-kept-"));
+    dirs.push(kept);
+    const ws = join(kept, "ws");
+    mkdirSync(ws);
+    const argv = launch(writeLauncher(r), [kept], {}, ["/bin/pwd", "-P"], [], ws);
+    const out = Bun.spawnSync(argv, { cwd: process.cwd(), stdout: "pipe", stderr: "pipe" });
+    expect(out.exitCode).toBe(0);
+    expect(out.stdout.toString()).toBe(`${ws}\n`);
 });
 
 test("a pid whose start time changed is another process, so it is neither running nor signalled", () => {

@@ -190,10 +190,16 @@ call through it is refused:
    never fired is journaled `ItemState missed` first, so every configured
    fault leaves a record.
 
-After the arm's last event, the scheduler waits for the busy set to empty and
-for a mid-fold SIGKILL still restarting the daemon, then calls the driver's
-`finish` and journals `EndArm`, so nothing an arm started runs into the next
-arm.
+After the arm's last event, the scheduler waits for a mid-fold SIGKILL still
+restarting the daemon and for the busy set to empty, calls the driver's
+`finish`, waits for the busy set again (a job the shutdown itself started
+ends before the arm does, and before a failed finish surfaces), closes any
+outage window and the current session,
+and journals `EndArm`, so nothing an arm started runs into the next arm. When `reset`, the
+`StartArm` append, an event, or a fault throws, the scheduler waits for a
+mid-fold restart still in flight, calls `finish`, waits for every job the
+finish itself started (a job the failed work left open is the resume's to
+close), then fails with the original error; the arm's journal ends before `EndArm`, so a resume takes it up again.
 
 Each arm's driver receives an `ArmHandle` through `bind` once the arm has
 started and its recovery entries are on disk: on a fresh arm after `reset`
@@ -309,9 +315,12 @@ without `EndArm`:
   turn had begun is spent with that interrupted turn: its remaining calls are
   not injected into later turns, and the proxy's call records keep
   `fault_ref` on every call it did fault;
-- calls the driver's `resume` with the `session_start` of the session the
-  journal left open, or null between sessions, so the driver restarts what
-  the killed process ran;
+- calls the driver's `reap` before any fault is armed again, so a host the
+  killed harness left running cannot reach a re-armed proxy, then its
+  `resume` with the `session_start` of the session the journal left open, or
+  null between sessions, and with the ids of the scheduler faults fired
+  without `FaultObserved`, so the driver restarts what the killed process ran
+  and clears a fault the journal records as interrupted;
 - continues with the first event that has no `Event` entry, with the arm's
   clock restored.
 

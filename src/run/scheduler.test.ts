@@ -3607,6 +3607,7 @@ describe("Scheduler", () => {
             faults: [kill],
             journal: j,
             settleMs: 0,
+            faultDrainMs: 10,
             order: ["a"],
             drivers: {
                 a: {
@@ -3699,6 +3700,7 @@ describe("Scheduler", () => {
                 faults: [kill],
                 journal: j,
                 settleMs: 0,
+                faultDrainMs: 10,
                 order: ["a"],
                 drivers: {
                     a: {
@@ -5040,6 +5042,409 @@ describe("driver lifecycle hooks", () => {
         const endArm = second.entries.findIndex((e) => e.kind === "EndArm");
         expect(endArm).toBe(finishedAt);
     });
+
+    test("provider faults are the proxy's, so a driver's support check leaves them alone", async () => {
+        const j = new Journal(join(dir(), "j.jsonl"));
+        const driver: ArmDriver = {
+            ...fakeDriver([]),
+            supports: (f) => f.seam.layer !== "proxy-sink" && f.type !== "host_upgrade",
+        };
+        const faults = [
+            episode("p1", "provider_429", { kind: "user_turn", session: "s-0000", n: 1 }),
+        ];
+        const proxy = { arm: () => undefined, disarm: () => undefined, reset: () => undefined };
+        await new Scheduler({
+            events: fixtureEvents(1),
+            faults,
+            journal: j,
+            settleMs: 0,
+            order: ["a"],
+            drivers: { a: driver },
+            proxy,
+        }).run();
+        expect(j.entries.some((e) => e.kind === "EndRun")).toBe(true);
+    });
+
+    test("a fault no driver supports is refused before StartRun", async () => {
+        const j = new Journal(join(dir(), "j.jsonl"));
+        const driver: ArmDriver = {
+            ...fakeDriver([]),
+            supports: (f) => f.type !== "host_upgrade",
+        };
+        const faults = [episode("u", "host_upgrade", { kind: "session_start", session: "s-0000" })];
+        const scheduler = new Scheduler({
+            events: fixtureEvents(1),
+            faults,
+            journal: j,
+            settleMs: 0,
+            order: ["a"],
+            drivers: { a: driver },
+        });
+        await expect(scheduler.run()).rejects.toThrow("host_upgrade");
+        expect(j.entries).toHaveLength(0);
+    });
+
+    test("a resume whose first pending event ends a session opens no host for it", async () => {
+        const path = join(dir(), "j.jsonl");
+        const j = new Journal(path);
+        const events = fixtureEvents(1);
+        const start = { order: ["a"], scenario: scenarioId(events, []) };
+        j.append({ kind: "StartRun", arm: null, scenario_ms: 0, ...start });
+        j.append({ kind: "StartArm", arm: "a", scenario_ms: 0 });
+        journalDone(
+            j,
+            events.filter((x) => x.kind !== "session_end"),
+        );
+        j.close();
+        const calls: string[] = [];
+        const driver: ArmDriver = {
+            ...fakeDriver(calls),
+            resume: async (open) => void calls.push(`resume:${open?.id ?? null}`),
+        };
+        await new Scheduler({
+            events,
+            faults: [],
+            journal: new Journal(path),
+            settleMs: 0,
+            order: ["a"],
+            drivers: { a: driver },
+        }).run();
+        expect(calls[0]).toBe("resume:null");
+        expect(calls[1]).toMatch(/^session_end:/);
+    });
+
+    test("a killed harness's processes are reaped before the proxy is armed again", async () => {
+        const path = join(dir(), "j.jsonl");
+        const j = new Journal(path);
+        const faults = [
+            episode(
+                "slow",
+                "slow_stream",
+                { kind: "user_turn", session: "s-0000", n: 1 },
+                "persistent",
+            ),
+        ];
+        const start = { order: ["a"], scenario: scenarioId(fixtureEvents(2), faults) };
+        j.append({ kind: "StartRun", arm: null, scenario_ms: 0, ...start });
+        j.append({ kind: "StartArm", arm: "a", scenario_ms: 0 });
+        j.append({ kind: "Event", arm: "a", scenario_ms: 0, event: "e-000000", outcome: "ok" });
+        j.append({
+            kind: "FaultFired",
+            arm: "a",
+            scenario_ms: 0,
+            fault: "slow",
+            type: "slow_stream",
+            layer: "proxy-sink",
+        });
+        j.close();
+        const calls: string[] = [];
+        const proxy = {
+            reset: () => undefined,
+            arm: (id: string) => void calls.push(`arm ${id}`),
+            disarm: (id: string) => void calls.push(`disarm ${id}`),
+        };
+        const driver: ArmDriver = {
+            ...fakeDriver([]),
+            reap: async () => void calls.push("reap"),
+            resume: async () => void calls.push("resume"),
+        };
+        await new Scheduler({
+            events: fixtureEvents(2),
+            faults,
+            journal: new Journal(path),
+            settleMs: 0,
+            order: ["a"],
+            drivers: { a: driver },
+            proxy,
+        }).run();
+        expect(calls.slice(0, 3)).toEqual(["reap", "arm slow", "resume"]);
+    });
+
+    test("an arm whose first attempt failed before StartArm starts at scenario zero", async () => {
+        const path = join(dir(), "j.jsonl");
+        const first = new Journal(path);
+        let scheduler: Scheduler | null = null;
+        const broken: ArmDriver = {
+            ...fakeDriver([]),
+            reset: async () => {
+                throw new Error("reset broke");
+            },
+            finish: async () => {
+                scheduler?.jobStart("cleanup");
+                await Bun.sleep(120);
+                scheduler?.jobEnd("cleanup");
+            },
+        };
+        scheduler = new Scheduler({
+            events: fixtureEvents(1),
+            faults: [],
+            journal: first,
+            settleMs: 0,
+            jobPollMs: 5,
+            order: ["a"],
+            drivers: { a: broken },
+        });
+        await expect(scheduler.run()).rejects.toThrow("reset broke");
+        first.close();
+        // A job outside a started arm has no handle to register through, so it leaves no entry.
+        expect(first.entries.filter((e) => e.arm === "a")).toEqual([]);
+        const calls: string[] = [];
+        const second = new Journal(path);
+        await new Scheduler({
+            events: fixtureEvents(1),
+            faults: [],
+            journal: second,
+            settleMs: 0,
+            order: ["a"],
+            drivers: { a: fakeDriver([]) },
+            onClock: (arm, ms) => void calls.push(`clock ${arm} ${ms}`),
+        }).run();
+        expect(calls[0]).toBe("clock a 0");
+        expect(second.entries.find((e) => e.kind === "StartArm")?.scenario_ms).toBe(0);
+    });
+
+    test("a resumed arm's clock is published only after the killed harness's processes are reaped", async () => {
+        const path = join(dir(), "j.jsonl");
+        const j = new Journal(path);
+        const start = { order: ["a"], scenario: scenarioId(fixtureEvents(2), []) };
+        j.append({ kind: "StartRun", arm: null, scenario_ms: 0, ...start });
+        j.append({ kind: "StartArm", arm: "a", scenario_ms: 0 });
+        j.append({ kind: "Event", arm: "a", scenario_ms: 0, event: "e-000000", outcome: "ok" });
+        j.close();
+        const calls: string[] = [];
+        const driver: ArmDriver = {
+            ...fakeDriver([]),
+            reap: async () => void calls.push("reap"),
+            resume: async () => void calls.push("resume"),
+        };
+        await new Scheduler({
+            events: fixtureEvents(2),
+            faults: [],
+            journal: new Journal(path),
+            settleMs: 0,
+            order: ["a"],
+            drivers: { a: driver },
+            onClock: (arm, ms) => void calls.push(`clock ${arm} ${ms}`),
+        }).run();
+        expect(calls.slice(0, 3)).toEqual(["reap", "clock a 0", "resume"]);
+    });
+
+    test("a job that starts while a failing finish runs ends before run() rethrows", async () => {
+        const j = new Journal(join(dir(), "j.jsonl"));
+        let scheduler: Scheduler | null = null;
+        const driver: ArmDriver = {
+            ...fakeDriver([]),
+            event: async () => {
+                throw new Error("turn broke");
+            },
+            finish: async () => {
+                scheduler?.jobStart("late-capture");
+                setTimeout(() => scheduler?.jobEnd("late-capture"), 150);
+            },
+        };
+        scheduler = new Scheduler({
+            events: fixtureEvents(1),
+            faults: [],
+            journal: j,
+            settleMs: 0,
+            jobPollMs: 5,
+            order: ["a"],
+            drivers: { a: driver },
+        });
+        await expect(scheduler.run()).rejects.toThrow("turn broke");
+        const kinds = j.entries.map((e) => `${e.kind}:${e.arm}`);
+        expect(kinds).toContain("EndJob:a");
+    });
+
+    test("a job that starts in a finish that then rejects ends before run() rethrows", async () => {
+        const j = new Journal(join(dir(), "j.jsonl"));
+        let scheduler: Scheduler | null = null;
+        const driver: ArmDriver = {
+            ...fakeDriver([]),
+            finish: async () => {
+                scheduler?.jobStart("late-capture");
+                setTimeout(() => scheduler?.jobEnd("late-capture"), 150);
+                throw new Error("teardown broke");
+            },
+        };
+        scheduler = new Scheduler({
+            events: fixtureEvents(1),
+            faults: [],
+            journal: j,
+            settleMs: 0,
+            jobPollMs: 5,
+            order: ["a"],
+            drivers: { a: driver },
+        });
+        await expect(scheduler.run()).rejects.toThrow("teardown broke");
+        expect(j.entries.map((e) => `${e.kind}:${e.arm}`)).toContain("EndJob:a");
+    });
+
+    test("a job that starts while the driver finishes ends before EndArm", async () => {
+        const j = new Journal(join(dir(), "j.jsonl"));
+        let scheduler: Scheduler | null = null;
+        const driver: ArmDriver = {
+            ...fakeDriver([]),
+            finish: async () => {
+                scheduler?.jobStart("late-capture");
+                setTimeout(() => scheduler?.jobEnd("late-capture"), 150);
+            },
+        };
+        scheduler = new Scheduler({
+            events: fixtureEvents(1),
+            faults: [],
+            journal: j,
+            settleMs: 0,
+            order: ["a"],
+            drivers: { a: driver },
+        });
+        await scheduler.run();
+        const kinds = j.entries.map((e) => `${e.kind}:${e.arm}`);
+        expect(kinds.indexOf("EndJob:a")).toBeGreaterThan(-1);
+        expect(kinds.indexOf("EndJob:a")).toBeLessThan(kinds.indexOf("EndArm:a"));
+        expect(j.entries.filter((e) => e.kind === "EndJob" && e.arm === null)).toHaveLength(0);
+    });
+
+    test("an arm whose every event is journaled is finished on resume without starting anything", async () => {
+        const path = join(dir(), "j.jsonl");
+        const j = new Journal(path);
+        const events = fixtureEvents(1);
+        const start = { order: ["a"], scenario: scenarioId(events, []) };
+        j.append({ kind: "StartRun", arm: null, scenario_ms: 0, ...start });
+        j.append({ kind: "StartArm", arm: "a", scenario_ms: 0 });
+        journalDone(j, events);
+        j.close();
+        const calls: string[] = [];
+        const driver: ArmDriver = {
+            ...fakeDriver([]),
+            reap: async () => void calls.push("reap"),
+            resume: async () => void calls.push("resume"),
+            finish: async () => void calls.push("finish"),
+        };
+        const resumed = new Journal(path);
+        await new Scheduler({
+            events,
+            faults: [],
+            journal: resumed,
+            settleMs: 0,
+            order: ["a"],
+            drivers: { a: driver },
+        }).run();
+        expect(calls).toEqual(["reap", "finish"]);
+        expect(resumed.entries.map((e) => e.kind).slice(-2)).toEqual(["EndArm", "EndRun"]);
+    });
+
+    test("a StartArm the journal cannot take finishes the driver reset started", async () => {
+        const j = new Journal(join(dir(), "j.jsonl"));
+        const append = j.append.bind(j);
+        j.append = (entry) => {
+            if (entry.kind === "StartArm") throw new Error("journal: ENOSPC");
+            return append(entry);
+        };
+        const calls: string[] = [];
+        const driver: ArmDriver = {
+            ...fakeDriver(calls),
+            finish: async () => void calls.push("finish"),
+        };
+        const scheduler = new Scheduler({
+            events: fixtureEvents(1),
+            faults: [],
+            journal: j,
+            settleMs: 0,
+            order: ["a"],
+            drivers: { a: driver },
+        });
+        await expect(scheduler.run()).rejects.toThrow("ENOSPC");
+        expect(calls).toEqual(["reset", "finish"]);
+    });
+
+    test("a failing reset is finished too, before the failure surfaces", async () => {
+        const j = new Journal(join(dir(), "j.jsonl"));
+        const calls: string[] = [];
+        const driver: ArmDriver = {
+            reset: async () => {
+                throw new Error("mount failed");
+            },
+            event: async () => ({}),
+            fault: async () => ({}),
+            finish: async () => void calls.push("finish"),
+        };
+        const scheduler = new Scheduler({
+            events: fixtureEvents(1),
+            faults: [],
+            journal: j,
+            settleMs: 0,
+            order: ["a"],
+            drivers: { a: driver },
+        });
+        await expect(scheduler.run()).rejects.toThrow("mount failed");
+        expect(calls).toEqual(["finish"]);
+        expect(j.entries.some((e) => e.kind === "StartArm")).toBe(false);
+    });
+
+    test("a pending mid-fold restart settles before a failing arm is finished", async () => {
+        const j = new Journal(join(dir(), "j.jsonl"));
+        let scheduler: Scheduler | null = null;
+        const order: string[] = [];
+        const kill = episode("k", "daemon_sigkill_mid_fold", {
+            kind: "first_summarizer_call",
+            session: "s-0000",
+        });
+        const driver: ArmDriver = {
+            reset: async () => undefined,
+            event: async (e) => {
+                if (e.kind === "user_turn") {
+                    scheduler?.observe("history_summarizer");
+                    throw new Error("turn failed");
+                }
+                return {};
+            },
+            fault: async () => {
+                await Bun.sleep(200);
+                order.push("restart");
+                return {};
+            },
+            finish: async () => void order.push("finish"),
+        };
+        scheduler = new Scheduler({
+            events: fixtureEvents(1),
+            faults: [kill],
+            journal: j,
+            settleMs: 0,
+            order: ["a"],
+            drivers: { a: driver },
+        });
+        await expect(scheduler.run()).rejects.toThrow("turn failed");
+        expect(order).toEqual(["restart", "finish"]);
+    });
+
+    test("an arm whose event throws is finished without EndArm, and the failure is kept", async () => {
+        const j = new Journal(join(dir(), "j.jsonl"));
+        const calls: string[] = [];
+        const driver: ArmDriver = {
+            reset: async () => undefined,
+            event: async (e) => {
+                if (e.index === 1) throw new Error("transcript store missing");
+                return {};
+            },
+            fault: async () => ({}),
+            finish: async () => {
+                calls.push("finish");
+                throw new Error("umount failed");
+            },
+        };
+        const scheduler = new Scheduler({
+            events: fixtureEvents(2),
+            faults: [],
+            journal: j,
+            settleMs: 0,
+            order: ["a"],
+            drivers: { a: driver },
+        });
+        await expect(scheduler.run()).rejects.toThrow("transcript store missing");
+        expect(calls).toEqual(["finish"]);
+        expect(j.entries.some((e) => e.kind === "EndArm")).toBe(false);
+    });
 });
 
 test("a mid-fold kill observed in the arm's last turn is observed before finish and EndArm", async () => {
@@ -5477,4 +5882,27 @@ async function killAt(
 ): Promise<void> {
     scheduler.run().catch(() => undefined);
     while (!journal.entries.some(at)) await Bun.sleep(5);
+}
+
+/** Journals `events` as delivered by arm `a`, with the clock jumps and turn records a run writes. */
+function journalDone(j: Journal, events: ScenarioEvent[]): void {
+    let clock = 0;
+    for (const e of events) {
+        if (e.scenario_ms > clock) {
+            j.append({
+                kind: "AdvanceClock",
+                arm: "a",
+                scenario_ms: e.scenario_ms,
+                from_ms: clock,
+                next_event: e.id,
+                busy: [],
+            });
+            clock = e.scenario_ms;
+        }
+        if (e.kind === "user_turn") {
+            j.append({ kind: "BeginTurn", arm: "a", scenario_ms: clock, event: e.id, probe: null });
+            j.append({ kind: "EndTurn", arm: "a", scenario_ms: clock, event: e.id, outcome: "ok" });
+        }
+        j.append({ kind: "Event", arm: "a", scenario_ms: clock, event: e.id, outcome: "ok" });
+    }
 }

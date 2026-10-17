@@ -543,6 +543,7 @@ async function runArms(
         const driver = new HostDriver({
             config,
             arm,
+            baseMs: manifest.base_wall_ms,
             host: o.host,
             armRoot,
             launcher: manifest.preflight.launcher,

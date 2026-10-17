@@ -101,6 +101,10 @@ export interface HostContext {
      * again at its end, and the later report replaces the earlier one.
      */
     onTool?: (run: ToolRun) => void;
+    /** Runs once the host process exists, before its readiness wait. */
+    onSpawn?: () => void;
+    /** Reads a process's start identity; the default reads `/proc`. */
+    procStart?: (pid: number) => string | null;
 }
 
 export interface ToolRun {
@@ -181,19 +185,24 @@ export class DaemonStack {
         return this.stack?.child?.pid ?? null;
     }
 
+    /** The harness runtime the daemon executes lives beside the arm, outside every path the host can write. */
+    get runtimeDir(): string {
+        return join(dirname(this.ctx.root), "runtime");
+    }
+
     async start(): Promise<void> {
         const { config } = this.ctx;
         const hr = await v1(config, "packages/e2e-tests/src/bedrock-peer/harness-runtime.ts");
         const hh = await v1(config, "packages/e2e-tests/src/rust-runner/hermetic-host.ts");
         const sources = hr.detectHarnessRuntimeSources();
         if (!sources.ok) throw new Error(`harness runtime sources: ${sources.reason}`);
-        // Each start regenerates the runtime, so the previous one is removed once its root is
-        // known to be a real directory.
-        const root = realBase(this.ctx.root);
-        rmSync(join(root, "runtime"), { recursive: true, force: true });
-        const runtimeDir = realDir(root, "runtime");
+        // Each start regenerates the runtime, which lives beside the arm; the arm root and the
+        // arm directory both have to be real directories before anything is removed.
+        realBase(this.ctx.root);
+        const armDir = realBase(dirname(this.ctx.root));
+        rmSync(this.runtimeDir, { recursive: true, force: true });
+        const runtimeDir = realDir(armDir, "runtime");
         // The store sits beside the arm root, so its walk starts at the arm directory both share.
-        const armDir = dirname(this.ctx.root);
         const store = relative(armDir, this.ctx.dataDir);
         if (store.startsWith("..") || isAbsolute(store)) {
             throw new Error(`daemon store ${this.ctx.dataDir} lies outside ${armDir}`);
@@ -222,35 +231,64 @@ export class DaemonStack {
             daemonEnv: faketimeEnv(this.ctx.offsetFile),
         });
         this.connectionFile = this.stack.connectionFile;
+        this.attach();
     }
 
-    // O_NOFOLLOW makes a symlink left at the log path fail the append instead of redirecting it.
-    private saveLog(): void {
-        if (!this.stack) return;
-        // O_NONBLOCK turns a FIFO with no reader into ENXIO instead of a blocked open.
+    private logError: unknown;
+
+    /**
+     * Every chunk the daemon writes goes to `daemon.log` as it arrives, so a kill at any point
+     * loses nothing already written. O_NOFOLLOW makes a symlink left at the log path fail the
+     * append instead of redirecting it, O_NONBLOCK turns a FIFO with no reader into ENXIO instead
+     * of a blocked open, and anything but a regular file is refused; the first failure surfaces
+     * at stop.
+     */
+    private append(chunk: Buffer): void {
         const flags =
             constants.O_WRONLY |
             constants.O_APPEND |
             constants.O_CREAT |
             constants.O_NOFOLLOW |
             constants.O_NONBLOCK;
-        const fd = openSync(this.ctx.logFile, flags, 0o600);
         try {
-            if (!fstatSync(fd).isFile())
-                throw new Error(`${this.ctx.logFile} is not a regular file`);
-            const log = Buffer.from(this.stack.hostLog());
-            for (let at = 0; at < log.length; ) at += writeSync(fd, log, at);
-        } finally {
-            closeSync(fd);
+            const fd = openSync(this.ctx.logFile, flags, 0o600);
+            try {
+                if (!fstatSync(fd).isFile())
+                    throw new Error(`${this.ctx.logFile} is not a regular file`);
+                for (let at = 0; at < chunk.length; ) at += writeSync(fd, chunk, at);
+            } finally {
+                closeSync(fd);
+            }
+        } catch (caught) {
+            this.logError ??= caught;
         }
     }
 
-    // The stack's restartHost is crashHost then startHost, and startHost clears the output
-    // buffers; the log is taken between the two so it keeps the old daemon's last bytes.
+    /**
+     * Follows the current daemon generation's output; a restart attaches to the next one. The
+     * output the stack captured while the generation started is written first, so the log opens
+     * with the startup lines the readiness wait consumed.
+     */
+    private attach(): void {
+        const stack = this.stack;
+        if (!stack) return;
+        const captured = `${stack.stdout ?? ""}${stack.stderr ?? ""}`;
+        if (captured.length > 0) this.append(Buffer.from(captured));
+        const child = stack.child;
+        const sink = (chunk: Buffer) => this.append(chunk);
+        child?.stdout?.on("data", sink);
+        child?.stderr?.on("data", sink);
+    }
+
+    /** The old generation's last bytes stream while it is crashed; the new one is attached once started. */
     async restart(): Promise<void> {
         await this.stack.crashHost();
-        this.saveLog();
-        await this.stack.startHost();
+        // A start that fails still captured the new generation's output; it reaches the log too.
+        try {
+            await this.stack.startHost();
+        } finally {
+            this.attach();
+        }
     }
 
     async stop(): Promise<void> {
@@ -268,16 +306,9 @@ export class DaemonStack {
                 stopConfirmed = false;
             });
         }
-        // The log is taken after shutdown, so it keeps what the daemon wrote while stopping.
-        let logError: unknown;
-        try {
-            this.saveLog();
-        } catch (caught) {
-            logError = caught;
-        }
         // A daemon whose forced stop is unconfirmed stays tracked, so a later stop can retry.
         if (failures.length === 0 || stopConfirmed) this.stack = null;
-        if (logError !== undefined) failures.push(logError);
+        if (this.logError !== undefined) failures.push(this.logError);
         if (failures.length === 1) throw failures[0];
         if (failures.length > 1) {
             throw new Error(`daemon stop failed: ${failures.map(String).join("; ")}`);
@@ -307,7 +338,25 @@ function turnResult(outcome: Untyped): PromptResult {
 /** The canonical node preflight probes; `root` is the install tree the sandbox keeps read-only. */
 export { nodeInstall };
 
-const hostNode = () => nodeInstall(Bun.which("node") ?? "node");
+export const hostNode = () => nodeInstall(Bun.which("node") ?? "node");
+
+/** Paths every sandboxed process of an arm reads but must not change: toolchains, the interposer, Eidnara sources, the clock. */
+export function readOnlyPaths(ctx: {
+    config: SimConfig;
+    launcher: string;
+    offsetFile: string;
+}): string[] {
+    const { config, launcher } = ctx;
+    const interposer = dirname(dirname(FAKETIME_LIB));
+    return [
+        ...config.toolchain.keep,
+        toolbinDir(launcher),
+        interposer,
+        config.eidnara_checkout,
+        // The scheduler writes the scenario clock from outside; hosts only read it.
+        dirname(ctx.offsetFile),
+    ];
+}
 
 export abstract class SimHost {
     readonly toolchain: { path: string; env: Record<string, string> };
@@ -322,16 +371,7 @@ export abstract class SimHost {
 
     /** Paths the host reads but must not change: toolchains, the interposer, eidnara sources. */
     get readOnly(): string[] {
-        const { config, launcher } = this.ctx;
-        const interposer = dirname(dirname(FAKETIME_LIB));
-        return [
-            ...config.toolchain.keep,
-            toolbinDir(launcher),
-            interposer,
-            config.eidnara_checkout,
-            // The scheduler writes the scenario clock from outside; hosts only read it.
-            dirname(this.ctx.offsetFile),
-        ];
+        return readOnlyPaths(this.ctx);
     }
 
     /** The launcher masks the run root, so a workspace exists inside the sandbox only below a kept path. */
@@ -398,6 +438,12 @@ export abstract class SimHost {
         const open = this.unfinished();
         for (const run of open) this.ctx.onTool?.(run);
         return [...this.tools.splice(0), ...open];
+    }
+
+    /** The launch identity the state records: the pid and the start captured when it was launched. */
+    hostIdentity(): { pid: number; start: string | null } | null {
+        const pid = this.hostPid();
+        return pid === null ? null : { pid, start: (this.ctx.procStart ?? processStart)(pid) };
     }
 }
 
@@ -505,23 +551,25 @@ export class PiSimHost extends SimHost {
             PI_SKIP_VERSION_CHECK: "1",
         };
         const ro = [...this.readOnly, node.root, config.pi_install];
-        // The launcher starts its command at /, so the command enters the workspace itself.
-        const command = [
-            "/bin/sh",
-            "-c",
-            'cd "$1" && shift && exec "$@"',
-            "sh",
+        const argv = launch(
+            this.ctx.launcher,
+            this.ctx.keep,
+            this.timeEnv,
+            [node.exe, ...args],
+            ro,
             cwd,
-            node.exe,
-            ...args,
-        ];
-        const argv = launch(this.ctx.launcher, this.ctx.keep, this.timeEnv, command, ro);
-        const child: ChildProcess = spawn(argv[0] as string, argv.slice(1), {
+        );
+        // The shell waits for one line on fd 3 before it execs the launcher, so Pi starts only once
+        // the driver has recorded the pid; stdin stays Pi's RPC channel. A harness that dies first
+        // closes the pipe and the shell exits, and a record that fails ends the shell the same way.
+        const gated = ["/bin/sh", "-c", 'read _ <&3 && exec 3<&- "$@"', "sh", ...argv];
+        const child: ChildProcess = spawn(gated[0] as string, gated.slice(1), {
             cwd,
             env,
-            stdio: ["pipe", "pipe", "pipe"],
+            stdio: ["pipe", "pipe", "pipe", "pipe"],
         });
-        this.launchStart = child.pid === undefined ? null : processStart(child.pid);
+        const read = this.ctx.procStart ?? processStart;
+        this.launchStart = child.pid === undefined ? null : read(child.pid);
         const spawnError = new Promise<never>((_, reject) => child.once("error", reject));
         spawnError.catch(() => undefined);
         this.rpc = new rpcClient.PiRpcProcess(child, new rpcClient.PiRpcProtocol(), {
@@ -529,6 +577,21 @@ export class PiSimHost extends SimHost {
         });
         this.started.clear();
         this.rpc.onEvent((e: Untyped) => this.toolEvent(e));
+        const gate = child.stdio[3] as import("node:stream").Writable | null;
+        try {
+            // The record names the launch by pid and start; a start the kernel did not report
+            // leaves nothing the next reap could match, so the gated shell ends unreleased.
+            if (this.launchStart === null) {
+                throw new Error(`Pi launch ${child.pid} has no start identity`);
+            }
+            this.ctx.onSpawn?.();
+        } catch (caught) {
+            gate?.destroy();
+            child.kill("SIGKILL");
+            this.rpc = null;
+            throw caught;
+        }
+        gate?.end("\n");
         const ready = this.rpc.sendCommand("get_state", {}, { timeoutMs: 120_000 });
         try {
             const state = await Promise.race([ready, spawnError]);
@@ -543,6 +606,11 @@ export class PiSimHost extends SimHost {
 
     hostPid(): number | null {
         return this.rpc?.child?.pid ?? null;
+    }
+
+    override hostIdentity(): { pid: number; start: string | null } | null {
+        const pid = this.hostPid();
+        return pid === null ? null : { pid, start: this.launchStart };
     }
 
     // Pi emits `agent_end` with `willRetry: true` before it retries a failed request itself,
@@ -605,7 +673,9 @@ export class PiSimHost extends SimHost {
                 settling = true;
                 try {
                     return turnResult(await this.settle(watch, deadline));
-                } catch {}
+                } catch {
+                    // A settle that fails here takes the abort-and-drain path below.
+                }
             }
             const drained = this.agentEnd(this.drainMs);
             // The abort runs alongside the drain, so an abort that never answers cannot delay it.
@@ -707,7 +777,7 @@ export class OpencodeSimHost extends SimHost {
         const ro = [...this.readOnly, root];
         const launcher = plainPath(this.ctx.launcher);
         const hostbin = dirname(
-            this.writeWrapper(launch(launcher, this.ctx.keep, this.timeEnv, [binary], ro)),
+            this.writeWrapper(launch(launcher, this.ctx.keep, this.timeEnv, [binary], ro, cwd)),
         );
         // The v1 runner rewrites the configuration on each spawn, so an earlier session's files go first.
         rmSync(join(this.controlDir("home"), "config"), { recursive: true, force: true });
@@ -755,6 +825,7 @@ export class OpencodeSimHost extends SimHost {
             pid: launchedPid,
             start: launchedPid === null ? null : processStart(launchedPid),
         };
+        this.ctx.onSpawn?.();
         const sdkPath = "packages/e2e-tests/node_modules/@opencode-ai/sdk/dist/index.js";
         try {
             const sdk = await import(join(config.eidnara_checkout, sdkPath));
@@ -790,14 +861,38 @@ export class OpencodeSimHost extends SimHost {
         return { id: created.data.id, existing: false };
     }
 
-    private writeWrapper(argv: string[]): string {
+    /**
+     * The wrapper records its own pid and start time beside the arm before it execs the launcher,
+     * so a harness killed during the server's startup leaves a record the next resume can reap.
+     * It then execs only while the harness that spawned it is still that process, so a wrapper the
+     * kernel scheduled after the harness died ends before the launcher instead of running a server
+     * no record reached recovery in time to name.
+     */
+    private writeWrapper(
+        argv: string[],
+        harness: { pid: number; start: string | null } = {
+            pid: process.pid,
+            start: processStart(process.pid),
+        },
+    ): string {
         const dir = join(dirname(this.ctx.launcher), "hostbin", this.ctx.arm);
         mkdirSync(dir, { recursive: true });
         const path = join(dir, "opencode");
         const staged = `${path}.${process.pid}`;
-        writeFileSync(staged, `#!/bin/sh\nexec ${argv.map(shellQuote).join(" ")} "$@"\n`, {
-            mode: 0o755,
-        });
+        const record = shellQuote(join(dirname(this.ctx.root), "opencode.launch"));
+        // The record is staged and renamed whole, and a record that cannot be written ends the
+        // wrapper before the launcher, so the server never runs unrecorded.
+        const script = [
+            "#!/bin/sh",
+            `r=${record}`,
+            `s=$(awk '{print $22}' /proc/$$/stat) && [ -n "$s" ] || exit 70`,
+            `printf '%s %s\\n' "$$" "$s" > "$r.$$" || exit 70`,
+            `mv -f "$r.$$" "$r" || exit 70`,
+            `[ "${harness.pid} $(awk '{print $22}' /proc/${harness.pid}/stat 2>/dev/null)" = ${shellQuote(`${harness.pid} ${harness.start ?? ""}`)} ] || exit 70`,
+            `exec ${argv.map(shellQuote).join(" ")} "$@"`,
+            "",
+        ].join("\n");
+        writeFileSync(staged, script, { mode: 0o755 });
         renameSync(staged, path);
         return path;
     }

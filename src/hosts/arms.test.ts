@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
 import {
     existsSync,
     lstatSync,
@@ -13,9 +14,9 @@ import {
     writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { loadConfig } from "../config/config";
-import { running } from "../run/procs";
+import { processStart, running } from "../run/procs";
 import {
     DaemonStack,
     type HostContext,
@@ -88,6 +89,14 @@ export class PiRpcProcess {
         `export async function spawnOpencode(opts: any) {
     globalThis.__simSpawnOpts = opts;
     const child = Bun.spawn(["/bin/sh", "-c", "sleep 300; exit 0", "sh", "serve", "${PORT}"]);
+    // The runner answers once the server is observable, as the real one does after readiness.
+    const { readFileSync } = await import("node:fs");
+    for (let i = 0; i < 200; i++) {
+        try {
+            if (readFileSync("/proc/" + child.pid + "/cmdline", "utf8").includes("serve")) break;
+        } catch {}
+        await Bun.sleep(5);
+    }
     return { url: "http://127.0.0.1:${PORT}", port: ${PORT}, kill: async () => child.kill() };
 }
 `,
@@ -255,29 +264,6 @@ test("a Pi turn whose abort cannot drain the previous turn fails the session", a
     expect(rpc.commands).toEqual(["prompt", "abort"]);
 });
 
-test("stopping the daemon stack terminates the daemon even when the log cannot be appended", async () => {
-    const run = runDir();
-    let terminated = false;
-    const stack = new DaemonStack({
-        config: loadConfig(),
-        root: run,
-        dataDir: join(run, "data"),
-        logFile: join(run, "missing-dir", "daemon.log"),
-        offsetFile: join(run, "offset"),
-        proxyHttp1: "",
-        proxyHttp2: "",
-        model: "m",
-    });
-    (stack as Untyped).stack = {
-        hostLog: () => "log",
-        terminateHost: async () => {
-            terminated = true;
-        },
-    };
-    await expect(stack.stop()).rejects.toThrow(/ENOENT/);
-    expect(terminated).toBe(true);
-});
-
 test("a settled OpenCode turn leaves no deadline timer holding the runtime", async () => {
     const script = `
 import { OpencodeSimHost } from "./src/hosts/arms";
@@ -304,13 +290,74 @@ console.log(JSON.stringify(await host.prompt("hi", 20_000)));
     expect(Date.now() - started).toBeLessThan(5_000);
 }, 15_000);
 
+test("the OpenCode wrapper stops before the launcher when its launch record cannot be written", async () => {
+    const run = runDir();
+    const ctx = { ...context(run), host: "opencode" as const, root: join(run, "gone", "arm") };
+    const host = new OpencodeSimHost(ctx);
+    const path = (host as Untyped).writeWrapper(["/bin/sh", "-c", "touch ran"]) as string;
+    const r = Bun.spawnSync([path], { cwd: run, stdout: "pipe", stderr: "pipe" });
+    expect(r.exitCode).toBe(70);
+    expect(existsSync(join(run, "ran"))).toBe(false);
+});
+
+test("the daemon's harness runtime lives beside the arm, outside what the host can write", () => {
+    const run = runDir();
+    const stack = new DaemonStack({
+        config: loadConfig(),
+        root: join(run, "arm", "r"),
+        dataDir: join(run, "arm", "s", "d"),
+        logFile: join(run, "arm", "daemon.log"),
+        offsetFile: join(run, "offset"),
+        proxyHttp1: "",
+        proxyHttp2: "",
+        model: "m",
+    });
+    expect(stack.runtimeDir).toBe(join(run, "arm", "runtime"));
+});
+
+test("the OpenCode wrapper stops before the launcher when the harness that spawned it is gone", async () => {
+    const run = runDir();
+    const ctx = { ...context(run), host: "opencode" as const };
+    const host = new OpencodeSimHost(ctx);
+    const gone = spawnSync("true").pid as number;
+    const path = (host as Untyped).writeWrapper(["/bin/sh", "-c", "touch ran"], {
+        pid: gone,
+        start: "1",
+    }) as string;
+    const r = Bun.spawnSync([path], { cwd: run, stdout: "pipe", stderr: "pipe" });
+    expect(r.exitCode).toBe(70);
+    expect(existsSync(join(run, "ran"))).toBe(false);
+    expect(existsSync(join(dirname(ctx.root), "opencode.launch"))).toBe(true);
+});
+
+test("the OpenCode wrapper stops before the launcher when its own start time cannot be read", async () => {
+    const run = runDir();
+    const ctx = { ...context(run), host: "opencode" as const };
+    const host = new OpencodeSimHost(ctx);
+    const path = (host as Untyped).writeWrapper(["/bin/sh", "-c", "touch ran"]) as string;
+    const fakebin = join(run, "fakebin");
+    mkdirSync(fakebin);
+    writeFileSync(join(fakebin, "awk"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+    const r = Bun.spawnSync([path], {
+        cwd: run,
+        env: { ...process.env, PATH: `${fakebin}:${process.env.PATH}` },
+        stdout: "pipe",
+        stderr: "pipe",
+    });
+    expect(r.exitCode).toBe(70);
+    expect(existsSync(join(run, "ran"))).toBe(false);
+    expect(existsSync(join(dirname(ctx.root), "opencode.launch"))).toBe(false);
+});
+
 test("the OpenCode wrapper lives outside every path the sandbox keeps writable", async () => {
     const ctx = { ...context(runDir()), host: "opencode" as const };
     const host = new OpencodeSimHost(ctx);
     const path = (host as Untyped).writeWrapper(["/x/sandbox.sh", "--", "/x/opencode"]) as string;
     for (const kept of ctx.keep) expect(path.startsWith(`${kept}/`)).toBe(false);
+    const record = join(dirname(ctx.root), "opencode.launch");
+    const harness = `${process.pid} ${processStart(process.pid)}`;
     expect(await Bun.file(path).text()).toBe(
-        `#!/bin/sh\nexec '/x/sandbox.sh' '--' '/x/opencode' "$@"\n`,
+        `#!/bin/sh\nr='${record}'\ns=$(awk '{print $22}' /proc/$$/stat) && [ -n "$s" ] || exit 70\nprintf '%s %s\\n' "$$" "$s" > "$r.$$" || exit 70\nmv -f "$r.$$" "$r" || exit 70\n[ "${process.pid} $(awk '{print $22}' /proc/${process.pid}/stat 2>/dev/null)" = '${harness}' ] || exit 70\nexec '/x/sandbox.sh' '--' '/x/opencode' "$@"\n`,
     );
 });
 
@@ -334,6 +381,26 @@ test("a Pi session whose readiness check fails stops the launcher tree it spawne
     }
 });
 
+test("a Pi launch whose start identity cannot be read is killed before the gate opens", async () => {
+    const run = runDir();
+    const checkout = fakeV1(run);
+    const ctx = context(run);
+    const config = { ...ctx.config, eidnara_checkout: checkout, pi_install: checkout };
+    const host = new PiSimHost({ ...ctx, config, procStart: () => null });
+    const outcome = await host.openSession(join(run, "arm"), "s1", null).then(
+        () => "opened",
+        (e: unknown) => String(e),
+    );
+    const child = (globalThis as Untyped).__simPiChild;
+    try {
+        expect(outcome).toContain("start identity");
+        expect(await gone(child.pid)).toBe(true);
+    } finally {
+        child.kill("SIGKILL");
+        await host.closeSession().catch(() => undefined);
+    }
+});
+
 test("an OpenCode session whose SDK setup fails stops the server it spawned", async () => {
     const run = runDir();
     const checkout = fakeV1(run);
@@ -350,6 +417,47 @@ test("an OpenCode session whose SDK setup fails stops the server it spawned", as
     await host.closeSession().catch(() => undefined);
     expect(outcome).toContain("list failed");
     expect(left).toEqual([]);
+});
+
+test("an OpenCode session reports its spawn before the SDK setup runs", async () => {
+    const run = runDir();
+    const checkout = fakeV1(run);
+    const ctx = { ...context(run), host: "opencode" as const };
+    const config = { ...ctx.config, eidnara_checkout: checkout };
+    const spawned: Array<number | null> = [];
+    const host = new OpencodeSimHost({
+        ...ctx,
+        config,
+        onSpawn: () => void spawned.push(host.hostPid()),
+    });
+    await host.openSession(ctx.root, "s1", null).catch(() => undefined);
+    await Bun.sleep(200);
+    for (const pid of serving()) process.kill(pid, "SIGKILL");
+    await host.closeSession().catch(() => undefined);
+    expect(spawned).toHaveLength(1);
+    expect(spawned[0]).not.toBeNull();
+});
+
+test("the Pi launcher runs only once the host's pid is recorded", async () => {
+    const run = runDir();
+    const checkout = fakeV1(run);
+    const marker = join(run, "launched");
+    writeFileSync(join(run, "sandbox.sh"), `#!/bin/sh\ntouch '${marker}'\nexec sleep 300\n`, {
+        mode: 0o755,
+    });
+    const ctx = context(run);
+    const host = new PiSimHost({
+        ...ctx,
+        config: { ...ctx.config, eidnara_checkout: checkout, pi_install: checkout },
+        onSpawn: () => {
+            throw new Error("state.json: ENOSPC");
+        },
+    });
+    await expect(host.openSession(ctx.root, "s1", null)).rejects.toThrow("ENOSPC");
+    await Bun.sleep(300);
+    expect(existsSync(marker)).toBe(false);
+    const child = (globalThis as Untyped).__simPiChild;
+    expect(await gone(child.pid)).toBe(true);
 });
 
 test("a Pi session whose readiness response is a refusal fails and stops the launcher tree", async () => {
@@ -519,12 +627,13 @@ test("the daemon stack refuses a symlinked store directory and replaces a symlin
     symlinkSync(elsewhere, join(store, "d"));
     await expect(stack(join(store, "d")).start()).rejects.toThrow(/symlink/);
     rmSync(join(store, "d"));
-    rmSync(join(root, "runtime"), { recursive: true, force: true });
-    symlinkSync(elsewhere, join(root, "runtime"));
+    rmSync(join(run, "runtime"), { recursive: true, force: true });
+    symlinkSync(elsewhere, join(run, "runtime"));
     await stack(join(store, "d")).start();
     expect(existsSync(join(elsewhere, "runtime.json"))).toBe(false);
-    expect(lstatSync(join(root, "runtime")).isSymbolicLink()).toBe(false);
-    expect(existsSync(join(root, "runtime/runtime.json"))).toBe(true);
+    expect(lstatSync(join(run, "runtime")).isSymbolicLink()).toBe(false);
+    expect(existsSync(join(run, "runtime/runtime.json"))).toBe(true);
+    expect(existsSync(join(root, "runtime"))).toBe(false);
 });
 
 test("OpenCode teardown targets the server this harness spawned, not another process on the port", async () => {
@@ -646,6 +755,24 @@ test("settling a Pi turn stays within the turn deadline when get_state hangs", a
     expect(Date.now() - started).toBeLessThan(2_000);
 });
 
+function daemonStack(run: string, logFile = join(run, "daemon.log")) {
+    return new DaemonStack({
+        config: loadConfig(),
+        root: run,
+        dataDir: join(run, "data"),
+        logFile,
+        offsetFile: join(run, "offset"),
+        proxyHttp1: "",
+        proxyHttp2: "",
+        model: "m",
+    });
+}
+
+function fakeChild() {
+    const { PassThrough } = require("node:stream");
+    return { pid: 4242, stdout: new PassThrough(), stderr: new PassThrough() };
+}
+
 test("appending the daemon log refuses a symlink left at the log path", async () => {
     const run = runDir();
     const target = join(run, "precious");
@@ -662,12 +789,16 @@ test("appending the daemon log refuses a symlink left at the log path", async ()
         proxyHttp2: "",
         model: "m",
     });
+    const child = fakeChild();
     (stack as Untyped).stack = {
-        hostLog: () => "log",
+        child,
         terminateHost: async () => {
             terminated = true;
         },
     };
+    (stack as Untyped).attach();
+    child.stdout.write("log\n");
+    await Bun.sleep(20);
     await expect(stack.stop()).rejects.toThrow(/ELOOP|symbolic link/);
     expect(terminated).toBe(true);
     expect(readFileSync(target, "utf8")).toBe("keep\n");
@@ -700,7 +831,7 @@ test("a daemon that outlives SIGTERM is killed before stop reports the failure",
     expect(stack.pid()).toBeNull();
 });
 
-test("Pi runs in the session workspace even though the launcher starts its command at /", async () => {
+test("Pi runs in the session workspace, which the host names as the launcher's start directory", async () => {
     const run = runDir();
     const checkout = fakeV1(run);
     const cli = join(checkout, "node_modules/@earendil-works/pi-coding-agent/dist/cli.js");
@@ -711,7 +842,7 @@ test("Pi runs in the session workspace even though the launcher starts its comma
     );
     writeFileSync(
         join(run, "sandbox.sh"),
-        '#!/bin/sh\nwhile [ "$1" != "--" ]; do shift; done\nshift\ncd /\nexec "$@"\n',
+        '#!/bin/sh\nstart="$1"; shift\nwhile [ "$1" != "--" ]; do shift; done\nshift\ncd "$start"\nexec "$@"\n',
         { mode: 0o755 },
     );
     const ctx = context(run);
@@ -747,6 +878,67 @@ test("the protected OpenCode install is the canonical binary's, not the symlink'
     });
     expect(install.binary).toBe(join(real, "opencode.exe"));
     expect(install.root).toBe(join(run, "real/node_modules"));
+});
+
+test("the daemon's output reaches daemon.log as it is written, through a graceful stop", async () => {
+    const run = runDir();
+    const stack = daemonStack(run);
+    const child = fakeChild();
+    let onDiskAtTerminate = "";
+    (stack as Untyped).stack = {
+        child,
+        terminateHost: async () => {
+            onDiskAtTerminate = await Bun.file(join(run, "daemon.log")).text();
+            child.stderr.write("shutting down cleanly\n");
+            await Bun.sleep(20);
+        },
+    };
+    (stack as Untyped).attach();
+    child.stdout.write("booted\n");
+    await Bun.sleep(20);
+    await stack.stop();
+    expect(onDiskAtTerminate).toBe("booted\n");
+    expect(await Bun.file(join(run, "daemon.log")).text()).toBe("booted\nshutting down cleanly\n");
+});
+
+test("a restarted daemon's output follows the previous generation's in daemon.log", async () => {
+    const run = runDir();
+    const stack = daemonStack(run);
+    const first = fakeChild();
+    const second = fakeChild();
+    const inner = {
+        child: first,
+        crashHost: async () => undefined,
+        startHost: async () => void (inner.child = second),
+        terminateHost: async () => undefined,
+    };
+    (stack as Untyped).stack = inner;
+    (stack as Untyped).attach();
+    first.stdout.write("booted\n");
+    await Bun.sleep(20);
+    await stack.restart();
+    second.stdout.write("booted\n");
+    await Bun.sleep(20);
+    await stack.stop();
+    expect(await Bun.file(join(run, "daemon.log")).text()).toBe("booted\nbooted\n");
+});
+
+test("stopping the daemon stack terminates the daemon even when the log cannot be appended", async () => {
+    const run = runDir();
+    let terminated = false;
+    const stack = daemonStack(run, join(run, "missing-dir", "daemon.log"));
+    const child = fakeChild();
+    (stack as Untyped).stack = {
+        child,
+        terminateHost: async () => {
+            terminated = true;
+        },
+    };
+    (stack as Untyped).attach();
+    child.stdout.write("log\n");
+    await Bun.sleep(20);
+    await expect(stack.stop()).rejects.toThrow(/ENOENT/);
+    expect(terminated).toBe(true);
 });
 
 test("OpenCode gets the hosts' sandbox PATH, not the harness's ambient one", async () => {
@@ -803,6 +995,25 @@ test("Pi launches the canonical node that preflight probed, whatever its install
     expect(install.root).toBe(join(run, "opt/runtime"));
 });
 
+test("the output a daemon wrote while starting reaches daemon.log once the stack is up", async () => {
+    const run = runDir();
+    const stack = daemonStack(run);
+    const child = fakeChild();
+    (stack as Untyped).stack = {
+        child,
+        stdout: "starting out\n",
+        stderr: "starting err\n",
+        terminateHost: async () => undefined,
+    };
+    (stack as Untyped).attach();
+    child.stdout.write("live\n");
+    await Bun.sleep(20);
+    await stack.stop();
+    expect(readFileSync(join(run, "daemon.log"), "utf8")).toBe(
+        "starting out\nstarting err\nlive\n",
+    );
+});
+
 test("the daemon log keeps what the daemon wrote while it shut down", async () => {
     const run = runDir();
     let terminated = false;
@@ -816,13 +1027,20 @@ test("the daemon log keeps what the daemon wrote while it shut down", async () =
         proxyHttp2: "",
         model: "m",
     });
+    const child = fakeChild();
     (stack as Untyped).stack = {
-        hostLog: () => (terminated ? "running\nshutting down\n" : "running\n"),
+        child,
         terminateHost: async () => {
             terminated = true;
+            child.stderr.write("shutting down\n");
+            await Bun.sleep(20);
         },
     };
+    (stack as Untyped).attach();
+    child.stdout.write("running\n");
+    await Bun.sleep(20);
     await stack.stop();
+    expect(terminated).toBe(true);
     expect(readFileSync(join(run, "daemon.log"), "utf8")).toBe("running\nshutting down\n");
 });
 
@@ -890,12 +1108,16 @@ test("a FIFO left at the daemon log path fails the append without blocking teard
         proxyHttp2: "",
         model: "m",
     });
+    const child = fakeChild();
     (stack as Untyped).stack = {
-        hostLog: () => "log",
+        child,
         terminateHost: async () => {
             terminated = true;
         },
     };
+    (stack as Untyped).attach();
+    child.stdout.write("log\n");
+    await Bun.sleep(20);
     const outcome = await Promise.race([
         stack.stop().then(
             () => "stopped",
@@ -919,8 +1141,9 @@ test("a failed SIGKILL fallback still records the log and reports both failures"
         proxyHttp2: "",
         model: "m",
     });
+    const child = fakeChild();
     (stack as Untyped).stack = {
-        hostLog: () => "last words\n",
+        child,
         terminateHost: async () => {
             throw new Error("did not exit after SIGTERM");
         },
@@ -928,6 +1151,9 @@ test("a failed SIGKILL fallback still records the log and reports both failures"
             throw new Error("did not exit after SIGKILL");
         },
     };
+    (stack as Untyped).attach();
+    child.stdout.write("last words\n");
+    await Bun.sleep(20);
     await expect(stack.stop()).rejects.toThrow(/SIGTERM[\s\S]*SIGKILL/);
     expect(readFileSync(join(run, "daemon.log"), "utf8")).toBe("last words\n");
 });
@@ -1033,35 +1259,51 @@ test("a daemon whose forced shutdown is unconfirmed stays tracked for another st
 test("a restart records the old daemon's output after it is killed and before the new start", async () => {
     const run = runDir();
     const calls: string[] = [];
-    let output = "before kill\n";
-    const stack = new DaemonStack({
-        config: loadConfig(),
-        root: run,
-        dataDir: join(run, "data"),
-        logFile: join(run, "daemon.log"),
-        offsetFile: join(run, "offset"),
-        proxyHttp1: "",
-        proxyHttp2: "",
-        model: "m",
-    });
-    (stack as Untyped).stack = {
-        hostLog: () => output,
+    const stack = daemonStack(run);
+    const old = fakeChild();
+    const fresh = fakeChild();
+    const inner = {
+        child: old,
         crashHost: async () => {
             calls.push("crash");
-            output = "before kill\nlast bytes\n";
+            old.stderr.write("last bytes\n");
+            await Bun.sleep(20);
         },
         startHost: async () => {
             calls.push("start");
-            output = "";
+            inner.child = fresh;
         },
         restartHost: async () => {
             calls.push("restart");
-            output = "";
         },
     };
+    (stack as Untyped).stack = inner;
+    (stack as Untyped).attach();
+    old.stdout.write("before kill\n");
+    await Bun.sleep(20);
     await stack.restart();
     expect(calls).toEqual(["crash", "start"]);
     expect(readFileSync(join(run, "daemon.log"), "utf8")).toBe("before kill\nlast bytes\n");
+});
+
+test("a restart whose new start fails still records the output that start captured", async () => {
+    const run = runDir();
+    const stack = daemonStack(run);
+    const old = fakeChild();
+    const inner = {
+        child: old,
+        stdout: "",
+        stderr: "",
+        crashHost: async () => undefined,
+        startHost: async () => {
+            inner.stderr = "boot failed: port in use\n";
+            throw new Error("daemon did not become ready");
+        },
+    };
+    (stack as Untyped).stack = inner;
+    (stack as Untyped).attach();
+    await expect(stack.restart()).rejects.toThrow("did not become ready");
+    expect(readFileSync(join(run, "daemon.log"), "utf8")).toContain("boot failed: port in use");
 });
 
 test("a Pi turn ending just before its deadline still waits the full quiet window", async () => {

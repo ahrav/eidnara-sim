@@ -2,6 +2,7 @@ import type { StoreCheck } from "../hosts/storecheck";
 import { canonicalJson, sha256Hex } from "../prereg/canonical";
 import type { FaultEpisode } from "../scenario/faults";
 import { Clock } from "./clock";
+import { withDeadline } from "./deadline";
 import { type Entry, type EntryKind, HarnessFailure, type Journal } from "./journal";
 
 export interface ScenarioEvent {
@@ -29,9 +30,14 @@ export interface ArmDriver {
     reset(): Promise<void>;
     /**
      * Restores a started arm in a new harness process. `open` is the `session_start` of the
-     * session the next event belongs to, or null between sessions.
+     * session the next event belongs to, or null between sessions; `interrupted` names the
+     * faults the journal fired and never observed before the kill.
      */
-    resume?(open: ScenarioEvent | null): Promise<void>;
+    resume?(open: ScenarioEvent | null, interrupted?: readonly string[]): Promise<void>;
+    /** Stops what a killed harness left running, before any fault is armed again. */
+    reap?(): Promise<void>;
+    /** Whether the driver has a mechanism for the fault; a run refuses an unsupported one before it starts. */
+    supports?(f: FaultEpisode): boolean;
     event(e: ScenarioEvent): Promise<TurnOutcome>;
     /** `at` is the scenario event a fault fired at, when a compiled event triggered it. */
     fault(f: FaultEpisode, at?: ScenarioEvent): Promise<Record<string, unknown>>;
@@ -84,6 +90,8 @@ export interface SchedulerOptions {
     jobPollMs?: number;
     /** The longest the busy set may hold the clock before the run stops. */
     idleLimitMs?: number;
+    /** The longest a failed arm waits for a fault its driver still runs before finishing. */
+    faultDrainMs?: number;
     settleMs?: number;
     onClock?: (arm: string, scenarioMs: number) => void;
     /** Runs before `EndArm` and `EndRun` are journaled; a throw leaves the arm or run open. */
@@ -134,6 +142,10 @@ export class Scheduler {
     private readonly fired = new Set<string>();
     private pendingKill: Promise<unknown> | null = null;
     private generation = 0;
+    /** The driver's latest fault call, which the fatal channel can cut while it still runs. */
+    private faultCall: Promise<unknown> | null = null;
+    /** Faults the journal fired and never observed on the arm being resumed. */
+    private interrupted: string[] = [];
     /** The running arm's handle; the public job, observe, and exit calls route through it. */
     private current: ArmHandle | null = null;
     /** Counts every job start and end, so a job that begins and ends between two polls still resets the quiet window. */
@@ -221,6 +233,17 @@ export class Scheduler {
             if (!finished.has(arm) && !this.o.drivers[arm])
                 throw new Error(`no driver for arm ${arm}`);
         }
+        for (const arm of this.o.order) {
+            if (finished.has(arm)) continue;
+            const driver = this.o.drivers[arm];
+            const owned = this.o.faults.filter((f) => f.seam.layer !== PROXY_LAYER);
+            const refused = owned.find((f) => driver?.supports?.(f) === false);
+            if (refused) {
+                throw new HarnessFailure(
+                    `scheduler: arm ${arm} has no mechanism for fault type ${refused.type} (${refused.id})`,
+                );
+            }
+        }
         if (!start) {
             this.log({ kind: "StartRun", order: this.o.order, scenario });
         } else {
@@ -230,12 +253,15 @@ export class Scheduler {
             const mine = entries.filter((e) => e.arm === arm);
             if (mine.some((e) => e.kind === "EndArm")) continue;
             this.arm = arm;
-            const startMs = mine.at(-1)?.scenario_ms ?? 0;
+            const started = mine.some((e) => e.kind === "StartArm");
+            const startMs = started ? (mine.at(-1)?.scenario_ms ?? 0) : 0;
             const onClock = (ms: number) => this.o.onClock?.(arm, ms);
-            this.clock = new Clock(startMs, this.o.journal, undefined, onClock);
-            onClock(startMs);
+            const clock = new Clock(startMs, this.o.journal, undefined, onClock);
+            this.clock = clock;
             const driver = this.o.drivers[arm] as ArmDriver;
             let ended = false;
+            let finishing = false;
+            let priorJobs = new Set<string>();
             try {
                 this.session = this.openSession(mine);
                 for (const e of mine) {
@@ -246,18 +272,40 @@ export class Scheduler {
                     }
                 }
                 try {
-                    const started = mine.some((e) => e.kind === "StartArm");
-                    if (!started) {
-                        await this.untilFatal(driver.reset());
-                        this.log({ kind: "StartArm" });
+                    // The arm's time begins at StartArm, so a fresh arm's clock holds through its
+                    // reset; on a resume, the killed harness's processes, which read the shared
+                    // clock too, are reaped before the restored time is published.
+                    if (!started) clock.hold();
+                    try {
+                        if (started) {
+                            if (driver.reap) await this.untilFatal(driver.reap());
+                            onClock(startMs);
+                        } else {
+                            onClock(startMs);
+                            await this.untilFatal(driver.reset());
+                            this.log({ kind: "StartArm" });
+                        }
+                    } finally {
+                        clock.release();
                     }
                     this.o.proxy?.reset();
                     const answered = this.resume(mine);
                     const handle = this.handle(++this.generation, driver);
                     this.current = handle;
                     driver.bind?.(handle);
-                    if (started && driver.resume) {
-                        await this.untilFatal(driver.resume(this.openStart(this.session)));
+                    // A resume reopens the session the next pending event belongs to; a pending
+                    // `session_end` closes nothing the killed harness still had open, and an
+                    // arm with no event left is finished without one.
+                    const delivered = new Set(
+                        this.o.journal.entries
+                            .filter((e) => e.arm === arm && e.kind === "Event")
+                            .map((e) => e.event as string),
+                    );
+                    const next = this.o.events.find((e) => !delivered.has(e.id));
+                    if (started && driver.resume && next) {
+                        const open =
+                            next.kind === "session_end" ? null : this.openStart(this.session);
+                        await this.untilFatal(driver.resume(open, this.interrupted));
                     }
                     if (answered.length > 0) {
                         await this.untilFatal(Bun.sleep(this.o.settleMs ?? 1_000));
@@ -280,7 +328,29 @@ export class Scheduler {
                         if (!done.has(e.id)) await this.step(driver, e);
                     }
                     await this.quiesce();
+                    // A job the shutdown itself starts holds the clock too; it ends before the
+                    // arm does.
+                    finishing = true;
+                    priorJobs = new Set(this.clock?.busyIds() ?? []);
                     if (driver.finish) await this.untilFatal(driver.finish());
+                    await this.idle();
+                } catch (caught) {
+                    // A failed arm still stops what it runs, so nothing it started outlives it;
+                    // a job the finish itself starts ends before the failure surfaces, and one
+                    // the failed work left open is the resume's to close, as after a kill.
+                    await this.pendingKill?.catch(() => undefined);
+                    // A fault the fatal channel cut still runs in the driver; it settles before
+                    // the finish, so a restart cannot start a daemon after the arm stopped it.
+                    if (this.faultCall) {
+                        const settled = this.faultCall.catch(() => undefined);
+                        await withDeadline(settled, this.o.faultDrainMs ?? 30_000);
+                    }
+                    if (!finishing) {
+                        priorJobs = new Set(this.clock?.busyIds() ?? []);
+                        await driver.finish?.().catch(() => undefined);
+                    }
+                    await this.drainNew(priorJobs);
+                    throw caught;
                 } finally {
                     await this.pendingKill?.catch(() => undefined);
                 }
@@ -292,6 +362,7 @@ export class Scheduler {
             } finally {
                 this.generation++;
                 this.current = null;
+                this.faultCall = null;
                 this.pendingKill = null;
                 this.outage = null;
                 this.session = null;
@@ -830,12 +901,16 @@ export class Scheduler {
             }
         }
         const observed = new Set(kinds("FaultObserved").map((e) => e.fault));
+        this.interrupted = [];
         for (const fired of kinds("FaultFired")) {
             const f = this.o.faults.find((x) => x.id === fired.fault);
             if (!f) continue;
             if (f.seam.layer !== PROXY_LAYER) {
-                if (!observed.has(f.id) && !marked.has(f.id) && f.type !== "laptop_sleep") {
-                    this.log({ kind: "ItemState", fault: f.id, state: "failed(interrupted)" });
+                if (!observed.has(f.id) && f.type !== "laptop_sleep") {
+                    this.interrupted.push(f.id);
+                    if (!marked.has(f.id)) {
+                        this.log({ kind: "ItemState", fault: f.id, state: "failed(interrupted)" });
+                    }
                 }
                 continue;
             }
@@ -924,6 +999,15 @@ export class Scheduler {
         }
     }
 
+    /** Waits, bounded by the liveness deadline, for the busy ids outside `prior` to end. */
+    private async drainNew(prior: ReadonlySet<string>): Promise<void> {
+        const limit = Date.now() + (this.o.idleLimitMs ?? Number.POSITIVE_INFINITY);
+        const fresh = () => (this.clock?.busyIds() ?? []).filter((id) => !prior.has(id));
+        while (fresh().length > 0 && Date.now() <= limit) {
+            await Bun.sleep(this.o.jobPollMs ?? 50);
+        }
+    }
+
     private async waitFor(pending: () => string[], limit: number): Promise<void> {
         while (pending().length > 0) {
             if (this.fatal) throw this.fatal;
@@ -960,7 +1044,9 @@ export class Scheduler {
         let evidence: Record<string, unknown>;
         try {
             const where = at ? structuredClone(at) : undefined;
-            const got: unknown = await this.untilFatal(driver.fault(structuredClone(f), where));
+            const call = driver.fault(structuredClone(f), where);
+            this.faultCall = call;
+            const got: unknown = await this.untilFatal(call);
             evidence = plainObject(got, "fault evidence");
         } catch (caught) {
             if (caught === this.fatal) {

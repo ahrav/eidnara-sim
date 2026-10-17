@@ -60,13 +60,14 @@ describe("time injection", () => {
         expect(launch("/x/sandbox.sh", [], { A: "/runs/host~aa/clock" }, ["true"])).toContain(
             "A=/runs/host~aa/clock",
         );
-        expect(launch("/x/sandbox.sh", ["/runs/host~aa/r"], {}, ["true"])[1]).toBe(
+        expect(launch("/x/sandbox.sh", ["/runs/host~aa/r"], {}, ["true"])).toContain(
             "/runs/host~aa/r",
         );
         expect(() => launch("/x/sandbox.sh", ["/runs/~aa"], {}, ["true"])).toThrow(/must match/);
         for (const value of ["~/clock", "a:~/b", "x=~y"]) {
             expect(() => launch("/x/sandbox.sh", [], { A: value }, ["true"])).toThrow(/plain word/);
         }
+        expect(() => launch("/x/sandbox.sh", [], {}, ["true"], [], "/a b")).toThrow(/must match/);
         expect(() => launch("/x/sandbox.sh", ["/a/b"], {}, ["true"], ["/a"])).toThrow(
             "sandbox path /a/b is kept writable under read-only /a",
         );
@@ -105,6 +106,7 @@ describe("time injection", () => {
         );
         expect(launch("/x/sandbox.sh", ["/k"], { A: "1" }, ["true"], ["/r"])).toEqual([
             "/x/sandbox.sh",
+            "/",
             "/k",
             "--ro",
             "/r",

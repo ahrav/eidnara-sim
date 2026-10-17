@@ -13,7 +13,9 @@ namespace on every exit path. The privileged part of the script runs with
 `PATH=/usr/sbin:/usr/bin:/sbin:/bin` from `/`, so root's tools come from
 system directories and the harness working directory stays hidden when it
 lies inside a masked tree; the caller's `PATH` reaches the command through
-`env` after the privilege drop, and the command starts in `/`. `unshare`
+`env` after the privilege drop, and the command starts in the directory
+`launch` names (`/` by default; a host names its workspace, a kept path,
+through `env --chdir`). `unshare`
 runs with `--kill-child`, and the interception test wraps each launch in
 GNU `timeout -s KILL`, which signals the launcher's whole process group;
 `unshare --fork` ignores `TERM` while it waits and namespace PID 1 has no
