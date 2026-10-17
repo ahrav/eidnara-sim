@@ -111,7 +111,7 @@ export class SnapshotRecorder {
     private git(args: string[], work?: string): string {
         if (work) this.requireRealDir(work);
         if (!existsSync(this.gitDir)) git(this.armDir, ["init", "--quiet", "--bare", this.gitDir]);
-        const scope: Record<string, string> = { GIT_DIR: this.gitDir };
+        const scope: Record<string, string> = { GIT_DIR: this.gitDir, GIT_NO_REPLACE_OBJECTS: "1" };
         if (work) {
             scope.GIT_WORK_TREE = work;
             scope.GIT_INDEX_FILE = join(this.gitDir, `${basename(work)}.index`);
@@ -349,13 +349,19 @@ export class SnapshotRecorder {
         }
     }
 
-    /** Adds tool runs; a run whose `call` id matches an earlier record replaces that record. */
+    /**
+     * Adds tool runs; a run whose `call` id matches an earlier record replaces that record and
+     * keeps its recorded start time, the moment the run began.
+     */
     addTools(tools: Command[]): void {
         if (tools.length === 0) return;
         for (const run of tools) {
             const at = run.call ? this.state.commands.findIndex((c) => c.call === run.call) : -1;
             if (at === -1) this.state.commands.push(run);
-            else this.state.commands[at] = run;
+            else {
+                const earlier = this.state.commands[at] as Command;
+                this.state.commands[at] = { ...run, scenario_ms: earlier.scenario_ms };
+            }
         }
         this.save();
     }

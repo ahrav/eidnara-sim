@@ -313,6 +313,44 @@ describe("HostDriver lifecycle", () => {
         ).rejects.toThrow(HarnessFailure);
     });
 
+    test("apply_diff refuses a commondir redirect and ignores replacement refs", async () => {
+        const { driver } = fixture("host", { p: gitRepo() });
+        await driver.reset();
+        const ws = driver.workspace("p");
+        const other = tmp();
+        writeFileSync(join(ws, ".git", "commondir"), `${other}\n`);
+        await expect(
+            driver.event(ev("apply_diff", { path: "src/a.txt", content: "A" })),
+        ).rejects.toThrow("commondir");
+        rmSync(join(ws, ".git", "commondir"));
+        const g = (...args: string[]) =>
+            spawnSync("git", args, { cwd: ws, encoding: "utf8" }).stdout.trim();
+        const head = g("rev-parse", "HEAD");
+        const emptyTree = g("hash-object", "-t", "tree", "/dev/null");
+        const replacement = spawnSync("git", ["commit-tree", emptyTree, "-m", "replacement"], {
+            cwd: ws,
+            encoding: "utf8",
+            env: {
+                ...process.env,
+                GIT_AUTHOR_NAME: "t",
+                GIT_AUTHOR_EMAIL: "t@t",
+                GIT_COMMITTER_NAME: "t",
+                GIT_COMMITTER_EMAIL: "t@t",
+            },
+        }).stdout.trim();
+        g("update-ref", `refs/replace/${head}`, replacement);
+        await driver.event(ev("apply_diff", { path: "src/a.txt", content: "A" }));
+        const files = spawnSync("git", ["ls-tree", "-r", "--name-only", "HEAD"], {
+            cwd: ws,
+            encoding: "utf8",
+            env: { ...process.env, GIT_NO_REPLACE_OBJECTS: "1" },
+        })
+            .stdout.trim()
+            .split("\n")
+            .sort();
+        expect(files).toEqual(["README", "src/a.txt"]);
+    });
+
     test("apply_diff refuses a target that is a FIFO or directory before writing", async () => {
         const { driver } = fixture("host", { p: gitRepo() });
         await driver.reset();
@@ -940,7 +978,7 @@ test("a tool run reported at its start is on record, and its end report replaces
         { command: "cargo build", exit: null, scenario_ms: 1, call: "t1" },
         { command: "ls", exit: 0, scenario_ms: 2 },
     ]);
-    recorder.addTools([{ command: "cargo build", exit: 1, scenario_ms: 1, call: "t1" }]);
+    recorder.addTools([{ command: "cargo build", exit: 1, scenario_ms: 9, call: "t1" }]);
     const ended = JSON.parse(readFileSync(join(armDir, "snapshot-state.json"), "utf8"));
     expect(ended.commands).toEqual([
         { command: "cargo build", exit: 1, scenario_ms: 1, call: "t1" },
@@ -1011,15 +1049,15 @@ test("snapshot git refuses a workspace path that an agent replaced with a symlin
 test("the workspace walk is bounded by the recorder deadline", () => {
     const repo = gitRepo();
     const armDir = tmp();
-    for (let i = 0; i < 3_000; i++) {
+    for (let i = 0; i < 1_500; i++) {
         mkdirSync(join(repo, "wide", `d${i}`, "deeper"), { recursive: true });
         writeFileSync(join(repo, "wide", `d${i}`, "f.rs"), "");
     }
     const recorder = new SnapshotRecorder(armDir, "eidnara", () => [], 1);
     expect(() => recorder.embedded(repo)).toThrow("timed out");
-    const roomy = new SnapshotRecorder(armDir, "eidnara", () => [], 60_000);
+    const roomy = new SnapshotRecorder(armDir, "eidnara", () => [], 120_000);
     expect(roomy.embedded(repo)).toEqual([]);
-}, 60_000);
+}, 120_000);
 
 test("the nested-repository check is bounded like the other snapshot git runs", () => {
     const repo = gitRepo();

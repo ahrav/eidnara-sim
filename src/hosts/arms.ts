@@ -419,6 +419,12 @@ const NON_INTERACTIVE = ["question", "plan_enter", "plan_exit"].map((permission)
 /** A tool part's exit by its OpenCode status; a pending or running part has none. */
 const EXIT: Record<string, number> = { completed: 0, error: 1 };
 
+/** An OpenCode tool part's stable id, which keys its run across the turn's listing and a resume. */
+const callId = (part: Untyped): string | undefined => {
+    const id = part.callID ?? part.id;
+    return typeof id === "string" ? `oc:${id}` : undefined;
+};
+
 export class OpencodeSimHost extends SimHost {
     private oc: Untyped = null;
     private client: Untyped = null;
@@ -492,6 +498,7 @@ export class OpencodeSimHost extends SimHost {
             .at(0);
         if (latest) {
             this.sid = String(latest.id);
+            await this.recoverTools(120_000);
             return;
         }
         const created = await this.client.session.create({
@@ -544,7 +551,24 @@ export class OpencodeSimHost extends SimHost {
             for (const part of m.parts.filter((p) => p.type === "tool")) {
                 const at = Number(part.state?.time?.start ?? origin);
                 const ms = startScenario + (Number.isFinite(origin) ? Math.max(0, at - origin) : 0);
-                this.logTool(part.tool, part.state?.input, EXIT[part.state?.status] ?? null, ms);
+                const exit = EXIT[part.state?.status] ?? null;
+                this.logTool(part.tool, part.state?.input, exit, ms, callId(part));
+            }
+        }
+    }
+
+    /**
+     * On reattaching to a session the killed harness left open, reports every tool part the
+     * session's messages hold, keyed by the part's id, so a run the interrupted turn executed
+     * reaches the recorder; a run it already holds keeps its recorded start time.
+     */
+    async recoverTools(deadlineMs: number): Promise<void> {
+        const now = this.ctx.now?.() ?? 0;
+        for (const m of await this.messages(deadlineMs)) {
+            for (const part of m.parts.filter((p) => p.type === "tool")) {
+                const command = toolCommand(part.tool, part.state?.input);
+                const exit = EXIT[part.state?.status] ?? null;
+                this.ctx.onTool?.({ command, exit, scenario_ms: now, call: callId(part) });
             }
         }
     }
