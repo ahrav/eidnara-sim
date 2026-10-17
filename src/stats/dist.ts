@@ -101,7 +101,8 @@ export function incompleteBeta(x: number, a: number, b: number): number {
     );
     const tiny = 1e-300;
     let [f, c, d] = [1, 1, 0];
-    for (let i = 0; i <= 400; i++) {
+    let step = 0;
+    for (let i = 0; i <= 10_000 && Math.abs(1 - step) >= 1e-15; i++) {
         const m = Math.floor(i / 2);
         const num =
             i === 0
@@ -114,10 +115,11 @@ export function incompleteBeta(x: number, a: number, b: number): number {
         d = 1 / d;
         c = 1 + num / c;
         c = Math.abs(c) < tiny ? tiny : c;
-        const step = c * d;
+        step = c * d;
         f *= step;
-        if (Math.abs(1 - step) < 1e-15) break;
     }
+    if (Math.abs(1 - step) >= 1e-15)
+        throw new RangeError("incompleteBeta: the continued fraction did not converge");
     return (front * (f - 1)) / a;
 }
 

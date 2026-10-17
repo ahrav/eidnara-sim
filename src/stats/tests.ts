@@ -64,13 +64,19 @@ export function newcombe(
     ];
 }
 
-/** Holm's step-down adjusted p-values, in the input order. */
+/**
+ * Holm's step-down adjusted p-values, in the input order. A NaN input stays NaN and the
+ * remaining inputs are adjusted among themselves.
+ */
 export function holm(ps: readonly number[]): number[] {
-    const order = ps.map((p, i) => [p, i] as const).sort((x, y) => x[0] - y[0]);
-    const out = new Array<number>(ps.length);
+    const order = ps
+        .map((p, i) => [p, i] as const)
+        .filter(([p]) => !Number.isNaN(p))
+        .sort((x, y) => x[0] - y[0]);
+    const out = new Array<number>(ps.length).fill(Number.NaN);
     let running = 0;
     order.forEach(([p, i], k) => {
-        running = Math.max(running, Math.min(1, (ps.length - k) * p));
+        running = Math.max(running, Math.min(1, (order.length - k) * p));
         out[i] = running;
     });
     return out;
@@ -215,6 +221,8 @@ const THETA_MAX = 1e8;
 
 const THETA_MIN = 1e-8;
 
+const HARMONIC_MAX = 1000;
+
 function weightedCross(x: number[][], w: number[], v?: number[]): number[][] {
     const p = (x[0] ?? []).length;
     const column = (a: number, b: (row: number[], i: number) => number) =>
@@ -227,16 +235,15 @@ function weightedCross(x: number[][], w: number[], v?: number[]): number[][] {
 
 /**
  * The derivative of the log-likelihood in theta at fixed means `m`. The rearranged terms
- * reduce cancellation at large `t`.
+ * reduce cancellation at large `t`; the harmonic form of the digamma difference is used up to
+ * `HARMONIC_MAX` so the work per observation stays bounded.
  */
 function thetaScore(y: number[], m: number[], t: number): number {
     return y.reduce((s, yi, j) => {
         const u = m[j] as number;
-        let psi = digamma(yi + t) - digamma(t);
-        if (Number.isInteger(yi) && yi >= 0) {
-            psi = 0;
-            for (let k = 0; k < yi; k++) psi += 1 / (t + k);
-        }
+        let psi = 0;
+        if (yi <= HARMONIC_MAX) for (let k = 0; k < yi; k++) psi += 1 / (t + k);
+        else psi = digamma(yi + t) - digamma(t);
         return s + psi - Math.log1p(u / t) + (u - yi) / (t + u);
     }, 0);
 }
@@ -266,12 +273,17 @@ function thetaAt(y: number[], m: number[]): number {
  */
 export function negativeBinomial(x: number[][], y: number[], iterations = 50): NegBinFit {
     const p = (x[0] ?? []).length;
+    if (y.length === 0 || p === 0)
+        throw new RangeError("negativeBinomial: an empty design has no fit");
+    if (!y.every((v) => Number.isInteger(v) && v >= 0))
+        throw new RangeError("negativeBinomial: the response must be nonnegative integer counts");
     let beta = new Array<number>(p).fill(0);
     beta[0] = Math.log(Math.max(mean(y), 1e-8));
     let theta = 1;
     let settled = false;
-    const mu = () =>
-        x.map((row) => Math.exp(row.reduce((s, v, j) => s + v * (beta[j] as number), 0)));
+    const eta = (b: number[]) =>
+        x.map((row) => row.reduce((s, v, j) => s + v * (b[j] as number), 0));
+    const mu = () => eta(beta).map(Math.exp);
     const weights = (m: number[]) => m.map((u) => u / (1 + u / theta));
     for (let outer = 0; outer < iterations; outer++) {
         let stable = false;
@@ -280,8 +292,9 @@ export function negativeBinomial(x: number[][], y: number[], iterations = 50): N
             const w = weights(m);
             const z = m.map((u, i) => Math.log(u) + ((y[i] as number) - u) / u);
             const next = solve(weightedCross(x, w), weightedCross(x, w, z)[0] as number[]);
-            const moved = next.reduce(
-                (s, b, j) => Math.max(s, Math.abs(b - (beta[j] as number))),
+            const before = eta(beta);
+            const moved = eta(next).reduce(
+                (s, e, i) => Math.max(s, Math.abs(e - (before[i] as number))),
                 0,
             );
             beta = next;

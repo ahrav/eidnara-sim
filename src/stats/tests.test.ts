@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { binomialPmf, normalCdf, normalQuantile } from "./dist";
+import { binomialPmf, incompleteBeta, normalCdf, normalQuantile } from "./dist";
 import {
     acceleration,
     bootstrap,
@@ -56,6 +56,8 @@ describe("statistics against published references", () => {
         });
         expect(holm([0.5, 0.001, 0.04, 0.2, 0.01])).toEqual([0.5, 0.005, 0.12, 0.4, 0.04]);
         expect(holm([0.04, 0.04])).toEqual([0.08, 0.08]);
+        expect(holm([0.01, Number.NaN, 0.02])).toEqual([0.02, Number.NaN, 0.02]);
+        expect(holm([0.01, 0.02, Number.NaN])).toEqual([0.02, 0.02, Number.NaN]);
     });
 
     test("the tabular CUSUM reproduces Hawkins's upward and downward sums and its signal", () => {
@@ -213,6 +215,30 @@ describe("statistics against published references", () => {
         const milli = negativeBinomial(design(0.001), y);
         expect([unit.converged, milli.converged]).toEqual([true, true]);
         near((milli.coefficients[6] as number) / 1000, unit.coefficients[6] as number, 1e-6);
+        const nano = negativeBinomial(design(1e-7), y);
+        expect(nano.converged).toBe(true);
+        near((nano.coefficients[6] as number) * 1e-7, unit.coefficients[6] as number, 1e-6);
+    });
+
+    test("the negative-binomial fit bounds its work for a large count and rejects an empty or non-count response", () => {
+        const started = performance.now();
+        const fit = negativeBinomial(
+            [
+                [1, 0],
+                [1, 1],
+            ],
+            [0, 10_000_000],
+        );
+        expect(fit.converged).toBe(false);
+        expect(performance.now() - started).toBeLessThan(2000);
+        expect(() => negativeBinomial([], [])).toThrow(RangeError);
+        expect(() => negativeBinomial([[1], [1], [1]], [-1, 2, 3])).toThrow(RangeError);
+        expect(() => negativeBinomial([[1], [1], [1]], [0.5, 2, 3])).toThrow(RangeError);
+    });
+
+    test("the incomplete beta function converges for large concentrated shapes", () => {
+        near(incompleteBeta(0.5, 1e7, 1e7), 0.5, 1e-7);
+        expect(() => incompleteBeta(0.5, 1e12, 1e12)).toThrow(RangeError);
     });
 
     test("the binomial mass keeps representable tails and exact half probabilities", () => {
