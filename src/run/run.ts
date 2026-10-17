@@ -342,10 +342,12 @@ export async function runTier(o: RunOptions): Promise<void> {
     }
 }
 
+/** Complete lines of calls.jsonl; a cut final line, with no newline after it, is left out. */
 const callRecords = (path: string): CallRecord[] =>
     existsSync(path)
         ? readFileSync(path, "utf8")
               .split("\n")
+              .slice(0, -1)
               .filter(Boolean)
               .map((line) => JSON.parse(line) as CallRecord)
         : [];

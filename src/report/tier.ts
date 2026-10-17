@@ -9,7 +9,6 @@ import { canonicalJson, sha256Hex } from "../prereg/canonical";
 import type { Preregistration } from "../prereg/schema";
 import { preregistrationHash } from "../prereg/validate";
 import { excludedFromFaultMetrics, type WitnessReport } from "../proxy/inject";
-import { readJournal } from "../run/journal";
 import type { Scenario } from "../scenario/compile";
 import { evaluateTier, falsificationSet, type TierInput } from "../stats/gate";
 import { clopperPearson } from "../stats/tests";
@@ -43,6 +42,16 @@ export function identityVersions(preflight: {
         ...(preflight.upgrade ?? []).map((h) => `upgrade:${h.host}@${h.version}`),
     ];
 }
+
+/** Complete lines of a JSONL file; a cut final line, with no newline after it, is left out. */
+const jsonl = <T>(path: string): T[] =>
+    existsSync(path)
+        ? readFileSync(path, "utf8")
+              .split("\n")
+              .slice(0, -1)
+              .filter(Boolean)
+              .map((line) => JSON.parse(line) as T)
+        : [];
 
 export function loadGraded(dir: string, prereg: Preregistration): GradedRun {
     const read = (name: string) => JSON.parse(readFileSync(join(dir, name), "utf8"));
@@ -85,7 +94,7 @@ export function loadGraded(dir: string, prereg: Preregistration): GradedRun {
     const { eidnara_commit, models, context_limit, events, side_model, user_sim_model } = manifest;
     const witnesses = new Map<string, WitnessReport>();
     const faults = join(dir, "faults.jsonl");
-    const lines = existsSync(faults) ? (readJournal(faults) as unknown as WitnessReport[][]) : [];
+    const lines = jsonl<WitnessReport[]>(faults);
     const reports = lines.length ? lines : null;
     for (const w of (reports ?? []).flat()) {
         if (witnesses.get(w.fault)?.status !== "fired") witnesses.set(w.fault, w);
@@ -95,9 +104,7 @@ export function loadGraded(dir: string, prereg: Preregistration): GradedRun {
             (o) => o.item === r.item && o.arm === arm && judgmentKey(o) === judgmentKey(r),
         );
     const pairingPath = join(dir, "pairing.jsonl");
-    const pairing = existsSync(pairingPath)
-        ? (readJournal(pairingPath) as unknown as PairingRecord[])
-        : null;
+    const pairing = existsSync(pairingPath) ? jsonl<PairingRecord>(pairingPath) : null;
     const sm = scenario.manifest as {
         generator_version?: string;
         random_schema_version?: number;
@@ -295,7 +302,7 @@ export function tierReport(
             .flatMap(({ g, arm }) =>
                 soakByMonth(g.run, arm, "rss").map((s) => ({ run: g.run.dir, ...s })),
             ),
-        counterfactual: counterfactual(runs),
+        counterfactual: counterfactual(runs, undefined, undefined, items),
     };
 }
 
@@ -330,9 +337,23 @@ export function counterfactual(
     runs: GradedRun[],
     memory = "eidnara",
     cf = "eidnara-cf",
+    items?: number,
 ): Counterfactual | null {
     const both = runs.filter((g) => [memory, cf].every((a) => g.run.arms.some((x) => x.arm === a)));
     if (both.length === 0) return null;
+    const issue = (p: { id: string; event?: string }) =>
+        Number((p.event ?? p.id).replace(/\D/g, ""));
+    const admitted = new Set<string>();
+    for (const type of CF_TYPES) {
+        const probes = both.flatMap((g) =>
+            g.scenario.probes
+                .filter((p) => p.type === type)
+                .map((p) => ({ key: `${g.run.dir}/${p.id}`, at: issue(p) })),
+        );
+        const kept =
+            items === undefined ? probes : probes.sort((a, b) => a.at - b.at).slice(0, items);
+        for (const p of kept) admitted.add(p.key);
+    }
     const deletions = both.flatMap((g) =>
         (g.run.arms.find((a) => a.arm === cf)?.journal ?? [])
             .filter((e) => e.kind === "CounterfactualDeletion")
@@ -356,6 +377,7 @@ export function counterfactual(
                 g.grades.find((r) => r.arm === arm && r.item === item)?.verdict;
             return items(g)
                 .filter((item) => !asym.has(`${runKey(g)}/${item}`))
+                .filter((item) => admitted.has(`${g.run.dir}/${item}`))
                 .map((item) => ({ m: verdict(memory, item), c: verdict(cf, item) }));
         });
         const graded = pairs.filter((p) => p.m && p.c && p.m !== "excluded" && p.c !== "excluded");

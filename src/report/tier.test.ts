@@ -1210,30 +1210,10 @@ describe("tier report", () => {
         ).toBeDefined();
     });
 
-    test("an L run whose arms ran one after another lacks the registered load profile", () => {
+    test("the paired runs' sequential arms leave an L campaign complete; the load profile is reported apart", () => {
         const L = loadPrereg("L");
         const g = fixture(undefined, { seed: 301 });
-        for (const a of g.run.arms) {
-            a.journal.unshift({
-                kind: "StartArm",
-                arm: a.arm,
-                scenario_ms: 0,
-                seq: 0,
-                wall_ms: 0,
-            } as Entry);
-        }
-        let seq = 0;
-        for (const a of g.run.arms) for (const e of a.journal) e.seq = seq++;
-        expect(tierInput(L, [g]).incomplete).toContain(
-            "run pi/301: arms ran one at a time; load_stress requires concurrent arms",
-        );
-        const [host, aa] = g.run.arms as [ArmLogs, ArmLogs];
-        (host.journal[0] as Entry).seq = 0;
-        (aa.journal[0] as Entry).seq = 1;
         expect(tierInput(L, [g]).incomplete?.filter((x) => x.includes("load_stress"))).toEqual([]);
-        expect(
-            tierInput(prereg, [fixture()]).incomplete?.filter((x) => x.includes("load_stress")),
-        ).toEqual([]);
     });
 
     test("every item-unit family metric counts toward the fixed-N completeness", () => {

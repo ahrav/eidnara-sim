@@ -168,7 +168,7 @@ from its runs' first journal entries:
 
 | Tier | Profile | Runs |
 |---|---|---|
-| M | `side-haiku` | Per host, the first seed's `host` and `eidnara` arms with Eidnara's summarizer and researcher calls on Haiku 5.5 (`--side-model`), replaying the paired run's user-sim tape (`--tapes`), the model factor against the paired runs' Opus; it runs only once that paired run completed inside its budget, else `tier-result.json` records it as skipped |
+| M | `side-haiku` | Per host, the first seed's `host` and `eidnara` arms with Eidnara's summarizer and researcher calls on Haiku 5.5 (`--side-model`), replaying the paired run's user-sim tape (`--tapes`), the model factor against the paired runs' Opus; it runs only once that paired run completed inside its budget with its `tape.jsonl` and `pairing.jsonl` in place, else `tier-result.json` records it as skipped |
 | M | `usersim-luna` | One Pi run of the first seed's `host` and `eidnara` arms with `gpt-5.6-luna` as the user-sim (`--user-sim-model`) |
 | L | `concurrent` | Per host, each arm of the first seed alone in its own run (`<dir>/L-301-<host>-concurrent/<arm>`), all started together; a group some of whose runs began and not all finished is refused until its run directories are removed, so a resumed member never measures alone |
 
@@ -185,8 +185,10 @@ run or grading, a report whose witness found a violation, a partial campaign,
 and the profiles' changed models never enter it; while the M directory
 holds a live lease, so a campaign still being graded never enters it; and
 while the M report's campaign-completeness list holds anything besides
-its CUSUM scale, so truncated runs, differing settings, or missing A/A
-controls never enter it. The record names its source directory and both
+its CUSUM scale and the three marks of a capped prefix (truncated runs, a
+moved fault schedule, fewer paired items than registered), so differing
+settings, unfinished arms, unavailable metrics, or missing A/A controls
+never enter it while the capped pilot's discordance still can. The record names its source directory and both
 pre-registration hashes; a later invocation refuses a record of another
 L pre-registration, or a `--resize-from` naming another source or an M
 pre-registration the record did not see. The record is written through a

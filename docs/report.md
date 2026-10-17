@@ -131,8 +131,7 @@ other than a boolean (either pairs nothing), each run without
 `scripts/pairing-check.ts` (`pairingFailures`: a pre-divergence reply
 differing from the reference arm's, an altered probe or paste turn, an
 unsent non-filler turn) or whose `UserSimRates` entry names a rate outside
-its band, each L run whose arms' `StartArm`/`EndArm` spans never overlap
-while `load_stress` registers concurrent arms, each registered A/A pair whose count
+its band, each registered A/A pair whose count
 of control arms that reached `EndArm` across the runs differs from
 `aa_controls.repeats`, each run-unit gate metric a run has no value for, each probe type,
 P13 and P14 included, and each other item-unit family metric (the harm
