@@ -204,6 +204,17 @@ describe("soak verdict", () => {
         });
         const again = soak(run([], "", kinds), arm({ journal, resources: reused }), "rss");
         expect([again?.verdict, again?.generations, again?.generation]).toEqual(["leak", 2, 1]);
+        const restarted = resources.map((r, i) => ({
+            ...r,
+            pid: 100,
+            pid_started: i < 50 ? 1000 : 5000,
+        }));
+        const resumed = soak(run([], "", kinds), arm({ journal, resources: restarted }), "rss");
+        expect([resumed?.verdict, resumed?.generations, resumed?.generation]).toEqual([
+            "leak",
+            2,
+            1,
+        ]);
     });
 
     test("the sampling cadence counts every sampler row, including those taken with the daemon down", () => {
@@ -275,12 +286,30 @@ describe("intrusiveness panel", () => {
             run(mutant.arms),
             mutant.arms[0] as ArmLogs,
         ).internal_string_hits;
-        expect(hits?.map((h) => h.source)).toEqual([
-            "agent-response",
-            "agent-response",
-            "agent-response",
+        expect(hits?.map((h) => h.evidence)).toEqual([
+            "<history-segments",
+            "</history-segments",
+            "<Eidnara-Search-Hint>",
+            "</Eidnara-Search-Hint>",
+            "context-researcher-augmentation",
         ]);
+        expect(new Set(hits?.map((h) => h.source))).toEqual(new Set(["agent-response"]));
         const first = mutant.arms[0] as ArmLogs;
+        const twice = {
+            ...first,
+            calls: [
+                {
+                    ...(first.calls[0] as ArmLogs["calls"][number]),
+                    seq: 900,
+                    turn: "t-9",
+                    response_text: "Done. <history-segments> were folded [eidnara] says so.",
+                },
+            ],
+        };
+        expect(intrusiveness(run([twice]), twice).internal_string_hits).toEqual([
+            { source: "agent-response", at: "t-9", evidence: "<history-segments" },
+            { source: "agent-response", at: "t-9", evidence: "[eidnara]" },
+        ]);
         const truncated = {
             ...first,
             calls: [

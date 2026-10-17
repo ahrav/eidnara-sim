@@ -54,14 +54,16 @@ const median = (xs: number[]) => {
 };
 
 /**
- * Consecutive samples from one daemon process. A sample with no process (`pid: null`) is a
- * boundary of its own, so a replacement that reuses the number still starts a new run.
+ * Consecutive samples from one daemon process, told apart by `pid` and the process's start time.
+ * A sample with no process (`pid: null`) is a boundary of its own, and a replacement that reuses
+ * the pid after a resume differs in `pid_started`, so each starts a new run.
  */
 function byPid(samples: ArmLogs["resources"]): ArmLogs["resources"][] {
+    const process = (s: ArmLogs["resources"][number]) => `${s.pid}/${s.pid_started}`;
     const runs: ArmLogs["resources"][] = [];
     for (const s of samples) {
         const last = runs[runs.length - 1];
-        if (last && last[0]?.pid === s.pid) last.push(s);
+        if (last?.[0] && process(last[0]) === process(s)) last.push(s);
         else runs.push([s]);
     }
     return runs;

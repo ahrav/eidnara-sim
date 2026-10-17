@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { armBase } from "../hosts/arms";
 import type { MemoryNote } from "../hosts/storecheck";
 import type { ArmLogs, RunLogs } from "../oracle/logs";
-import { runOracles } from "../oracle/oracles";
+import { INTERNAL_TEXT } from "../oracle/oracles";
 import { RESPONSE_TEXT_LIMIT } from "../proxy/records";
 import { readJournal } from "../run/journal";
 import type { Scenario } from "../scenario/compile";
@@ -286,6 +286,23 @@ function corrections(run: RunLogs, arm: ArmLogs) {
         });
 }
 
+/** Every match of every F7 pattern in every relayed agent response, in response order. */
+function internalStrings(arm: ArmLogs) {
+    return arm.calls
+        .filter((c) => c.component === "agent" && c.response_text)
+        .flatMap((c) =>
+            INTERNAL_TEXT.flatMap((re) =>
+                [...(c.response_text ?? "").matchAll(new RegExp(re.source, `${re.flags}g`))].map(
+                    (m) => ({
+                        source: "agent-response" as const,
+                        at: c.turn ?? `call ${c.seq}`,
+                        evidence: m[0],
+                    }),
+                ),
+            ),
+        );
+}
+
 export function intrusiveness(run: RunLogs, arm: ArmLogs): Intrusiveness {
     const latencies = turnLatencies(arm);
     const cut =
@@ -294,15 +311,7 @@ export function intrusiveness(run: RunLogs, arm: ArmLogs): Intrusiveness {
         ) || arm.journal.some((e) => e.kind === "ItemState" && e.state === "failed(interrupted)");
     return {
         arm: arm.arm,
-        internal_string_hits: cut
-            ? null
-            : runOracles({ ...run, arms: [arm] })
-                  .filter((a) => a.oracle === "F7")
-                  .map((a) => ({
-                      source: "agent-response" as const,
-                      at: a.at,
-                      evidence: a.evidence,
-                  })),
+        internal_string_hits: cut ? null : internalStrings(arm),
         tool_output_hits: null,
         corrections_referencing_injected_text: corrections(run, arm),
         reverted_edits: arm.tools
