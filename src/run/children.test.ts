@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Children, SIGTERM_EXIT } from "./children";
@@ -196,4 +196,24 @@ test("an outside stop disables the scheduled check, so a slow teardown writes no
     await stopped;
     expect(await run).toBe(SIGTERM_EXIT);
     expect(reasons).toEqual([]);
+});
+
+test("a log replaced by a symlink while the child runs keeps writing to the file the run opened", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "sim-children-"));
+    const target = join(dir, "target");
+    writeFileSync(target, "kept\n");
+    const log = join(dir, "log");
+    const children = new Children(process.env, 300);
+    const run = children.run(
+        [
+            "-e",
+            "let i = 0; const t = setInterval(() => { console.log('tick', i++); if (i > 6) { clearInterval(t); } }, 50)",
+        ],
+        log,
+    );
+    await Bun.sleep(120);
+    rmSync(log);
+    symlinkSync(target, log);
+    expect(await run).toBe(0);
+    expect(readFileSync(target, "utf8")).toBe("kept\n");
 });

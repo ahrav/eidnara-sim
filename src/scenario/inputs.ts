@@ -39,6 +39,23 @@ export function loadCompileInput(
     embedder: Embedder,
     standIn = false,
 ): CompileInput {
+    // The digest is taken before and after the files are read; a corpus rewritten in between
+    // yields two digests, and the read is tried again until one snapshot holds.
+    for (let attempt = 0; attempt < 3; attempt++) {
+        const before = compileInputsHash();
+        const input = readCompileInput(seed, tier, embedder, standIn, before);
+        if (compileInputsHash() === before) return input;
+    }
+    throw new Error("the corpus changed under three attempts to read it");
+}
+
+function readCompileInput(
+    seed: number,
+    tier: Tier,
+    embedder: Embedder,
+    standIn: boolean,
+    compileInputsSha256: string,
+): CompileInput {
     const prereg = loadPrereg(tier);
     if (standIn) prereg.scenario.cue_probe_similarity.embedding_model = embedder.model;
     const projects: Project[] = loadRepos().flatMap((r) => {
@@ -59,7 +76,7 @@ export function loadCompileInput(
             read("tool-outputs/error-codes.jsonl"),
         ) as CompileInput["errorCodes"],
         corpusManifestSha256: corpusManifestHash(),
-        compileInputsSha256: compileInputsHash(),
+        compileInputsSha256,
         embedder,
     };
 }

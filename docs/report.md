@@ -156,8 +156,10 @@ a pre-registered arm (`arms.run`) that has no `EndArm` entry, each run whose man
 `events` stops short of its scenario's events, each manifest setting
 (`eidnara_commit`, `models`, `context_limit`, the preflight's clock
 `distortions`, its host versions, the scenario's generator, random
-schema, corpus manifest, and embedding model, the tapes it replayed, and the
-preflight's toolchain probes) the runs disagree on, each run with
+schema, corpus manifest, compile inputs, and embedding model, the tapes it
+replayed, the preflight's toolchain probes, and the `grader` digests of
+the grades the report uses) the runs disagree on, each run whose used
+grades come from more than one grader, each run with
 a scheduled proxy fault without its witness in `faults.jsonl`, each run made
 with a fault override, each run with grades for
 items outside its scenario's probes, for a metric of another probe type

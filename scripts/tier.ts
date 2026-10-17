@@ -444,15 +444,33 @@ const runJob = async (job: TierJob) => {
 };
 const gradeJob = async (ran: Awaited<ReturnType<typeof runJob>>) => {
     const { log, ...job } = ran;
+    // The coordinator takes the run's own lease for grading and the A/A report, so a
+    // standalone run cannot start on the directory meanwhile; a lease it cannot take
+    // means another process holds the run.
+    let heldNow = job.leased_elsewhere;
+    if (!heldNow) {
+        try {
+            takeLease(job.dir);
+        } catch {
+            heldNow = true;
+        }
+    }
     const graded =
-        existsSync(join(job.dir, "manifest.json")) && !job.leased_elsewhere
+        existsSync(join(job.dir, "manifest.json")) && !heldNow
             ? await run(["grade-run.ts", job.dir], log, limit)
             : null;
     const aa =
         graded === 0 && job.arms.some((a) => a.includes("~"))
             ? await run(["aa-report.ts", job.dir], log, limit)
             : null;
-    return { ...job, grade_exit: graded, aa_exit: aa, wall_ms: Date.now() - started };
+    if (!heldNow) releaseLease(job.dir);
+    return {
+        ...job,
+        leased_elsewhere: heldNow,
+        grade_exit: graded,
+        aa_exit: aa,
+        wall_ms: Date.now() - started,
+    };
 };
 const groups = [...new Set(plan.map((j) => j.group))];
 type Result = Omit<Awaited<ReturnType<typeof gradeJob>>, "run_exit"> & {
@@ -543,7 +561,7 @@ for (const group of groups) {
     const restartMissing = group === "main" && unrestarted.length > 0;
     reports[group] =
         dirs.length && paired && !restartMissing
-            ? await run(["report.ts", ...dirs, "--out", target], join(out, "report.log"))
+            ? await run(["report.ts", ...dirs, "--out", target], join(out, "report.log"), limit)
             : null;
 }
 const start_skew_ms = Object.fromEntries(groups.map((g) => [g, skew(g)]));

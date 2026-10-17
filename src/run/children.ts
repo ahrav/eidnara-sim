@@ -1,5 +1,12 @@
 import { type ChildProcess, spawn } from "node:child_process";
-import { appendFileSync, existsSync, lstatSync, readdirSync, readFileSync } from "node:fs";
+import {
+    closeSync,
+    constants as fsConstants,
+    openSync,
+    readdirSync,
+    readFileSync,
+    writeSync,
+} from "node:fs";
 import { constants } from "node:os";
 import { killOwnedTree } from "./procs";
 
@@ -71,10 +78,20 @@ export class Children {
         onStop?: (reason: StopReason) => void,
     ): Promise<number> {
         if (this.stopping) return Promise.resolve(SIGTERM_EXIT);
-        // The log is a file of the run's own; a symlink standing there is refused before the
-        // child starts, so nothing is appended through it.
-        if (existsSync(log) && lstatSync(log).isSymbolicLink()) {
-            console.error(`${log} is a symlink; a child's log is a file of its own`);
+        // The log is a file of the run's own, opened once without following symlinks and held
+        // for the child's life, so a link planted at its path before or during the run is never
+        // written through.
+        let fd: number;
+        try {
+            fd = openSync(
+                log,
+                fsConstants.O_WRONLY |
+                    fsConstants.O_APPEND |
+                    fsConstants.O_CREAT |
+                    fsConstants.O_NOFOLLOW,
+            );
+        } catch (caught) {
+            console.error(`${log}: ${(caught as Error).message}`);
             return Promise.resolve(127);
         }
         return new Promise<number>((done) => {
@@ -93,7 +110,7 @@ export class Children {
             // A note the run log cannot take goes to stderr; recording never throws.
             const note = (line: string) => {
                 try {
-                    appendFileSync(log, `${line}\n`);
+                    writeSync(fd, `${line}\n`);
                 } catch {
                     console.error(`${log}: ${line}`);
                 }
@@ -102,7 +119,7 @@ export class Children {
             // instead of throwing out of the stream callback past the supervisor.
             const sink = (chunk: Buffer) => {
                 try {
-                    appendFileSync(log, chunk);
+                    writeSync(fd, chunk);
                 } catch (caught) {
                     console.error(`${log}: ${(caught as Error).message}`);
                     kill(child);
@@ -142,6 +159,7 @@ export class Children {
                 this.polls.delete(child);
                 for (const t of timers) clearTimeout(t);
                 this.live.delete(child);
+                closeSync(fd);
                 settledRun();
                 done(code);
             };
@@ -165,7 +183,7 @@ export class Children {
             };
             child.on("error", (e) => {
                 try {
-                    appendFileSync(log, `spawn failed: ${e.message}\n`);
+                    writeSync(fd, `spawn failed: ${e.message}\n`);
                 } catch (caught) {
                     console.error(`${log}: ${(caught as Error).message}`);
                 }

@@ -63,7 +63,8 @@ derive from, or when `scenario.json` hashes to other than the manifest's
 item whose latest grade already cites its snapshot is skipped as `already
 graded` when the same grader made it (each record carries `grader`, a
 digest of the grader's source files and of `scripts/grade-run.ts`; a
-grade from another implementation is made again), so grading a run again is free of judge calls and leaves
+grade from another implementation is made again; the digest covers those
+files, so a change confined to a module they import leaves it unchanged), so grading a run again is free of judge calls and leaves
 earlier judgments as they stand; a P7 pair's two grades land in one write, host
 side first, and the memory arm's grade means its pair stands (the host
 snapshot is shared by every memory arm's pair). A grade record a kill cut

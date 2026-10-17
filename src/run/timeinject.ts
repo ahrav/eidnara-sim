@@ -24,7 +24,8 @@ const BUILD_STEP_MS = 600_000;
 export async function buildFaketime(): Promise<string> {
     if (existsSync(FAKETIME_LIB)) return FAKETIME_LIB;
     mkdirSync(VENDOR, { recursive: true });
-    const deadline = Date.now() + BUILD_STEP_MS;
+    // A holder may spend a full step on each of download, extraction, and compilation.
+    const deadline = Date.now() + 3 * BUILD_STEP_MS;
     for (;;) {
         try {
             takeLease(VENDOR);
