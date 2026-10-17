@@ -14,7 +14,7 @@ import { falsificationPairs } from "./falsify";
 import { percentile } from "./intrusive";
 import { type GradedRun, tierInput } from "./observe";
 import { renderTier } from "./render";
-import { counterfactual, loadGraded, tierReport } from "./tier";
+import { counterfactual, cusumScale, loadGraded, tierReport } from "./tier";
 
 const prereg = loadPrereg("S");
 const boundary = readFileSync(join(import.meta.dir, "../../docs/claim-boundary.md"), "utf8");
@@ -525,6 +525,19 @@ describe("counterfactual attribution", () => {
     test("runs that hold the counterfactual arm without the memory arm give no panel", () => {
         const alone = { ...g, run: { ...g.run, arms: [g.run.arms[1]] } } as unknown as GradedRun;
         expect(counterfactual([alone])).toBeNull();
+    });
+});
+
+describe("CUSUM scale", () => {
+    test("L's rules take M's A/A scale from the invocation, else the scale recorded beside the runs", () => {
+        const L = loadPrereg("L");
+        const recorded = { harm: 0.5, futility: 0.25 };
+        expect(cusumScale(L, new Map(), recorded)).toEqual(recorded);
+        expect(cusumScale(L, new Map([["M", { harm: 0.7 }]]), recorded)).toEqual({
+            harm: 0.7,
+            futility: 0.25,
+        });
+        expect(cusumScale(L, new Map())).toEqual({ harm: undefined, futility: undefined });
     });
 });
 

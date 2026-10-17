@@ -1,8 +1,8 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
-import type { Preregistration, Tier } from "../src/prereg/schema";
+import { dirname, join, resolve } from "node:path";
+import type { Tier } from "../src/prereg/schema";
 import { renderTier } from "../src/report/render";
-import { aaScale, type CusumScale, loadGraded, tierReport } from "../src/report/tier";
+import { aaScale, type CusumScale, cusumScale, loadGraded, tierReport } from "../src/report/tier";
 import { loadPrereg } from "../src/scenario/inputs";
 
 const args = process.argv.slice(2);
@@ -27,16 +27,13 @@ const loaded = new Map(
     }),
 );
 const scales = new Map([...loaded].map(([tier, t]) => [tier, aaScale(t.prereg, t.runs)]));
-function cusumScale(prereg: Preregistration): CusumScale {
-    const scale: CusumScale = {};
-    for (const rule of prereg.stopping_rule.cusum) {
-        const named = /^the (\w+) tier's/.exec(rule.sd_source)?.[1] as Tier | undefined;
-        scale[rule.kind] = scales.get(named ?? prereg.tier)?.[rule.kind];
-    }
-    return scale;
-}
+const recorded = (tier: Tier, dirs: string[]): CusumScale | undefined => {
+    const beside = dirs.map((d) => join(dirname(d), `${tier}-resizing.json`)).find(existsSync);
+    return beside ? (JSON.parse(readFileSync(beside, "utf8")).cusum_sd ?? undefined) : undefined;
+};
 for (const [tier, { prereg, runs }] of loaded) {
-    const report = tierReport(prereg, runs, boundary, cusumScale(prereg), catalog);
+    const scale = cusumScale(prereg, scales, recorded(tier, byTier.get(tier) ?? []));
+    const report = tierReport(prereg, runs, boundary, scale, catalog);
     const text = renderTier(report);
     if (out) {
         mkdirSync(out, { recursive: true });

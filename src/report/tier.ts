@@ -77,6 +77,19 @@ export function aaScale(prereg: Preregistration, runs: GradedRun[]): CusumScale 
     return { harm: sd(diffs("harm")), futility: sd(diffs("probe-P1")) };
 }
 
+export function cusumScale(
+    prereg: Preregistration,
+    scales: ReadonlyMap<string, CusumScale | undefined>,
+    recorded?: CusumScale,
+): CusumScale {
+    const scale: CusumScale = {};
+    for (const rule of prereg.stopping_rule.cusum) {
+        const named = /^the (\w+) tier's/.exec(rule.sd_source)?.[1] ?? prereg.tier;
+        scale[rule.kind] = scales.get(named)?.[rule.kind] ?? recorded?.[rule.kind];
+    }
+    return scale;
+}
+
 export function tierReport(
     prereg: Preregistration,
     runs: GradedRun[],

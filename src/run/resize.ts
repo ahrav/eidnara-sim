@@ -22,16 +22,36 @@ export interface Resizing {
     paired_items_per_probe_type: number;
 }
 
-export function gradedMainRuns(dir: string): { main: string[]; ungraded: string[] } {
+export function gradedMainRuns(
+    dir: string,
+    m?: Pick<Preregistration, "tier" | "hosts" | "seeds">,
+): { main: string[]; ungraded: string[] } {
     const read = (name: string) => JSON.parse(readFileSync(join(dir, name), "utf8"));
-    const plan = read("tier-plan.json").plan as { group: string; dir: string }[];
-    const main = plan.filter((j) => j.group === "main").map((j) => j.dir);
+    const planned = read("tier-plan.json") as {
+        tier: string;
+        plan: { group: string; dir: string; host: string; seed: number }[];
+    };
+    if (m && planned.tier !== m.tier) {
+        throw new Error(`${dir} holds a ${planned.tier} tier plan; resizing reads ${m.tier}`);
+    }
+    const jobs = planned.plan.filter((j) => j.group === "main");
+    const have = new Set(jobs.map((j) => `${j.seed}-${j.host}`));
+    const missing = (m?.hosts ?? [])
+        .flatMap((h) => (m?.seeds ?? []).map((s) => `${s}-${h}`))
+        .filter((k) => !have.has(k));
+    if (missing.length > 0) {
+        throw new Error(`${dir} plans no ${m?.tier} paired run for ${missing.join(", ")}`);
+    }
+    const main = jobs.map((j) => j.dir);
     const results = read("tier-result.json").results as {
         dir: string;
+        run_exit: number | null;
         grade_exit: number | null;
     }[];
-    const graded = new Set(results.filter((r) => r.grade_exit === 0).map((r) => r.dir));
-    return { main, ungraded: main.filter((d) => !graded.has(d)) };
+    const done = new Set(
+        results.filter((r) => r.run_exit === 0 && r.grade_exit === 0).map((r) => r.dir),
+    );
+    return { main, ungraded: main.filter((d) => !done.has(d)) };
 }
 
 /** One-way ANOVA intraclass correlation of item differences within ledger facts, in [0, 1]. */
@@ -63,11 +83,14 @@ export function resizeFromM(l: Preregistration, m: TierInput): Resizing {
     const planning =
         l.resizing?.planning_paired_items_per_probe_type ??
         l.stopping_rule.paired_items_per_probe_type;
+    const asym = new Set(m.asymmetric);
     const per_type = l.families
         .filter((f) => f.analysis_unit === "item" && f.direction !== "descriptive")
         .flatMap((f) =>
             f.metrics.map((metric): TypeSize => {
-                const items = m.observations.find((o) => o.metric === metric)?.items ?? [];
+                const items = (m.observations.find((o) => o.metric === metric)?.items ?? []).filter(
+                    (x) => !asym.has(x.item),
+                );
                 const harm = f.direction === "noninferiority";
                 const effect = Number(harm ? f.margin.value : f.mde.value) / 100;
                 const za = normalQuantile(1 - Number(f.alpha) / (harm ? f.metrics.length : 2));

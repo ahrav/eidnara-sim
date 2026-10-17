@@ -3,7 +3,7 @@ import { dirname, join, resolve } from "node:path";
 import { loadConfig } from "../src/config/config";
 import { TIERS, type Tier } from "../src/prereg/schema";
 import { tierInput } from "../src/report/observe";
-import { loadGraded } from "../src/report/tier";
+import { aaScale, loadGraded } from "../src/report/tier";
 import { Children, SIGTERM_EXIT } from "../src/run/children";
 import { gradedMainRuns, resizeFromM } from "../src/run/resize";
 import { loadScenario } from "../src/run/run";
@@ -66,13 +66,14 @@ if (prereg.resizing && from && !existsSync(resizing)) {
         if (!existsSync(join(resolve(from), name)))
             fail(`${from} holds no ${name}; the ${m.tier} tier has not finished`);
     }
-    const { main, ungraded } = gradedMainRuns(resolve(from));
+    const { main, ungraded } = gradedMainRuns(resolve(from), m);
     if (main.length === 0 || ungraded.length > 0)
         fail(`the ${m.tier} paired runs are not all graded: ${ungraded.join(", ") || "none"}`);
     const runs = main.map((d) => loadGraded(d, m));
     const sized = {
         recorded_at: new Date().toISOString(),
         runs: main,
+        cusum_sd: aaScale(m, runs) ?? null,
         ...resizeFromM(prereg, tierInput(m, runs)),
     };
     writeFileSync(resizing, `${JSON.stringify(sized, null, 2)}\n`);

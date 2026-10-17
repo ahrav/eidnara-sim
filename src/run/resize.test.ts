@@ -95,23 +95,70 @@ describe("L resizing from M", () => {
         const dir = mkdtempSync(join(tmpdir(), "sim-m-"));
         const [a, b, c] = [`${dir}/M-201-pi`, `${dir}/M-202-pi`, `${dir}/M-201-pi-side-haiku`];
         const plan = [
-            { group: "main", dir: a },
-            { group: "main", dir: b },
-            { group: "side-haiku", dir: c },
+            { group: "main", dir: a, host: "pi", seed: 201 },
+            { group: "main", dir: b, host: "pi", seed: 202 },
+            { group: "side-haiku", dir: c, host: "pi", seed: 201 },
         ];
-        writeFileSync(join(dir, "tier-plan.json"), JSON.stringify({ plan }));
+        writeFileSync(join(dir, "tier-plan.json"), JSON.stringify({ tier: "M", plan }));
         for (const j of plan) {
             mkdirSync(j.dir);
             writeFileSync(join(j.dir, "grades.jsonl"), "");
         }
         expect(() => gradedMainRuns(dir)).toThrow(/tier-result\.json/);
         const results = [
-            { dir: a, grade_exit: 0 },
-            { dir: b, grade_exit: 1 },
-            { dir: c, grade_exit: 0 },
+            { dir: a, run_exit: 0, grade_exit: 0 },
+            { dir: b, run_exit: 0, grade_exit: 1 },
+            { dir: c, run_exit: 0, grade_exit: 0 },
         ];
         writeFileSync(join(dir, "tier-result.json"), JSON.stringify({ results }));
         expect(gradedMainRuns(dir)).toEqual({ main: [a, b], ungraded: [b] });
+    });
+
+    test("a main run that exited non-zero stays ungraded even when its grader exited zero", () => {
+        const dir = mkdtempSync(join(tmpdir(), "sim-m-"));
+        const a = `${dir}/M-201-pi`;
+        const plan = [{ group: "main", dir: a, host: "pi", seed: 201 }];
+        writeFileSync(join(dir, "tier-plan.json"), JSON.stringify({ tier: "M", plan }));
+        const results = [{ dir: a, run_exit: 1, grade_exit: 0 }];
+        writeFileSync(join(dir, "tier-result.json"), JSON.stringify({ results }));
+        expect(gradedMainRuns(dir).ungraded).toEqual([a]);
+    });
+
+    test("resizing refuses a directory of another tier or one missing a registered host or seed", () => {
+        const M = loadPrereg("M");
+        const dir = mkdtempSync(join(tmpdir(), "sim-m-"));
+        const job = (host: string, seed: number) => ({
+            group: "main",
+            dir: `${dir}/M-${seed}-${host}`,
+            host,
+            seed,
+        });
+        const full = M.hosts.flatMap((h) => M.seeds.map((s) => job(h, s)));
+        const results = full.map((j) => ({ dir: j.dir, run_exit: 0, grade_exit: 0 }));
+        writeFileSync(join(dir, "tier-result.json"), JSON.stringify({ results }));
+        writeFileSync(join(dir, "tier-plan.json"), JSON.stringify({ tier: "S", plan: full }));
+        expect(() => gradedMainRuns(dir, M)).toThrow(/S tier plan/);
+        const pi = full.filter((j) => j.host === "pi");
+        writeFileSync(join(dir, "tier-plan.json"), JSON.stringify({ tier: "M", plan: pi }));
+        expect(() => gradedMainRuns(dir, M)).toThrow(/opencode/);
+        writeFileSync(join(dir, "tier-plan.json"), JSON.stringify({ tier: "M", plan: full }));
+        expect(gradedMainRuns(dir, M).ungraded).toEqual([]);
+    });
+
+    test("fault-asymmetric pairs leave the discordance and the design effect, as they leave the gates", () => {
+        const L = loadPrereg("L");
+        const items = pairs(100, 30, 100);
+        const observations: TierInput["observations"] = [
+            { metric: "P1.pass", unit: "item", cluster_key: "ledger_fact_id", items },
+        ];
+        const all = resizeFromM(L, { observations, excluded: [], asymmetric: [] });
+        const dropped = resizeFromM(L, {
+            observations,
+            excluded: [],
+            asymmetric: items.slice(0, 30).map((x) => x.item),
+        });
+        expect(all.per_type[0]?.discordance).toBe(0.3);
+        expect(dropped.per_type[0]).toMatchObject({ pairs: 70, discordance: 0, n: null });
     });
 
     test("a type M never saw discordant keeps the planning count, so L's count never falls below it", () => {
