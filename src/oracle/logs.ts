@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Command } from "../grade/artefacts";
+import { armBase, requireOrder } from "../hosts/arms";
 import { parseStoreCheck, type StoreCheck } from "../hosts/storecheck";
 import { ARMS, type Preregistration } from "../prereg/schema";
 import { type CallRecord, recordProblems } from "../proxy/records";
@@ -309,11 +310,9 @@ export function loadRun(dir: string, prereg: Preregistration): RunLogs {
     const kinds = new Map(scenario.events.map((e) => [String(e.id), String(e.kind)]));
     const order = manifest.order as string[];
     if (order.length === 0) throw new Error("manifest names no arms");
+    requireOrder(order, ARMS, prereg.aa_controls?.pairs ?? []);
     for (const arm of order) {
-        if (!(ARMS as readonly string[]).includes(arm)) {
-            throw new Error(`manifest arm ${arm} is not a pre-registered arm`);
-        }
-        if (!prereg.arms.run.includes(arm)) {
+        if (!prereg.arms.run.includes(armBase(arm))) {
             throw new Error(`manifest arm ${arm} is not in tier ${prereg.tier}'s run`);
         }
     }
@@ -416,7 +415,7 @@ export function loadRun(dir: string, prereg: Preregistration): RunLogs {
         if (!existsSync(join(dir, arm.arm, "tools.jsonl"))) {
             throw new Error(`arm ${arm.arm} has no tools.jsonl`);
         }
-        if (arm.arm === "host") continue;
+        if (armBase(arm.arm) === "host") continue;
         if (!arm.resources.some((s) => typeof s.rss === "number")) {
             throw new Error(
                 `arm ${arm.arm} has no daemon RSS samples in ${arm.arm}/resources.jsonl`,

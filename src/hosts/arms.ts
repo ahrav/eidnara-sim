@@ -95,6 +95,40 @@ export interface PromptResult {
 }
 
 export const eidnaraOn = (arm: ArmName) => arm !== "host";
+
+/** An A/A control arm `host~aa` runs as `host` under its own label. */
+export const armBase = (label: string) => label.split("~")[0] as ArmName;
+/** A control label: a run arm, a tilde, and a tag; nothing a path could carry. */
+export const CONTROL_LABEL = /^[a-z-]+~[a-z0-9]+$/;
+
+/**
+ * Admits a manifest order of pre-registered arms and A/A controls: a control's label matches
+ * `CONTROL_LABEL`, its arm is in `pairs` and runs right before it, and each arm has at most one.
+ */
+export function requireOrder(
+    order: readonly string[],
+    arms: readonly string[],
+    pairs: readonly (readonly string[])[],
+): void {
+    for (const arm of order) {
+        const base = armBase(arm);
+        const known =
+            arms.includes(base) &&
+            (arm === base || (CONTROL_LABEL.test(arm) && pairs.some(([x]) => x === base)));
+        if (!known) throw new Error(`manifest arm ${arm} is not a pre-registered arm`);
+    }
+    const controls = order.filter((arm) => arm !== armBase(arm));
+    for (const control of controls) {
+        const base = armBase(control);
+        if (!order.includes(base)) throw new Error(`manifest arm ${control} runs without ${base}`);
+        if (order.indexOf(control) !== order.indexOf(base) + 1) {
+            throw new Error(`manifest arm ${control} runs apart from ${base}`);
+        }
+        if (controls.filter((c) => armBase(c) === base).length > 1) {
+            throw new Error(`manifest order runs two A/A controls of ${base}`);
+        }
+    }
+}
 const modelRef = (model: string) => `amazon-bedrock/${model}`;
 
 function eidnaraUserConfig(connectionFile: string, model: string): Record<string, unknown> {

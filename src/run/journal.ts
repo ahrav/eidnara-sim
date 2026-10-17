@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import {
     closeSync,
     existsSync,
@@ -76,12 +77,21 @@ function readLease(path: string): Lease | null {
  * on this host has exited, or that a kill left unreadable, is moved aside by one atomic rename
  * and replaced, which is how a killed run resumes.
  */
+/**
+ * A staging name beside `path` that no other process, on this host or another sharing the
+ * directory, is writing: host, pid, and a random nonce. An exclusive create at it refuses a
+ * planted symlink, and a leftover from a killed process collides with nothing.
+ */
+export function stagingPath(path: string): string {
+    return `${path}.${hostname()}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
+}
+
 export function takeLease(dir: string): Lease {
     const path = join(dir, "lease.json");
     const mine: Lease = { pid: process.pid, host: hostname(), started_wall_ms: Date.now() };
     for (let attempt = 0; attempt < 3; attempt++) {
-        const staged = join(dir, `lease.${process.pid}.tmp`);
-        writeFileSync(staged, JSON.stringify(mine));
+        const staged = stagingPath(join(dir, "lease"));
+        writeFileSync(staged, JSON.stringify(mine), { flag: "wx" });
         try {
             linkSync(staged, path);
             rmSync(staged);

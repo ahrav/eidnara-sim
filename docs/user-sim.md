@@ -119,6 +119,90 @@ a band and is flagged, and `scripts/pairing-check.ts` fails a run that lacks
 an arm's `UserSimRates`. The P14 grader reads the `UserTurn` labels of the session, since a
 replayed reply makes no model call.
 
+## A/A control
+
+An arm label `<arm>~<tag>`, with a lowercase alphanumeric tag such as
+`host~aa`, runs as `<arm>` under its own label, with its own directories
+(the sandbox launcher admits `~` in its paths and clock file),
+journal entries, and call records (`armBase` and `CONTROL_LABEL` in
+`src/hosts/arms.ts`). `--arms host,host~aa` runs it right after its arm,
+one control per arm, and only for a pair the tier pre-registers in
+`aa_controls.pairs` (S and M); a resumed run's persisted order is held to
+the same rule (`requireAdmittedOrder`), the oracle loader and the A/A
+report hold a manifest order to it, adjacency and the tier's arms included
+(`requireOrder`), and `pairing-check.ts` holds it to the control structure. A control's reference arm is its own arm,
+so its divergence records and tape replies pair it with that arm; every
+other arm's reference is the first of the order. Both arms of a pair share
+the scenario, the behaviour plan, and the tape, so the control measures
+the noise the agent and the user-sim add on their own. `grade-run.ts`
+judges a control of `host` against nothing, and P7 grades, which come from
+judgments against the host arm, stay out of the A/A pairing.
+
+`scripts/aa-report.ts <run>` reads the run's graded items and, for each
+control, pairs every item both arms graded. It takes the run path only as
+a real directory (a symlink anywhere in the path is refused), holds the run's lease while
+it reads, opens `grades.jsonl` only as a regular file with one link
+(`GradeLog` repairs a cut last line in place), requires a manifest event
+count inside the scenario and the journal complete for the manifest order
+and the scheduled events with no corrupt terminated line (`requireComplete`,
+as `grade-run.ts` does), requires a pre-registered seed and the run arms
+in the seed's relative order, requires each paired turn to match one
+journaled, unrecovered `UserTurn` of the same delivery and label (a reactive
+label from the tape or a live call, a scripted one from the script), checks each
+pairing record's shape and arm (`readPairing`, which
+`pairing-check.ts` shares, refusing a corrupt terminated line), binds each
+record to its scheduled turn's session and index, admits one turn per arm
+and event and one divergence per arm and session, requires each divergence
+to cite its control turn's digest and context and a differing digest the
+reference arm's turn carries, or, against a recorded run, a context no
+manifest tape's pairing log holds together with a source's digest and
+context (the tapes still hashing to the manifest's digests), each divergence
+written before its turn, a divergence row at or before any control turn
+whose digest differs from its arm's, each delivered probe or paste turn and
+each turn delivered from the script alone to carry the compiled text, and a turn record from
+each arm of the pair for every scheduled user turn, refuses a
+control whose delivered text differed from its arm's before its recorded
+divergence (`pairingMismatches`, the check `pairing-check.ts` runs), checks each
+grade log's identities (an opponent only on P7, versions 1..n once per item
+and arm) and each latest grade's arm, item, probe type, version, verdict, and
+metrics (booleans, finite numbers, or categorical strings such as
+`P3.reliance`, which pair nothing; `<type>.pass` stating the verdict)
+against the run and its reached probes, requires each grade
+to name the arm's journaled first snapshot of its item from that arm's turn
+at the probe's event that ended ok, requires both grades of a paired item to carry the same metric keys and
+value types, refuses a run whose order
+names no control, refuses
+a run graded under another pre-registration or whose scenario no longer
+hashes to the manifest's digest, requires the manifest's tier and seed to
+match the compiled scenario's, and records the pre-registration hash it
+used. Each entry carries `sim-claim-boundary/v1`
+(docs/claim-boundary.md). It reports, per arm and leaving P7 aside, the excluded grades and
+the probes the run reached (through their turn, or for P14 through the
+session that ended in the prefix) that the arm has no grade for, and the items
+graded on one side only, which pair nothing. A grading run cut short converges on its rerun: the rerun grades
+every item again and the report pairs each side's latest grade. For each metric,
+verdicts as `<type>.pass` and each numeric grade metric, it reports the
+mean difference with a percentile bootstrap interval that resamples the
+family's pre-registered `cluster_key`: ledger facts for item-level
+families, and the run itself for run-level families (P13, P14), which one
+run therefore leaves uninformative. The bootstrap uses the pre-registered
+`bootstrap` replicates and seed; a metric whose differences overflow is
+refused. A metric over fewer than five clusters is listed as uninformative
+and decides nothing. Over the rest it
+reports whether every interval covers zero (`null` when no metric is
+informative) and the metrics whose interval misses it against the five
+percent expected by chance, the share of paired items whose verdicts
+differ (the disagreement rate), and how many sessions diverged at which
+index. It stages `<run>/aa.json` under an exclusive create beside it and
+renames it into place. A
+divergence is recorded against the control's arm or, under
+`--tapes`, against the control's own recorded run; either way the control
+stops sharing its arm's taped replies from that turn, so both count. The
+report describes one run; the five pre-registered M repeats are a claim
+for their aggregation, which this script does not make. M7 applies each
+family's own pre-registered interval method; this report uses the cluster
+bootstrap for every metric.
+
 ## Limits
 
 - The persona writes only the reactive part of a turn; the task wording is

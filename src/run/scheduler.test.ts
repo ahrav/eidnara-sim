@@ -158,6 +158,14 @@ describe("Journal and lease", () => {
         expect(() => takeLease(d)).toThrow(/on elsewhere/);
     });
 
+    test("staging files left by killed holders, under any pid or host, block nothing", () => {
+        const d = dir();
+        writeFileSync(join(d, `lease.${process.pid}.tmp`), "{}");
+        writeFileSync(join(d, `lease.${require("node:os").hostname()}.${process.pid}.tmp`), "{}");
+        expect(takeLease(d).pid).toBe(process.pid);
+        releaseLease(d);
+    });
+
     test("a corrupt line before the last refuses the journal", () => {
         const path = join(dir(), "j.jsonl");
         writeFileSync(path, '{"seq":0}\nnot json\n{"seq":2}\n');

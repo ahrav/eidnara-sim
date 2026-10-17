@@ -1,9 +1,11 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { CORPUS_DIR } from "../src/corpus/sources";
+import { armBase, requireOrder } from "../src/hosts/arms";
 import { sha256Hex } from "../src/prereg/canonical";
 import { preregistrationHash } from "../src/prereg/validate";
 import { readJournalStrict, requireComplete } from "../src/run/journal";
+import { referenceArm } from "../src/run/run";
 import type { Scenario } from "../src/scenario/compile";
 import { scenarioHash } from "../src/scenario/compile";
 import { loadPrereg } from "../src/scenario/inputs";
@@ -74,8 +76,14 @@ if (scenarioHash(scenarioJson as Record<string, unknown>) !== manifest.scenario_
     process.exit(2);
 }
 const records = readPairing(join(dir, "pairing.jsonl"));
-const first = manifest.order[0] as string;
-const reference = () => first;
+// The order's control structure, as the run command admits it; the arms it names are the
+// manifest's own, which the oracle loader and the A/A report bind to the tier.
+requireOrder(
+    manifest.order as string[],
+    [...new Set((manifest.order as string[]).map(armBase))],
+    loadPrereg(manifest.tier).aa_controls?.pairs ?? [],
+);
+const reference = referenceArm(manifest.order);
 const turns = records.filter((r): r is TurnRecord => r.kind === "turn");
 const script = new Map(
     scenario.events
@@ -179,7 +187,7 @@ const invalidDivergences = records
     .filter((r) => {
         const event = script.get(r.event);
         const own = turns.find((t) => t.arm === r.arm && t.event === r.event);
-        const ref = turns.find((t) => t.arm === reference() && t.event === r.event);
+        const ref = turns.find((t) => t.arm === reference(r.arm) && t.event === r.event);
         // The record is on disk before the turn it describes, so it precedes that turn's row.
         const at = records.indexOf(r);
         const ahead =
@@ -250,7 +258,7 @@ const divergenceAt = new Map(
 );
 const replaying = Array.isArray(manifest.tapes) && manifest.tapes.length > 0;
 const liveBeforeDivergence = turns
-    .filter((r) => r.source === "live" && (r.arm !== reference() || replaying))
+    .filter((r) => r.source === "live" && (r.arm !== reference(r.arm) || replaying))
     .filter(
         (r) => r.index < (divergenceAt.get(`${r.arm}/${r.session}`) ?? Number.POSITIVE_INFINITY),
     )
@@ -379,7 +387,7 @@ const misplaced = turns
     })
     .map((r) => `${r.arm} ${r.event}`);
 const report = {
-    reference: first,
+    reference: Object.fromEntries(manifest.order.map((a: string) => [a, reference(a)])),
     mismatches_before_divergence: pairingMismatches(records, reference),
     divergences: records.filter((r) => r.kind === "divergedAt"),
     sources: Object.fromEntries(

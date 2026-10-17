@@ -475,6 +475,8 @@ describe("evidence presence", () => {
         // The host arm runs no plugin, so its faults are judged without a plugin log.
         const hostReload = { ...arm(journal), arm: "host", pluginLogMissing: true as const };
         expect(recoveries(run([hostReload])).map((r) => r.recovered)).toEqual([true]);
+        const control = { ...arm(journal), arm: "host~aa", pluginLogMissing: true as const };
+        expect(recoveries(run([control])).map((r) => r.recovered)).toEqual([true]);
     });
 
     test("a fail-open stamp that parses to no instant refuses the arm", () => {

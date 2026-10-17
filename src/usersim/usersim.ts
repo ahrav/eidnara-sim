@@ -318,8 +318,14 @@ export function checkTapeSources(
 }
 
 /** Reads a pairing log with every row checked, for a checker that certifies a finished run. */
-export function readPairing(path: string): PairingRecord[] {
-    return jsonl<PairingRecord>(path, "source", pairingRow);
+export function readPairing(path: string, arms?: readonly string[]): PairingRecord[] {
+    const rows = jsonl<PairingRecord>(path, "source", pairingRow);
+    rows.forEach((r, i) => {
+        if (arms && !arms.includes(r.arm)) {
+            throw new HarnessFailure(`${path}: line ${i + 1}: arm ${r.arm} is not in the manifest`);
+        }
+    });
+    return rows;
 }
 
 /** The tape key of a reply: seed, event, label, the session context, and the scripted text. */

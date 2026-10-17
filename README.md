@@ -26,6 +26,7 @@ bun tests/witness-faults.ts runs/witness             # live fault and resume wit
 bun scripts/grade-run.ts runs/S-101-pi                 # grade a run's probe snapshots (docs/grading.md)
 bun scripts/oracle-run.ts runs/S-101-pi                # failure-class oracles over runs (docs/oracles.md)
 bun scripts/pairing-check.ts runs/S-101-pi             # user-sim pairing, divergence, and rates (docs/user-sim.md)
+bun scripts/aa-report.ts runs/S-102-aa                 # A/A noise floor over a graded run (docs/user-sim.md)
 ```
 
 ## Layout

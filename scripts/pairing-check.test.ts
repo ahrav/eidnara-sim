@@ -795,3 +795,9 @@ test("a paste turn's record must name the compiled corpus item, whose bytes the 
     expect(bad.report.paste_provenance).toEqual(["b e-0-5"]);
     expect(bad.exit).toBe(1);
 });
+
+test("the pairing check refuses a control listed without its arm", () => {
+    const r = run(fixture(["host~aa"]));
+    expect(r.exit).not.toBe(0);
+    expect(r.stderr).toContain("host~aa runs without host");
+});
