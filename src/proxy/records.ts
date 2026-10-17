@@ -89,7 +89,14 @@ export class RecordWriter {
     /** Byte offset in the log where the next record lands; `write` reports each record's placement through `placed`. */
     protected offset = 0;
 
-    constructor(private readonly path: string | null) {
+    /**
+     * `retain` keeps every record in `records` for callers that read them back in memory; a
+     * run-long writer passes false, since its records live on disk and in the call index.
+     */
+    constructor(
+        private readonly path: string | null,
+        private readonly retain = true,
+    ) {
         if (path) requireAppendable(path);
         if (!path || !existsSync(path)) return;
         const text = readFileSync(path, "utf8");
@@ -114,7 +121,7 @@ export class RecordWriter {
         if (problems.length > 0) throw new Error(`call record refused: ${problems.join(", ")}`);
         this.seq++;
         this.lastWall = wall_ms;
-        this.records.push(record);
+        if (this.retain) this.records.push(record);
         if (this.path) {
             const line = `${JSON.stringify(record)}\n`;
             appendFileSync(this.path, line);

@@ -205,3 +205,19 @@ test("an artefact without its class's payload is refused rather than read as emp
     );
     expect(() => gradeItem(p13.probe, [calls], rules)).toThrow("has no calls");
 });
+
+test("test-result and workspace-state artefacts are accepted with their own payloads", () => {
+    const f = fixture("P2-pass");
+    const snap = structuredClone(f.snapshots[0]) as Snapshot;
+    snap.artefacts.push(
+        { id: "t", class: "test-result", command: "cargo test", exit: 0, summary: ["ok"] },
+        { id: "w", class: "workspace-state", files: { "a.rs": "abc" } },
+    );
+    expect(gradeItem(f.probe, [snap], rules)?.verdict).toBe("pass");
+    snap.artefacts.pop();
+    snap.artefacts.push({
+        id: "w2",
+        class: "workspace-state",
+    } as unknown as Snapshot["artefacts"][number]);
+    expect(() => gradeItem(f.probe, [snap], rules)).toThrow("has no files");
+});

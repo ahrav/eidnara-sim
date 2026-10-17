@@ -20,7 +20,8 @@ A snapshot holds the artefacts the harness captured at a probe turn's first
 
 `gradeItem` refuses a snapshot with an artefact of any other class, such as
 an agent transcript or self-report (SIM-P40), an artefact whose class payload is missing (a diff without its `patch`, a
-command log or proxy-call artefact without its array), a snapshot without an artefact
+command log or proxy-call artefact without its array, a test result without
+its command, exit, and summary, a workspace state without its files), a snapshot without an artefact
 its grader reads (the turn diff for the diff graders and for a P13 item whose
 check names no commands, the turn command log for P5 and P6, the
 prior-session diff for P6, whose item opens a later session of its project,
@@ -80,7 +81,8 @@ turn during the walk, and hashing them runs under the recorder bound. A
 workspace with more than 1,000 nested repositories fails the probe turn
 before git runs. Each probe snapshot reads its session's call records by position from an
 index the proxy's writer keeps (seeded once from `calls.jsonl` on resume), so
-capture cost grows with the session, not the run. The workspace walk reads
+capture cost grows with the session, not the run; the run's writer keeps no
+record in memory once it is on disk. The workspace walk reads
 each directory one entry at a time, so its entry cap and deadline hold inside
 a wide directory too. The driver waits the scheduler's settle window and then its background
 jobs before it takes a probe snapshot, and checks the daemon is alive after
@@ -137,7 +139,8 @@ or an arm's `EndArm` and one terminal `Event` per scheduled event (SIM-P67),
 drops a cut last line of `grades.jsonl`, requires one `SnapshotArtefacts` entry per arm and item, exactly one row for
 every journaled snapshot id, every snapshot row to name its directory's arm and
 carry grade-class artefacts only, every journaled row to match its journal
-entry's arm and item and the compiled probe's event and session, every
+entry's arm and item and the compiled probe's event and session, to be named
+by an `EndTurn` whose outcome agrees with its `turn_outcome`, every
 agent call's model in `calls.jsonl` to be one
 the manifest records, and every agent call a journaled snapshot holds to be
 recorded in `calls.jsonl` under the snapshot's arm with the same content
