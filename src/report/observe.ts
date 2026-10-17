@@ -3,6 +3,7 @@ import { armBase } from "../hosts/arms";
 import type { ArmLogs, RunLogs } from "../oracle/logs";
 import { runOracles } from "../oracle/oracles";
 import type { Preregistration } from "../prereg/schema";
+import type { WitnessReport } from "../proxy/inject";
 import type { Scenario } from "../scenario/compile";
 import type { ItemPair, Observation, RunPair, TierInput } from "../stats/gate";
 import { pairByItem } from "../stats/gate";
@@ -18,6 +19,8 @@ export interface GradedRun {
     judged: GradeRecord[];
     host: string;
     identity: RunIdentity;
+    /** The proxy's fault witnesses from `faults.jsonl`; an `untriggered` one keeps the run out of the fault metrics (SIM-P32). */
+    witnesses: WitnessReport[];
 }
 
 /** The manifest fields a tier's runs share for their evidence to pool. */
@@ -278,20 +281,25 @@ function incomplete(
     const controls = (p.aa_controls?.pairs ?? []).flatMap(([a]) => {
         const have = runs.reduce(
             (s, g) =>
-                s + g.run.arms.filter((x) => x.arm.includes("~") && armBase(x.arm) === a).length,
+                s +
+                g.run.arms.filter(
+                    (x) =>
+                        x.arm.includes("~") &&
+                        armBase(x.arm) === a &&
+                        x.journal.some((e) => e.kind === "EndArm"),
+                ).length,
             0,
         );
         const want = p.aa_controls?.repeats ?? 0;
         return have < want ? [`A/A ${a}: ${have} of ${want} control runs`] : [];
     });
-    const settings = (Object.keys(runs[0]?.identity ?? {}) as (keyof RunIdentity)[]).flatMap(
-        (field) => {
-            const values = [...new Set(runs.map((g) => JSON.stringify(g.identity[field])))];
-            return values.length > 1
-                ? [`runs differ in ${field}: ${values.map((v) => JSON.parse(v)).join(", ")}`]
-                : [];
-        },
-    );
+    const shared: (keyof RunIdentity)[] = ["eidnara_commit", "models", "context_limit"];
+    const settings = shared.flatMap((field) => {
+        const values = [...new Set(runs.map((g) => JSON.stringify(g.identity[field])))];
+        return values.length > 1
+            ? [`runs differ in ${field}: ${values.map((v) => JSON.parse(v)).join(", ")}`]
+            : [];
+    });
     const n = p.stopping_rule.paired_items_per_probe_type;
     const short = p.families.flatMap((f) => {
         if (!/^probe-P\d+$/.test(f.id)) return [];

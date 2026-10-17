@@ -194,6 +194,7 @@ function fixture(status = (_: number) => 200, opts: FixtureOptions = {}): Graded
         grades,
         host: opts.host ?? "pi",
         judged: [],
+        witnesses: [],
         identity: identity(opts.commit),
     };
 }
@@ -696,7 +697,13 @@ describe("tier report", () => {
             }),
         );
         writeFileSync(join(dir, "scenario.json"), canonicalJson({ ...body, scenario_hash }));
-        expect(loadGraded(dir, prereg).scenario.faults).toEqual([fault]);
+        writeFileSync(
+            join(dir, "faults.jsonl"),
+            `${JSON.stringify([{ fault: "f-x", status: "untriggered" }])}\n`,
+        );
+        const loaded = loadGraded(dir, prereg);
+        expect(loaded.scenario.faults).toEqual([fault]);
+        expect(loaded.witnesses.map((w) => [w.fault, w.status])).toEqual([["f-x", "untriggered"]]);
     });
 
     test("runs of one tier with different live settings keep the campaign incomplete", () => {
@@ -786,6 +793,51 @@ describe("tier report", () => {
         const rates = falsificationPairs(g, "host", "host~aa").pre_divergence_pushback_rate;
         expect(rates).toHaveLength(SESSIONS);
         expect(rates.filter((r) => r.control !== r.treatment)).toEqual([]);
+    });
+
+    test("seeds with scenarios of different lengths share one campaign", () => {
+        const a = fixture(undefined, { seed: 101 });
+        const b = fixture(undefined, { seed: 102 });
+        b.identity.events = 40;
+        b.scenario.events = Array.from({ length: 40 }, (_, i) => ({ id: `e-${i}` })) as never;
+        a.scenario.events = Array.from({ length: 36 }, (_, i) => ({ id: `e-${i}` })) as never;
+        const open = tierInput(prereg, [a, b]).incomplete ?? [];
+        expect(open.filter((x) => x.includes("events"))).toEqual([]);
+    });
+
+    test("an A/A control counts toward the registered repeats once it has its EndArm", () => {
+        const g = fixture();
+        const control = arm(g, "host~aa");
+        control.journal = control.journal.filter((e) => e.kind !== "EndArm");
+        expect(tierInput(prereg, [g]).incomplete).toContain("A/A host: 0 of 1 control runs");
+    });
+
+    test("a run whose scheduled fault never fired leaves the fault metrics", () => {
+        const g = fixture();
+        g.witnesses.push({
+            fault: "f-miss",
+            type: "provider_5xx",
+            armed: true,
+            injected_seq: [],
+            host_observed_seq: [],
+            proxy_retried: false,
+            status: "untriggered",
+        });
+        const report = tierReport(prereg, [g], boundary);
+        expect(report.missed_faults).toEqual([{ run: g.run.dir, faults: ["f-miss"] }]);
+        expect(renderTier(report)).toContain(`${g.run.dir}: f-miss`);
+    });
+
+    test("the cost TOTAL row conserves calls and tokens over every component", () => {
+        const g = fixture();
+        arm(g, "eidnara").calls.push({
+            ...(arm(g, "eidnara").calls[0] as CallRecord),
+            component: "user-sim",
+            input_tokens: 7,
+            output_tokens: 3,
+        });
+        const text = renderTier(tierReport(prereg, [g], boundary));
+        expect(text).toContain(`| ${g.run.dir} | eidnara | TOTAL | 13 | 12007 | 1203 | 0 | 0 |`);
     });
 
     test("a planted 4xx difference between the A/A arms fails that falsification check", () => {

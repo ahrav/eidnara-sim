@@ -18,6 +18,7 @@ export interface TierReport {
     verdict: TierVerdict;
     oracles: Record<string, OracleCount>;
     recoveries: (Recovery & { run: string })[];
+    missed_faults: { run: string; faults: string[] }[];
     soak: (SoakVerdict & { run: string })[];
     intrusiveness: (Intrusiveness & { run: string })[];
     cost: (CostPanel & { run: string })[];
@@ -139,6 +140,8 @@ function panels(r: TierReport): string[] {
         "",
         "## Recovery after infrastructure faults",
         "",
+        `Runs left out of the fault metrics, a scheduled fault having never fired: ${r.missed_faults.length ? r.missed_faults.map((m) => `${m.run}: ${m.faults.join(", ")}`).join("; ") : "none"}.`,
+        "",
         ...table(
             ["run", "arm", "fault", "type", "turns to clean", "recovered", "reasons"],
             r.recoveries.map((x) => [
@@ -242,7 +245,15 @@ function panels(r: TierReport): string[] {
                     x.cache_write,
                     fmt(x.usd),
                 ]),
-                [c.run, c.arm, "TOTAL", "", "", "", "", "", fmt(c.usd)],
+                [
+                    c.run,
+                    c.arm,
+                    "TOTAL",
+                    ...(["calls", "input", "output", "cache_read", "cache_write"] as const).map(
+                        (k) => c.components.reduce((s, x) => s + x[k], 0),
+                    ),
+                    fmt(c.usd),
+                ],
             ]),
         ),
         ...table(

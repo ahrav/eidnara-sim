@@ -8,6 +8,8 @@ import { recoveries } from "../oracle/recovery";
 import { canonicalJson, sha256Hex } from "../prereg/canonical";
 import type { Preregistration } from "../prereg/schema";
 import { preregistrationHash } from "../prereg/validate";
+import { excludedFromFaultMetrics, type WitnessReport } from "../proxy/inject";
+import { readJournal } from "../run/journal";
 import type { Scenario } from "../scenario/compile";
 import { evaluateTier, falsificationSet, type TierInput } from "../stats/gate";
 import { costPanel, judgeCost } from "./cost";
@@ -46,6 +48,10 @@ export function loadGraded(dir: string, prereg: Preregistration): GradedRun {
         if ((judged.get(key)?.version ?? 0) < g.version) judged.set(key, g);
     }
     const { eidnara_commit, models, context_limit, events } = manifest;
+    const faults = join(dir, "faults.jsonl");
+    const witnesses = existsSync(faults)
+        ? ((readJournal(faults) as unknown as WitnessReport[][]).at(-1) ?? [])
+        : [];
     return {
         run: loadRun(dir, prereg),
         scenario: { ...scenario, faults: manifest.fault_override ?? scenario.faults },
@@ -53,6 +59,7 @@ export function loadGraded(dir: string, prereg: Preregistration): GradedRun {
         judged: [...judged.values()],
         host: manifest.host,
         identity: { eidnara_commit, models, context_limit, events },
+        witnesses,
     };
 }
 
@@ -135,7 +142,15 @@ export function tierReport(
         grades: runs.flatMap((g) => g.grades),
         verdict: evaluateTier(prereg, input),
         oracles: oracleReport(runs.map((g) => g.run))[prereg.tier] ?? {},
-        recoveries: runs.flatMap((g) => recoveries(g.run).map((r) => ({ ...r, run: g.run.dir }))),
+        recoveries: runs
+            .filter((g) => !excludedFromFaultMetrics(g.witnesses))
+            .flatMap((g) => recoveries(g.run).map((r) => ({ ...r, run: g.run.dir }))),
+        missed_faults: runs.flatMap((g) => {
+            const faults = g.witnesses
+                .filter((w) => w.status === "untriggered")
+                .map((w) => w.fault);
+            return faults.length ? [{ run: g.run.dir, faults }] : [];
+        }),
         soak: perArm
             .filter(({ arm }) => armBase(arm.arm) !== "host")
             .flatMap(({ g, arm }) =>

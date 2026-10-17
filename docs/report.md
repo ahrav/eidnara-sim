@@ -60,6 +60,8 @@ driver writes `<arm>/memory.json` at `finish` with every memory note and
 its delivery count, from which the panel reports the memory writes and the
 writes with zero later reads.
 
+The cost table's `TOTAL` row sums every component's calls and tokens; its
+estimate is the arm's non-harness spend, as the heading states.
 `judgeCost(run)` prices the P7 judge calls the grader wrote to
 `judge-calls.jsonl` under its own arm `judge`. A judge call compares a
 memory arm with the host arm, so the figure belongs to the run; it is
@@ -74,7 +76,8 @@ records a `prereg_sha256` other than the hash of the tier's current
 pre-registration, or whose `scenario.json` hashes to other than the
 manifest's `scenario_hash`, so a verdict carries the registration and the
 scenario its runs were made under; a run started with `--faults` takes the
-manifest's `fault_override` as its fault schedule. `grades.jsonl` gives the
+manifest's `fault_override` as its fault schedule, and the last line of its `faults.jsonl` is the proxy's fault
+witnesses. `grades.jsonl` gives the
 run its latest grade per item and arm, and every P7 judgment (latest per
 item, arm, and `inputs`), so a P7 pair takes the host grade from the same
 judgment as the treatment's; a judgment whose `gate_eligible` is false
@@ -104,9 +107,9 @@ scheduler recorded `FaultObserved` or the proxy stamped a call's
 list names each pre-registered host and seed without a run, each run with
 a pre-registered arm (`arms.run`) that has no `EndArm` entry, each run whose manifest
 `events` stops short of its scenario's events, each manifest setting
-(`eidnara_commit`, `models`, `context_limit`, `events`) the runs disagree
-on, each registered A/A pair with fewer control arms across the runs than
-`aa_controls.repeats`, each run-unit gate metric a run has no value for, each probe type,
+(`eidnara_commit`, `models`, `context_limit`) the runs disagree on, each
+registered A/A pair with fewer control arms that reached `EndArm` across
+the runs than `aa_controls.repeats`, each run-unit gate metric a run has no value for, each probe type,
 P13 and P14 included, with fewer paired items outside the excluded and
 fault-asymmetric sets than `stopping_rule.paired_items_per_probe_type`,
 and each CUSUM rule without its A/A scale; the tier passes only with an
@@ -145,7 +148,8 @@ interval, p, detectable difference, resolution ratio, verdict, and gate
 result (a bound family shows its observed per-run values, or a binary
 metric's treatment rate over the pairs the verdict kept), the campaign's
 open requirements, the harm
-panel, oracle activations with the uncovered list, recovery, soak for the
+panel, oracle activations with the uncovered list, recovery (a run with
+an `untriggered` witness is named and left out of it, SIM-P32), soak for the
 daemon arms per run with the longest sampling gap, intrusiveness with each arm's latency delta against its run's `host`,
 cost with the run's judge calls priced once (`judgeCost`), the
 falsification set with the pairs it used, the A/A reports (`<run>/aa.json`, or a note
