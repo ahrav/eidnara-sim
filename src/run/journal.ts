@@ -30,6 +30,7 @@ export type EntryKind =
     | "UserTurn"
     | "UserSimRates"
     | "CounterfactualSample"
+    | "DeleteMemoryObject"
     | "CounterfactualDeletion"
     | "EndArm"
     | "EndRun";

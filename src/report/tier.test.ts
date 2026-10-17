@@ -97,6 +97,8 @@ const identity = (commit = "abc") => ({
     events: 36,
     distortions: [] as string[],
     host_versions: ["pi@1", "opencode@1"],
+    side_model: null as string | null,
+    user_sim_model: "u",
 });
 
 function fixture(status = (_: number) => 200, opts: FixtureOptions = {}): GradedRun {
@@ -773,6 +775,11 @@ describe("tier report", () => {
         const b = fixture(undefined, { host: "opencode", commit: "def" });
         expect(tierInput(prereg, [a, b]).incomplete).toContain(
             "runs differ in eidnara_commit: abc, def",
+        );
+        const haiku = fixture(undefined, { host: "opencode" });
+        haiku.identity = { ...haiku.identity, side_model: "haiku" };
+        expect(tierInput(prereg, [a, haiku]).incomplete).toContain(
+            "runs differ in side_model: , haiku",
         );
     });
 

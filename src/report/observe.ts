@@ -33,6 +33,8 @@ export interface RunIdentity {
     distortions: string[];
     /** `manifest.preflight.hosts` as `<host>@<version>`. */
     host_versions: string[];
+    side_model: string | null;
+    user_sim_model: string;
 }
 
 const ALIASES: Record<string, string> = {
@@ -320,6 +322,8 @@ function incomplete(
         "context_limit",
         "distortions",
         "host_versions",
+        "side_model",
+        "user_sim_model",
     ];
     const settings = shared.flatMap((field) => {
         const values = [...new Set(runs.map((g) => JSON.stringify(g.identity[field])))];

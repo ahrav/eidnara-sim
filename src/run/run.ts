@@ -198,9 +198,18 @@ export function armOrder(o: Pick<RunOptions, "tier" | "seed" | "arms">): string[
     return kept;
 }
 
-/** The arm a user-sim divergence is measured against: an A/A control's own arm, else the first. */
-export const referenceArm = (order: string[]) => (arm: string) =>
-    arm.includes("~") ? armBase(arm) : (order[0] as string);
+const PARTNER: Partial<Record<string, string>> = { eidnara: "eidnara-cf", "eidnara-cf": "eidnara" };
+
+/**
+ * The arm a user-sim divergence is measured against: an A/A control's own arm; the
+ * `eidnara`/`eidnara-cf` partner when it appears earlier in `order`; else the first arm.
+ */
+export const referenceArm = (order: string[]) => (arm: string) => {
+    if (arm.includes("~")) return armBase(arm);
+    const partner = PARTNER[arm];
+    const at = (a: string) => order.indexOf(a);
+    return partner && at(partner) >= 0 && at(partner) < at(arm) ? partner : (order[0] as string);
+};
 
 const sameJson = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 
@@ -637,11 +646,20 @@ async function runArms(
                 if (armBase(arm) !== "eidnara-cf") return;
                 for (const c of deletions.get(e.id) ?? []) {
                     if (done(c.probe)) continue;
-                    log({
-                        probe: c.probe,
-                        fact: c.fact,
-                        ...(await driver.deleteFact(c.statement, othersOf(c.fact))),
-                    });
+                    const result = await driver.deleteFact(c.statement, othersOf(c.fact));
+                    for (const id of "deleted" in result ? result.deleted : []) {
+                        journal.append({
+                            kind: "DeleteMemoryObject",
+                            arm,
+                            scenario_ms: now(),
+                            object_id: id,
+                            object_kind: "note",
+                            target_item_id: c.probe,
+                            fact: c.fact,
+                            event: e.id,
+                        });
+                    }
+                    log({ probe: c.probe, fact: c.fact, ...result });
                 }
             },
             fault: async (f, at) => {

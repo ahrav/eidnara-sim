@@ -1,7 +1,10 @@
 # Tier command
 
 `scripts/tier.ts --tier S --out <dir> [--hosts pi,opencode] [--turn-ms N]
-[--plan-only]` runs one tier end to end. It compiles each seed's scenario,
+[--resize-from <M tier dir>] [--models a,b] [--plan-only]` runs one tier
+end to end. `--models` lists the models the runs' `model_switch` fault
+cycles through; a tier whose scenarios schedule that fault refuses to start
+with fewer than two distinct models, and the plan records the list. It compiles each seed's scenario,
 plans one run per pre-registered host and seed, builds the vendored
 libfaketime once, starts the runs in parallel, grades each one, reports
 its A/A pairs, and writes the tier report. A run whose journal already
@@ -157,9 +160,11 @@ paired runs, the `main` group of its `tier-plan.json`, and refuses until
 that plan is the M tier's with a run for every pre-registered host and
 seed and its `tier-result.json` records a zero `run_exit` and `grade_exit`
 for each of them, so an interrupted run or grading, a partial campaign,
-and the profiles' changed models never enter it, and while the M
-directory holds a live lease, so a campaign still being graded never
-enters it. The record names its source directory and both
+and the profiles' changed models never enter it; while the M directory
+holds a live lease, so a campaign still being graded never enters it; and
+while the M report's campaign-completeness list holds anything besides
+its CUSUM scale, so truncated runs, differing settings, or missing A/A
+controls never enter it. The record names its source directory and both
 pre-registration hashes; a later invocation refuses a record of another
 L pre-registration, or a `--resize-from` naming another source or an M
 pre-registration the record did not see. The record is written through a
@@ -196,7 +201,9 @@ caller-scope functions so its ownership triggers admit a delete inside
 the note's own project and report no facade authority drain, so the
 authority triggers stay inactive for the delete; a failed delete is
 journaled as skipped, and the child is stopped with the arm when the run
-is torn down. The grader marks the arm's grade for a sampled probe whose
+is torn down. Each deleted note is journaled first as its own
+`DeleteMemoryObject` entry with the object id, its kind, the target probe,
+and the scenario time. The grader marks the arm's grade for a sampled probe whose
 deletion was skipped, deleted nothing, or left matching notes as
 `excluded(cf-unverified)`, so the gates never read an outcome from an
 intervention of unknown effect. A run with an `eidnara-cf` arm stops at start when
