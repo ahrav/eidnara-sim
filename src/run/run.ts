@@ -271,7 +271,9 @@ export class CallIndex {
 
     private remember(record: CallRecord, offset: number, length: number): void {
         const key = `${record.arm}/${record.session}`;
-        this.places.set(key, [...(this.places.get(key) ?? []), [offset, length]]);
+        const list = this.places.get(key);
+        if (list) list.push([offset, length]);
+        else this.places.set(key, [[offset, length]]);
     }
 
     add(record: CallRecord, offset: number, length: number): void {
@@ -378,7 +380,7 @@ async function runArms(
     }
     const gateway = new Gateway({
         upstream: bedrockUpstream(config.bedrock.region, config.bedrock.aws_profile),
-        records: new RunRecords(callsPath),
+        records: new RunRecords(callsPath, false),
         injector,
         rng: new Rng((seed ^ 0x27d4eb2f) >>> 0),
         clock: { scenarioMs: now },

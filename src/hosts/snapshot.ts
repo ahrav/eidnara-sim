@@ -219,7 +219,7 @@ export class SnapshotRecorder {
         const pending = [dir];
         for (let at = pending.shift(); at !== undefined; at = pending.shift()) {
             for (const entry of entriesOf(at)) {
-                if (++seen > WORKSPACE_ENTRY_CAP || Date.now() > deadline) {
+                if (++seen > WORKSPACE_ENTRY_CAP || Date.now() >= deadline) {
                     const why =
                         seen > WORKSPACE_ENTRY_CAP
                             ? `more than ${WORKSPACE_ENTRY_CAP} entries`
@@ -307,7 +307,7 @@ export class SnapshotRecorder {
         const now: Record<string, string> = {};
         const deadline = Date.now() + (this.gitTimeoutMs ?? Number.POSITIVE_INFINITY);
         for (const path of ignoreFiles) {
-            if (Date.now() > deadline)
+            if (Date.now() >= deadline)
                 throw new GitBound(`rule files of ${dir}: hashing timed out`);
             now[path] = blobId(join(dir, path));
         }
@@ -376,6 +376,13 @@ export class SnapshotRecorder {
 
     /** `--text` diffs every file as text, so a NUL byte or a `-diff` attribute hides no added line. */
     private diff(from: string, to: string): string {
+        for (const id of [from, to]) {
+            if (!/^[0-9a-f]{40}$/.test(id)) {
+                throw new Error(
+                    `snapshot state names ${JSON.stringify(id)} where a tree id belongs`,
+                );
+            }
+        }
         const flags = ["--no-color", "--no-ext-diff", "--no-textconv", "--text"];
         return this.git(["diff", ...flags, from, to]);
     }

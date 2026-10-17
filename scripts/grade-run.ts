@@ -119,6 +119,10 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
         firstOf.add(key);
     }
     const journaled = new Set(named.keys());
+    const turnEnds = new Map<string, string>();
+    for (const e of entries.filter((e) => e.kind === "EndTurn" && typeof e.snapshot === "string")) {
+        turnEnds.set(String(e.snapshot), String(e.outcome));
+    }
     const probes = new Map(scenario.probes.map((p) => [p.id, p]));
     const snapshots = new Map<string, Snapshot[]>();
     for (const arm of arms) {
@@ -141,10 +145,20 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
             const probe = entry ? probes.get(s.item) : undefined;
             if (entry && probe) {
                 const turnOk = probe.event === undefined || s.turn === probe.event;
-                const sessionOk = s.session === undefined || s.session === probe.session;
+                const sessionOk = s.session === probe.session;
                 if (!turnOk || !sessionOk) {
                     throw new Error(
                         `snapshot ${s.id} is of turn ${s.turn} in session ${String(s.session)}, not the probe's event ${String(probe.event)} in session ${probe.session}`,
+                    );
+                }
+                const ended = turnEnds.get(s.id);
+                if (!ended) {
+                    throw new Error(`snapshot ${s.id} has no EndTurn naming it in the journal`);
+                }
+                const expected = ended === "ok" ? "ok" : "failed";
+                if (s.turn_outcome !== expected) {
+                    throw new Error(
+                        `snapshot ${s.id} records turn_outcome ${String(s.turn_outcome)}, but its EndTurn ended ${ended}`,
                     );
                 }
             }
@@ -167,7 +181,7 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
             `journaled snapshots have more than one row in snapshots.jsonl: ${doubled.join(", ")}`,
         );
     }
-    const wanted = new Map<string, { snapshot: string; call: CallView }>();
+    const wanted = new Map<string, Array<{ snapshot: string; call: CallView }>>();
     for (const rows of snapshots.values()) {
         for (const s of rows) {
             if (!journaled.has(s.id)) continue;
@@ -175,7 +189,10 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
             if (calls?.class !== "proxy-call") continue;
             for (const c of calls.calls) {
                 if (c.component === "agent")
-                    wanted.set(`${s.arm}/${c.seq}`, { snapshot: s.id, call: c });
+                    wanted.set(`${s.arm}/${c.seq}`, [
+                        ...(wanted.get(`${s.arm}/${c.seq}`) ?? []),
+                        { snapshot: s.id, call: c },
+                    ]);
             }
         }
     }
@@ -189,13 +206,16 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
                 throw new Error(`calls.jsonl record ${String(r.seq)} names no model`);
             }
             agentModels.add(r.model);
-            const held = wanted.get(`${r.arm}/${r.seq}`);
-            if (!held) continue;
-            const { turn_index: _turn, ...stored } = held.call;
-            if (canonicalJson(stored) !== canonicalJson(projectCall(r))) {
-                throw new Error(
-                    `snapshot ${held.snapshot} holds agent call ${r.seq} with content that differs from calls.jsonl`,
-                );
+            const copies = wanted.get(`${r.arm}/${r.seq}`);
+            if (!copies) continue;
+            const expected = canonicalJson(projectCall(r));
+            for (const held of copies) {
+                const { turn_index: _turn, ...stored } = held.call;
+                if (canonicalJson(stored) !== expected) {
+                    throw new Error(
+                        `snapshot ${held.snapshot} holds agent call ${r.seq} with content that differs from calls.jsonl`,
+                    );
+                }
             }
             wanted.delete(`${r.arm}/${r.seq}`);
         }
@@ -208,7 +228,8 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
     }
     const [orphan] = wanted;
     if (orphan) {
-        const [key, { snapshot }] = orphan;
+        const [key, copies] = orphan;
+        const snapshot = copies[0]?.snapshot ?? "?";
         throw new Error(
             `snapshot ${snapshot} holds agent call ${key.split("/").pop()}, which calls.jsonl does not record for arm ${key.split("/")[0]}`,
         );
