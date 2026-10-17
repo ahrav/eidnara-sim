@@ -24,8 +24,13 @@ const ALIASES: Record<string, string> = {
 
 /** The prefix that keeps one seed's items apart across the tier's hosts: `<host>/<seed>`. */
 const runKey = (g: GradedRun) => `${g.host}/${g.scenario.manifest.seed}`;
+const runId = (g: GradedRun) => `${g.run.tier}-${g.host}-${g.scenario.manifest.seed}`;
 
-type RunValue = (g: GradedRun, arm: ArmLogs, other: ArmLogs) => number | null;
+interface Pairing {
+    other: ArmLogs;
+    dropped: ReadonlySet<string>;
+}
+type RunValue = (g: GradedRun, arm: ArmLogs, pairing: Pairing) => number | null;
 
 export const userTexts = (g: GradedRun) =>
     g.scenario.events.flatMap((e) =>
@@ -38,17 +43,24 @@ const panelOf = (g: GradedRun, arm: ArmLogs) => {
     return cached;
 };
 
-function values(g: GradedRun, arm: string, metric: string, other: string): Map<string, number> {
+function values(
+    g: GradedRun,
+    arm: string,
+    metric: string,
+    { other, dropped }: Pairing,
+): Map<string, number> {
     const of = (a: string) =>
         new Map(
             g.grades
                 .filter((r) => r.arm === a && r.verdict !== "excluded")
                 .flatMap((r) => {
                     const v = r.metrics[metric];
-                    return typeof v === "number" ? [[r.item, v] as const] : [];
+                    return typeof v === "number" && !dropped.has(`${runKey(g)}/${r.item}`)
+                        ? [[r.item, v] as const]
+                        : [];
                 }),
         );
-    const theirs = of(other);
+    const theirs = of(other.arm);
     return new Map([...of(arm)].filter(([item]) => theirs.has(item)));
 }
 const total = (xs: number[]) => xs.reduce((s, x) => s + x, 0);
@@ -62,8 +74,8 @@ const slope =
         soak(run, arm, resource).slope_per_session;
 const graded =
     (metric: string, reduce: (xs: number[]) => number): RunValue =>
-    (g, arm, other) => {
-        const v = [...values(g, arm.arm, metric, other.arm).values()];
+    (g, arm, pairing) => {
+        const v = [...values(g, arm.arm, metric, pairing).values()];
         return v.length === 0 ? null : reduce(v);
     };
 
@@ -112,7 +124,7 @@ const RUN_VALUES: Record<string, { value: RunValue; delta: boolean; hostless?: t
         delta: false,
     },
     "P13.fold_fidelity_score": {
-        value: graded("P13.fold_fidelity_score", (v) => total(v) / v.length),
+        value: graded("P13.fold_fidelity_score", (v) => (100 * total(v)) / v.length),
         delta: false,
     },
     "P14.post_compaction_correction_count": {
@@ -155,16 +167,20 @@ function runPairs(
     metric: string,
     control: string,
     treatment: string,
+    dropped: ReadonlySet<string>,
 ): RunPair[] {
     const def = RUN_VALUES[metric];
     if (!def) return [];
     return runs.flatMap((g) => {
         const [c, t] = [control, treatment].map((a) => g.run.arms.find((x) => x.arm === a));
         if (!c || !t) return [];
-        const [raw, tv] = [def.value(g, c, t), def.value(g, t, c)];
+        const [raw, tv] = [
+            def.value(g, c, { other: t, dropped }),
+            def.value(g, t, { other: c, dropped }),
+        ];
         const cv = raw === null && def.hostless && armBase(c.arm) === "host" ? 0 : raw;
         if (tv === null || cv === null) return [];
-        const run = `${g.run.tier}-${g.host}-${g.scenario.manifest.seed}`;
+        const run = runId(g);
         return [
             def.delta
                 ? { run, control: 0, treatment: tv - cv }
@@ -202,11 +218,13 @@ function asymmetric(runs: GradedRun[], control: string, treatment: string): stri
     });
 }
 
-/**
- * What the fixed-N campaign still lacks: a pre-registered host and seed without a run, or a
- * probe type with fewer completed paired items than `paired_items_per_probe_type`.
- */
-function incomplete(p: Preregistration, runs: GradedRun[], observations: Observation[]): string[] {
+function incomplete(
+    p: Preregistration,
+    runs: GradedRun[],
+    observations: Observation[],
+    control: string,
+    treatment: string,
+): string[] {
     const present = new Set(runs.map(runKey));
     const missing = p.hosts.flatMap((host) =>
         p.seeds.flatMap((seed) =>
@@ -214,20 +232,45 @@ function incomplete(p: Preregistration, runs: GradedRun[], observations: Observa
         ),
     );
     const n = p.stopping_rule.paired_items_per_probe_type;
+    const none = new Set<string>();
     const short = p.families.flatMap((f) => {
-        if (!/^probe-P\d+$/.test(f.id) || f.analysis_unit !== "item") return [];
-        const pairs = observations.find((o) => o.metric === f.metrics[0])?.items?.length ?? 0;
+        if (!/^probe-P\d+$/.test(f.id)) return [];
+        const metric = f.metrics[0] as string;
+        const pairs =
+            f.analysis_unit === "item"
+                ? (observations.find((o) => o.metric === metric)?.items?.length ?? 0)
+                : runs.reduce((s, g) => {
+                      const [c, t] = [control, treatment].map((a) =>
+                          g.run.arms.find((x) => x.arm === a),
+                      );
+                      return !c || !t
+                          ? s
+                          : s + values(g, t.arm, metric, { other: c, dropped: none }).size;
+                  }, 0);
         return pairs < n ? [`${f.id}: ${pairs} of ${n} paired items`] : [];
     });
     return [...missing, ...short];
 }
 
+function ordered(p: Preregistration, runs: GradedRun[]): GradedRun[] {
+    const at = (xs: readonly unknown[], x: unknown) => {
+        const i = xs.indexOf(x);
+        return i < 0 ? xs.length : i;
+    };
+    const rank = (g: GradedRun) =>
+        at(p.hosts, g.host) * (p.seeds.length + 1) + at(p.seeds, g.scenario.manifest.seed);
+    return [...runs].sort((a, b) => rank(a) - rank(b));
+}
+
 export function tierInput(
     p: Preregistration,
-    runs: GradedRun[],
+    given: GradedRun[],
     treatment: string = p.arms.default,
     control = "host",
 ): TierInput {
+    const runs = ordered(p, given);
+    const asym = asymmetric(runs, control, treatment);
+    const dropped = new Set(asym);
     const observations: Observation[] = p.families.flatMap((f) =>
         f.metrics.map(
             (metric): Observation =>
@@ -242,7 +285,7 @@ export function tierInput(
                           metric,
                           unit: "run",
                           cluster_key: f.cluster_key,
-                          runs: runPairs(runs, metric, control, treatment),
+                          runs: runPairs(runs, metric, control, treatment, dropped),
                       },
         ),
     );
@@ -258,7 +301,13 @@ export function tierInput(
     return {
         observations,
         excluded,
-        asymmetric: asymmetric(runs, control, treatment),
-        incomplete: incomplete(p, runs, observations),
+        asymmetric: asym,
+        incomplete: incomplete(p, runs, observations, control, treatment),
+        journal_seq_at_eval: Object.fromEntries(
+            runs.map((g) => [
+                runId(g),
+                Math.max(0, ...g.run.arms.flatMap((a) => a.journal.map((e) => e.seq))),
+            ]),
+        ),
     };
 }

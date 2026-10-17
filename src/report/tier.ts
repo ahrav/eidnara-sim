@@ -5,6 +5,7 @@ import { armBase } from "../hosts/arms";
 import { loadRun } from "../oracle/logs";
 import { oracleReport } from "../oracle/oracles";
 import { recoveries } from "../oracle/recovery";
+import { canonicalJson, sha256Hex } from "../prereg/canonical";
 import type { Preregistration } from "../prereg/schema";
 import { preregistrationHash } from "../prereg/validate";
 import type { Scenario } from "../scenario/compile";
@@ -20,6 +21,7 @@ export function loadGraded(dir: string, prereg: Preregistration): GradedRun {
     const manifest = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8")) as {
         host: string;
         prereg_sha256: string;
+        scenario_hash: string;
     };
     const current = preregistrationHash(prereg);
     if (manifest.prereg_sha256 !== current) {
@@ -27,10 +29,18 @@ export function loadGraded(dir: string, prereg: Preregistration): GradedRun {
             `${dir}: ran under pre-registration ${manifest.prereg_sha256}; the report uses ${current}`,
         );
     }
+    const scenario = JSON.parse(readFileSync(join(dir, "scenario.json"), "utf8")) as Scenario;
+    const { scenario_hash: _, ...body } = scenario;
+    const actual = sha256Hex(canonicalJson(body));
+    if (actual !== manifest.scenario_hash) {
+        throw new Error(
+            `${dir}: scenario.json hashes to ${actual}; the manifest ran scenario ${manifest.scenario_hash}`,
+        );
+    }
     const grades = join(dir, "grades.jsonl");
     return {
         run: loadRun(dir, prereg),
-        scenario: JSON.parse(readFileSync(join(dir, "scenario.json"), "utf8")) as Scenario,
+        scenario,
         grades: existsSync(grades) ? new GradeLog(grades).latest() : [],
         host: manifest.host,
     };
@@ -45,25 +55,24 @@ const sd = (xs: number[]) => {
 
 export type CusumScale = NonNullable<TierInput["cusum_sd"]>;
 
-const controlArm = (runs: GradedRun[]) =>
-    runs.flatMap((g) => g.run.arms.map((a) => a.arm)).find((a) => a.includes("~"));
+const controlArms = (runs: GradedRun[]) => [
+    ...new Set(runs.flatMap((g) => g.run.arms.map((a) => a.arm)).filter((a) => a.includes("~"))),
+];
 
-/**
- * The CUSUM rules' scale from the runs' A/A control (`<arm>~<tag>`): the standard deviation of
- * its paired item differences, over the per-item maximum across the harm metrics and over the
- * P1 items.
- */
 export function aaScale(prereg: Preregistration, runs: GradedRun[]): CusumScale | undefined {
-    const control = controlArm(runs);
-    if (!control) return undefined;
-    const aa = tierInput(prereg, runs, control, armBase(control));
+    const controls = controlArms(runs).sort();
+    if (controls.length === 0) return undefined;
     const diffs = (family: string) => {
         const metrics = prereg.families.find((f) => f.id === family)?.metrics ?? [];
         const best = new Map<string, number>();
-        for (const o of aa.observations.filter((x) => metrics.includes(x.metric))) {
-            for (const x of o.items ?? []) {
-                const d = x.treatment - x.control;
-                best.set(x.item, Math.max(best.get(x.item) ?? Number.NEGATIVE_INFINITY, d));
+        for (const control of controls) {
+            const aa = tierInput(prereg, runs, control, armBase(control));
+            for (const o of aa.observations.filter((x) => metrics.includes(x.metric))) {
+                for (const x of o.items ?? []) {
+                    const key = `${control}/${x.item}`;
+                    const d = x.treatment - x.control;
+                    best.set(key, Math.max(best.get(key) ?? Number.NEGATIVE_INFINITY, d));
+                }
             }
         }
         return [...best.values()];
@@ -78,7 +87,7 @@ export function tierReport(
     scale: CusumScale | undefined = aaScale(prereg, runs),
 ): TierReport {
     const arms = [...new Set(runs.flatMap((g) => g.run.arms.map((a) => a.arm)))];
-    const control = controlArm(runs);
+    const control = controlArms(runs)[0];
     const pair: [string, string] = control
         ? [armBase(control), control]
         : ["host", prereg.arms.default];

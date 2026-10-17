@@ -57,8 +57,9 @@ writes with zero later reads.
 writes `report-<tier>.md` and the gate verdict as `report-<tier>.json`, or
 prints the Markdown. `loadGraded` refuses a run directory whose manifest
 records a `prereg_sha256` other than the hash of the tier's current
-pre-registration, so a verdict carries the registration its runs were made
-under. Each run directory needs `grades.jsonl` from
+pre-registration, or whose `scenario.json` hashes to other than the
+manifest's `scenario_hash`, so a verdict carries the registration and the
+scenario its runs were made under. Each run directory needs `grades.jsonl` from
 `scripts/grade-run.ts` for its probe items; a run without one reports its
 run-level metrics alone.
 
@@ -74,7 +75,7 @@ treatment arm (`arms.default`, `eidnara`) against `host`:
 | `internal_string_hits`, `user_corrections_referencing_injected_text` | Per run, the panel's counts |
 | `reverted_memory_edits` | Per run, the treatment's reverted edits minus the control's; the zero-tolerance bound fails a run whose difference is above zero |
 | `usd_per_component`, `usd_per_useful_retrieval` | Per run, the cost panel's total and cost per pass |
-| `P13.fold_fidelity_score`, `P14.post_compaction_correction_count` | Per run, the mean and the sum of the item metric over the items both arms graded without exclusion |
+| `P13.fold_fidelity_score`, `P14.post_compaction_correction_count` | Per run, the mean (in percentage points, the family's scale) and the sum of the item metric over the items both arms graded without exclusion and outside the fault-asymmetric stratum |
 
 Graded items the treatment or control arm excluded are listed as
 excluded, and probe items of a session where a fault landed in one arm
@@ -82,10 +83,15 @@ only form the fault-asymmetric stratum; a fault landed where the
 scheduler recorded `FaultObserved` or the proxy stamped a call's
 `fault_ref`, which is how provider faults show. The input's `incomplete`
 list names each pre-registered host and seed without a run and each probe
-type with fewer paired items than `stopping_rule.paired_items_per_probe_type`;
-the tier passes only with an empty list. `aaScale` takes the CUSUM rules'
-scale from the runs' A/A control (`<arm>~<tag>`): the standard deviation
-of its paired item differences, over the per-item maximum across the harm
+type, P13 and P14 included, with fewer paired items than
+`stopping_rule.paired_items_per_probe_type`; the tier passes only with an
+empty list. The input's `journal_seq_at_eval` records, per run id, the
+last journal `seq` the observations read. `tierInput` orders the runs by
+the pre-registration's hosts then seeds, so items tied in issue order
+across runs keep one order whatever order the directories arrive in.
+`aaScale` takes the CUSUM rules' scale from the runs' A/A controls
+(`<arm>~<tag>`), pooled over every control: the standard deviation of
+their paired item differences, over the per-item maximum across the harm
 metrics, as the harm statistic is built, and over the P1 items.
 `scripts/report.ts` gives each rule the scale of the tier its `sd_source`
 names, so L's rules take M's A/A pairs when the M runs are in the same
