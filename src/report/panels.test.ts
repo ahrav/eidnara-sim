@@ -166,6 +166,29 @@ describe("soak verdict", () => {
         ]);
     });
 
+    test("each daemon process is its own memory trajectory, so a replaced leaking daemon still leaks", () => {
+        const { kinds, journal } = sessions(20, () => 0);
+        const resources = Array.from({ length: 20 }, (_, s) =>
+            Array.from({ length: 5 }, (_, i) => ({
+                scenario_ms: s * 1000 + i * 100,
+                wall_ms: s * 1000 + i * 100,
+                pid: s < 10 ? 100 : 200,
+                rss: s < 10 ? 100 * MB + s * 12 * MB : 100 * MB,
+                store_bytes: 10 * MB,
+            })),
+        ).flat();
+        const v = soak(run([], "", kinds), arm({ journal, resources }), "rss");
+        expect([v.verdict, v.slope_over_bound, v.generations, v.generation]).toEqual([
+            "leak",
+            true,
+            2,
+            1,
+        ]);
+        expect(v.slope_per_session).toBeCloseTo(12 * MB, -3);
+        const store = soak(run([], "", kinds), arm({ journal, resources }), "store_bytes");
+        expect([store.verdict, store.generations]).toEqual(["no leak", 1]);
+    });
+
     test("a sample taken while a session end is still closing belongs to the open session", () => {
         seq = 0;
         const kinds = new Map([["end-0", "session_end"]]);
@@ -381,6 +404,15 @@ describe("intrusiveness panel", () => {
             { command: "sudo git restore e.rs", exit: 0, scenario_ms: 3, turn: "e-2" },
             { command: "FOO=1 git restore f.rs", exit: 0, scenario_ms: 3, turn: "e-2" },
             { command: "(git restore g.rs)", exit: 0, scenario_ms: 3, turn: "e-2" },
+            { command: "sudo -n git restore j.rs", exit: 0, scenario_ms: 3, turn: "e-2" },
+            { command: "env FOO=1 git reset --hard", exit: 0, scenario_ms: 3, turn: "e-2" },
+            { command: "git restore k.rs 2>&1", exit: 0, scenario_ms: 3, turn: "e-2" },
+            {
+                command: "git restore l.rs >/dev/null 2>&1 && echo ok",
+                exit: 0,
+                scenario_ms: 3,
+                turn: "e-2",
+            },
             { command: "cargo test", exit: 0, scenario_ms: 4, turn: "e-2" },
         ];
         const panel = intrusiveness(run([], dir, new Map(), BASE), arm({ journal, tools }));
@@ -401,8 +433,20 @@ describe("intrusiveness panel", () => {
             "sudo git restore e.rs",
             "FOO=1 git restore f.rs",
             "(git restore g.rs)",
+            "sudo -n git restore j.rs",
+            "env FOO=1 git reset --hard",
+            "git restore k.rs 2>&1",
+            "git restore l.rs >/dev/null 2>&1 && echo ok",
         ]);
         expect(panel.latency_ms).toEqual({ n: 7, p50: 500, p95: 5000 });
+        expect(panel.tool_output_hits).toBeNull();
+        const partial = intrusiveness(
+            run([], dir, new Map(), BASE),
+            arm({
+                journal: [...journal, entry("EndTurn", 8000, { event: "e-11", outcome: "ok" })],
+            }),
+        );
+        expect(partial.latency_ms).toBeNull();
         expect(percentile([5, 1, 3, 2, 4], 0.5)).toBe(3);
 
         const grades = [

@@ -10,10 +10,17 @@ import type { PairingRecord } from "../usersim/usersim";
 export interface Intrusiveness {
     arm: string;
     internal_string_hits: { source: "agent-response"; at: string; evidence: string }[];
+    /**
+     * Internal strings in tool output the agent saw. `null`: the hosts record each tool run's
+     * command and exit status, so there is no tool output to scan and SIM-P59's second source
+     * is unavailable.
+     */
+    tool_output_hits: { source: "tool-output"; at: string; evidence: string }[] | null;
     /** `null` when the arm's `memory.json` records that its notes could not be read. */
     corrections_referencing_injected_text: { event: string; label: string; quote: string }[] | null;
     reverted_edits: { turn: string | null; command: string }[];
-    latency_ms: { n: number; p50: number | null; p95: number | null };
+    /** `null` when a completed turn has no `prompt_ms`: a journal begun before the field existed. */
+    latency_ms: { n: number; p50: number | null; p95: number | null } | null;
 }
 
 /**
@@ -22,8 +29,10 @@ export interface Intrusiveness {
  * `nohup`, or `exec` prefixes; its subcommand and arguments run up to the next separator.
  */
 const GIT =
-    /(?:^|[;&|(][ \t]*)[ \t]*(?:\w+=[^ \t\n]*[ \t]+)*(?:(?:sudo|env|time|nice|nohup|exec)[ \t]+)*git[ \t]+(?:-[Cc][ \t]+[^ \t\n]+[ \t]+)*([a-z-]+)((?:[ \t]+[^ \t\n;&|)]+)*)/gm;
+    /(?:^|[;&|(][ \t]*)[ \t]*(?:\w+=[^ \t\n]*[ \t]+)*(?:(?:sudo|env|time|nice|nohup|exec)(?:[ \t]+(?:-[^ \t\n]*|\w+=[^ \t\n]*))*[ \t]+)*git[ \t]+(?:-[Cc][ \t]+[^ \t\n]+[ \t]+)*([a-z-]+)((?:[ \t]+[^ \t\n;&|)]+)*)/gm;
 const COMMENT = /(^|[ \t])#.*$/g;
+/** Redirections (`2>&1`, `&>f`, `>f`, `<f`), which are part of a command rather than separators. */
+const REDIRECT = /[ \t]*(?:\d*[<>]{1,2}&?\d*|&>>?)[ \t]*[^ \t\n;&|)]*/g;
 const HEREDOC = /<<-?[ \t]*(['"]?)(\w+)\1/g;
 const QUOTED = /'[^'\n]*'|"(?:[^"\\\n]|\\.)*"/g;
 const SEPARATOR = /&&|\|\||[;|&\n]/g;
@@ -81,8 +90,8 @@ const checksOutPaths = (args: string[]) => {
 
 /**
  * The command's lines as the shell runs them: each quoted string becomes one plain word, so later
- * words keep their positions; a comment (`#` at a word start outside quotes) and the body lines
- * of a heredoc whose `<<` sits outside quotes are dropped.
+ * words keep their positions; a comment (`#` at a word start outside quotes), redirections, and
+ * the body lines of a heredoc whose `<<` sits outside quotes are dropped.
  */
 function executable(command: string): string {
     const lines: string[] = [];
@@ -101,7 +110,7 @@ function executable(command: string): string {
             (m) => !inQuotes(m.index + (m[1] as string).length),
         );
         const code = comment ? line.slice(0, comment.index) : line;
-        lines.push(code.replace(QUOTED, "_"));
+        lines.push(code.replace(QUOTED, "_").replace(REDIRECT, " "));
     }
     return lines.join("\n");
 }
@@ -162,13 +171,16 @@ export function percentile(values: number[], q: number): number | null {
 
 /**
  * Each completed turn's `prompt_ms` from `EndTurn`: the host's prompt call, after the user-sim
- * delivered. A failed turn is dependability's, counted there as a failed turn or hang.
+ * delivered. A failed turn is dependability's, counted there as a failed turn or hang. `null`
+ * when a completed turn carries no `prompt_ms`, so a journal from before the field never yields
+ * a sample over part of its turns.
  */
-export function turnLatencies(arm: ArmLogs): number[] {
-    return arm.journal
-        .filter((e) => e.kind === "EndTurn" && e.outcome === "ok")
+export function turnLatencies(arm: ArmLogs): number[] | null {
+    const completed = arm.journal.filter((e) => e.kind === "EndTurn" && e.outcome === "ok");
+    const latencies = completed
         .map((e) => e.prompt_ms)
         .filter((ms): ms is number => typeof ms === "number");
+    return latencies.length === completed.length ? latencies : null;
 }
 
 /**
@@ -228,14 +240,18 @@ export function intrusiveness(run: RunLogs, arm: ArmLogs): Intrusiveness {
         internal_string_hits: runOracles({ ...run, arms: [arm] })
             .filter((a) => a.oracle === "F7")
             .map((a) => ({ source: "agent-response" as const, at: a.at, evidence: a.evidence })),
+        tool_output_hits: null,
         corrections_referencing_injected_text: corrections(run, arm),
         reverted_edits: arm.tools
             .filter((t) => t.exit === 0 && isRevert(t.command))
             .map((t) => ({ turn: t.turn, command: t.command.slice(0, 200) })),
-        latency_ms: {
-            n: latencies.length,
-            p50: percentile(latencies, 0.5),
-            p95: percentile(latencies, 0.95),
-        },
+        latency_ms:
+            latencies === null
+                ? null
+                : {
+                      n: latencies.length,
+                      p50: percentile(latencies, 0.5),
+                      p95: percentile(latencies, 0.95),
+                  },
     };
 }

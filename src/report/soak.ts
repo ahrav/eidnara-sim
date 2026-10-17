@@ -23,7 +23,25 @@ export interface SoakVerdict {
     windows: { warmup: number; steady: number; cooldown: number };
     /** The longest wall-time gap between samples, against `leak_bound.sample_interval_ms`. */
     max_gap_ms: number | null;
+    /**
+     * Daemon processes the samples span: each `pid` run is its own memory trajectory, and the
+     * verdict is the most decisive generation's (`leak`, then `no leak`, then `insufficient
+     * samples`), `generation` naming it from 1. `store_bytes` is one trajectory.
+     */
+    generations: number;
+    generation: number;
 }
+
+type Evaluated = Omit<
+    SoakVerdict,
+    "arm" | "resource" | "sessions" | "max_gap_ms" | "generations" | "generation"
+>;
+
+const RANK: Record<SoakVerdict["verdict"], number> = {
+    leak: 2,
+    "no leak": 1,
+    "insufficient samples": 0,
+};
 
 const median = (xs: number[]) => {
     const s = [...xs].sort((a, b) => a - b);
@@ -31,33 +49,66 @@ const median = (xs: number[]) => {
     return s.length % 2 ? (s[m] as number) : ((s[m - 1] as number) + (s[m] as number)) / 2;
 };
 
+/** Consecutive samples from one daemon process. */
+function byPid(samples: ArmLogs["resources"]): ArmLogs["resources"][] {
+    const runs: ArmLogs["resources"][] = [];
+    for (const s of samples) {
+        const last = runs[runs.length - 1];
+        if (last && last[0]?.pid === s.pid) last.push(s);
+        else runs.push([s]);
+    }
+    return runs;
+}
+
 export function soak(run: RunLogs, arm: ArmLogs, resource: Resource): SoakVerdict {
-    const { c_bytes_per_session: c, r2_threshold } = run.prereg.leak_bound;
     const ends = arm.journal
         .filter((e) => e.kind === "Event" && run.kinds.get(String(e.event)) === "session_end")
         .map((e) => e.wall_ms);
     const all = arm.resources.filter(
         (s) => typeof s[resource] === "number" && typeof s.wall_ms === "number",
     );
-    const first = all.findIndex((s) => (s[resource] as number) > 0);
-    const samples = first < 0 ? [] : all.slice(first);
+    const walls = all.map((s) => s.wall_ms as number);
+    const gaps = walls.slice(1).map((w, i) => w - (walls[i] as number));
+    const generations = resource === "store_bytes" ? [all] : byPid(all);
+    const verdicts = generations.map((g) => evaluate(run, resource, ends, g));
+    const chosen = verdicts.reduce<number>((best, v, i) => {
+        const b = verdicts[best] as Evaluated;
+        const better =
+            RANK[v.verdict] > RANK[b.verdict] ||
+            (RANK[v.verdict] === RANK[b.verdict] && v.samples > b.samples);
+        return better ? i : best;
+    }, 0);
+    return {
+        arm: arm.arm,
+        resource,
+        sessions: ends.length,
+        max_gap_ms: gaps.length ? Math.max(...gaps) : null,
+        generations: generations.length,
+        generation: chosen + 1,
+        ...(verdicts[chosen] as Evaluated),
+    };
+}
+
+function evaluate(
+    run: RunLogs,
+    resource: Resource,
+    ends: number[],
+    generation: ArmLogs["resources"],
+): Evaluated {
+    const { c_bytes_per_session: c, r2_threshold } = run.prereg.leak_bound;
+    const first = generation.findIndex((s) => (s[resource] as number) > 0);
+    const samples = first < 0 ? [] : generation.slice(first);
     const completed = (s: (typeof samples)[number]) =>
         ends.filter((ms) => ms <= (s.wall_ms as number)).length;
     const before = samples[0] === undefined ? 0 : completed(samples[0]);
     const points = samples.map((s) => ({ x: completed(s) - before, y: s[resource] as number }));
-    const walls = samples.map((s) => s.wall_ms as number);
-    const gaps = walls.slice(1).map((w, i) => w - (walls[i] as number));
     const tenth = Math.max(1, Math.floor(points.length / 10));
     const warmup = points.slice(0, tenth);
     const cooldown = points.slice(-tenth);
     const steady = points.slice(tenth, points.length - tenth);
     const base = {
-        arm: arm.arm,
-        resource,
         samples: points.length,
-        sessions: ends.length,
         windows: { warmup: warmup.length, steady: steady.length, cooldown: cooldown.length },
-        max_gap_ms: gaps.length ? Math.max(...gaps) : null,
     };
     const baseline = points[0]?.y ?? null;
     if (baseline === null) {
