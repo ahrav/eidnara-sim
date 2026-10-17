@@ -1530,3 +1530,52 @@ describe("tier gate review findings, seventeenth Codex round", () => {
         ).toThrow("dependability: noninferiority is a binary item claim");
     });
 });
+
+describe("tier gate review findings, eighteenth Codex round", () => {
+    const seq = { journal_seq_at_eval: 7, arms: { control: "host", treatment: "eidnara" } };
+    const input = { observations: [], excluded: [], asymmetric: [], ...seq };
+    const withFamily = (id: string, patch: object) => ({
+        ...M,
+        families: M.families.map((f) => (f.id === id ? { ...f, ...patch } : f)),
+    });
+
+    test("noninferiority is registered for lower-is-better metrics", () => {
+        expect(() =>
+            evaluateTier(
+                withFamily("probe-P1", {
+                    direction: "noninferiority",
+                    margin: { value: "10", scale: "pp" },
+                }),
+                input,
+            ),
+        ).toThrow("probe-P1: noninferiority bounds a lower-is-better metric");
+    });
+
+    test("the cluster bootstrap does not depend on the order items arrive in", () => {
+        const pairs: [number, number][] = Array.from({ length: 15 }, (_, i) =>
+            i % 4 === 0 ? [0, 1] : [0, 0],
+        );
+        const obs = binary("P1.pass", pairs, (i) => `f-${i % 4}`);
+        const reversed = { ...obs, items: [...(obs.items ?? [])].reverse() };
+        const few = { ...M, bootstrap: { ...M.bootstrap, replicates: 40 } };
+        const run = (o: Observation) => evaluateTier(few, { ...input, observations: [o] });
+        const m1 = metric(run(obs), "probe-P1", "P1.pass");
+        const m2 = metric(run(reversed), "probe-P1", "P1.pass");
+        expect(m2?.interval).toEqual(m1?.interval);
+        expect(m2?.verdict).toBe(m1?.verdict ?? "");
+    });
+
+    test("one CUSUM rule per kind", () => {
+        const twice = {
+            ...M,
+            stopping_rule: {
+                ...M.stopping_rule,
+                cusum: [
+                    ...M.stopping_rule.cusum,
+                    ...M.stopping_rule.cusum.filter((r) => r.kind === "harm"),
+                ],
+            },
+        };
+        expect(() => evaluateTier(twice, input)).toThrow("cusum harm: one rule per kind");
+    });
+});

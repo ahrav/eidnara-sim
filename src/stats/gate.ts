@@ -176,8 +176,11 @@ function binary(f: Family, items: ItemPair[], p: Preregistration): Stats {
         items.filter((x) => x.treatment === t && x.control === c).length;
     const [a, b, c, d] = [count(1, 1), count(1, 0), count(0, 1), count(0, 0)];
     const [nl, nh] = newcombe(a, b, c, d, num(f.alpha));
-    const clusters = [...new Set(items.map((x) => x.cluster))].map((k) =>
-        items.filter((x) => x.cluster === k).map((x) => x.treatment - x.control),
+    const clusters = [...new Set(items.map((x) => x.cluster))].sort().map((k) =>
+        items
+            .filter((x) => x.cluster === k)
+            .sort((x, y) => x.order - y.order)
+            .map((x) => x.treatment - x.control),
     );
     if (clusters.length < 2) {
         return {
@@ -409,7 +412,11 @@ const MAX_EVENTS = 1e8;
 
 function check(p: Preregistration, input: TierInput): void {
     checkBootstrap(p);
+    const kinds = p.stopping_rule.cusum.map((r) => r.kind);
     for (const rule of p.stopping_rule.cusum) {
+        if (kinds.filter((k) => k === rule.kind).length > 1) {
+            throw new StatsRefusal(`cusum ${rule.kind}: one rule per kind`);
+        }
         const [k, h] = [num(rule.k), num(rule.h)];
         if (!Number.isFinite(k) || k < 0 || !Number.isFinite(h) || h <= 0) {
             throw new StatsRefusal(
@@ -448,6 +455,9 @@ function check(p: Preregistration, input: TierInput): void {
         }
         if (f.direction === "noninferiority" && f.outcome !== "binary") {
             throw new StatsRefusal(`${f.id}: noninferiority is a binary item claim`);
+        }
+        if (f.direction === "noninferiority" && f.metrics.some(higherIsBetter)) {
+            throw new StatsRefusal(`${f.id}: noninferiority bounds a lower-is-better metric`);
         }
         for (const m of f.metrics) {
             if (!hasPolarity(m)) throw new StatsRefusal(`${f.id}: ${m} has no registered polarity`);
