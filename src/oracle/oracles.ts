@@ -85,18 +85,24 @@ function f4(arm: ArmLogs, quietMs: number): Activation[] {
         const tools = arm.tools.filter((t) => t.turn === turn).map((t) => t.scenario_ms);
         const began = arm.journal.find((b) => b.kind === "BeginTurn" && b.event === e.event);
         if (DEADLINE.test(String(e.outcome))) {
-            const points = [
-                ...(began ? [began.scenario_ms] : []),
-                ...turnCalls.flatMap((c) => [
+            const end = e.scenario_ms;
+            const spans = [
+                ...(began ? [[began.scenario_ms, began.scenario_ms]] : []),
+                ...turnCalls.map((c) => [
                     c.scenario_ms,
-                    c.scenario_ms + (c.wall_ms - c.started_wall_ms),
+                    Math.min(end, c.scenario_ms + (c.wall_ms - c.started_wall_ms)),
                 ]),
-                ...tools,
-                e.scenario_ms,
+                ...tools.map((ms) => [ms, ms]),
+                [end, end],
             ]
-                .filter((ms) => ms <= e.scenario_ms)
-                .sort((a, b) => a - b);
-            const gap = Math.max(0, ...points.slice(1).map((ms, i) => ms - (points[i] as number)));
+                .filter(([from]) => (from as number) <= end)
+                .sort((a, b) => (a[0] as number) - (b[0] as number)) as [number, number][];
+            let covered = spans[0]?.[1] ?? end;
+            let gap = 0;
+            for (const [from, to] of spans) {
+                gap = Math.max(gap, from - covered);
+                covered = Math.max(covered, to);
+            }
             if (calls.length === 0 || gap > quietMs) {
                 const what =
                     calls.length === 0 ? "with no model call" : `after ${calls.length} model calls`;
@@ -119,7 +125,8 @@ function f4(arm: ArmLogs, quietMs: number): Activation[] {
         const silence = "with no tool run, call, or turn end";
         if (began) {
             const starts = calls.map((c) => c.scenario_ms);
-            const quiet = quietAfter(began.scenario_ms, [...starts, e.scenario_ms]);
+            const next = Math.min(...starts.filter((ms) => ms >= began.scenario_ms), e.scenario_ms);
+            const quiet = next - began.scenario_ms;
             if (quiet > quietMs) windows.push(`turn began, then ${Math.round(quiet / 1000)} s`);
         }
         for (const c of calls) {
@@ -157,7 +164,8 @@ function lifetimes(samples: Sample[]): Sample[][] {
     const same = (a: Sample, b: Sample) => a.pid === b.pid && a.start === b.start;
     for (const s of samples) {
         const last = out.at(-1);
-        if (last && last[0] && same(last[0], s)) last.push(s);
+        const head = last?.[0];
+        if (last && head && same(head, s)) last.push(s);
         else out.push([s]);
     }
     return out;

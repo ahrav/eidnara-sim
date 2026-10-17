@@ -191,7 +191,7 @@ export class SnapshotRecorder {
         rmSync(this.stateFile, { force: true });
         rmSync(this.gitDir, { recursive: true, force: true });
         rmSync(join(this.armDir, "snapshots.jsonl"), { force: true });
-        rmSync(join(this.armDir, "tools.jsonl"), { force: true });
+        writeFileSync(join(this.armDir, "tools.jsonl"), "");
     }
 
     /**

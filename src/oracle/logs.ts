@@ -117,6 +117,18 @@ function requireTurnEnds(journal: Entry[], arms: string[], events: Scenario["eve
             }
         }
         for (const id of turns) {
+            const order = mine
+                .filter(
+                    (e) =>
+                        ["BeginTurn", "EndTurn", "Event"].includes(String(e.kind)) &&
+                        e.event === id,
+                )
+                .map((e) => String(e.kind));
+            const rank: Record<string, number> = { BeginTurn: 0, EndTurn: 1, Event: 2 };
+            const sorted = order.every(
+                (k, i) => i === 0 || (rank[k] ?? 9) >= (rank[order[i - 1] ?? ""] ?? 9),
+            );
+            if (!sorted) throw new Error(`arm ${arm}: turn ${id} markers out of order`);
             const begins = mine.filter((e) => e.kind === "BeginTurn" && e.event === id).length;
             if (begins !== 1) {
                 const what = begins === 0 ? "no BeginTurn" : `${begins} BeginTurn entries`;

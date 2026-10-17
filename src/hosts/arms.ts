@@ -584,7 +584,7 @@ export class PiSimHost extends SimHost {
         } catch (caught) {
             await Bun.sleep(0);
             const drained = ended ? Promise.resolve() : this.agentEnd(this.drainWaitMs);
-            await this.rpc.sendCommand("abort", {}, { timeoutMs: 60_000 }).catch(() => undefined);
+            this.rpc.sendCommand("abort", {}, { timeoutMs: 60_000 }).catch(() => undefined);
             const settled = await drained.then(
                 () => true,
                 () => false,

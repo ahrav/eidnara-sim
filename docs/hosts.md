@@ -73,7 +73,8 @@ process tree and signals every process the user owns, with SIGKILL after
 becomes a failed turn. After a Pi turn fails, the host aborts it and waits up
 to 30 s for its `agent_end` (an end that arrived before the failure counts),
 so a late end cannot finish the next turn; a Pi that reports no `agent_end`
-in that wait is still running the old turn, so
+in that wait (the abort call itself is not waited on past it) is still
+running the old turn, so
 its process is stopped and the session's later turns fail at once, and no
 tool event from the old turn can land on a later turn's record.
 OpenCode turns race the deadline, abort the session (waiting at most 5 s for

@@ -488,3 +488,37 @@ test("an agent_end emitted in the same tick as the prompt failure still settles 
     expect(result.error).not.toContain("killed");
     expect(stopped).toEqual([]);
 });
+
+test("a stalled abort RPC does not delay the drain verdict past the drain wait", async () => {
+    const host = new PiSimHost({
+        ...({} as HostContext),
+        config: loadConfig(),
+        root: "/x",
+        launcher: "/x/sandbox.sh",
+        now: () => 1,
+    });
+    const stopped: number[] = [];
+    const rpc = {
+        child: { pid: 4242, stdin: { end: () => {} } },
+        sendCommand: (name: string) => {
+            if (name === "prompt") return Promise.reject(new Error("Timed out after 100ms"));
+            return new Promise(() => {});
+        },
+        waitForEvent: (_match: unknown, o: { timeoutMs: number }) =>
+            new Promise((_resolve, reject) =>
+                setTimeout(() => reject(new Error("agent_end timed out")), o.timeoutMs),
+            ),
+        shutdown: async () => {},
+        onEvent: () => {},
+    };
+    Object.assign(host as unknown as Record<string, unknown>, {
+        rpc,
+        stopTree: async (pid: number) => void stopped.push(pid),
+        drainWaitMs: 50,
+    });
+    const started = Date.now();
+    const result = await host.prompt("go", 100);
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(result.error).toContain("killed");
+    expect(stopped).toEqual([4242]);
+});

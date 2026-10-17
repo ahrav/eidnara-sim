@@ -1291,3 +1291,11 @@ test("a fresh recorder creates an empty tools.jsonl, so a run with no tool runs 
     new SnapshotRecorder(armDir, "eidnara", () => []);
     expect(readFileSync(join(armDir, "tools.jsonl"), "utf8")).toBe("");
 });
+
+test("clearing a recorder leaves an empty tools.jsonl in place", () => {
+    const armDir = tmp();
+    const recorder = new SnapshotRecorder(armDir, "eidnara", () => []);
+    recorder.addTools([{ command: "ls", exit: 0, scenario_ms: 1 }], "e-1");
+    recorder.clear();
+    expect(readFileSync(join(armDir, "tools.jsonl"), "utf8")).toBe("");
+});
