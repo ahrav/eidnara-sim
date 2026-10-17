@@ -131,3 +131,13 @@ describe("restartFraction", () => {
         expect(restartFraction("0.2", { restart_at: 0.7 }, "XL")).toBe(0.2);
     });
 });
+
+describe("restartFraction syntax", () => {
+    test("an empty or non-numeric flag is not a fraction", () => {
+        expect(restartFraction("", null, "XL")).toBeNaN();
+        expect(restartFraction("abc", null, "XL")).toBeNaN();
+        expect(restartFraction(" ", { restart_at: 0.3 }, "XL")).toBeNaN();
+        expect(restartFraction("0.25", null, "XL")).toBe(0.25);
+        expect(restartFraction("0", null, "XL")).toBe(0);
+    });
+});

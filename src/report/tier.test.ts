@@ -484,9 +484,9 @@ describe("tier report", () => {
         ]);
         const text = renderTier(report);
         expect(text).toContain(
-            "| run | arm | month | verdict | samples | slope MB/session | R2 | bound | returned |",
+            "| run | arm | month | verdict | samples | sessions | slope MB/session | R2 | bound | returned |",
         );
-        expect(text).toContain(`| ${g.run.dir} | eidnara | 1 | no leak | 48 |`);
+        expect(text).toContain(`| ${g.run.dir} | eidnara | 1 | no leak | 48 | 12 |`);
         expect(text).toContain("| holds | true |");
     });
 });

@@ -40,8 +40,10 @@ workspace, and, on an Eidnara arm, starts a fresh daemon through the v1
 arm's last event, before `EndArm`: it closes the host, stops the daemon with
 SIGTERM so its store stays on disk, appends the daemon's output to
 `<arm>/daemon.log`, and unmounts the store. The daemon also appends its output
-there before each restart. `stop` first waits for a host `openSession` still in
-flight, so a client spawned moments before a stop is closed rather than leaked.
+there before each restart. `stop` first waits for a host `openSession` or a daemon
+restart still in flight, so a process spawned moments before a stop is closed
+rather than leaked; `state.json` also carries the daemon restarts whose store
+check the next turn still owes, so a resumed arm emits it.
 
 `DaemonStack` starts the daemon through the v1 `HermeticHostStack` with the
 interposer environment, restarts it with SIGKILL against the same store, and

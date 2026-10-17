@@ -26,6 +26,8 @@ interface ArmState {
     model: number;
     upgraded?: boolean;
     second?: { pid: number; start: string | null } | null;
+    /** Daemon restarts whose post-crash store check is still owed. */
+    store_faults?: string[];
     daemon: { pid: number; start: string | null } | null;
     host: { pid: number; start: string | null } | null;
 }
@@ -98,8 +100,8 @@ export class HostDriver implements ArmDriver {
     private readonly snapshots: SnapshotRecorder;
     private upgraded = false;
     private second: SimHost | null = null;
-    /** A host `openSession` still in flight, which `stop` awaits before closing that host. */
-    private opening: Promise<void> | null = null;
+    /** A host open or daemon restart still in flight, which `stop` awaits before closing either. */
+    private inflight: Promise<void> | null = null;
     /** Daemon restarts that the end of the current or next turn owes a store check. */
     private storeFaults: string[] = [];
 
@@ -170,6 +172,7 @@ export class HostDriver implements ArmDriver {
             daemon: proc(this.daemonPid()),
             host: proc(this.sessionProject === null ? null : (this.host?.hostPid() ?? null)),
             second: proc(this.second?.hostPid() ?? null),
+            store_faults: this.storeFaults,
         };
         mkdirSync(this.armDir, { recursive: true });
         writeFileSync(this.stateFile, JSON.stringify(state));
@@ -219,6 +222,7 @@ export class HostDriver implements ArmDriver {
         const state = this.readState();
         this.model = state?.model ?? 0;
         this.upgraded = state?.upgraded ?? false;
+        this.storeFaults = state?.store_faults ?? [];
         const checked = join(this.armDir, "transcripts.json");
         this.transcriptsChecked =
             existsSync(checked) && JSON.parse(readFileSync(checked, "utf8")).missing.length === 0;
@@ -254,15 +258,18 @@ export class HostDriver implements ArmDriver {
         session: string,
         connection: string | null,
     ): Promise<void> {
-        const pending = host.openSession(dir, session, connection);
-        this.opening = pending.then(
+        await this.track(host.openSession(dir, session, connection));
+    }
+
+    private async track<T>(pending: Promise<T>): Promise<T> {
+        this.inflight = pending.then(
             () => undefined,
             () => undefined,
         );
         try {
-            await pending;
+            return await pending;
         } finally {
-            this.opening = null;
+            this.inflight = null;
         }
     }
 
@@ -303,6 +310,7 @@ export class HostDriver implements ArmDriver {
             const store = checkStore(this.storeDb);
             outcome.stores = this.storeFaults.map((fault) => ({ fault, store }));
             this.storeFaults = [];
+            this.recordState();
         }
         if (e.probe) {
             const probe = { probe: e.probe, session: e.session, id: e.id };
@@ -359,7 +367,7 @@ export class HostDriver implements ArmDriver {
         if (f.type === "daemon_sigkill_mid_fold" || f.type === "daemon_restart") {
             if (!this.daemon) return { skipped: "arm runs no daemon" };
             const before = this.daemonPid();
-            await this.daemon.restart();
+            await this.track(this.daemon.restart());
             this.storeFaults.push(f.id);
             this.recordState();
             const after = this.daemonPid();
@@ -521,7 +529,7 @@ export class HostDriver implements ArmDriver {
         this.host = null;
         this.daemon = null;
         this.second = null;
-        await this.opening;
+        await this.inflight;
         let failure: unknown = null;
         const closeSecond = () => (second ? this.releaseSecond(second) : undefined);
         for (const close of [() => host?.closeSession(), closeSecond]) {

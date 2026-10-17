@@ -168,9 +168,10 @@ history summaries, stays in place.
 XL runs one seed per host with `host` and `eidnara`. Its scenario's fault
 schedule adds `host_upgrade` and `two_hosts_one_daemon` (`docs/hosts.md`).
 Each XL paired run is stopped once with SIGTERM when its journal holds
-`--restart-at` (0.4 by default at XL, a fraction in [0, 1), recorded in
-`tier-plan.json` as `restart_at` and reused by a rerun without the flag,
-like `turn_ms`) of its planned events across its arms, checked every 30 s,
+`--restart-at` (0.4 by default at XL, a decimal fraction in [0, 1); an
+empty or non-numeric value is refused; recorded in `tier-plan.json` as
+`restart_at` and reused by a rerun without the flag, like `turn_ms`) of its
+planned events across its arms, checked every 30 s,
 and resumed from its journal within the rest of its wall limit. The restart writes `<run>/restarted`,
 so a rerun of the command neither restarts that run again nor reports it
 unrestarted; `tier-result.json` records `restarted` per run, and the

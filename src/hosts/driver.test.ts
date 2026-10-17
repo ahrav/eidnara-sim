@@ -115,10 +115,20 @@ function fakeDaemon(pid: number | null) {
     const d = {
         current: pid,
         pid: () => d.current,
+        gate: Promise.resolve() as Promise<void>,
+        restarting: false,
+        stoppedWhileRestarting: 0,
+        stops: 0,
         restart: async () => {
+            d.restarting = true;
+            await d.gate;
+            d.restarting = false;
             d.current = (d.current ?? 0) + 1;
         },
-        stop: async () => undefined,
+        stop: async () => {
+            if (d.restarting) d.stoppedWhileRestarting++;
+            d.stops++;
+        },
         connectionFile: "/run/conn",
     };
     return d;
@@ -514,6 +524,51 @@ describe("HostDriver faults", () => {
         expect(lines.map((l) => JSON.parse(l))).toEqual([
             { turn: "s-0000-b", command: "ls -la", exit: 0, scenario_ms: 7 },
         ]);
+    });
+
+    test("stopping while the daemon restarts waits for the restart, then stops it", async () => {
+        const { driver } = fixture("eidnara");
+        const daemon = fakeDaemon(10);
+        let release: () => void = () => undefined;
+        daemon.gate = new Promise<void>((r) => {
+            release = r;
+        });
+        driver.daemon = daemon as unknown as DaemonStack;
+        const fault = driver.fault(episode("daemon_restart"));
+        fault.catch(() => undefined);
+        await Bun.sleep(5);
+        expect(daemon.restarting).toBe(true);
+        let stopped = false;
+        const stop = driver.stop().then(() => {
+            stopped = true;
+        });
+        await Bun.sleep(20);
+        expect([stopped, daemon.stoppedWhileRestarting]).toEqual([false, 0]);
+        release();
+        await stop;
+        await fault;
+        expect([daemon.stops, daemon.stoppedWhileRestarting]).toEqual([1, 0]);
+    });
+
+    test("the store checks a daemon restart owes survive a resume through the arm state", async () => {
+        const { driver, armDir } = fixture("eidnara");
+        driver.daemon = fakeDaemon(10) as unknown as DaemonStack;
+        await driver.fault(episode("daemon_restart"));
+        const state = JSON.parse(readFileSync(join(armDir, "state.json"), "utf8"));
+        expect(state.store_faults).toEqual(["f-daemon_restart"]);
+        const plain = fixture("host", { p: gitRepo() });
+        await plain.driver.reset();
+        const written = JSON.parse(readFileSync(join(plain.armDir, "state.json"), "utf8"));
+        writeFileSync(
+            join(plain.armDir, "state.json"),
+            JSON.stringify({ ...written, store_faults: ["f-daemon_restart"] }),
+        );
+        const fresh = new HostDriver((plain.driver as unknown as { o: DriverOptions }).o);
+        await fresh.resume(null);
+        expect((fresh as unknown as { storeFaults: string[] }).storeFaults).toEqual([
+            "f-daemon_restart",
+        ]);
+        await fresh.stop();
     });
 
     test("a second client whose close fails keeps its pid in the arm state", async () => {
