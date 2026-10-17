@@ -229,6 +229,23 @@ test("the held stdout of a killed lifetime is recovered from the marker", () => 
     expect(existsSync(join(dir, "daemon.log.source"))).toBe(false);
 });
 
+test("a held stdout appended before a kill is rolled back and appended once", () => {
+    const dir = mkdtempSync(join(tmpdir(), "sim-daemon-"));
+    const logFile = join(dir, "daemon.log");
+    writeFileSync(logFile, "earlier\nstdout line\n");
+    writeFileSync(
+        join(dir, "daemon.log.source"),
+        JSON.stringify({
+            pending: [],
+            copying: null,
+            stdout: "stdout line\n",
+            stdout_target: "earlier\n".length,
+        }),
+    );
+    new DaemonStack(stackCtx(dir)).recoverLog();
+    expect(readFileSync(logFile, "utf8")).toBe("earlier\nstdout line\n");
+});
+
 test("a held log and a live log that are one inode are recovered once", () => {
     const dir = mkdtempSync(join(tmpdir(), "sim-daemon-"));
     const logPath = join(dir, "direct-host.log");

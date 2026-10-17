@@ -47,7 +47,8 @@ interface Timeline {
 
 function logMs(line: string): number | null {
     const stamp = /^\[(\d{4}-\d\d-\d\dT[\d:.]+Z)\]/.exec(line)?.[1];
-    return stamp ? Date.parse(stamp) : null;
+    const ms = stamp ? Date.parse(stamp) : Number.NaN;
+    return Number.isFinite(ms) ? ms : null;
 }
 
 /**
@@ -102,8 +103,9 @@ function timeline(arm: ArmLogs, base: number): Timeline {
         from: finite(e, "wall_ms"),
         to: offsets[i + 1] ? finite(offsets[i + 1] as Entry, "wall_ms") : Number.POSITIVE_INFINITY,
     }));
+    // Two offsets written in one millisecond leave the earlier span empty; the newer owns the instant.
     for (const [i, span] of spans.entries()) {
-        if (span.to <= span.from) {
+        if (span.to < span.from) {
             throw new Error(
                 `${arm.arm}: clock offset ${String(offsets[i]?.seq)} has a later offset at an earlier wall_ms, so its span runs backward`,
             );
@@ -294,14 +296,21 @@ export function recoveries(run: RunLogs): Recovery[] {
                 anchors.set(e.fault, e);
         }
         if (anchors.size === 0) return [];
-        // An arm whose verdicts depend on the plugin log needs that log on disk.
-        if (arm.pluginLogMissing) {
-            throw new Error(
-                `${arm.arm}: r/eidnara.log is missing, so fail-open evidence cannot be read`,
-            );
-        }
-        const tl = timeline(arm, run.base_wall_ms ?? Number.NaN);
-        const indexed = indexEvidence(arm, tl);
+        // The timeline and evidence index are built once the first fault needs a verdict.
+        let built: { tl: Timeline; indexed: Evidence } | null = null;
+        const evidenceOf = () => {
+            if (built) return built;
+            // An arm whose verdicts depend on the plugin log needs that log on disk; the host arm
+            // skips daemon faults and runs no plugin, so its missing log is never consulted.
+            if (arm.pluginLogMissing) {
+                throw new Error(
+                    `${arm.arm}: r/eidnara.log is missing, so fail-open evidence cannot be read`,
+                );
+            }
+            const tl = timeline(arm, run.base_wall_ms ?? Number.NaN);
+            built = { tl, indexed: indexEvidence(arm, tl) };
+            return built;
+        };
         return [...anchors.values()].map((fired): Recovery => {
             // A sleep's evidence is its recorded clock jump: a fault-tagged AdvanceClock that moved
             // the clock forward with the busy set empty, by the scheduled duration when known.
@@ -337,6 +346,7 @@ export function recoveries(run: RunLogs): Recovery[] {
                 const reasons = [`skipped: ${evidence.skipped}`];
                 return { ...base, turns_to_first_clean: null, recovered: null, reasons };
             }
+            const { tl, indexed } = evidenceOf();
             const turns = turnsAfter(arm, fired, tl);
             const dirty = turns.map((t) => dirtyReasons(indexed, t, tl));
             const index = dirty.findIndex((r) => r.length === 0);
