@@ -139,6 +139,16 @@ export async function loadScenario(
             `scenario.json is ${tier} seed ${seed}, not ${o.tier} seed ${o.seed}`,
         );
     }
+    if (items !== undefined) {
+        const { seeds, hosts } = loadPrereg(o.tier);
+        const want = Math.ceil(items / (seeds.length * hosts.length));
+        const { probes_per_type } = scenario.manifest as { probes_per_type: number };
+        if (probes_per_type !== want) {
+            throw new HarnessFailure(
+                `${path} has probes_per_type ${probes_per_type}; the recorded resizing needs ${want}`,
+            );
+        }
+    }
     // A run with a manifest keeps the scenario it ran; a new run takes only a scenario compiled
     // from the current generator, corpus, and pre-registration.
     if (!existsSync(join(o.out, "manifest.json"))) {
@@ -485,6 +495,18 @@ async function runArms(
         throw new HarnessFailure(
             "the eidnara-cf arm deletes through python3, which is not on PATH",
         );
+    }
+    if (deletions.size > 0 && !journal.entries.some((e) => e.kind === "StartRun")) {
+        journal.append({
+            kind: "CounterfactualSample",
+            arm: null,
+            scenario_ms: 0,
+            sample: (scenario.cf_deletions ?? []).map((c) => ({
+                probe: c.probe,
+                fact: String(c.fact),
+                before_event: String(c.before_event),
+            })),
+        });
     }
     const userTurns = (arm: string, session?: string) =>
         journal.entries.filter(

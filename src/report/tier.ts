@@ -110,10 +110,11 @@ export function tierReport(
     claimBoundary: string,
     scale: CusumScale | undefined = aaScale(prereg, runs),
     catalog = "",
+    items?: number,
     reference?: { source: string; continuity: Continuity[] },
 ): TierReport {
     const arms = [...new Set(runs.flatMap((g) => g.run.arms.map((a) => a.arm)))];
-    const input = tierInput(prereg, runs);
+    const input = tierInput(prereg, runs, undefined, undefined, items);
     input.cusum_sd = scale;
     const falsify: Record<string, { control: number; treatment: number }[]> = {};
     const pairs = new Map<string, [string, string]>();

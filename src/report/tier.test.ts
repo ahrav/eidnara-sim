@@ -430,6 +430,9 @@ describe("tier report", () => {
         expect(full).toContain("probe-P13: 0 of 24 paired items");
         expect(full).toContain("probe-P14: 0 of 24 paired items");
         expect(full.find((x) => x.startsWith("probe-P8"))).toBeUndefined();
+        const resized = tierReport(prereg, all, boundary, undefined, "", 40).verdict;
+        expect(resized.pass.incomplete).toContain("probe-P1: 0 of 40 paired items");
+        expect(resized.prereg_sha256).toBe(preregistrationHash(prereg));
     });
 
     test("a tier whose CUSUM scale comes from another tier's A/A pairs takes that scale", () => {

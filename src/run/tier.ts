@@ -186,6 +186,13 @@ export function compressFaults(scenario: Scenario, events: number): FaultEpisode
         );
         p90.add(longest);
     }
+    const slot = (t: FaultEpisode["trigger"], s = t.session) =>
+        t.kind === "user_turn" ? `${s}/${t.n ?? 1}` : null;
+    const taken = new Set(
+        scenario.faults
+            .filter((f) => sessions.includes(f.trigger.session))
+            .flatMap((f) => slot(f.trigger) ?? []),
+    );
     return scenario.faults.map((f, i) => {
         if (sessions.includes(f.trigger.session)) return f;
         const n = f.trigger.kind === "user_turn" ? (f.trigger.n ?? 1) : 0;
@@ -194,11 +201,14 @@ export function compressFaults(scenario: Scenario, events: number): FaultEpisode
             (f.trigger.kind !== "session_start" || s !== sessions[0]) &&
             (turns.get(s) ?? 0) >= Math.max(1, n) &&
             (f.trigger.kind !== "first_summarizer_call" || p90.has(s)) &&
-            (!sleep || (gap.get(s) ?? 0) > 0);
+            (!sleep || (gap.get(s) ?? 0) > 0) &&
+            !taken.has(slot(f.trigger, s) ?? "");
         const start = Math.floor(((i + 1) * sessions.length) / (scenario.faults.length + 1));
         const order = [...sessions.slice(start), ...sessions.slice(0, start)];
         const session = order.find(fits);
         if (!session) return f;
+        const used = slot(f.trigger, session);
+        if (used) taken.add(used);
         const params = sleep ? { ...f.params, duration_ms: gap.get(session) ?? 0 } : f.params;
         return { ...f, trigger: { ...f.trigger, session }, params };
     });

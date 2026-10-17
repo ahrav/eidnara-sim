@@ -132,9 +132,9 @@ from its runs' first journal entries:
 
 | Tier | Profile | Runs |
 |---|---|---|
-| M | `side-haiku` | Per host, the first seed's `host` and `eidnara` arms with Eidnara's summarizer and researcher calls on Haiku 5.5 (`--side-model`), replaying the paired run's user-sim tape (`--tapes`), the model factor against the paired runs' Opus |
+| M | `side-haiku` | Per host, the first seed's `host` and `eidnara` arms with Eidnara's summarizer and researcher calls on Haiku 5.5 (`--side-model`), replaying the paired run's user-sim tape (`--tapes`), the model factor against the paired runs' Opus; it runs only once that paired run completed inside its budget, else `tier-result.json` records it as skipped |
 | M | `usersim-luna` | One Pi run of the first seed's `host` and `eidnara` arms with `gpt-5.6-luna` as the user-sim (`--user-sim-model`) |
-| L | `concurrent` | Per host, each arm of the first seed alone in its own run (`<dir>/L-301-<host>-concurrent/<arm>`), all started together |
+| L | `concurrent` | Per host, each arm of the first seed alone in its own run (`<dir>/L-301-<host>-concurrent/<arm>`), all started together; a group some of whose runs began and not all finished is refused until its run directories are removed, so a resumed member never measures alone |
 
 M's six paired runs (three seeds on two hosts) each carry `host~aa` and
 `eidnara~aa`, which gives six repeats of each A/A pair.
@@ -142,8 +142,12 @@ M's six paired runs (three seeds on two hosts) each carry `host~aa` and
 L starts only after `<dir>/L-resizing.json` records its paired items per
 probe type. `--resize-from <M tier dir>` computes it from the M tier's
 paired runs, the `main` group of its `tier-plan.json`, and refuses until
-its `tier-result.json` records a zero `grade_exit` for each of them, so an
-interrupted grading or the profiles' changed models never enter it.
+that plan is the M tier's with a run for every pre-registered host and
+seed and its `tier-result.json` records a zero `run_exit` and `grade_exit`
+for each of them, so an interrupted run or grading, a partial campaign,
+and the profiles' changed models never enter it. The record is written
+through a rename, so a killed command leaves no partial file. Fault-asymmetric
+pairs leave the discordance and design effect, as they leave the M gates.
 It applies the pre-registered rule (`src/run/resize.ts`) to each
 superiority and noninferiority item metric:
 the discordance M observed, the ledger-fact design effect from M's

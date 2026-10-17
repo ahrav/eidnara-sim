@@ -263,10 +263,49 @@ const gradeJob = async (ran: Awaited<ReturnType<typeof runJob>>) => {
     return { ...job, grade_exit: graded, aa_exit: aa, wall_ms: Date.now() - started };
 };
 const groups = [...new Set(plan.map((j) => j.group))];
-const results: Awaited<ReturnType<typeof gradeJob>>[] = [];
+type Result = Omit<Awaited<ReturnType<typeof gradeJob>>, "run_exit"> & {
+    run_exit: number | null;
+    skipped?: string;
+};
+const results: Result[] = [];
+const tapeSource = (job: TierJob) => {
+    const at = job.extra.indexOf("--tapes");
+    return at < 0 ? null : dirname(job.extra[at + 1] as string);
+};
+const sourceFailed = (job: TierJob) => {
+    const source = tapeSource(job);
+    if (source === null) return null;
+    const r = results.find((x) => x.dir === source);
+    return r && r.run_exit === 0 && !r.over_budget ? null : `source run ${source} did not complete`;
+};
+const skipped = (job: TierJob, why: string): Result => ({
+    ...job,
+    start_ms: null,
+    restarted: false,
+    run_exit: null,
+    run_wall_ms: 0,
+    over_budget: false,
+    grade_exit: null,
+    aa_exit: null,
+    wall_ms: Date.now() - started,
+    skipped: why,
+});
 for (const group of groups) {
+    const jobs = plan.filter((j) => j.group === group);
+    if (group === "concurrent") {
+        // Concurrent runs start together; a partly run group restarts only from removed directories.
+        const begun = jobs.filter((j) => existsSync(join(j.dir, "journal.jsonl")));
+        if (begun.length > 0 && jobs.some((j) => runSpan(j.dir, started).ended === undefined)) {
+            await children.stopAll("SIGTERM");
+            refuse(
+                `the concurrent group is partly run (${begun.map((j) => j.dir).join(", ")}); remove its run directories to start it together`,
+            );
+        }
+    }
+    const held = jobs.map((j) => [j, sourceFailed(j)] as const);
+    results.push(...held.flatMap(([j, why]) => (why ? [skipped(j, why)] : [])));
     const ran = await supervised(() =>
-        Promise.all(plan.filter((j) => j.group === group).map(runJob)),
+        Promise.all(held.filter(([, why]) => why === null).map(([j]) => runJob(j))),
     );
     results.push(...(await supervised(() => Promise.all(ran.map(gradeJob)))));
 }
@@ -308,7 +347,7 @@ console.log(
     }),
 );
 const unrestarted = results
-    .filter((r) => restartAt > 0 && r.group === "main" && !r.restarted)
+    .filter((r) => restartAt > 0 && r.group === "main" && r.skipped === undefined && !r.restarted)
     .map((r) => r.dir);
 if (unrestarted.length > 0) console.error(`no harness restart in ${unrestarted.join(", ")}`);
 const failed =
