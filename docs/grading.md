@@ -73,8 +73,10 @@ rewrite the content git indexes. The baseline is the source's `.gitignore` and
 recorded at reset. The rule files are found by name in the workspace walk and
 hashed from disk, so a rule that ignores its own file still surfaces it; a rule
 path that is a symlink, FIFO, or directory, or larger than 1 MiB, reads as a
-changed rule. A workspace with more than 1,000 nested
-repositories fails the probe turn before git runs. Each probe snapshot reads its session's call records by position from an
+changed rule, a workspace with more than 1,000 rule files fails the probe
+turn during the walk, and hashing them runs under the recorder bound. A
+workspace with more than 1,000 nested repositories fails the probe turn
+before git runs. Each probe snapshot reads its session's call records by position from an
 index the proxy's writer keeps (seeded once from `calls.jsonl` on resume), so
 capture cost grows with the session, not the run. The workspace walk reads
 each directory one entry at a time, so its entry cap and deadline hold inside
@@ -96,7 +98,9 @@ is excluded (SIM-P46) instead of graded on a diff that lacks that content.
 The recorder's git refuses a workspace path that is a symlink or lies behind
 one, and a tracked-but-ignored path whose parent became a symlink is left out
 of the tree. Nested repositories are found by their `.git` entries, with the
-ones the workspace's ignore rules match left alone. Snapshot diffs run with
+ones the workspace's ignore rules match left alone; a nested repository is
+also removed from the recorder's index, so a directory it replaced reads as
+deleted in the tree. Snapshot diffs run with
 `--text`, so a NUL byte or a `-diff` attribute hides no added line.
 
 | Artefact | Source |
@@ -128,8 +132,8 @@ the graders read neither.
 time allocates versions, refuses a run whose pre-registration or scenario no
 longer hashes to the digests in its manifest or whose journal lacks `EndRun`
 or an arm's `EndArm` and one terminal `Event` per scheduled event (SIM-P67),
-drops a cut last line of `grades.jsonl`, requires one `SnapshotArtefacts` entry per arm and item, a row for every
-journaled snapshot id, every snapshot row to name its directory's arm and
+drops a cut last line of `grades.jsonl`, requires one `SnapshotArtefacts` entry per arm and item, exactly one row for
+every journaled snapshot id, every snapshot row to name its directory's arm and
 carry grade-class artefacts only, every journaled row to match its journal
 entry's arm and item and the compiled probe's event and session, every
 agent call's model in `calls.jsonl` to be one

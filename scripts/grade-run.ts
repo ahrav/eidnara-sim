@@ -179,10 +179,19 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
             snapshots.set(key, [...(snapshots.get(key) ?? []), kept]);
         }
     }
-    const present = new Set([...snapshots.values()].flat().map((s) => s.id));
-    const lost = [...named.keys()].filter((id) => !present.has(id));
+    const occurrences = new Map<string, number>();
+    for (const s of [...snapshots.values()].flat()) {
+        occurrences.set(s.id, (occurrences.get(s.id) ?? 0) + 1);
+    }
+    const lost = [...named.keys()].filter((id) => !occurrences.has(id));
     if (lost.length > 0) {
         throw new Error(`journaled snapshots have no row in snapshots.jsonl: ${lost.join(", ")}`);
+    }
+    const doubled = [...named.keys()].filter((id) => (occurrences.get(id) ?? 0) > 1);
+    if (doubled.length > 0) {
+        throw new Error(
+            `journaled snapshots have more than one row in snapshots.jsonl: ${doubled.join(", ")}`,
+        );
     }
     const recorded = new Map<string, { arm: string; model: string }>();
     for (const r of readJournal(join(dir, "calls.jsonl"))) {

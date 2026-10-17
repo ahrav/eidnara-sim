@@ -50,6 +50,8 @@ const WORKSPACE_ENTRY_CAP = 200_000;
 const NESTED_REPO_CAP = 1_000;
 /** Bytes an ignore-rule file may hold before it reads as an unreadable, changed rule. */
 const RULE_FILE_CAP = 1 << 20;
+/** Rule files a workspace may hold at most; more fail the probe turn during the walk. */
+const RULE_FILE_COUNT_CAP = 1_000;
 /** In-tree files whose rules shape what the snapshot tree holds: ignore rules and attributes (filters, `ident`, eol). */
 const RULE_FILES = new Set([".gitignore", ".gitattributes"]);
 
@@ -213,7 +215,14 @@ export class SnapshotRecorder {
                     if (at !== dir) found.push(relative(dir, at).split(sep).join("/"));
                     continue;
                 }
-                if (RULE_FILES.has(entry.name)) ignoreFiles.push(rel);
+                if (RULE_FILES.has(entry.name)) {
+                    ignoreFiles.push(rel);
+                    if (ignoreFiles.length > RULE_FILE_COUNT_CAP) {
+                        throw new GitBound(
+                            `workspace walk of ${dir}: more than ${RULE_FILE_COUNT_CAP} rule files`,
+                        );
+                    }
+                }
                 if (entry.isDirectory()) pending.push(join(at, entry.name));
             }
         }
@@ -277,7 +286,12 @@ export class SnapshotRecorder {
         const baseline = this.state.ignores?.[project];
         if (!baseline) return [];
         const now: Record<string, string> = {};
-        for (const path of ignoreFiles) now[path] = blobId(join(dir, path));
+        const deadline = Date.now() + (this.gitTimeoutMs ?? Number.POSITIVE_INFINITY);
+        for (const path of ignoreFiles) {
+            if (Date.now() > deadline)
+                throw new GitBound(`rule files of ${dir}: hashing timed out`);
+            now[path] = blobId(join(dir, path));
+        }
         const changes: string[] = [];
         for (const path of new Set([
             ...Object.keys(baseline.files),
@@ -321,6 +335,9 @@ export class SnapshotRecorder {
     tree(dir: string, nested = this.embedded(dir)): string {
         const excluded = nested.map((path) => `:(exclude)${path}`);
         this.git(["add", "--all", "--", ".", ...excluded], dir);
+        if (nested.length > 0) {
+            this.git(["rm", "-r", "-q", "--cached", "--ignore-unmatch", "--", ...nested], dir);
+        }
         const root = realpathSync(dir);
         const inPlace = (path: string): boolean => {
             try {

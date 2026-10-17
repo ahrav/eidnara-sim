@@ -1084,6 +1084,52 @@ test("the workspace walk is bounded by the recorder deadline", () => {
     expect(roomy.embedded(repo)).toEqual([]);
 }, 120_000);
 
+test("a session end that leaves a nested repository where indexed files were drops them from the tree", () => {
+    const repo = gitRepo();
+    mkdirSync(join(repo, "vendor"));
+    writeFileSync(join(repo, "vendor", "old.rs"), "fn old() {}\n");
+    const armDir = tmp();
+    const recorder = new SnapshotRecorder(armDir, "eidnara", () => []);
+    recorder.sessionStart("s-1", "p", repo);
+    rmSync(join(repo, "vendor"), { recursive: true });
+    mkdirSync(join(repo, "vendor"));
+    spawnSync("git", ["init", "-q"], { cwd: join(repo, "vendor") });
+    writeFileSync(join(repo, "vendor", "new.rs"), "fn fresh() {}\n");
+    recorder.sessionEnd("s-1", "p", repo);
+    recorder.sessionStart("s-2", "p", repo);
+    const id = recorder.capture(
+        { probe: "q", session: "s-2", id: "e-2" },
+        "p",
+        repo,
+        recorder.tree(repo),
+        [],
+        false,
+    );
+    const prior = captured(armDir)[`${id}:prior-diff`]?.patch ?? "";
+    expect(prior).toContain("-fn old() {}");
+    expect(prior).not.toContain("fresh");
+});
+
+test("rule-file hashing is bounded by count and by the recorder deadline", () => {
+    const repo = gitRepo();
+    const armDir = tmp();
+    for (let i = 0; i < 1_100; i++) {
+        mkdirSync(join(repo, "many", `d${i}`), { recursive: true });
+        writeFileSync(join(repo, "many", `d${i}`, ".gitignore"), "x\n");
+    }
+    const recorder = new SnapshotRecorder(armDir, "eidnara", () => [], 60_000);
+    expect(() => recorder.survey(repo)).toThrow("more than 1000 rule files");
+    const few = gitRepo();
+    for (let i = 0; i < 50; i++) {
+        mkdirSync(join(few, "some", `d${i}`), { recursive: true });
+        writeFileSync(join(few, "some", `d${i}`, ".gitignore"), "x\n");
+    }
+    const slow = new SnapshotRecorder(tmp(), "eidnara", () => [], 1);
+    slow.trackIgnoreRules(basename(few), {}, null, null);
+    const files = Array.from({ length: 50 }, (_, i) => `some/d${i}/.gitignore`);
+    expect(() => slow.ignoreChanges(few, basename(few), files)).toThrow("hashing timed out");
+}, 60_000);
+
 test("the nested-repository check is bounded like the other snapshot git runs", () => {
     const repo = gitRepo();
     const armDir = tmp();

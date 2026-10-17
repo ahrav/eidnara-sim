@@ -358,6 +358,15 @@ describe("grade-run", () => {
         await expect(gradeRun(dir, null)).rejects.toThrow("not the probe's event e-1");
     });
 
+    test("two snapshot rows carrying one journaled id are refused", async () => {
+        const dir = run({ probes: [p5.probe] });
+        snapshot(dir, "eidnara", snap);
+        const path = join(dir, "eidnara", "snapshots.jsonl");
+        const row = readFileSync(path, "utf8");
+        appendFileSync(path, row);
+        await expect(gradeRun(dir, null)).rejects.toThrow("more than one row in snapshots.jsonl");
+    });
+
     test("a journal naming two first snapshots for one arm and item is refused", async () => {
         const dir = run({ probes: [p5.probe] });
         snapshot(dir, "eidnara", snap);
