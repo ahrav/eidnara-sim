@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { SEGMENTS_DDL } from "../../tests/segments";
-import { checkStore, type StoreCheck } from "../hosts/storecheck";
+import { checkStore, parseStoreCheck, type StoreCheck } from "../hosts/storecheck";
 import type { Entry } from "../run/journal";
 import { loadPrereg } from "../scenario/inputs";
 import type { ArmLogs, RunLogs } from "./logs";
@@ -124,6 +124,32 @@ describe("recovery oracles", () => {
             const [r] = recoveries(run([a]));
             expect([error, r?.reasons]).toEqual([error, ["e-1: overflow"]]);
         }
+    });
+
+    test("a store check of the wrong shape refuses the run instead of certifying it", () => {
+        seq = 0;
+        const journal = (after: unknown, pass: unknown) => [
+            entry("FaultObserved", 0, {
+                fault: "k",
+                type: "daemon_restart",
+                evidence: { store: after },
+            }),
+            entry("BeginTurn", 10, { event: "e-1" }),
+            entry("EndTurn", 20, { event: "e-1", outcome: "ok" }),
+            entry("StoreChecked", 20, { event: "e-1", fault: "k", store: pass }),
+        ];
+        const ok = store("ok");
+        const bogus = { integrity: "ok", overlaps: "", ranges: [] };
+        expect(() =>
+            recoveries(run([arm(journal(ok, ok), [], bogus as unknown as StoreCheck)])),
+        ).toThrow("store check");
+        expect(() => recoveries(run([arm(journal(bogus, ok), [], ok)]))).toThrow("store check");
+        expect(() => recoveries(run([arm(journal(ok, bogus), [], ok)]))).toThrow("store check");
+        const badRange = { ...ok, ranges: [["s", 1, 0]] };
+        expect(() => recoveries(run([arm(journal(ok, badRange), [], ok)]))).toThrow("store check");
+        expect(parseStoreCheck(ok, "x")).toEqual(ok);
+        const legacy = { ...ok, ranges: [["s", 1, 0, 9]] };
+        expect(parseStoreCheck(legacy, "x").ranges as unknown[]).toEqual([["s", 1, 0, 9]]);
     });
 
     test("a failed pass's warning and its decision record count as one publication", () => {

@@ -35,6 +35,41 @@ function digest(g: Segment): string {
     return hash.digest("hex").slice(0, 16);
 }
 
+const isRange = (r: unknown): r is StoreCheck["ranges"][number] =>
+    Array.isArray(r) &&
+    (r.length === 4 || r.length === 5) &&
+    typeof r[0] === "string" &&
+    typeof r[1] === "number" &&
+    typeof r[2] === "number" &&
+    typeof r[3] === "number" &&
+    (r.length === 4 || typeof r[4] === "string");
+
+const isOverlap = (o: unknown): o is StoreCheck["overlaps"][number] =>
+    typeof o === "object" &&
+    o !== null &&
+    typeof (o as { session: unknown }).session === "string" &&
+    typeof (o as { first: unknown }).first === "number" &&
+    typeof (o as { second: unknown }).second === "number";
+
+/**
+ * A recorded store check, read back with its shape checked, so a malformed artifact refuses the
+ * run rather than certifying it. Ranges recorded before digests have four elements.
+ */
+export function parseStoreCheck(value: unknown, where: string): StoreCheck {
+    const v = value as Partial<Record<keyof StoreCheck, unknown>> | null;
+    const sound =
+        typeof v === "object" &&
+        v !== null &&
+        typeof v.integrity === "string" &&
+        typeof v.segments === "number" &&
+        Array.isArray(v.overlaps) &&
+        v.overlaps.every(isOverlap) &&
+        Array.isArray(v.ranges) &&
+        v.ranges.every(isRange);
+    if (!sound) throw new Error(`${where}: store check has an unexpected shape`);
+    return v as StoreCheck;
+}
+
 export function checkStore(path: string): StoreCheck {
     if (!existsSync(path)) return { integrity: "missing", segments: 0, overlaps: [], ranges: [] };
     try {

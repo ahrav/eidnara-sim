@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Command } from "../grade/artefacts";
-import type { StoreCheck } from "../hosts/storecheck";
+import { parseStoreCheck, type StoreCheck } from "../hosts/storecheck";
 import { ARMS, type Preregistration } from "../prereg/schema";
 import { type CallRecord, recordProblems } from "../proxy/records";
 import { type Entry, readJournal, requireComplete } from "../run/journal";
@@ -134,7 +134,10 @@ export function loadRun(dir: string, prereg: Preregistration): RunLogs {
             TOOL_FIELDS,
         ),
         finalStore: existsSync(join(dir, arm, "store-check.json"))
-            ? (JSON.parse(readFileSync(join(dir, arm, "store-check.json"), "utf8")) as StoreCheck)
+            ? parseStoreCheck(
+                  JSON.parse(readFileSync(join(dir, arm, "store-check.json"), "utf8")),
+                  `${arm}/store-check.json`,
+              )
             : undefined,
     }));
     for (const arm of arms) {

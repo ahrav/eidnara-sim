@@ -1,4 +1,4 @@
-import type { StoreCheck } from "../hosts/storecheck";
+import { parseStoreCheck, type StoreCheck } from "../hosts/storecheck";
 import type { Entry } from "../run/journal";
 import { INFRA_FAULTS } from "../scenario/faults";
 import type { ArmLogs, RunLogs } from "./logs";
@@ -226,10 +226,12 @@ export function recoveries(run: RunLogs): Recovery[] {
             const pass = arm.journal.find(
                 (x) => x.kind === "StoreChecked" && x.seq > fired.seq && x.fault === base.fault,
             );
+            const parsed = (value: unknown, where: string) =>
+                value === undefined ? undefined : parseStoreCheck(value, where);
             const checks: Checks = {
-                after_crash: evidence.store,
-                post_crash_pass: pass?.store as StoreCheck | undefined,
-                final: arm.finalStore,
+                after_crash: parsed(evidence.store, `${arm.arm}: ${base.fault} FaultObserved`),
+                post_crash_pass: parsed(pass?.store, `${arm.arm}: ${base.fault} StoreChecked`),
+                final: parsed(arm.finalStore, `${arm.arm}: store-check.json`),
             };
             const store = storeReasons(checks);
             const summary = Object.fromEntries(
