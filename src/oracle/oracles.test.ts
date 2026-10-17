@@ -474,6 +474,13 @@ describe("oracle round three", () => {
         }
     });
 
+    test("an order runs one control per arm, each beside its arm", () => {
+        const two = completeDir(["host", "host~aa", "host~bb"]);
+        expect(() => loadRun(two.dir, prereg)).toThrow("two A/A controls of host");
+        const alone = completeDir(["host~aa", "eidnara"]);
+        expect(() => loadRun(alone.dir, prereg)).toThrow("host~aa runs without host");
+    });
+
     test("a control of host runs no daemon, so it loads without RSS samples or a daemon.log", () => {
         const { dir } = completeDir(["host", "host~aa"]);
         expect(existsSync(join(dir, "host~aa"))).toBe(false);

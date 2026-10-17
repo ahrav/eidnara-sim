@@ -119,7 +119,7 @@ An arm label `<arm>~<tag>`, with a lowercase alphanumeric tag such as
 journal entries, and call records (`armBase` and `CONTROL_LABEL` in
 `src/hosts/arms.ts`). `--arms host,host~aa` runs it right after its arm,
 one control per arm, and only for a pair the tier pre-registers in
-`aa_controls.pairs` (S and M); the oracle loader accepts the same labels. A control's reference arm is its own arm,
+`aa_controls.pairs` (S and M); the oracle loader accepts the same orders. A control's reference arm is its own arm,
 so its divergence records and tape replies pair it with that arm; every
 other arm's reference is the first of the order. Both arms of a pair share
 the scenario, the behaviour plan, and the tape, so the control measures
@@ -129,7 +129,8 @@ judgments against the host arm, stay out of the A/A pairing.
 
 `scripts/aa-report.ts <run>` reads the run's graded items and, for each
 control, pairs every item both arms graded. It holds the run's lease while
-it reads, refuses a run graded under another pre-registration or whose
+it reads, checks each pairing record's shape and arm (`readPairing`, which
+`pairing-check.ts` shares), refuses a run graded under another pre-registration or whose
 scenario no longer hashes to the manifest's digest, refuses a pair whose
 grade versions differ (a grading batch cut short), and records the
 pre-registration hash it used. For each metric,
@@ -144,13 +145,14 @@ reports whether every interval covers zero (`null` when no metric is
 informative) and the metrics whose interval misses it against the five
 percent expected by chance, the share of paired items whose verdicts
 differ (the disagreement rate), and how many sessions diverged at which
-index. A divergence is recorded against the control's arm or, under
+index. It writes `<run>/aa.json` beside and renames it into place. A
+divergence is recorded against the control's arm or, under
 `--tapes`, against the control's own recorded run; either way the control
 stops sharing its arm's taped replies from that turn, so both count. The
 report describes one run; the five pre-registered M repeats are a claim
 for their aggregation, which this script does not make. M7 applies each
 family's own pre-registered interval method; this report uses the cluster
-bootstrap for every metric. It writes `<run>/aa.json`.
+bootstrap for every metric.
 
 ## Limits
 

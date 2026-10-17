@@ -142,6 +142,14 @@ export function loadRun(dir: string, prereg: Preregistration): RunLogs {
             (arm === base || (CONTROL_LABEL.test(arm) && pairs.some(([x]) => x === base)));
         if (!known) throw new Error(`manifest arm ${arm} is not a pre-registered arm`);
     }
+    const controls = order.filter((arm) => arm !== armBase(arm));
+    for (const control of controls) {
+        const base = armBase(control);
+        if (!order.includes(base)) throw new Error(`manifest arm ${control} runs without ${base}`);
+        if (controls.filter((c) => armBase(c) === base).length > 1) {
+            throw new Error(`manifest order runs two A/A controls of ${base}`);
+        }
+    }
     const calls = jsonl<CallRecord>(join(dir, "calls.jsonl"));
     const seen = new Set<number>();
     for (const c of calls) {

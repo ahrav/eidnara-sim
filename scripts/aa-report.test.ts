@@ -1,5 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { appendFileSync, mkdtempSync, writeFileSync } from "node:fs";
+import {
+    appendFileSync,
+    lstatSync,
+    mkdtempSync,
+    readFileSync,
+    symlinkSync,
+    writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { GradeRecord } from "../src/grade/probes";
@@ -30,12 +37,12 @@ function gradedRun(
     const line = (o: unknown) => `${JSON.stringify(o)}\n`;
     const probes = items.flatMap((i) => [
         { id: `p-${i}`, type: "P3", fact: `fact-${i}` },
-        { id: `q-${i}`, type: "P14", fact: null },
+        { id: `q-${i}`, type: "P13", fact: `fact-${i}` },
     ]);
     const grades = items.flatMap((i) =>
         ["host", "host~aa"].flatMap((arm) => [
             grade(arm, `p-${i}`, "P3", "P3.delta_mem", arm === "host" ? 0 : i),
-            grade(arm, `q-${i}`, "P14", "P14.post_compaction_correction_count", i % 2),
+            grade(arm, `q-${i}`, "P13", "P13.fold_fidelity_score", i % 2),
         ]),
     ) as GradeRecord[];
     const scenario = { probes };
@@ -77,14 +84,37 @@ describe("aa-report", () => {
         expect(report?.every_interval_covers_zero).toBeNull();
     });
 
+    test("refuses a pairing record whose shape or arm is wrong", () => {
+        const bad = [
+            '{"kind":"divergedAt","arm":"host~aa","session":"s-1","index":"1"}',
+            '{"kind":"turn","arm":"eidnara","session":"s-1","index":1}',
+            '{"kind":"other","arm":"host~aa","session":"s-1","index":1}',
+        ];
+        for (const record of bad) {
+            const dir = gradedRun("S", preregistrationHash(loadPrereg("S")));
+            writeFileSync(join(dir, "pairing.jsonl"), `${record}\n`);
+            expect(() => aaReport(dir)).toThrow(/pairing\.jsonl: line 1/);
+        }
+    });
+
+    test("aa.json replaces a symlink left in the run directory instead of writing through it", () => {
+        const dir = gradedRun("S", preregistrationHash(loadPrereg("S")));
+        const target = join(dir, "elsewhere.json");
+        writeFileSync(target, "keep me\n");
+        symlinkSync(target, join(dir, "aa.json"));
+        aaReport(dir);
+        expect(readFileSync(target, "utf8")).toBe("keep me\n");
+        expect(lstatSync(join(dir, "aa.json")).isSymbolicLink()).toBe(false);
+    });
+
     test("a run-level family forms one cluster per run, so one run leaves it uninformative", () => {
         const dir = gradedRun("S", preregistrationHash(loadPrereg("S")));
         const [report] = aaReport(dir);
         const by = new Map(report?.metrics.map((m) => [m.metric, m]));
         expect(by.get("P3.delta_mem")?.clusters).toBe(6);
-        expect(by.get("P14.post_compaction_correction_count")?.clusters).toBe(1);
-        expect(by.get("P14.pass")?.clusters).toBe(1);
-        expect(report?.uninformative).toEqual(["P14.pass", "P14.post_compaction_correction_count"]);
+        expect(by.get("P13.fold_fidelity_score")?.clusters).toBe(1);
+        expect(by.get("P13.pass")?.clusters).toBe(1);
+        expect(report?.uninformative).toEqual(["P13.pass", "P13.fold_fidelity_score"]);
         expect(report?.prereg_sha256).toBe(preregistrationHash(loadPrereg("S")));
     });
 

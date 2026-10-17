@@ -1,14 +1,14 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { GradeLog } from "../src/grade/probes";
 import { armBase } from "../src/hosts/arms";
 import type { Tier } from "../src/prereg/schema";
 import { preregistrationHash } from "../src/prereg/validate";
 import { bootstrapMean, disagreementRate, pairedDiffs } from "../src/report/paired";
-import { readJournal, releaseLease, takeLease } from "../src/run/journal";
+import { releaseLease, takeLease } from "../src/run/journal";
 import { type Scenario, scenarioHash } from "../src/scenario/compile";
 import { loadPrereg } from "../src/scenario/inputs";
-import type { PairingRecord } from "../src/usersim/usersim";
+import { readPairing } from "../src/usersim/usersim";
 
 /** A percentile interval over fewer clusters than this undercovers, so it decides nothing. */
 const MIN_CLUSTERS = 5;
@@ -50,8 +50,7 @@ function report(dir: string) {
         runLevel.has(probeType(metric)) ? "run" : (fact.get(item) ?? item);
     const grades = new GradeLog(join(dir, "grades.jsonl")).latest();
     const version = new Map(grades.map((g) => [`${g.arm}/${g.item}`, g.version]));
-    // SAFETY: Each line in `pairing.jsonl` must contain a `PairingRecord`.
-    const pairing = readJournal(join(dir, "pairing.jsonl")) as unknown as PairingRecord[];
+    const pairing = readPairing(join(dir, "pairing.jsonl"), manifest.order as string[]);
     const controls = (manifest.order as string[]).filter((a) => a.includes("~"));
     const report = controls.map((control) => {
         const arm = armBase(control);
@@ -90,7 +89,10 @@ function report(dir: string) {
             divergence_indices: diverged.map((r) => r.index),
         };
     });
-    writeFileSync(join(dir, "aa.json"), `${JSON.stringify(report, null, 2)}\n`);
+    // Written beside and renamed over, so a symlink at `aa.json` is replaced, never followed.
+    const out = join(dir, "aa.json");
+    writeFileSync(`${out}.tmp`, `${JSON.stringify(report, null, 2)}\n`);
+    renameSync(`${out}.tmp`, out);
     return report;
 }
 

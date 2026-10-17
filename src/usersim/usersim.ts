@@ -178,6 +178,23 @@ export interface DivergenceRecord {
 
 export type PairingRecord = TurnRecord | DivergenceRecord;
 
+/** The pairing log's records, each checked for its kind, arm, session, and index before use. */
+export function readPairing(path: string, arms: readonly string[]): PairingRecord[] {
+    const rows = readJournal(path) as unknown[];
+    rows.forEach((row, i) => {
+        const r = row as Record<string, unknown>;
+        const shaped =
+            (r.kind === "turn" || r.kind === "divergedAt") &&
+            typeof r.arm === "string" &&
+            arms.includes(r.arm) &&
+            typeof r.session === "string" &&
+            typeof r.index === "number";
+        if (!shaped) throw new HarnessFailure(`${path}: line ${i + 1}: not a pairing record`);
+    });
+    // SAFETY: every row passed the kind, arm, session, and index checks above.
+    return rows as PairingRecord[];
+}
+
 /**
  * The pairing log; each record is on disk before the turn it describes is sent. Lookups go
  * through indexes kept in step with `records`, since an XL arm appends tens of thousands of
