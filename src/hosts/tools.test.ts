@@ -244,6 +244,44 @@ test("a Pi tool run is timed from its start event, and an unfinished one keeps i
     ]);
 });
 
+test("a Pi turn whose abort never drains kills the Pi process, and later prompts in the session fail fast", async () => {
+    const reported: unknown[] = [];
+    const host = new PiSimHost({
+        ...({} as HostContext),
+        config: loadConfig(),
+        root: "/x",
+        launcher: "/x/sandbox.sh",
+        now: () => 1,
+        onTool: (run) => void reported.push(run),
+    });
+    const stopped: number[] = [];
+    const rpc = {
+        child: { pid: 4242, stdin: { end: () => {} } },
+        sendCommand: async (name: string) => {
+            if (name === "prompt") throw new Error("Timed out after 100ms");
+            return {};
+        },
+        waitForEvent: (_match: unknown, o: { timeoutMs: number }) =>
+            new Promise((_resolve, reject) =>
+                setTimeout(() => reject(new Error("agent_end timed out")), o.timeoutMs),
+            ),
+        shutdown: async () => {},
+        onEvent: () => {},
+    };
+    Object.assign(host as unknown as Record<string, unknown>, {
+        rpc,
+        stopTree: async (pid: number) => void stopped.push(pid),
+        drainWaitMs: 10,
+    });
+    const first = await host.prompt("go", 100);
+    expect(first.error).toContain("Timed out");
+    expect(first.error).toContain("Pi process killed");
+    expect(stopped).toEqual([4242]);
+    const second = await host.prompt("again", 100);
+    expect(second.error).toContain("killed after an undrained abort");
+    expect(reported).toEqual([]);
+});
+
 function opencodeHost(client: Record<string, unknown>): OpencodeSimHost {
     const host = new OpencodeSimHost({
         ...({} as HostContext),

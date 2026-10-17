@@ -106,6 +106,11 @@ function eidnaraUserConfig(connectionFile: string, model: string): Record<string
     };
 }
 
+interface LogMarker {
+    pending: string[];
+    copying: { source: string; target_bytes: number } | null;
+}
+
 export interface DaemonContext {
     config: SimConfig;
     root: string;
@@ -144,50 +149,69 @@ export class DaemonStack {
         return this.stack?.child?.pid ?? null;
     }
 
-    /** Names the file a `start` after a harness kill reads to find the dead lifetime's stderr log. */
+    /** Names the marker a `start` after a harness kill reads to find the logs still to save. */
     private get logSourceFile(): string {
         return `${this.ctx.logFile}.source`;
     }
 
-    /** Records the live stack's stderr log path, so a later `recoverLog` finds it after a harness kill. */
-    noteLogSource(): void {
-        writeFileSync(this.logSourceFile, String(this.stack?.logPath ?? ""));
+    /**
+     * The marker lists the stderr logs not yet saved to `daemon.log`, in order, and the copy
+     * in progress with `daemon.log`'s length before it. It is replaced through a rename.
+     */
+    private writeMarker(marker: LogMarker): void {
+        const tmp = `${this.logSourceFile}.tmp`;
+        writeFileSync(tmp, JSON.stringify(marker));
+        renameSync(tmp, this.logSourceFile);
     }
 
-    /** Appends a dead lifetime's log to `daemon.log` exactly once, then removes it. */
-    private absorb(source: string): void {
+    private readMarker(): LogMarker | null {
+        if (!existsSync(this.logSourceFile)) return null;
+        const text = readFileSync(this.logSourceFile, "utf8");
+        try {
+            const parsed = JSON.parse(text) as Partial<LogMarker>;
+            return { pending: parsed.pending ?? [], copying: parsed.copying ?? null };
+        } catch {
+            throw new Error(`${this.logSourceFile}: unreadable daemon log recovery marker`);
+        }
+    }
+
+    /** Records the live stack's stderr log as the one log still to save. */
+    noteLogSource(): void {
+        this.writeMarker({ pending: [String(this.stack?.logPath ?? "")], copying: null });
+    }
+
+    /** Appends one log to `daemon.log` exactly once, then removes it and takes it off the marker. */
+    private absorb(source: string, rest: string[]): void {
         const start = existsSync(this.ctx.logFile) ? statSync(this.ctx.logFile).size : 0;
-        const tmp = `${this.logSourceFile}.tmp`;
-        writeFileSync(tmp, JSON.stringify({ source, target_bytes: start }));
-        renameSync(tmp, this.logSourceFile);
+        this.writeMarker({ pending: rest, copying: { source, target_bytes: start } });
         appendFileFrom(source, this.ctx.logFile);
         rmSync(source, { force: true });
-        rmSync(this.logSourceFile, { force: true });
+        this.writeMarker({ pending: rest, copying: null });
     }
 
     /**
-     * Saves the stderr log a killed lifetime left behind. The marker names the log; while a
-     * copy runs it also records `daemon.log`'s length before the copy, so a kill mid-copy is
-     * rolled back to that length before the copy runs again, and the log is appended once.
-     * A clean `stop` or `restart` has already saved and removed its log, so this finds a file
-     * only after a kill.
+     * Saves every log the marker lists that still exists, in order. A copy an earlier kill
+     * cut short is rolled back to the length the marker recorded before it runs again, so each
+     * log is appended once. A clean `stop` or `restart` leaves no log behind, so this finds
+     * one only after a kill.
      */
     recoverLog(): void {
-        if (!existsSync(this.logSourceFile)) return;
-        const note = readFileSync(this.logSourceFile, "utf8").trim();
-        let source = note;
-        if (note.startsWith("{")) {
-            let parsed: { source: string; target_bytes: number };
-            try {
-                parsed = JSON.parse(note);
-            } catch {
-                throw new Error(`${this.logSourceFile}: unreadable daemon log recovery marker`);
+        const marker = this.readMarker();
+        if (!marker) return;
+        let pending = [...marker.pending];
+        if (marker.copying) {
+            if (existsSync(this.ctx.logFile)) {
+                truncateSync(this.ctx.logFile, marker.copying.target_bytes);
             }
-            source = parsed.source;
-            if (existsSync(this.ctx.logFile)) truncateSync(this.ctx.logFile, parsed.target_bytes);
+            pending = [marker.copying.source, ...pending];
         }
-        if (source !== "" && existsSync(source)) this.absorb(source);
-        else rmSync(this.logSourceFile, { force: true });
+        while (pending.length > 0) {
+            const [source, ...rest] = pending as [string, ...string[]];
+            if (source !== "" && existsSync(source)) this.absorb(source, rest);
+            else this.writeMarker({ pending: rest, copying: null });
+            pending = rest;
+        }
+        rmSync(this.logSourceFile, { force: true });
     }
 
     async start(): Promise<void> {
@@ -234,35 +258,27 @@ export class DaemonStack {
      * (`logPath`, a private field the stack's own `diagnostics` view reads the same way) and
      * stdout from the `diagnostics` view.
      */
-    /**
-     * Saves the lifetime's stdout, then its stderr log, once the daemon is dead so the log
-     * holds everything it wrote. `held` is a hard link taken before a restart: the stack
-     * replaces the log path when the new daemon starts, and the link keeps the old inode
-     * readable until the old daemon's last write has landed.
-     */
-    private saveLog(stdout: string, log: string): void {
-        appendFileSync(this.ctx.logFile, stdout);
-        if (existsSync(log)) {
-            appendFileFrom(log, this.ctx.logFile);
-            rmSync(log, { force: true });
-        }
-        rmSync(this.logSourceFile, { force: true });
-    }
-
     private get held(): string {
         return `${this.ctx.logFile}.held`;
     }
 
-    /** The dying lifetime's stdout and stderr, held with its log until the replacement is up. */
+    /** The dying lifetime's stdout, held with its log until the replacement is up. */
     private heldStdout: string | null = null;
 
-    /** Holds the live lifetime's diagnostics and a hard link to its log for `restart` to save. */
+    /**
+     * Holds the live lifetime's output for `restart` to save once the old daemon is dead. `held`
+     * is a hard link to the live log: the stack replaces the log path when the new daemon
+     * starts, and the link keeps the old inode readable until the old daemon's last write has
+     * landed. The marker names the held log and the live one, so a kill at any point leaves
+     * both findable; it names the live one alone once the held copy is saved.
+     */
     private hold(): void {
         const { stdout } = this.hh.__hermeticHostTest.diagnostics(this.stack);
         const live = String(this.stack.logPath ?? "");
         rmSync(this.held, { force: true });
         if (existsSync(live)) linkSync(live, this.held);
         this.heldStdout = stdout;
+        this.writeMarker({ pending: [this.held, live], copying: null });
     }
 
     /**
@@ -277,19 +293,24 @@ export class DaemonStack {
     /** Starts the replacement daemon, killing the current one first unless `crash` already did. */
     async restart(): Promise<void> {
         if (this.heldStdout === null) this.hold();
+        const live = String(this.stack.logPath ?? "");
         await this.stack.restartHost();
-        this.saveLog(this.heldStdout ?? "", this.held);
+        appendFileSync(this.ctx.logFile, this.heldStdout ?? "");
         this.heldStdout = null;
-        this.noteLogSource();
+        this.absorb(this.held, [live]);
     }
 
+    /** Stops the daemon, then saves its stdout and its whole stderr log; nothing is left to recover. */
     async stop(): Promise<void> {
         const stack = this.stack;
         if (!stack) return;
         const { stdout } = this.hh.__hermeticHostTest.diagnostics(stack);
         await stack.terminateHost();
         this.stack = null;
-        this.saveLog(stdout, String(stack.logPath ?? ""));
+        appendFileSync(this.ctx.logFile, stdout);
+        const live = String(stack.logPath ?? "");
+        if (live !== "" && existsSync(live)) this.absorb(live, []);
+        rmSync(this.logSourceFile, { force: true });
     }
 }
 
@@ -491,7 +512,17 @@ export class PiSimHost extends SimHost {
         return end;
     }
 
+    /** How long an aborted turn may take to report `agent_end` before the Pi process is killed. */
+    private drainWaitMs = 30_000;
+
+    /**
+     * Runs one turn. A turn that fails or times out is aborted; a Pi that then reports no
+     * `agent_end` within the drain wait is still running the old turn, so its process is
+     * killed and the session's later prompts fail at once. A tool event from that turn can
+     * then never land on a later turn's record.
+     */
     async prompt(text: string, timeoutMs: number, interruptMs?: number): Promise<PromptResult> {
+        if (!this.rpc) return { error: "Pi process killed after an undrained abort" };
         const end = this.agentEnd(timeoutMs);
         try {
             const response = await this.rpc.sendCommand("prompt", { message: text }, { timeoutMs });
@@ -511,10 +542,18 @@ export class PiSimHost extends SimHost {
                 ? { error: String(last.errorMessage ?? "error") }
                 : {};
         } catch (caught) {
-            const drained = this.agentEnd(30_000);
+            const drained = this.agentEnd(this.drainWaitMs);
             await this.rpc.sendCommand("abort", {}, { timeoutMs: 60_000 }).catch(() => undefined);
-            await drained.catch(() => undefined);
-            return { error: String(caught).slice(0, 2000) };
+            const settled = await drained.then(
+                () => true,
+                () => false,
+            );
+            const error = String(caught).slice(0, 2000);
+            if (settled) return { error };
+            await this.closeSession();
+            return {
+                error: `${error} | Pi process killed after an undrained abort`.slice(0, 2000),
+            };
         }
     }
 

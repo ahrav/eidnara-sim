@@ -65,7 +65,7 @@ export class ResourceSampler {
         },
     ) {}
 
-    sample(): Sample {
+    sample(transitions = true): Sample {
         const pid = this.o.pid();
         const stats = pid === null ? null : procStats(pid);
         const wall = Date.now();
@@ -75,7 +75,7 @@ export class ResourceSampler {
         }
         this.last = stats && pid !== null ? { pid, wall, cpu: stats.cpuMs } : null;
         const busy = fraction !== null && fraction > this.o.busyFraction;
-        if (busy !== this.busy) {
+        if (transitions && busy !== this.busy) {
             this.busy = busy;
             this.o.onBusy(busy);
         }
@@ -108,9 +108,10 @@ export class ResourceSampler {
 
     /**
      * A running sampler takes a final sample before its timer goes, so the last interval's
-     * growth is on record. A final sample that cannot be written throws after the timer and
-     * busy state are cleared; the caller shuts the arm down in a `finally` and the error
-     * keeps the run from ending as complete evidence.
+     * growth is on record and reports no busy transition, so no job outlives the arm. A final
+     * sample that cannot be written throws after the timer and busy state are cleared; the
+     * caller shuts the arm down in a `finally` and the error keeps the run from ending as
+     * complete evidence.
      */
     stop(): void {
         if (!this.timer) return;
@@ -118,6 +119,6 @@ export class ResourceSampler {
         this.timer = null;
         if (this.busy) this.o.onBusy(false);
         this.busy = false;
-        this.sample();
+        this.sample(false);
     }
 }
