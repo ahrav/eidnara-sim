@@ -70,11 +70,58 @@ describe("aa-report", () => {
         expect(() => aaReport(dir)).toThrow(/scenario_hash/);
     });
 
-    test("refuses grades split across grading attempts instead of pairing them", () => {
+    test("a grading run cut short converges on its rerun: the latest grade per side pairs", () => {
         const dir = gradedRun("S", preregistrationHash(loadPrereg("S")));
-        const regraded = { ...grade("host", "p-1", "P3", "P3.delta_mem", 9), version: 2 };
-        appendFileSync(join(dir, "grades.jsonl"), `${JSON.stringify(regraded)}\n`);
-        expect(() => aaReport(dir)).toThrow(/p-1.*host v2.*host~aa v1/);
+        const line = (o: unknown) => `${JSON.stringify(o)}\n`;
+        const cut = grade("host", "p-7", "P3", "P3.delta_mem", 0);
+        const rerun = [{ ...cut, version: 2 }, grade("host~aa", "p-7", "P3", "P3.delta_mem", 7)];
+        appendFileSync(join(dir, "grades.jsonl"), [cut, ...rerun].map(line).join(""));
+        writeFileSync(
+            join(dir, "scenario.json"),
+            JSON.stringify({
+                probes: [
+                    ...JSON.parse(readFileSync(join(dir, "scenario.json"), "utf8")).probes,
+                    { id: "p-7", type: "P3", fact: "fact-7" },
+                ],
+            }),
+        );
+        const manifest = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8"));
+        const scenario = JSON.parse(readFileSync(join(dir, "scenario.json"), "utf8"));
+        manifest.scenario_hash = scenarioHash(scenario);
+        writeFileSync(join(dir, "manifest.json"), JSON.stringify(manifest));
+        const [report] = aaReport(dir);
+        expect(report?.metrics.find((m) => m.metric === "P3.delta_mem")?.n).toBe(7);
+    });
+
+    test("refuses a grade whose probe type, arm, or version contradicts the run", () => {
+        const base = grade("host", "p-1", "P3", "P3.delta_mem", 0);
+        const bad = [
+            { ...base, version: 2, probe_type: "P9" },
+            { ...base, arm: "eidnara" },
+            { ...base, version: "2" },
+            { ...base, item: "p-99" },
+        ];
+        for (const record of bad) {
+            const dir = gradedRun("S", preregistrationHash(loadPrereg("S")));
+            appendFileSync(join(dir, "grades.jsonl"), `${JSON.stringify(record)}\n`);
+            expect(() => aaReport(dir)).toThrow(/grades\.jsonl/);
+        }
+    });
+
+    test("refuses a pairing log whose terminated last line is corrupt", () => {
+        const dir = gradedRun("S", preregistrationHash(loadPrereg("S")));
+        const turn = { kind: "turn", arm: "host~aa", session: "s-1", index: 0 };
+        writeFileSync(join(dir, "pairing.jsonl"), `${JSON.stringify(turn)}\n{corrupt\n`);
+        expect(() => aaReport(dir)).toThrow(/last line is corrupt/);
+    });
+
+    test("a staging file left as a symlink is refused, never written through", () => {
+        const dir = gradedRun("S", preregistrationHash(loadPrereg("S")));
+        const target = join(dir, "elsewhere.json");
+        writeFileSync(target, "keep me\n");
+        symlinkSync(target, join(dir, `aa.json.${process.pid}.tmp`));
+        expect(() => aaReport(dir)).toThrow(/EEXIST/);
+        expect(readFileSync(target, "utf8")).toBe("keep me\n");
     });
 
     test("with no informative metric the report draws no interval conclusion", () => {

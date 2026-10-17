@@ -180,7 +180,7 @@ export type PairingRecord = TurnRecord | DivergenceRecord;
 
 /** The pairing log's records, each checked for its kind, arm, session, and index before use. */
 export function readPairing(path: string, arms: readonly string[]): PairingRecord[] {
-    const rows = readJournal(path) as unknown[];
+    const rows = jsonl<unknown>(path, "source");
     rows.forEach((row, i) => {
         const r = row as Record<string, unknown>;
         const shaped =

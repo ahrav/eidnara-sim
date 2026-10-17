@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { GradeLog } from "../src/grade/probes";
 import { armBase } from "../src/hosts/arms";
@@ -49,21 +49,23 @@ function report(dir: string) {
     const clusterOf = (metric: string) => (item: string) =>
         runLevel.has(probeType(metric)) ? "run" : (fact.get(item) ?? item);
     const grades = new GradeLog(join(dir, "grades.jsonl")).latest();
-    const version = new Map(grades.map((g) => [`${g.arm}/${g.item}`, g.version]));
+    const order = manifest.order as string[];
+    const typeOf = new Map(scenario.probes.map((p) => [p.id, p.type]));
+    for (const g of grades) {
+        const sound =
+            order.includes(g.arm) &&
+            typeOf.get(g.item) === g.probe_type &&
+            Number.isInteger(g.version) &&
+            typeof g.verdict === "string" &&
+            typeof g.metrics === "object" &&
+            g.metrics !== null;
+        if (!sound)
+            throw new Error(`${dir}/grades.jsonl: ${g.arm}/${g.item} is not a grade of this run`);
+    }
     const pairing = readPairing(join(dir, "pairing.jsonl"), manifest.order as string[]);
     const controls = (manifest.order as string[]).filter((a) => a.includes("~"));
     const report = controls.map((control) => {
         const arm = armBase(control);
-        // Grading commits every arm of an item in one batch, so a version split marks a torn batch.
-        for (const [key, v] of version) {
-            const [a, item] = key.split("/") as [string, string];
-            const other = version.get(`${control}/${item}`);
-            if (a === arm && other !== undefined && other !== v) {
-                throw new Error(
-                    `${dir}: ${item} is graded ${arm} v${v} but ${control} v${other}; grade the run again`,
-                );
-            }
-        }
         const metrics = [...pairedDiffs(grades, arm, control)].map(([m, d]) =>
             bootstrapMean(m, d, clusterOf(m), prereg.bootstrap.replicates, prereg.bootstrap.seed),
         );
@@ -89,10 +91,16 @@ function report(dir: string) {
             divergence_indices: diverged.map((r) => r.index),
         };
     });
-    // Written beside and renamed over, so a symlink at `aa.json` is replaced, never followed.
+    // Staged under an exclusive create, which refuses an existing path or symlink, then renamed
+    // over `aa.json`, so neither name is written through.
     const out = join(dir, "aa.json");
-    writeFileSync(`${out}.tmp`, `${JSON.stringify(report, null, 2)}\n`);
-    renameSync(`${out}.tmp`, out);
+    const staged = `${out}.${process.pid}.tmp`;
+    try {
+        writeFileSync(staged, `${JSON.stringify(report, null, 2)}\n`, { flag: "wx" });
+        renameSync(staged, out);
+    } finally {
+        rmSync(staged, { force: true });
+    }
     return report;
 }
 

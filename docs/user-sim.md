@@ -130,10 +130,12 @@ judgments against the host arm, stay out of the A/A pairing.
 `scripts/aa-report.ts <run>` reads the run's graded items and, for each
 control, pairs every item both arms graded. It holds the run's lease while
 it reads, checks each pairing record's shape and arm (`readPairing`, which
-`pairing-check.ts` shares), refuses a run graded under another pre-registration or whose
-scenario no longer hashes to the manifest's digest, refuses a pair whose
-grade versions differ (a grading batch cut short), and records the
-pre-registration hash it used. For each metric,
+`pairing-check.ts` shares, refusing a corrupt terminated line), checks each
+latest grade's arm, item, probe type, and version against the run, refuses
+a run graded under another pre-registration or whose scenario no longer
+hashes to the manifest's digest, and records the pre-registration hash it
+used. A grading run cut short converges on its rerun: the rerun grades
+every item again and the report pairs each side's latest grade. For each metric,
 verdicts as `<type>.pass` and each numeric grade metric, it reports the
 mean difference with a percentile bootstrap interval that resamples the
 family's pre-registered `cluster_key`: ledger facts for item-level
@@ -145,7 +147,8 @@ reports whether every interval covers zero (`null` when no metric is
 informative) and the metrics whose interval misses it against the five
 percent expected by chance, the share of paired items whose verdicts
 differ (the disagreement rate), and how many sessions diverged at which
-index. It writes `<run>/aa.json` beside and renames it into place. A
+index. It stages `<run>/aa.json` under an exclusive create beside it and
+renames it into place. A
 divergence is recorded against the control's arm or, under
 `--tapes`, against the control's own recorded run; either way the control
 stops sharing its arm's taped replies from that turn, so both count. The
