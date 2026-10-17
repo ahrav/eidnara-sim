@@ -36,8 +36,12 @@ test("grading a run again leaves the grades that already cite their snapshot; --
     const dir = runDir();
     expect(grade(dir).status).toBe(0);
     expect(versions(dir)).toEqual([1]);
-    expect(grade(dir).status).toBe(0);
+    const again = grade(dir);
+    expect(again.status).toBe(0);
     expect(versions(dir)).toEqual([1]);
+    const summary = JSON.parse(again.stdout);
+    expect(summary.verdicts).toEqual({ "eidnara/P1": { pass: 1 } });
+    expect(summary.skipped).toEqual({ "already graded": 1 });
     expect(grade(dir, "--regrade").status).toBe(0);
     expect(versions(dir)).toEqual([1, 2]);
 });

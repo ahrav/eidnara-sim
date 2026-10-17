@@ -22,6 +22,8 @@ const readsTranscripts = (command: string) =>
 export interface TranscriptOrder {
     arm: string;
     sessions: number;
+    /** Sessions the arm reached whose transcript the store lacks. */
+    missing: string[];
     in_order: boolean | null;
     max_lead_ms: number | null;
     max_lag_ms: number | null;
@@ -87,18 +89,25 @@ function transcriptTimes(path: string): Map<string, number> {
 function order(g: GradedRun, arm: ArmLogs, paths: string[]): TranscriptOrder {
     const scheduled = new Map(g.scenario.events.map((e) => [e.id, e]));
     const times = new Map(paths.flatMap((p) => [...transcriptTimes(p)]));
-    const pairs = arm.journal
+    const reached = arm.journal
         .filter((e) => e.kind === "Event" && g.run.kinds.get(String(e.event)) === "session_start")
         .flatMap((e) => {
             const at = scheduled.get(String(e.event));
-            const t = times.get(`sim-${at?.session}`);
-            if (t === undefined || !at) return [];
-            return [{ t, d: t - (g.run.base_wall_ms + Number(at.scenario_ms)) }];
+            return at ? [at] : [];
         });
+    const missing = reached
+        .filter((at) => !times.has(`sim-${at.session}`))
+        .map((at) => String(at.session));
+    const pairs = reached.flatMap((at) => {
+        const t = times.get(`sim-${at.session}`);
+        if (t === undefined) return [];
+        return [{ t, d: t - (g.run.base_wall_ms + Number(at.scenario_ms)) }];
+    });
     const d = pairs.map((p) => p.d);
     return {
         arm: arm.arm,
         sessions: pairs.length,
+        missing,
         in_order: pairs.length
             ? pairs.every((p, i) => i === 0 || p.t >= (pairs[i - 1]?.t ?? 0))
             : null,
@@ -201,13 +210,22 @@ export function renderConditions(conditions: RunConditions[], recall: Continuity
         "Transcript creation times, read back from each host's store, against the session's",
         "scenario wall time:",
         "",
-        ...head(["run", "arm", "sessions", "in scenario order", "max lead ms", "max lag ms"]),
+        ...head([
+            "run",
+            "arm",
+            "sessions",
+            "missing",
+            "in scenario order",
+            "max lead ms",
+            "max lag ms",
+        ]),
         ...conditions.flatMap((c) =>
             c.transcript_order.map((o) =>
                 row([
                     c.run,
                     o.arm,
                     o.sessions,
+                    o.missing.join(", ") || "none",
                     o.in_order === null ? "-" : o.in_order ? "yes" : "no",
                     o.max_lead_ms ?? "-",
                     o.max_lag_ms ?? "-",

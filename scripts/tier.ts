@@ -3,8 +3,9 @@ import { dirname, join, resolve } from "node:path";
 import { loadConfig } from "../src/config/config";
 import { TIERS, type Tier } from "../src/prereg/schema";
 import { Children, SIGTERM_EXIT } from "../src/run/children";
+import { releaseLease, takeLease } from "../src/run/journal";
 import { loadScenario } from "../src/run/run";
-import { tierPlan } from "../src/run/tier";
+import { planConflicts, runStartedMs, tierPlan } from "../src/run/tier";
 import { buildFaketime } from "../src/run/timeinject";
 import type { Scenario } from "../src/scenario/compile";
 import { loadPrereg } from "../src/scenario/inputs";
@@ -54,6 +55,17 @@ if (!Number.isInteger(turnMs) || turnMs <= 0) fail("--turn-ms must be a positive
 if (new Set(hosts).size !== hosts.length || !hosts.every((h) => prereg.hosts.includes(h)))
     fail(`--hosts must name distinct hosts from ${prereg.hosts.join(",")}`);
 mkdirSync(out, { recursive: true });
+// One invocation per output directory: a second would resume runs the first still drives and
+// grade their directories while they change.
+try {
+    takeLease(out);
+} catch (caught) {
+    fail(String((caught as Error).message));
+}
+const exit = (code: number): never => {
+    releaseLease(out);
+    process.exit(code);
+};
 
 const scenarios = new Map<number, Scenario>();
 for (const seed of prereg.seeds) {
@@ -62,14 +74,24 @@ for (const seed of prereg.seeds) {
     scenarios.set(seed, await loadScenario({ config, tier, seed, out: dir }));
 }
 const plan = tierPlan(prereg, scenarios, hosts, out, turnMs);
+const conflicts = planConflicts(plan);
+if (conflicts.length > 0) {
+    console.error(
+        `${conflicts.join("\n")}\n--turn-ms must keep the prefix of a run that has a manifest`,
+    );
+    exit(2);
+}
 writeFileSync(
     join(out, "tier-plan.json"),
     `${JSON.stringify({ tier, turn_ms: turnMs, plan }, null, 2)}\n`,
 );
 console.log(JSON.stringify(plan.map((j) => [j.dir, j.events, j.user_turns, j.arms.join(",")])));
 const empty = plan.filter((j) => j.events === 0).map((j) => j.dir);
-if (empty.length > 0) fail(`no session fits the wall budget for ${empty.join(", ")}`);
-if (flags.has("plan-only")) process.exit(0);
+if (empty.length > 0) {
+    console.error(`no session fits the wall budget for ${empty.join(", ")}\n${USAGE}`);
+    exit(2);
+}
+if (flags.has("plan-only")) exit(0);
 
 const bin = resolve(dirname(config.opencode_binary), "../../.bin");
 const env = { ...process.env, PATH: `${bin}:${process.env.PATH}` };
@@ -80,7 +102,7 @@ const run = (args: string[], log: string, limitMs?: number) =>
 for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
     process.on(signal, async () => {
         await children.stopAll(signal);
-        process.exit(signal === "SIGINT" ? 130 : SIGTERM_EXIT);
+        exit(signal === "SIGINT" ? 130 : SIGTERM_EXIT);
     });
 }
 
@@ -93,6 +115,9 @@ const started = Date.now();
 const results = await Promise.all(
     plan.map(async (job) => {
         mkdirSync(job.dir, { recursive: true });
+        // A resumed run keeps the budget it started with: its wall time counts from its
+        // journaled StartRun, and the child gets what remains of the limit.
+        const runStarted = runStartedMs(job.dir, started);
         if (!existsSync(join(job.dir, "scenario.json"))) {
             writeFileSync(
                 join(job.dir, "scenario.json"),
@@ -112,9 +137,9 @@ const results = await Promise.all(
                 String(job.events),
             ],
             log,
-            limit,
+            Math.max(1, limit - (started - runStarted)),
         );
-        const run_wall_ms = Date.now() - started;
+        const run_wall_ms = Date.now() - runStarted;
         const ran = existsSync(join(job.dir, "manifest.json"));
         const graded = ran ? await run(["grade-run.ts", job.dir], log, limit) : null;
         const aa =
@@ -150,4 +175,4 @@ console.log(
 const failed = results.some(
     (r) => r.run_exit !== 0 || r.over_budget || r.grade_exit !== 0 || (r.aa_exit ?? 0) !== 0,
 );
-process.exit(failed || report !== 0 ? 1 : 0);
+exit(failed || report !== 0 ? 1 : 0);

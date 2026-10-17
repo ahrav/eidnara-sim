@@ -97,10 +97,18 @@ describe("run conditions", () => {
         });
         expect(c.interception).toEqual([{ name: "pi", intercepted: true, wall_clock_only: false }]);
         expect(c.transcript_order).toEqual([
-            { arm: "host", sessions: 2, in_order: true, max_lead_ms: 40, max_lag_ms: 25 },
+            {
+                arm: "host",
+                sessions: 2,
+                missing: [],
+                in_order: true,
+                max_lead_ms: 40,
+                max_lag_ms: 25,
+            },
             {
                 arm: "eidnara",
                 sessions: 2,
+                missing: [],
                 in_order: false,
                 max_lead_ms: 2 * HOUR,
                 max_lag_ms: HOUR,
@@ -169,4 +177,14 @@ test("an arm that never reached its transcript check renders as unchecked, apart
     expect(c.transcripts[1]).toEqual({ arm: "eidnara", paths: [], missing: null });
     const text = renderConditions([c], []).join("\n");
     expect(text).toContain("eidnara unchecked");
+});
+
+test("a reached session with no transcript in the store is named as missing", () => {
+    const g = fixture();
+    const d = new Database(join(g.run.dir, "eidnara/opencode.db"));
+    d.run("delete from session where title = 'sim-s-2'");
+    d.close();
+    const c = runConditions(g);
+    expect(c.transcript_order[1]).toMatchObject({ arm: "eidnara", sessions: 1, missing: ["s-2"] });
+    expect(renderConditions([c], []).join("\n")).toContain("| s-2 |");
 });

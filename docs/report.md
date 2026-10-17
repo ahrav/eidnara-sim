@@ -132,8 +132,8 @@ reads each host's transcripts back, Pi's session files under
 `.pi/agent/sessions` and OpenCode's `session` table in `opencode.db`, and
 compares each `sim-<session>` creation time with the session's scheduled
 wall time (`base_wall_ms` plus the `session_start` event's scenario time). The table
-says whether the creation times follow scenario order and gives the
-largest lead and lag. Hosts run at wall pace between clock jumps, so a
+names the reached sessions the store lacks, says whether the creation
+times follow scenario order, and gives the largest lead and lag. Hosts run at wall pace between clock jumps, so a
 lead up to the idle wall time since the last jump is expected; a lag, or
 an order break, is a D2 caveat for that host.
 

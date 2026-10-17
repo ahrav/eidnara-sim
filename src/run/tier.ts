@@ -1,5 +1,8 @@
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { Preregistration } from "../prereg/schema";
 import type { Scenario } from "../scenario/compile";
+import { readJournal } from "./journal";
 
 export interface TierJob {
     host: "pi" | "opencode";
@@ -59,4 +62,24 @@ export function tierPlan(
             return { host, seed, arms, ...cap, dir: `${out}/${prereg.tier}-${seed}-${host}` };
         }),
     );
+}
+
+/** When the run began: its journaled `StartRun`, or `now` for a run with no journal yet. */
+export function runStartedMs(dir: string, now: number): number {
+    const path = join(dir, "journal.jsonl");
+    if (!existsSync(path)) return now;
+    const start = readJournal(path).find((e) => e.kind === "StartRun");
+    return start ? start.wall_ms : now;
+}
+
+/** Jobs whose planned prefix differs from the events their existing manifest ran. */
+export function planConflicts(plan: TierJob[]): string[] {
+    return plan.flatMap((job) => {
+        const path = join(job.dir, "manifest.json");
+        if (!existsSync(path)) return [];
+        const ran = Number(JSON.parse(readFileSync(path, "utf8")).events);
+        return ran === job.events
+            ? []
+            : [`${job.dir} ran ${ran} events, the plan says ${job.events}`];
+    });
 }

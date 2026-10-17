@@ -1,11 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Scenario } from "../scenario/compile";
 import { loadPrereg } from "../scenario/inputs";
-import { capEvents, tierPlan } from "./tier";
+import { capEvents, planConflicts, runStartedMs, type TierJob, tierPlan } from "./tier";
 
 const event = (kind: string, i: number) => ({
     id: `e-${i}`,
@@ -58,4 +58,41 @@ test("the tier command refuses an unknown flag before it plans anything", () => 
     expect(r.status).toBe(2);
     expect(r.stderr).toContain("--host");
     expect(existsSync(join(out, "tier-plan.json"))).toBe(false);
+});
+
+test("the tier command refuses an output directory another invocation holds", () => {
+    const out = mkdtempSync(join(tmpdir(), "sim-tier-"));
+    writeFileSync(
+        join(out, "lease.json"),
+        JSON.stringify({ pid: process.pid, host: hostname(), started_wall_ms: Date.now() }),
+    );
+    const r = spawnSync("bun", ["scripts/tier.ts", "--tier", "S", "--out", out, "--plan-only"], {
+        encoding: "utf8",
+    });
+    expect(r.status).toBe(2);
+    expect(r.stderr).toContain("leased");
+    expect(existsSync(join(out, "tier-plan.json"))).toBe(false);
+});
+
+describe("tier resume", () => {
+    test("a run's start is its journaled StartRun, so a resumed run keeps its wall budget", () => {
+        const dir = mkdtempSync(join(tmpdir(), "sim-tier-"));
+        expect(runStartedMs(dir, 5_000)).toBe(5_000);
+        writeFileSync(
+            join(dir, "journal.jsonl"),
+            `${JSON.stringify({ kind: "StartRun", arm: null, seq: 0, scenario_ms: 0, wall_ms: 1_000 })}\n`,
+        );
+        expect(runStartedMs(dir, 5_000)).toBe(1_000);
+    });
+
+    test("a plan whose prefix differs from an existing manifest's is a conflict", () => {
+        const out = mkdtempSync(join(tmpdir(), "sim-tier-"));
+        const job = { dir: join(out, "S-101-pi"), events: 7 } as TierJob;
+        expect(planConflicts([job])).toEqual([]);
+        mkdirSync(job.dir);
+        writeFileSync(join(job.dir, "manifest.json"), JSON.stringify({ events: 7 }));
+        expect(planConflicts([job])).toEqual([]);
+        writeFileSync(join(job.dir, "manifest.json"), JSON.stringify({ events: 5 }));
+        expect(planConflicts([job])).toEqual([`${job.dir} ran 5 events, the plan says 7`]);
+    });
 });

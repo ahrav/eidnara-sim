@@ -10,7 +10,9 @@ run's own wall time and whether it exceeded the tier's wall budget; each
 run directory keeps its `tier.log`. The command exits 1 when any run,
 grading, A/A report, or the tier report fails or any run exceeded
 `liveness_bounds.tier_wall_budget_ms` (SIM-L03), and 2 on a malformed
-flag or a plan where no session fits the budget. SIGINT, SIGTERM, or
+flag, a plan where no session fits the budget, a `--turn-ms` whose
+prefix differs from one a run with a manifest ran, or an output directory
+another invocation holds (`<dir>/lease.json`). SIGINT, SIGTERM, or
 SIGHUP to the command reaches every child it started, SIGKILLs any still
 live a minute later together with its descendants, and starts no further
 grading or report; each run tears down and stays resumable.
@@ -29,10 +31,11 @@ Every arm runs the same prefix of the scenario: the longest one that ends
 on a session end and whose user turns, at `--turn-ms` each (45 to 75 s on
 Pi with Opus 5.5 in the S smoke runs), fit 85% of the tier's
 `liveness_bounds.tier_wall_budget_ms` once per arm. The rest of the
-budget covers setup and the turns' spread. A run that finishes past the
-budget fails the command; one still going at 125% of the budget is
+budget covers setup and the turns' spread. A run's wall time counts from
+its journaled `StartRun`, across resumptions. A run that finishes past
+the budget fails the command; one still going at 125% of the budget is
 stopped with SIGTERM, and with SIGKILL a minute later if its teardown
-stalls; it stays resumable. Grading and the A/A report run under the same
+stalls; it stays resumable, with what remains of the limit. Grading and the A/A report run under the same
 125% limit. Rerunning the command resumes every run from its journal;
 without `--turn-ms` it reuses the `turn_ms` of the existing
 `tier-plan.json`, so the planned prefixes match the manifests. Every run
