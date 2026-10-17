@@ -28,8 +28,9 @@ export interface CostPanel {
     harness_usd: number;
     /**
      * Passing P1 to P12 items at their latest version. `null` until `grade-summary.json` shows a
-     * grading pass that finished with no judge error, since a prefix of `grades.jsonl` would
-     * count as a verified total.
+     * grading pass that finished with no judge error over the journal as it stands, since a
+     * prefix of `grades.jsonl`, or a pass over a run later resumed, would count as a verified
+     * total.
      */
     passes: number | null;
     usd_per_pass: number | null;
@@ -84,12 +85,18 @@ export function judgeCost(run: RunLogs): ComponentCost | null {
     return componentCosts(calls, run.price.rates).find((c) => c.component === "judge") ?? null;
 }
 
-/** Whether `scripts/grade-run.ts` finished over the run with every judge call answered. */
-function gradingComplete(dir: string): boolean {
-    const path = join(dir, "grade-summary.json");
+/**
+ * Whether `scripts/grade-run.ts` finished over this run's journal, as it stands, with every judge
+ * call answered: a run resumed after grading has a later `journal_seq` than the summary names.
+ */
+function gradingComplete(run: RunLogs): boolean {
+    const path = join(run.dir, "grade-summary.json");
     if (!existsSync(path)) return false;
-    const summary = JSON.parse(readFileSync(path, "utf8")) as { judge_errors?: number };
-    return summary.judge_errors === 0;
+    const summary = JSON.parse(readFileSync(path, "utf8")) as {
+        judge_errors?: number;
+        journal_seq?: number;
+    };
+    return summary.judge_errors === 0 && summary.journal_seq === run.journal_seq;
 }
 
 /** The arm's cost at the price table its run recorded; `null` for a run that recorded none. */
@@ -106,7 +113,7 @@ export function costPanel(run: RunLogs, arm: ArmLogs, grades: GradeRecord[]): Co
         const seen = latest.get(g.item);
         if (seen === undefined || g.version > seen.version) latest.set(g.item, g);
     }
-    const passes = gradingComplete(run.dir)
+    const passes = gradingComplete(run)
         ? [...latest.values()].filter((g) => g.verdict === "pass" && USEFUL.test(g.probe_type))
               .length
         : null;

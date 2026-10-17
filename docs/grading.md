@@ -58,8 +58,8 @@ host arm, through a gateway it starts for the judge. It prints the verdict
 counts per arm and probe type, the skipped items by reason, the summed
 `P11.weighted_score` per arm, Δmem per memory arm, and the judge errors,
 removes any `grade-summary.json` in the run directory when it starts and
-writes the same summary there when it finishes, and exits 1 when a judge
-call failed. The scenario plants no canary
+writes the same summary there when it finishes, with the journal's last
+`seq` as `journal_seq`, and exits 1 when a judge call failed. The scenario plants no canary
 strings, so it passes the judge none; blinding still refuses arm names. P14 items have no probe turn of their
 own and wait on the user simulator's labels (M6), so it lists them as
 skipped.

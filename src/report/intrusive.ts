@@ -13,9 +13,9 @@ export interface Intrusiveness {
     arm: string;
     /**
      * `null` when an agent response reached the proxy's `RESPONSE_TEXT_LIMIT`, or a turn was
-     * interrupted (`ItemState` `failed(interrupted)`): the recorded text may lack the suffix the
-     * user saw, or a streamed response has no record at all, so a scan of the records cannot
-     * clear the arm.
+     * interrupted (`ItemState` `failed(interrupted)` naming the turn's `event`; a fault's record
+     * precedes any turn): the recorded text may lack the suffix the user saw, or a streamed
+     * response has no record at all, so a scan of the records cannot clear the arm.
      */
     internal_string_hits: { source: "agent-response"; at: string; evidence: string }[] | null;
     /**
@@ -38,11 +38,13 @@ export interface Intrusiveness {
  * Each `git` invocation at a command position on one line of a shell command: at the line start or
  * after a separator or a grouping `(` (a `$(` substitution's status is the outer command's, so it
  * is no position), past any `VAR=value` assignments and `sudo`, `env`, `time`, `nice`, `nohup`,
- * or `exec` prefixes with their options; its subcommand and arguments run up to the next separator.
- * Group 1 is the separator before it: after `||` the shell may have skipped the invocation.
+ * or `exec` prefixes with their options, and past git's own global options (`-C <path>`,
+ * `-c <k>=<v>`, and any `--option` or `--option=value`); its subcommand and arguments run up to
+ * the next separator. Group 1 is the separator before it: after `||` the shell may have skipped
+ * the invocation.
  */
 const GIT =
-    /(^|&&|\|\||[;&|]|(?<!\$)\()[ \t]*(?:\w+=[^ \t\n]*[ \t]+)*(?:(?:sudo|env|time|nice|nohup|exec)(?:[ \t]+(?:-[^ \t\n]*|\w+=[^ \t\n]*))*[ \t]+)*git[ \t]+(?:-[Cc][ \t]+[^ \t\n]+[ \t]+)*([a-z-]+)((?:[ \t]+[^ \t\n;&|)]+)*)/gm;
+    /(^|&&|\|\||[;&|]|(?<!\$)\()[ \t]*(?:\w+=[^ \t\n]*[ \t]+)*(?:(?:sudo|env|time|nice|nohup|exec)(?:[ \t]+(?:-[^ \t\n]*|\w+=[^ \t\n]*))*[ \t]+)*git[ \t]+(?:-[Cc][ \t]+[^ \t\n]+[ \t]+|--[^ \t\n]+[ \t]+)*([a-z-]+)((?:[ \t]+[^ \t\n;&|)]+)*)/gm;
 const COMMENT = /(^|[ \t])#.*$/g;
 /** Redirections (`2>&1`, `&>f`, `>f`, `<f`), which are part of a command rather than separators. */
 const REDIRECT = /[ \t]*(?:\d*[<>]{1,2}&?\d*|&>>?)[ \t]*[^ \t\n;&|)]*/g;
@@ -152,8 +154,8 @@ const reverts = (sub: string, args: string[]) =>
  * Whether a zero exit status of the whole command establishes that a reverting `git` invocation
  * in it ran and succeeded: it does not follow `||`, which may have skipped it, and every command
  * after it is joined by `&&`, so the shell ran them only after the revert exited 0 and the final
- * status is theirs only when all succeeded. Trailing whitespace and comment-only lines are no
- * commands.
+ * status is theirs only when all succeeded. Trailing whitespace, `;`, and comment-only lines
+ * close no command, so `git restore f;` is the last command.
  */
 export function isRevert(command: string): boolean {
     const shell = executable(command).trimEnd();
@@ -165,7 +167,8 @@ export function isRevert(command: string): boolean {
             .split(/\s+/)
             .filter((a) => a !== "");
         if (!reverts(sub ?? "", args)) continue;
-        const after = shell.slice(m.index + m[0].length).match(SEPARATOR) ?? [];
+        const tail = shell.slice(m.index + m[0].length).replace(/[\s;]+$/, "");
+        const after = tail.match(SEPARATOR) ?? [];
         if (after.every((sep) => sep === "&&")) return true;
     }
     return false;
@@ -308,7 +311,13 @@ export function intrusiveness(run: RunLogs, arm: ArmLogs): Intrusiveness {
     const cut =
         arm.calls.some(
             (c) => c.component === "agent" && (c.response_text?.length ?? 0) >= RESPONSE_TEXT_LIMIT,
-        ) || arm.journal.some((e) => e.kind === "ItemState" && e.state === "failed(interrupted)");
+        ) ||
+        arm.journal.some(
+            (e) =>
+                e.kind === "ItemState" &&
+                e.state === "failed(interrupted)" &&
+                typeof e.event === "string",
+        );
     return {
         arm: arm.arm,
         internal_string_hits: cut ? null : internalStrings(arm),

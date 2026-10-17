@@ -27,10 +27,9 @@ rmSync(summaryPath, { force: true });
 const log = new GradeLog(join(dir, "grades.jsonl"));
 const arms = manifest.order as string[];
 
+const journal = readJournal(join(dir, "journal.jsonl"));
 const journaled = new Set(
-    readJournal(join(dir, "journal.jsonl"))
-        .filter((e) => e.kind === "SnapshotArtefacts")
-        .map((e) => String(e.snapshot)),
+    journal.filter((e) => e.kind === "SnapshotArtefacts").map((e) => String(e.snapshot)),
 );
 const snapshots = new Map<string, Snapshot[]>();
 for (const arm of arms) {
@@ -133,7 +132,14 @@ const p11 = Object.fromEntries(
 );
 const delta = memoryArms.map((arm) => ({ arm, delta_mem: deltaMem(log.latest(), arm) }));
 const report = JSON.stringify(
-    { verdicts: summary, skipped, p11, p3: delta, judge_errors: judgeErrors },
+    {
+        verdicts: summary,
+        skipped,
+        p11,
+        p3: delta,
+        judge_errors: judgeErrors,
+        journal_seq: journal.at(-1)?.seq ?? 0,
+    },
     null,
     2,
 );

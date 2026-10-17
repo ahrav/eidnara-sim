@@ -43,6 +43,7 @@ const run = (
     kinds,
     arms,
     price: PRICE_TABLE,
+    journal_seq: 7,
 });
 
 function sessions(n: number, rss: (session: number, i: number) => number) {
@@ -330,6 +331,11 @@ describe("intrusiveness panel", () => {
             ],
         };
         expect(intrusiveness(run([interrupted]), interrupted).internal_string_hits).toBeNull();
+        const faultOnly = {
+            ...first,
+            journal: [entry("ItemState", 1, { fault: "f-1", state: "failed(interrupted)" })],
+        };
+        expect(intrusiveness(run([faultOnly]), faultOnly).internal_string_hits).toHaveLength(5);
     });
 
     test("a correction counts only when it quotes a note delivered earlier that the user never wrote", () => {
@@ -525,6 +531,16 @@ describe("intrusiveness panel", () => {
             { command: "git restore r.rs\n", exit: 0, scenario_ms: 3, turn: "e-2" },
             { command: "git restore s.rs\n\n# done\n", exit: 0, scenario_ms: 3, turn: "e-2" },
             { command: "false || git restore t.rs", exit: 0, scenario_ms: 3, turn: "e-2" },
+            { command: "git --no-pager restore u.rs", exit: 0, scenario_ms: 3, turn: "e-2" },
+            {
+                command: "git --git-dir=/r/.git --work-tree=/r restore v.rs",
+                exit: 0,
+                scenario_ms: 3,
+                turn: "e-2",
+            },
+            { command: "git restore w.rs;", exit: 0, scenario_ms: 3, turn: "e-2" },
+            { command: "git restore x.rs; # done", exit: 0, scenario_ms: 3, turn: "e-2" },
+            { command: "git restore y.rs &", exit: 0, scenario_ms: 3, turn: "e-2" },
             { command: 'git reset "--hard"', exit: 0, scenario_ms: 3, turn: "e-2" },
             { command: "cargo test", exit: 0, scenario_ms: 4, turn: "e-2" },
         ];
@@ -552,6 +568,10 @@ describe("intrusiveness panel", () => {
             "git restore l.rs >/dev/null 2>&1 && echo ok",
             "git restore r.rs\n",
             "git restore s.rs\n\n# done\n",
+            "git --no-pager restore u.rs",
+            "git --git-dir=/r/.git --work-tree=/r restore v.rs",
+            "git restore w.rs;",
+            "git restore x.rs; # done",
             'git reset "--hard"',
         ]);
         expect(panel.latency_ms).toEqual({ n: 7, p50: 500, p95: 5000 });
@@ -648,9 +668,20 @@ describe("intrusiveness panel", () => {
         );
         const ungraded = costPanel(run([], dir), arm({ calls }), grades);
         expect([ungraded?.passes, ungraded?.usd_per_pass, ungraded?.usd]).toEqual([null, null, 31]);
-        writeFileSync(join(dir, "grade-summary.json"), JSON.stringify({ judge_errors: 1 }));
+        writeFileSync(
+            join(dir, "grade-summary.json"),
+            JSON.stringify({ judge_errors: 1, journal_seq: 7 }),
+        );
         expect(costPanel(run([], dir), arm({ calls }), grades)?.passes).toBeNull();
-        writeFileSync(join(dir, "grade-summary.json"), JSON.stringify({ judge_errors: 0 }));
+        writeFileSync(
+            join(dir, "grade-summary.json"),
+            JSON.stringify({ judge_errors: 0, journal_seq: 5 }),
+        );
+        expect(costPanel(run([], dir), arm({ calls }), grades)?.passes).toBeNull();
+        writeFileSync(
+            join(dir, "grade-summary.json"),
+            JSON.stringify({ judge_errors: 0, journal_seq: 7 }),
+        );
         const cost = costPanel(run([], dir), arm({ calls }), grades);
         if (cost === null) throw new Error("the run records a price table");
         expect(cost.tokens).toEqual({ input: 2e6, output: 1e6, cache_read: 2e6, cache_write: 0 });
