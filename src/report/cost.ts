@@ -1,6 +1,10 @@
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import type { GradeRecord } from "../grade/probes";
 import type { ArmLogs, RunLogs } from "../oracle/logs";
 import { HARNESS } from "../oracle/oracles";
+import type { CallRecord } from "../proxy/records";
+import { readJournal } from "../run/journal";
 import { notesOf } from "./intrusive";
 
 export interface Price {
@@ -39,14 +43,15 @@ export interface CostPanel {
 
 const USEFUL = /^P(?:[1-9]|1[0-2])$/;
 
-export function costPanel(
-    run: RunLogs,
-    arm: ArmLogs,
-    grades: GradeRecord[],
-    price: Price = V1_PRICE,
-): CostPanel {
+type Tokens = Pick<
+    CallRecord,
+    "component" | "input_tokens" | "output_tokens" | "cache_read_tokens" | "cache_write_tokens"
+>;
+
+function componentCosts(calls: readonly Tokens[]): ComponentCost[] {
+    const price = V1_PRICE;
     const byComponent = new Map<string, ComponentCost>();
-    for (const c of arm.calls) {
+    for (const c of calls) {
         const row = byComponent.get(c.component) ?? {
             component: c.component,
             calls: 0,
@@ -69,7 +74,22 @@ export function costPanel(
             1e6;
         byComponent.set(c.component, row);
     }
-    const components = [...byComponent.values()].sort((a, b) => b.usd - a.usd);
+    return [...byComponent.values()].sort((a, b) => b.usd - a.usd);
+}
+
+/**
+ * The run's P7 judge spend from `judge-calls.jsonl`, which the grader writes under its own arm
+ * `judge`; a judge call compares two arms, so it belongs to the run. `null` when none was written.
+ */
+export function judgeCost(run: RunLogs): ComponentCost | null {
+    const path = join(run.dir, "judge-calls.jsonl");
+    if (!existsSync(path)) return null;
+    const calls = readJournal(path) as unknown as Tokens[];
+    return componentCosts(calls).find((c) => c.component === "judge") ?? null;
+}
+
+export function costPanel(run: RunLogs, arm: ArmLogs, grades: GradeRecord[]): CostPanel {
+    const components = componentCosts(arm.calls);
     const sum = (rows: ComponentCost[]) => rows.reduce((s, c) => s + c.usd, 0);
     const usd = sum(components.filter((c) => !HARNESS.has(c.component)));
     const passes = grades.filter(

@@ -13,12 +13,18 @@ export const V1_CONTINUITY: Record<string, [number, number]> = {
     eidnara: [0.99, 1],
 };
 
-const TRANSCRIPT_READ =
+const TRANSCRIPT_PATH =
     /\.pi\/agent\/sessions|PI_CODING_AGENT_DIR\}?\/sessions|XDG_DATA_HOME\}?\/opencode|opencode\.db|opencode\/storage|\/sessions\/\S*\.jsonl/;
+const READ_OP =
+    /\b(cat|less|more|head|tail|sed|awk|grep|rg|find|ls|jq|sqlite3|strings|bat|view)\b|^read /;
+const readsTranscripts = (command: string) =>
+    TRANSCRIPT_PATH.test(command) && READ_OP.test(command);
 
 export interface TranscriptOrder {
     arm: string;
     sessions: number;
+    /** Sessions the arm reached whose transcript the store lacks. */
+    missing: string[];
     in_order: boolean | null;
     max_lead_ms: number | null;
     max_lag_ms: number | null;
@@ -32,7 +38,8 @@ export interface RunConditions {
     events_run: number;
     scenario_events: number;
     interception: { name: string; intercepted: boolean; wall_clock_only: boolean }[];
-    transcripts: { arm: string; paths: string[]; missing: string[] }[];
+    /** `missing` is null for an arm that never reached its transcript check. */
+    transcripts: { arm: string; paths: string[]; missing: string[] | null }[];
     transcript_order: TranscriptOrder[];
 }
 
@@ -117,18 +124,25 @@ function transcriptTimes(path: string): Map<string, number> {
 function order(g: GradedRun, arm: ArmLogs, paths: string[]): TranscriptOrder {
     const scheduled = new Map(g.scenario.events.map((e) => [e.id, e]));
     const times = new Map(paths.flatMap((p) => [...transcriptTimes(p)]));
-    const pairs = arm.journal
+    const reached = arm.journal
         .filter((e) => e.kind === "Event" && g.run.kinds.get(String(e.event)) === "session_start")
         .flatMap((e) => {
             const at = scheduled.get(String(e.event));
-            const t = times.get(`sim-${at?.session}`);
-            if (t === undefined || !at) return [];
-            return [{ t, d: t - (g.run.base_wall_ms + Number(at.scenario_ms)) }];
+            return at ? [at] : [];
         });
+    const missing = reached
+        .filter((at) => !times.has(`sim-${at.session}`))
+        .map((at) => String(at.session));
+    const pairs = reached.flatMap((at) => {
+        const t = times.get(`sim-${at.session}`);
+        if (t === undefined) return [];
+        return [{ t, d: t - (g.run.base_wall_ms + Number(at.scenario_ms)) }];
+    });
     const d = pairs.map((p) => p.d);
     return {
         arm: arm.arm,
         sessions: pairs.length,
+        missing,
         in_order: pairs.length
             ? pairs.every((p, i) => i === 0 || p.t >= (pairs[i - 1]?.t ?? 0))
             : null,
@@ -142,8 +156,15 @@ export function runConditions(g: GradedRun): RunConditions {
     const manifest = existsSync(m) ? JSON.parse(readFileSync(m, "utf8")) : {};
     const transcripts = g.run.arms.map((arm) => {
         const p = join(g.run.dir, arm.arm, "transcripts.json");
-        const t = existsSync(p) ? JSON.parse(readFileSync(p, "utf8")) : { paths: [], missing: [] };
-        return { arm: arm.arm, paths: t.paths as string[], missing: t.missing as string[] };
+        // An absent or cut file (the driver writes it in one call a kill can interrupt) is an
+        // unchecked arm.
+        let t = { paths: [] as string[], missing: null as string[] | null };
+        try {
+            if (existsSync(p)) t = JSON.parse(readFileSync(p, "utf8"));
+        } catch {
+            t = { paths: [], missing: null };
+        }
+        return { arm: arm.arm, paths: t.paths, missing: t.missing };
     });
     const probes = (manifest.preflight?.time_injection ?? []) as RunConditions["interception"];
     return {
@@ -192,7 +213,7 @@ export function continuity(runs: GradedRun[]): Continuity[] {
             c.pass++;
             const tools = g.run.arms.find((a) => a.arm === r.arm)?.tools ?? [];
             const turn = turnOf(r);
-            if (tools.some((t) => t.turn === turn && TRANSCRIPT_READ.test(t.command))) {
+            if (tools.some((t) => t.turn === turn && readsTranscripts(t.command))) {
                 c.pass_with_transcript_read++;
             }
         }
@@ -220,20 +241,31 @@ export function renderConditions(conditions: RunConditions[], recall: Continuity
                 c.interception
                     .map((i) => `${i.name} ${i.intercepted ? "intercepted" : "not intercepted"}`)
                     .join(", "),
-                c.transcripts.flatMap((t) => t.missing).join(", ") || "none",
+                c.transcripts
+                    .flatMap((t) => (t.missing === null ? [`${t.arm} unchecked`] : t.missing))
+                    .join(", ") || "none",
             ]),
         ),
         "",
         "Transcript creation times, read back from each host's store, against the session's",
         "scenario wall time:",
         "",
-        ...head(["run", "arm", "sessions", "in scenario order", "max lead ms", "max lag ms"]),
+        ...head([
+            "run",
+            "arm",
+            "sessions",
+            "missing",
+            "in scenario order",
+            "max lead ms",
+            "max lag ms",
+        ]),
         ...conditions.flatMap((c) =>
             c.transcript_order.map((o) =>
                 row([
                     c.run,
                     o.arm,
                     o.sessions,
+                    o.missing.join(", ") || "none",
                     o.in_order === null ? "-" : o.in_order ? "yes" : "no",
                     o.max_lead_ms ?? "-",
                     o.max_lag_ms ?? "-",

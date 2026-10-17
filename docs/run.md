@@ -27,7 +27,7 @@ entries of different arms are not ordered by scenario time.
 | `StartArm`, `EndArm` | An arm starts, after its driver's reset, and finishes |
 | `AdvanceClock` | The clock jumps; carries `from_ms`, an empty `busy` list, and the next event id or the laptop-sleep fault |
 | `BeginTurn` | A user turn is delivered |
-| `EndTurn` | The turn is answered; a probe turn carries `probe` and `state` (`completed` or `failed`) |
+| `EndTurn` | The turn is answered, with `prompt_ms`, the wall time of the host's prompt call; a probe turn carries `probe` and `state` (`completed` or `failed`) |
 | `RegisterJob`, `EndJob` | A background job starts and ends |
 | `FaultFired`, `FaultObserved` | A scheduled fault fires, and the driver returns its evidence |
 | `ItemState` | On resume, an in-flight turn or a scheduler fault without evidence is `failed(interrupted)`; the daemon exits |

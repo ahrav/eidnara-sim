@@ -7,23 +7,25 @@ import { aaScale, type CusumScale, cusumScale, loadGraded, tierReport } from "..
 import { loadPrereg } from "../src/scenario/inputs";
 
 const args = process.argv.slice(2);
-const flag = (name: string) => {
+const USAGE =
+    "usage: bun scripts/report.ts <run dir>... [--out <dir>] [--recall-reference <continuity json>]";
+const flagged = new Set<number>();
+const flag = (name: string): string | null => {
     const i = args.indexOf(`--${name}`);
-    return i < 0 ? null : resolve(args[i + 1] ?? ".");
+    if (i < 0) return null;
+    const value = args[i + 1];
+    if (value === undefined || value.startsWith("--")) {
+        console.error(USAGE);
+        process.exit(2);
+    }
+    flagged.add(i).add(i + 1);
+    return resolve(value);
 };
 const out = flag("out");
 const refPath = flag("recall-reference");
-const flagged = new Set(
-    ["--out", "--recall-reference"].flatMap((f) => {
-        const i = args.indexOf(f);
-        return i < 0 ? [] : [i, i + 1];
-    }),
-);
 const dirs = args.filter((_, i) => !flagged.has(i)).map((d) => resolve(d));
 if (dirs.length === 0 || dirs.some((d) => !existsSync(join(d, "manifest.json")))) {
-    console.error(
-        "usage: bun scripts/report.ts <run dir>... [--out <dir>] [--recall-reference <continuity json>]",
-    );
+    console.error(USAGE);
     process.exit(2);
 }
 const reference = refPath

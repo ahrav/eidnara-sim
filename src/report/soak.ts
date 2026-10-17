@@ -30,15 +30,17 @@ export function soak(run: RunLogs, arm: ArmLogs, resource: Resource): SoakVerdic
     const { c_bytes_per_session: c, r2_threshold } = run.prereg.leak_bound;
     const ends = arm.journal
         .filter((e) => e.kind === "Event" && run.kinds.get(String(e.event)) === "session_end")
-        .map((e) => e.scenario_ms);
-    const all = arm.resources.filter((s) => typeof s[resource] === "number");
+        .map((e) => e.wall_ms);
+    const all = arm.resources.filter(
+        (s) => typeof s[resource] === "number" && typeof s.wall_ms === "number",
+    );
     const first = all.findIndex((s) => (s[resource] as number) > 0);
     const samples = first < 0 ? [] : all.slice(first);
-    const points = samples.map((s) => ({
-        x: ends.filter((ms) => ms <= s.scenario_ms).length,
-        y: s[resource] as number,
-    }));
-    const walls = samples.map((s) => s.wall_ms).filter((w): w is number => typeof w === "number");
+    const completed = (s: (typeof samples)[number]) =>
+        ends.filter((ms) => ms <= (s.wall_ms as number)).length;
+    const before = samples[0] === undefined ? 0 : completed(samples[0]);
+    const points = samples.map((s) => ({ x: completed(s) - before, y: s[resource] as number }));
+    const walls = samples.map((s) => s.wall_ms as number);
     const gaps = walls.slice(1).map((w, i) => w - (walls[i] as number));
     const tenth = Math.max(1, Math.floor(points.length / 10));
     const warmup = points.slice(0, tenth);
@@ -53,8 +55,7 @@ export function soak(run: RunLogs, arm: ArmLogs, resource: Resource): SoakVerdic
         max_gap_ms: gaps.length ? Math.max(...gaps) : null,
     };
     const baseline = points[0]?.y ?? null;
-    const fit = steady.length >= 3 ? rssFit(steady) : null;
-    if (baseline === null || fit === null) {
+    if (baseline === null) {
         return {
             ...base,
             verdict: "insufficient samples",
@@ -66,7 +67,8 @@ export function soak(run: RunLogs, arm: ArmLogs, resource: Resource): SoakVerdic
             returned_to_baseline: null,
         };
     }
-    const slopeOver = fit.r2 >= Number(r2_threshold) && fit.slope > c;
+    const fit = steady.length >= 3 ? rssFit(steady) : null;
+    const slopeOver = fit !== null && fit.r2 >= Number(r2_threshold) && fit.slope > c;
     const worst = points
         .map((p) => ({ value: p.y, limit: 2 * baseline + p.x * c, sessions: p.x }))
         .reduce((w, p) => (p.value - p.limit > w.value - w.limit ? p : w));
@@ -75,12 +77,13 @@ export function soak(run: RunLogs, arm: ArmLogs, resource: Resource): SoakVerdic
         resource !== "store_bytes"
             ? median(cooldown.map((p) => p.y)) <= median(warmup.map((p) => p.y)) + c
             : null;
+    const leak = slopeOver || !holds || returned === false;
     return {
         ...base,
-        verdict: slopeOver || !holds || returned === false ? "leak" : "no leak",
+        verdict: leak ? "leak" : fit === null ? "insufficient samples" : "no leak",
         baseline,
-        slope_per_session: fit.slope,
-        r2: fit.r2,
+        slope_per_session: fit?.slope ?? null,
+        r2: fit?.r2 ?? null,
         slope_over_bound: slopeOver,
         bound: { holds, worst },
         returned_to_baseline: returned,

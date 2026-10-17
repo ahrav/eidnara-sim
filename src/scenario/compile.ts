@@ -2,6 +2,7 @@ import { sample } from "../corpus/cdf";
 import { type Distributions, table } from "../corpus/distributions";
 import { canonicalJson, sha256Hex } from "../prereg/canonical";
 import type { Preregistration } from "../prereg/schema";
+import { preregistrationHash } from "../prereg/validate";
 import { Rng } from "../rng";
 import { scheduleFaults, validateFault } from "./faults";
 import { bm25Ratio, cosine, type Embedder } from "./similarity";
@@ -47,7 +48,9 @@ export interface CompileInput {
     pastes: { id: string; content: string }[];
     errorCodes: { id: string; code: string; context: string }[];
     corpusManifestSha256: string;
+    compileInputsSha256: string;
     embedder: Embedder;
+    items?: number;
 }
 
 interface Session {
@@ -232,7 +235,7 @@ export async function compileScenario(input: CompileInput) {
     });
 
     const perType = Math.ceil(
-        prereg.stopping_rule.paired_items_per_probe_type /
+        (input.items ?? prereg.stopping_rule.paired_items_per_probe_type) /
             (prereg.seeds.length * prereg.hosts.length),
     );
     const p90 = sessions.filter((x) => x.forced_p90);
@@ -618,7 +621,9 @@ export async function compileScenario(input: CompileInput) {
             random_schema_version: 1,
             seed,
             tier: prereg.tier,
+            prereg_sha256: preregistrationHash(prereg),
             corpus_manifest_sha256: input.corpusManifestSha256,
+            compile_inputs_sha256: input.compileInputsSha256,
             embedding_model: input.embedder.model,
             cue_probe_similarity: thresholds,
             within_session_gap_scale: Math.round(withinScale * 1e6) / 1e6,

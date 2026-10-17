@@ -10,7 +10,7 @@ import {
     renderConditions,
     renderDrift,
 } from "./conditions";
-import { type CostPanel, PRICE_TABLE, V1_PRICE } from "./cost";
+import { type ComponentCost, type CostPanel, PRICE_TABLE, V1_PRICE } from "./cost";
 import type { Intrusiveness } from "./intrusive";
 import type { SoakVerdict } from "./soak";
 import type { Counterfactual } from "./tier";
@@ -19,7 +19,7 @@ import type { PropertyWitness } from "./witness";
 export interface TierReport {
     tier: string;
     treatment: string;
-    falsification_pair: [string, string];
+    falsification_pairs: [string, string][];
     observed: Record<string, number[]>;
     runs: string[];
     arms: string[];
@@ -30,6 +30,7 @@ export interface TierReport {
     soak: SoakVerdict[];
     intrusiveness: (Intrusiveness & { run: string })[];
     cost: CostPanel[];
+    judge: { run: string; cost: ComponentCost | null }[];
     falsification: ZeroEffect[];
     aa: unknown[];
     prereg: Preregistration;
@@ -250,7 +251,7 @@ function panels(r: TierReport): string[] {
                 return [
                     i.arm,
                     i.internal_string_hits.length,
-                    i.corrections_referencing_injected_text.length,
+                    i.corrections_referencing_injected_text?.length ?? "-",
                     i.reverted_edits.length,
                     fmt(i.latency_ms.p50, 0),
                     fmt(i.latency_ms.p95, 0),
@@ -278,6 +279,23 @@ function panels(r: TierReport): string[] {
             ]),
         ),
         ...table(
+            ["run", "caller", "calls", "input", "output", "cacheRead", "cacheWrite", "est $"],
+            r.judge.map(({ run, cost: x }) =>
+                x
+                    ? [
+                          "judge",
+                          x.component,
+                          x.calls,
+                          x.input,
+                          x.output,
+                          x.cache_read,
+                          x.cache_write,
+                          fmt(x.usd),
+                      ]
+                    : ["judge", "-", "-", "-", "-", "-", "-", `${run}: not graded`],
+            ),
+        ),
+        ...table(
             ["arm", "useful passes", "$ per pass", "memory writes", "writes with zero reads"],
             r.cost.map((c) => [
                 c.arm,
@@ -289,7 +307,7 @@ function panels(r: TierReport): string[] {
         ),
         "## Harness falsification set",
         "",
-        `Pair: ${r.falsification_pair.join(" against ")}. On an A/B pair the daemon arm's background work holds the clock, so the idle-gap check measures it; the set is a zero-effect check on an A/A pair.`,
+        `Pairs: ${r.falsification_pairs.map((p) => p.join(" against ")).join("; ")}. On an A/B pair the daemon arm's background work holds the clock, so the idle-gap check measures it; the set is a zero-effect check on an A/A pair.`,
         "",
         ...table(
             ["check", "n", "diff", "interval", "zero effect"],

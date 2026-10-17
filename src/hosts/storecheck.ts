@@ -71,8 +71,9 @@ export interface MemoryNote {
 
 export function memoryNotes(path: string): MemoryNote[] | null {
     if (!existsSync(path)) return null;
-    const db = new Database(path, { readonly: true });
+    let db: Database | null = null;
     try {
+        db = new Database(path, { readonly: true });
         return db
             .query(
                 "select n.id, n.content, n.status, (select count(*) from note_deliveries d where d.note_id = n.id) as deliveries, (select min(d.created_at_ms) from note_deliveries d where d.note_id = n.id) as first_delivery_ms from notes n order by n.id",
@@ -81,7 +82,7 @@ export function memoryNotes(path: string): MemoryNote[] | null {
     } catch {
         return null;
     } finally {
-        db.close();
+        db?.close();
     }
 }
 
