@@ -9,6 +9,7 @@ import type { Preregistration } from "../prereg/schema";
 import { preregistrationHash } from "../prereg/validate";
 import type { CallRecord } from "../proxy/records";
 import type { Entry } from "../run/journal";
+import { PRICE_TABLE } from "../run/price";
 import type { Scenario } from "../scenario/compile";
 import { loadPrereg } from "../scenario/inputs";
 import { falsificationPairs } from "./falsify";
@@ -206,7 +207,7 @@ function fixture(status = (_: number) => 200, opts: FixtureOptions = {}): Graded
         events: [],
     } as unknown as Scenario;
     return {
-        run: { dir, tier: "S", base_wall_ms: 0, prereg, kinds, arms },
+        run: { dir, tier: "S", base_wall_ms: 0, prereg, kinds, arms, price: PRICE_TABLE },
         scenario,
         grades,
         host: opts.host ?? "pi",
@@ -820,7 +821,7 @@ describe("tier report", () => {
         const report = tierReport(prereg, [g], boundary);
         expect(new Set(report.cost.map((c) => c.run))).toEqual(new Set([g.run.dir]));
         const text = renderTier(report);
-        expect(text).toContain(`| ${g.run.dir} | eidnara | agent | 12 |`);
+        expect(text).toContain(`| ${g.run.dir} | eidnara | v1 | agent | 12 |`);
         expect(text).toContain(`| ${g.run.dir} | eidnara | 0 | 0 | 0 |`);
     });
 
@@ -885,7 +886,9 @@ describe("tier report", () => {
             output_tokens: 3,
         });
         const text = renderTier(tierReport(prereg, [g], boundary));
-        expect(text).toContain(`| ${g.run.dir} | eidnara | TOTAL | 13 | 12007 | 1203 | 0 | 0 |`);
+        expect(text).toContain(
+            `| ${g.run.dir} | eidnara | v1 | TOTAL | 13 | 12007 | 1203 | 0 | 0 |`,
+        );
     });
 
     test("more A/A controls than registered repeats keep the campaign incomplete", () => {

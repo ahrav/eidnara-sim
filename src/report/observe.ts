@@ -153,11 +153,11 @@ const RUN_VALUES: Record<string, { value: RunValue; delta: boolean; hostless?: t
         delta: true,
     },
     usd_per_component: {
-        value: ({ run, grades }, arm) => costPanel(run, arm, grades).usd,
+        value: ({ run, grades }, arm) => costPanel(run, arm, grades)?.usd ?? null,
         delta: false,
     },
     usd_per_useful_retrieval: {
-        value: ({ run, grades }, arm) => costPanel(run, arm, grades).usd_per_pass,
+        value: ({ run, grades }, arm) => costPanel(run, arm, grades)?.usd_per_pass ?? null,
         delta: false,
     },
     "P13.fold_fidelity_score": {

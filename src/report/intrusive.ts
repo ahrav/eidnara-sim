@@ -16,10 +16,16 @@ export interface Intrusiveness {
     latency_ms: { n: number; p50: number | null; p95: number | null };
 }
 
-/** Each `git` invocation in a shell command: its subcommand and the arguments up to a separator. */
-const GIT = /\bgit\s+(?:-[Cc]\s+\S+\s+)*([a-z-]+)((?:\s+[^\s;&|]+)*)/g;
-const HEREDOC = /<<-?\s*(['"]?)(\w+)\1[^\n]*\n[\s\S]*?\n\s*\2(?=\n|$)/g;
-const QUOTED = /'[^']*'|"(?:[^"\\]|\\.)*"/g;
+/**
+ * Each `git` invocation at a command position on one line of a shell command: at the line start or
+ * after a separator or `(`, past any `VAR=value` assignments and `sudo`, `env`, `time`, `nice`,
+ * `nohup`, or `exec` prefixes; its subcommand and arguments run up to the next separator.
+ */
+const GIT =
+    /(?:^|[;&|(][ \t]*)[ \t]*(?:\w+=[^ \t\n]*[ \t]+)*(?:(?:sudo|env|time|nice|nohup|exec)[ \t]+)*git[ \t]+(?:-[Cc][ \t]+[^ \t\n]+[ \t]+)*([a-z-]+)((?:[ \t]+[^ \t\n;&|)]+)*)/gm;
+const COMMENT = /(^|[ \t])#.*$/g;
+const HEREDOC = /<<-?[ \t]*(['"]?)(\w+)\1/g;
+const QUOTED = /'[^'\n]*'|"(?:[^"\\\n]|\\.)*"/g;
 const SEPARATOR = /&&|\|\||[;|&\n]/g;
 const SHINGLE = 5;
 /** Clock slack between a note's delivery stamp and the harness's nominal turn boundary. */
@@ -51,8 +57,14 @@ function scriptedTurns(dir: string): { id: string; text: string | null }[] {
     }));
 }
 
+/** The options before `--`; what follows `--` is pathspecs. */
+const options = (args: string[]) => {
+    const dd = args.indexOf("--");
+    return dd < 0 ? args : args.slice(0, dd);
+};
+
 const hasFlag = (args: string[], long: string, short: string) =>
-    args.some((a) => a === long || (/^-[A-Za-z]+$/.test(a) && a.includes(short)));
+    options(args).some((a) => a === long || (/^-[A-Za-z]+$/.test(a) && a.includes(short)));
 
 /**
  * A `git restore` reverts working-tree edits unless `--staged`/`-S` is given without
@@ -61,16 +73,43 @@ const hasFlag = (args: string[], long: string, short: string) =>
 const restoresWorktree = (args: string[]) =>
     hasFlag(args, "--worktree", "W") || !hasFlag(args, "--staged", "S");
 
+/** A `git checkout` reverts working-tree files when a pathspec follows `--`. */
+const checksOutPaths = (args: string[]) => {
+    const dd = args.indexOf("--");
+    return dd >= 0 && dd < args.length - 1;
+};
+
 /**
- * The command with heredoc bodies removed and each quoted string replaced by one plain word, so
- * the words the shell runs keep their positions.
+ * The command's lines as the shell runs them: each quoted string becomes one plain word, so later
+ * words keep their positions; a comment (`#` at a word start outside quotes) and the body lines
+ * of a heredoc whose `<<` sits outside quotes are dropped.
  */
-const executable = (command: string) => command.replace(HEREDOC, " ").replace(QUOTED, "_");
+function executable(command: string): string {
+    const lines: string[] = [];
+    let tag: string | null = null;
+    for (const line of command.split("\n")) {
+        if (tag !== null) {
+            if (line.trim() === tag) tag = null;
+            continue;
+        }
+        const quoted = [...line.matchAll(QUOTED)].map((m) => [m.index, m.index + m[0].length]);
+        const inQuotes = (i: number) =>
+            quoted.some(([a, b]) => i >= (a as number) && i < (b as number));
+        const heredoc = [...line.matchAll(HEREDOC)].find((m) => !inQuotes(m.index));
+        if (heredoc) tag = heredoc[2] as string;
+        const comment = [...line.matchAll(COMMENT)].find(
+            (m) => !inQuotes(m.index + (m[1] as string).length),
+        );
+        const code = comment ? line.slice(0, comment.index) : line;
+        lines.push(code.replace(QUOTED, "_"));
+    }
+    return lines.join("\n");
+}
 
 const reverts = (sub: string, args: string[]) =>
     sub === "revert" ||
     (sub === "reset" && args.includes("--hard")) ||
-    (sub === "checkout" && args.includes("--")) ||
+    (sub === "checkout" && checksOutPaths(args)) ||
     (sub === "restore" && restoresWorktree(args));
 
 /**
@@ -121,10 +160,13 @@ export function percentile(values: number[], q: number): number | null {
     return sorted[Math.min(sorted.length - 1, Math.ceil(q * sorted.length) - 1)] ?? null;
 }
 
-/** Each turn's `prompt_ms` from `EndTurn`: the host's prompt call, after the user-sim delivered. */
+/**
+ * Each completed turn's `prompt_ms` from `EndTurn`: the host's prompt call, after the user-sim
+ * delivered. A failed turn is dependability's, counted there as a failed turn or hang.
+ */
 export function turnLatencies(arm: ArmLogs): number[] {
     return arm.journal
-        .filter((e) => e.kind === "EndTurn")
+        .filter((e) => e.kind === "EndTurn" && e.outcome === "ok")
         .map((e) => e.prompt_ms)
         .filter((ms): ms is number => typeof ms === "number");
 }
@@ -134,7 +176,9 @@ export function turnLatencies(arm: ArmLogs): number[] {
  * five-word run with a memory note whose `first_delivery_ms` is at least `CLOCK_SLACK_MS` before
  * the turn's `BeginTurn` time (`base_wall_ms + scenario_ms`), and neither four-word half of the
  * run is in the scripted user text up to and including that turn: a user restating a rule it
- * gave is quoting itself.
+ * gave is quoting itself. The journal must hold the turn's `BeginTurn` and a delivered `UserTurn`;
+ * a pairing record alone is the user-sim's intent, which a kill before the turn ends leaves
+ * undelivered.
  */
 function corrections(run: RunLogs, arm: ArmLogs) {
     const script = scriptedTurns(run.dir);
@@ -155,11 +199,16 @@ function corrections(run: RunLogs, arm: ArmLogs) {
             .filter((e) => e.kind === "BeginTurn")
             .map((e) => [String(e.event), run.base_wall_ms + e.scenario_ms]),
     );
+    const delivered = new Set(
+        arm.journal
+            .filter((e) => e.kind === "UserTurn" && e.delivered === true)
+            .map((e) => String(e.event)),
+    );
     return userSimReplies(run.dir, arm.arm)
         .filter((r) => r.label === "pushback" || r.label === "redirect")
         .flatMap((r) => {
             const at = began.get(r.event);
-            if (at === undefined) return [];
+            if (at === undefined || !delivered.has(r.event)) return [];
             const own = ownBy(r.event);
             const injected = new Set(
                 notes
