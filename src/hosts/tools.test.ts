@@ -568,6 +568,29 @@ test("a Pi abort that fails after the agent already finished keeps the agent's o
     expect(stopped).toEqual([]);
 });
 
+test("a Pi abort that stalls is left behind once the agent's own ending arrives", async () => {
+    const host = new PiSimHost({
+        ...({} as HostContext),
+        config: loadConfig(),
+        root: "/x",
+        launcher: "/x/sandbox.sh",
+        now: () => 100,
+    });
+    const end = Bun.sleep(100).then(() => ({
+        type: "agent_end",
+        messages: [{ role: "assistant", stopReason: "stop" }],
+    }));
+    const rpc = {
+        sendCommand: (name: string) =>
+            name === "abort" ? new Promise(() => {}) : Promise.resolve({ success: true }),
+        waitForEvent: () => end,
+    };
+    Object.assign(host as unknown as Record<string, unknown>, { rpc });
+    const started = Date.now();
+    expect(await host.prompt("go", 5_000, 50)).toEqual({});
+    expect(Date.now() - started).toBeLessThan(2_000);
+});
+
 test("a Pi interrupt counts only when the agent's last message was aborted", async () => {
     const run = (stopReason: string) => {
         const host = new PiSimHost({

@@ -3,6 +3,8 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sha256Hex } from "../src/prereg/canonical";
+import { loadPrereg } from "../src/scenario/inputs";
+import { type Label, realisedRates } from "../src/usersim/plan";
 
 const ROOT = join(import.meta.dir, "..");
 let dir = "";
@@ -14,7 +16,7 @@ function run(
     pairing: object[] = [],
 ): { exit: number; report: Record<string, unknown> } {
     dir = mkdtempSync(join(tmpdir(), "pairing-check-"));
-    const manifest = { order: ["a", "b"], events: events.length };
+    const manifest = { tier: "S", order: ["a", "b"], events: events.length };
     writeFileSync(join(dir, "manifest.json"), JSON.stringify(manifest));
     writeFileSync(join(dir, "scenario.json"), JSON.stringify({ events }));
     writeFileSync(
@@ -32,10 +34,49 @@ function run(
     return { exit: r.exitCode, report: JSON.parse(r.stdout.toString()) };
 }
 
-const rates = (arm: string) => ({ kind: "UserSimRates", arm, outside: [], rates: {} });
+const prereg = loadPrereg("S");
+// Ten sessions of ten delivered turns whose labels sit inside every pre-registered band.
+const turnsOf = (arm: string) => {
+    const rows: object[] = [];
+    for (let s = 0; s < 10; s++) {
+        for (let i = 0; i < 10; i++) {
+            const label =
+                i < 5
+                    ? "pushback"
+                    : i === 5 && s < 5
+                      ? "interrupt"
+                      : i === 6 && s === 0
+                        ? "redirect"
+                        : i === 7 && s === 1
+                          ? "abandon"
+                          : "task";
+            rows.push({
+                kind: "UserTurn",
+                arm,
+                session: `s-${s}`,
+                event: `t-${s}-${i}`,
+                label,
+                delivered: true,
+            });
+        }
+    }
+    return rows;
+};
+const summary = (arm: string) =>
+    realisedRates(
+        (turnsOf(arm) as { session: string; label: Label }[]).map((t) => ({
+            session: t.session,
+            label: t.label,
+        })),
+        prereg,
+    );
+const rates = (arm: string) => ({ kind: "UserSimRates", arm, ...summary(arm) });
 const endArm = (arm: string) => ({ kind: "EndArm", arm });
 const endRun = { kind: "EndRun", arm: null };
-const complete = (...arms: string[]) => [...arms.flatMap((a) => [rates(a), endArm(a)]), endRun];
+const complete = (...arms: string[]) => [
+    ...arms.flatMap((a) => [...turnsOf(a), rates(a), endArm(a)]),
+    endRun,
+];
 
 test("the pairing check fails a run that lacks an arm's rate summary, and passes one with each arm's", () => {
     const partial = run([rates("a"), endArm("a"), endArm("b"), endRun]);
@@ -65,7 +106,10 @@ test("the pairing check refuses a pairing row with a wrongly typed field", () =>
         source: "elsewhere",
     };
     dir = mkdtempSync(join(tmpdir(), "pairing-check-"));
-    writeFileSync(join(dir, "manifest.json"), JSON.stringify({ order: ["a"], events: 1 }));
+    writeFileSync(
+        join(dir, "manifest.json"),
+        JSON.stringify({ tier: "S", order: ["a"], events: 1 }),
+    );
     writeFileSync(join(dir, "scenario.json"), JSON.stringify({ events }));
     writeFileSync(join(dir, "pairing.jsonl"), `${JSON.stringify(bad)}\n`);
     writeFileSync(
@@ -80,6 +124,33 @@ test("the pairing check refuses a pairing row with a wrongly typed field", () =>
     });
     expect(r.exitCode).not.toBe(0);
     expect(r.stderr.toString()).toContain("index is not an integer");
+});
+
+test("the pairing check recomputes each arm's rates from its delivered turns", () => {
+    const stale = { ...rates("b"), rates: { ...summary("b").rates, pushback_per_turn: 0.4 } };
+    const r = run([
+        ...turnsOf("a"),
+        rates("a"),
+        endArm("a"),
+        ...turnsOf("b"),
+        stale,
+        endArm("b"),
+        endRun,
+    ]);
+    expect(r.report.rates_mismatch).toEqual(["b"]);
+    expect(r.exit).toBe(1);
+    const bare = { kind: "UserSimRates", arm: "b", outside: [], rates: {} };
+    const thin = run([
+        ...turnsOf("a"),
+        rates("a"),
+        endArm("a"),
+        ...turnsOf("b"),
+        bare,
+        endArm("b"),
+        endRun,
+    ]);
+    expect(thin.report.rates_mismatch).toEqual(["b"]);
+    expect(thin.exit).toBe(1);
 });
 
 test("the pairing check fails a run that never reached EndArm for an arm or EndRun", () => {

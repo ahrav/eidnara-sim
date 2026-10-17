@@ -134,7 +134,7 @@ const pairingRow: RowCheck = (row) => {
     if (row.kind === "divergedAt") {
         return [
             ...shared,
-            ...strings(row, ["reference_digest"]),
+            ...strings(row, ["reference_digest", "context_sha256"]),
             ...oneOf(row, "against", ["recorded", "reference"]),
         ];
     }
@@ -307,6 +307,8 @@ export interface DivergenceRecord {
     index: number;
     digest: string;
     reference_digest: string;
+    /** The arm's session context at this turn, the chained digests the tape key uses. */
+    context_sha256: string;
     /** `recorded` for the same arm in a replayed run, else the reference arm of this run. */
     against: "recorded" | "reference";
 }
@@ -429,6 +431,24 @@ export interface AgentReply {
     tail?: string;
 }
 
+/**
+ * The agent reply a call record carries, for the user-sim: the text when it is a string, with
+ * the whole-text digest and tail when those are strings too. Any other shape is no reply.
+ */
+export function agentReplyOf(record: {
+    component?: unknown;
+    response_text?: unknown;
+    response_sha256?: unknown;
+    response_tail?: unknown;
+}): AgentReply | undefined {
+    if (record.component !== "agent" || typeof record.response_text !== "string") return undefined;
+    return {
+        text: record.response_text,
+        ...(typeof record.response_sha256 === "string" ? { sha256: record.response_sha256 } : {}),
+        ...(typeof record.response_tail === "string" ? { tail: record.response_tail } : {}),
+    };
+}
+
 export interface Delivery {
     label: Label;
     text: string;
@@ -532,7 +552,13 @@ export class UserSim {
         const against = !recorded.none && !recorded.matched ? "recorded" : "reference";
         const other = against === "recorded" ? recorded.digest : reference;
         if (!pairing.diverged(arm, t.session) && other !== undefined && other !== digest) {
-            pairing.append({ kind: "divergedAt", ...base, reference_digest: other, against });
+            pairing.append({
+                kind: "divergedAt",
+                ...base,
+                reference_digest: other,
+                context_sha256: context,
+                against,
+            });
         }
         if (plan.skipped.has(t.id)) {
             const skip = {

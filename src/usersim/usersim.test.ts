@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { loadPrereg } from "../scenario/inputs";
 import {
     behaviourPlan,
+    deliveredTurns,
     type Label,
     type Plan,
     type PlanTurn,
@@ -12,6 +13,7 @@ import {
     realisedRates,
 } from "./plan";
 import {
+    agentReplyOf,
     checkTapeSources,
     type Llm,
     normaliser,
@@ -100,6 +102,47 @@ describe("behaviour plan", () => {
             { trigger: { kind: "session_start", session: "s-1" }, seam: { layer: "proxy-sink" } },
         ];
         expect([...pinnedTurns(events, atStart)].sort()).toEqual(["e-1", "e-2", "e-3"]);
+    });
+
+    test("delivered turns leave out a record recovered after a kill, whose delivery is unknown", () => {
+        const entries = [
+            {
+                kind: "UserTurn",
+                arm: "a",
+                session: "s",
+                event: "e-1",
+                label: "task",
+                delivered: true,
+            },
+            {
+                kind: "UserTurn",
+                arm: "a",
+                session: "s",
+                event: "e-2",
+                label: "pushback",
+                delivered: true,
+                recovered: true,
+            },
+            {
+                kind: "UserTurn",
+                arm: "a",
+                session: "s",
+                event: "e-3",
+                label: "abandon",
+                delivered: false,
+            },
+            {
+                kind: "UserTurn",
+                arm: "b",
+                session: "s",
+                event: "e-1",
+                label: "task",
+                delivered: true,
+            },
+            { kind: "EndTurn", arm: "a", event: "e-1" },
+        ];
+        expect(deliveredTurns(entries, "a").map((e) => e.event)).toEqual(["e-1"]);
+        expect(deliveredTurns(entries, "a", "other")).toEqual([]);
     });
 
     test("a fault's trigger turn is never interrupted", () => {
@@ -305,6 +348,38 @@ describe("tape and pairing", () => {
         await play(again.user, "a", outputs);
         expect(replay.calls).toBe(0);
         expect(again.pairing.records.filter((r) => r.kind === "divergedAt")).toEqual([]);
+    });
+
+    test("a call record's response fields reach the user-sim only as strings", () => {
+        expect(agentReplyOf({ component: "agent", response_text: "hi" })).toEqual({ text: "hi" });
+        expect(
+            agentReplyOf({
+                component: "agent",
+                response_text: "hi",
+                response_sha256: "s",
+                response_tail: "t",
+            }),
+        ).toEqual({ text: "hi", sha256: "s", tail: "t" });
+        expect(agentReplyOf({ component: "agent", response_text: 123 })).toBeUndefined();
+        expect(
+            agentReplyOf({ component: "agent", response_text: "hi", response_sha256: 5 }),
+        ).toEqual({ text: "hi" });
+        expect(agentReplyOf({ component: "judge", response_text: "hi" })).toBeUndefined();
+    });
+
+    test("a divergence record carries the arm's session context beside both digests", async () => {
+        const { user, pairing } = sim(dir(), counting());
+        await play(user, "a", outputs);
+        const changed = outputs.map((o, i) => (i === 2 ? `${o} Also fixed a typo.` : o));
+        await play(user, "b", changed);
+        const d = pairing.records.find((r) => r.kind === "divergedAt");
+        expect(typeof (d as { context_sha256?: unknown }).context_sha256).toBe("string");
+        const turn = pairing.records.find(
+            (r) => r.kind === "turn" && r.arm === "b" && r.event === "e-3",
+        );
+        expect((d as { context_sha256?: unknown }).context_sha256).toBe(
+            (turn as { context_sha256: string }).context_sha256,
+        );
     });
 
     test("a reply the proxy cut is paired by its whole text and read from its real tail", async () => {

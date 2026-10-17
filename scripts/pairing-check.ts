@@ -4,6 +4,8 @@ import { CORPUS_DIR } from "../src/corpus/sources";
 import { sha256Hex } from "../src/prereg/canonical";
 import { readJournal } from "../src/run/journal";
 import type { Scenario } from "../src/scenario/compile";
+import { loadPrereg } from "../src/scenario/inputs";
+import { deliveredTurns, type Label, realisedRates } from "../src/usersim/plan";
 import { pairingMismatches, readPairing, type TurnRecord } from "../src/usersim/usersim";
 
 const dir = resolve(process.argv[2] ?? "");
@@ -61,6 +63,19 @@ const unsent = turns
     .filter((r) => !r.delivered && script.get(r.event)?.role !== "filler")
     .map((r) => `${r.arm} ${r.event}`);
 const journal = readJournal(join(dir, "journal.jsonl"));
+const prereg = loadPrereg(manifest.tier);
+// Each arm's summary must equal the rates recomputed from its delivered turns.
+const ratesMismatch = (manifest.order as string[]).filter((arm) => {
+    const journaled = journal.find((e) => e.kind === "UserSimRates" && e.arm === arm);
+    if (!journaled) return false;
+    const turns = deliveredTurns(journal, arm).map((e) => ({
+        session: String(e.session),
+        label: e.label as Label,
+    }));
+    const expected = realisedRates(turns, prereg);
+    const { kind: _kind, arm: _arm, seq: _seq, scenario_ms: _ms, ...rest } = journaled;
+    return JSON.stringify(rest) !== JSON.stringify(expected);
+});
 const scheduled = scenario.events
     .slice(0, manifest.events as number)
     .filter((e) => e.kind === "user_turn");
@@ -84,6 +99,7 @@ const report = {
     flagged: journal
         .filter((e) => e.kind === "UserSimRates" && (e.outside as string[]).length > 0)
         .map((e) => `${e.arm}: ${(e.outside as string[]).join(", ")}`),
+    rates_mismatch: ratesMismatch,
     missing_rates: (manifest.order as string[]).filter(
         (arm) => journal.filter((e) => e.kind === "UserSimRates" && e.arm === arm).length !== 1,
     ),
@@ -109,6 +125,7 @@ const failed =
     provenance.length +
     report.flagged.length +
     report.missing_rates.length +
+    report.rates_mismatch.length +
     report.missing_turns.length +
     report.incomplete.length +
     report.interrupted_turns.length;

@@ -636,9 +636,8 @@ export class PiSimHost extends SimHost {
             // A failed abort is read off `end` like a landed one: the original waiter still
             // holds the agent's ending, or waits on for it under the turn deadline.
             if (first === null) {
-                await this.rpc
-                    .sendCommand("abort", {}, { timeoutMs: 60_000 })
-                    .catch(() => undefined);
+                const abort = this.rpc.sendCommand("abort", {}, { timeoutMs: 60_000 });
+                await Promise.race([abort.catch(() => undefined), end.catch(() => undefined)]);
             }
             // The interrupt is read off the agent's own last message: an abort that reached Pi
             // after the agent had finished leaves a stop reason other than `aborted`.

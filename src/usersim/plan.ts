@@ -128,6 +128,26 @@ export function pinnedTurns(
     return pinned;
 }
 
+/**
+ * The journal's `UserTurn` rows an arm delivered, in a session when one is named. A row a
+ * resume recovered from the pairing log says what the user-sim decided, not that the host
+ * received it, so it is left out.
+ */
+export function deliveredTurns<T extends Record<string, unknown>>(
+    entries: readonly T[],
+    arm: string,
+    session?: string,
+): T[] {
+    return entries.filter(
+        (e) =>
+            e.kind === "UserTurn" &&
+            e.arm === arm &&
+            e.delivered === true &&
+            e.recovered !== true &&
+            (session === undefined || e.session === session),
+    );
+}
+
 export interface RealisedRates {
     turns: number;
     sessions: number;
