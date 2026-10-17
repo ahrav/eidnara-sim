@@ -1,11 +1,4 @@
-import {
-    existsSync,
-    lstatSync,
-    mkdirSync,
-    readFileSync,
-    realpathSync,
-    writeFileSync,
-} from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { loadConfig } from "../src/config/config";
 import { TIERS, type Tier } from "../src/prereg/schema";
@@ -181,10 +174,12 @@ const supervised = async <T>(work: () => Promise<T>): Promise<T> => {
         return exit(1);
     }
 };
+// Every run directory is checked before any run starts, so a refusal exits with nothing
+// launched.
+for (const job of plan) ownDir(job.dir);
 const results = await supervised(() =>
     Promise.all(
         plan.map(async (job) => {
-            ownDir(job.dir);
             // A run another process still holds is left as it is: its scenario stays, it is
             // neither run nor graded here, and the command fails for it.
             const held = leaseHeld(job.dir);
@@ -250,7 +245,7 @@ const results = await supervised(() =>
         }),
     ),
 );
-writeFileSync(
+writeAtomic(
     join(out, "tier-result.json"),
     `${JSON.stringify({ tier, limit_ms: limit, results }, null, 2)}\n`,
 );

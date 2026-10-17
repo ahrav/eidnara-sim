@@ -248,8 +248,14 @@ const CHECKS: Record<string, Check> = {
             for (const a of c.g.run.arms) {
                 const clock = journalClock(a.journal);
                 let wall = Number.NEGATIVE_INFINITY;
+                const seqs = new Set<number>();
                 for (const call of [...a.calls].sort((x, y) => x.seq - y.seq)) {
                     n++;
+                    if (!Number.isInteger(call.seq) || seqs.has(call.seq)) {
+                        bad.push(`call seq ${JSON.stringify(call.seq)} is not a fresh integer`);
+                        continue;
+                    }
+                    seqs.add(call.seq);
                     if (!Number.isFinite(call.scenario_ms) || !Number.isFinite(call.wall_ms)) {
                         bad.push(`call ${call.seq} lacks a time`);
                         continue;
