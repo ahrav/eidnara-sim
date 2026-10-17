@@ -147,6 +147,22 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
             snapshots.set(key, [...(snapshots.get(key) ?? []), s]);
         }
     }
+    const present = new Set([...snapshots.values()].flat().map((s) => s.id));
+    const lost = [...named.keys()].filter((id) => !present.has(id));
+    if (lost.length > 0) {
+        throw new Error(`journaled snapshots have no row in snapshots.jsonl: ${lost.join(", ")}`);
+    }
+    const agentModels = new Set(
+        readJournal(join(dir, "calls.jsonl"))
+            .filter((r) => r.component === "agent" && typeof r.model === "string")
+            .map((r) => String(r.model)),
+    );
+    const unrecorded = [...agentModels].filter((m) => !models.includes(m));
+    if (unrecorded.length > 0) {
+        throw new Error(
+            `agent calls used models the manifest does not record: ${unrecorded.join(", ")}`,
+        );
+    }
     const attempts = (arm: string, item: string): Snapshot[] | undefined => {
         const rows = snapshots.get(`${arm}/${item}`) ?? [];
         const first = rows.findIndex((s) => journaled.has(s.id));

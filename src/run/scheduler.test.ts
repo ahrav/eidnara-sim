@@ -107,10 +107,17 @@ describe("Clock", () => {
 describe("Journal and lease", () => {
     test("keepCompleteLines drops a cut last line and leaves whole lines", () => {
         const path = join(dir(), "log.jsonl");
-        expect(keepCompleteLines(path)).toBe("");
+        expect(keepCompleteLines(path)).toBe(0);
         writeFileSync(path, '{"a":1}\n{"b":2}\n{"c":');
-        expect(keepCompleteLines(path)).toBe('{"a":1}\n{"b":2}\n');
+        expect(keepCompleteLines(path)).toBe(16);
         expect(readFileSync(path, "utf8")).toBe('{"a":1}\n{"b":2}\n');
+        const whole = `{"big":"${"x".repeat(3 << 20)}"}\n`;
+        writeFileSync(path, `${whole}{"cut":"${"y".repeat(2 << 20)}`);
+        expect(keepCompleteLines(path)).toBe(Buffer.byteLength(whole));
+        expect(readFileSync(path, "utf8")).toBe(whole);
+        writeFileSync(path, "no newline at all");
+        expect(keepCompleteLines(path)).toBe(0);
+        expect(readFileSync(path, "utf8")).toBe("");
     });
 
     test("a cut last line is dropped, and scenario time may not decrease within an arm", () => {

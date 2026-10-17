@@ -101,8 +101,9 @@ const commandText = (r: ArtefactReader) =>
         .join("\n");
 const work = (r: ArtefactReader) => `${addedLines(r.diff())}\n${commandText(r)}`;
 
+/** The completed fold calls in the item's range; a call that failed produced no fold the host used. */
 function foldsIn(r: ArtefactReader, turns?: [number, number]): CallView[] {
-    const folds = r.calls().filter((c) => FOLDS.includes(c.component));
+    const folds = r.calls().filter((c) => FOLDS.includes(c.component) && !c.failed);
     if (!turns) return folds;
     const [lo, hi] = turns;
     return folds.filter(

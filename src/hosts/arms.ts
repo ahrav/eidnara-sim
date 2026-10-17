@@ -63,10 +63,16 @@ export function toolCommand(tool: string, args: Record<string, unknown> | undefi
     if (typeof args?.command === "string") return args.command;
     const key = TARGET_KEYS.find((k) => typeof args?.[k] === "string");
     if (!key || !args) return `${tool} ${JSON.stringify(args ?? {})}`;
-    const body = Object.entries(args)
-        .filter(([k, v]) => k !== key && (typeof v === "string" || typeof v === "object"))
+    const rest = Object.entries(args).filter(([k, v]) => k !== key && v !== undefined);
+    const scalars = rest
+        .filter(([, v]) => typeof v !== "string" && typeof v !== "object")
+        .map(([k, v]) => `${k}=${JSON.stringify(v)}`)
+        .sort();
+    const body = rest
+        .filter(([, v]) => typeof v === "string" || typeof v === "object")
         .map(([, v]) => (typeof v === "string" ? v : JSON.stringify(v)));
-    return [`${tool} ${args[key]}`, ...body].join("\n");
+    const head = [`${tool} ${args[key]}`, ...scalars].join(" ");
+    return [head, ...body].join("\n");
 }
 
 export interface PromptResult {

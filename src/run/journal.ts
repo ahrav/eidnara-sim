@@ -1,9 +1,11 @@
 import {
     closeSync,
     existsSync,
+    fstatSync,
     linkSync,
     openSync,
     readFileSync,
+    readSync,
     renameSync,
     rmSync,
     truncateSync,
@@ -97,16 +99,38 @@ export function releaseLease(dir: string): void {
     rmSync(join(dir, "lease.json"), { force: true });
 }
 
+const TAIL_CHUNK = 1 << 20;
+
 /**
  * Truncates a JSONL file to its newline-terminated prefix, which drops the line a kill
- * mid-append left cut, and returns that prefix; a missing file reads as empty.
+ * mid-append left cut, and returns the byte length kept. The file is scanned backwards in
+ * chunks from its end, so a log of large records costs one chunk of memory, and a missing
+ * file reads as empty.
  */
-export function keepCompleteLines(path: string): string {
-    if (!existsSync(path)) return "";
-    const text = readFileSync(path, "utf8");
-    const complete = text.slice(0, text.lastIndexOf("\n") + 1);
-    if (complete.length < text.length) truncateSync(path, Buffer.byteLength(complete));
-    return complete;
+export function keepCompleteLines(path: string): number {
+    if (!existsSync(path)) return 0;
+    const fd = openSync(path, "r");
+    try {
+        const size = fstatSync(fd).size;
+        if (size === 0) return 0;
+        const chunk = Buffer.alloc(Math.min(TAIL_CHUNK, size));
+        let end = size;
+        while (end > 0) {
+            const start = Math.max(0, end - chunk.length);
+            const read = readSync(fd, chunk, 0, end - start, start);
+            const newline = chunk.lastIndexOf(0x0a, read - 1);
+            if (newline !== -1) {
+                const keep = start + newline + 1;
+                if (keep < size) truncateSync(path, keep);
+                return keep;
+            }
+            end = start;
+        }
+        truncateSync(path, 0);
+        return 0;
+    } finally {
+        closeSync(fd);
+    }
 }
 
 /**

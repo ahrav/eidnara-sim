@@ -164,3 +164,15 @@ test("a snapshot without the artefact its grader reads is refused rather than gr
     only.artefacts = only.artefacts.filter((a) => a.class !== "proxy-call");
     expect(() => gradeItem(p13.probe, [only], rules)).toThrow("lacks the proxy-call artefact");
 });
+
+test("a fold call that failed is no fold for P13", () => {
+    const f = fixture("P13-pass");
+    const snap = structuredClone(f.snapshots[0]) as Snapshot;
+    const calls = snap.artefacts.find((a) => a.class === "proxy-call") as unknown as {
+        calls: Record<string, unknown>[];
+    };
+    for (const c of calls.calls) if (c.component === "history_summarizer") c.failed = true;
+    const grade = gradeItem(f.probe, [snap], rules);
+    expect(grade?.verdict).toBe("excluded");
+    expect(grade?.reason).toBe("no fold in the item's range");
+});

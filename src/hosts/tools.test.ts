@@ -18,7 +18,10 @@ test("a structured write or edit keeps the content it wrote under its target pat
         `edit src/x.rs\n${JSON.stringify(edits)}`,
     );
     expect(toolCommand("read", { path: "src/db.rs", offset: 10, limit: 20 })).toBe(
-        "read src/db.rs",
+        "read src/db.rs limit=20 offset=10",
+    );
+    expect(toolCommand("read", { path: "src/db.rs", offset: 200 })).not.toBe(
+        toolCommand("read", { path: "src/db.rs", offset: 10 }),
     );
 });
 
