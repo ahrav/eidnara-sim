@@ -651,14 +651,14 @@ describe("HostDriver faults", () => {
         const { driver, hosts, armDir } = fixture("eidnara", { p: "/repo" });
         const o = (driver as unknown as { o: DriverOptions }).o;
         o.daemonFactory = () => fakeDaemon(10) as unknown as DaemonStack;
+        const dead = Bun.spawnSync(["true"]).pid;
         const factory = o.hostFactory as (ctx: HostContext) => SimHost;
         o.hostFactory = (ctx) => {
             const h = factory(ctx) as unknown as FakeHost;
-            h.pid = process.pid;
+            h.pid = dead;
             return h as unknown as SimHost;
         };
         mkdirSync(armDir, { recursive: true });
-        const dead = Bun.spawnSync(["true"]).pid;
         writeFileSync(
             join(armDir, "state.json"),
             JSON.stringify({
@@ -673,6 +673,15 @@ describe("HostDriver faults", () => {
         inner.snapshots = { sessionStart: noop, sessionEnd: noop, addTools: noop };
         await driver.resume(null);
         expect(hosts.map((h) => h.opened[0])).not.toContain(`s-0000-b@${driver.workspace("p")}`);
+        await driver.stop();
+        const again = new HostDriver(o);
+        (again as unknown as Record<string, unknown>).snapshots = inner.snapshots;
+        await again.resume(null);
+        await again.event(ev("session_start", { project: "p" }));
+        expect(hosts.map((h) => h.opened[0])).toContain(`s-0000-b@${driver.workspace("p")}`);
+        await again.stop();
+        hosts.length = 0;
+        await driver.resume(null);
         await driver.event(ev("session_start", { project: "p" }));
         expect(hosts.map((h) => h.opened[0])).toContain(`s-0000-b@${driver.workspace("p")}`);
         expect(inner.second).not.toBeNull();
@@ -712,6 +721,12 @@ describe("HostDriver faults", () => {
         writeFileSync(join(sessions, "old.jsonl"), "{}");
         await driver.event(ev("session_end"));
         await driver.fault(episode("host_upgrade"));
+        const preUpgrade = new HostDriver(o);
+        await preUpgrade.resume(null);
+        expect((preUpgrade as unknown as { transcriptsChecked: boolean }).transcriptsChecked).toBe(
+            false,
+        );
+        await preUpgrade.stop();
         await driver.event(ev("session_start"));
         await expect(driver.event(ev("session_end"))).rejects.toThrow("no new transcript");
         const resumed = new HostDriver(o);

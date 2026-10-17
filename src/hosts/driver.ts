@@ -27,6 +27,8 @@ interface ArmState {
     model: number;
     upgraded?: boolean;
     second?: { pid: number; start: string | null; session?: string } | null;
+    /** A session owed a second client again, kept until that client is attached. */
+    second_owed?: string | null;
     /** Daemon restarts whose post-crash store check is still owed. */
     store_faults?: string[];
     daemon: { pid: number; start: string | null } | null;
@@ -193,6 +195,7 @@ export class HostDriver implements ArmDriver {
                 return p && this.secondSession ? { ...p, session: this.secondSession } : p;
             })(),
             store_faults: [...this.storeFaults, ...this.justChecked],
+            second_owed: this.secondOwed,
         };
         mkdirSync(this.armDir, { recursive: true });
         writeFileSync(this.stateFile, JSON.stringify(state));
@@ -247,12 +250,13 @@ export class HostDriver implements ArmDriver {
         this.storeFaults = state?.store_faults ?? [];
         const checked = join(this.armDir, "transcripts.json");
         const record = existsSync(checked) ? JSON.parse(readFileSync(checked, "utf8")) : null;
+        // An upgraded arm accepts only the record of the upgraded host's own fresh check.
         this.transcriptsChecked =
             record !== null &&
             record.missing.length === 0 &&
-            record.fresh !== false &&
+            (this.upgraded ? record.fresh === true : record.fresh !== false) &&
             JSON.stringify(record.templates ?? null) === JSON.stringify(this.transcriptPaths());
-        this.secondOwed = state?.second?.session ?? null;
+        this.secondOwed = state?.second?.session ?? state?.second_owed ?? null;
         await this.reapStale();
         await this.startArm(false);
         if (open) await this.event(open);
