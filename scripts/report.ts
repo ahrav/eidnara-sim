@@ -62,6 +62,12 @@ const recorded = (tier: Tier, dirs: string[]) => {
         process.exit(2);
     }
     const text = texts[0] ?? null;
+    if (text === null && loadPrereg(tier).resizing) {
+        console.error(
+            `the ${tier} runs have no ${tier}-resizing.json beside them: ${dirs.join(", ")}`,
+        );
+        process.exit(2);
+    }
     return text === null
         ? undefined
         : (JSON.parse(text) as {

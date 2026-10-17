@@ -470,6 +470,10 @@ describe("tier report", () => {
         const resized = tierReport(prereg, all, boundary, undefined, "", 40).verdict;
         expect(resized.pass.incomplete).toContain("probe-P1: 0 of 40 paired items");
         expect(resized.prereg_sha256).toBe(preregistrationHash(prereg));
+        const capped = tierInput(prereg, all, undefined, undefined, 2).observations;
+        const withItems = capped.filter((o) => (o.items?.length ?? 0) > 0);
+        expect(withItems.length).toBeGreaterThan(0);
+        for (const o of withItems) expect(o.items?.length).toBeLessThanOrEqual(2);
     });
 
     test("a tier whose CUSUM scale comes from another tier's A/A pairs takes that scale", () => {
@@ -1149,14 +1153,16 @@ describe("CUSUM scale", () => {
         const L = loadPrereg("L");
         const recorded = { harm: 0.5, futility: 0.25 };
         expect(cusumScale(L, new Map(), recorded)).toEqual(recorded);
-        const m = { scale: { harm: 0.7 }, complete: true };
-        expect(cusumScale(L, new Map([["M", m]]), recorded)).toEqual({
-            harm: 0.7,
+        const m = { scale: { harm: 0.7, futility: 0.1 }, complete: true };
+        expect(cusumScale(L, new Map([["M", m]]), recorded)).toEqual(recorded);
+        expect(cusumScale(L, new Map([["M", m]]), { harm: 0.5 })).toEqual({
+            harm: 0.5,
+            futility: 0.1,
+        });
+        expect(cusumScale(L, new Map([["M", { ...m, complete: false }]]))).toEqual({
+            harm: undefined,
             futility: undefined,
         });
-        expect(cusumScale(L, new Map([["M", { ...m, complete: false }]]), recorded)).toEqual(
-            recorded,
-        );
         expect(cusumScale(L, new Map())).toEqual({ harm: undefined, futility: undefined });
     });
 });

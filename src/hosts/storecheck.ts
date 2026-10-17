@@ -162,6 +162,7 @@ export async function deleteFactNotes(
     path: string,
     statement: string,
     others: readonly string[] = [],
+    onSpawn: (child: ReturnType<typeof Bun.spawn>) => void = () => undefined,
 ): Promise<Deletion> {
     if (lstatSync(path).isSymbolicLink()) {
         throw new Error(`${path} is a symlink; the deletion opens only the arm's own store file`);
@@ -174,6 +175,7 @@ export async function deleteFactNotes(
         const p = Bun.spawn(["python3", "-c", DELETE, path, JSON.stringify(ids)], {
             stderr: "pipe",
         });
+        onSpawn(p);
         if ((await p.exited) !== 0) throw new Error(await new Response(p.stderr).text());
     }
     const verify = factMatcher(statement, others, 3);

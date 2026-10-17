@@ -2,10 +2,11 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { loadConfig } from "../src/config/config";
 import { TIERS, type Tier } from "../src/prereg/schema";
+import { preregistrationHash } from "../src/prereg/validate";
 import { tierInput } from "../src/report/observe";
 import { aaScale, loadGraded } from "../src/report/tier";
 import { Children, SIGTERM_EXIT, type StopReason } from "../src/run/children";
-import { releaseLease, takeLease } from "../src/run/journal";
+import { leaseHolder, releaseLease, takeLease } from "../src/run/journal";
 import { gradedMainRuns, resizeFromM } from "../src/run/resize";
 import { loadScenario, writeAtomic } from "../src/run/run";
 import {
@@ -95,12 +96,23 @@ const refuse = (why: string): never => {
 
 const resizing = join(out, `${tier}-resizing.json`);
 const from = arg("resize-from");
+interface ResizingRecord {
+    source_dir: string;
+    source_prereg_sha256: string;
+    target_prereg_sha256: string;
+    paired_items_per_probe_type: number;
+}
+const recorded = (): ResizingRecord | null =>
+    existsSync(resizing) ? (JSON.parse(readFileSync(resizing, "utf8")) as ResizingRecord) : null;
 if (prereg.resizing && from && !existsSync(resizing)) {
     const m = loadPrereg(prereg.resizing.source_tier);
     for (const name of ["tier-plan.json", "tier-result.json"]) {
         if (!existsSync(join(resolve(from), name)))
             refuse(`${from} holds no ${name}; the ${m.tier} tier has not finished`);
     }
+    const holder = leaseHolder(resolve(from));
+    if (holder)
+        refuse(`${from} is leased by pid ${holder.pid} on ${holder.host}; resize once it finishes`);
     const { main, ungraded } = (() => {
         try {
             return gradedMainRuns(resolve(from), m);
@@ -113,18 +125,30 @@ if (prereg.resizing && from && !existsSync(resizing)) {
     const runs = main.map((d) => loadGraded(d, m));
     const sized = {
         recorded_at: new Date().toISOString(),
+        source_dir: resolve(from),
+        source_prereg_sha256: preregistrationHash(m),
+        target_prereg_sha256: preregistrationHash(prereg),
         runs: main,
         cusum_sd: aaScale(m, runs) ?? null,
         ...resizeFromM(prereg, tierInput(m, runs)),
     };
     writeFileSync(resizing, `${JSON.stringify(sized, null, 2)}\n`);
 }
-if (prereg.resizing && !existsSync(resizing))
+const record = recorded();
+if (prereg.resizing && !record)
     refuse(`${tier} starts only after ${resizing} records the resizing; pass --resize-from`);
-const items = prereg.resizing
-    ? (JSON.parse(readFileSync(resizing, "utf8")) as { paired_items_per_probe_type: number })
-          .paired_items_per_probe_type
-    : undefined;
+if (prereg.resizing && record) {
+    const m = loadPrereg(prereg.resizing.source_tier);
+    if (record.target_prereg_sha256 !== preregistrationHash(prereg))
+        refuse(
+            `${resizing} was recorded under another ${tier} pre-registration; remove it to resize again`,
+        );
+    if (from && record.source_dir !== resolve(from))
+        refuse(`${resizing} was recorded from ${record.source_dir}, not ${resolve(from)}`);
+    if (from && record.source_prereg_sha256 !== preregistrationHash(m))
+        refuse(`${resizing} was recorded under another ${m.tier} pre-registration`);
+}
+const items = record?.paired_items_per_probe_type;
 
 const scenarios = new Map<number, Scenario>();
 for (const seed of prereg.seeds) {

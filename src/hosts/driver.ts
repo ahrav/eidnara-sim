@@ -534,11 +534,18 @@ export class HostDriver implements ArmDriver {
         if (!this.daemon) return { skipped: "arm runs no daemon" };
         if (!existsSync(this.storeDb)) return { skipped: "no store yet" };
         try {
-            return await deleteFactNotes(this.storeDb, statement, others);
+            return await deleteFactNotes(this.storeDb, statement, others, (child) => {
+                this.deleting = child;
+                void child.exited.finally(() => {
+                    if (this.deleting === child) this.deleting = null;
+                });
+            });
         } catch (caught) {
             return { skipped: `deletion failed: ${String(caught).slice(0, 300)}` };
         }
     }
+
+    private deleting: ReturnType<typeof Bun.spawn> | null = null;
 
     get storeDb(): string {
         return join(this.dataDir, "eidnara", "context", "store.db");
@@ -558,6 +565,11 @@ export class HostDriver implements ArmDriver {
         this.host = null;
         this.daemon = null;
         this.second = null;
+        const deleting = this.deleting;
+        if (deleting) {
+            deleting.kill();
+            await deleting.exited;
+        }
         let failure: unknown = null;
         const closeSecond = () => (second ? this.releaseSecond(second) : undefined);
         for (const close of [() => host?.closeSession(), closeSecond]) {
