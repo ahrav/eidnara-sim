@@ -113,6 +113,49 @@ describe("soak verdict", () => {
         );
         expect(few.verdict).toBe("insufficient samples");
     });
+
+    test("a broken bound or a missed return is a leak with no fittable slope", () => {
+        const { kinds, journal } = sessions(1, () => 0);
+        const flat = (rss: number) =>
+            Array.from({ length: 10 }, (_, i) => ({
+                scenario_ms: i * 100,
+                wall_ms: i * 100,
+                rss,
+                store_bytes: 0,
+            }));
+        const jump = flat(100 * MB);
+        (jump[5] as { rss: number }).rss = 300 * MB;
+        const v = soak(run([], "", kinds), arm({ journal, resources: jump }), "rss");
+        expect([v.verdict, v.slope_per_session, v.bound.holds, v.returned_to_baseline]).toEqual([
+            "leak",
+            null,
+            false,
+            true,
+        ]);
+        const drift = flat(100 * MB);
+        (drift[9] as { rss: number }).rss = 120 * MB;
+        const d = soak(run([], "", kinds), arm({ journal, resources: drift }), "rss");
+        expect([d.verdict, d.bound.holds, d.returned_to_baseline]).toEqual(["leak", true, false]);
+        const steady = soak(run([], "", kinds), arm({ journal, resources: flat(100 * MB) }), "rss");
+        expect(steady.verdict).toBe("insufficient samples");
+    });
+
+    test("a sample taken while a session end is still closing belongs to the open session", () => {
+        seq = 0;
+        const kinds = new Map([["end-0", "session_end"]]);
+        const journal = [entry("Event", 999, { event: "end-0", wall_ms: 1_500 })];
+        const resources = [
+            { scenario_ms: 0, wall_ms: 0, rss: 100 * MB, store_bytes: 0 },
+            { scenario_ms: 999, wall_ms: 1_000, rss: 300 * MB, store_bytes: 0 },
+            { scenario_ms: 999, wall_ms: 2_000, rss: 100 * MB, store_bytes: 0 },
+        ];
+        const v = soak(run([], "", kinds), arm({ journal, resources }), "rss");
+        expect(v.bound.worst).toEqual({
+            value: 300 * MB,
+            limit: 200 * MB,
+            sessions: 0,
+        });
+    });
 });
 
 describe("intrusiveness panel", () => {
@@ -165,7 +208,7 @@ describe("intrusiveness panel", () => {
                 content: "Observed: retries stop after nine attempts in the client.",
                 status: "active",
                 deliveries: 1,
-                first_delivery_ms: BASE + 9_000,
+                first_delivery_ms: BASE + 5_500,
             },
         ];
         writeFileSync(join(dir, "eidnara", "memory.json"), JSON.stringify(notes));
@@ -176,7 +219,17 @@ describe("intrusiveness panel", () => {
             ["e-4", "pushback", "Who said retries stop after nine attempts in the client?", []],
             ["e-5", "task", "Note that the daemon port is 7780 here.", []],
             ["e-6", "pushback", "Is the daemon port is 7780 right?", ["P1"]],
+            ["e-7", "pushback", "Who says the daemon port is 7780 on every host?", []],
         ] as const;
+        writeFileSync(
+            join(dir, "scenario.json"),
+            JSON.stringify({
+                events: [
+                    { id: "e-1", kind: "user_turn", text: `Remember: ${rule}` },
+                    { id: "end-1", kind: "session_end" },
+                ],
+            }),
+        );
         const tape = replies.map(([event, label, text]) => ({
             key: event,
             event,
@@ -207,33 +260,54 @@ describe("intrusiveness panel", () => {
             `${pairing.map((t) => JSON.stringify(t)).join("\n")}\n`,
         );
         seq = 0;
-        const journal = [
-            entry("BeginTurn", 0, { event: "e-1" }),
-            entry("EndTurn", 4000, { event: "e-1" }),
-            entry("BeginTurn", 5000, { event: "e-2" }),
-            entry("EndTurn", 15000, { event: "e-2" }),
-            ...replies.map(([event]) =>
-                entry("UserTurn", event === "e-4" ? 5000 : 15000, { event }),
-            ),
+        const turns: [string, number, number][] = [
+            ["e-1", 1000, 4000],
+            ["e-2", 5000, 15000],
+            ["e-3", 5000, 6000],
+            ["e-4", 5000, 6000],
+            ["e-5", 5000, 6000],
+            ["e-6", 5000, 6000],
         ];
+        const journal = turns.flatMap(([event, begin, end]) => [
+            entry("BeginTurn", begin, { event }),
+            entry("EndTurn", end, { event }),
+            entry("UserTurn", end, { event }),
+        ]);
         const tools = [
             { command: "git restore src/db.rs", exit: 0, scenario_ms: 1, turn: "e-2" },
             { command: "git checkout -- src/lib.rs", exit: 0, scenario_ms: 2, turn: "e-2" },
             { command: "git restore --staged src/lib.rs", exit: 0, scenario_ms: 3, turn: "e-2" },
+            {
+                command: "git restore --quiet --staged src/lib.rs",
+                exit: 0,
+                scenario_ms: 3,
+                turn: "e-2",
+            },
+            {
+                command: "git restore --source=HEAD -S src/lib.rs",
+                exit: 0,
+                scenario_ms: 3,
+                turn: "e-2",
+            },
+            {
+                command: "git restore --staged --worktree src/lib.rs",
+                exit: 0,
+                scenario_ms: 3,
+                turn: "e-2",
+            },
             { command: "git checkout main && echo -- x", exit: 0, scenario_ms: 3, turn: "e-2" },
             { command: "cargo test", exit: 0, scenario_ms: 4, turn: "e-2" },
         ];
-        const panel = intrusiveness(run([], dir, new Map(), BASE), arm({ journal, tools }), [
-            `Remember: ${rule}`,
-        ]);
+        const panel = intrusiveness(run([], dir, new Map(), BASE), arm({ journal, tools }));
         expect(panel.corrections_referencing_injected_text).toEqual([
             { event: "e-2", label: "pushback", quote: "the daemon port is 7780" },
         ]);
         expect(panel.reverted_edits.map((r) => r.command)).toEqual([
             "git restore src/db.rs",
             "git checkout -- src/lib.rs",
+            "git restore --staged --worktree src/lib.rs",
         ]);
-        expect(panel.latency_ms).toEqual({ n: 2, p50: 4000, p95: 10000 });
+        expect(panel.latency_ms).toEqual({ n: 6, p50: 1000, p95: 10000 });
         expect(percentile([5, 1, 3, 2, 4], 0.5)).toBe(3);
 
         const grades = [

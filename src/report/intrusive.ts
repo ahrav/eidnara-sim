@@ -4,6 +4,7 @@ import type { MemoryNote } from "../hosts/storecheck";
 import type { ArmLogs, RunLogs } from "../oracle/logs";
 import { runOracles } from "../oracle/oracles";
 import { readJournal } from "../run/journal";
+import type { Scenario } from "../scenario/compile";
 import type { PairingRecord } from "../usersim/usersim";
 
 export interface Intrusiveness {
@@ -14,8 +15,12 @@ export interface Intrusiveness {
     latency_ms: { n: number; p50: number | null; p95: number | null };
 }
 
+/**
+ * A `git restore` reverts working-tree edits unless it names `--staged` or `-S` without
+ * `--worktree` or `-W`; both long and short forms may follow other options.
+ */
 const REVERT =
-    /\bgit\s+(?:-[Cc]\s+\S+\s+)*(?:revert\b|restore\b(?!\s+--staged)|checkout\b(?:\s+[^\s;&|]+)*?\s+--(?=\s)|reset\s+--hard\b)/;
+    /\bgit\s+(?:-[Cc]\s+\S+\s+)*(?:revert\b|restore\b(?:(?=(?:\s+[^\s;&|]+)*?\s+(?:--worktree|-W)\b)|(?!(?:\s+[^\s;&|]+)*?\s+(?:--staged|-S)\b))|checkout\b(?:\s+[^\s;&|]+)*?\s+--(?=\s)|reset\s+--hard\b)/;
 const SHINGLE = 5;
 
 function jsonl<T>(path: string): T[] {
@@ -27,6 +32,15 @@ export function notesOf(dir: string, arm: string): MemoryNote[] | null {
     return existsSync(path)
         ? (JSON.parse(readFileSync(path, "utf8")) as MemoryNote[] | null)
         : null;
+}
+
+function scriptedText(dir: string): string[] {
+    const path = join(dir, "scenario.json");
+    if (!existsSync(path)) return [];
+    const scenario = JSON.parse(readFileSync(path, "utf8")) as Scenario;
+    return scenario.events
+        .filter((e) => e.kind === "user_turn" && typeof e.text === "string")
+        .map((e) => e.text as string);
 }
 
 export const isRevert = (command: string) => REVERT.test(command);
@@ -72,26 +86,27 @@ export function turnLatencies(arm: ArmLogs): number[] {
 
 /**
  * A correction references injected text when a pushback or redirect the agent received shares a
- * five-word run with a memory note delivered before that turn (both in the hosts' faked clock,
- * `base_wall_ms` plus scenario time), and neither four-word half of the
- * run is in scripted user text: a user restating a rule it gave is quoting itself.
+ * five-word run with a memory note whose `first_delivery_ms` is at or before the turn's
+ * `BeginTurn` time (`base_wall_ms + scenario_ms`), and neither four-word half of the run is in
+ * the scenario's scripted user text: a user restating a rule it gave is quoting itself.
  */
-function corrections(run: RunLogs, arm: ArmLogs, userText: readonly string[]) {
-    const own = new Set(userText.flatMap((t) => shingles(t, SHINGLE - 1)));
+function corrections(run: RunLogs, arm: ArmLogs) {
+    const own = new Set(scriptedText(run.dir).flatMap((t) => shingles(t, SHINGLE - 1)));
     const quoted = (s: string) => {
         const words = s.split(" ");
         return own.has(words.slice(1).join(" ")) || own.has(words.slice(0, -1).join(" "));
     };
     const notes = (notesOf(run.dir, arm.arm) ?? []).filter((n) => n.first_delivery_ms !== null);
-    const sent = new Map(
+    const began = new Map(
         arm.journal
-            .filter((e) => e.kind === "UserTurn")
+            .filter((e) => e.kind === "BeginTurn")
             .map((e) => [String(e.event), run.base_wall_ms + e.scenario_ms]),
     );
     return userSimReplies(run.dir, arm.arm)
         .filter((r) => r.label === "pushback" || r.label === "redirect")
         .flatMap((r) => {
-            const at = sent.get(r.event) ?? Number.POSITIVE_INFINITY;
+            const at = began.get(r.event);
+            if (at === undefined) return [];
             const injected = new Set(
                 notes
                     .filter((n) => (n.first_delivery_ms as number) <= at)
@@ -103,18 +118,14 @@ function corrections(run: RunLogs, arm: ArmLogs, userText: readonly string[]) {
         });
 }
 
-export function intrusiveness(
-    run: RunLogs,
-    arm: ArmLogs,
-    userText: readonly string[] = [],
-): Intrusiveness {
+export function intrusiveness(run: RunLogs, arm: ArmLogs): Intrusiveness {
     const latencies = turnLatencies(arm);
     return {
         arm: arm.arm,
         internal_string_hits: runOracles({ ...run, arms: [arm] })
             .filter((a) => a.oracle === "F7")
             .map((a) => ({ source: "agent-response" as const, at: a.at, evidence: a.evidence })),
-        corrections_referencing_injected_text: corrections(run, arm, userText),
+        corrections_referencing_injected_text: corrections(run, arm),
         reverted_edits: arm.tools
             .filter((t) => isRevert(t.command))
             .map((t) => ({ turn: t.turn, command: t.command.slice(0, 200) })),

@@ -22,8 +22,12 @@ squared. The verdict is `leak` when any of these holds:
   median, so memory did not return to its baseline. A store keeps what it
   learns, so `store_bytes` has no return check.
 
-Otherwise it is `no leak`. With no nonzero sample, or a steady window too
-short or too flat in sessions to fit, it is `insufficient samples`.
+Otherwise it is `no leak`. With no nonzero sample it is `insufficient
+samples`; so is a steady window too short or too flat in sessions to fit
+when the bound and return checks, which need no fit, both pass. A sample's
+completed sessions are the session ends whose journal entry has a wall
+time at or before the sample's, so a sample taken while a session is
+still closing belongs to the open session.
 
 ## Intrusiveness
 
@@ -32,8 +36,8 @@ short or too flat in sessions to fit, it is `insufficient samples`.
 | Metric | Source |
 |---|---|
 | Internal-string hits | The F7 oracle's patterns over the agent's relayed responses, the text the user-sim reads, each tagged with that source; tool output shown to the agent has no capture to scan |
-| Corrections referencing injected text | Delivered user-sim pushback and redirect replies (the tape entries an arm's pairing records name, fallbacks left out) that share a five-word run with a memory note delivered before the turn (`<arm>/memory.json`; both times in the hosts' faked clock, `base_wall_ms` plus scenario time), where neither four-word half of the run appears in the scenario's scripted user text |
-| Reverted edits | Tool runs of `git revert`, `git restore` (not `--staged`), `git checkout ... --` within one command, or `git reset --hard`, with or without `-C` or `-c` options |
+| Corrections referencing injected text | Delivered user-sim pushback and redirect replies (the tape entries an arm's pairing records name, fallbacks left out) that share a five-word run with a memory note first delivered at or before the turn's `BeginTurn` (`<arm>/memory.json`; both times in the hosts' faked clock, `base_wall_ms` plus scenario time), where neither four-word half of the run appears in the scripted user turns of the run's `scenario.json`; a reply whose turn has no `BeginTurn` is left out |
+| Reverted edits | Tool runs of `git revert`, `git restore` (unless `--staged` or `-S` appears anywhere in the invocation without `--worktree` or `-W`), `git checkout ... --` within one command, or `git reset --hard`, with or without `-C` or `-c` options |
 | Turn latency | p50 and p95 of each turn's wall time from `BeginTurn` to `EndTurn` |
 
 A revert is counted on every arm, so the difference from the host arm is

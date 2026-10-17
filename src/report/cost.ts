@@ -39,12 +39,8 @@ export interface CostPanel {
 
 const USEFUL = /^P(?:[1-9]|1[0-2])$/;
 
-export function costPanel(
-    run: RunLogs,
-    arm: ArmLogs,
-    grades: GradeRecord[],
-    price: Price = V1_PRICE,
-): CostPanel {
+export function costPanel(run: RunLogs, arm: ArmLogs, grades: GradeRecord[]): CostPanel {
+    const price = V1_PRICE;
     const byComponent = new Map<string, ComponentCost>();
     for (const c of arm.calls) {
         const row = byComponent.get(c.component) ?? {
