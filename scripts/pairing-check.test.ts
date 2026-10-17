@@ -265,3 +265,20 @@ test("the pairing check fails a run whose log lacks a scheduled turn for an arm"
     expect(interrupted.report.interrupted_turns).toEqual(["b e-1"]);
     expect(interrupted.exit).toBe(1);
 });
+
+test("the pairing check refuses a control listed without its arm", () => {
+    const dir = mkdtempSync(join(tmpdir(), "pairing-check-"));
+    writeFileSync(
+        join(dir, "manifest.json"),
+        JSON.stringify({ tier: "S", order: ["host~aa"], events: 0 }),
+    );
+    writeFileSync(join(dir, "scenario.json"), JSON.stringify({ events: [] }));
+    writeFileSync(join(dir, "pairing.jsonl"), "");
+    writeFileSync(join(dir, "journal.jsonl"), "");
+    const r = Bun.spawnSync(["bun", join(ROOT, "scripts/pairing-check.ts"), dir], {
+        stdout: "pipe",
+        stderr: "pipe",
+    });
+    expect(r.exitCode).not.toBe(0);
+    expect(r.stderr.toString()).toContain("host~aa runs without host");
+});

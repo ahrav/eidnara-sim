@@ -2,7 +2,7 @@ import { existsSync, lstatSync, readFileSync, renameSync, rmSync, writeFileSync 
 import { join, resolve } from "node:path";
 import { GradeLog } from "../src/grade/probes";
 import { armBase, requireOrder } from "../src/hosts/arms";
-import { ARMS, type Tier } from "../src/prereg/schema";
+import type { Tier } from "../src/prereg/schema";
 import { preregistrationHash } from "../src/prereg/validate";
 import { bootstrapMean, disagreementRate, pairedDiffs } from "../src/report/paired";
 import {
@@ -20,6 +20,8 @@ import { pairingMismatches, readPairing } from "../src/usersim/usersim";
 /** A percentile interval over fewer clusters than this undercovers, so it decides nothing. */
 const MIN_CLUSTERS = 5;
 const VERDICTS: readonly string[] = ["pass", "fail", "excluded"];
+/** docs/claim-boundary.md: every report carries this document's version. */
+const CLAIM_BOUNDARY = "sim-claim-boundary/v1";
 
 export function aaReport(dir: string) {
     // The lease, the staging file, and aa.json land in `dir` itself, never through a link.
@@ -64,12 +66,25 @@ function report(dir: string) {
     );
     const clusterOf = (metric: string) => (item: string) =>
         runLevel.has(probeType(metric)) ? "run" : (fact.get(item) ?? item);
-    // GradeLog repairs a cut last line in place, so only a regular file may be opened.
+    // GradeLog repairs a cut last line in place, so only a file that is nobody else's may be opened.
     const gradesPath = join(dir, "grades.jsonl");
-    if (!lstatSync(gradesPath).isFile()) throw new Error(`${gradesPath} is not a regular file`);
+    const stat = lstatSync(gradesPath);
+    if (!stat.isFile() || stat.nlink !== 1) {
+        throw new Error(`${gradesPath} is not a regular file with one link`);
+    }
     const grades = new GradeLog(gradesPath).latest();
     const order = manifest.order as string[];
-    requireOrder(order, ARMS, prereg.aa_controls?.pairs ?? []);
+    requireOrder(order, prereg.arms.run, prereg.aa_controls?.pairs ?? []);
+    const count: unknown = manifest.events;
+    if (
+        !Number.isInteger(count) ||
+        (count as number) < 1 ||
+        (count as number) > scenario.events.length
+    ) {
+        throw new Error(
+            `${dir}: manifest events ${String(count)} is outside 1..${scenario.events.length}`,
+        );
+    }
     const scheduled = scenario.events.slice(0, manifest.events).map((e) => String(e.id));
     const prefix = scenario.events.slice(0, manifest.events);
     const userTurns = prefix.filter((e) => e.kind === "user_turn").map((e) => String(e.id));
@@ -91,6 +106,7 @@ function report(dir: string) {
         const sound =
             order.includes(g.arm) &&
             typeOf.get(g.item) === g.probe_type &&
+            (g.probe_type === "P7" || reached.includes(g.item)) &&
             Number.isInteger(g.version) &&
             VERDICTS.includes(g.verdict) &&
             typeof g.metrics === "object" &&
@@ -105,7 +121,14 @@ function report(dir: string) {
             .filter((e) => e.kind === "user_turn")
             .map((e) => [String(e.id), e as { session?: string; index?: number }]),
     );
+    const seen = new Set<string>();
     for (const r of pairing) {
+        const identity =
+            r.kind === "turn" ? `${r.arm} turn ${r.event}` : `${r.arm} divergence in ${r.session}`;
+        if (seen.has(identity)) {
+            throw new Error(`${dir}/pairing.jsonl: ${identity} is recorded twice`);
+        }
+        seen.add(identity);
         const e = turnOf.get(r.event);
         if (!e || e.session !== r.session || e.index !== r.index) {
             throw new Error(
@@ -164,6 +187,7 @@ function report(dir: string) {
             arm,
             control,
             prereg_sha256,
+            claim_boundary: CLAIM_BOUNDARY,
             metrics,
             method: "cluster percentile bootstrap, 95%",
             every_interval_covers_zero:

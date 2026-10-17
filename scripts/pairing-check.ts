@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { CORPUS_DIR } from "../src/corpus/sources";
+import { armBase, requireOrder } from "../src/hosts/arms";
 import { sha256Hex } from "../src/prereg/canonical";
 import { readJournal } from "../src/run/journal";
 import { referenceArm } from "../src/run/run";
@@ -17,6 +18,14 @@ if (!existsSync(join(dir, "pairing.jsonl"))) {
 const manifest = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8"));
 const scenario = JSON.parse(readFileSync(join(dir, "scenario.json"), "utf8")) as Scenario;
 const records = readPairing(join(dir, "pairing.jsonl"), manifest.order as string[]);
+// The order's control structure, as the run command admits it; the arms it names are the
+// manifest's own, which the oracle loader and the A/A report bind to the tier.
+const order = manifest.order as string[];
+requireOrder(
+    order,
+    [...new Set(order.map(armBase))],
+    loadPrereg(manifest.tier).aa_controls?.pairs ?? [],
+);
 const reference = referenceArm(manifest.order);
 const turns = records.filter((r): r is TurnRecord => r.kind === "turn");
 const script = new Map(

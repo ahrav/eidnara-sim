@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
     appendFileSync,
     existsSync,
+    linkSync,
     lstatSync,
     mkdtempSync,
     readFileSync,
@@ -58,6 +59,12 @@ const journal = (order: string[], events: number) => [
     { kind: "EndRun", arm: null, scenario_ms: 0 },
 ];
 
+const PROBE_EVENTS = [1, 2, 3, 4, 5, 6].flatMap((i) => [`p-${i}`, `q-${i}`]);
+const N_EVENTS = PROBE_EVENTS.length + 1;
+/** Every scheduled turn of an arm, each delivering `text`. */
+const allTurns = (arm: string, text = "same") =>
+    PROBE_EVENTS.map((_, i) => turn(arm, `e-${i + 1}`, text, i));
+
 function gradedRun(
     tier: string,
     prereg_sha256: string,
@@ -77,14 +84,14 @@ function gradedRun(
         ]),
     ) as GradeRecord[];
     const events = [
-        ...[1, 2, 3].map((i) => ({
-            id: `e-${i}`,
+        ...PROBE_EVENTS.map((probe, i) => ({
+            id: `e-${i + 1}`,
             kind: "user_turn",
             session: "s-1",
-            index: i - 1,
-            probe: `p-${i}`,
+            index: i,
+            probe,
         })),
-        { id: "e-4", kind: "session_end", session: "s-1" },
+        { id: `e-${N_EVENTS}`, kind: "session_end", session: "s-1" },
     ];
     probes.push(
         { id: "j-1", type: "P7", fact: "fact-1" },
@@ -95,16 +102,14 @@ function gradedRun(
         tier,
         seed: 101,
         order: ["host", "host~aa"],
-        events: 4,
+        events: N_EVENTS,
         prereg_sha256,
         scenario_hash: scenario_hash ?? scenarioHash(scenario),
     };
     writeFileSync(join(dir, "manifest.json"), JSON.stringify(manifest));
     writeFileSync(join(dir, "scenario.json"), JSON.stringify(scenario));
     writeFileSync(join(dir, "grades.jsonl"), grades.map(line).join(""));
-    const turns = ["host", "host~aa"].flatMap((arm) =>
-        [1, 2, 3].map((i) => turn(arm, `e-${i}`, "same", i - 1)),
-    );
+    const turns = ["host", "host~aa"].flatMap((arm) => allTurns(arm));
     writeFileSync(join(dir, "pairing.jsonl"), turns.map(line).join(""));
     writeFileSync(
         join(dir, "journal.jsonl"),
@@ -127,23 +132,16 @@ describe("aa-report", () => {
     test("a grading run cut short converges on its rerun: the latest grade per side pairs", () => {
         const dir = gradedRun("S", preregistrationHash(loadPrereg("S")));
         const line = (o: unknown) => `${JSON.stringify(o)}\n`;
-        const cut = grade("host", "p-7", "P3", "P3.delta_mem", 0);
-        const rerun = [{ ...cut, version: 2 }, grade("host~aa", "p-7", "P3", "P3.delta_mem", 7)];
+        const cut = { ...grade("host", "p-1", "P3", "P3.delta_mem", 0), version: 2 };
+        const rerun = [
+            { ...cut, version: 3 },
+            { ...grade("host~aa", "p-1", "P3", "P3.delta_mem", 9), version: 2 },
+        ];
         appendFileSync(join(dir, "grades.jsonl"), [cut, ...rerun].map(line).join(""));
-        const was = JSON.parse(readFileSync(join(dir, "scenario.json"), "utf8"));
-        writeFileSync(
-            join(dir, "scenario.json"),
-            JSON.stringify({
-                ...was,
-                probes: [...was.probes, { id: "p-7", type: "P3", fact: "fact-7" }],
-            }),
-        );
-        const manifest = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8"));
-        const scenario = JSON.parse(readFileSync(join(dir, "scenario.json"), "utf8"));
-        manifest.scenario_hash = scenarioHash(scenario);
-        writeFileSync(join(dir, "manifest.json"), JSON.stringify(manifest));
         const [report] = aaReport(dir);
-        expect(report?.metrics.find((m) => m.metric === "P3.delta_mem")?.n).toBe(7);
+        const m = report?.metrics.find((x) => x.metric === "P3.delta_mem");
+        expect(m?.n).toBe(6);
+        expect(m?.mean).toBeCloseTo((9 + 2 + 3 + 4 + 5 + 6) / 6);
     });
 
     test("refuses a grade whose probe type, arm, or version contradicts the run", () => {
@@ -251,12 +249,9 @@ describe("aa-report", () => {
     test("refuses a control whose delivered text differed from its arm's before any divergence", () => {
         const dir = gradedRun("S", preregistrationHash(loadPrereg("S")));
         const records = [
-            turn("host", "e-1", "aaaa"),
-            turn("host~aa", "e-1", "bbbb"),
-            ...["e-2", "e-3"].flatMap((e, i) => [
-                turn("host", e, "same", i + 1),
-                turn("host~aa", e, "same", i + 1),
-            ]),
+            ...allTurns("host"),
+            turn("host~aa", "e-1", "bbbb", 0),
+            ...allTurns("host~aa").slice(1),
         ];
         writeFileSync(
             join(dir, "pairing.jsonl"),
@@ -271,11 +266,7 @@ describe("aa-report", () => {
         writeFileSync(join(empty, "pairing.jsonl"), "");
         expect(() => aaReport(empty)).toThrow(/host has no pairing record for e-1, e-2, e-3/);
         const lost = gradedRun("S", preregistrationHash(loadPrereg("S")));
-        const kept = [
-            ...["e-1", "e-2", "e-3"].map((e, i) => turn("host~aa", e, "same", i)),
-            turn("host", "e-1", "same"),
-            turn("host", "e-3", "same", 2),
-        ];
+        const kept = [...allTurns("host~aa"), ...allTurns("host").filter((t) => t.event !== "e-2")];
         writeFileSync(join(lost, "pairing.jsonl"), kept.map(line).join(""));
         expect(() => aaReport(lost)).toThrow(/host has no pairing record for e-2/);
     });
@@ -286,13 +277,13 @@ describe("aa-report", () => {
         rmSync(join(gone, "journal.jsonl"));
         expect(() => aaReport(gone)).toThrow(/journaled order/);
         const cut = gradedRun("S", preregistrationHash(loadPrereg("S")));
-        const entries = journal(["host", "host~aa"], 4).filter((e) => e.kind !== "EndRun");
+        const entries = journal(["host", "host~aa"], N_EVENTS).filter((e) => e.kind !== "EndRun");
         writeFileSync(join(cut, "journal.jsonl"), entries.map(line).join(""));
         expect(() => aaReport(cut)).toThrow(/no EndRun/);
         const swapped = gradedRun("S", preregistrationHash(loadPrereg("S")));
         writeFileSync(
             join(swapped, "journal.jsonl"),
-            journal(["host~aa", "host"], 4).map(line).join(""),
+            journal(["host~aa", "host"], N_EVENTS).map(line).join(""),
         );
         expect(() => aaReport(swapped)).toThrow(/journaled order/);
     });
@@ -320,7 +311,7 @@ describe("aa-report", () => {
     test("refuses a pairing log missing a scheduled turn on both sides", () => {
         const dir = gradedRun("S", preregistrationHash(loadPrereg("S")));
         const line = (o: unknown) => `${JSON.stringify(o)}\n`;
-        const kept = ["host", "host~aa"].map((a) => turn(a, "e-1", "same"));
+        const kept = ["host", "host~aa"].map((a) => turn(a, "e-1", "same", 0));
         writeFileSync(join(dir, "pairing.jsonl"), kept.map(line).join(""));
         expect(() => aaReport(dir)).toThrow(/e-2, e-3/);
     });
@@ -366,21 +357,91 @@ describe("aa-report", () => {
         const line = (o: unknown) => `${JSON.stringify(o)}\n`;
         const moved = gradedRun("S", preregistrationHash(loadPrereg("S")));
         const rows = [
-            ...[1, 2, 3].map((i) => turn("host", `e-${i}`, "same", i - 1)),
-            turn("host~aa", "e-1", "same", 0),
-            turn("host~aa", "e-2", "same", 7),
-            turn("host~aa", "e-3", "same", 2),
+            ...allTurns("host"),
+            ...allTurns("host~aa").map((t) => (t.event === "e-2" ? { ...t, index: 7 } : t)),
         ];
         writeFileSync(join(moved, "pairing.jsonl"), rows.map(line).join(""));
         expect(() => aaReport(moved)).toThrow(/e-2.*index 7/);
         const strayed = gradedRun("S", preregistrationHash(loadPrereg("S")));
         const other = [
-            ...[1, 2, 3].map((i) => turn("host", `e-${i}`, "same", i - 1)),
-            ...[1, 2, 3].map((i) => turn("host~aa", `e-${i}`, "same", i - 1)),
-            { ...turn("host~aa", "e-9", "same", 0) },
+            ...allTurns("host"),
+            ...allTurns("host~aa"),
+            turn("host~aa", "e-99", "same", 0),
         ];
         writeFileSync(join(strayed, "pairing.jsonl"), other.map(line).join(""));
-        expect(() => aaReport(strayed)).toThrow(/e-9/);
+        expect(() => aaReport(strayed)).toThrow(/e-99/);
+    });
+
+    test("refuses a grade for a probe the run's scheduled prefix never reached", () => {
+        const dir = gradedRun("S", preregistrationHash(loadPrereg("S")));
+        const scenario = JSON.parse(readFileSync(join(dir, "scenario.json"), "utf8"));
+        scenario.probes.push({ id: "z-1", type: "P3", fact: "fact-z" });
+        writeFileSync(join(dir, "scenario.json"), JSON.stringify(scenario));
+        const manifest = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8"));
+        manifest.scenario_hash = scenarioHash(scenario);
+        writeFileSync(join(dir, "manifest.json"), JSON.stringify(manifest));
+        const stale = ["host", "host~aa"].map((a) => grade(a, "z-1", "P3", "P3.delta_mem", 0));
+        appendFileSync(
+            join(dir, "grades.jsonl"),
+            stale.map((g) => `${JSON.stringify(g)}\n`).join(""),
+        );
+        expect(() => aaReport(dir)).toThrow(/z-1/);
+    });
+
+    test("refuses a second turn for an arm's event and a second divergence for an arm's session", () => {
+        const line = (o: unknown) => `${JSON.stringify(o)}\n`;
+        const twice = gradedRun("S", preregistrationHash(loadPrereg("S")));
+        const rows = [...allTurns("host"), ...allTurns("host~aa"), turn("host", "e-1", "same", 0)];
+        writeFileSync(join(twice, "pairing.jsonl"), rows.map(line).join(""));
+        expect(() => aaReport(twice)).toThrow(/host.*e-1.*twice/);
+        const diverged = gradedRun("S", preregistrationHash(loadPrereg("S")));
+        const d = (index: number) => ({
+            kind: "divergedAt",
+            arm: "host~aa",
+            session: "s-1",
+            event: `e-${index + 1}`,
+            index,
+            digest: "d",
+            context_sha256: "c",
+            reference_digest: "r",
+            against: "reference",
+        });
+        const twoD = [...allTurns("host"), ...allTurns("host~aa"), d(3), d(5)];
+        writeFileSync(join(diverged, "pairing.jsonl"), twoD.map(line).join(""));
+        expect(() => aaReport(diverged)).toThrow(/host~aa.*s-1.*twice/);
+    });
+
+    test("refuses an arm outside the tier's run and a manifest event count outside the scenario", () => {
+        const foreign = gradedRun("S", preregistrationHash(loadPrereg("S")));
+        const m1 = JSON.parse(readFileSync(join(foreign, "manifest.json"), "utf8"));
+        writeFileSync(
+            join(foreign, "manifest.json"),
+            JSON.stringify({ ...m1, order: ["host", "host~aa", "eidnara-cf"] }),
+        );
+        expect(() => aaReport(foreign)).toThrow(/eidnara-cf/);
+        for (const events of [999, 0, 1.5, "3"]) {
+            const dir = gradedRun("S", preregistrationHash(loadPrereg("S")));
+            const m = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8"));
+            writeFileSync(join(dir, "manifest.json"), JSON.stringify({ ...m, events }));
+            expect(() => aaReport(dir)).toThrow(/manifest events/);
+        }
+    });
+
+    test("a hard-linked grade log is refused before GradeLog could repair the shared inode", () => {
+        const dir = gradedRun("S", preregistrationHash(loadPrereg("S")));
+        const target = join(dir, "elsewhere.jsonl");
+        const body = readFileSync(join(dir, "grades.jsonl"), "utf8").trimEnd();
+        writeFileSync(target, body);
+        rmSync(join(dir, "grades.jsonl"));
+        linkSync(target, join(dir, "grades.jsonl"));
+        expect(() => aaReport(dir)).toThrow(/grades\.jsonl/);
+        expect(readFileSync(target, "utf8")).toBe(body);
+    });
+
+    test("each entry names the claim boundary that governs it", () => {
+        const dir = gradedRun("S", preregistrationHash(loadPrereg("S")));
+        const [report] = aaReport(dir);
+        expect(report?.claim_boundary).toBe("sim-claim-boundary/v1");
     });
 
     test("a run-level family forms one cluster per run, so one run leaves it uninformative", () => {

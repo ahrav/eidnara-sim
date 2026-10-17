@@ -127,7 +127,8 @@ journal entries, and call records (`armBase` and `CONTROL_LABEL` in
 `src/hosts/arms.ts`). `--arms host,host~aa` runs it right after its arm,
 one control per arm, and only for a pair the tier pre-registers in
 `aa_controls.pairs` (S and M); the oracle loader and the A/A report hold a
-manifest order to the same rule, adjacency included (`requireOrder`). A control's reference arm is its own arm,
+manifest order to the same rule, adjacency and the tier's arms included
+(`requireOrder`), and `pairing-check.ts` holds it to the control structure. A control's reference arm is its own arm,
 so its divergence records and tape replies pair it with that arm; every
 other arm's reference is the first of the order. Both arms of a pair share
 the scenario, the behaviour plan, and the tape, so the control measures
@@ -138,20 +139,24 @@ judgments against the host arm, stay out of the A/A pairing.
 `scripts/aa-report.ts <run>` reads the run's graded items and, for each
 control, pairs every item both arms graded. It takes the run path only as
 a directory itself (a symlink is refused), holds the run's lease while
-it reads, opens `grades.jsonl` only as a regular file (`GradeLog` repairs a
-cut last line in place), requires the journal complete for the manifest order and the
-scheduled events (`requireComplete`, as `grade-run.ts` does), checks each
+it reads, opens `grades.jsonl` only as a regular file with one link
+(`GradeLog` repairs a cut last line in place), requires a manifest event
+count inside the scenario and the journal complete for the manifest order
+and the scheduled events (`requireComplete`, as `grade-run.ts` does), checks each
 pairing record's shape and arm (`readPairing`, which
 `pairing-check.ts` shares, refusing a corrupt terminated line), binds each
-record to its scheduled turn's session and index, requires a turn record
+record to its scheduled turn's session and index, admits one turn per arm
+and event and one divergence per arm and session, requires a turn record
 from each arm of the pair for every scheduled user turn, refuses a
 control whose delivered text differed from its arm's before its recorded
 divergence (`pairingMismatches`, the check `pairing-check.ts` runs), checks each
-latest grade's arm, item, probe type, and version against the run, refuses
+latest grade's arm, item, probe type, version, and verdict against the
+run and its reached probes, refuses
 a run graded under another pre-registration or whose scenario no longer
 hashes to the manifest's digest, requires the manifest's tier and seed to
 match the compiled scenario's, and records the pre-registration hash it
-used. It reports, per arm and leaving P7 aside, the excluded grades and
+used. Each entry carries `sim-claim-boundary/v1`
+(docs/claim-boundary.md). It reports, per arm and leaving P7 aside, the excluded grades and
 the probes the run reached (through their turn, or for P14 through the
 session that ended in the prefix) that the arm has no grade for, and the items
 graded on one side only, which pair nothing. A grading run cut short converges on its rerun: the rerun grades
