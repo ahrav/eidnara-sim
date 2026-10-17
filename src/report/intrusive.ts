@@ -38,18 +38,15 @@ export interface Intrusiveness {
  * Each `git` invocation at a command position on one line of a shell command: at the line start or
  * after a separator or a grouping `(` (a `$(` substitution's status is the outer command's, so it
  * is no position), past any `VAR=value` assignments and `sudo`, `env`, `time`, `nice`, `nohup`,
- * or `exec` prefixes with their options, and past git's own global options (`-C <path>`,
+ * `exec`, or `command` prefixes with their options, and past git's own global options (`-C <path>`,
  * `-c <k>=<v>`, and any `--option` or `--option=value`); its subcommand and arguments run up to
  * the next separator. Group 1 is the separator before it: after `||` the shell may have skipped
  * the invocation.
  */
 const GIT =
-    /(^|&&|\|\||[;&|]|(?<!\$)\()[ \t]*(?:\w+=[^ \t\n]*[ \t]+)*(?:(?:sudo|env|time|nice|nohup|exec)(?:[ \t]+(?:-[^ \t\n]*|\w+=[^ \t\n]*))*[ \t]+)*git[ \t]+(?:-[Cc][ \t]+[^ \t\n]+[ \t]+|--[^ \t\n]+[ \t]+)*([a-z-]+)((?:[ \t]+[^ \t\n;&|)]+)*)/gm;
-const COMMENT = /(^|[ \t])#.*$/g;
-/** Redirections (`2>&1`, `&>f`, `>f`, `<f`), which are part of a command rather than separators. */
+    /(^|&&|\|\||[;&|]|(?<!\$)\()[ \t]*(?:\w+=[^ \t\n]*[ \t]+)*(?:(?:sudo|env|time|nice|nohup|exec|command)(?:[ \t]+(?:-[^ \t\n]*|\w+=[^ \t\n]*))*[ \t]+)*git[ \t]+(?:-[Cc][ \t]+[^ \t\n]+[ \t]+|--[^ \t\n]+[ \t]+)*([a-z-]+)((?:[ \t]+[^ \t\n;&|)]+)*)/gm;
 const REDIRECT = /[ \t]*(?:\d*[<>]{1,2}&?\d*|&>>?)[ \t]*[^ \t\n;&|)]*/g;
-const HEREDOC = /<<-?[ \t]*(['"]?)(\w+)\1/g;
-const QUOTED = /'[^'\n]*'|"(?:[^"\\\n]|\\.)*"/g;
+const HEREDOC_OPEN = /^<<-?[ \t]*(['"]?)(\w+)\1/;
 /** A quoted string as one shell word: its text with every shell-significant character made plain. */
 const unquote = (q: string) => q.slice(1, -1).replace(/[\s;&|()<>$#'"\\`]/g, "_") || "_";
 const SEPARATOR = /&&|\|\||[;|&\n]/g;
@@ -117,31 +114,47 @@ const checksOutPaths = (args: string[]) => {
 };
 
 /**
- * The command's lines as the shell runs them: each quoted string becomes the one word the shell
- * passes (`"-S"` is `-S`, `"my file"` is `my_file`), so options keep their meaning and later
- * words their positions; a comment (`#` at a word start outside quotes), redirections, and
- * the body lines of a heredoc whose `<<` sits outside quotes are dropped.
+ * The command as the shell runs it: each quoted string, across lines too, becomes the one word
+ * the shell passes (`"-S"` is `-S`, `"my file"` is `my_file`), so options keep their meaning and
+ * later words their positions; a comment (`#` at a word start outside quotes), redirections, and
+ * the body lines of a heredoc whose `<<` sits outside quotes are dropped. An unclosed quote runs
+ * to the end.
  */
 function executable(command: string): string {
-    const lines: string[] = [];
-    let tag: string | null = null;
-    for (const line of command.split("\n")) {
-        if (tag !== null) {
-            if (line.trim() === tag) tag = null;
-            continue;
+    let out = "";
+    let heredoc: string | null = null;
+    for (let i = 0; i < command.length; ) {
+        const ch = command[i] as string;
+        if (ch === "\n") {
+            out += ch;
+            i++;
+            while (heredoc !== null && i < command.length) {
+                const end = command.indexOf("\n", i);
+                const line = command.slice(i, end < 0 ? command.length : end);
+                i = end < 0 ? command.length : end + 1;
+                if (line.trim() === heredoc) heredoc = null;
+            }
+            heredoc = null;
+        } else if (ch === "'" || ch === '"') {
+            let j = i + 1;
+            while (j < command.length && command[j] !== ch)
+                j += ch === '"' && command[j] === "\\" ? 2 : 1;
+            out += unquote(command.slice(i, Math.min(j, command.length)) + ch);
+            i = j + 1;
+        } else if (ch === "#" && (i === 0 || /[ \t\n]/.test(command[i - 1] as string))) {
+            const end = command.indexOf("\n", i);
+            i = end < 0 ? command.length : end;
+        } else if (ch === "<" && command[i + 1] === "<" && HEREDOC_OPEN.test(command.slice(i))) {
+            const m = HEREDOC_OPEN.exec(command.slice(i)) as RegExpExecArray;
+            heredoc = m[2] as string;
+            out += " ";
+            i += m[0].length;
+        } else {
+            out += ch;
+            i++;
         }
-        const quoted = [...line.matchAll(QUOTED)].map((m) => [m.index, m.index + m[0].length]);
-        const inQuotes = (i: number) =>
-            quoted.some(([a, b]) => i >= (a as number) && i < (b as number));
-        const heredoc = [...line.matchAll(HEREDOC)].find((m) => !inQuotes(m.index));
-        if (heredoc) tag = heredoc[2] as string;
-        const comment = [...line.matchAll(COMMENT)].find(
-            (m) => !inQuotes(m.index + (m[1] as string).length),
-        );
-        const code = comment ? line.slice(0, comment.index) : line;
-        lines.push(code.replace(QUOTED, unquote).replace(REDIRECT, " "));
     }
-    return lines.join("\n");
+    return out.replace(REDIRECT, " ");
 }
 
 const reverts = (sub: string, args: string[]) =>
@@ -243,9 +256,11 @@ export function turnLatencies(arm: ArmLogs): number[] | null {
  * five-word run with a memory note whose `first_delivery_ms` is at least `CLOCK_SLACK_MS` before
  * the turn's `BeginTurn` time (`base_wall_ms + scenario_ms`), and neither four-word half of the
  * run is in the scripted user text up to and including that turn: a user restating a rule it
- * gave is quoting itself. The journal must hold the turn's `BeginTurn` and a delivered `UserTurn`;
- * a pairing record alone is the user-sim's intent, which a kill before the turn ends leaves
- * undelivered. `null` when the notes or the replies are unavailable.
+ * gave is quoting itself. The journal must hold the turn's `BeginTurn` and evidence of delivery:
+ * a `UserTurn` with `delivered: true`, or an `EndTurn` with outcome `ok` and a `prompt_ms`, which
+ * a kill between the two writes leaves as the only record of a prompt that ran. A pairing record
+ * alone is the user-sim's intent, which a kill before the turn ends leaves undelivered. `null`
+ * when the notes or the replies are unavailable.
  */
 function corrections(run: RunLogs, arm: ArmLogs) {
     const script = scriptedTurns(run.dir);
@@ -269,7 +284,11 @@ function corrections(run: RunLogs, arm: ArmLogs) {
     );
     const delivered = new Set(
         arm.journal
-            .filter((e) => e.kind === "UserTurn" && e.delivered === true)
+            .filter(
+                (e) =>
+                    (e.kind === "UserTurn" && e.delivered === true) ||
+                    (e.kind === "EndTurn" && e.outcome === "ok" && typeof e.prompt_ms === "number"),
+            )
             .map((e) => String(e.event)),
     );
     return replies

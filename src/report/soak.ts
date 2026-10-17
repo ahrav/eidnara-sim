@@ -71,10 +71,15 @@ function byPid(samples: ArmLogs["resources"]): ArmLogs["resources"][] {
 
 /**
  * `null` when a sample lacks the resource's field altogether (a `resources.jsonl` begun before
- * the sampler recorded it), so the verdict never rests on the suffix that has it.
+ * the sampler recorded it), so the verdict never rests on the suffix that has it; and, for a
+ * memory resource, when a sample with a process lacks `pid_started`, since two processes sharing
+ * a pid could then be told apart only by a `pid: null` row between them.
  */
 export function soak(run: RunLogs, arm: ArmLogs, resource: Resource): SoakVerdict | null {
     if (arm.resources.some((s) => !(resource in s))) return null;
+    const unidentified = (s: ArmLogs["resources"][number]) =>
+        typeof s.pid === "number" && !("pid_started" in s);
+    if (resource !== "store_bytes" && arm.resources.some(unidentified)) return null;
     const ends = arm.journal
         .filter((e) => e.kind === "Event" && run.kinds.get(String(e.event)) === "session_end")
         .map((e) => e.wall_ms);

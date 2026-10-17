@@ -180,6 +180,7 @@ describe("soak verdict", () => {
                 scenario_ms: s * 1000 + i * 100,
                 wall_ms: s * 1000 + i * 100,
                 pid: s < 10 ? 100 : 200,
+                pid_started: 1000,
                 rss: s < 10 ? 100 * MB + s * 12 * MB : 100 * MB,
                 store_bytes: 10 * MB,
             })),
@@ -196,6 +197,11 @@ describe("soak verdict", () => {
         const store = soak(run([], "", kinds), arm({ journal, resources }), "store_bytes");
         expect([store?.verdict, store?.generations]).toEqual(["no leak", 1]);
         const reused: ArmLogs["resources"] = resources.map((r) => ({ ...r, pid: 100 }));
+        const legacy = resources.map(({ pid_started, ...r }) => r);
+        expect(soak(run([], "", kinds), arm({ journal, resources: legacy }), "rss")).toBeNull();
+        expect(
+            soak(run([], "", kinds), arm({ journal, resources: legacy }), "store_bytes")?.verdict,
+        ).toBe("no leak");
         reused.splice(50, 0, {
             scenario_ms: 9950,
             wall_ms: 9950,
@@ -222,9 +228,16 @@ describe("soak verdict", () => {
         seq = 0;
         const kinds = new Map<string, string>();
         const resources = [
-            { scenario_ms: 0, wall_ms: 0, pid: 1, rss: 100 * MB, store_bytes: 0 },
+            { scenario_ms: 0, wall_ms: 0, pid: 1, pid_started: 1, rss: 100 * MB, store_bytes: 0 },
             { scenario_ms: 10_000, wall_ms: 10_000, pid: null, rss: null, store_bytes: 0 },
-            { scenario_ms: 20_000, wall_ms: 20_000, pid: 2, rss: 100 * MB, store_bytes: 0 },
+            {
+                scenario_ms: 20_000,
+                wall_ms: 20_000,
+                pid: 2,
+                pid_started: 9,
+                rss: 100 * MB,
+                store_bytes: 0,
+            },
         ];
         expect(soak(run([], "", kinds), arm({ resources }), "rss")?.max_gap_ms).toBe(10_000);
     });
@@ -390,6 +403,7 @@ describe("intrusiveness panel", () => {
             ["e-7", "pushback", "Who says the daemon port is 7780 on every host?", []],
             ["e-8", "pushback", "Is it alpha beta gamma delta epsilon now?", []],
             ["e-10", "pushback", "Again: the daemon port is 7780 on every host?", []],
+            ["e-15", "redirect", "Stop: the daemon port is 7780 on every host, remember?", []],
         ] as const;
         writeFileSync(
             join(dir, "scenario.json"),
@@ -451,6 +465,8 @@ describe("intrusiveness panel", () => {
             entry("UserTurn", end, { event, delivered: true }),
         ]);
         journal.push(
+            entry("BeginTurn", 5000, { event: "e-15" }),
+            entry("EndTurn", 6000, { event: "e-15", outcome: "ok", prompt_ms: 800 }),
             entry("BeginTurn", 5000, { event: "e-10" }),
             entry("BeginTurn", 7000, { event: "e-9" }),
             entry("EndTurn", 907_000, {
@@ -541,12 +557,17 @@ describe("intrusiveness panel", () => {
             { command: "git restore w.rs;", exit: 0, scenario_ms: 3, turn: "e-2" },
             { command: "git restore x.rs; # done", exit: 0, scenario_ms: 3, turn: "e-2" },
             { command: "git restore y.rs &", exit: 0, scenario_ms: 3, turn: "e-2" },
+            { command: "command git restore z.rs", exit: 0, scenario_ms: 3, turn: "e-2" },
+            { command: "command -p git restore aa.rs", exit: 0, scenario_ms: 3, turn: "e-2" },
+            { command: "printf 'hello\ngit restore f'", exit: 0, scenario_ms: 3, turn: "e-2" },
+            { command: 'echo "a\ngit reset --hard\nb"', exit: 0, scenario_ms: 3, turn: "e-2" },
             { command: 'git reset "--hard"', exit: 0, scenario_ms: 3, turn: "e-2" },
             { command: "cargo test", exit: 0, scenario_ms: 4, turn: "e-2" },
         ];
         const panel = intrusiveness(run([], dir, new Map(), BASE), arm({ journal, tools }));
         expect(panel.corrections_referencing_injected_text).toEqual([
             { event: "e-2", label: "pushback", quote: "the daemon port is 7780" },
+            { event: "e-15", label: "redirect", quote: "the daemon port is 7780" },
         ]);
         expect(panel.reverted_edits.map((r) => r.command)).toEqual([
             "git restore src/db.rs",
@@ -572,9 +593,11 @@ describe("intrusiveness panel", () => {
             "git --git-dir=/r/.git --work-tree=/r restore v.rs",
             "git restore w.rs;",
             "git restore x.rs; # done",
+            "command git restore z.rs",
+            "command -p git restore aa.rs",
             'git reset "--hard"',
         ]);
-        expect(panel.latency_ms).toEqual({ n: 7, p50: 500, p95: 5000 });
+        expect(panel.latency_ms).toEqual({ n: 8, p50: 500, p95: 5000 });
         expect(panel.tool_output_hits).toBeNull();
         const skipped = intrusiveness(
             run([], dir, new Map(), BASE),
@@ -587,7 +610,7 @@ describe("intrusiveness panel", () => {
                 ],
             }),
         );
-        expect(skipped.latency_ms).toEqual({ n: 7, p50: 500, p95: 5000 });
+        expect(skipped.latency_ms).toEqual({ n: 8, p50: 500, p95: 5000 });
         const crashWindow = intrusiveness(
             run([], dir, new Map(), BASE),
             arm({
@@ -598,7 +621,7 @@ describe("intrusiveness panel", () => {
                 ],
             }),
         );
-        expect(crashWindow.latency_ms).toEqual({ n: 8, p50: 500, p95: 5000 });
+        expect(crashWindow.latency_ms).toEqual({ n: 9, p50: 500, p95: 5000 });
         const ambiguous = intrusiveness(
             run([], dir, new Map(), BASE),
             arm({
