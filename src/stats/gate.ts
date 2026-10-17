@@ -1,4 +1,9 @@
-import { type Family, needsPairedRuns, type Preregistration } from "../prereg/schema";
+import {
+    BOUND_DIRECTIONS,
+    type Family,
+    needsPairedRuns,
+    type Preregistration,
+} from "../prereg/schema";
 import { preregistrationHash } from "../prereg/validate";
 import { betaQuantile, binomialCdf, normalQuantile, normalSf } from "./dist";
 import {
@@ -371,8 +376,10 @@ function check(p: Preregistration, input: TierInput): void {
         );
     }
     const seq = input.journal_seq_at_eval;
-    if (!Number.isInteger(seq) || seq < 0) {
-        throw new StatsRefusal(`journal_seq_at_eval must be a non-negative integer, got ${seq}`);
+    if (!Number.isSafeInteger(seq) || seq < 0) {
+        throw new StatsRefusal(
+            `journal_seq_at_eval must be a non-negative safe integer, got ${seq}`,
+        );
     }
     const arms = input.arms;
     if (arms?.control !== "host" || arms.treatment !== p.arms.default) {
@@ -392,6 +399,19 @@ function check(p: Preregistration, input: TierInput): void {
         if (f.analysis_unit === "item" && f.outcome !== "binary") {
             throw new StatsRefusal(`${f.id}: an item-level family has a binary outcome`);
         }
+        const bound = BOUND_DIRECTIONS.includes(f.direction);
+        if (bound && f.interval_method !== "none") {
+            throw new StatsRefusal(`${f.id}: a bound family has no interval method`);
+        }
+        if (!bound && f.interval_method === "none" && f.claim === "gate") {
+            throw new StatsRefusal(`${f.id}: a gate with a paired claim names an interval method`);
+        }
+        const methods = METHODS[`${f.analysis_unit} ${f.outcome}`] ?? [];
+        if (f.interval_method !== "none" && !methods.includes(f.interval_method)) {
+            throw new StatsRefusal(
+                `${f.id}: ${f.interval_method} is not a method for ${f.analysis_unit} ${f.outcome}`,
+            );
+        }
         for (const m of f.metrics) {
             if (byMetric.has(m)) throw new StatsRefusal(`${m} is registered in two families`);
             byMetric.set(m, f);
@@ -403,6 +423,12 @@ function check(p: Preregistration, input: TierInput): void {
         if (e.arm !== arms.control && e.arm !== arms.treatment) {
             throw new StatsRefusal(`excluded ${e.id}: arm ${e.arm} is neither compared arm`);
         }
+        if (!isName(e.id) || !isName(e.reason)) {
+            throw new StatsRefusal(`excluded ${e.id}: an exclusion names its item and its reason`);
+        }
+    }
+    if (!input.asymmetric.every(isName)) {
+        throw new StatsRefusal("an asymmetric id is a non-blank string");
     }
     const exclusions = input.excluded.map((e) => `${e.arm}\n${e.id}`);
     const excludedIds = new Set(input.excluded.map((e) => e.id));
@@ -437,6 +463,15 @@ function check(p: Preregistration, input: TierInput): void {
         if (!own || other) {
             throw new StatsRefusal(
                 `${o.metric}: a ${o.unit} observation carries exactly ${o.unit}s`,
+            );
+        }
+        const names = [
+            ...(o.items ?? []).flatMap((x) => [x.item, x.cluster]),
+            ...(o.runs ?? []).map((r) => r.run),
+        ];
+        if (!names.every(isName)) {
+            throw new StatsRefusal(
+                `${o.metric}: item, cluster, and run identifiers are non-blank strings`,
             );
         }
         if (!own.every((x) => Number.isFinite(x.control) && Number.isFinite(x.treatment))) {
@@ -502,9 +537,34 @@ function check(p: Preregistration, input: TierInput): void {
             runIds.set(f.id, set);
         }
     }
+    const turns = input.observations.find((o) => o.metric === "failed_turns")?.runs;
+    if (turns) {
+        for (const [arm, side] of [
+            [arms.control, "control"],
+            [arms.treatment, "treatment"],
+        ] as const) {
+            const failed = input.excluded.filter(
+                (e) => e.arm === arm && e.reason.startsWith("failed("),
+            ).length;
+            const observed = turns.reduce((s, r) => s + r[side], 0);
+            if (failed > observed) {
+                throw new StatsRefusal(
+                    `${arm}: ${failed} failed exclusions exceed ${observed} failed turns; the missingness policy counts failed items in dependability`,
+                );
+            }
+        }
+    }
 }
 
 const isBit = (v: number) => v === 0 || v === 1;
+const isName = (v: unknown) => typeof v === "string" && v.trim() !== "";
+/** The interval methods the gate implements per unit and outcome; `none` is allowed everywhere. */
+const METHODS: Record<string, readonly string[]> = {
+    "item binary": ["exact-mcnemar-newcombe-cluster-bootstrap"],
+    "run graded": ["paired-bca-bootstrap", "paired-percentile-bootstrap"],
+    "run count": ["paired-sign-test", "negative-binomial-glm"],
+    "run slope": ["slope-paired-bootstrap"],
+};
 const isShare = (v: number) => v >= 0 && v <= 1;
 const isIndex = (v: number) => Number.isInteger(v) && v >= 0;
 

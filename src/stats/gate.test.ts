@@ -1028,3 +1028,70 @@ describe("tier gate review findings, ninth Codex round", () => {
         ).toThrow("probe-P1: an item-level family has a binary outcome");
     });
 });
+
+describe("tier gate review findings, tenth Codex round", () => {
+    const seq = { journal_seq_at_eval: 7, arms: { control: "host", treatment: "eidnara" } };
+    const s = (observations: Observation[], extra: object = {}) =>
+        evaluateTier(S, { observations, excluded: [], asymmetric: [], ...seq, ...extra });
+
+    test("a family's interval method matches its unit, outcome, and claim", () => {
+        const rewire = (id: string, patch: object) => ({
+            ...M,
+            families: M.families.map((f) => (f.id === id ? { ...f, ...patch } : f)),
+        });
+        const input = { observations: [], excluded: [], asymmetric: [], ...seq };
+        expect(() =>
+            evaluateTier(rewire("probe-P1", { interval_method: "paired-sign-test" }), input),
+        ).toThrow("probe-P1: paired-sign-test is not a method for item binary");
+        expect(() => evaluateTier(rewire("probe-P1", { interval_method: "none" }), input)).toThrow(
+            "probe-P1: a gate with a paired claim names an interval method",
+        );
+        expect(() =>
+            evaluateTier(rewire("resources", { interval_method: "paired-bca-bootstrap" }), input),
+        ).toThrow("resources: a bound family has no interval method");
+    });
+
+    test("the journal sequence is a safe integer", () => {
+        expect(() => evaluate([], { journal_seq_at_eval: 2 ** 53 })).toThrow(StatsRefusal);
+    });
+
+    test("item, cluster, and run identifiers are non-blank strings", () => {
+        const obs = binary("P1.pass", [[0, 1]]);
+        const objCluster = {
+            ...obs,
+            items: obs.items?.map((x) => ({ ...x, cluster: {} as unknown as string })),
+        };
+        expect(() => evaluate([objCluster])).toThrow(StatsRefusal);
+        const blankItem = { ...obs, items: obs.items?.map((x) => ({ ...x, item: " " })) };
+        expect(() => evaluate([blankItem])).toThrow(StatsRefusal);
+        const blankRun = runs("failed_turns", [[0, 0]]);
+        blankRun.runs = blankRun.runs?.map((r) => ({ ...r, run: "" }));
+        expect(() => evaluate([blankRun])).toThrow(StatsRefusal);
+    });
+
+    test("failed exclusions are counted in the arm's failed turns", () => {
+        const obs = binary("P8.cross_session_pass_rate", repeat(4, [1, 1] as [number, number]));
+        const id = obs.items?.[0]?.item ?? "";
+        const failed = [{ id, arm: "eidnara", reason: "failed(interrupted)" }];
+        const zeros = runs("failed_turns", repeat(2, [0, 0] as [number, number]));
+        expect(() => s([obs, zeros], { excluded: failed })).toThrow(StatsRefusal);
+        const one = runs("failed_turns", [
+            [0, 1],
+            [0, 0],
+        ]);
+        expect(() => s([obs, one], { excluded: failed })).not.toThrow();
+    });
+
+    test("an exclusion carries a non-blank reason", () => {
+        const obs = binary("P1.pass", repeat(3, [0, 1] as [number, number]));
+        const id = obs.items?.[0]?.item ?? "";
+        expect(() => evaluate([obs], { excluded: [{ id, arm: "host", reason: "" }] })).toThrow(
+            StatsRefusal,
+        );
+        expect(() =>
+            evaluate([obs], {
+                excluded: [{ id, arm: "host", reason: undefined as unknown as string }],
+            }),
+        ).toThrow(StatsRefusal);
+    });
+});
