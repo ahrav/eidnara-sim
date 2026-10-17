@@ -149,14 +149,16 @@ record to its scheduled turn's session and index, admits one turn per arm
 and event and one divergence per arm and session, requires each divergence
 to cite its control turn's digest and context and a differing digest the
 reference arm's turn (or, against a recorded run, any manifest tape's
-pairing log) carries, each
+pairing log, the tapes still hashing to the manifest's digests) carries, each
 probe or paste turn to carry the compiled text, and a turn record from
 each arm of the pair for every scheduled user turn, refuses a
 control whose delivered text differed from its arm's before its recorded
 divergence (`pairingMismatches`, the check `pairing-check.ts` runs), checks each
 grade log's identities (an opponent only on P7, versions 1..n once per item
 and arm) and each latest grade's arm, item, probe type, version, verdict, and
-finite metrics against the run and its reached probes, refuses
+finite metrics against the run and its reached probes, requires both grades
+of a paired item to carry the same metric keys, refuses a run whose order
+names no control, refuses
 a run graded under another pre-registration or whose scenario no longer
 hashes to the manifest's digest, requires the manifest's tier and seed to
 match the compiled scenario's, and records the pre-registration hash it

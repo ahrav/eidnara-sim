@@ -15,6 +15,7 @@ import { basename, dirname, join } from "node:path";
 import type { GradeRecord } from "../src/grade/probes";
 import { preregistrationHash } from "../src/prereg/validate";
 import { scenarioHash } from "../src/scenario/compile";
+import { tapeDigests } from "../src/usersim/usersim";
 import { loadPrereg } from "../src/scenario/inputs";
 import { aaReport } from "./aa-report";
 
@@ -532,9 +533,10 @@ describe("aa-report", () => {
             line(turn("host~aa", "e-2", "same", 1)).replace('"digest":"d"', '"digest":"old"'),
         );
         const m = JSON.parse(readFileSync(join(taped, "manifest.json"), "utf8"));
+        const tapes = [join(source, "tape.jsonl")];
         writeFileSync(
             join(taped, "manifest.json"),
-            JSON.stringify({ ...m, tapes: [join(source, "tape.jsonl")] }),
+            JSON.stringify({ ...m, tapes, tape_sha256: tapeDigests(tapes) }),
         );
         writeFileSync(
             join(taped, "pairing.jsonl"),
@@ -591,7 +593,10 @@ describe("aa-report", () => {
             return join(src, "tape.jsonl");
         });
         const m = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8"));
-        writeFileSync(join(dir, "manifest.json"), JSON.stringify({ ...m, tapes: sources }));
+        writeFileSync(
+            join(dir, "manifest.json"),
+            JSON.stringify({ ...m, tapes: sources, tape_sha256: tapeDigests(sources) }),
+        );
         const d = {
             kind: "divergedAt",
             arm: "host~aa",
@@ -621,6 +626,52 @@ describe("aa-report", () => {
             wide.map((g) => `${JSON.stringify(g)}\n`).join(""),
         );
         expect(() => aaReport(dir)).toThrow(/P3\.delta_mem.*finite/);
+    });
+
+    test("replay sources must still hash to the manifest's tape digests", () => {
+        const line = (o: unknown) => `${JSON.stringify(o)}\n`;
+        const dir = gradedRun("S", preregistrationHash(loadPrereg("S")));
+        const src = mkdtempSync(join(tmpdir(), "sim-aa-tape-"));
+        writeFileSync(join(src, "tape.jsonl"), "");
+        writeFileSync(
+            join(src, "pairing.jsonl"),
+            line({ ...turn("host~aa", "e-2", "same", 1), digest: "old" }),
+        );
+        const m = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8"));
+        const tapes = [join(src, "tape.jsonl")];
+        writeFileSync(
+            join(dir, "manifest.json"),
+            JSON.stringify({ ...m, tapes, tape_sha256: ["0000"] }),
+        );
+        expect(() => aaReport(dir)).toThrow(/replay sources/);
+        writeFileSync(
+            join(dir, "manifest.json"),
+            JSON.stringify({ ...m, tapes, tape_sha256: tapeDigests(tapes) }),
+        );
+        expect(aaReport(dir)).toHaveLength(1);
+    });
+
+    test("refuses a paired item whose two grades carry different metric keys", () => {
+        const dir = gradedRun("S", preregistrationHash(loadPrereg("S")));
+        const narrow = { ...grade("host~aa", "p-1", "P3", "P3.delta_mem", 1), version: 2 };
+        delete (narrow.metrics as Record<string, unknown>)["P3.delta_mem"];
+        appendFileSync(join(dir, "grades.jsonl"), `${JSON.stringify(narrow)}\n`);
+        expect(() => aaReport(dir)).toThrow(/p-1.*P3\.delta_mem/);
+    });
+
+    test("a run without an A/A control yields no report", () => {
+        const line = (o: unknown) => `${JSON.stringify(o)}\n`;
+        const dir = gradedRun("S", preregistrationHash(loadPrereg("S")));
+        const m = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8"));
+        writeFileSync(join(dir, "manifest.json"), JSON.stringify({ ...m, order: ["host"] }));
+        writeFileSync(join(dir, "journal.jsonl"), journal(["host"], N_EVENTS).map(line).join(""));
+        writeFileSync(join(dir, "pairing.jsonl"), allTurns("host").map(line).join(""));
+        const kept = readFileSync(join(dir, "grades.jsonl"), "utf8")
+            .split("\n")
+            .filter((l) => l.includes('"arm":"host"'));
+        writeFileSync(join(dir, "grades.jsonl"), `${kept.join("\n")}\n`);
+        expect(() => aaReport(dir)).toThrow(/no A\/A control/);
+        expect(existsSync(join(dir, "aa.json"))).toBe(false);
     });
 
     test("a run-level family forms one cluster per run, so one run leaves it uninformative", () => {

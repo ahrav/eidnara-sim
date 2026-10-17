@@ -24,7 +24,7 @@ import {
 import { referenceArm } from "../src/run/run";
 import { type Scenario, scenarioHash } from "../src/scenario/compile";
 import { loadPrereg } from "../src/scenario/inputs";
-import { pairingMismatches, readPairing } from "../src/usersim/usersim";
+import { pairingMismatches, readPairing, tapeDigests } from "../src/usersim/usersim";
 
 /** A percentile interval over fewer clusters than this undercovers, so it decides nothing. */
 const MIN_CLUSTERS = 5;
@@ -176,6 +176,9 @@ function report(dir: string) {
     }
     const reference = referenceArm(order);
     const tapes = (manifest.tapes ?? []) as string[];
+    if (JSON.stringify(tapeDigests(tapes)) !== JSON.stringify(manifest.tape_sha256 ?? [])) {
+        throw new Error(`${dir}: replay sources changed since the manifest hashed them`);
+    }
     // Every replay source's digest for an arm's event is a digest the runner may have recorded.
     const recordedDigests = new Map<string, Set<string>>();
     for (const tape of tapes) {
@@ -222,6 +225,7 @@ function report(dir: string) {
     }
     const mismatched = pairingMismatches(pairing, reference);
     const controls = order.filter((a) => a !== armBase(a));
+    if (controls.length === 0) throw new Error(`${dir}: manifest order names no A/A control`);
     const report = controls.map((control) => {
         const arm = armBase(control);
         for (const a of [arm, control]) {
@@ -259,6 +263,28 @@ function report(dir: string) {
         const unpaired_items = [...new Set([...mineItems, ...theirItems])]
             .filter((i) => !(mineItems.has(i) && theirItems.has(i)))
             .sort();
+        // Both grades of a paired item carry the same metric keys, so every metric sees every item.
+        const byItem = (a: string) =>
+            new Map(
+                diagnosed
+                    .filter((g) => g.arm === a && g.verdict !== "excluded")
+                    .map((g) => [g.item, g]),
+            );
+        const [left, right] = [byItem(arm), byItem(control)];
+        for (const [item, x] of left) {
+            const y = right.get(item);
+            if (!y) continue;
+            const [kx, ky] = [Object.keys(x.metrics), Object.keys(y.metrics)];
+            const odd = [
+                ...kx.filter((k) => !ky.includes(k)),
+                ...ky.filter((k) => !kx.includes(k)),
+            ];
+            if (odd.length > 0) {
+                throw new Error(
+                    `${dir}/grades.jsonl: ${item} carries ${odd.join(", ")} on one arm only`,
+                );
+            }
+        }
         const metrics = [...pairedDiffs(grades, arm, control)].map(([m, d]) =>
             bootstrapMean(m, d, clusterOf(m), prereg.bootstrap.replicates, prereg.bootstrap.seed),
         );
