@@ -84,7 +84,10 @@ ratio margin; a treatment arm with no events passes. At six to eight runs
 that limit stays above 1.5 unless the treatment arm has far fewer events,
 so the sign-test gates at M and L pass with zero or few treatment events. The tier passes by intersection-union:
 every gate component passes at its own alpha, which the verdict lists,
-and no CUSUM rule stopped the tier. A noninferiority or at-most component
+no CUSUM rule stopped the tier, every CUSUM rule had its A/A scale, and
+the input's `incomplete` list, the fixed-N campaign requirements still
+open, is empty; the verdict carries that list, with any CUSUM rule
+without a scale, under `pass.incomplete`. A noninferiority or at-most component
 decides on the upper end of a two-sided interval, a one-sided test at
 half its alpha, and the verdict says so.
 
@@ -98,7 +101,7 @@ stop, recorded with the metric, the signal index, and the item ids since
 the sum last stood at zero, and a stop withholds the pass; a benefit,
 which moves only the lower sum, stops nothing. A rule without an A/A
 standard deviation is listed as unavailable. The verdict also carries the
-pre-registration digest, the journal sequence it was evaluated at, the
+pre-registration digest, the last journal sequence read per run id, the
 families with their MDE and margin, and the harm metrics whose verdict is
 `worse` ("memory made it worse"). An evaluation whose output contains the
 word parity is refused.

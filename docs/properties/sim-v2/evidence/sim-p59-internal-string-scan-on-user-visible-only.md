@@ -15,8 +15,9 @@ The internal-string regex set runs over agent output delivered to the user-sim
 and over tool output shown to the agent, each hit is journaled by source, and
 the S gate requires zero hits.
 
-No harness code, test, or run exists yet. The surface lands in M7
-(#1032).
+M7 (#1033) scans the agent's relayed responses, the text the user-sim reads,
+with the F7 patterns, including the mutant fixture; tool output shown to the
+agent has no capture yet, so that half of the scan is open.
 
 ## Failure scenario
 

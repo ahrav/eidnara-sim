@@ -396,3 +396,34 @@ export function pairingMismatches(
         })
         .map((r) => `${r.arm} ${r.session} #${r.index}`);
 }
+
+/**
+ * The pairing checks `scripts/pairing-check.ts` reports: a pre-divergence reply whose text differs
+ * from the reference arm's, a probe or paste turn sent with other text than the script's, and a
+ * non-filler turn the arm never sent.
+ */
+export function pairingFailures(
+    records: readonly PairingRecord[],
+    scenario: { events: readonly Record<string, unknown>[] },
+    reference: (arm: string) => string,
+): Record<
+    "mismatches_before_divergence" | "probe_or_paste_text_altered" | "non_filler_unsent",
+    string[]
+> {
+    const turns = records.filter((r): r is TurnRecord => r.kind === "turn");
+    const script = new Map(
+        scenario.events.filter((e) => e.kind === "user_turn").map((e) => [String(e.id), e]),
+    );
+    const verbatim = turns.filter((r) =>
+        ["paste", "probe"].includes(String(script.get(r.event)?.role ?? "")),
+    );
+    return {
+        mismatches_before_divergence: pairingMismatches(records, reference),
+        probe_or_paste_text_altered: verbatim
+            .filter((r) => r.text_sha256 !== sha256Hex(String(script.get(r.event)?.text)))
+            .map((r) => `${r.arm} ${r.event}`),
+        non_filler_unsent: turns
+            .filter((r) => !r.delivered && script.get(r.event)?.role !== "filler")
+            .map((r) => `${r.arm} ${r.event}`),
+    };
+}
