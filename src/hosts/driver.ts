@@ -27,6 +27,7 @@ import {
 } from "../run/scheduler";
 import type { FaultEpisode } from "../scenario/faults";
 import {
+    armBase,
     DaemonStack,
     eidnaraOn,
     type HostContext,
@@ -45,7 +46,9 @@ interface ArmState {
     store_faults: Record<string, number>;
 }
 
-export interface DriverOptions extends Omit<HostContext, "root" | "model"> {
+export interface DriverOptions extends Omit<HostContext, "root" | "model" | "arm"> {
+    /** The arm's label; `armBase` gives the arm it runs as. */
+    arm: string;
     armRoot: string;
     projects: Record<string, string>;
     models: string[];
@@ -193,10 +196,18 @@ export class HostDriver implements ArmDriver {
 
     private newHost(): SimHost {
         const make = this.o.hostFactory ?? makeHost;
-        const keep = eidnaraOn(this.o.arm) ? [...this.o.keep, this.storeRoot] : this.o.keep;
+        const arm = armBase(this.o.arm);
+        const keep = eidnaraOn(arm) ? [...this.o.keep, this.storeRoot] : this.o.keep;
         const onTool = (run: ToolRun) =>
             this.snapshots.addTools([run], run.recovered ? null : this.turn);
-        return make({ ...this.o, keep, root: this.o.armRoot, model: this.currentModel(), onTool });
+        return make({
+            ...this.o,
+            arm,
+            keep,
+            root: this.o.armRoot,
+            model: this.currentModel(),
+            onTool,
+        });
     }
 
     private recordState(): void {
@@ -222,8 +233,8 @@ export class HostDriver implements ArmDriver {
 
     private async startArm(fresh: boolean): Promise<void> {
         mkdirSync(this.storeRoot, { recursive: true, mode: 0o700 });
-        if (this.o.loopStore && eidnaraOn(this.o.arm)) this.mountStore(fresh);
-        if (eidnaraOn(this.o.arm)) {
+        if (this.o.loopStore && eidnaraOn(armBase(this.o.arm))) this.mountStore(fresh);
+        if (eidnaraOn(armBase(this.o.arm))) {
             this.daemon = new DaemonStack({
                 ...this.o,
                 root: this.o.armRoot,
@@ -337,6 +348,7 @@ export class HostDriver implements ArmDriver {
             this.applyDiff(e);
             return {};
         }
+        const entered = Date.now();
         const project = this.project(e);
         const dir = this.workspace(project);
         let before: string | null = "";
@@ -354,8 +366,20 @@ export class HostDriver implements ArmDriver {
         const outcome: TurnOutcome = {};
         const owedBefore = this.owedStores();
         if (owedBefore) outcome.stores = owedBefore;
+        const interruptMs = typeof e.interrupt_ms === "number" ? e.interrupt_ms : undefined;
+        // A turn that spent part of its deadline before the prompt passes the rest along; one
+        // that spent all of it fails here, so the agent never runs past the deadline.
+        const deadline =
+            typeof e.deadline_ms === "number"
+                ? Math.min(this.o.turnDeadlineMs, e.deadline_ms - (Date.now() - entered))
+                : this.o.turnDeadlineMs;
+        if (deadline <= 0) {
+            outcome.failed = `turn deadline ${this.o.turnDeadlineMs} ms spent before the prompt`;
+            outcome.undelivered = true;
+            return outcome;
+        }
         this.turn = e.id;
-        const result = await host.prompt(String(e.text), this.o.turnDeadlineMs);
+        const result = await host.prompt(String(e.text), deadline, interruptMs);
         let reported = false;
         const checkDaemon = () => {
             if (reported || !this.daemon || this.daemonPid() !== null) return;
@@ -365,6 +389,8 @@ export class HostDriver implements ArmDriver {
         checkDaemon();
         const tools = host.drainTools();
         this.turn = null;
+        if (result.interrupted) outcome.user = { interrupted: true };
+        if (result.undelivered) outcome.undelivered = true;
         if (result.error) outcome.failed = result.error;
         if (e.probe && before === null) {
             const reason = `snapshot before the turn: ${beforeFailed}`;

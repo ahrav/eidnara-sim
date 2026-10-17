@@ -158,6 +158,14 @@ describe("Journal and lease", () => {
         expect(() => takeLease(d)).toThrow(/on elsewhere/);
     });
 
+    test("staging files left by killed holders, under any pid or host, block nothing", () => {
+        const d = dir();
+        writeFileSync(join(d, `lease.${process.pid}.tmp`), "{}");
+        writeFileSync(join(d, `lease.${require("node:os").hostname()}.${process.pid}.tmp`), "{}");
+        expect(takeLease(d).pid).toBe(process.pid);
+        releaseLease(d);
+    });
+
     test("a corrupt line before the last refuses the journal", () => {
         const path = join(dir(), "j.jsonl");
         writeFileSync(path, '{"seq":0}\nnot json\n{"seq":2}\n');
@@ -166,6 +174,34 @@ describe("Journal and lease", () => {
 });
 
 describe("Scheduler", () => {
+    test("a turn's user record lands before its EndTurn, and each arm's rates before its EndArm", async () => {
+        const j = new Journal(join(dir(), "j.jsonl"));
+        const driver: ArmDriver = {
+            ...fakeDriver([]),
+            event: async (e) =>
+                e.kind === "user_turn" ? { user: { label: "pushback", delivered: true } } : {},
+        };
+        await new Scheduler({
+            events: fixtureEvents(2),
+            faults: [],
+            journal: j,
+            settleMs: 0,
+            order: ["a"],
+            drivers: { a: driver },
+            armSummary: (arm) => ({ rates: { arm } }),
+        }).run();
+        const kinds = j.entries.map((e) => e.kind);
+        const users = j.entries.filter((e) => e.kind === "UserTurn");
+        expect(users.length).toBeGreaterThan(0);
+        for (const u of users) {
+            const end = j.entries.find((e) => e.kind === "EndTurn" && e.event === u.event);
+            expect(end && u.seq < end.seq).toBe(true);
+            expect(u.label).toBe("pushback");
+        }
+        expect(kinds.slice(-3)).toEqual(["UserSimRates", "EndArm", "EndRun"]);
+        expect(j.entries.at(-3)?.rates).toEqual({ arm: "a" });
+    });
+
     test("arms run in order from one event list, each reset first, with every jump landing on the next event", async () => {
         const j = new Journal(join(dir(), "j.jsonl"));
         const logs: Record<string, string[]> = { host: [], eidnara: [] };
@@ -684,6 +720,109 @@ describe("store checks outside turns", () => {
 });
 
 describe("driver lifecycle hooks", () => {
+    test("a turn interrupted by a kill keeps the user record its driver can recover", async () => {
+        const path = join(dir(), "j.jsonl");
+        const j = new Journal(path);
+        j.append({ kind: "StartRun", arm: null, scenario_ms: 0 });
+        j.append({ kind: "StartArm", arm: "a", scenario_ms: 0 });
+        j.append({ kind: "Event", arm: "a", scenario_ms: 0, event: "e-000000" });
+        j.append({
+            kind: "BeginTurn",
+            arm: "a",
+            scenario_ms: 1_000,
+            event: "e-000001",
+            probe: null,
+        });
+        j.close();
+        const second = new Journal(path);
+        await new Scheduler({
+            events: fixtureEvents(2),
+            faults: [],
+            journal: second,
+            settleMs: 0,
+            order: ["a"],
+            drivers: { a: fakeDriver([]) },
+            recoverTurn: (event) =>
+                event === "e-000001"
+                    ? { session: "s-0001", label: "pushback", delivered: true }
+                    : undefined,
+        }).run();
+        const kinds = second.entries.map((e) => [e.kind, e.event ?? null]);
+        const user = kinds.findIndex(([k, e]) => k === "UserTurn" && e === "e-000001");
+        const done = kinds.findIndex(([k, e]) => k === "Event" && e === "e-000001");
+        expect(user).toBeGreaterThan(0);
+        expect(user).toBeLessThan(done);
+        expect(second.entries[user]).toMatchObject({ label: "pushback", recovered: true });
+    });
+
+    test("a turn killed after its user record was journaled is not given a second one on resume", async () => {
+        const path = join(dir(), "j.jsonl");
+        const j = new Journal(path);
+        j.append({ kind: "StartRun", arm: null, scenario_ms: 0 });
+        j.append({ kind: "StartArm", arm: "a", scenario_ms: 0 });
+        j.append({ kind: "Event", arm: "a", scenario_ms: 0, event: "e-000000" });
+        j.append({
+            kind: "BeginTurn",
+            arm: "a",
+            scenario_ms: 1_000,
+            event: "e-000001",
+            probe: null,
+        });
+        j.append({
+            kind: "UserTurn",
+            arm: "a",
+            scenario_ms: 1_000,
+            event: "e-000001",
+            label: "task",
+            delivered: true,
+        });
+        j.close();
+        const second = new Journal(path);
+        await new Scheduler({
+            events: fixtureEvents(2),
+            faults: [],
+            journal: second,
+            settleMs: 0,
+            order: ["a"],
+            drivers: { a: fakeDriver([]) },
+            recoverTurn: () => ({ session: "s-0001", label: "task", delivered: true }),
+        }).run();
+        const users = second.entries.filter((e) => e.kind === "UserTurn" && e.event === "e-000001");
+        expect(users).toHaveLength(1);
+    });
+
+    test("an arm killed after its rate summary resumes without a second one", async () => {
+        const path = join(dir(), "j.jsonl");
+        const events = fixtureEvents(2);
+        const first = new Journal(path);
+        const run = (journal: Journal, armSummary: () => object) =>
+            new Scheduler({
+                events,
+                faults: [],
+                journal,
+                settleMs: 0,
+                order: ["a"],
+                drivers: { a: fakeDriver([]) },
+                armSummary,
+            }).run();
+        await expect(
+            run(first, () => {
+                throw new Error("harness killed");
+            }),
+        ).rejects.toThrow("harness killed");
+        first.append({
+            kind: "UserSimRates",
+            arm: "a",
+            scenario_ms: first.entries.at(-1)?.scenario_ms ?? 0,
+            rates: { arm: "a" },
+        });
+        first.close();
+        const second = new Journal(path);
+        await run(second, () => ({ rates: { arm: "a" } }));
+        expect(second.entries.filter((e) => e.kind === "UserSimRates")).toHaveLength(1);
+        expect(second.entries.filter((e) => e.kind === "EndArm")).toHaveLength(1);
+    });
+
     test("a resumed arm gets the open session, its open jobs end, and finish precedes EndArm", async () => {
         const path = join(dir(), "j.jsonl");
         const events = fixtureEvents(3);

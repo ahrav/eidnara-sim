@@ -8,19 +8,23 @@ the capture proxy, the clock, the scheduler, and the arm drivers
 PATH=<opencode release>/node_modules/.bin:$PATH \
 bun scripts/run-tier.ts --tier S --seed 101 --out runs/S-101-pi \
     [--host pi|opencode] [--arms host,eidnara] [--events N] \
-    [--faults episodes.json] [--context-limit N] [--models a,b]
+    [--faults episodes.json] [--context-limit N] [--models a,b] \
+    [--tapes tape.jsonl,...]
 ```
 
 The v1 harness closure resolves `opencode` through a shell, and that shell
 sees the `PATH` the harness started with, so the run refuses to start
 unless the pinned OpenCode release's `node_modules/.bin` is on `PATH`.
 
-`--arms` keeps the listed arms of the seed's pre-registered order, and
+`--arms` keeps the listed arms of the seed's pre-registered order, plus
+any A/A control label such as `host~aa` (`docs/user-sim.md`), and
 `--events N` runs the first N scenario events. `--faults` replaces the
 scenario's fault schedule, `--context-limit` sets the model window the host
 sees (200,000 by default), and `--models` lists the models `model_switch`
-cycles through (`agent_model` by default). The manifest records every one of
-these values. The run refuses a seed outside the pre-registration, an arm
+cycles through (`agent_model` by default). `--tapes` names earlier runs'
+user-sim tapes to replay replies from (`docs/user-sim.md`). The manifest
+records every one of these values, and a digest of each tape and the
+pairing log beside it (`tape_sha256`). The run refuses a seed outside the pre-registration, an arm
 outside the seed's order, and a non-positive count.
 
 ## Run sequence
@@ -38,7 +42,8 @@ outside the seed's order, and a non-positive count.
    limit, models, fault override, scenario hash, pre-registration hash,
    eidnara commit, base wall time, and preflight result. A later invocation
    refuses when any option it states differs from the manifest, when the
-   scenario hash, pre-registration hash, or eidnara commit changed, or when
+   scenario hash, pre-registration hash, eidnara commit, or a replay tape's
+   digest changed, or when
    an interception result changed, and appends its preflight result to
    `preflight.jsonl`.
 4. Start the capture proxy; its records append to `calls.jsonl`, and a

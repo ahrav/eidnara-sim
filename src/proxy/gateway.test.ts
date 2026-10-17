@@ -5,6 +5,7 @@ import { connect as http2Connect } from "node:http2";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { decodeMessages } from "../../tests/eventstream-decode";
+import { sha256Hex } from "../prereg/canonical";
 import { Rng } from "../rng";
 import type { FaultType } from "../scenario/faults";
 import { classify } from "./classify";
@@ -343,6 +344,36 @@ describe("fault composition at the proxy sink", () => {
         ]);
     });
 
+    test("an injected empty reply records an empty response text", async () => {
+        const fault = {
+            id: "e",
+            type: "empty_content",
+            strategy: "single",
+            params: {},
+        } as ProxyFault;
+        const { injector, records, url } = await start(fault);
+        injector.arm("e");
+        await hostCallJson(url, AGENT_BODY, 2_000);
+        expect(records.records[0]?.fault_ref).toBe("e");
+        expect(records.records[0]?.response_text).toBe("");
+        expect(records.records[0]?.response_sha256).toBe(sha256Hex(""));
+    });
+
+    test("an injected provider error records no response text", async () => {
+        const fault = {
+            id: "p",
+            type: "provider_429",
+            strategy: "single",
+            params: {},
+        } as ProxyFault;
+        const { injector, records, url } = await start(fault);
+        injector.arm("p");
+        await hostCallJson(url, AGENT_BODY, 2_000);
+        expect(records.records[0]?.fault_ref).toBe("p");
+        expect(records.records[0]?.response_text).toBeUndefined();
+        expect(records.records[0]?.response_sha256).toBeUndefined();
+    });
+
     test("slow_stream over an upstream that throttles first records the proxy's retry", async () => {
         const fault = {
             id: "s",
@@ -547,6 +578,58 @@ describe("call records", () => {
         expect(summary?.response_text).toBeUndefined();
         expect((userSim?.wall_ms ?? 0) >= (summary?.wall_ms ?? Infinity)).toBe(true);
         expect(started.map((e) => e.component)).toEqual(["history_summarizer", "user-sim"]);
+    });
+
+    test("a relayed text longer than the record limit keeps its whole-text digest and its tail", async () => {
+        const long = "y".repeat(300_000);
+        const upstream = {
+            calls: 0,
+            async converse() {
+                const message = { role: "assistant", content: [{ text: long }] };
+                return { json: { output: { message }, stopReason: "end_turn", usage: {} } };
+            },
+        } as unknown as Upstream;
+        const { records, url } = await start(null, upstream);
+        await hostCallJson(url, AGENT_BODY, 2_000);
+        const record = records.records[0];
+        expect(record?.response_text).toBe(long.slice(0, 262_144));
+        expect(record?.response_text_truncated).toBe(true);
+        expect(record?.response_sha256).toBe(sha256Hex(long));
+        expect(record?.response_tail).toBe(long.slice(-6_000));
+        const { records: short, url: shortUrl } = await start(null);
+        await hostCallJson(shortUrl, AGENT_BODY, 2_000);
+        expect(short.records[0]?.response_sha256).toBe(sha256Hex("done"));
+        expect(short.records[0]?.response_tail).toBeUndefined();
+    });
+
+    test("an agent call that relayed no text records an empty response text", async () => {
+        const upstream = {
+            calls: 0,
+            async converse() {
+                const message = { role: "assistant", content: [] };
+                return { json: { output: { message }, stopReason: "end_turn", usage: {} } };
+            },
+        } as unknown as Upstream;
+        const { records, url } = await start(null, upstream);
+        await hostCallJson(url, AGENT_BODY, 2_000);
+        expect(records.records[0]?.response_text).toBe("");
+        expect(records.records[0]?.response_sha256).toBe(sha256Hex(""));
+    });
+
+    test("an upstream failure before any assistant text records no response text", async () => {
+        const upstream = {
+            calls: 0,
+            async converse() {
+                throw Object.assign(new Error("bad request"), {
+                    name: "ValidationException",
+                    $metadata: { httpStatusCode: 400 },
+                });
+            },
+        } as unknown as Upstream;
+        const { records, url } = await start(null, upstream);
+        await hostCallJson(url, AGENT_BODY, 5_000);
+        expect(records.records[0]?.status).toBe(400);
+        expect(records.records[0]?.response_text).toBeUndefined();
     });
 
     test("a non-streaming agent call records the response text it relayed", async () => {

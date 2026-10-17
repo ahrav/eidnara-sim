@@ -10,6 +10,15 @@ export type Tier = (typeof TIERS)[number];
 
 export const ARMS = ["host", "eidnara", "eidnara-kl", "eidnara-cf"] as const;
 export const HOSTS = ["pi", "opencode"] as const;
+/** The `divergence_policy.normalisation` rules the user-sim implements. */
+export const NORMALISATION_RULES = [
+    "iso-8601-timestamps",
+    "durations",
+    "pids",
+    "temp-paths",
+    "run-ids",
+] as const;
+export type NormalisationRule = (typeof NORMALISATION_RULES)[number];
 
 /** The families a tier report carries; `checkReport` refuses a report missing one by name. */
 export const PROBE_FAMILIES = Array.from({ length: 14 }, (_, i) => `probe-P${i + 1}`);
@@ -161,6 +170,17 @@ export interface Preregistration {
         /** F6: an arm's tokens per host-arm token above this activates the cost oracle. */
         cost_ratio_max: string;
     };
+    /** The simulated user (M6), added in revision 6 before any tier run. */
+    user_sim: {
+        model: string;
+        max_tokens: number;
+        /** Targets the behaviour schedule samples to, from the SWE-chat rates. */
+        rates: Record<UserSimRate, string>;
+        /** A run whose realised rate falls outside its band is flagged. */
+        bands: Record<UserSimRate, { min: string; max: string }>;
+        /** A hard interrupt aborts the turn this long after the prompt is sent. */
+        interrupt_after_ms: { min: number; max: number };
+    };
     families: Family[];
     /** S and M only: same-arm pairs under different labels, each run `repeats` times. */
     aa_controls?: { pairs: string[][]; repeats: number };
@@ -173,6 +193,14 @@ export interface Preregistration {
         margins_family: "dependability";
     };
 }
+
+export const USER_SIM_RATES = [
+    "pushback_per_turn",
+    "interrupt_per_turn",
+    "redirect_per_session",
+    "abandon_per_session",
+] as const;
+export type UserSimRate = (typeof USER_SIM_RATES)[number];
 
 /** A run-level gate with a paired claim needs six paired runs (SIM-P56); a bound gate needs none. */
 export const MIN_PAIRED_RUNS_FOR_RUN_GATE = 6;

@@ -636,3 +636,313 @@ test("an agent_end arriving in the tick after the first waiter expired still set
     expect(result.error).not.toContain("killed");
     expect(stopped).toEqual([]);
 });
+
+function opencodeHost(client: Record<string, unknown>): OpencodeSimHost {
+    const host = new OpencodeSimHost({
+        ...({} as HostContext),
+        config: loadConfig(),
+        root: "/x",
+        launcher: "/x/sandbox.sh",
+        now: () => 100,
+    });
+    Object.assign(host as unknown as Record<string, unknown>, {
+        client,
+        sid: "s",
+        oc: { stderr: () => "" },
+    });
+    return host;
+}
+
+test("an OpenCode interrupt counts only when the abort landed; a turn that ran to its end is reported as it ended", async () => {
+    const messages = async () => ({ data: [] });
+    const slow = () => Bun.sleep(300).then(() => ({ data: { info: {} } }));
+    const refused = opencodeHost({
+        session: { messages, prompt: slow, abort: async () => ({ error: { message: "no" } }) },
+    });
+    expect(await refused.prompt("go", 5_000, 50)).toEqual({});
+    const rejected = opencodeHost({
+        session: {
+            messages,
+            prompt: slow,
+            abort: async () => {
+                throw new Error("connection reset");
+            },
+        },
+    });
+    expect(await rejected.prompt("go", 5_000, 50)).toEqual({});
+    const aborted = opencodeHost({
+        session: { messages, prompt: slow, abort: async () => ({ data: true }) },
+    });
+    expect(await aborted.prompt("go", 5_000, 50)).toEqual({ interrupted: true });
+});
+
+test("an OpenCode turn whose abort was refused runs on under its own deadline", async () => {
+    const host = opencodeHost({
+        session: {
+            messages: async () => ({ data: [] }),
+            prompt: () => Bun.sleep(400).then(() => ({ data: { info: {} } })),
+            abort: async () => ({ data: false }),
+        },
+    });
+    Object.assign(host as unknown as Record<string, unknown>, { drainWaitMs: 50 });
+    expect(await host.prompt("go", 5_000, 50)).toEqual({});
+});
+
+test("an OpenCode abort wait counts against the turn's own deadline", async () => {
+    const host = opencodeHost({
+        session: {
+            messages: async () => ({ data: [] }),
+            prompt: () => Bun.sleep(1_800).then(() => ({ data: { info: {} } })),
+            abort: () => new Promise(() => {}),
+        },
+    });
+    Object.assign(host as unknown as Record<string, unknown>, {
+        abortWaitMs: 600,
+        drainWaitMs: 2_000,
+    });
+    const result = await host.prompt("go", 1_200, 50);
+    expect(result.error).toContain("turn deadline 1200 ms");
+}, 10_000);
+
+test("an OpenCode abort that answers after its wait but stopped the prompt still counts as the interrupt", async () => {
+    const host = opencodeHost({
+        session: {
+            messages: async () => ({ data: [] }),
+            prompt: () => Bun.sleep(5_300).then(() => ({ data: { info: {} } })),
+            abort: () => Bun.sleep(5_200).then(() => ({ data: true })),
+        },
+    });
+    Object.assign(host as unknown as Record<string, unknown>, { abortWaitMs: 50 });
+    expect(await host.prompt("go", 20_000, 50)).toEqual({ interrupted: true });
+}, 15_000);
+
+test("an abort request still open when the turn settles is cancelled before the next prompt", async () => {
+    let signal: AbortSignal | undefined;
+    const host = opencodeHost({
+        session: {
+            messages: async () => ({ data: [] }),
+            prompt: () => Bun.sleep(300).then(() => ({ data: { info: {} } })),
+            abort: (o: { signal?: AbortSignal }) =>
+                new Promise((_resolve, reject) => {
+                    signal = o.signal;
+                    o.signal?.addEventListener("abort", () => reject(new Error("cancelled")));
+                }),
+        },
+    });
+    Object.assign(host as unknown as Record<string, unknown>, { abortWaitMs: 50 });
+    expect(await host.prompt("go", 5_000, 50)).toEqual({});
+    expect(signal?.aborted).toBe(true);
+});
+
+test("a deadline abort still open when the drained turn settles is cancelled too", async () => {
+    let signal: AbortSignal | undefined;
+    const host = opencodeHost({
+        session: {
+            messages: async () => ({ data: [] }),
+            prompt: () => Bun.sleep(1_300).then(() => ({ data: { info: {} } })),
+            abort: (o: { signal?: AbortSignal }) =>
+                new Promise((_resolve, reject) => {
+                    signal = o.signal;
+                    o.signal?.addEventListener("abort", () => reject(new Error("cancelled")));
+                }),
+        },
+    });
+    Object.assign(host as unknown as Record<string, unknown>, {
+        abortWaitMs: 50,
+        drainWaitMs: 2_000,
+    });
+    const result = await host.prompt("go", 1_000);
+    expect(result.error).toContain("turn deadline 1000 ms");
+    expect(signal?.aborted).toBe(true);
+});
+
+test("the message listing before an OpenCode turn spends the turn's own deadline", async () => {
+    let listings = 0;
+    const host = opencodeHost({
+        session: {
+            messages: () => Bun.sleep(listings++ === 0 ? 800 : 0).then(() => ({ data: [] })),
+            prompt: () => Bun.sleep(1_300).then(() => ({ data: { info: {} } })),
+            abort: async () => ({ data: true }),
+        },
+    });
+    Object.assign(host as unknown as Record<string, unknown>, { drainWaitMs: 2_000 });
+    const result = await host.prompt("go", 1_500);
+    expect(result.error).toContain("turn deadline 1500 ms");
+}, 10_000);
+
+test("an OpenCode abort that answers true while the turn runs on under its deadline is the interrupt even when the deadline then passes", async () => {
+    const host = opencodeHost({
+        session: {
+            messages: async () => ({ data: [] }),
+            prompt: () => Bun.sleep(1_600).then(() => ({ data: { info: {} } })),
+            abort: () => Bun.sleep(300).then(() => ({ data: true })),
+        },
+    });
+    Object.assign(host as unknown as Record<string, unknown>, {
+        abortWaitMs: 50,
+        drainWaitMs: 2_000,
+    });
+    expect(await host.prompt("go", 1_200, 50)).toEqual({ interrupted: true });
+}, 10_000);
+
+test("an OpenCode turn whose deadline is spent before the prompt sends nothing", async () => {
+    let prompted = 0;
+    const host = opencodeHost({
+        session: {
+            messages: async () => ({ data: [] }),
+            prompt: () => {
+                prompted++;
+                return Bun.sleep(100).then(() => ({ data: { info: {} } }));
+            },
+            abort: async () => ({ data: true }),
+        },
+    });
+    const spent = await host.prompt("go", 0);
+    expect(spent.undelivered).toBe(true);
+    expect(spent.error).toContain("spent before the prompt");
+    expect(prompted).toBe(0);
+});
+
+test("an OpenCode prompt the server rejected is undelivered", async () => {
+    const host = opencodeHost({
+        session: {
+            messages: async () => ({ data: [] }),
+            prompt: () => Promise.reject(new Error("ECONNRESET")),
+            abort: async () => ({ data: true }),
+        },
+    });
+    const result = await host.prompt("go", 5_000);
+    expect(result.error).toContain("ECONNRESET");
+    expect(result.undelivered).toBe(true);
+});
+
+test("a Pi prompt command that fails is undelivered", async () => {
+    const host = new PiSimHost({
+        ...({} as HostContext),
+        config: loadConfig(),
+        root: "/x",
+        launcher: "/x/sandbox.sh",
+        now: () => 100,
+    });
+    const rpc = {
+        child: { pid: 7, stdin: { end: () => {} } },
+        sendCommand: async (name: string) =>
+            name === "prompt" ? { success: false, error: "busy" } : { success: true },
+        waitForEvent: () => Promise.resolve({ type: "agent_end", messages: [] }),
+        shutdown: async () => {},
+    };
+    Object.assign(host as unknown as Record<string, unknown>, { rpc, drainWaitMs: 50 });
+    const result = await host.prompt("go", 5_000);
+    expect(result.error).toContain("busy");
+    expect(result.undelivered).toBe(true);
+});
+
+test("an aborted OpenCode turn whose tool listing then fails keeps the interrupt beside the capture error", async () => {
+    let listings = 0;
+    const host = opencodeHost({
+        session: {
+            messages: async () => {
+                if (listings++ === 0) return { data: [] };
+                throw new Error("listing stalled");
+            },
+            prompt: () => Bun.sleep(300).then(() => ({ data: { info: {} } })),
+            abort: async () => ({ data: true }),
+        },
+    });
+    const result = await host.prompt("go", 5_000, 50);
+    expect(result.interrupted).toBe(true);
+    expect(result.error).toStartWith("tool capture:");
+});
+
+test("a Pi abort that fails after the agent already finished keeps the agent's own ending", async () => {
+    const host = new PiSimHost({
+        ...({} as HostContext),
+        config: loadConfig(),
+        root: "/x",
+        launcher: "/x/sandbox.sh",
+        now: () => 100,
+    });
+    const end = Bun.sleep(100).then(() => ({
+        type: "agent_end",
+        messages: [{ role: "assistant", stopReason: "stop" }],
+    }));
+    let waiters = 0;
+    const stopped: number[] = [];
+    const rpc = {
+        child: { pid: 7, stdin: { end: () => {} } },
+        sendCommand: async (name: string) => {
+            if (name === "abort") throw new Error("Timed out after 60000ms");
+            return { success: true };
+        },
+        waitForEvent: () => (waiters++ === 0 ? end : new Promise(() => {})),
+        shutdown: async () => {},
+    };
+    Object.assign(host as unknown as Record<string, unknown>, {
+        rpc,
+        stopTree: async (pid: number) => void stopped.push(pid),
+        drainWaitMs: 50,
+    });
+    expect(await host.prompt("go", 5_000, 50)).toEqual({});
+    expect(stopped).toEqual([]);
+});
+
+test("a Pi abort that stalls is left behind once the agent's own ending arrives", async () => {
+    const host = new PiSimHost({
+        ...({} as HostContext),
+        config: loadConfig(),
+        root: "/x",
+        launcher: "/x/sandbox.sh",
+        now: () => 100,
+    });
+    const end = Bun.sleep(100).then(() => ({
+        type: "agent_end",
+        messages: [{ role: "assistant", stopReason: "stop" }],
+    }));
+    const rpc = {
+        sendCommand: (name: string) =>
+            name === "abort" ? new Promise(() => {}) : Promise.resolve({ success: true }),
+        waitForEvent: () => end,
+    };
+    Object.assign(host as unknown as Record<string, unknown>, { rpc });
+    const started = Date.now();
+    expect(await host.prompt("go", 5_000, 50)).toEqual({});
+    expect(Date.now() - started).toBeLessThan(2_000);
+});
+
+test("a prompt to a Pi killed after an undrained abort is undelivered", async () => {
+    const host = new PiSimHost({
+        ...({} as HostContext),
+        config: loadConfig(),
+        root: "/x",
+        launcher: "/x/sandbox.sh",
+        now: () => 100,
+    });
+    Object.assign(host as unknown as Record<string, unknown>, { rpc: null });
+    const result = await host.prompt("go", 5_000);
+    expect(result.error).toContain("killed after an undrained abort");
+    expect(result.undelivered).toBe(true);
+});
+
+test("a Pi interrupt counts only when the agent's last message was aborted", async () => {
+    const run = (stopReason: string) => {
+        const host = new PiSimHost({
+            ...({} as HostContext),
+            config: loadConfig(),
+            root: "/x",
+            launcher: "/x/sandbox.sh",
+            now: () => 100,
+        });
+        const end = Bun.sleep(300).then(() => ({
+            type: "agent_end",
+            messages: [{ role: "assistant", stopReason }],
+        }));
+        const rpc = {
+            sendCommand: async () => ({ success: true }),
+            waitForEvent: () => end,
+        };
+        Object.assign(host as unknown as Record<string, unknown>, { rpc });
+        return host.prompt("go", 5_000, 50);
+    };
+    expect(await run("stop")).toEqual({});
+    expect(await run("aborted")).toEqual({ interrupted: true });
+});

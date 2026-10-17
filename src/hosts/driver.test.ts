@@ -55,8 +55,13 @@ class FakeHost {
         this.opened.push(`${session}@${cwd}`);
     }
     failNext = false;
-    async prompt(): Promise<PromptResult> {
+    interrupts: (number | undefined)[] = [];
+    deadlines: number[] = [];
+    async prompt(_text: string, timeoutMs: number, interruptMs?: number): Promise<PromptResult> {
         this.onPrompt();
+        this.interrupts.push(interruptMs);
+        this.deadlines.push(timeoutMs);
+        if (interruptMs !== undefined) return { interrupted: true };
         if (!this.failNext) return {};
         this.failNext = false;
         return { error: "boom" };
@@ -558,6 +563,64 @@ describe("HostDriver lifecycle", () => {
         expect(listed.missing).toEqual([missing]);
     });
 
+    test("a turn's remaining deadline bounds the host prompt under the pre-registered one", async () => {
+        const { driver } = fixture("host");
+        const host = new FakeHost({} as HostContext, "/x");
+        driver.host = host as unknown as SimHost;
+        await driver.event(ev("user_turn", { id: "e-1", text: "go", deadline_ms: 400 }));
+        await driver.event(ev("user_turn", { id: "e-2", text: "go" }));
+        await driver.event(ev("user_turn", { id: "e-3", text: "go", deadline_ms: 5_000 }));
+        await driver.event(ev("user_turn", { id: "e-4", text: "go", deadline_ms: 30 }));
+        const spent = await driver.event(
+            ev("user_turn", { id: "e-5", text: "go", deadline_ms: 0 }),
+        );
+        expect(host.deadlines).toEqual([400, 1_000, 1_000, 30]);
+        expect(spent.failed).toContain("turn deadline");
+        expect(spent.undelivered).toBe(true);
+    });
+
+    test("a probe's pre-turn snapshot spends the turn's shared deadline", async () => {
+        const { driver } = fixture("host", { p: gitRepo() });
+        await driver.reset();
+        const host = new FakeHost({} as HostContext, "/x");
+        driver.host = host as unknown as SimHost;
+        const snapshots = (driver as unknown as { snapshots: { tree: (d: string) => string } })
+            .snapshots;
+        const tree = snapshots.tree.bind(snapshots);
+        snapshots.tree = (d: string) => {
+            const until = Date.now() + 300;
+            while (Date.now() < until) {}
+            return tree(d);
+        };
+        await driver.event(ev("session_start", { session: "s-0" }));
+        await driver.event(
+            ev("user_turn", {
+                id: "e-8",
+                session: "s-0",
+                text: "go",
+                probe: "q-1",
+                deadline_ms: 900,
+            }),
+        );
+        expect(host.deadlines[0]).toBeLessThan(700);
+    });
+
+    test("a scheduled interrupt reaches the host's prompt and the turn reports it", async () => {
+        const { driver } = fixture("host");
+        const host = new FakeHost({} as HostContext, "/x");
+        driver.host = host as unknown as SimHost;
+        const cut = await driver.event(
+            ev("user_turn", { id: "e-1", text: "go", interrupt_ms: 7_000 }),
+        );
+        const plain = await driver.event(ev("user_turn", { id: "e-2", text: "go" }));
+        expect(host.interrupts).toEqual([7_000, undefined]);
+        expect([cut.user, cut.failed, plain.user]).toEqual([
+            { interrupted: true },
+            undefined,
+            undefined,
+        ]);
+    });
+
     test("a daemon gone after a turn is reported once with the turn id", async () => {
         const { driver, hosts, exits } = fixture("eidnara");
         const daemon = fakeDaemon(10);
@@ -919,6 +982,17 @@ describe("HostDriver faults", () => {
             overlaps: [],
             ranges: [],
         });
+    });
+
+    test("an A/A control label runs as its arm: the host sees the base arm and no store", async () => {
+        const { driver } = fixture("eidnara~aa");
+        await driver.fault(episode("model_switch"));
+        expect(driver.host?.ctx.arm).toBe("eidnara");
+        expect(driver.host?.ctx.keep).toContain(driver.storeRoot);
+        const plain = fixture("host~aa").driver;
+        await plain.fault(episode("model_switch"));
+        expect(plain.host?.ctx.arm).toBe("host");
+        expect(plain.host?.ctx.keep).not.toContain(plain.storeRoot);
     });
 
     test("a model switch moves later sessions to the next model and keeps the daemon", async () => {

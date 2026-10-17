@@ -59,6 +59,8 @@ export interface CallView {
     /** The call ended in an error status, a recorded error, or a cut stream; it is no completed fold. */
     failed?: boolean;
     label?: string;
+    /** The entry restates a journaled user turn; `calls.jsonl` holds no record for it. */
+    journal?: true;
 }
 
 export interface ProxyCalls {

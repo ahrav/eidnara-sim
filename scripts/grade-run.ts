@@ -25,6 +25,7 @@ import {
     requireEvidence,
     verdictCounts,
 } from "../src/grade/probes";
+import { armBase } from "../src/hosts/arms";
 import { canonicalJson } from "../src/prereg/canonical";
 import { preregistrationHash } from "../src/prereg/validate";
 import { bedrockUpstream, Gateway } from "../src/proxy/gateway";
@@ -239,9 +240,27 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
             const calls = s.artefacts.find((a) => a.class === "proxy-call");
             if (calls?.class !== "proxy-call") continue;
             const key = `${s.arm}/${String(s.session)}`;
+            // A journal-backed user-sim entry restates a journaled turn; the log holds no record
+            // for it, so the prefix the log must match is the proxy-backed calls alone. The mark
+            // is honoured only on a user-sim entry whose turn the journal holds with that label.
+            for (const c of calls.calls) {
+                if (!c.journal) continue;
+                const backed = entries.some(
+                    (e) =>
+                        e.kind === "UserTurn" &&
+                        e.arm === s.arm &&
+                        String(e.event) === c.turn &&
+                        e.label === c.label,
+                );
+                if (c.component !== "user-sim" || !backed) {
+                    throw new Error(
+                        `snapshot ${s.id} marks call ${c.seq} as journal-backed, but the journal holds no such user turn`,
+                    );
+                }
+            }
             cursors.set(key, [
                 ...(cursors.get(key) ?? []),
-                { snapshot: s.id, calls: calls.calls, at: 0 },
+                { snapshot: s.id, calls: calls.calls.filter((c) => !c.journal), at: 0 },
             ]);
         }
     }
@@ -319,7 +338,7 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
     const outside = `probe turn outside the run's ${manifest.events} events`;
     let judgeErrors = 0;
     const p7 = scenario.probes.filter((p) => p.type === "P7");
-    const memoryArms = arms.filter((a) => a !== "host");
+    const memoryArms = arms.filter((a) => armBase(a) !== "host");
     const pairs = p7.flatMap((probe) =>
         memoryArms.flatMap((arm) => {
             if (!ran.has(probe.id)) {

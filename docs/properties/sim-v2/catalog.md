@@ -142,8 +142,9 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M6 (#1031); nothing constructs
-it yet
+Exercised: partial - M6 (#1031) unit tests replay one- and two-arm runs with
+identical text; the `usersim-1` smoke run (S seed 101, 45 events) found no
+mismatch before divergence; no full-tier run yet
 Guarantee: SIM-P02: For arms A and B of one run and every `event_idx <
 divergence_idx(A, B)`, the delivered user text, pasted bytes, and fault
 parameters are byte-identical.
@@ -155,10 +156,12 @@ stale context hash serves the wrong tape entry.
 Required faults and enabling state: two arms of one seed; a tape recorded by the
 first arm; at least one paste and one scheduled fault before divergence.
 Confidence: low -
-[evidence](evidence/sim-p02-paired-arms-share-event-prefix.md). PROPOSED:
-reconstructed from the condensed index in spec #1007; no implementation exists
-to verify against, and a default tier run reaches it.
-Existing check: none
+[evidence](evidence/sim-p02-paired-arms-share-event-prefix.md). M6 (#1031) keys
+replies by the session's chained digests and compares delivered-text hashes
+before the divergence index; verified in `src/usersim/usersim.test.ts` and the
+`usersim-1` smoke run.
+Existing check: `pairingMismatches` and `scripts/pairing-check.ts` compare
+delivered-text hashes before the recorded divergence index
 Impact: A measured effect is confounded with different user input.
 Open questions:
 - OQ-3 policy half is resolved in the M0 pre-registration: the divergence hash
@@ -170,8 +173,12 @@ Open questions:
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M6 (#1031); nothing constructs
-it yet
+Exercised: partial - M6 (#1031) tests prove the `divergedAt` record is on disk
+before the diverging arm's own live call and before its turn record; arms run
+one after another, so the ordering against the reference arm's later inputs that
+the guarantee names is not what the test proves, and the record carries the
+arm's context hash beside the two digests (see the evidence); no full-tier run
+yet
 Guarantee: SIM-P03: If the agent-visible context hash differs at `event_idx`
 between two arms, a divergence record with that index and both hashes exists
 before the next `IssueUserText` for either arm.
@@ -183,10 +190,12 @@ Fault/timing angle: the divergence check runs between `EndTurn` and the next
 Required faults and enabling state: two arms whose agent outputs differ after
 normalisation.
 Confidence: low -
-[evidence](evidence/sim-p03-divergence-is-recorded-never-hidden.md). PROPOSED:
-reconstructed from the condensed index in spec #1007; no implementation exists
-to verify against, and a default tier run reaches it.
-Existing check: none
+[evidence](evidence/sim-p03-divergence-is-recorded-never-hidden.md). M6 (#1031)
+appends `divergedAt` before the turn's text is sent; verified in
+`src/usersim/usersim.test.ts`. The record lives in `pairing.jsonl`, not the
+journal (see the evidence).
+Existing check: `src/usersim/usersim.test.ts` asserts the record is on disk
+before the live call
 Impact: A diverged pair is analysed as paired and the report overstates pairing.
 Open questions:
 - Same as SIM-P02: the hash input is pre-registered in `divergence_policy`; the
@@ -197,8 +206,8 @@ Open questions:
 Type: reachability
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M6 (#1031); nothing constructs
-it yet
+Exercised: partial - the `usersim-1` smoke run diverged in three of ten
+sessions; no full-tier campaign yet
 Guarantee: SIM-P04: At least one arm pair diverges before the last event of its
 run.
 Check: `sometimes` - count pairs whose divergence index is below the run's last
@@ -208,8 +217,8 @@ Fault/timing angle: none.
 Required faults and enabling state: live models at production temperature; a run
 long enough for outputs to differ.
 Confidence: low - [evidence](evidence/sim-p04-divergence-occurs-in-campaign.md).
-PROPOSED: reconstructed from the condensed index in spec #1007; no
-implementation exists to verify against, and a default tier run reaches it.
+M6 (#1031) recorded divergence in a 45-event smoke run; a full-tier campaign has
+not run.
 Existing check: none
 Impact: The replay-to-live transition is never exercised and its defects stay
 hidden.
@@ -341,8 +350,8 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M6 (#1031); nothing constructs
-it yet
+Exercised: partial - M6 (#1031) tests check the S seed 101 plan against every
+band; `usersim-1`, cut at 45 events, was flagged; no full-tier run yet
 Guarantee: SIM-P10: Pushback, interrupt, redirect, and abandon rates over the
 run fall inside pre-registered tolerance bands around the fitted targets, and
 the realised rates are journaled.
@@ -355,9 +364,10 @@ Required faults and enabling state: a full run with user-sim labels on every
 turn.
 Confidence: low -
 [evidence](evidence/sim-p10-user-sim-event-mix-matches-distribution-bounds.md).
-PROPOSED: reconstructed from the condensed index in spec #1007; no
-implementation exists to verify against, and a default tier run reaches it.
-Existing check: none
+M6 (#1031) samples labels from the pre-registered rates and journals
+`UserSimRates` per arm; verified in `src/usersim/usersim.test.ts`.
+Existing check: `realisedRates` journals each arm's rates and the ones outside
+their band; `scripts/pairing-check.ts` fails a flagged or missing summary
 Impact: Results generalise to a user population the corpus does not describe.
 Open questions: None.
 
@@ -586,8 +596,8 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M6 (#1031); nothing constructs
-it yet
+Exercised: partial - M6 (#1031) tests replay one- and two-arm runs with zero
+live calls; no full-tier replay yet
 Guarantee: SIM-P20: A sibling arm in `replaying` mode receives the tape's text
 for `event_idx` when its context hash equals the tape's recorded hash, and no
 user-sim model call is made for that event.
@@ -598,10 +608,11 @@ Fault/timing angle: the hash comparison races the agent's final output flush.
 Required faults and enabling state: two arms of one seed with matching outputs
 at least once.
 Confidence: low -
-[evidence](evidence/sim-p20-tape-replays-while-context-matches.md). PROPOSED:
-reconstructed from the condensed index in spec #1007; no implementation exists
-to verify against, and a default tier run reaches it.
-Existing check: none
+[evidence](evidence/sim-p20-tape-replays-while-context-matches.md). M6 (#1031)
+keys replies by the session's chained digests and the scripted text; verified in
+`src/usersim/usersim.test.ts`.
+Existing check: `src/usersim/usersim.test.ts` replays recorded runs and counts
+live calls
 Impact: Paired arms receive different user text before divergence.
 Open questions:
 - OQ-3: see SIM-P02.
@@ -611,8 +622,8 @@ Open questions:
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M6 (#1031); nothing constructs
-it yet
+Exercised: partial - M6 (#1031) tests check that a replay with one changed
+output records one divergence and goes live after it; no full-tier run yet
 Guarantee: SIM-P21: The first user-sim model call for a sibling arm at
 `event_idx` has a divergence record with index at most `event_idx`.
 Check: `always` - for each sibling arm's first user-sim call, assert a
@@ -621,10 +632,11 @@ pairing.
 Fault/timing angle: none.
 Required faults and enabling state: a sibling arm that diverges.
 Confidence: low -
-[evidence](evidence/sim-p21-tape-goes-live-only-after-divergence.md). PROPOSED:
-reconstructed from the condensed index in spec #1007; no implementation exists
-to verify against, and a default tier run reaches it.
-Existing check: none
+[evidence](evidence/sim-p21-tape-goes-live-only-after-divergence.md). M6 (#1031)
+gives a context that left the reference's no taped reply to find, so the first
+live call follows the `divergedAt`; verified in `src/usersim/usersim.test.ts`.
+Existing check: `src/usersim/usersim.test.ts` checks the record order and the
+live-call count
 Impact: Paired arms receive different user text before divergence.
 Open questions: None.
 
@@ -633,8 +645,9 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M6 (#1031); nothing constructs
-it yet
+Exercised: partial - M6 (#1031) tests check that fact-bearing script text stays
+out of the persona prompt and that an abandon skips fillers only; no full-tier
+run yet
 Guarantee: SIM-P22: For every ledger fact, exactly one conveyance event with the
 compiled manner and session is journaled as delivered; reversal facts have
 exactly two, the statement and the reversal.
@@ -647,9 +660,10 @@ Required faults and enabling state: the conveyance plan with every manner,
 including stated-then-reversed facts.
 Confidence: low -
 [evidence](evidence/sim-p22-each-ledger-fact-conveyed-once-in-assigned-manner.md).
-PROPOSED: reconstructed from the condensed index in spec #1007; no
-implementation exists to verify against, and a default tier run reaches it.
-Existing check: none
+M6 (#1031) delivers conveyance, update, and reversal turns with their compiled
+text; verified in `src/usersim/usersim.test.ts`.
+Existing check: `scripts/pairing-check.ts` fails a run that leaves a non-filler
+turn unsent
 Impact: Recall is measured on facts conveyed a different number of times than
 planned.
 Open questions: None.
@@ -682,18 +696,21 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M6 (#1031); nothing constructs
-it yet
+Exercised: partial - M6 (#1031) records the corpus id and byte length on each
+paste turn's record and checks the delivered text against the compiled text;
+`usersim-1` passed; no full-tier run yet
 Guarantee: SIM-P24: A paste turn's record names its corpus item id and byte
 length, and the bytes delivered equal the corpus bytes.
 Check: `always` - for each paste turn, assert the record names a corpus id and
 length and the delivered bytes equal the corpus item's bytes.
 Fault/timing angle: none.
 Required faults and enabling state: a scenario with paste turns.
-Confidence: low - [evidence](evidence/sim-p24-paste-turn-provenance.md).
-PROPOSED: reconstructed from the condensed index in spec #1007; no
-implementation exists to verify against, and a default tier run reaches it.
-Existing check: none
+Confidence: low - [evidence](evidence/sim-p24-paste-turn-provenance.md). M6
+(#1031) carries `paste.sample_id` and `paste.bytes` on the turn record and
+`scripts/pairing-check.ts` checks each paste turn against the compiled text and
+the corpus item.
+Existing check: `scripts/pairing-check.ts` checks each paste turn's text hash
+and corpus provenance
 Impact: A paste carries unlicensed or altered content.
 Open questions: None.
 
@@ -702,8 +719,9 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M6 (#1031); nothing constructs
-it yet
+Exercised: partial - M6 (#1031) journals a labelled `UserTurn` per turn and
+lists labels in probe snapshots; compiled P14 items are still skipped by the
+grader; no full-tier run yet
 Guarantee: SIM-P25: Every user-sim turn carries a label in task, pushback,
 interrupt, redirect, abandon, clarify, or paste, and P14 derives from labels
 only.
@@ -711,10 +729,12 @@ Check: `always` - assert every user-sim turn has exactly one label from the
 fixed set and that P14's inputs are labels only.
 Fault/timing angle: none.
 Required faults and enabling state: a run with user-sim turns.
-Confidence: low - [evidence](evidence/sim-p25-pushback-label-per-turn.md).
-PROPOSED: reconstructed from the condensed index in spec #1007; no
-implementation exists to verify against, and a default tier run reaches it.
-Existing check: none
+Confidence: low - [evidence](evidence/sim-p25-pushback-label-per-turn.md). M6
+(#1031) journals one labelled `UserTurn` per turn ahead of its `EndTurn`;
+verified in `src/run/scheduler.test.ts`. P14 grading of compiled items is a gap
+(see the evidence).
+Existing check: `src/run/scheduler.test.ts` checks the label and the order;
+`scripts/grade-run.ts` still skips compiled P14 items
 Impact: P14 reads transcript text and grades by self-report.
 Open questions: None.
 

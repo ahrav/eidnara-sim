@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import {
     closeSync,
     existsSync,
@@ -31,6 +32,8 @@ export type EntryKind =
     | "ItemState"
     | "SnapshotArtefacts"
     | "StoreChecked"
+    | "UserTurn"
+    | "UserSimRates"
     | "EndArm"
     | "EndRun";
 
@@ -74,12 +77,21 @@ function readLease(path: string): Lease | null {
  * on this host has exited, or that a kill left unreadable, is moved aside by one atomic rename
  * and replaced, which is how a killed run resumes.
  */
+/**
+ * A staging name beside `path` that no other process, on this host or another sharing the
+ * directory, is writing: host, pid, and a random nonce. An exclusive create at it refuses a
+ * planted symlink, and a leftover from a killed process collides with nothing.
+ */
+export function stagingPath(path: string): string {
+    return `${path}.${hostname()}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
+}
+
 export function takeLease(dir: string): Lease {
     const path = join(dir, "lease.json");
     const mine: Lease = { pid: process.pid, host: hostname(), started_wall_ms: Date.now() };
     for (let attempt = 0; attempt < 3; attempt++) {
-        const staged = join(dir, `lease.${process.pid}.tmp`);
-        writeFileSync(staged, JSON.stringify(mine));
+        const staged = stagingPath(join(dir, "lease"));
+        writeFileSync(staged, JSON.stringify(mine), { flag: "wx" });
         try {
             linkSync(staged, path);
             rmSync(staged);
@@ -152,6 +164,18 @@ export function keepCompleteLines(path: string): number {
  * Every line but the last must parse; a cut last line, which a kill mid-write leaves, is
  * dropped. `bytes` is the length of the complete prefix.
  */
+/**
+ * Reads a finished journal for certification: a cut last line is dropped like `readJournal`,
+ * and a terminated last line that does not parse is refused as corruption.
+ */
+export function readJournalStrict(path: string): Entry[] {
+    const read = readJournal(path);
+    if (!existsSync(path)) return read;
+    const dropped = readFileSync(path).subarray(read.bytes ?? 0);
+    if (dropped.at(-1) === 0x0a) throw new Error(`${path}: last line is corrupt`);
+    return read;
+}
+
 export function readJournal(path: string): Entry[] & { bytes?: number } {
     const entries: Entry[] & { bytes?: number } = [];
     entries.bytes = 0;

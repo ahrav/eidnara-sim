@@ -6,7 +6,8 @@ import { runTier } from "../src/run/run";
 import type { FaultEpisode } from "../src/scenario/faults";
 
 const USAGE = `usage: --tier S --seed 101 --out <run dir> [--host pi|opencode] [--arms a,b]
-    [--events N] [--faults <episodes.json>] [--context-limit N] [--models a,b]`;
+    [--events N] [--faults <episodes.json>] [--context-limit N] [--models a,b]
+    [--tapes <tape.jsonl>,...]`;
 const arg = (name: string) => {
     const i = process.argv.indexOf(`--${name}`);
     return i < 0 ? undefined : process.argv[i + 1];
@@ -41,4 +42,7 @@ await runTier({
     faults: faults ? (JSON.parse(readFileSync(faults, "utf8")) as FaultEpisode[]) : undefined,
     contextLimit: count("context-limit"),
     models: arg("models")?.split(","),
+    tapes: arg("tapes")
+        ?.split(",")
+        .map((p) => resolve(p)),
 });

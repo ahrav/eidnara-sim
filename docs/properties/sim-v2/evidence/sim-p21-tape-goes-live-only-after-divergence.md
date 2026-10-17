@@ -14,8 +14,19 @@ v2 harness before any harness code existed.
 The first user-sim model call for a sibling arm at `event_idx` has a divergence
 record with index at most `event_idx`.
 
-No harness code, test, or run exists yet. The surface lands in M6
-(#1031).
+M6 (#1031) keys a reply by the session's chained normalised agent digests, so
+a sibling arm's first live reply follows the turn whose digest first differed
+from the reference's, which is the turn its `divergedAt` record names; a
+replay with one changed agent output records one divergence against the
+recorded run and makes live calls after it, and two arms with the same outputs
+share replies whatever the run order.
+
+Contract versus code: the catalog indexes the divergence record by a run-wide
+`event_idx`; the code records it with the session's turn `index` in
+`<run>/pairing.jsonl`, and a sibling arm's first live call in a session
+follows its `divergedAt` record for that session: the tape key carries the
+session's chained digests (`context_sha256`, built in `UserSim.deliver`), so a
+context that left the reference's has no taped reply to find.
 
 ## Failure scenario
 

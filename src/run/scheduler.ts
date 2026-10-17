@@ -19,6 +19,10 @@ export interface TurnOutcome {
     snapshot?: string;
     /** Store checks the arm owed daemon restarts, one `StoreChecked` entry each. */
     stores?: { fault: string; store: StoreCheck }[];
+    /** The user turn the user-sim sent or skipped, journaled as `UserTurn`. */
+    user?: Record<string, unknown>;
+    /** The host never received the turn's text. */
+    undelivered?: boolean;
 }
 
 export interface ArmDriver {
@@ -62,6 +66,13 @@ export interface SchedulerOptions {
      * jump's own `AdvanceClock` entry otherwise.
      */
     onClock?: (arm: string, scenarioMs: number) => OffsetWrite | undefined;
+    /** The arm's realised user-sim rates, journaled as `UserSimRates` before `EndArm`. */
+    armSummary?: (arm: string) => object | undefined;
+    /**
+     * The user record of a turn a kill interrupted, from the driver's own log, journaled as
+     * `UserTurn` with `recovered: true` ahead of the turn's `failed(interrupted)` event.
+     */
+    recoverTurn?: (event: string) => Record<string, unknown> | undefined;
     /** Runs before `EndArm` and `EndRun` are journaled; a throw leaves the arm or run open. */
     beforeEnd?: () => void;
 }
@@ -72,6 +83,11 @@ const OUTAGE = new Set(["daemon_sigkill_mid_fold", "daemon_restart", "host_upgra
 export class Scheduler {
     clock: Clock | null = null;
     private arm: string | null = null;
+
+    /** The arm whose events are running, or null between arms. */
+    get currentArm(): string | null {
+        return this.arm;
+    }
     private session: string | null = null;
     private outage: string | null = null;
     private readonly fired = new Set<string>();
@@ -159,6 +175,10 @@ export class Scheduler {
             await this.pendingKill;
             const last = await driver.finish?.();
             this.logStores(last?.stores, null);
+            // A kill between the summary and EndArm resumes here; the arm keeps its one summary.
+            const summarised = mine.some((e) => e.kind === "UserSimRates");
+            const rates = summarised ? undefined : this.o.armSummary?.(arm);
+            if (rates) this.log({ kind: "UserSimRates", ...rates });
             this.o.beforeEnd?.();
             this.log({ kind: "EndArm" });
         }
@@ -176,10 +196,15 @@ export class Scheduler {
             this.snapshotTurn(e);
             this.log({ kind: "Event", event: e.event, outcome: e.outcome });
         }
+        const journaled = new Set(kinds("UserTurn").map((e) => e.event));
         const interrupted = kinds("BeginTurn").filter(
             (x) => !ended.has(x.event) && !done.has(x.event),
         );
         for (const e of interrupted) {
+            const user = journaled.has(e.event)
+                ? undefined
+                : this.o.recoverTurn?.(e.event as string);
+            if (user) this.log({ kind: "UserTurn", event: e.event, ...user, recovered: true });
             this.log({ kind: "ItemState", event: e.event, state: "failed(interrupted)" });
             this.log({ kind: "Event", event: e.event, outcome: "failed(interrupted)" });
         }
@@ -348,8 +373,10 @@ export class Scheduler {
             }
             const state = outcome.failed ? "failed" : "completed";
             const item = e.probe ? { probe: e.probe, state } : {};
-            // The checks go first: a kill before EndTurn replays the turn with them on record.
+            // The checks and the user record go first: a kill before EndTurn replays the turn
+            // with them on record, and a resume reads a turn's EndTurn as the whole turn.
             this.logStores(outcome.stores, e.id);
+            if (outcome.user) this.log({ kind: "UserTurn", event: e.id, ...outcome.user });
             const snapshot = outcome.snapshot ? { snapshot: outcome.snapshot } : {};
             const end = { event: e.id, outcome: outcome.failed ?? "ok", ...item, ...snapshot };
             this.log({ kind: "EndTurn", ...end });

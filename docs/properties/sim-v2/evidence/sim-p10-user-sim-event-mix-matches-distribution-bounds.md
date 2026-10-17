@@ -15,8 +15,13 @@ Pushback, interrupt, redirect, and abandon rates over the run fall inside
 pre-registered tolerance bands around the fitted targets, and the realised rates
 are journaled.
 
-No harness code, test, or run exists yet. The surface lands in M6
-(#1031).
+M6 (#1031) samples pushback, interrupt, redirect, and abandon from
+pre-registered rates (revision 6, `user_sim`) with rounded quotas; over the
+whole S seed 101 scenario the plan gives 45.7%, 4.5%, 6%, and 6%, inside every
+band. Each arm journals `UserSimRates` before `EndArm`, and a rate outside its
+band is flagged; `usersim-1`, cut at 45 events, was flagged for pushback and
+abandon. `scripts/pairing-check.ts` fails a run that lacks an arm's
+`UserSimRates`.
 
 M1 (#1025) lands the rate inputs. `corpus/distributions.json` carries
 pushback and interrupt rates per turn and redirect and abandon rates per

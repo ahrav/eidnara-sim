@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
     appendFileSync,
+    existsSync,
     mkdirSync,
     mkdtempSync,
     readdirSync,
@@ -10,6 +11,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { armBase } from "../hosts/arms";
 import { scenarioHash } from "../scenario/compile";
 import { loadPrereg } from "../scenario/inputs";
 import { type ArmLogs, loadRun, type RunLogs } from "./logs";
@@ -56,6 +58,17 @@ describe("oracle fixtures", () => {
             expect(counts(f)).toEqual(nonzero);
         });
     }
+});
+
+describe("A/A control arms", () => {
+    test("a control of host runs as host, so F6 does not hold it to the host's token or title budget", () => {
+        const bad = fixtures.find(([f]) => f === "F6-bad.json")?.[1] as Fixture;
+        const relabel = (a: ArmLogs): ArmLogs =>
+            a.arm === "host"
+                ? a
+                : { ...a, arm: "host~aa", calls: a.calls.map((c) => ({ ...c, arm: "host~aa" })) };
+        expect(counts({ ...bad, arms: bad.arms.map(relabel) })).toEqual({});
+    });
 });
 
 describe("oracle report", () => {
@@ -491,6 +504,32 @@ describe("oracle round three", () => {
         writeFileSync(join(dir, "eidnara", "r", "eidnara.log"), "");
         expect(loadRun(dir, prereg).arms.map((a) => a.arm)).toEqual(order);
     });
+
+    test("a control label is a pre-registered arm, a tilde, and a tag; a path is refused", () => {
+        for (const label of ["host~x/../../outside", "host~", "host~A", "eidnara-kl~aa"]) {
+            const { dir } = completeDir(["host", label]);
+            expect(() => loadRun(dir, prereg)).toThrow(
+                `manifest arm ${label} is not a pre-registered arm`,
+            );
+        }
+    });
+
+    test("an order runs one control per arm, each beside its arm", () => {
+        const two = completeDir(["host", "host~aa", "host~bb"]);
+        expect(() => loadRun(two.dir, prereg)).toThrow("two A/A controls of host");
+        const alone = completeDir(["host~aa", "eidnara"]);
+        expect(() => loadRun(alone.dir, prereg)).toThrow("host~aa runs without host");
+        const before = completeDir(["host~aa", "host"]);
+        expect(() => loadRun(before.dir, prereg)).toThrow("host~aa runs apart from host");
+        const apart = completeDir(["host", "eidnara", "host~aa"]);
+        expect(() => loadRun(apart.dir, prereg)).toThrow("host~aa runs apart from host");
+    });
+
+    test("a control of host runs no daemon, so it loads without RSS samples or a daemon.log", () => {
+        const { dir } = completeDir(["host", "host~aa"]);
+        expect(existsSync(join(dir, "host~aa", "daemon.log"))).toBe(false);
+        expect(loadRun(dir, prereg).arms.map((a) => a.arm)).toEqual(["host", "host~aa"]);
+    });
 });
 
 describe("oracle round four", () => {
@@ -668,10 +707,10 @@ function completeDir(order: string[]): { dir: string; line: (o: unknown) => stri
     writeFileSync(join(dir, "journal.jsonl"), journal.map(line).join(""));
     writeFileSync(join(dir, "calls.jsonl"), "");
     for (const arm of order) {
-        if (arm.startsWith("..")) continue;
+        if (arm.includes("..")) continue;
         mkdirSync(join(dir, arm));
         writeFileSync(join(dir, arm, "tools.jsonl"), "");
-        if (arm === "host") continue;
+        if (armBase(arm) === "host") continue;
         writeFileSync(
             join(dir, arm, "resources.jsonl"),
             line({ scenario_ms: 0, rss: 100, pid: 1 }),

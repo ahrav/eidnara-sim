@@ -13,7 +13,7 @@ import {
 import { dirname, join, resolve } from "node:path";
 import type { SimConfig } from "../config/config";
 import type { CallView } from "../grade/artefacts";
-import type { ArmName } from "../hosts/arms";
+import { armBase, CONTROL_LABEL } from "../hosts/arms";
 import { HostDriver } from "../hosts/driver";
 import { canonicalJson } from "../prereg/canonical";
 import type { Tier } from "../prereg/schema";
@@ -26,6 +26,26 @@ import { compileScenario, type Scenario } from "../scenario/compile";
 import type { FaultEpisode } from "../scenario/faults";
 import { loadCompileInput, loadPrereg } from "../scenario/inputs";
 import { bedrockEmbedder } from "../scenario/similarity";
+import {
+    beganAt,
+    behaviourPlan,
+    deliveredTurns,
+    type Label,
+    pinnedTurns,
+    realisedRates,
+    withUserLabels,
+} from "../usersim/plan";
+import {
+    type AgentReply,
+    agentReplyOf,
+    checkTapeSources,
+    normaliser,
+    Pairing,
+    proxyUserSim,
+    Tape,
+    tapeDigests,
+    UserSim,
+} from "../usersim/usersim";
 import { Journal, releaseLease, requireAppendable, takeLease } from "./journal";
 import { plainPath } from "./launcher";
 import { type Preflight, preflight } from "./preflight";
@@ -44,20 +64,25 @@ export interface RunOptions {
     faults?: FaultEpisode[];
     contextLimit?: number;
     models?: string[];
+    /** Earlier runs' user-sim tapes to replay from. */
+    tapes?: string[];
 }
 
 interface Manifest {
-    schema: "sim-run-manifest/v1";
+    schema: "sim-run-manifest/v2";
     tier: Tier;
     seed: number;
     host: "pi" | "opencode";
-    order: ArmName[];
+    order: string[];
     events: number;
     context_limit: number;
     models: string[];
     scenario_hash: string;
     eidnara_commit: string;
     fault_override: FaultEpisode[] | null;
+    tapes: string[];
+    /** One digest per entry of `tapes`, over the tape and the pairing log beside it. */
+    tape_sha256: string[];
     prereg_sha256: string;
     base_wall_ms: number;
     preflight: Preflight;
@@ -117,17 +142,55 @@ async function loadScenario(o: RunOptions): Promise<Scenario> {
     return scenario;
 }
 
-function armOrder(o: RunOptions): ArmName[] {
+/**
+ * The seed's pre-registered order, kept to `--arms`. An A/A control label `<arm>~<tag>` runs
+ * right after its arm when the tier pre-registers the `[arm, arm]` pair.
+ */
+export function armOrder(o: Pick<RunOptions, "tier" | "seed" | "arms">): string[] {
     const prereg = loadPrereg(o.tier);
     const index = prereg.seeds.indexOf(o.seed);
     if (index < 0) throw new HarnessFailure(`seed ${o.seed} is not pre-registered for ${o.tier}`);
-    const order = prereg.arms.order_by_seed[index] ?? prereg.arms.run;
-    const unknown = (o.arms ?? []).filter((a) => !order.includes(a));
+    const order: string[] = prereg.arms.order_by_seed[index] ?? prereg.arms.run;
+    const pairs = prereg.aa_controls?.pairs ?? [];
+    const control = (a: string) =>
+        CONTROL_LABEL.test(a) && pairs.some(([x, y]) => x === armBase(a) && y === armBase(a));
+    if (new Set(o.arms).size !== (o.arms ?? []).length) {
+        throw new HarnessFailure("--arms lists an arm twice");
+    }
+    const unknown = (o.arms ?? []).filter((a) => !order.includes(a) && !control(a));
     if (unknown.length > 0) throw new HarnessFailure(`arms not in the ${o.tier} order: ${unknown}`);
-    const kept = order.filter((a) => !o.arms || o.arms.includes(a)) as ArmName[];
+    const kept = order
+        .filter((a) => !o.arms || o.arms.includes(a))
+        .flatMap((a) => [a, ...(o.arms ?? []).filter((c) => control(c) && armBase(c) === a)]);
+    if ((o.arms ?? []).some((a) => control(a) && !kept.includes(armBase(a)))) {
+        throw new HarnessFailure("an A/A control arm runs only beside its arm");
+    }
+    const controls = (o.arms ?? []).filter(control).map(armBase);
+    if (new Set(controls).size !== controls.length) {
+        throw new HarnessFailure("an arm runs one A/A control");
+    }
     if (kept.length === 0) throw new HarnessFailure("no arm to run");
     return kept;
 }
+
+/**
+ * A persisted order is one `armOrder` would schedule for the tier and seed: pre-registered arms
+ * in the seed's relative order, each control right after its arm, once, for a registered pair.
+ */
+export function requireAdmittedOrder(
+    o: Pick<RunOptions, "tier" | "seed">,
+    order: readonly string[],
+): void {
+    if (!sameJson(armOrder({ ...o, arms: [...order] }), order)) {
+        throw new HarnessFailure(
+            `manifest order ${order.join(",")} is not an order ${o.tier} seed ${o.seed} admits`,
+        );
+    }
+}
+
+/** The arm a user-sim divergence is measured against: an A/A control's own arm, else the first. */
+export const referenceArm = (order: string[]) => (arm: string) =>
+    arm.includes("~") ? armBase(arm) : (order[0] as string);
 
 const sameJson = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 
@@ -143,15 +206,54 @@ async function loadManifest(o: RunOptions, scenario: Scenario): Promise<Manifest
         context_limit: o.contextLimit ?? 200_000,
         models: o.models ?? [o.config.agent_model],
         fault_override: o.faults ?? null,
+        tapes: o.tapes ?? [],
     };
+    const sources = (
+        tapes: string[],
+        events: number,
+        order: readonly string[],
+        faultOverride: FaultEpisode[] | null,
+    ) =>
+        checkTapeSources(tapes, {
+            seed: o.seed,
+            scenario_hash: scenario.scenario_hash,
+            prereg_sha256: preregistrationHash(loadPrereg(o.tier)),
+            events,
+            order,
+            fault_override: faultOverride,
+            turns: scenario.events
+                .slice(0, events)
+                .filter((e) => e.kind === "user_turn")
+                .map((e) => e.id),
+            scripted: new Map(
+                scenario.events
+                    .filter((e) => e.kind === "user_turn")
+                    .map((e) => [e.id, String((e as { text?: unknown }).text ?? "")]),
+            ),
+        });
+    if (o.events !== undefined && o.events > scenario.events.length) {
+        throw new HarnessFailure(
+            `--events ${o.events} exceeds the scenario's ${scenario.events.length} events`,
+        );
+    }
     if (existsSync(path)) {
         const manifest = JSON.parse(readFileSync(path, "utf8")) as Manifest;
+        if (manifest.schema !== "sim-run-manifest/v2") {
+            throw new HarnessFailure(
+                `${path} is ${String(manifest.schema)}, from before the user-sim fields; start a new run`,
+            );
+        }
+        requireAdmittedOrder(o, manifest.order);
+        // A resume checks the sources against the run it continues, whose event count and arm
+        // order the manifest holds whether or not this invocation restates them.
+        sources(manifest.tapes, manifest.events, manifest.order, manifest.fault_override);
         const given: Record<string, boolean> = {
             order: o.arms !== undefined,
             events: o.events !== undefined,
             context_limit: o.contextLimit !== undefined,
             models: o.models !== undefined,
             fault_override: o.faults !== undefined,
+            tapes: o.tapes !== undefined,
         };
         const differs = Object.entries(wanted).filter(
             ([k, v]) => given[k] !== false && !sameJson(manifest[k as keyof Manifest], v),
@@ -164,9 +266,10 @@ async function loadManifest(o: RunOptions, scenario: Scenario): Promise<Manifest
             scenario_hash: scenario.scenario_hash,
             prereg_sha256: preregistrationHash(loadPrereg(o.tier)),
             eidnara_commit: gitHead(o.config.eidnara_checkout),
+            tape_sha256: tapeDigests(manifest.tapes),
         };
         const changed = Object.entries(digests).filter(
-            ([k, v]) => manifest[k as keyof Manifest] !== v,
+            ([k, v]) => !sameJson(manifest[k as keyof Manifest], v),
         );
         if (changed.length > 0) {
             const names = changed.map(([k]) => k).join(", ");
@@ -179,12 +282,14 @@ async function loadManifest(o: RunOptions, scenario: Scenario): Promise<Manifest
         appendFileSync(join(o.out, "preflight.jsonl"), `${JSON.stringify(checks)}\n`);
         return manifest;
     }
+    sources(wanted.tapes, wanted.events, wanted.order, wanted.fault_override);
     const manifest: Manifest = {
-        schema: "sim-run-manifest/v1",
+        schema: "sim-run-manifest/v2",
         ...wanted,
         scenario_hash: scenario.scenario_hash,
         eidnara_commit: gitHead(o.config.eidnara_checkout),
         prereg_sha256: preregistrationHash(loadPrereg(o.tier)),
+        tape_sha256: tapeDigests(wanted.tapes),
         base_wall_ms: Date.now(),
         preflight: checks,
     };
@@ -343,14 +448,20 @@ async function runArms(
     const compiled = await loadScenario(o);
     const manifest = await loadManifest(o, compiled);
     const scenario = { ...compiled, faults: manifest.fault_override ?? compiled.faults };
-    const events = scenario.events.slice(0, manifest.events) as unknown as ScenarioEvent[];
+    const allEvents = scenario.events as unknown as ScenarioEvent[];
+    const events = allEvents.slice(0, manifest.events);
     const hostRow = manifest.preflight.hosts.find((h) => h.host === o.host);
     if (!hostRow) throw new Error(`preflight lists no ${o.host} host`);
 
-    const drivers: Partial<Record<ArmName, ArmDriver>> = {};
+    const drivers: Record<string, ArmDriver> = {};
     const proxyFaults = scenario.faults.filter((f) => f.seam.layer === "proxy-sink");
     const injector = new FaultInjector(proxyFaults, new Rng((seed ^ 0x5bd1e995) >>> 0), 120_000);
     const offsetFile = (arm: string) => join(o.out, arm, "clock", "offset");
+    const pairing = new Pairing(
+        join(o.out, "pairing.jsonl"),
+        referenceArm(manifest.order),
+        manifest.tapes.map((t) => join(dirname(t), "pairing.jsonl")),
+    );
     const scheduler = new Scheduler({
         events,
         faults: scenario.faults,
@@ -361,6 +472,24 @@ async function runArms(
         idleLimitMs: prereg.liveness_bounds.job_deadline_ms,
         beforeEnd: () => requireRecorded(gateway),
         onClock: (arm, ms) => writeOffset(offsetFile(arm), manifest.base_wall_ms, ms),
+        armSummary: (arm) => {
+            const turns = userTurns(arm).map((e) => ({
+                session: String(e.session),
+                label: e.label as Label,
+            }));
+            return realisedRates(turns, prereg);
+        },
+        // The pairing log holds the turn's user record ahead of the prompt, so a turn a kill
+        // interrupted mid-prompt keeps its label and delivery in the journal.
+        recoverTurn: (event: string): Record<string, unknown> | undefined => {
+            const arm: string | null = scheduler.currentArm;
+            const r = pairing.records.find(
+                (x) => x.kind === "turn" && x.arm === arm && x.event === event,
+            );
+            return r?.kind === "turn"
+                ? { session: r.session, label: r.label, delivered: r.delivered }
+                : undefined;
+        },
     });
     const now = () => scheduler.clock?.now() ?? 0;
     const scope = { arm: "", session: null as string | null, turn: null as string | null };
@@ -368,9 +497,17 @@ async function runArms(
     let jobSeq = journal.entries.filter((e) => e.kind === "RegisterJob").length;
     const callsPath = join(o.out, "calls.jsonl");
     const callIndex = new CallIndex(callsPath);
+    const agentText = new Map<string, AgentReply>();
+    const noteAgent = (
+        r: { arm?: unknown; session?: unknown } & Parameters<typeof agentReplyOf>[0],
+    ) => {
+        const reply = agentReplyOf(r);
+        if (reply) agentText.set(`${r.arm}/${r.session}`, reply);
+    };
     class RunRecords extends RecordWriter {
         override write(partial: Omit<CallRecord, "seq" | "wall_ms">): CallRecord {
             const record = super.write(partial);
+            noteAgent(record);
             const id = jobs.get(`${record.arm}/${record.component}`)?.shift();
             if (id) scheduler.jobEnd(id);
             return record;
@@ -388,7 +525,7 @@ async function runArms(
         clock: { scenarioMs: now },
         scope: () => ({ ...scope }),
         observe: (e) => {
-            const driver = drivers[scope.arm as ArmName];
+            const driver = drivers[scope.arm];
             if (driver) scheduler.observe(e.component, driver);
             if (!BACKGROUND.has(e.component)) return;
             const id = `${e.component}-${jobSeq++}`;
@@ -411,6 +548,59 @@ async function runArms(
     const turnIndex = new Map(
         events.filter((e) => e.index !== undefined).map((e) => [e.id, e.index as number]),
     );
+    const scripted = scenario.events.filter((e) => e.kind === "user_turn") as unknown as {
+        id: string;
+        session: string;
+        index: number;
+        role: string;
+        text: string;
+        paste?: { sample_id: string; bytes: number };
+    }[];
+    // Pinning reads the whole scenario, so a shorter `--events` run labels its prefix the way
+    // a full run of the seed does.
+    const pinned = pinnedTurns(allEvents, scenario.faults);
+    const tape = new Tape(join(o.out, "tape.jsonl"), manifest.tapes);
+    // Both loaders have read the sources; the bytes they read must be the ones the manifest
+    // attests.
+    if (!sameJson(tapeDigests(manifest.tapes), manifest.tape_sha256)) {
+        throw new HarnessFailure("replay sources changed since the manifest hashed them");
+    }
+    const userSim = new UserSim({
+        seed,
+        plan: behaviourPlan(scripted, prereg, seed, pinned),
+        tape,
+        pairing,
+        llm: proxyUserSim(
+            gateway.urls[0] as string,
+            prereg.user_sim.model,
+            prereg.user_sim.max_tokens,
+            prereg.liveness_bounds.turn_deadline_ms,
+        ),
+        normalise: normaliser(prereg.divergence_policy.normalisation),
+        keys: [
+            ...scenario.facts.flatMap((f) => [f.id, f.template]),
+            ...scenario.probes.map((p) => p.id),
+        ],
+        facts: scenario.facts.flatMap((f) => [f.statement, ...f.cues]),
+    });
+    const scriptedById = new Map(scripted.map((t) => [t.id, t]));
+    const userTurns = (arm: string, session?: string) =>
+        deliveredTurns(journal.entries, arm, session);
+    // On a resume the session's last agent reply is read back from the call index on demand,
+    // so the whole call log never sits in memory.
+    const lastAgent = (arm: string, session: string): AgentReply => {
+        const key = `${arm}/${session}`;
+        const known = agentText.get(key);
+        if (known) return known;
+        for (const r of callIndex.records(arm, session).reverse()) {
+            const reply = agentReplyOf(r);
+            if (reply) {
+                agentText.set(key, reply);
+                return reply;
+            }
+        }
+        return { text: "" };
+    };
     for (const arm of manifest.order) {
         const armRoot = join(o.out, arm, "r");
         mkdirSync(dirname(offsetFile(arm)), { recursive: true });
@@ -434,7 +624,12 @@ async function runArms(
             sampleDaemon: () => sampler.observe(),
             callsFor: (session) => {
                 requireRecorded(gateway);
-                return callsOf(callIndex, arm, session, turnIndex);
+                return withUserLabels(
+                    callsOf(callIndex, arm, session, turnIndex),
+                    userTurns(arm, session),
+                    turnIndex,
+                    beganAt(journal.entries, arm),
+                ) as CallView[];
             },
             settle: () => scheduler.quiesceJobs(),
             now,
@@ -485,7 +680,33 @@ async function runArms(
                 scope.session = e.session;
                 scope.turn = e.kind === "user_turn" ? e.id : null;
                 try {
-                    return await driver.event(e);
+                    if (e.kind === "session_end") agentText.delete(`${arm}/${e.session}`);
+                    if (e.kind !== "user_turn") return await driver.event(e);
+                    const turn = scriptedById.get(e.id);
+                    if (!turn) throw new HarnessFailure(`${e.id}: no scripted user turn`);
+                    // The turn's deadline opened at BeginTurn; the user-sim call and the host
+                    // prompt share it.
+                    const opened = Date.now();
+                    const d = await userSim.deliver(arm, turn, lastAgent(arm, e.session));
+                    const user = { session: e.session, label: d.label, delivered: d.delivered };
+                    if (!d.delivered) return { user };
+                    const out = await driver.event({
+                        ...e,
+                        text: d.text,
+                        interrupt_ms: d.interruptMs,
+                        deadline_ms:
+                            prereg.liveness_bounds.turn_deadline_ms - (Date.now() - opened),
+                    });
+                    const cut = d.label !== "interrupt" || out.user?.interrupted === true;
+                    const label = cut ? d.label : "task";
+                    const scheduled = cut ? {} : { scheduled: "interrupt" };
+                    // A turn the host never received counts as undelivered, whatever the
+                    // user-sim decided.
+                    const delivered = d.delivered && !out.undelivered;
+                    return {
+                        ...out,
+                        user: { ...user, ...out.user, label, delivered, ...scheduled },
+                    };
                 } finally {
                     scope.turn = null;
                 }

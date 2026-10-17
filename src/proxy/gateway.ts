@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { createServer as createHttp1Server, type Server } from "node:http";
 import { createServer as createHttp2Server, type Http2Server } from "node:http2";
 import type { AddressInfo } from "node:net";
@@ -7,6 +8,7 @@ import {
     ConverseStreamCommand,
 } from "@aws-sdk/client-bedrock-runtime";
 import { defaultProvider } from "@aws-sdk/credential-provider-node";
+import { sha256Hex } from "../prereg/canonical";
 import type { Rng } from "../rng";
 import { COMPONENT_HEADER, type ConverseBody, classify } from "./classify";
 import { encodeEvent } from "./eventstream";
@@ -104,6 +106,7 @@ type Done = Partial<CallRecord> &
     Pick<CallRecord, "component" | "componentSource" | "model" | "status">;
 
 const RESPONSE_TEXT_LIMIT = 262_144;
+const RESPONSE_TAIL_LIMIT = 6_000;
 const RELAYED_TEXT = new Set<string>(["agent", "user-sim", "judge"]);
 
 const CLAUDE_5_5 = /anthropic\.claude-(opus|sonnet|haiku)-5-5/;
@@ -308,7 +311,12 @@ export class Gateway {
                 sink,
                 tool,
             );
-            const relayed = text && RELAYED_TEXT.has(done.component) ? { response_text: text } : {};
+            // A provider error or timeout produced no assistant output, so no text is recorded;
+            // an injected empty reply is recorded as the empty text it was.
+            const relayed =
+                RELAYED_TEXT.has(done.component) && text !== undefined
+                    ? { response_text: text, response_sha256: sha256Hex(text) }
+                    : {};
             return { ...done, ...outcome, ...relayed };
         }
         const usage: Usage = {};
@@ -323,8 +331,14 @@ export class Gateway {
         let textLength = 0;
         let truncated = false;
         const keep = RELAYED_TEXT.has(done.component);
+        // The whole text is digested and its last characters kept as it streams, so the record
+        // can name the whole reply while holding only the bounded prefix.
+        const digest = createHash("sha256");
+        let tail = "";
         const retain = (piece: string) => {
             if (!keep) return;
+            digest.update(piece);
+            tail = (tail + piece).slice(-RESPONSE_TAIL_LIMIT);
             const room = RESPONSE_TEXT_LIMIT - textLength;
             if (piece.length > room) truncated = true;
             if (room <= 0) return;
@@ -413,11 +427,16 @@ export class Gateway {
             } else if (!done.finish_reason) done.finish_reason = "stream_cut";
         }
         const relayed = text.join("");
-        const cut = truncated ? { response_text_truncated: true as const } : {};
+        const cut = truncated
+            ? { response_text_truncated: true as const, response_tail: tail }
+            : {};
+        // A call that failed before any assistant text produced no reply; the fields stay absent
+        // so the last real reply stands.
+        const observed = relayed !== "" || !done.error;
         return {
             ...done,
-            ...(relayed && RELAYED_TEXT.has(done.component)
-                ? { response_text: relayed, ...cut }
+            ...(keep && observed
+                ? { response_text: relayed, response_sha256: digest.digest("hex"), ...cut }
                 : {}),
             proxy_retries: retries,
             input_tokens: usage.inputTokens ?? 0,
