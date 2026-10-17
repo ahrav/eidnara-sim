@@ -765,6 +765,43 @@ test("quiet-window retries share one liveness deadline", async () => {
     expect(Date.now() - started).toBeLessThan(2_000);
 });
 
+test("jobs that keep starting and ending between polls still hit the liveness deadline", async () => {
+    const j = new Journal(join(dir(), "j.jsonl"));
+    let scheduler: Scheduler | null = null;
+    let n = 0;
+    const driver: ArmDriver = {
+        reset: async () => undefined,
+        event: async (e) => {
+            if (e.kind !== "user_turn") return {};
+            const blip = setInterval(() => {
+                const id = `history_summarizer-${n++}`;
+                scheduler?.jobStart(id);
+                scheduler?.jobEnd(id);
+            }, 20);
+            try {
+                await scheduler?.quiesceJobs();
+            } finally {
+                clearInterval(blip);
+            }
+            return {};
+        },
+        fault: async () => ({}),
+    };
+    scheduler = new Scheduler({
+        events: fixtureEvents(1),
+        faults: [],
+        journal: j,
+        settleMs: 100,
+        jobPollMs: 50,
+        idleLimitMs: 400,
+        order: ["a"],
+        drivers: { a: driver },
+    });
+    const started = Date.now();
+    await expect(scheduler.run()).rejects.toThrow("quiet window open past 400 ms");
+    expect(Date.now() - started).toBeLessThan(2_000);
+});
+
 test("recording failures found before EndArm leave the arm open", async () => {
     const j = new Journal(join(dir(), "j.jsonl"));
     const driver: ArmDriver = {

@@ -202,6 +202,11 @@ export class Scheduler {
         let activity = this.jobActivity;
         while (Date.now() - quietSince < settle) {
             await Bun.sleep(this.o.jobPollMs ?? 50);
+            if (Date.now() > limit) {
+                throw new HarnessFailure(
+                    `background jobs kept the quiet window open past ${this.o.idleLimitMs} ms`,
+                );
+            }
             if (this.jobActivity !== activity || jobs().length > 0) {
                 await this.quiesce(jobs, limit);
                 activity = this.jobActivity;
