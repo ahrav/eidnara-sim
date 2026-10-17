@@ -1497,6 +1497,74 @@ describe("grading harness", () => {
         expect(gradeItem(f.probe, [snap], rules)?.verdict).toBe("fail");
     });
 
+    test("package-manager global flags precede the test subcommand", () => {
+        const f = fixture("P6-pass");
+        for (const cmd of [
+            "bun --silent test",
+            "npm --silent test",
+            "pnpm -s test",
+            "bun --cwd pkg test",
+        ]) {
+            const snap = structuredClone(f.snapshots[0]) as Snapshot;
+            const log = snap.artefacts.find((a) => a.class === "command-log" && a.role === "turn");
+            if (log?.class !== "command-log") throw new Error("fixture lacks command-log");
+            log.commands.push({ command: cmd, exit: 0, scenario_ms: 10 });
+            expect(gradeItem(f.probe, [snap], rules)?.metrics["P6.ran_tests"]).toBe(true);
+        }
+        const p13 = fixture("P13-pass");
+        const snap = structuredClone(p13.snapshots[0]) as Snapshot;
+        const log = snap.artefacts.find((a) => a.class === "command-log");
+        if (log?.class !== "command-log") throw new Error("fixture lacks command-log");
+        log.commands.unshift({ command: "bun --silent test", exit: 0, scenario_ms: 100 });
+        log.commands.push({ command: "bun --silent test", exit: 0, scenario_ms: 900 });
+        expect(gradeItem(p13.probe, [snap], rules)?.metrics["P13.repeated_action"]).toBe(false);
+    });
+
+    test("a rename label with spaced names is read from its metadata, and a binary note names its files", () => {
+        const f = fixture("P1-pass");
+        const probe = { ...f.probe, check: { must: ["^src/new name\\.ts$"] } };
+        const run = (patch: string) => {
+            const snap = structuredClone(f.snapshots[0]) as Snapshot;
+            const diff = snap.artefacts.find((a) => a.class === "diff" && a.role === "turn");
+            if (diff?.class !== "diff") throw new Error("fixture lacks diff");
+            diff.patch = patch;
+            return () =>
+                gradeItem(probe, [snap], rules) as NonNullable<ReturnType<typeof gradeItem>>;
+        };
+        expect(
+            run(
+                "diff --git a/src/old name.ts b/src/new name.ts\nsimilarity index 100%\nrename from src/old name.ts\nrename to src/new name.ts\n",
+            )().verdict,
+        ).toBe("pass");
+        expect(
+            run(
+                "diff --git a/src/old name.ts b/src/new name.ts\n--- a/src/old name.ts\t\n+++ b/src/new name.ts\t\n@@ -1 +1 @@\n-a\n+b\n",
+            )().verdict,
+        ).toBe("pass");
+        expect(run("diff --git a/x b/x\nBinary files nonsense\n")).toThrow("patch");
+        expect(run("diff --git a/x b/x\nBinary files a/y and b/y differ\n")).toThrow("patch");
+        expect(run("diff --git a/x b/x\nBinary files a/x and b/x differ\n")().verdict).toBe("fail");
+        expect(run("diff --git a/x b/x\nBinary files /dev/null and b/x differ\n")().verdict).toBe(
+            "fail",
+        );
+    });
+
+    test("an exit inside a brace group ends the list, a subshell's does not", () => {
+        const f = fixture("P6-pass");
+        const run = (cmd: string) => {
+            const snap = structuredClone(f.snapshots[0]) as Snapshot;
+            const log = snap.artefacts.find((a) => a.class === "command-log" && a.role === "turn");
+            if (log?.class !== "command-log") throw new Error("fixture lacks command-log");
+            log.commands.push({ command: cmd, exit: 0, scenario_ms: 10 });
+            return gradeItem(f.probe, [snap], rules)?.metrics["P6.reread_files"];
+        };
+        expect(run("{ exit 0; }; cat src/connection.rs")).toBe(0);
+        expect(run("{ true; { exit 0; }; }; cat src/connection.rs")).toBe(0);
+        expect(run("( exit 0 ); cat src/connection.rs")).toBe(1);
+        expect(run("{ false && exit 0; }; cat src/connection.rs")).toBe(1);
+        expect(run("{ exit 0; } | cat; cat src/connection.rs")).toBe(1);
+    });
+
     test("a check pattern that is empty after its prefix or fails to compile is refused", () => {
         const f = fixture("P1-fail");
         for (const bad of ["(?i)", "["]) {

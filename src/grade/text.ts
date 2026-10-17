@@ -69,14 +69,32 @@ function gitPath(token: string): string {
 const HUNK_HEADER = /^@@ -(\d+)(,\d+)? \+(\d+)(,\d+)? @@/;
 const FILE_META =
     /^(index |old mode |new mode |deleted file mode |new file mode |similarity index |dissimilarity index |rename from |rename to |copy from |copy to |Binary files |GIT binary patch|literal |delta )/;
-const GIT_LABEL = /^diff --git ("a\/(?:[^"\\]|\\.)*"|a\/\S+) ("b\/(?:[^"\\]|\\.)*"|b\/.+)$/;
-/** The two paths of a `diff --git` label: quoted, or unquoted and equal (a path with spaces splits at its middle), or whitespace-separated. */
-function labelPaths(line: string): [string, string] | null {
-    const rest = line.slice("diff --git ".length);
+/**
+ * The two paths of a `diff --git` label read without the file's metadata: quoted, or unquoted and
+ * equal (a path with spaces splits at its middle). Unequal unquoted paths wait for the rename, copy,
+ * or `---`/`+++` names, which fix the split; whitespace is the last resort.
+ */
+function labelPaths(rest: string): [string, string] | null {
     const same = /^a\/(.+) b\/\1$/.exec(rest);
     if (same) return [same[1] as string, same[1] as string];
-    const named = GIT_LABEL.exec(line);
-    return named ? [gitPath(named[1] as string), gitPath(named[2] as string)] : null;
+    const quoted = /^("a\/(?:[^"\\]|\\.)*"|a\/\S+) ("b\/(?:[^"\\]|\\.)*"|b\/.+)$/.exec(rest);
+    if (!quoted) return null;
+    const first = quoted[1] as string;
+    const second = quoted[2] as string;
+    if (first.startsWith('"') || second.startsWith('"')) return [gitPath(first), gitPath(second)];
+    return null;
+}
+const SPLIT_LABEL = /^a\/(\S+) b\/(.+)$/;
+/** `Binary files <old> and <new> differ` names the label's two files, either side `/dev/null` for a creation or deletion. */
+function binaryNote(line: string, labelText: string | null): boolean {
+    const m = /^Binary files (.+) and (.+) differ$/.exec(line);
+    if (!m || labelText === null) return false;
+    const a = m[1] as string;
+    const b = m[2] as string;
+    if (`${a} ${b}` === labelText) return true;
+    if (a === "/dev/null") return labelText.startsWith("a/") && labelText.endsWith(` ${b}`);
+    if (b === "/dev/null") return labelText.startsWith(`${a} b/`);
+    return false;
 }
 
 /** A `---`/`+++` header's path: the token before any tab-separated timestamp, decoded, or null for `/dev/null`. */
@@ -110,7 +128,13 @@ function scanDiff(patch: string): Scan {
     let oldLeft = 0;
     let newLeft = 0;
     let label: string | null = null;
+    /** The unquoted label text awaiting its split, and the names that can fix it. */
+    let labelRest: string | null = null;
+    let labelText: string | null = null;
+    let inFile = false;
+    let oldName: string | null = null;
     let operative: string | null = null;
+    const from: Record<string, string> = {};
     let deleted = false;
     let hunks = 0;
     /** Where the previous hunk ended in each file, so hunks advance through it. */
@@ -136,11 +160,39 @@ function scanDiff(patch: string): Scan {
         (meta.has("rename from") && meta.has("rename to")) ||
         (meta.has("copy from") && meta.has("copy to")) ||
         ((meta.has("new file mode") || meta.has("deleted file mode")) && meta.has("index"));
+    /** Settles an unquoted label against the file's rename, copy, or header names. */
+    const resolveLabel = () => {
+        if (labelRest === null) return;
+        const candidates: [string | null, string | null][] = [
+            [from["rename from"] ?? null, from["rename to"] ?? null],
+            [from["copy from"] ?? null, from["copy to"] ?? null],
+            [oldName, operative],
+        ];
+        let pair = candidates.find(
+            ([a, b]) => a !== null && b !== null && labelRest === `a/${a} b/${b}`,
+        ) as [string, string] | undefined;
+        if (!pair) {
+            const m = SPLIT_LABEL.exec(labelRest);
+            if (m) pair = [m[1] as string, m[2] as string];
+        }
+        labelRest = null;
+        if (!pair) {
+            fail();
+            return;
+        }
+        paths.push(pair[0], pair[1]);
+        label = pair[1];
+    };
     const close = () => {
+        resolveLabel();
         const survivor = operative ?? label;
         if (survivor !== null && !deleted) surviving.push(survivor);
         label = null;
+        labelText = null;
+        inFile = false;
+        oldName = null;
         operative = null;
+        for (const k of Object.keys(from)) delete from[k];
         deleted = false;
         hunks = 0;
         oldEnd = 0;
@@ -185,14 +237,15 @@ function scanDiff(patch: string): Scan {
         if (line.startsWith("\\")) continue;
         if (line.startsWith("diff --git ")) {
             if (!fileBody() || pendingNew) fail();
-            const named = labelPaths(line);
-            if (!named) {
-                fail();
-                break;
-            }
+            const rest = line.slice("diff --git ".length);
+            const named = labelPaths(rest);
             close();
-            paths.push(named[0], named[1]);
-            label = named[1];
+            labelText = rest;
+            if (named) {
+                paths.push(named[0], named[1]);
+                label = named[1];
+            } else labelRest = rest;
+            inFile = true;
             opened = true;
             headersDone = false;
         } else if (line.startsWith("--- ")) {
@@ -204,6 +257,7 @@ function scanDiff(patch: string): Scan {
             }
             const old = headerPath(line.slice(4));
             if (old !== null) paths.push(old);
+            oldName = old;
             opened = true;
             pendingNew = true;
         } else if (line.startsWith("+++ ")) {
@@ -231,13 +285,19 @@ function scanDiff(patch: string): Scan {
             newEnd = newFrom + newLeft;
             hunks++;
         } else if (FILE_META.test(line)) {
-            if (pendingNew || headersDone || label === null) fail();
+            if (pendingNew || headersDone || !inFile) fail();
             const kind = ((FILE_META.exec(line) as RegExpExecArray)[1] as string).trim();
             if (kind === "deleted file mode") deleted = true;
-            if (kind === "Binary files") meta.add("differ");
-            else if (kind === "GIT binary patch") meta.add("binary");
+            if (kind === "Binary files") {
+                if (binaryNote(line, labelText)) meta.add("differ");
+                else fail();
+            } else if (kind === "GIT binary patch") meta.add("binary");
             else if (kind === "literal" || kind === "delta") fail();
-            else meta.add(kind);
+            else {
+                meta.add(kind);
+                if (/^(rename|copy) (from|to)$/.test(kind))
+                    from[kind] = line.slice(kind.length + 1);
+            }
         } else {
             fail();
             break;

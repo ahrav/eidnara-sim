@@ -72,9 +72,12 @@ const READS = /^(cat|less|more|head|tail|sed|view|bat|grep|rg|read)\b/;
 /** `cargo [+toolchain] [OPTIONS]` ahead of the subcommand: the toolchain selector and Cargo's global options. */
 const CARGO =
     "cargo(?: \\+\\S+)?(?: (?:-[vq]+|--verbose|--quiet|--locked|--offline|--frozen|--color(?:=\\S+| \\S+)|-C ?\\S+|--config(?:=\\S+| \\S+)|-Z ?\\S+))*";
-const TESTS = new RegExp(`^(${CARGO} (test|t)|(bun|npm|pnpm) (run )?test)\\b`);
+/** `bun`, `npm`, or `pnpm` with the global options the three accept ahead of the subcommand. */
+const PM =
+    "(?:bun|npm|pnpm)(?: (?:-[sqrw]|--silent|--quiet|--bun|--offline|--prefer-offline|--workspace-root|--loglevel[= ]\\S+|--cwd[= ]\\S+|--dir[= ]\\S+|-C ?\\S+|--prefix[= ]\\S+|--filter[= ]\\S+|--config[= ]\\S+|--env-file[= ]\\S+))*";
+const TESTS = new RegExp(`^(${CARGO} (test|t)|${PM} (run )?test)\\b`);
 const QUIET = new RegExp(
-    `^\\s*(${CARGO} (build|check|test|b|c|t)|(bun|npm|pnpm) (install|i|ci|(run )?(test|build))|git (status|log|diff)|ls|pwd)\\b[^&|;\`$()\\n]*$`,
+    `^\\s*(${CARGO} (build|check|test|b|c|t)|${PM} (install|i|ci|(run )?(test|build))|git (status|log|diff)|ls|pwd)\\b[^&|;\`$()\\n]*$`,
 );
 const FOLDS = ["history_summarizer", "native_compaction"];
 const USER_SIM_LABELS = [
@@ -251,6 +254,29 @@ function splitShell(command: string): Segment[] {
 }
 
 /** The exit code belongs to the last list of a command, so only an `&&` segment there is established by it. */
+/**
+ * Whether segment `i` ends the current shell: an unconditional, foreground `exit` or
+ * command-bearing `exec`, or a `{ ...; }` group run in the current shell whose body does so.
+ * A pipeline member, a background job, and a `( ... )` subshell end their own process only.
+ */
+const terminalAt = (parts: Segment[], i: number, guard: string): boolean => {
+    const own = (parts[i] as Segment).op;
+    const next = parts[i + 1]?.op ?? ";";
+    if (own === "|" || next === "|" || next === "&" || !/^[;&\n]$/.test(guard)) return false;
+    return terminates((parts[i] as Segment).seg);
+};
+const terminates = (segment: string): boolean => {
+    const seg = unprefixed(segment);
+    if (/^exit\b|^exec\s+[^\s<>&\d]/.test(seg)) return true;
+    const group = /^\{\s+([\s\S]*?)\s*\}$/.exec(seg);
+    if (!group) return false;
+    const inner = splitShell(group[1] as string);
+    let guard = ";";
+    return inner.some((p, i) => {
+        guard = p.op === "|" ? guard : p.op;
+        return terminalAt(inner, i, guard);
+    });
+};
 const executedParts = (x: Command): Segment[] => {
     const parts = splitShell(x.command);
     let guard = ";";
@@ -261,16 +287,7 @@ const executedParts = (x: Command): Segment[] => {
     const lastList = guarded.reduce((n, p, i) => (/^[;&\n]$/.test(p.op) ? i : n), 0);
     const mixed = guarded.slice(lastList).some((p) => p.op === "||");
     const firstListEnd = guarded.findIndex((p, i) => i > 0 && /^[;&\n]$/.test(p.op));
-    const exitAt = guarded.findIndex((p, i) => {
-        const own = (parts[i] as { op: string }).op;
-        const next = parts[i + 1]?.op ?? ";";
-        const foreground = own !== "|" && next !== "|" && next !== "&";
-        return (
-            /^[;&\n]$/.test(p.op) &&
-            foreground &&
-            /^exit\b|^exec\s+[^\s<>&\d]/.test(unprefixed(p.seg))
-        );
-    });
+    const exitAt = guarded.findIndex((p, i) => terminalAt(parts, i, p.op));
     const afterExit = exitAt < 0 ? guarded.length : exitAt + 1;
     const unfinished = x.exit === null && firstListEnd >= 0 ? firstListEnd : guarded.length;
     const reached = Math.min(afterExit, unfinished);

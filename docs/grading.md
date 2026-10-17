@@ -23,7 +23,7 @@ an agent transcript or self-report (SIM-P40), a snapshot that lacks an
 artefact its grader reads (a missing diff or command log is refused, so it
 cannot pass a negative-match grader as empty evidence), an artefact without a
 unique nonempty id or with a payload outside its class's shape (a non-empty
-patch that is not a well-formed unified diff with complete, paired file headers ahead of each file's hunks, at least one hunk per text file, hunks whose line counts match their headers, change at least one line, advance through the file in order, and whose every line carries its ` `, `+`, or `-` prefix, a `diff --git` label whose unquoted paths are equal or whitespace-separated (a path with spaces is read from the equal halves and from the `---`/`+++` headers), and metadata-only files that form a complete operation (a mode pair, a rename or copy pair, an empty-file creation or deletion with its index line, a `Binary files ... differ` note, or a Git binary patch with its two closed `literal`/`delta` blocks), a command or test result without its text or with a
+patch that is not a well-formed unified diff with complete, paired file headers ahead of each file's hunks, at least one hunk per text file, hunks whose line counts match their headers, change at least one line, advance through the file in order, and whose every line carries its ` `, `+`, or `-` prefix, a `diff --git` label whose paths are quoted, equal, named by the file's rename, copy, or `---`/`+++` lines, or whitespace-separated, in that order (so a path with spaces is read from the equal halves or the metadata), and metadata-only files that form a complete operation (a mode pair, a rename or copy pair, an empty-file creation or deletion with its index line, a `Binary files <old> and <new> differ` note naming the label's files or `/dev/null`, or a Git binary patch with its two closed `literal`/`delta` blocks), a command or test result without its text or with a
 fractional exit status, a call with a non-integer
 status, a component outside the proxy's set, a negative token count or
 scenario time, a sequence number that fails to increase, or an arm or session
@@ -93,13 +93,15 @@ or follows `&&` in the command's last list when that list has no `||` and
 the command exited 0 (the exit code is that list's); every member of a
 pipeline shares the guard of its first command; a command without a recorded
 exit status credits its first list only; segments after a foreground top-level `exit`
-or command-bearing `exec`, assignment-prefixed or bare, are unreachable (one
-inside a pipeline or a background job ends its subshell only; a `return` has
+or command-bearing `exec`, assignment-prefixed or bare, or after a `{ ...; }`
+group whose body holds one, are unreachable (one inside a pipeline, a
+background job, or a `( ... )` subshell ends its own process only; a `return` has
 no function context in a captured command and does not end it); leading `NAME=value` assignments, parsed as shell words with quotes
 and escapes, are dropped before the command word is classified, and
 `cargo`'s `+toolchain` selector and global options (`-q`, `-v`, `--locked`,
-`--offline`, `--frozen`, `--color`, `-C`, `--config`, `-Z`) are read past
-before its subcommand; a `||` continuation is left out
+`--offline`, `--frozen`, `--color`, `-C`, `--config`, `-Z`) and the package
+managers' (`--silent`, `-s`, `--cwd`, `-C`, `--prefix`, `--filter`,
+`--loglevel`, and kin) are read past before the subcommand; a `||` continuation is left out
 because the exit code does not say whether it ran. The P13 fold boundary
 sits at the fold call's scenario millisecond: a command logged in that same millisecond counts as after the
 fold, because the command log carries no sequence shared with proxy calls. A pattern that starts with `(?i)` matches
