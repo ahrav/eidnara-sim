@@ -338,6 +338,38 @@ test("an aborted OpenCode turn whose tool listing then fails keeps the interrupt
     expect(result.error).toStartWith("tool capture:");
 });
 
+test("a Pi abort that fails after the agent already finished keeps the agent's own ending", async () => {
+    const host = new PiSimHost({
+        ...({} as HostContext),
+        config: loadConfig(),
+        root: "/x",
+        launcher: "/x/sandbox.sh",
+        now: () => 100,
+    });
+    const end = Bun.sleep(100).then(() => ({
+        type: "agent_end",
+        messages: [{ role: "assistant", stopReason: "stop" }],
+    }));
+    let waiters = 0;
+    const stopped: number[] = [];
+    const rpc = {
+        child: { pid: 7, stdin: { end: () => {} } },
+        sendCommand: async (name: string) => {
+            if (name === "abort") throw new Error("Timed out after 60000ms");
+            return { success: true };
+        },
+        waitForEvent: () => (waiters++ === 0 ? end : new Promise(() => {})),
+        shutdown: async () => {},
+    };
+    Object.assign(host as unknown as Record<string, unknown>, {
+        rpc,
+        stopTree: async (pid: number) => void stopped.push(pid),
+        drainWaitMs: 50,
+    });
+    expect(await host.prompt("go", 5_000, 50)).toEqual({});
+    expect(stopped).toEqual([]);
+});
+
 test("a Pi interrupt counts only when the agent's last message was aborted", async () => {
     const run = (stopReason: string) => {
         const host = new PiSimHost({

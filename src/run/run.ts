@@ -400,6 +400,7 @@ async function runArms(
             ...scenario.probes.map((p) => p.id),
         ],
     });
+    const scriptedById = new Map(scripted.map((t) => [t.id, t]));
     const userTurns = (arm: string, session?: string) =>
         journal.entries.filter(
             (e) =>
@@ -496,7 +497,7 @@ async function runArms(
                 scope.turn = e.kind === "user_turn" ? e.id : null;
                 try {
                     if (e.kind !== "user_turn") return await driver.event(e);
-                    const turn = scripted.find((t) => t.id === e.id);
+                    const turn = scriptedById.get(e.id);
                     if (!turn) throw new HarnessFailure(`${e.id}: no scripted user turn`);
                     const d = await userSim.deliver(arm, turn, lastAgent(arm, e.session));
                     const user = { session: e.session, label: d.label, delivered: d.delivered };

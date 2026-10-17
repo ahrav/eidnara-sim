@@ -531,7 +531,13 @@ export class PiSimHost extends SimHost {
             }
             const cut = interruptMs === undefined ? null : Bun.sleep(interruptMs).then(() => null);
             const first = await Promise.race(cut ? [end, cut] : [end]);
-            if (first === null) await this.rpc.sendCommand("abort", {}, { timeoutMs: 60_000 });
+            // A failed abort is read off `end` like a landed one: the original waiter still
+            // holds the agent's ending, or waits on for it under the turn deadline.
+            if (first === null) {
+                await this.rpc
+                    .sendCommand("abort", {}, { timeoutMs: 60_000 })
+                    .catch(() => undefined);
+            }
             // The interrupt is read off the agent's own last message: an abort that reached Pi
             // after the agent had finished leaves a stop reason other than `aborted`.
             const outcome = first ?? (await end);

@@ -52,10 +52,14 @@ never skipped by an abandon, so the fault meets that turn's agent call.
 ## Tape and divergence
 
 The first arm of the run's order is the reference. Each reply is keyed by
-seed, event, label, and the digest of the agent's last reply (the last
-agent call of the session whose response carried text) after the
-pre-registered normalisation (`divergence_policy.normalisation`: ISO-8601
-timestamps, durations, pids, temp paths, run ids). `<run>/tape.jsonl`
+seed, event, label, the scripted text, and the session's context: the
+chained digests of the agent's last reply before each turn so far (the last
+agent call of the session whose response carried text, after the
+pre-registered normalisation `divergence_policy.normalisation`: ISO-8601
+timestamps, durations, pids, temp paths, run ids). Two arms, or two runs,
+whose agent outputs matched through the session so far share a key, so the
+later one replays the earlier one's reply; an output that differed anywhere
+earlier in the session gives another key. `<run>/tape.jsonl`
 records every reply, replayed ones included; `--tapes` adds earlier runs'
 tapes to replay from, and each must exist with its `pairing.jsonl` beside
 it. A reply whose key is on the tape is replayed with no model call. The
@@ -63,7 +67,8 @@ proxy record keeps the first 262,144 characters of a reply; a cut reply is
 keyed by the digest of its whole text as well, so replies that differ only
 past the cut never pair, and its label and persona prompt read the recorded
 tail. A cut last line in either log, left by a kill mid-append, is dropped on
-the next open and the log cut back to it.
+the next open and the log cut back to it; a complete line that does not
+parse is refused.
 
 Before each turn the user-sim appends a record to `<run>/pairing.jsonl`:
 arm, session, event, index, label, the digest, a hash of the agent-visible
@@ -71,19 +76,16 @@ prefix (the session's agent replies and user texts so far), the hash
 of the delivered text, and its source (`script`, `tape`, or `live`). When a
 non-reference arm's digest first differs from the reference arm's at the
 same event, a `divergedAt` record with the index and both digests comes
-first. From then on that session's reply keys also carry the arm, so the
-arm's replies come from a replay of its own recorded run or from a live
-call. An arm that has not diverged reuses its reference arm's replies, and
-through it the replies of the arm that reference reuses. In a replay
-(`--tapes`), the pairing logs beside the replayed tapes give each arm's
-recorded digests; an arm whose digest matches none of them gets a
-`divergedAt` record with `against: "recorded"`, ahead of the comparison with
-its reference arm. An arm a replayed run recorded as diverged in a session
-keeps its own reply keys from that index, so an arm replayed on its own
-still reads its recorded replies; the recorded divergence counts whichever
-source holds it. A reply that is empty, cut at `user_sim.max_tokens`, or carries a
-probe-announcement marker or a ledger key is replaced by a fixed line for
-its label, and the record lists the cause in `fallback`.
+first; from that turn on the arm's context differs from the reference's, so
+its replies come from an arm or run that shared its outputs, or from a live
+call. In a replay (`--tapes`), the pairing logs beside the replayed tapes
+give each arm's recorded digests; an arm whose digest matches none of them
+gets a `divergedAt` record with `against: "recorded"`, ahead of the
+comparison with its reference arm. A reply that is empty, that stopped for any reason other than `end_turn`
+or `stop_sequence` (`max_tokens`, a guardrail or content filter, a context
+window overflow), or that carries a probe-announcement marker or a ledger
+key is replaced by a fixed line for its label, and the record lists the
+cause in `fallback`.
 The whole delivered text is checked against the markers again before it is
 sent, and a hit stops the run.
 

@@ -70,7 +70,13 @@ export function normaliser(rules: readonly string[]): (text: string) => string {
 function jsonl<T>(path: string, role: "own" | "source"): T[] {
     if (role === "source") requireSource(path);
     const read = readJournal(path);
-    if (role === "own" && existsSync(path)) truncateSync(path, read.bytes ?? 0);
+    if (!existsSync(path)) return [];
+    const text = readFileSync(path, "utf8");
+    const dropped = text.slice(read.bytes ?? 0);
+    // A kill mid-append leaves an unterminated tail; a terminated line that does not parse is
+    // corruption, which no truncation may paper over.
+    if (dropped.endsWith("\n")) throw new HarnessFailure(`${path}: last line is corrupt`);
+    if (role === "own") truncateSync(path, read.bytes ?? 0);
     return read as unknown as T[];
 }
 
@@ -106,7 +112,11 @@ interface Taped {
     stop: string;
 }
 
-/** User-sim replies keyed by seed, event, label, and the normalised agent-output digest. */
+/**
+ * User-sim replies keyed by seed, event, label, the session's chained normalised digests, and
+ * the scripted text. Two arms with the same agent outputs so far in a session share a key,
+ * whatever the run order; a differing output anywhere earlier in the session gives another key.
+ */
 export class Tape {
     private readonly entries = new Map<string, Taped>();
     /** Keys already on this run's own tape; a source hit is copied there once. */
@@ -146,6 +156,8 @@ export interface TurnRecord {
     label: Label;
     delivered: boolean;
     digest: string;
+    /** The session's normalised digests so far, chained; the tape key's context. */
+    context_sha256: string;
     prefix_sha256: string;
     text_sha256: string;
     source: "script" | "tape" | "live";
@@ -176,8 +188,6 @@ export class Pairing {
 
     /** Every digest the replay sources recorded for an arm's event. */
     private readonly recorded = new Map<string, Set<string>>();
-    /** The earliest index at which a replay source saw the arm diverge in a session. */
-    private readonly recordedDivergence = new Map<string, number>();
     private readonly turns = new Map<string, TurnRecord>();
     private readonly lastTurn = new Map<string, TurnRecord>();
     private readonly divergence = new Map<string, number>();
@@ -194,14 +204,9 @@ export class Pairing {
         this.records = jsonl<PairingRecord>(path, "own");
         for (const r of this.records) this.index(r);
         for (const r of sources.flatMap((p) => jsonl<PairingRecord>(p, "source"))) {
-            if (r.kind === "turn") {
-                const key = `${r.arm}/${r.event}`;
-                this.recorded.set(key, (this.recorded.get(key) ?? new Set()).add(r.digest));
-            } else {
-                const key = `${r.arm}/${r.session}`;
-                const at = this.recordedDivergence.get(key);
-                if (at === undefined || r.index < at) this.recordedDivergence.set(key, r.index);
-            }
+            if (r.kind !== "turn") continue;
+            const key = `${r.arm}/${r.event}`;
+            this.recorded.set(key, (this.recorded.get(key) ?? new Set()).add(r.digest));
         }
     }
 
@@ -242,21 +247,6 @@ export class Pairing {
                 x.kind === "turn" && x.arm === arm && x.session === session && x.index < index,
         );
         return mine.at(-1);
-    }
-
-    /**
-     * The arm whose taped replies `arm` reuses: itself once it has diverged in the session, in
-     * this run or in a replayed one, the shared tape for the run's first arm, else its reference
-     * arm's owner. A recorded divergence counts whichever source holds it, so an arm matching a
-     * source that had not diverged there may miss the shared entry and go live.
-     */
-    owner(arm: string, session: string, index: number): string {
-        const recorded = this.recordedDivergence.get(`${arm}/${session}`);
-        if (this.diverged(arm, session, index) || (recorded !== undefined && recorded <= index)) {
-            return arm;
-        }
-        const ref = this.reference(arm);
-        return ref === arm ? "" : this.owner(ref, session, index);
     }
 
     /** Whether the arm diverged in the session at or before `index`, in this run. */
@@ -305,6 +295,9 @@ const ASKS: Partial<Record<Label, string>> = {
 /** Roles whose script text carries a ledger fact, which the persona prompt leaves out. */
 const FACT_ROLES = new Set(["conveyance", "update", "reversal"]);
 
+/** Converse stop reasons of a reply the model finished on its own terms. */
+const NORMAL_STOPS = new Set(["end_turn", "stop_sequence"]);
+
 const FALLBACK: Partial<Record<Label, string>> = {
     pushback: "I'm not convinced by that. Take another look at your last change before moving on.",
     redirect: "Let's stop going down this path and try a different approach.",
@@ -345,9 +338,8 @@ export interface UserSimOptions {
 /**
  * Delivers each scripted user turn: probes, pastes, and plain tasks verbatim, and the scheduled
  * behaviours with a reply the model writes in front of the script text. A reply is keyed by the
- * agent's normalised last output, so it comes from the tape while that output matches the one
- * recorded; once an arm diverges in a session, its replies are keyed by the arm as well, so
- * they come from a replayed run's own tape or a live call.
+ * session's normalised agent outputs so far, so it comes from the tape while those match an
+ * arm or run that already answered them, and from a live call once they differ.
  */
 export class UserSim {
     constructor(private readonly o: UserSimOptions) {}
@@ -365,9 +357,15 @@ export class UserSim {
         const prev = t.index === 0 ? undefined : pairing.last(arm, t.session, t.index);
         const chain = prev ? `${prev.prefix_sha256}\n${prev.text_sha256}` : "";
         const prefix = sha256Hex(`${chain}\n${whole}`);
+        const context = sha256Hex(`${prev?.context_sha256 ?? ""}\n${digest}`);
         const base = { arm, session: t.session, event: t.id, index: t.index, digest };
         if (plan.skipped.has(t.id)) {
-            const skip = { ...base, prefix_sha256: prefix, text_sha256: sha256Hex("") };
+            const skip = {
+                ...base,
+                context_sha256: context,
+                prefix_sha256: prefix,
+                text_sha256: sha256Hex(""),
+            };
             pairing.append({
                 kind: "turn",
                 ...skip,
@@ -388,7 +386,7 @@ export class UserSim {
         }
         let label = plan.labels.get(t.id) ?? "task";
         if (label === "task" && t.role === "filler" && asksQuestion(end)) label = "clarify";
-        const reply = ASKS[label] ? await this.reply(arm, t, label, digest, end) : null;
+        const reply = ASKS[label] ? await this.reply(t, label, context, digest, end) : null;
         const text =
             reply === null
                 ? t.text
@@ -403,6 +401,7 @@ export class UserSim {
             ...base,
             label,
             delivered: true,
+            context_sha256: context,
             prefix_sha256: prefix,
             text_sha256: sha256Hex(text),
             source: reply?.source ?? "script",
@@ -418,19 +417,16 @@ export class UserSim {
     }
 
     private async reply(
-        arm: string,
         t: ScriptTurn,
         label: Label,
+        context: string,
         digest: string,
         lastAgent: string,
     ) {
-        const owner = this.o.pairing.owner(arm, t.session, t.index);
         // The scripted text is part of the key, so a tape from another scenario that shares the
         // seed and event ids never answers for an edited task.
         const scripted = sha256Hex(t.text);
-        const key = sha256Hex(
-            `${owner === "" ? "" : `${owner}/`}${this.o.seed}/${t.id}/${label}/${digest}/${scripted}`,
-        );
+        const key = sha256Hex(`${this.o.seed}/${t.id}/${label}/${context}/${scripted}`);
         const taped = this.o.tape.get(key);
         let got = taped;
         if (got === undefined) {
@@ -442,7 +438,7 @@ export class UserSim {
         this.o.tape.put({ key, event: t.id, label, digest, ...got });
         const source: "tape" | "live" = taped === undefined ? "live" : "tape";
         const hits = markerHits(got.text, this.o.keys);
-        const cut = got.stop === "max_tokens" ? ["max_tokens"] : [];
+        const cut = NORMAL_STOPS.has(got.stop) ? [] : [got.stop];
         const empty = got.text === "" ? ["empty"] : [];
         const fallback = [...empty, ...cut, ...hits];
         if (fallback.length === 0) return { text: got.text, source };

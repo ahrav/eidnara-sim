@@ -480,6 +480,66 @@ describe("tape and pairing", () => {
         }
     });
 
+    test("a digest matching one source replays from it even when another source diverged there", async () => {
+        const first = dir();
+        await play(sim(first, counting()).user, "a", outputs);
+        const second = dir();
+        const changed = outputs.map((o, i) => (i === 2 ? `${o} Also fixed a typo.` : o));
+        const diverging = sim(second, counting(), "a", [join(first, "tape.jsonl")]);
+        await play(diverging.user, "a", changed);
+        expect(diverging.pairing.records.filter((r) => r.kind === "divergedAt")).toHaveLength(1);
+        const replay = counting();
+        const both = [join(first, "tape.jsonl"), join(second, "tape.jsonl")];
+        const again = sim(dir(), replay, "a", both);
+        await play(again.user, "a", outputs);
+        expect(replay.calls).toBe(0);
+    });
+
+    test("two non-reference arms with the same agent outputs share replies after both left the reference", async () => {
+        const llm = counting();
+        const { user, pairing } = sim(dir(), llm);
+        await play(user, "a", outputs);
+        const changed = outputs.map((o, i) => (i === 2 ? `${o} Also fixed a typo.` : o));
+        const b = await play(user, "b", changed);
+        const before = llm.calls;
+        expect(await play(user, "c", changed)).toEqual(b);
+        expect(llm.calls).toBe(before);
+        const diverged = pairing.records.filter((r) => r.kind === "divergedAt").map((r) => r.arm);
+        expect(diverged).toEqual(["b", "c"]);
+    });
+
+    test("a complete but corrupt last line in a replay source is refused", () => {
+        const root = dir();
+        writeFileSync(
+            join(root, "tape.jsonl"),
+            '{"key":"k","text":"t","stop":"end_turn"}\nnot json\n',
+        );
+        writeFileSync(join(root, "pairing.jsonl"), "");
+        expect(() => new Tape(join(dir(), "tape.jsonl"), [join(root, "tape.jsonl")])).toThrow(
+            "corrupt",
+        );
+    });
+
+    test("a reply that stopped for any reason other than a normal end falls back", async () => {
+        const replies = [
+            { text: "Blocked by policy.", stop: "guardrail_intervened" },
+            { text: "Partial", stop: "model_context_window_exceeded" },
+            { text: "Fine.", stop: "stop_sequence" },
+        ];
+        const llm: Llm = async () => replies.shift() ?? { text: "", stop: "end_turn" };
+        const { user, pairing } = sim(dir(), llm);
+        const texts = await play(user, "a", outputs);
+        expect(texts[1]).toStartWith("I'm not convinced by that.");
+        expect(texts[2]).toStartWith("I'm not convinced by that.");
+        expect(texts[3]).toStartWith("Fine.");
+        const fallbacks = pairing.records.map((r) => (r.kind === "turn" ? r.fallback : undefined));
+        expect(fallbacks.slice(1, 4)).toEqual([
+            ["guardrail_intervened"],
+            ["model_context_window_exceeded"],
+            undefined,
+        ]);
+    });
+
     test("a delivered text that carries a ledger key or probe id stops the run", async () => {
         const { user } = sim(dir(), counting());
         const leak: ScriptTurn = {
