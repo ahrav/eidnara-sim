@@ -5,6 +5,8 @@ import type { Snapshot } from "../src/grade/artefacts";
 import { gradeP7, judgePair, p7Pair, proxyJudge } from "../src/grade/judge";
 import { deltaMem, GradeLog, type GradeRecord, gradeItem } from "../src/grade/probes";
 import { armBase } from "../src/hosts/arms";
+import { canonicalJson, sha256Hex } from "../src/prereg/canonical";
+import { preregistrationHash } from "../src/prereg/validate";
 import { bedrockUpstream, Gateway } from "../src/proxy/gateway";
 import { FaultInjector } from "../src/proxy/inject";
 import { RecordWriter } from "../src/proxy/records";
@@ -22,7 +24,23 @@ if (!process.argv[2] || !existsSync(join(dir, "manifest.json"))) {
 const config = loadConfig();
 const manifest = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8"));
 const scenario = JSON.parse(readFileSync(join(dir, "scenario.json"), "utf8")) as Scenario;
-const rules = loadPrereg(manifest.tier).grading;
+const prereg = loadPrereg(manifest.tier);
+// Grades derive from the registration's rules, so a run made under another one is refused
+// before the log changes.
+if (manifest.prereg_sha256 !== preregistrationHash(prereg)) {
+    console.error(
+        `${dir} ran under pre-registration ${manifest.prereg_sha256}; the grader's is ${preregistrationHash(prereg)}`,
+    );
+    process.exit(2);
+}
+// The grades derive from the scenario's checks too, so a scenario that no longer hashes to the
+// manifest's record is refused before the log changes.
+const { scenario_hash: _hash, ...scenarioBody } = scenario;
+if (sha256Hex(canonicalJson(scenarioBody)) !== manifest.scenario_hash) {
+    console.error(`${dir}: scenario.json hashes to other than the manifest's scenario_hash`);
+    process.exit(2);
+}
+const rules = prereg.grading;
 const log = new GradeLog(join(dir, "grades.jsonl"));
 const arms = manifest.order as string[];
 
@@ -48,8 +66,8 @@ const snapshots = new Map<string, Snapshot[]>();
 for (const arm of arms) {
     const path = join(dir, arm, "snapshots.jsonl");
     if (!existsSync(path)) continue;
-    for (const line of readFileSync(path, "utf8").split("\n").filter(Boolean)) {
-        const s = JSON.parse(line) as Snapshot;
+    // readJournal drops a record a kill cut short at the end of the file.
+    for (const s of readJournal(path) as unknown as Snapshot[]) {
         if (!journaled.has(s.id)) continue;
         const key = `${arm}/${s.item}`;
         snapshots.set(key, [...(snapshots.get(key) ?? []), s]);
@@ -105,8 +123,9 @@ const pairs = p7.flatMap((probe) =>
             skip("P7 without two completed snapshots");
             return [];
         }
-        // The pair lands in one write, so one graded side means the pair stands.
-        if (gradedBefore(probe.id, arm, a.id) || gradedBefore(probe.id, "host", b.id)) {
+        // The pair lands in one write, so the memory arm's grade means its pair stands; the host
+        // snapshot is shared by every memory arm's pair and says nothing about this one.
+        if (gradedBefore(probe.id, arm, a.id)) {
             skip("already graded");
             return [];
         }
@@ -138,7 +157,13 @@ if (pairs.length > 0) {
                     calibration: null,
                     permutation: null,
                 };
-                append(...gradeP7(judgment, context, rules));
+                // Host side first: a write cut after one record leaves the memory arm ungraded,
+                // which is what makes the pair stand or fall on the next grading.
+                const sides = gradeP7(judgment, context, rules);
+                append(
+                    ...sides.filter((g) => g.arm === "host"),
+                    ...sides.filter((g) => g.arm !== "host"),
+                );
             } catch (caught) {
                 judgeErrors++;
                 console.error(`${probe.id} (${arm}): ${String(caught)}`);

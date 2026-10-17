@@ -13,7 +13,12 @@ export interface SoakVerdict {
     slope_per_session: number | null;
     r2: number | null;
     slope_over_bound: boolean;
-    bound: { holds: boolean; worst: { value: number; limit: number; sessions: number } | null };
+    /** `value < 2 * baseline + sessions * c`, with the pre-registered `c_bytes_per_session`. */
+    bound: {
+        c: number;
+        holds: boolean;
+        worst: { value: number; limit: number; sessions: number } | null;
+    };
     returned_to_baseline: boolean | null;
     windows: { warmup: number; steady: number; cooldown: number };
     /** The longest wall-time gap between samples, against `leak_bound.sample_interval_ms`. */
@@ -63,7 +68,7 @@ export function soak(run: RunLogs, arm: ArmLogs, resource: Resource): SoakVerdic
             slope_per_session: null,
             r2: null,
             slope_over_bound: false,
-            bound: { holds: true, worst: null },
+            bound: { c, holds: true, worst: null },
             returned_to_baseline: null,
         };
     }
@@ -85,7 +90,7 @@ export function soak(run: RunLogs, arm: ArmLogs, resource: Resource): SoakVerdic
         slope_per_session: fit?.slope ?? null,
         r2: fit?.r2 ?? null,
         slope_over_bound: slopeOver,
-        bound: { holds, worst },
+        bound: { c, holds, worst },
         returned_to_baseline: returned,
     };
 }

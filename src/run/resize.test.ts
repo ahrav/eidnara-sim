@@ -204,7 +204,8 @@ describe("tier profiles", () => {
     } as unknown as Scenario;
     test("M adds per-host model-factor runs and one Pi user-sim variant; L runs each arm alone, together", () => {
         const M = loadPrereg("M");
-        const m = profileJobs(M, new Map([[201, scenario]]), ["pi", "opencode"], "/o", 1000);
+        const all = (p: { seeds: number[] }) => new Map(p.seeds.map((seed) => [seed, scenario]));
+        const m = profileJobs(M, all(M), ["pi", "opencode"], "/o", 1000);
         const side = (h: string) =>
             `--side-model ${M.user_sim.model} --tapes /o/M-201-${h}/tape.jsonl`;
         expect(m.map((j) => [j.group, j.host, j.arms.join(","), j.extra.join(" ")])).toEqual([
@@ -213,16 +214,14 @@ describe("tier profiles", () => {
             ["usersim-luna", "pi", "host,eidnara", `--user-sim-model ${M.grading.judge.model}`],
         ]);
         const L = loadPrereg("L");
-        const l = profileJobs(L, new Map([[301, scenario]]), ["pi"], "/o", 1000);
+        const l = profileJobs(L, all(L), ["pi"], "/o", 1000);
         expect(l.map((j) => [j.group, j.dir])).toEqual(
             (L.arms.order_by_seed[0] ?? L.arms.run).map((a) => [
                 "concurrent",
                 `/o/L-301-pi-concurrent/${a}`,
             ]),
         );
-        expect(
-            profileJobs(loadPrereg("S"), new Map([[101, scenario]]), ["pi"], "/o", 1000),
-        ).toEqual([]);
+        expect(profileJobs(loadPrereg("S"), all(loadPrereg("S")), ["pi"], "/o", 1000)).toEqual([]);
     });
 });
 

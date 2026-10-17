@@ -67,3 +67,29 @@ test("stopAll settles when a child's spawn failed", async () => {
     ).toBe("settled");
     expect(await failed).toBe(127);
 });
+
+test("a child that exits on SIGTERM leaving a descendant still has that descendant killed", async () => {
+    const children = new Children(process.env, 300);
+    const path = log();
+    const code = await children.run(
+        [
+            "-e",
+            "const p = Bun.spawn(['sleep', '60']); console.log(p.pid); process.on('SIGTERM', () => process.exit(143)); setInterval(() => {}, 1000)",
+        ],
+        path,
+        300,
+    );
+    expect(code).toBe(SIGTERM_EXIT);
+    const grandchild = Number(readFileSync(path, "utf8").trim());
+    await Bun.sleep(100);
+    expect(running(grandchild)).toBe(false);
+});
+
+test("a log that cannot be written ends the child and settles the run with a failure code", async () => {
+    const children = new Children(process.env, 300);
+    const code = await children.run(
+        ["-e", "console.log('x'); setInterval(() => {}, 1000)"],
+        "/nonexistent/dir/log",
+    );
+    expect(code).toBe(127);
+});

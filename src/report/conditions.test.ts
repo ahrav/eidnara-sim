@@ -99,6 +99,7 @@ describe("run conditions", () => {
         expect(c.transcript_order).toEqual([
             {
                 arm: "host",
+                checked: true,
                 sessions: 2,
                 missing: [],
                 in_order: true,
@@ -107,6 +108,7 @@ describe("run conditions", () => {
             },
             {
                 arm: "eidnara",
+                checked: true,
                 sessions: 2,
                 missing: [],
                 in_order: false,
@@ -163,6 +165,8 @@ test("a transcript path in a command counts as a read only with a reading or sea
             exit: 0,
             scenario_ms: 0,
         },
+        { turn: "e-1", command: "cat ./opencode.db", exit: 0, scenario_ms: 0 },
+        { turn: "e-1", command: "cat notes/sessions/today.jsonl", exit: 0, scenario_ms: 0 },
         {
             turn: "e-3",
             command: "cd /tmp && sqlite3 ~/.local/share/opencode/opencode.db 'select 1'",
@@ -182,8 +186,10 @@ test("an arm that never reached its transcript check renders as unchecked, apart
     rmSync(join(g.run.dir, "eidnara/transcripts.json"));
     const c = runConditions(g);
     expect(c.transcripts[1]).toEqual({ arm: "eidnara", paths: [], missing: null });
+    expect(c.transcript_order[1]).toMatchObject({ arm: "eidnara", checked: false, missing: [] });
     const text = renderConditions([c], []).join("\n");
     expect(text).toContain("eidnara unchecked");
+    expect(text).toContain("| eidnara | unchecked |");
 });
 
 test("a reached session with no transcript in the store is named as missing", () => {
@@ -212,4 +218,47 @@ test("a transcript root that is itself a symlink is left unread", () => {
         sessions: 0,
         missing: ["s-1", "s-2"],
     });
+});
+
+test("a transcript root outside the arm directory, through a symlinked ancestor or a persisted path, is left unread", () => {
+    const g = fixture();
+    const outside = mkdtempSync(join(tmpdir(), "sim-conditions-outside-"));
+    mkdirSync(join(outside, "agent/sessions/p"), { recursive: true });
+    writeFileSync(
+        join(outside, "agent/sessions/p/sim-s-1.jsonl"),
+        `${JSON.stringify({ type: "session", id: "sim-s-1", timestamp: new Date(BASE).toISOString() })}\n`,
+    );
+    const home = join(g.run.dir, "host/r/home");
+    rmSync(join(home, ".pi"), { recursive: true });
+    symlinkSync(outside, join(home, ".pi"));
+    expect(runConditions(g).transcript_order[0]).toMatchObject({ sessions: 0 });
+    writeFileSync(
+        join(g.run.dir, "host/transcripts.json"),
+        JSON.stringify({ paths: [join(outside, "agent/sessions")], missing: [] }),
+    );
+    expect(runConditions(g).transcript_order[0]).toMatchObject({ sessions: 0 });
+});
+
+test("a transcript with no usable creation time counts as missing, not as ordered", () => {
+    const g = fixture();
+    const sessions = join(g.run.dir, "host/r/home/.pi/agent/sessions/p");
+    writeFileSync(
+        join(sessions, "sim-s-2.jsonl"),
+        `${JSON.stringify({ type: "session", id: "sim-s-2" })}\n`,
+    );
+    expect(runConditions(g).transcript_order[0]).toMatchObject({
+        sessions: 1,
+        missing: ["s-2"],
+        max_lead_ms: 40,
+        max_lag_ms: 0,
+    });
+});
+
+test("a transcripts.json of the wrong shape reads as an unchecked arm", () => {
+    const g = fixture();
+    writeFileSync(
+        join(g.run.dir, "eidnara/transcripts.json"),
+        JSON.stringify({ paths: {}, missing: [] }),
+    );
+    expect(runConditions(g).transcripts[1]).toEqual({ arm: "eidnara", paths: [], missing: null });
 });

@@ -4,11 +4,13 @@ import type { ArmLogs, RunLogs } from "../oracle/logs";
 import { runOracles } from "../oracle/oracles";
 import type { Preregistration } from "../prereg/schema";
 import type { WitnessReport } from "../proxy/inject";
+import { referenceArm } from "../run/run";
 import type { Scenario } from "../scenario/compile";
 import type { ItemPair, Observation, RunPair, TierInput } from "../stats/gate";
 import { pairByItem } from "../stats/gate";
+import { type PairingRecord, pairingFailures } from "../usersim/usersim";
 import { costPanel } from "./cost";
-import { intrusiveness, percentile, turnLatencies } from "./intrusive";
+import { intrusiveness, notesOf, percentile, turnLatencies } from "./intrusive";
 import { soak } from "./soak";
 
 export interface GradedRun {
@@ -21,6 +23,10 @@ export interface GradedRun {
     identity: RunIdentity;
     /** The proxy's fault witnesses from `faults.jsonl`; an `untriggered` one keeps the run out of the fault metrics (SIM-P32), and `null` records that the file is absent. */
     witnesses: WitnessReport[] | null;
+    /** The user-sim's `pairing.jsonl` records; `null` records that the file is absent. */
+    pairing: PairingRecord[] | null;
+    /** Whether `calls.jsonl` is present, the capture the F7 scan reads. */
+    captured: boolean;
 }
 
 /** The manifest fields a tier's runs share for their evidence to pool. */
@@ -35,12 +41,32 @@ export interface RunIdentity {
     host_versions: string[];
     side_model: string | null;
     user_sim_model: string;
+    /** `scenario.manifest`'s `generator_version/random_schema_version/corpus_manifest_sha256`. */
+    scenario_provenance: string;
+    /** The digest of `manifest.fault_override`, or `null` for the scenario's own schedule. */
+    fault_override: string | null;
 }
 
 const ALIASES: Record<string, string> = {
     "P8.cross_session_pass_rate": "P8.pass",
     "P9.cross_session_pass_rate": "P9.pass",
 };
+
+/**
+ * The two records of one P7 judgment share the snapshots read and the judge's verdicts in both
+ * orders; a re-grade interrupted between its two appends leaves records with different keys.
+ */
+export const judgmentKey = (r: GradeRecord) =>
+    [
+        r.inputs.join("\n"),
+        r.metrics.verdict_a_then_b,
+        r.metrics.verdict_b_then_a,
+        r.metrics.length_a,
+        r.metrics.length_b,
+        r.metrics.judge_prompt_digest,
+    ].join("|");
+
+const probeIds = (g: GradedRun) => new Set(g.scenario.probes.map((p) => p.id));
 
 /** The prefix that keeps one seed's items apart across the tier's hosts: `<host>/<seed>`. */
 export const runKey = (g: GradedRun) => `${g.host}/${g.scenario.manifest.seed}`;
@@ -68,7 +94,7 @@ function values(
     const of = (a: string) =>
         new Map(
             g.grades
-                .filter((r) => r.arm === a && r.verdict !== "excluded")
+                .filter((r) => r.arm === a && r.verdict !== "excluded" && probeIds(g).has(r.item))
                 .flatMap((r) => {
                     const v = r.metrics[metric];
                     return typeof v === "number" && !dropped.has(`${runKey(g)}/${r.item}`)
@@ -82,8 +108,10 @@ function values(
 const total = (xs: number[]) => xs.reduce((s, x) => s + x, 0);
 const latency =
     (q: number): RunValue =>
-    (_, arm) =>
-        percentile(turnLatencies(arm), q);
+    (_, arm) => {
+        const latencies = turnLatencies(arm);
+        return latencies === null ? null : percentile(latencies, q);
+    };
 const slope =
     (resource: "rss" | "heap" | "store_bytes"): RunValue =>
     ({ run }, arm) =>
@@ -102,11 +130,15 @@ const graded =
 const RUN_VALUES: Record<string, { value: RunValue; delta: boolean; hostless?: true }> = {
     failed_turns: {
         value: (_, arm) =>
-            arm.journal.filter(
-                (e) =>
-                    (e.kind === "EndTurn" && e.outcome !== "ok") ||
-                    (e.kind === "Event" && e.outcome === "failed(interrupted)"),
-            ).length,
+            new Set(
+                arm.journal
+                    .filter(
+                        (e) =>
+                            (e.kind === "EndTurn" && e.outcome !== "ok") ||
+                            (e.kind === "Event" && e.outcome === "failed(interrupted)"),
+                    )
+                    .map((e) => String(e.event)),
+            ).size,
         delta: false,
     },
     hangs: {
@@ -120,11 +152,14 @@ const RUN_VALUES: Record<string, { value: RunValue; delta: boolean; hostless?: t
     daemon_heap_growth_bytes_per_session: { value: slope("heap"), delta: true, hostless: true },
     store_growth_bytes_per_session: { value: slope("store_bytes"), delta: true, hostless: true },
     internal_string_hits: {
-        value: (g, arm) => panelOf(g, arm).internal_string_hits.length,
+        value: (g, arm) => (g.captured ? panelOf(g, arm).internal_string_hits.length : null),
         delta: false,
     },
     user_corrections_referencing_injected_text: {
-        value: (g, arm) => panelOf(g, arm).corrections_referencing_injected_text?.length ?? null,
+        value: (g, arm) =>
+            armBase(arm.arm) !== "host" && notesOf(g.run.dir, arm.arm) === undefined
+                ? null
+                : (panelOf(g, arm).corrections_referencing_injected_text?.length ?? null),
         delta: false,
     },
     reverted_memory_edits: {
@@ -132,11 +167,11 @@ const RUN_VALUES: Record<string, { value: RunValue; delta: boolean; hostless?: t
         delta: true,
     },
     usd_per_component: {
-        value: ({ run, grades }, arm) => costPanel(run, arm, grades).usd,
+        value: ({ run, grades }, arm) => costPanel(run, arm, grades)?.usd ?? null,
         delta: false,
     },
     usd_per_useful_retrieval: {
-        value: ({ run, grades }, arm) => costPanel(run, arm, grades).usd_per_pass,
+        value: ({ run, grades }, arm) => costPanel(run, arm, grades)?.usd_per_pass ?? null,
         delta: false,
     },
     "P13.fold_fidelity_score": {
@@ -160,22 +195,21 @@ function itemPairs(
     return runs.flatMap((g) => {
         const seed = String(g.scenario.manifest.seed);
         const key = runKey(g);
+        const known = probeIds(g);
         const records = (arm: string) =>
             (p7 ? g.judged : g.grades).filter(
                 (r) =>
                     r.arm === arm &&
+                    known.has(r.item) &&
                     r.verdict !== "excluded" &&
-                    source in r.metrics &&
+                    typeof r.metrics[source] === "boolean" &&
                     r.metrics.gate_eligible !== false,
             );
         const value = (r: GradeRecord) => Number(r.metrics[source] === true);
         const theirs = records(treatment);
         const mine = records(control).filter(
             (c) =>
-                !p7 ||
-                theirs.some(
-                    (t) => t.item === c.item && t.inputs.join("\n") === c.inputs.join("\n"),
-                ),
+                !p7 || theirs.some((t) => t.item === c.item && judgmentKey(t) === judgmentKey(c)),
         );
         const byItem = (rs: GradeRecord[]) => new Map(rs.map((r) => [r.item, value(r)] as const));
         const fact = new Map(g.scenario.probes.map((p) => [p.id, p.fact ?? p.id]));
@@ -280,6 +314,65 @@ function incomplete(
                 );
             }),
         );
+    const binary = new Set(
+        p.families
+            .filter((f) => f.analysis_unit === "item")
+            .flatMap((f) => f.metrics.map((m) => ALIASES[m] ?? m)),
+    );
+    const unknown = runs.flatMap((g) => {
+        const known = probeIds(g);
+        const items = [...new Set(g.grades.filter((r) => !known.has(r.item)).map((r) => r.item))];
+        const malformed = [...g.grades, ...g.judged].flatMap((r) =>
+            Object.entries(r.metrics)
+                .filter(([k, v]) => binary.has(k) && typeof v !== "boolean")
+                .map(([k]) => `run ${runKey(g)}: ${k} is not a boolean for ${r.arm} ${r.item}`),
+        );
+        return [
+            ...(items.length
+                ? [`run ${runKey(g)}: grades for unknown items ${items.join(", ")}`]
+                : []),
+            ...malformed,
+        ];
+    });
+    const pairing = runs.flatMap((g) => {
+        if (g.pairing === null) return [`run ${runKey(g)}: pairing records missing`];
+        const order = g.run.arms.map((a) => a.arm);
+        const failures = pairingFailures(g.pairing, g.scenario, referenceArm(order));
+        const out = Object.entries(failures).flatMap(([kind, list]) =>
+            list.length
+                ? [`run ${runKey(g)}: ${kind.replaceAll("_", " ")}: ${list.join(", ")}`]
+                : [],
+        );
+        const outside = g.run.arms.flatMap((a) =>
+            a.journal
+                .filter((e) => e.kind === "UserSimRates" && ((e.outside as string[]) ?? []).length)
+                .map(
+                    (e) =>
+                        `run ${runKey(g)}: ${a.arm} user-sim rates outside band: ${(e.outside as string[]).join(", ")}`,
+                ),
+        );
+        return [...out, ...outside];
+    });
+    const sequential = p.load_stress?.arms_concurrent
+        ? runs.flatMap((g) => {
+              const spans = g.run.arms.flatMap((a) => {
+                  const start = a.journal.find((e) => e.kind === "StartArm")?.seq;
+                  const end = a.journal.find((e) => e.kind === "EndArm")?.seq;
+                  return start === undefined || end === undefined ? [] : [[start, end] as const];
+              });
+              const overlap = spans.some(([s1, e1], i) =>
+                  spans.some(([s2, e2], j) => i !== j && s1 <= e2 && s2 <= e1),
+              );
+              return spans.length < 2 || overlap
+                  ? []
+                  : [
+                        `run ${runKey(g)}: arms ran one at a time; load_stress requires concurrent arms`,
+                    ];
+          })
+        : [];
+    const overridden = runs.flatMap((g) =>
+        g.identity.fault_override === null ? [] : [`run ${runKey(g)}: fault schedule overridden`],
+    );
     const unwitnessed = runs.flatMap((g) =>
         g.witnesses === null && g.scenario.faults.some((f) => f.seam.layer === "proxy-sink")
             ? [`run ${runKey(g)}: fault witnesses missing`]
@@ -313,6 +406,7 @@ function incomplete(
         "host_versions",
         "side_model",
         "user_sim_model",
+        "scenario_provenance",
     ];
     const settings = shared.flatMap((field) => {
         const values = [...new Set(runs.map((g) => JSON.stringify(g.identity[field])))];
@@ -322,28 +416,36 @@ function incomplete(
     });
     const n = items;
     const short = p.families.flatMap((f) => {
-        if (!/^probe-P\d+$/.test(f.id)) return [];
-        const metric = f.metrics[0] as string;
-        const pairs =
-            f.analysis_unit === "item"
-                ? (observations.find((o) => o.metric === metric)?.items ?? []).filter(
-                      (x) => !dropped.has(x.item),
-                  ).length
-                : runs.reduce((s, g) => {
-                      const [c, t] = [control, treatment].map((a) =>
-                          g.run.arms.find((x) => x.arm === a),
-                      );
-                      return !c || !t
-                          ? s
-                          : s + values(g, t.arm, metric, { other: c, dropped }).size;
-                  }, 0);
-        return pairs < n ? [`${f.id}: ${pairs} of ${n} paired items`] : [];
+        const probeType = /^probe-P\d+$/.test(f.id);
+        if (!probeType && f.analysis_unit !== "item") return [];
+        const metrics = probeType ? [f.metrics[0] as string] : f.metrics;
+        return metrics.flatMap((metric) => {
+            const pairs =
+                f.analysis_unit === "item"
+                    ? (observations.find((o) => o.metric === metric)?.items ?? []).filter(
+                          (x) => !dropped.has(x.item),
+                      ).length
+                    : runs.reduce((s, g) => {
+                          const [c, t] = [control, treatment].map((a) =>
+                              g.run.arms.find((x) => x.arm === a),
+                          );
+                          return !c || !t
+                              ? s
+                              : s + values(g, t.arm, metric, { other: c, dropped }).size;
+                      }, 0);
+            const label = probeType ? f.id : `${f.id}/${metric}`;
+            return pairs < n ? [`${label}: ${pairs} of ${n} paired items`] : [];
+        });
     });
     return [
         ...missing,
         ...unfinished,
         ...truncated,
         ...unwitnessed,
+        ...overridden,
+        ...unknown,
+        ...pairing,
+        ...sequential,
         ...settings,
         ...controls,
         ...unavailable,
@@ -351,7 +453,7 @@ function incomplete(
     ];
 }
 
-function ordered(p: Preregistration, runs: GradedRun[]): GradedRun[] {
+export function ordered(p: Preregistration, runs: GradedRun[]): GradedRun[] {
     const at = (xs: readonly unknown[], x: unknown) => {
         const i = xs.indexOf(x);
         return i < 0 ? xs.length : i;
@@ -412,7 +514,7 @@ export function tierInput(
                     o.item === r.item &&
                     o.arm !== r.arm &&
                     pairArms.includes(o.arm) &&
-                    o.inputs.join("\n") === r.inputs.join("\n"),
+                    judgmentKey(o) === judgmentKey(r),
             );
         return [...g.grades.filter((r) => r.probe_type !== "P7"), ...g.judged.filter(judgedPair)]
             .filter((r) => r.verdict === "excluded" && pairArms.includes(r.arm))

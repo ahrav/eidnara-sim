@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { GradeLog, type GradeRecord } from "../grade/probes";
 import { canonicalJson } from "../prereg/canonical";
+import { TARGET } from "../proxy/inject";
 import { type Entry, readJournal } from "../run/journal";
 import { checkJournal } from "../run/journal-check";
 import { referenceArm } from "../run/run";
@@ -144,7 +145,9 @@ const CHECKS: Record<string, Check> = {
                     r.against === "reference"
                         ? turnOf(reference(r.arm), r.event)?.digest
                         : c.recorded.get(`${r.arm}/${r.event}`);
-                if (
+                if (r.against === "recorded" && other === undefined)
+                    bad.push(`${r.arm} ${r.event} has no source digest to compare with`);
+                else if (
                     (own && own.digest !== r.digest) ||
                     (other !== undefined && other !== r.reference_digest)
                 )
@@ -215,17 +218,32 @@ const CHECKS: Record<string, Check> = {
         let n = 0;
         for (const c of runs) {
             for (const a of c.g.run.arms) {
+                const clock = journalClock(a.journal);
                 let wall = Number.NEGATIVE_INFINITY;
                 for (const call of [...a.calls].sort((x, y) => x.seq - y.seq)) {
                     n++;
-                    if (!Number.isFinite(call.scenario_ms) || !Number.isFinite(call.wall_ms))
+                    if (!Number.isFinite(call.scenario_ms) || !Number.isFinite(call.wall_ms)) {
                         bad.push(`call ${call.seq} lacks a time`);
-                    else if (call.wall_ms < wall) bad.push(`call ${call.seq} wall time decreases`);
+                        continue;
+                    }
+                    if (call.wall_ms < wall) bad.push(`call ${call.seq} wall time decreases`);
                     wall = Math.max(wall, call.wall_ms);
+                    const expected = clock(call.started_wall_ms);
+                    if (
+                        expected !== undefined &&
+                        Math.abs(call.scenario_ms - expected) > CLOCK_SLACK_MS
+                    )
+                        bad.push(
+                            `call ${call.seq} at scenario ${call.scenario_ms} ms, the journal's clock says ${expected}`,
+                        );
                 }
             }
         }
-        return outcome(n, bad, "proxy records with both times, wall time in order");
+        return outcome(
+            n,
+            bad,
+            "proxy records with both times, wall time in order, scenario time on the journal's clock",
+        );
     },
     "SIM-P25": (runs) => {
         const turns = runs.flatMap((c) => journalOf(c).filter((e) => e.kind === "UserTurn"));
@@ -246,33 +264,33 @@ const CHECKS: Record<string, Check> = {
             }
             for (const a of c.g.run.arms) {
                 const fired = a.journal.filter((e) => e.kind === "FaultFired");
-                const injected = a.calls
-                    .filter((x) => typeof x.fault_ref === "string")
-                    .sort((x, y) => x.seq - y.seq);
-                const counted = new Map<string, number>();
-                for (const call of injected) {
+                const calls = [...a.calls].sort((x, y) => x.seq - y.seq);
+                // The injector spends a bounded fault's count on every eligible agent call after
+                // it fired, whether or not that call was injected.
+                const eligible = (firedAt: number) =>
+                    calls.filter((x) => x.component === TARGET && x.started_wall_ms >= firedAt);
+                for (const call of calls.filter((x) => typeof x.fault_ref === "string")) {
                     n++;
                     const id = call.fault_ref as string;
                     const fault = faults.find((f) => f.id === id);
-                    const before = fired.some(
+                    const firedAt = fired.find(
                         (e) => e.fault === id && e.wall_ms <= call.started_wall_ms,
-                    );
-                    if (!fault || !before) {
+                    )?.wall_ms;
+                    if (!fault || firedAt === undefined) {
                         bad.push(`call ${call.seq} names ${id}, not fired before it`);
                         continue;
                     }
                     // The window closes at the trigger session's end, and for a bounded fault
-                    // after its count of calls.
+                    // after its count of eligible calls.
                     const closed = windowClose(c, a.journal, fault.trigger.session);
                     if (closed !== undefined && call.started_wall_ms > closed)
                         bad.push(`call ${call.seq} names ${id} after its session ended`);
-                    const seen = (counted.get(id) ?? 0) + 1;
-                    counted.set(id, seen);
                     const limit =
                         fault.strategy === "persistent"
                             ? Number.POSITIVE_INFINITY
                             : (fault.params.count ?? fault.params.calls ?? 1);
-                    if (seen > limit) bad.push(`call ${call.seq} names ${id} beyond its count`);
+                    const position = eligible(firedAt).findIndex((x) => x.seq === call.seq) + 1;
+                    if (position > limit) bad.push(`call ${call.seq} names ${id} beyond its count`);
                 }
             }
         }
@@ -290,6 +308,10 @@ const CHECKS: Record<string, Check> = {
             for (const a of c.g.run.arms) {
                 const ends = a.journal.filter((e) => e.kind === "EndTurn");
                 const probes = new Set(ends.filter((e) => e.probe).map((e) => String(e.probe)));
+                for (const e of a.journal.filter((x) => x.kind === "SnapshotArtefacts")) {
+                    if (!probes.has(String(e.item)))
+                        bad.push(`${a.arm}/${e.item} snapshot with no probe turn`);
+                }
                 for (const probe of probes) {
                     const first = ends.find((e) => e.probe === probe) as Entry;
                     const snap = a.journal.find(
@@ -302,11 +324,12 @@ const CHECKS: Record<string, Check> = {
                         bad.push(`${a.arm}/${probe} snapshot after a later turn`);
                 }
             }
-            for (const r of c.g.grades) {
+            // Every persisted grade, earlier versions included, cites the item's one snapshot.
+            for (const r of c.grades.length > 0 ? c.grades : c.g.grades) {
                 const s = seen.get(`${c.g.run.dir}/${r.arm}/${r.item}`);
                 if (!s) bad.push(`${r.arm}/${r.item} graded without a journaled snapshot`);
                 else if (s.snapshot !== undefined && s.snapshot !== r.snapshot)
-                    bad.push(`${r.arm}/${r.item} grades ${r.snapshot}`);
+                    bad.push(`${r.arm}/${r.item} v${r.version} grades ${r.snapshot}`);
             }
         }
         bad.unshift(...[...seen].filter(([, s]) => s.n > 1).map(([k]) => `${k} set twice`));
@@ -325,6 +348,10 @@ const CHECKS: Record<string, Check> = {
             for (const r of c.grades) {
                 n++;
                 const key = `${r.arm}/${r.item}`;
+                if (!Number.isInteger(r.version) || r.version < 1) {
+                    bad.push(`${key} version ${JSON.stringify(r.version)}`);
+                    continue;
+                }
                 if (r.version <= (versions.get(key) ?? 0)) bad.push(key);
                 versions.set(key, r.version);
             }
@@ -348,13 +375,50 @@ const CHECKS: Record<string, Check> = {
             const end = c.entries.find((e) => e.kind === "EndRun");
             if (!start || !end) continue;
             n++;
+            if (!Number.isFinite(start.wall_ms) || !Number.isFinite(end.wall_ms)) {
+                bad.push(`${c.g.run.dir} has a wall time that is not a number`);
+                continue;
+            }
             const span = end.wall_ms - start.wall_ms;
-            if (span > c.g.run.prereg.liveness_bounds.tier_wall_budget_ms)
+            if (span < 0) bad.push(`${c.g.run.dir} ended ${-span} ms before it started`);
+            else if (span > c.g.run.prereg.liveness_bounds.tier_wall_budget_ms)
                 bad.push(`${c.g.run.dir} took ${span} ms`);
         }
         return outcome(n, bad, "completed runs inside the tier's wall budget");
     },
 };
+
+/** Jitter allowed between a call's stamped scenario time and the clock the journal implies. */
+const CLOCK_SLACK_MS = 5_000;
+
+/**
+ * The arm's scenario clock as a function of wall time, from its journal: at wall pace while a
+ * turn or job is open, held while idle, and jumping where an entry says so. Undefined before
+ * the first entry.
+ */
+function journalClock(journal: Entry[]): (wallMs: number) => number | undefined {
+    const entries = [...journal]
+        .filter((e) => Number.isFinite(e.wall_ms) && Number.isFinite(e.scenario_ms))
+        .sort((a, b) => a.seq - b.seq);
+    const busyAfter: boolean[] = [];
+    const open = new Set<string>();
+    for (const e of entries) {
+        if (e.kind === "BeginTurn") open.add(`turn:${String(e.event)}`);
+        if (e.kind === "EndTurn") open.delete(`turn:${String(e.event)}`);
+        if (e.kind === "RegisterJob") open.add(`job:${String(e.job)}`);
+        if (e.kind === "EndJob") open.delete(`job:${String(e.job)}`);
+        busyAfter.push(open.size > 0);
+    }
+    return (wallMs) => {
+        let i = -1;
+        for (let k = 0; k < entries.length; k++) {
+            if ((entries[k] as Entry).wall_ms <= wallMs) i = k;
+        }
+        if (i < 0) return undefined;
+        const e = entries[i] as Entry;
+        return busyAfter[i] ? e.scenario_ms + (wallMs - e.wall_ms) : e.scenario_ms;
+    };
+}
 
 /** Wall time of the journaled `Event` that ended `session` in this arm, if it happened. */
 function windowClose(c: Ctx, journal: Entry[], session: string): number | undefined {
@@ -374,7 +438,14 @@ function journalCheck(
 ) {
     let n = 0;
     const bad: string[] = [];
-    for (const { g, entries } of runs) {
+    for (const { g, entries: written } of runs) {
+        // The checks read the journal in seq order; a repeated or non-integer seq is a break.
+        const entries = [...written].sort((a, b) => a.seq - b.seq);
+        entries.forEach((e, i) => {
+            if (!Number.isInteger(e.seq)) bad.push(`${g.run.dir} seq ${JSON.stringify(e.seq)}`);
+            else if (i > 0 && entries[i - 1]?.seq === e.seq)
+                bad.push(`${g.run.dir} seq ${e.seq} twice`);
+        });
         const events = new Map(g.scenario.events.map((e) => [e.id, e.scenario_ms as number]));
         const sleeps = new Map(
             g.scenario.faults

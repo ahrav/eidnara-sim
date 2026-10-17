@@ -6,10 +6,12 @@ import {
     readFileSync,
     renameSync,
     rmSync,
+    truncateSync,
     writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
 import type { Artefact, CallView, Command, Snapshot } from "../grade/artefacts";
+import { readJournal } from "../run/journal";
 
 function git(dir: string, args: string[], index: string): string {
     const env = { ...process.env, GIT_INDEX_FILE: index, GIT_CONFIG_GLOBAL: "/dev/null" };
@@ -125,7 +127,11 @@ export class SnapshotRecorder {
             turn_outcome: failed ? "failed" : "ok",
             artefacts,
         };
-        appendFileSync(join(this.armDir, "snapshots.jsonl"), `${JSON.stringify(snapshot)}\n`);
+        // A record a kill cut short ends the file without its newline; it is dropped so the
+        // next record starts a line of its own.
+        const path = join(this.armDir, "snapshots.jsonl");
+        if (existsSync(path)) truncateSync(path, readJournal(path).bytes ?? 0);
+        appendFileSync(path, `${JSON.stringify(snapshot)}\n`);
         return id;
     }
 }

@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import { existsSync, lstatSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import type { GradeRecord } from "../grade/probes";
 import { armBase } from "../hosts/arms";
@@ -12,8 +12,9 @@ export const V1_CONTINUITY: Record<string, [number, number]> = {
     eidnara: [0.99, 1],
 };
 
+/** The hosts' transcript stores as the sandboxed agent names them: Pi's sessions directory and OpenCode's data directory. */
 const TRANSCRIPT_PATH =
-    /\.pi\/agent\/sessions|PI_CODING_AGENT_DIR\}?\/sessions|XDG_DATA_HOME\}?\/opencode|opencode\.db|opencode\/storage|\/sessions\/\S*\.jsonl/;
+    /\.pi\/agent\/sessions|PI_CODING_AGENT_DIR\}?\/sessions|XDG_DATA_HOME\}?\/opencode|\/opencode\/opencode\.db|\/opencode\/storage|agent\/sessions\/\S*\.jsonl/;
 const READERS = new Set([
     "cat",
     "less",
@@ -44,6 +45,8 @@ const readsTranscripts = (command: string) =>
 
 export interface TranscriptOrder {
     arm: string;
+    /** False for an arm whose transcript check never ran, so nothing below was measured. */
+    checked: boolean;
     sessions: number;
     /** Sessions the arm reached whose transcript the store lacks. */
     missing: string[];
@@ -75,35 +78,50 @@ export interface Continuity {
     v1: [number, number] | null;
 }
 
-function files(dir: string): string[] {
-    if (!existsSync(dir) || lstatSync(dir).isSymbolicLink()) return [];
+/** Whether `path` resolves to a real location inside `root`. */
+function within(path: string, root: string): boolean {
+    try {
+        const real = realpathSync(path);
+        const base = realpathSync(root);
+        return real === base || real.startsWith(`${base}/`);
+    } catch {
+        return false;
+    }
+}
+
+/** Regular files under `dir`, which must resolve inside `root`; symlinks are left unread. */
+function files(dir: string, root: string): string[] {
+    if (!existsSync(dir) || lstatSync(dir).isSymbolicLink() || !within(dir, root)) return [];
     return readdirSync(dir).flatMap((f) => {
         const p = join(dir, f);
         const stat = lstatSync(p);
-        return stat.isDirectory() ? files(p) : stat.isFile() ? [p] : [];
+        return stat.isDirectory() ? files(p, root) : stat.isFile() ? [p] : [];
     });
 }
 
-function transcriptTimes(path: string): Map<string, number> {
+function transcriptTimes(path: string, armDir: string): Map<string, number> {
     const out = new Map<string, number>();
+    if (!within(path, armDir)) return out;
     if (path.endsWith(".db")) {
-        if (!existsSync(path)) return out;
         const db = new Database(path, { readonly: true });
         try {
             const rows = db.query("select title, time_created from session").all() as {
                 title: string;
                 time_created: number;
             }[];
-            for (const r of rows) out.set(r.title, r.time_created);
+            for (const r of rows) {
+                if (Number.isFinite(r.time_created)) out.set(r.title, r.time_created);
+            }
         } finally {
             db.close();
         }
         return out;
     }
-    for (const f of files(path).filter((p) => p.endsWith(".jsonl"))) {
+    for (const f of files(path, armDir).filter((p) => p.endsWith(".jsonl"))) {
         try {
             const head = JSON.parse(readFileSync(f, "utf8").split("\n")[0] || "{}");
-            if (head.type === "session") out.set(head.id, Date.parse(head.timestamp));
+            const at = Date.parse(head.timestamp);
+            if (head.type === "session" && Number.isFinite(at)) out.set(head.id, at);
         } catch {}
     }
     return out;
@@ -111,7 +129,8 @@ function transcriptTimes(path: string): Map<string, number> {
 
 function order(g: GradedRun, arm: ArmLogs, paths: string[]): TranscriptOrder {
     const scheduled = new Map(g.scenario.events.map((e) => [e.id, e]));
-    const times = new Map(paths.flatMap((p) => [...transcriptTimes(p)]));
+    const armDir = join(g.run.dir, arm.arm);
+    const times = new Map(paths.flatMap((p) => [...transcriptTimes(p, armDir)]));
     const reached = arm.journal
         .filter((e) => e.kind === "Event" && g.run.kinds.get(String(e.event)) === "session_start")
         .flatMap((e) => {
@@ -129,6 +148,7 @@ function order(g: GradedRun, arm: ArmLogs, paths: string[]): TranscriptOrder {
     const d = pairs.map((p) => p.d);
     return {
         arm: arm.arm,
+        checked: true,
         sessions: pairs.length,
         missing,
         in_order: pairs.length
@@ -146,12 +166,15 @@ export function runConditions(g: GradedRun): RunConditions {
         const p = join(g.run.dir, arm.arm, "transcripts.json");
         // An absent or cut file (the driver writes it in one call a kill can interrupt) is an
         // unchecked arm.
-        let t = { paths: [] as string[], missing: null as string[] | null };
+        const unchecked = { paths: [] as string[], missing: null as string[] | null };
+        let t = unchecked;
         try {
             if (existsSync(p)) t = JSON.parse(readFileSync(p, "utf8"));
         } catch {
-            t = { paths: [], missing: null };
+            t = unchecked;
         }
+        const strings = (x: unknown) => Array.isArray(x) && x.every((v) => typeof v === "string");
+        if (!strings(t.paths) || !(t.missing === null || strings(t.missing))) t = unchecked;
         return { arm: arm.arm, paths: t.paths, missing: t.missing };
     });
     const probes = (manifest.preflight?.time_injection ?? []) as RunConditions["interception"];
@@ -171,7 +194,19 @@ export function runConditions(g: GradedRun): RunConditions {
             wall_clock_only,
         })),
         transcripts,
-        transcript_order: g.run.arms.map((arm, i) => order(g, arm, transcripts[i]?.paths ?? [])),
+        transcript_order: g.run.arms.map((arm, i) =>
+            transcripts[i]?.missing === null
+                ? {
+                      arm: arm.arm,
+                      checked: false,
+                      sessions: 0,
+                      missing: [],
+                      in_order: null,
+                      max_lead_ms: null,
+                      max_lag_ms: null,
+                  }
+                : order(g, arm, transcripts[i]?.paths ?? []),
+        ),
     };
 }
 
@@ -252,7 +287,7 @@ export function renderConditions(conditions: RunConditions[], recall: Continuity
                 row([
                     c.run,
                     o.arm,
-                    o.sessions,
+                    o.checked ? o.sessions : "unchecked",
                     o.missing.join(", ") || "none",
                     o.in_order === null ? "-" : o.in_order ? "yes" : "no",
                     o.max_lead_ms ?? "-",

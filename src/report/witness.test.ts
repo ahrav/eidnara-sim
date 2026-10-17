@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ArmLogs } from "../oracle/logs";
@@ -63,6 +63,7 @@ function run(broken: boolean): GradedRun {
         ({ kind, arm: "eidnara", scenario_ms, seq: seq++, wall_ms: 0, ...extra }) as Entry;
     const journal = [
         entry("UserTurn", 10, { event: "e-1", label: broken ? "nagging" : "task" }),
+        entry("EndTurn", 15, { event: "e-1", outcome: "ok", probe: "q-1" }),
         entry("SnapshotArtefacts", 20, { item: "q-1" }),
         entry(broken ? "SnapshotArtefacts" : "Event", broken ? 5 : 30, { item: "q-1" }),
     ];
@@ -161,13 +162,15 @@ function second(broken: boolean, busy = false): GradedRun {
     const begin = at("BeginTurn", 10, { event: "e-1" });
     const end = at("EndTurn", 20, { event: "e-1", outcome: "ok" });
     const jump = at("AdvanceClock", broken ? 150 : 100, { from_ms: broken || busy ? 10 : 20 });
+    // seq follows the journal's order, which is what the checks read.
     const journal = [
         begin,
         ...(broken || busy ? [jump, end] : [end, jump]),
         at("Event", 20, { event: "e-1" }),
         at("FaultObserved", 100, { fault: broken ? "f-9" : "f-1" }),
+        at("EndTurn", 100, { event: "e-2", outcome: "ok", probe: "q-1" }),
         at("SnapshotArtefacts", 100, { item: "q-1", snapshot: "eidnara:q-1:e-1" }),
-    ];
+    ].map((e, i) => ({ ...e, seq: i }));
     writeFileSync(join(dir, "journal.jsonl"), lines(journal));
     const grade = (version: number, snapshot: string) => ({
         item: "q-1",
@@ -229,7 +232,7 @@ function made(p: Parts): GradedRun {
     );
     writeFileSync(join(dir, "pairing.jsonl"), lines(p.pairing ?? []));
     const journal = (p.journal ?? []).map(
-        (e, seq) => ({ arm: "eidnara", wall_ms: seq, seq, ...e }) as Entry,
+        (e, i) => ({ arm: "eidnara", wall_ms: i, seq: i, ...e }) as Entry,
     );
     writeFileSync(join(dir, "journal.jsonl"), lines(journal));
     writeFileSync(join(dir, "grades.jsonl"), lines(p.grades ?? []));
@@ -324,6 +327,11 @@ describe("property witness evidence", () => {
             });
         expect(one("P03", run("r")).status).toBe("witnessed");
         expect(one("P03", run("x")).status).toBe("violated");
+        rmSync(join(source, "pairing.jsonl"));
+        expect(one("P03", run("r"))).toMatchObject({
+            status: "violated",
+            detail: expect.stringContaining("source digest"),
+        });
     });
 
     test("SIM-P10 recomputes the rates from the turn labels and holds the journaled summary to them", () => {
@@ -394,6 +402,12 @@ describe("property witness evidence", () => {
         expect(one("L03", made({ journal: span(1).slice(0, 1) }))).toMatchObject({
             status: "unreached",
         });
+        const odd = (end: unknown) => [
+            { kind: "StartRun", scenario_ms: 0, wall_ms: 1_000 },
+            { kind: "EndRun", scenario_ms: 0, wall_ms: end },
+        ];
+        expect(one("L03", made({ journal: odd("later") }))).toMatchObject({ status: "violated" });
+        expect(one("L03", made({ journal: odd(500) }))).toMatchObject({ status: "violated" });
     });
 
     test("SIM-P30 checks every injected call against a fault fired before it", () => {
@@ -457,6 +471,7 @@ describe("property witness evidence", () => {
         ];
         const call = (seq: number, started_wall_ms: number) => ({
             seq,
+            component: "agent",
             fault_ref: "f-1",
             started_wall_ms,
             wall_ms: started_wall_ms + 1,
@@ -472,17 +487,75 @@ describe("property witness evidence", () => {
             status: "violated",
             detail: expect.stringContaining("beyond its count"),
         });
+        // An intermittent fault spends its count on every eligible agent call, injected or not.
+        const intermittent = [{ ...(faults[0] as object), strategy: "intermittent" }];
+        const plain = (seq: number, started_wall_ms: number) => ({
+            seq,
+            component: "agent",
+            fault_ref: null,
+            started_wall_ms,
+            wall_ms: started_wall_ms + 1,
+            scenario_ms: 5,
+        });
+        expect(
+            one(
+                "P30",
+                made({
+                    faults: intermittent,
+                    events,
+                    journal,
+                    calls: [plain(1, 60), plain(2, 65), call(3, 70)],
+                }),
+            ),
+        ).toMatchObject({
+            status: "violated",
+            detail: expect.stringContaining("beyond its count"),
+        });
     });
 
     test("SIM-P41 treats a grade without a journaled snapshot as a violation", () => {
+        const probe = {
+            kind: "EndTurn",
+            scenario_ms: 0,
+            event: "e-1",
+            outcome: "ok",
+            probe: "q-1",
+        };
         const snap = { kind: "SnapshotArtefacts", scenario_ms: 1, item: "q-1", snapshot: "s1" };
         const grade = (item: string) => ({ item, arm: "eidnara", version: 1, snapshot: "s1" });
-        expect(one("P41", made({ journal: [snap], grades: [grade("q-1")] })).status).toBe(
+        expect(one("P41", made({ journal: [probe, snap], grades: [grade("q-1")] })).status).toBe(
             "witnessed",
         );
         expect(
-            one("P41", made({ journal: [snap], grades: [grade("q-1"), grade("q-2")] })),
+            one("P41", made({ journal: [probe, snap], grades: [grade("q-1"), grade("q-2")] })),
         ).toMatchObject({ status: "violated", detail: expect.stringContaining("q-2") });
+        const stale = { ...grade("q-1"), snapshot: "s0" };
+        const regraded = { ...grade("q-1"), version: 2 };
+        expect(
+            one(
+                "P41",
+                made({ journal: [probe, snap], grades: [stale, regraded], used: [regraded] }),
+            ),
+        ).toMatchObject({ status: "violated", detail: expect.stringContaining("v1") });
+    });
+
+    test("SIM-P11 reads the journal in seq order and refuses a repeated seq", () => {
+        const entry = (seq: number, scenario_ms: number) => ({
+            kind: "Event",
+            seq,
+            scenario_ms,
+            event: `e-${seq}`,
+        });
+        expect(one("P11", made({ journal: [entry(1, 0), entry(0, 10)] }))).toMatchObject({
+            status: "violated",
+        });
+        expect(one("P11", made({ journal: [entry(0, 0), entry(0, 10)] }))).toMatchObject({
+            status: "violated",
+            detail: expect.stringContaining("seq 0 twice"),
+        });
+        expect(one("P11", made({ journal: [entry(0, 0), entry(1, 10)] }))).toMatchObject({
+            status: "witnessed",
+        });
     });
 
     test("SIM-P41 wants a snapshot right after the first EndTurn of every reached probe", () => {
@@ -514,6 +587,9 @@ describe("property witness evidence", () => {
             "violated",
         );
         expect(status([snap("q-1"), end("q-1", "e-1")])).toBe("violated");
+        expect(status([end("q-1", "e-1"), snap("q-1"), snap("q-9")], [grade("q-1")])).toBe(
+            "violated",
+        );
     });
 
     test("SIM-P42 requires the report to grade at the latest version and names the versions it used", () => {
@@ -529,6 +605,43 @@ describe("property witness evidence", () => {
             detail: expect.stringContaining("v2"),
         });
         expect(one("P42", made({ grades, used: [grade(1)] })).status).toBe("violated");
+        const unversioned = { ...grade(1), version: "bad" };
+        expect(one("P42", made({ grades: [unversioned], used: [] }))).toMatchObject({
+            status: "violated",
+            detail: expect.stringContaining("version"),
+        });
+    });
+
+    test("SIM-P15 holds each call's scenario time to the clock the journal implies at its start", () => {
+        // Busy from wall 1000 (scenario 100) to wall 1500 (scenario 600); idle after.
+        const journal = [
+            { kind: "BeginTurn", seq: 0, scenario_ms: 100, wall_ms: 1_000, event: "e-1" },
+            {
+                kind: "EndTurn",
+                seq: 1,
+                scenario_ms: 600,
+                wall_ms: 1_500,
+                event: "e-1",
+                outcome: "ok",
+            },
+        ];
+        const call = (scenario_ms: number, started_wall_ms: number) => ({
+            seq: 1,
+            scenario_ms,
+            started_wall_ms,
+            wall_ms: started_wall_ms + 10,
+            fault_ref: null,
+        });
+        expect(one("P15", made({ journal, calls: [call(300, 1_200)] }))).toMatchObject({
+            status: "witnessed",
+        });
+        expect(one("P15", made({ journal, calls: [call(600, 1_700)] }))).toMatchObject({
+            status: "witnessed",
+        });
+        expect(one("P15", made({ journal, calls: [call(99_000, 1_200)] }))).toMatchObject({
+            status: "violated",
+            detail: expect.stringContaining("clock"),
+        });
     });
 
     test("liveness records appear in the panel, unchecked", () => {
