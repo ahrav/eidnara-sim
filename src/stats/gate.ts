@@ -328,7 +328,15 @@ function statsOf(f: Family, o: Observation, p: Preregistration): Stats {
     return f.outcome === "count" ? counts(f, o.runs ?? []) : graded(f, o.runs ?? [], p);
 }
 
+/** eval-core's `bootstrap_replicates` range starts at 40; below it a BCa interval degenerates. */
+const MIN_BOOTSTRAP_REPLICATES = 40;
+
 function check(p: Preregistration, input: TierInput): void {
+    if (p.bootstrap.replicates < MIN_BOOTSTRAP_REPLICATES) {
+        throw new StatsRefusal(
+            `bootstrap.replicates ${p.bootstrap.replicates} is below the floor of ${MIN_BOOTSTRAP_REPLICATES}`,
+        );
+    }
     const seq = input.journal_seq_at_eval;
     if (!Number.isInteger(seq) || seq < 0) {
         throw new StatsRefusal(`journal_seq_at_eval must be a non-negative integer, got ${seq}`);

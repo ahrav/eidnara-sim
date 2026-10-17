@@ -758,8 +758,8 @@ describe("tier gate review findings, third Codex round", () => {
         expect(() => evaluate([twice])).toThrow(StatsRefusal);
     });
 
-    test("a bootstrap plan too small for a finite interval is refused", () => {
-        const thin = { ...M, bootstrap: { ...M.bootstrap, replicates: 1 } };
+    test("a bootstrap plan below eval-core's replicate floor is refused", () => {
+        const thin = { ...M, bootstrap: { ...M.bootstrap, replicates: 39 } };
         const scores = runs(
             "P13.fold_fidelity_score",
             Array.from({ length: 6 }, (_, i): [number, number] => [0, 0.1 * (i + 1)]),
@@ -772,7 +772,7 @@ describe("tier gate review findings, third Codex round", () => {
                 journal_seq_at_eval: 7,
                 arms: { control: "host", treatment: "eidnara" },
             }),
-        ).toThrow(StatsRefusal);
+        ).toThrow("bootstrap.replicates 39 is below the floor of 40");
     });
 
     test("the verdict records each CUSUM rule's registered source and the deviation it used", () => {

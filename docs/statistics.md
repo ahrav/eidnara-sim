@@ -52,8 +52,9 @@ family's value other than 0 or 1, a negative count, an item whose issue
 order is not a non-negative integer, an item or run identity repeated
 within an observation, an issue order shared by two items or an item with
 two orders, an id listed twice across the excluded and fault-asymmetric
-lists, a run-level family whose metrics come from different run sets, and
-a bootstrap plan whose interval is not finite. A metric whose name ends in
+lists, a run-level family whose metrics come from different run sets, a
+bootstrap plan below 40 replicates (eval-core's floor), and a bootstrap
+interval that is not finite. A metric whose name ends in
 `_delta_ms` or names a growth per session arrives as the paired delta in
 the treatment value with 0 as control, so a bound on it is a bound on the
 delta. The input names the compared arms, which are `host` against the
