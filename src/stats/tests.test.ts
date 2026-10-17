@@ -6,7 +6,10 @@ import {
     binomialCdf,
     binomialPmf,
     digamma,
+    digammaDiff,
     incompleteBeta,
+    logGamma,
+    logGammaDiff,
     normalCdf,
     normalQuantile,
 } from "./dist";
@@ -119,6 +122,32 @@ describe("statistics against published references", () => {
         const b = bootstrap(xs, stat, { replicates: 100_000, seed: 1, bca: true });
         expect(b.a).toBeGreaterThan(0);
         expect([b.lo, b.hi]).toEqual([Number.NaN, Number.NaN]);
+        const saturated = bootstrap(xs, stat, {
+            replicates: 1_000_000,
+            seed: 1,
+            bca: true,
+            alpha: 0.25,
+        });
+        expect(Number.isFinite(saturated.lo)).toBe(true);
+        expect(saturated.lo).toBe(saturated.hi);
+    });
+
+    test("the theta log-likelihood ranks a large finite root against the cap without cancellation", () => {
+        near(logGammaDiff(1e8, 1000), 18420.68573893573, 1e-9);
+        near(logGammaDiff(6, 2000), logGamma(2006) - logGamma(6), 1e-8);
+        near(logGammaDiff(0.5, 3), Math.log(0.5) + Math.log(1.5) + Math.log(2.5), 1e-12);
+        near(digammaDiff(1e8, 1000), 1000 / 1e8 - 499500 / 1e16, 1e-15);
+    });
+
+    test("the CUSUM, Newcombe, and beta functions reject or survive their edge inputs", () => {
+        expect(() => cusum([1, Number.NaN, 100], 0, 0.5, 5)).toThrow(RangeError);
+        expect(() => cusum([1, 2], Number.POSITIVE_INFINITY, 0.5, 5)).toThrow(RangeError);
+        const [lo, hi] = newcombe(20, 12, 2, 16, 1e-20);
+        expect(lo).toBeLessThan(hi);
+        expect(Number.isFinite(lo) && Number.isFinite(hi)).toBe(true);
+        expect(() => incompleteBeta(0.5, 0, 2)).toThrow(RangeError);
+        expect(() => betaQuantile(0.5, 0, 2)).toThrow(RangeError);
+        expect(() => betaQuantile(0.5, 2, Number.POSITIVE_INFINITY)).toThrow(RangeError);
     });
 
     test("the negative-binomial standard errors of a wide identity design are the Poisson ones", () => {
@@ -304,8 +333,7 @@ describe("statistics against published references", () => {
         expect(fit.converged).toBe(false);
         const wide = negativeBinomial([[1], [1]], [0, 10_000_000]);
         expect(wide.converged).toBe(true);
-        expect(wide.theta).toBeGreaterThan(0);
-        expect(wide.theta).toBeLessThan(1);
+        near(wide.theta, 0.049384549, 1e-6);
         expect(performance.now() - started).toBeLessThan(2000);
         expect(() => negativeBinomial([[1, 0], [1]], [1, 2])).toThrow(RangeError);
         expect(() =>

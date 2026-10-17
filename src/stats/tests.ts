@@ -1,5 +1,12 @@
 import { Rng } from "../rng";
-import { betaQuantile, binomialCdf, digamma, logGamma, normalCdf, normalQuantile } from "./dist";
+import {
+    betaQuantile,
+    binomialCdf,
+    digammaDiff,
+    logGammaDiff,
+    normalCdf,
+    normalQuantile,
+} from "./dist";
 
 function counts(fn: string, values: readonly number[]): void {
     if (!values.every((v) => Number.isInteger(v) && v >= 0))
@@ -72,7 +79,7 @@ export function newcombe(
     if (n === 0) throw new RangeError("newcombe: an empty table has no difference");
     counts("newcombe", [a, b, c, d]);
     level("newcombe", alpha);
-    const z = normalQuantile(1 - alpha / 2);
+    const z = -normalQuantile(alpha / 2);
     const [p1, p2] = [(a + b) / n, (a + c) / n];
     const [l1, u1] = wilson(a + b, n, z);
     const [l2, u2] = wilson(a + c, n, z);
@@ -124,6 +131,8 @@ export function cusum(
     h: number,
     head = 0,
 ): Cusum {
+    if (![...xs, target, k, h, head].every(Number.isFinite))
+        throw new RangeError("cusum: every observation and parameter must be finite");
     let [up, down] = [head, -head];
     const upper: number[] = [];
     const lower: number[] = [];
@@ -202,7 +211,7 @@ export function bootstrap<T>(
         return scale > 0 ? normalCdf(z0 + (z0 + z) / scale) : Number.NaN;
     };
     const [qlo, qhi] = [adjust(alpha / 2), adjust(1 - alpha / 2)];
-    const ordered = qlo < qhi;
+    const ordered = qlo <= qhi;
     return {
         estimate,
         lo: ordered ? percentile(reps, qlo) : Number.NaN,
@@ -212,7 +221,6 @@ export function bootstrap<T>(
     };
 }
 
-/** Cholesky solve of a symmetric positive-definite system. */
 /** `m` must be symmetric positive-definite. */
 function cholesky(m: number[][]): number[][] {
     const n = m.length;
@@ -267,27 +275,6 @@ const THETA_MAX = 1e8;
 
 const THETA_MIN = 1e-8;
 
-const HARMONIC_MAX = 1000;
-
-/**
- * `digamma(t + y) - digamma(t)` for a count `y`: the harmonic sum up to `HARMONIC_MAX`, and
- * above it the difference of the asymptotic expansions, whose leading term is `log1p(y / t)`,
- * when `t >= 6`.
- */
-function psiDiff(y: number, t: number): number {
-    if (y <= HARMONIC_MAX) {
-        let sum = 0;
-        for (let k = 0; k < y; k++) sum += 1 / (t + k);
-        return sum;
-    }
-    if (t < 6) return digamma(y + t) - digamma(t);
-    const tail = (x: number) => {
-        const f = 1 / (x * x);
-        return -0.5 / x - f * (1 / 12 - f * (1 / 120 - f * (1 / 252 - f / 240)));
-    };
-    return Math.log1p(y / t) + tail(t + y) - tail(t);
-}
-
 function weightedCross(x: number[][], w: number[], v?: number[]): number[][] {
     const p = (x[0] ?? []).length;
     const column = (a: number, b: (row: number[], i: number) => number) =>
@@ -300,13 +287,12 @@ function weightedCross(x: number[][], w: number[], v?: number[]): number[][] {
 
 /**
  * The derivative of the log-likelihood in theta at fixed means `m`. The rearranged terms
- * reduce cancellation at large `t`; the harmonic form of the digamma difference is used up to
- * `HARMONIC_MAX` so the work per observation stays bounded.
+ * reduce cancellation at large `t`.
  */
 function thetaScore(y: number[], m: number[], t: number): number {
     return y.reduce((s, yi, j) => {
         const u = m[j] as number;
-        return s + psiDiff(yi, t) - Math.log1p(u / t) + (u - yi) / (t + u);
+        return s + digammaDiff(t, yi) - Math.log1p(u / t) + (u - yi) / (t + u);
     }, 0);
 }
 
@@ -314,9 +300,8 @@ function thetaScore(y: number[], m: number[], t: number): number {
 function thetaLogLik(y: number[], m: number[], t: number): number {
     return y.reduce((s, yi, j) => {
         const u = m[j] as number;
-        return (
-            s + logGamma(yi + t) - logGamma(t) - t * Math.log1p(u / t) + yi * Math.log(u / (t + u))
-        );
+        const tail = yi > 0 ? yi * Math.log(u / (t + u)) : 0;
+        return s + logGammaDiff(t, yi) - t * Math.log1p(u / t) + tail;
     }, 0);
 }
 
