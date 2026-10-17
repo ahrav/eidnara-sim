@@ -18,6 +18,8 @@ export interface McNemar {
 
 /** The exact McNemar test on the discordant counts, with R `exact2x2::mcnemar.exact` limits. */
 export function mcnemarExact(b: number, c: number, alpha = 0.05): McNemar {
+    if (![b, c].every((v) => Number.isInteger(v) && v >= 0))
+        throw new RangeError("mcnemarExact: the discordant counts must be nonnegative integers");
     const n = b + c;
     const lo = b === 0 ? 0 : betaQuantile(alpha / 2, b, c + 1);
     const hi = c === 0 ? 1 : betaQuantile(1 - alpha / 2, b + 1, c);
@@ -272,7 +274,7 @@ function thetaAt(y: number[], m: number[]): number {
  * reweighted least squares for the coefficients alternating with the theta that maximises
  * the likelihood at the current means.
  */
-export function negativeBinomial(x: number[][], y: number[], iterations = 50): NegBinFit {
+export function negativeBinomial(x: number[][], y: number[], iterations = 200): NegBinFit {
     const p = (x[0] ?? []).length;
     if (y.length === 0 || p === 0)
         throw new RangeError("negativeBinomial: an empty design has no fit");

@@ -235,6 +235,17 @@ describe("statistics against published references", () => {
         expect(() => negativeBinomial([[1], [1], [1]], [-1, 2, 3])).toThrow(RangeError);
         expect(() => negativeBinomial([[1], [1], [1]], [0.5, 2, 3])).toThrow(RangeError);
         expect(() => negativeBinomial([[1], [1]], [1, 2, 100])).toThrow(RangeError);
+        expect(() => mcnemarExact(1.5, 2)).toThrow(RangeError);
+        expect(() => mcnemarExact(-1, 2)).toThrow(RangeError);
+    });
+
+    test("the negative-binomial alternation has room to settle a slowly converging theta", () => {
+        const fit = negativeBinomial(
+            [-3, -2, -1, 1, 2, 3].map((v) => [1, v]),
+            [15, 12, 1, 2, 2, 2],
+        );
+        expect(fit.converged).toBe(true);
+        near(fit.theta, 90.1321046, 1e-6);
     });
 
     test("the negative-binomial fit starts from the observed counts, whatever the column order or a rare large count", () => {
