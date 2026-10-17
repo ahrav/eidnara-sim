@@ -92,10 +92,19 @@ const ROLES: Record<string, readonly string[]> = {
 
 const isString = (v: unknown) => typeof v === "string";
 const isRecord = (v: unknown) => typeof v === "object" && v !== null && !Array.isArray(v);
+const isNumber = (v: unknown) => typeof v === "number" && Number.isFinite(v);
+/** A command-log entry: command text, a 0/1/null exit, a scenario time, and an optional call id. */
+const isCommandRun = (v: unknown) =>
+    isRecord(v) &&
+    isString((v as { command: unknown }).command) &&
+    ((v as { exit: unknown }).exit === null || isNumber((v as { exit: unknown }).exit)) &&
+    isNumber((v as { scenario_ms: unknown }).scenario_ms) &&
+    ((v as { call?: unknown }).call === undefined || isString((v as { call?: unknown }).call));
+const isCommandLog = (v: unknown) => Array.isArray(v) && v.every(isCommandRun);
 /** The fields each artefact class carries, and the check each must pass. */
 const PAYLOADS: Record<ArtefactClass, Array<[string, (v: unknown) => boolean]>> = {
     diff: [["patch", isString]],
-    "command-log": [["commands", Array.isArray]],
+    "command-log": [["commands", isCommandLog]],
     "test-result": [
         ["command", isString],
         ["exit", (v) => typeof v === "number"],

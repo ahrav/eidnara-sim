@@ -96,7 +96,7 @@ stays open for a resume and `calls.jsonl` never silently lacks a call the host
 made. Recorder git children run with global and system config disabled and
 the per-user excludes file (`$XDG_CONFIG_HOME/git/ignore`) pointed at
 `/dev/null`, so the workspace's own rules are the only ignore rules. The grade, judge-call, and judgment logs must be regular
-files or absent; a symlink at any of those paths stops grading before a
+files or absent, checked before the judge gateway starts; a symlink at any of those paths stops grading before a
 write.
 The snapshot tree adds, with `--force`, the paths the project's source
 repository tracks although its ignore rules match them (the driver lists
@@ -141,13 +141,16 @@ the graders read neither.
 
 `scripts/grade-run.ts <run dir>` takes the run's lease, so one grader at a
 time allocates versions, refuses a run whose pre-registration or scenario no
-longer hashes to the digests in its manifest or whose journal lacks `EndRun`
+longer hashes to the digests in its manifest, whose `scenario.json` names a
+seed or tier other than the manifest's, or whose journal lacks `EndRun`
 or an arm's `EndArm` and one terminal `Event` per scheduled event, in the
 scheduled order (SIM-P67),
 drops a cut last line of `grades.jsonl`, requires one `SnapshotArtefacts` entry per arm and item, exactly one row for
 every journaled snapshot id, every snapshot row to name its directory's arm and
-carry grade-class artefacts only, every journaled row to match its journal
-entry's arm and item and the compiled probe's event and session, to be named
+carry grade-class artefacts only (a command log's entries each carry command
+text, a numeric or null exit, and a scenario time), every journaled row to
+name an item the scenario compiles and match its journal entry's arm and item
+and the compiled probe's event and session, to be named
 by an `EndTurn` whose outcome agrees with its `turn_outcome`, every
 agent call's model in `calls.jsonl` to be one
 the manifest records, and every call a journaled snapshot holds, whatever its
