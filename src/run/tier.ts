@@ -172,8 +172,7 @@ export function compressFaults(scenario: Scenario, events: number): FaultEpisode
         );
         p90.add(longest);
     }
-    const slot = (t: FaultEpisode["trigger"], s = t.session) =>
-        t.kind === "user_turn" ? `${s}/${t.n ?? 1}` : null;
+    const slot = (t: FaultEpisode["trigger"], s = t.session) => (t.kind === "user_turn" ? s : null);
     const taken = new Set(
         scenario.faults
             .filter((f) => sessions.includes(f.trigger.session))

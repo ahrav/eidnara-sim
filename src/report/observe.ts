@@ -576,6 +576,20 @@ export function tierInput(
     }
     const asym = asymmetric(runs, control, treatment);
     const dropped = new Set(asym);
+    if (items !== undefined) {
+        const byType = new Map<string, { key: string; at: number }[]>();
+        for (const g of runs) {
+            for (const pr of g.scenario.probes) {
+                const at = Number((pr.event ?? pr.id).replace(/\D/g, ""));
+                const list = byType.get(pr.type) ?? [];
+                list.push({ key: `${runKey(g)}/${pr.id}`, at });
+                byType.set(pr.type, list);
+            }
+        }
+        for (const list of byType.values()) {
+            for (const pr of list.sort((a, b) => a.at - b.at).slice(items)) dropped.add(pr.key);
+        }
+    }
     const fixedN = (pairs: ItemPair[]) =>
         items === undefined
             ? pairs

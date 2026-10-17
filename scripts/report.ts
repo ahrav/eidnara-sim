@@ -107,6 +107,13 @@ const recorded = (tier: Tier, dirs: string[], runs: GradedRun[]) => {
         process.exit(2);
     }
     const prereg = loadPrereg(tier);
+    const n = record.paired_items_per_probe_type;
+    if (!Number.isInteger(n) || n <= 0) {
+        console.error(
+            `the ${tier}-resizing.json beside the runs records paired_items_per_probe_type ${n}`,
+        );
+        process.exit(2);
+    }
     if (record.target_prereg_sha256 !== preregistrationHash(prereg)) {
         console.error(
             `the ${tier}-resizing.json beside the runs was recorded under another ${tier} pre-registration`,

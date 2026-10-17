@@ -43,6 +43,10 @@ export function gradedMainRuns(
         throw new Error(`${dir} plans no ${m?.tier} paired run for ${missing.join(", ")}`);
     }
     const main = jobs.map((j) => j.dir);
+    const outside = main.filter((d) => !d.startsWith(`${dir}/`));
+    if (outside.length > 0) {
+        throw new Error(`${dir} plans runs outside itself: ${outside.join(", ")}`);
+    }
     const result = read("tier-result.json") as {
         reports?: Record<string, number | null>;
         results: { dir: string; run_exit: number | null; grade_exit: number | null }[];

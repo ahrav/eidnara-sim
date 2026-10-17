@@ -109,6 +109,21 @@ const refuse = (why: string): never => {
     console.error(`${why}\n${USAGE}`);
     return exit(2);
 };
+process.on("uncaughtException", (caught) => {
+    console.error(caught);
+    exit(1);
+});
+process.on("unhandledRejection", (caught) => {
+    console.error(caught);
+    exit(1);
+});
+let stopChildren: ((signal: NodeJS.Signals) => Promise<void>) | null = null;
+for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
+    process.on(signal, async () => {
+        await stopChildren?.(signal);
+        exit(signal === "SIGINT" ? 130 : SIGTERM_EXIT);
+    });
+}
 
 const resizing = join(out, `${tier}-resizing.json`);
 const from = arg("resize-from");
@@ -126,7 +141,12 @@ if (prereg.resizing && from && !existsSync(resizing)) {
         if (!existsSync(join(resolve(from), name)))
             refuse(`${from} holds no ${name}; the ${m.tier} tier has not finished`);
     }
-    if (leaseHeld(resolve(from))) refuse(`${from} is leased; resize once that invocation finishes`);
+    try {
+        takeLease(resolve(from));
+    } catch (caught) {
+        refuse(`${String((caught as Error).message)}; resize once that invocation finishes`);
+    }
+    process.on("exit", () => releaseLease(resolve(from)));
     const { main, ungraded } = (() => {
         try {
             return gradedMainRuns(resolve(from), m);
@@ -152,6 +172,7 @@ if (prereg.resizing && from && !existsSync(resizing)) {
         ...resizeFromM(prereg, input),
     };
     writeAtomic(resizing, `${JSON.stringify(sized, null, 2)}\n`);
+    releaseLease(resolve(from));
 }
 const record = recorded();
 if (prereg.resizing && !record)
@@ -166,29 +187,13 @@ if (prereg.resizing && record) {
         refuse(`${resizing} was recorded from ${record.source_dir}, not ${resolve(from)}`);
     if (from && record.source_prereg_sha256 !== preregistrationHash(m))
         refuse(`${resizing} was recorded under another ${m.tier} pre-registration`);
+    const n = record.paired_items_per_probe_type;
+    if (!Number.isInteger(n) || n <= 0)
+        refuse(
+            `${resizing} records paired_items_per_probe_type ${n}; a positive integer is needed`,
+        );
 }
 const items = record?.paired_items_per_probe_type;
-
-// Setup after the lease (scenario compilation, the plan, the faketime build) runs at top level;
-// a thrown error there releases the lease on the way out, so a retry from another host is not
-// held off by a dead invocation.
-process.on("uncaughtException", (caught) => {
-    console.error(caught);
-    exit(1);
-});
-process.on("unhandledRejection", (caught) => {
-    console.error(caught);
-    exit(1);
-});
-// A signal during setup releases the lease too; once the runs start, the handlers below stop
-// the children first.
-let stopChildren: ((signal: NodeJS.Signals) => Promise<void>) | null = null;
-for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
-    process.on(signal, async () => {
-        await stopChildren?.(signal);
-        exit(signal === "SIGINT" ? 130 : SIGTERM_EXIT);
-    });
-}
 
 // A generated directory the command writes into is its own: an existing symlink there is
 // refused rather than followed.
@@ -298,7 +303,8 @@ const runJob = async (job: TierJob) => {
     const log = join(job.dir, "tier.log");
     const faults = compressFaults(scenario, job.events);
     const moved = JSON.stringify(faults) !== JSON.stringify(scenario.faults);
-    if (moved) writeFileSync(join(job.dir, "faults.json"), `${JSON.stringify(faults)}\n`);
+    if (moved && !held && span.ended === undefined)
+        writeAtomic(join(job.dir, "faults.json"), `${JSON.stringify(faults)}\n`);
     const code = held
         ? SIGTERM_EXIT
         : span.ended !== undefined
@@ -315,10 +321,9 @@ const runJob = async (job: TierJob) => {
                 log,
                 Math.max(1, limit - (launched - span.started)),
             );
-    const run_wall_ms = (span.ended ?? Date.now()) - span.started;
-    const start_ms = existsSync(join(job.dir, "journal.jsonl"))
-        ? runSpan(job.dir, launched).started
-        : null;
+    const after = runSpan(job.dir, launched);
+    const run_wall_ms = (after.ended ?? Date.now()) - after.started;
+    const start_ms = existsSync(join(job.dir, "journal.jsonl")) ? after.started : null;
     return {
         ...job,
         log,
