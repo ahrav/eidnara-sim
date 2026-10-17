@@ -32,6 +32,7 @@ import {
     type Label,
     pinnedTurns,
     realisedRates,
+    withUserLabels,
 } from "../usersim/plan";
 import {
     type AgentReply,
@@ -191,19 +192,29 @@ async function loadManifest(o: RunOptions, scenario: Scenario): Promise<Manifest
         fault_override: o.faults ?? null,
         tapes: o.tapes ?? [],
     };
-    const sources = (tapes: string[], events: number, order: readonly string[]) =>
+    const sources = (
+        tapes: string[],
+        events: number,
+        order: readonly string[],
+        faultOverride: FaultEpisode[] | null,
+    ) =>
         checkTapeSources(tapes, {
             seed: o.seed,
             scenario_hash: scenario.scenario_hash,
             prereg_sha256: preregistrationHash(loadPrereg(o.tier)),
             events,
             order,
+            fault_override: faultOverride,
+            turns: scenario.events
+                .slice(0, events)
+                .filter((e) => e.kind === "user_turn")
+                .map((e) => e.id),
         });
     if (existsSync(path)) {
         const manifest = JSON.parse(readFileSync(path, "utf8")) as Manifest;
         // A resume checks the sources against the run it continues, whose event count and arm
         // order the manifest holds whether or not this invocation restates them.
-        sources(manifest.tapes, manifest.events, manifest.order);
+        sources(manifest.tapes, manifest.events, manifest.order, manifest.fault_override);
         const given: Record<string, boolean> = {
             order: o.arms !== undefined,
             events: o.events !== undefined,
@@ -239,7 +250,7 @@ async function loadManifest(o: RunOptions, scenario: Scenario): Promise<Manifest
         appendFileSync(join(o.out, "preflight.jsonl"), `${JSON.stringify(checks)}\n`);
         return manifest;
     }
-    sources(wanted.tapes, wanted.events, wanted.order);
+    sources(wanted.tapes, wanted.events, wanted.order, wanted.fault_override);
     const manifest: Manifest = {
         schema: "sim-run-manifest/v1",
         ...wanted,
@@ -397,7 +408,8 @@ async function runArms(
     const compiled = await loadScenario(o);
     const manifest = await loadManifest(o, compiled);
     const scenario = { ...compiled, faults: manifest.fault_override ?? compiled.faults };
-    const events = scenario.events.slice(0, manifest.events) as unknown as ScenarioEvent[];
+    const allEvents = scenario.events as unknown as ScenarioEvent[];
+    const events = allEvents.slice(0, manifest.events);
     const hostRow = manifest.preflight.hosts.find((h) => h.host === o.host);
     if (!hostRow) throw new Error(`preflight lists no ${o.host} host`);
 
@@ -503,7 +515,9 @@ async function runArms(
         text: string;
         paste?: { sample_id: string; bytes: number };
     }[];
-    const pinned = pinnedTurns(events, scenario.faults);
+    // Pinning reads the whole scenario, so a shorter `--events` run labels its prefix the way
+    // a full run of the seed does.
+    const pinned = pinnedTurns(allEvents, scenario.faults);
     const tape = new Tape(join(o.out, "tape.jsonl"), manifest.tapes);
     // Both loaders have read the sources; the bytes they read must be the ones the manifest
     // attests.
@@ -568,19 +582,11 @@ async function runArms(
             sampleDaemon: () => sampler.observe(),
             callsFor: (session) => {
                 requireRecorded(gateway);
-                return [
-                    ...callsOf(callIndex, arm, session, turnIndex),
-                    ...userTurns(arm, session).map((e) => ({
-                        seq: e.seq,
-                        component: "user-sim",
-                        turn: String(e.event),
-                        turn_index: turnIndex.get(String(e.event)),
-                        scenario_ms: e.scenario_ms,
-                        input_tokens: 0,
-                        output_tokens: 0,
-                        label: String(e.label),
-                    })),
-                ];
+                return withUserLabels(
+                    callsOf(callIndex, arm, session, turnIndex),
+                    userTurns(arm, session),
+                    turnIndex,
+                ) as CallView[];
             },
             settle: () => scheduler.quiesceJobs(),
             now,
@@ -650,7 +656,13 @@ async function runArms(
                     const cut = d.label !== "interrupt" || out.user?.interrupted === true;
                     const label = cut ? d.label : "task";
                     const scheduled = cut ? {} : { scheduled: "interrupt" };
-                    return { ...out, user: { ...user, ...out.user, label, ...scheduled } };
+                    // A turn the host never received counts as undelivered, whatever the
+                    // user-sim decided.
+                    const delivered = d.delivered && !out.undelivered;
+                    return {
+                        ...out,
+                        user: { ...user, ...out.user, label, delivered, ...scheduled },
+                    };
                 } finally {
                     scope.turn = null;
                 }

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { appendFileSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadPrereg } from "../scenario/inputs";
@@ -11,6 +11,7 @@ import {
     type PlanTurn,
     pinnedTurns,
     realisedRates,
+    withUserLabels,
 } from "./plan";
 import {
     agentReplyOf,
@@ -143,6 +144,36 @@ describe("behaviour plan", () => {
         ];
         expect(deliveredTurns(entries, "a").map((e) => e.event)).toEqual(["e-1"]);
         expect(deliveredTurns(entries, "a", "other")).toEqual([]);
+    });
+
+    test("a snapshot's calls carry the journaled user labels in place of the raw user-sim records", () => {
+        const calls = [
+            {
+                seq: 1,
+                component: "agent",
+                turn: "e-1",
+                scenario_ms: 5,
+                input_tokens: 1,
+                output_tokens: 1,
+            },
+            {
+                seq: 2,
+                component: "user-sim",
+                turn: "e-2",
+                scenario_ms: 6,
+                input_tokens: 1,
+                output_tokens: 1,
+            },
+        ];
+        const turns = [{ seq: 9, event: "e-2", scenario_ms: 6, label: "pushback" }];
+        const labelled = withUserLabels(calls, turns, new Map([["e-2", 1]]));
+        expect(labelled.map((c) => [c.component, (c as { label?: string }).label ?? null])).toEqual(
+            [
+                ["agent", null],
+                ["user-sim", "pushback"],
+            ],
+        );
+        expect(labelled[1]).toMatchObject({ turn: "e-2", turn_index: 1, input_tokens: 0 });
     });
 
     test("a fault's trigger turn is never interrupted", () => {
@@ -867,6 +898,33 @@ describe("tape and pairing", () => {
         expect(diverged).toHaveLength(1);
         expect(diverged[0]).toMatchObject({ arm: "b", event: "e-10", index: 3 });
         expect(pairing.records.at(-1)).toMatchObject({ kind: "turn", arm: "b", delivered: false });
+    });
+
+    test("a corrupt terminated last line is refused however many bytes the earlier rows hold", () => {
+        const root = dir();
+        const wide = {
+            key: "k",
+            event: "e",
+            label: "task",
+            digest: "d",
+            text: "ß".repeat(400),
+            stop: "end_turn",
+        };
+        writeFileSync(join(root, "tape.jsonl"), `${JSON.stringify(wide)}\nnot json\n`);
+        writeFileSync(join(root, "pairing.jsonl"), "");
+        expect(() => new Tape(join(dir(), "tape.jsonl"), [join(root, "tape.jsonl")])).toThrow(
+            "corrupt",
+        );
+    });
+
+    test("a run's own tape or pairing log that is a symlink is refused", () => {
+        const root = dir();
+        const target = join(root, "elsewhere.jsonl");
+        writeFileSync(target, "");
+        symlinkSync(target, join(root, "tape.jsonl"));
+        expect(() => new Tape(join(root, "tape.jsonl"))).toThrow("symlink");
+        symlinkSync(target, join(root, "pairing.jsonl"));
+        expect(() => new Pairing(join(root, "pairing.jsonl"), () => "a")).toThrow("symlink");
     });
 
     test("a complete but corrupt last line in a replay source is refused", () => {

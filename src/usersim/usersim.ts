@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, readFileSync, truncateSync } from "node:fs";
+import { appendFileSync, existsSync, lstatSync, readFileSync, truncateSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { sha256Hex } from "../prereg/canonical";
 import type { NormalisationRule } from "../prereg/schema";
@@ -99,13 +99,16 @@ type RowCheck = (row: Record<string, unknown>) => string[];
 
 function jsonl<T>(path: string, role: "own" | "source", check: RowCheck): T[] {
     if (role === "source") requireSource(path);
-    const read = readJournal(path);
     if (!existsSync(path)) return [];
-    const text = readFileSync(path, "utf8");
-    const dropped = text.slice(read.bytes ?? 0);
+    // The run's own log is truncated and appended by path, so it must be a regular file.
+    if (role === "own" && lstatSync(path).isSymbolicLink()) {
+        throw new HarnessFailure(`${path} is a symlink`);
+    }
+    const read = readJournal(path);
+    const dropped = readFileSync(path).subarray(read.bytes ?? 0);
     // A kill mid-append leaves an unterminated tail; a terminated line that does not parse is
     // corruption, which no truncation may paper over.
-    if (dropped.endsWith("\n")) throw new HarnessFailure(`${path}: last line is corrupt`);
+    if (dropped.at(-1) === 0x0a) throw new HarnessFailure(`${path}: last line is corrupt`);
     read.forEach((row, i) => {
         const problems = check(row as unknown as Record<string, unknown>);
         if (problems.length > 0) {
@@ -344,6 +347,8 @@ export interface DivergenceRecord {
     reference_digest: string;
     /** The arm's session context at this turn, the chained digests the tape key uses. */
     context_sha256: string;
+    /** For a recorded divergence, the context a replay source recorded for this turn. */
+    recorded_context_sha256?: string;
     /** `recorded` for the same arm in a replayed run, else the reference arm of this run. */
     against: "recorded" | "reference";
 }
@@ -410,12 +415,13 @@ export class Pairing {
         arm: string,
         event: string,
         context: string,
-    ): { none: boolean; matched: boolean; digest?: string } {
+    ): { none: boolean; matched: boolean; digest?: string; context?: string } {
         const entries = this.recorded.get(`${arm}/${event}`) ?? [];
         return {
             none: entries.length === 0,
             matched: entries.some((e) => e.context === context),
             digest: entries[0]?.digest,
+            context: entries[0]?.context,
         };
     }
 
@@ -586,12 +592,19 @@ export class UserSim {
             arm === pairing.reference(arm) ? undefined : pairing.referenceDigest(arm, t.id);
         const against = !recorded.none && !recorded.matched ? "recorded" : "reference";
         const other = against === "recorded" ? recorded.digest : reference;
-        if (!pairing.diverged(arm, t.session) && other !== undefined && other !== digest) {
+        // A recorded divergence is a context that matches no source, whatever this turn's
+        // digest; a reference divergence is a digest that differs from the reference arm's.
+        const diverged =
+            against === "recorded" ? other !== undefined : other !== undefined && other !== digest;
+        if (!pairing.diverged(arm, t.session) && diverged) {
             pairing.append({
                 kind: "divergedAt",
                 ...base,
-                reference_digest: other,
+                reference_digest: other as string,
                 context_sha256: context,
+                ...(against === "recorded" && recorded.context !== undefined
+                    ? { recorded_context_sha256: recorded.context }
+                    : {}),
                 against,
             });
         }

@@ -86,6 +86,8 @@ export function toolCommand(tool: string, args: Record<string, unknown> | undefi
 
 export interface PromptResult {
     error?: string;
+    /** The host never sent the text: the turn failed before its prompt. */
+    undelivered?: true;
     /** The user aborted the turn through the host's abort path. */
     interrupted?: boolean;
 }
@@ -927,7 +929,7 @@ export class OpencodeSimHost extends SimHost {
         try {
             seen = new Set((await this.messages(timeoutMs)).map((m) => String(m.info?.id)));
         } catch (caught) {
-            return { error: `tool capture: ${String(caught)}`.slice(0, 2000) };
+            return { error: `tool capture: ${String(caught)}`.slice(0, 2000), undelivered: true };
         }
         const startScenario = this.ctx.now?.() ?? 0;
         // The listing spent part of the turn's deadline; the turn gets the rest.

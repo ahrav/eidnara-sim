@@ -148,6 +148,30 @@ export function deliveredTurns<T extends Record<string, unknown>>(
     );
 }
 
+/**
+ * A snapshot's call records with the journaled user turns in place of the raw `user-sim` proxy
+ * records, so every user-sim entry a grader reads carries its label.
+ */
+export function withUserLabels<C extends { component: string }>(
+    calls: readonly C[],
+    turns: readonly Record<string, unknown>[],
+    turnIndex: ReadonlyMap<string, number>,
+): (C | Record<string, unknown>)[] {
+    return [
+        ...calls.filter((c) => c.component !== "user-sim"),
+        ...turns.map((e) => ({
+            seq: e.seq,
+            component: "user-sim",
+            turn: String(e.event),
+            turn_index: turnIndex.get(String(e.event)),
+            scenario_ms: e.scenario_ms,
+            input_tokens: 0,
+            output_tokens: 0,
+            label: String(e.label),
+        })),
+    ];
+}
+
 export interface RealisedRates {
     turns: number;
     sessions: number;

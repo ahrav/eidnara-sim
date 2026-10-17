@@ -560,6 +560,7 @@ describe("HostDriver lifecycle", () => {
         );
         expect(host.deadlines).toEqual([400, 1_000, 1_000, 30]);
         expect(spent.failed).toContain("turn deadline");
+        expect(spent.undelivered).toBe(true);
     });
 
     test("a scheduled interrupt reaches the host's prompt and the turn reports it", async () => {
