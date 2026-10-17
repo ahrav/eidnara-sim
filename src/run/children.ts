@@ -5,6 +5,15 @@ import { killOwnedTree } from "./procs";
 
 export const SIGTERM_EXIT = 143;
 
+const groupAlive = (pid: number): boolean => {
+    try {
+        process.kill(-pid, 0);
+        return true;
+    } catch {
+        return false;
+    }
+};
+
 /** SIGKILL for the child's process group and for every owned descendant the process tree shows. */
 const kill = (child: ChildProcess) => {
     if (child.pid === undefined) return;
@@ -71,13 +80,24 @@ export class Children {
                 this.live.delete(child);
                 done(code);
             };
+            // The run settles once the child's whole process group is gone: a descendant that
+            // outlives the leader gets the rest of the grace period, then SIGKILL.
+            const settle = async (code: number) => {
+                const pid = child.pid;
+                if (pid !== undefined) {
+                    const deadline = Date.now() + this.graceMs;
+                    while (groupAlive(pid) && Date.now() < deadline) await Bun.sleep(50);
+                    if (groupAlive(pid)) kill(child);
+                }
+                finish(code);
+            };
             child.on("error", (e) => {
                 appendFileSync(log, `spawn failed: ${e.message}\n`);
                 finish(127);
             });
-            child.on("exit", (code, signal) =>
-                finish(code ?? 128 + (signal ? (constants.signals[signal] ?? 9) : 9)),
-            );
+            child.on("exit", (code, signal) => {
+                void settle(code ?? 128 + (signal ? (constants.signals[signal] ?? 9) : 9));
+            });
         });
     }
 

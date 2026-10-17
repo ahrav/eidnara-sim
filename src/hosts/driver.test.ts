@@ -429,6 +429,37 @@ describe("HostDriver faults", () => {
         await resumed.stop();
     });
 
+    test("a host upgrade asks for the upgraded version's transcript store at its next session end", async () => {
+        const { driver, armDir } = fixture("host", { p: gitRepo() });
+        const o = (driver as unknown as { o: DriverOptions }).o;
+        o.hostVersions = {
+            from: "0.80.2",
+            to: "0.87.1",
+            upgradeTranscriptPaths: ["$PI_CODING_AGENT_DIR/sessions-next"],
+        };
+        o.config = { ...o.config, upgrade: { pi_install: "/next/pi" } };
+        const inner = driver as unknown as { transcriptsChecked: boolean };
+        await driver.reset();
+        inner.transcriptsChecked = true;
+        await driver.fault(episode("host_upgrade"));
+        expect(inner.transcriptsChecked).toBe(false);
+        writeFileSync(
+            join(armDir, "transcripts.json"),
+            JSON.stringify({
+                checked_after: "first session_end",
+                templates: ["$PI_CODING_AGENT_DIR/sessions"],
+                paths: ["/t/sessions"],
+                missing: [],
+            }),
+        );
+        const resumed = new HostDriver(o);
+        await resumed.resume(null);
+        expect((resumed as unknown as { transcriptsChecked: boolean }).transcriptsChecked).toBe(
+            false,
+        );
+        await resumed.stop();
+    });
+
     test("a second host client runs one turn on the arm's daemon at the session's start", async () => {
         const { driver, hosts } = fixture("eidnara", { p: "/repo" });
         driver.daemon = fakeDaemon(10) as unknown as DaemonStack;

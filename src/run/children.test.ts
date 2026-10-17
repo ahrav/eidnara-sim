@@ -91,3 +91,19 @@ test("the stopWhen check runs often enough to catch a cut a second before the ru
     expect(await children.run(IDLE, log(), undefined, () => true)).toBe(SIGTERM_EXIT);
     expect(Date.now() - started).toBeLessThan(2_500);
 });
+
+test("a stop this run issued settles only once the child's process group is gone", async () => {
+    const children = new Children(process.env, 300);
+    const path = log();
+    const code = await children.run(
+        [
+            "-e",
+            "const p = Bun.spawn(['sleep', '60']); console.log(p.pid); process.on('SIGTERM', () => process.exit(143)); setInterval(() => {}, 1000)",
+        ],
+        path,
+        300,
+    );
+    expect(code).toBe(SIGTERM_EXIT);
+    const grandchild = Number(readFileSync(path, "utf8").trim());
+    expect(running(grandchild)).toBe(false);
+});

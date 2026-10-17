@@ -371,6 +371,7 @@ async function runArms(
     const events = scenario.events.slice(0, manifest.events) as unknown as ScenarioEvent[];
     const hostRow = manifest.preflight.hosts.find((h) => h.host === o.host);
     if (!hostRow) throw new Error(`preflight lists no ${o.host} host`);
+    const upgradeRow = manifest.preflight.upgrade?.find((h) => h.host === o.host);
 
     const drivers: Record<string, ArmDriver> = {};
     const proxyFaults = scenario.faults.filter((f) => f.seam.layer === "proxy-sink");
@@ -539,7 +540,8 @@ async function runArms(
             transcriptPaths: hostRow.transcript_paths,
             hostVersions: {
                 from: hostRow.version,
-                to: manifest.preflight.upgrade?.find((h) => h.host === o.host)?.version ?? null,
+                to: upgradeRow?.version ?? null,
+                ...(upgradeRow ? { upgradeTranscriptPaths: upgradeRow.transcript_paths } : {}),
             },
             loopStore,
             onDaemonExit: (detail) => scheduler.daemonExited(detail),

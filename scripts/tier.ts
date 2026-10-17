@@ -17,6 +17,7 @@ import {
     runSpan,
     type TierJob,
     tierPlan,
+    uncuttableRuns,
 } from "../src/run/tier";
 import { buildFaketime } from "../src/run/timeinject";
 import type { Scenario } from "../src/scenario/compile";
@@ -142,6 +143,9 @@ if (conflicts.length > 0) {
     );
     exit(2);
 }
+const uncuttable = uncuttableRuns(plan, restartAt);
+if (uncuttable.length > 0)
+    refuse(`--restart-at ${restartAt} first stops at the last event of ${uncuttable.join(", ")}`);
 writeAtomic(
     priorPlan,
     `${JSON.stringify(
@@ -158,11 +162,6 @@ if (empty.length > 0) {
     console.error(`no session fits the wall budget for ${empty.join(", ")}\n${USAGE}`);
     exit(2);
 }
-const uncuttable = plan
-    .filter((j) => j.group === "main" && restartCut(restartAt, j.events, j.arms.length) === null)
-    .map((j) => j.dir);
-if (restartAt > 0 && uncuttable.length > 0)
-    refuse(`--restart-at ${restartAt} first stops at the last event of ${uncuttable.join(", ")}`);
 if (flags.has("plan-only")) exit(0);
 
 const bin = resolve(dirname(config.opencode_binary), "../../.bin");

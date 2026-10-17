@@ -15,6 +15,7 @@ import {
     runSpan,
     type TierJob,
     tierPlan,
+    uncuttableRuns,
 } from "./tier";
 
 const event = (kind: string, i: number) => ({
@@ -222,5 +223,16 @@ describe("tier resume", () => {
         expect(planConflicts([job])).toEqual([]);
         writeFileSync(join(job.dir, "manifest.json"), JSON.stringify({ events: 5 }));
         expect(planConflicts([job])).toEqual([`${job.dir} ran 5 events, the plan says 7`]);
+    });
+});
+
+describe("uncuttableRuns", () => {
+    test("names the paired runs whose first reachable cut is their last event", () => {
+        const job = (dir: string, events: number, group = "main") =>
+            ({ dir, events, arms: ["host", "eidnara"], group }) as TierJob;
+        const plan = [job("/r/a", 50), job("/r/b", 2), job("/r/p", 2, "profile")];
+        expect(uncuttableRuns(plan, 0.4)).toEqual([]);
+        expect(uncuttableRuns(plan, 0.9)).toEqual(["/r/b"]);
+        expect(uncuttableRuns(plan, 0)).toEqual([]);
     });
 });

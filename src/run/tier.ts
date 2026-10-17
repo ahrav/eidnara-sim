@@ -40,6 +40,16 @@ export function restartCut(restartAt: number, events: number, arms: number): num
     return restartAt > 0 && cut < total ? cut : null;
 }
 
+/** The paired runs a positive `restartAt` has no cut for, named before the plan is saved. */
+export function uncuttableRuns(plan: TierJob[], restartAt: number): string[] {
+    if (!(restartAt > 0)) return [];
+    return plan
+        .filter(
+            (j) => j.group === "main" && restartCut(restartAt, j.events, j.arms.length) === null,
+        )
+        .map((j) => j.dir);
+}
+
 /**
  * The longest prefix of the scenario that ends on a session end and whose user turns, run once
  * per arm at `turnMs` each, fit inside the tier's wall budget.

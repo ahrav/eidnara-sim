@@ -45,7 +45,7 @@ export interface DriverOptions extends Omit<HostContext, "root" | "model" | "arm
     hostFactory?: (ctx: HostContext) => SimHost;
     daemonFactory?: (ctx: ConstructorParameters<typeof DaemonStack>[0]) => DaemonStack;
     /** The host's pinned and `config.upgrade` versions, as the run's preflight recorded them. */
-    hostVersions?: { from: string; to: string | null };
+    hostVersions?: { from: string; to: string | null; upgradeTranscriptPaths?: string[] };
     onDaemonExit: (detail: Record<string, unknown>) => void;
 }
 
@@ -233,8 +233,11 @@ export class HostDriver implements ArmDriver {
         this.upgraded = state?.upgraded ?? false;
         this.storeFaults = state?.store_faults ?? [];
         const checked = join(this.armDir, "transcripts.json");
+        const record = existsSync(checked) ? JSON.parse(readFileSync(checked, "utf8")) : null;
         this.transcriptsChecked =
-            existsSync(checked) && JSON.parse(readFileSync(checked, "utf8")).missing.length === 0;
+            record !== null &&
+            record.missing.length === 0 &&
+            JSON.stringify(record.templates ?? null) === JSON.stringify(this.transcriptPaths());
         await this.reapStale();
         await this.startArm(false);
         if (open) await this.event(open);
@@ -365,11 +368,19 @@ export class HostDriver implements ArmDriver {
         git(dir, "commit", "--quiet", "--no-verify", "-m", `Add ${String(e.path)}`, "--", path);
     }
 
+    /** The transcript store templates of the host version now running. */
+    private transcriptPaths(): string[] {
+        const upgraded = this.o.hostVersions?.upgradeTranscriptPaths;
+        return this.upgraded && upgraded ? upgraded : this.o.transcriptPaths;
+    }
+
     private checkTranscripts(host: SimHost): void {
         const env = host.transcriptEnv();
-        const paths = this.o.transcriptPaths.map((t) => expandTemplate(t, env));
+        const templates = this.transcriptPaths();
+        const paths = templates.map((t) => expandTemplate(t, env));
         const missing = paths.filter((p) => !existsSync(p));
-        const record = { checked_after: "first session_end", paths, missing };
+        const after = this.upgraded ? "first session_end after host_upgrade" : "first session_end";
+        const record = { checked_after: after, templates, paths, missing };
         writeFileSync(join(this.armDir, "transcripts.json"), JSON.stringify(record));
         if (missing.length > 0) throw new Error(`transcript store missing: ${missing.join(", ")}`);
         this.transcriptsChecked = true;
@@ -417,6 +428,7 @@ export class HostDriver implements ArmDriver {
         const from_version = this.o.hostVersions?.from ?? null;
         const to_version = this.o.hostVersions?.to ?? null;
         this.upgraded = true;
+        this.transcriptsChecked = false;
         this.host = this.newHost();
         this.recordState();
         return {
