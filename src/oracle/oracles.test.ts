@@ -21,6 +21,7 @@ const runOf = (f: Fixture, tier = "S"): RunLogs => ({
     dir: "",
     tier,
     price: null,
+    journal_seq: 0,
     base_wall_ms: 0,
     prereg,
     kinds: new Map(Object.entries(f.kinds)),

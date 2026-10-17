@@ -24,8 +24,10 @@ plan where no session fits the budget, a plan whose prefix, arms, host,
 or seed differ from what a run with a manifest ran, an unreadable
 `tier-plan.json` with no `--turn-ms` to replace it, an `--out` resolving
 (symlinks included) inside the Eidnara checkout, a generated directory
-(`scenarios-<seed>`, a run) that is a symlink, or an output directory
-another invocation holds (`<dir>/lease.json`). Every exit, a thrown setup
+(`scenarios-<seed>`, a run) that is a symlink, every run directory being
+checked before any run starts, or an output directory another invocation
+holds (`<dir>/lease.json`). `tier-plan.json` and `tier-result.json` are
+written beside their paths and renamed in. Every exit, a thrown setup
 error or a signal during setup included, releases that lease. SIGINT, SIGTERM, or
 SIGHUP to the command reaches every child it started, SIGKILLs any still
 live a minute later together with its descendants, and starts no further
@@ -128,8 +130,8 @@ The run-level checks cover:
   scheduled jumps (each from the arm's clock before it), from
   `checkJournal` over the entries in `seq` order, a repeated or
   non-integer `seq` counting as a break;
-- SIM-P15: proxy records carry both times, with wall time in `seq` order
-  per arm, a receipt time that is finite and at or before completion and
+- SIM-P15: proxy records carry both times, each with a fresh integer
+  `seq`, with wall time in `seq` order per arm, a receipt time that is finite and at or before completion and
   that the journal has begun by, and each call's scenario time within 5 s
   of the clock the arm's journal implies at the call's start (wall pace
   while a turn or job is open, closed by `EndTurn`, `EndJob`, or the

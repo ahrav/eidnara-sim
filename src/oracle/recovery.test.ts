@@ -25,6 +25,7 @@ const run = (arms: ArmLogs[], base = 0): RunLogs => ({
     dir: "",
     tier: "S",
     price: null,
+    journal_seq: 0,
     base_wall_ms: base,
     prereg,
     kinds: new Map(),
