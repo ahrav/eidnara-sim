@@ -137,12 +137,19 @@ function requirePidShape(path: string, samples: Sample[]): void {
     if (withPid !== 0 && withPid !== numeric.length) {
         throw new Error(`${path}: pid present on some samples and absent on others`);
     }
+    const withStart = numeric.filter((s) => "start" in s).length;
+    if (withStart !== 0 && withStart !== numeric.length) {
+        throw new Error(`${path}: start present on some samples and absent on others`);
+    }
     samples.forEach((s, i) => {
         if (typeof s.rss === "number" && s.rss < 0) {
             throw new Error(`${path}: line ${i + 1}: rss negative`);
         }
         if (typeof s.rss === "number" && "pid" in s && s.pid === null) {
             throw new Error(`${path}: line ${i + 1}: numeric rss with a null pid`);
+        }
+        if (typeof s.pid === "number" && "start" in s && s.start === null) {
+            throw new Error(`${path}: line ${i + 1}: pid with a null start`);
         }
     });
 }
@@ -177,6 +184,12 @@ export function loadRun(dir: string, prereg: Preregistration): RunLogs {
     if (digest !== manifest.scenario_hash) {
         throw new Error(
             `scenario_hash ${digest} differs from the manifest's ${manifest.scenario_hash}`,
+        );
+    }
+    const scenarioTier = (scenario as { manifest?: { tier?: string } }).manifest?.tier;
+    if (scenarioTier !== undefined && scenarioTier !== manifest.tier) {
+        throw new Error(
+            `manifest tier ${manifest.tier} differs from the scenario's ${scenarioTier}`,
         );
     }
     const kinds = new Map(scenario.events.map((e) => [String(e.id), String(e.kind)]));
@@ -221,6 +234,7 @@ export function loadRun(dir: string, prereg: Preregistration): RunLogs {
     });
     const journalPath = join(dir, "journal.jsonl");
     const journal = readJournal(journalPath);
+    const lastMs = new Map<string | null, number>();
     journal.forEach((e, i) => {
         const fields: Record<string, FieldCheck> = { kind: str, arm: strOrNull, scenario_ms: num };
         if (["BeginTurn", "EndTurn", "Event"].includes(String(e.kind))) fields.event = str;
@@ -228,6 +242,13 @@ export function loadRun(dir: string, prereg: Preregistration): RunLogs {
         for (const [field, ok] of Object.entries(fields)) {
             if (!ok(e[field])) throw new Error(`${journalPath}: line ${i + 1}: ${field} missing`);
         }
+        const last = lastMs.get(e.arm);
+        if (last !== undefined && e.scenario_ms < last) {
+            throw new Error(
+                `${journalPath}: line ${i + 1}: scenario_ms ${e.scenario_ms} precedes ${last}`,
+            );
+        }
+        lastMs.set(e.arm, e.scenario_ms);
     });
     const scheduled = planned.map((e) => String(e.id));
     requireComplete(journal, order, scheduled);

@@ -841,7 +841,7 @@ describe("oracle round ten", () => {
                 arm: "eidnara",
                 event: "bogus",
                 outcome: "prompt is too long",
-                scenario_ms: 6,
+                scenario_ms: 9,
             },
         ]);
         expect(() => loadRun(dir, prereg)).toThrow(
@@ -1008,5 +1008,58 @@ describe("oracle round twelve", () => {
             arms: [armOf("eidnara", { journal: ends, resources })],
         };
         expect(oracle(run, "F5").map((a) => a.at)).toEqual(["daemon 100", "daemon 100"]);
+    });
+});
+
+describe("oracle round thirteen", () => {
+    test("pid-bearing samples carry a start time on every row or on none, never null", () => {
+        const { dir, line } = completeDir(["eidnara"]);
+        const rs = join(dir, "eidnara", "resources.jsonl");
+        writeFileSync(
+            rs,
+            line({ scenario_ms: 0, rss: 100, pid: 1, start: "7" }) +
+                line({ scenario_ms: 1, rss: 110, pid: 1 }),
+        );
+        expect(() => loadRun(dir, prereg)).toThrow(
+            /resources\.jsonl: start present on some samples and absent on others/,
+        );
+        writeFileSync(
+            rs,
+            line({ scenario_ms: 0, rss: 100, pid: 1, start: "7" }) +
+                line({ scenario_ms: 1, rss: 110, pid: 1, start: null }),
+        );
+        expect(() => loadRun(dir, prereg)).toThrow(
+            /resources\.jsonl: line 2: pid with a null start/,
+        );
+        writeFileSync(
+            rs,
+            line({ scenario_ms: 0, rss: 100, pid: 1, start: "7" }) +
+                line({ scenario_ms: 1, rss: 110, pid: 1, start: "7" }),
+        );
+        expect(loadRun(dir, prereg).arms[0]?.resources).toHaveLength(2);
+    });
+
+    test("journal entries run in scenario order per arm, and the manifest tier matches the scenario's", () => {
+        const { dir, line } = completeDir(["eidnara"]);
+        const journal = [
+            { kind: "StartRun", arm: null, order: ["eidnara"], scenario_ms: 0 },
+            { kind: "BeginTurn", arm: "eidnara", event: "e-1", scenario_ms: 9 },
+            { kind: "EndTurn", arm: "eidnara", event: "e-1", outcome: "ok", scenario_ms: 5 },
+            { kind: "Event", arm: "eidnara", event: "e-1", outcome: "ok", scenario_ms: 9 },
+            { kind: "EndArm", arm: "eidnara", scenario_ms: 9 },
+            { kind: "EndRun", arm: null, scenario_ms: 9 },
+        ];
+        writeFileSync(join(dir, "journal.jsonl"), journal.map(line).join(""));
+        expect(() => loadRun(dir, prereg)).toThrow(
+            /journal\.jsonl: line 3: scenario_ms 5 precedes 9/,
+        );
+        const scenario = JSON.parse(readFileSync(join(dir, "scenario.json"), "utf8"));
+        const tiered = { ...scenario, manifest: { tier: "M" } };
+        const { scenario_hash: _old, ...body } = tiered;
+        const scenario_hash = scenarioHash(body);
+        writeFileSync(join(dir, "scenario.json"), JSON.stringify({ ...body, scenario_hash }));
+        const manifest = { tier: "S", order: ["eidnara"], events: 1, scenario_hash };
+        writeFileSync(join(dir, "manifest.json"), JSON.stringify(manifest));
+        expect(() => loadRun(dir, prereg)).toThrow("manifest tier S differs from the scenario's M");
     });
 });

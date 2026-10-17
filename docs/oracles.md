@@ -5,14 +5,17 @@ class fired. `loadRun` admits a complete run only, through the journal
 check grading uses (`requireComplete`, SIM-P67): every scheduled event
 ended once per arm, an `EndArm` per arm, and an `EndRun`; a `scenario.json`
 whose digest differs from the manifest's `scenario_hash` is refused, and so
-is a manifest arm outside the pre-registered names, a manifest event count
+is a manifest tier other than the scenario's, a manifest arm outside the
+pre-registered names, a manifest event count
 outside 1 to the scenario's length, a scheduled user turn without one
 `BeginTurn` and one `EndTurn` per arm (a turn the resume path closed as
 `failed(interrupted)` has no `EndTurn`), a `BeginTurn` or `EndTurn` for an
 unscheduled event, a call or tool run naming a turn outside the schedule, a
 call with a negative token count, resource samples that name a pid on some
-rows and not others, pair a reading with a null pid, or carry a negative
-reading, a daemon arm with no numeric RSS sample, no reading in its final
+rows and not others, name a process start time on some rows and not others
+or null against a pid, pair a reading with a null pid, or carry a negative
+reading, a journal whose entries run backwards in scenario time within an
+arm, a daemon arm with no numeric RSS sample, no reading in its final
 sample, or no `daemon.log`, a manifest with no arms, a call whose status is
 neither the proxy's `0` sentinel nor an HTTP status, whose end precedes its
 start, or whose sequence number breaks the file's `0..n-1` order, a call record that fails the proxy's

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readJournal } from "./journal";
 import { processStart } from "./procs";
-import { ResourceSampler } from "./sampler";
+import { pageBytes, procStats, ResourceSampler } from "./sampler";
 
 test("start takes RSS(0) at once instead of waiting for the first interval", () => {
     const dir = mkdtempSync(join(tmpdir(), "sim-sampler-"));
@@ -120,4 +120,13 @@ test("a sample names the daemon's process start time alongside its pid", () => {
     const first = JSON.parse(readFileSync(path, "utf8").split("\n")[0] ?? "{}");
     expect(first.pid).toBe(process.pid);
     expect(first.start).toBe(processStart(process.pid));
+});
+
+test("RSS is read in bytes using the host's page size", () => {
+    const page = Number(Bun.spawnSync(["getconf", "PAGESIZE"]).stdout.toString().trim());
+    expect(pageBytes()).toBe(page);
+    const stats = procStats(process.pid);
+    expect(stats).not.toBeNull();
+    expect((stats?.rss ?? 0) % page).toBe(0);
+    expect(stats?.rss ?? 0).toBeGreaterThan(page);
 });

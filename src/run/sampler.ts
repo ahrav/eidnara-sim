@@ -4,14 +4,24 @@ import { keepCompleteLines } from "./journal";
 import { processStart } from "./procs";
 
 const TICKS_PER_SECOND = 100;
-const PAGE_BYTES = 4096;
+
+let pageSize: number | null = null;
+
+/** The host's memory page size in bytes, the unit `/proc/<pid>/stat` counts RSS in; read once from `getconf`. */
+export function pageBytes(): number {
+    if (pageSize === null) {
+        const got = Number(Bun.spawnSync(["getconf", "PAGESIZE"]).stdout.toString().trim());
+        pageSize = Number.isInteger(got) && got > 0 ? got : 4096;
+    }
+    return pageSize;
+}
 
 export function procStats(pid: number): { rss: number; cpuMs: number } | null {
     try {
         const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
         const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
         const ticks = Number(fields[11]) + Number(fields[12]);
-        return { rss: Number(fields[21]) * PAGE_BYTES, cpuMs: (ticks * 1000) / TICKS_PER_SECOND };
+        return { rss: Number(fields[21]) * pageBytes(), cpuMs: (ticks * 1000) / TICKS_PER_SECOND };
     } catch {
         return null;
     }

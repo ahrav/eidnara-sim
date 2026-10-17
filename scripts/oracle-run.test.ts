@@ -37,8 +37,8 @@ function completeRun(root: string, tier: string, prereg_sha256: string): string 
         { kind: "BeginTurn", arm: "eidnara", event: "e-1", scenario_ms: 200 },
         { kind: "EndTurn", arm: "eidnara", event: "e-1", outcome: "ok", scenario_ms: 200 },
         { kind: "Event", arm: "eidnara", event: "e-1", scenario_ms: 200 },
-        { kind: "EndArm", arm: "eidnara", scenario_ms: 0 },
-        { kind: "EndRun", arm: null, scenario_ms: 0 },
+        { kind: "EndArm", arm: "eidnara", scenario_ms: 200 },
+        { kind: "EndRun", arm: null, scenario_ms: 200 },
     ];
     writeFileSync(join(dir, "journal.jsonl"), journal.map(line).join(""));
     const overflow = {
