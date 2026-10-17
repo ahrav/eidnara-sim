@@ -29,6 +29,12 @@
           "class": "diff",
           "role": "turn",
           "patch": "diff --git a/src/db.rs b/src/db.rs\n--- a/src/db.rs\n+++ b/src/db.rs\n@@ -1,0 +1,1 @@\n+static STORE: Mutex<HashMap<String, Bytes>> = Mutex::new(HashMap::new());\n"
+        },
+        {
+          "id": "s-P5-b:turn-commands",
+          "class": "command-log",
+          "role": "turn",
+          "commands": []
         }
       ]
     }

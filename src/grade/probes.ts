@@ -271,36 +271,39 @@ function graderFor(probe: ProbeItem): Grader {
     return grader;
 }
 
+type Evidence = [Artefact["class"], string | null];
+const TURN_DIFF: Evidence = ["diff", "turn"];
+const TURN_COMMANDS: Evidence = ["command-log", "turn"];
+const CALLS: Evidence = ["proxy-call", null];
+
 /**
- * The artefacts a probe type's grader reads as evidence. A grader reading a missing one would
- * grade an empty default, so a snapshot without it is refused.
+ * The artefacts a probe item's grader reads as evidence. A grader reading a missing one would
+ * grade an empty default, so a snapshot without it is refused. P6 items open a later session
+ * of a project the agent already worked in, so their prior-session diff is always expected;
+ * a P13 item reads the turn diff unless its check names commands instead.
  */
-const EVIDENCE: Record<string, Array<[Artefact["class"], string | null]>> = {
-    P1: [["diff", "turn"]],
-    "P1-control": [["diff", "turn"]],
-    P2: [["diff", "turn"]],
-    P3: [["diff", "turn"]],
-    P4: [["diff", "turn"]],
-    P5: [["diff", "turn"]],
-    P6: [
-        ["diff", "turn"],
-        ["command-log", "turn"],
-        ["proxy-call", null],
-    ],
-    P8: [["proxy-call", null]],
-    P9: [["proxy-call", null]],
-    P10: [["diff", "turn"]],
-    P11: [["diff", "turn"]],
-    P12: [["diff", "turn"]],
-    P13: [
-        ["command-log", "session"],
-        ["proxy-call", null],
-    ],
-    P14: [["proxy-call", null]],
-};
+function evidenceFor(probe: ProbeItem): Evidence[] {
+    const check = (probe.check ?? {}) as Check;
+    switch (probe.type) {
+        case "P5":
+            return [TURN_DIFF, TURN_COMMANDS];
+        case "P6":
+            return [TURN_DIFF, ["diff", "prior-session"], TURN_COMMANDS, CALLS];
+        case "P8":
+        case "P9":
+        case "P14":
+            return [CALLS];
+        case "P10":
+            return [TURN_DIFF, CALLS];
+        case "P13":
+            return [["command-log", "session"], CALLS, ...(check.commands_must ? [] : [TURN_DIFF])];
+        default:
+            return [TURN_DIFF];
+    }
+}
 
 export function requireEvidence(probe: ProbeItem, snapshot: Snapshot): void {
-    for (const [cls, role] of EVIDENCE[probe.type] ?? []) {
+    for (const [cls, role] of evidenceFor(probe)) {
         const present = snapshot.artefacts.some(
             (a) => a.class === cls && (role === null || (a as { role?: string }).role === role),
         );

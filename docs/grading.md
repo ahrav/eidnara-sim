@@ -20,9 +20,11 @@ A snapshot holds the artefacts the harness captured at a probe turn's first
 
 `gradeItem` refuses a snapshot with an artefact of any other class, such as
 an agent transcript or self-report (SIM-P40), a snapshot without an artefact
-its probe type's grader reads (the turn diff for the diff graders, the
-`proxy-call` artefact for P6, P8, P9, P13, and P14, the session command log
-for P13), and an item whose check lacks
+its grader reads (the turn diff for the diff graders and for a P13 item whose
+check names no commands, the turn command log for P5 and P6, the
+prior-session diff for P6, whose item opens a later session of its project,
+the `proxy-call` artefact for P6, P8, P9, P10, P13, and P14, and the session
+command log for P13), and an item whose check lacks
 a key its grader needs. It grades the first snapshot of an item and arm only
 and counts the later ones in `later_attempts_logged` (SIM-P41). An item
 whose probe turn ended `failed` gets no grade (SIM-P46). Each grade lists the

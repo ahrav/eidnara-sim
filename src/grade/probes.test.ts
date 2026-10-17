@@ -176,3 +176,15 @@ test("a fold call that failed is no fold for P13", () => {
     expect(grade?.verdict).toBe("excluded");
     expect(grade?.reason).toBe("no fold in the item's range");
 });
+
+test("P6 without its prior-session diff, P5 without its command log, and P10 without calls are refused", () => {
+    const without = (name: string, drop: (a: { class: string; role?: string }) => boolean) => {
+        const f = fixture(name);
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        snap.artefacts = snap.artefacts.filter((a) => !drop(a as { class: string; role?: string }));
+        return () => gradeItem(f.probe, [snap], rules);
+    };
+    expect(without("P6-pass", (a) => a.role === "prior-session")).toThrow("diff (prior-session)");
+    expect(without("P5-pass", (a) => a.class === "command-log")).toThrow("command-log (turn)");
+    expect(without("P10-pass", (a) => a.class === "proxy-call")).toThrow("proxy-call");
+});
