@@ -163,6 +163,8 @@ export function bootstrap<T>(
     const reps = Array.from({ length: o.replicates }, () => stat(resample(xs, rng))).sort(
         (x, y) => x - y,
     );
+    if (![estimate, ...reps].every(Number.isFinite))
+        return { estimate, lo: Number.NaN, hi: Number.NaN };
     if (!o.bca)
         return { estimate, lo: percentile(reps, alpha / 2), hi: percentile(reps, 1 - alpha / 2) };
     const below = Math.min(

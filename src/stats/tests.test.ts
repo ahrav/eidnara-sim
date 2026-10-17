@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { binomialPmf, incompleteBeta, normalCdf, normalQuantile } from "./dist";
+import { binomialCdf, binomialPmf, incompleteBeta, normalCdf, normalQuantile } from "./dist";
 import {
     acceleration,
     bootstrap,
@@ -94,6 +94,15 @@ describe("statistics against published references", () => {
         const p = bootstrap(r.x, variance, { replicates: 2_000, seed: 1, alpha: 0.1 });
         expect(p).toEqual(bootstrap(r.x, variance, { replicates: 2_000, seed: 1, alpha: 0.1 }));
         expect(p.lo).toBeLessThan(b.lo);
+    });
+
+    test("a bootstrap whose statistic is undefined on some resample reports NaN limits for every seed", () => {
+        const undefinedOnTies = (s: number[]) =>
+            new Set(s).size === 1 ? Number.NaN : s.reduce((a, b) => a + b, 0) / s.length;
+        for (const seed of [2, 3]) {
+            const b = bootstrap([0, 1], undefinedOnTies, { replicates: 20, seed });
+            expect([b.estimate, b.lo, b.hi]).toEqual([0.5, Number.NaN, Number.NaN]);
+        }
     });
 
     test("BCa stays finite when every replicate falls on one side of the estimate", () => {
@@ -306,6 +315,10 @@ describe("statistics against published references", () => {
         near(binomialPmf(500, 1000, 0.2) / 3.1032622600153052e-99, 1, 1e-9);
         expect(binomialPmf(0, 6, 0.5)).toBe(1 / 64);
         expect(binomialPmf(3, 6, 0.5)).toBe(20 / 64);
+        near(binomialCdf(900, 2000, 0.5) / 4.228544767750218e-6, 1, 1e-9);
+        const started = performance.now();
+        near(signTest(50_000_000, 100_000_000), 1, 1e-3);
+        expect(performance.now() - started).toBeLessThan(1000);
     });
 
     test("the normal distribution functions invert each other", () => {

@@ -31,12 +31,17 @@ statistic is floating point. Binomial probabilities up to a
 thousand trials come from running products rather than log-gamma, which
 keeps small cases such as 6 against 0 (p = 2/64) exact; a product whose
 power factor would fall below the smallest normal double is taken in log
-space instead, so representable tails stay nonzero. eval-core's exact
+space instead, so representable tails stay nonzero. Past a thousand
+trials the binomial tail is the regularized incomplete beta, so a sign
+test on any count finishes in milliseconds. eval-core's exact
 McNemar (`crates/eval-core/src/stale.rs`) is Rust only and decides
 `p <= alpha` in integer arithmetic; the fixture `eval_core_mcnemar` copies
 the decisions its tests list (eval-core 0.1.0, eidnara commit
 `bb866266c`), and this library decides the same way, continuing past the
 123 or so discordant pairs where eval-core refuses.
 
-The cluster bootstrap the gates use resamples ledger facts with this
-percentile bootstrap; no published table covers a cluster resample.
+The tier gate evaluation resamples ledger-fact clusters with this
+percentile bootstrap; no published table covers a cluster resample. The
+per-run report in `src/report/paired.ts` keeps its own `bootstrapMean`
+for its descriptive interval. A statistic that is undefined on the
+sample or on any resample makes both limits NaN, whatever the seed.

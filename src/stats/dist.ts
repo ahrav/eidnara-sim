@@ -32,8 +32,11 @@ export function binomialPmf(k: number, n: number, p: number): number {
 }
 
 export function binomialCdf(k: number, n: number, p: number): number {
+    if (k < 0) return 0;
+    if (k >= n) return 1;
+    if (n > 1000) return incompleteBeta(1 - p, n - k, k + 1);
     let sum = 0;
-    for (let i = 0; i <= Math.min(k, n); i++) sum += binomialPmf(i, n, p);
+    for (let i = 0; i <= k; i++) sum += binomialPmf(i, n, p);
     return Math.min(1, sum);
 }
 
