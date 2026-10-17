@@ -270,9 +270,9 @@ function graded(f: Family, runs: RunPair[], p: Preregistration): Stats {
     const n = runs.length;
     const bca = f.interval_method === "paired-bca-bootstrap" || n < 10;
     const method = bca ? "paired BCa bootstrap over runs" : "paired percentile bootstrap over runs";
-    if (n < 2) return { ...empty(method), n };
     const unit = f.mde.scale === "pp" ? 100 : 1;
     const diffs = runs.map((r) => unit * (r.treatment - r.control));
+    if (n < 2) return { ...empty(method), n, difference: n ? (diffs[0] as number) : 0 };
     const m = mean(diffs);
     const sd = Math.sqrt(diffs.reduce((s, v) => s + (v - m) ** 2, 0) / (n - 1));
     const b = bootstrap(diffs, mean, { ...p.bootstrap, alpha: num(f.alpha), bca });
@@ -400,6 +400,9 @@ function check(p: Preregistration, input: TierInput): void {
             throw new StatsRefusal(`${f.id}: an item-level family has a binary outcome`);
         }
         const bound = BOUND_DIRECTIONS.includes(f.direction);
+        if (bound && f.outcome === "binary" && !isShare(num(f.margin.value))) {
+            throw new StatsRefusal(`${f.id}: a binary threshold lies in [0, 1]`);
+        }
         if (bound && f.interval_method !== "none") {
             throw new StatsRefusal(`${f.id}: a bound family has no interval method`);
         }
@@ -418,7 +421,7 @@ function check(p: Preregistration, input: TierInput): void {
         }
     }
     const seen = new Set<string>();
-    const runIds = new Map<string, string>();
+    const runIds = new Map<string, Set<string>>();
     for (const e of input.excluded) {
         if (e.arm !== arms.control && e.arm !== arms.treatment) {
             throw new StatsRefusal(`excluded ${e.id}: arm ${e.arm} is neither compared arm`);
@@ -460,10 +463,13 @@ function check(p: Preregistration, input: TierInput): void {
             );
         }
         const [own, other] = o.unit === "item" ? [o.items, o.runs] : [o.runs, o.items];
-        if (!own || other) {
+        if (!Array.isArray(own) || other !== undefined) {
             throw new StatsRefusal(
-                `${o.metric}: a ${o.unit} observation carries exactly ${o.unit}s`,
+                `${o.metric}: a ${o.unit} observation carries exactly an array of ${o.unit}s`,
             );
+        }
+        if (!own.every((x) => typeof x === "object" && x !== null)) {
+            throw new StatsRefusal(`${o.metric}: every ${o.unit} is a pair record`);
         }
         const names = [
             ...(o.items ?? []).flatMap((x) => [x.item, x.cluster]),
@@ -527,9 +533,12 @@ function check(p: Preregistration, input: TierInput): void {
             throw new StatsRefusal(`${o.metric}: each ${o.unit} identity appears once`);
         }
         if (o.unit === "run") {
-            const set = [...ids].sort().join("\n");
+            const set = new Set(ids);
             const prior = runIds.get(f.id);
-            if (prior !== undefined && prior !== set) {
+            if (
+                prior !== undefined &&
+                (prior.size !== set.size || ![...set].every((id) => prior.has(id)))
+            ) {
                 throw new StatsRefusal(
                     `${f.id}: every metric of a run-level family comes from the same runs`,
                 );

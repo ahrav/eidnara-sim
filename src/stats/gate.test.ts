@@ -1095,3 +1095,67 @@ describe("tier gate review findings, tenth Codex round", () => {
         ).toThrow(StatsRefusal);
     });
 });
+
+describe("tier gate review findings, eleventh Codex round", () => {
+    test("run sets compare by membership, whatever the identifiers contain", () => {
+        const a: Observation = {
+            metric: "failed_turns",
+            unit: "run",
+            cluster_key: "run",
+            runs: [
+                { run: "a\nb", control: 0, treatment: 0 },
+                { run: "c", control: 0, treatment: 0 },
+            ],
+        };
+        const b: Observation = {
+            metric: "hangs",
+            unit: "run",
+            cluster_key: "run",
+            runs: ["a", "b", "c"].map((run) => ({ run, control: 0, treatment: 0 })),
+        };
+        expect(() => evaluate([a, b])).toThrow(StatsRefusal);
+    });
+
+    test("a collection that is not an array of pairs is refused", () => {
+        const bad = { ...binary("P1.pass", [[0, 1]]), items: {} as unknown as ItemPair[] };
+        expect(() => evaluate([bad])).toThrow(StatsRefusal);
+        const holes = { ...binary("P1.pass", [[0, 1]]), items: [null as unknown as ItemPair] };
+        expect(() => evaluate([holes])).toThrow(StatsRefusal);
+    });
+
+    test("a binary threshold lies in [0, 1]", () => {
+        const high = {
+            ...S,
+            families: S.families.map((f) =>
+                f.id === "probe-P8"
+                    ? { ...f, margin: { value: "1.1", scale: "ratio" as const } }
+                    : f,
+            ),
+        };
+        expect(() =>
+            evaluateTier(high, {
+                observations: [
+                    binary("P8.cross_session_pass_rate", repeat(4, [1, 1] as [number, number])),
+                ],
+                excluded: [],
+                asymmetric: [],
+                journal_seq_at_eval: 7,
+                arms: { control: "host", treatment: "eidnara" },
+            }),
+        ).toThrow("probe-P8: a binary threshold lies in [0, 1]");
+    });
+
+    test("a single graded run keeps its observed difference", () => {
+        const XL = loadPrereg("XL");
+        const v = evaluateTier(XL, {
+            observations: [runs("P13.fold_fidelity_score", [[0.2, 0.8]])],
+            excluded: [],
+            asymmetric: [],
+            journal_seq_at_eval: 1,
+            arms: { control: "host", treatment: XL.arms.default },
+        });
+        const m = metric(v, "probe-P13", "P13.fold_fidelity_score");
+        expect([m?.n, m?.interval]).toEqual([1, null]);
+        expect(m?.difference).toBeCloseTo(60, 9);
+    });
+});
