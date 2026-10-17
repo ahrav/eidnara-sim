@@ -348,6 +348,7 @@ function judge(f: Family, metric: string, s: Stats, obs: Observation): Judgement
     if (f.direction === "superiority-two-sided") return [text, text === "better"];
     if (f.direction === "noninferiority") return [text, hi !== undefined && hi < margin];
     if (hi !== undefined) return [text, hi <= margin];
+    if (f.outcome !== "count") return [text, false];
     const upper = s.rate_ratio_upper;
     const within =
         f.margin.scale !== "ratio" ||
@@ -408,6 +409,11 @@ function check(p: Preregistration, input: TierInput): void {
                 `cusum ${rule.kind}: k is finite and at least 0, h finite and positive`,
             );
         }
+        if (rule.statistic !== CUSUM_STATISTICS[rule.kind](rule.metric)) {
+            throw new StatsRefusal(
+                `cusum ${rule.kind}: statistic "${rule.statistic}" is not the one the gate computes for ${rule.metric}`,
+            );
+        }
     }
     const seq = input.journal_seq_at_eval;
     if (!Number.isSafeInteger(seq) || seq < 0) {
@@ -453,6 +459,14 @@ function check(p: Preregistration, input: TierInput): void {
         if (bound && f.outcome === "binary" && !isShare(num(f.margin.value))) {
             throw new StatsRefusal(`${f.id}: a binary threshold lies in [0, 1]`);
         }
+        const paired = !bound && f.direction !== "descriptive";
+        if (
+            paired &&
+            f.outcome === "binary" &&
+            (f.margin.scale !== "pp" || num(f.margin.value) < 0 || num(f.margin.value) > 100)
+        ) {
+            throw new StatsRefusal(`${f.id}: a paired binary margin is 0 to 100 pp`);
+        }
         if (f.outcome === "count" && f.direction === "at-most" && f.margin.scale !== "ratio") {
             throw new StatsRefusal(`${f.id}: an at-most count family registers a ratio margin`);
         }
@@ -472,6 +486,12 @@ function check(p: Preregistration, input: TierInput): void {
             if (byMetric.has(m)) throw new StatsRefusal(`${m} is registered in two families`);
             byMetric.set(m, f);
         }
+    }
+    if (
+        !Array.isArray(input.observations) ||
+        !input.observations.every((o) => typeof o === "object" && o !== null)
+    ) {
+        throw new StatsRefusal("observations is an array of observation records");
     }
     const seen = new Set<string>();
     const runIds = new Map<string, Set<string>>();
@@ -619,6 +639,13 @@ function check(p: Preregistration, input: TierInput): void {
 }
 
 const isBit = (v: number) => v === 0 || v === 1;
+/** The two CUSUM sequences the gate computes, as the pre-registrations register them. */
+const CUSUM_STATISTICS = {
+    harm: (metric: string) =>
+        `the maximum over the five ${metric} metrics of the paired difference eidnara minus host, one value per completed paired item in issue order`,
+    futility: (metric: string) =>
+        `the paired difference host minus eidnara on ${metric}, one value per completed paired item in issue order`,
+};
 const isName = (v: unknown) => typeof v === "string" && v.trim() !== "";
 /** The interval methods the gate implements per unit and outcome; `none` is allowed everywhere. */
 const METHODS: Record<string, readonly string[]> = {

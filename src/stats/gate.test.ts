@@ -1425,3 +1425,58 @@ describe("tier gate review findings, fifteenth Codex round", () => {
         );
     });
 });
+
+describe("tier gate review findings, sixteenth Codex round", () => {
+    const seq = { journal_seq_at_eval: 7, arms: { control: "host", treatment: "eidnara" } };
+    const input = { observations: [], excluded: [], asymmetric: [], ...seq };
+    const withFamily = (id: string, patch: object) => ({
+        ...M,
+        families: M.families.map((f) => (f.id === id ? { ...f, ...patch } : f)),
+    });
+
+    test("a paired binary margin is in percentage points within [0, 100]", () => {
+        expect(() =>
+            evaluateTier(withFamily("harm", { margin: { value: "101", scale: "pp" } }), input),
+        ).toThrow("harm: a paired binary margin is 0 to 100 pp");
+        expect(() =>
+            evaluateTier(withFamily("harm", { margin: { value: "10", scale: "ratio" } }), input),
+        ).toThrow("harm: a paired binary margin is 0 to 100 pp");
+    });
+
+    test("the observations collection is an array of records", () => {
+        expect(() =>
+            evaluateTier(M, { ...input, observations: {} as unknown as Observation[] }),
+        ).toThrow(StatsRefusal);
+        expect(() =>
+            evaluateTier(M, { ...input, observations: [null as unknown as Observation] }),
+        ).toThrow(StatsRefusal);
+    });
+
+    test("a CUSUM rule registers one of the two implemented statistics", () => {
+        const rules = {
+            ...M,
+            stopping_rule: {
+                ...M.stopping_rule,
+                cusum: M.stopping_rule.cusum.map((r) =>
+                    r.kind === "harm" ? { ...r, statistic: "control plus treatment" } : r,
+                ),
+            },
+        };
+        expect(() => evaluateTier(rules, input)).toThrow("cusum harm: statistic");
+    });
+
+    test("an at-most gate with no interval and no event ratio fails", () => {
+        const atMost = withFamily("probe-P1", {
+            direction: "at-most",
+            margin: { value: "10", scale: "pp" },
+            claim: "gate",
+        });
+        const one = binary("P1.pass", repeat(40, [0, 0] as [number, number]), () => "f-only");
+        const m = metric(
+            evaluateTier(atMost, { ...input, observations: [one] }),
+            "probe-P1",
+            "P1.pass",
+        );
+        expect([m?.verdict, m?.passed]).toEqual(["inconclusive", false]);
+    });
+});
