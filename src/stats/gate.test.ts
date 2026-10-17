@@ -1226,3 +1226,65 @@ describe("tier gate review findings, twelfth Codex round", () => {
         expect(() => evaluate([obs])).toThrow(StatsRefusal);
     });
 });
+
+describe("tier gate review findings, thirteenth Codex round", () => {
+    const seq = { journal_seq_at_eval: 7, arms: { control: "host", treatment: "eidnara" } };
+
+    test("a singleton graded difference that overflows is refused", () => {
+        expect(() => evaluate([runs("turn_latency_p95_delta_ms", [[-1e308, 1e308]])])).toThrow(
+            StatsRefusal,
+        );
+        const one = metric(
+            evaluate([runs("turn_latency_p95_delta_ms", [[100, 140]])]),
+            "latency",
+            "turn_latency_p95_delta_ms",
+        );
+        expect([one?.n, one?.difference, one?.interval]).toEqual([1, 40, null]);
+    });
+
+    test("failed identifiers travel as structured data beside the verdict text", () => {
+        const spaced: Observation = {
+            metric: "internal_string_hits",
+            unit: "run",
+            cluster_key: "run",
+            runs: [
+                { run: "a b", control: 0, treatment: 2 },
+                { run: "c", control: 0, treatment: 0 },
+            ],
+        };
+        const m = evaluateTier(S, {
+            observations: [spaced],
+            excluded: [],
+            asymmetric: [],
+            ...seq,
+        }).families.find((f) => f.family === "intrusiveness")?.metrics[0];
+        expect(m?.failed_items).toEqual(["a b"]);
+        expect(m?.verdict).toBe("failed-gate(internal_string_hits, a b)");
+        const ok = metric(
+            evaluate([runs("failed_turns", repeat(6, [0, 0] as [number, number]))]),
+            "dependability",
+            "failed_turns",
+        );
+        expect(ok?.failed_items).toBeUndefined();
+    });
+
+    test("event totals stay within the beta routine's range", () => {
+        expect(() =>
+            evaluate([runs("failed_turns", repeat(6, [4e14, 6e14] as [number, number]))]),
+        ).toThrow(StatsRefusal);
+    });
+
+    test("an at-most count family registers a ratio margin", () => {
+        const counted = {
+            ...M,
+            families: M.families.map((f) =>
+                f.id === "dependability"
+                    ? { ...f, margin: { value: "0", scale: "count" as const } }
+                    : f,
+            ),
+        };
+        expect(() =>
+            evaluateTier(counted, { observations: [], excluded: [], asymmetric: [], ...seq }),
+        ).toThrow("dependability: an at-most count family registers a ratio margin");
+    });
+});

@@ -63,6 +63,8 @@ export interface MetricResult {
     resolution_ratio: number | null;
     resolution_note?: string;
     rate_ratio_upper?: number | "unbounded";
+    /** The run or item identities a bound names in `failed-gate(metric, ids)`. */
+    failed_items?: string[];
     verdict: string;
     passed: boolean | null;
     asymmetric_pairs: number;
@@ -243,9 +245,9 @@ function counts(f: Family, runs: RunPair[]): Stats {
     );
     const t = runs.reduce((s, r) => s + r.treatment, 0);
     const c = runs.reduce((s, r) => s + r.control, 0);
-    if (!Number.isSafeInteger(t) || !Number.isSafeInteger(c) || !Number.isSafeInteger(t + c)) {
+    if (!Number.isSafeInteger(t) || !Number.isSafeInteger(c) || t + c > MAX_EVENTS) {
         throw new StatsRefusal(
-            `${f.id}: the event totals ${t} and ${c} exceed exact integer range`,
+            `${f.id}: the event totals ${t} and ${c} exceed the ${MAX_EVENTS} the beta quantile supports`,
         );
     }
     const share = c === 0 ? 1 : betaQuantile(1 - num(f.alpha) / 2, t + 1, c);
@@ -272,7 +274,11 @@ function graded(f: Family, runs: RunPair[], p: Preregistration): Stats {
     const method = bca ? "paired BCa bootstrap over runs" : "paired percentile bootstrap over runs";
     const unit = f.mde.scale === "pp" ? 100 : 1;
     const diffs = runs.map((r) => unit * (r.treatment - r.control));
-    if (n < 2) return { ...empty(method), n, difference: n ? (diffs[0] as number) : 0 };
+    const single = n ? (diffs[0] as number) : 0;
+    if (!Number.isFinite(single)) {
+        throw new StatsRefusal(`${f.id}: the paired difference overflows`);
+    }
+    if (n < 2) return { ...empty(method), n, difference: single };
     const m = mean(diffs);
     const sd = Math.sqrt(diffs.reduce((s, v) => s + (v - m) ** 2, 0) / (n - 1));
     const b = bootstrap(diffs, mean, { ...p.bootstrap, alpha: num(f.alpha), bca });
@@ -293,7 +299,9 @@ function graded(f: Family, runs: RunPair[], p: Preregistration): Stats {
     };
 }
 
-function bound(f: Family, metric: string, s: Stats, obs: Observation): [string, boolean] {
+type Judgement = [string, boolean | null, string[]?];
+
+function bound(f: Family, metric: string, s: Stats, obs: Observation): Judgement {
     const margin = num(f.margin.value);
     if (s.n === 0) return ["inconclusive", false];
     const bad =
@@ -308,10 +316,10 @@ function bound(f: Family, metric: string, s: Stats, obs: Observation): [string, 
                   .map((r) => r.run);
     return bad.length === 0
         ? ["within-bound", true]
-        : [`failed-gate(${metric}, ${bad.join(" ")})`, false];
+        : [`failed-gate(${metric}, ${bad.join(" ")})`, false, bad];
 }
 
-function judge(f: Family, metric: string, s: Stats, obs: Observation): [string, boolean | null] {
+function judge(f: Family, metric: string, s: Stats, obs: Observation): Judgement {
     if (f.direction === "threshold" || f.direction === "zero-tolerance") {
         return bound(f, metric, s, obs);
     }
@@ -368,6 +376,8 @@ function statsOf(f: Family, o: Observation, p: Preregistration): Stats {
 
 /** eval-core's `bootstrap_replicates` range starts at 40; below it a BCa interval degenerates. */
 const MIN_BOOTSTRAP_REPLICATES = 40;
+/** The incomplete beta in `dist.ts` converges for shapes to a few hundred million. */
+const MAX_EVENTS = 1e8;
 
 function check(p: Preregistration, input: TierInput): void {
     if (p.bootstrap.replicates < MIN_BOOTSTRAP_REPLICATES) {
@@ -402,6 +412,9 @@ function check(p: Preregistration, input: TierInput): void {
         const bound = BOUND_DIRECTIONS.includes(f.direction);
         if (bound && f.outcome === "binary" && !isShare(num(f.margin.value))) {
             throw new StatsRefusal(`${f.id}: a binary threshold lies in [0, 1]`);
+        }
+        if (f.outcome === "count" && f.direction === "at-most" && f.margin.scale !== "ratio") {
+            throw new StatsRefusal(`${f.id}: an at-most count family registers a ratio margin`);
         }
         if (bound && f.interval_method !== "none") {
             throw new StatsRefusal(`${f.id}: a bound family has no interval method`);
@@ -663,14 +676,21 @@ export function evaluateTier(p: Preregistration, input: TierInput): TierVerdict 
         const metrics = mine.map((o, i): MetricResult => {
             const full = stats[i] as Stats;
             const { shift: _, ...s } = full;
-            const [verdict, passed] = judge(f, o.metric, full, o);
+            const [verdict, passed, failed] = judge(f, o.metric, full, o);
             const raw = input.observations.find((x) => x.metric === o.metric);
             const ids = [
                 ...(raw?.items ?? []).map((x) => x.item),
                 ...(raw?.runs ?? []).map((r) => r.run),
             ];
             const asymmetric_pairs = ids.filter((id) => asym.has(id)).length;
-            return { metric: o.metric, ...s, verdict, passed, asymmetric_pairs };
+            return {
+                metric: o.metric,
+                ...s,
+                verdict,
+                passed,
+                asymmetric_pairs,
+                ...(failed ? { failed_items: failed } : {}),
+            };
         });
         const passed = f.claim !== "gate" ? null : metrics.every((m) => m.passed === true);
         const { id: family, claim, direction } = f;
