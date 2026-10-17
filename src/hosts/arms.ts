@@ -773,11 +773,13 @@ export class PiSimHost extends SimHost {
             },
             () => undefined,
         );
+        let accepted = false;
         try {
             const response = await this.rpc.sendCommand("prompt", { message: text }, { timeoutMs });
             if (response.success === false) {
                 throw new Error(JSON.stringify(response).slice(0, 2000));
             }
+            accepted = true;
             const cut = interruptMs === undefined ? null : Bun.sleep(interruptMs).then(() => null);
             const first = await Promise.race(cut ? [end, cut] : [end]);
             // A failed abort is read off `end` like a landed one: the original waiter still
@@ -805,10 +807,13 @@ export class PiSimHost extends SimHost {
                 () => false,
             );
             const error = String(caught).slice(0, 2000);
-            if (settled) return { error };
+            // A prompt the command never accepted was never received.
+            const receipt = accepted ? {} : { undelivered: true as const };
+            if (settled) return { error, ...receipt };
             await this.closeSession();
             return {
                 error: `${error} | Pi process killed after an undrained abort`.slice(0, 2000),
+                ...receipt,
             };
         }
     }
@@ -1136,8 +1141,13 @@ export class OpencodeSimHost extends SimHost {
             return { error: `turn deadline ${wholeMs} ms` };
         }
         if ("caught" in first) {
+            // A rejected prompt call never got an acknowledgement, so the text's receipt is unknown
+            // and the turn counts as undelivered.
             const tail = String(this.oc?.stderr?.() ?? "").slice(-600);
-            return { error: `${String(first.caught)} | serve stderr: ${tail}`.slice(0, 2000) };
+            return {
+                error: `${String(first.caught)} | serve stderr: ${tail}`.slice(0, 2000),
+                undelivered: true,
+            };
         }
         const { result } = first;
         if (result.error) return { error: JSON.stringify(result.error).slice(0, 2000) };

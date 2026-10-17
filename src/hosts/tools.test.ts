@@ -803,6 +803,40 @@ test("an OpenCode turn whose deadline is spent before the prompt sends nothing",
     expect(prompted).toBe(0);
 });
 
+test("an OpenCode prompt the server rejected is undelivered", async () => {
+    const host = opencodeHost({
+        session: {
+            messages: async () => ({ data: [] }),
+            prompt: () => Promise.reject(new Error("ECONNRESET")),
+            abort: async () => ({ data: true }),
+        },
+    });
+    const result = await host.prompt("go", 5_000);
+    expect(result.error).toContain("ECONNRESET");
+    expect(result.undelivered).toBe(true);
+});
+
+test("a Pi prompt command that fails is undelivered", async () => {
+    const host = new PiSimHost({
+        ...({} as HostContext),
+        config: loadConfig(),
+        root: "/x",
+        launcher: "/x/sandbox.sh",
+        now: () => 100,
+    });
+    const rpc = {
+        child: { pid: 7, stdin: { end: () => {} } },
+        sendCommand: async (name: string) =>
+            name === "prompt" ? { success: false, error: "busy" } : { success: true },
+        waitForEvent: () => Promise.resolve({ type: "agent_end", messages: [] }),
+        shutdown: async () => {},
+    };
+    Object.assign(host as unknown as Record<string, unknown>, { rpc, drainWaitMs: 50 });
+    const result = await host.prompt("go", 5_000);
+    expect(result.error).toContain("busy");
+    expect(result.undelivered).toBe(true);
+});
+
 test("an aborted OpenCode turn whose tool listing then fails keeps the interrupt beside the capture error", async () => {
     let listings = 0;
     const host = opencodeHost({

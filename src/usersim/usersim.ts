@@ -162,6 +162,12 @@ const pairingRow: RowCheck = (row) => {
         ...oneOf(row, "label", LABELS),
         ...oneOf(row, "source", ["script", "tape", "live"]),
         ...(typeof row.delivered === "boolean" ? [] : ["delivered is not a boolean"]),
+        ...(row.fallback === undefined ||
+        (Array.isArray(row.fallback) &&
+            row.fallback.length > 0 &&
+            row.fallback.every((c) => typeof c === "string"))
+            ? []
+            : ["fallback is not a non-empty list of causes"]),
     ];
 };
 
@@ -240,8 +246,7 @@ export function checkTapeSources(
     },
 ): void {
     for (const tape of tapes) {
-        const path = join(dirname(tape), "manifest.json");
-        if (!existsSync(path)) throw new HarnessFailure(`replay source ${path} does not exist`);
+        const path = requireSource(join(dirname(tape), "manifest.json"));
         const manifest = JSON.parse(readFileSync(path, "utf8")) as {
             seed?: unknown;
             scenario_hash?: unknown;
@@ -267,10 +272,7 @@ export function checkTapeSources(
         if (run.events !== undefined) {
             // A source cut short of this run's events has no reply for the rest, and a
             // reference arm past its end would go live with no divergence on record.
-            const journal = join(dirname(tape), "journal.jsonl");
-            if (!existsSync(journal)) {
-                throw new HarnessFailure(`replay source ${journal} does not exist`);
-            }
+            const journal = requireSource(join(dirname(tape), "journal.jsonl"));
             if (!readJournal(journal).some((e) => e.kind === "EndRun")) {
                 throw new HarnessFailure(`replay source ${tape} is from a run without EndRun`);
             }

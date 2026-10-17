@@ -15,8 +15,9 @@ import { basename, dirname, join } from "node:path";
 import type { GradeRecord } from "../src/grade/probes";
 import { sha256Hex } from "../src/prereg/canonical";
 import { preregistrationHash } from "../src/prereg/validate";
-import { scenarioHash } from "../src/scenario/compile";
+import { type Scenario, scenarioHash } from "../src/scenario/compile";
 import { loadPrereg } from "../src/scenario/inputs";
+import { deliveredTurns, type Label, realisedRates } from "../src/usersim/plan";
 import { tapeDigests } from "../src/usersim/usersim";
 import { aaReport } from "./aa-report";
 
@@ -75,6 +76,15 @@ const journal = (order: string[], events: number): Record<string, unknown>[] => 
                 { kind: "Event", arm, event, scenario_ms: 0 },
             ];
         }).flat(),
+        {
+            kind: "UserSimRates",
+            arm,
+            scenario_ms: 0,
+            ...realisedRates(
+                PROBE_EVENTS.map(() => ({ session: "s-1", label: "task" as const })),
+                loadPrereg("S"),
+            ),
+        },
         { kind: "EndArm", arm, scenario_ms: 0 },
     ]),
     { kind: "EndRun", arm: null, scenario_ms: 0 },
@@ -100,6 +110,45 @@ const ordered = (rows: Record<string, unknown>[]) => {
     }
     return out;
 };
+
+/**
+ * Gives one scenario event `role`, appends `more` events, and re-pins the manifest to the new
+ * scenario: its hash and its event count.
+ */
+function withRole(dir: string, id: string, role: string, more: Record<string, unknown>[] = []) {
+    const scenario = JSON.parse(readFileSync(join(dir, "scenario.json"), "utf8")) as {
+        events: Record<string, unknown>[];
+    };
+    scenario.events = [...scenario.events.map((e) => (e.id === id ? { ...e, role } : e)), ...more];
+    const manifest = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8")) as Record<
+        string,
+        unknown
+    >;
+    manifest.scenario_hash = scenarioHash(scenario as unknown as Scenario);
+    manifest.events = scenario.events.length;
+    writeFileSync(join(dir, "scenario.json"), JSON.stringify(scenario));
+    writeFileSync(join(dir, "manifest.json"), JSON.stringify(manifest));
+}
+
+/** The journal with each arm's UserSimRates recomputed from its delivered UserTurn rows. */
+function rerated(entries: Record<string, unknown>[]): Record<string, unknown>[] {
+    return entries.map((e) =>
+        e.kind === "UserSimRates"
+            ? {
+                  kind: "UserSimRates",
+                  arm: e.arm,
+                  scenario_ms: 0,
+                  ...realisedRates(
+                      deliveredTurns(entries, e.arm as string).map((t) => ({
+                          session: String(t.session),
+                          label: t.label as Label,
+                      })),
+                      loadPrereg("S"),
+                  ),
+              }
+            : e,
+    );
+}
 
 function gradedRun(
     tier: string,
@@ -158,6 +207,90 @@ function gradedRun(
 }
 
 describe("aa-report", () => {
+    test("a scheduled interrupt the host finished first is journaled task and still reports", () => {
+        const dir = gradedRun("S", preregistrationHash(loadPrereg("S")));
+        const line = (o: unknown) => `${JSON.stringify(o)}\n`;
+        // With e-1 the scenario's one filler, the seeded plan draws its interrupt there.
+        withRole(dir, "e-1", "filler");
+        const rows = readFileSync(join(dir, "pairing.jsonl"), "utf8")
+            .trim()
+            .split("\n")
+            .map((l) => JSON.parse(l) as Record<string, unknown>);
+        for (const r of rows) {
+            if (r.event === "e-1") r.label = "interrupt";
+        }
+        writeFileSync(join(dir, "pairing.jsonl"), rows.map(line).join(""));
+        const journal = readFileSync(join(dir, "journal.jsonl"), "utf8")
+            .trim()
+            .split("\n")
+            .map((l) => JSON.parse(l) as Record<string, unknown>);
+        for (const e of journal) {
+            if (e.kind !== "UserTurn" || e.event !== "e-1") continue;
+            if (e.arm === "host") Object.assign(e, { label: "task", scheduled: "interrupt" });
+            else e.label = "interrupt";
+        }
+        writeFileSync(join(dir, "journal.jsonl"), rerated(journal).map(line).join(""));
+        expect(aaReport(dir)).toHaveLength(1);
+    });
+
+    test("a reference divergence placed ahead of the reference turn is refused", () => {
+        const dir = gradedRun("S", preregistrationHash(loadPrereg("S")));
+        const line = (o: unknown) => `${JSON.stringify(o)}\n`;
+        const rows = readFileSync(join(dir, "pairing.jsonl"), "utf8")
+            .trim()
+            .split("\n")
+            .map((l) => JSON.parse(l) as Record<string, unknown>);
+        for (const r of rows) if (r.arm === "host~aa" && r.event === "e-2") r.digest = "d2";
+        const divergence = {
+            kind: "divergedAt",
+            arm: "host~aa",
+            session: "s-1",
+            event: "e-2",
+            index: 1,
+            digest: "d2",
+            reference_digest: "d",
+            context_sha256: "c",
+            against: "reference",
+        };
+        const reordered = [divergence, ...rows];
+        writeFileSync(join(dir, "pairing.jsonl"), reordered.map(line).join(""));
+        expect(() => aaReport(dir)).toThrow(/divergence at e-2/);
+    });
+
+    test("a label the seeded plan did not assign, or a rate summary that disagrees, blocks the report", () => {
+        const dir = gradedRun("S", preregistrationHash(loadPrereg("S")));
+        const line = (o: unknown) => `${JSON.stringify(o)}\n`;
+        const rows = readFileSync(join(dir, "pairing.jsonl"), "utf8")
+            .trim()
+            .split("\n")
+            .map((l) => JSON.parse(l) as Record<string, unknown>);
+        for (const r of rows) {
+            if (r.arm === "host" && r.event === "e-1") {
+                r.label = "pushback";
+                r.source = "live";
+            }
+        }
+        writeFileSync(join(dir, "pairing.jsonl"), rows.map(line).join(""));
+        const journal = readFileSync(join(dir, "journal.jsonl"), "utf8")
+            .trim()
+            .split("\n")
+            .map((l) => JSON.parse(l) as Record<string, unknown>);
+        for (const e of journal) {
+            if (e.kind === "UserTurn" && e.arm === "host" && e.event === "e-1")
+                e.label = "pushback";
+        }
+        writeFileSync(join(dir, "journal.jsonl"), journal.map(line).join(""));
+        expect(() => aaReport(dir)).toThrow(/plan/);
+        const other = gradedRun("S", preregistrationHash(loadPrereg("S")));
+        const entries = readFileSync(join(other, "journal.jsonl"), "utf8")
+            .trim()
+            .split("\n")
+            .map((l) => JSON.parse(l) as Record<string, unknown>)
+            .filter((e) => e.kind !== "UserSimRates");
+        writeFileSync(join(other, "journal.jsonl"), entries.map(line).join(""));
+        expect(() => aaReport(other)).toThrow(/UserSimRates/);
+    });
+
     test("refuses a run graded under another pre-registration", () => {
         const dir = gradedRun("S", "0000");
         expect(() => aaReport(dir)).toThrow(/pre-registration/);
@@ -989,18 +1122,56 @@ describe("aa-report", () => {
     test("an undelivered trailing filler carries the empty text, as the runner records it", () => {
         const line = (o: unknown) => `${JSON.stringify(o)}\n`;
         const dir = gradedRun("S", preregistrationHash(loadPrereg("S")));
+        // Eight single-turn task sessions after s-1 give the plan an abandon quota of one; s-1,
+        // whose trailing filler e-12 makes it the one abandonable session, receives it.
+        const extra = [2, 3, 4, 5, 6, 7, 8, 9];
+        withRole(dir, "e-12", "filler", [
+            ...extra.flatMap((k) => [
+                {
+                    id: `x-${k}`,
+                    kind: "user_turn",
+                    session: `s-${k}`,
+                    index: 0,
+                    role: "task",
+                    text: SCRIPT_TEXT,
+                },
+                { id: `y-${k}`, kind: "session_end", session: `s-${k}` },
+            ]),
+        ]);
         const skip = (t: ReturnType<typeof turn>) =>
             t.event === "e-12"
                 ? { ...t, label: "abandon", delivered: false, text_sha256: sha256Hex("") }
                 : t;
-        const rows = [...allTurns("host").map(skip), ...allTurns("host~aa").map(skip)];
+        const extraTurns = (arm: string) =>
+            extra.map((k) => ({ ...turn(arm, `x-${k}`, "same", 0), session: `s-${k}` }));
+        const rows = ["host", "host~aa"].flatMap((arm) => [
+            ...allTurns(arm).map(skip),
+            ...extraTurns(arm),
+        ]);
         writeFileSync(join(dir, "pairing.jsonl"), rows.map(line).join(""));
-        const entries = journal(["host", "host~aa"], N_EVENTS).map((e) =>
-            e.kind === "UserTurn" && e.event === "e-12"
-                ? { ...e, label: "abandon", delivered: false }
-                : e,
-        );
-        writeFileSync(join(dir, "journal.jsonl"), entries.map(line).join(""));
+        const entries = journal(["host", "host~aa"], N_EVENTS).flatMap((e) => {
+            if (e.kind === "UserTurn" && e.event === "e-12") {
+                return [{ ...e, label: "abandon", delivered: false }];
+            }
+            if (e.kind !== "EndArm") return [e];
+            return [
+                ...extra.flatMap((k) => [
+                    {
+                        kind: "UserTurn",
+                        arm: e.arm,
+                        event: `x-${k}`,
+                        session: `s-${k}`,
+                        label: "task",
+                        delivered: true,
+                        scenario_ms: 0,
+                    },
+                    { kind: "Event", arm: e.arm, event: `x-${k}`, scenario_ms: 0 },
+                    { kind: "Event", arm: e.arm, event: `y-${k}`, scenario_ms: 0 },
+                ]),
+                e,
+            ];
+        });
+        writeFileSync(join(dir, "journal.jsonl"), rerated(entries).map(line).join(""));
         expect(aaReport(dir)).toHaveLength(1);
     });
 

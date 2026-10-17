@@ -24,6 +24,13 @@ import {
 import { referenceArm } from "../src/run/run";
 import { type Scenario, scenarioHash } from "../src/scenario/compile";
 import { loadPrereg } from "../src/scenario/inputs";
+import {
+    behaviourPlan,
+    deliveredTurns,
+    type Label,
+    pinnedTurns,
+    realisedRates,
+} from "../src/usersim/plan";
 import { pairingMismatches, readPairing, tapeDigests } from "../src/usersim/usersim";
 
 /** A percentile interval over fewer clusters than this undercovers, so it decides nothing. */
@@ -273,10 +280,16 @@ function report(dir: string) {
                   sources.some((x) => x.context === r.recorded_context_sha256) &&
                   sources.every((x) => x.context !== r.context_sha256)
                 : theirs?.digest === r.reference_digest && r.reference_digest !== r.digest;
-        // The runner writes the divergence before the turn it describes.
+        // The runner writes the divergence before the turn it describes, and derives a reference
+        // divergence from the reference arm's turn, which is on disk before it.
         if (mine && pairing.indexOf(r) > pairing.indexOf(mine)) {
             throw new Error(
                 `${dir}/pairing.jsonl: ${r.arm} divergence at ${r.event} is recorded after its turn`,
+            );
+        }
+        if (r.against === "reference" && theirs && pairing.indexOf(theirs) > pairing.indexOf(r)) {
+            throw new Error(
+                `${dir}/pairing.jsonl: ${r.arm} divergence at ${r.event} is recorded before the reference turn it cites`,
             );
         }
         const sound =
@@ -342,7 +355,14 @@ function report(dir: string) {
                 }
                 // The journal names the turn's label; a reactive label's text came from the tape
                 // or a live call, a scripted label's from the script.
-                if (mine[0]?.label !== r.label) {
+                // A scheduled interrupt the host finished first is journaled `task` with
+                // `scheduled: "interrupt"` and no interruption.
+                const relabel =
+                    r.label === "interrupt" &&
+                    mine[0]?.label === "task" &&
+                    mine[0]?.scheduled === "interrupt" &&
+                    mine[0]?.interrupted !== true;
+                if (mine[0]?.label !== r.label && !relabel) {
                     throw new Error(
                         `${dir}: ${a} ${r.event} pairing label ${r.label} differs from the journaled label`,
                     );
@@ -446,6 +466,73 @@ function report(dir: string) {
             divergence_indices: diverged.map((r) => r.index),
         };
     });
+    // The labels are the seeded plan's, under the run's effective fault schedule, and each arm's
+    // journaled rate summary is the one its delivered turns give.
+    const plan = behaviourPlan(
+        scenario.events
+            .filter((e) => e.kind === "user_turn")
+            .map((e) => ({
+                id: String(e.id),
+                session: String(e.session),
+                index: Number(e.index),
+                role: String(e.role),
+            })),
+        prereg,
+        manifest.seed as number,
+        pinnedTurns(
+            scenario.events.map((e) => ({
+                id: String(e.id),
+                kind: String(e.kind),
+                session: String(e.session),
+                ...(typeof e.index === "number" ? { index: e.index } : {}),
+            })),
+            (manifest.fault_override as typeof scenario.faults | null | undefined) ??
+                scenario.faults ??
+                [],
+        ),
+    );
+    for (const r of pairing) {
+        if (r.kind !== "turn") continue;
+        const planned = plan.skipped.has(r.event)
+            ? "abandon"
+            : (plan.labels.get(r.event) ?? "task");
+        const e = turnOf.get(r.event) as { role?: string } | undefined;
+        const clarify = planned === "task" && r.label === "clarify" && e?.role === "filler";
+        if (r.label !== planned && !clarify) {
+            throw new Error(
+                `${dir}/pairing.jsonl: ${r.arm} ${r.event} carries label ${r.label}; the seeded plan assigned ${planned}`,
+            );
+        }
+    }
+    const rateOutside: Record<string, string[]> = {};
+    for (const arm of order) {
+        const journaled = entries.filter((e) => e.kind === "UserSimRates" && e.arm === arm);
+        if (journaled.length !== 1) {
+            throw new Error(
+                `${dir}/journal.jsonl: arm ${arm} has ${journaled.length} UserSimRates entries`,
+            );
+        }
+        const expected = realisedRates(
+            deliveredTurns(entries, arm).map((e) => ({
+                session: String(e.session),
+                label: e.label as Label,
+            })),
+            prereg,
+        );
+        const summary = journaled[0] as Record<string, unknown>;
+        const held = {
+            turns: summary.turns,
+            sessions: summary.sessions,
+            rates: summary.rates,
+            outside: summary.outside,
+        };
+        if (JSON.stringify(held) !== JSON.stringify(expected)) {
+            throw new Error(
+                `${dir}/journal.jsonl: arm ${arm}'s UserSimRates differs from its delivered turns`,
+            );
+        }
+        rateOutside[arm] = expected.outside;
+    }
     // Staged under an exclusive create at a name of its own, then renamed over `aa.json`, so a
     // symlink at either name is replaced and a leftover of a killed report blocks nothing.
     const out = join(dir, "aa.json");

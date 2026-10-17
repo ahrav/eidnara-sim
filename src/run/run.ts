@@ -680,6 +680,7 @@ async function runArms(
                 scope.session = e.session;
                 scope.turn = e.kind === "user_turn" ? e.id : null;
                 try {
+                    if (e.kind === "session_end") agentText.delete(`${arm}/${e.session}`);
                     if (e.kind !== "user_turn") return await driver.event(e);
                     const turn = scriptedById.get(e.id);
                     if (!turn) throw new HarnessFailure(`${e.id}: no scripted user turn`);

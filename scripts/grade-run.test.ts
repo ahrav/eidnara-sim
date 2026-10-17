@@ -245,12 +245,38 @@ describe("grade-run", () => {
             ),
         };
         snapshot(dir, "eidnara", withUser);
+        // The journal holds the user turn the entry restates.
+        appendFileSync(
+            join(dir, "journal.jsonl"),
+            `${JSON.stringify({ seq: 998, wall_ms: 998, kind: "UserTurn", arm: "eidnara", scenario_ms: 0, event: base.turn, session: "s-1", label: "task", delivered: true })}\n`,
+        );
         const calls = readFileSync(join(dir, "calls.jsonl"), "utf8")
             .trim()
             .split("\n")
             .filter((l) => !l.includes('"seq":999'));
         writeFileSync(join(dir, "calls.jsonl"), `${calls.join("\n")}\n`);
         expect((await gradeRun(dir, null)).verdicts).toEqual({ "eidnara/P8": { pass: 1 } });
+    });
+
+    test("a journal mark on anything but a journaled user turn is refused", async () => {
+        const p8 = fixture("P8-pass");
+        const dir = run({ probes: [p8.probe] });
+        const base = p8.snapshots[0] as Snapshot;
+        const forged: Snapshot = {
+            ...base,
+            artefacts: base.artefacts.map((a) =>
+                a.class === "proxy-call"
+                    ? {
+                          ...a,
+                          calls: a.calls.map((c) =>
+                              c.component === "agent" ? { ...c, journal: true } : c,
+                          ),
+                      }
+                    : a,
+            ),
+        };
+        snapshot(dir, "eidnara", forged);
+        await expect(gradeRun(dir, null)).rejects.toThrow(/journal/);
     });
 
     test("grades a journaled snapshot and keys skipped items by arm and reason", async () => {

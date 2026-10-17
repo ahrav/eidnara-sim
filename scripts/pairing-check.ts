@@ -1,11 +1,11 @@
 import { existsSync, readFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { CORPUS_DIR } from "../src/corpus/sources";
-import { armBase, requireOrder } from "../src/hosts/arms";
+import { requireOrder } from "../src/hosts/arms";
 import { sha256Hex } from "../src/prereg/canonical";
 import { preregistrationHash } from "../src/prereg/validate";
 import { readJournalStrict, requireComplete } from "../src/run/journal";
-import { referenceArm } from "../src/run/run";
+import { CallIndex, referenceArm } from "../src/run/run";
 import type { Scenario } from "../src/scenario/compile";
 import { scenarioHash } from "../src/scenario/compile";
 import { loadPrereg } from "../src/scenario/inputs";
@@ -18,6 +18,7 @@ import {
     realisedRates,
 } from "../src/usersim/plan";
 import {
+    asksQuestion,
     pairingMismatches,
     readPairing,
     type TurnRecord,
@@ -60,7 +61,7 @@ if (manifest.events <= 0 || manifest.events > scenario.events.length) {
     process.exit(2);
 }
 const compiledFor = (
-    scenario as unknown as {
+    scenarioJson as {
         manifest?: { seed?: unknown; tier?: unknown; corpus_manifest_sha256?: unknown };
     }
 ).manifest;
@@ -80,7 +81,7 @@ const records = readPairing(join(dir, "pairing.jsonl"));
 // manifest's own, which the oracle loader and the A/A report bind to the tier.
 requireOrder(
     manifest.order as string[],
-    [...new Set((manifest.order as string[]).map(armBase))],
+    loadPrereg(manifest.tier).arms.run,
     loadPrereg(manifest.tier).aa_controls?.pairs ?? [],
 );
 const reference = referenceArm(manifest.order);
@@ -182,6 +183,15 @@ if (preregistrationHash(prereg) !== manifest.prereg_sha256) {
 // A divergence row is a cutoff only at its compiled event, for a known arm, with digests that
 // differ.
 const arms = new Set(manifest.order as string[]);
+// The replay sources the manifest names, read for the rows a recorded divergence cites.
+const sourceTurns = new Map<string, TurnRecord[]>();
+for (const tape of (manifest.tapes as string[] | undefined) ?? []) {
+    for (const r of readPairing(join(dirname(tape), "pairing.jsonl"))) {
+        if (r.kind !== "turn") continue;
+        const key = `${r.arm}/${r.event}`;
+        sourceTurns.set(key, [...(sourceTurns.get(key) ?? []), r]);
+    }
+}
 const invalidDivergences = records
     .filter((r) => r.kind === "divergedAt")
     .filter((r) => {
@@ -199,8 +209,20 @@ const invalidDivergences = records
             own?.digest === r.digest &&
             own?.context_sha256 === r.context_sha256 &&
             (r.against === "recorded" || ref?.digest === r.reference_digest);
+        // A recorded divergence cites a replay source's row for the event: the manifest names
+        // the source, and that source's pairing log holds the cited digest and context.
+        const sourceRows =
+            r.against === "recorded" ? (sourceTurns.get(`${r.arm}/${r.event}`) ?? []) : [];
+        const cited =
+            r.against !== "recorded" ||
+            sourceRows.some(
+                (x) =>
+                    x.digest === r.reference_digest &&
+                    x.context_sha256 === r.recorded_context_sha256,
+            );
         const differs =
             bound &&
+            cited &&
             (r.against === "recorded"
                 ? r.recorded_context_sha256 !== undefined &&
                   r.recorded_context_sha256 !== r.context_sha256
@@ -314,19 +336,27 @@ const missingDivergences = (manifest.order as string[])
 // filler the agent ended with a question.
 const scriptedTurns = scenario.events
     .filter((e) => e.kind === "user_turn")
-    .map((e) => e as unknown as { id: string; session: string; index: number; role: string });
+    .map((e) => ({
+        id: String(e.id),
+        session: String(e.session),
+        index: Number(e.index),
+        role: String(e.role),
+    }));
 const plan = behaviourPlan(
     scriptedTurns,
     prereg,
     manifest.seed as number,
     pinnedTurns(
-        scenario.events as unknown as {
-            id: string;
-            kind: string;
-            session: string;
-            index?: number;
-        }[],
-        scenario.faults ?? [],
+        scenario.events.map((e) => ({
+            id: String(e.id),
+            kind: String(e.kind),
+            session: String(e.session),
+            ...(typeof e.index === "number" ? { index: e.index } : {}),
+        })),
+        // The run pinned turns from its effective schedule: the manifest's override when set.
+        (manifest.fault_override as typeof scenario.faults | null | undefined) ??
+            scenario.faults ??
+            [],
     ),
 );
 const planLabelMismatch = turns
@@ -337,6 +367,28 @@ const planLabelMismatch = turns
         const clarify =
             planned === "task" && r.label === "clarify" && script.get(r.event)?.role === "filler";
         return r.label !== planned && !clarify;
+    })
+    .map((r) => `${r.arm} ${r.event}`);
+// A clarify row stands where the agent's preceding reply ended with a question; the proxy
+// record of that reply (its tail when cut) is the witness.
+const callIndex = existsSync(join(dir, "calls.jsonl"))
+    ? new CallIndex(join(dir, "calls.jsonl"))
+    : null;
+const began = new Map(
+    journal
+        .filter((e) => e.kind === "BeginTurn")
+        .map((e) => [`${e.arm}/${e.event}`, Number(e.scenario_ms)]),
+);
+const unwitnessedClarify = turns
+    .filter((r) => r.label === "clarify" && r.delivered)
+    .filter((r) => {
+        const at = began.get(`${r.arm}/${r.event}`);
+        const before = (callIndex?.records(r.arm, r.session) ?? [])
+            .filter((c) => c.component === "agent" && typeof c.response_text === "string")
+            .filter((c) => at === undefined || c.scenario_ms < at);
+        const last = before.at(-1);
+        if (!last) return true;
+        return !asksQuestion(last.response_tail ?? last.response_text ?? "");
     })
     .map((r) => `${r.arm} ${r.event}`);
 const prefix = new Set(allScheduled.map((e) => e.id));
@@ -406,6 +458,7 @@ const report = {
     tape_missing: tapeMissing,
     missing_divergences: missingDivergences,
     plan_label_mismatch: planLabelMismatch,
+    unwitnessed_clarify: unwitnessedClarify,
     unknown_arms: unknownArms,
     paste_provenance: provenance,
     script_text_altered: scriptAltered,
@@ -449,6 +502,7 @@ const failed =
     tapeMissing.length +
     missingDivergences.length +
     planLabelMismatch.length +
+    unwitnessedClarify.length +
     unknownArms.length +
     provenance.length +
     scriptAltered.length +

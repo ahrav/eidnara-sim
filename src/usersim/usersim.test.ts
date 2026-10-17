@@ -1000,6 +1000,40 @@ describe("tape and pairing", () => {
         );
     });
 
+    test("a replay source's manifest or journal that is not a regular file is refused", () => {
+        const root = dir();
+        writeFileSync(join(root, "tape.jsonl"), "");
+        writeFileSync(join(root, "pairing.jsonl"), "");
+        mkdirSync(join(root, "manifest.json"));
+        expect(() =>
+            checkTapeSources([join(root, "tape.jsonl")], { seed: 101, scenario_hash: "abc" }),
+        ).toThrow("regular file");
+    });
+
+    test("a pairing row's fallback, when present, names at least one cause", () => {
+        const root = dir();
+        const row = {
+            kind: "turn",
+            arm: "a",
+            session: "s",
+            event: "e",
+            index: 0,
+            label: "pushback",
+            delivered: true,
+            digest: "d",
+            context_sha256: "c",
+            prefix_sha256: "p",
+            text_sha256: "t",
+            source: "tape",
+            fallback: [],
+        };
+        writeFileSync(join(root, "pairing.jsonl"), `${JSON.stringify(row)}\n`);
+        expect(
+            () =>
+                new Pairing(join(dir(), "pairing.jsonl"), () => "a", [join(root, "pairing.jsonl")]),
+        ).toThrow("fallback");
+    });
+
     test("a replay source from another pre-registration is refused", () => {
         const root = dir();
         writeFileSync(join(root, "tape.jsonl"), "");
