@@ -24,6 +24,7 @@ const recorded = JSON.parse(
 const run = (arms: ArmLogs[], base = 0): RunLogs => ({
     dir: "",
     tier: "S",
+    price: null,
     base_wall_ms: base,
     prereg,
     kinds: new Map(),

@@ -211,7 +211,10 @@ export function tierReport(
             ...intrusiveness(g.run, arm),
             run: g.run.dir,
         })),
-        cost: perArm.map(({ g, arm }) => ({ ...costPanel(g.run, arm, g.grades), run: g.run.dir })),
+        cost: perArm.flatMap(({ g, arm }) => {
+            const panel = costPanel(g.run, arm, g.grades);
+            return panel ? [{ ...panel, run: g.run.dir }] : [];
+        }),
         judge: runs.map((g) => ({ run: g.run.dir, cost: judgeCost(g.run) })),
         falsification: falsificationSet(prereg, falsify),
         aa: runs.flatMap((g) => {

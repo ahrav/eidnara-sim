@@ -5,8 +5,9 @@ import { join } from "node:path";
 import type { GradeRecord } from "../grade/probes";
 import type { ArmLogs, RunLogs } from "../oracle/logs";
 import type { Entry } from "../run/journal";
+import { PRICE_TABLE } from "../run/price";
 import { loadPrereg } from "../scenario/inputs";
-import { costPanel, judgeCost, V1_PRICE } from "./cost";
+import { costPanel, judgeCost } from "./cost";
 import { intrusiveness, percentile } from "./intrusive";
 import { soak } from "./soak";
 
@@ -41,6 +42,7 @@ const run = (
     prereg,
     kinds,
     arms,
+    price: PRICE_TABLE,
 });
 
 function sessions(n: number, rss: (session: number, i: number) => number) {
@@ -156,9 +158,10 @@ describe("soak verdict", () => {
             { scenario_ms: 500, wall_ms: 500, rss: 100 * MB, store_bytes: 0 },
         ];
         const v = soak(run([], "", kinds), arm({ journal, resources }), "rss");
-        expect([v.sessions, v.bound.holds, v.bound.worst]).toEqual([
+        expect([v.sessions, v.bound.holds, v.bound.c, v.bound.worst]).toEqual([
             2,
             false,
+            8 * MB,
             { value: 210 * MB, limit: 200 * MB, sessions: 0 },
         ]);
     });
@@ -251,6 +254,7 @@ describe("intrusiveness panel", () => {
             ["e-6", "pushback", "Is the daemon port is 7780 right?", ["P1"]],
             ["e-7", "pushback", "Who says the daemon port is 7780 on every host?", []],
             ["e-8", "pushback", "Is it alpha beta gamma delta epsilon now?", []],
+            ["e-10", "pushback", "Again: the daemon port is 7780 on every host?", []],
         ] as const;
         writeFileSync(
             join(dir, "scenario.json"),
@@ -308,9 +312,18 @@ describe("intrusiveness panel", () => {
         ];
         const journal = turns.flatMap(([event, begin, end]) => [
             entry("BeginTurn", begin, { event }),
-            entry("EndTurn", end, { event, prompt_ms: (end - begin) / 2 }),
-            entry("UserTurn", end, { event }),
+            entry("EndTurn", end, { event, outcome: "ok", prompt_ms: (end - begin) / 2 }),
+            entry("UserTurn", end, { event, delivered: true }),
         ]);
+        journal.push(
+            entry("BeginTurn", 5000, { event: "e-10" }),
+            entry("BeginTurn", 7000, { event: "e-9" }),
+            entry("EndTurn", 907_000, {
+                event: "e-9",
+                outcome: "Timed out after 900000 ms",
+                prompt_ms: 900_000,
+            }),
+        );
         const tools = [
             { command: "git restore src/db.rs", exit: 0, scenario_ms: 1, turn: "e-2" },
             { command: "git checkout -- src/lib.rs", exit: 0, scenario_ms: 2, turn: "e-2" },
@@ -353,6 +366,21 @@ describe("intrusiveness panel", () => {
             { command: "git restore b.rs; false", exit: 1, scenario_ms: 3, turn: "e-2" },
             { command: "git restore c.rs && cargo test", exit: 0, scenario_ms: 3, turn: "e-2" },
             { command: "git restore d.rs | tee log", exit: 0, scenario_ms: 3, turn: "e-2" },
+            { command: "git checkout main\necho -- file", exit: 0, scenario_ms: 3, turn: "e-2" },
+            { command: "git checkout main --", exit: 0, scenario_ms: 3, turn: "e-2" },
+            { command: "git restore -- --staged", exit: 0, scenario_ms: 3, turn: "e-2" },
+            {
+                command: 'git commit -m "fix <<EOF"\nbody\nEOF\ngit restore h.rs',
+                exit: 0,
+                scenario_ms: 3,
+                turn: "e-2",
+            },
+            { command: "echo git restore x", exit: 0, scenario_ms: 3, turn: "e-2" },
+            { command: "rg git restore README", exit: 0, scenario_ms: 3, turn: "e-2" },
+            { command: "echo ok # git reset --hard", exit: 0, scenario_ms: 3, turn: "e-2" },
+            { command: "sudo git restore e.rs", exit: 0, scenario_ms: 3, turn: "e-2" },
+            { command: "FOO=1 git restore f.rs", exit: 0, scenario_ms: 3, turn: "e-2" },
+            { command: "(git restore g.rs)", exit: 0, scenario_ms: 3, turn: "e-2" },
             { command: "cargo test", exit: 0, scenario_ms: 4, turn: "e-2" },
         ];
         const panel = intrusiveness(run([], dir, new Map(), BASE), arm({ journal, tools }));
@@ -368,14 +396,24 @@ describe("intrusiveness panel", () => {
             'git checkout -- "my file.rs"',
             'git -C "/tmp/my repo" restore a.rs',
             "git restore c.rs && cargo test",
+            "git restore -- --staged",
+            'git commit -m "fix <<EOF"\nbody\nEOF\ngit restore h.rs',
+            "sudo git restore e.rs",
+            "FOO=1 git restore f.rs",
+            "(git restore g.rs)",
         ]);
         expect(panel.latency_ms).toEqual({ n: 7, p50: 500, p95: 5000 });
         expect(percentile([5, 1, 3, 2, 4], 0.5)).toBe(3);
 
         const grades = [
-            { arm: "eidnara", verdict: "pass", probe_type: "P3" },
-            { arm: "eidnara", verdict: "pass", probe_type: "P13" },
-            { arm: "host", verdict: "pass", probe_type: "P3" },
+            { arm: "eidnara", item: "i-1", version: 1, verdict: "pass", probe_type: "P3" },
+            { arm: "eidnara", item: "i-13", version: 1, verdict: "pass", probe_type: "P13" },
+            { arm: "host", item: "i-1", version: 1, verdict: "pass", probe_type: "P3" },
+            { arm: "eidnara", item: "i-4", version: 1, verdict: "pass", probe_type: "P4" },
+            { arm: "eidnara", item: "i-4", version: 2, verdict: "fail", probe_type: "P4" },
+            { arm: "eidnara", item: "i-5", version: 1, verdict: "fail", probe_type: "P5" },
+            { arm: "eidnara", item: "i-5", version: 3, verdict: "pass", probe_type: "P5" },
+            { arm: "eidnara", item: "i-5", version: 2, verdict: "pass", probe_type: "P5" },
         ] as GradeRecord[];
         const calls = [
             {
@@ -412,6 +450,7 @@ describe("intrusiveness panel", () => {
             })}\n`,
         );
         const cost = costPanel(run([], dir), arm({ calls }), grades);
+        if (cost === null) throw new Error("the run records a price table");
         expect(judgeCost(run([], dir))).toEqual({
             component: "judge",
             calls: 1,
@@ -419,16 +458,19 @@ describe("intrusiveness panel", () => {
             output: 1e6,
             cache_read: 0,
             cache_write: 0,
-            usd: 2 * V1_PRICE.input + V1_PRICE.output,
+            usd: 2 * PRICE_TABLE.rates.input + PRICE_TABLE.rates.output,
         });
         expect(judgeCost(run([], mkdtempSync(join(tmpdir(), "sim-panel-"))))).toBeNull();
+        const unpriced = { ...run([], dir), price: null };
+        expect(costPanel(unpriced, arm({ calls }), grades)).toBeNull();
+        expect(judgeCost(unpriced)).toBeNull();
         expect(cost.components.map((c) => [c.component, c.usd])).toEqual([
-            ["history_summarizer", V1_PRICE.output + 2 * V1_PRICE.cache_read],
-            ["agent", V1_PRICE.input],
-            ["user-sim", V1_PRICE.input],
+            ["history_summarizer", PRICE_TABLE.rates.output + 2 * PRICE_TABLE.rates.cache_read],
+            ["agent", PRICE_TABLE.rates.input],
+            ["user-sim", PRICE_TABLE.rates.input],
         ]);
         expect([cost.usd, cost.harness_usd, cost.passes, cost.usd_per_pass]).toEqual([
-            31, 5, 1, 31,
+            31, 5, 2, 15.5,
         ]);
         expect([cost.memory_writes, cost.writes_with_zero_reads, cost.price_table]).toEqual([
             5,

@@ -3,7 +3,7 @@ import type { OracleCount } from "../oracle/oracles";
 import type { Recovery } from "../oracle/recovery";
 import type { Preregistration } from "../prereg/schema";
 import type { TierVerdict, ZeroEffect } from "../stats/gate";
-import { type ComponentCost, type CostPanel, PRICE_TABLE, V1_PRICE } from "./cost";
+import type { ComponentCost, CostPanel } from "./cost";
 import type { Intrusiveness } from "./intrusive";
 import type { SoakVerdict } from "./soak";
 
@@ -224,12 +224,13 @@ function panels(r: TierReport): string[] {
                 ];
             }),
         ),
-        `## Cost (est $ at price table ${PRICE_TABLE}: USD ${V1_PRICE.input}, ${V1_PRICE.output}, ${V1_PRICE.cache_read}, ${V1_PRICE.cache_write} per million input, output, cache-read, cache-write tokens; arm totals leave out harness calls)`,
+        "## Cost (est $ at the price table each run's manifest recorded, named per row; arm totals leave out harness calls; a run that recorded no table has no rows)",
         "",
         ...table(
             [
                 "run",
                 "arm",
+                "table",
                 "caller",
                 "calls",
                 "input",
@@ -242,6 +243,7 @@ function panels(r: TierReport): string[] {
                 ...c.components.map((x) => [
                     c.run,
                     c.arm,
+                    c.price_table,
                     x.component,
                     x.calls,
                     x.input,
@@ -253,6 +255,7 @@ function panels(r: TierReport): string[] {
                 [
                     c.run,
                     c.arm,
+                    c.price_table,
                     "TOTAL",
                     ...(["calls", "input", "output", "cache_read", "cache_write"] as const).map(
                         (k) => c.components.reduce((s, x) => s + x[k], 0),
