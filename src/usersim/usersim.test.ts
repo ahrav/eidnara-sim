@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadPrereg } from "../scenario/inputs";
 import {
+    beganAt,
     behaviourPlan,
     deliveredTurns,
     type Label,
@@ -182,6 +183,29 @@ describe("behaviour plan", () => {
             ],
         );
         expect(labelled[1]).toMatchObject({ turn: "e-2", turn_index: 1, input_tokens: 0 });
+    });
+
+    test("a snapshot's user-sim entries carry the time the turn began", () => {
+        const entries = [
+            { kind: "BeginTurn", arm: "a", event: "e-1", scenario_ms: 10 },
+            {
+                kind: "UserTurn",
+                arm: "a",
+                event: "e-1",
+                scenario_ms: 90,
+                label: "pushback",
+                delivered: true,
+            },
+            { kind: "BeginTurn", arm: "b", event: "e-1", scenario_ms: 20 },
+        ];
+        expect(beganAt(entries, "a").get("e-1")).toBe(10);
+        const labelled = withUserLabels(
+            [],
+            [entries[1] as Record<string, unknown>],
+            new Map(),
+            beganAt(entries, "a"),
+        );
+        expect(labelled[0]).toMatchObject({ scenario_ms: 10, label: "pushback" });
     });
 
     test("a fault's trigger turn is never interrupted", () => {

@@ -952,7 +952,14 @@ export class OpencodeSimHost extends SimHost {
             return { error: `tool capture: ${String(caught)}`.slice(0, 2000), undelivered: true };
         }
         const startScenario = this.ctx.now?.() ?? 0;
-        // The listing spent part of the turn's deadline; the turn gets the rest.
+        // The listing spent part of the turn's deadline; a spent deadline sends nothing, and the
+        // turn gets the rest under the one-second floor.
+        if (deadline - Date.now() <= 0) {
+            return {
+                error: `turn deadline ${timeoutMs} ms spent before the prompt`,
+                undelivered: true,
+            };
+        }
         const outcome = await this.turn(text, remaining(), interruptMs, timeoutMs);
         try {
             await this.logTurnTools(seen, startScenario, remaining());

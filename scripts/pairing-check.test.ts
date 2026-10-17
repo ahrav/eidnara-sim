@@ -90,18 +90,27 @@ function fixture(arms: string[] = ["a", "b"]): Fixture {
     }
     journal.push({ kind: "EndRun", arm: null });
     const manifest = {
+        schema: "sim-run-manifest/v2",
         tier: "S",
+        seed: 101,
         order: arms,
         events: events.length,
-        scenario_hash: scenarioHash({ events }),
+        scenario_hash: scenarioHash(scenarioOf(events)),
         prereg_sha256: preregistrationHash(prereg),
     };
     return { events, journal, pairing, manifest };
 }
 
+const CORPUS_MANIFEST_SHA = sha256Hex(readFileSync(join(ROOT, "corpus/manifest.json"), "utf8"));
+const scenarioOf = (events: Row[]) => ({
+    manifest: { seed: 101, tier: "S", corpus_manifest_sha256: CORPUS_MANIFEST_SHA },
+    events,
+});
+
 function run(f: Fixture): { exit: number; report: Record<string, unknown>; stderr: string } {
     dir = mkdtempSync(join(tmpdir(), "pairing-check-"));
-    const scenario = { events: f.events, scenario_hash: scenarioHash({ events: f.events }) };
+    const body = scenarioOf(f.events);
+    const scenario = { ...body, scenario_hash: scenarioHash(body) };
     writeFileSync(join(dir, "manifest.json"), JSON.stringify(f.manifest));
     writeFileSync(join(dir, "scenario.json"), JSON.stringify(scenario));
     writeFileSync(
@@ -184,7 +193,7 @@ test("the pairing check fails a run that never reached EndArm for an arm or EndR
 test("a non-filler turn the host never received fails the check even when its pairing row says delivered", () => {
     const f = fixture();
     find(f.events, (e) => e.id === "e-1-1").role = "conveyance";
-    f.manifest = { ...f.manifest, scenario_hash: scenarioHash({ events: f.events }) };
+    f.manifest = { ...f.manifest, scenario_hash: scenarioHash(scenarioOf(f.events)) };
     find(
         f.journal,
         (r) => r.kind === "UserTurn" && r.arm === "b" && r.event === "e-1-1",
@@ -405,7 +414,7 @@ test("user-turn evidence outside the executed prefix is rejected", () => {
 test("every delivered scripted row carries the compiled text's hash", () => {
     const f = fixture();
     find(f.events, (e) => e.id === "e-1-1").role = "conveyance";
-    f.manifest = { ...f.manifest, scenario_hash: scenarioHash({ events: f.events }) };
+    f.manifest = { ...f.manifest, scenario_hash: scenarioHash(scenarioOf(f.events)) };
     for (const arm of ["a", "b"]) {
         find(f.pairing, (r) => r.arm === arm && r.event === "e-1-1").text_sha256 =
             sha256Hex("else");
@@ -418,7 +427,8 @@ test("every delivered scripted row carries the compiled text's hash", () => {
 test("a journal whose discarded tail is a terminated corrupt row is refused", () => {
     const f = fixture();
     dir = mkdtempSync(join(tmpdir(), "pairing-check-"));
-    const scenario = { events: f.events, scenario_hash: scenarioHash({ events: f.events }) };
+    const body = scenarioOf(f.events);
+    const scenario = { ...body, scenario_hash: scenarioHash(body) };
     writeFileSync(join(dir, "manifest.json"), JSON.stringify(f.manifest));
     writeFileSync(join(dir, "scenario.json"), JSON.stringify(scenario));
     writeFileSync(
@@ -442,6 +452,92 @@ test("a manifest without a non-empty distinct arm order is refused", () => {
     const r = run(f);
     expect(r.exit).not.toBe(0);
     expect(r.stderr).toContain("order");
+});
+
+test("a divergence row must precede its turn row", () => {
+    const f = fixture();
+    find(f.pairing, (r) => r.arm === "b" && r.event === "e-0-1").digest = "d2";
+    f.pairing.push({ ...diverged("e-0-1", 1, "d2"), reference_digest: "d" });
+    const r = run(f);
+    expect(r.report.invalid_divergences).toEqual(["b e-0-1"]);
+    expect(r.exit).toBe(1);
+});
+
+test("a journal user turn may be delivered only when its pairing row was", () => {
+    const f = fixture();
+    const row = find(f.pairing, (r) => r.arm === "a" && r.event === "e-0-9");
+    row.delivered = false;
+    row.label = "abandon";
+    row.text_sha256 = sha256Hex("");
+    find(f.journal, (r) => r.kind === "UserTurn" && r.arm === "a" && r.event === "e-0-9").label =
+        "abandon";
+    const rates = find(f.journal, (r) => r.kind === "UserSimRates" && r.arm === "a");
+    Object.assign(
+        rates,
+        realisedRates(
+            f.journal
+                .filter((r) => r.kind === "UserTurn" && r.arm === "a" && r.delivered === true)
+                .map((r) => ({ session: String(r.session), label: r.label as Label })),
+            prereg,
+        ),
+    );
+    const r = run(f);
+    expect(r.report.journal_pairing_mismatch).toEqual(["a e-0-9"]);
+    expect(r.exit).toBe(1);
+});
+
+test("the manifest's event count stays within the compiled scenario", () => {
+    const f = fixture();
+    f.manifest = { ...f.manifest, events: 500 };
+    const r = run(f);
+    expect(r.exit).not.toBe(0);
+    expect(r.stderr).toContain("events");
+});
+
+test("the manifest's seed and tier must be the compiled scenario's", () => {
+    const f = fixture();
+    f.manifest = { ...f.manifest, seed: 102 };
+    const r = run(f);
+    expect(r.exit).not.toBe(0);
+    expect(r.stderr).toContain("seed");
+});
+
+test("paste provenance is checked against the corpus the scenario was compiled from", () => {
+    const f = fixture();
+    dir = mkdtempSync(join(tmpdir(), "pairing-check-"));
+    const base = scenarioOf(f.events);
+    const body = {
+        ...base,
+        manifest: { ...base.manifest, corpus_manifest_sha256: "0".repeat(64) },
+    };
+    const scenario = { ...body, scenario_hash: scenarioHash(body) };
+    writeFileSync(
+        join(dir, "manifest.json"),
+        JSON.stringify({ ...f.manifest, scenario_hash: scenario.scenario_hash }),
+    );
+    writeFileSync(join(dir, "scenario.json"), JSON.stringify(scenario));
+    writeFileSync(
+        join(dir, "pairing.jsonl"),
+        f.pairing.map((e) => `${JSON.stringify(e)}\n`).join(""),
+    );
+    writeFileSync(
+        join(dir, "journal.jsonl"),
+        f.journal.map((e) => `${JSON.stringify(e)}\n`).join(""),
+    );
+    const r = Bun.spawnSync(["bun", join(ROOT, "scripts/pairing-check.ts"), dir], {
+        stdout: "pipe",
+        stderr: "pipe",
+    });
+    expect(r.exitCode).not.toBe(0);
+    expect(r.stderr.toString()).toContain("corpus");
+});
+
+test("a manifest from before the user-sim fields is refused by name", () => {
+    const f = fixture();
+    f.manifest = { ...f.manifest, schema: "sim-run-manifest/v1" };
+    const r = run(f);
+    expect(r.exit).not.toBe(0);
+    expect(r.stderr).toContain("sim-run-manifest/v2");
 });
 
 test("the pairing check refuses a pairing row with a wrongly typed field", () => {
@@ -481,7 +577,7 @@ test("a paste turn's record must name the compiled corpus item, whose bytes the 
     event.role = "paste";
     event.text = text;
     event.paste = paste;
-    f.manifest = { ...f.manifest, scenario_hash: scenarioHash({ events: f.events }) };
+    f.manifest = { ...f.manifest, scenario_hash: scenarioHash(scenarioOf(f.events)) };
     for (const arm of ["a", "b"]) {
         const row = find(f.pairing, (r) => r.arm === arm && r.event === "e-0-9");
         row.label = "paste";

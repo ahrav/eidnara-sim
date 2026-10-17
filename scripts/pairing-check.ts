@@ -29,8 +29,33 @@ if (
     console.error("manifest.json needs a tier, an event count, and a non-empty distinct arm order");
     process.exit(2);
 }
+if (manifest.schema !== "sim-run-manifest/v2") {
+    console.error(
+        `manifest.json is ${String(manifest.schema)}; the checker reads sim-run-manifest/v2`,
+    );
+    process.exit(2);
+}
 const scenarioJson: unknown = JSON.parse(readFileSync(join(dir, "scenario.json"), "utf8"));
 const scenario = scenarioJson as Scenario;
+// The manifest names one run: its event count lies within the compiled scenario, and its seed
+// and tier are the ones the scenario was compiled for.
+if (manifest.events <= 0 || manifest.events > scenario.events.length) {
+    console.error(
+        `manifest.json claims ${manifest.events} events; the scenario has ${scenario.events.length}`,
+    );
+    process.exit(2);
+}
+const compiledFor = (
+    scenario as unknown as {
+        manifest?: { seed?: unknown; tier?: unknown; corpus_manifest_sha256?: unknown };
+    }
+).manifest;
+if (compiledFor?.seed !== manifest.seed || compiledFor?.tier !== manifest.tier) {
+    console.error(
+        `manifest.json names seed ${manifest.seed} tier ${manifest.tier}; the scenario was compiled for seed ${compiledFor?.seed} tier ${compiledFor?.tier}`,
+    );
+    process.exit(2);
+}
 // The checker certifies against the scenario and pre-registration the manifest attests.
 if (scenarioHash(scenarioJson as Record<string, unknown>) !== manifest.scenario_hash) {
     console.error(`scenario.json does not match the manifest's scenario hash`);
@@ -57,8 +82,22 @@ const scriptAltered = turns
     .filter((r) => r.delivered && r.source === "script" && script.has(r.event))
     .filter((r) => r.text_sha256 !== sha256Hex(String(script.get(r.event)?.text)))
     .map((r) => `${r.arm} ${r.event}`);
+// The paste bytes come from the corpus the scenario was compiled from: its manifest hash is
+// the scenario's, and the samples file is the one that manifest names.
+const corpusManifestText = readFileSync(join(CORPUS_DIR, "manifest.json"), "utf8");
+if (sha256Hex(corpusManifestText) !== compiledFor?.corpus_manifest_sha256) {
+    console.error("corpus/manifest.json differs from the corpus the scenario was compiled from");
+    process.exit(2);
+}
+const samplesText = readFileSync(join(CORPUS_DIR, "tool-outputs/samples.jsonl"), "utf8");
+const attestedSamples = (JSON.parse(corpusManifestText) as { files?: Record<string, string> })
+    .files?.["tool-outputs/samples.jsonl"];
+if (sha256Hex(samplesText) !== attestedSamples) {
+    console.error("corpus/tool-outputs/samples.jsonl differs from the corpus manifest's digest");
+    process.exit(2);
+}
 const corpus = new Map(
-    readFileSync(join(CORPUS_DIR, "tool-outputs/samples.jsonl"), "utf8")
+    samplesText
         .split("\n")
         .filter((l) => l !== "")
         .map((l) => JSON.parse(l) as { id: string; content: string })
@@ -117,7 +156,10 @@ const invalidDivergences = records
         const event = script.get(r.event);
         const own = turns.find((t) => t.arm === r.arm && t.event === r.event);
         const ref = turns.find((t) => t.arm === reference() && t.event === r.event);
+        // The record is on disk before the turn it describes, so it precedes that turn's row.
+        const ahead = own !== undefined && records.indexOf(r) < records.indexOf(own);
         const bound =
+            ahead &&
             own?.digest === r.digest &&
             (r.against === "recorded" || ref?.digest === r.reference_digest);
         const differs =
@@ -161,6 +203,7 @@ const journalPairingMismatch = (manifest.order as string[]).flatMap((arm) => {
             row.label === "interrupt" && u.label === "task" && u.scheduled === "interrupt";
         if (u.session !== row.session || (u.label !== row.label && !relabel))
             off.add(String(u.event));
+        if (u.delivered === true && !row.delivered) off.add(String(u.event));
     }
     return [...off].sort().map((event) => `${arm} ${event}`);
 });

@@ -156,6 +156,7 @@ export function withUserLabels<C extends { component: string }>(
     calls: readonly C[],
     turns: readonly Record<string, unknown>[],
     turnIndex: ReadonlyMap<string, number>,
+    began: ReadonlyMap<string, number> = new Map(),
 ): (C | Record<string, unknown>)[] {
     return [
         ...calls.filter((c) => c.component !== "user-sim"),
@@ -164,12 +165,26 @@ export function withUserLabels<C extends { component: string }>(
             component: "user-sim",
             turn: String(e.event),
             turn_index: turnIndex.get(String(e.event)),
-            scenario_ms: e.scenario_ms,
+            // The user's text reached the agent when the turn began; the journal row that
+            // carries the label is appended after the turn ends.
+            scenario_ms: began.get(String(e.event)) ?? e.scenario_ms,
             input_tokens: 0,
             output_tokens: 0,
             label: String(e.label),
         })),
     ];
+}
+
+/** The scenario time each of an arm's turns began, by event, from the journal's `BeginTurn` rows. */
+export function beganAt<T extends Record<string, unknown>>(
+    entries: readonly T[],
+    arm: string,
+): Map<string, number> {
+    return new Map(
+        entries
+            .filter((e) => e.kind === "BeginTurn" && e.arm === arm)
+            .map((e) => [String(e.event), Number(e.scenario_ms)]),
+    );
 }
 
 export interface RealisedRates {

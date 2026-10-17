@@ -785,6 +785,24 @@ test("an OpenCode abort that answers true while the turn runs on under its deadl
     expect(await host.prompt("go", 1_200, 50)).toEqual({ interrupted: true });
 }, 10_000);
 
+test("an OpenCode turn whose deadline is spent before the prompt sends nothing", async () => {
+    let prompted = 0;
+    const host = opencodeHost({
+        session: {
+            messages: async () => ({ data: [] }),
+            prompt: () => {
+                prompted++;
+                return Bun.sleep(100).then(() => ({ data: { info: {} } }));
+            },
+            abort: async () => ({ data: true }),
+        },
+    });
+    const spent = await host.prompt("go", 0);
+    expect(spent.undelivered).toBe(true);
+    expect(spent.error).toContain("spent before the prompt");
+    expect(prompted).toBe(0);
+});
+
 test("an aborted OpenCode turn whose tool listing then fails keeps the interrupt beside the capture error", async () => {
     let listings = 0;
     const host = opencodeHost({
