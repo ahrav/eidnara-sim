@@ -110,19 +110,25 @@ judges a control of `host` against nothing, and P7 grades, which come from
 judgments against the host arm, stay out of the A/A pairing.
 
 `scripts/aa-report.ts <run>` reads the run's graded items and, for each
-control, pairs every item both arms graded. For each metric, verdicts as
-`<type>.pass` and each numeric grade metric, it reports the mean
-difference with a percentile bootstrap interval that resamples ledger
-facts (the pre-registered `cluster_key`), using the pre-registered
-`bootstrap` replicates and seed. A metric over fewer than five ledger
-facts is listed as uninformative and decides nothing. Over the rest it
+control, pairs every item both arms graded. It refuses a run graded under
+another pre-registration and records the hash it used. For each metric,
+verdicts as `<type>.pass` and each numeric grade metric, it reports the
+mean difference with a percentile bootstrap interval that resamples the
+family's pre-registered `cluster_key`: ledger facts for item-level
+families, and the run itself for run-level families (P13, P14), which one
+run therefore leaves uninformative. The bootstrap uses the pre-registered
+`bootstrap` replicates and seed. A metric over fewer than five clusters
+is listed as uninformative and decides nothing. Over the rest it
 reports whether every interval covers zero and the metrics whose interval
 misses it against the five percent expected by chance, the share of paired items whose verdicts
 differ (the disagreement rate), and how many sessions diverged at which
-index. With fewer than five pre-registered A/A repeats the result is
-descriptive. M7 applies each family's own pre-registered interval method;
-this report uses the cluster bootstrap for every metric. It writes
-`<run>/aa.json`.
+index. A divergence is recorded against the control's arm or, under
+`--tapes`, against the control's own recorded run; either way the control
+stops sharing its arm's taped replies from that turn, so both count. The
+report describes one run; the five pre-registered M repeats are a claim
+for their aggregation, which this script does not make. M7 applies each
+family's own pre-registered interval method; this report uses the cluster
+bootstrap for every metric. It writes `<run>/aa.json`.
 
 ## Limits
 

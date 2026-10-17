@@ -49,6 +49,17 @@ describe("oracle fixtures", () => {
     }
 });
 
+describe("A/A control arms", () => {
+    test("a control of host runs as host, so F6 does not hold it to the host's token or title budget", () => {
+        const bad = fixtures.find(([f]) => f === "F6-bad.json")?.[1] as Fixture;
+        const relabel = (a: ArmLogs): ArmLogs =>
+            a.arm === "host"
+                ? a
+                : { ...a, arm: "host~aa", calls: a.calls.map((c) => ({ ...c, arm: "host~aa" })) };
+        expect(counts({ ...bad, arms: bad.arms.map(relabel) })).toEqual({});
+    });
+});
+
 describe("oracle report", () => {
     test("each tier lists an activation count per oracle and marks zero-activation oracles uncovered", () => {
         const bad = fixtures.find(([f]) => f === "F1-bad.json")?.[1] as Fixture;
