@@ -1299,7 +1299,9 @@ Confidence: low -
 [evidence](evidence/sim-p51-gate-reads-completed-pairs-only.md). PROPOSED:
 reconstructed from the condensed index in spec #1007; no implementation exists
 to verify against, and a default tier run reaches it.
-Existing check: none
+Existing check: `src/stats/gate.test.ts`: excluded and fault-asymmetric pairs
+leave the analysis and are counted per arm, and an evaluation without a
+journal sequence is refused; status unaudited
 Impact: A gate passes on a selected subset of pairs.
 Open questions: None.
 
@@ -1323,7 +1325,9 @@ reconstructed from the condensed index in spec #1007; no implementation exists
 to verify against, and a default tier run reaches it.
 Existing check: `src/prereg/validate.test.ts`, report check: a report missing a
 family, under another pre-registration hash, or with a verdict the family's
-claim does not allow is refused by name; status unaudited
+claim does not allow is refused by name; `src/stats/gate.test.ts`: a verdict
+carries the pre-registration digest, each family's MDE and margin, n, and the
+resolution ratio; status unaudited
 Impact: A gate is passed under an analysis chosen after seeing the data.
 Open questions: None.
 
@@ -1346,7 +1350,8 @@ Confidence: low - [evidence](evidence/sim-p53-parity-never-emitted.md).
 PROPOSED: reconstructed from the condensed index in spec #1007; no
 implementation exists to verify against, and a default tier run reaches it.
 Existing check: `src/prereg/validate.test.ts`, report check: the token `parity`
-anywhere in a report, in any case, is refused; status unaudited
+anywhere in a report, in any case, is refused; `src/stats/gate.test.ts`: no
+fixture verdict contains the token; status unaudited
 Impact: A null at small n is read as equivalence.
 Open questions:
 - The verdict vocabulary adds three kinds to the spec index's four:
@@ -1371,7 +1376,8 @@ Required faults and enabling state: a run with one excluded item in one arm.
 Confidence: low - [evidence](evidence/sim-p54-pairing-by-item-identity.md).
 PROPOSED: reconstructed from the condensed index in spec #1007; no
 implementation exists to verify against, and a default tier run reaches it.
-Existing check: none
+Existing check: `src/stats/gate.test.ts`: pairs join by item id across arms in
+issue order whatever order each arm graded in; status unaudited
 Impact: Discordance is computed on mismatched items.
 Open questions: None.
 
@@ -1393,7 +1399,8 @@ Required faults and enabling state: a harm or futility signal in a sequence.
 Confidence: low - [evidence](evidence/sim-p55-early-stop-records-cause.md).
 PROPOSED: reconstructed from the condensed index in spec #1007; no
 implementation exists to verify against, and a default tier run reaches it.
-Existing check: none
+Existing check: `src/stats/gate.test.ts`: a harm CUSUM stop records its kind,
+signal index, and window and withholds the pass; status unaudited
 Impact: An early stop hides its cause or abandons issued items.
 Open questions: None.
 
@@ -1420,7 +1427,10 @@ PROPOSED: reconstructed from the condensed index in spec #1007; no
 implementation exists to verify against, and a default tier run reaches it.
 Existing check: `src/prereg/validate.test.ts`: the validator refuses a run-level
 gate with a paired interval below six paired runs, and the report check refuses
-any verdict but `insufficient-runs` below the family's floor; status unaudited
+any verdict but `insufficient-runs` below the family's floor;
+`src/stats/gate.test.ts`: four runs give `insufficient-runs(4)`, six runs a
+sign-test verdict, and six runs against a registered floor of eight
+`insufficient-runs(6)`; status unaudited
 Impact: A run-level claim is made from one or two runs.
 Open questions:
 - The S tier gates failed turns, internal-string hits, and p95 latency delta as
@@ -1472,7 +1482,8 @@ Required faults and enabling state: harm family results.
 Confidence: low - [evidence](evidence/sim-p58-harm-metric-direction.md).
 PROPOSED: reconstructed from the condensed index in spec #1007; no
 implementation exists to verify against, and a default tier run reaches it.
-Existing check: none
+Existing check: `src/stats/gate.test.ts`: `memory_made_it_worse` names exactly
+the harm metrics whose Holm-adjusted verdict is `worse`; status unaudited
 Impact: Harm is reported in the wrong direction or not at all.
 Open questions: None.
 

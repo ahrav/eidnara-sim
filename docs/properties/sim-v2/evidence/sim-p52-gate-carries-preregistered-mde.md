@@ -14,10 +14,8 @@ v2 harness before any harness code existed.
 A verdict records MDE, n, and the pre-registration hash journaled at `StartRun`,
 and the hash matches the pre-registration file.
 
-No harness code, test, or run exists yet. The surface lands in M0
-(#1024).
-
-M7 (#1032) puts the pre-registration digest, each family's MDE and margin, n, the detectable difference, and the resolution ratio into every verdict.
+M7 (#1032) puts the pre-registration digest, each family's MDE and margin, n,
+the detectable difference, and the resolution ratio into every verdict.
 
 ## Failure scenario
 

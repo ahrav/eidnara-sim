@@ -35,7 +35,13 @@ const runs = (metric: string, values: [number, number][]): Observation => ({
     runs: values.map(([control, treatment], i): RunPair => ({ run: `r-${i}`, control, treatment })),
 });
 const evaluate = (observations: Observation[], extra = {}) =>
-    evaluateTier(M, { observations, excluded: [], asymmetric: [], ...extra });
+    evaluateTier(M, {
+        observations,
+        excluded: [],
+        asymmetric: [],
+        journal_seq_at_eval: 7,
+        ...extra,
+    });
 const metric = (v: ReturnType<typeof evaluate>, family: string, name: string) =>
     v.families.find((f) => f.family === family)?.metrics.find((m) => m.metric === name);
 const repeat = <T>(n: number, x: T) => Array.from({ length: n }, () => x);
@@ -93,6 +99,7 @@ describe("tier gates", () => {
         expect(harm?.passed).toBe(false);
         expect(v.memory_made_it_worse.map((w) => w.metric)).toEqual(["P2.harm"]);
         expect(harm?.mde).toEqual({ value: "0", scale: "pp" });
+        expect(harm?.margin).toEqual({ value: "10", scale: "pp" });
         expect(v.prereg_sha256).toMatch(/^[0-9a-f]{64}$/);
         expect(v.pass.per_component_alpha.harm).toBe(0.05);
         expect(v.pass.per_component_alpha["probe-P14"]).toBe(0.03);
@@ -250,7 +257,8 @@ describe("tier gates", () => {
             "dependability",
             "failed_turns",
         );
-        expect([oneHost?.rate_ratio_upper, oneHost?.passed]).toEqual([0, true]);
+        expect(oneHost?.rate_ratio_upper).toBeCloseTo(0.985 / 0.015, 3);
+        expect(oneHost?.passed).toBe(false);
         const ties = metric(
             evaluate([runs("usd_per_component", repeat(7, [1, 1] as [number, number]))]),
             "cost",
@@ -276,7 +284,7 @@ describe("tier gates", () => {
 
     test("bounds pass or fail per run, and no output carries the word parity", () => {
         const s = (observations: Observation[]) =>
-            evaluateTier(S, { observations, excluded: [], asymmetric: [] });
+            evaluateTier(S, { observations, excluded: [], asymmetric: [], journal_seq_at_eval: 7 });
         const ok = s([runs("internal_string_hits", repeat(2, [0, 0] as [number, number]))]);
         const intr = ok.families.find((f) => f.family === "intrusiveness")?.metrics[0];
         expect([intr?.verdict, intr?.passed]).toEqual(["within-bound", true]);
@@ -365,5 +373,151 @@ describe("tier gates", () => {
             return (m?.interval?.[1] ?? 0) - (m?.interval?.[0] ?? 0);
         };
         expect(width(shared)).toBeGreaterThan(width(own));
+    });
+});
+
+describe("tier gate review findings", () => {
+    const seq = { journal_seq_at_eval: 7 };
+    const bounds = (overrides: Partial<Record<string, Observation>> = {}) => {
+        const zero: [number, number] = [0, 0];
+        const base: Record<string, Observation> = {
+            P8: binary("P8.cross_session_pass_rate", repeat(10, [1, 1] as [number, number])),
+            P9: binary("P9.cross_session_pass_rate", repeat(10, [1, 1] as [number, number])),
+            failed_turns: runs("failed_turns", repeat(2, zero)),
+            hangs: runs("hangs", repeat(2, zero)),
+            latency: runs("turn_latency_p95_delta_ms", repeat(2, [100, 120] as [number, number])),
+            rss: runs(
+                "daemon_rss_growth_bytes_per_session",
+                repeat(2, [1000, 2000] as [number, number]),
+            ),
+            heap: runs(
+                "daemon_heap_growth_bytes_per_session",
+                repeat(2, [1000, 2000] as [number, number]),
+            ),
+            store: runs(
+                "store_growth_bytes_per_session",
+                repeat(2, [1000, 2000] as [number, number]),
+            ),
+            hits: runs("internal_string_hits", repeat(2, zero)),
+            corrections: runs("user_corrections_referencing_injected_text", repeat(2, zero)),
+            reverted: runs("reverted_memory_edits", repeat(2, zero)),
+        };
+        return Object.values({ ...base, ...overrides }).filter((o): o is Observation => !!o);
+    };
+
+    test("a graded pp-scale metric reports proportions in percentage points", () => {
+        const scores: [number, number][] = [
+            [0.6667, 0.8667],
+            [0.3333, 0.5333],
+            [1, 1],
+            [0.6667, 0.8667],
+            [0.3333, 0.5333],
+            [0.6667, 0.8667],
+        ];
+        const m = metric(
+            evaluate([runs("P13.fold_fidelity_score", scores)], seq),
+            "probe-P13",
+            "P13.fold_fidelity_score",
+        );
+        expect(m?.difference).toBeCloseTo(16.67, 1);
+        expect(m?.interval?.[0]).toBeGreaterThan(1);
+        expect(m?.detectable).toBeGreaterThan(1);
+        expect(m?.resolution_ratio).toBeCloseTo(m?.detectable ?? 0, 9);
+    });
+
+    test("an observation carrying the wrong collection for its unit, or a non-finite value, is refused", () => {
+        const s = (observations: Observation[]) =>
+            evaluateTier(S, { observations, excluded: [], asymmetric: [], ...seq });
+        const miswired: Observation = {
+            metric: "P8.cross_session_pass_rate",
+            unit: "item",
+            cluster_key: "ledger_fact_id",
+            runs: [{ run: "r-0", control: 0, treatment: 0 }],
+        };
+        expect(() => s([miswired])).toThrow(StatsRefusal);
+        const both: Observation = { ...binary("P8.cross_session_pass_rate", [[1, 1]]), runs: [] };
+        expect(() => s([both])).toThrow(StatsRefusal);
+        const nan = runs("internal_string_hits", [[0, Number.NaN]]);
+        expect(() => s([nan])).toThrow(StatsRefusal);
+        const inf = binary("P8.cross_session_pass_rate", [[1, Number.POSITIVE_INFINITY]]);
+        expect(() => s([inf])).toThrow(StatsRefusal);
+    });
+
+    test("a family's registered run floor above six governs insufficient-runs", () => {
+        const eight = {
+            ...M,
+            families: M.families.map((f) =>
+                f.id === "dependability" ? { ...f, min_paired_runs: 8 } : f,
+            ),
+        };
+        const v = evaluateTier(eight, {
+            observations: [runs("failed_turns", repeat(6, [0, 3] as [number, number]))],
+            excluded: [],
+            asymmetric: [],
+            ...seq,
+        });
+        const m = metric(v, "dependability", "failed_turns");
+        expect([m?.verdict, m?.passed]).toEqual(["insufficient-runs(6)", false]);
+    });
+
+    test("a tier passes only when every CUSUM rule was evaluated", () => {
+        const s = (extra: object) =>
+            evaluateTier(S, {
+                observations: bounds(),
+                excluded: [],
+                asymmetric: [],
+                ...seq,
+                ...extra,
+            });
+        const withSd = s({ cusum_sd: { harm: 0.5, futility: 0.5 } });
+        expect([withSd.pass.passed, withSd.cusum_unavailable, withSd.stops]).toEqual([
+            true,
+            [],
+            [],
+        ]);
+        const noSd = s({});
+        expect(noSd.families.filter((f) => f.claim === "gate").every((f) => f.passed)).toBe(true);
+        expect(noSd.cusum_unavailable.length).toBe(2);
+        expect(noSd.pass.passed).toBe(false);
+        expect(noSd.pass.rule).toContain("evaluated");
+    });
+
+    test("the journal sequence is required and must be a non-negative integer", () => {
+        const input = { observations: [], excluded: [], asymmetric: [] };
+        expect(() =>
+            evaluateTier(M, { ...input, journal_seq_at_eval: undefined as unknown as number }),
+        ).toThrow(StatsRefusal);
+        expect(() => evaluateTier(M, { ...input, journal_seq_at_eval: -1 })).toThrow(StatsRefusal);
+        expect(() => evaluateTier(M, { ...input, journal_seq_at_eval: 1.5 })).toThrow(StatsRefusal);
+        expect(evaluateTier(M, { ...input, journal_seq_at_eval: 0 }).journal_seq_at_eval).toBe(0);
+    });
+
+    test("zero treatment events keep the Clopper-Pearson ratio bound; no events in either arm leave no bound", () => {
+        const oneHost = metric(
+            evaluate(
+                [runs("failed_turns", [[1, 0], ...repeat(5, [0, 0] as [number, number])])],
+                seq,
+            ),
+            "dependability",
+            "failed_turns",
+        );
+        expect(oneHost?.rate_ratio_upper).toBeCloseTo(0.985 / 0.015, 3);
+        expect(oneHost?.passed).toBe(false);
+        const fiveHost = metric(
+            evaluate(
+                [runs("failed_turns", [...repeat(5, [1, 0] as [number, number]), [0, 0]])],
+                seq,
+            ),
+            "dependability",
+            "failed_turns",
+        );
+        expect(fiveHost?.rate_ratio_upper).toBeLessThan(1.5);
+        expect(fiveHost?.passed).toBe(true);
+        const none = metric(
+            evaluate([runs("hangs", repeat(6, [0, 0] as [number, number]))], seq),
+            "dependability",
+            "hangs",
+        );
+        expect([none?.rate_ratio_upper, none?.passed]).toEqual([undefined, true]);
     });
 });

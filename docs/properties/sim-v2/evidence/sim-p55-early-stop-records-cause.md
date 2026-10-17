@@ -14,10 +14,10 @@ v2 harness before any harness code existed.
 A CUSUM early stop journals the metric, the item ids in the stopping window, and
 `journal_seq_at_eval`, and items already issued continue to terminal state.
 
-No harness code, test, or run exists yet. The surface lands in M7
-(#1032).
-
-M7 (#1032) records a CUSUM stop with its kind, metric, signal index, and the item ids since the sum last stood at zero, and the evaluation's journal sequence; a stop withholds the pass. Items already issued continuing to terminal state is the scheduler's part and is not exercised here.
+M7 (#1032) records a CUSUM stop with its kind, metric, signal index, and the
+item ids since the sum last stood at zero, and the evaluation's journal
+sequence; a stop withholds the pass. Items already issued continuing to terminal
+state is the scheduler's part and is not exercised here.
 
 ## Failure scenario
 

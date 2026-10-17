@@ -1,9 +1,4 @@
-import {
-    type Family,
-    MIN_PAIRED_RUNS_FOR_RUN_GATE,
-    needsPairedRuns,
-    type Preregistration,
-} from "../prereg/schema";
+import { type Family, needsPairedRuns, type Preregistration } from "../prereg/schema";
 import { preregistrationHash } from "../prereg/validate";
 import { betaQuantile, binomialCdf, normalQuantile, normalSf } from "./dist";
 import {
@@ -43,7 +38,8 @@ export interface TierInput {
     excluded: { id: string; arm: string; reason: string }[];
     asymmetric: string[];
     cusum_sd?: Partial<Record<"harm" | "futility", number>>;
-    journal_seq_at_eval?: number;
+    /** The observations are the completed pairs at this journal sequence. */
+    journal_seq_at_eval: number;
 }
 
 export class StatsRefusal extends Error {}
@@ -85,7 +81,7 @@ export interface CusumStop {
 
 export interface TierVerdict {
     prereg_sha256: string;
-    journal_seq_at_eval: number | null;
+    journal_seq_at_eval: number;
     families: FamilyResult[];
     memory_made_it_worse: { metric: string; interval: [number, number] | null }[];
     pass: {
@@ -206,6 +202,7 @@ function counts(f: Family, runs: RunPair[]): Stats {
     const t = runs.reduce((s, r) => s + r.treatment, 0);
     const c = runs.reduce((s, r) => s + r.control, 0);
     const share = c === 0 ? 1 : betaQuantile(1 - num(f.alpha) / 2, t + 1, c);
+    const ratioUpper = share >= 1 ? Number.POSITIVE_INFINITY : share / (1 - share);
     return {
         n,
         difference: mean(diffs),
@@ -217,7 +214,7 @@ function counts(f: Family, runs: RunPair[]): Stats {
         detectable: least === undefined ? null : (100 * least) / n,
         resolution_ratio: null,
         resolution_note: `the sign test's detectable size is a share of runs, which the ${f.mde.scale}-scale MDE does not measure`,
-        rate_ratio_upper: t === 0 ? 0 : share >= 1 ? Number.POSITIVE_INFINITY : share / (1 - share),
+        rate_ratio_upper: t + c === 0 ? undefined : ratioUpper,
         shift: p <= num(f.alpha) ? Math.sign(up - down) : 0,
     };
 }
@@ -227,7 +224,8 @@ function graded(f: Family, runs: RunPair[], p: Preregistration): Stats {
     const bca = f.interval_method === "paired-bca-bootstrap" || n < 10;
     const method = bca ? "paired BCa bootstrap over runs" : "paired percentile bootstrap over runs";
     if (n < 2) return { ...empty(method), n };
-    const diffs = runs.map((r) => r.treatment - r.control);
+    const unit = f.mde.scale === "pp" ? 100 : 1;
+    const diffs = runs.map((r) => unit * (r.treatment - r.control));
     const m = mean(diffs);
     const sd = Math.sqrt(diffs.reduce((s, v) => s + (v - m) ** 2, 0) / (n - 1));
     const b = bootstrap(diffs, mean, { ...p.bootstrap, alpha: num(f.alpha), bca });
@@ -267,7 +265,7 @@ function judge(f: Family, metric: string, s: Stats, obs: Observation): [string, 
         return bound(f, metric, s, obs);
     }
     if (s.n === 0) return ["inconclusive", f.claim === "gate" ? false : null];
-    if (needsPairedRuns(f) && s.n < MIN_PAIRED_RUNS_FOR_RUN_GATE) {
+    if (needsPairedRuns(f) && s.n < f.min_paired_runs) {
         return [`insufficient-runs(${s.n})`, false];
     }
     const adjusted = s.p_adjusted ?? s.p;
@@ -301,6 +299,10 @@ function statsOf(f: Family, o: Observation, p: Preregistration): Stats {
 }
 
 function check(p: Preregistration, input: TierInput): void {
+    const seq = input.journal_seq_at_eval;
+    if (!Number.isInteger(seq) || seq < 0) {
+        throw new StatsRefusal(`journal_seq_at_eval must be a non-negative integer, got ${seq}`);
+    }
     const byMetric = new Map(p.families.flatMap((f) => f.metrics.map((m) => [m, f] as const)));
     const seen = new Set<string>();
     for (const o of input.observations) {
@@ -317,6 +319,15 @@ function check(p: Preregistration, input: TierInput): void {
             throw new StatsRefusal(
                 `${o.metric}: cluster ${o.cluster_key}, pre-registered ${f.cluster_key}`,
             );
+        }
+        const [own, other] = o.unit === "item" ? [o.items, o.runs] : [o.runs, o.items];
+        if (!own || other) {
+            throw new StatsRefusal(
+                `${o.metric}: a ${o.unit} observation carries exactly ${o.unit}s`,
+            );
+        }
+        if (!own.every((x) => Number.isFinite(x.control) && Number.isFinite(x.treatment))) {
+            throw new StatsRefusal(`${o.metric}: every control and treatment value is finite`);
         }
     }
 }
@@ -415,14 +426,18 @@ export function evaluateTier(p: Preregistration, input: TierInput): TierVerdict 
         .map((m) => ({ metric: m.metric, interval: m.interval }));
     const verdict: TierVerdict = {
         prereg_sha256: preregistrationHash(p),
-        journal_seq_at_eval: input.journal_seq_at_eval ?? null,
+        journal_seq_at_eval: input.journal_seq_at_eval,
         families,
         memory_made_it_worse: worse ?? [],
         pass: {
-            passed: halts.length === 0 && gates.length > 0 && gates.every((f) => f.passed === true),
+            passed:
+                halts.length === 0 &&
+                unavailable.length === 0 &&
+                gates.length > 0 &&
+                gates.every((f) => f.passed === true),
             components: gates.map((f) => f.family),
             per_component_alpha: Object.fromEntries(gates.map((f) => [f.family, f.alpha])),
-            rule: "intersection-union: the tier passes when every gate component passes at its own alpha and no CUSUM rule stopped it; a noninferiority or at-most component decides on the upper end of its two-sided interval, a one-sided test at half its alpha",
+            rule: "intersection-union: the tier passes when every gate component passes at its own alpha and every CUSUM rule was evaluated and none stopped it; a noninferiority or at-most component with an interval decides on its upper end, a one-sided test at half its alpha; the at-most sign test decides its one-sided p at its alpha",
         },
         stops: halts,
         cusum_unavailable: unavailable,

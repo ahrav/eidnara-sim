@@ -14,10 +14,12 @@ v2 harness before any harness code existed.
 `EvaluateGate` input set equals `CompletedPairs(tier)` at `journal_seq_at_eval`,
 and the verdict carries excluded-pair count and ids.
 
-No harness code, test, or run exists yet. The surface lands in M7
-(#1032).
-
-M7 (#1032) evaluates a tier from the paired observations it is given; excluded ids and fault-asymmetric pairs leave the analysis, and the verdict lists the excluded ids with their arm and counts them per arm. The report (#1033) builds the observations from completed pairs.
+M7 (#1032) evaluates a tier from the paired observations it is given; excluded
+ids and fault-asymmetric pairs leave the analysis, and the verdict lists the
+excluded ids with their arm and counts them per arm. The input names the
+journal sequence its completed pairs were read at, a non-negative integer the
+evaluation refuses to run without, and the verdict repeats it. The report
+(#1033) builds the observations from completed pairs.
 
 ## Failure scenario
 

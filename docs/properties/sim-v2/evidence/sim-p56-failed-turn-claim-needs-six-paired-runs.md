@@ -14,10 +14,10 @@ v2 harness before any harness code existed.
 A dependability verdict on failed turns or hangs is emitted only with at least
 six paired runs; below that the verdict is `insufficient-runs(k)`.
 
-No harness code, test, or run exists yet. The surface lands in M7
-(#1032).
-
-M7 (#1032) answers `insufficient-runs(k)` for a run-level gate below six paired runs; a test checks four runs, and six runs give a sign-test verdict.
+M7 (#1032) answers `insufficient-runs(k)` for a run-level gate below its
+family's registered floor, which the validator keeps at six or more; a test
+checks four runs against the floor of six, six runs give a sign-test verdict,
+and six runs against a registered floor of eight give `insufficient-runs(6)`.
 
 ## Failure scenario
 

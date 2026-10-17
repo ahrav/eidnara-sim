@@ -45,15 +45,19 @@ pairs in the fault-asymmetric stratum; both leave the analysis, and the
 verdict counts them per arm and per metric.
 
 A metric with no pre-registration entry is refused by name, and so is a
-metric observed twice or an observation whose unit or cluster key differs
-from its family's. Every registered metric gets a result: one with no
+metric observed twice, an observation whose unit or cluster key differs
+from its family's, an observation carrying runs for an item unit or items
+for a run unit, and a control or treatment value that is not finite. The
+input names the journal sequence whose completed pairs it was built from,
+a non-negative integer; the verdict repeats it so the input set can be
+recomputed. Every registered metric gets a result: one with no
 observations is `inconclusive`, and a gate family with such a metric
 fails.
 
 | Outcome and unit | Method |
 |---|---|
 | Binary items | Exact McNemar p on the discordant pairs; the interval is the wider of the Newcombe method 10 interval and a ledger-fact cluster bootstrap, in percentage points |
-| Graded runs | Paired BCa bootstrap over runs for `paired-bca-bootstrap` or under ten runs, else percentile |
+| Graded runs | Paired BCa bootstrap over runs for `paired-bca-bootstrap` or under ten runs, else percentile; a family on the `pp` scale takes proportions and reports percentage points |
 | Count runs | Paired sign test up to eight runs, one-sided for `at-most`; above eight, or for `negative-binomial-glm`, a negative-binomial GLM with an arm term and a term per run over the runs with any events, reporting the rate ratio, with the sign test standing in when an arm has no events or the fit does not converge |
 | Bound families | No statistic; each run's treatment value, or a binary metric's treatment rate, is checked against the margin |
 
@@ -62,7 +66,10 @@ significant at the family's alpha (`p <= alpha`, after Holm over all of a
 `holm` family's registered metrics, a missing one at p = 1) in the
 direction the metric favours (pass rates and fidelity up, harms, counts,
 latency, and resources down), and otherwise
-`no-difference-above-X<scale>-detectable-at-n`. X is the detectable
+`no-difference-above-X<scale>-detectable-at-n`. Holm governs these
+labels, which is where the harm family's "memory made it worse" claim
+comes from; the family's noninferiority pass is decided per metric as
+described below. X is the detectable
 difference at that n: for binary items a normal approximation in Connor's
 form, `(z(1 - alpha/2) + z(power)) * sqrt(discordant) / n`, with the
 observed discordant count in place of the planned one and without
@@ -72,21 +79,31 @@ smallest share of runs that would reach significance (`pp-of-runs`); and
 for the GLM the rate ratio. The resolution ratio is X over the
 pre-registered MDE, or over the margin for a noninferiority family whose
 MDE is zero; the sign test has none, and its result says why. A run-level
-gate with fewer than six paired runs says `insufficient-runs(k)`. Bound
+gate with fewer paired runs than its family's registered floor (six at
+least) says `insufficient-runs(k)`. Bound
 families say `within-bound` or `failed-gate(metric, ids)`.
 
 A gate component passes as follows: `superiority-two-sided` needs
 `better`; `noninferiority` needs the interval's upper end below the
-margin; `at-most` needs the upper end at or below the margin, or, for the
+margin, each metric at the family alpha, so five harm metrics form an
+intersection-union test whose size is at most that alpha without a
+multiplicity adjustment; `at-most` needs the upper end at or below the
+margin, or, for the
 sign test, no `worse` and the Clopper-Pearson upper limit (at half the
 alpha) of the treatment-to-control ratio of event totals at or below a
-ratio margin; a treatment arm with no events passes. At six to eight runs
-that limit stays above 1.5 unless the treatment arm has far fewer events,
-so the sign-test gates at M and L pass with zero or few treatment events. The tier passes by intersection-union:
+ratio margin. With no events in either arm there is no ratio to bound and
+the component rests on the sign test. At six to eight runs
+that limit stays above 1.5 unless the treatment arm has far fewer events:
+one control event and none in treatment bounds the ratio near 66, and
+five control events and none in treatment near 1.3. The tier passes by
+intersection-union:
 every gate component passes at its own alpha, which the verdict lists,
-and no CUSUM rule stopped the tier. A noninferiority or at-most component
-decides on the upper end of a two-sided interval, a one-sided test at
-half its alpha, and the verdict says so.
+every CUSUM rule was evaluated, and none stopped the tier. A noninferiority
+or at-most component with an interval decides on its upper end, a
+one-sided test at half its alpha; the at-most sign test compares its
+one-sided p with the family alpha (the pre-registration's "sign test at
+p 0.03" at six paired runs, where six discordant runs give p = 1/64); the
+verdict says so.
 
 The CUSUM rules of `stopping_rule` run as harm or futility stops only.
 The harm sequence is, per item in issue order, the largest
@@ -97,7 +114,8 @@ A/A pairs. The upper tabular CUSUM at the rule's `k` and `h` signals a
 stop, recorded with the metric, the signal index, and the item ids since
 the sum last stood at zero, and a stop withholds the pass; a benefit,
 which moves only the lower sum, stops nothing. A rule without an A/A
-standard deviation is listed as unavailable. The verdict also carries the
+standard deviation is listed as unavailable, and a tier with an
+unavailable rule gets no pass. The verdict also carries the
 pre-registration digest, the journal sequence it was evaluated at, the
 families with their MDE and margin, and the harm metrics whose verdict is
 `worse` ("memory made it worse"). An evaluation whose output contains the
