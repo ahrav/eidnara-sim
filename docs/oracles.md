@@ -6,21 +6,23 @@ check grading uses (`requireComplete`, SIM-P67): every scheduled event
 ended once per arm, an `EndArm` per arm, and an `EndRun`; a `scenario.json`
 whose digest differs from the manifest's `scenario_hash` is refused, and so
 is a manifest arm outside the pre-registered names, a daemon arm with no
-numeric RSS sample, a call record that fails the proxy's record contract
-(`recordProblems`), names an arm outside the manifest, or repeats a sequence
-number, a resource sample or tool run missing a field, or an evidence file
-with a line that does not parse. It gathers, per arm, the call records, journal entries,
+numeric RSS sample or no `daemon.log`, a call record that fails the proxy's
+record contract (`recordProblems`), names an arm outside the manifest, or
+repeats a sequence number, a journal entry, resource sample, or tool run
+missing a field (an `EndTurn` needs its `outcome`), or an evidence file with
+a line that does not parse. It gathers, per arm, the call records, journal entries,
 plugin log (`<arm>/r/eidnara.log`), daemon log (`<arm>/daemon.log`),
-resource samples, and tool runs (`<arm>/tools.jsonl`, one line per tool run
-with its turn). `runOracles` returns every activation with its arm, where it
+resource samples, and tool runs (`<arm>/tools.jsonl`, one line per tool
+report with its turn; a Pi run with a `call` id is reported at its start with
+a null exit and again at its end, so it has two lines with one start time). `runOracles` returns every activation with its arm, where it
 happened, and the evidence.
 
 | Oracle | Fires on |
 |---|---|
-| F1 fold-lag overflow | An HTTP 4xx call whose error says the prompt exceeds the context (`prompt is too long`, `ContextOverflow`, `input is too long`), or a failed turn whose outcome says so and that has no agent-call overflow of its own (an auxiliary call's overflow in the same turn leaves the turn's activation in place) |
+| F1 fold-lag overflow | An HTTP 4xx call whose error says the prompt exceeds the context (`prompt is too long`, `ContextOverflow`, `input is too long`), or a failed turn whose outcome says so and whose agent calls carry no overflow wording of their own, at any status (an auxiliary call's overflow in the same turn leaves the turn's activation in place; an agent 5xx with overflow wording keeps the turn out of F1) |
 | F2 array-shape 400 | An HTTP 4xx call whose error names a message-array shape fault: roles that fail to alternate, an assistant prefill, a final assistant message, modified thinking blocks, or empty or non-list content |
 | F3 raw-history fallback | A plugin `rust pass` line with `served_from=raw`, one per transform pass that served its input unchanged; the warning the plugin logs before a failed pass is not counted again; a pass the daemon declined by policy (`declined:invocation_budget`) also serves raw and counts |
-| F4 hang | A turn that hit its deadline (OpenCode's `turn deadline` or Pi's `Timed out after ... ms`) with no agent call, or whose recorded activity (turn start, call starts and ends, tool starts, turn end) has a gap above `oracles.hang_quiet_ms`, so a turn active to its deadline is a long turn and a tool that waited on until the deadline is a hang; a turn that began and saw no call, tool start, or turn end within `oracles.hang_quiet_ms` (five minutes, SIM-P39), whatever its outcome; or an agent call that completed, whatever its status, and was followed by no tool start, other same-turn call starting at or after its end (a persistence call counts), or turn end within that bound: one activation per turn, its evidence naming every silent window; a tool that starts within a second of the call's end counts as progress however long it runs in a turn that completed, and its silence counts in a turn that hit the deadline |
+| F4 hang | A turn that hit its deadline (OpenCode's `turn deadline` or Pi's `Timed out after ... ms`) with no agent call, or whose recorded activity (turn start, call starts and ends, tool starts, turn end) has a gap above `oracles.hang_quiet_ms`, so a turn active to its deadline is a long turn and a tool that waited on until the deadline is a hang; a turn that began and saw no agent call, tool start, or turn end within `oracles.hang_quiet_ms` (five minutes, SIM-P39), whatever its outcome (an auxiliary call alone is not agent activity); or an agent call that completed, whatever its status, and was followed by no tool start, other same-turn call starting at or after its end (a persistence call counts), or turn end within that bound: one activation per turn, its evidence naming every silent window; a tool that starts within a second of the call's end counts as progress however long it runs in a turn that completed, and its silence counts in a turn that hit the deadline |
 | F5 RSS growth | A daemon RSS sample at or above `2 x RSS(0) + sessions x leak_bound.c_bytes_per_session`, or an RSS-per-session slope above that bound with a fit at or above `leak_bound.r2_threshold`; each daemon lifetime (the samples sharing a pid) is read on its own, with its first sample as RSS(0) and sessions counted from its start, so a restart hides no leak. The sampler records a sample when each daemon process is up (reset, resume, and after a fault's restart), one before a fault takes a daemon down, and a final sample when the arm finishes; a run whose daemon arm has no numeric RSS sample is refused by `loadRun` rather than read as leak-free |
 | F6 cost | An arm whose total tokens exceed `oracles.cost_ratio_max` (1.5) times the host arm's, or that makes more title calls than the host arm: one activation per arm and run, its evidence naming each exceeded bound; until the report prices tokens (M7) this is a token ratio |
 | F7 visible internal text | An agent response carrying plugin markup or diagnostics: history-segment tags, `eidnara` tags, context-researcher augmentation, `[eidnara]` log prefixes, or pass fields such as `row_version` and `served_from`; read from the recorded response text, the first 262,144 characters; a call whose text ran past that cap carries `response_text_truncated` |
@@ -118,26 +120,30 @@ check is a reason of its own. `two_hosts_one_daemon` has no mechanism yet
 two clients reading one proposal.
 
 The recorded `witness-8` eidnara arm reaches a clean turn after each of its
-four faults: the restart and plugin reload at the first later turn, and the
-model switch and full store at the second, because the turn on the full
-store published two fail-open passes. That run predates the store check, so
-its restart is unrecovered for want of one.
+five faults: the laptop sleep, the restart, and the plugin reload at the
+first later turn, and the model switch and full store at the second, because
+the turn on the full store published a fail-open pass. The sleep's row comes
+from its `FaultFired` and clock jump, since that run predates the sleep's
+`FaultObserved` entry; the run also predates the store check, so its restart
+is unrecovered for want of one.
 
 In the live `recovery-3` run (S seed 101, Pi, eidnara arm, a 30000-token
 context limit so that sessions fold), the daemon took a SIGKILL during the
 history-summarizer calls of `s-0004` and `s-0005` and a restart at
 `s-0005`'s start. Each restart left the one segment of `s-0003`; each
 post-crash check and the final store kept it with integrity `ok` and no
-overlap. The `s-0005` faults recovered at the first turn. The `s-0004` kill
-recovered at the second: in the turn it cut, the plugin logged a failed pass
-(`connection generation retired`) and a `decision=error` pass about a
-second after the restart. The final store
-holds two segments of `s-0005` and none of `s-0004`, whose only fold the
-kill cut. The run is the fixture `tests/fixtures/recovery/recovery-3-eidnara.json`;
-a test that empties its post-crash segment lists turns all three verdicts
-unrecovered. In `recovery-2`, a restart of an empty store recovered the same
-way, and the plugin logged two `declined:invocation_budget` passes, which
-count toward F3 and leave their turns clean.
+overlap, by bounds. The `s-0005` faults reach a clean turn at the first
+turn. The `s-0004` kill reaches one at the second: in the turn it cut, the
+plugin logged a failed pass (`connection generation retired`) about a second
+after the restart. The final store holds two segments of `s-0005` and none
+of `s-0004`, whose only fold the kill cut. The run is the fixture
+`tests/fixtures/recovery/recovery-3-eidnara.json`. Its store checks predate
+the content digests, so the oracle withholds `recovered` from all three
+faults with the reason `store ranges lack content digests`; a test that
+empties its post-crash segment lists adds the removed segment as a second
+reason. In `recovery-2`, a restart of an empty store behaved the same way,
+and the plugin logged two `declined:invocation_budget` passes, which count
+toward F3 and leave their turns clean.
 
 ## Fixtures
 

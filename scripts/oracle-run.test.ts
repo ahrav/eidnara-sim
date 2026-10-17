@@ -26,10 +26,10 @@ function completeRun(root: string, tier: string, prereg_sha256: string): string 
     writeFileSync(join(dir, "manifest.json"), JSON.stringify(manifest));
     writeFileSync(join(dir, "scenario.json"), JSON.stringify({ ...scenario, scenario_hash }));
     const journal = [
-        { kind: "StartRun", arm: null, order: ["eidnara"] },
-        { kind: "Event", arm: "eidnara", event: "e-1" },
-        { kind: "EndArm", arm: "eidnara" },
-        { kind: "EndRun", arm: null },
+        { kind: "StartRun", arm: null, order: ["eidnara"], scenario_ms: 0 },
+        { kind: "Event", arm: "eidnara", event: "e-1", scenario_ms: 0 },
+        { kind: "EndArm", arm: "eidnara", scenario_ms: 0 },
+        { kind: "EndRun", arm: null, scenario_ms: 0 },
     ];
     writeFileSync(join(dir, "journal.jsonl"), journal.map(line).join(""));
     const overflow = {
@@ -57,6 +57,7 @@ function completeRun(root: string, tier: string, prereg_sha256: string): string 
     writeFileSync(join(dir, "calls.jsonl"), line(overflow));
     mkdirSync(join(dir, "eidnara"));
     writeFileSync(join(dir, "eidnara", "resources.jsonl"), line({ scenario_ms: 0, rss: 100 }));
+    writeFileSync(join(dir, "eidnara", "daemon.log"), "");
     return dir;
 }
 

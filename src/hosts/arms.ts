@@ -3,13 +3,17 @@ import {
     appendFileSync,
     closeSync,
     existsSync,
+    linkSync,
     mkdirSync,
     openSync,
     readdirSync,
     readFileSync,
     readSync,
     realpathSync,
+    renameSync,
     rmSync,
+    statSync,
+    truncateSync,
     writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -46,7 +50,11 @@ export interface HostContext {
     model: string;
     contextLimit: number;
     now?: () => number;
-    /** The host invokes `onTool` once per tool run as it records the run; `drainTools` invokes it for the runs it adds itself. */
+    /**
+     * The host invokes `onTool` as it records a run; `drainTools` invokes it for the runs it
+     * adds itself. A run with a `call` id may be reported at its start with a null exit and
+     * again at its end, and the later report replaces the earlier one.
+     */
     onTool?: (run: ToolRun) => void;
 }
 
@@ -54,6 +62,8 @@ export interface ToolRun {
     command: string;
     exit: number | null;
     scenario_ms: number;
+    /** The host's id for the run, when it reports a start before the end; a later report with the same id replaces the earlier one. */
+    call?: string;
 }
 
 const TARGET_KEYS = ["path", "filePath", "pattern", "file_path"];
@@ -144,17 +154,40 @@ export class DaemonStack {
         writeFileSync(this.logSourceFile, String(this.stack?.logPath ?? ""));
     }
 
+    /** Appends a dead lifetime's log to `daemon.log` exactly once, then removes it. */
+    private absorb(source: string): void {
+        const start = existsSync(this.ctx.logFile) ? statSync(this.ctx.logFile).size : 0;
+        const tmp = `${this.logSourceFile}.tmp`;
+        writeFileSync(tmp, JSON.stringify({ source, target_bytes: start }));
+        renameSync(tmp, this.logSourceFile);
+        appendFileFrom(source, this.ctx.logFile);
+        rmSync(source, { force: true });
+        rmSync(this.logSourceFile, { force: true });
+    }
+
     /**
-     * Saves the stderr log a killed lifetime left behind, then removes it. A clean `stop` or
-     * `restart` has already saved and removed its log, so this finds a file only after a kill.
+     * Saves the stderr log a killed lifetime left behind. The marker names the log; while a
+     * copy runs it also records `daemon.log`'s length before the copy, so a kill mid-copy is
+     * rolled back to that length before the copy runs again, and the log is appended once.
+     * A clean `stop` or `restart` has already saved and removed its log, so this finds a file
+     * only after a kill.
      */
     recoverLog(): void {
         if (!existsSync(this.logSourceFile)) return;
-        const source = readFileSync(this.logSourceFile, "utf8").trim();
-        rmSync(this.logSourceFile, { force: true });
-        if (source === "" || !existsSync(source)) return;
-        appendFileFrom(source, this.ctx.logFile);
-        rmSync(source, { force: true });
+        const note = readFileSync(this.logSourceFile, "utf8").trim();
+        let source = note;
+        if (note.startsWith("{")) {
+            let parsed: { source: string; target_bytes: number };
+            try {
+                parsed = JSON.parse(note);
+            } catch {
+                throw new Error(`${this.logSourceFile}: unreadable daemon log recovery marker`);
+            }
+            source = parsed.source;
+            if (existsSync(this.ctx.logFile)) truncateSync(this.ctx.logFile, parsed.target_bytes);
+        }
+        if (source !== "" && existsSync(source)) this.absorb(source);
+        else rmSync(this.logSourceFile, { force: true });
     }
 
     async start(): Promise<void> {
@@ -201,37 +234,62 @@ export class DaemonStack {
      * (`logPath`, a private field the stack's own `diagnostics` view reads the same way) and
      * stdout from the `diagnostics` view.
      */
-    private saveLog(): void {
-        if (!this.stack) return;
-        const { stdout } = this.hh.__hermeticHostTest.diagnostics(this.stack);
+    /**
+     * Saves the lifetime's stdout, then its stderr log, once the daemon is dead so the log
+     * holds everything it wrote. `held` is a hard link taken before a restart: the stack
+     * replaces the log path when the new daemon starts, and the link keeps the old inode
+     * readable until the old daemon's last write has landed.
+     */
+    private saveLog(stdout: string, log: string): void {
         appendFileSync(this.ctx.logFile, stdout);
-        const logPath = String(this.stack.logPath ?? "");
-        if (existsSync(logPath)) {
-            appendFileFrom(logPath, this.ctx.logFile);
-            rmSync(logPath, { force: true });
+        if (existsSync(log)) {
+            appendFileFrom(log, this.ctx.logFile);
+            rmSync(log, { force: true });
         }
         rmSync(this.logSourceFile, { force: true });
     }
 
-    /** Kills the daemon by SIGKILL; the store stays as the kill left it until `restart`. */
+    private get held(): string {
+        return `${this.ctx.logFile}.held`;
+    }
+
+    /** The dying lifetime's stdout and stderr, held with its log until the replacement is up. */
+    private heldStdout: string | null = null;
+
+    /** Holds the live lifetime's diagnostics and a hard link to its log for `restart` to save. */
+    private hold(): void {
+        const { stdout } = this.hh.__hermeticHostTest.diagnostics(this.stack);
+        const live = String(this.stack.logPath ?? "");
+        rmSync(this.held, { force: true });
+        if (existsSync(live)) linkSync(live, this.held);
+        this.heldStdout = stdout;
+    }
+
+    /**
+     * Kills the daemon by SIGKILL; the store stays as the kill left it until `restart`, which
+     * saves the dead lifetime's held log.
+     */
     async crash(): Promise<void> {
-        this.saveLog();
+        this.hold();
         await this.stack.crashHost();
     }
 
-    /** Starts the replacement daemon, killing the current one first when it is still running. */
+    /** Starts the replacement daemon, killing the current one first unless `crash` already did. */
     async restart(): Promise<void> {
-        if (this.pid() !== null) this.saveLog();
+        if (this.heldStdout === null) this.hold();
         await this.stack.restartHost();
+        this.saveLog(this.heldStdout ?? "", this.held);
+        this.heldStdout = null;
         this.noteLogSource();
     }
 
     async stop(): Promise<void> {
         const stack = this.stack;
         if (!stack) return;
-        this.saveLog();
+        const { stdout } = this.hh.__hermeticHostTest.diagnostics(stack);
         await stack.terminateHost();
         this.stack = null;
+        this.saveLog(stdout, String(stack.logPath ?? ""));
     }
 }
 
@@ -281,8 +339,10 @@ export abstract class SimHost {
         args: Record<string, unknown> | undefined,
         exit: number | null,
         scenario_ms = this.ctx.now?.() ?? 0,
+        call?: string,
     ) {
-        const run = { command: toolCommand(tool, args), exit, scenario_ms };
+        const run: ToolRun = { command: toolCommand(tool, args), exit, scenario_ms };
+        if (call) run.call = call;
         this.tools.push(run);
         this.ctx.onTool?.(run);
     }
@@ -307,25 +367,34 @@ export class PiSimHost extends SimHost {
     >();
 
     protected override unfinished(): ToolRun[] {
-        const open = [...this.started.values()];
+        const open = [...this.started.entries()];
         this.started.clear();
-        return open.map((t) => ({
+        return open.map(([call, t]) => ({
             command: toolCommand(t.tool, t.args),
             exit: null,
             scenario_ms: t.scenario_ms,
+            call,
         }));
     }
 
-    /** A tool run is timed from its start event, the moment the action began. */
+    /**
+     * A tool run is timed from its start event, the moment the action began, and reported to
+     * the recorder at that moment with a null exit, so a kill before the end event leaves the
+     * run on record; the end event reports it again with its exit.
+     */
     private toolEvent(e: Untyped): void {
         if (e.type === "tool_execution_start") {
             const scenario_ms = this.ctx.now?.() ?? 0;
             this.started.set(e.toolCallId, { tool: e.toolName, args: e.args, scenario_ms });
+            const command = toolCommand(e.toolName, e.args);
+            this.ctx.onTool?.({ command, exit: null, scenario_ms, call: e.toolCallId });
         }
         if (e.type !== "tool_execution_end") return;
         const run = this.started.get(e.toolCallId);
         this.started.delete(e.toolCallId);
-        if (run) this.logTool(run.tool, run.args, e.isError === true ? 1 : 0, run.scenario_ms);
+        if (!run) return;
+        const exit = e.isError === true ? 1 : 0;
+        this.logTool(run.tool, run.args, exit, run.scenario_ms, e.toolCallId);
     }
 
     private writeConfigs(connectionFile: string | null): void {

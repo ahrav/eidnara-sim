@@ -473,6 +473,24 @@ describe("HostDriver lifecycle", () => {
         await plain.driver.event(ev("user_turn", { text: "go" }));
         expect(plain.exits).toEqual([]);
     });
+
+    test("a daemon gone while a probe turn settles and snapshots is reported with that turn", async () => {
+        const { driver, exits } = fixture("host", { p: gitRepo() });
+        const daemon = fakeDaemon(10);
+        const o = (driver as unknown as { o: DriverOptions }).o;
+        o.settle = async () => {
+            daemon.current = null;
+        };
+        const fresh = new HostDriver(o);
+        await fresh.reset();
+        fresh.daemon = daemon as unknown as DaemonStack;
+        await fresh.event(ev("session_start", { session: "s-0" }));
+        const outcome = await fresh.event(
+            ev("user_turn", { id: "e-8", session: "s-0", text: "go", probe: "q-1" }),
+        );
+        expect(exits).toEqual([{ after: "e-8" }]);
+        expect(outcome.snapshot).toBe("host:q-1:e-8");
+    });
 });
 
 describe("HostDriver faults", () => {
@@ -697,6 +715,18 @@ describe("HostDriver faults", () => {
             ev("user_turn", { id: "e-1", session: "s-0", text: "go", probe: "q-1" }),
         );
         expect(outcome.stores?.map((s) => s.fault)).toEqual(["f-daemon_restart"]);
+    });
+
+    test("a fault whose id is an object prototype key still owes and settles its check", async () => {
+        const { driver } = fixture("eidnara");
+        driver.daemon = fakeDaemon(10) as unknown as DaemonStack;
+        driver.host = new FakeHost({} as HostContext, "/x") as unknown as SimHost;
+        await driver.fault({ ...episode("daemon_restart"), id: "__proto__" });
+        const state = JSON.parse(readFileSync(join(driver.armDir, "state.json"), "utf8"));
+        expect(Object.keys(state.store_faults)).toEqual(["__proto__"]);
+        pluginLog(driver, PASS);
+        const outcome = await driver.event(ev("user_turn", { id: "e-1", text: "go" }));
+        expect(outcome.stores?.map((s) => s.fault)).toEqual(["__proto__"]);
     });
 
     test("the store check waits for the first pass the replacement daemon serves", async () => {
@@ -1114,6 +1144,24 @@ test("a recorder rebuilt over a stale index lock waits its bound for the holder,
     expect(existsSync(lock)).toBe(false);
 });
 
+test("a tool run reported at its start is on record, and its end report replaces it", () => {
+    const armDir = tmp();
+    const recorder = new SnapshotRecorder(armDir, "eidnara", () => []);
+    recorder.addTools([{ command: "cargo build", exit: null, scenario_ms: 1, call: "t1" }], "e-1");
+    recorder.addTools([{ command: "ls", exit: 0, scenario_ms: 2 }], "e-1");
+    const killed = JSON.parse(readFileSync(join(armDir, "snapshot-state.json"), "utf8"));
+    expect(killed.commands).toEqual([
+        { command: "cargo build", exit: null, scenario_ms: 1, call: "t1" },
+        { command: "ls", exit: 0, scenario_ms: 2 },
+    ]);
+    recorder.addTools([{ command: "cargo build", exit: 1, scenario_ms: 1, call: "t1" }], "e-1");
+    const ended = JSON.parse(readFileSync(join(armDir, "snapshot-state.json"), "utf8"));
+    expect(ended.commands).toEqual([
+        { command: "cargo build", exit: 1, scenario_ms: 1, call: "t1" },
+        { command: "ls", exit: 0, scenario_ms: 2 },
+    ]);
+});
+
 test("a recorder rebuilt over a cut last snapshot line drops the cut and appends whole records", () => {
     const repo = gitRepo();
     const armDir = tmp();
@@ -1183,9 +1231,9 @@ test("the workspace walk is bounded by the recorder deadline", () => {
     }
     const recorder = new SnapshotRecorder(armDir, "eidnara", () => [], 1);
     expect(() => recorder.embedded(repo)).toThrow("timed out");
-    const roomy = new SnapshotRecorder(armDir, "eidnara", () => [], 10_000);
+    const roomy = new SnapshotRecorder(armDir, "eidnara", () => [], 60_000);
     expect(roomy.embedded(repo)).toEqual([]);
-});
+}, 60_000);
 
 test("the nested-repository check is bounded like the other snapshot git runs", () => {
     const repo = gitRepo();

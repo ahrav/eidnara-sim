@@ -6,7 +6,14 @@ import { fixtureEvents } from "../../tests/run-fixture";
 import type { FaultEpisode } from "../scenario/faults";
 import { SEAMS } from "../scenario/faults";
 import { Clock } from "./clock";
-import { type Entry, Journal, readJournal, releaseLease, takeLease } from "./journal";
+import {
+    type Entry,
+    Journal,
+    keepCompleteLines,
+    readJournal,
+    releaseLease,
+    takeLease,
+} from "./journal";
 import { type ArmDriver, HarnessFailure, type ScenarioEvent, Scheduler } from "./scheduler";
 
 const ROOT = join(import.meta.dir, "..", "..");
@@ -98,6 +105,14 @@ describe("Clock", () => {
 });
 
 describe("Journal and lease", () => {
+    test("keepCompleteLines drops a cut last line and leaves whole lines", () => {
+        const path = join(dir(), "log.jsonl");
+        expect(keepCompleteLines(path)).toBe("");
+        writeFileSync(path, '{"a":1}\n{"b":2}\n{"c":');
+        expect(keepCompleteLines(path)).toBe('{"a":1}\n{"b":2}\n');
+        expect(readFileSync(path, "utf8")).toBe('{"a":1}\n{"b":2}\n');
+    });
+
     test("a cut last line is dropped, and scenario time may not decrease within an arm", () => {
         const path = join(dir(), "j.jsonl");
         const j = new Journal(path);
@@ -517,6 +532,33 @@ describe("resume of a journaled sleep jump", () => {
         expect(observed[0]?.evidence).toEqual({ clock_advanced_ms: duration });
         const last = resumed.entries.at(-1) as Entry;
         expect(last.scenario_ms).toBeLessThan(2 * duration);
+    });
+});
+
+describe("fault schedule validity", () => {
+    test("duplicate fault ids and non-positive sleep durations are refused before the run starts", () => {
+        const j = new Journal(join(dir(), "j.jsonl"));
+        const base = {
+            events: fixtureEvents(1),
+            journal: j,
+            settleMs: 0,
+            order: ["a"],
+            drivers: { a: fakeDriver([]) },
+        };
+        const twice = episode("dup", "daemon_restart", {
+            kind: "session_start",
+            session: "s-0000",
+        });
+        expect(() => new Scheduler({ ...base, faults: [twice, { ...twice }] })).toThrow(
+            "fault id dup is scheduled twice",
+        );
+        const still = {
+            ...episode("f-sleep", "laptop_sleep", { kind: "session_start", session: "s-0000" }),
+            params: { duration_ms: 0 },
+        };
+        expect(() => new Scheduler({ ...base, faults: [still] })).toThrow(
+            "laptop_sleep f-sleep needs a positive duration_ms",
+        );
     });
 });
 

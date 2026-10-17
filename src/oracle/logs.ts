@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Command } from "../grade/artefacts";
-import type { StoreCheck } from "../hosts/storecheck";
+import { parseStoreCheck, type StoreCheck } from "../hosts/storecheck";
 import { ARMS, type Preregistration } from "../prereg/schema";
 import { type CallRecord, recordProblems } from "../proxy/records";
 import { type Entry, readJournal, requireComplete } from "../run/journal";
@@ -110,7 +110,16 @@ export function loadRun(dir: string, prereg: Preregistration): RunLogs {
         if (seen.has(c.seq)) throw new Error(`call ${c.seq}: sequence number repeated`);
         seen.add(c.seq);
     }
-    const journal = readJournal(join(dir, "journal.jsonl"));
+    const journalPath = join(dir, "journal.jsonl");
+    const journal = readJournal(journalPath);
+    journal.forEach((e, i) => {
+        const fields: Record<string, FieldCheck> = { kind: str, arm: strOrNull, scenario_ms: num };
+        if (["BeginTurn", "EndTurn", "Event"].includes(String(e.kind))) fields.event = str;
+        if (e.kind === "EndTurn") fields.outcome = str;
+        for (const [field, ok] of Object.entries(fields)) {
+            if (!ok(e[field])) throw new Error(`${journalPath}: line ${i + 1}: ${field} missing`);
+        }
+    });
     const scheduled = scenario.events.slice(0, manifest.events).map((e) => String(e.id));
     requireComplete(journal, order, scheduled);
     const arms = order.map((arm) => ({
@@ -125,7 +134,10 @@ export function loadRun(dir: string, prereg: Preregistration): RunLogs {
             TOOL_FIELDS,
         ),
         finalStore: existsSync(join(dir, arm, "store-check.json"))
-            ? (JSON.parse(readFileSync(join(dir, arm, "store-check.json"), "utf8")) as StoreCheck)
+            ? parseStoreCheck(
+                  JSON.parse(readFileSync(join(dir, arm, "store-check.json"), "utf8")),
+                  `${arm}/store-check.json`,
+              )
             : undefined,
     }));
     for (const arm of arms) {
@@ -134,6 +146,9 @@ export function loadRun(dir: string, prereg: Preregistration): RunLogs {
             throw new Error(
                 `arm ${arm.arm} has no daemon RSS samples in ${arm.arm}/resources.jsonl`,
             );
+        }
+        if (!existsSync(join(dir, arm.arm, "daemon.log"))) {
+            throw new Error(`arm ${arm.arm} has no daemon.log`);
         }
     }
     return { dir, tier: manifest.tier, base_wall_ms: manifest.base_wall_ms, prereg, kinds, arms };

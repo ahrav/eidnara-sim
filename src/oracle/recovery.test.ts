@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { SEGMENTS_DDL } from "../../tests/segments";
-import { checkStore, type StoreCheck } from "../hosts/storecheck";
+import { checkStore, parseStoreCheck, type StoreCheck } from "../hosts/storecheck";
 import type { Entry } from "../run/journal";
 import { loadPrereg } from "../scenario/inputs";
 import type { ArmLogs, RunLogs } from "./logs";
@@ -97,6 +97,76 @@ describe("recovery oracles", () => {
             "store ranges lack content digests",
             "post-crash pass removed or changed segments sim-s-0003/1/1/4",
         ]);
+    });
+
+    test("every overflow wording the F1 oracle knows dirties a turn", () => {
+        seq = 0;
+        const journal = [
+            entry("FaultObserved", 0, { fault: "f", type: "plugin_reload", evidence: {} }),
+            entry("BeginTurn", 10, { event: "e-1" }),
+            entry("EndTurn", 20, { event: "e-1", outcome: "ok" }),
+        ];
+        const call = (error: string) =>
+            ({
+                turn: "e-1",
+                status: 500,
+                error,
+                started_wall_ms: 12,
+                wall_ms: 14,
+                scenario_ms: 12,
+            }) as unknown as ArmLogs["calls"][number];
+        for (const error of [
+            "too many total text bytes",
+            "input length exceeds the model's maximum context length",
+        ]) {
+            const a = arm(journal);
+            a.calls = [call(error)];
+            const [r] = recoveries(run([a]));
+            expect([error, r?.reasons]).toEqual([error, ["e-1: overflow"]]);
+        }
+    });
+
+    test("a store check of the wrong shape refuses the run instead of certifying it", () => {
+        seq = 0;
+        const journal = (after: unknown, pass: unknown) => [
+            entry("FaultObserved", 0, {
+                fault: "k",
+                type: "daemon_restart",
+                evidence: { store: after },
+            }),
+            entry("BeginTurn", 10, { event: "e-1" }),
+            entry("EndTurn", 20, { event: "e-1", outcome: "ok" }),
+            entry("StoreChecked", 20, { event: "e-1", fault: "k", store: pass }),
+        ];
+        const ok = store("ok");
+        const bogus = { integrity: "ok", overlaps: "", ranges: [] };
+        expect(() =>
+            recoveries(run([arm(journal(ok, ok), [], bogus as unknown as StoreCheck)])),
+        ).toThrow("store check");
+        expect(() => recoveries(run([arm(journal(bogus, ok), [], ok)]))).toThrow("store check");
+        expect(() => recoveries(run([arm(journal(ok, bogus), [], ok)]))).toThrow("store check");
+        const badRange = { ...ok, ranges: [["s", 1, 0]] };
+        expect(() => recoveries(run([arm(journal(ok, badRange), [], ok)]))).toThrow("store check");
+        expect(parseStoreCheck(ok, "x")).toEqual(ok);
+        const legacy = { ...ok, ranges: [["s", 1, 0, 9]] };
+        expect(parseStoreCheck(legacy, "x").ranges as unknown[]).toEqual([["s", 1, 0, 9]]);
+    });
+
+    test("a failed pass's warning and its decision record count as one publication", () => {
+        seq = 0;
+        const journal = [
+            entry("FaultObserved", 0, { fault: "f", type: "plugin_reload", evidence: {} }),
+            entry("BeginTurn", 10, { event: "e-1" }),
+            entry("EndTurn", 20, { event: "e-1", outcome: "ok" }),
+        ];
+        const log = [
+            `${stamp(15)} [eidnara][s-1] rust transform failed; serving the input unchanged: x`,
+            `${stamp(15)} [eidnara][s-1] rust pass: decision=error reason=none served_from=raw`,
+        ];
+        const [r] = recoveries(run([arm(journal, log)]));
+        expect(r?.reasons).toEqual(["e-1: 1 fail-open publications"]);
+        const [warned] = recoveries(run([arm(journal, [log[0] as string])]));
+        expect(warned?.reasons).toEqual(["e-1: 1 fail-open publications"]);
     });
 
     test("a fail-open publication in every later turn prevents a recovered verdict", () => {
@@ -233,6 +303,14 @@ describe("recovery oracles", () => {
             { session: "s", first: 1, second: 2 },
             { session: "s", first: 1, second: 3 },
         ]);
+        const nul = new Database(path);
+        nul.run("delete from history_segments");
+        nul.run(
+            "insert into history_segments (session_id, sequence, start_message, end_message, title, content) values ('n', 1, 0, 1, 'a', 'b' || char(0) || 'c'), ('n', 2, 2, 3, 'a' || char(0) || 'b', 'c')",
+        );
+        nul.close();
+        const [first, second] = checkStore(path).ranges;
+        expect(first?.[4]).not.toBe(second?.[4]);
         const inverted = new Database(path);
         inverted.run(
             "insert into history_segments (session_id, sequence, start_message, end_message) values ('u', 1, 9, 2)",
@@ -392,6 +470,21 @@ describe("plugin log attribution", () => {
         expect([r?.recovered, r?.turns_to_first_clean]).toEqual([true, 2]);
         const [both] = recoveries(run([arm(journal.slice(0, 4), log)], base));
         expect(both?.reasons).toEqual(["e-1: 1 fail-open publications"]);
+    });
+
+    test("a journal without clock offsets needs a finite manifest base to place stamps", () => {
+        seq = 0;
+        const journal = [
+            entry("FaultObserved", 0, { fault: "f", type: "plugin_reload", evidence: {} }),
+            entry("BeginTurn", 10, { event: "e-1" }),
+            entry("EndTurn", 20, { event: "e-1", outcome: "ok" }),
+        ];
+        const log = [`${stamp(15)} [eidnara][s-1] rust pass: decision=error served_from=raw`];
+        expect(() => recoveries(run([arm(journal, log)], Number.NaN))).toThrow(
+            "base_wall_ms is not a finite number",
+        );
+        const unset = { ...run([arm(journal, log)]), base_wall_ms: undefined as unknown as number };
+        expect(() => recoveries(unset)).toThrow("base_wall_ms is not a finite number");
     });
 
     test("a journal whose turns began before its first clock offset is refused", () => {

@@ -26,12 +26,48 @@ interface Segment {
     content: string;
 }
 
+/** Each field length-prefixed, so fields holding any byte, NUL included, hash unambiguously. */
 function digest(g: Segment): string {
     const hash = createHash("sha256");
     for (const part of [g.start_message_id, g.end_message_id, g.title, g.content]) {
-        hash.update(part).update("\0");
+        hash.update(`${Buffer.byteLength(part)}:`).update(part);
     }
     return hash.digest("hex").slice(0, 16);
+}
+
+const isRange = (r: unknown): r is StoreCheck["ranges"][number] =>
+    Array.isArray(r) &&
+    (r.length === 4 || r.length === 5) &&
+    typeof r[0] === "string" &&
+    typeof r[1] === "number" &&
+    typeof r[2] === "number" &&
+    typeof r[3] === "number" &&
+    (r.length === 4 || typeof r[4] === "string");
+
+const isOverlap = (o: unknown): o is StoreCheck["overlaps"][number] =>
+    typeof o === "object" &&
+    o !== null &&
+    typeof (o as { session: unknown }).session === "string" &&
+    typeof (o as { first: unknown }).first === "number" &&
+    typeof (o as { second: unknown }).second === "number";
+
+/**
+ * A recorded store check, read back with its shape checked, so a malformed artifact refuses the
+ * run rather than certifying it. Ranges recorded before digests have four elements.
+ */
+export function parseStoreCheck(value: unknown, where: string): StoreCheck {
+    const v = value as Partial<Record<keyof StoreCheck, unknown>> | null;
+    const sound =
+        typeof v === "object" &&
+        v !== null &&
+        typeof v.integrity === "string" &&
+        typeof v.segments === "number" &&
+        Array.isArray(v.overlaps) &&
+        v.overlaps.every(isOverlap) &&
+        Array.isArray(v.ranges) &&
+        v.ranges.every(isRange);
+    if (!sound) throw new Error(`${where}: store check has an unexpected shape`);
+    return v as StoreCheck;
 }
 
 export function checkStore(path: string): StoreCheck {
@@ -47,41 +83,48 @@ export function checkStore(path: string): StoreCheck {
 function inspect(path: string): StoreCheck {
     const db = new Database(path, { readonly: true });
     try {
-        const rows = db.query("pragma integrity_check").all() as { integrity_check: string }[];
-        const checks = rows.map((r) => r.integrity_check);
-        const segments = db
-            .query(
+        const pragma = db.query("pragma integrity_check").all() as { integrity_check: string }[];
+        const checks = pragma.map((r) => r.integrity_check);
+        // Rows stream one at a time: the digest is taken and the text dropped before the next row.
+        const rows = db
+            .query<Segment, []>(
                 "select session_id, sequence, start_message, end_message, start_message_id, end_message_id, title, content from history_segments order by session_id, start_message, end_message, sequence",
             )
-            .all() as Segment[];
-        // The schema has no constraint on the bounds, so an inverted range passes the pragma.
-        for (const g of segments) {
-            if (g.start_message > g.end_message) {
-                checks.push(`inverted range ${g.session_id}/${g.sequence}`);
-            }
-        }
-        const integrity = checks.join("; ");
+            .iterate();
         const overlaps: StoreCheck["overlaps"] = [];
-        let reach: Segment | null = null;
-        for (const next of segments) {
-            if (reach?.session_id !== next.session_id) reach = null;
-            if (reach && next.start_message <= reach.end_message) {
+        const ranges: StoreCheck["ranges"] = [];
+        type Reach = Pick<Segment, "session_id" | "sequence" | "end_message">;
+        let reach = null as Reach | null;
+        for (const next of rows) {
+            // The schema has no constraint on the bounds, so an inverted range passes the pragma.
+            if (next.start_message > next.end_message) {
+                checks.push(`inverted range ${next.session_id}/${next.sequence}`);
+            }
+            const same: Reach | null = reach?.session_id === next.session_id ? reach : null;
+            if (same && next.start_message <= same.end_message) {
                 overlaps.push({
                     session: next.session_id,
-                    first: reach.sequence,
+                    first: same.sequence,
                     second: next.sequence,
                 });
             }
-            if (!reach || next.end_message > reach.end_message) reach = next;
+            reach =
+                same && same.end_message >= next.end_message
+                    ? same
+                    : {
+                          session_id: next.session_id,
+                          sequence: next.sequence,
+                          end_message: next.end_message,
+                      };
+            ranges.push([
+                next.session_id,
+                next.sequence,
+                next.start_message,
+                next.end_message,
+                digest(next),
+            ]);
         }
-        const ranges = segments.map((g): StoreCheck["ranges"][number] => [
-            g.session_id,
-            g.sequence,
-            g.start_message,
-            g.end_message,
-            digest(g),
-        ]);
-        return { integrity, segments: segments.length, overlaps, ranges };
+        return { integrity: checks.join("; "), segments: ranges.length, overlaps, ranges };
     } finally {
         db.close();
     }

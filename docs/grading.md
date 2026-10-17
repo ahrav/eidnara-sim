@@ -62,7 +62,9 @@ changes, or removes a `.gitignore`, or edits `.git/info/exclude`, ends
 `failed` with `ignore rules changed: <paths>`, since a rule added in the turn
 would hide that turn's files from the diff; the baseline is the source's
 `.gitignore` blobs and the clone's `exclude` file, recorded at reset. The driver waits the scheduler's settle window and then its background
-jobs before it takes a probe snapshot.
+jobs before it takes a probe snapshot, and checks the daemon is alive after
+the prompt and again after the snapshot, reporting an exit once with the
+turn's id.
 The snapshot tree adds, with `--force`, the paths the project's source
 repository tracks although its ignore rules match them (the driver lists
 them from the source at reset), so a change to such a file is in the diff.
@@ -80,7 +82,7 @@ ones the workspace's ignore rules match left alone. Snapshot diffs run with
 |---|---|
 | `diff` (`turn`) | A git tree of the workspace's files that its `.gitignore` rules leave in, untracked files included, taken before the prompt and after it, and diffed |
 | `diff` (`prior-session`) | The same trees at the start and end of the project's previous session |
-| `command-log` | The host's tool runs, each a bash command or the tool name and its path followed by the text and structured arguments it was given (a `write`'s content, an `edit`'s edits), with a 0 or 1 error flag (null for a run that never finished) and the scenario time the run started. The recorder saves each run as the host logs it, so a harness kill mid-turn keeps the runs logged so far in the session log. Pi reports `tool_execution_start` and `tool_execution_end` events as they happen, and a run is timed from its start event; OpenCode's tool parts come from the session messages the turn added, read after the turn whatever its outcome, each timed from its start relative to the turn's first new message, both in OpenCode's own clock, with a pending or running part's exit null, so a turn OpenCode was running when the harness was killed leaves no tool runs; both listings are bounded by the turn deadline, and one that stalls fails the turn as a capture gap |
+| `command-log` | The host's tool runs, each a bash command or the tool name and its path followed by the text and structured arguments it was given (a `write`'s content, an `edit`'s edits), with a 0 or 1 error flag (null for a run that never finished) and the scenario time the run started. The recorder saves each run as the host logs it, so a harness kill mid-turn keeps the runs logged so far in the session log. Pi reports `tool_execution_start` and `tool_execution_end` events as they happen, and a run is timed from its start event and reaches the recorder at that start with a null exit, which its end report replaces, so a harness kill mid-run keeps the run on record; OpenCode's tool parts come from the session messages the turn added, read after the turn whatever its outcome, each timed from its start relative to the turn's first new message, both in OpenCode's own clock, with a pending or running part's exit null, so a turn OpenCode was running when the harness was killed leaves no tool runs; both listings are bounded by the turn deadline, and one that stalls fails the turn as a capture gap |
 | `proxy-call` | The session's call records from `calls.jsonl`, each with the index of the user turn it belongs to (a background call takes the preceding turn's), and the response text the proxy records for agent, user-sim, and judge calls (the first 262,144 characters, with `response_text_truncated` on a longer reply) |
 
 The recorder keeps each project's session-start tree, the last session's
@@ -111,7 +113,8 @@ appends any (an item whose answer the proxy truncated is skipped as `answer
 refused`; a structural artefact violation aborts with nothing appended),
 holds P7 grades until the judge gateway has stopped and reports no failed
 `judge-calls.jsonl` write, writes one `judgments.jsonl` row per judged
-pairing (item, arms, the judgment with its digests and order verdicts, and
+pairing (after dropping a cut last line, as for the other logs), where a
+judgment the grader refuses on structural grounds aborts grading, (item, arms, the judgment with its digests and order verdicts, and
 the `judge-calls.jsonl` sequence numbers of its two calls), and
 grades every snapshot the
 journal names

@@ -36,4 +36,13 @@ Forced p90 sessions.
 
 ## Investigation log
 
-No open questions.
+### Q: Does a run at the default context limit fold?
+
+- Sources examined: `tests/fixtures/recovery/recovery-3-eidnara.json` (a
+  30000-token limit), `tests/fixtures/recovery/witness-8-eidnara.json` (names
+  no limit), the `runs/` directory of this tree.
+- Findings: the only retained run with recorded folds ran at a lowered limit;
+  no retained artifact records an S run together with its default limit.
+- Missing evidence: a default-limit S run's journal, call records, and final
+  store.
+- Conclusion: unresolved, needs a default-limit S run.
