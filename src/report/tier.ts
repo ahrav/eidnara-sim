@@ -25,8 +25,8 @@ export function loadGraded(dir: string, prereg: Preregistration): GradedRun {
         prereg_sha256: string;
         scenario_hash: string;
         fault_override: Scenario["faults"] | null;
-        preflight?: { distortions?: string[] };
-    } & Omit<RunIdentity, "distortions">;
+        preflight?: { distortions?: string[]; hosts?: { host: string; version: string }[] };
+    } & Omit<RunIdentity, "distortions" | "host_versions">;
     const current = preregistrationHash(prereg);
     if (manifest.prereg_sha256 !== current) {
         throw new Error(
@@ -51,14 +51,26 @@ export function loadGraded(dir: string, prereg: Preregistration): GradedRun {
     const { eidnara_commit, models, context_limit, events } = manifest;
     const witnesses = new Map<string, WitnessReport>();
     const faults = join(dir, "faults.jsonl");
-    const reports = existsSync(faults) ? (readJournal(faults) as unknown as WitnessReport[][]) : [];
-    for (const w of reports.flat()) {
+    const reports = existsSync(faults)
+        ? (readJournal(faults) as unknown as WitnessReport[][])
+        : null;
+    for (const w of (reports ?? []).flat()) {
         if (witnesses.get(w.fault)?.status !== "fired") witnesses.set(w.fault, w);
     }
+    const counterpart = (r: GradeRecord, arm: string) =>
+        [...judged.values()].some(
+            (o) =>
+                o.item === r.item && o.arm === arm && o.inputs.join("\n") === r.inputs.join("\n"),
+        );
+    const hostP7 = (r: GradeRecord) => r.probe_type === "P7" && armBase(r.arm) === "host";
+    const grades = [
+        ...log.latest().filter((r) => !hostP7(r)),
+        ...[...judged.values()].filter((r) => hostP7(r) && counterpart(r, prereg.arms.default)),
+    ];
     return {
         run: loadRun(dir, prereg),
         scenario: { ...scenario, faults: manifest.fault_override ?? scenario.faults },
-        grades: log.latest(),
+        grades,
         judged: [...judged.values()],
         host: manifest.host,
         identity: {
@@ -67,8 +79,9 @@ export function loadGraded(dir: string, prereg: Preregistration): GradedRun {
             context_limit,
             events,
             distortions: manifest.preflight?.distortions ?? [],
+            host_versions: (manifest.preflight?.hosts ?? []).map((h) => `${h.host}@${h.version}`),
         },
-        witnesses: [...witnesses.values()],
+        witnesses: reports === null ? null : [...witnesses.values()],
     };
 }
 
@@ -82,8 +95,27 @@ const sd = (xs: number[]) => {
 export type CusumScale = NonNullable<TierInput["cusum_sd"]>;
 
 const controlArms = (runs: GradedRun[]) => [
-    ...new Set(runs.flatMap((g) => g.run.arms.map((a) => a.arm)).filter((a) => a.includes("~"))),
+    ...new Set(
+        runs
+            .flatMap((g) => g.run.arms)
+            .filter((a) => a.arm.includes("~") && a.journal.some((e) => e.kind === "EndArm"))
+            .map((a) => a.arm),
+    ),
 ];
+
+/** The scale each CUSUM rule's `sd_source` names, lent by a tier only when its campaign is complete. */
+export function cusumScale(
+    prereg: Preregistration,
+    scales: ReadonlyMap<string, { scale: CusumScale | undefined; complete: boolean }>,
+): CusumScale {
+    const scale: CusumScale = {};
+    for (const rule of prereg.stopping_rule.cusum) {
+        const named = /^the (\w+) tier's/.exec(rule.sd_source)?.[1] ?? prereg.tier;
+        const source = scales.get(named);
+        if (source?.complete) scale[rule.kind] = source.scale?.[rule.kind];
+    }
+    return scale;
+}
 
 export function aaScale(prereg: Preregistration, runs: GradedRun[]): CusumScale | undefined {
     const controls = controlArms(runs).sort();
@@ -152,11 +184,11 @@ export function tierReport(
         verdict: evaluateTier(prereg, input),
         oracles: oracleReport(runs.map((g) => g.run))[prereg.tier] ?? {},
         recoveries: runs
-            .filter((g) => !excludedFromFaultMetrics(g.witnesses))
+            .filter((g) => !excludedFromFaultMetrics(g.witnesses ?? []))
             .flatMap((g) => recoveries(g.run).map((r) => ({ ...r, run: g.run.dir }))),
         distortions: runs.map((g) => ({ run: g.run.dir, distortions: g.identity.distortions })),
         missed_faults: runs.flatMap((g) => {
-            const faults = g.witnesses
+            const faults = (g.witnesses ?? [])
                 .filter((w) => w.status === "untriggered")
                 .map((w) => w.fault);
             return faults.length ? [{ run: g.run.dir, faults }] : [];
@@ -178,7 +210,10 @@ export function tierReport(
         falsification: falsificationSet(prereg, falsify),
         aa: runs.flatMap((g) => {
             const path = join(g.run.dir, "aa.json");
-            return existsSync(path) ? (JSON.parse(readFileSync(path, "utf8")) as unknown[]) : [];
+            const reports = existsSync(path)
+                ? (JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>[])
+                : [];
+            return reports.map((r) => ({ run: g.run.dir, ...r }));
         }),
         prereg,
         claim_boundary: claimBoundary,

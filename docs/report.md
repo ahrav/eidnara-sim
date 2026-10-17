@@ -80,7 +80,9 @@ manifest's `fault_override` as its fault schedule, and its `faults.jsonl` lines,
 proxy's fault witnesses, a fault once `fired` staying fired. `grades.jsonl` gives the
 run its latest grade per item and arm, and every P7 judgment (latest per
 item, arm, and `inputs`), so a P7 pair takes the host grade from the same
-judgment as the treatment's; a judgment whose `gate_eligible` is false
+judgment as the treatment's, a P7 exclusion counts against its own
+judgment, and the host's P7 row in the accuracy and cost panels is its
+judgment against `arms.default`; a judgment whose `gate_eligible` is false
 pairs nothing. Each run directory needs `grades.jsonl` from
 `scripts/grade-run.ts` for its probe items; a run without one reports its
 run-level metrics alone.
@@ -107,8 +109,9 @@ scheduler recorded `FaultObserved` or the proxy stamped a call's
 list names each pre-registered host and seed without a run, each run with
 a pre-registered arm (`arms.run`) that has no `EndArm` entry, each run whose manifest
 `events` stops short of its scenario's events, each manifest setting
-(`eidnara_commit`, `models`, `context_limit`, and the preflight's clock
-`distortions`) the runs disagree on, each registered A/A pair whose count
+(`eidnara_commit`, `models`, `context_limit`, the preflight's clock
+`distortions`, and its host versions) the runs disagree on, each run with
+scheduled proxy faults and no `faults.jsonl`, each registered A/A pair whose count
 of control arms that reached `EndArm` across the runs differs from
 `aa_controls.repeats`, each run-unit gate metric a run has no value for, each probe type,
 P13 and P14 included, with fewer paired items outside the excluded and
@@ -124,9 +127,10 @@ across runs keep one order whatever order the directories arrive in.
 fault-asymmetric items: the standard deviation of their paired item
 differences, over the per-item maximum across the harm metrics, as the
 harm statistic is built, and over the P1 items.
-`scripts/report.ts` gives each rule the scale of the tier its `sd_source`
-names, so L's rules take M's A/A pairs when the M runs are in the same
-invocation.
+`cusumScale` gives each rule the scale of the tier its `sd_source` names
+once that tier's own campaign is complete, so L's rules take M's A/A pairs
+when the complete M runs are in the same `scripts/report.ts` invocation.
+The scale pools the controls that reached `EndArm`.
 
 The falsification set (`src/report/falsify.ts`) pairs, per run, each A/A
 control with its arm, or else the treatment with `host`, and pools the
@@ -154,7 +158,7 @@ panel, oracle activations with the uncovered list, recovery (a run with
 an `untriggered` witness is named and left out of it, SIM-P32), soak for the
 daemon arms per run with the longest sampling gap, intrusiveness with each arm's latency delta against its run's `host`,
 cost with the run's judge calls priced once (`judgeCost`), the
-falsification set with the pairs it used, the A/A reports (`<run>/aa.json`, or a note
+falsification set with the pairs it used, the A/A reports (`<run>/aa.json`, each with its `run`, or a note
 that control arms ran without one), the claim boundary, and the
 pre-registration. The soak, intrusiveness, and cost tables name each
 row's run, and the intrusiveness table takes each arm's latency delta
