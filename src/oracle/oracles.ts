@@ -150,12 +150,13 @@ export function rssFit(points: { x: number; y: number }[]): { slope: number; r2:
     return { slope, r2: sst === 0 ? 0 : 1 - ssr / sst };
 }
 
-/** Consecutive samples from one daemon process; a restart starts a new lifetime with its own RSS(0). */
+/** Consecutive samples from one daemon process, by pid and start time; a restart starts a new lifetime with its own RSS(0). */
 function lifetimes(samples: Sample[]): Sample[][] {
     const out: Sample[][] = [];
+    const same = (a: Sample, b: Sample) => a.pid === b.pid && a.start === b.start;
     for (const s of samples) {
         const last = out.at(-1);
-        if (last && last[0]?.pid === s.pid) last.push(s);
+        if (last && last[0] && same(last[0], s)) last.push(s);
         else out.push([s]);
     }
     return out;

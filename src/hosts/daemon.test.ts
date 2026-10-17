@@ -322,3 +322,31 @@ test("recovery stops a daemon the marker still names as live before saving its l
     expect(running(child.pid)).toBe(false);
     expect(readFileSync(join(dir, "daemon.log"), "utf8")).toBe("still writing\n");
 });
+
+test("a stop rolls back and saves a copy that failed mid-way before the live log", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "sim-daemon-"));
+    const logFile = join(dir, "daemon.log");
+    const held = join(dir, "daemon.log.held");
+    const logPath = join(dir, "direct-host.log");
+    writeFileSync(logFile, "earlier\n");
+    writeFileSync(held, "held lifetime\n");
+    writeFileSync(logPath, "live lifetime\n");
+    appendFileSync(logFile, "held lif");
+    writeFileSync(
+        `${logFile}.source`,
+        JSON.stringify({
+            pending: [logPath],
+            copying: { source: held, target_bytes: "earlier\n".length },
+        }),
+    );
+    const stack = { logPath, terminateHost: async () => {} };
+    const hh = {
+        __hermeticHostTest: { diagnostics: () => ({ stdout: "", stderr: "", retainedLog: "" }) },
+    };
+    const daemon = new DaemonStack(stackCtx(dir));
+    Object.assign(daemon as unknown as Record<string, unknown>, { stack, hh });
+    await daemon.stop();
+    expect(readFileSync(logFile, "utf8")).toBe("earlier\nheld lifetime\nlive lifetime\n");
+    expect(existsSync(held)).toBe(false);
+    expect(existsSync(`${logFile}.source`)).toBe(false);
+});

@@ -512,10 +512,10 @@ describe("oracle round four", () => {
         mkdirSync(join(dir, "eidnara"));
         writeFileSync(join(dir, "eidnara", "resources.jsonl"), line({ scenario_ms: 0, rss: 100 }));
         writeFileSync(join(dir, "eidnara", "daemon.log"), "");
-        const { output_tokens: _dropped, ...damaged } = call({ seq: 7 });
+        const { output_tokens: _dropped, ...damaged } = call({ seq: 0 });
         writeFileSync(join(dir, "calls.jsonl"), line(damaged));
-        expect(() => loadRun(dir, prereg)).toThrow("call 7: output_tokens missing");
-        writeFileSync(join(dir, "calls.jsonl"), line(call({ seq: 7 })));
+        expect(() => loadRun(dir, prereg)).toThrow("call 0: output_tokens missing");
+        writeFileSync(join(dir, "calls.jsonl"), line(call({ seq: 0 })));
         expect(loadRun(dir, prereg).arms[0]?.calls).toHaveLength(1);
     });
 });
@@ -679,9 +679,9 @@ describe("oracle round six", () => {
         expect(() => loadRun(dir, prereg)).toThrow(
             "call 0: arm eidnara-typo is not in the manifest",
         );
-        writeFileSync(join(dir, "calls.jsonl"), line(call({ seq: 3 })) + line(call({ seq: 3 })));
-        expect(() => loadRun(dir, prereg)).toThrow("call 3: sequence number repeated");
-        writeFileSync(join(dir, "calls.jsonl"), line(call({ seq: 3 })) + line(call({ seq: 4 })));
+        writeFileSync(join(dir, "calls.jsonl"), line(call({ seq: 0 })) + line(call({ seq: 0 })));
+        expect(() => loadRun(dir, prereg)).toThrow("call 0: sequence number repeated");
+        writeFileSync(join(dir, "calls.jsonl"), line(call({ seq: 0 })) + line(call({ seq: 1 })));
         expect(loadRun(dir, prereg).arms[0]?.calls).toHaveLength(2);
     });
 
@@ -966,5 +966,47 @@ describe("oracle round eleven", () => {
         );
         writeFileSync(join(whole.dir, "calls.jsonl"), whole.line(call({ seq: 0, status: 0 })));
         expect(loadRun(whole.dir, prereg).arms[0]?.calls).toHaveLength(1);
+    });
+});
+
+describe("oracle round twelve", () => {
+    test("a call whose end precedes its start, or a gap in the sequence numbers, refuses the run", () => {
+        const { dir, line } = completeDir(["eidnara"]);
+        writeFileSync(
+            join(dir, "calls.jsonl"),
+            line(call({ seq: 0, started_wall_ms: 500, wall_ms: 100 })),
+        );
+        expect(() => loadRun(dir, prereg)).toThrow("call 0: wall_ms precedes started_wall_ms");
+        writeFileSync(join(dir, "calls.jsonl"), line(call({ seq: 0 })) + line(call({ seq: 2 })));
+        expect(() => loadRun(dir, prereg)).toThrow("call 2: expected sequence number 1");
+        writeFileSync(join(dir, "calls.jsonl"), line(call({ seq: 1 })));
+        expect(() => loadRun(dir, prereg)).toThrow("call 1: expected sequence number 0");
+    });
+
+    test("F5 tells daemon lifetimes apart by pid and process start time", () => {
+        const c = Number(prereg.leak_bound.c_bytes_per_session);
+        const ends = [1, 2, 3, 4, 5, 6].map((i) => ({
+            kind: "Event" as const,
+            arm: "eidnara",
+            event: `end-${i}`,
+            seq: i,
+            wall_ms: 0,
+            scenario_ms: i * 1000 + 500,
+        }));
+        const kinds = new Map(ends.map((e) => [e.event, "session_end"]));
+        const resources = [1, 2, 3, 4, 5, 6].map((i) => ({
+            scenario_ms: i * 1000 + 900,
+            pid: 100,
+            start: i <= 3 ? "1000" : "2000",
+            rss: 100 * c + ((i - 1) % 3) * 3 * c,
+        }));
+        const run: RunLogs = {
+            dir: "",
+            tier: "S",
+            prereg,
+            kinds,
+            arms: [armOf("eidnara", { journal: ends, resources })],
+        };
+        expect(oracle(run, "F5").map((a) => a.at)).toEqual(["daemon 100", "daemon 100"]);
     });
 });
