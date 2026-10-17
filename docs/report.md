@@ -115,7 +115,10 @@ names: the A/A pairs of that tier's runs when they are in the same
 invocation, else the `cusum_sd` that `<tier>-resizing.json` beside the
 run directories recorded from them. The same file's
 `paired_items_per_probe_type` is the count the campaign-completeness
-check uses for a resized tier.
+check uses for a resized tier, passed beside the pre-registration so the
+verdict keeps the registered hash. Every run of the tier binds to one
+identical record; runs beside different records are refused as one
+campaign.
 
 The falsification set (`src/report/falsify.ts`) pairs, per run, each A/A
 control with its arm, or else the treatment with `host`, and pools the

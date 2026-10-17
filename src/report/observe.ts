@@ -221,6 +221,7 @@ function incomplete(
     control: string,
     treatment: string,
     dropped: ReadonlySet<string>,
+    items = p.stopping_rule.paired_items_per_probe_type,
 ): string[] {
     const present = new Set(runs.map(runKey));
     const missing = p.hosts.flatMap((host) =>
@@ -234,7 +235,7 @@ function incomplete(
         );
         return open.length ? [`run ${runKey(g)}: ${open.join(", ")} without EndArm`] : [];
     });
-    const n = p.stopping_rule.paired_items_per_probe_type;
+    const n = items;
     const short = p.families.flatMap((f) => {
         if (!/^probe-P\d+$/.test(f.id)) return [];
         const metric = f.metrics[0] as string;
@@ -271,6 +272,7 @@ export function tierInput(
     given: GradedRun[],
     treatment: string = p.arms.default,
     control = "host",
+    items?: number,
 ): TierInput {
     const runs = ordered(p, given);
     const seen = new Set<string>();
@@ -312,7 +314,7 @@ export function tierInput(
         observations,
         excluded,
         asymmetric: asym,
-        incomplete: incomplete(p, runs, observations, control, treatment, dropped),
+        incomplete: incomplete(p, runs, observations, control, treatment, dropped, items),
         journal_seq_at_eval: Object.fromEntries(
             runs.map((g) => [
                 runId(g),

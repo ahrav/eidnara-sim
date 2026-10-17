@@ -86,6 +86,29 @@ describe("tier plan", () => {
         ]);
     });
 
+    test("two moved turn-triggered faults never share a session and turn", () => {
+        const events = ["s-1", "s-2", "s-3"].flatMap((session, k) => [
+            { id: `${session}-start`, kind: "session_start", session },
+            ...Array.from({ length: [2, 5, 1][k] as number }, (_, t) => ({
+                id: `${session}-${t}`,
+                kind: "user_turn",
+                session,
+            })),
+            { id: `${session}-end`, kind: "session_end", session },
+        ]);
+        const fault = (id: string) =>
+            ({
+                id,
+                type: "provider_429",
+                trigger: { kind: "user_turn", session: "s-far", n: 4 },
+            }) as unknown as FaultEpisode;
+        const s = { events, sessions: [], faults: [fault("a"), fault("b")] } as unknown as Scenario;
+        expect(compressFaults(s, events.length).map((f) => f.trigger.session)).toEqual([
+            "s-2",
+            "s-far",
+        ]);
+    });
+
     test("a moved laptop sleep lasts the idle gap before the session it lands on", () => {
         const at = { "s-1": 0, "s-2": 50_000, "s-3": 400_000 };
         const events = Object.entries(at).flatMap(([session, start]) => [

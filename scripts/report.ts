@@ -33,27 +33,34 @@ const loaded = new Map(
 );
 const scales = new Map([...loaded].map(([tier, t]) => [tier, aaScale(t.prereg, t.runs)]));
 const recorded = (tier: Tier, dirs: string[]) => {
-    const beside = dirs.map((d) => join(dirname(d), `${tier}-resizing.json`)).find(existsSync);
-    return beside
-        ? (JSON.parse(readFileSync(beside, "utf8")) as {
+    const texts = dirs.map((d) => {
+        const parents = [dirname(d), dirname(dirname(d))];
+        const beside = parents.map((p) => join(p, `${tier}-resizing.json`)).find(existsSync);
+        return beside ? readFileSync(beside, "utf8") : null;
+    });
+    if (new Set(texts).size > 1) {
+        console.error(`the ${tier} runs bind to different resizing records: ${dirs.join(", ")}`);
+        process.exit(2);
+    }
+    const text = texts[0] ?? null;
+    return text === null
+        ? undefined
+        : (JSON.parse(text) as {
               cusum_sd: CusumScale | null;
               paired_items_per_probe_type: number;
-          })
-        : undefined;
+          });
 };
 for (const [tier, { prereg, runs }] of loaded) {
     const resizing = recorded(tier, byTier.get(tier) ?? []);
     const scale = cusumScale(prereg, scales, resizing?.cusum_sd ?? undefined);
-    const effective = resizing
-        ? {
-              ...prereg,
-              stopping_rule: {
-                  ...prereg.stopping_rule,
-                  paired_items_per_probe_type: resizing.paired_items_per_probe_type,
-              },
-          }
-        : prereg;
-    const report = tierReport(effective, runs, boundary, scale, catalog);
+    const report = tierReport(
+        prereg,
+        runs,
+        boundary,
+        scale,
+        catalog,
+        resizing?.paired_items_per_probe_type,
+    );
     const text = renderTier(report);
     if (out) {
         mkdirSync(out, { recursive: true });

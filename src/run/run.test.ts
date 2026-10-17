@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SimConfig } from "../config/config";
@@ -15,6 +15,18 @@ describe("scenario loading", () => {
         );
         await expect(loadScenario({ config, tier: "L", seed: 301, out })).rejects.toThrow(
             /resizing/,
+        );
+    });
+
+    test("a cached scenario compiled for another item count is refused with the resized count", async () => {
+        const out = mkdtempSync(join(tmpdir(), "sim-l-"));
+        writeFileSync(
+            join(out, "scenario.json"),
+            JSON.stringify({ manifest: { seed: 301, tier: "L", probes_per_type: 25 }, events: [] }),
+        );
+        const config = {} as SimConfig;
+        await expect(loadScenario({ config, tier: "L", seed: 301, out }, 300)).rejects.toThrow(
+            /probes_per_type 25/,
         );
     });
 });
