@@ -202,11 +202,11 @@ export class DaemonStack {
      * source is removed, so a kill between the two leaves an orphan file, never a lost or
      * doubled lifetime.
      */
-    private absorb(source: string, rest: string[]): void {
+    private absorb(source: string, rest: string[], owner: LogMarker["owner"] = null): void {
         const start = existsSync(this.ctx.logFile) ? statSync(this.ctx.logFile).size : 0;
-        this.writeMarker({ pending: rest, copying: { source, target_bytes: start } });
+        this.writeMarker({ pending: rest, copying: { source, target_bytes: start }, owner });
         appendFileFrom(source, this.ctx.logFile);
-        this.writeMarker({ pending: rest, copying: null });
+        this.writeMarker({ pending: rest, copying: null, owner });
         rmSync(source, { force: true });
     }
 
@@ -328,9 +328,10 @@ export class DaemonStack {
         if (existsSync(live)) linkSync(live, this.held);
         this.writeMarker({ pending: [this.held, live], copying: null, owner: this.owner() });
         await this.stack.restartHost();
+        const owner = this.owner();
+        this.writeMarker({ pending: [this.held, live], copying: null, owner });
         appendFileSync(this.ctx.logFile, stdout);
-        this.absorb(this.held, [live]);
-        this.writeMarker({ pending: [live], copying: null, owner: this.owner() });
+        this.absorb(this.held, [live], owner);
     }
 
     /**

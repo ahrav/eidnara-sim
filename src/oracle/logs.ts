@@ -274,6 +274,9 @@ export function loadRun(dir: string, prereg: Preregistration): RunLogs {
         if (!(ARMS as readonly string[]).includes(arm)) {
             throw new Error(`manifest arm ${arm} is not a pre-registered arm`);
         }
+        if (!prereg.arms.run.includes(arm)) {
+            throw new Error(`manifest arm ${arm} is not in tier ${prereg.tier}'s run`);
+        }
     }
     const count = manifest.events;
     if (!Number.isInteger(count) || count < 1 || count > scenario.events.length) {
@@ -331,6 +334,9 @@ export function loadRun(dir: string, prereg: Preregistration): RunLogs {
         if (e.kind === "EndTurn") fields.outcome = str;
         for (const [field, ok] of Object.entries(fields)) {
             if (!ok(e[field])) throw new Error(`${journalPath}: line ${i + 1}: ${field} missing`);
+        }
+        if (!Number.isSafeInteger(e.scenario_ms) || e.scenario_ms < 0) {
+            throw new Error(`${journalPath}: line ${i + 1}: scenario_ms is not a count`);
         }
         const last = lastMs.get(e.arm);
         if (last !== undefined && e.scenario_ms < last) {

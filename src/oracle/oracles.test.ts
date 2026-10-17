@@ -1380,3 +1380,38 @@ describe("oracle round seventeen", () => {
         expect(oracle(run, "F5")).toEqual([]);
     });
 });
+
+describe("oracle round eighteen", () => {
+    test("manifest arms belong to the tier's pre-registered run, and journal timestamps are counts", () => {
+        const { dir, line } = completeDir(["eidnara-cf"]);
+        expect(() => loadRun(dir, prereg)).toThrow(
+            "manifest arm eidnara-cf is not in tier S's run",
+        );
+        const good = completeDir(["eidnara"]);
+        const journal = [
+            { kind: "StartRun", arm: null, order: ["eidnara"], scenario_ms: 0 },
+            { kind: "BeginTurn", arm: "eidnara", event: "e-1", scenario_ms: 0.5 },
+            { kind: "EndTurn", arm: "eidnara", event: "e-1", outcome: "ok", scenario_ms: 5 },
+            { kind: "Event", arm: "eidnara", event: "e-1", outcome: "ok", scenario_ms: 5 },
+            { kind: "EndArm", arm: "eidnara", scenario_ms: 5 },
+            { kind: "EndRun", arm: null, scenario_ms: 5 },
+        ];
+        writeFileSync(join(good.dir, "journal.jsonl"), journal.map(good.line).join(""));
+        expect(() => loadRun(good.dir, prereg)).toThrow(
+            /journal\.jsonl: line 2: scenario_ms is not a count/,
+        );
+        void line;
+    });
+
+    test("an agent call carrying overflow wording at any status stands in for the turn's overflow", () => {
+        const overflow = "ValidationException: prompt is too long";
+        const streamed = runWith(
+            armOf("eidnara", {
+                calls: [call({ seq: 0, status: 200, error: overflow })],
+                journal: [endTurn("eidnara", "e-1", 0, overflow)],
+            }),
+        );
+        expect(oracle(streamed, "F1")).toEqual([]);
+        expect(oracle(streamed, "F9")).toEqual([]);
+    });
+});
