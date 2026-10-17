@@ -53,7 +53,7 @@ export interface Continuity {
 }
 
 function files(dir: string): string[] {
-    if (!existsSync(dir)) return [];
+    if (!existsSync(dir) || lstatSync(dir).isSymbolicLink()) return [];
     return readdirSync(dir).flatMap((f) => {
         const p = join(dir, f);
         const stat = lstatSync(p);

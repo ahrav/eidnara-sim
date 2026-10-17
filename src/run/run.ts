@@ -93,7 +93,8 @@ export function requirePinnedPath(config: SimConfig): void {
     }
 }
 
-function writeAtomic(path: string, text: string): void {
+/** Writes `text` beside `path` and renames it in, so a reader sees the whole file or none. */
+export function writeAtomic(path: string, text: string): void {
     writeFileSync(`${path}.${process.pid}`, text);
     renameSync(`${path}.${process.pid}`, path);
 }

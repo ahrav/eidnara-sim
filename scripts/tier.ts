@@ -4,7 +4,7 @@ import { loadConfig } from "../src/config/config";
 import { TIERS, type Tier } from "../src/prereg/schema";
 import { Children, SIGTERM_EXIT } from "../src/run/children";
 import { releaseLease, takeLease } from "../src/run/journal";
-import { loadScenario } from "../src/run/run";
+import { loadScenario, writeAtomic } from "../src/run/run";
 import { planConflicts, runSpan, tierPlan } from "../src/run/tier";
 import { buildFaketime } from "../src/run/timeinject";
 import type { Scenario } from "../src/scenario/compile";
@@ -133,7 +133,7 @@ const results = await supervised(() =>
             const span = runSpan(job.dir, started);
             const runStarted = span.started;
             if (!existsSync(join(job.dir, "scenario.json"))) {
-                writeFileSync(
+                writeAtomic(
                     join(job.dir, "scenario.json"),
                     `${JSON.stringify(scenarios.get(job.seed))}\n`,
                 );

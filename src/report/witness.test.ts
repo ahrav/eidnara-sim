@@ -159,7 +159,7 @@ function second(broken: boolean, busy = false): GradedRun {
         ({ kind, arm: "eidnara", scenario_ms, seq: seq++, wall_ms: 0, ...extra }) as Entry;
     const begin = at("BeginTurn", 10, { event: "e-1" });
     const end = at("EndTurn", 20, { event: "e-1", outcome: "ok" });
-    const jump = at("AdvanceClock", broken ? 150 : 100, { from_ms: 20 });
+    const jump = at("AdvanceClock", broken ? 150 : 100, { from_ms: broken || busy ? 10 : 20 });
     const journal = [
         begin,
         ...(broken || busy ? [jump, end] : [end, jump]),
@@ -203,6 +203,7 @@ function second(broken: boolean, busy = false): GradedRun {
 
 interface Parts {
     capped?: boolean;
+    tapes?: string[];
     events?: object[];
     pairing?: object[];
     journal?: object[];
@@ -217,7 +218,11 @@ function made(p: Parts): GradedRun {
     const dir = mkdtempSync(join(tmpdir(), "sim-witness-"));
     writeFileSync(
         join(dir, "manifest.json"),
-        JSON.stringify({ order: ["host", "eidnara"], events: p.capped ? 0 : 3 }),
+        JSON.stringify({
+            order: ["host", "eidnara"],
+            events: p.capped ? 0 : 3,
+            tapes: p.tapes ?? [],
+        }),
     );
     writeFileSync(join(dir, "pairing.jsonl"), lines(p.pairing ?? []));
     const journal = (p.journal ?? []).map(
@@ -278,6 +283,28 @@ describe("property witness evidence", () => {
         expect(one("P03", run("b", "x")).status).toBe("violated");
     });
 
+    test("SIM-P03 compares a replayed run's divergence against the digest its source tape recorded", () => {
+        const source = mkdtempSync(join(tmpdir(), "sim-witness-tape-"));
+        writeFileSync(join(source, "pairing.jsonl"), lines([turn("eidnara", "r")]));
+        const diverged = (reference_digest: string) => ({
+            kind: "divergedAt",
+            arm: "eidnara",
+            session: "s-1",
+            event: "e-1",
+            index: 0,
+            digest: "b",
+            reference_digest,
+            against: "recorded",
+        });
+        const run = (r: string) =>
+            made({
+                tapes: [join(source, "tape.jsonl")],
+                pairing: [turn("host", "b"), diverged(r), turn("eidnara", "b")],
+            });
+        expect(one("P03", run("r")).status).toBe("witnessed");
+        expect(one("P03", run("x")).status).toBe("violated");
+    });
+
     test("SIM-P10 recomputes the rates from the turn labels and holds the journaled summary to them", () => {
         // 40 turns over 10 sessions: 18 pushbacks, 2 interrupts, 1 redirect, 1 abandon sit in band.
         const turns = (extra: string) =>
@@ -298,7 +325,22 @@ describe("property witness evidence", () => {
                               : extra,
                 delivered: true,
             }));
-        const rates = (outside: string[]) => ({ kind: "UserSimRates", scenario_ms: 99, outside });
+        const summary = {
+            turns: 40,
+            sessions: 10,
+            rates: {
+                pushback_per_turn: 0.45,
+                interrupt_per_turn: 0.05,
+                redirect_per_session: 0.1,
+                abandon_per_session: 0.1,
+            },
+        };
+        const rates = (outside: string[], extra: object = summary) => ({
+            kind: "UserSimRates",
+            scenario_ms: 99,
+            outside,
+            ...extra,
+        });
         const inBand = { journal: [...turns("task"), rates([])] };
         expect(one("P10", made(inBand))).toMatchObject({ status: "witnessed" });
         const nagging = { journal: [...turns("pushback"), rates([])] };
@@ -309,6 +351,11 @@ describe("property witness evidence", () => {
         expect(one("P10", capped)).toMatchObject({ status: "unreached" });
         const stopped = made({ journal: turns("pushback") });
         expect(one("P10", stopped)).toMatchObject({ status: "unreached" });
+        const miscounted = { journal: [...turns("task"), rates([], { ...summary, turns: 39 })] };
+        expect(one("P10", made(miscounted))).toMatchObject({
+            status: "violated",
+            detail: expect.stringContaining("journaled summary"),
+        });
         const mixed = propertyWitness("| SIM-P10 | [x](#x) | safety |", [capped, made(nagging)]);
         expect(mixed[0]).toMatchObject({ status: "violated" });
     });
@@ -431,6 +478,7 @@ describe("property witness evidence", () => {
         expect(status([end("q-1", "e-1"), end("q-2", "e-2"), snap("q-1"), snap("q-2")])).toBe(
             "violated",
         );
+        expect(status([snap("q-1"), end("q-1", "e-1")])).toBe("violated");
     });
 
     test("SIM-P42 requires the report to grade at the latest version and names the versions it used", () => {

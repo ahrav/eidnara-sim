@@ -195,3 +195,14 @@ test("a truncated transcripts.json reads as an unchecked arm instead of failing 
     const c = runConditions(g);
     expect(c.transcripts[1]).toEqual({ arm: "eidnara", paths: [], missing: null });
 });
+
+test("a transcript root that is itself a symlink is left unread", () => {
+    const g = fixture();
+    const sessions = join(g.run.dir, "host/r/home/.pi/agent/sessions");
+    rmSync(sessions, { recursive: true });
+    symlinkSync("/", sessions);
+    expect(runConditions(g).transcript_order[0]).toMatchObject({
+        sessions: 0,
+        missing: ["s-1", "s-2"],
+    });
+});

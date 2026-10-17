@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { GradeLog, type GradeRecord } from "../grade/probes";
+import { canonicalJson } from "../prereg/canonical";
 import { type Entry, readJournal } from "../run/journal";
 import { checkJournal } from "../run/journal-check";
 import { referenceArm } from "../run/run";
@@ -20,7 +21,9 @@ export interface PropertyWitness {
 interface Ctx {
     g: GradedRun;
     pairing: PairingRecord[];
-    manifest: { order: string[]; events: number };
+    manifest: { order: string[]; events: number; tapes?: string[] };
+    /** Digests by `arm/event` from the pairing logs of the tapes a replayed run took. */
+    recorded: Map<string, string>;
     entries: Entry[];
     grades: GradeRecord[];
 }
@@ -40,12 +43,20 @@ const jsonl = <T>(path: string): T[] =>
 function context(g: GradedRun): Ctx {
     const grades = join(g.run.dir, "grades.jsonl");
     const manifest = join(g.run.dir, "manifest.json");
+    const read: Ctx["manifest"] = existsSync(manifest)
+        ? JSON.parse(readFileSync(manifest, "utf8"))
+        : { order: g.run.arms.map((a) => a.arm), events: g.scenario.events.length };
+    const recorded = new Map<string, string>();
+    for (const tape of read.tapes ?? []) {
+        for (const r of jsonl<PairingRecord>(join(dirname(tape), "pairing.jsonl"))) {
+            if (r.kind === "turn") recorded.set(`${r.arm}/${r.event}`, r.digest);
+        }
+    }
     return {
         g,
         pairing: jsonl<PairingRecord>(join(g.run.dir, "pairing.jsonl")),
-        manifest: existsSync(manifest)
-            ? JSON.parse(readFileSync(manifest, "utf8"))
-            : { order: g.run.arms.map((a) => a.arm), events: g.scenario.events.length },
+        manifest: read,
+        recorded,
         entries: jsonl<Entry>(join(g.run.dir, "journal.jsonl")),
         grades: existsSync(grades) ? new GradeLog(grades).all() : [],
     };
@@ -109,10 +120,12 @@ const CHECKS: Record<string, Check> = {
                 if (turn >= 0 && turn < i) bad.push(`${r.arm} ${r.event}`);
                 const own = turnOf(r.arm, r.event);
                 const other =
-                    r.against === "reference" ? turnOf(reference(r.arm), r.event) : undefined;
+                    r.against === "reference"
+                        ? turnOf(reference(r.arm), r.event)?.digest
+                        : c.recorded.get(`${r.arm}/${r.event}`);
                 if (
                     (own && own.digest !== r.digest) ||
-                    (other && other.digest !== r.reference_digest)
+                    (other !== undefined && other !== r.reference_digest)
                 )
                     bad.push(`${r.arm} ${r.event} hashes differ from its turns'`);
             });
@@ -149,11 +162,18 @@ const CHECKS: Record<string, Check> = {
                     .filter((e) => e.kind === "UserTurn" && e.delivered === true)
                     .map((e) => ({ session: String(e.session), label: e.label as Label }));
                 n++;
-                const { outside } = realisedRates(turns, c.g.run.prereg);
-                if (outside.length > 0) bad.push(`${a.arm}: ${outside}`);
-                const summary = (journaled.outside as string[] | undefined) ?? [];
-                if (summary.join() !== outside.join())
-                    bad.push(`${a.arm}: journaled rates say ${summary.join() || "all in band"}`);
+                const realised = realisedRates(turns, c.g.run.prereg);
+                if (realised.outside.length > 0) bad.push(`${a.arm}: ${realised.outside}`);
+                const {
+                    kind: _k,
+                    arm: _a,
+                    scenario_ms: _s,
+                    seq: _q,
+                    wall_ms: _w,
+                    ...summary
+                } = journaled;
+                if (canonicalJson(summary) !== canonicalJson(realised))
+                    bad.push(`${a.arm}: journaled summary differs from the turns' rates`);
             }
         }
         return outcome(n, bad, "completed arms with realised rates");
@@ -258,6 +278,8 @@ const CHECKS: Record<string, Check> = {
                         (e) => e.kind === "SnapshotArtefacts" && e.item === probe,
                     );
                     if (!snap) bad.push(`${a.arm}/${probe} reached without a snapshot`);
+                    else if (snap.seq < first.seq)
+                        bad.push(`${a.arm}/${probe} snapshot before the probe's turn ended`);
                     else if (ends.some((e) => e.seq > first.seq && e.seq < snap.seq))
                         bad.push(`${a.arm}/${probe} snapshot after a later turn`);
                 }
