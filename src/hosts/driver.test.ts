@@ -495,7 +495,7 @@ describe("HostDriver faults", () => {
     });
 
     test("a second client that exits before the primary's session_end fails the arm", async () => {
-        const { driver, hosts } = fixture("eidnara", { p: "/repo" });
+        const { driver, hosts, armDir } = fixture("eidnara", { p: "/repo" });
         driver.daemon = fakeDaemon(10) as unknown as DaemonStack;
         const at = ev("session_start", { project: "p" });
         await driver.fault(episode("two_hosts_one_daemon"), at);
@@ -513,9 +513,20 @@ describe("HostDriver faults", () => {
         await driver.stop().catch(() => undefined);
         const o = (driver as unknown as { o: DriverOptions }).o;
         o.daemonFactory = () => fakeDaemon(10) as unknown as DaemonStack;
+        const orphan = Bun.spawn(["sleep", "300"]);
+        const start = readFileSync(`/proc/${orphan.pid}/stat`, "utf8")
+            .split(") ")[1]
+            ?.split(" ")[19];
+        const recorded = JSON.parse(readFileSync(join(armDir, "state.json"), "utf8"));
+        writeFileSync(
+            join(armDir, "state.json"),
+            JSON.stringify({ ...recorded, daemon: { pid: orphan.pid, start } }),
+        );
         await expect(new HostDriver(o).resume(null)).rejects.toThrow(
             "second client exited before the primary session's session_end",
         );
+        await orphan.exited;
+        expect(orphan.signalCode).toBe("SIGTERM");
     });
 
     test("stopping while the second client opens waits for the open, then closes it", async () => {

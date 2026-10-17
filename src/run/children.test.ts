@@ -174,3 +174,26 @@ test("a log path that is a symlink is refused before the child starts, and its t
     expect(await children.run(["-e", "console.log('x')"], link)).toBe(127);
     expect(readFileSync(target, "utf8")).toBe("kept\n");
 });
+
+test("an outside stop disables the scheduled check, so a slow teardown writes no restart reason", async () => {
+    const reasons: string[] = [];
+    const children = new Children(process.env, 1_000, 50);
+    let due = false;
+    const slow = [
+        "-e",
+        "process.on('SIGTERM', () => setTimeout(() => process.exit(143), 400)); setInterval(() => {}, 1000)",
+    ];
+    const run = children.run(
+        slow,
+        log(),
+        undefined,
+        () => due,
+        (r) => void reasons.push(r),
+    );
+    await Bun.sleep(150);
+    const stopped = children.stopAll("SIGTERM");
+    due = true;
+    await stopped;
+    expect(await run).toBe(SIGTERM_EXIT);
+    expect(reasons).toEqual([]);
+});

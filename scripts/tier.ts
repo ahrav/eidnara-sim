@@ -388,13 +388,15 @@ const runJob = async (job: TierJob) => {
     // A marker counts only beside the journal of the run it stopped; one left in a cleaned
     // directory, or a symlink in its place, is removed before the run begins.
     const journaled = existsSync(join(job.dir, "journal.jsonl"));
-    const markerEntry = ((): "file" | "link" | null => {
+    const markerEntry = ((): "file" | "link" | "other" | null => {
         try {
-            return lstatSync(marker).isSymbolicLink() ? "link" : "file";
+            const st = lstatSync(marker);
+            return st.isSymbolicLink() ? "link" : st.isFile() ? "file" : "other";
         } catch {
             return null;
         }
     })();
+    if (markerEntry === "other") throw new Error(`${marker} is not a regular file`);
     if (markerEntry === "link" || (markerEntry === "file" && !journaled)) rmSync(marker);
     const marked = markerEntry === "file" && journaled;
     const due = job.group === "main" ? restartCut(restartAt, job.events, job.arms.length) : null;

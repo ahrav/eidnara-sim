@@ -68,10 +68,11 @@ export function versionOf(config: SimConfig, host: "pi" | "opencode", launcher?:
     if (!launcher) return hostVersion(argv);
     const home = mkdtempSync(join(dirname(launcher), "probe-home-"));
     const nodeRoot = resolve(node, "../..");
-    const ro =
+    const install =
         host === "pi"
-            ? [nodeRoot, config.pi_install]
-            : [nodeRoot, dirname(dirname(dirname(plainPath(config.opencode_binary))))];
+            ? config.pi_install
+            : dirname(dirname(dirname(plainPath(config.opencode_binary))));
+    const ro = [nodeRoot, install, config.eidnara_checkout];
     const env = {
         HOME: home,
         PATH: `${join(nodeRoot, "bin")}:/usr/local/bin:/usr/bin:/bin`,
@@ -80,7 +81,9 @@ export function versionOf(config: SimConfig, host: "pi" | "opencode", launcher?:
         ...DUMMY_AWS,
     };
     try {
-        return hostVersion(launch(launcher, [home], env, argv, ro));
+        // The probe starts from this allowlisted environment alone; the sandbox preserves
+        // whatever it is handed, so nothing of the tier process's environment reaches it.
+        return hostVersion(launch(launcher, [home], env, argv, ro), env);
     } finally {
         rmSync(home, { recursive: true, force: true });
     }
@@ -96,7 +99,11 @@ export async function preflight(config: SimConfig, runRoot: string): Promise<Pre
         ...(next
             ? probes({ node, opencode: next, daemon: config.daemon_binary })
                   .filter((p) => p.name === "opencode")
-                  .map((p) => ({ ...p, name: "opencode-upgrade" as const }))
+                  .map((p) => ({
+                      ...p,
+                      name: "opencode-upgrade" as const,
+                      readOnly: [config.eidnara_checkout],
+                  }))
             : []),
     ]);
     const { distortions } = assess(time_injection);

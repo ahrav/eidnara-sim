@@ -35,6 +35,8 @@ export type StopReason = "limit" | "stopWhen";
 export class Children {
     /** Each live child with the promise that settles once its run has finished. */
     private readonly live = new Map<ChildProcess, Promise<void>>();
+    /** Each live child's scheduled-stop check, cleared before an outside stop signals it. */
+    private readonly polls = new Map<ChildProcess, ReturnType<typeof setInterval>>();
     private stopping = false;
 
     constructor(
@@ -110,11 +112,13 @@ export class Children {
             const poll = stopWhen
                 ? setInterval(() => stopWhen() && stop("stopWhen"), this.pollMs)
                 : null;
+            if (poll) this.polls.set(child, poll);
             let settled = false;
             const finish = (code: number) => {
                 if (settled) return;
                 settled = true;
                 if (poll) clearInterval(poll);
+                this.polls.delete(child);
                 for (const t of timers) clearTimeout(t);
                 this.live.delete(child);
                 settledRun();
@@ -158,6 +162,9 @@ export class Children {
         const sent = signal === "SIGHUP" ? "SIGTERM" : signal;
         const children = [...this.live.keys()];
         const exits = children.map((child) => this.live.get(child) as Promise<void>);
+        // An outside stop is no scheduled restart: the checks go before the signal.
+        for (const poll of this.polls.values()) clearInterval(poll);
+        this.polls.clear();
         for (const child of children) child.kill(sent);
         const backstop = setTimeout(() => {
             for (const child of children) kill(child);

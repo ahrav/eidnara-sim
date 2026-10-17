@@ -272,12 +272,12 @@ export class HostDriver implements ArmDriver {
         this.secondOwed = state?.second?.session ?? state?.second_owed ?? null;
         this.storeMarkAtOpen = state?.transcript_mark ?? null;
         this.secondExited = state?.second_exited ?? null;
+        await this.reapStale();
         if (this.secondExited !== null) {
             throw new HarnessFailure(
                 `the second client exited before the primary session's session_end in ${this.secondExited}`,
             );
         }
-        await this.reapStale();
         await this.startArm(false);
         if (open) await this.event(open);
     }
