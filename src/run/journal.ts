@@ -3,6 +3,7 @@ import {
     existsSync,
     fstatSync,
     linkSync,
+    lstatSync,
     openSync,
     readFileSync,
     readSync,
@@ -106,12 +107,24 @@ export function releaseLease(dir: string): void {
 const TAIL_CHUNK = 1 << 20;
 
 /**
+ * A log the harness appends to must be a regular file or absent; a symlink or other shape at
+ * its path would carry the write elsewhere.
+ */
+export function requireAppendable(path: string): void {
+    const stat = lstatSync(path, { throwIfNoEntry: false });
+    if (stat !== undefined && !stat.isFile()) {
+        throw new Error(`${path} is not a regular file; refusing to write through it`);
+    }
+}
+
+/**
  * Truncates a JSONL file to its newline-terminated prefix, which drops the line a kill
  * mid-append left cut, and returns the byte length kept. The file is scanned backwards in
  * chunks from its end, so a log of large records costs one chunk of memory, and a missing
  * file reads as empty.
  */
 export function keepCompleteLines(path: string): number {
+    requireAppendable(path);
     if (!existsSync(path)) return 0;
     const fd = openSync(path, "r");
     try {

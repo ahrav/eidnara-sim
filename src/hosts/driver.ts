@@ -239,19 +239,18 @@ export class HostDriver implements ArmDriver {
             const forced = git(source, tracked).split("\0").filter(Boolean);
             this.snapshots.trackIgnored(project, forced);
             const rules: Record<string, string> = {};
-            const listed = git(source, [
-                "ls-files",
-                "-s",
-                "-z",
-                "--",
-                ".gitignore",
-                "**/.gitignore",
-            ]);
+            const names = [".gitignore", "**/.gitignore", ".gitattributes", "**/.gitattributes"];
+            const listed = git(source, ["ls-files", "-s", "-z", "--", ...names]);
             for (const row of listed.split("\0").filter(Boolean)) {
                 const [meta, path] = row.split("\t") as [string, string];
                 rules[path] = meta.split(" ")[1] as string;
             }
-            this.snapshots.trackIgnoreRules(project, rules, this.snapshots.excludeDigest(target));
+            this.snapshots.trackIgnoreRules(
+                project,
+                rules,
+                this.snapshots.excludeDigest(target),
+                this.snapshots.excludeDigest(target, "attributes"),
+            );
         }
         await this.startArm(true);
     }
@@ -369,7 +368,7 @@ export class HostDriver implements ArmDriver {
                     ...(() => {
                         const changed = this.snapshots.ignoreChanges(dir, project, ignoreFiles);
                         return changed.length > 0
-                            ? [`ignore rules changed: ${changed.join(", ")}`]
+                            ? [`rule files changed: ${changed.join(", ")}`]
                             : [];
                     })(),
                 ].filter((r): r is string => r !== null);
@@ -708,7 +707,12 @@ export class HostDriver implements ArmDriver {
             await daemon?.stop();
             if (daemon && checkFinalStore) {
                 const check = checkStore(this.storeDb);
-                writeFileSync(join(this.armDir, "store-check.json"), `${JSON.stringify(check)}\n`);
+                // Staged under an exclusive create and renamed into place, so a link left at the
+                // report's path is replaced rather than written through.
+                const report = join(this.armDir, "store-check.json");
+                const staged = `${report}.${process.pid}`;
+                writeFileSync(staged, `${JSON.stringify(check)}\n`, { flag: "wx" });
+                renameSync(staged, report);
             }
         } catch (caught) {
             failure ??= caught;

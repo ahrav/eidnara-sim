@@ -5,6 +5,7 @@ import {
     appendFileSync,
     closeSync,
     existsSync,
+    lstatSync,
     mkdirSync,
     mkdtempSync,
     openSync,
@@ -901,6 +902,23 @@ describe("HostDriver faults", () => {
         expect(after.stores).toBeUndefined();
     });
 
+    test("the final store check replaces a symlink at its path without writing through it", async () => {
+        const { driver, armDir } = fixture("eidnara");
+        driver.daemon = fakeDaemon(10) as unknown as DaemonStack;
+        mkdirSync(dirname(driver.storeDb), { recursive: true });
+        new Database(driver.storeDb).run(SEGMENTS_DDL);
+        const target = join(armDir, "elsewhere.json");
+        writeFileSync(target, "untouched\n");
+        mkdirSync(armDir, { recursive: true });
+        symlinkSync(target, join(armDir, "store-check.json"));
+        await driver.finish();
+        expect(readFileSync(target, "utf8")).toBe("untouched\n");
+        expect(lstatSync(join(armDir, "store-check.json")).isSymbolicLink()).toBe(false);
+        expect(JSON.parse(readFileSync(join(armDir, "store-check.json"), "utf8")).integrity).toBe(
+            "ok",
+        );
+    });
+
     test("finish stops the daemon and writes the final store check", async () => {
         const { driver } = fixture("eidnara");
         const daemon = fakeDaemon(10);
@@ -1015,7 +1033,7 @@ describe("probe snapshots", () => {
         const hidden = await fresh.event(
             ev("user_turn", { id: "e-1", session: "s-0", text: "go", probe: "q-1" }),
         );
-        expect(hidden.failed).toBe("ignore rules changed: .gitignore (added)");
+        expect(hidden.failed).toBe("rule files changed: .gitignore (added)");
         host.onPrompt = () => appendFileSync(join(ws, ".git", "info", "exclude"), "cache.rs\n");
         const excluded = await fresh.event(
             ev("user_turn", { id: "e-2", session: "s-0", text: "go", probe: "q-2" }),
@@ -1047,7 +1065,7 @@ describe("probe snapshots", () => {
             ev("user_turn", { id: "e-1", session: "s-0", text: "go", probe: "q-1" }),
         );
         expect(outcome.failed).toBe(
-            "ignore rules changed: .gitignore (added), deep/er/.gitignore (added)",
+            "rule files changed: .gitignore (added), deep/er/.gitignore (added)",
         );
     });
 
@@ -1086,6 +1104,31 @@ describe("probe snapshots", () => {
         rmSync(info, { recursive: true });
         symlinkSync(tmp(), info);
         expect(recorder.excludeDigest(repo)).toBe("unreadable");
+    });
+
+    test("a probe turn that adds a .gitattributes rule ends failed, since attributes rewrite indexed content", async () => {
+        const { driver, hosts } = fixture("host", { p: gitRepo() });
+        const fresh = new HostDriver((driver as unknown as { o: DriverOptions }).o);
+        await fresh.reset();
+        const host = hosts.at(-1) as FakeHost;
+        const ws = fresh.workspace("p");
+        await fresh.event(ev("session_start", { session: "s-0" }));
+        host.onPrompt = () => {
+            writeFileSync(join(ws, "note.txt"), "before $Id: FORBIDDEN_VALUE $ after\n");
+            writeFileSync(join(ws, ".gitattributes"), "*.txt ident\n");
+        };
+        const outcome = await fresh.event(
+            ev("user_turn", { id: "e-1", session: "s-0", text: "go", probe: "q-1" }),
+        );
+        expect(outcome.failed).toBe("rule files changed: .gitattributes (added)");
+        host.onPrompt = () =>
+            writeFileSync(join(ws, ".git", "info", "attributes"), "*.txt ident\n");
+        rmSync(join(ws, ".gitattributes"));
+        mkdirSync(join(ws, ".git", "info"), { recursive: true });
+        const info = await fresh.event(
+            ev("user_turn", { id: "e-2", session: "s-0", text: "go", probe: "q-2" }),
+        );
+        expect(info.failed).toBe("rule files changed: .git/info/attributes (changed)");
     });
 
     test("a probe turn that leaves an embedded repository in the workspace ends failed, naming it", async () => {

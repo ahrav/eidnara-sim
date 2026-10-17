@@ -1025,3 +1025,65 @@ test("quiescing jobs waits for background jobs while the turn itself stays open"
         kinds.indexOf("EndTurn:e-000001"),
     );
 });
+
+test("a second resume after an interrupted turn adds no second terminal Event", async () => {
+    const path = join(dir(), "j.jsonl");
+    const events = fixtureEvents(2);
+    const first = new Journal(path);
+    const killed: ArmDriver = {
+        reset: async () => undefined,
+        event: async (e) => {
+            if (e.index === 0) throw new Error("harness killed");
+            return {};
+        },
+        fault: async () => ({}),
+    };
+    await expect(
+        new Scheduler({
+            events,
+            faults: [],
+            journal: first,
+            settleMs: 0,
+            order: ["a"],
+            drivers: { a: killed },
+        }).run(),
+    ).rejects.toThrow("harness killed");
+    first.close();
+    const again = new Journal(path);
+    const killedLater: ArmDriver = {
+        reset: async () => undefined,
+        event: async (e) => {
+            if (e.index === 1) throw new Error("harness killed again");
+            return {};
+        },
+        fault: async () => ({}),
+    };
+    await expect(
+        new Scheduler({
+            events,
+            faults: [],
+            journal: again,
+            settleMs: 0,
+            order: ["a"],
+            drivers: { a: killedLater },
+        }).run(),
+    ).rejects.toThrow("harness killed again");
+    again.close();
+    const third = new Journal(path);
+    const fine: ArmDriver = {
+        reset: async () => undefined,
+        event: async () => ({}),
+        fault: async () => ({}),
+    };
+    await new Scheduler({
+        events,
+        faults: [],
+        journal: third,
+        settleMs: 0,
+        order: ["a"],
+        drivers: { a: fine },
+    }).run();
+    const terminal = third.entries.filter((e) => e.kind === "Event").map((e) => e.event);
+    expect(terminal).toEqual([...new Set(terminal)]);
+    expect(terminal.filter((e) => e === "e-000001")).toHaveLength(1);
+});

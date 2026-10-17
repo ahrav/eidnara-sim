@@ -182,7 +182,10 @@ export class Scheduler {
             this.log({ kind: "Event", event: e.event, outcome: e.outcome });
         }
         const journaled = new Set(kinds("UserTurn").map((e) => e.event));
-        for (const e of kinds("BeginTurn").filter((x) => !ended.has(x.event))) {
+        const interrupted = kinds("BeginTurn").filter(
+            (x) => !ended.has(x.event) && !done.has(x.event),
+        );
+        for (const e of interrupted) {
             const user = journaled.has(e.event)
                 ? undefined
                 : this.o.recoverTurn?.(e.event as string);

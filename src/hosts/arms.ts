@@ -157,8 +157,8 @@ export class DaemonStack {
 
     constructor(private readonly ctx: DaemonContext) {}
 
-    pid(): number | null {
-        return this.stack?.child?.pid ?? null;
+    pid(stack: Untyped = this.stack): number | null {
+        return stack?.child?.pid ?? null;
     }
 
     /** Names the marker a `start` after a harness kill reads to find the logs still to save. */
@@ -377,6 +377,10 @@ export class DaemonStack {
         if (this.heldStdout === null) this.hold();
         const live = String(this.stack.logPath ?? "");
         await this.stack.restartHost();
+        // The replacement owns the marker from here, so a kill before the logs are saved still
+        // lets a resume stop it before starting another daemon against the same store.
+        const marker = this.readMarker();
+        if (marker) this.writeMarker({ ...marker, owner: this.owner() });
         appendFileSync(this.ctx.logFile, this.heldStdout ?? "");
         this.heldStdout = null;
         this.absorb(this.held, [live]);
@@ -384,9 +388,10 @@ export class DaemonStack {
     }
 
     /**
-     * Stops the daemon, then saves its stdout (read after termination, so a line written while
-     * handling SIGTERM is in it) and every log the marker still lists, the live one included;
-     * nothing is left to recover.
+     * Stops the daemon, then saves every log the marker still lists, the live one included,
+     * and last its stdout (read after termination, so a line written while handling SIGTERM
+     * is in it, and appended after any rollback so the rollback cannot erase it); nothing is
+     * left to recover.
      */
     async stop(): Promise<void> {
         const stack = this.stack;
@@ -394,17 +399,29 @@ export class DaemonStack {
         await stack.terminateHost();
         this.stack = null;
         const { stdout } = this.hh.__hermeticHostTest.diagnostics(stack);
-        // The stack's stdout covers a held copy from a kill that failed, so the marker drops its own.
+        // A held stdout belongs to the lifetime the marker names as owner. When that is still the
+        // stack's lifetime (a kill that failed), the stack's stdout covers it and the marker drops
+        // its own; when a replacement came up and then failed, the held copy is the old lifetime's
+        // only stdout and lands ahead of the replacement's output. The stack's stdout goes last,
+        // after any rollback the drains perform, so a rollback cannot erase it.
+        const live = String(stack.logPath ?? "");
         const marker = this.readMarker();
+        const sameLifetime = marker?.owner?.pid != null && marker.owner.pid === this.pid(stack);
         const {
             stdout: _held,
             stdout_target: _target,
             ...rest
         } = marker ?? { pending: [], copying: null };
-        if (marker?.stdout !== undefined) this.writeMarker(rest);
-        appendFileSync(this.ctx.logFile, stdout);
         this.heldStdout = null;
-        this.drain(marker ? rest : null, [String(stack.logPath ?? "")]);
+        if (marker?.stdout !== undefined && !sameLifetime) {
+            this.drain({ ...marker, pending: marker.pending.filter((p) => p !== live) }, []);
+            this.drain(null, [live]);
+            appendFileSync(this.ctx.logFile, stdout);
+            return;
+        }
+        if (marker?.stdout !== undefined) this.writeMarker(rest);
+        this.drain(marker ? rest : null, [live]);
+        appendFileSync(this.ctx.logFile, stdout);
     }
 }
 
@@ -611,7 +628,8 @@ export class PiSimHost extends SimHost {
 
     /**
      * Runs one turn. A turn that fails or times out is aborted; an `agent_end` that already
-     * arrived settles the drain, otherwise a fresh waiter runs for the drain wait. A Pi that
+     * arrived (checked after one event-loop tick, so a same-tick end counts) settles the drain,
+     * otherwise a fresh waiter runs for the drain wait. A Pi that
      * reports no `agent_end` in that time is still running the old turn, so its process is
      * killed and the session's later prompts fail at once. A tool event from that turn can
      * then never land on a later turn's record.
@@ -649,6 +667,7 @@ export class PiSimHost extends SimHost {
                 ? { error: String(last.errorMessage ?? "error") }
                 : {};
         } catch (caught) {
+            await Bun.sleep(0);
             const drained = ended ? Promise.resolve() : this.agentEnd(this.drainWaitMs);
             await this.rpc.sendCommand("abort", {}, { timeoutMs: 60_000 }).catch(() => undefined);
             const settled = await drained.then(

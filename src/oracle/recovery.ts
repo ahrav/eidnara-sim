@@ -169,6 +169,13 @@ function turnsAfter(arm: ArmLogs, fault: Entry, tl: Timeline): Turn[] {
             turns.push({ event: String(e.event), from, end: e, next: Number.POSITIVE_INFINITY });
         }
     }
+    for (const t of turns) {
+        if (t.next < t.from) {
+            throw new Error(
+                `${arm.arm}: turn ${t.event}'s window closes before it opens; its wall times run backward`,
+            );
+        }
+    }
     return turns;
 }
 
@@ -326,6 +333,20 @@ export function recoveries(run: RunLogs): Recovery[] {
                 anchors.set(e.fault, e);
         }
         if (anchors.size === 0) return [];
+        // A journaled fault must be the scheduled one: same id, same type.
+        for (const anchor of anchors.values()) {
+            const scheduled = run.faultTypes?.get(String(anchor.fault));
+            if (run.faultTypes && scheduled === undefined) {
+                throw new Error(
+                    `${arm.arm}: fault ${String(anchor.fault)} is not in the run's schedule`,
+                );
+            }
+            if (scheduled !== undefined && scheduled !== String(anchor.type)) {
+                throw new Error(
+                    `${arm.arm}: fault ${String(anchor.fault)} is journaled as ${String(anchor.type)} but scheduled as ${scheduled}`,
+                );
+            }
+        }
         // The timeline and evidence index are built once the first fault needs a verdict.
         let built: { tl: Timeline; indexed: Evidence } | null = null;
         const evidenceOf = () => {

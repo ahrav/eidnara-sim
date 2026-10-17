@@ -96,7 +96,9 @@ function f4(arm: ArmLogs, quietMs: number): Activation[] {
                 ]),
                 ...tools,
                 e.scenario_ms,
-            ].sort((a, b) => a - b);
+            ]
+                .filter((ms) => ms <= e.scenario_ms)
+                .sort((a, b) => a - b);
             const gap = Math.max(0, ...points.slice(1).map((ms, i) => ms - (points[i] as number)));
             if (calls.length === 0 || gap > quietMs) {
                 const what =

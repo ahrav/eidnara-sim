@@ -459,21 +459,24 @@ async function runArms(
             loopStore,
             onDaemonExit: (detail) => scheduler.daemonExited(detail),
             sampleDaemon: () => sampler.observe(),
-            callsFor: (session) => [
-                ...callsOf(join(o.out, "calls.jsonl"), arm, session, turnIndex).filter(
-                    (c) => c.component !== "user-sim",
-                ),
-                ...userTurns(arm, session).map((e) => ({
-                    seq: e.seq,
-                    component: "user-sim",
-                    turn: String(e.event),
-                    turn_index: turnIndex.get(String(e.event)),
-                    scenario_ms: e.scenario_ms,
-                    input_tokens: 0,
-                    output_tokens: 0,
-                    label: String(e.label),
-                })),
-            ],
+            callsFor: (session) => {
+                requireRecorded(gateway);
+                return [
+                    ...callsOf(join(o.out, "calls.jsonl"), arm, session, turnIndex).filter(
+                        (c) => c.component !== "user-sim",
+                    ),
+                    ...userTurns(arm, session).map((e) => ({
+                        seq: e.seq,
+                        component: "user-sim",
+                        turn: String(e.event),
+                        turn_index: turnIndex.get(String(e.event)),
+                        scenario_ms: e.scenario_ms,
+                        input_tokens: 0,
+                        output_tokens: 0,
+                        label: String(e.label),
+                    })),
+                ];
+            },
             settle: () => scheduler.quiesceJobs(),
             now,
         });
@@ -566,4 +569,15 @@ async function runArms(
         };
     }
     await scheduler.run();
+    requireRecorded(gateway);
+}
+
+/**
+ * A call record the gateway failed to write leaves `calls.jsonl` short of a call the host made,
+ * so the run stops rather than snapshot or end on incomplete evidence.
+ */
+function requireRecorded(gateway: Gateway): void {
+    if (gateway.failures.length === 0) return;
+    const causes = gateway.failures.map((f) => f.message).join("; ");
+    throw new HarnessFailure(`proxy call recording failed: ${causes}`);
 }
