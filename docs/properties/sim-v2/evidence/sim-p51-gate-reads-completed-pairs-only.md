@@ -18,8 +18,11 @@ M7 (#1032) evaluates a tier from the paired observations it is given; excluded
 ids and fault-asymmetric pairs leave the analysis, and the verdict lists the
 excluded ids with their arm and counts them per arm. The input names the
 journal sequence its completed pairs were read at, a non-negative integer the
-evaluation refuses to run without, and the verdict repeats it. The report
-(#1033) builds the observations from completed pairs.
+evaluation refuses to run without, and the verdict repeats it. In this tree
+`evaluateTier` has no caller beyond its tests, so a caller can still hand it
+any observation subset with any valid sequence; the report path that builds
+the observations from the completed pairs at that sequence is #1033 work and
+is unresolved here.
 
 ## Failure scenario
 

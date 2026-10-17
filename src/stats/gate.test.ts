@@ -742,3 +742,56 @@ describe("tier gate review findings, Kilo round", () => {
         expect(v.stops[0]?.window).toEqual(ids.slice(10, 13));
     });
 });
+
+describe("tier gate review findings, third Codex round", () => {
+    test("distinct items carry distinct issue orders and one item carries one order", () => {
+        const a = binary("P2.harm", [[0, 0]]);
+        const b = binary("P3.harm", [[0, 0]]);
+        b.items = b.items?.map((x) => ({ ...x, order: a.items?.[0]?.order ?? 0 }));
+        expect(() => evaluate([a, b])).toThrow(StatsRefusal);
+        const twice = binary("P2.harm", [
+            [0, 0],
+            [0, 0],
+        ]);
+        const first = twice.items?.[0]?.order ?? 0;
+        twice.items = twice.items?.map((x) => ({ ...x, order: first }));
+        expect(() => evaluate([twice])).toThrow(StatsRefusal);
+    });
+
+    test("a bootstrap plan too small for a finite interval is refused", () => {
+        const thin = { ...M, bootstrap: { ...M.bootstrap, replicates: 1 } };
+        const scores = runs(
+            "P13.fold_fidelity_score",
+            Array.from({ length: 6 }, (_, i): [number, number] => [0, 0.1 * (i + 1)]),
+        );
+        expect(() =>
+            evaluateTier(thin, {
+                observations: [scores],
+                excluded: [],
+                asymmetric: [],
+                journal_seq_at_eval: 7,
+                arms: { control: "host", treatment: "eidnara" },
+            }),
+        ).toThrow(StatsRefusal);
+    });
+
+    test("the verdict records each CUSUM rule's registered source and the deviation it used", () => {
+        const v = evaluate([binary("P1.pass", repeat(3, [1, 1] as [number, number]))], {
+            cusum_sd: { futility: 0.25 },
+        });
+        expect(v.cusum_rules).toEqual([
+            { kind: "harm", metric: "harm", sd_source: "this tier's A/A pairs", sd: null },
+            { kind: "futility", metric: "probe-P1", sd_source: "this tier's A/A pairs", sd: 0.25 },
+        ]);
+    });
+
+    test("an unbounded rate ratio survives serialization", () => {
+        const m = metric(
+            evaluate([runs("failed_turns", repeat(6, [0, 1] as [number, number]))]),
+            "dependability",
+            "failed_turns",
+        );
+        expect([m?.rate_ratio_upper, m?.passed]).toEqual(["unbounded", false]);
+        expect(JSON.parse(JSON.stringify(m)).rate_ratio_upper).toBe("unbounded");
+    });
+});

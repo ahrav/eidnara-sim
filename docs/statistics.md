@@ -50,9 +50,13 @@ from its family's, an observation carrying runs for an item unit or items
 for a run unit, a control or treatment value that is not finite, a binary
 family's value other than 0 or 1, a negative count, an item whose issue
 order is not a non-negative integer, an item or run identity repeated
-within an observation, an id listed twice across the excluded and
-fault-asymmetric lists, and a run-level family whose metrics come from
-different run sets. The input names the compared arms, which are `host` against the
+within an observation, an issue order shared by two items or an item with
+two orders, an id listed twice across the excluded and fault-asymmetric
+lists, a run-level family whose metrics come from different run sets, and
+a bootstrap plan whose interval is not finite. A metric whose name ends in
+`_delta_ms` or names a growth per session arrives as the paired delta in
+the treatment value with 0 as control, so a bound on it is a bound on the
+delta. The input names the compared arms, which are `host` against the
 pre-registration's default arm (D1), and the journal sequence whose
 completed pairs it was built from, a non-negative integer; the verdict
 repeats both so the input set can be recomputed. Every registered metric
@@ -97,7 +101,8 @@ multiplicity adjustment; `at-most` needs the upper end at or below the
 margin, or, for the
 sign test, no `worse` and the Clopper-Pearson upper limit (at half the
 alpha) of the treatment-to-control ratio of event totals at or below a
-ratio margin. With no events in either arm there is no ratio to bound and
+ratio margin; with treatment events and no control events the limit is
+recorded as `unbounded` and the component fails. With no events in either arm there is no ratio to bound and
 the component rests on the sign test. At six to eight runs
 that limit stays above 1.5 unless the treatment arm has far fewer events:
 one control event and none in treatment bounds the ratio near 66, and
@@ -122,7 +127,10 @@ the sum last stood at zero, and a stop withholds the pass; a benefit,
 which moves only the lower sum, stops nothing. The standard deviation is
 finite and positive or the input is refused. A rule without an A/A
 standard deviation, or with no items for its metric, is listed as
-unavailable, and a tier with an unavailable rule gets no pass. The verdict also carries the
+unavailable, and a tier with an unavailable rule gets no pass. The
+verdict lists every rule with its registered `sd_source` and the
+deviation it used, so the A/A report can be checked against it. The
+verdict also carries the
 pre-registration digest, the journal sequence it was evaluated at, the
 families with their MDE and margin, and the harm metrics whose verdict is
 `worse` ("memory made it worse"). An evaluation whose output contains the

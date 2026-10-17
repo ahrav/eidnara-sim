@@ -57,7 +57,7 @@ export interface MetricResult {
     detectable: number | null;
     resolution_ratio: number | null;
     resolution_note?: string;
-    rate_ratio_upper?: number;
+    rate_ratio_upper?: number | "unbounded";
     verdict: string;
     passed: boolean | null;
     asymmetric_pairs: number;
@@ -81,6 +81,13 @@ export interface CusumStop {
     window: string[];
 }
 
+export interface CusumRule {
+    kind: "harm" | "futility";
+    metric: string;
+    sd_source: string;
+    sd: number | null;
+}
+
 export interface TierVerdict {
     prereg_sha256: string;
     journal_seq_at_eval: number;
@@ -94,6 +101,7 @@ export interface TierVerdict {
         rule: string;
     };
     stops: CusumStop[];
+    cusum_rules: CusumRule[];
     cusum_unavailable: string[];
     excluded_per_arm: Record<string, number>;
     excluded: TierInput["excluded"];
@@ -122,6 +130,13 @@ const empty = (method: string): Stats => ({
     resolution_ratio: null,
     shift: 0,
 });
+const finiteInterval = (interval: [number, number], p: Preregistration) => {
+    if (!interval.every(Number.isFinite)) {
+        throw new StatsRefusal(
+            `the bootstrap interval is not finite at ${p.bootstrap.replicates} replicates`,
+        );
+    }
+};
 
 function binary(f: Family, items: ItemPair[], p: Preregistration): Stats {
     const n = items.length;
@@ -148,6 +163,7 @@ function binary(f: Family, items: ItemPair[], p: Preregistration): Stats {
         alpha: num(f.alpha),
     });
     const interval: [number, number] = [100 * Math.min(nl, boot.lo), 100 * Math.max(nh, boot.hi)];
+    finiteInterval(interval, p);
     const exact = mcnemarExact(b, c).p;
     const detectable = 100 * zSum(f) * Math.sqrt(Math.max(b + c, 1) / n / n);
     const sig = exact <= num(f.alpha) && (interval[0] > 0 || interval[1] < 0);
@@ -212,7 +228,7 @@ function counts(f: Family, runs: RunPair[]): Stats {
     const t = runs.reduce((s, r) => s + r.treatment, 0);
     const c = runs.reduce((s, r) => s + r.control, 0);
     const share = c === 0 ? 1 : betaQuantile(1 - num(f.alpha) / 2, t + 1, c);
-    const ratioUpper = share >= 1 ? Number.POSITIVE_INFINITY : share / (1 - share);
+    const ratioUpper = share >= 1 ? "unbounded" : share / (1 - share);
     return {
         n,
         difference: mean(diffs),
@@ -239,6 +255,7 @@ function graded(f: Family, runs: RunPair[], p: Preregistration): Stats {
     const m = mean(diffs);
     const sd = Math.sqrt(diffs.reduce((s, v) => s + (v - m) ** 2, 0) / (n - 1));
     const b = bootstrap(diffs, mean, { ...p.bootstrap, alpha: num(f.alpha), bca });
+    finiteInterval([b.lo, b.hi], p);
     const detectable = (zSum(f) * sd) / Math.sqrt(n);
     return {
         n,
@@ -293,7 +310,10 @@ function judge(f: Family, metric: string, s: Stats, obs: Observation): [string, 
     if (f.direction === "noninferiority") return [text, hi !== undefined && hi < margin];
     if (hi !== undefined) return [text, hi <= margin];
     const upper = s.rate_ratio_upper;
-    const within = f.margin.scale !== "ratio" || upper === undefined || upper <= margin;
+    const within =
+        f.margin.scale !== "ratio" ||
+        upper === undefined ||
+        (upper !== "unbounded" && upper <= margin);
     return [text, text !== "worse" && within];
 }
 
@@ -334,6 +354,8 @@ function check(p: Preregistration, input: TierInput): void {
     if (new Set(flagged).size !== flagged.length) {
         throw new StatsRefusal("excluded and asymmetric ids are distinct and listed once");
     }
+    const orderOf = new Map<string, number>();
+    const itemAt = new Map<number, string>();
     for (const o of input.observations) {
         if (seen.has(o.metric)) throw new StatsRefusal(`metric ${o.metric} is observed twice`);
         seen.add(o.metric);
@@ -367,6 +389,20 @@ function check(p: Preregistration, input: TierInput): void {
         if (!(o.items ?? []).every((x) => isIndex(x.order))) {
             throw new StatsRefusal(`${o.metric}: an item's issue order is a non-negative integer`);
         }
+        for (const x of o.items ?? []) {
+            const prior = orderOf.get(x.item);
+            const holder = itemAt.get(x.order);
+            if (
+                (prior !== undefined && prior !== x.order) ||
+                (holder !== undefined && holder !== x.item)
+            ) {
+                throw new StatsRefusal(
+                    `${o.metric}: issue order ${x.order} belongs to one item, and ${x.item} has one order`,
+                );
+            }
+            orderOf.set(x.item, x.order);
+            itemAt.set(x.order, x.item);
+        }
         const ids =
             o.unit === "item"
                 ? (o.items ?? []).map((x) => x.item)
@@ -390,11 +426,22 @@ function check(p: Preregistration, input: TierInput): void {
 const isBit = (v: number) => v === 0 || v === 1;
 const isIndex = (v: number) => Number.isInteger(v) && v >= 0;
 
-function stops(p: Preregistration, input: TierInput, kept: Observation[]): [CusumStop[], string[]] {
+function stops(
+    p: Preregistration,
+    input: TierInput,
+    kept: Observation[],
+): [CusumStop[], string[], CusumRule[]] {
     const out: CusumStop[] = [];
     const unavailable: string[] = [];
+    const rules: CusumRule[] = [];
     for (const rule of p.stopping_rule.cusum) {
         const sd = input.cusum_sd?.[rule.kind];
+        rules.push({
+            kind: rule.kind,
+            metric: rule.metric,
+            sd_source: rule.sd_source,
+            sd: sd ?? null,
+        });
         if (!sd) {
             unavailable.push(`${rule.kind}: no A/A standard deviation`);
             continue;
@@ -431,7 +478,7 @@ function stops(p: Preregistration, input: TierInput, kept: Observation[]): [Cusu
             window: items.slice(start, signal + 1).map((x) => x.item),
         });
     }
-    return [out, unavailable];
+    return [out, unavailable, rules];
 }
 
 export function evaluateTier(p: Preregistration, input: TierInput): TierVerdict {
@@ -478,7 +525,7 @@ export function evaluateTier(p: Preregistration, input: TierInput): TierVerdict 
         const { id: family, claim, direction, mde, margin } = f;
         return { family, claim, direction, alpha: num(f.alpha), mde, margin, metrics, passed };
     });
-    const [halts, unavailable] = stops(p, input, kept);
+    const [halts, unavailable, rules] = stops(p, input, kept);
     const gates = families.filter((f) => f.claim === "gate");
     const excluded: Record<string, number> = {};
     for (const e of input.excluded) excluded[e.arm] = (excluded[e.arm] ?? 0) + 1;
@@ -503,6 +550,7 @@ export function evaluateTier(p: Preregistration, input: TierInput): TierVerdict 
             rule: "intersection-union: the tier passes when every gate component passes at its own alpha and every CUSUM rule was evaluated and none stopped it; a noninferiority or at-most component with an interval decides on its upper end, a one-sided test at half its alpha; the at-most sign test decides its one-sided p at its alpha",
         },
         stops: halts,
+        cusum_rules: rules,
         cusum_unavailable: unavailable,
         excluded_per_arm: excluded,
         excluded: input.excluded,

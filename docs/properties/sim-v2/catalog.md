@@ -1485,7 +1485,10 @@ implementation exists to verify against, and a default tier run reaches it.
 Existing check: `src/stats/gate.test.ts`: `memory_made_it_worse` names exactly
 the harm metrics whose Holm-adjusted verdict is `worse`; status unaudited
 Impact: Harm is reported in the wrong direction or not at all.
-Open questions: None.
+Open questions:
+- The guarantee says `eidnara < host`; the registered harm metrics are harm
+  indicators, so the implementation flags `eidnara > host`. Which scale the
+  property compares needs stating (needs human input).
 
 ### sim-p59-internal-string-scan-on-user-visible-only
 
