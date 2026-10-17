@@ -43,6 +43,7 @@ export interface DriverOptions extends Omit<HostContext, "root" | "model" | "arm
     loopStore: boolean;
     callsFor?: (session: string) => CallView[];
     hostFactory?: (ctx: HostContext) => SimHost;
+    daemonFactory?: (ctx: ConstructorParameters<typeof DaemonStack>[0]) => DaemonStack;
     /** The host's pinned and `config.upgrade` versions, as the run's preflight recorded them. */
     hostVersions?: { from: string; to: string | null };
     onDaemonExit: (detail: Record<string, unknown>) => void;
@@ -100,7 +101,7 @@ export class HostDriver implements ArmDriver {
     private readonly snapshots: SnapshotRecorder;
     private upgraded = false;
     private second: SimHost | null = null;
-    /** A host open or daemon restart still in flight, which `stop` awaits before closing either. */
+    /** A host open or daemon start or restart in flight, which `stop` awaits before closing either. */
     private inflight: Promise<void> | null = null;
     /** Daemon restarts that the end of the current or next turn owes a store check. */
     private storeFaults: string[] = [];
@@ -187,14 +188,15 @@ export class HostDriver implements ArmDriver {
         mkdirSync(this.storeRoot, { recursive: true, mode: 0o700 });
         if (this.o.loopStore && eidnaraOn(armBase(this.o.arm))) this.mountStore(fresh);
         if (eidnaraOn(armBase(this.o.arm))) {
-            this.daemon = new DaemonStack({
+            const make = this.o.daemonFactory ?? ((ctx) => new DaemonStack(ctx));
+            this.daemon = make({
                 ...this.o,
                 root: this.o.armRoot,
                 dataDir: this.dataDir,
                 logFile: join(this.armDir, "daemon.log"),
                 model: this.o.sideModel ?? this.currentModel(),
             });
-            await this.daemon.start();
+            await this.track(this.daemon.start());
             this.recordState();
         }
         this.host = this.newHost();

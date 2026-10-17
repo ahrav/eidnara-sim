@@ -67,3 +67,20 @@ test("stopAll settles when a child's spawn failed", async () => {
     ).toBe("settled");
     expect(await failed).toBe(127);
 });
+
+describe("stop reasons", () => {
+    test("a stop names its cause: the limit, the stopWhen check, or nothing for an outside signal", async () => {
+        const reasons: string[] = [];
+        const onStop = (reason: string) => void reasons.push(reason);
+        const children = new Children(process.env, 300, 50);
+        expect(await children.run(IDLE, log(), 200, undefined, onStop)).toBe(SIGTERM_EXIT);
+        expect(reasons).toEqual(["limit"]);
+        expect(await children.run(IDLE, log(), undefined, () => true, onStop)).toBe(SIGTERM_EXIT);
+        expect(reasons).toEqual(["limit", "stopWhen"]);
+        const outside = children.run(IDLE, log(), undefined, () => false, onStop);
+        await Bun.sleep(150);
+        await children.stopAll("SIGTERM");
+        expect(await outside).toBe(SIGTERM_EXIT);
+        expect(reasons).toEqual(["limit", "stopWhen"]);
+    });
+});

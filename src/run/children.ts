@@ -19,7 +19,10 @@ const kill = (child: ChildProcess) => {
 /**
  * When `limitMs` expires, or `stopWhen` holds at one of its checks every `pollMs`, a child gets
  * SIGTERM, then SIGKILL after `graceMs` if it is still live, which bounds a stalled teardown.
+ * `onStop` receives the cause of a stop this run issued; a signal from outside issues none.
  */
+export type StopReason = "limit" | "stopWhen";
+
 export class Children {
     private readonly live = new Set<ChildProcess>();
     private stopping = false;
@@ -30,7 +33,13 @@ export class Children {
         private readonly pollMs = 30_000,
     ) {}
 
-    run(argv: string[], log: string, limitMs?: number, stopWhen?: () => boolean): Promise<number> {
+    run(
+        argv: string[],
+        log: string,
+        limitMs?: number,
+        stopWhen?: () => boolean,
+        onStop?: (reason: StopReason) => void,
+    ): Promise<number> {
         if (this.stopping) return Promise.resolve(SIGTERM_EXIT);
         return new Promise<number>((done) => {
             const child = spawn("bun", argv, {
@@ -44,14 +53,18 @@ export class Children {
             child.stderr?.on("data", sink);
             const timers: ReturnType<typeof setTimeout>[] = [];
             let stopping = false;
-            const stop = () => {
+            const stop = (reason: StopReason) => {
                 if (stopping) return;
                 stopping = true;
+                onStop?.(reason);
                 child.kill("SIGTERM");
                 timers.push(setTimeout(() => kill(child), this.graceMs));
             };
-            if (limitMs !== undefined && limitMs > 0) timers.push(setTimeout(stop, limitMs));
-            const poll = stopWhen ? setInterval(() => stopWhen() && stop(), this.pollMs) : null;
+            if (limitMs !== undefined && limitMs > 0)
+                timers.push(setTimeout(() => stop("limit"), limitMs));
+            const poll = stopWhen
+                ? setInterval(() => stopWhen() && stop("stopWhen"), this.pollMs)
+                : null;
             const finish = (code: number) => {
                 if (poll) clearInterval(poll);
                 for (const t of timers) clearTimeout(t);

@@ -202,7 +202,8 @@ empty or non-numeric value is refused; recorded in `tier-plan.json` as
 fraction whose first reachable event count is a run's last event is refused,
 since that stop could not land before the run ends) of its
 planned events across its arms, checked every 30 s,
-and resumed from its journal within the rest of its wall limit. The restart writes `<run>/restarted`,
+and resumed from its journal within the rest of its wall limit. The restart writes `<run>/restarted` only when the journal check requested
+the stop (an outside SIGTERM at the same point leaves no marker),
 so a rerun of the command neither restarts that run again nor reports it
 unrestarted; `tier-result.json` records `restarted` per run, and the
 command exits 1 naming any paired run without a restart.

@@ -127,9 +127,18 @@ function fakeDaemon(pid: number | null) {
         },
         stop: async () => {
             if (d.restarting) d.stoppedWhileRestarting++;
+            if (d.starting) d.stoppedWhileStarting++;
             d.stops++;
         },
         connectionFile: "/run/conn",
+        starting: false,
+        stoppedWhileStarting: 0,
+        start: async () => {
+            d.starting = true;
+            await d.gate;
+            d.starting = false;
+            d.current = d.current ?? 10;
+        },
     };
     return d;
 }
@@ -548,6 +557,31 @@ describe("HostDriver faults", () => {
         await stop;
         await fault;
         expect([daemon.stops, daemon.stoppedWhileRestarting]).toEqual([1, 0]);
+    });
+
+    test("stopping while the daemon starts waits for the start, then stops it", async () => {
+        const { driver } = fixture("eidnara");
+        const daemon = fakeDaemon(null);
+        let release: () => void = () => undefined;
+        daemon.gate = new Promise<void>((r) => {
+            release = r;
+        });
+        const o = (driver as unknown as { o: DriverOptions }).o;
+        o.daemonFactory = () => daemon as unknown as DaemonStack;
+        const reset = driver.reset();
+        reset.catch(() => undefined);
+        await Bun.sleep(20);
+        expect(daemon.starting).toBe(true);
+        let stopped = false;
+        const stop = driver.stop().then(() => {
+            stopped = true;
+        });
+        await Bun.sleep(20);
+        expect([stopped, daemon.stoppedWhileStarting]).toEqual([false, 0]);
+        release();
+        await stop;
+        await reset;
+        expect([daemon.stops, daemon.stoppedWhileStarting]).toEqual([1, 0]);
     });
 
     test("the store checks a daemon restart owes survive a resume through the arm state", async () => {

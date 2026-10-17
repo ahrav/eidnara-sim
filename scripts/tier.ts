@@ -4,7 +4,7 @@ import { loadConfig } from "../src/config/config";
 import { TIERS, type Tier } from "../src/prereg/schema";
 import { tierInput } from "../src/report/observe";
 import { aaScale, loadGraded } from "../src/report/tier";
-import { Children, SIGTERM_EXIT } from "../src/run/children";
+import { Children, SIGTERM_EXIT, type StopReason } from "../src/run/children";
 import { releaseLease, takeLease } from "../src/run/journal";
 import { gradedMainRuns, resizeFromM } from "../src/run/resize";
 import { loadScenario } from "../src/run/run";
@@ -163,12 +163,19 @@ if (flags.has("plan-only")) exit(0);
 const bin = resolve(dirname(config.opencode_binary), "../../.bin");
 const env = { ...process.env, PATH: `${bin}:${process.env.PATH}` };
 const children = new Children(env);
-const run = (args: string[], log: string, limitMs?: number, stopWhen?: () => boolean) =>
+const run = (
+    args: string[],
+    log: string,
+    limitMs?: number,
+    stopWhen?: () => boolean,
+    onStop?: (reason: StopReason) => void,
+) =>
     children.run(
         [join(import.meta.dir, args[0] as string), ...args.slice(1)],
         log,
         limitMs,
         stopWhen,
+        onStop,
     );
 for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
     process.on(signal, async () => {
@@ -225,6 +232,7 @@ const runJob = async (job: TierJob) => {
     const due = job.group === "main" ? restartCut(restartAt, job.events, job.arms.length) : null;
     const cut = due !== null && !existsSync(marker) ? due : null;
     const remaining = () => Math.max(1, limit - (Date.now() - span.started));
+    let requested = false;
     let code =
         span.ended !== undefined
             ? 0
@@ -233,8 +241,11 @@ const runJob = async (job: TierJob) => {
                   log,
                   remaining(),
                   cut === null ? undefined : () => eventsRun(job.dir) >= cut,
+                  (reason) => {
+                      requested = reason === "stopWhen";
+                  },
               );
-    if (cut !== null && code === SIGTERM_EXIT && eventsRun(job.dir) >= cut && remaining() > 1) {
+    if (requested && code === SIGTERM_EXIT && remaining() > 1) {
         writeFileSync(marker, `${new Date().toISOString()}\n`);
         code = await run(args, log, remaining());
     }
