@@ -1437,6 +1437,18 @@ test("a tool run reported at its start is on record, and its end report replaces
     ]);
 });
 
+test("a symlink planted at the saved git-config path is never written through on reset", async () => {
+    const { driver, armDir } = fixture("host", { p: gitRepo() });
+    const victim = join(tmp(), "victim");
+    writeFileSync(victim, "keep");
+    mkdirSync(armDir, { recursive: true });
+    symlinkSync(victim, join(armDir, "p.gitconfig"));
+    await driver.reset();
+    expect(readFileSync(victim, "utf8")).toBe("keep");
+    expect(lstatSync(join(armDir, "p.gitconfig")).isSymbolicLink()).toBe(false);
+    expect(readFileSync(join(armDir, "p.gitconfig"), "utf8")).toContain("[core]");
+});
+
 test("a symlink planted at the recorder's staging path is never written through", () => {
     const repo = gitRepo();
     const armDir = tmp();

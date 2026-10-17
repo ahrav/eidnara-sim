@@ -339,6 +339,37 @@ test("a stop after a failed restart saves every log the marker still lists", asy
     expect(existsSync(join(dir, "daemon.log.source"))).toBe(false);
 });
 
+test("a stop records its final stdout append in the marker until it lands", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "sim-daemon-"));
+    const logPath = join(dir, "direct-host.log");
+    const marker = join(dir, "daemon.log.source");
+    writeFileSync(logPath, "stderr\n");
+    const stack = { logPath, terminateHost: async () => {} };
+    const hh = {
+        __hermeticHostTest: {
+            diagnostics: () => ({ stdout: "final\n", stderr: "", retainedLog: "" }),
+        },
+    };
+    const daemon = new DaemonStack(stackCtx(dir));
+    Object.assign(daemon as unknown as Record<string, unknown>, { stack, hh });
+    const seen: unknown[] = [];
+    const original = (daemon as unknown as { writeMarker: (m: unknown) => void }).writeMarker.bind(
+        daemon,
+    );
+    (daemon as unknown as { writeMarker: (m: unknown) => void }).writeMarker = (m) => {
+        seen.push(m);
+        original(m);
+    };
+    await daemon.stop();
+    expect(readFileSync(join(dir, "daemon.log"), "utf8")).toBe("stderr\nfinal\n");
+    expect(existsSync(marker)).toBe(false);
+    // Before the final append, the marker named the stdout and the log's length to roll back to.
+    expect(seen.some((m) => (m as { stdout?: string }).stdout === "final\n")).toBe(true);
+    expect(
+        seen.some((m) => typeof (m as { stdout_target?: number }).stdout_target === "number"),
+    ).toBe(true);
+});
+
 test("stdout the daemon wrote while handling SIGTERM is saved", async () => {
     const dir = mkdtempSync(join(tmpdir(), "sim-daemon-"));
     const logPath = join(dir, "direct-host.log");
@@ -512,6 +543,31 @@ test("a stop treats a reused pid with another start time as a new lifetime", asy
     expect(readFileSync(join(dir, "daemon.log"), "utf8")).toBe(
         "old stdout\nold stderr\nnew stderr\nnew stdout\n",
     );
+});
+
+test("the marker names the replacement while its readiness is still awaited", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "sim-daemon-"));
+    const logPath = join(dir, "direct-host.log");
+    const marker = join(dir, "daemon.log.source");
+    writeFileSync(logPath, "old\n");
+    let duringWait: unknown = null;
+    const stack = {
+        logPath,
+        child: { pid: process.ppid },
+        restartHost: async () => {
+            stack.child = { pid: process.pid };
+            await Bun.sleep(400);
+            duringWait = JSON.parse(readFileSync(marker, "utf8")).owner?.pid;
+            throw new Error("replacement never became ready");
+        },
+    };
+    const hh = {
+        __hermeticHostTest: { diagnostics: () => ({ stdout: "", stderr: "", retainedLog: "" }) },
+    };
+    const daemon = new DaemonStack(stackCtx(dir));
+    Object.assign(daemon as unknown as Record<string, unknown>, { stack, hh });
+    await expect(daemon.restart()).rejects.toThrow("never became ready");
+    expect(duringWait).toBe(process.pid);
 });
 
 test("the marker names the replacement daemon as soon as it is up", async () => {

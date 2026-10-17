@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import {
     appendFileSync,
     closeSync,
+    constants,
     copyFileSync,
     existsSync,
     lstatSync,
@@ -234,7 +235,9 @@ export class HostDriver implements ArmDriver {
         for (const [project, source] of Object.entries(this.o.projects)) {
             const target = this.workspace(project);
             git(this.o.armRoot, ["clone", "--quiet", "--no-hardlinks", source, target]);
-            copyFileSync(join(target, ".git", "config"), join(this.armDir, `${project}.gitconfig`));
+            const baseline = join(this.armDir, `${project}.gitconfig`);
+            rmSync(baseline, { force: true });
+            copyFileSync(join(target, ".git", "config"), baseline, constants.COPYFILE_EXCL);
             const tracked = ["ls-files", "-z", "--cached", "--ignored", "--exclude-standard"];
             const forced = git(source, tracked).split("\0").filter(Boolean);
             this.snapshots.trackIgnored(project, forced);
@@ -720,6 +723,8 @@ export class HostDriver implements ArmDriver {
         } catch (caught) {
             failure ??= caught;
         }
+        // A fill a session_end never cleared comes off before the mount does.
+        this.clearStoreFill();
         if (this.storeMount) {
             const r = spawnSync("sudo", ["-n", "umount", this.storeMount], { encoding: "utf8" });
             if (r.status === 0) this.storeMount = null;

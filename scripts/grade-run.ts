@@ -22,6 +22,7 @@ import {
     GradeLog,
     type GradeRecord,
     gradeItem,
+    requireEvidence,
     verdictCounts,
 } from "../src/grade/probes";
 import { canonicalJson } from "../src/prereg/canonical";
@@ -35,6 +36,7 @@ import {
     keepCompleteLines,
     readJournal,
     releaseLease,
+    requireAppendable,
     requireComplete,
     takeLease,
 } from "../src/run/journal";
@@ -99,6 +101,12 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
         const names = changed.map(([k]) => k).join(", ");
         throw new Error(`inputs differ from the run's manifest: ${names}`);
     }
+    const identity = scenario.manifest as { seed?: unknown; tier?: unknown };
+    if (identity.seed !== manifest.seed || identity.tier !== manifest.tier) {
+        throw new Error(
+            `scenario.json is ${String(identity.tier)} seed ${String(identity.seed)}, not the manifest's ${String(manifest.tier)} seed ${String(manifest.seed)}`,
+        );
+    }
     const rules = loadPrereg(manifest.tier).grading;
     const arms = manifest.order as string[];
     const models = manifest.models as string[];
@@ -143,6 +151,11 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
                 );
             }
             const probe = entry ? probes.get(s.item) : undefined;
+            if (entry && !probe) {
+                throw new Error(
+                    `snapshot ${s.id} is journaled for item ${s.item}, which the scenario does not compile`,
+                );
+            }
             if (entry && probe) {
                 const turnOk = probe.event === undefined || s.turn === probe.event;
                 const sessionOk = s.session === probe.session;
@@ -282,6 +295,7 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
             }
             const [mine, host] = [sides[arm], sides.host];
             if (lost.size > 0 || !mine?.[0] || !host?.[0]) return [];
+            for (const side of [mine[0], host[0]]) requireEvidence(probe, side);
             return [{ probe, arm, a: mine[0], b: host[0], rows: { a: mine, b: host } }];
         }),
     );
@@ -325,6 +339,8 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
     }
 
     if (pairs.length > 0 && config) {
+        for (const name of ["judge-calls.jsonl", "judgments.jsonl"])
+            requireAppendable(join(dir, name));
         const records = new RecordWriter(join(dir, "judge-calls.jsonl"));
         const gateway = new Gateway({
             upstream: bedrockUpstream(config.bedrock.region, config.bedrock.aws_profile),
@@ -357,6 +373,7 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
                 try {
                     built = p7Pair(probe.id, a, b);
                 } catch (caught) {
+                    if (!(caught instanceof AnswerRefused)) throw caught;
                     refuse(caught);
                     continue;
                 }

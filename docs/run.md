@@ -25,8 +25,8 @@ entries of different arms are not ordered by scenario time.
 |---|---|
 | `StartRun`, `EndRun` | The run starts (with the arm order) and ends |
 | `StartArm`, `EndArm` | An arm starts, after its driver's reset, and finishes |
-| `AdvanceClock` | The clock jumps; carries `from_ms`, an empty `busy` list, the next event id or the laptop-sleep fault, and `offset_s`, the whole-second offset the arm's processes read from then on (`docs/time.md`) |
-| `ClockOffset` | The arm starts; carries `offset_s` for the time until the first jump |
+| `AdvanceClock` | The clock jumps; carries `from_ms`, an empty `busy` list, the next event id or the laptop-sleep fault, `offset_s`, the whole-second offset the arm's processes read from then on, and `offset_wall_ms`, the wall instant it took effect (`docs/time.md`) |
+| `ClockOffset` | The arm starts; carries `offset_s` and `offset_wall_ms` for the time until the first jump |
 | `BeginTurn` | A user turn is delivered |
 | `EndTurn` | The turn is answered; a probe turn carries `probe` and `state` (`completed` or `failed`) |
 | `RegisterJob`, `EndJob` | A background job starts and ends |
