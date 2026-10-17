@@ -32,6 +32,8 @@ interface RecorderState {
     commands: Command[];
     /** Per project, the paths the source repository tracks although its ignore rules match them. */
     forced?: Record<string, string[]>;
+    /** Per project, the generation of its index file; a lock a killed git left behind moves the project to the next. */
+    indexGenerations?: Record<string, number>;
     /**
      * Per project, the blob ids of the source's `.gitignore` and `.gitattributes` files and the
      * digests of the clone's `.git/info/exclude` and `.git/info/attributes`.
@@ -50,6 +52,8 @@ const WORKSPACE_ENTRY_CAP = 200_000;
 const NESTED_REPO_CAP = 1_000;
 /** Bytes an ignore-rule file may hold before it reads as an unreadable, changed rule. */
 const RULE_FILE_CAP = 1 << 20;
+/** Rule files a workspace may hold at most; more fail the probe turn during the walk. */
+const RULE_FILE_COUNT_CAP = 1_000;
 /** In-tree files whose rules shape what the snapshot tree holds: ignore rules and attributes (filters, `ident`, eol). */
 const RULE_FILES = new Set([".gitignore", ".gitattributes"]);
 
@@ -100,20 +104,36 @@ export class SnapshotRecorder {
     }
 
     /**
-     * The run lease makes this recorder the only writer of its repository. A git child the
-     * killed harness left running may still hold an `<project>.index.lock`; it runs at most
-     * the recorder's bound, so a lock that outlives that bound after construction is stale and
-     * is removed.
+     * A git child the killed harness left running may still hold a workspace index lock, and
+     * from this process nothing proves it has exited. Each index is therefore versioned: a lock
+     * found at construction moves that workspace to a fresh index file, which costs one full
+     * rehash, and the orphan's lock and index stay untouched on their old path.
      */
     private dropIndexLocks(): void {
         if (!existsSync(this.gitDir)) return;
-        const locks = readdirSync(this.gitDir).filter((name) => name.endsWith(".index.lock"));
-        if (locks.length === 0) return;
-        const deadline = Date.now() + (this.gitTimeoutMs ?? 0);
-        while (Date.now() < deadline && locks.some((name) => existsSync(join(this.gitDir, name)))) {
-            Bun.sleepSync(50);
+        const generations = { ...this.state.indexGenerations };
+        let bumped = false;
+        for (const name of readdirSync(this.gitDir)) {
+            const match = /^(.+?)(?:\.(\d+))?\.index\.lock$/.exec(name);
+            if (!match) continue;
+            const project = match[1] as string;
+            const held = Number(match[2] ?? 0);
+            if (held >= (generations[project] ?? 0)) {
+                generations[project] = held + 1;
+                bumped = true;
+            }
         }
-        for (const name of locks) rmSync(join(this.gitDir, name), { force: true });
+        if (bumped) {
+            this.state.indexGenerations = generations;
+            this.save();
+        }
+    }
+
+    private indexFile(work: string): string {
+        const project = basename(work);
+        const generation = this.state.indexGenerations?.[project] ?? 0;
+        const suffix = generation === 0 ? "" : `.${generation}`;
+        return join(this.gitDir, `${project}${suffix}.index`);
     }
 
     /** Drops a line a kill cut from `snapshots.jsonl` and `tools.jsonl`, and creates `tools.jsonl` so a run with no tool runs still has its ledger. */
@@ -137,7 +157,7 @@ export class SnapshotRecorder {
         const scope: Record<string, string> = { GIT_DIR: this.gitDir, GIT_NO_REPLACE_OBJECTS: "1" };
         if (work) {
             scope.GIT_WORK_TREE = work;
-            scope.GIT_INDEX_FILE = join(this.gitDir, `${basename(work)}.index`);
+            scope.GIT_INDEX_FILE = this.indexFile(work);
         }
         try {
             return git(work ?? this.armDir, args, scope, this.gitTimeoutMs);
@@ -214,7 +234,14 @@ export class SnapshotRecorder {
                     if (at !== dir) found.push(relative(dir, at).split(sep).join("/"));
                     continue;
                 }
-                if (RULE_FILES.has(entry.name)) ignoreFiles.push(rel);
+                if (RULE_FILES.has(entry.name)) {
+                    ignoreFiles.push(rel);
+                    if (ignoreFiles.length > RULE_FILE_COUNT_CAP) {
+                        throw new GitBound(
+                            `workspace walk of ${dir}: more than ${RULE_FILE_COUNT_CAP} rule files`,
+                        );
+                    }
+                }
                 if (entry.isDirectory()) pending.push(join(at, entry.name));
             }
         }
@@ -278,7 +305,12 @@ export class SnapshotRecorder {
         const baseline = this.state.ignores?.[project];
         if (!baseline) return [];
         const now: Record<string, string> = {};
-        for (const path of ignoreFiles) now[path] = blobId(join(dir, path));
+        const deadline = Date.now() + (this.gitTimeoutMs ?? Number.POSITIVE_INFINITY);
+        for (const path of ignoreFiles) {
+            if (Date.now() > deadline)
+                throw new GitBound(`rule files of ${dir}: hashing timed out`);
+            now[path] = blobId(join(dir, path));
+        }
         const changes: string[] = [];
         for (const path of new Set([
             ...Object.keys(baseline.files),
@@ -322,6 +354,9 @@ export class SnapshotRecorder {
     tree(dir: string, nested = this.embedded(dir)): string {
         const excluded = nested.map((path) => `:(exclude)${path}`);
         this.git(["add", "--all", "--", ".", ...excluded], dir);
+        if (nested.length > 0) {
+            this.git(["rm", "-r", "-q", "--cached", "--ignore-unmatch", "--", ...nested], dir);
+        }
         const root = realpathSync(dir);
         const inPlace = (path: string): boolean => {
             try {

@@ -58,8 +58,10 @@ workspace is bounded by the turn deadline; a run past it fails the probe turn
 with `snapshot: git ... timed out` and the item has no snapshot; a run past the
 bound at a session boundary leaves that session without a start or end tree,
 so the next session carries no prior-session diff. The recorder removes the
-index lock a killed git leaves, after a timeout and when rebuilt after a
-kill; on rebuild it first waits up to the bound for a still-running holder.
+index lock a killed git leaves after a timeout; a recorder rebuilt after a
+kill that finds a workspace index lock moves that workspace to a fresh,
+numbered index file and leaves the lock and its index to the orphaned git
+child that may still hold them.
 The nested-repository check and the recorder's workspace path check run
 before any walk of the workspace, and the walk itself stops at the bound or
 at 200,000 entries, failing the probe turn. A `git diff` past the 256 MiB
@@ -73,8 +75,10 @@ rewrite the content git indexes. The baseline is the source's `.gitignore` and
 recorded at reset. The rule files are found by name in the workspace walk and
 hashed from disk, so a rule that ignores its own file still surfaces it; a rule
 path that is a symlink, FIFO, or directory, or larger than 1 MiB, reads as a
-changed rule. A workspace with more than 1,000 nested
-repositories fails the probe turn before git runs. Each probe snapshot reads its session's call records by position from an
+changed rule, a workspace with more than 1,000 rule files fails the probe
+turn during the walk, and hashing them runs under the recorder bound. A
+workspace with more than 1,000 nested repositories fails the probe turn
+before git runs. Each probe snapshot reads its session's call records by position from an
 index the proxy's writer keeps (seeded once from `calls.jsonl` on resume), so
 capture cost grows with the session, not the run. The workspace walk reads
 each directory one entry at a time, so its entry cap and deadline hold inside
@@ -96,7 +100,9 @@ is excluded (SIM-P46) instead of graded on a diff that lacks that content.
 The recorder's git refuses a workspace path that is a symlink or lies behind
 one, and a tracked-but-ignored path whose parent became a symlink is left out
 of the tree. Nested repositories are found by their `.git` entries, with the
-ones the workspace's ignore rules match left alone. Snapshot diffs run with
+ones the workspace's ignore rules match left alone; a nested repository is
+also removed from the recorder's index, so a directory it replaced reads as
+deleted in the tree. Snapshot diffs run with
 `--text`, so a NUL byte or a `-diff` attribute hides no added line.
 
 | Artefact | Source |
@@ -128,13 +134,15 @@ the graders read neither.
 time allocates versions, refuses a run whose pre-registration or scenario no
 longer hashes to the digests in its manifest or whose journal lacks `EndRun`
 or an arm's `EndArm` and one terminal `Event` per scheduled event (SIM-P67),
-drops a cut last line of `grades.jsonl`, requires one `SnapshotArtefacts` entry per arm and item, a row for every
-journaled snapshot id, every snapshot row to name its directory's arm and
+drops a cut last line of `grades.jsonl`, requires one `SnapshotArtefacts` entry per arm and item, exactly one row for
+every journaled snapshot id, every snapshot row to name its directory's arm and
 carry grade-class artefacts only, every journaled row to match its journal
 entry's arm and item and the compiled probe's event and session, every
 agent call's model in `calls.jsonl` to be one
 the manifest records, and every agent call a journaled snapshot holds to be
-recorded in `calls.jsonl` under the snapshot's arm, reads each arm's snapshot log one row at a time and
+recorded in `calls.jsonl` under the snapshot's arm with the same content
+(`calls.jsonl` is read one record at a time, keeping only the records the
+snapshots name), reads each arm's snapshot log one row at a time and
 keeps the artefacts of journaled rows only, computes every grade before it
 appends any (an item whose answer the proxy truncated is skipped as `answer
 refused`; a structural artefact violation aborts with nothing appended),
