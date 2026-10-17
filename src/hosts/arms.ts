@@ -786,7 +786,8 @@ export class OpencodeSimHost extends SimHost {
      * unknown. A failed turn whose listing also fails keeps its own error and names the gap.
      */
     async prompt(text: string, timeoutMs: number): Promise<PromptResult> {
-        const started = Date.now();
+        const deadline = Date.now() + timeoutMs;
+        const remaining = () => Math.max(1_000, deadline - Date.now());
         let seen: Set<string>;
         try {
             seen = new Set((await this.messages(timeoutMs)).map((m) => String(m.info?.id)));
@@ -794,10 +795,9 @@ export class OpencodeSimHost extends SimHost {
             return { error: `tool capture: ${String(caught)}`.slice(0, 2000) };
         }
         const startScenario = this.ctx.now?.() ?? 0;
-        const outcome = await this.turn(text, timeoutMs);
-        const remaining = Math.max(1_000, timeoutMs - (Date.now() - started));
+        const outcome = await this.turn(text, remaining());
         try {
-            await this.logTurnTools(seen, startScenario, remaining);
+            await this.logTurnTools(seen, startScenario, remaining());
         } catch (caught) {
             const gap = `tool capture: ${String(caught)}`;
             return { error: (outcome.error ? `${outcome.error} | ${gap}` : gap).slice(0, 2000) };

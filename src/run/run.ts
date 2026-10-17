@@ -1,8 +1,12 @@
 import {
     appendFileSync,
+    closeSync,
     existsSync,
+    fstatSync,
     mkdirSync,
+    openSync,
     readFileSync,
+    readSync,
     renameSync,
     writeFileSync,
 } from "node:fs";
@@ -22,7 +26,7 @@ import { compileScenario, type Scenario } from "../scenario/compile";
 import type { FaultEpisode } from "../scenario/faults";
 import { loadCompileInput, loadPrereg } from "../scenario/inputs";
 import { bedrockEmbedder } from "../scenario/similarity";
-import { Journal, readJournal, releaseLease, takeLease } from "./journal";
+import { Journal, releaseLease, takeLease } from "./journal";
 import { plainPath } from "./launcher";
 import { type Preflight, preflight } from "./preflight";
 import { ResourceSampler } from "./sampler";
@@ -224,34 +228,96 @@ export async function runTier(o: RunOptions): Promise<void> {
     }
 }
 
-function callsOf(
-    path: string,
+/**
+ * Where each arm and session's call records lie in `calls.jsonl`, so a snapshot reads its own
+ * records by position instead of the whole log. Seeded once from disk on construction, then
+ * extended by the writer as it appends.
+ */
+export class CallIndex {
+    private readonly places = new Map<string, Array<[number, number]>>();
+
+    constructor(private readonly path: string) {
+        if (!existsSync(path)) return;
+        const fd = openSync(path, "r");
+        try {
+            const size = fstatSync(fd).size;
+            const chunk = Buffer.alloc(1 << 20);
+            let offset = 0;
+            let lineStart = 0;
+            let carry = Buffer.alloc(0);
+            while (offset < size) {
+                const read = readSync(fd, chunk, 0, chunk.length, offset);
+                let buf =
+                    carry.length > 0
+                        ? Buffer.concat([carry, chunk.subarray(0, read)])
+                        : chunk.subarray(0, read);
+                let base = lineStart;
+                let at = buf.indexOf(0x0a);
+                while (at !== -1) {
+                    const line = buf.subarray(0, at);
+                    this.remember(JSON.parse(line.toString("utf8")) as CallRecord, base, at + 1);
+                    base += at + 1;
+                    buf = buf.subarray(at + 1);
+                    at = buf.indexOf(0x0a);
+                }
+                carry = Buffer.from(buf);
+                lineStart = base;
+                offset += read;
+            }
+        } finally {
+            closeSync(fd);
+        }
+    }
+
+    private remember(record: CallRecord, offset: number, length: number): void {
+        const key = `${record.arm}/${record.session}`;
+        this.places.set(key, [...(this.places.get(key) ?? []), [offset, length]]);
+    }
+
+    add(record: CallRecord, offset: number, length: number): void {
+        this.remember(record, offset, length);
+    }
+
+    records(arm: string, session: string): CallRecord[] {
+        const places = this.places.get(`${arm}/${session}`) ?? [];
+        if (places.length === 0) return [];
+        const fd = openSync(this.path, "r");
+        try {
+            return places.map(([offset, length]) => {
+                const buf = Buffer.alloc(length);
+                readSync(fd, buf, 0, length, offset);
+                return JSON.parse(buf.toString("utf8").trimEnd()) as CallRecord;
+            });
+        } finally {
+            closeSync(fd);
+        }
+    }
+}
+
+export function callsOf(
+    index: CallIndex,
     arm: string,
     session: string,
     turnIndex: Map<string, number>,
 ): CallView[] {
-    if (!existsSync(path)) return [];
-    let index: number | undefined;
-    return readJournal(path)
-        .map((r) => r as unknown as CallRecord)
-        .filter((r) => r.arm === arm && r.session === session)
-        .map((r) => {
-            index = (r.turn ? turnIndex.get(r.turn) : undefined) ?? index;
-            return {
-                seq: r.seq,
-                component: r.component,
-                turn: r.turn,
-                ...(index === undefined ? {} : { turn_index: index }),
-                scenario_ms: r.scenario_ms,
-                input_tokens: r.input_tokens,
-                output_tokens: r.output_tokens,
-                ...(r.response_text ? { response_text: r.response_text } : {}),
-                ...(r.response_text_truncated ? { response_text_truncated: true } : {}),
-                ...(r.status >= 400 || r.error !== null || r.finish_reason === "stream_cut"
-                    ? { failed: true }
-                    : {}),
-            };
-        });
+    let turn: number | undefined;
+    return index.records(arm, session).map((r) => {
+        turn = (r.turn ? turnIndex.get(r.turn) : undefined) ?? turn;
+        return {
+            seq: r.seq,
+            component: r.component,
+            turn: r.turn,
+            ...(turn === undefined ? {} : { turn_index: turn }),
+            scenario_ms: r.scenario_ms,
+            input_tokens: r.input_tokens,
+            output_tokens: r.output_tokens,
+            ...(r.response_text ? { response_text: r.response_text } : {}),
+            ...(r.response_text_truncated ? { response_text_truncated: true } : {}),
+            ...(r.status >= 400 || r.error !== null || r.finish_reason === "stream_cut"
+                ? { failed: true }
+                : {}),
+        };
+    });
 }
 
 async function runArms(
@@ -291,6 +357,8 @@ async function runArms(
     const scope = { arm: "", session: null as string | null, turn: null as string | null };
     const jobs = new Map<string, string[]>();
     let jobSeq = journal.entries.filter((e) => e.kind === "RegisterJob").length;
+    const callsPath = join(o.out, "calls.jsonl");
+    const callIndex = new CallIndex(callsPath);
     class RunRecords extends RecordWriter {
         override write(partial: Omit<CallRecord, "seq" | "wall_ms">): CallRecord {
             const record = super.write(partial);
@@ -298,10 +366,14 @@ async function runArms(
             if (id) scheduler.jobEnd(id);
             return record;
         }
+
+        protected override placed(record: CallRecord, offset: number, length: number): void {
+            callIndex.add(record, offset, length);
+        }
     }
     const gateway = new Gateway({
         upstream: bedrockUpstream(config.bedrock.region, config.bedrock.aws_profile),
-        records: new RunRecords(join(o.out, "calls.jsonl")),
+        records: new RunRecords(callsPath),
         injector,
         rng: new Rng((seed ^ 0x27d4eb2f) >>> 0),
         clock: { scenarioMs: now },
@@ -353,7 +425,7 @@ async function runArms(
             sampleDaemon: () => sampler.observe(),
             callsFor: (session) => {
                 requireRecorded(gateway);
-                return callsOf(join(o.out, "calls.jsonl"), arm, session, turnIndex);
+                return callsOf(callIndex, arm, session, turnIndex);
             },
             settle: () => scheduler.quiesceJobs(),
             now,

@@ -16,10 +16,11 @@ A snapshot holds the artefacts the harness captured at a probe turn's first
 | `command-log` | Each command the agent ran, with its exit code and scenario time: `turn` for the probe turn, `session` for every turn of its session so far |
 | `test-result` | A test command, its exit code, and its summary lines |
 | `workspace-state` | Selected workspace files by path |
-| `proxy-call` | Call records with component, turn, scenario time, token counts, and the response text the proxy relayed. A call whose relayed text ran past the proxy's 262,144-character cap carries `response_text_truncated`, and a grader that reads that answer refuses the item|
+| `proxy-call` | Call records with component, turn, scenario time, token counts, and the response text the proxy relayed. A call whose relayed text ran past the proxy's 262,144-character cap carries `response_text_truncated` (the proxy keeps only that prefix while it consumes the stream), and a grader that reads that answer refuses the item|
 
 `gradeItem` refuses a snapshot with an artefact of any other class, such as
-an agent transcript or self-report (SIM-P40), a snapshot without an artefact
+an agent transcript or self-report (SIM-P40), an artefact whose class payload is missing (a diff without its `patch`, a
+command log or proxy-call artefact without its array), a snapshot without an artefact
 its grader reads (the turn diff for the diff graders and for a P13 item whose
 check names no commands, the turn command log for P5 and P6, the
 prior-session diff for P6, whose item opens a later session of its project,
@@ -73,7 +74,11 @@ recorded at reset. The rule files are found by name in the workspace walk and
 hashed from disk, so a rule that ignores its own file still surfaces it; a rule
 path that is a symlink, FIFO, or directory, or larger than 1 MiB, reads as a
 changed rule. A workspace with more than 1,000 nested
-repositories fails the probe turn before git runs. The driver waits the scheduler's settle window and then its background
+repositories fails the probe turn before git runs. Each probe snapshot reads its session's call records by position from an
+index the proxy's writer keeps (seeded once from `calls.jsonl` on resume), so
+capture cost grows with the session, not the run. The workspace walk reads
+each directory one entry at a time, so its entry cap and deadline hold inside
+a wide directory too. The driver waits the scheduler's settle window and then its background
 jobs before it takes a probe snapshot, and checks the daemon is alive after
 the prompt and again after the snapshot, reporting an exit once with the
 turn's id. A proxy call record the gateway failed to write stops the run at
@@ -98,7 +103,7 @@ ones the workspace's ignore rules match left alone. Snapshot diffs run with
 |---|---|
 | `diff` (`turn`) | A git tree of the workspace's files that its `.gitignore` rules leave in, untracked files included, taken before the prompt and after it, and diffed |
 | `diff` (`prior-session`) | The same trees at the start and end of the project's previous session |
-| `command-log` | The host's tool runs, each a bash command or the tool name, its path, and its scalar arguments as `name=value` (a `read`'s offset and limit) followed by the text and structured arguments it was given (a `write`'s content, an `edit`'s edits), with a 0 or 1 error flag (null for a run that never finished) and the scenario time the run started. The recorder saves each run as the host logs it, so a harness kill mid-turn keeps the runs logged so far in the session log. Pi reports `tool_execution_start` and `tool_execution_end` events as they happen, and a run is timed from its start event and reaches the recorder at that start with a null exit, which its end report replaces, so a harness kill mid-run keeps the run on record; OpenCode's tool parts come from the session messages the turn added, read after the turn whatever its outcome, each timed from its start relative to the turn's first new message, both in OpenCode's own clock, with a pending or running part's exit null, and keyed by the part's id; on reattaching to a session after a kill, the host reports every tool part the session's messages hold, so a turn that was running at the kill still contributes its runs, timed at the resume when the recorder has no earlier record of them; both listings are bounded by the turn deadline, and one that stalls fails the turn as a capture gap |
+| `command-log` | The host's tool runs, each a bash command or the tool name, its path, and its scalar arguments as `name=value` (a `read`'s offset and limit) followed by the text and structured arguments it was given (a `write`'s content, an `edit`'s edits), with a 0 or 1 error flag (null for a run that never finished) and the scenario time the run started. The recorder saves each run as the host logs it, so a harness kill mid-turn keeps the runs logged so far in the session log. Pi reports `tool_execution_start` and `tool_execution_end` events as they happen, and a run is timed from its start event and reaches the recorder at that start with a null exit, which its end report replaces, so a harness kill mid-run keeps the run on record; OpenCode's tool parts come from the session messages the turn added, read after the turn whatever its outcome, each timed from its start relative to the turn's first new message, both in OpenCode's own clock, with a pending or running part's exit null, and keyed by the part's id; on reattaching to a session after a kill, the host reports every tool part the session's messages hold, so a turn that was running at the kill still contributes its runs, timed at the resume when the recorder has no earlier record of them; the listings and the turn share one turn deadline, and a listing that stalls fails the turn as a capture gap |
 | `proxy-call` | The session's call records from `calls.jsonl`, each with the index of the user turn it belongs to (a background call takes the preceding turn's), a `failed` flag on a call that ended in an error status, a recorded error, or a cut stream (such a call is no fold for P13), and the response text the proxy records for agent, user-sim, and judge calls (the first 262,144 characters, with `response_text_truncated` on a longer reply) |
 
 The recorder keeps each project's session-start tree, the last session's
@@ -126,9 +131,10 @@ or an arm's `EndArm` and one terminal `Event` per scheduled event (SIM-P67),
 drops a cut last line of `grades.jsonl`, requires one `SnapshotArtefacts` entry per arm and item, a row for every
 journaled snapshot id, every snapshot row to name its directory's arm and
 carry grade-class artefacts only, every journaled row to match its journal
-entry's arm and item and the compiled probe's event and session, and every
+entry's arm and item and the compiled probe's event and session, every
 agent call's model in `calls.jsonl` to be one
-the manifest records, reads each arm's snapshot log one row at a time and
+the manifest records, and every agent call a journaled snapshot holds to be
+recorded in `calls.jsonl` under the snapshot's arm, reads each arm's snapshot log one row at a time and
 keeps the artefacts of journaled rows only, computes every grade before it
 appends any (an item whose answer the proxy truncated is skipped as `answer
 refused`; a structural artefact violation aborts with nothing appended),

@@ -312,6 +312,18 @@ export class Gateway {
             fault ? sleep(fault.params.delay_ms ?? 2_000, sink.signal) : undefined;
         let retries = 0;
         const text: string[] = [];
+        let textLength = 0;
+        let truncated = false;
+        const keep = RELAYED_TEXT.has(done.component);
+        const retain = (piece: string) => {
+            if (!keep) return;
+            const room = RESPONSE_TEXT_LIMIT - textLength;
+            if (piece.length > room) truncated = true;
+            if (room <= 0) return;
+            const kept = piece.slice(0, room);
+            text.push(kept);
+            textLength += kept.length;
+        };
         try {
             const deadlineAt = Date.now() + (this.options.requestDeadlineMs ?? 900_000);
             const response = await sendWithRetry(
@@ -331,7 +343,7 @@ export class Gateway {
                     | { message?: { content?: Array<{ text?: string }> } }
                     | undefined;
                 const blocks = (output?.message?.content ?? []).map((b) => b.text ?? "");
-                text.push(blocks.filter(Boolean).join("\n"));
+                retain(blocks.filter(Boolean).join("\n"));
                 done.finish_reason = (response.json.stopReason as string | undefined) ?? null;
                 sink.status(200, { "content-type": "application/json" });
                 sink.write(Buffer.from(JSON.stringify(response.json)));
@@ -352,9 +364,9 @@ export class Gateway {
                         };
                         if (type === "contentBlockDelta" && m.delta?.text) {
                             const index = m.contentBlockIndex ?? 0;
-                            if (block !== null && index !== block) text.push("\n");
+                            if (block !== null && index !== block) retain("\n");
                             block = index;
-                            text.push(m.delta.text);
+                            retain(m.delta.text);
                         }
                         if (type === "metadata") Object.assign(usage, m.usage ?? {});
                         if (type === "messageStop") done.finish_reason = m.stopReason ?? null;
@@ -387,9 +399,8 @@ export class Gateway {
                 sink.write(Buffer.from(JSON.stringify({ message: failure.message ?? "error" })));
             } else if (!done.finish_reason) done.finish_reason = "stream_cut";
         }
-        const whole = text.join("");
-        const relayed = whole.slice(0, RESPONSE_TEXT_LIMIT);
-        const cut = whole.length > relayed.length ? { response_text_truncated: true as const } : {};
+        const relayed = text.join("");
+        const cut = truncated ? { response_text_truncated: true as const } : {};
         return {
             ...done,
             ...(relayed && RELAYED_TEXT.has(done.component)
