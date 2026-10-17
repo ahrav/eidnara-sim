@@ -63,6 +63,7 @@ function run(broken: boolean): GradedRun {
         ({ kind, arm: "eidnara", scenario_ms, seq: seq++, wall_ms: 0, ...extra }) as Entry;
     const journal = [
         entry("UserTurn", 10, { event: "e-1", label: broken ? "nagging" : "task" }),
+        entry("EndTurn", 15, { event: "e-1", outcome: "ok", probe: "q-1" }),
         entry("SnapshotArtefacts", 20, { item: "q-1" }),
         entry(broken ? "SnapshotArtefacts" : "Event", broken ? 5 : 30, { item: "q-1" }),
     ];
@@ -167,6 +168,7 @@ function second(broken: boolean, busy = false): GradedRun {
         ...(broken || busy ? [jump, end] : [end, jump]),
         at("Event", 20, { event: "e-1" }),
         at("FaultObserved", 100, { fault: broken ? "f-9" : "f-1" }),
+        at("EndTurn", 100, { event: "e-2", outcome: "ok", probe: "q-1" }),
         at("SnapshotArtefacts", 100, { item: "q-1", snapshot: "eidnara:q-1:e-1" }),
     ].map((e, i) => ({ ...e, seq: i }));
     writeFileSync(join(dir, "journal.jsonl"), lines(journal));
@@ -400,6 +402,12 @@ describe("property witness evidence", () => {
         expect(one("L03", made({ journal: span(1).slice(0, 1) }))).toMatchObject({
             status: "unreached",
         });
+        const odd = (end: unknown) => [
+            { kind: "StartRun", scenario_ms: 0, wall_ms: 1_000 },
+            { kind: "EndRun", scenario_ms: 0, wall_ms: end },
+        ];
+        expect(one("L03", made({ journal: odd("later") }))).toMatchObject({ status: "violated" });
+        expect(one("L03", made({ journal: odd(500) }))).toMatchObject({ status: "violated" });
     });
 
     test("SIM-P30 checks every injected call against a fault fired before it", () => {
@@ -463,6 +471,7 @@ describe("property witness evidence", () => {
         ];
         const call = (seq: number, started_wall_ms: number) => ({
             seq,
+            component: "agent",
             fault_ref: "f-1",
             started_wall_ms,
             wall_ms: started_wall_ms + 1,
@@ -478,21 +487,55 @@ describe("property witness evidence", () => {
             status: "violated",
             detail: expect.stringContaining("beyond its count"),
         });
+        // An intermittent fault spends its count on every eligible agent call, injected or not.
+        const intermittent = [{ ...(faults[0] as object), strategy: "intermittent" }];
+        const plain = (seq: number, started_wall_ms: number) => ({
+            seq,
+            component: "agent",
+            fault_ref: null,
+            started_wall_ms,
+            wall_ms: started_wall_ms + 1,
+            scenario_ms: 5,
+        });
+        expect(
+            one(
+                "P30",
+                made({
+                    faults: intermittent,
+                    events,
+                    journal,
+                    calls: [plain(1, 60), plain(2, 65), call(3, 70)],
+                }),
+            ),
+        ).toMatchObject({
+            status: "violated",
+            detail: expect.stringContaining("beyond its count"),
+        });
     });
 
     test("SIM-P41 treats a grade without a journaled snapshot as a violation", () => {
+        const probe = {
+            kind: "EndTurn",
+            scenario_ms: 0,
+            event: "e-1",
+            outcome: "ok",
+            probe: "q-1",
+        };
         const snap = { kind: "SnapshotArtefacts", scenario_ms: 1, item: "q-1", snapshot: "s1" };
         const grade = (item: string) => ({ item, arm: "eidnara", version: 1, snapshot: "s1" });
-        expect(one("P41", made({ journal: [snap], grades: [grade("q-1")] })).status).toBe(
+        expect(one("P41", made({ journal: [probe, snap], grades: [grade("q-1")] })).status).toBe(
             "witnessed",
         );
         expect(
-            one("P41", made({ journal: [snap], grades: [grade("q-1"), grade("q-2")] })),
+            one("P41", made({ journal: [probe, snap], grades: [grade("q-1"), grade("q-2")] })),
         ).toMatchObject({ status: "violated", detail: expect.stringContaining("q-2") });
         const stale = { ...grade("q-1"), snapshot: "s0" };
         const regraded = { ...grade("q-1"), version: 2 };
         expect(
-            one("P41", made({ journal: [snap], grades: [stale, regraded], used: [regraded] })),
+            one(
+                "P41",
+                made({ journal: [probe, snap], grades: [stale, regraded], used: [regraded] }),
+            ),
         ).toMatchObject({ status: "violated", detail: expect.stringContaining("v1") });
     });
 
@@ -544,6 +587,9 @@ describe("property witness evidence", () => {
             "violated",
         );
         expect(status([snap("q-1"), end("q-1", "e-1")])).toBe("violated");
+        expect(status([end("q-1", "e-1"), snap("q-1"), snap("q-9")], [grade("q-1")])).toBe(
+            "violated",
+        );
     });
 
     test("SIM-P42 requires the report to grade at the latest version and names the versions it used", () => {

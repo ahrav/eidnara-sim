@@ -58,7 +58,8 @@ the recorder drops it before its next write) into `grades.jsonl` and judges each
 arm against the host arm, through a gateway it starts for the judge. It
 exits 2 before writing when the manifest's `prereg_sha256` is not the
 hash of the tier's current pre-registration, whose rules the grades
-derive from. An
+derive from, or when `scenario.json` hashes to other than the manifest's
+`scenario_hash`, whose checks they derive from. An
 item whose latest grade already cites its snapshot is skipped as `already
 graded`, so grading a run again is free of judge calls and leaves earlier
 judgments as they stand; a P7 pair's two grades land in one write, and

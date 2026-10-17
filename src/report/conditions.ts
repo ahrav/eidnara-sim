@@ -108,7 +108,9 @@ function transcriptTimes(path: string, armDir: string): Map<string, number> {
                 title: string;
                 time_created: number;
             }[];
-            for (const r of rows) out.set(r.title, r.time_created);
+            for (const r of rows) {
+                if (Number.isFinite(r.time_created)) out.set(r.title, r.time_created);
+            }
         } finally {
             db.close();
         }
@@ -117,7 +119,8 @@ function transcriptTimes(path: string, armDir: string): Map<string, number> {
     for (const f of files(path, armDir).filter((p) => p.endsWith(".jsonl"))) {
         try {
             const head = JSON.parse(readFileSync(f, "utf8").split("\n")[0] || "{}");
-            if (head.type === "session") out.set(head.id, Date.parse(head.timestamp));
+            const at = Date.parse(head.timestamp);
+            if (head.type === "session" && Number.isFinite(at)) out.set(head.id, at);
         } catch {}
     }
     return out;

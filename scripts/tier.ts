@@ -70,6 +70,17 @@ const exit = (code: number): never => {
     releaseLease(out);
     process.exit(code);
 };
+// Setup after the lease (scenario compilation, the plan, the faketime build) runs at top level;
+// a thrown error there releases the lease on the way out, so a retry from another host is not
+// held off by a dead invocation.
+process.on("uncaughtException", (caught) => {
+    console.error(caught);
+    exit(1);
+});
+process.on("unhandledRejection", (caught) => {
+    console.error(caught);
+    exit(1);
+});
 
 const scenarios = new Map<number, Scenario>();
 for (const seed of prereg.seeds) {
@@ -132,12 +143,15 @@ const results = await supervised(() =>
     Promise.all(
         plan.map(async (job) => {
             mkdirSync(job.dir, { recursive: true });
+            // A run another process still holds is left as it is: its scenario stays, it is
+            // neither run nor graded here, and the command fails for it.
+            const held = leaseHeld(job.dir);
             // A resumed run keeps the budget it started with: its wall time counts from its
             // journaled StartRun, and the child gets what remains of the limit. A run that
             // journaled EndRun is complete and is left as it finished.
             const span = runSpan(job.dir, started);
             const runStarted = span.started;
-            if (!existsSync(join(job.dir, "scenario.json"))) {
+            if (!held && !existsSync(join(job.dir, "scenario.json"))) {
                 writeAtomic(
                     join(job.dir, "scenario.json"),
                     `${JSON.stringify(scenarios.get(job.seed))}\n`,
@@ -154,8 +168,10 @@ const results = await supervised(() =>
                 job.dir,
             ];
             const code =
-                span.ended !== undefined
-                    ? 0
+                held || span.ended !== undefined
+                    ? held
+                        ? SIGTERM_EXIT
+                        : 0
                     : await run(
                           [
                               ...args,
@@ -170,9 +186,6 @@ const results = await supervised(() =>
                           Math.max(1, limit - (started - runStarted)),
                       );
             const run_wall_ms = (span.ended ?? Date.now()) - runStarted;
-            // A run another process still holds is left ungraded: its journal and snapshots
-            // are changing under it.
-            const held = leaseHeld(job.dir);
             const ran = existsSync(join(job.dir, "manifest.json")) && !held;
             const graded = ran ? await run(["grade-run.ts", job.dir], log, limit) : null;
             const aa =

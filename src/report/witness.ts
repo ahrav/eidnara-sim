@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { GradeLog, type GradeRecord } from "../grade/probes";
 import { canonicalJson } from "../prereg/canonical";
+import { TARGET } from "../proxy/inject";
 import { type Entry, readJournal } from "../run/journal";
 import { checkJournal } from "../run/journal-check";
 import { referenceArm } from "../run/run";
@@ -263,33 +264,33 @@ const CHECKS: Record<string, Check> = {
             }
             for (const a of c.g.run.arms) {
                 const fired = a.journal.filter((e) => e.kind === "FaultFired");
-                const injected = a.calls
-                    .filter((x) => typeof x.fault_ref === "string")
-                    .sort((x, y) => x.seq - y.seq);
-                const counted = new Map<string, number>();
-                for (const call of injected) {
+                const calls = [...a.calls].sort((x, y) => x.seq - y.seq);
+                // The injector spends a bounded fault's count on every eligible agent call after
+                // it fired, whether or not that call was injected.
+                const eligible = (id: string, firedAt: number) =>
+                    calls.filter((x) => x.component === TARGET && x.started_wall_ms >= firedAt);
+                for (const call of calls.filter((x) => typeof x.fault_ref === "string")) {
                     n++;
                     const id = call.fault_ref as string;
                     const fault = faults.find((f) => f.id === id);
-                    const before = fired.some(
+                    const firedAt = fired.find(
                         (e) => e.fault === id && e.wall_ms <= call.started_wall_ms,
-                    );
-                    if (!fault || !before) {
+                    )?.wall_ms;
+                    if (!fault || firedAt === undefined) {
                         bad.push(`call ${call.seq} names ${id}, not fired before it`);
                         continue;
                     }
                     // The window closes at the trigger session's end, and for a bounded fault
-                    // after its count of calls.
+                    // after its count of eligible calls.
                     const closed = windowClose(c, a.journal, fault.trigger.session);
                     if (closed !== undefined && call.started_wall_ms > closed)
                         bad.push(`call ${call.seq} names ${id} after its session ended`);
-                    const seen = (counted.get(id) ?? 0) + 1;
-                    counted.set(id, seen);
                     const limit =
                         fault.strategy === "persistent"
                             ? Number.POSITIVE_INFINITY
                             : (fault.params.count ?? fault.params.calls ?? 1);
-                    if (seen > limit) bad.push(`call ${call.seq} names ${id} beyond its count`);
+                    const position = eligible(id, firedAt).findIndex((x) => x.seq === call.seq) + 1;
+                    if (position > limit) bad.push(`call ${call.seq} names ${id} beyond its count`);
                 }
             }
         }
@@ -307,6 +308,10 @@ const CHECKS: Record<string, Check> = {
             for (const a of c.g.run.arms) {
                 const ends = a.journal.filter((e) => e.kind === "EndTurn");
                 const probes = new Set(ends.filter((e) => e.probe).map((e) => String(e.probe)));
+                for (const e of a.journal.filter((x) => x.kind === "SnapshotArtefacts")) {
+                    if (!probes.has(String(e.item)))
+                        bad.push(`${a.arm}/${e.item} snapshot with no probe turn`);
+                }
                 for (const probe of probes) {
                     const first = ends.find((e) => e.probe === probe) as Entry;
                     const snap = a.journal.find(
@@ -370,8 +375,13 @@ const CHECKS: Record<string, Check> = {
             const end = c.entries.find((e) => e.kind === "EndRun");
             if (!start || !end) continue;
             n++;
+            if (!Number.isFinite(start.wall_ms) || !Number.isFinite(end.wall_ms)) {
+                bad.push(`${c.g.run.dir} has a wall time that is not a number`);
+                continue;
+            }
             const span = end.wall_ms - start.wall_ms;
-            if (span > c.g.run.prereg.liveness_bounds.tier_wall_budget_ms)
+            if (span < 0) bad.push(`${c.g.run.dir} ended ${-span} ms before it started`);
+            else if (span > c.g.run.prereg.liveness_bounds.tier_wall_budget_ms)
                 bad.push(`${c.g.run.dir} took ${span} ms`);
         }
         return outcome(n, bad, "completed runs inside the tier's wall budget");

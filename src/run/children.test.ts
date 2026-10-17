@@ -84,3 +84,12 @@ test("a child that exits on SIGTERM leaving a descendant still has that descenda
     await Bun.sleep(100);
     expect(running(grandchild)).toBe(false);
 });
+
+test("a log that cannot be written ends the child and settles the run with a failure code", async () => {
+    const children = new Children(process.env, 300);
+    const code = await children.run(
+        ["-e", "console.log('x'); setInterval(() => {}, 1000)"],
+        "/nonexistent/dir/log",
+    );
+    expect(code).toBe(127);
+});

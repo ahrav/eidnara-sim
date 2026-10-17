@@ -5,6 +5,7 @@ import type { Snapshot } from "../src/grade/artefacts";
 import { gradeP7, judgePair, p7Pair, proxyJudge } from "../src/grade/judge";
 import { deltaMem, GradeLog, type GradeRecord, gradeItem } from "../src/grade/probes";
 import { armBase } from "../src/hosts/arms";
+import { canonicalJson, sha256Hex } from "../src/prereg/canonical";
 import { preregistrationHash } from "../src/prereg/validate";
 import { bedrockUpstream, Gateway } from "../src/proxy/gateway";
 import { FaultInjector } from "../src/proxy/inject";
@@ -30,6 +31,13 @@ if (manifest.prereg_sha256 !== preregistrationHash(prereg)) {
     console.error(
         `${dir} ran under pre-registration ${manifest.prereg_sha256}; the grader's is ${preregistrationHash(prereg)}`,
     );
+    process.exit(2);
+}
+// The grades derive from the scenario's checks too, so a scenario that no longer hashes to the
+// manifest's record is refused before the log changes.
+const { scenario_hash: _hash, ...scenarioBody } = scenario;
+if (sha256Hex(canonicalJson(scenarioBody)) !== manifest.scenario_hash) {
+    console.error(`${dir}: scenario.json hashes to other than the manifest's scenario_hash`);
     process.exit(2);
 }
 const rules = prereg.grading;

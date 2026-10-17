@@ -236,3 +236,18 @@ test("a transcript root outside the arm directory, through a symlinked ancestor 
     );
     expect(runConditions(g).transcript_order[0]).toMatchObject({ sessions: 0 });
 });
+
+test("a transcript with no usable creation time counts as missing, not as ordered", () => {
+    const g = fixture();
+    const sessions = join(g.run.dir, "host/r/home/.pi/agent/sessions/p");
+    writeFileSync(
+        join(sessions, "sim-s-2.jsonl"),
+        `${JSON.stringify({ type: "session", id: "sim-s-2" })}\n`,
+    );
+    expect(runConditions(g).transcript_order[0]).toMatchObject({
+        sessions: 1,
+        missing: ["s-2"],
+        max_lead_ms: 40,
+        max_lag_ms: 0,
+    });
+});

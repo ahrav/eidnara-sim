@@ -38,7 +38,17 @@ export class Children {
                 detached: true,
             });
             this.live.add(child);
-            const sink = (chunk: Buffer) => appendFileSync(log, chunk);
+            // A log the command cannot write ends the child and settles the run as a failure,
+            // instead of throwing out of the stream callback past the supervisor.
+            const sink = (chunk: Buffer) => {
+                try {
+                    appendFileSync(log, chunk);
+                } catch (caught) {
+                    console.error(`${log}: ${(caught as Error).message}`);
+                    kill(child);
+                    finish(127);
+                }
+            };
             child.stdout?.on("data", sink);
             child.stderr?.on("data", sink);
             const timers: ReturnType<typeof setTimeout>[] = [];
@@ -49,7 +59,10 @@ export class Children {
             if (limitMs !== undefined && limitMs > 0) timers.push(setTimeout(stop, limitMs));
             // The run tears its own tree down before it exits; whatever is left in its process
             // group afterwards is an orphan, so the group is killed on every exit.
+            let settled = false;
             const finish = (code: number) => {
+                if (settled) return;
+                settled = true;
                 for (const t of timers) clearTimeout(t);
                 kill(child);
                 this.live.delete(child);
