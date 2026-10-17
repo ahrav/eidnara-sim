@@ -284,6 +284,7 @@ describe("oracle evidence integrity", () => {
         writeFileSync(join(dir, "manifest.json"), JSON.stringify(manifest));
         const journal = [
             { kind: "StartRun", arm: null, order: ["host"], scenario_ms: 0 },
+            { kind: "EndTurn", arm: "host", event: "e-1", outcome: "ok", scenario_ms: 0 },
             { kind: "Event", arm: "host", event: "e-1", scenario_ms: 0 },
             { kind: "EndArm", arm: "host", scenario_ms: 0 },
             { kind: "EndRun", arm: null, scenario_ms: 0 },
@@ -426,8 +427,10 @@ describe("oracle round three", () => {
         writeFileSync(join(dir, "scenario.json"), JSON.stringify({ ...scenario, scenario_hash }));
         const journal = [
             { kind: "StartRun", arm: null, order, scenario_ms: 0 },
+            { kind: "EndTurn", arm: "host", event: "e-1", outcome: "ok", scenario_ms: 0 },
             { kind: "Event", arm: "host", event: "e-1", scenario_ms: 0 },
             { kind: "EndArm", arm: "host", scenario_ms: 0 },
+            { kind: "EndTurn", arm: "eidnara", event: "e-1", outcome: "ok", scenario_ms: 0 },
             { kind: "Event", arm: "eidnara", event: "e-1", scenario_ms: 0 },
             { kind: "EndArm", arm: "eidnara", scenario_ms: 0 },
             { kind: "EndRun", arm: null, scenario_ms: 0 },
@@ -495,6 +498,7 @@ describe("oracle round four", () => {
         writeFileSync(join(dir, "scenario.json"), JSON.stringify({ ...scenario, scenario_hash }));
         const journal = [
             { kind: "StartRun", arm: null, order, scenario_ms: 0 },
+            { kind: "EndTurn", arm: "eidnara", event: "e-1", outcome: "ok", scenario_ms: 0 },
             { kind: "Event", arm: "eidnara", event: "e-1", scenario_ms: 0 },
             { kind: "EndArm", arm: "eidnara", scenario_ms: 0 },
             { kind: "EndRun", arm: null, scenario_ms: 0 },
@@ -559,6 +563,7 @@ describe("oracle round five", () => {
         writeFileSync(join(dir, "scenario.json"), JSON.stringify({ ...scenario, scenario_hash }));
         const journal = [
             { kind: "StartRun", arm: null, order, scenario_ms: 0 },
+            { kind: "EndTurn", arm: "eidnara", event: "e-1", outcome: "ok", scenario_ms: 0 },
             { kind: "Event", arm: "eidnara", event: "e-1", scenario_ms: 0 },
             { kind: "EndArm", arm: "eidnara", scenario_ms: 0 },
             { kind: "EndRun", arm: null, scenario_ms: 0 },
@@ -588,6 +593,7 @@ function completeDir(order: string[]): { dir: string; line: (o: unknown) => stri
     const journal = [
         { kind: "StartRun", arm: null, order, scenario_ms: 0 },
         ...order.flatMap((arm) => [
+            { kind: "EndTurn", arm, event: "e-1", outcome: "ok", scenario_ms: 0 },
             { kind: "Event", arm, event: "e-1", scenario_ms: 0 },
             { kind: "EndArm", arm, scenario_ms: 0 },
         ]),
@@ -746,5 +752,60 @@ describe("oracle round eight", () => {
         ];
         writeFileSync(join(dir, "journal.jsonl"), journal.map(line).join(""));
         expect(() => loadRun(dir, prereg)).toThrow(/journal\.jsonl: line 2: outcome/);
+    });
+});
+
+describe("oracle round nine", () => {
+    test("a scheduled user turn needs its EndTurn, or an interrupted outcome", () => {
+        const { dir, line } = completeDir(["eidnara"]);
+        const scenario = { events: [{ id: "e-1", kind: "user_turn" }] };
+        const scenario_hash = scenarioHash(scenario);
+        writeFileSync(join(dir, "scenario.json"), JSON.stringify({ ...scenario, scenario_hash }));
+        const manifest = { tier: "S", order: ["eidnara"], events: 1, scenario_hash };
+        writeFileSync(join(dir, "manifest.json"), JSON.stringify(manifest));
+        const base = [
+            { kind: "StartRun", arm: null, order: ["eidnara"], scenario_ms: 0 },
+            { kind: "EndArm", arm: "eidnara", scenario_ms: 9 },
+            { kind: "EndRun", arm: null, scenario_ms: 9 },
+        ];
+        const ended = {
+            kind: "EndTurn",
+            arm: "eidnara",
+            event: "e-1",
+            outcome: "ok",
+            scenario_ms: 5,
+        };
+        const event = (outcome: string) => ({
+            kind: "Event",
+            arm: "eidnara",
+            event: "e-1",
+            outcome,
+            scenario_ms: 5,
+        });
+        const write = (rows: unknown[]) =>
+            writeFileSync(join(dir, "journal.jsonl"), rows.map(line).join(""));
+        write([base[0], event("ok"), base[1], base[2]]);
+        expect(() => loadRun(dir, prereg)).toThrow("arm eidnara: turn e-1 has no EndTurn");
+        write([base[0], ended, ended, event("ok"), base[1], base[2]]);
+        expect(() => loadRun(dir, prereg)).toThrow("arm eidnara: turn e-1 has 2 EndTurn entries");
+        write([base[0], ended, event("ok"), base[1], base[2]]);
+        expect(loadRun(dir, prereg).arms[0]?.journal).toHaveLength(3);
+        write([base[0], event("failed(interrupted)"), base[1], base[2]]);
+        expect(loadRun(dir, prereg).arms[0]?.journal).toHaveLength(2);
+    });
+
+    test("a manifest claiming more events than the scenario holds is refused", () => {
+        const { dir } = completeDir(["eidnara"]);
+        const scenario = JSON.parse(readFileSync(join(dir, "scenario.json"), "utf8"));
+        const manifest = {
+            tier: "S",
+            order: ["eidnara"],
+            events: 2,
+            scenario_hash: scenario.scenario_hash,
+        };
+        writeFileSync(join(dir, "manifest.json"), JSON.stringify(manifest));
+        expect(() => loadRun(dir, prereg)).toThrow("manifest events 2 exceeds the scenario's 1");
+        writeFileSync(join(dir, "manifest.json"), JSON.stringify({ ...manifest, events: 0 }));
+        expect(() => loadRun(dir, prereg)).toThrow("manifest events 0");
     });
 });
