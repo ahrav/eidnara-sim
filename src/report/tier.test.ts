@@ -101,6 +101,7 @@ const identity = (commit = "abc") => ({
     scenario_provenance: "gen1/1/abc",
     fault_override: null as string | null,
     tapes: [] as string[],
+    toolchain: ["bun 1"],
 });
 
 function fixture(status = (_: number) => 200, opts: FixtureOptions = {}): GradedRun {
@@ -1344,7 +1345,7 @@ describe("tier report", () => {
             { id: "t-99", kind: "user_turn" },
         ] as never;
         expect(tierInput(prereg, [g]).incomplete).toContain(
-            "run pi/101: pairing records missing for host: t-99; eidnara: t-99",
+            "run pi/101: pairing records missing for host: t-99; eidnara: t-99; host~aa: t-99",
         );
     });
 
@@ -1487,6 +1488,154 @@ describe("tier report", () => {
             stdout: "pipe",
         });
         expect([r.exitCode, r.stderr.toString().includes("eidnara checkout")]).toEqual([2, true]);
+    });
+
+    test("a control's coverage needs every registered metric of the probe type", () => {
+        const g = fixture();
+        for (const r of g.grades)
+            if (r.arm === "host~aa" && r.item === "q-h-0") delete r.metrics["P2.harm"];
+        expect(tierInput(prereg, [g]).incomplete).toContain(
+            "run pi/101: control host~aa covers 7 of 8 P2 probes",
+        );
+    });
+
+    test("A/A arms need their pairing records too", () => {
+        const g = loadPairing(fixture());
+        g.scenario.events = [{ id: "t-0-0", kind: "user_turn" }] as never;
+        g.pairing = (g.pairing ?? []).filter(
+            (r) => !(r.kind === "turn" && r.arm === "host~aa" && r.event === "t-0-0"),
+        );
+        expect(tierInput(prereg, [g]).incomplete).toContain(
+            "run pi/101: pairing records missing for host~aa: t-0-0",
+        );
+    });
+
+    test("a soak leak verdict holds the pass even when the slope is within the margin", () => {
+        const g = fixture();
+        const eidnara = arm(g, "eidnara");
+        eidnara.resources = eidnara.resources.map((r, i) => ({
+            ...r,
+            rss: i === 20 ? (r.rss as number) + 400 * 2 ** 20 : r.rss,
+        }));
+        const report = tierReport(prereg, [g], boundary);
+        const rss = report.soak.find((x) => x.arm === "eidnara" && x.resource === "rss");
+        expect(rss?.verdict).toBe("leak");
+        expect(report.verdict.pass.incomplete).toContain(
+            "run pi/101: eidnara rss soak verdict leak",
+        );
+    });
+
+    test("a scripted turn counts as paired only with a delivered UserTurn in the journal", () => {
+        const g = loadPairing(fixture());
+        g.scenario.events = [{ id: "e-0", kind: "user_turn" }] as never;
+        for (const r of g.pairing ?? [])
+            if (r.kind === "turn" && r.arm === "eidnara" && r.event === "t-0-0") r.event = "e-0";
+        const eidnara = arm(g, "eidnara");
+        eidnara.journal = eidnara.journal.filter(
+            (e) => !(e.kind === "UserTurn" && e.event === "e-0"),
+        );
+        expect(tierInput(prereg, [g]).incomplete).toContain(
+            "run pi/101: delivered UserTurn missing for eidnara: e-0",
+        );
+    });
+
+    test("the reference arm's pairing records are required too", () => {
+        const g = loadPairing(fixture());
+        g.run.arms.unshift(armLogs("eidnara-kl", () => 0));
+        g.scenario.events = [{ id: "t-0-0", kind: "user_turn" }] as never;
+        expect(tierInput(prereg, [g]).incomplete).toContain(
+            "run pi/101: pairing records missing for eidnara-kl: t-0-0",
+        );
+    });
+
+    test("the host's P7 row is its newest complete default-arm judgment", () => {
+        const dir = mkdtempSync(join(tmpdir(), "sim-report-"));
+        const body = { manifest: { seed: 101 }, events: [], probes: [], faults: [] };
+        const scenario_hash = sha256Hex(canonicalJson(body));
+        writeFileSync(
+            join(dir, "manifest.json"),
+            JSON.stringify({
+                tier: "S",
+                seed: 101,
+                host: "pi",
+                order: [],
+                base_wall_ms: 0,
+                prereg_sha256: preregistrationHash(prereg),
+                scenario_hash,
+            }),
+        );
+        writeFileSync(join(dir, "scenario.json"), canonicalJson({ ...body, scenario_hash }));
+        const rows = [
+            judgment("q-7", "host", false, ["e", "h"]),
+            judgment("q-7", "eidnara", true, ["e", "h"]),
+            { ...judgment("q-7", "host", true, ["e2", "h2"]), version: 2 },
+            { ...judgment("q-7", "eidnara", true, ["e2", "h2"]), version: 2 },
+        ];
+        writeFileSync(
+            join(dir, "grades.jsonl"),
+            `${rows.map((r) => JSON.stringify(r)).join("\n")}\n`,
+        );
+        expect(
+            loadGraded(dir, prereg)
+                .grades.filter((r) => r.arm === "host")
+                .map((r) => r.verdict),
+        ).toEqual(["pass"]);
+    });
+
+    test("the recorded toolchain is part of the compared identity", () => {
+        const a = fixture(undefined, { host: "pi" });
+        const b = fixture(undefined, { host: "opencode" });
+        b.identity.toolchain = ["bun 2"];
+        expect(
+            tierInput(prereg, [a, b]).incomplete?.find((x) =>
+                x.startsWith("runs differ in toolchain"),
+            ),
+        ).toBeDefined();
+    });
+
+    test("the report script refuses an --out that is a checkout child named with leading dots", () => {
+        const dir = mkdtempSync(join(tmpdir(), "sim-report-"));
+        writeFileSync(join(dir, "manifest.json"), JSON.stringify({ tier: "S" }));
+        const checkout = mkdtempSync(join(tmpdir(), "sim-checkout-"));
+        const config = join(dir, "sim.config.json");
+        writeFileSync(config, JSON.stringify({ eidnara_checkout: checkout }));
+        const r = Bun.spawnSync(
+            ["bun", "scripts/report.ts", dir, "--out", join(checkout, "..reports")],
+            {
+                cwd: join(import.meta.dir, "../.."),
+                env: { ...process.env, SIM_CONFIG: config },
+                stderr: "pipe",
+                stdout: "pipe",
+            },
+        );
+        expect([r.exitCode, r.stderr.toString().includes("eidnara checkout")]).toEqual([2, true]);
+    });
+
+    test("the report script accepts only the registered tier literals", () => {
+        const dir = mkdtempSync(join(tmpdir(), "sim-report-"));
+        writeFileSync(join(dir, "manifest.json"), JSON.stringify({ tier: "../S" }));
+        const r = Bun.spawnSync(["bun", "scripts/report.ts", dir], {
+            cwd: join(import.meta.dir, "../.."),
+            stderr: "pipe",
+            stdout: "pipe",
+        });
+        expect([r.exitCode, r.stderr.toString().includes("tier")]).toEqual([2, true]);
+    });
+
+    test("a scheduled proxy fault needs its own witness", () => {
+        const g = fixture();
+        g.scenario.faults.push({
+            id: "f1",
+            type: "provider_5xx",
+            strategy: "single",
+            trigger: { kind: "user_turn", session: "s-0", n: 1 },
+            params: {},
+            seam: { layer: "proxy-sink", legal_outcomes: [] },
+        } as unknown as Scenario["faults"][number]);
+        g.witnesses = [];
+        expect(tierInput(prereg, [g]).incomplete).toContain(
+            "run pi/101: fault witnesses missing for f1",
+        );
     });
 
     test("a planted 4xx difference between the A/A arms fails that falsification check", () => {

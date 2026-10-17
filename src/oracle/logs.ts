@@ -33,6 +33,8 @@ export interface RunLogs {
     arms: ArmLogs[];
     /** The price table the manifest recorded; `null` for a run that recorded none. */
     price: PriceTable | null;
+    /** The last `seq` in the run's journal, every arm included; a grading summary names the one it saw. */
+    journal_seq: number;
 }
 
 function jsonl<T>(path: string): T[] {
@@ -72,5 +74,6 @@ export function loadRun(dir: string, prereg: Preregistration): RunLogs {
         kinds,
         arms,
         price: (manifest.price_table as PriceTable | undefined) ?? null,
+        journal_seq: journal.at(-1)?.seq ?? 0,
     };
 }

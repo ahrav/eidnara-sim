@@ -783,6 +783,16 @@ describe("property witness evidence", () => {
         ).toMatchObject({
             status: "violated",
         });
+        // The order is by seq, so a seq that is missing or repeated leaves it unestablished.
+        expect(
+            one(
+                "P15",
+                made({ journal, calls: [call(300, 1_200), { ...call(300, 1_210), seq: 1 }] }),
+            ),
+        ).toMatchObject({ status: "violated", detail: expect.stringContaining("seq") });
+        expect(
+            one("P15", made({ journal, calls: [{ ...call(300, 1_200), seq: "a" }] })),
+        ).toMatchObject({ status: "violated", detail: expect.stringContaining("seq") });
     });
 
     test("liveness records appear in the panel, unchecked", () => {

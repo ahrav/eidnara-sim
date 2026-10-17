@@ -302,6 +302,7 @@ export function gradeP7(j: Judgment, c: P7Context, rules: Rules, version = 1): G
             item: c.item,
             arm: c.arms[side],
             probe_type: "P7",
+            pair: c.arms[side === "a" ? "b" : "a"],
             version,
             snapshot: c.snapshots[side],
             inputs: c.inputs,

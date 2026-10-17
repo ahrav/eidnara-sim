@@ -542,7 +542,7 @@ for (const group of groups) {
             : null;
 }
 const start_skew_ms = Object.fromEntries(groups.map((g) => [g, skew(g)]));
-writeFileSync(
+writeAtomic(
     join(out, "tier-result.json"),
     `${JSON.stringify({ tier, limit_ms: limit, start_skew_ms, reports, results }, null, 2)}\n`,
 );

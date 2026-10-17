@@ -291,7 +291,7 @@ export function gradeItem(
  */
 export const graderDigest = (): string =>
     sha256Hex(
-        ["artefacts.ts", "judge.ts", "probes.ts", "text.ts"]
+        ["artefacts.ts", "judge.ts", "probes.ts", "text.ts", "../../scripts/grade-run.ts"]
             .map((f) => readFileSync(join(import.meta.dir, f), "utf8"))
             .join("\n"),
     );
