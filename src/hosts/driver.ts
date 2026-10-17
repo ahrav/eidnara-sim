@@ -20,7 +20,7 @@ import {
 import type { FaultEpisode } from "../scenario/faults";
 import { armBase, DaemonStack, eidnaraOn, type HostContext, makeHost, type SimHost } from "./arms";
 import { SnapshotRecorder } from "./snapshot";
-import { checkStore } from "./storecheck";
+import { checkStore, memoryNotes } from "./storecheck";
 
 interface ArmState {
     model: number;
@@ -247,11 +247,16 @@ export class HostDriver implements ArmDriver {
         const dir = this.workspace(project);
         const before = e.probe ? this.snapshots.tree(dir) : "";
         const interruptMs = typeof e.interrupt_ms === "number" ? e.interrupt_ms : undefined;
+        const started = performance.now();
         const result = await host.prompt(String(e.text), this.o.turnDeadlineMs, interruptMs);
+        const prompt_ms = Math.round(performance.now() - started);
         if (this.daemon && this.daemonPid() === null) this.o.onDaemonExit({ after: e.id });
         const tools = host.drainTools();
         this.snapshots.addTools(tools, e.id);
-        const outcome: TurnOutcome = result.interrupted ? { user: { interrupted: true } } : {};
+        const outcome: TurnOutcome = {
+            prompt_ms,
+            ...(result.interrupted ? { user: { interrupted: true } } : {}),
+        };
         if (result.error) outcome.failed = result.error;
         if (this.storeFaults.length > 0 && this.daemon) {
             const store = checkStore(this.storeDb);
@@ -389,6 +394,8 @@ export class HostDriver implements ArmDriver {
             if (daemon && checkFinalStore) {
                 const check = checkStore(this.storeDb);
                 writeFileSync(join(this.armDir, "store-check.json"), `${JSON.stringify(check)}\n`);
+                const notes = memoryNotes(this.storeDb);
+                writeFileSync(join(this.armDir, "memory.json"), `${JSON.stringify(notes)}\n`);
             }
         } catch (caught) {
             failure ??= caught;

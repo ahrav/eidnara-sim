@@ -15,6 +15,8 @@ export interface ScenarioEvent {
 
 export interface TurnOutcome {
     failed?: string;
+    /** Wall time of the host's prompt call alone, journaled on `EndTurn`. */
+    prompt_ms?: number;
     snapshot?: string;
     /** Store checks the arm owed daemon restarts, one `StoreChecked` entry each. */
     stores?: { fault: string; store: StoreCheck }[];
@@ -241,7 +243,13 @@ export class Scheduler {
             }
             const state = outcome.failed ? "failed" : "completed";
             const item = e.probe ? { probe: e.probe, state } : {};
-            this.log({ kind: "EndTurn", event: e.id, outcome: outcome.failed ?? "ok", ...item });
+            this.log({
+                kind: "EndTurn",
+                event: e.id,
+                outcome: outcome.failed ?? "ok",
+                prompt_ms: outcome.prompt_ms ?? null,
+                ...item,
+            });
             if (e.probe && outcome.snapshot && !this.snapshotted(e.probe)) {
                 this.log({ kind: "SnapshotArtefacts", item: e.probe, snapshot: outcome.snapshot });
             }
