@@ -137,7 +137,9 @@ judgments against the host arm, stay out of the A/A pairing.
 
 `scripts/aa-report.ts <run>` reads the run's graded items and, for each
 control, pairs every item both arms graded. It holds the run's lease while
-it reads, checks each pairing record's shape and arm (`readPairing`, which
+it reads, requires the journal complete for the manifest order and the
+scheduled events (`requireComplete`, as `grade-run.ts` does), checks each
+pairing record's shape and arm (`readPairing`, which
 `pairing-check.ts` shares, refusing a corrupt terminated line), requires a
 turn record on both sides of every event the pair delivered, refuses a
 control whose delivered text differed from its arm's before its recorded

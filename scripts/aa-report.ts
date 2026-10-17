@@ -5,7 +5,7 @@ import { armBase, requireOrder } from "../src/hosts/arms";
 import { ARMS, type Tier } from "../src/prereg/schema";
 import { preregistrationHash } from "../src/prereg/validate";
 import { bootstrapMean, disagreementRate, pairedDiffs } from "../src/report/paired";
-import { releaseLease, takeLease } from "../src/run/journal";
+import { readJournal, releaseLease, requireComplete, takeLease } from "../src/run/journal";
 import { referenceArm } from "../src/run/run";
 import { type Scenario, scenarioHash } from "../src/scenario/compile";
 import { loadPrereg } from "../src/scenario/inputs";
@@ -52,6 +52,8 @@ function report(dir: string) {
     const grades = new GradeLog(join(dir, "grades.jsonl")).latest();
     const order = manifest.order as string[];
     requireOrder(order, ARMS, prereg.aa_controls?.pairs ?? []);
+    const scheduled = scenario.events.slice(0, manifest.events).map((e) => String(e.id));
+    requireComplete(readJournal(join(dir, "journal.jsonl")), order, scheduled);
     const typeOf = new Map(scenario.probes.map((p) => [p.id, p.type]));
     for (const g of grades) {
         const sound =

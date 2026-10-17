@@ -80,7 +80,8 @@ export function takeLease(dir: string): Lease {
     const mine: Lease = { pid: process.pid, host: hostname(), started_wall_ms: Date.now() };
     for (let attempt = 0; attempt < 3; attempt++) {
         const staged = join(dir, `lease.${process.pid}.tmp`);
-        writeFileSync(staged, JSON.stringify(mine));
+        // An exclusive create refuses an existing path, a symlink included.
+        writeFileSync(staged, JSON.stringify(mine), { flag: "wx" });
         try {
             linkSync(staged, path);
             rmSync(staged);

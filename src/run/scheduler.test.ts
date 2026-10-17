@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fixtureEvents } from "../../tests/run-fixture";
@@ -155,6 +155,15 @@ describe("Journal and lease", () => {
             JSON.stringify({ pid: dead, host: "elsewhere", started_wall_ms: 0 }),
         );
         expect(() => takeLease(d)).toThrow(/on elsewhere/);
+    });
+
+    test("a lease staging symlink is refused, never written through", () => {
+        const d = dir();
+        const target = join(d, "elsewhere.json");
+        writeFileSync(target, "keep me\n");
+        symlinkSync(target, join(d, `lease.${process.pid}.tmp`));
+        expect(() => takeLease(d)).toThrow(/EEXIST/);
+        expect(readFileSync(target, "utf8")).toBe("keep me\n");
     });
 
     test("a corrupt line before the last refuses the journal", () => {

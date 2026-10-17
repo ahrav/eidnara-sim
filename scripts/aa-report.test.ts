@@ -4,6 +4,7 @@ import {
     lstatSync,
     mkdtempSync,
     readFileSync,
+    rmSync,
     symlinkSync,
     writeFileSync,
 } from "node:fs";
@@ -37,6 +38,20 @@ const turn = (arm: string, event: string, text_sha256: string, index = 0) => ({
     text_sha256,
 });
 
+const journal = (order: string[], events: number) => [
+    { kind: "StartRun", arm: null, order, scenario_ms: 0 },
+    ...order.flatMap((arm) => [
+        ...Array.from({ length: events }, (_, i) => ({
+            kind: "Event",
+            arm,
+            event: `e-${i + 1}`,
+            scenario_ms: 0,
+        })),
+        { kind: "EndArm", arm, scenario_ms: 0 },
+    ]),
+    { kind: "EndRun", arm: null, scenario_ms: 0 },
+];
+
 function gradedRun(
     tier: string,
     prereg_sha256: string,
@@ -55,10 +70,12 @@ function gradedRun(
             grade(arm, `q-${i}`, "P13", "P13.fold_fidelity_score", i % 2),
         ]),
     ) as GradeRecord[];
-    const scenario = { probes };
+    const events = [1, 2, 3].map((i) => ({ id: `e-${i}`, kind: "user_turn" }));
+    const scenario = { probes, events };
     const manifest = {
         tier,
         order: ["host", "host~aa"],
+        events: 3,
         prereg_sha256,
         scenario_hash: scenario_hash ?? scenarioHash(scenario),
     };
@@ -69,6 +86,10 @@ function gradedRun(
         [1, 2, 3].map((i) => turn(arm, `e-${i}`, "same")),
     );
     writeFileSync(join(dir, "pairing.jsonl"), turns.map(line).join(""));
+    writeFileSync(
+        join(dir, "journal.jsonl"),
+        journal(manifest.order, manifest.events).map(line).join(""),
+    );
     return dir;
 }
 
@@ -89,13 +110,12 @@ describe("aa-report", () => {
         const cut = grade("host", "p-7", "P3", "P3.delta_mem", 0);
         const rerun = [{ ...cut, version: 2 }, grade("host~aa", "p-7", "P3", "P3.delta_mem", 7)];
         appendFileSync(join(dir, "grades.jsonl"), [cut, ...rerun].map(line).join(""));
+        const was = JSON.parse(readFileSync(join(dir, "scenario.json"), "utf8"));
         writeFileSync(
             join(dir, "scenario.json"),
             JSON.stringify({
-                probes: [
-                    ...JSON.parse(readFileSync(join(dir, "scenario.json"), "utf8")).probes,
-                    { id: "p-7", type: "P3", fact: "fact-7" },
-                ],
+                ...was,
+                probes: [...was.probes, { id: "p-7", type: "P3", fact: "fact-7" }],
             }),
         );
         const manifest = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8"));
@@ -206,6 +226,23 @@ describe("aa-report", () => {
         ];
         writeFileSync(join(lost, "pairing.jsonl"), kept.map(line).join(""));
         expect(() => aaReport(lost)).toThrow(/e-2/);
+    });
+
+    test("refuses a run whose journal is missing, incomplete, or ordered otherwise", () => {
+        const line = (o: unknown) => `${JSON.stringify(o)}\n`;
+        const gone = gradedRun("S", preregistrationHash(loadPrereg("S")));
+        rmSync(join(gone, "journal.jsonl"));
+        expect(() => aaReport(gone)).toThrow(/journaled order/);
+        const cut = gradedRun("S", preregistrationHash(loadPrereg("S")));
+        const entries = journal(["host", "host~aa"], 3).filter((e) => e.kind !== "EndRun");
+        writeFileSync(join(cut, "journal.jsonl"), entries.map(line).join(""));
+        expect(() => aaReport(cut)).toThrow(/no EndRun/);
+        const swapped = gradedRun("S", preregistrationHash(loadPrereg("S")));
+        writeFileSync(
+            join(swapped, "journal.jsonl"),
+            journal(["host~aa", "host"], 3).map(line).join(""),
+        );
+        expect(() => aaReport(swapped)).toThrow(/journaled order/);
     });
 
     test("a run-level family forms one cluster per run, so one run leaves it uninformative", () => {
