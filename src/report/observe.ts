@@ -23,8 +23,10 @@ export interface GradedRun {
     identity: RunIdentity;
     /** The proxy's fault witnesses from `faults.jsonl`; an `untriggered` one keeps the run out of the fault metrics (SIM-P32), and `null` records that the file is absent. */
     witnesses: WitnessReport[] | null;
-    /** The user-sim's `pairing.jsonl` records. */
-    pairing: PairingRecord[];
+    /** The user-sim's `pairing.jsonl` records; `null` records that the file is absent. */
+    pairing: PairingRecord[] | null;
+    /** Whether `calls.jsonl` is present, the capture the F7 scan reads. */
+    captured: boolean;
 }
 
 /** The manifest fields a tier's runs share for their evidence to pool. */
@@ -37,6 +39,10 @@ export interface RunIdentity {
     distortions: string[];
     /** `manifest.preflight.hosts` as `<host>@<version>`. */
     host_versions: string[];
+    /** `scenario.manifest`'s `generator_version/random_schema_version/corpus_manifest_sha256`. */
+    scenario_provenance: string;
+    /** The digest of `manifest.fault_override`, or `null` for the scenario's own schedule. */
+    fault_override: string | null;
 }
 
 const ALIASES: Record<string, string> = {
@@ -100,8 +106,10 @@ function values(
 const total = (xs: number[]) => xs.reduce((s, x) => s + x, 0);
 const latency =
     (q: number): RunValue =>
-    (_, arm) =>
-        percentile(turnLatencies(arm), q);
+    (_, arm) => {
+        const latencies = turnLatencies(arm);
+        return latencies === null ? null : percentile(latencies, q);
+    };
 const slope =
     (resource: "rss" | "heap" | "store_bytes"): RunValue =>
     ({ run }, arm) =>
@@ -120,11 +128,15 @@ const graded =
 const RUN_VALUES: Record<string, { value: RunValue; delta: boolean; hostless?: true }> = {
     failed_turns: {
         value: (_, arm) =>
-            arm.journal.filter(
-                (e) =>
-                    (e.kind === "EndTurn" && e.outcome !== "ok") ||
-                    (e.kind === "Event" && e.outcome === "failed(interrupted)"),
-            ).length,
+            new Set(
+                arm.journal
+                    .filter(
+                        (e) =>
+                            (e.kind === "EndTurn" && e.outcome !== "ok") ||
+                            (e.kind === "Event" && e.outcome === "failed(interrupted)"),
+                    )
+                    .map((e) => String(e.event)),
+            ).size,
         delta: false,
     },
     hangs: {
@@ -138,7 +150,7 @@ const RUN_VALUES: Record<string, { value: RunValue; delta: boolean; hostless?: t
     daemon_heap_growth_bytes_per_session: { value: slope("heap"), delta: true, hostless: true },
     store_growth_bytes_per_session: { value: slope("store_bytes"), delta: true, hostless: true },
     internal_string_hits: {
-        value: (g, arm) => panelOf(g, arm).internal_string_hits.length,
+        value: (g, arm) => (g.captured ? panelOf(g, arm).internal_string_hits.length : null),
         delta: false,
     },
     user_corrections_referencing_injected_text: {
@@ -188,7 +200,7 @@ function itemPairs(
                     r.arm === arm &&
                     known.has(r.item) &&
                     r.verdict !== "excluded" &&
-                    source in r.metrics &&
+                    typeof r.metrics[source] === "boolean" &&
                     r.metrics.gate_eligible !== false,
             );
         const value = (r: GradeRecord) => Number(r.metrics[source] === true);
@@ -299,14 +311,28 @@ function incomplete(
                 );
             }),
         );
+    const binary = new Set(
+        p.families
+            .filter((f) => f.analysis_unit === "item")
+            .flatMap((f) => f.metrics.map((m) => ALIASES[m] ?? m)),
+    );
     const unknown = runs.flatMap((g) => {
         const known = probeIds(g);
         const items = [...new Set(g.grades.filter((r) => !known.has(r.item)).map((r) => r.item))];
-        return items.length
-            ? [`run ${runKey(g)}: grades for unknown items ${items.join(", ")}`]
-            : [];
+        const malformed = [...g.grades, ...g.judged].flatMap((r) =>
+            Object.entries(r.metrics)
+                .filter(([k, v]) => binary.has(k) && typeof v !== "boolean")
+                .map(([k]) => `run ${runKey(g)}: ${k} is not a boolean for ${r.arm} ${r.item}`),
+        );
+        return [
+            ...(items.length
+                ? [`run ${runKey(g)}: grades for unknown items ${items.join(", ")}`]
+                : []),
+            ...malformed,
+        ];
     });
     const pairing = runs.flatMap((g) => {
+        if (g.pairing === null) return [`run ${runKey(g)}: pairing records missing`];
         const order = g.run.arms.map((a) => a.arm);
         const failures = pairingFailures(g.pairing, g.scenario, referenceArm(order));
         const out = Object.entries(failures).flatMap(([kind, list]) =>
@@ -324,6 +350,26 @@ function incomplete(
         );
         return [...out, ...outside];
     });
+    const sequential = p.load_stress?.arms_concurrent
+        ? runs.flatMap((g) => {
+              const spans = g.run.arms.flatMap((a) => {
+                  const start = a.journal.find((e) => e.kind === "StartArm")?.seq;
+                  const end = a.journal.find((e) => e.kind === "EndArm")?.seq;
+                  return start === undefined || end === undefined ? [] : [[start, end] as const];
+              });
+              const overlap = spans.some(([s1, e1], i) =>
+                  spans.some(([s2, e2], j) => i !== j && s1 <= e2 && s2 <= e1),
+              );
+              return spans.length < 2 || overlap
+                  ? []
+                  : [
+                        `run ${runKey(g)}: arms ran one at a time; load_stress requires concurrent arms`,
+                    ];
+          })
+        : [];
+    const overridden = runs.flatMap((g) =>
+        g.identity.fault_override === null ? [] : [`run ${runKey(g)}: fault schedule overridden`],
+    );
     const unwitnessed = runs.flatMap((g) =>
         g.witnesses === null && g.scenario.faults.some((f) => f.seam.layer === "proxy-sink")
             ? [`run ${runKey(g)}: fault witnesses missing`]
@@ -355,6 +401,7 @@ function incomplete(
         "context_limit",
         "distortions",
         "host_versions",
+        "scenario_provenance",
     ];
     const settings = shared.flatMap((field) => {
         const values = [...new Set(runs.map((g) => JSON.stringify(g.identity[field])))];
@@ -364,30 +411,36 @@ function incomplete(
     });
     const n = p.stopping_rule.paired_items_per_probe_type;
     const short = p.families.flatMap((f) => {
-        if (!/^probe-P\d+$/.test(f.id)) return [];
-        const metric = f.metrics[0] as string;
-        const pairs =
-            f.analysis_unit === "item"
-                ? (observations.find((o) => o.metric === metric)?.items ?? []).filter(
-                      (x) => !dropped.has(x.item),
-                  ).length
-                : runs.reduce((s, g) => {
-                      const [c, t] = [control, treatment].map((a) =>
-                          g.run.arms.find((x) => x.arm === a),
-                      );
-                      return !c || !t
-                          ? s
-                          : s + values(g, t.arm, metric, { other: c, dropped }).size;
-                  }, 0);
-        return pairs < n ? [`${f.id}: ${pairs} of ${n} paired items`] : [];
+        const probeType = /^probe-P\d+$/.test(f.id);
+        if (!probeType && f.analysis_unit !== "item") return [];
+        const metrics = probeType ? [f.metrics[0] as string] : f.metrics;
+        return metrics.flatMap((metric) => {
+            const pairs =
+                f.analysis_unit === "item"
+                    ? (observations.find((o) => o.metric === metric)?.items ?? []).filter(
+                          (x) => !dropped.has(x.item),
+                      ).length
+                    : runs.reduce((s, g) => {
+                          const [c, t] = [control, treatment].map((a) =>
+                              g.run.arms.find((x) => x.arm === a),
+                          );
+                          return !c || !t
+                              ? s
+                              : s + values(g, t.arm, metric, { other: c, dropped }).size;
+                      }, 0);
+            const label = probeType ? f.id : `${f.id}/${metric}`;
+            return pairs < n ? [`${label}: ${pairs} of ${n} paired items`] : [];
+        });
     });
     return [
         ...missing,
         ...unfinished,
         ...truncated,
         ...unwitnessed,
+        ...overridden,
         ...unknown,
         ...pairing,
+        ...sequential,
         ...settings,
         ...controls,
         ...unavailable,

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { Tier } from "../src/prereg/schema";
@@ -49,8 +50,11 @@ for (const [tier, { prereg, runs }] of loaded) {
             [join(out, `report-${tier}.md`), text],
             [join(out, `report-${tier}.json`), `${JSON.stringify(report.verdict, null, 2)}\n`],
         ] as const;
-        for (const [path, body] of staged) writeFileSync(`${path}.${process.pid}`, body);
-        for (const [path] of staged) renameSync(`${path}.${process.pid}`, path);
+        const tmp = staged.map(([path]) => `${path}.${randomUUID()}.tmp`);
+        for (const [i, [, body]] of staged.entries()) {
+            writeFileSync(tmp[i] as string, body, { flag: "wx" });
+        }
+        for (const [i, [path]] of staged.entries()) renameSync(tmp[i] as string, path);
     } else console.log(text);
 }
 // A violated property means the runs broke an invariant the verdict rests on; the report stays

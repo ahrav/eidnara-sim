@@ -222,10 +222,10 @@ function panels(r: TierReport): string[] {
                     i.internal_string_hits.length,
                     i.corrections_referencing_injected_text?.length ?? "-",
                     i.reverted_edits.length,
-                    fmt(i.latency_ms.p50, 0),
-                    fmt(i.latency_ms.p95, 0),
-                    fmt(delta(i.latency_ms.p50, host?.p50), 0),
-                    fmt(delta(i.latency_ms.p95, host?.p95), 0),
+                    fmt(i.latency_ms?.p50, 0),
+                    fmt(i.latency_ms?.p95, 0),
+                    fmt(delta(i.latency_ms?.p50 ?? null, host?.p50), 0),
+                    fmt(delta(i.latency_ms?.p95 ?? null, host?.p95), 0),
                 ];
             }),
         ),
@@ -320,6 +320,17 @@ function panels(r: TierReport): string[] {
         ),
         "## A/A controls",
         "",
+        ...(r.aa.some((a) => (a as { stale?: boolean }).stale)
+            ? [
+                  `Stale: ${r.aa
+                      .filter((a) => (a as { stale?: boolean }).stale)
+                      .map((a) => String((a as { run?: string }).run))
+                      .join(
+                          ", ",
+                      )} have an aa.json older than grades.jsonl; rerun scripts/aa-report.ts.`,
+                  "",
+              ]
+            : []),
         r.aa.length === 0
             ? r.arms.some((a) => a.includes("~"))
                 ? "A/A control arms ran; run scripts/aa-report.ts on the graded run for their report."
