@@ -7,7 +7,14 @@ import { readJournalStrict, requireComplete } from "../src/run/journal";
 import type { Scenario } from "../src/scenario/compile";
 import { scenarioHash } from "../src/scenario/compile";
 import { loadPrereg } from "../src/scenario/inputs";
-import { deliveredTurns, LABELS, type Label, realisedRates } from "../src/usersim/plan";
+import {
+    behaviourPlan,
+    deliveredTurns,
+    LABELS,
+    type Label,
+    pinnedTurns,
+    realisedRates,
+} from "../src/usersim/plan";
 import {
     pairingMismatches,
     readPairing,
@@ -266,6 +273,64 @@ const unknownArms = [
         ].filter((a) => !arms.has(a)),
     ),
 ].sort();
+// A sibling arm's first turn whose digest leaves the reference's has its divergence row ahead
+// of it, or the divergence is hidden.
+const missingDivergences = (manifest.order as string[])
+    .filter((arm) => arm !== reference())
+    .flatMap((arm) => {
+        const sessions = new Map<string, TurnRecord[]>();
+        for (const t of turns.filter((r) => r.arm === arm)) {
+            sessions.set(t.session, [...(sessions.get(t.session) ?? []), t]);
+        }
+        return [...sessions.values()].flatMap((rows) => {
+            const first = rows
+                .sort((x, y) => x.index - y.index)
+                .find((t) => {
+                    const ref = turns.find((r) => r.arm === reference() && r.event === t.event);
+                    return ref !== undefined && ref.digest !== t.digest;
+                });
+            if (!first) return [];
+            const cut = divergenceAt.get(`${arm}/${first.session}`);
+            const row = records.find(
+                (r) => r.kind === "divergedAt" && r.arm === arm && r.session === first.session,
+            );
+            const valid =
+                cut !== undefined &&
+                cut <= first.index &&
+                row !== undefined &&
+                !invalidDivergences.includes(`${arm} ${row.event}`);
+            return valid ? [] : [`${arm} ${first.event}`];
+        });
+    });
+// Every label is the one the seeded plan assigned; the plan's `task` may read `clarify` at a
+// filler the agent ended with a question.
+const scriptedTurns = scenario.events
+    .filter((e) => e.kind === "user_turn")
+    .map((e) => e as unknown as { id: string; session: string; index: number; role: string });
+const plan = behaviourPlan(
+    scriptedTurns,
+    prereg,
+    manifest.seed as number,
+    pinnedTurns(
+        scenario.events as unknown as {
+            id: string;
+            kind: string;
+            session: string;
+            index?: number;
+        }[],
+        scenario.faults ?? [],
+    ),
+);
+const planLabelMismatch = turns
+    .filter((r) => {
+        const planned = plan.skipped.has(r.event)
+            ? "abandon"
+            : (plan.labels.get(r.event) ?? "task");
+        const clarify =
+            planned === "task" && r.label === "clarify" && script.get(r.event)?.role === "filler";
+        return r.label !== planned && !clarify;
+    })
+    .map((r) => `${r.arm} ${r.event}`);
 const prefix = new Set(allScheduled.map((e) => e.id));
 const outOfPrefix = [
     ...new Set([
@@ -331,6 +396,8 @@ const report = {
     source_label_mismatch: sourceLabelMismatch,
     live_before_divergence: liveBeforeDivergence,
     tape_missing: tapeMissing,
+    missing_divergences: missingDivergences,
+    plan_label_mismatch: planLabelMismatch,
     unknown_arms: unknownArms,
     paste_provenance: provenance,
     script_text_altered: scriptAltered,
@@ -372,6 +439,8 @@ const failed =
     sourceLabelMismatch.length +
     liveBeforeDivergence.length +
     tapeMissing.length +
+    missingDivergences.length +
+    planLabelMismatch.length +
     unknownArms.length +
     provenance.length +
     scriptAltered.length +

@@ -201,6 +201,7 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
             const calls = s.artefacts.find((a) => a.class === "proxy-call");
             if (calls?.class !== "proxy-call") continue;
             for (const c of calls.calls) {
+                if (c.journal) continue;
                 wanted.set(`${s.arm}/${c.seq}`, [
                     ...(wanted.get(`${s.arm}/${c.seq}`) ?? []),
                     { snapshot: s.id, call: c },

@@ -195,6 +195,42 @@ const p7snapshot = (item: string, turn = "e-1"): Snapshot => ({
 });
 
 describe("grade-run", () => {
+    test("a journal-backed user-sim entry in a snapshot is not reconciled against calls.jsonl", async () => {
+        const p8 = fixture("P8-pass");
+        const dir = run({ probes: [p8.probe] });
+        const base = p8.snapshots[0] as Snapshot;
+        const withUser: Snapshot = {
+            ...base,
+            artefacts: base.artefacts.map((a) =>
+                a.class === "proxy-call"
+                    ? {
+                          ...a,
+                          calls: [
+                              ...a.calls,
+                              {
+                                  seq: 999,
+                                  component: "user-sim",
+                                  turn: base.turn,
+                                  scenario_ms: 0,
+                                  input_tokens: 0,
+                                  output_tokens: 0,
+                                  label: "task",
+                                  journal: true,
+                              },
+                          ],
+                      }
+                    : a,
+            ),
+        };
+        snapshot(dir, "eidnara", withUser);
+        const calls = readFileSync(join(dir, "calls.jsonl"), "utf8")
+            .trim()
+            .split("\n")
+            .filter((l) => !l.includes('"seq":999'));
+        writeFileSync(join(dir, "calls.jsonl"), `${calls.join("\n")}\n`);
+        expect((await gradeRun(dir, null)).verdicts).toEqual({ "eidnara/P8": { pass: 1 } });
+    });
+
     test("grades a journaled snapshot and keys skipped items by arm and reason", async () => {
         const dir = run({ probes: [p5.probe] });
         snapshot(dir, "eidnara", snap);

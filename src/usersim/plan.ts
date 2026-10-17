@@ -171,6 +171,8 @@ export function withUserLabels<C extends { component: string }>(
             input_tokens: 0,
             output_tokens: 0,
             label: String(e.label),
+            // The entry comes from the journal, not from a proxy call record.
+            journal: true,
         })),
     ];
 }

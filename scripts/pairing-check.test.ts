@@ -6,7 +6,7 @@ import { sha256Hex } from "../src/prereg/canonical";
 import { preregistrationHash } from "../src/prereg/validate";
 import { scenarioHash } from "../src/scenario/compile";
 import { loadPrereg } from "../src/scenario/inputs";
-import { type Label, realisedRates } from "../src/usersim/plan";
+import { behaviourPlan, type Label, realisedRates } from "../src/usersim/plan";
 import { tapeKey } from "../src/usersim/usersim";
 
 const ROOT = join(import.meta.dir, "..");
@@ -23,18 +23,9 @@ interface Fixture {
     manifest: Row;
 }
 
-const labelAt = (s: number, i: number): Label =>
-    i < 5
-        ? "pushback"
-        : i === 5 && s < 5
-          ? "interrupt"
-          : i === 6 && s === 0
-            ? "redirect"
-            : i === 7 && s === 1
-              ? "abandon"
-              : "task";
+type Plan = ReturnType<typeof behaviourPlan>;
 
-function fixture(arms: string[] = ["a", "b"]): Fixture {
+function scriptedEvents(): Row[] {
     const events: Row[] = [];
     for (let s = 0; s < 10; s++) {
         for (let i = 0; i < 10; i++) {
@@ -48,26 +39,52 @@ function fixture(arms: string[] = ["a", "b"]): Fixture {
             });
         }
     }
+    return events;
+}
+
+const planOf = (events: Row[]): Plan =>
+    behaviourPlan(
+        events.map((e) => ({
+            id: String(e.id),
+            session: String(e.session),
+            index: Number(e.index),
+            role: String(e.role),
+        })),
+        prereg,
+        101,
+        new Set(),
+    );
+
+const labelOf = (plan: Plan, id: string): Label =>
+    plan.skipped.has(id) ? "abandon" : (plan.labels.get(id) ?? "task");
+
+const REACTIVE_LABELS = new Set(["pushback", "redirect", "abandon", "clarify"]);
+
+function fixture(arms: string[] = ["a", "b"], events: Row[] = scriptedEvents()): Fixture {
+    const plan = planOf(events);
     const journal: Row[] = [{ kind: "StartRun", arm: null, order: arms }];
     const pairing: Row[] = [];
     const tape: Row[] = [];
     for (const arm of arms) {
         const turns: { session: string; label: Label }[] = [];
         for (const e of events) {
-            const [, s, i] = String(e.id).split("-").map(Number) as [number, number, number];
-            const label = labelAt(s, i);
-            turns.push({ session: String(e.session), label });
-            const reactive = ["pushback", "redirect", "abandon", "clarify"].includes(label);
-            const reply = `reply to ${e.id}`;
-            const delivered = reactive
-                ? label === "abandon"
-                    ? reply
-                    : `${reply}\n\n${String(e.text)}`
-                : String(e.text);
-            if (reactive && arm === arms[0]) {
+            const id = String(e.id);
+            const label = labelOf(plan, id);
+            const skipped = plan.skipped.has(id);
+            const reactive = REACTIVE_LABELS.has(label);
+            const reply = `reply to ${id}`;
+            const delivered = skipped
+                ? ""
+                : reactive
+                  ? label === "abandon"
+                      ? reply
+                      : `${reply}\n\n${String(e.text)}`
+                  : String(e.text);
+            if (!skipped) turns.push({ session: String(e.session), label });
+            if (reactive && !skipped && arm === arms[0]) {
                 tape.push({
-                    key: tapeKey(101, String(e.id), label, "c", String(e.text)),
-                    event: e.id,
+                    key: tapeKey(101, id, label, "c", String(e.text)),
+                    event: id,
                     label,
                     digest: "d",
                     text: reply,
@@ -78,26 +95,27 @@ function fixture(arms: string[] = ["a", "b"]): Fixture {
                 kind: "turn",
                 arm,
                 session: e.session,
-                event: e.id,
+                event: id,
                 index: e.index,
                 label,
-                delivered: true,
+                delivered: !skipped,
                 digest: "d",
                 context_sha256: "c",
                 prefix_sha256: "p",
                 text_sha256: sha256Hex(delivered),
-                source: reactive ? "tape" : "script",
+                source: reactive && !skipped ? "tape" : "script",
+                ...(e.paste ? { paste: e.paste } : {}),
             });
             journal.push({
                 kind: "UserTurn",
                 arm,
                 session: e.session,
-                event: e.id,
+                event: id,
                 label,
-                delivered: true,
+                delivered: !skipped,
                 ...(label === "interrupt" ? { interrupted: true } : {}),
             });
-            journal.push({ kind: "Event", arm, event: e.id, outcome: "ok" });
+            journal.push({ kind: "Event", arm, event: id, outcome: "ok" });
         }
         journal.push({
             kind: "UserSimRates",
@@ -160,6 +178,10 @@ const find = (rows: Row[], match: (r: Row) => boolean) => rows.find(match) as Ro
 
 test("a finished run whose journal and pairing log agree passes", () => {
     const r = run(fixture());
+    const failing = Object.entries(r.report).filter(
+        ([k, v]) => k !== "rates" && k !== "divergences" && Array.isArray(v) && v.length > 0,
+    );
+    expect(failing).toEqual([]);
     expect(r.exit).toBe(0);
     expect(r.report.rates_mismatch).toEqual([]);
     expect(r.report.missing_turns).toEqual([]);
@@ -192,10 +214,10 @@ test("the pairing check recomputes each arm's rates from its delivered turns", (
 
 test("a delivered journal row with an unknown label cannot certify the rates", () => {
     const f = fixture();
-    find(f.journal, (r) => r.kind === "UserTurn" && r.arm === "a" && r.event === "e-0-9").label =
+    find(f.journal, (r) => r.kind === "UserTurn" && r.arm === "a" && r.event === "e-0-5").label =
         "shout";
     const r = run(f);
-    expect(r.report.invalid_labels).toEqual(["a e-0-9"]);
+    expect(r.report.invalid_labels).toEqual(["a e-0-5"]);
     expect(r.exit).toBe(1);
 });
 
@@ -213,9 +235,9 @@ test("the pairing check fails a run that never reached EndArm for an arm or EndR
 });
 
 test("a non-filler turn the host never received fails the check even when its pairing row says delivered", () => {
-    const f = fixture();
-    find(f.events, (e) => e.id === "e-1-1").role = "conveyance";
-    f.manifest = { ...f.manifest, scenario_hash: scenarioHash(scenarioOf(f.events)) };
+    const events = scriptedEvents();
+    find(events, (e) => e.id === "e-1-1").role = "conveyance";
+    const f = fixture(["a", "b"], events);
     find(
         f.journal,
         (r) => r.kind === "UserTurn" && r.arm === "b" && r.event === "e-1-1",
@@ -388,17 +410,17 @@ test("a divergence row's digests must be the turn rows' digests at that event", 
 
 test("a journal user turn must carry its pairing row's session and label, with the scheduled interrupt as the one relabel", () => {
     const f = fixture();
-    find(f.journal, (r) => r.kind === "UserTurn" && r.arm === "a" && r.event === "e-0-9").label =
-        "pushback";
     find(f.journal, (r) => r.kind === "UserTurn" && r.arm === "a" && r.event === "e-0-0").label =
+        "pushback";
+    find(f.journal, (r) => r.kind === "UserTurn" && r.arm === "a" && r.event === "e-0-1").label =
         "task";
     const r = run(f);
-    expect(r.report.journal_pairing_mismatch).toEqual(["a e-0-0", "a e-0-9"]);
+    expect(r.report.journal_pairing_mismatch).toEqual(["a e-0-0", "a e-0-1"]);
     expect(r.exit).toBe(1);
     const g = fixture();
     const relabelled = find(
         g.journal,
-        (r) => r.kind === "UserTurn" && r.arm === "a" && r.event === "e-0-5",
+        (r) => r.kind === "UserTurn" && r.arm === "a" && r.event === "e-0-9",
     );
     relabelled.label = "task";
     relabelled.scheduled = "interrupt";
@@ -446,9 +468,9 @@ test("user-turn evidence outside the executed prefix is rejected", () => {
 });
 
 test("every delivered scripted row carries the compiled text's hash", () => {
-    const f = fixture();
-    find(f.events, (e) => e.id === "e-1-9").role = "conveyance";
-    f.manifest = { ...f.manifest, scenario_hash: scenarioHash(scenarioOf(f.events)) };
+    const events = scriptedEvents();
+    find(events, (e) => e.id === "e-1-9").role = "conveyance";
+    const f = fixture(["a", "b"], events);
     for (const arm of ["a", "b"]) {
         find(f.pairing, (r) => r.arm === arm && r.event === "e-1-9").text_sha256 =
             sha256Hex("else");
@@ -499,11 +521,11 @@ test("a divergence row must precede its turn row", () => {
 
 test("a journal user turn may be delivered only when its pairing row was", () => {
     const f = fixture();
-    const row = find(f.pairing, (r) => r.arm === "a" && r.event === "e-0-9");
+    const row = find(f.pairing, (r) => r.arm === "a" && r.event === "e-0-5");
     row.delivered = false;
     row.label = "abandon";
     row.text_sha256 = sha256Hex("");
-    find(f.journal, (r) => r.kind === "UserTurn" && r.arm === "a" && r.event === "e-0-9").label =
+    find(f.journal, (r) => r.kind === "UserTurn" && r.arm === "a" && r.event === "e-0-5").label =
         "abandon";
     const rates = find(f.journal, (r) => r.kind === "UserSimRates" && r.arm === "a");
     Object.assign(
@@ -516,7 +538,7 @@ test("a journal user turn may be delivered only when its pairing row was", () =>
         ),
     );
     const r = run(f);
-    expect(r.report.journal_pairing_mismatch).toEqual(["a e-0-9"]);
+    expect(r.report.journal_pairing_mismatch).toEqual(["a e-0-5"]);
     expect(r.exit).toBe(1);
 });
 
@@ -609,10 +631,10 @@ test("a divergence row's context must be its turn row's context", () => {
 test("a delivered row's source matches its label", () => {
     const f = fixture();
     for (const arm of ["a", "b"]) {
-        find(f.pairing, (r) => r.arm === arm && r.event === "e-0-0").source = "script";
+        find(f.pairing, (r) => r.arm === arm && r.event === "e-0-1").source = "script";
     }
     const r = run(f);
-    expect(r.report.source_label_mismatch).toEqual(["a e-0-0", "b e-0-0"]);
+    expect(r.report.source_label_mismatch).toEqual(["a e-0-1", "b e-0-1"]);
     expect(r.exit).toBe(1);
 });
 
@@ -624,11 +646,11 @@ test("an interrupt label in the journal carries the host's interruption", () => 
     for (const arm of ["a", "b"]) {
         const row = find(
             g.journal,
-            (r) => r.kind === "UserTurn" && r.arm === arm && r.event === "e-0-5",
+            (r) => r.kind === "UserTurn" && r.arm === arm && r.event === "e-0-9",
         );
         delete row.interrupted;
     }
-    expect(run(g).report.journal_pairing_mismatch).toEqual(["a e-0-5", "b e-0-5"]);
+    expect(run(g).report.journal_pairing_mismatch).toEqual(["a e-0-9", "b e-0-9"]);
 });
 
 test("a sibling arm's live reply before its divergence fails the check", () => {
@@ -660,7 +682,7 @@ test("a task relabel of a scheduled interrupt cannot also report the interruptio
     const f = fixture();
     const row = find(
         f.journal,
-        (r) => r.kind === "UserTurn" && r.arm === "a" && r.event === "e-0-5",
+        (r) => r.kind === "UserTurn" && r.arm === "a" && r.event === "e-0-9",
     );
     row.label = "task";
     row.scheduled = "interrupt";
@@ -675,7 +697,7 @@ test("a task relabel of a scheduled interrupt cannot also report the interruptio
             prereg,
         ),
     );
-    expect(run(f).report.journal_pairing_mismatch).toEqual(["a e-0-5"]);
+    expect(run(f).report.journal_pairing_mismatch).toEqual(["a e-0-9"]);
 });
 
 test("a reference divergence needs the reference turn's row ahead of it", () => {
@@ -699,6 +721,28 @@ test("evidence for an arm the manifest never ran fails the check", () => {
     });
     const r = run(f);
     expect(r.report.unknown_arms).toEqual(["zz"]);
+    expect(r.exit).toBe(1);
+});
+
+test("a sibling turn whose digest left the reference's needs a divergence row ahead of it", () => {
+    const f = fixture();
+    find(f.pairing, (r) => r.arm === "b" && r.event === "e-0-1").digest = "d2";
+    const r = run(f);
+    expect(r.report.missing_divergences).toEqual(["b e-0-1"]);
+    expect(r.exit).toBe(1);
+    const g = fixture();
+    find(g.pairing, (r) => r.arm === "b" && r.event === "e-0-1").digest = "d2";
+    placeBefore(g, "b", "e-0-1", { ...diverged("e-0-1", 1, "d2"), reference_digest: "d" });
+    expect(run(g).report.missing_divergences).toEqual([]);
+});
+
+test("each pairing label is the one the seeded plan assigned", () => {
+    const f = fixture();
+    const a0 = find(f.pairing, (r) => r.arm === "a" && r.event === "e-0-0");
+    const a1 = find(f.pairing, (r) => r.arm === "a" && r.event === "e-0-1");
+    [a0.label, a1.label] = [a1.label, a0.label];
+    const r = run(f);
+    expect(r.report.plan_label_mismatch).toEqual(["a e-0-0", "a e-0-1"]);
     expect(r.exit).toBe(1);
 });
 
@@ -734,35 +778,20 @@ test("a paste turn's record must name the compiled corpus item, whose bytes the 
     const sample = samples[0] as { id: string; content: string };
     const text = `Here's what I'm seeing:\n\`\`\`\n${sample.content}\n\`\`\``;
     const paste = { sample_id: sample.id, bytes: Buffer.byteLength(sample.content) };
-    const f = fixture();
-    const event = find(f.events, (e) => e.id === "e-0-9");
+    const events = scriptedEvents();
+    const event = find(events, (e) => e.id === "e-0-5");
     event.role = "paste";
     event.text = text;
     event.paste = paste;
-    f.manifest = { ...f.manifest, scenario_hash: scenarioHash(scenarioOf(f.events)) };
-    for (const arm of ["a", "b"]) {
-        const row = find(f.pairing, (r) => r.arm === arm && r.event === "e-0-9");
-        row.label = "paste";
-        row.text_sha256 = sha256Hex(text);
-        row.paste = paste;
-        find(
-            f.journal,
-            (r) => r.kind === "UserTurn" && r.arm === arm && r.event === "e-0-9",
-        ).label = "paste";
-        const rates = find(f.journal, (r) => r.kind === "UserSimRates" && r.arm === arm);
-        const turns = f.journal
-            .filter((r) => r.kind === "UserTurn" && r.arm === arm)
-            .map((r) => ({ session: String(r.session), label: r.label as Label }));
-        Object.assign(rates, realisedRates(turns, prereg));
-    }
+    const f = fixture(["a", "b"], events);
     const good = run(f);
     expect(good.report.paste_provenance).toEqual([]);
     expect(good.exit).toBe(0);
-    find(f.pairing, (r) => r.arm === "b" && r.event === "e-0-9").paste = {
+    find(f.pairing, (r) => r.arm === "b" && r.event === "e-0-5").paste = {
         ...paste,
         bytes: paste.bytes + 1,
     };
     const bad = run(f);
-    expect(bad.report.paste_provenance).toEqual(["b e-0-9"]);
+    expect(bad.report.paste_provenance).toEqual(["b e-0-5"]);
     expect(bad.exit).toBe(1);
 });
