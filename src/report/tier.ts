@@ -125,6 +125,7 @@ export function loadGraded(dir: string, prereg: Preregistration): GradedRun {
                 existsSync(t) ? sha256Hex(readFileSync(t, "utf8")) : `missing:${t}`,
             ),
             toolchain: (manifest.preflight?.toolchain ?? []).map((t) => canonicalJson(t)),
+            grader: [...new Set(grades.map((g) => g.grader ?? "unrecorded"))].sort(),
         },
         witnesses: reports === null ? null : [...witnesses.values()],
         pairing,

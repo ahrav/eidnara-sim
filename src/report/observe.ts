@@ -51,6 +51,8 @@ export interface RunIdentity {
     tapes: string[];
     /** `manifest.preflight.toolchain`, one string per probe. */
     toolchain: string[];
+    /** The `grader` digests of the grades the report uses, sorted; one for a run graded by one grader. */
+    grader: string[];
 }
 
 const ALIASES: Record<string, string> = {
@@ -570,6 +572,7 @@ function incomplete(
         "scenario_provenance",
         "tapes",
         "toolchain",
+        "grader",
     ];
     const settings = shared.flatMap((field) => {
         const values = [...new Set(runs.map((g) => JSON.stringify(g.identity[field])))];

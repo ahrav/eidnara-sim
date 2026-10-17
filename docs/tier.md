@@ -26,7 +26,7 @@ or seed differ from what a run with a manifest ran, an unreadable
 (`scenarios-<seed>`, a run) that is a symlink, every run directory being
 checked before any run starts, or an output directory another invocation
 holds (`<dir>/lease.json`). `tier-plan.json` and `tier-result.json` are
-written beside their paths and renamed in. Every exit, a thrown setup
+staged under a random name created exclusively and renamed in. Every exit, a thrown setup
 error or a signal during setup included, releases that lease. SIGINT, SIGTERM, or
 SIGHUP to the command reaches every child it started, SIGKILLs any still
 live a minute later together with its descendants, and starts no further

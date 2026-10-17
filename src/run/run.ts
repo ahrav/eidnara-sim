@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import {
     appendFileSync,
     existsSync,
@@ -98,10 +99,15 @@ export function requirePinnedPath(config: SimConfig): void {
     }
 }
 
-/** Writes `text` beside `path` and renames it in, so a reader sees the whole file or none. */
+/**
+ * Writes `text` beside `path` and renames it in, so a reader sees the whole file or none. The
+ * staging file is created exclusively under a random name, so a link planted at a guessable
+ * path is never written through.
+ */
 export function writeAtomic(path: string, text: string): void {
-    writeFileSync(`${path}.${process.pid}`, text);
-    renameSync(`${path}.${process.pid}`, path);
+    const staged = `${path}.${randomUUID()}.tmp`;
+    writeFileSync(staged, text, { flag: "wx" });
+    renameSync(staged, path);
 }
 
 function gitHead(dir: string): string {

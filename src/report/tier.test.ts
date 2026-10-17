@@ -95,6 +95,7 @@ const identity = (commit = "abc") => ({
     fault_override: null as string | null,
     tapes: [] as string[],
     toolchain: ["bun 1"],
+    grader: ["0".repeat(64)],
 });
 
 function fixture(status = (_: number) => 200, opts: FixtureOptions = {}): GradedRun {
@@ -952,6 +953,15 @@ describe("tier report", () => {
             "runs differ in distortions: , opencode reads wall-clock time",
         );
         expect(renderTier(report)).toContain(`${b.run.dir}: opencode reads wall-clock time`);
+    });
+
+    test("runs graded by different grader implementations keep the campaign incomplete", () => {
+        const a = fixture(undefined, { host: "pi" });
+        const b = fixture(undefined, { host: "opencode" });
+        b.identity.grader = ["1".repeat(64)];
+        expect(tierInput(prereg, [a, b]).incomplete).toContain(
+            `runs differ in grader: ${a.identity.grader.join(",")}, ${"1".repeat(64)}`,
+        );
     });
 
     test("runs made with different host releases keep the campaign incomplete", () => {
