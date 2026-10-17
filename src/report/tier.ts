@@ -10,7 +10,7 @@ import type { Preregistration } from "../prereg/schema";
 import { preregistrationHash } from "../prereg/validate";
 import type { Scenario } from "../scenario/compile";
 import { evaluateTier, falsificationSet, type TierInput } from "../stats/gate";
-import { costPanel } from "./cost";
+import { costPanel, judgeCost } from "./cost";
 import { falsificationPairs } from "./falsify";
 import { intrusiveness } from "./intrusive";
 import { type GradedRun, tierInput } from "./observe";
@@ -67,8 +67,9 @@ export function aaScale(prereg: Preregistration, runs: GradedRun[]): CusumScale 
         const best = new Map<string, number>();
         for (const control of controls) {
             const aa = tierInput(prereg, runs, control, armBase(control));
+            const asym = new Set(aa.asymmetric);
             for (const o of aa.observations.filter((x) => metrics.includes(x.metric))) {
-                for (const x of o.items ?? []) {
+                for (const x of (o.items ?? []).filter((x) => !asym.has(x.item))) {
                     const key = `${control}/${x.item}`;
                     const d = x.treatment - x.control;
                     best.set(key, Math.max(best.get(key) ?? Number.NEGATIVE_INFINITY, d));
@@ -80,6 +81,11 @@ export function aaScale(prereg: Preregistration, runs: GradedRun[]): CusumScale 
     return { harm: sd(diffs("harm")), futility: sd(diffs("probe-P1")) };
 }
 
+function falsificationPairsOf(prereg: Preregistration, g: GradedRun): [string, string][] {
+    const controls = controlArms([g]).sort();
+    return controls.length ? controls.map((c) => [armBase(c), c]) : [["host", prereg.arms.default]];
+}
+
 export function tierReport(
     prereg: Preregistration,
     runs: GradedRun[],
@@ -87,16 +93,16 @@ export function tierReport(
     scale: CusumScale | undefined = aaScale(prereg, runs),
 ): TierReport {
     const arms = [...new Set(runs.flatMap((g) => g.run.arms.map((a) => a.arm)))];
-    const control = controlArms(runs)[0];
-    const pair: [string, string] = control
-        ? [armBase(control), control]
-        : ["host", prereg.arms.default];
     const input = tierInput(prereg, runs);
     input.cusum_sd = scale;
     const falsify: Record<string, { control: number; treatment: number }[]> = {};
+    const pairs = new Map<string, [string, string]>();
     for (const g of runs) {
-        for (const [k, v] of Object.entries(falsificationPairs(g, ...pair)))
-            falsify[k] = [...(falsify[k] ?? []), ...v];
+        for (const pair of falsificationPairsOf(prereg, g)) {
+            pairs.set(pair.join("/"), pair);
+            for (const [k, v] of Object.entries(falsificationPairs(g, ...pair)))
+                falsify[k] = [...(falsify[k] ?? []), ...v];
+        }
     }
     const perArm = runs.flatMap((g) => g.run.arms.map((arm) => ({ g, arm })));
     const dropped = new Set([...input.excluded.map((e) => e.id), ...input.asymmetric]);
@@ -112,7 +118,7 @@ export function tierReport(
     return {
         tier: prereg.tier,
         treatment: prereg.arms.default,
-        falsification_pair: pair,
+        falsification_pairs: [...pairs.values()],
         observed,
         runs: runs.map((g) => g.run.dir),
         arms,
@@ -130,6 +136,7 @@ export function tierReport(
             run: g.run.dir,
         })),
         cost: perArm.map(({ g, arm }) => costPanel(g.run, arm, g.grades)),
+        judge: runs.map((g) => ({ run: g.run.dir, cost: judgeCost(g.run) })),
         falsification: falsificationSet(prereg, falsify),
         aa: runs.flatMap((g) => {
             const path = join(g.run.dir, "aa.json");

@@ -220,6 +220,7 @@ function incomplete(
     observations: Observation[],
     control: string,
     treatment: string,
+    dropped: ReadonlySet<string>,
 ): string[] {
     const present = new Set(runs.map(runKey));
     const missing = p.hosts.flatMap((host) =>
@@ -227,25 +228,32 @@ function incomplete(
             present.has(`${host}/${seed}`) ? [] : [`missing run ${host}/${seed}`],
         ),
     );
+    const unfinished = runs.flatMap((g) => {
+        const open = [control, treatment].filter(
+            (a) => !g.run.arms.find((x) => x.arm === a)?.journal.some((e) => e.kind === "EndArm"),
+        );
+        return open.length ? [`run ${runKey(g)}: ${open.join(", ")} without EndArm`] : [];
+    });
     const n = p.stopping_rule.paired_items_per_probe_type;
-    const none = new Set<string>();
     const short = p.families.flatMap((f) => {
         if (!/^probe-P\d+$/.test(f.id)) return [];
         const metric = f.metrics[0] as string;
         const pairs =
             f.analysis_unit === "item"
-                ? (observations.find((o) => o.metric === metric)?.items?.length ?? 0)
+                ? (observations.find((o) => o.metric === metric)?.items ?? []).filter(
+                      (x) => !dropped.has(x.item),
+                  ).length
                 : runs.reduce((s, g) => {
                       const [c, t] = [control, treatment].map((a) =>
                           g.run.arms.find((x) => x.arm === a),
                       );
                       return !c || !t
                           ? s
-                          : s + values(g, t.arm, metric, { other: c, dropped: none }).size;
+                          : s + values(g, t.arm, metric, { other: c, dropped }).size;
                   }, 0);
         return pairs < n ? [`${f.id}: ${pairs} of ${n} paired items`] : [];
     });
-    return [...missing, ...short];
+    return [...missing, ...unfinished, ...short];
 }
 
 function ordered(p: Preregistration, runs: GradedRun[]): GradedRun[] {
@@ -265,6 +273,12 @@ export function tierInput(
     control = "host",
 ): TierInput {
     const runs = ordered(p, given);
+    const seen = new Set<string>();
+    for (const g of runs) {
+        const key = runKey(g);
+        if (seen.has(key)) throw new Error(`two runs for ${key}: ${g.run.dir} repeats one`);
+        seen.add(key);
+    }
     const asym = asymmetric(runs, control, treatment);
     const dropped = new Set(asym);
     const observations: Observation[] = p.families.flatMap((f) =>
@@ -298,7 +312,7 @@ export function tierInput(
         observations,
         excluded,
         asymmetric: asym,
-        incomplete: incomplete(p, runs, observations, control, treatment),
+        incomplete: incomplete(p, runs, observations, control, treatment, dropped),
         journal_seq_at_eval: Object.fromEntries(
             runs.map((g) => [
                 runId(g),

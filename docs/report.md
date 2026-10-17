@@ -96,30 +96,34 @@ excluded, and probe items of a session where a fault landed in one arm
 only form the fault-asymmetric stratum; a fault landed where the
 scheduler recorded `FaultObserved` or the proxy stamped a call's
 `fault_ref`, which is how provider faults show. The input's `incomplete`
-list names each pre-registered host and seed without a run and each probe
-type, P13 and P14 included, with fewer paired items than
-`stopping_rule.paired_items_per_probe_type`; the tier passes only with an
-empty list. The input's `journal_seq_at_eval` records, per run id, the
+list names each pre-registered host and seed without a run, each run whose
+`host` or treatment arm has no `EndArm` entry, and each probe type, P13 and
+P14 included, with fewer paired items outside the excluded and
+fault-asymmetric sets than `stopping_rule.paired_items_per_probe_type`;
+the tier passes only with an empty list. Two runs with one host and seed
+are refused. The input's `journal_seq_at_eval` records, per run id, the
 last journal `seq` the observations read. `tierInput` orders the runs by
 the pre-registration's hosts then seeds, so items tied in issue order
 across runs keep one order whatever order the directories arrive in.
 `aaScale` takes the CUSUM rules' scale from the runs' A/A controls
-(`<arm>~<tag>`), pooled over every control: the standard deviation of
-their paired item differences, over the per-item maximum across the harm
-metrics, as the harm statistic is built, and over the P1 items.
+(`<arm>~<tag>`), pooled over every control and leaving out the pairs'
+fault-asymmetric items: the standard deviation of their paired item
+differences, over the per-item maximum across the harm metrics, as the
+harm statistic is built, and over the P1 items.
 `scripts/report.ts` gives each rule the scale of the tier its `sd_source`
 names, so L's rules take M's A/A pairs when the M runs are in the same
 invocation.
 
-The falsification set (`src/report/falsify.ts`) pairs the A/A control with
-its arm, or else the treatment with `host`: P1-control pass per item, the
+The falsification set (`src/report/falsify.ts`) pairs, per run, each A/A
+control with its arm, or else the treatment with `host`, and pools the
+pairs: P1-control pass per item, the
 gateway 4xx share per session with no scheduled fault, the pushback share
 per session before the treatment's divergence index, and the wall time the
 harness spent from the preceding scripted event's completion (its `Event`
 entry) to each scripted clock jump. On an A/B pair the daemon arm's
 background work holds the clock, so the idle-gap check measures that work
 there; the set is a zero-effect check on an A/A pair, and the report says
-which pair it used.
+which pairs it used.
 
 A run recorded before the sampler took the `heap` field has no heap
 samples, so its `daemon_heap_growth_bytes_per_session` is `inconclusive`
@@ -133,7 +137,8 @@ metric's treatment rate over the pairs the verdict kept), the campaign's
 open requirements, the harm
 panel, oracle activations with the uncovered list, recovery, soak for the
 daemon arms with the longest sampling gap, intrusiveness with each arm's latency delta against its run's `host`,
-cost, the falsification set, the A/A reports (`<run>/aa.json`, or a note
+cost with the run's judge calls priced once (`judgeCost`), the
+falsification set with the pairs it used, the A/A reports (`<run>/aa.json`, or a note
 that control arms ran without one), the claim boundary, and the
 pre-registration. The intrusiveness table takes each arm's latency delta
 against the `host` arm of the same run. It refuses a report whose own text, outside the

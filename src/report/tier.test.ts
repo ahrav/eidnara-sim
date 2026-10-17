@@ -64,6 +64,13 @@ function armLogs(
             response_text: "done",
         } as CallRecord);
     }
+    journal.push({
+        kind: "EndArm",
+        arm: name,
+        scenario_ms: SESSIONS * 10_000,
+        seq: seq++,
+        wall_ms: wall,
+    } as Entry);
     return { arm: name, calls, journal, pluginLog: [], daemonLog: [], resources: [], tools: [] };
 }
 
@@ -515,6 +522,96 @@ describe("tier report", () => {
         expect(observation([g], "P13.fold_fidelity_score")?.runs).toEqual([
             { run: "S-pi-101", control: 50, treatment: 50 },
         ]);
+    });
+
+    test("a run whose analysed arm has no EndArm leaves the campaign incomplete", () => {
+        const g = fixture();
+        const complete = tierInput(prereg, [g]).incomplete ?? [];
+        expect(complete.filter((x) => x.includes("EndArm"))).toEqual([]);
+        const host = arm(g, "host");
+        host.journal = host.journal.filter((e) => e.kind !== "EndArm");
+        expect(tierInput(prereg, [g]).incomplete).toContain("run pi/101: host without EndArm");
+    });
+
+    test("the fixed-N count is the population the verdict analyses", () => {
+        const g = asymmetricFixture((host) => {
+            (host.calls[0] as CallRecord).fault_ref = "f1";
+        });
+        expect(tierInput(prereg, [g]).incomplete).toContain("probe-P8: 9 of 24 paired items");
+    });
+
+    test("the A/A scale leaves fault-asymmetric control items out", () => {
+        const clean = aaScale(prereg, [fixture()]);
+        const g = fixture();
+        g.scenario.probes.push({
+            id: "q-p1-0",
+            type: "P1",
+            fact: "f-p1",
+            project: "p",
+            session: "s-0",
+            text: "x",
+            check: {},
+            event: "e-0",
+        } as unknown as Scenario["probes"][number]);
+        g.scenario.faults.push({
+            id: "f1",
+            type: "provider_500",
+            strategy: "single",
+            trigger: { kind: "user_turn", session: "s-0", n: 1 },
+            params: {},
+            seam: { layer: "proxy-sink", legal_outcomes: [] },
+        } as unknown as Scenario["faults"][number]);
+        (arm(g, "host~aa").calls[0] as CallRecord).fault_ref = "f1";
+        const without = fixture();
+        without.grades = without.grades.filter((r) => r.item !== "q-p1-0");
+        const scaled = aaScale(prereg, [g]);
+        expect(scaled?.futility).not.toEqual(clean?.futility);
+        expect(scaled).toEqual(aaScale(prereg, [without]));
+    });
+
+    test("two runs with one host and seed are refused", () => {
+        expect(() => tierInput(prereg, [fixture(), fixture()])).toThrow(/pi\/101/);
+    });
+
+    test("each run's own A/A control feeds the falsification set", () => {
+        const a = fixture();
+        const b = fixture(undefined, { seed: 102 });
+        const control = arm(b, "host~aa");
+        control.arm = "eidnara~aa";
+        for (const r of b.grades) if (r.arm === "host~aa") r.arm = "eidnara~aa";
+        const report = tierReport(prereg, [a, b], boundary);
+        const facts = report.falsification.find(
+            (z) => z.check === "in_session_repo_readable_fact_pass",
+        );
+        expect(facts?.n).toBe(24);
+    });
+
+    test("the report prices the grader's judge calls once per run", () => {
+        const g = fixture();
+        writeFileSync(
+            join(g.run.dir, "judge-calls.jsonl"),
+            `${JSON.stringify({
+                component: "judge",
+                input_tokens: 1_000_000,
+                output_tokens: 0,
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
+            })}\n`,
+        );
+        const report = tierReport(prereg, [g], boundary);
+        expect(report.judge.map((j) => [j.run, j.cost?.usd])).toEqual([[g.run.dir, 5]]);
+        expect(renderTier(report)).toMatch(/\| judge \| judge \| 1 \| 1000000 \|/);
+    });
+
+    test("the report script refuses --out without a destination", () => {
+        const dir = mkdtempSync(join(tmpdir(), "sim-report-"));
+        writeFileSync(join(dir, "manifest.json"), JSON.stringify({ tier: "S" }));
+        const r = Bun.spawnSync(["bun", "scripts/report.ts", dir, "--out"], {
+            cwd: join(import.meta.dir, "../.."),
+            stderr: "pipe",
+            stdout: "pipe",
+        });
+        expect([r.exitCode, r.stderr.toString().includes("usage:")]).toEqual([2, true]);
     });
 
     test("a planted 4xx difference between the A/A arms fails that falsification check", () => {
