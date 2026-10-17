@@ -76,8 +76,8 @@ records a `prereg_sha256` other than the hash of the tier's current
 pre-registration, or whose `scenario.json` hashes to other than the
 manifest's `scenario_hash`, so a verdict carries the registration and the
 scenario its runs were made under; a run started with `--faults` takes the
-manifest's `fault_override` as its fault schedule, and the last line of its `faults.jsonl` is the proxy's fault
-witnesses. `grades.jsonl` gives the
+manifest's `fault_override` as its fault schedule, and its `faults.jsonl` lines, one per attempt, merge into the
+proxy's fault witnesses, a fault once `fired` staying fired. `grades.jsonl` gives the
 run its latest grade per item and arm, and every P7 judgment (latest per
 item, arm, and `inputs`), so a P7 pair takes the host grade from the same
 judgment as the treatment's; a judgment whose `gate_eligible` is false
@@ -107,9 +107,10 @@ scheduler recorded `FaultObserved` or the proxy stamped a call's
 list names each pre-registered host and seed without a run, each run with
 a pre-registered arm (`arms.run`) that has no `EndArm` entry, each run whose manifest
 `events` stops short of its scenario's events, each manifest setting
-(`eidnara_commit`, `models`, `context_limit`) the runs disagree on, each
-registered A/A pair with fewer control arms that reached `EndArm` across
-the runs than `aa_controls.repeats`, each run-unit gate metric a run has no value for, each probe type,
+(`eidnara_commit`, `models`, `context_limit`, and the preflight's clock
+`distortions`) the runs disagree on, each registered A/A pair whose count
+of control arms that reached `EndArm` across the runs differs from
+`aa_controls.repeats`, each run-unit gate metric a run has no value for, each probe type,
 P13 and P14 included, with fewer paired items outside the excluded and
 fault-asymmetric sets than `stopping_rule.paired_items_per_probe_type`,
 and each CUSUM rule without its A/A scale; the tier passes only with an
@@ -142,7 +143,8 @@ A run recorded before the sampler took the `heap` field has no heap
 samples, so its `daemon_heap_growth_bytes_per_session` is `inconclusive`
 and the resources gate fails until the run is repeated.
 
-`renderTier` writes, in order: the accuracy table by probe type in the v1
+`renderTier` writes, in order: the runs, arms, and each run's recorded
+clock distortions, the accuracy table by probe type in the v1
 sweep report's layout, the gate verdict with every metric's n, difference,
 interval, p, detectable difference, resolution ratio, verdict, and gate
 result (a bound family shows its observed per-run values, or a binary

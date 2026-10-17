@@ -85,6 +85,7 @@ const identity = (commit = "abc") => ({
     models: ["m"],
     context_limit: 1,
     events: 36,
+    distortions: [] as string[],
 });
 
 function fixture(status = (_: number) => 200, opts: FixtureOptions = {}): GradedRun {
@@ -838,6 +839,48 @@ describe("tier report", () => {
         });
         const text = renderTier(tierReport(prereg, [g], boundary));
         expect(text).toContain(`| ${g.run.dir} | eidnara | TOTAL | 13 | 12007 | 1203 | 0 | 0 |`);
+    });
+
+    test("more A/A controls than registered repeats keep the campaign incomplete", () => {
+        const g = fixture();
+        g.run.arms.push(armLogs("host~bb", () => 0));
+        expect(tierInput(prereg, [g]).incomplete).toContain("A/A host: 2 of 1 control runs");
+    });
+
+    test("fault witnesses merge across resumed attempts, a fired fault staying fired", () => {
+        const dir = mkdtempSync(join(tmpdir(), "sim-report-"));
+        const body = { manifest: { seed: 101 }, events: [], probes: [], faults: [] };
+        const scenario_hash = sha256Hex(canonicalJson(body));
+        writeFileSync(
+            join(dir, "manifest.json"),
+            JSON.stringify({
+                tier: "S",
+                seed: 101,
+                host: "pi",
+                order: [],
+                base_wall_ms: 0,
+                prereg_sha256: preregistrationHash(prereg),
+                scenario_hash,
+                preflight: { distortions: ["x reads wall-clock time"] },
+            }),
+        );
+        writeFileSync(join(dir, "scenario.json"), canonicalJson({ ...body, scenario_hash }));
+        const line = (status: string) => JSON.stringify([{ fault: "f-1", status }]);
+        writeFileSync(join(dir, "faults.jsonl"), `${line("fired")}\n${line("untriggered")}\n`);
+        const loaded = loadGraded(dir, prereg);
+        expect(loaded.witnesses.map((w) => [w.fault, w.status])).toEqual([["f-1", "fired"]]);
+        expect(loaded.identity.distortions).toEqual(["x reads wall-clock time"]);
+    });
+
+    test("each run's clock distortions are rendered and must agree across the campaign", () => {
+        const a = fixture(undefined, { host: "pi" });
+        const b = fixture(undefined, { host: "opencode" });
+        b.identity.distortions = ["opencode reads wall-clock time"];
+        const report = tierReport(prereg, [a, b], boundary);
+        expect(report.verdict.pass.incomplete).toContain(
+            "runs differ in distortions: , opencode reads wall-clock time",
+        );
+        expect(renderTier(report)).toContain(`${b.run.dir}: opencode reads wall-clock time`);
     });
 
     test("a planted 4xx difference between the A/A arms fails that falsification check", () => {

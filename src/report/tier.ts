@@ -25,7 +25,8 @@ export function loadGraded(dir: string, prereg: Preregistration): GradedRun {
         prereg_sha256: string;
         scenario_hash: string;
         fault_override: Scenario["faults"] | null;
-    } & RunIdentity;
+        preflight?: { distortions?: string[] };
+    } & Omit<RunIdentity, "distortions">;
     const current = preregistrationHash(prereg);
     if (manifest.prereg_sha256 !== current) {
         throw new Error(
@@ -48,18 +49,26 @@ export function loadGraded(dir: string, prereg: Preregistration): GradedRun {
         if ((judged.get(key)?.version ?? 0) < g.version) judged.set(key, g);
     }
     const { eidnara_commit, models, context_limit, events } = manifest;
+    const witnesses = new Map<string, WitnessReport>();
     const faults = join(dir, "faults.jsonl");
-    const witnesses = existsSync(faults)
-        ? ((readJournal(faults) as unknown as WitnessReport[][]).at(-1) ?? [])
-        : [];
+    const reports = existsSync(faults) ? (readJournal(faults) as unknown as WitnessReport[][]) : [];
+    for (const w of reports.flat()) {
+        if (witnesses.get(w.fault)?.status !== "fired") witnesses.set(w.fault, w);
+    }
     return {
         run: loadRun(dir, prereg),
         scenario: { ...scenario, faults: manifest.fault_override ?? scenario.faults },
         grades: log.latest(),
         judged: [...judged.values()],
         host: manifest.host,
-        identity: { eidnara_commit, models, context_limit, events },
-        witnesses,
+        identity: {
+            eidnara_commit,
+            models,
+            context_limit,
+            events,
+            distortions: manifest.preflight?.distortions ?? [],
+        },
+        witnesses: [...witnesses.values()],
     };
 }
 
@@ -145,6 +154,7 @@ export function tierReport(
         recoveries: runs
             .filter((g) => !excludedFromFaultMetrics(g.witnesses))
             .flatMap((g) => recoveries(g.run).map((r) => ({ ...r, run: g.run.dir }))),
+        distortions: runs.map((g) => ({ run: g.run.dir, distortions: g.identity.distortions })),
         missed_faults: runs.flatMap((g) => {
             const faults = g.witnesses
                 .filter((w) => w.status === "untriggered")

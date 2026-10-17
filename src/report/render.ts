@@ -19,6 +19,7 @@ export interface TierReport {
     oracles: Record<string, OracleCount>;
     recoveries: (Recovery & { run: string })[];
     missed_faults: { run: string; faults: string[] }[];
+    distortions: { run: string; distortions: string[] }[];
     soak: (SoakVerdict & { run: string })[];
     intrusiveness: (Intrusiveness & { run: string })[];
     cost: (CostPanel & { run: string })[];
@@ -321,6 +322,15 @@ export function renderTier(r: TierReport): string {
         `# Tier ${r.tier} report`,
         "",
         `Runs: ${r.runs.join(", ")}. Arms: ${r.arms.join(", ")}.`,
+        "",
+        `Clock distortions: ${
+            r.distortions.some((d) => d.distortions.length)
+                ? r.distortions
+                      .filter((d) => d.distortions.length)
+                      .map((d) => `${d.run}: ${d.distortions.join("; ")}`)
+                      .join(". ")
+                : "none recorded"
+        }.`,
         "",
         ...accuracy(r),
         ...gates(r),

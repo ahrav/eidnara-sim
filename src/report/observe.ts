@@ -29,6 +29,8 @@ export interface RunIdentity {
     models: string[];
     context_limit: number;
     events: number;
+    /** `manifest.preflight.distortions`: the clock limits the claim boundary says the report names. */
+    distortions: string[];
 }
 
 const ALIASES: Record<string, string> = {
@@ -291,9 +293,14 @@ function incomplete(
             0,
         );
         const want = p.aa_controls?.repeats ?? 0;
-        return have < want ? [`A/A ${a}: ${have} of ${want} control runs`] : [];
+        return have === want ? [] : [`A/A ${a}: ${have} of ${want} control runs`];
     });
-    const shared: (keyof RunIdentity)[] = ["eidnara_commit", "models", "context_limit"];
+    const shared: (keyof RunIdentity)[] = [
+        "eidnara_commit",
+        "models",
+        "context_limit",
+        "distortions",
+    ];
     const settings = shared.flatMap((field) => {
         const values = [...new Set(runs.map((g) => JSON.stringify(g.identity[field])))];
         return values.length > 1
