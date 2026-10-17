@@ -123,7 +123,10 @@ function fixture(status = (_: number) => 200, opts: FixtureOptions = {}): Graded
         join(dir, "aa.json"),
         JSON.stringify([{ arm: "host", control: "host~aa", disagreement_rate: 0 }]),
     );
-    writeFileSync(join(dir, "grade-summary.json"), JSON.stringify({ judge_errors: 0 }));
+    writeFileSync(
+        join(dir, "grade-summary.json"),
+        JSON.stringify({ judge_errors: 0, journal_seq: 0 }),
+    );
     const pairing = arms.flatMap((a) =>
         Array.from({ length: SESSIONS }, (_, s) =>
             [0, 1, 2].map((index) => ({
@@ -212,7 +215,16 @@ function fixture(status = (_: number) => 200, opts: FixtureOptions = {}): Graded
         events: [],
     } as unknown as Scenario;
     return {
-        run: { dir, tier: "S", base_wall_ms: 0, prereg, kinds, arms, price: PRICE_TABLE },
+        run: {
+            dir,
+            tier: "S",
+            base_wall_ms: 0,
+            prereg,
+            kinds,
+            arms,
+            price: PRICE_TABLE,
+            journal_seq: 0,
+        } as GradedRun["run"],
         scenario,
         grades,
         host: opts.host ?? "pi",
@@ -1402,6 +1414,47 @@ describe("tier report", () => {
             if (r.kind === "turn" && r.arm === "eidnara") r.tape_key = "k";
         expect(observation([g], "user_corrections_referencing_injected_text")?.runs).toEqual([]);
         expect(observation([g], "reverted_memory_edits")?.runs).toEqual([]);
+    });
+
+    test("a host control's coverage leaves P7 out, which the judge grades for memory arms alone", () => {
+        const g = fixture();
+        probe(g, "q-7", "P7");
+        expect(tierInput(prereg, [g]).incomplete?.filter((x) => x.includes("P7 probes"))).toEqual(
+            [],
+        );
+    });
+
+    test("call capture covers a turn only with a scannable agent response", () => {
+        const g = fixture();
+        const first = arm(g, "eidnara").calls[0] as CallRecord;
+        (first as { response_text?: string }).response_text = undefined;
+        expect(observation([g], "internal_string_hits")?.runs).toEqual([]);
+    });
+
+    test("a P7 item pairs the two sides of one judgment, the newest complete one", () => {
+        const g = fixture();
+        probe(g, "q-7", "P7");
+        g.judged.push(judgment("q-7", "host", false, ["e", "h"]));
+        g.judged.push(judgment("q-7", "eidnara", false, ["e", "h"]));
+        g.judged.push({ ...judgment("q-7", "eidnara", true, ["e2", "h2"]), version: 2 });
+        expect(observation([g], "P7.pass")?.items?.map((x) => [x.control, x.treatment])).toEqual([
+            [0, 0],
+        ]);
+    });
+
+    test("the report script refuses an --out inside the eidnara checkout", () => {
+        const dir = mkdtempSync(join(tmpdir(), "sim-report-"));
+        writeFileSync(join(dir, "manifest.json"), JSON.stringify({ tier: "S" }));
+        const checkout = mkdtempSync(join(tmpdir(), "sim-checkout-"));
+        const config = join(dir, "sim.config.json");
+        writeFileSync(config, JSON.stringify({ eidnara_checkout: checkout }));
+        const r = Bun.spawnSync(["bun", "scripts/report.ts", dir, "--out", join(checkout, "out")], {
+            cwd: join(import.meta.dir, "../.."),
+            env: { ...process.env, SIM_CONFIG: config },
+            stderr: "pipe",
+            stdout: "pipe",
+        });
+        expect([r.exitCode, r.stderr.toString().includes("eidnara checkout")]).toEqual([2, true]);
     });
 
     test("a planted 4xx difference between the A/A arms fails that falsification check", () => {

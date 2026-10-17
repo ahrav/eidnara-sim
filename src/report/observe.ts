@@ -92,7 +92,11 @@ export const controlArmsOf = (g: GradedRun) =>
 
 /** Whether every turn that ended `ok` has a call record, the capture the F7 scan reads. */
 function callsCoverTurns(arm: ArmLogs): boolean {
-    const called = new Set(arm.calls.map((c) => c.turn));
+    const called = new Set(
+        arm.calls
+            .filter((c) => c.component === "agent" && typeof c.response_text === "string")
+            .map((c) => c.turn),
+    );
     return arm.journal
         .filter((e) => e.kind === "EndTurn" && e.outcome === "ok")
         .every((e) => called.has(String(e.event)));
@@ -249,10 +253,14 @@ function itemPairs(
             );
         const value = (r: GradeRecord) => Number(r.metrics[source] === true);
         const theirs = records(treatment);
-        const mine = records(control).filter(
-            (c) =>
-                !p7 || theirs.some((t) => t.item === c.item && judgmentKey(t) === judgmentKey(c)),
-        );
+        const paired = (a: GradeRecord, b: GradeRecord) =>
+            a.item === b.item && judgmentKey(a) === judgmentKey(b);
+        const matched = p7
+            ? theirs
+                  .filter((t) => records(control).some((c) => paired(c, t)))
+                  .sort((x, y) => x.version - y.version)
+            : theirs;
+        const mine = records(control).filter((c) => !p7 || matched.some((t) => paired(c, t)));
         const byItem = (rs: GradeRecord[]) => new Map(rs.map((r) => [r.item, value(r)] as const));
         const fact = new Map(g.scenario.probes.map((p) => [p.id, p.fact ?? p.id]));
         const issue = new Map(
@@ -260,7 +268,7 @@ function itemPairs(
         );
         return pairByItem(
             byItem(mine),
-            byItem(theirs),
+            byItem(matched),
             (item) => `${seed}/${fact.get(item) ?? item}`,
             (item) => issue.get(item) ?? 0,
         ).map((x) => ({ ...x, item: `${key}/${x.item}` }));
@@ -471,7 +479,7 @@ function incomplete(
     const coverage = runs.flatMap((g) => {
         const byType = new Map<string, string[]>();
         for (const pr of g.scenario.probes) {
-            if (/^P([1-9]|1[0-2])$/.test(pr.type))
+            if (/^P([1-9]|1[0-2])$/.test(pr.type) && pr.type !== "P7")
                 byType.set(pr.type, [...(byType.get(pr.type) ?? []), pr.id]);
         }
         return controlArmsOf(g).flatMap((c) => {
