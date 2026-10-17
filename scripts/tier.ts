@@ -226,16 +226,14 @@ if (paired.length < repeats)
         `${repeats} A/A repeats are registered, and these hosts and seeds plan ${paired.length} runs`,
     );
 const plan: TierJob[] = [...paired, ...profileJobs(prereg, scenarios, hosts, out, turnMs)];
-const modelConflicts = arg("models")
-    ? plan.flatMap((job) => {
-          const path = join(job.dir, "manifest.json");
-          if (!existsSync(path)) return [];
-          const ran = JSON.parse(readFileSync(path, "utf8")).models as string[];
-          return JSON.stringify(ran) === JSON.stringify(models)
-              ? []
-              : [`${job.dir} ran on ${ran.join(",")}, --models says ${models.join(",")}`];
-      })
-    : [];
+const modelConflicts = plan.flatMap((job) => {
+    const path = join(job.dir, "manifest.json");
+    if (!existsSync(path)) return [];
+    const ran = JSON.parse(readFileSync(path, "utf8")).models as string[];
+    return JSON.stringify(ran) === JSON.stringify(models)
+        ? []
+        : [`${job.dir} ran on ${ran.join(",")}; this invocation's models are ${models.join(",")}`];
+});
 if (modelConflicts.length > 0) refuse(modelConflicts.join("\n"));
 const conflicts = planConflicts(plan);
 if (conflicts.length > 0) {

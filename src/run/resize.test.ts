@@ -277,6 +277,39 @@ describe("counterfactual deletion", () => {
         after.close();
     });
 
+    test("the chosen ids reach the caller before the delete, and planned ids repeat it without matching", async () => {
+        const path = store([
+            [1, "/p/a", "Codename is ember_magpie."],
+            [2, "/p/a", "Prefer tabs."],
+        ]);
+        const planned: number[][] = [];
+        const first = await deleteFactNotes(
+            path,
+            "codename is ember_magpie",
+            [],
+            undefined,
+            undefined,
+            {
+                onPlanned: (ids) => planned.push([...ids]),
+            },
+        );
+        expect(planned).toEqual([[1]]);
+        expect(first).toEqual({ deleted: [1], remaining: 0 });
+        const again = await deleteFactNotes(
+            path,
+            "codename is ember_magpie",
+            [],
+            undefined,
+            undefined,
+            {
+                planned: [1],
+                onPlanned: (ids) => planned.push([...ids]),
+            },
+        );
+        expect(again).toEqual({ deleted: [1], remaining: 0 });
+        expect(planned).toEqual([[1]]);
+    });
+
     test("a store path that is a symlink is refused before any read or delete", async () => {
         const real = store([[1, "/p/a", "Codename is ember_magpie."]]);
         const moved = `${real}.real`;

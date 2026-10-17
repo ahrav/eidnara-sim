@@ -654,19 +654,31 @@ async function runArms(
                 if (armBase(arm) !== "eidnara-cf") return;
                 for (const c of deletions.get(e.id) ?? []) {
                     if (done(c.probe)) continue;
-                    const result = await driver.deleteFact(c.statement, othersOf(c.fact));
-                    for (const id of "deleted" in result ? result.deleted : []) {
-                        journal.append({
-                            kind: "DeleteMemoryObject",
-                            arm,
-                            scenario_ms: now(),
-                            object_id: id,
-                            object_kind: "note",
-                            target_item_id: c.probe,
-                            fact: c.fact,
-                            event: e.id,
-                        });
-                    }
+                    const planned = journal.entries
+                        .filter(
+                            (x) =>
+                                x.kind === "DeleteMemoryObject" &&
+                                x.arm === arm &&
+                                x.target_item_id === c.probe,
+                        )
+                        .map((x) => Number(x.object_id));
+                    const result = await driver.deleteFact(c.statement, othersOf(c.fact), {
+                        ...(planned.length ? { planned } : {}),
+                        onPlanned: (ids) => {
+                            for (const id of ids) {
+                                journal.append({
+                                    kind: "DeleteMemoryObject",
+                                    arm,
+                                    scenario_ms: now(),
+                                    object_id: id,
+                                    object_kind: "note",
+                                    target_item_id: c.probe,
+                                    fact: c.fact,
+                                    event: e.id,
+                                });
+                            }
+                        },
+                    });
                     log({ probe: c.probe, fact: c.fact, ...result });
                 }
             },

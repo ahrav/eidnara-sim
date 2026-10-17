@@ -20,7 +20,13 @@ import {
 import type { FaultEpisode } from "../scenario/faults";
 import { armBase, DaemonStack, eidnaraOn, type HostContext, makeHost, type SimHost } from "./arms";
 import { SnapshotRecorder } from "./snapshot";
-import { checkStore, type Deletion, deleteFactNotes, memoryNotes } from "./storecheck";
+import {
+    checkStore,
+    type Deletion,
+    type DeletionPlan,
+    deleteFactNotes,
+    memoryNotes,
+} from "./storecheck";
 
 interface ArmState {
     model: number;
@@ -373,6 +379,7 @@ export class HostDriver implements ArmDriver {
     async deleteFact(
         statement: string,
         others: readonly string[] = [],
+        plan: DeletionPlan = {},
     ): Promise<Deletion | { skipped: string }> {
         if (!this.daemon) return { skipped: "arm runs no daemon" };
         if (!existsSync(this.storeDb)) return { skipped: "no store yet" };
@@ -388,6 +395,7 @@ export class HostDriver implements ArmDriver {
                     });
                 },
                 this.dataDir,
+                plan,
             );
         } catch (caught) {
             return { skipped: `deletion failed: ${String(caught).slice(0, 300)}` };
