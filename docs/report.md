@@ -101,7 +101,7 @@ treatment arm (`arms.default`, `eidnara`) against `host`:
 | Family metrics | Observation |
 |---|---|
 | `<type>.pass`, `<type>.harm` | Per probe item, both arms' grade metric joined by item id across runs (`<host>/<seed>/<item>`), clustered by `<seed>/<ledger fact>`, in issue order; `P8` and `P9` cross-session rates read `P8.pass` and `P9.pass` |
-| `failed_turns`, `hangs` | Per run (`<tier>-<host>-<seed>`), `EndTurn` outcomes other than `ok` plus the turns a kill interrupted (`Event` outcome `failed(interrupted)`, which a resume records without an `EndTurn`), and F4 activations |
+| `failed_turns`, `hangs` | Per run (`<tier>-<host>-<seed>`), the distinct turns with an `EndTurn` outcome other than `ok` or an `Event` outcome `failed(interrupted)` (which a resume records for a turn without an `EndTurn`), and F4 activations |
 | `turn_latency_p50_delta_ms`, `turn_latency_p95_delta_ms` | Per run, the treatment minus control percentile of turn wall time; a control arm without turn latencies leaves the run out |
 | `daemon_rss_growth_bytes_per_session`, `daemon_heap_growth_bytes_per_session`, `store_growth_bytes_per_session` | Per run, the treatment minus control soak slope, with a `host` control that runs no daemon counted as zero; the heap is the daemon's anonymous resident memory (`RssAnon`), which the sampler records as `heap` |
 | `internal_string_hits`, `user_corrections_referencing_injected_text` | Per run, the panel's counts; a run without `calls.jsonl` has no hit count, and a daemon arm without `memory.json`, or whose notes could not be read, has no corrections count; either leaves the observation |
@@ -120,7 +120,8 @@ a pre-registered arm (`arms.run`) that has no `EndArm` entry, each run whose man
 (`eidnara_commit`, `models`, `context_limit`, the preflight's clock
 `distortions`, its host versions, and the scenario's generator, random
 schema, and corpus manifest) the runs disagree on, each run with
-scheduled proxy faults and no `faults.jsonl`, each run with grades for
+scheduled proxy faults and no complete `faults.jsonl` line, each run made
+with a fault override, each run with grades for
 items outside its scenario's probes (which pair nothing), each run without
 `pairing.jsonl` or whose records fail the checks of
 `scripts/pairing-check.ts` (`pairingFailures`: a pre-divergence reply
@@ -130,7 +131,8 @@ its band, each L run whose arms' `StartArm`/`EndArm` spans never overlap
 while `load_stress` registers concurrent arms, each registered A/A pair whose count
 of control arms that reached `EndArm` across the runs differs from
 `aa_controls.repeats`, each run-unit gate metric a run has no value for, each probe type,
-P13 and P14 included, with fewer paired items outside the excluded and
+P13 and P14 included, and each other item-unit family metric (the harm
+metrics) with fewer paired items outside the excluded and
 fault-asymmetric sets than `stopping_rule.paired_items_per_probe_type`,
 and each CUSUM rule without its A/A scale; the tier passes only with an
 empty list. Two runs with one host and seed, or a run outside the
@@ -175,7 +177,8 @@ panel, oracle activations with the uncovered list, recovery (a run with
 an `untriggered` witness is named and left out of it, SIM-P32), soak for the
 daemon arms per run with the longest sampling gap, intrusiveness with each arm's latency delta against its run's `host`,
 cost with the run's judge calls priced once (`judgeCost`), the
-falsification set with the pairs it used, the A/A reports (`<run>/aa.json`, each with its `run`, or a note
+falsification set with the pairs it used, the A/A reports (`<run>/aa.json`, each with its `run` and marked stale
+when `grades.jsonl` is newer, or a note
 that control arms ran without one), the claim boundary, and the
 pre-registration. The soak, intrusiveness, and cost tables name each
 row's run, and the intrusiveness table takes each arm's latency delta

@@ -315,6 +315,17 @@ function panels(r: TierReport): string[] {
         ),
         "## A/A controls",
         "",
+        ...(r.aa.some((a) => (a as { stale?: boolean }).stale)
+            ? [
+                  `Stale: ${r.aa
+                      .filter((a) => (a as { stale?: boolean }).stale)
+                      .map((a) => String((a as { run?: string }).run))
+                      .join(
+                          ", ",
+                      )} have an aa.json older than grades.jsonl; rerun scripts/aa-report.ts.`,
+                  "",
+              ]
+            : []),
         r.aa.length === 0
             ? r.arms.some((a) => a.includes("~"))
                 ? "A/A control arms ran; run scripts/aa-report.ts on the graded run for their report."

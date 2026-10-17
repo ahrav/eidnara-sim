@@ -41,6 +41,8 @@ export interface RunIdentity {
     host_versions: string[];
     /** `scenario.manifest`'s `generator_version/random_schema_version/corpus_manifest_sha256`. */
     scenario_provenance: string;
+    /** The digest of `manifest.fault_override`, or `null` for the scenario's own schedule. */
+    fault_override: string | null;
 }
 
 const ALIASES: Record<string, string> = {
@@ -124,11 +126,15 @@ const graded =
 const RUN_VALUES: Record<string, { value: RunValue; delta: boolean; hostless?: true }> = {
     failed_turns: {
         value: (_, arm) =>
-            arm.journal.filter(
-                (e) =>
-                    (e.kind === "EndTurn" && e.outcome !== "ok") ||
-                    (e.kind === "Event" && e.outcome === "failed(interrupted)"),
-            ).length,
+            new Set(
+                arm.journal
+                    .filter(
+                        (e) =>
+                            (e.kind === "EndTurn" && e.outcome !== "ok") ||
+                            (e.kind === "Event" && e.outcome === "failed(interrupted)"),
+                    )
+                    .map((e) => String(e.event)),
+            ).size,
         delta: false,
     },
     hangs: {
@@ -346,6 +352,9 @@ function incomplete(
                     ];
           })
         : [];
+    const overridden = runs.flatMap((g) =>
+        g.identity.fault_override === null ? [] : [`run ${runKey(g)}: fault schedule overridden`],
+    );
     const unwitnessed = runs.flatMap((g) =>
         g.witnesses === null && g.scenario.faults.some((f) => f.seam.layer === "proxy-sink")
             ? [`run ${runKey(g)}: fault witnesses missing`]
@@ -387,28 +396,33 @@ function incomplete(
     });
     const n = p.stopping_rule.paired_items_per_probe_type;
     const short = p.families.flatMap((f) => {
-        if (!/^probe-P\d+$/.test(f.id)) return [];
-        const metric = f.metrics[0] as string;
-        const pairs =
-            f.analysis_unit === "item"
-                ? (observations.find((o) => o.metric === metric)?.items ?? []).filter(
-                      (x) => !dropped.has(x.item),
-                  ).length
-                : runs.reduce((s, g) => {
-                      const [c, t] = [control, treatment].map((a) =>
-                          g.run.arms.find((x) => x.arm === a),
-                      );
-                      return !c || !t
-                          ? s
-                          : s + values(g, t.arm, metric, { other: c, dropped }).size;
-                  }, 0);
-        return pairs < n ? [`${f.id}: ${pairs} of ${n} paired items`] : [];
+        const probeType = /^probe-P\d+$/.test(f.id);
+        if (!probeType && f.analysis_unit !== "item") return [];
+        const metrics = probeType ? [f.metrics[0] as string] : f.metrics;
+        return metrics.flatMap((metric) => {
+            const pairs =
+                f.analysis_unit === "item"
+                    ? (observations.find((o) => o.metric === metric)?.items ?? []).filter(
+                          (x) => !dropped.has(x.item),
+                      ).length
+                    : runs.reduce((s, g) => {
+                          const [c, t] = [control, treatment].map((a) =>
+                              g.run.arms.find((x) => x.arm === a),
+                          );
+                          return !c || !t
+                              ? s
+                              : s + values(g, t.arm, metric, { other: c, dropped }).size;
+                      }, 0);
+            const label = probeType ? f.id : `${f.id}/${metric}`;
+            return pairs < n ? [`${label}: ${pairs} of ${n} paired items`] : [];
+        });
     });
     return [
         ...missing,
         ...unfinished,
         ...truncated,
         ...unwitnessed,
+        ...overridden,
         ...unknown,
         ...pairing,
         ...sequential,

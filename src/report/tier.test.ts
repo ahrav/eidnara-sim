@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { GradeRecord } from "../grade/probes";
@@ -91,6 +91,7 @@ const identity = (commit = "abc") => ({
     distortions: [] as string[],
     host_versions: ["pi@1", "opencode@1"],
     scenario_provenance: "gen1/1/abc",
+    fault_override: null as string | null,
 });
 
 function fixture(status = (_: number) => 200, opts: FixtureOptions = {}): GradedRun {
@@ -1042,7 +1043,7 @@ describe("tier report", () => {
         const g = fixture();
         const report = tierReport(prereg, [g], boundary);
         expect(report.aa).toEqual([
-            { run: g.run.dir, arm: "host", control: "host~aa", disagreement_rate: 0 },
+            { run: g.run.dir, stale: false, arm: "host", control: "host~aa", disagreement_rate: 0 },
         ]);
     });
 
@@ -1181,6 +1182,66 @@ describe("tier report", () => {
         expect(
             tierInput(prereg, [fixture()]).incomplete?.filter((x) => x.includes("load_stress")),
         ).toEqual([]);
+    });
+
+    test("every item-unit family metric counts toward the fixed-N completeness", () => {
+        const open = tierInput(prereg, [fixture()]).incomplete ?? [];
+        expect(open).toContain("harm/P2.harm: 0 of 24 paired items");
+    });
+
+    test("an empty or cut faults.jsonl is a missing witness file", () => {
+        const dir = mkdtempSync(join(tmpdir(), "sim-report-"));
+        const body = { manifest: { seed: 101 }, events: [], probes: [], faults: [] };
+        const scenario_hash = sha256Hex(canonicalJson(body));
+        writeFileSync(
+            join(dir, "manifest.json"),
+            JSON.stringify({
+                tier: "S",
+                seed: 101,
+                host: "pi",
+                order: [],
+                base_wall_ms: 0,
+                prereg_sha256: preregistrationHash(prereg),
+                scenario_hash,
+            }),
+        );
+        writeFileSync(join(dir, "scenario.json"), canonicalJson({ ...body, scenario_hash }));
+        writeFileSync(join(dir, "faults.jsonl"), '[{"fault":"f-1","status":"fir');
+        expect(loadGraded(dir, prereg).witnesses).toBeNull();
+    });
+
+    test("a failed turn counts once when a resume repeats its outcome as an Event", () => {
+        const g = fixture();
+        const push = (extra: Record<string, unknown>) =>
+            arm(g, "eidnara").journal.push({
+                arm: "eidnara",
+                scenario_ms: 0,
+                seq: 9_000,
+                wall_ms: 0,
+                ...extra,
+            } as Entry);
+        push({ kind: "BeginTurn", event: "e-bad" });
+        push({ kind: "EndTurn", event: "e-bad", outcome: "failed(interrupted)" });
+        push({ kind: "Event", event: "e-bad", outcome: "failed(interrupted)" });
+        expect(observation([g], "failed_turns")?.runs?.map((r) => r.treatment)).toEqual([1]);
+    });
+
+    test("a run made with a fault override is outside the registered campaign", () => {
+        const g = fixture();
+        g.identity.fault_override = "abc";
+        expect(tierInput(prereg, [g]).incomplete).toContain(
+            "run pi/101: fault schedule overridden",
+        );
+    });
+
+    test("an A/A report older than the grades it summarises is marked stale", () => {
+        const g = fixture();
+        const future = new Date(Date.now() + 60_000);
+        writeFileSync(join(g.run.dir, "grades.jsonl"), "");
+        utimesSync(join(g.run.dir, "grades.jsonl"), future, future);
+        const report = tierReport(prereg, [g], boundary);
+        expect(report.aa[0]).toMatchObject({ run: g.run.dir, stale: true });
+        expect(renderTier(report)).toContain("older than grades.jsonl");
     });
 
     test("a planted 4xx difference between the A/A arms fails that falsification check", () => {
