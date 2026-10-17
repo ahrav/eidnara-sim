@@ -191,9 +191,11 @@ describe("tier profiles", () => {
     test("M adds per-host model-factor runs and one Pi user-sim variant; L runs each arm alone, together", () => {
         const M = loadPrereg("M");
         const m = profileJobs(M, new Map([[201, scenario]]), ["pi", "opencode"], "/o", 1000);
+        const side = (h: string) =>
+            `--side-model ${M.user_sim.model} --tapes /o/M-201-${h}/tape.jsonl`;
         expect(m.map((j) => [j.group, j.host, j.arms.join(","), j.extra.join(" ")])).toEqual([
-            ["side-haiku", "pi", "host,eidnara", `--side-model ${M.user_sim.model}`],
-            ["side-haiku", "opencode", "host,eidnara", `--side-model ${M.user_sim.model}`],
+            ["side-haiku", "pi", "host,eidnara", side("pi")],
+            ["side-haiku", "opencode", "host,eidnara", side("opencode")],
             ["usersim-luna", "pi", "host,eidnara", `--user-sim-model ${M.grading.judge.model}`],
         ]);
         const L = loadPrereg("L");

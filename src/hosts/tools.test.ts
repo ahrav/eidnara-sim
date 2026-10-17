@@ -1,12 +1,18 @@
 import { expect, test } from "bun:test";
 import { loadConfig } from "../config/config";
-import { type HostContext, OpencodeSimHost, toolCommand } from "./arms";
+import { type HostContext, OpencodeSimHost, piModels, toolCommand } from "./arms";
 
 test("a tool run reads as its bash command, or as the tool and its target path", () => {
     expect(toolCommand("bash", { command: "cargo test" })).toBe("cargo test");
     expect(toolCommand("read", { path: "src/db.rs" })).toBe("read src/db.rs");
     expect(toolCommand("edit", { filePath: "src/x.ts" })).toBe("edit src/x.ts");
     expect(toolCommand("eidnara_search", { query: "cap" })).toBe('eidnara_search {"query":"cap"}');
+});
+
+test("a Pi host registers its side-call model beside the agent model, once", () => {
+    expect(piModels({ model: "opus" })).toEqual(["opus"]);
+    expect(piModels({ model: "opus", sideModel: "opus" })).toEqual(["opus"]);
+    expect(piModels({ model: "opus", sideModel: "haiku" })).toEqual(["opus", "haiku"]);
 });
 
 test("an OpenCode turn logs only its own messages' tools, timed in OpenCode's clock from the turn's first message", async () => {

@@ -113,7 +113,7 @@ export function profileJobs(
                     h,
                     "side-haiku",
                     pair,
-                    ["--side-model", prereg.user_sim.model],
+                    ["--side-model", prereg.user_sim.model, "--tapes", `${base(h)}/tape.jsonl`],
                     `${base(h)}-side-haiku`,
                 ),
             ),

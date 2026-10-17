@@ -88,8 +88,11 @@ scale from the runs' A/A control (`<arm>~<tag>`): the standard deviation
 of its paired item differences, over the per-item maximum across the harm
 metrics, as the harm statistic is built, and over the P1 items.
 `scripts/report.ts` gives each rule the scale of the tier its `sd_source`
-names, so L's rules take M's A/A pairs when the M runs are in the same
-invocation.
+names: the A/A pairs of that tier's runs when they are in the same
+invocation, else the `cusum_sd` that `<tier>-resizing.json` beside the
+run directories recorded from them. The same file's
+`paired_items_per_probe_type` is the count the campaign-completeness
+check uses for a resized tier.
 
 The falsification set (`src/report/falsify.ts`) pairs the A/A control with
 its arm, or else the treatment with `host`: P1-control pass per item, the

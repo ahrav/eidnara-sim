@@ -458,7 +458,8 @@ async function runArms(
         const statement = scenario.facts.find((f) => f.id === fact)?.statement ?? "";
         deletions.set(at, [...(deletions.get(at) ?? []), { probe: c.probe, fact, statement }]);
     }
-    const statements = scenario.facts.map((f) => f.statement);
+    const othersOf = (fact: string) =>
+        scenario.facts.filter((f) => f.id !== fact).map((f) => f.statement);
     if (manifest.order.some((a) => armBase(a) === "eidnara-cf") && !Bun.which("python3")) {
         throw new HarnessFailure(
             "the eidnara-cf arm deletes through python3, which is not on PATH",
@@ -590,11 +591,10 @@ async function runArms(
                 if (armBase(arm) !== "eidnara-cf") return;
                 for (const c of deletions.get(e.id) ?? []) {
                     if (done(c.probe)) continue;
-                    const others = statements.filter((x) => x !== c.statement);
                     log({
                         probe: c.probe,
                         fact: c.fact,
-                        ...(await driver.deleteFact(c.statement, others)),
+                        ...(await driver.deleteFact(c.statement, othersOf(c.fact))),
                     });
                 }
             },
