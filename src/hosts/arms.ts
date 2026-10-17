@@ -529,10 +529,17 @@ export class OpencodeSimHost extends SimHost {
     private async messages(
         deadlineMs: number,
     ): Promise<Array<{ info: Untyped; parts: Untyped[] }>> {
-        const call = this.client.session.messages({ path: { id: this.sid } });
+        const controller = new AbortController();
+        const call = this.client.session.messages({
+            path: { id: this.sid },
+            signal: controller.signal,
+        });
         call.catch(() => undefined);
         const listed = await Promise.race([call, Bun.sleep(deadlineMs).then(() => null)]);
-        if (listed === null) throw new Error(`session.messages timed out after ${deadlineMs} ms`);
+        if (listed === null) {
+            controller.abort();
+            throw new Error(`session.messages timed out after ${deadlineMs} ms`);
+        }
         if (listed.error || !listed.data) {
             throw new Error(`session.messages failed: ${JSON.stringify(listed.error ?? null)}`);
         }
@@ -563,8 +570,18 @@ export class OpencodeSimHost extends SimHost {
      * reaches the recorder; a run it already holds keeps its recorded start time.
      */
     async recoverTools(deadlineMs: number): Promise<void> {
+        this.recoverParts(await this.messages(deadlineMs));
+    }
+
+    /**
+     * The message ids the last turn saw before its post-turn listing failed; the next turn's
+     * pre-turn listing reports the tool parts of every message beyond them.
+     */
+    private unlogged: Set<string> | null = null;
+
+    private recoverParts(messages: Array<{ info: Untyped; parts: Untyped[] }>): void {
         const now = this.ctx.now?.() ?? 0;
-        for (const m of await this.messages(deadlineMs)) {
+        for (const m of messages) {
             for (const part of m.parts.filter((p) => p.type === "tool")) {
                 const command = toolCommand(part.tool, part.state?.input);
                 const exit = EXIT[part.state?.status] ?? null;
@@ -586,7 +603,11 @@ export class OpencodeSimHost extends SimHost {
         const remaining = () => Math.max(1_000, deadline - Date.now());
         let seen: Set<string>;
         try {
-            seen = new Set((await this.messages(timeoutMs)).map((m) => String(m.info?.id)));
+            const listed = await this.messages(timeoutMs);
+            if (this.unlogged)
+                this.recoverParts(listed.filter((m) => !this.unlogged?.has(String(m.info?.id))));
+            this.unlogged = null;
+            seen = new Set(listed.map((m) => String(m.info?.id)));
         } catch (caught) {
             return { error: `tool capture: ${String(caught)}`.slice(0, 2000) };
         }
@@ -595,6 +616,7 @@ export class OpencodeSimHost extends SimHost {
         try {
             await this.logTurnTools(seen, startScenario, remaining());
         } catch (caught) {
+            this.unlogged = seen;
             const gap = `tool capture: ${String(caught)}`;
             return { error: (outcome.error ? `${outcome.error} | ${gap}` : gap).slice(0, 2000) };
         }

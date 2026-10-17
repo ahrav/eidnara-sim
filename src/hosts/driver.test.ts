@@ -1011,6 +1011,32 @@ test("a tool run reported at its start is on record, and its end report replaces
     ]);
 });
 
+test("a recorder state naming a non-tree value where a tree id belongs is refused before git runs", () => {
+    const repo = gitRepo();
+    const armDir = tmp();
+    const first = new SnapshotRecorder(armDir, "eidnara", () => []);
+    first.sessionStart("s-1", "p", repo);
+    first.sessionEnd("s-1", "p", repo);
+    const statePath = join(armDir, "snapshot-state.json");
+    const state = JSON.parse(readFileSync(statePath, "utf8"));
+    const victim = join(tmp(), "victim");
+    state.last.p.from = `--output=${victim}`;
+    writeFileSync(statePath, JSON.stringify(state));
+    const resumed = new SnapshotRecorder(armDir, "eidnara", () => []);
+    resumed.sessionStart("s-2", "p", repo);
+    expect(() =>
+        resumed.capture(
+            { probe: "q", session: "s-2", id: "e-2" },
+            "p",
+            repo,
+            resumed.tree(repo),
+            [],
+            false,
+        ),
+    ).toThrow("where a tree id belongs");
+    expect(existsSync(victim)).toBe(false);
+});
+
 test("a recorder rebuilt over a cut last snapshot line drops the cut and appends whole records", () => {
     const repo = gitRepo();
     const armDir = tmp();
@@ -1124,7 +1150,7 @@ test("rule-file hashing is bounded by count and by the recorder deadline", () =>
         mkdirSync(join(few, "some", `d${i}`), { recursive: true });
         writeFileSync(join(few, "some", `d${i}`, ".gitignore"), "x\n");
     }
-    const slow = new SnapshotRecorder(tmp(), "eidnara", () => [], 1);
+    const slow = new SnapshotRecorder(tmp(), "eidnara", () => [], 0);
     slow.trackIgnoreRules(basename(few), {}, null, null);
     const files = Array.from({ length: 50 }, (_, i) => `some/d${i}/.gitignore`);
     expect(() => slow.ignoreChanges(few, basename(few), files)).toThrow("hashing timed out");

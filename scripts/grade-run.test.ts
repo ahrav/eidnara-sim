@@ -371,6 +371,23 @@ describe("grade-run", () => {
         await expect(gradeRun(edited, null)).rejects.toThrow(
             "content that differs from calls.jsonl",
         );
+        const earlier = run({ probes: [p8.probe, { ...p8.probe, id: "P8-b" }] });
+        const base = p8.snapshots[0] as Snapshot;
+        snapshot(earlier, "eidnara", base);
+        snapshot(earlier, "eidnara", { ...base, item: "P8-b", turn: "e-2" });
+        const log = join(earlier, "eidnara", "snapshots.jsonl");
+        const [first, second] = readFileSync(log, "utf8")
+            .trim()
+            .split("\n")
+            .map((l) => JSON.parse(l));
+        for (const a of first.artefacts) {
+            if (a.class !== "proxy-call") continue;
+            for (const c of a.calls) if (c.component === "agent") c.response_text = "";
+        }
+        writeFileSync(log, `${JSON.stringify(first)}\n${JSON.stringify(second)}\n`);
+        await expect(gradeRun(earlier, null)).rejects.toThrow(
+            "content that differs from calls.jsonl",
+        );
     });
 
     test("agent calls whose model the manifest does not record are refused before judging", async () => {
