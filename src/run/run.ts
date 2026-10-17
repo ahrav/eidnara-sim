@@ -2,10 +2,13 @@ import { randomUUID } from "node:crypto";
 import {
     appendFileSync,
     existsSync,
+    constants as fsConstants,
     mkdirSync,
+    openSync,
     readFileSync,
     renameSync,
     writeFileSync,
+    writeSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import type { SimConfig } from "../config/config";
@@ -123,6 +126,7 @@ export async function loadScenario(
     if (!existsSync(path)) {
         const { aws_profile, region } = o.config.bedrock;
         const cache = join(ROOT, "runs/scenarios/embeddings.jsonl");
+        mkdirSync(dirname(cache), { recursive: true });
         const embedder = bedrockEmbedder(aws_profile, region, cache);
         const compiled = await compileScenario(loadCompileInput(o.seed, o.tier, embedder));
         writeAtomic(path, `${canonicalJson(compiled)}\n`);
@@ -387,6 +391,11 @@ async function runArms(
             return record;
         }
     }
+    // The diagnostics file is opened once without following symlinks, like a child's log.
+    const downstreamFd = openSync(
+        join(o.out, "downstream.jsonl"),
+        fsConstants.O_WRONLY | fsConstants.O_APPEND | fsConstants.O_CREAT | fsConstants.O_NOFOLLOW,
+    );
     const gateway = new Gateway({
         upstream: bedrockUpstream(config.bedrock.region, config.bedrock.aws_profile),
         records: new RunRecords(join(o.out, "calls.jsonl")),
@@ -398,7 +407,7 @@ async function runArms(
             // The sink runs inside an HTTP/2 event listener; a failed write ends the run through
             // its signal path rather than escaping as an uncaught exception.
             try {
-                appendFileSync(join(o.out, "downstream.jsonl"), `${JSON.stringify(e)}\n`);
+                writeSync(downstreamFd, `${JSON.stringify(e)}\n`);
             } catch (caught) {
                 console.error(`downstream.jsonl: ${(caught as Error).message}`);
                 process.kill(process.pid, "SIGTERM");

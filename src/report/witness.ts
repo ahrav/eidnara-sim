@@ -37,6 +37,8 @@ interface Ctx {
     changedSources: string[];
     /** `arm/id` of every complete record on the arms' snapshot logs. */
     snapshots: Set<string>;
+    /** Every complete record on the run's raw call log, arms filtered by nothing. */
+    rawCalls: { seq: unknown; arm: unknown }[];
     entries: Entry[];
     grades: GradeRecord[];
 }
@@ -80,6 +82,7 @@ function context(g: GradedRun): Ctx {
         manifest: read,
         recorded,
         changedSources,
+        rawCalls: jsonl<{ seq: unknown; arm: unknown }>(join(g.run.dir, "calls.jsonl")),
         snapshots: new Set(
             g.run.arms.flatMap((a) =>
                 jsonl<{ id: string }>(join(g.run.dir, a.arm, "snapshots.jsonl")).map(
@@ -199,8 +202,18 @@ const CHECKS: Record<string, Check> = {
         );
     },
     "SIM-P04": (runs) => {
+        // A divergence counts once the turn it describes is on the log; a record a kill left
+        // without its turn exercised no live path yet.
         const n = runs.reduce(
-            (s, c) => s + c.pairing.filter((r) => r.kind === "divergedAt").length,
+            (s, c) =>
+                s +
+                c.pairing.filter(
+                    (r) =>
+                        r.kind === "divergedAt" &&
+                        c.pairing.some(
+                            (x) => x.kind === "turn" && x.arm === r.arm && x.event === r.event,
+                        ),
+                ).length,
             0,
         );
         return outcome(n, [], "divergences");
@@ -254,6 +267,15 @@ const CHECKS: Record<string, Check> = {
         const bad: string[] = [];
         let n = 0;
         for (const c of runs) {
+            // Every record on the raw call log belongs to an arm of the run; one naming another
+            // arm has no clock to stand on.
+            const known = new Set(c.g.run.arms.map((a) => a.arm));
+            for (const raw of c.rawCalls) {
+                if (!known.has(String(raw.arm))) {
+                    n++;
+                    bad.push(`call ${raw.seq} names arm ${raw.arm}, outside the run`);
+                }
+            }
             // One sequence and one wall clock span the run's arms, as one RecordWriter wrote them.
             const clocks = new Map(c.g.run.arms.map((a) => [a.arm, journalClock(a.journal)]));
             const all = c.g.run.arms.flatMap((a) => a.calls.map((call) => ({ a, call })));
@@ -526,12 +548,15 @@ function journalCheck(
 }
 
 export function propertyWitness(catalog: string, runs: GradedRun[]): PropertyWitness[] {
+    const ids = [...catalog.matchAll(/^\| (SIM-[A-Z]\d+) \|/gm)].map(([, id]) => id as string);
+    // A report assembled without a catalog reads no run artefacts here.
+    if (ids.length === 0) return [];
     const ctx = runs.map(context);
-    return [...catalog.matchAll(/^\| (SIM-[A-Z]\d+) \|/gm)].map(([, id]) => {
-        const check = CHECKS[id as string];
+    return ids.map((id) => {
+        const check = CHECKS[id];
         const result = check
             ? check(ctx)
             : { status: "unchecked" as const, detail: "no run-level check" };
-        return { id: id as string, ...result };
+        return { id, ...result };
     });
 }

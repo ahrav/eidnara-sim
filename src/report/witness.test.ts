@@ -233,6 +233,8 @@ function second(broken: boolean, busy = false): GradedRun {
 
 interface Parts {
     arms?: string[];
+    /** Extra records on the run's raw `calls.jsonl`, beyond the arms' own calls. */
+    rawCalls?: object[];
     /** Snapshot ids on each arm's `snapshots.jsonl`; by default every journaled snapshot. */
     snapshots?: string[];
     tape_pairing_sha256?: Record<string, string>;
@@ -267,6 +269,10 @@ function made(p: Parts): GradedRun {
     );
     writeFileSync(join(dir, "journal.jsonl"), lines(journal));
     writeFileSync(join(dir, "grades.jsonl"), lines(p.grades ?? []));
+    writeFileSync(
+        join(dir, "calls.jsonl"),
+        lines([...(p.calls ?? []).map((c) => ({ arm: "eidnara", ...c })), ...(p.rawCalls ?? [])]),
+    );
     const snapshotIds =
         p.snapshots ??
         journal.filter((e) => e.kind === "SnapshotArtefacts").map((e) => String(e.snapshot));
@@ -421,6 +427,25 @@ describe("property witness evidence", () => {
             status: "violated",
             detail: expect.stringContaining("source digest"),
         });
+    });
+
+    test("SIM-P04 counts a divergence once the turn it describes is on the log", () => {
+        const diverged = {
+            kind: "divergedAt",
+            arm: "eidnara",
+            session: "s-1",
+            event: "e-1",
+            index: 0,
+            digest: "b",
+            reference_digest: "a",
+            against: "reference",
+        };
+        expect(one("P04", made({ pairing: [turn("host", "a"), diverged] }))).toMatchObject({
+            status: "unreached",
+        });
+        expect(
+            one("P04", made({ pairing: [turn("host", "a"), diverged, turn("eidnara", "b")] })),
+        ).toMatchObject({ status: "witnessed" });
     });
 
     test("SIM-P03 counts a divergence only once both turns it describes are on the log", () => {
@@ -835,6 +860,18 @@ describe("property witness evidence", () => {
             status: "violated",
             detail: expect.stringContaining("wall time decreases"),
         });
+        // A call record naming an arm the run has no journal for is a record the property still
+        // covers; it cannot be placed on a clock and is a violation.
+        expect(
+            one(
+                "P15",
+                made({
+                    journal,
+                    calls: [call(300, 1_200)],
+                    rawCalls: [{ ...call(300, 1_200), seq: 9, arm: "ghost" }],
+                }),
+            ),
+        ).toMatchObject({ status: "violated", detail: expect.stringContaining("ghost") });
         // The order is by seq, so a seq that is missing or repeated leaves it unestablished.
         expect(
             one(

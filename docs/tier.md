@@ -9,10 +9,12 @@ its A/A pairs, and writes the tier report. A run whose journal already
 holds `EndRun` is complete and is graded and reported as it finished. A
 job that fails in orchestration stops the sibling runs before the command
 exits. A run whose directory another process holds (`lease.json` with a
-live pid, read before the run and again after it) is left ungraded, kept
-out of the report, and fails the command. A child's log (`tier.log`,
-`faketime.log`, `report.log`) that exists as a symlink is refused before
-the child starts. `<dir>/tier-plan.json` holds
+live pid, read before the run; after it the coordinator takes the run's
+lease for grading and the A/A report, and a lease it cannot take means
+another process holds the run) is left ungraded, kept out of the report,
+and fails the command. A child's log (`tier.log`, `faketime.log`,
+`report.log`) is opened once without following symlinks and held for the
+child's life. The report child runs under the same 125% limit. `<dir>/tier-plan.json` holds
 the plan and `<dir>/tier-result.json` the outcome of each run, with the
 run's own wall time and whether it exceeded the tier's wall budget; each
 run directory keeps its `tier.log`. The command exits 1 when any run,
@@ -40,9 +42,11 @@ bank, repository list, distributions, and tool outputs), is refused for a
 new run; a run that already has a manifest keeps the
 scenario it ran. The libfaketime build's download,
 extraction, and compilation each end within ten minutes; invocations
-serialise on a lease over `vendor/build`, which a signal to the build
-releases when this process holds it, and the finished tree is renamed
-into place, so another command sees a complete library or none.
+serialise on a lease over `vendor/build` (a waiter allows the holder
+thirty minutes, one step each), which a signal to the build releases when
+this process holds it, and the finished tree is renamed into place, so
+another command sees a complete library or none. The embedding cache's
+directory, `runs/scenarios/`, is created before the first compilation.
 
 ## Plan
 
@@ -103,7 +107,7 @@ The run-level checks cover:
   no turn whose
   context digest differs
   from its reference arm's without a divergence record;
-- SIM-P04: a divergence occurred;
+- SIM-P04: a divergence occurred, its turn on the pairing log;
 - SIM-P10: user-sim rates recomputed from the journaled turn labels
   inside their bands, with the journaled `UserSimRates` summary equal to
   the recomputation, over the completed arms (those with that entry) of
@@ -112,9 +116,10 @@ The run-level checks cover:
   scheduled jumps (each from the arm's clock before it), from
   `checkJournal` over the entries in `seq` order, a repeated or
   non-integer `seq` counting as a break;
-- SIM-P15: proxy records carry both times, each with a fresh integer
-  `seq` across the run, with wall time in `seq` order across the run, a
-  receipt time that is finite and at or before completion and
+- SIM-P15: proxy records (every record on `calls.jsonl`, one naming an
+  arm outside the run being a violation) carry both times, each with a
+  fresh integer `seq` across the run, with wall time in `seq` order across
+  the run, a receipt time that is finite and at or before completion and
   that the journal has begun by, and each call's scenario time within 5 s
   of the clock the arm's journal implies at the call's start (wall pace
   while a turn or job is open, closed by `EndTurn`, `EndJob`, or the

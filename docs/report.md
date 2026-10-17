@@ -158,7 +158,8 @@ a pre-registered arm (`arms.run`) that has no `EndArm` entry, each run whose man
 `distortions`, its host versions, the scenario's generator, random
 schema, corpus manifest, compile inputs, and embedding model, the tapes it
 replayed, the preflight's toolchain probes, and the `grader` digests of
-the grades the report uses) the runs disagree on, each run with
+the grades the report uses) the runs disagree on, each run whose used
+grades come from more than one grader, each run with
 a scheduled proxy fault without its witness in `faults.jsonl`, each run made
 with a fault override, each run with grades for
 items outside its scenario's probes, for a metric of another probe type

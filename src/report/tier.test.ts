@@ -964,6 +964,14 @@ describe("tier report", () => {
         );
     });
 
+    test("a run whose used grades come from two graders is incomplete on its own", () => {
+        const a = fixture(undefined, { host: "pi" });
+        a.identity.grader = ["0".repeat(64), "1".repeat(64)];
+        expect(tierInput(prereg, [a]).incomplete).toContainEqual(
+            expect.stringMatching(/^run .*: grades from 2 graders/),
+        );
+    });
+
     test("runs made with different host releases keep the campaign incomplete", () => {
         const a = fixture(undefined, { host: "pi" });
         const b = fixture(undefined, { host: "opencode" });

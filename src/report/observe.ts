@@ -574,6 +574,12 @@ function incomplete(
         "toolchain",
         "grader",
     ];
+    // The grades a run's report uses come from one grader implementation.
+    const mixed = runs.flatMap((g) =>
+        g.identity.grader.length > 1
+            ? [`run ${runKey(g)}: grades from ${g.identity.grader.length} graders`]
+            : [],
+    );
     const settings = shared.flatMap((field) => {
         const values = [...new Set(runs.map((g) => JSON.stringify(g.identity[field])))];
         return values.length > 1
@@ -613,6 +619,7 @@ function incomplete(
         ...pairing,
         ...sequential,
         ...settings,
+        ...mixed,
         ...controls,
         ...coverage,
         ...leaks,

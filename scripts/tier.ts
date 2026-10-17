@@ -226,15 +226,24 @@ const results = await supervised(() =>
             // is read again so preflight before StartRun and teardown after EndRun stay out.
             const after = runSpan(job.dir, started);
             const run_wall_ms = (after.ended ?? Date.now()) - after.started;
-            // A standalone run may have taken the directory while the child ran; the lease is
-            // read again before grading.
-            const heldNow = held || leaseHeld(job.dir);
+            // The coordinator takes the run's own lease for grading and the A/A report, so a
+            // standalone run cannot start on the directory meanwhile; a lease it cannot take
+            // means another process holds the run.
+            let heldNow = held;
+            if (!held) {
+                try {
+                    takeLease(job.dir);
+                } catch {
+                    heldNow = true;
+                }
+            }
             const ran = existsSync(join(job.dir, "manifest.json")) && !heldNow;
             const graded = ran ? await run(["grade-run.ts", job.dir], log, limit) : null;
             const aa =
                 graded === 0 && job.arms.some((a) => a.includes("~"))
                     ? await run(["aa-report.ts", job.dir], log, limit)
                     : null;
+            if (!heldNow) releaseLease(job.dir);
             return {
                 ...job,
                 run_exit: code,
@@ -256,7 +265,7 @@ const reported = results
     .filter((r) => !r.leased_elsewhere && existsSync(join(r.dir, "manifest.json")))
     .map((r) => r.dir);
 const report = reported.length
-    ? await run(["report.ts", ...reported, "--out", out], join(out, "report.log"))
+    ? await run(["report.ts", ...reported, "--out", out], join(out, "report.log"), limit)
     : null;
 console.log(
     JSON.stringify({
