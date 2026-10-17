@@ -163,7 +163,10 @@ export class Scheduler {
             this.snapshotTurn(e);
             this.log({ kind: "Event", event: e.event, outcome: e.outcome });
         }
-        for (const e of kinds("BeginTurn").filter((x) => !ended.has(x.event))) {
+        const interrupted = kinds("BeginTurn").filter(
+            (x) => !ended.has(x.event) && !done.has(x.event),
+        );
+        for (const e of interrupted) {
             this.log({ kind: "ItemState", event: e.event, state: "failed(interrupted)" });
             this.log({ kind: "Event", event: e.event, outcome: "failed(interrupted)" });
         }

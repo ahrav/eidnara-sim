@@ -399,3 +399,46 @@ test("a timed-out prompt whose abort drains keeps the Pi process even though the
     expect(result.error).not.toContain("killed");
     expect(stopped).toEqual([]);
 });
+
+test("an agent_end emitted in the same tick as the prompt failure still settles the drain", async () => {
+    const host = new PiSimHost({
+        ...({} as HostContext),
+        config: loadConfig(),
+        root: "/x",
+        launcher: "/x/sandbox.sh",
+        now: () => 1,
+    });
+    const stopped: number[] = [];
+    let endResolve: ((v: unknown) => void) | null = null;
+    let waits = 0;
+    const rpc = {
+        child: { pid: 4242, stdin: { end: () => {} } },
+        sendCommand: (name: string) => {
+            if (name !== "prompt") return Promise.resolve({});
+            return new Promise((_resolve, reject) => {
+                setTimeout(() => {
+                    reject(new Error("prompt failed"));
+                    endResolve?.({ type: "agent_end" });
+                }, 5);
+            });
+        },
+        waitForEvent: (_match: unknown, o: { timeoutMs: number }) => {
+            waits += 1;
+            if (waits === 1) return new Promise((resolve) => void (endResolve = resolve));
+            return new Promise((_resolve, reject) =>
+                setTimeout(() => reject(new Error("agent_end timed out")), o.timeoutMs),
+            );
+        },
+        shutdown: async () => {},
+        onEvent: () => {},
+    };
+    Object.assign(host as unknown as Record<string, unknown>, {
+        rpc,
+        stopTree: async (pid: number) => void stopped.push(pid),
+        drainWaitMs: 50,
+    });
+    const result = await host.prompt("go", 1_000);
+    expect(result.error).toContain("prompt failed");
+    expect(result.error).not.toContain("killed");
+    expect(stopped).toEqual([]);
+});

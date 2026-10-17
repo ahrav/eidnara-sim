@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { appendFileSync, mkdtempSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { decodeMessages } from "../../tests/eventstream-decode";
@@ -825,4 +825,10 @@ describe("every request yields one record", () => {
         expect([...walls].sort((a, b) => a - b)).toEqual(walls);
         expect(new Set(records.records.map((r) => r.scenario_ms)).size).toBe(3);
     });
+});
+
+test("a record writer creates its file at once, so a run with no calls still has calls.jsonl", () => {
+    const path = join(mkdtempSync(join(tmpdir(), "sim-records-")), "calls.jsonl");
+    new RecordWriter(path);
+    expect(existsSync(path)).toBe(true);
 });

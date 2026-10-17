@@ -386,9 +386,10 @@ export class DaemonStack {
     }
 
     /**
-     * Stops the daemon, then saves its stdout (read after termination, so a line written while
-     * handling SIGTERM is in it) and every log the marker still lists, the live one included;
-     * nothing is left to recover.
+     * Stops the daemon, then saves every log the marker still lists, the live one included,
+     * and last its stdout (read after termination, so a line written while handling SIGTERM
+     * is in it, and appended after any rollback so the rollback cannot erase it); nothing is
+     * left to recover.
      */
     async stop(): Promise<void> {
         const stack = this.stack;
@@ -399,7 +400,8 @@ export class DaemonStack {
         // A held stdout belongs to the lifetime the marker names as owner. When that is still the
         // stack's lifetime (a kill that failed), the stack's stdout covers it and the marker drops
         // its own; when a replacement came up and then failed, the held copy is the old lifetime's
-        // only stdout and lands ahead of the replacement's.
+        // only stdout and lands ahead of the replacement's output. The stack's stdout goes last,
+        // after any rollback the drains perform, so a rollback cannot erase it.
         const live = String(stack.logPath ?? "");
         const marker = this.readMarker();
         const sameLifetime = marker?.owner?.pid != null && marker.owner.pid === this.pid(stack);
@@ -410,15 +412,14 @@ export class DaemonStack {
         } = marker ?? { pending: [], copying: null };
         this.heldStdout = null;
         if (marker?.stdout !== undefined && !sameLifetime) {
-            // The old lifetime's stdout and held log land first, then the replacement's output.
             this.drain({ ...marker, pending: marker.pending.filter((p) => p !== live) }, []);
-            appendFileSync(this.ctx.logFile, stdout);
             this.drain(null, [live]);
+            appendFileSync(this.ctx.logFile, stdout);
             return;
         }
         if (marker?.stdout !== undefined) this.writeMarker(rest);
-        appendFileSync(this.ctx.logFile, stdout);
         this.drain(marker ? rest : null, [live]);
+        appendFileSync(this.ctx.logFile, stdout);
     }
 }
 
@@ -625,7 +626,8 @@ export class PiSimHost extends SimHost {
 
     /**
      * Runs one turn. A turn that fails or times out is aborted; an `agent_end` that already
-     * arrived settles the drain, otherwise a fresh waiter runs for the drain wait. A Pi that
+     * arrived (checked after one event-loop tick, so a same-tick end counts) settles the drain,
+     * otherwise a fresh waiter runs for the drain wait. A Pi that
      * reports no `agent_end` in that time is still running the old turn, so its process is
      * killed and the session's later prompts fail at once. A tool event from that turn can
      * then never land on a later turn's record.
@@ -652,6 +654,7 @@ export class PiSimHost extends SimHost {
                 ? { error: String(last.errorMessage ?? "error") }
                 : {};
         } catch (caught) {
+            await Bun.sleep(0);
             const drained = ended ? Promise.resolve() : this.agentEnd(this.drainWaitMs);
             await this.rpc.sendCommand("abort", {}, { timeoutMs: 60_000 }).catch(() => undefined);
             const settled = await drained.then(
