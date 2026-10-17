@@ -91,7 +91,7 @@ export function normalQuantile(p: number): number {
     }
     const e = normalCdf(x) - p;
     const u = e * Math.sqrt(2 * Math.PI) * Math.exp((x * x) / 2);
-    return x - u / (1 + (x * u) / 2);
+    return Number.isFinite(u) ? x - u / (1 + (x * u) / 2) : x;
 }
 
 /** The regularized incomplete beta function by Lentz's continued fraction. */
@@ -128,6 +128,8 @@ export function incompleteBeta(x: number, a: number, b: number): number {
 
 /** The `q` quantile of Beta(a, b), by bisection on the incomplete beta function. */
 export function betaQuantile(q: number, a: number, b: number): number {
+    if (!(q >= 0 && q <= 1)) throw new RangeError("betaQuantile: q must lie in [0, 1]");
+    if (q === 0 || q === 1) return q;
     let [lo, hi] = [0, 1];
     for (let i = 0; i < 200; i++) {
         const mid = (lo + hi) / 2;
