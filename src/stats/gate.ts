@@ -339,10 +339,14 @@ function statsOf(f: Family, o: Observation, p: Preregistration): Stats {
     if (f.interval_method === "none") {
         const diffs = [...(o.items ?? []), ...(o.runs ?? [])].map((x) => x.treatment - x.control);
         const unit = f.outcome === "binary" ? 100 : 1;
+        const difference = diffs.length ? unit * mean(diffs) : 0;
+        if (!Number.isFinite(difference)) {
+            throw new StatsRefusal(`${o.metric}: the paired mean difference overflows`);
+        }
         return {
             ...empty("paired mean difference; the pre-registration names no interval method"),
             n: diffs.length,
-            difference: diffs.length ? unit * mean(diffs) : 0,
+            difference,
         };
     }
     if (o.unit === "item") return binary(f, o.items ?? [], p);
@@ -436,9 +440,9 @@ function check(p: Preregistration, input: TierInput): void {
         if (
             f.outcome === "count" &&
             f.margin.scale !== "none" &&
-            !own.every((x) => Number.isInteger(x.control) && Number.isInteger(x.treatment))
+            !own.every((x) => Number.isSafeInteger(x.control) && Number.isSafeInteger(x.treatment))
         ) {
-            throw new StatsRefusal(`${o.metric}: an event count is an integer in both arms`);
+            throw new StatsRefusal(`${o.metric}: an event count is a safe integer in both arms`);
         }
         if (
             f.outcome === "graded" &&
@@ -589,12 +593,13 @@ export function evaluateTier(p: Preregistration, input: TierInput): TierVerdict 
             return { metric: o.metric, ...s, verdict, passed, asymmetric_pairs };
         });
         const passed = f.claim !== "gate" ? null : metrics.every((m) => m.passed === true);
-        const { id: family, claim, direction, mde, margin } = f;
+        const { id: family, claim, direction } = f;
+        const [mde, margin] = [{ ...f.mde }, { ...f.margin }];
         return { family, claim, direction, alpha: num(f.alpha), mde, margin, metrics, passed };
     });
     const [halts, unavailable, rules] = stops(p, input, kept);
     const gates = families.filter((f) => f.claim === "gate");
-    const excluded: Record<string, number> = {};
+    const excluded: Record<string, number> = { [input.arms.control]: 0, [input.arms.treatment]: 0 };
     for (const e of input.excluded) excluded[e.arm] = (excluded[e.arm] ?? 0) + 1;
     const worse = families
         .find((f) => f.family === "harm")
@@ -603,7 +608,7 @@ export function evaluateTier(p: Preregistration, input: TierInput): TierVerdict 
     const verdict: TierVerdict = {
         prereg_sha256: preregistrationHash(p),
         journal_seq_at_eval: input.journal_seq_at_eval,
-        arms: input.arms,
+        arms: { ...input.arms },
         families,
         memory_made_it_worse: worse ?? [],
         pass: {
@@ -620,8 +625,8 @@ export function evaluateTier(p: Preregistration, input: TierInput): TierVerdict 
         cusum_rules: rules,
         cusum_unavailable: unavailable,
         excluded_per_arm: excluded,
-        excluded: input.excluded,
-        asymmetric_stratum: input.asymmetric,
+        excluded: input.excluded.map((e) => ({ ...e })),
+        asymmetric_stratum: [...input.asymmetric],
     };
     if (JSON.stringify(verdict).toLowerCase().includes("parity")) {
         throw new StatsRefusal("a verdict may not use the word parity");

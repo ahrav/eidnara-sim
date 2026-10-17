@@ -1298,8 +1298,8 @@ Required faults and enabling state: a tier with an in-flight item at evaluation.
 Confidence: low -
 [evidence](evidence/sim-p51-gate-reads-completed-pairs-only.md). Reconstructed
 from spec #1007. The M7 gate (`src/stats/gate.ts`) drops excluded and
-fault-asymmetric ids, counts them per arm, and requires the journal sequence;
-its tests exercise that. The report path that supplies the completed pairs is
+fault-asymmetric ids, counts exclusions per arm and asymmetric pairs per
+metric, and requires the journal sequence; its tests exercise that. The report path that supplies the completed pairs is
 #1033 work, and no tier run has reached the gate.
 Existing check: `src/stats/gate.test.ts`: excluded and fault-asymmetric pairs
 leave the analysis and are counted per arm, and an evaluation without a
@@ -1363,6 +1363,10 @@ Open questions:
   SIM-P56, and `descriptive` for a family the pre-registration does not gate.
   Whether the spec index should list them is a design decision (needs human
   input).
+- The M7 gate also emits `within-bound` for a threshold or zero-tolerance
+  metric that meets its bound; neither the guarantee nor the report check's
+  `VERDICT_KINDS` (`src/prereg/report.ts`) lists it, so the report path has
+  no family verdict to map a passing bound family to (needs human input).
 
 ### sim-p54-pairing-by-item-identity
 

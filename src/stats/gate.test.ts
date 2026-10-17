@@ -170,7 +170,7 @@ describe("tier gates", () => {
         });
         const m = metric(v, "probe-P1", "P1.pass");
         expect([m?.n, m?.asymmetric_pairs]).toEqual([7, 2]);
-        expect(v.excluded_per_arm).toEqual({ eidnara: 1 });
+        expect(v.excluded_per_arm).toEqual({ host: 0, eidnara: 1 });
         expect(v.excluded.map((e) => e.id)).toEqual([ids[0]] as string[]);
         expect(v.asymmetric_stratum).toEqual([ids[1], ids[2]] as string[]);
     });
@@ -803,7 +803,10 @@ describe("tier gate review findings, fourth Codex round", () => {
         const drop = (arm: string) => [{ id, arm, reason: "failed(interrupted)" }];
         expect(() => evaluate([obs], { excluded: drop("eidnrara") })).toThrow(StatsRefusal);
         expect(() => evaluate([obs], { excluded: drop("eidnara-kl") })).toThrow(StatsRefusal);
-        expect(evaluate([obs], { excluded: drop("host") }).excluded_per_arm).toEqual({ host: 1 });
+        expect(evaluate([obs], { excluded: drop("host") }).excluded_per_arm).toEqual({
+            host: 1,
+            eidnara: 0,
+        });
     });
 });
 
@@ -937,5 +940,52 @@ describe("tier gate review findings, seventh Codex round", () => {
         const m = metric(evaluate([binary("P2.harm", half)]), "harm", "P2.harm");
         expect(m?.detectable).toBeCloseTo(9.93, 2);
         expect(m?.resolution_ratio).toBeCloseTo(0.993, 3);
+    });
+});
+
+describe("tier gate review findings, eighth Codex round", () => {
+    test("excluded_per_arm names both compared arms, zero included", () => {
+        const obs = binary("P1.pass", repeat(3, [0, 1] as [number, number]));
+        const id = obs.items?.[0]?.item ?? "";
+        expect(evaluate([obs]).excluded_per_arm).toEqual({ host: 0, eidnara: 0 });
+        const one = evaluate([obs], {
+            excluded: [{ id, arm: "host", reason: "failed(interrupted)" }],
+        });
+        expect(one.excluded_per_arm).toEqual({ host: 1, eidnara: 0 });
+    });
+
+    test("an event count is a safe integer", () => {
+        expect(() =>
+            evaluate([runs("failed_turns", repeat(6, [1e308, 1e308] as [number, number]))]),
+        ).toThrow(StatsRefusal);
+        expect(() =>
+            evaluate([runs("hangs", repeat(6, [2 ** 53, 0] as [number, number]))]),
+        ).toThrow(StatsRefusal);
+    });
+
+    test("the verdict holds copies of the evidence it was given", () => {
+        const obs = binary("P1.pass", repeat(3, [0, 1] as [number, number]));
+        const excluded = [
+            { id: obs.items?.[0]?.item ?? "", arm: "host", reason: "failed(interrupted)" },
+        ];
+        const asymmetric = [obs.items?.[1]?.item ?? ""];
+        const arms = { control: "host", treatment: "eidnara" };
+        const v = evaluate([obs], { excluded, asymmetric, arms });
+        excluded.pop();
+        asymmetric.pop();
+        arms.treatment = "eidnara-kl";
+        expect([v.excluded.length, v.asymmetric_stratum.length, v.arms.treatment]).toEqual([
+            1,
+            1,
+            "eidnara",
+        ]);
+        const fam = v.families.find((f) => f.family === "probe-P1");
+        expect(fam?.mde).not.toBe(M.families.find((f) => f.id === "probe-P1")?.mde);
+    });
+
+    test("a descriptive difference that overflows is refused", () => {
+        expect(() =>
+            evaluate([runs("usd_per_component", repeat(6, [0, 1e308] as [number, number]))]),
+        ).toThrow(StatsRefusal);
     });
 });

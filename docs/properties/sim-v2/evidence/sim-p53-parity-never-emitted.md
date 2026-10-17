@@ -25,7 +25,10 @@ report check (`src/prereg/report.ts`) expects one family-level verdict from
 this vocabulary, `descriptive` exactly for a descriptive-claim family, while
 the gate's family result carries per-metric verdicts and `passed: null` for
 such a family; the translation from metric verdicts to one family verdict is
-the report path's part (#1033) and is unresolved here.
+the report path's part (#1033) and is unresolved here. `within-bound`, which
+the gate emits for a met bound, is absent from both the guarantee and the
+report check's `VERDICT_KINDS`, so the mapping of a passing bound family is
+a second unresolved disagreement, carried in the catalog's open questions.
 
 ## Failure scenario
 

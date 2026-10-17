@@ -41,8 +41,10 @@ issue order) or run pairs. `pairByItem` joins two arms' values by item id
 and orders the pairs by the issue order it is given, so pairing never
 depends on the order either arm graded in. The input also lists the ids
 the missingness policy excludes (each with its arm and reason) and the
-pairs in the fault-asymmetric stratum; both leave the analysis, and the
-verdict counts them per arm and per metric.
+pairs in the fault-asymmetric stratum; both leave the analysis. The
+verdict counts exclusions per compared arm, both arms always named, zero
+included, lists the asymmetric stratum, and counts asymmetric pairs per
+metric.
 
 A metric with no pre-registration entry is refused by name, and so is a metric
 registered in two families, a metric observed twice, an observation whose unit
@@ -87,7 +89,8 @@ labels, which is where the harm family's "memory made it worse" claim
 comes from; the family's noninferiority pass is decided per metric as
 described below. X is the detectable
 difference at that n: for binary items a normal approximation in Connor's
-form, `(z(1 - alpha/2) + z(power)) * sqrt(discordant) / n`, where a Holm
+form, `100 * (z(1 - alpha/2) + z(power)) * sqrt(max(discordant, 1)) / n`
+in percentage points, where a Holm
 family with a one-sided claim is planned at its first step, `z(1 - alpha/m)`
 over its `m` metrics (one-sided 0.01 for the harm family, the level
 `docs/eval-core-mapping.md` registers its power at), with the
