@@ -330,6 +330,64 @@ describe("HostDriver lifecycle", () => {
         ).rejects.toThrow(HarnessFailure);
     });
 
+    test("apply_diff refuses a target that is a FIFO or directory before writing", async () => {
+        const { driver } = fixture("host", { p: gitRepo() });
+        await driver.reset();
+        const ws = driver.workspace("p");
+        mkdirSync(join(ws, "src"));
+        spawnSync("mkfifo", [join(ws, "src", "a.txt")]);
+        const started = Date.now();
+        await expect(
+            driver.event(ev("apply_diff", { path: "src/a.txt", content: "A" })),
+        ).rejects.toThrow("not a regular file");
+        expect(Date.now() - started).toBeLessThan(2_000);
+        mkdirSync(join(ws, "src", "b.txt"));
+        await expect(
+            driver.event(ev("apply_diff", { path: "src/b.txt", content: "B" })),
+        ).rejects.toThrow("not a regular file");
+    });
+
+    test("apply_diff bounds its walk of the workspace .git by entry count", async () => {
+        const { driver } = fixture("host", { p: gitRepo() });
+        const o = { ...(driver as unknown as { o: DriverOptions }).o, gitDirEntryCap: 50 };
+        const bounded = new HostDriver(o);
+        await bounded.reset();
+        const ws = bounded.workspace("p");
+        for (let i = 0; i < 60; i++) writeFileSync(join(ws, ".git", `junk-${i}`), "");
+        await expect(
+            bounded.event(ev("apply_diff", { path: "src/a.txt", content: "A" })),
+        ).rejects.toThrow("walk: too many entries or timed out");
+    });
+
+    test("apply_diff removes the real index lock when its update times out", async () => {
+        const shim = tmp();
+        const real = spawnSync("sh", ["-c", "command -v git"]).stdout.toString().trim();
+        writeFileSync(
+            join(shim, "git"),
+            `#!/bin/sh\nfor a in "$@"; do if [ "$a" = "update-index" ] && [ -z "$GIT_INDEX_FILE" ]; then touch "$GIT_DIR/index.lock"; sleep 30; fi; done\nexec ${real} "$@"\n`,
+            { mode: 0o755 },
+        );
+        const { driver } = fixture("host", { p: gitRepo() });
+        const o = { ...(driver as unknown as { o: DriverOptions }).o, turnDeadlineMs: 500 };
+        const fresh = new HostDriver(o);
+        await fresh.reset();
+        const ws = fresh.workspace("p");
+        const path = process.env.PATH;
+        process.env.PATH = `${shim}:${path}`;
+        try {
+            await expect(
+                fresh.event(ev("apply_diff", { path: "src/a.txt", content: "A" })),
+            ).rejects.toThrow("timed out");
+        } finally {
+            process.env.PATH = path;
+        }
+        expect(existsSync(join(ws, ".git", "index.lock"))).toBe(false);
+        await fresh.event(ev("apply_diff", { path: "src/a.txt", content: "A" }));
+        expect(spawnSync("git", ["show", "HEAD:src/a.txt"], { cwd: ws }).stdout.toString()).toBe(
+            "A",
+        );
+    });
+
     test("apply_diff proceeds over a scratch index lock a killed git left behind", async () => {
         const { driver, armDir } = fixture("host", { p: gitRepo() });
         await driver.reset();
@@ -886,6 +944,31 @@ describe("probe snapshots", () => {
         );
         expect(stillChanged.failed).toContain(".git/info/exclude (changed)");
         expect(stillChanged.failed).not.toContain(".gitignore");
+    });
+
+    test("an exclude file that is a directory, symlink, or FIFO reads as a changed rule without blocking", () => {
+        const repo = gitRepo();
+        const armDir = tmp();
+        const recorder = new SnapshotRecorder(armDir, "eidnara", () => []);
+        const info = join(repo, ".git", "info");
+        mkdirSync(info, { recursive: true });
+        const exclude = join(info, "exclude");
+        rmSync(exclude, { force: true });
+        expect(recorder.excludeDigest(repo)).toBeNull();
+        mkdirSync(exclude);
+        expect(recorder.excludeDigest(repo)).toBe("unreadable");
+        rmSync(exclude, { recursive: true });
+        symlinkSync(join(tmp(), "secret"), exclude);
+        expect(recorder.excludeDigest(repo)).toBe("unreadable");
+        rmSync(exclude);
+        spawnSync("mkfifo", [exclude]);
+        const started = Date.now();
+        expect(recorder.excludeDigest(repo)).toBe("unreadable");
+        expect(Date.now() - started).toBeLessThan(1_000);
+        rmSync(exclude);
+        rmSync(info, { recursive: true });
+        symlinkSync(tmp(), info);
+        expect(recorder.excludeDigest(repo)).toBe("unreadable");
     });
 
     test("a probe turn that leaves an embedded repository in the workspace ends failed, naming it", async () => {

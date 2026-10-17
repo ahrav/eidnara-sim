@@ -82,7 +82,7 @@ describe("oracle report", () => {
         const dir = mkdtempSync(join(tmpdir(), "sim-oracle-"));
         const line = (o: unknown) => `${JSON.stringify(o)}\n`;
         const order = ["host", "eidnara"];
-        const scenario = { events: [{ id: "e-1", kind: "session_end" }] };
+        const scenario = { events: [{ id: "e-1", kind: "user_turn" }] };
         const scenario_hash = scenarioHash(scenario);
         const manifest = { tier: "S", order, events: 1, scenario_hash };
         writeFileSync(join(dir, "manifest.json"), JSON.stringify(manifest));
@@ -91,13 +91,17 @@ describe("oracle report", () => {
             join(dir, "calls.jsonl"),
             line(call({ arm: "eidnara", seq: 0 })) + line(call({ arm: "host", seq: 1 })),
         );
+        const turn = (arm: string) => [
+            { kind: "BeginTurn", arm, event: "e-1", scenario_ms: 0 },
+            { kind: "EndTurn", arm, event: "e-1", outcome: "ok", scenario_ms: 0 },
+            { kind: "Event", arm, event: "e-1", scenario_ms: 0 },
+            { kind: "EndArm", arm, scenario_ms: 0 },
+        ];
         const journal = [
             { kind: "StartRun", arm: null, order, scenario_ms: 0 },
             { kind: "StartArm", arm: "host", scenario_ms: 0 },
-            { kind: "Event", arm: "host", event: "e-1", scenario_ms: 0 },
-            { kind: "EndArm", arm: "host", scenario_ms: 0 },
-            { kind: "Event", arm: "eidnara", event: "e-1", scenario_ms: 0 },
-            { kind: "EndArm", arm: "eidnara", scenario_ms: 0 },
+            ...turn("host"),
+            ...turn("eidnara"),
             { kind: "EndRun", arm: null, scenario_ms: 0 },
         ];
         writeFileSync(join(dir, "journal.jsonl"), journal.map(line).join(""));
@@ -107,13 +111,13 @@ describe("oracle report", () => {
         writeFileSync(join(dir, "eidnara", "resources.jsonl"), line({ scenario_ms: 0, rss: 100 }));
         const run = loadRun(dir, prereg);
         const eidnara = run.arms.find((a) => a.arm === "eidnara");
-        expect(run.kinds.get("e-1")).toBe("session_end");
+        expect(run.kinds.get("e-1")).toBe("user_turn");
         expect([eidnara?.calls.length, eidnara?.pluginLog, eidnara?.daemonLog]).toEqual([
             1,
             ["a", "b"],
             ["c"],
         ]);
-        expect(run.arms.find((a) => a.arm === "host")?.journal).toHaveLength(3);
+        expect(run.arms.find((a) => a.arm === "host")?.journal).toHaveLength(5);
     });
 });
 
@@ -284,6 +288,7 @@ describe("oracle evidence integrity", () => {
         writeFileSync(join(dir, "manifest.json"), JSON.stringify(manifest));
         const journal = [
             { kind: "StartRun", arm: null, order: ["host"], scenario_ms: 0 },
+            { kind: "BeginTurn", arm: "host", event: "e-1", scenario_ms: 0 },
             { kind: "EndTurn", arm: "host", event: "e-1", outcome: "ok", scenario_ms: 0 },
             { kind: "Event", arm: "host", event: "e-1", scenario_ms: 0 },
             { kind: "EndArm", arm: "host", scenario_ms: 0 },
@@ -427,9 +432,11 @@ describe("oracle round three", () => {
         writeFileSync(join(dir, "scenario.json"), JSON.stringify({ ...scenario, scenario_hash }));
         const journal = [
             { kind: "StartRun", arm: null, order, scenario_ms: 0 },
+            { kind: "BeginTurn", arm: "host", event: "e-1", scenario_ms: 0 },
             { kind: "EndTurn", arm: "host", event: "e-1", outcome: "ok", scenario_ms: 0 },
             { kind: "Event", arm: "host", event: "e-1", scenario_ms: 0 },
             { kind: "EndArm", arm: "host", scenario_ms: 0 },
+            { kind: "BeginTurn", arm: "eidnara", event: "e-1", scenario_ms: 0 },
             { kind: "EndTurn", arm: "eidnara", event: "e-1", outcome: "ok", scenario_ms: 0 },
             { kind: "Event", arm: "eidnara", event: "e-1", scenario_ms: 0 },
             { kind: "EndArm", arm: "eidnara", scenario_ms: 0 },
@@ -498,6 +505,7 @@ describe("oracle round four", () => {
         writeFileSync(join(dir, "scenario.json"), JSON.stringify({ ...scenario, scenario_hash }));
         const journal = [
             { kind: "StartRun", arm: null, order, scenario_ms: 0 },
+            { kind: "BeginTurn", arm: "eidnara", event: "e-1", scenario_ms: 0 },
             { kind: "EndTurn", arm: "eidnara", event: "e-1", outcome: "ok", scenario_ms: 0 },
             { kind: "Event", arm: "eidnara", event: "e-1", scenario_ms: 0 },
             { kind: "EndArm", arm: "eidnara", scenario_ms: 0 },
@@ -563,6 +571,7 @@ describe("oracle round five", () => {
         writeFileSync(join(dir, "scenario.json"), JSON.stringify({ ...scenario, scenario_hash }));
         const journal = [
             { kind: "StartRun", arm: null, order, scenario_ms: 0 },
+            { kind: "BeginTurn", arm: "eidnara", event: "e-1", scenario_ms: 0 },
             { kind: "EndTurn", arm: "eidnara", event: "e-1", outcome: "ok", scenario_ms: 0 },
             { kind: "Event", arm: "eidnara", event: "e-1", scenario_ms: 0 },
             { kind: "EndArm", arm: "eidnara", scenario_ms: 0 },
@@ -593,6 +602,7 @@ function completeDir(order: string[]): { dir: string; line: (o: unknown) => stri
     const journal = [
         { kind: "StartRun", arm: null, order, scenario_ms: 0 },
         ...order.flatMap((arm) => [
+            { kind: "BeginTurn", arm, event: "e-1", scenario_ms: 0 },
             { kind: "EndTurn", arm, event: "e-1", outcome: "ok", scenario_ms: 0 },
             { kind: "Event", arm, event: "e-1", scenario_ms: 0 },
             { kind: "EndArm", arm, scenario_ms: 0 },
@@ -768,6 +778,7 @@ describe("oracle round nine", () => {
             { kind: "EndArm", arm: "eidnara", scenario_ms: 9 },
             { kind: "EndRun", arm: null, scenario_ms: 9 },
         ];
+        const began = { kind: "BeginTurn", arm: "eidnara", event: "e-1", scenario_ms: 0 };
         const ended = {
             kind: "EndTurn",
             arm: "eidnara",
@@ -784,14 +795,14 @@ describe("oracle round nine", () => {
         });
         const write = (rows: unknown[]) =>
             writeFileSync(join(dir, "journal.jsonl"), rows.map(line).join(""));
-        write([base[0], event("ok"), base[1], base[2]]);
+        write([base[0], began, event("ok"), base[1], base[2]]);
         expect(() => loadRun(dir, prereg)).toThrow("arm eidnara: turn e-1 has no EndTurn");
-        write([base[0], ended, ended, event("ok"), base[1], base[2]]);
+        write([base[0], began, ended, ended, event("ok"), base[1], base[2]]);
         expect(() => loadRun(dir, prereg)).toThrow("arm eidnara: turn e-1 has 2 EndTurn entries");
-        write([base[0], ended, event("ok"), base[1], base[2]]);
+        write([base[0], began, ended, event("ok"), base[1], base[2]]);
+        expect(loadRun(dir, prereg).arms[0]?.journal).toHaveLength(4);
+        write([base[0], began, event("failed(interrupted)"), base[1], base[2]]);
         expect(loadRun(dir, prereg).arms[0]?.journal).toHaveLength(3);
-        write([base[0], event("failed(interrupted)"), base[1], base[2]]);
-        expect(loadRun(dir, prereg).arms[0]?.journal).toHaveLength(2);
     });
 
     test("a manifest claiming more events than the scenario holds is refused", () => {
@@ -807,5 +818,157 @@ describe("oracle round nine", () => {
         expect(() => loadRun(dir, prereg)).toThrow("manifest events 2 exceeds the scenario's 1");
         writeFileSync(join(dir, "manifest.json"), JSON.stringify({ ...manifest, events: 0 }));
         expect(() => loadRun(dir, prereg)).toThrow("manifest events 0");
+    });
+});
+
+describe("oracle round ten", () => {
+    test("a scheduled user turn needs one BeginTurn, and an EndTurn for an unscheduled event is refused", () => {
+        const { dir, line } = completeDir(["eidnara"]);
+        const rows = (extra: unknown[], drop: string[] = []) => {
+            const base: Record<string, unknown>[] = [
+                { kind: "StartRun", arm: null, order: ["eidnara"], scenario_ms: 0 },
+                { kind: "BeginTurn", arm: "eidnara", event: "e-1", scenario_ms: 0 },
+                { kind: "EndTurn", arm: "eidnara", event: "e-1", outcome: "ok", scenario_ms: 5 },
+                { kind: "Event", arm: "eidnara", event: "e-1", outcome: "ok", scenario_ms: 5 },
+                { kind: "EndArm", arm: "eidnara", scenario_ms: 9 },
+                { kind: "EndRun", arm: null, scenario_ms: 9 },
+            ];
+            const kept = base.filter((r) => !drop.includes(String(r.kind)));
+            writeFileSync(join(dir, "journal.jsonl"), [...kept, ...extra].map(line).join(""));
+        };
+        rows([], ["BeginTurn"]);
+        expect(() => loadRun(dir, prereg)).toThrow("arm eidnara: turn e-1 has no BeginTurn");
+        rows([
+            {
+                kind: "EndTurn",
+                arm: "eidnara",
+                event: "bogus",
+                outcome: "prompt is too long",
+                scenario_ms: 6,
+            },
+        ]);
+        expect(() => loadRun(dir, prereg)).toThrow(
+            "arm eidnara: EndTurn for unscheduled event bogus",
+        );
+        rows([]);
+        expect(loadRun(dir, prereg).arms[0]?.journal).toHaveLength(4);
+    });
+
+    test("a call or tool run naming a turn outside the schedule, or negative tokens, refuses the run", () => {
+        const { dir, line } = completeDir(["eidnara"]);
+        writeFileSync(join(dir, "calls.jsonl"), line(call({ seq: 0, turn: "e-9" })));
+        expect(() => loadRun(dir, prereg)).toThrow("call 0: turn e-9 is not a scheduled user turn");
+        writeFileSync(join(dir, "calls.jsonl"), line(call({ seq: 0, input_tokens: -5 })));
+        expect(() => loadRun(dir, prereg)).toThrow("call 0: input_tokens negative");
+        writeFileSync(join(dir, "calls.jsonl"), line(call({ seq: 0, turn: null })));
+        writeFileSync(
+            join(dir, "eidnara", "tools.jsonl"),
+            line({ turn: "e-9", command: "ls", exit: 0, scenario_ms: 1 }),
+        );
+        expect(() => loadRun(dir, prereg)).toThrow(
+            /tools\.jsonl: line 1: turn e-9 is not a scheduled user turn/,
+        );
+        writeFileSync(
+            join(dir, "eidnara", "tools.jsonl"),
+            line({ turn: null, command: "ls", exit: 0, scenario_ms: 1 }),
+        );
+        expect(loadRun(dir, prereg).arms[0]?.tools).toHaveLength(1);
+    });
+
+    test("resource samples mix pid presence or pair a numeric RSS with a null pid: refused", () => {
+        const { dir, line } = completeDir(["eidnara"]);
+        const rs = join(dir, "eidnara", "resources.jsonl");
+        writeFileSync(
+            rs,
+            line({ scenario_ms: 0, rss: 100, pid: 1 }) + line({ scenario_ms: 1, rss: 110 }),
+        );
+        expect(() => loadRun(dir, prereg)).toThrow(
+            /resources\.jsonl: pid present on some samples and absent on others/,
+        );
+        writeFileSync(
+            rs,
+            line({ scenario_ms: 0, rss: 100, pid: 1 }) +
+                line({ scenario_ms: 1, rss: 110, pid: null }),
+        );
+        expect(() => loadRun(dir, prereg)).toThrow(
+            /resources\.jsonl: line 2: numeric rss with a null pid/,
+        );
+        writeFileSync(rs, line({ scenario_ms: 0, rss: 100 }) + line({ scenario_ms: 1, rss: 110 }));
+        expect(loadRun(dir, prereg).arms[0]?.resources).toHaveLength(2);
+    });
+
+    test("F5's absolute bound reads each lifetime's final sample (SIM-P57); a freed spike is not a leak", () => {
+        const c = Number(prereg.leak_bound.c_bytes_per_session);
+        const run: RunLogs = {
+            dir: "",
+            tier: "S",
+            base_wall_ms: 0,
+            prereg,
+            kinds: new Map(),
+            arms: [
+                armOf("eidnara", {
+                    resources: [
+                        { scenario_ms: 0, rss: 100 * c, pid: 1 },
+                        { scenario_ms: 1, rss: 300 * c, pid: 1 },
+                        { scenario_ms: 2, rss: 100 * c, pid: 1 },
+                    ],
+                }),
+            ],
+        };
+        expect(oracle(run, "F5")).toEqual([]);
+        const leaked = {
+            ...run,
+            arms: [
+                armOf("eidnara", {
+                    resources: [
+                        ...(run.arms[0]?.resources ?? []).slice(0, 2),
+                        { scenario_ms: 2, rss: 300 * c, pid: 1 },
+                    ],
+                }),
+            ],
+        };
+        expect(oracle(leaked, "F5").map((a) => a.at)).toEqual(["session 0"]);
+    });
+});
+
+describe("oracle round eleven", () => {
+    test("a negative RSS reading, or a null final reading on a daemon arm, refuses the run", () => {
+        const { dir, line } = completeDir(["eidnara"]);
+        const rs = join(dir, "eidnara", "resources.jsonl");
+        writeFileSync(
+            rs,
+            line({ scenario_ms: 0, rss: -1, pid: 1 }) + line({ scenario_ms: 1, rss: 0, pid: 1 }),
+        );
+        expect(() => loadRun(dir, prereg)).toThrow(/resources\.jsonl: line 1: rss negative/);
+        writeFileSync(
+            rs,
+            line({ scenario_ms: 0, rss: 100, pid: 1 }) +
+                line({ scenario_ms: 1, rss: null, pid: null }),
+        );
+        expect(() => loadRun(dir, prereg)).toThrow("arm eidnara: final RSS sample has no reading");
+    });
+
+    test("a manifest with no arms, or a call with an impossible status, refuses the run", () => {
+        const { dir, line } = completeDir(["eidnara"]);
+        const scenario = JSON.parse(readFileSync(join(dir, "scenario.json"), "utf8"));
+        const manifest = { tier: "S", order: [], events: 1, scenario_hash: scenario.scenario_hash };
+        writeFileSync(join(dir, "manifest.json"), JSON.stringify(manifest));
+        writeFileSync(
+            join(dir, "journal.jsonl"),
+            [
+                { kind: "StartRun", arm: null, order: [], scenario_ms: 0 },
+                { kind: "EndRun", arm: null, scenario_ms: 0 },
+            ]
+                .map(line)
+                .join(""),
+        );
+        expect(() => loadRun(dir, prereg)).toThrow("manifest names no arms");
+        const whole = completeDir(["eidnara"]);
+        writeFileSync(join(whole.dir, "calls.jsonl"), whole.line(call({ seq: 0, status: 450.5 })));
+        expect(() => loadRun(whole.dir, prereg)).toThrow(
+            "call 0: status 450.5 is not an HTTP status",
+        );
+        writeFileSync(join(whole.dir, "calls.jsonl"), whole.line(call({ seq: 0, status: 0 })));
+        expect(loadRun(whole.dir, prereg).arms[0]?.calls).toHaveLength(1);
     });
 });

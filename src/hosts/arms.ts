@@ -19,7 +19,7 @@ import {
 import { dirname, join, resolve } from "node:path";
 import type { SimConfig } from "../config/config";
 import { launch, plainPath, shellQuote } from "../run/launcher";
-import { stopOwnedTree } from "../run/procs";
+import { processStart, running, stopOwnedTree } from "../run/procs";
 import { FAKETIME_LIB, faketimeEnv } from "../run/timeinject";
 import { toolbinDir, toolchainEnv } from "../run/toolchain";
 
@@ -72,10 +72,16 @@ export function toolCommand(tool: string, args: Record<string, unknown> | undefi
     if (typeof args?.command === "string") return args.command;
     const key = TARGET_KEYS.find((k) => typeof args?.[k] === "string");
     if (!key || !args) return `${tool} ${JSON.stringify(args ?? {})}`;
-    const body = Object.entries(args)
-        .filter(([k, v]) => k !== key && (typeof v === "string" || typeof v === "object"))
+    const rest = Object.entries(args).filter(([k, v]) => k !== key && v !== undefined);
+    const scalars = rest
+        .filter(([, v]) => typeof v !== "string" && typeof v !== "object")
+        .map(([k, v]) => `${k}=${JSON.stringify(v)}`)
+        .sort();
+    const body = rest
+        .filter(([, v]) => typeof v === "string" || typeof v === "object")
         .map(([, v]) => (typeof v === "string" ? v : JSON.stringify(v)));
-    return [`${tool} ${args[key]}`, ...body].join("\n");
+    const head = [`${tool} ${args[key]}`, ...scalars].join(" ");
+    return [head, ...body].join("\n");
 }
 
 export interface PromptResult {
@@ -107,6 +113,8 @@ function eidnaraUserConfig(connectionFile: string, model: string): Record<string
 interface LogMarker {
     pending: string[];
     copying: { source: string; target_bytes: number } | null;
+    /** The daemon process writing the live log, when one is up; recovery stops it before reading. */
+    owner?: { pid: number; start: string | null } | null;
 }
 
 export interface DaemonContext {
@@ -167,24 +175,39 @@ export class DaemonStack {
         const text = readFileSync(this.logSourceFile, "utf8");
         try {
             const parsed = JSON.parse(text) as Partial<LogMarker>;
-            return { pending: parsed.pending ?? [], copying: parsed.copying ?? null };
+            return {
+                pending: parsed.pending ?? [],
+                copying: parsed.copying ?? null,
+                owner: parsed.owner ?? null,
+            };
         } catch {
             throw new Error(`${this.logSourceFile}: unreadable daemon log recovery marker`);
         }
     }
 
-    /** Records the live stack's stderr log as the one log still to save. */
-    noteLogSource(): void {
-        this.writeMarker({ pending: [String(this.stack?.logPath ?? "")], copying: null });
+    /** The live daemon's identity, so a recovery after a kill can tell it from a reused pid. */
+    private owner(): LogMarker["owner"] {
+        const pid = this.pid();
+        return pid === null ? null : { pid, start: processStart(pid) };
     }
 
-    /** Appends one log to `daemon.log` exactly once, then removes it and takes it off the marker. */
+    /** Records the live stack's stderr log as the one log still to save, and the daemon writing it. */
+    noteLogSource(): void {
+        const live = String(this.stack?.logPath ?? "");
+        this.writeMarker({ pending: [live], copying: null, owner: this.owner() });
+    }
+
+    /**
+     * Appends one log to `daemon.log` exactly once: the marker commits the copy before the
+     * source is removed, so a kill between the two leaves an orphan file, never a lost or
+     * doubled lifetime.
+     */
     private absorb(source: string, rest: string[]): void {
         const start = existsSync(this.ctx.logFile) ? statSync(this.ctx.logFile).size : 0;
         this.writeMarker({ pending: rest, copying: { source, target_bytes: start } });
         appendFileFrom(source, this.ctx.logFile);
-        rmSync(source, { force: true });
         this.writeMarker({ pending: rest, copying: null });
+        rmSync(source, { force: true });
     }
 
     /**
@@ -193,9 +216,15 @@ export class DaemonStack {
      * log is appended once. A clean `stop` or `restart` leaves no log behind, so this finds
      * one only after a kill.
      */
-    recoverLog(): void {
+    async recoverLog(): Promise<void> {
         const marker = this.readMarker();
         if (!marker) return;
+        const { owner } = marker;
+        if (owner && running(owner.pid) && processStart(owner.pid) === owner.start) {
+            if (!(await stopOwnedTree(owner.pid, 10_000))) {
+                throw new Error(`daemon ${owner.pid} from the last lifetime survived SIGKILL`);
+            }
+        }
         let pending = [...marker.pending];
         if (marker.copying) {
             if (existsSync(this.ctx.logFile)) {
@@ -219,7 +248,7 @@ export class DaemonStack {
     }
 
     async start(): Promise<void> {
-        this.recoverLog();
+        await this.recoverLog();
         const { config } = this.ctx;
         const hr = await v1(config, "packages/e2e-tests/src/bedrock-peer/harness-runtime.ts");
         const hh = await v1(config, "packages/e2e-tests/src/rust-runner/hermetic-host.ts");
@@ -282,7 +311,7 @@ export class DaemonStack {
         rmSync(this.held, { force: true });
         if (existsSync(live)) linkSync(live, this.held);
         this.heldStdout = stdout;
-        this.writeMarker({ pending: [this.held, live], copying: null });
+        this.writeMarker({ pending: [this.held, live], copying: null, owner: this.owner() });
     }
 
     /**
@@ -302,18 +331,29 @@ export class DaemonStack {
         appendFileSync(this.ctx.logFile, this.heldStdout ?? "");
         this.heldStdout = null;
         this.absorb(this.held, [live]);
+        this.writeMarker({ pending: [live], copying: null, owner: this.owner() });
     }
 
-    /** Stops the daemon, then saves its stdout and its whole stderr log; nothing is left to recover. */
+    /**
+     * Stops the daemon, then saves its stdout (read after termination, so a line written while
+     * handling SIGTERM is in it) and every log the marker still lists, the live one included;
+     * nothing is left to recover.
+     */
     async stop(): Promise<void> {
         const stack = this.stack;
         if (!stack) return;
-        const { stdout } = this.hh.__hermeticHostTest.diagnostics(stack);
         await stack.terminateHost();
         this.stack = null;
+        const { stdout } = this.hh.__hermeticHostTest.diagnostics(stack);
         appendFileSync(this.ctx.logFile, stdout);
         const live = String(stack.logPath ?? "");
-        if (live !== "" && existsSync(live)) this.absorb(live, []);
+        const listed = this.readMarker()?.pending ?? [];
+        const sources = [...new Set([...listed, live])].filter((p) => p !== "");
+        while (sources.length > 0) {
+            const [source, ...rest] = sources as [string, ...string[]];
+            if (existsSync(source)) this.absorb(source, rest);
+            sources.shift();
+        }
         rmSync(this.logSourceFile, { force: true });
     }
 }
@@ -685,6 +725,7 @@ export class OpencodeSimHost extends SimHost {
         deadlineMs: number,
     ): Promise<Array<{ info: Untyped; parts: Untyped[] }>> {
         const call = this.client.session.messages({ path: { id: this.sid } });
+        call.catch(() => undefined);
         const listed = await Promise.race([call, Bun.sleep(deadlineMs).then(() => null)]);
         if (listed === null) throw new Error(`session.messages timed out after ${deadlineMs} ms`);
         if (listed.error || !listed.data) {
@@ -711,15 +752,12 @@ export class OpencodeSimHost extends SimHost {
     }
 
     /**
-     * Runs one turn and then logs the tool parts of the messages it added, on every outcome:
-     * the next turn treats those messages as seen, so a turn that errored or hit its deadline
-     * logs its tools here or never. A failed turn whose listing also fails keeps its own
-     * error and names the capture gap.
-     */
-    /**
-     * Runs one turn under `timeoutMs`, which also bounds the message listings before and
-     * after it. A listing that stalls before the turn fails the turn; one that stalls after it
-     * fails the turn as a capture gap, since its tool runs are then unknown.
+     * Runs one turn under `timeoutMs` and then logs the tool parts of the messages it added, on
+     * every outcome: the next turn treats those messages as seen, so a turn that errored or hit
+     * its deadline logs its tools here or never. The deadline also bounds the message listings
+     * before and after the turn: a listing that stalls before the turn fails the turn, and one
+     * that stalls after it fails the turn as a capture gap, since its tool runs are then
+     * unknown. A failed turn whose listing also fails keeps its own error and names the gap.
      */
     async prompt(text: string, timeoutMs: number): Promise<PromptResult> {
         const started = Date.now();
