@@ -1525,3 +1525,53 @@ describe("oracle round twenty-one", () => {
         ]);
     });
 });
+
+describe("oracle round twenty-three", () => {
+    test("a truncated call keeps its response prefix", () => {
+        const { dir, line } = completeDir(["eidnara"]);
+        writeFileSync(
+            join(dir, "calls.jsonl"),
+            line({ ...call({ arm: "eidnara", seq: 0 }), response_text_truncated: true }),
+        );
+        expect(() => loadRun(dir, prereg)).toThrow(
+            /call 0: response_text_truncated without response_text/,
+        );
+    });
+
+    test("a Markdown link to the project is not the plugin's log prefix", () => {
+        const link = runWith(
+            armOf("eidnara", {
+                calls: [
+                    call({
+                        seq: 0,
+                        response_text:
+                            "See [Eidnara](https://github.com/ahrav/eidnara) and [eidnara](x).",
+                    }),
+                ],
+            }),
+        );
+        expect(oracle(link, "F7")).toEqual([]);
+        const leaked = runWith(
+            armOf("eidnara", {
+                calls: [
+                    call({ seq: 0, response_text: "Done.\n[eidnara] rust pass: decision=HARD" }),
+                ],
+            }),
+        );
+        expect(oracle(leaked, "F7")).toHaveLength(1);
+    });
+});
+
+test("a record file is read in chunks and parsed line by line, so a line spanning chunks still loads", () => {
+    const { dir, line } = completeDir(["eidnara"]);
+    const big = "x".repeat((1 << 20) + 17);
+    writeFileSync(
+        join(dir, "calls.jsonl"),
+        line(call({ arm: "eidnara", seq: 0, response_text: big })) +
+            line(call({ arm: "eidnara", seq: 1, response_text: "é".repeat(600_000) })),
+    );
+    const run = loadRun(dir, prereg);
+    expect(run.arms[0]?.calls.map((c) => c.response_text?.length)).toEqual([big.length, 600_000]);
+    writeFileSync(join(dir, "calls.jsonl"), `${line(call({ seq: 0 }))}{"seq":`);
+    expect(() => loadRun(dir, prereg)).toThrow(/calls\.jsonl: line 2 is cut/);
+});

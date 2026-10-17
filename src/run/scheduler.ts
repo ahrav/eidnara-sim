@@ -241,7 +241,8 @@ export class Scheduler {
     }
 
     private async idle(): Promise<void> {
-        await this.quiesce(() => this.clock?.busyIds() ?? []);
+        const limit = Date.now() + (this.o.idleLimitMs ?? Number.POSITIVE_INFINITY);
+        await this.quiesce(() => this.clock?.busyIds() ?? [], limit);
     }
 
     /**
@@ -252,16 +253,25 @@ export class Scheduler {
     async quiesceJobs(): Promise<void> {
         const settle = this.o.settleMs ?? 1_000;
         const jobs = () => (this.clock?.busyIds() ?? []).filter((id) => id.startsWith("job:"));
-        for (;;) {
-            await Bun.sleep(settle);
-            await this.quiesce(jobs);
-            await Bun.sleep(settle);
-            if (jobs().length === 0) return;
+        const limit = Date.now() + (this.o.idleLimitMs ?? Number.POSITIVE_INFINITY);
+        await Bun.sleep(settle);
+        await this.quiesce(jobs, limit);
+        let quietSince = Date.now();
+        let activity = this.jobActivity;
+        while (Date.now() - quietSince < settle) {
+            await Bun.sleep(this.o.jobPollMs ?? 50);
+            if (this.jobActivity !== activity || jobs().length > 0) {
+                await this.quiesce(jobs, limit);
+                activity = this.jobActivity;
+                quietSince = Date.now();
+            }
         }
     }
 
-    private async quiesce(pending: () => string[]): Promise<void> {
-        const limit = Date.now() + (this.o.idleLimitMs ?? Number.POSITIVE_INFINITY);
+    /** Counts every job start and end, so a job that begins and ends between two polls still resets the quiet window. */
+    private jobActivity = 0;
+
+    private async quiesce(pending: () => string[], limit: number): Promise<void> {
         while (pending().length > 0) {
             if (Date.now() > limit) {
                 throw new HarnessFailure(
@@ -350,11 +360,13 @@ export class Scheduler {
     }
 
     jobStart(id: string): void {
+        this.jobActivity++;
         this.clock?.begin(`job:${id}`);
         this.log({ kind: "RegisterJob", job: id });
     }
 
     jobEnd(id: string): void {
+        this.jobActivity++;
         this.log({ kind: "EndJob", job: id });
         this.clock?.end(`job:${id}`);
     }

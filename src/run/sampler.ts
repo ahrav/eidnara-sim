@@ -67,7 +67,8 @@ export interface Sample {
 
 export class ResourceSampler {
     private timer: ReturnType<typeof setInterval> | null = null;
-    private last: { pid: number; wall: number; cpu: number } | null = null;
+    /** The CPU baseline names the process lifetime it was read from; a reused pid with a new start begins afresh. */
+    private last: { pid: number; start: string; wall: number; cpu: number } | null = null;
     private busy = false;
 
     constructor(
@@ -76,6 +77,8 @@ export class ResourceSampler {
             intervalMs: number;
             busyFraction: number;
             pid: () => number | null;
+            /** Reads a process's /proc snapshot; defaults to procStats. */
+            stats?: (pid: number) => ReturnType<typeof procStats>;
             storeDir: string;
             scenarioMs: () => number;
             onBusy: (busy: boolean) => void;
@@ -84,13 +87,15 @@ export class ResourceSampler {
 
     sample(transitions = true): Sample {
         const pid = this.o.pid();
-        const stats = pid === null ? null : procStats(pid);
+        const stats = pid === null ? null : (this.o.stats ?? procStats)(pid);
         const wall = Date.now();
         let fraction: number | null = null;
-        if (stats && this.last?.pid === pid && wall > this.last.wall) {
+        const sameLife = this.last?.pid === pid && this.last?.start === stats?.start;
+        if (stats && this.last && sameLife && wall > this.last.wall) {
             fraction = (stats.cpuMs - this.last.cpu) / (wall - this.last.wall);
         }
-        this.last = stats && pid !== null ? { pid, wall, cpu: stats.cpuMs } : null;
+        this.last =
+            stats && pid !== null ? { pid, start: stats.start, wall, cpu: stats.cpuMs } : null;
         const busy = fraction !== null && fraction > this.o.busyFraction;
         if (transitions && busy !== this.busy) {
             this.busy = busy;

@@ -29,7 +29,6 @@ interface RecorderState {
     ended?: string | null;
     starts: Record<string, string>;
     last: Record<string, { from: string; to: string }>;
-    commands: Command[];
     /** Per project, the paths the source repository tracks although its ignore rules match them. */
     forced?: Record<string, string[]>;
     /** Per project, the generation of its index file; a lock a killed git left behind moves the project to the next. */
@@ -44,7 +43,26 @@ interface RecorderState {
     >;
 }
 
-const EMPTY: RecorderState = { session: null, ended: null, starts: {}, last: {}, commands: [] };
+const EMPTY: RecorderState = { session: null, ended: null, starts: {}, last: {} };
+
+/**
+ * A restored state's index generations are the only values that reach a path: each must be a
+ * nonnegative safe integer, so `GIT_INDEX_FILE` stays under the recorder's repository.
+ */
+function restoredState(raw: unknown): RecorderState {
+    const state = raw as RecorderState;
+    for (const [project, generation] of Object.entries(state.indexGenerations ?? {})) {
+        if (!Number.isSafeInteger(generation) || generation < 0) {
+            throw new Error(
+                `snapshot state names index generation ${JSON.stringify(generation)} for ${project}`,
+            );
+        }
+    }
+    return state;
+}
+
+/** A git run the workspace's own rule files made fail: the probe turn fails and the run goes on. */
+export class WorkspaceRefused extends GitBound {}
 
 /** Entries a workspace walk visits at most; a wider forest fails the probe turn. */
 const WORKSPACE_ENTRY_CAP = 200_000;
@@ -96,11 +114,47 @@ export class SnapshotRecorder {
         mkdirSync(armDir, { recursive: true });
         this.gitDir = join(armDir, "snapshot.git");
         this.stateFile = join(armDir, "snapshot-state.json");
+        this.commandsFile = join(armDir, "commands.jsonl");
         this.state = existsSync(this.stateFile)
-            ? (JSON.parse(readFileSync(this.stateFile, "utf8")) as RecorderState)
+            ? restoredState(JSON.parse(readFileSync(this.stateFile, "utf8")))
             : structuredClone(EMPTY);
         this.dropCutLine();
         this.dropIndexLocks();
+        this.loadCommands();
+    }
+
+    /**
+     * The open session's tool runs, one appended line each, so a tool-heavy session costs one
+     * append per report; a run whose `call` id matches an earlier line replaces that record.
+     */
+    private readonly commandsFile: string;
+    private commands: Command[] = [];
+    private readonly commandAt = new Map<string, number>();
+
+    private loadCommands(): void {
+        this.commands = [];
+        this.commandAt.clear();
+        if (!existsSync(this.commandsFile)) return;
+        const end = keepCompleteLines(this.commandsFile);
+        if (end === 0) return;
+        for (const line of readFileSync(this.commandsFile, "utf8").split("\n")) {
+            if (line) this.place(JSON.parse(line) as Command);
+        }
+    }
+
+    private place(run: Command): void {
+        const at = run.call ? this.commandAt.get(run.call) : undefined;
+        if (at === undefined) {
+            if (run.call) this.commandAt.set(run.call, this.commands.length);
+            this.commands.push(run);
+        } else {
+            this.commands[at] = run;
+        }
+    }
+
+    /** The open session's tool runs so far, in report order. */
+    sessionCommands(): Command[] {
+        return [...this.commands];
     }
 
     /**
@@ -190,6 +244,9 @@ export class SnapshotRecorder {
 
     clear(): void {
         this.state = structuredClone(EMPTY);
+        this.commands = [];
+        this.commandAt.clear();
+        rmSync(this.commandsFile, { force: true });
         rmSync(this.stateFile, { force: true });
         rmSync(this.gitDir, { recursive: true, force: true });
         rmSync(join(this.armDir, "snapshots.jsonl"), { force: true });
@@ -354,10 +411,11 @@ export class SnapshotRecorder {
     }
 
     tree(dir: string, nested = this.embedded(dir)): string {
-        const excluded = nested.map((path) => `:(exclude)${path}`);
-        this.git(["add", "--all", "--", ".", ...excluded], dir);
+        const excluded = nested.map((path) => `:(exclude,literal)${path}`);
+        this.addAll(dir, excluded);
         if (nested.length > 0) {
-            this.git(["rm", "-r", "-q", "--cached", "--ignore-unmatch", "--", ...nested], dir);
+            const rm = ["rm", "-r", "-q", "--cached", "--ignore-unmatch", "--", ...nested];
+            this.git(["--literal-pathspecs", ...rm], dir);
         }
         const root = realpathSync(dir);
         const inPlace = (path: string): boolean => {
@@ -372,8 +430,28 @@ export class SnapshotRecorder {
                 inPlace(path) &&
                 !nested.some((repo) => path === repo || path.startsWith(`${repo}/`)),
         );
-        if (forced.length > 0) this.git(["add", "--force", "--", ...forced], dir);
+        if (forced.length > 0)
+            this.git(["--literal-pathspecs", "add", "--force", "--", ...forced], dir);
         return this.git(["write-tree"], dir).trim();
+    }
+
+    /**
+     * Indexes the workspace. The workspace's own attribute rules shape how git reads each file,
+     * and a rule the agent wrote can make that read fail; such a failure under changed rule
+     * files fails the probe turn, as a changed rule file does, instead of stopping the run.
+     */
+    private addAll(dir: string, excluded: string[]): void {
+        try {
+            this.git(["add", "--all", "--", ".", ...excluded], dir);
+        } catch (caught) {
+            if (caught instanceof GitBound) throw caught;
+            const { ignoreFiles } = this.survey(dir);
+            const changed = this.ignoreChanges(dir, basename(dir), ignoreFiles);
+            if (changed.length === 0) throw caught;
+            throw new WorkspaceRefused(
+                `git add failed under changed rule files (${changed.join(", ")}): ${String(caught)}`,
+            );
+        }
     }
 
     /** `--text` diffs every file as text, so a NUL byte or a `-diff` attribute hides no added line. */
@@ -400,7 +478,9 @@ export class SnapshotRecorder {
         this.state.session = session;
         if (start) this.state.starts[project] = start;
         else delete this.state.starts[project];
-        this.state.commands = [];
+        this.commands = [];
+        this.commandAt.clear();
+        writeFileSync(this.commandsFile, "");
         this.save();
     }
 
@@ -432,17 +512,17 @@ export class SnapshotRecorder {
      */
     addTools(tools: Command[], turn: string | null): void {
         if (tools.length === 0) return;
-        const lines = tools.map((t) => `${JSON.stringify({ turn, ...t })}\n`).join("");
-        appendFileSync(join(this.armDir, "tools.jsonl"), lines);
+        const toolLines = tools.map((t) => `${JSON.stringify({ turn, ...t })}\n`).join("");
+        appendFileSync(join(this.armDir, "tools.jsonl"), toolLines);
+        const lines: string[] = [];
         for (const run of tools) {
-            const at = run.call ? this.state.commands.findIndex((c) => c.call === run.call) : -1;
-            if (at === -1) this.state.commands.push(run);
-            else {
-                const earlier = this.state.commands[at] as Command;
-                this.state.commands[at] = { ...run, scenario_ms: earlier.scenario_ms };
-            }
+            const at = run.call ? this.commandAt.get(run.call) : undefined;
+            const earlier = at === undefined ? undefined : this.commands[at];
+            const placed = earlier ? { ...run, scenario_ms: earlier.scenario_ms } : run;
+            this.place(placed);
+            lines.push(JSON.stringify(placed));
         }
-        this.save();
+        appendFileSync(this.commandsFile, `${lines.join("\n")}\n`);
     }
 
     capture(
@@ -455,7 +535,7 @@ export class SnapshotRecorder {
         after = this.tree(dir),
     ): string {
         const id = `${this.arm}:${e.probe}:${e.id}`;
-        const commands = [...this.state.commands];
+        const commands = [...this.commands];
         const artefacts: Artefact[] = [
             {
                 id: `${id}:diff`,

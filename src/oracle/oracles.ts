@@ -43,7 +43,7 @@ export const INTERNAL_TEXT = [
     /<\/?history[_-]segments?\b/i,
     /<\/?eidnara[\w-]*>/i,
     /context[_-]researcher[_-]augmentation/i,
-    /\[eidnara\]/i,
+    /^\s*\[eidnara\] /m,
     /\b(row_version|served_from|invocation_bytes|emergency_wait)\b/,
     /\bdecision=(SOFT|HARD)/,
 ];
