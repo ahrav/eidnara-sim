@@ -40,7 +40,7 @@ const ROWS_SCANNED = 4096;
 
 const FOOTER =
     /^\[(The command completed|Current working directory|Python interpreter|Command finished)/;
-const EXIT = /\[Command finished with exit code (-?\d+)\]/;
+const EXIT = /\[(?:Command finished|The command completed) with exit code (-?\d+)\.?\]/g;
 const EXCEPTION =
     /^((?:[A-Za-z_]\w*\.)*[A-Z]\w*(?:Error|Exception|Failure|Exit|Interrupt|Warning))(?::\s?(.*))?$/;
 
@@ -53,14 +53,32 @@ interface Message {
 }
 
 export function classify(tool: string, command: string, content: string): SampleKind | null {
-    if (content.includes("Traceback (most recent call last)")) return "stack_trace";
-    if (tool === "execute_bash") {
-        if (/\b(pytest|py\.test|unittest|tox|nox)\b/.test(command)) return "test_run";
-        if (/\b(grep|rg|ag)\b/.test(command)) return "grep";
-        if (/^\s*(cat|head|tail|sed -n)\b/.test(command)) return "file_read";
+    if (tool === "str_replace_editor") {
+        return content.startsWith("Here's the result of running `cat -n`") ? "file_read" : null;
     }
-    const view = content.startsWith("Here's the result of running `cat -n`");
-    return tool === "str_replace_editor" && view ? "file_read" : null;
+    if (content.includes(TRACEBACK)) return "stack_trace";
+    if (tool !== "execute_bash" || SHELL_ERROR.test(content)) return null;
+    const bare = command.replace(QUOTED, '""').replace(COMMENT, "$1").replace(FALLBACK, "");
+    const runner = bare.split(SEPARATOR).find((segment) => RUNNER.test(segment));
+    if (runner !== undefined) return NO_RUN.test(runner) ? null : "test_run";
+    if (SEARCH.test(bare)) return "grep";
+    if (/^\s*(cat|head|tail|sed -n)\b/.test(command)) return "file_read";
+    return null;
+}
+
+/** A committed sample's kind must follow from its tool, command, and clipped content. */
+export function kindMatches(sample: {
+    kind: string;
+    tool: string;
+    command: string;
+    content: string;
+}): boolean {
+    if (sample.kind === "stack_trace") {
+        const lines = sample.content.trimEnd().split("\n");
+        const framed = lines.some((l) => FRAME.test(l)) && TRACE_END.test(lines.at(-1) ?? "");
+        return sample.tool === "execute_bash" && (sample.content.includes(TRACEBACK) || framed);
+    }
+    return classify(sample.tool, sample.command, sample.content) === sample.kind;
 }
 
 export function commandOf(args: string): string {
@@ -74,22 +92,64 @@ export function commandOf(args: string): string {
     }
 }
 
-function clip(body: string, keepTail: boolean): string {
+function clip(body: string, kind: SampleKind): string {
     if (body.length <= CONTENT_CAP) return body;
-    return keepTail ? body.slice(-CONTENT_CAP) : body.slice(0, CONTENT_CAP);
+    if (kind === "stack_trace") {
+        const start = Math.max(0, body.lastIndexOf(TRACEBACK));
+        const lines = body.slice(start).split("\n");
+        const last = lines.findIndex((l, i) => i > 0 && TRACE_END.test(l));
+        const end =
+            last < 0 ? start + CONTENT_CAP : start + lines.slice(0, last + 1).join("\n").length;
+        if (end - start <= CONTENT_CAP) return body.slice(start, start + CONTENT_CAP);
+        return body.slice(end - CONTENT_CAP, end);
+    }
+    return kind === "test_run" ? body.slice(-CONTENT_CAP) : body.slice(0, CONTENT_CAP);
 }
 
 type Provenanced = Omit<Provenance, "id">;
+
+const FRAME = /^\s*File "/;
+const DOC_SECTION = /^\s*(?:Raises|Warns|Returns|Yields|Args|Arguments|Parameters)\s*:?\s*$/;
+const RUNNER =
+    /(^|(?<!\\)&&|(?<!\\);|(?<!\\)\|)\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*(?:python3?\s+-m\s+)?(?:pytest|py\.test|tox|nox|unittest)\b/;
+const SEPARATOR = /(?<!\\)(?:\|\||&&|;|\|)/;
+const FALLBACK = /(?<!\\)\|\|[^&;|]*/g;
+const QUOTED = /"(?:\\.|[^"\\])*"|'[^']*'/g;
+const NO_RUN = /(^|\s)(--help|-h|--version|--co|--collect-only|--fixtures|--markers)(\s|$)/;
+const SHELL_ERROR = /^(?:bash|sh): (?:line \d+: )?(?:syntax error|.*: command not found)/m;
+const COMMENT = /(^|\s)#.*$/gm;
+const TRACEBACK = "Traceback (most recent call last)";
+const TRACE_END = /^(?:E\s+)?\s*[\w.]*(?:Error|Exception|Failure|Exit|Interrupt|Warning)\b/;
+const SEARCH =
+    /(^|(?<!\\)&&|(?<!\\);|(?<!\\)\|)\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*(?:sudo\s+|xargs\s+(?:-\S+\s+)*)?(?:grep|rg|ag)\b|(^|(?<!\\)&&|(?<!\\);|(?<!\\)\|)\s*find\b.*?-exec\s+(?:grep|rg|ag)\b/;
+
+export function exceptionLine(line: string): { code: string; message: string } | undefined {
+    const code = EXCEPTION.exec(line.trim());
+    if (code?.[1] === undefined) return undefined;
+    return { code: code[1], message: (code[2] ?? "").slice(0, 300) };
+}
+
+function inDocSection(lines: string[], index: number): boolean {
+    let inside = false;
+    for (const line of lines.slice(0, index)) {
+        if (DOC_SECTION.test(line)) inside = true;
+        else if (FRAME.test(line) || (line.trim() !== "" && !/^\s/.test(line))) inside = false;
+    }
+    return inside;
+}
 
 function harvestCodes(lines: string[], base: Provenanced, codes: Map<string, ErrorCodeEntry>) {
     for (const [i, line] of lines.entries()) {
         const code = EXCEPTION.exec(line.trim());
         if (code?.[1] === undefined || codes.has(code[1]) || codes.size >= MAX_ERROR_CODES)
             continue;
+        if (code[2] === undefined && !lines.slice(Math.max(0, i - 2), i).some((l) => FRAME.test(l)))
+            continue;
+        if (inDocSection(lines, i)) continue;
         codes.set(code[1], {
             id: `err-${codes.size.toString().padStart(4, "0")}`,
             code: code[1],
-            message: (code[2] ?? "").slice(0, 300),
+            message: exceptionLine(line)?.message ?? "",
             context: lines.slice(Math.max(0, i - 8), i + 1).join("\n"),
             ...base,
         });
@@ -120,18 +180,26 @@ export function extractFrom(rows: TrajectoryRow[], dataset: Dataset): Extraction
             if (m.role !== "tool" || !m.content) continue;
             const source_id = `${dataset.repo}@${dataset.revision}:${row.trajectory_id}#${index}`;
             const base = { repo: row.repo, license: dataset.license, source_id };
-            const lines = m.content.split("\n").filter((l) => !FOOTER.test(l));
-            harvestCodes(lines, base, codes);
+            const raw = m.content.split("\n");
+            let end = raw.length;
+            while (end > 0 && (raw[end - 1] ?? "").trim() === "") end--;
+            while (end > 0 && FOOTER.test(raw[end - 1] ?? "")) end--;
+            const footer = raw.slice(end).join("\n");
+            const lines = raw.slice(0, end);
+            const tool = m.name ?? "";
+            const exit = [...footer.matchAll(EXIT)].at(-1)?.[1];
+            const failed =
+                exit !== undefined && (exit !== "0" || lines.join("\n").includes(TRACEBACK));
+            if (tool === "execute_bash" && failed) harvestCodes(lines, base, codes);
 
             const body = lines.join("\n").trim();
-            const tool = m.name ?? "";
             const command = calls.get(m.tool_call_id ?? "") ?? "";
             const kind = classify(tool, command, body);
             if (kind === null || body.length < MIN_CHARS || taken.has(kind)) continue;
+            if (tool === "execute_bash" && exit === undefined) continue;
             if ((perKind.get(kind) ?? 0) >= SAMPLES_PER_KIND) continue;
             taken.add(kind);
             perKind.set(kind, (perKind.get(kind) ?? 0) + 1);
-            const exit = EXIT.exec(m.content)?.[1];
             samples.push({
                 id: `out-${samples.length.toString().padStart(4, "0")}`,
                 kind,
@@ -140,7 +208,7 @@ export function extractFrom(rows: TrajectoryRow[], dataset: Dataset): Extraction
                 exit_code: exit === undefined ? null : Number(exit),
                 chars: body.length,
                 truncated: body.length > CONTENT_CAP,
-                content: clip(body, kind === "test_run" || kind === "stack_trace"),
+                content: clip(body, kind),
                 ...base,
             });
         }
@@ -148,8 +216,10 @@ export function extractFrom(rows: TrajectoryRow[], dataset: Dataset): Extraction
     return { samples, error_codes: [...codes.values()] };
 }
 
+export const OPENHANDS_FILE = "trajectories.parquet";
+
 export async function extractToolOutputs(dataset: Dataset): Promise<Extraction> {
-    const file = await asyncBufferFromFile(cachePath(dataset, "trajectories.parquet"));
+    const file = await asyncBufferFromFile(cachePath(dataset, OPENHANDS_FILE));
     const columns = ["trajectory_id", "repo", "trajectory"];
     const rows = await parquetReadObjects({ file, rowEnd: ROWS_SCANNED, columns, compressors });
     return extractFrom(rows as TrajectoryRow[], dataset);

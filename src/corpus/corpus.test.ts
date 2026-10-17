@@ -1,6 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { Rng } from "../rng";
 import type { CdfTable } from "./cdf";
 import { checkCorpus } from "./check";
@@ -10,10 +8,11 @@ import {
     failedChecks,
     loadCited,
     loadDistributions,
+    loadRates,
     table,
+    waived,
 } from "./distributions";
 import { type SampledSession, sampleSession } from "./sampler";
-import { CORPUS_DIR } from "./sources";
 
 interface Rate {
     value: number | null;
@@ -53,12 +52,18 @@ function ksDistance(t: CdfTable, draws: number[]): number {
             d = Math.max(d, Math.abs(below / n - (t.p[i] ?? 1)));
         }
     }
+    let first = 0;
     for (let i = 0; i < n; i++) {
         const v = sorted[i] ?? 0;
         if (sorted[i + 1] === v) continue;
         const f = cdfAt(t, v);
         d = Math.max(d, Math.abs((i + 1) / n - f));
-        if (t.kind === "continuous") d = Math.max(d, Math.abs(f - i / n));
+        if (t.kind === "continuous") {
+            const atom = t.x.indexOf(v);
+            const below = atom < 0 ? f : (t.p[atom] ?? 0);
+            d = Math.max(d, Math.abs(below - first / n));
+        }
+        first = i + 1;
     }
     return d;
 }
@@ -81,7 +86,7 @@ describe("committed corpus", () => {
     });
 
     test("only append p90 carries a recorded deviation", () => {
-        const deviations = cited.checks.filter((c) => c.deviation !== undefined);
+        const deviations = cited.checks.filter(waived);
         expect(deviations.map((c) => [c.quantity, c.q])).toEqual([["append_tokens_per_step", 0.9]]);
     });
 
@@ -129,6 +134,11 @@ describe("sampler over 10,000 sessions", () => {
         expect(Math.max(...idle)).toBeGreaterThan(11 * 3600);
     });
 
+    test("append token counts are whole numbers", () => {
+        const append = pooled.append_tokens_per_step ?? [];
+        expect(append.filter((a) => !Number.isInteger(a))).toEqual([]);
+    });
+
     test("the append tail reaches 10k tokens per step", () => {
         const append = pooled.append_tokens_per_step ?? [];
         const share = append.filter((a) => a >= 10_000).length / append.length;
@@ -160,7 +170,16 @@ describe("SIM-P09: forced p90 sessions", () => {
 });
 
 describe("SIM-P10: user-behaviour rates", () => {
-    const published = JSON.parse(readFileSync(join(CORPUS_DIR, "published-rates.json"), "utf8"));
+    const published = loadRates();
+
+    test("the four behaviour rates are present", () => {
+        expect(Object.keys(published.rates).sort()).toEqual([
+            "abandon_per_session",
+            "interrupt_per_turn",
+            "pushback_per_turn",
+            "redirect_per_session",
+        ]);
+    });
 
     test("distributions.json carries the published rates unchanged", () => {
         expect(dist.rates).toEqual({
@@ -170,7 +189,7 @@ describe("SIM-P10: user-behaviour rates", () => {
         });
     });
 
-    test("each rate's numbers appear as percentages in its quote and stay ordered", () => {
+    test("each rate's numbers lie in [0, 1], appear as percentages in its quote, and stay ordered", () => {
         for (const [name, raw] of Object.entries(published.rates)) {
             const rate = raw as Rate;
             const numbers = [
@@ -182,6 +201,8 @@ describe("SIM-P10: user-behaviour rates", () => {
             expect({ name, any: numbers.length > 0 }).toEqual({ name, any: true });
             const quoted = [...rate.quote.matchAll(/(\d+(?:\.\d+)?)%/g)].map((m) => Number(m[1]));
             for (const v of numbers) {
+                expect(v).toBeGreaterThanOrEqual(0);
+                expect(v).toBeLessThanOrEqual(1);
                 const found = quoted.some((q) => Math.abs(q / 100 - v) < 1e-9);
                 expect({ name, v, found }).toEqual({ name, v, found: true });
             }
@@ -206,5 +227,11 @@ describe("failedChecks", () => {
     });
     test("an in-band check that still carries a deviation fails", () => {
         expect(failedChecks([{ ...base, within: true, deviation: "stale" }])).toHaveLength(1);
+    });
+    test("a blank or non-string deviation waives nothing", () => {
+        for (const deviation of ["", "  ", null, 0] as unknown[]) {
+            const check = { ...base, within: false, deviation } as CheckResult;
+            expect(failedChecks([check])).toHaveLength(1);
+        }
     });
 });

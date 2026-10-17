@@ -47,9 +47,9 @@ The scenario compiler conditions on at least one request.
 |---|---|---|---|---|
 | `requests_per_session` | 8,058 | 1 | 16 | 152 |
 | `tool_steps_per_request` | 79,216 | 2 | 18 | 90 |
-| `append_tokens_per_step` | 665,453 | 1,045 | 6,963 | 159,485 |
-| `idle_within_session_s` | 70,163 | 106 | 963 | 41,118 |
-| `idle_between_sessions_s` | 4,221 | 1,605 | 111,627 | 1,043,601 |
+| `append_tokens_per_step` | 661,022 | 1,042 | 6,964 | 160,073 |
+| `idle_within_session_s` | 71,290 | 101 | 938 | 40,358 |
+| `idle_between_sessions_s` | 1,675 | 2,641 | 245,896 | 1,787,034 |
 | `tool_output_chars` | 743,050 | 407 | 8,219 | 40,151 |
 
 Tool output size has a public distribution in TraceLab's `tool_calls.result_chars`,
@@ -72,9 +72,9 @@ Paper v2 reports append percentiles per provider only.
 | Check | Cited | Fitted | Status |
 |---|---|---|---|
 | requests/session p50, p90, p99 | 1, 16, 161 | 1, 16, 152 | within |
-| idle p50, p90, p99 (s) | 86, 900, 39,600 | 106, 963, 41,118 | within |
-| append p50 | ~1k | 1,045 | within |
-| append p90 | ~4.4k | 6,963 | recorded deviation |
+| idle p50, p90, p99 (s) | 86, 900, 39,600 | 101, 938, 40,358 | within |
+| append p50 | ~1k | 1,042 | within |
+| append p90 | ~4.4k | 6,964 | recorded deviation |
 
 The append p90 deviation is a recorded waiver, and the M1 exit criterion
 holds for that percentile only through it. TraceLab paper v2
@@ -92,8 +92,10 @@ with a recorded deviation comes back into band.
 `corpus/tool-outputs/samples.jsonl` holds 600 excerpts, 150 each of test runs,
 grep results, file reads, and stack traces, taken from the first 4,096
 trajectories in row order with at most one excerpt per trajectory and kind.
-`error-codes.jsonl` holds 200 distinct exception names, each at its first
-occurrence with its message and the eight lines before it. Every entry
+`error-codes.jsonl` holds 200 distinct exception names from the output of
+completed commands that exited nonzero or printed a traceback, each at its
+first occurrence with its message and the eight lines before it; a name
+without a message counts only directly below a traceback frame. Every entry
 carries `license` and `source_id`; `bun run corpus:check` rejects an entry
 missing either. `corpus/tool-outputs/NOTICE.md` gives the attribution.
 
