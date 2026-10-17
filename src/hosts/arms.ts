@@ -395,7 +395,7 @@ export class DaemonStack {
                     if (marker) this.writeMarker({ ...marker, owner: this.owner() });
                     return;
                 }
-                await Bun.sleep(25);
+                await Bun.sleep(5);
             }
         })();
         try {
@@ -452,12 +452,14 @@ export class DaemonStack {
         if (marker?.stdout !== undefined && !sameLifetime) {
             this.drain({ ...marker, pending: marker.pending.filter((p) => p !== live) }, []);
             this.drain(null, [live]);
-            appendFileSync(this.ctx.logFile, stdout);
-            return;
+        } else {
+            if (marker?.stdout !== undefined) this.writeMarker(rest);
+            this.drain(marker ? rest : null, [live]);
         }
-        if (marker?.stdout !== undefined) this.writeMarker(rest);
-        this.drain(marker ? rest : null, [live]);
-        appendFileSync(this.ctx.logFile, stdout);
+        // The final stdout lands through the marker too, so a kill mid-append is rolled back on
+        // resume and the lifetime's stdout is kept whole; the marker is removed once it has landed.
+        this.saveHeldStdout({ pending: [], copying: null, owner: null, stdout });
+        rmSync(this.logSourceFile, { force: true });
     }
 }
 

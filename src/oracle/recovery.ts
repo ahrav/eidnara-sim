@@ -137,11 +137,13 @@ function timeline(arm: ArmLogs, base: number): Timeline {
     const stamps = (line: string) => {
         const ms = logMs(line);
         if (ms === null) return [];
+        // A span's end is inclusive: a stamp in the millisecond an offset changed is placed through
+        // both the old offset and the new, and counts wherever either position falls.
         return spans
             .map((s) => ms - s.offset)
             .filter((t, i) => {
                 const span = spans[i] as (typeof spans)[number];
-                return t >= span.from && t < span.to;
+                return t >= span.from && t <= span.to;
             });
     };
     const at = (e: Entry) => {
@@ -393,12 +395,18 @@ export function recoveries(run: RunLogs): Recovery[] {
                     e.busy.length === 0
                 );
             });
+            const observation = observations.get(fired.fault);
+            if (observation && observation.type !== fired.type) {
+                throw new Error(
+                    `${arm.arm}: fault ${String(fired.fault)} fired as ${String(fired.type)} but observed as ${String(observation.type)}`,
+                );
+            }
             const observed =
                 fired.type === "laptop_sleep"
                     ? jumped
-                        ? (observations.get(fired.fault) ?? fired)
+                        ? (observation ?? fired)
                         : undefined
-                    : observations.get(fired.fault);
+                    : observation;
             const evidence = (observed?.evidence ?? {}) as {
                 skipped?: unknown;
                 store?: StoreCheck;
@@ -453,9 +461,14 @@ export function recoveries(run: RunLogs): Recovery[] {
                 };
             }
             if (!RESTARTS.has(base.type)) return { ...result, recovered: clean };
-            const pass = arm.journal.find(
+            const passes = arm.journal.filter(
                 (x) => x.kind === "StoreChecked" && x.seq > fired.seq && x.fault === base.fault,
             );
+            // The scheduler journals one check per restart; a second is a malformed journal.
+            if (passes.length > 1) {
+                throw new Error(`${arm.arm}: restart ${base.fault} is checked twice`);
+            }
+            const pass = passes[0];
             const checks: Checks = {
                 after_crash: parsed(evidence.store, `${arm.arm}: ${base.fault} FaultObserved`),
                 post_crash_pass: parsed(pass?.store, `${arm.arm}: ${base.fault} StoreChecked`),

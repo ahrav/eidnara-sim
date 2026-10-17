@@ -708,6 +708,8 @@ export class HostDriver implements ArmDriver {
         } catch (caught) {
             failure ??= caught;
         }
+        // A fill a session_end never cleared comes off before the mount does.
+        this.clearStoreFill();
         if (this.storeMount) {
             const r = spawnSync("sudo", ["-n", "umount", this.storeMount], { encoding: "utf8" });
             if (r.status === 0) this.storeMount = null;
