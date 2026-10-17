@@ -98,6 +98,8 @@ export class HostDriver implements ArmDriver {
     private readonly snapshots: SnapshotRecorder;
     private upgraded = false;
     private second: SimHost | null = null;
+    /** A host `openSession` still in flight, which `stop` awaits before closing that host. */
+    private opening: Promise<void> | null = null;
     /** Daemon restarts that the end of the current or next turn owes a store check. */
     private storeFaults: string[] = [];
 
@@ -241,9 +243,27 @@ export class HostDriver implements ArmDriver {
         this.sessionProject = this.project(e);
         const connection = this.daemon?.connectionFile ?? null;
         const dir = this.workspace(this.sessionProject);
-        await host.openSession(dir, e.session, connection);
+        await this.open(host, dir, e.session, connection);
         this.snapshots.sessionStart(e.session, this.sessionProject, dir);
         this.recordState();
+    }
+
+    private async open(
+        host: SimHost,
+        dir: string,
+        session: string,
+        connection: string | null,
+    ): Promise<void> {
+        const pending = host.openSession(dir, session, connection);
+        this.opening = pending.then(
+            () => undefined,
+            () => undefined,
+        );
+        try {
+            await pending;
+        } finally {
+            this.opening = null;
+        }
     }
 
     async event(e: ScenarioEvent): Promise<TurnOutcome> {
@@ -391,9 +411,13 @@ export class HostDriver implements ArmDriver {
         const second = this.second;
         this.second = null;
         if (!second) return;
-        second.drainTools();
-        await second.closeSession();
+        await this.releaseSecond(second);
         if (record) this.recordState();
+    }
+
+    private async releaseSecond(second: SimHost): Promise<void> {
+        this.snapshots.addTools(second.drainTools(), null);
+        await second.closeSession();
     }
 
     /** A second client's host process must still run at the primary session's `session_end`. */
@@ -416,7 +440,8 @@ export class HostDriver implements ArmDriver {
         const session = `${at.session}-b`;
         this.second = second;
         try {
-            await second.openSession(
+            await this.open(
+                second,
                 this.workspace(this.project(at)),
                 session,
                 this.daemon.connectionFile,
@@ -427,6 +452,7 @@ export class HostDriver implements ArmDriver {
             }
             this.recordState();
             const result = await second.prompt(SECOND_CLIENT_PROMPT, this.o.turnDeadlineMs);
+            this.snapshots.addTools(second.drainTools(), session);
             return {
                 second_session: session,
                 second_host_pid: second.hostPid(),
@@ -491,10 +517,14 @@ export class HostDriver implements ArmDriver {
     async stop(checkFinalStore = false): Promise<void> {
         const host = this.host;
         const daemon = this.daemon;
+        const second = this.second;
         this.host = null;
         this.daemon = null;
+        this.second = null;
+        await this.opening;
         let failure: unknown = null;
-        for (const close of [() => host?.closeSession(), () => this.closeSecond(false)]) {
+        const closeSecond = () => (second ? this.releaseSecond(second) : undefined);
+        for (const close of [() => host?.closeSession(), closeSecond]) {
             try {
                 await close();
             } catch (caught) {

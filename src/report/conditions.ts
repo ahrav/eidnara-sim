@@ -46,6 +46,40 @@ export interface Continuity {
     v1: [number, number] | null;
 }
 
+const count = (x: unknown): x is number => Number.isInteger(x) && (x as number) >= 0;
+
+export function parseContinuity(value: unknown): Continuity[] {
+    if (!Array.isArray(value)) throw new Error("continuity: expected an array of rows");
+    const seen = new Set<string>();
+    return value.map((raw, i) => {
+        const at = `continuity[${i}]`;
+        if (typeof raw !== "object" || raw === null) throw new Error(`${at}: expected an object`);
+        const r = raw as Record<string, unknown>;
+        for (const field of ["host", "arm"]) {
+            if (typeof r[field] !== "string") throw new Error(`${at}.${field}: expected a string`);
+        }
+        if (r.probe !== "P8" && r.probe !== "P9") throw new Error(`${at}.probe: expected P8 or P9`);
+        if (!count(r.n)) throw new Error(`${at}.n: expected a count`);
+        if (!count(r.pass) || r.pass > r.n) throw new Error(`${at}.pass: expected a count up to n`);
+        if (!count(r.pass_with_transcript_read) || r.pass_with_transcript_read > r.pass) {
+            throw new Error(`${at}.pass_with_transcript_read: expected a count up to pass`);
+        }
+        const key = `${r.host}/${r.arm}/${r.probe}`;
+        if (seen.has(key)) throw new Error(`${at}: duplicates ${key}`);
+        seen.add(key);
+        const v1 = Array.isArray(r.v1) ? (r.v1 as [number, number]) : null;
+        return {
+            host: r.host as string,
+            arm: r.arm as string,
+            probe: r.probe,
+            n: r.n,
+            pass: r.pass,
+            pass_with_transcript_read: r.pass_with_transcript_read,
+            v1,
+        };
+    });
+}
+
 function files(dir: string): string[] {
     if (!existsSync(dir)) return [];
     return readdirSync(dir).flatMap((f) => {

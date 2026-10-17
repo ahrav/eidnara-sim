@@ -7,7 +7,13 @@ import { loadGraded } from "../src/report/tier";
 import { Children, SIGTERM_EXIT } from "../src/run/children";
 import { resizeFromM } from "../src/run/resize";
 import { loadScenario } from "../src/run/run";
-import { compressFaults, profileJobs, type TierJob, tierPlan } from "../src/run/tier";
+import {
+    compressFaults,
+    profileJobs,
+    restartFraction,
+    type TierJob,
+    tierPlan,
+} from "../src/run/tier";
 import type { Scenario } from "../src/scenario/compile";
 import { loadPrereg } from "../src/scenario/inputs";
 
@@ -28,16 +34,16 @@ const config = loadConfig();
 const prereg = loadPrereg(tier);
 const hosts = (arg("hosts") ?? prereg.hosts.join(",")).split(",") as ("pi" | "opencode")[];
 const priorPlan = join(out, "tier-plan.json");
-const turnMs = Number(
-    arg("turn-ms") ??
-        (existsSync(priorPlan) ? JSON.parse(readFileSync(priorPlan, "utf8")).turn_ms : 75_000),
-);
+const prior = existsSync(priorPlan)
+    ? (JSON.parse(readFileSync(priorPlan, "utf8")) as { turn_ms?: number; restart_at?: number })
+    : null;
+const turnMs = Number(arg("turn-ms") ?? prior?.turn_ms ?? 75_000);
 const fail = (why: string) => {
     console.error(`${why}\n${USAGE}`);
     process.exit(2);
 };
 if (!Number.isInteger(turnMs) || turnMs <= 0) fail("--turn-ms must be a positive integer");
-const restartAt = Number(arg("restart-at") ?? (tier === "XL" ? 0.4 : 0));
+const restartAt = restartFraction(arg("restart-at"), prior, tier);
 if (!(restartAt >= 0 && restartAt < 1)) fail("--restart-at must be a fraction in [0, 1)");
 if (new Set(hosts).size !== hosts.length || !hosts.every((h) => prereg.hosts.includes(h)))
     fail(`--hosts must name distinct hosts from ${prereg.hosts.join(",")}`);
@@ -82,7 +88,11 @@ const plan: TierJob[] = [
 ];
 writeFileSync(
     priorPlan,
-    `${JSON.stringify({ tier, turn_ms: turnMs, items_per_type: items ?? null, plan }, null, 2)}\n`,
+    `${JSON.stringify(
+        { tier, turn_ms: turnMs, restart_at: restartAt, items_per_type: items ?? null, plan },
+        null,
+        2,
+    )}\n`,
 );
 console.log(
     JSON.stringify(plan.map((j) => [j.group, j.dir, j.events, j.user_turns, j.arms.join(",")])),

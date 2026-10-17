@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { Tier } from "../src/prereg/schema";
+import { parseContinuity } from "../src/report/conditions";
 import { renderTier } from "../src/report/render";
 import { loadGraded, tierReport } from "../src/report/tier";
 import { loadPrereg } from "../src/scenario/inputs";
@@ -26,7 +27,7 @@ if (dirs.length === 0 || dirs.some((d) => !existsSync(join(d, "manifest.json")))
     process.exit(2);
 }
 const reference = refPath
-    ? { source: refPath, continuity: JSON.parse(readFileSync(refPath, "utf8")) }
+    ? { source: refPath, continuity: parseContinuity(JSON.parse(readFileSync(refPath, "utf8"))) }
     : undefined;
 const boundary = readFileSync(join(import.meta.dir, "../docs/claim-boundary.md"), "utf8");
 const catalog = readFileSync(join(import.meta.dir, "../docs/properties/sim-v2/catalog.md"), "utf8");

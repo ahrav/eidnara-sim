@@ -153,9 +153,10 @@ history summaries, stays in place.
 XL runs one seed per host with `host` and `eidnara`. Its scenario's fault
 schedule adds `host_upgrade` and `two_hosts_one_daemon` (`docs/hosts.md`).
 Each XL paired run is stopped once with SIGTERM when its journal holds
-`--restart-at` (0.4 by default at XL, a fraction in [0, 1)) of its planned
-events across its arms, checked every 30 s, and resumed from its journal
-within the rest of its wall limit. The restart writes `<run>/restarted`,
+`--restart-at` (0.4 by default at XL, a fraction in [0, 1), recorded in
+`tier-plan.json` as `restart_at` and reused by a rerun without the flag,
+like `turn_ms`) of its planned events across its arms, checked every 30 s,
+and resumed from its journal within the rest of its wall limit. The restart writes `<run>/restarted`,
 so a rerun of the command neither restarts that run again nor reports it
 unrestarted; `tier-result.json` records `restarted` per run, and the
 command exits 1 naming any paired run without a restart.
@@ -170,7 +171,9 @@ time for each run's daemon arm, the last month partial: each
 month's slope, bound, and return-to-baseline use that month's samples and
 sessions alone, and the whole-span soak verdict stays the gate's input.
 
-`scripts/report.ts --recall-reference <dir>/continuity-L.json` adds a recall
+`scripts/report.ts --recall-reference <dir>/continuity-L.json` (shape-checked
+row by row: counts with `pass_with_transcript_read <= pass <= n`, one row per
+host, arm, and probe) adds a recall
 drift table to the XL report: each host, arm, and probe's P8 or P9 pass
 rate against the L tier's 95% Clopper-Pearson interval for the same row,
 `drift` when outside it. Every report writes its continuity rows to

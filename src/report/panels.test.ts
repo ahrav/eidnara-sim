@@ -300,6 +300,19 @@ describe("soak by month", () => {
             [2, "leak", 30, 30],
         ]);
         const short = arm({ journal, resources: resources.slice(0, 20) });
-        expect(soakByMonth(run([], "", kinds), short, "rss").map((m) => m.samples)).toEqual([20]);
+        expect(
+            soakByMonth(run([], "", kinds), short, "rss").map((m) => [
+                m.month,
+                m.verdict,
+                m.samples,
+            ]),
+        ).toEqual([
+            [1, "no leak", 20],
+            [2, "insufficient samples", 0],
+        ]);
+        const none = arm({ journal: journal.slice(0, 5), resources: [] });
+        expect(soakByMonth(run([], "", kinds), none, "rss").map((m) => m.verdict)).toEqual([
+            "insufficient samples",
+        ]);
     });
 });

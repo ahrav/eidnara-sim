@@ -164,6 +164,24 @@ export const referenceArm = (order: string[]) => (arm: string) =>
 
 const sameJson = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 
+export interface ProxyScope {
+    session: string | null;
+    turn: string | null;
+}
+
+export function faultScope(
+    prior: ProxyScope,
+    f: Pick<FaultEpisode, "type">,
+    at: ScenarioEvent | undefined,
+): { during: ProxyScope; after: ProxyScope } {
+    if (f.type !== "two_hosts_one_daemon" || at === undefined)
+        return { during: prior, after: prior };
+    return {
+        during: { session: `${at.session}-b`, turn: null },
+        after: { session: at.session, turn: null },
+    };
+}
+
 async function loadManifest(o: RunOptions, scenario: Scenario): Promise<Manifest> {
     const path = join(o.out, "manifest.json");
     const checks = await preflight(o.config, o.out);
@@ -275,8 +293,9 @@ function callsOf(
 ): CallView[] {
     if (!existsSync(path)) return [];
     let index: number | undefined;
-    return readJournal(path)
-        .map((r) => r as unknown as CallRecord)
+    // SAFETY: the caller must supply a journal whose records satisfy CallRecord.
+    const records = readJournal(path) as unknown as CallRecord[];
+    return records
         .filter((r) => r.arm === arm && r.session === session)
         .map((r) => {
             index = (r.turn ? turnIndex.get(r.turn) : undefined) ?? index;
@@ -308,6 +327,7 @@ async function runArms(
     const compiled = await loadScenario(o);
     const manifest = await loadManifest(o, compiled);
     const scenario = { ...compiled, faults: manifest.fault_override ?? compiled.faults };
+    // SAFETY: the caller must supply a scenario whose events satisfy ScenarioEvent.
     const events = scenario.events.slice(0, manifest.events) as unknown as ScenarioEvent[];
     const hostRow = manifest.preflight.hosts.find((h) => h.host === o.host);
     if (!hostRow) throw new Error(`preflight lists no ${o.host} host`);
@@ -343,7 +363,9 @@ async function runArms(
             agentText.set(`${r.arm}/${r.session}`, r.response_text);
         }
     };
-    for (const r of readJournal(join(o.out, "calls.jsonl"))) noteAgent(r as unknown as CallRecord);
+    // SAFETY: the caller must supply a calls journal whose records satisfy CallRecord.
+    const priorCalls = readJournal(join(o.out, "calls.jsonl")) as unknown as CallRecord[];
+    for (const r of priorCalls) noteAgent(r);
     class RunRecords extends RecordWriter {
         override write(partial: Omit<CallRecord, "seq" | "wall_ms">): CallRecord {
             const record = super.write(partial);
@@ -386,6 +408,7 @@ async function runArms(
     const turnIndex = new Map(
         events.filter((e) => e.index !== undefined).map((e) => [e.id, e.index as number]),
     );
+    // SAFETY: the caller must supply user_turn events that carry id, session, index, role, and text.
     const scripted = scenario.events.filter((e) => e.kind === "user_turn") as unknown as {
         id: string;
         session: string;
@@ -569,15 +592,15 @@ async function runArms(
             },
             fault: async (f, at) => {
                 guard();
-                const second = f.type === "two_hosts_one_daemon" && at !== undefined;
                 const prior = { session: scope.session, turn: scope.turn };
-                if (second) Object.assign(scope, { session: `${at.session}-b`, turn: null });
+                const scopes = faultScope(prior, f, at);
+                Object.assign(scope, scopes.during);
                 try {
                     const evidence = await driver.fault(f, at);
                     guard();
                     return evidence;
                 } finally {
-                    Object.assign(scope, prior);
+                    Object.assign(scope, scopes.after);
                 }
             },
             finish: async () => {

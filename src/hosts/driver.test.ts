@@ -41,9 +41,15 @@ class FakeHost {
         private readonly transcripts: string,
     ) {}
     async openSession(cwd: string, session: string, connection: string | null = null) {
+        this.opening = true;
+        await this.gate;
+        this.opening = false;
         this.opened.push(`${session}@${cwd}`);
         this.connections.push(connection);
     }
+    gate: Promise<void> = Promise.resolve();
+    opening = false;
+    closedWhileOpening = 0;
     failNext = false;
     interrupts: (number | undefined)[] = [];
     async prompt(_text: string, _timeoutMs: number, interruptMs?: number): Promise<PromptResult> {
@@ -56,6 +62,7 @@ class FakeHost {
     }
     failClose = false;
     async closeSession() {
+        if (this.opening) this.closedWhileOpening++;
         this.closed++;
         if (this.failClose) throw new Error("host survived");
     }
@@ -452,6 +459,61 @@ describe("HostDriver faults", () => {
         await expect(driver.event(ev("session_end", { project: "p" }))).rejects.toThrow(
             "second client exited before the primary session's session_end",
         );
+    });
+
+    test("stopping while the second client opens waits for the open, then closes it", async () => {
+        const { driver, hosts } = fixture("eidnara", { p: "/repo" });
+        driver.daemon = fakeDaemon(10) as unknown as DaemonStack;
+        let release: () => void = () => undefined;
+        const gate = new Promise<void>((r) => {
+            release = r;
+        });
+        const o = (driver as unknown as { o: DriverOptions }).o;
+        const factory = o.hostFactory as (ctx: HostContext) => SimHost;
+        o.hostFactory = (ctx) => {
+            const h = factory(ctx) as unknown as FakeHost;
+            h.gate = gate;
+            h.pid = process.pid;
+            return h as unknown as SimHost;
+        };
+        const fault = driver.fault(
+            episode("two_hosts_one_daemon"),
+            ev("session_start", { project: "p" }),
+        );
+        fault.catch(() => undefined);
+        await Bun.sleep(5);
+        const second = hosts.at(-1) as FakeHost;
+        expect(second.opening).toBe(true);
+        let stopped = false;
+        const stop = driver.stop().then(() => {
+            stopped = true;
+        });
+        await Bun.sleep(20);
+        expect([stopped, second.closedWhileOpening]).toEqual([false, 0]);
+        release();
+        await stop;
+        await expect(fault).rejects.toThrow("the arm stopped while the second client opened");
+        expect(second.closed).toBeGreaterThanOrEqual(1);
+        expect(second.closedWhileOpening).toBe(0);
+    });
+
+    test("the second client's tool runs are recorded under its session", async () => {
+        const { driver, hosts, armDir } = fixture("eidnara", { p: "/repo" });
+        driver.daemon = fakeDaemon(10) as unknown as DaemonStack;
+        const at = ev("session_start", { project: "p" });
+        const o = (driver as unknown as { o: DriverOptions }).o;
+        const factory = o.hostFactory as (ctx: HostContext) => SimHost;
+        o.hostFactory = (ctx) => {
+            const h = factory(ctx) as unknown as FakeHost;
+            h.onPrompt = () => h.tools.push({ command: "ls -la", exit: 0, scenario_ms: 7 });
+            return h as unknown as SimHost;
+        };
+        await driver.fault(episode("two_hosts_one_daemon"), at);
+        expect(hosts.at(-1)?.tools).toEqual([]);
+        const lines = readFileSync(join(armDir, "tools.jsonl"), "utf8").trim().split("\n");
+        expect(lines.map((l) => JSON.parse(l))).toEqual([
+            { turn: "s-0000-b", command: "ls -la", exit: 0, scenario_ms: 7 },
+        ]);
     });
 
     test("a second client whose close fails keeps its pid in the arm state", async () => {

@@ -9,6 +9,7 @@ import type { Entry } from "../run/journal";
 import type { Scenario } from "../scenario/compile";
 import {
     continuity,
+    parseContinuity,
     recallDrift,
     renderConditions,
     renderDrift,
@@ -163,5 +164,35 @@ describe("recall drift", () => {
             ["x", null],
         ]);
         expect(renderDrift(drift, "L").join("\n")).toContain("| pi | eidnara | P8 | 0.50 |");
+    });
+});
+
+describe("parseContinuity", () => {
+    const row: Record<string, unknown> = {
+        host: "pi",
+        arm: "eidnara",
+        probe: "P8",
+        n: 40,
+        pass: 38,
+        pass_with_transcript_read: 2,
+        v1: null,
+    };
+    test("a continuity file written by the report parses back", () => {
+        const parsed: unknown[] = parseContinuity([row, { ...row, probe: "P9" }]);
+        expect(parsed).toEqual([row, { ...row, probe: "P9" }]);
+    });
+
+    test("a malformed reference is refused by row and field", () => {
+        expect(() => parseContinuity({ rows: [row] })).toThrow("continuity: expected an array");
+        expect(() => parseContinuity([{ ...row, n: "40" }])).toThrow("continuity[0].n");
+        expect(() => parseContinuity([{ ...row, pass: 41 }])).toThrow("continuity[0].pass");
+        expect(() => parseContinuity([{ ...row, pass: -1 }])).toThrow("continuity[0].pass");
+        expect(() => parseContinuity([{ ...row, pass_with_transcript_read: 39 }])).toThrow(
+            "continuity[0].pass_with_transcript_read",
+        );
+        expect(() => parseContinuity([{ ...row, probe: "P1" }])).toThrow("continuity[0].probe");
+        expect(() => parseContinuity([row, row])).toThrow(
+            "continuity[1]: duplicates pi/eidnara/P8",
+        );
     });
 });

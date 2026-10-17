@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { Scenario } from "../scenario/compile";
 import type { FaultEpisode } from "../scenario/faults";
 import { loadPrereg } from "../scenario/inputs";
-import { capEvents, compressFaults, tierPlan } from "./tier";
+import { capEvents, compressFaults, restartFraction, tierPlan } from "./tier";
 
 const event = (kind: string, i: number) => ({
     id: `e-${i}`,
@@ -80,5 +80,19 @@ describe("tier plan", () => {
             "s-far",
             "s-1",
         ]);
+    });
+});
+
+describe("restartFraction", () => {
+    test("the flag wins; without a flag or prior plan, XL stops at 0.4 and other tiers never", () => {
+        expect(restartFraction("0.7", null, "XL")).toBe(0.7);
+        expect(restartFraction(undefined, null, "XL")).toBe(0.4);
+        expect(restartFraction(undefined, null, "L")).toBe(0);
+    });
+
+    test("a rerun without the flag reuses the prior plan's fraction", () => {
+        expect(restartFraction(undefined, { restart_at: 0 }, "XL")).toBe(0);
+        expect(restartFraction(undefined, { restart_at: 0.7 }, "XL")).toBe(0.7);
+        expect(restartFraction("0.2", { restart_at: 0.7 }, "XL")).toBe(0.2);
     });
 });

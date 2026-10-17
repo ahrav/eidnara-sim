@@ -17,6 +17,14 @@ export interface TierJob {
 /** Room left in the wall budget for setup, grading, and the turns' variance. */
 const BUDGET_SHARE = 0.85;
 
+export function restartFraction(
+    flag: string | undefined,
+    prior: { restart_at?: number } | null,
+    tier: Preregistration["tier"],
+): number {
+    return Number(flag ?? prior?.restart_at ?? (tier === "XL" ? 0.4 : 0));
+}
+
 /**
  * The longest prefix of the scenario that ends on a session end and whose user turns, run once
  * per arm at `turnMs` each, fit inside the tier's wall budget.

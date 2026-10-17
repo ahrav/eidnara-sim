@@ -40,7 +40,8 @@ workspace, and, on an Eidnara arm, starts a fresh daemon through the v1
 arm's last event, before `EndArm`: it closes the host, stops the daemon with
 SIGTERM so its store stays on disk, appends the daemon's output to
 `<arm>/daemon.log`, and unmounts the store. The daemon also appends its output
-there before each restart.
+there before each restart. `stop` first waits for a host `openSession` still in
+flight, so a client spawned moments before a stop is closed rather than leaked.
 
 `DaemonStack` starts the daemon through the v1 `HermeticHostStack` with the
 interposer environment, restarts it with SIGKILL against the same store, and
@@ -155,7 +156,7 @@ against the same store (OQ-10).
 | `model_switch` | Later sessions use the next configured model; the daemon keeps running with its summarizer model | The new model id |
 | `laptop_sleep` | One event-free clock jump (`docs/run.md`) | The `AdvanceClock` entry, and `clock_advanced_ms` |
 | `host_upgrade` | Later sessions run the next pinned version of the arm's host, `config.upgrade.pi_install` or `config.upgrade.opencode_binary` (Pi 0.87.1 and OpenCode 1.18.23 in `sim.config.json`); the daemon's harness closures keep the pinned versions; preflight records each configured version, which the fault's evidence reports, and probes the next OpenCode binary's time interception as `opencode-upgrade`; without a configured version the fault is skipped | `from`, `to`, both `--version` strings, and `takes_effect` |
-| `two_hosts_one_daemon` | At its `session_start`, a second host client opens session `<session>-b` in the same workspace on the arm's daemon and runs one fixed turn, with the proxy's scope on `<session>-b`; it stays attached while the primary session opens and runs, and closes at the primary's `session_end`, which first requires its host process to be running, so both clients are registered on the daemon together; `state.json` holds its pid for a resumed arm to reap, and keeps it when the close fails; a run stopped inside that session closes it without reopening it on resume; daemon calls made for the second client after its turn carry the primary session's scope | The second session, its host pid, the daemon pid, the turn's outcome, and `attached_until` |
+| `two_hosts_one_daemon` | At its `session_start`, a second host client opens session `<session>-b` in the same workspace on the arm's daemon and runs one fixed turn, with the proxy's scope on `<session>-b` and its tool runs in `tools.jsonl` under turn `<session>-b`; after the turn the proxy's scope is the primary session with no turn; it stays attached while the primary session opens and runs, and closes at the primary's `session_end`, which first requires its host process to be running, so both clients are registered on the daemon together; `state.json` holds its pid for a resumed arm to reap, and keeps it when the close fails; a run stopped inside that session closes it without reopening it on resume; daemon calls made for the second client after its turn carry the primary session's scope | The second session, its host pid, the daemon pid, the turn's outcome, and `attached_until` |
 
 `plugin_reload`, `model_switch`, `host_upgrade`, and `two_hosts_one_daemon`
 fire between sessions; one fired inside a session stops the run, and so
