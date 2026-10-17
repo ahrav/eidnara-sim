@@ -42,6 +42,8 @@ export interface RunLogs {
     kinds: Map<string, string>;
     /** Each scheduled laptop sleep's duration by fault id, from the override the run used or its scenario. */
     sleeps?: Map<string, number>;
+    /** Each scheduled fault's type by id, from the same source, so a journaled fault must match its schedule. */
+    faultTypes?: Map<string, string>;
     arms: ArmLogs[];
 }
 
@@ -82,8 +84,9 @@ function shaped<T>(path: string, fields: Record<string, FieldCheck>): T[] {
         for (const [field, ok] of Object.entries(fields)) {
             if (!ok(row[field])) throw new Error(`${path}: line ${i + 1}: ${field} missing`);
         }
-        if ("pid" in row && !numOrNull(row.pid))
-            throw new Error(`${path}: line ${i + 1}: pid missing`);
+        const pidOk =
+            row.pid === null || (Number.isSafeInteger(row.pid) && (row.pid as number) > 0);
+        if ("pid" in row && !pidOk) throw new Error(`${path}: line ${i + 1}: pid missing`);
         if ("start" in row && !strOrNull(row.start)) {
             throw new Error(`${path}: line ${i + 1}: start missing`);
         }
@@ -154,12 +157,19 @@ function requirePidShape(path: string, samples: Sample[]): void {
     if (withPid !== 0 && withPid !== numeric.length) {
         throw new Error(`${path}: pid present on some samples and absent on others`);
     }
+    const withStart = numeric.filter((s) => "start" in s).length;
+    if (withStart !== 0 && withStart !== numeric.length) {
+        throw new Error(`${path}: start present on some samples and absent on others`);
+    }
     samples.forEach((s, i) => {
         if (typeof s.rss === "number" && s.rss < 0) {
             throw new Error(`${path}: line ${i + 1}: rss negative`);
         }
         if (typeof s.rss === "number" && "pid" in s && s.pid === null) {
             throw new Error(`${path}: line ${i + 1}: numeric rss with a null pid`);
+        }
+        if (typeof s.pid === "number" && "start" in s && s.start === null) {
+            throw new Error(`${path}: line ${i + 1}: pid with a null start`);
         }
     });
 }
@@ -174,14 +184,78 @@ const TOKEN_FIELDS = [
 function samplesOf(path: string): Sample[] {
     const samples = shaped<Sample>(path, SAMPLE_FIELDS);
     requirePidShape(path, samples);
+    samples.forEach((s, i) => {
+        const prev = samples[i - 1];
+        const opens = !prev || prev.pid !== s.pid || prev.start !== s.start;
+        if (opens && s.pid !== null && typeof s.rss !== "number") {
+            throw new Error(`${path}: line ${i + 1}: lifetime opens without a reading`);
+        }
+    });
+    samples.forEach((s, i) => {
+        const prev = samples[i - 1];
+        if (prev && s.scenario_ms < prev.scenario_ms) {
+            throw new Error(
+                `${path}: line ${i + 1}: scenario_ms ${s.scenario_ms} precedes ${prev.scenario_ms}`,
+            );
+        }
+    });
     return samples;
 }
 
-function toolsOf(path: string, turns: Set<string>): (Command & { turn: string | null })[] {
+type Bounds = Map<string, { from: number; to: number }>;
+
+/** Each turn's journaled interval per arm: `BeginTurn` to `EndTurn`, open-ended where one is absent. */
+function turnBounds(journal: Entry[]): Bounds {
+    const bounds: Bounds = new Map();
+    for (const e of journal) {
+        if (e.kind !== "BeginTurn" && e.kind !== "EndTurn") continue;
+        const key = `${e.arm}/${String(e.event)}`;
+        const b = bounds.get(key) ?? {
+            from: Number.NEGATIVE_INFINITY,
+            to: Number.POSITIVE_INFINITY,
+        };
+        if (e.kind === "BeginTurn") b.from = e.scenario_ms;
+        else b.to = e.scenario_ms;
+        bounds.set(key, b);
+    }
+    return bounds;
+}
+
+/** A call attributed to a turn started while that turn was open: between its `BeginTurn` and its `EndTurn`. */
+function requireCallsInTurns(calls: CallRecord[], bounds: Bounds): void {
+    for (const c of calls) {
+        if (c.turn === null) continue;
+        const b = bounds.get(`${c.arm}/${c.turn}`);
+        if (b && (c.scenario_ms < b.from || c.scenario_ms > b.to)) {
+            throw new Error(
+                `call ${c.seq}: starts at ${c.scenario_ms}, outside turn ${c.turn} (${b.from} to ${b.to})`,
+            );
+        }
+    }
+}
+
+/** A tool start lands on the host's clock up to this much after the turn's journaled end. */
+const TOOL_SLACK_MS = 1_000;
+
+function toolsOf(
+    path: string,
+    turns: Set<string>,
+    bounds: Bounds,
+    arm: string,
+): (Command & { turn: string | null })[] {
     const tools = shaped<Command & { turn: string | null }>(path, TOOL_FIELDS);
     tools.forEach((t, i) => {
-        if (t.turn !== null && !turns.has(t.turn)) {
+        if (t.turn === null) return;
+        if (!turns.has(t.turn)) {
             throw new Error(`${path}: line ${i + 1}: turn ${t.turn} is not a scheduled user turn`);
+        }
+        const b = bounds.get(`${arm}/${t.turn}`);
+        const early = b !== undefined && t.scenario_ms < b.from;
+        const late = b !== undefined && t.scenario_ms > b.to + TOOL_SLACK_MS;
+        if (b && (early || late)) {
+            throw new Error(
+                `${path}: line ${i + 1}: starts at ${t.scenario_ms}, outside turn ${t.turn} (${b.from} to ${b.to})`,
+            );
         }
     });
     return tools;
@@ -196,6 +270,12 @@ export function loadRun(dir: string, prereg: Preregistration): RunLogs {
             `scenario_hash ${digest} differs from the manifest's ${manifest.scenario_hash}`,
         );
     }
+    const scenarioTier = (scenario as { manifest?: { tier?: string } }).manifest?.tier;
+    if (scenarioTier !== undefined && scenarioTier !== manifest.tier) {
+        throw new Error(
+            `manifest tier ${manifest.tier} differs from the scenario's ${scenarioTier}`,
+        );
+    }
     const kinds = new Map(scenario.events.map((e) => [String(e.id), String(e.kind)]));
     const order = manifest.order as string[];
     if (order.length === 0) throw new Error("manifest names no arms");
@@ -208,6 +288,7 @@ export function loadRun(dir: string, prereg: Preregistration): RunLogs {
     }
     const planned = scenario.events.slice(0, count);
     const turns = new Set(planned.filter((e) => e.kind === "user_turn").map((e) => String(e.id)));
+    if (!existsSync(join(dir, "calls.jsonl"))) throw new Error("run has no calls.jsonl");
     const calls = jsonl<CallRecord>(join(dir, "calls.jsonl"));
     const seen = new Set<number>();
     calls.forEach((c, i) => {
@@ -226,6 +307,15 @@ export function loadRun(dir: string, prereg: Preregistration): RunLogs {
         }
         for (const field of TOKEN_FIELDS) {
             if (c[field] < 0) throw new Error(`call ${c.seq}: ${field} negative`);
+            if (!Number.isSafeInteger(c[field])) {
+                throw new Error(`call ${c.seq}: ${field} is not a count`);
+            }
+        }
+        if ("response_text" in c && typeof c.response_text !== "string") {
+            throw new Error(`call ${c.seq}: response_text is not a string`);
+        }
+        if ("response_text_truncated" in c && c.response_text_truncated !== true) {
+            throw new Error(`call ${c.seq}: response_text_truncated is not true`);
         }
         const http = Number.isInteger(c.status) && c.status >= 100 && c.status <= 599;
         if (c.status !== 0 && !http) {
@@ -234,6 +324,7 @@ export function loadRun(dir: string, prereg: Preregistration): RunLogs {
     });
     const journalPath = join(dir, "journal.jsonl");
     const journal = readJournal(journalPath);
+    const lastMs = new Map<string | null, number>();
     journal.forEach((e, i) => {
         const fields: Record<string, FieldCheck> = { kind: str, arm: strOrNull, scenario_ms: num };
         if (["BeginTurn", "EndTurn", "Event"].includes(String(e.kind))) fields.event = str;
@@ -241,10 +332,23 @@ export function loadRun(dir: string, prereg: Preregistration): RunLogs {
         for (const [field, ok] of Object.entries(fields)) {
             if (!ok(e[field])) throw new Error(`${journalPath}: line ${i + 1}: ${field} missing`);
         }
+        // A journal the harness wrote numbers each entry by its line; the oracles order by it.
+        if (e.seq !== undefined && e.seq !== i) {
+            throw new Error(`${journalPath}: line ${i + 1}: seq ${String(e.seq)} is not ${i}`);
+        }
+        const last = lastMs.get(e.arm);
+        if (last !== undefined && e.scenario_ms < last) {
+            throw new Error(
+                `${journalPath}: line ${i + 1}: scenario_ms ${e.scenario_ms} precedes ${last}`,
+            );
+        }
+        lastMs.set(e.arm, e.scenario_ms);
     });
     const scheduled = planned.map((e) => String(e.id));
     requireComplete(journal, order, scheduled);
     requireTurnEnds(journal, order, planned);
+    const bounds = turnBounds(journal);
+    requireCallsInTurns(calls, bounds);
     const arms = order.map((arm) => ({
         arm,
         calls: calls.filter((c) => c.arm === arm),
@@ -255,7 +359,7 @@ export function loadRun(dir: string, prereg: Preregistration): RunLogs {
             : { pluginLogMissing: true as const }),
         daemonLog: lines(join(dir, arm, "daemon.log")),
         resources: samplesOf(join(dir, arm, "resources.jsonl")),
-        tools: toolsOf(join(dir, arm, "tools.jsonl"), turns),
+        tools: toolsOf(join(dir, arm, "tools.jsonl"), turns, bounds, arm),
         finalStore: existsSync(join(dir, arm, "store-check.json"))
             ? parseStoreCheck(
                   JSON.parse(readFileSync(join(dir, arm, "store-check.json"), "utf8")),
@@ -276,6 +380,9 @@ export function loadRun(dir: string, prereg: Preregistration): RunLogs {
         if (!existsSync(join(dir, arm.arm, "daemon.log"))) {
             throw new Error(`arm ${arm.arm} has no daemon.log`);
         }
+        if (!existsSync(join(dir, arm.arm, "r", "eidnara.log"))) {
+            throw new Error(`arm ${arm.arm} has no r/eidnara.log`);
+        }
     }
     const faults = manifest.fault_override ?? scenario.faults ?? [];
     const sleeps = new Map(
@@ -283,6 +390,7 @@ export function loadRun(dir: string, prereg: Preregistration): RunLogs {
             .filter((f) => f.type === "laptop_sleep")
             .map((f) => [String(f.id), Number(f.params?.duration_ms)]),
     );
+    const faultTypes = new Map(faults.map((f) => [String(f.id), String(f.type)]));
     return {
         dir,
         tier: manifest.tier,
@@ -290,6 +398,7 @@ export function loadRun(dir: string, prereg: Preregistration): RunLogs {
         prereg,
         kinds,
         sleeps,
+        faultTypes,
         arms,
     };
 }

@@ -1,3 +1,4 @@
+import { armBase } from "../hosts/arms";
 import { parseStoreCheck, type StoreCheck } from "../hosts/storecheck";
 import type { Entry } from "../run/journal";
 import { INFRA_FAULTS } from "../scenario/faults";
@@ -45,9 +46,26 @@ interface Timeline {
     stamps(line: string): number[];
 }
 
+/**
+ * The instant a plugin log line's leading stamp names, or null when the line has none or the
+ * stamp names no calendar instant (`Date.parse` would move an impossible day into the next month).
+ */
 function logMs(line: string): number | null {
-    const stamp = /^\[(\d{4}-\d\d-\d\dT[\d:.]+Z)\]/.exec(line)?.[1];
-    return stamp ? Date.parse(stamp) : null;
+    const m = /^\[(\d{4})-(\d\d)-(\d\d)T(\d\d):(\d\d):(\d\d)(?:\.(\d{1,3}))?Z\]/.exec(line);
+    if (!m) return null;
+    const [year, month, day, hour, minute, second] = m.slice(1, 7).map(Number) as number[];
+    const ms = m[7] ? Number(m[7].padEnd(3, "0")) : 0;
+    const date = new Date(
+        Date.UTC(year as number, (month as number) - 1, day, hour, minute, second, ms),
+    );
+    const roundTrips =
+        date.getUTCFullYear() === year &&
+        date.getUTCMonth() + 1 === month &&
+        date.getUTCDate() === day &&
+        date.getUTCHours() === hour &&
+        date.getUTCMinutes() === minute &&
+        date.getUTCSeconds() === second;
+    return roundTrips ? date.getTime() : null;
 }
 
 /**
@@ -102,8 +120,9 @@ function timeline(arm: ArmLogs, base: number): Timeline {
         from: finite(e, "wall_ms"),
         to: offsets[i + 1] ? finite(offsets[i + 1] as Entry, "wall_ms") : Number.POSITIVE_INFINITY,
     }));
+    // Two offsets written in one millisecond leave the earlier span empty; the newer owns the instant.
     for (const [i, span] of spans.entries()) {
-        if (span.to <= span.from) {
+        if (span.to < span.from) {
             throw new Error(
                 `${arm.arm}: clock offset ${String(offsets[i]?.seq)} has a later offset at an earlier wall_ms, so its span runs backward`,
             );
@@ -151,6 +170,13 @@ function turnsAfter(arm: ArmLogs, fault: Entry, tl: Timeline): Turn[] {
             turns.push({ event: String(e.event), from, end: e, next: Number.POSITIVE_INFINITY });
         }
     }
+    for (const t of turns) {
+        if (t.next < t.from) {
+            throw new Error(
+                `${arm.arm}: turn ${t.event}'s window closes before it opens; its wall times run backward`,
+            );
+        }
+    }
     return turns;
 }
 
@@ -194,6 +220,18 @@ function indexEvidence(arm: ArmLogs, tl: Timeline): Evidence {
     return { callsByTurn, failOpen };
 }
 
+/** The first index in `sorted` whose position is past `at`. */
+function upperBound(sorted: FailOpen[], at: number): number {
+    let lo = 0;
+    let hi = sorted.length;
+    while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if ((sorted[mid] as FailOpen).at <= at) lo = mid + 1;
+        else hi = mid;
+    }
+    return lo;
+}
+
 /** The first index in `sorted` whose position is at or past `at`. */
 function lowerBound(sorted: FailOpen[], at: number): number {
     let lo = 0;
@@ -212,8 +250,10 @@ function lowerBound(sorted: FailOpen[], at: number): number {
  * before its record) counts on its own.
  */
 function failOpenCount(evidence: Evidence, from: number, to: number): number {
+    // A line stamped at the instant the next turn begins is ambiguous at millisecond resolution
+    // and counts against both turns, so the upper bound is inclusive.
     const lines = evidence.failOpen
-        .slice(lowerBound(evidence.failOpen, from), lowerBound(evidence.failOpen, to))
+        .slice(lowerBound(evidence.failOpen, from), upperBound(evidence.failOpen, to))
         .sort((a, b) => a.line - b.line);
     let records = 0;
     let unpaired = 0;
@@ -294,14 +334,35 @@ export function recoveries(run: RunLogs): Recovery[] {
                 anchors.set(e.fault, e);
         }
         if (anchors.size === 0) return [];
-        // An arm whose verdicts depend on the plugin log needs that log on disk.
-        if (arm.pluginLogMissing) {
-            throw new Error(
-                `${arm.arm}: r/eidnara.log is missing, so fail-open evidence cannot be read`,
-            );
+        // A journaled fault must be the scheduled one: same id, same type.
+        for (const anchor of anchors.values()) {
+            const scheduled = run.faultTypes?.get(String(anchor.fault));
+            if (run.faultTypes && scheduled === undefined) {
+                throw new Error(
+                    `${arm.arm}: fault ${String(anchor.fault)} is not in the run's schedule`,
+                );
+            }
+            if (scheduled !== undefined && scheduled !== String(anchor.type)) {
+                throw new Error(
+                    `${arm.arm}: fault ${String(anchor.fault)} is journaled as ${String(anchor.type)} but scheduled as ${scheduled}`,
+                );
+            }
         }
-        const tl = timeline(arm, run.base_wall_ms ?? Number.NaN);
-        const indexed = indexEvidence(arm, tl);
+        // The timeline and evidence index are built once the first fault needs a verdict.
+        let built: { tl: Timeline; indexed: Evidence } | null = null;
+        const evidenceOf = () => {
+            if (built) return built;
+            // An arm whose verdicts depend on the plugin log needs that log on disk; the host
+            // control arm runs no plugin, so its faults are judged on its calls and turns alone.
+            if (arm.pluginLogMissing && armBase(arm.arm) !== "host") {
+                throw new Error(
+                    `${arm.arm}: r/eidnara.log is missing, so fail-open evidence cannot be read`,
+                );
+            }
+            const tl = timeline(arm, run.base_wall_ms ?? Number.NaN);
+            built = { tl, indexed: indexEvidence(arm, tl) };
+            return built;
+        };
         return [...anchors.values()].map((fired): Recovery => {
             // A sleep's evidence is its recorded clock jump: a fault-tagged AdvanceClock that moved
             // the clock forward with the busy set empty, by the scheduled duration when known.
@@ -337,6 +398,7 @@ export function recoveries(run: RunLogs): Recovery[] {
                 const reasons = [`skipped: ${evidence.skipped}`];
                 return { ...base, turns_to_first_clean: null, recovered: null, reasons };
             }
+            const { tl, indexed } = evidenceOf();
             const turns = turnsAfter(arm, fired, tl);
             const dirty = turns.map((t) => dirtyReasons(indexed, t, tl));
             const index = dirty.findIndex((r) => r.length === 0);

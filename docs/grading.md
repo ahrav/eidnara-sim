@@ -63,18 +63,24 @@ The nested-repository check and the recorder's workspace path check run
 before any walk of the workspace, and the walk itself stops at the bound or
 at 200,000 entries, failing the probe turn. A `git diff` past the 256 MiB
 output cap fails the probe turn the same way. A probe turn that adds,
-changes, or removes a `.gitignore`, or edits `.git/info/exclude`, ends
-`failed` with `ignore rules changed: <paths>`, since a rule added in the turn
-would hide that turn's files from the diff; the baseline is the source's
-`.gitignore` blobs and the clone's `exclude` file, recorded at reset. The
-`.gitignore` files are found by name in the workspace walk and hashed from
-disk, so a rule that ignores its own file still surfaces it; an `exclude` or
-`.gitignore` path that is a symlink, FIFO, or directory, or larger than 1 MiB,
-reads as a changed rule. A workspace with more than 1,000 nested
+changes, or removes a `.gitignore` or `.gitattributes`, or edits
+`.git/info/exclude` or `.git/info/attributes`, ends `failed` with
+`rule files changed: <paths>`: a rule added in the turn would hide that turn's
+files from the diff, and an attribute (`ident`, `eol`, a clean driver) would
+rewrite the content git indexes. The baseline is the source's `.gitignore` and
+`.gitattributes` blobs and the clone's `exclude` and `attributes` files,
+recorded at reset. The rule files are found by name in the workspace walk and
+hashed from disk, so a rule that ignores its own file still surfaces it; a rule
+path that is a symlink, FIFO, or directory, or larger than 1 MiB, reads as a
+changed rule. A workspace with more than 1,000 nested
 repositories fails the probe turn before git runs. The driver waits the scheduler's settle window and then its background
 jobs before it takes a probe snapshot, and checks the daemon is alive after
 the prompt and again after the snapshot, reporting an exit once with the
-turn's id.
+turn's id. A proxy call record the gateway failed to write stops the run at
+the next snapshot or at the run's end, so `calls.jsonl` never silently lacks a
+call the host made. The grade, judge-call, and judgment logs must be regular
+files or absent; a symlink at any of those paths stops grading before a
+write.
 The snapshot tree adds, with `--force`, the paths the project's source
 repository tracks although its ignore rules match them (the driver lists
 them from the source at reset), so a change to such a file is in the diff.
@@ -92,7 +98,7 @@ ones the workspace's ignore rules match left alone. Snapshot diffs run with
 |---|---|
 | `diff` (`turn`) | A git tree of the workspace's files that its `.gitignore` rules leave in, untracked files included, taken before the prompt and after it, and diffed |
 | `diff` (`prior-session`) | The same trees at the start and end of the project's previous session |
-| `command-log` | The host's tool runs, each a bash command or the tool name, its path, and its scalar arguments as `name=value` (a `read`'s offset and limit) followed by the text and structured arguments it was given (a `write`'s content, an `edit`'s edits), with a 0 or 1 error flag (null for a run that never finished) and the scenario time the run started. The recorder saves each run as the host logs it, so a harness kill mid-turn keeps the runs logged so far in the session log. Pi reports `tool_execution_start` and `tool_execution_end` events as they happen, and a run is timed from its start event and reaches the recorder at that start with a null exit, which its end report replaces, so a harness kill mid-run keeps the run on record; OpenCode's tool parts come from the session messages the turn added, read after the turn whatever its outcome, each timed from its start relative to the turn's first new message, both in OpenCode's own clock, with a pending or running part's exit null, so a turn OpenCode was running when the harness was killed leaves no tool runs; both listings are bounded by the turn deadline, and one that stalls fails the turn as a capture gap |
+| `command-log` | The host's tool runs, each a bash command or the tool name, its path, and its scalar arguments as `name=value` (a `read`'s offset and limit) followed by the text and structured arguments it was given (a `write`'s content, an `edit`'s edits), with a 0 or 1 error flag (null for a run that never finished) and the scenario time the run started. The recorder saves each run as the host logs it, so a harness kill mid-turn keeps the runs logged so far in the session log. Pi reports `tool_execution_start` and `tool_execution_end` events as they happen, and a run is timed from its start event and reaches the recorder at that start with a null exit, which its end report replaces, so a harness kill mid-run keeps the run on record; OpenCode's tool parts come from the session messages the turn added, read after the turn whatever its outcome, each timed from its start relative to the turn's first new message, both in OpenCode's own clock, with a pending or running part's exit null, and keyed by the part's id; on reattaching to a session after a kill, the host reports every tool part the session's messages hold, so a turn that was running at the kill still contributes its runs, timed at the resume when the recorder has no earlier record of them; both listings are bounded by the turn deadline, and one that stalls fails the turn as a capture gap |
 | `proxy-call` | The session's call records from `calls.jsonl`, each with the index of the user turn it belongs to (a background call takes the preceding turn's), a `failed` flag on a call that ended in an error status, a recorded error, or a cut stream (such a call is no fold for P13), and the response text the proxy records for agent, user-sim, and judge calls (the first 262,144 characters, with `response_text_truncated` on a longer reply) |
 
 The recorder keeps each project's session-start tree, the last session's

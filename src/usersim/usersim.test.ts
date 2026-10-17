@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { loadPrereg } from "../scenario/inputs";
 import {
     behaviourPlan,
+    deliveredTurns,
     type Label,
     type Plan,
     type PlanTurn,
@@ -12,6 +13,7 @@ import {
     realisedRates,
 } from "./plan";
 import {
+    agentReplyOf,
     checkTapeSources,
     type Llm,
     normaliser,
@@ -87,9 +89,60 @@ describe("behaviour plan", () => {
         const faults = [
             { trigger: { kind: "user_turn", session: "s-1", n: 2 }, seam: { layer: "proxy-sink" } },
             { trigger: { kind: "user_turn", session: "s-2", n: 1 }, seam: { layer: "daemon" } },
-            { trigger: { kind: "session_start", session: "s-2" }, seam: { layer: "proxy-sink" } },
         ];
         expect([...pinnedTurns(events, faults)].sort()).toEqual(["e-2", "e-3", "e-4"]);
+        const dynamic = [
+            {
+                trigger: { kind: "first_summarizer_call", session: "s-2" },
+                seam: { layer: "daemon" },
+            },
+        ];
+        expect([...pinnedTurns(events, dynamic)].sort()).toEqual(["e-4", "e-5"]);
+        const atStart = [
+            { trigger: { kind: "session_start", session: "s-1" }, seam: { layer: "proxy-sink" } },
+        ];
+        expect([...pinnedTurns(events, atStart)].sort()).toEqual(["e-1", "e-2", "e-3"]);
+    });
+
+    test("delivered turns leave out a record recovered after a kill, whose delivery is unknown", () => {
+        const entries = [
+            {
+                kind: "UserTurn",
+                arm: "a",
+                session: "s",
+                event: "e-1",
+                label: "task",
+                delivered: true,
+            },
+            {
+                kind: "UserTurn",
+                arm: "a",
+                session: "s",
+                event: "e-2",
+                label: "pushback",
+                delivered: true,
+                recovered: true,
+            },
+            {
+                kind: "UserTurn",
+                arm: "a",
+                session: "s",
+                event: "e-3",
+                label: "abandon",
+                delivered: false,
+            },
+            {
+                kind: "UserTurn",
+                arm: "b",
+                session: "s",
+                event: "e-1",
+                label: "task",
+                delivered: true,
+            },
+            { kind: "EndTurn", arm: "a", event: "e-1" },
+        ];
+        expect(deliveredTurns(entries, "a").map((e) => e.event)).toEqual(["e-1"]);
+        expect(deliveredTurns(entries, "a", "other")).toEqual([]);
     });
 
     test("a fault's trigger turn is never interrupted", () => {
@@ -295,6 +348,38 @@ describe("tape and pairing", () => {
         await play(again.user, "a", outputs);
         expect(replay.calls).toBe(0);
         expect(again.pairing.records.filter((r) => r.kind === "divergedAt")).toEqual([]);
+    });
+
+    test("a call record's response fields reach the user-sim only as strings", () => {
+        expect(agentReplyOf({ component: "agent", response_text: "hi" })).toEqual({ text: "hi" });
+        expect(
+            agentReplyOf({
+                component: "agent",
+                response_text: "hi",
+                response_sha256: "s",
+                response_tail: "t",
+            }),
+        ).toEqual({ text: "hi", sha256: "s", tail: "t" });
+        expect(agentReplyOf({ component: "agent", response_text: 123 })).toBeUndefined();
+        expect(
+            agentReplyOf({ component: "agent", response_text: "hi", response_sha256: 5 }),
+        ).toEqual({ text: "hi" });
+        expect(agentReplyOf({ component: "judge", response_text: "hi" })).toBeUndefined();
+    });
+
+    test("a divergence record carries the arm's session context beside both digests", async () => {
+        const { user, pairing } = sim(dir(), counting());
+        await play(user, "a", outputs);
+        const changed = outputs.map((o, i) => (i === 2 ? `${o} Also fixed a typo.` : o));
+        await play(user, "b", changed);
+        const d = pairing.records.find((r) => r.kind === "divergedAt");
+        expect(typeof (d as { context_sha256?: unknown }).context_sha256).toBe("string");
+        const turn = pairing.records.find(
+            (r) => r.kind === "turn" && r.arm === "b" && r.event === "e-3",
+        );
+        expect((d as { context_sha256?: unknown }).context_sha256).toBe(
+            (turn as { context_sha256: string }).context_sha256,
+        );
     });
 
     test("a reply the proxy cut is paired by its whole text and read from its real tail", async () => {
@@ -608,6 +693,134 @@ describe("tape and pairing", () => {
             () =>
                 new Pairing(join(dir(), "pairing.jsonl"), () => "a", [join(root, "pairing.jsonl")]),
         ).toThrow("digest");
+    });
+
+    test("a replay source row with a wrongly typed field is refused", () => {
+        const root = dir();
+        writeFileSync(
+            join(root, "tape.jsonl"),
+            '{"key":123,"event":"e","label":"task","digest":"d","text":"t","stop":"end_turn"}\n',
+        );
+        writeFileSync(join(root, "pairing.jsonl"), "");
+        expect(() => new Tape(join(dir(), "tape.jsonl"), [join(root, "tape.jsonl")])).toThrow(
+            "key",
+        );
+        const row = {
+            kind: "turn",
+            arm: "a",
+            session: "s",
+            event: "e",
+            index: "0",
+            label: "task",
+            delivered: true,
+            digest: "d",
+            context_sha256: "c",
+            prefix_sha256: "p",
+            text_sha256: "t",
+            source: "script",
+        };
+        writeFileSync(join(root, "pairing.jsonl"), `${JSON.stringify(row)}\n`);
+        expect(
+            () =>
+                new Pairing(join(dir(), "pairing.jsonl"), () => "a", [join(root, "pairing.jsonl")]),
+        ).toThrow("index");
+        writeFileSync(
+            join(root, "pairing.jsonl"),
+            `${JSON.stringify({ ...row, index: 0, label: "shout" })}\n`,
+        );
+        expect(
+            () =>
+                new Pairing(join(dir(), "pairing.jsonl"), () => "a", [join(root, "pairing.jsonl")]),
+        ).toThrow("label");
+    });
+
+    test("a replay source that stopped short of this run is refused", () => {
+        const root = dir();
+        writeFileSync(join(root, "tape.jsonl"), "");
+        writeFileSync(join(root, "pairing.jsonl"), "");
+        const run = { seed: 101, scenario_hash: "abc", events: 10 };
+        const manifest = (events: number) =>
+            writeFileSync(
+                join(root, "manifest.json"),
+                JSON.stringify({ seed: 101, scenario_hash: "abc", events }),
+            );
+        manifest(10);
+        expect(() => checkTapeSources([join(root, "tape.jsonl")], run)).toThrow("journal.jsonl");
+        writeFileSync(join(root, "journal.jsonl"), '{"kind":"StartRun"}\n');
+        expect(() => checkTapeSources([join(root, "tape.jsonl")], run)).toThrow("EndRun");
+        writeFileSync(join(root, "journal.jsonl"), '{"kind":"StartRun"}\n{"kind":"EndRun"}\n');
+        manifest(5);
+        expect(() => checkTapeSources([join(root, "tape.jsonl")], run)).toThrow("5 events");
+        manifest(10);
+        expect(() => checkTapeSources([join(root, "tape.jsonl")], run)).not.toThrow();
+    });
+
+    test("a paste turn's record names its corpus item and byte length", async () => {
+        const { user, pairing } = sim(dir(), counting());
+        const paste: ScriptTurn = {
+            id: "e-12",
+            session: "s-3",
+            index: 0,
+            role: "paste",
+            text: "Here's what I'm seeing:\n```\nabc\n```",
+            paste: { sample_id: "out-0001", bytes: 3 },
+        };
+        await user.deliver("a", paste, "");
+        expect(pairing.records.at(-1)).toMatchObject({
+            kind: "turn",
+            event: "e-12",
+            paste: { sample_id: "out-0001", bytes: 3 },
+        });
+    });
+
+    test("a replay source must have run every arm of this run", () => {
+        const root = dir();
+        writeFileSync(join(root, "tape.jsonl"), "");
+        writeFileSync(join(root, "pairing.jsonl"), "");
+        writeFileSync(
+            join(root, "manifest.json"),
+            JSON.stringify({ seed: 101, scenario_hash: "abc", order: ["eidnara"] }),
+        );
+        const run = { seed: 101, scenario_hash: "abc", order: ["host", "eidnara"] };
+        expect(() => checkTapeSources([join(root, "tape.jsonl")], run)).toThrow("host");
+        expect(() =>
+            checkTapeSources([join(root, "tape.jsonl")], { ...run, order: ["eidnara"] }),
+        ).not.toThrow();
+    });
+
+    test("a replay source under another fault override is refused", () => {
+        const root = dir();
+        writeFileSync(join(root, "tape.jsonl"), "");
+        writeFileSync(join(root, "pairing.jsonl"), "");
+        writeFileSync(
+            join(root, "manifest.json"),
+            JSON.stringify({ seed: 101, scenario_hash: "abc", fault_override: [{ id: "f" }] }),
+        );
+        const run = { seed: 101, scenario_hash: "abc", fault_override: null };
+        expect(() => checkTapeSources([join(root, "tape.jsonl")], run)).toThrow("fault");
+        expect(() =>
+            checkTapeSources([join(root, "tape.jsonl")], { ...run, fault_override: [{ id: "f" }] }),
+        ).not.toThrow();
+    });
+
+    test("a replay source must hold a turn record for every arm and event of this run", () => {
+        const first = dir();
+        const recordedRun = sim(first, counting());
+        const a = script.slice(0, 4);
+        for (const [i, t] of a.entries()) recordedRun.user.deliver("a", t, outputs[i] ?? "");
+        writeFileSync(
+            join(first, "manifest.json"),
+            JSON.stringify({ seed: 101, scenario_hash: "abc", order: ["a"], events: 5 }),
+        );
+        writeFileSync(join(first, "journal.jsonl"), '{"kind":"EndRun"}\n');
+        const run = {
+            seed: 101,
+            scenario_hash: "abc",
+            order: ["a"],
+            events: 5,
+            turns: script.map((t) => t.id),
+        };
+        expect(() => checkTapeSources([join(first, "tape.jsonl")], run)).toThrow("a e-5");
     });
 
     test("a replay source from another pre-registration is refused", () => {

@@ -22,9 +22,16 @@ import { compileScenario, type Scenario } from "../scenario/compile";
 import type { FaultEpisode } from "../scenario/faults";
 import { loadCompileInput, loadPrereg } from "../scenario/inputs";
 import { bedrockEmbedder } from "../scenario/similarity";
-import { behaviourPlan, type Label, pinnedTurns, realisedRates } from "../usersim/plan";
+import {
+    behaviourPlan,
+    deliveredTurns,
+    type Label,
+    pinnedTurns,
+    realisedRates,
+} from "../usersim/plan";
 import {
     type AgentReply,
+    agentReplyOf,
     checkTapeSources,
     normaliser,
     Pairing,
@@ -180,13 +187,19 @@ async function loadManifest(o: RunOptions, scenario: Scenario): Promise<Manifest
         fault_override: o.faults ?? null,
         tapes: o.tapes ?? [],
     };
-    checkTapeSources(wanted.tapes, {
-        seed: o.seed,
-        scenario_hash: scenario.scenario_hash,
-        prereg_sha256: preregistrationHash(loadPrereg(o.tier)),
-    });
+    const sources = (tapes: string[], events: number, order: readonly string[]) =>
+        checkTapeSources(tapes, {
+            seed: o.seed,
+            scenario_hash: scenario.scenario_hash,
+            prereg_sha256: preregistrationHash(loadPrereg(o.tier)),
+            events,
+            order,
+        });
     if (existsSync(path)) {
         const manifest = JSON.parse(readFileSync(path, "utf8")) as Manifest;
+        // A resume checks the sources against the run it continues, whose event count and arm
+        // order the manifest holds whether or not this invocation restates them.
+        sources(manifest.tapes, manifest.events, manifest.order);
         const given: Record<string, boolean> = {
             order: o.arms !== undefined,
             events: o.events !== undefined,
@@ -222,6 +235,7 @@ async function loadManifest(o: RunOptions, scenario: Scenario): Promise<Manifest
         appendFileSync(join(o.out, "preflight.jsonl"), `${JSON.stringify(checks)}\n`);
         return manifest;
     }
+    sources(wanted.tapes, wanted.events, wanted.order);
     const manifest: Manifest = {
         schema: "sim-run-manifest/v1",
         ...wanted,
@@ -325,6 +339,11 @@ async function runArms(
     const proxyFaults = scenario.faults.filter((f) => f.seam.layer === "proxy-sink");
     const injector = new FaultInjector(proxyFaults, new Rng((seed ^ 0x5bd1e995) >>> 0), 120_000);
     const offsetFile = (arm: string) => join(o.out, arm, "clock", "offset");
+    const pairing = new Pairing(
+        join(o.out, "pairing.jsonl"),
+        referenceArm(manifest.order),
+        manifest.tapes.map((t) => join(dirname(t), "pairing.jsonl")),
+    );
     const scheduler = new Scheduler({
         events,
         faults: scenario.faults,
@@ -341,22 +360,30 @@ async function runArms(
             }));
             return realisedRates(turns, prereg);
         },
+        // The pairing log holds the turn's user record ahead of the prompt, so a turn a kill
+        // interrupted mid-prompt keeps its label and delivery in the journal.
+        recoverTurn: (event: string): Record<string, unknown> | undefined => {
+            const arm: string | null = scheduler.currentArm;
+            const r = pairing.records.find(
+                (x) => x.kind === "turn" && x.arm === arm && x.event === event,
+            );
+            return r?.kind === "turn"
+                ? { session: r.session, label: r.label, delivered: r.delivered }
+                : undefined;
+        },
     });
     const now = () => scheduler.clock?.now() ?? 0;
     const scope = { arm: "", session: null as string | null, turn: null as string | null };
     const jobs = new Map<string, string[]>();
     let jobSeq = journal.entries.filter((e) => e.kind === "RegisterJob").length;
     const agentText = new Map<string, AgentReply>();
-    const noteAgent = (r: CallRecord) => {
-        if (r.component === "agent" && r.response_text !== undefined) {
-            agentText.set(`${r.arm}/${r.session}`, {
-                text: r.response_text,
-                ...(r.response_sha256 ? { sha256: r.response_sha256 } : {}),
-                ...(r.response_tail ? { tail: r.response_tail } : {}),
-            });
-        }
+    const noteAgent = (
+        r: { arm?: unknown; session?: unknown } & Parameters<typeof agentReplyOf>[0],
+    ) => {
+        const reply = agentReplyOf(r);
+        if (reply) agentText.set(`${r.arm}/${r.session}`, reply);
     };
-    for (const r of readJournal(join(o.out, "calls.jsonl"))) noteAgent(r as unknown as CallRecord);
+    for (const r of readJournal(join(o.out, "calls.jsonl"))) noteAgent(r);
     class RunRecords extends RecordWriter {
         override write(partial: Omit<CallRecord, "seq" | "wall_ms">): CallRecord {
             const record = super.write(partial);
@@ -403,17 +430,20 @@ async function runArms(
         index: number;
         role: string;
         text: string;
+        paste?: { sample_id: string; bytes: number };
     }[];
     const pinned = pinnedTurns(events, scenario.faults);
+    const tape = new Tape(join(o.out, "tape.jsonl"), manifest.tapes);
+    // Both loaders have read the sources; the bytes they read must be the ones the manifest
+    // attests.
+    if (!sameJson(tapeDigests(manifest.tapes), manifest.tape_sha256)) {
+        throw new HarnessFailure("replay sources changed since the manifest hashed them");
+    }
     const userSim = new UserSim({
         seed,
         plan: behaviourPlan(scripted, prereg, seed, pinned),
-        tape: new Tape(join(o.out, "tape.jsonl"), manifest.tapes),
-        pairing: new Pairing(
-            join(o.out, "pairing.jsonl"),
-            referenceArm(manifest.order),
-            manifest.tapes.map((t) => join(dirname(t), "pairing.jsonl")),
-        ),
+        tape,
+        pairing,
         llm: proxyUserSim(
             gateway.urls[0] as string,
             prereg.user_sim.model,
@@ -428,13 +458,7 @@ async function runArms(
     });
     const scriptedById = new Map(scripted.map((t) => [t.id, t]));
     const userTurns = (arm: string, session?: string) =>
-        journal.entries.filter(
-            (e) =>
-                e.kind === "UserTurn" &&
-                e.arm === arm &&
-                e.delivered === true &&
-                (session === undefined || e.session === session),
-        );
+        deliveredTurns(journal.entries, arm, session);
     const lastAgent = (arm: string, session: string): AgentReply =>
         agentText.get(`${arm}/${session}`) ?? { text: "" };
     for (const arm of manifest.order) {
@@ -458,21 +482,24 @@ async function runArms(
             loopStore,
             onDaemonExit: (detail) => scheduler.daemonExited(detail),
             sampleDaemon: () => sampler.observe(),
-            callsFor: (session) => [
-                ...callsOf(join(o.out, "calls.jsonl"), arm, session, turnIndex).filter(
-                    (c) => c.component !== "user-sim",
-                ),
-                ...userTurns(arm, session).map((e) => ({
-                    seq: e.seq,
-                    component: "user-sim",
-                    turn: String(e.event),
-                    turn_index: turnIndex.get(String(e.event)),
-                    scenario_ms: e.scenario_ms,
-                    input_tokens: 0,
-                    output_tokens: 0,
-                    label: String(e.label),
-                })),
-            ],
+            callsFor: (session) => {
+                requireRecorded(gateway);
+                return [
+                    ...callsOf(join(o.out, "calls.jsonl"), arm, session, turnIndex).filter(
+                        (c) => c.component !== "user-sim",
+                    ),
+                    ...userTurns(arm, session).map((e) => ({
+                        seq: e.seq,
+                        component: "user-sim",
+                        turn: String(e.event),
+                        turn_index: turnIndex.get(String(e.event)),
+                        scenario_ms: e.scenario_ms,
+                        input_tokens: 0,
+                        output_tokens: 0,
+                        label: String(e.label),
+                    })),
+                ];
+            },
             settle: () => scheduler.quiesceJobs(),
             now,
         });
@@ -565,4 +592,15 @@ async function runArms(
         };
     }
     await scheduler.run();
+    requireRecorded(gateway);
+}
+
+/**
+ * A call record the gateway failed to write leaves `calls.jsonl` short of a call the host made,
+ * so the run stops rather than snapshot or end on incomplete evidence.
+ */
+function requireRecorded(gateway: Gateway): void {
+    if (gateway.failures.length === 0) return;
+    const causes = gateway.failures.map((f) => f.message).join("; ");
+    throw new HarnessFailure(`proxy call recording failed: ${causes}`);
 }

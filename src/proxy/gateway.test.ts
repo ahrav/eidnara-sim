@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { appendFileSync, mkdtempSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { decodeMessages } from "../../tests/eventstream-decode";
@@ -340,6 +340,21 @@ describe("fault composition at the proxy sink", () => {
             ["t", "The change is partly"],
             ["t", "The change is partly"],
         ]);
+    });
+
+    test("an injected empty reply records an empty response text", async () => {
+        const fault = {
+            id: "e",
+            type: "empty_content",
+            strategy: "single",
+            params: {},
+        } as ProxyFault;
+        const { injector, records, url } = await start(fault);
+        injector.arm("e");
+        await hostCallJson(url, AGENT_BODY, 2_000);
+        expect(records.records[0]?.fault_ref).toBe("e");
+        expect(records.records[0]?.response_text).toBe("");
+        expect(records.records[0]?.response_sha256).toBe(sha256Hex(""));
     });
 
     test("slow_stream over an upstream that throttles first records the proxy's retry", async () => {
@@ -862,4 +877,10 @@ describe("every request yields one record", () => {
         expect([...walls].sort((a, b) => a - b)).toEqual(walls);
         expect(new Set(records.records.map((r) => r.scenario_ms)).size).toBe(3);
     });
+});
+
+test("a record writer creates its file at once, so a run with no calls still has calls.jsonl", () => {
+    const path = join(mkdtempSync(join(tmpdir(), "sim-records-")), "calls.jsonl");
+    new RecordWriter(path);
+    expect(existsSync(path)).toBe(true);
 });

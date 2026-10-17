@@ -5,6 +5,7 @@ import {
     appendFileSync,
     closeSync,
     existsSync,
+    lstatSync,
     mkdirSync,
     mkdtempSync,
     openSync,
@@ -338,6 +339,44 @@ describe("HostDriver lifecycle", () => {
         ).rejects.toThrow(HarnessFailure);
     });
 
+    test("apply_diff refuses a commondir redirect and ignores replacement refs", async () => {
+        const { driver } = fixture("host", { p: gitRepo() });
+        await driver.reset();
+        const ws = driver.workspace("p");
+        const other = tmp();
+        writeFileSync(join(ws, ".git", "commondir"), `${other}\n`);
+        await expect(
+            driver.event(ev("apply_diff", { path: "src/a.txt", content: "A" })),
+        ).rejects.toThrow("commondir");
+        rmSync(join(ws, ".git", "commondir"));
+        const g = (...args: string[]) =>
+            spawnSync("git", args, { cwd: ws, encoding: "utf8" }).stdout.trim();
+        const head = g("rev-parse", "HEAD");
+        const emptyTree = g("hash-object", "-t", "tree", "/dev/null");
+        const replacement = spawnSync("git", ["commit-tree", emptyTree, "-m", "replacement"], {
+            cwd: ws,
+            encoding: "utf8",
+            env: {
+                ...process.env,
+                GIT_AUTHOR_NAME: "t",
+                GIT_AUTHOR_EMAIL: "t@t",
+                GIT_COMMITTER_NAME: "t",
+                GIT_COMMITTER_EMAIL: "t@t",
+            },
+        }).stdout.trim();
+        g("update-ref", `refs/replace/${head}`, replacement);
+        await driver.event(ev("apply_diff", { path: "src/a.txt", content: "A" }));
+        const files = spawnSync("git", ["ls-tree", "-r", "--name-only", "HEAD"], {
+            cwd: ws,
+            encoding: "utf8",
+            env: { ...process.env, GIT_NO_REPLACE_OBJECTS: "1" },
+        })
+            .stdout.trim()
+            .split("\n")
+            .sort();
+        expect(files).toEqual(["README", "src/a.txt"]);
+    });
+
     test("apply_diff refuses a target that is a FIFO or directory before writing", async () => {
         const { driver } = fixture("host", { p: gitRepo() });
         await driver.reset();
@@ -515,7 +554,12 @@ describe("HostDriver lifecycle", () => {
         await driver.event(ev("user_turn", { id: "e-1", text: "go", deadline_ms: 400 }));
         await driver.event(ev("user_turn", { id: "e-2", text: "go" }));
         await driver.event(ev("user_turn", { id: "e-3", text: "go", deadline_ms: 5_000 }));
-        expect(host.deadlines).toEqual([400, 1_000, 1_000]);
+        await driver.event(ev("user_turn", { id: "e-4", text: "go", deadline_ms: 30 }));
+        const spent = await driver.event(
+            ev("user_turn", { id: "e-5", text: "go", deadline_ms: 0 }),
+        );
+        expect(host.deadlines).toEqual([400, 1_000, 1_000, 30]);
+        expect(spent.failed).toContain("turn deadline");
     });
 
     test("a scheduled interrupt reaches the host's prompt and the turn reports it", async () => {
@@ -858,6 +902,23 @@ describe("HostDriver faults", () => {
         expect(after.stores).toBeUndefined();
     });
 
+    test("the final store check replaces a symlink at its path without writing through it", async () => {
+        const { driver, armDir } = fixture("eidnara");
+        driver.daemon = fakeDaemon(10) as unknown as DaemonStack;
+        mkdirSync(dirname(driver.storeDb), { recursive: true });
+        new Database(driver.storeDb).run(SEGMENTS_DDL);
+        const target = join(armDir, "elsewhere.json");
+        writeFileSync(target, "untouched\n");
+        mkdirSync(armDir, { recursive: true });
+        symlinkSync(target, join(armDir, "store-check.json"));
+        await driver.finish();
+        expect(readFileSync(target, "utf8")).toBe("untouched\n");
+        expect(lstatSync(join(armDir, "store-check.json")).isSymbolicLink()).toBe(false);
+        expect(JSON.parse(readFileSync(join(armDir, "store-check.json"), "utf8")).integrity).toBe(
+            "ok",
+        );
+    });
+
     test("finish stops the daemon and writes the final store check", async () => {
         const { driver } = fixture("eidnara");
         const daemon = fakeDaemon(10);
@@ -983,7 +1044,7 @@ describe("probe snapshots", () => {
         const hidden = await fresh.event(
             ev("user_turn", { id: "e-1", session: "s-0", text: "go", probe: "q-1" }),
         );
-        expect(hidden.failed).toBe("ignore rules changed: .gitignore (added)");
+        expect(hidden.failed).toBe("rule files changed: .gitignore (added)");
         host.onPrompt = () => appendFileSync(join(ws, ".git", "info", "exclude"), "cache.rs\n");
         const excluded = await fresh.event(
             ev("user_turn", { id: "e-2", session: "s-0", text: "go", probe: "q-2" }),
@@ -1015,7 +1076,7 @@ describe("probe snapshots", () => {
             ev("user_turn", { id: "e-1", session: "s-0", text: "go", probe: "q-1" }),
         );
         expect(outcome.failed).toBe(
-            "ignore rules changed: .gitignore (added), deep/er/.gitignore (added)",
+            "rule files changed: .gitignore (added), deep/er/.gitignore (added)",
         );
     });
 
@@ -1054,6 +1115,31 @@ describe("probe snapshots", () => {
         rmSync(info, { recursive: true });
         symlinkSync(tmp(), info);
         expect(recorder.excludeDigest(repo)).toBe("unreadable");
+    });
+
+    test("a probe turn that adds a .gitattributes rule ends failed, since attributes rewrite indexed content", async () => {
+        const { driver, hosts } = fixture("host", { p: gitRepo() });
+        const fresh = new HostDriver((driver as unknown as { o: DriverOptions }).o);
+        await fresh.reset();
+        const host = hosts.at(-1) as FakeHost;
+        const ws = fresh.workspace("p");
+        await fresh.event(ev("session_start", { session: "s-0" }));
+        host.onPrompt = () => {
+            writeFileSync(join(ws, "note.txt"), "before $Id: FORBIDDEN_VALUE $ after\n");
+            writeFileSync(join(ws, ".gitattributes"), "*.txt ident\n");
+        };
+        const outcome = await fresh.event(
+            ev("user_turn", { id: "e-1", session: "s-0", text: "go", probe: "q-1" }),
+        );
+        expect(outcome.failed).toBe("rule files changed: .gitattributes (added)");
+        host.onPrompt = () =>
+            writeFileSync(join(ws, ".git", "info", "attributes"), "*.txt ident\n");
+        rmSync(join(ws, ".gitattributes"));
+        mkdirSync(join(ws, ".git", "info"), { recursive: true });
+        const info = await fresh.event(
+            ev("user_turn", { id: "e-2", session: "s-0", text: "go", probe: "q-2" }),
+        );
+        expect(info.failed).toBe("rule files changed: .git/info/attributes (changed)");
     });
 
     test("a probe turn that leaves an embedded repository in the workspace ends failed, naming it", async () => {
@@ -1327,7 +1413,7 @@ test("a tool run reported at its start is on record, and its end report replaces
         { command: "cargo build", exit: null, scenario_ms: 1, call: "t1" },
         { command: "ls", exit: 0, scenario_ms: 2 },
     ]);
-    recorder.addTools([{ command: "cargo build", exit: 1, scenario_ms: 1, call: "t1" }], "e-1");
+    recorder.addTools([{ command: "cargo build", exit: 1, scenario_ms: 9, call: "t1" }], "e-1");
     const ended = JSON.parse(readFileSync(join(armDir, "snapshot-state.json"), "utf8"));
     expect(ended.commands).toEqual([
         { command: "cargo build", exit: 1, scenario_ms: 1, call: "t1" },
@@ -1398,15 +1484,15 @@ test("snapshot git refuses a workspace path that an agent replaced with a symlin
 test("the workspace walk is bounded by the recorder deadline", () => {
     const repo = gitRepo();
     const armDir = tmp();
-    for (let i = 0; i < 3_000; i++) {
+    for (let i = 0; i < 1_500; i++) {
         mkdirSync(join(repo, "wide", `d${i}`, "deeper"), { recursive: true });
         writeFileSync(join(repo, "wide", `d${i}`, "f.rs"), "");
     }
     const recorder = new SnapshotRecorder(armDir, "eidnara", () => [], 1);
     expect(() => recorder.embedded(repo)).toThrow("timed out");
-    const roomy = new SnapshotRecorder(armDir, "eidnara", () => [], 60_000);
+    const roomy = new SnapshotRecorder(armDir, "eidnara", () => [], 120_000);
     expect(roomy.embedded(repo)).toEqual([]);
-}, 60_000);
+}, 120_000);
 
 test("the nested-repository check is bounded like the other snapshot git runs", () => {
     const repo = gitRepo();

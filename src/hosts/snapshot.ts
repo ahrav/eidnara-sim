@@ -30,8 +30,14 @@ interface RecorderState {
     commands: Command[];
     /** Per project, the paths the source repository tracks although its ignore rules match them. */
     forced?: Record<string, string[]>;
-    /** Per project, the blob ids of the source's `.gitignore` files and the digest of `.git/info/exclude`. */
-    ignores?: Record<string, { files: Record<string, string>; exclude: string | null }>;
+    /**
+     * Per project, the blob ids of the source's `.gitignore` and `.gitattributes` files and the
+     * digests of the clone's `.git/info/exclude` and `.git/info/attributes`.
+     */
+    ignores?: Record<
+        string,
+        { files: Record<string, string>; exclude: string | null; attributes?: string | null }
+    >;
 }
 
 const EMPTY: RecorderState = { session: null, ended: null, starts: {}, last: {}, commands: [] };
@@ -42,6 +48,8 @@ const WORKSPACE_ENTRY_CAP = 200_000;
 const NESTED_REPO_CAP = 1_000;
 /** Bytes an ignore-rule file may hold before it reads as an unreadable, changed rule. */
 const RULE_FILE_CAP = 1 << 20;
+/** In-tree files whose rules shape what the snapshot tree holds: ignore rules and attributes (filters, `ident`, eol). */
+const RULE_FILES = new Set([".gitignore", ".gitattributes"]);
 
 /**
  * Git's blob id of a regular file under the size cap, computed without git; any other shape
@@ -109,7 +117,7 @@ export class SnapshotRecorder {
     private git(args: string[], work?: string): string {
         if (work) this.requireRealDir(work);
         if (!existsSync(this.gitDir)) git(this.armDir, ["init", "--quiet", "--bare", this.gitDir]);
-        const scope: Record<string, string> = { GIT_DIR: this.gitDir };
+        const scope: Record<string, string> = { GIT_DIR: this.gitDir, GIT_NO_REPLACE_OBJECTS: "1" };
         if (work) {
             scope.GIT_WORK_TREE = work;
             scope.GIT_INDEX_FILE = join(this.gitDir, `${basename(work)}.index`);
@@ -189,7 +197,7 @@ export class SnapshotRecorder {
                     if (at !== dir) found.push(relative(dir, at).split(sep).join("/"));
                     continue;
                 }
-                if (entry.name === ".gitignore") ignoreFiles.push(rel);
+                if (RULE_FILES.has(entry.name)) ignoreFiles.push(rel);
                 if (entry.isDirectory()) pending.push(join(at, entry.name));
             }
         }
@@ -230,8 +238,13 @@ export class SnapshotRecorder {
      * Records the project's baseline ignore rules: the blob id of every `.gitignore` the source
      * tracks and the digest of the clone's `.git/info/exclude`.
      */
-    trackIgnoreRules(project: string, files: Record<string, string>, exclude: string | null): void {
-        this.state.ignores = { ...this.state.ignores, [project]: { files, exclude } };
+    trackIgnoreRules(
+        project: string,
+        files: Record<string, string>,
+        exclude: string | null,
+        attributes: string | null,
+    ): void {
+        this.state.ignores = { ...this.state.ignores, [project]: { files, exclude, attributes } };
         this.save();
     }
 
@@ -261,8 +274,11 @@ export class SnapshotRecorder {
                 `${path} (${was === undefined ? "added" : is === undefined ? "removed" : "changed"})`,
             );
         }
-        const digest = this.excludeDigest(dir);
-        if (digest !== baseline.exclude) changes.push(".git/info/exclude (changed)");
+        if (this.excludeDigest(dir) !== baseline.exclude)
+            changes.push(".git/info/exclude (changed)");
+        if (this.excludeDigest(dir, "attributes") !== (baseline.attributes ?? null)) {
+            changes.push(".git/info/attributes (changed)");
+        }
         return changes.sort();
     }
 
@@ -271,10 +287,10 @@ export class SnapshotRecorder {
      * directory or regular file; a missing file reads as null, and any other shape (a symlink,
      * a FIFO, a directory in the file's place) reads as a changed rule.
      */
-    excludeDigest(dir: string): string | null {
+    excludeDigest(dir: string, name: "exclude" | "attributes" = "exclude"): string | null {
         const gitDir = join(dir, ".git");
         const info = join(gitDir, "info");
-        const exclude = join(info, "exclude");
+        const exclude = join(info, name);
         for (const at of [gitDir, info]) {
             const stat = lstatSync(at, { throwIfNoEntry: false });
             if (stat === undefined) return at === gitDir ? "unreadable" : null;
@@ -350,7 +366,8 @@ export class SnapshotRecorder {
 
     /**
      * Adds tool runs: each is appended to `tools.jsonl` with the turn it belongs to, and a run
-     * whose `call` id matches an earlier record replaces that record in the session's commands.
+     * whose `call` id matches an earlier record replaces that record in the session's commands
+     * and keeps its recorded start time, the moment the run began.
      */
     addTools(tools: Command[], turn: string | null): void {
         if (tools.length === 0) return;
@@ -359,7 +376,10 @@ export class SnapshotRecorder {
         for (const run of tools) {
             const at = run.call ? this.state.commands.findIndex((c) => c.call === run.call) : -1;
             if (at === -1) this.state.commands.push(run);
-            else this.state.commands[at] = run;
+            else {
+                const earlier = this.state.commands[at] as Command;
+                this.state.commands[at] = { ...run, scenario_ms: earlier.scenario_ms };
+            }
         }
         this.save();
     }

@@ -21,11 +21,17 @@ file after each delivery. In `usersim-1`, the eidnara arm diverged at index 1
 of sessions `s-0003`, `s-0005`, and `s-0009`.
 
 Contract versus code: the catalog check requires the divergence record to
-precede the next `IssueUserText` in journal order. The journal has no
-`IssueUserText` entry; the user turn is journaled as `UserTurn`, and the
-`divergedAt` record lives in `<run>/pairing.jsonl`, appended before the turn's
-text is sent (`src/usersim/usersim.ts`, `UserSim.deliver`). The ordering the
-check names holds across the two files, not within the journal.
+precede the next `IssueUserText` in journal order and to carry both
+agent-visible context hashes. The journal has no `IssueUserText` entry; the
+user turn is journaled as `UserTurn`, and the `divergedAt` record lives in
+`<run>/pairing.jsonl`, appended before the turn's text is sent
+(`src/usersim/usersim.ts`, `UserSim.deliver`). The record carries `digest` and
+`reference_digest`, the normalised last-output digests the pre-registration
+names as the divergence hash input (`divergence_policy.hash_input`), and
+`context_sha256`, the arm's chained session digests; the reference arm's
+chained context is on its own turn record for the event, not on this record.
+The ordering the check names holds across the two files, not within the
+journal.
 
 ## Failure scenario
 

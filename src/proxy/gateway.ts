@@ -302,7 +302,9 @@ export class Gateway {
                 sink,
                 tool,
             );
-            const relayed = text && RELAYED_TEXT.has(done.component) ? { response_text: text } : {};
+            const relayed = RELAYED_TEXT.has(done.component)
+                ? { response_text: text ?? "", response_sha256: sha256Hex(text ?? "") }
+                : {};
             return { ...done, ...outcome, ...relayed };
         }
         const usage: Usage = {};

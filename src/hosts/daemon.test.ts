@@ -47,7 +47,7 @@ test("daemon.log holds each daemon output line once; the v1 stack's hostLog repe
     };
     Object.assign(daemon as unknown as Record<string, unknown>, { stack, hh });
     await daemon.stop();
-    expect(readFileSync(logFile, "utf8")).toBe("ready\nmemory capture output rejected\n");
+    expect(readFileSync(logFile, "utf8")).toBe("memory capture output rejected\nready\n");
 });
 
 test("daemon.log keeps the whole stderr of a lifetime, past the 256 KiB tail the stack retains in memory", async () => {
@@ -80,7 +80,7 @@ test("daemon.log keeps the whole stderr of a lifetime, past the 256 KiB tail the
     Object.assign(daemon as unknown as Record<string, unknown>, { stack, hh });
     await daemon.stop();
     const saved = readFileSync(logFile, "utf8");
-    expect(saved.startsWith("ready\n")).toBe(true);
+    expect(saved.endsWith("ready\n")).toBe(true);
     expect(saved).toContain(refusal);
     expect(saved.length).toBe("ready\n".length + refusal.length + filler.length);
 });
@@ -229,6 +229,23 @@ test("the held stdout of a killed lifetime is recovered from the marker", () => 
     expect(existsSync(join(dir, "daemon.log.source"))).toBe(false);
 });
 
+test("a held stdout appended before a kill is rolled back and appended once", () => {
+    const dir = mkdtempSync(join(tmpdir(), "sim-daemon-"));
+    const logFile = join(dir, "daemon.log");
+    writeFileSync(logFile, "earlier\nstdout line\n");
+    writeFileSync(
+        join(dir, "daemon.log.source"),
+        JSON.stringify({
+            pending: [],
+            copying: null,
+            stdout: "stdout line\n",
+            stdout_target: "earlier\n".length,
+        }),
+    );
+    new DaemonStack(stackCtx(dir)).recoverLog();
+    expect(readFileSync(logFile, "utf8")).toBe("earlier\nstdout line\n");
+});
+
 test("a held log and a live log that are one inode are recovered once", () => {
     const dir = mkdtempSync(join(tmpdir(), "sim-daemon-"));
     const logPath = join(dir, "direct-host.log");
@@ -339,6 +356,91 @@ test("stdout the daemon wrote while handling SIGTERM is saved", async () => {
     );
 });
 
+test("a stop after a failed crash saves the stack's stdout once, superseding the held copy", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "sim-daemon-"));
+    const logPath = join(dir, "direct-host.log");
+    writeFileSync(logPath, "stderr\n");
+    const stack = {
+        logPath,
+        child: { pid: process.pid },
+        crashHost: async () => {
+            throw new Error("kill refused");
+        },
+        terminateHost: async () => {},
+    };
+    const hh = {
+        __hermeticHostTest: {
+            diagnostics: () => ({ stdout: "ready\n", stderr: "", retainedLog: "" }),
+        },
+    };
+    const daemon = new DaemonStack(stackCtx(dir));
+    Object.assign(daemon as unknown as Record<string, unknown>, { stack, hh });
+    await expect(daemon.crash()).rejects.toThrow("kill refused");
+    await daemon.stop();
+    expect(readFileSync(join(dir, "daemon.log"), "utf8")).toBe("stderr\nready\n");
+});
+
+test("a stop after a replacement that failed to come up keeps the killed lifetime's held stdout", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "sim-daemon-"));
+    const logPath = join(dir, "direct-host.log");
+    writeFileSync(logPath, "old stderr\n");
+    let stdout = "old stdout\n";
+    const stack = {
+        logPath,
+        child: { pid: process.pid },
+        crashHost: async () => {},
+        restartHost: async () => {
+            stack.child = { pid: process.ppid };
+            stdout = "new stdout\n";
+            rmSync(logPath);
+            writeFileSync(logPath, "new stderr\n");
+            throw new Error("replacement never became ready");
+        },
+        terminateHost: async () => {},
+    };
+    const hh = {
+        __hermeticHostTest: { diagnostics: () => ({ stdout, stderr: "", retainedLog: "" }) },
+    };
+    const daemon = new DaemonStack(stackCtx(dir));
+    Object.assign(daemon as unknown as Record<string, unknown>, { stack, hh });
+    await expect(daemon.restart()).rejects.toThrow("never became ready");
+    await daemon.stop();
+    expect(readFileSync(join(dir, "daemon.log"), "utf8")).toBe(
+        "old stdout\nold stderr\nnew stderr\nnew stdout\n",
+    );
+});
+
+test("the marker names the replacement daemon as soon as it is up", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "sim-daemon-"));
+    const logPath = join(dir, "direct-host.log");
+    const marker = join(dir, "daemon.log.source");
+    writeFileSync(logPath, "old\n");
+    const owners: unknown[] = [];
+    const stack = {
+        logPath,
+        child: { pid: process.ppid },
+        restartHost: async () => {
+            stack.child = { pid: process.pid };
+            rmSync(logPath);
+            writeFileSync(logPath, "new\n");
+        },
+    };
+    const hh = {
+        __hermeticHostTest: { diagnostics: () => ({ stdout: "", stderr: "", retainedLog: "" }) },
+    };
+    const daemon = new DaemonStack(stackCtx(dir));
+    Object.assign(daemon as unknown as Record<string, unknown>, { stack, hh });
+    const absorb = (daemon as unknown as { absorb: (s: string, r: string[]) => void }).absorb.bind(
+        daemon,
+    );
+    (daemon as unknown as { absorb: (s: string, r: string[]) => void }).absorb = (s, r) => {
+        owners.push(JSON.parse(readFileSync(marker, "utf8")).owner?.pid);
+        absorb(s, r);
+    };
+    await daemon.restart();
+    expect(owners).toEqual([process.pid]);
+});
+
 test("recovery stops a daemon the marker still names as live before saving its log", async () => {
     const dir = mkdtempSync(join(tmpdir(), "sim-daemon-"));
     const logPath = join(dir, "direct-host.log");
@@ -380,4 +482,56 @@ test("a stop rolls back and saves a copy that failed mid-way before the live log
     expect(readFileSync(logFile, "utf8")).toBe("earlier\nheld lifetime\nlive lifetime\n");
     expect(existsSync(held)).toBe(false);
     expect(existsSync(`${logFile}.source`)).toBe(false);
+});
+
+test("recovery saves two names of one inode once", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "sim-daemon-"));
+    const logPath = join(dir, "direct-host.log");
+    const held = join(dir, "daemon.log.held");
+    writeFileSync(logPath, "one lifetime\n");
+    linkSync(logPath, held);
+    writeFileSync(
+        join(dir, "daemon.log.source"),
+        JSON.stringify({ pending: [held, logPath], copying: null }),
+    );
+    await new DaemonStack(stackCtx(dir)).recoverLog();
+    expect(readFileSync(join(dir, "daemon.log"), "utf8")).toBe("one lifetime\n");
+    expect(existsSync(held)).toBe(false);
+    expect(existsSync(logPath)).toBe(false);
+});
+
+test("a stop keeps the shutdown stdout when it rolls back an interrupted copy", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "sim-daemon-"));
+    const logFile = join(dir, "daemon.log");
+    const held = join(dir, "daemon.log.held");
+    const logPath = join(dir, "direct-host.log");
+    writeFileSync(logFile, "earlier\n");
+    writeFileSync(held, "held lifetime\n");
+    writeFileSync(logPath, "live lifetime\n");
+    appendFileSync(logFile, "held lif");
+    writeFileSync(
+        `${logFile}.source`,
+        JSON.stringify({
+            pending: [logPath],
+            copying: { source: held, target_bytes: "earlier\n".length },
+        }),
+    );
+    const stack = { logPath, terminateHost: async () => {} };
+    const hh = {
+        __hermeticHostTest: {
+            diagnostics: () => ({
+                stdout: "daemon: memory capture output rejected\n",
+                stderr: "",
+                retainedLog: "",
+            }),
+        },
+    };
+    const daemon = new DaemonStack(stackCtx(dir));
+    Object.assign(daemon as unknown as Record<string, unknown>, { stack, hh });
+    await daemon.stop();
+    const saved = readFileSync(logFile, "utf8");
+    expect(saved).toContain("daemon: memory capture output rejected\n");
+    expect(saved).toContain("held lifetime\n");
+    expect(saved).toContain("live lifetime\n");
+    expect(saved).not.toContain("held lif\n");
 });

@@ -15,11 +15,14 @@ A sibling arm in `replaying` mode receives the tape's text for `event_idx` when
 its context hash equals the tape's recorded hash, and no user-sim model call is
 made for that event.
 
-M6 (#1031) replays a reply from the tape when its key (seed, event, label,
-normalised digest) matches, with no model call; tests replay a one-arm and a
-two-arm run against their recorded outputs with zero live calls. A reply the
-proxy record cut at 262,144 characters is keyed by the digest of the whole text
-as well, so two replies that differ only past the cut never pair.
+M6 (#1031) replays a reply from the tape when its key matches, with no model
+call. The key is the seed, the event, the label, the digest of the scripted
+text, and `context_sha256`: the session's chained normalised digests of the
+agent's last reply before each turn so far (`UserSim.deliver`). Tests replay a
+one-arm and a two-arm run against their recorded outputs with zero live calls.
+A reply the proxy record cut at 262,144 characters is keyed by the digest of
+the whole text as well, so two replies that differ only past the cut never
+pair.
 
 ## Failure scenario
 

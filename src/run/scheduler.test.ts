@@ -709,6 +709,77 @@ describe("store checks outside turns", () => {
 });
 
 describe("driver lifecycle hooks", () => {
+    test("a turn interrupted by a kill keeps the user record its driver can recover", async () => {
+        const path = join(dir(), "j.jsonl");
+        const j = new Journal(path);
+        j.append({ kind: "StartRun", arm: null, scenario_ms: 0 });
+        j.append({ kind: "StartArm", arm: "a", scenario_ms: 0 });
+        j.append({ kind: "Event", arm: "a", scenario_ms: 0, event: "e-000000" });
+        j.append({
+            kind: "BeginTurn",
+            arm: "a",
+            scenario_ms: 1_000,
+            event: "e-000001",
+            probe: null,
+        });
+        j.close();
+        const second = new Journal(path);
+        await new Scheduler({
+            events: fixtureEvents(2),
+            faults: [],
+            journal: second,
+            settleMs: 0,
+            order: ["a"],
+            drivers: { a: fakeDriver([]) },
+            recoverTurn: (event) =>
+                event === "e-000001"
+                    ? { session: "s-0001", label: "pushback", delivered: true }
+                    : undefined,
+        }).run();
+        const kinds = second.entries.map((e) => [e.kind, e.event ?? null]);
+        const user = kinds.findIndex(([k, e]) => k === "UserTurn" && e === "e-000001");
+        const done = kinds.findIndex(([k, e]) => k === "Event" && e === "e-000001");
+        expect(user).toBeGreaterThan(0);
+        expect(user).toBeLessThan(done);
+        expect(second.entries[user]).toMatchObject({ label: "pushback", recovered: true });
+    });
+
+    test("a turn killed after its user record was journaled is not given a second one on resume", async () => {
+        const path = join(dir(), "j.jsonl");
+        const j = new Journal(path);
+        j.append({ kind: "StartRun", arm: null, scenario_ms: 0 });
+        j.append({ kind: "StartArm", arm: "a", scenario_ms: 0 });
+        j.append({ kind: "Event", arm: "a", scenario_ms: 0, event: "e-000000" });
+        j.append({
+            kind: "BeginTurn",
+            arm: "a",
+            scenario_ms: 1_000,
+            event: "e-000001",
+            probe: null,
+        });
+        j.append({
+            kind: "UserTurn",
+            arm: "a",
+            scenario_ms: 1_000,
+            event: "e-000001",
+            label: "task",
+            delivered: true,
+        });
+        j.close();
+        const second = new Journal(path);
+        await new Scheduler({
+            events: fixtureEvents(2),
+            faults: [],
+            journal: second,
+            settleMs: 0,
+            order: ["a"],
+            drivers: { a: fakeDriver([]) },
+            recoverTurn: () => ({ session: "s-0001", label: "task", delivered: true }),
+        }).run();
+        const users = second.entries.filter((e) => e.kind === "UserTurn" && e.event === "e-000001");
+        expect(users).toHaveLength(1);
+    });
+
     test("an arm killed after its rate summary resumes without a second one", async () => {
         const path = join(dir(), "j.jsonl");
         const events = fixtureEvents(2);
@@ -961,4 +1032,66 @@ test("quiescing jobs waits for background jobs while the turn itself stays open"
     expect(kinds.indexOf("EndJob:history_summarizer-0")).toBeLessThan(
         kinds.indexOf("EndTurn:e-000001"),
     );
+});
+
+test("a second resume after an interrupted turn adds no second terminal Event", async () => {
+    const path = join(dir(), "j.jsonl");
+    const events = fixtureEvents(2);
+    const first = new Journal(path);
+    const killed: ArmDriver = {
+        reset: async () => undefined,
+        event: async (e) => {
+            if (e.index === 0) throw new Error("harness killed");
+            return {};
+        },
+        fault: async () => ({}),
+    };
+    await expect(
+        new Scheduler({
+            events,
+            faults: [],
+            journal: first,
+            settleMs: 0,
+            order: ["a"],
+            drivers: { a: killed },
+        }).run(),
+    ).rejects.toThrow("harness killed");
+    first.close();
+    const again = new Journal(path);
+    const killedLater: ArmDriver = {
+        reset: async () => undefined,
+        event: async (e) => {
+            if (e.index === 1) throw new Error("harness killed again");
+            return {};
+        },
+        fault: async () => ({}),
+    };
+    await expect(
+        new Scheduler({
+            events,
+            faults: [],
+            journal: again,
+            settleMs: 0,
+            order: ["a"],
+            drivers: { a: killedLater },
+        }).run(),
+    ).rejects.toThrow("harness killed again");
+    again.close();
+    const third = new Journal(path);
+    const fine: ArmDriver = {
+        reset: async () => undefined,
+        event: async () => ({}),
+        fault: async () => ({}),
+    };
+    await new Scheduler({
+        events,
+        faults: [],
+        journal: third,
+        settleMs: 0,
+        order: ["a"],
+        drivers: { a: fine },
+    }).run();
+    const terminal = third.entries.filter((e) => e.kind === "Event").map((e) => e.event);
+    expect(terminal).toEqual([...new Set(terminal)]);
+    expect(terminal.filter((e) => e === "e-000001")).toHaveLength(1);
 });

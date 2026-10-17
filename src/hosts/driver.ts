@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 import {
+    appendFileSync,
     closeSync,
     copyFileSync,
     existsSync,
@@ -226,6 +227,7 @@ export class HostDriver implements ArmDriver {
             await this.daemon.start();
             this.recordState();
             this.o.sampleDaemon?.();
+            appendFileSync(join(this.o.armRoot, "eidnara.log"), "");
         }
         this.host = this.newHost();
         this.recordState();
@@ -248,19 +250,18 @@ export class HostDriver implements ArmDriver {
             const forced = git(source, tracked).split("\0").filter(Boolean);
             this.snapshots.trackIgnored(project, forced);
             const rules: Record<string, string> = {};
-            const listed = git(source, [
-                "ls-files",
-                "-s",
-                "-z",
-                "--",
-                ".gitignore",
-                "**/.gitignore",
-            ]);
+            const names = [".gitignore", "**/.gitignore", ".gitattributes", "**/.gitattributes"];
+            const listed = git(source, ["ls-files", "-s", "-z", "--", ...names]);
             for (const row of listed.split("\0").filter(Boolean)) {
                 const [meta, path] = row.split("\t") as [string, string];
                 rules[path] = meta.split(" ")[1] as string;
             }
-            this.snapshots.trackIgnoreRules(project, rules, this.snapshots.excludeDigest(target));
+            this.snapshots.trackIgnoreRules(
+                project,
+                rules,
+                this.snapshots.excludeDigest(target),
+                this.snapshots.excludeDigest(target, "attributes"),
+            );
         }
         await this.startArm(true);
     }
@@ -342,11 +343,16 @@ export class HostDriver implements ArmDriver {
         const owedBefore = this.owedStores();
         if (owedBefore) outcome.stores = owedBefore;
         const interruptMs = typeof e.interrupt_ms === "number" ? e.interrupt_ms : undefined;
-        // A turn that spent part of its deadline before the prompt passes the rest along.
+        // A turn that spent part of its deadline before the prompt passes the rest along; one
+        // that spent all of it fails here, so the agent never runs past the deadline.
         const deadline =
             typeof e.deadline_ms === "number"
-                ? Math.max(100, Math.min(this.o.turnDeadlineMs, e.deadline_ms))
+                ? Math.min(this.o.turnDeadlineMs, e.deadline_ms)
                 : this.o.turnDeadlineMs;
+        if (deadline <= 0) {
+            outcome.failed = `turn deadline ${this.o.turnDeadlineMs} ms spent before the prompt`;
+            return outcome;
+        }
         this.turn = e.id;
         const result = await host.prompt(String(e.text), deadline, interruptMs);
         let reported = false;
@@ -373,7 +379,7 @@ export class HostDriver implements ArmDriver {
                     ...(() => {
                         const changed = this.snapshots.ignoreChanges(dir, project, ignoreFiles);
                         return changed.length > 0
-                            ? [`ignore rules changed: ${changed.join(", ")}`]
+                            ? [`rule files changed: ${changed.join(", ")}`]
                             : [];
                     })(),
                 ].filter((r): r is string => r !== null);
@@ -477,7 +483,13 @@ export class HostDriver implements ArmDriver {
     /** Workspace git operations override agent-controlled execution settings to constrain which programs git can invoke. */
     private workspaceGit(dir: string, args: string[], extra: Record<string, string> = {}): string {
         const gitDir = join(dir, ".git");
-        const scope = { GIT_DIR: gitDir, GIT_WORK_TREE: dir, ...extra };
+        const scope = {
+            GIT_DIR: gitDir,
+            GIT_WORK_TREE: dir,
+            GIT_NO_REPLACE_OBJECTS: "1",
+            GIT_NAMESPACE: "",
+            ...extra,
+        };
         const off = [
             `core.hooksPath=${join(this.armDir, "no-hooks")}`,
             "core.fsmonitor=false",
@@ -524,8 +536,10 @@ export class HostDriver implements ArmDriver {
                 throw new HarnessFailure(`${relative(dir, path)} is ${kind}`);
             }
         }
-        if (existsSync(join(gitDir, "objects", "info", "alternates"))) {
-            throw new HarnessFailure(".git/objects/info/alternates names another object store");
+        for (const redirect of ["objects/info/alternates", "commondir", "gitdir"]) {
+            if (existsSync(join(gitDir, redirect))) {
+                throw new HarnessFailure(`.git/${redirect} redirects git to another repository`);
+            }
         }
         const config = join(gitDir, "config");
         const aside = join(gitDir, "config.sim-aside");
@@ -704,7 +718,12 @@ export class HostDriver implements ArmDriver {
             await daemon?.stop();
             if (daemon && checkFinalStore) {
                 const check = checkStore(this.storeDb);
-                writeFileSync(join(this.armDir, "store-check.json"), `${JSON.stringify(check)}\n`);
+                // Staged under an exclusive create and renamed into place, so a link left at the
+                // report's path is replaced rather than written through.
+                const report = join(this.armDir, "store-check.json");
+                const staged = `${report}.${process.pid}`;
+                writeFileSync(staged, `${JSON.stringify(check)}\n`, { flag: "wx" });
+                renameSync(staged, report);
             }
         } catch (caught) {
             failure ??= caught;

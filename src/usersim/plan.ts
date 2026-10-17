@@ -100,9 +100,11 @@ export function behaviourPlan(
 }
 
 /**
- * The user turns a fault schedule pins: each `user_turn` trigger, and for a proxy fault the
- * rest of its session, since a burst, intermittent, or persistent provider fault stays armed
- * for later agent calls of that session.
+ * The user turns a fault schedule pins: each `user_turn` trigger, for a proxy fault the rest of
+ * its session, since a burst, intermittent, or persistent provider fault stays armed for later
+ * agent calls of that session, and for a fault whose trigger is a session start or a call the
+ * host makes on its own (`first_summarizer_call`) the whole session, since no fixed turn
+ * consumes it.
  */
 export function pinnedTurns(
     events: readonly { id: string; kind: string; session: string; index?: number }[],
@@ -114,17 +116,36 @@ export function pinnedTurns(
     const pinned = new Set<string>();
     for (const f of faults) {
         const t = f.trigger;
-        if (t.kind !== "user_turn" || t.n === undefined) continue;
-        const from = t.n - 1;
+        const fixed = t.kind === "user_turn" && t.n !== undefined;
+        const from = fixed ? (t.n as number) - 1 : 0;
+        const tail = !fixed || f.seam.layer === "proxy-sink";
         for (const e of events) {
             if (e.kind !== "user_turn" || e.session !== t.session || e.index === undefined)
                 continue;
-            if (e.index === from || (f.seam.layer === "proxy-sink" && e.index > from)) {
-                pinned.add(e.id);
-            }
+            if (e.index === from || (tail && e.index > from)) pinned.add(e.id);
         }
     }
     return pinned;
+}
+
+/**
+ * The journal's `UserTurn` rows an arm delivered, in a session when one is named. A row a
+ * resume recovered from the pairing log says what the user-sim decided, not that the host
+ * received it, so it is left out.
+ */
+export function deliveredTurns<T extends Record<string, unknown>>(
+    entries: readonly T[],
+    arm: string,
+    session?: string,
+): T[] {
+    return entries.filter(
+        (e) =>
+            e.kind === "UserTurn" &&
+            e.arm === arm &&
+            e.delivered === true &&
+            e.recovered !== true &&
+            (session === undefined || e.session === session),
+    );
 }
 
 export interface RealisedRates {
