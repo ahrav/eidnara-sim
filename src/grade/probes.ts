@@ -2,6 +2,7 @@ import { appendFileSync, existsSync, readFileSync, truncateSync } from "node:fs"
 import type { Preregistration } from "../prereg/schema";
 import type { ProbeItem } from "../scenario/compile";
 import {
+    type Artefact,
     ArtefactReader,
     assertArtefactsOnly,
     type CallView,
@@ -100,8 +101,9 @@ const commandText = (r: ArtefactReader) =>
         .join("\n");
 const work = (r: ArtefactReader) => `${addedLines(r.diff())}\n${commandText(r)}`;
 
+/** The completed fold calls in the item's range; a call that failed produced no fold the host used. */
 function foldsIn(r: ArtefactReader, turns?: [number, number]): CallView[] {
-    const folds = r.calls().filter((c) => FOLDS.includes(c.component));
+    const folds = r.calls().filter((c) => FOLDS.includes(c.component) && !c.failed);
     if (!turns) return folds;
     const [lo, hi] = turns;
     return folds.filter(
@@ -269,6 +271,48 @@ function graderFor(probe: ProbeItem): Grader {
     return grader;
 }
 
+/**
+ * The artefacts a probe type's grader reads as evidence. A grader reading a missing one would
+ * grade an empty default, so a snapshot without it is refused.
+ */
+const EVIDENCE: Record<string, Array<[Artefact["class"], string | null]>> = {
+    P1: [["diff", "turn"]],
+    "P1-control": [["diff", "turn"]],
+    P2: [["diff", "turn"]],
+    P3: [["diff", "turn"]],
+    P4: [["diff", "turn"]],
+    P5: [["diff", "turn"]],
+    P6: [
+        ["diff", "turn"],
+        ["command-log", "turn"],
+        ["proxy-call", null],
+    ],
+    P8: [["proxy-call", null]],
+    P9: [["proxy-call", null]],
+    P10: [["diff", "turn"]],
+    P11: [["diff", "turn"]],
+    P12: [["diff", "turn"]],
+    P13: [
+        ["command-log", "session"],
+        ["proxy-call", null],
+    ],
+    P14: [["proxy-call", null]],
+};
+
+export function requireEvidence(probe: ProbeItem, snapshot: Snapshot): void {
+    for (const [cls, role] of EVIDENCE[probe.type] ?? []) {
+        const present = snapshot.artefacts.some(
+            (a) => a.class === cls && (role === null || (a as { role?: string }).role === role),
+        );
+        if (!present) {
+            const name = role ? `${cls} (${role})` : cls;
+            throw new GradeRefused(
+                `snapshot ${snapshot.id} lacks the ${name} artefact ${probe.type} reads`,
+            );
+        }
+    }
+}
+
 export function gradeItem(
     probe: ProbeItem,
     snapshots: Snapshot[],
@@ -283,6 +327,7 @@ export function gradeItem(
     assertArtefactsOnly(first);
     const grader = graderFor(probe);
     if (first.turn_outcome === "failed") return null;
+    requireEvidence(probe, first);
     const reader = new ArtefactReader(first);
     const outcome = grader(reader, (probe.check ?? {}) as Check, rules, probe);
     const paired = probe.type === "P1-control" || probe.type === "P1";

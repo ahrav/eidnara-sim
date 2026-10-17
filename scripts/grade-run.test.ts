@@ -292,7 +292,41 @@ describe("grade-run", () => {
         await expect(gradeRun(dir, null)).rejects.toThrow("does not match its journal entry");
         writeFileSync(path, `${JSON.stringify({ ...row, artefacts: [] })}\n`);
         await expect(gradeRun(dir, null)).rejects.toThrow("has no artefacts");
+        const retry = { ...row, id: "retry", artefacts: [{ id: "t", class: "transcript" }] };
+        writeFileSync(path, `${JSON.stringify(row)}\n${JSON.stringify(retry)}\n`);
+        await expect(gradeRun(dir, null)).rejects.toThrow("is not a grade input");
         expect(() => readFileSync(join(dir, "grades.jsonl"))).toThrow();
+    });
+
+    test("a journaled snapshot id with no row in snapshots.jsonl is refused", async () => {
+        const dir = run({ probes: [p5.probe] });
+        snapshot(dir, "eidnara", snap);
+        writeFileSync(join(dir, "eidnara", "snapshots.jsonl"), "");
+        await expect(gradeRun(dir, null)).rejects.toThrow("have no row in snapshots.jsonl");
+    });
+
+    test("agent calls whose model the manifest does not record are refused before judging", async () => {
+        const dir = run({ probes: [p5.probe] });
+        snapshot(dir, "eidnara", snap);
+        const call = {
+            seq: 0,
+            wall_ms: 0,
+            scenario_ms: 0,
+            arm: "eidnara",
+            component: "agent",
+            model: "global.openai.gpt-5.6-luna",
+            status: 200,
+        };
+        writeFileSync(join(dir, "calls.jsonl"), `${JSON.stringify(call)}\n`);
+        await expect(gradeRun(dir, null)).rejects.toThrow("models the manifest does not record");
+        expect(() => readFileSync(join(dir, "grades.jsonl"))).toThrow();
+    });
+
+    test("a journal naming two first snapshots for one arm and item is refused", async () => {
+        const dir = run({ probes: [p5.probe] });
+        snapshot(dir, "eidnara", snap);
+        snapshot(dir, "eidnara", { ...snap, turn: "e-1-again" });
+        await expect(gradeRun(dir, null)).rejects.toThrow("more than one first snapshot");
     });
 
     test("a run directory leased by a live process is refused", async () => {

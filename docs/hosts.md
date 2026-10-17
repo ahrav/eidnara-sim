@@ -90,7 +90,9 @@ inside it before any directory is created, and a `.git` that is a file or
 symlink, any entry under `.git` that is not a regular file or directory, a
 missing `.git/config`, or an `objects/info/alternates` file stops the run
 before git writes anything; every workspace git run is bounded by the turn
-deadline.
+deadline, the walk of `.git` stops at that deadline or 200,000 entries, a
+target path that exists must be a regular file, and a real-index update
+that times out removes the `index.lock` it left.
 
 Pi runs in RPC mode with `--session-id sim-<session>`, its agent directory,
 settings, and model list under the arm root, and the Eidnara extension from

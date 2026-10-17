@@ -14,7 +14,6 @@ import {
 import { dirname, join, relative, resolve } from "node:path";
 import { GitBound, git } from "../git";
 import type { CallView } from "../grade/artefacts";
-import { sha256Hex } from "../prereg/canonical";
 import { processStart, running, stopOwnedTree } from "../run/procs";
 import { type ArmDriver, HarnessFailure, type ScenarioEvent } from "../run/scheduler";
 import type { FaultEpisode } from "../scenario/faults";
@@ -44,6 +43,8 @@ export interface DriverOptions extends Omit<HostContext, "root" | "model"> {
     callsFor?: (session: string) => CallView[];
     /** Awaited after a probe turn and before its snapshot, so background calls the turn started are on record. */
     settle?: () => Promise<void>;
+    /** Entries a walk of a workspace `.git` visits at most; the default is `GIT_DIR_ENTRY_CAP`. */
+    gitDirEntryCap?: number;
     hostFactory?: (ctx: HostContext) => SimHost;
     onDaemonExit: (detail: Record<string, unknown>) => void;
     /**
@@ -52,6 +53,9 @@ export interface DriverOptions extends Omit<HostContext, "root" | "model"> {
      */
     sampleDaemon?: () => void;
 }
+
+/** Entries a walk of the workspace `.git` visits at most; a wider tree stops the run. */
+export const GIT_DIR_ENTRY_CAP = 200_000;
 
 const IDENTITY = {
     GIT_AUTHOR_NAME: "sim-user",
@@ -213,9 +217,7 @@ export class HostDriver implements ArmDriver {
                 const [meta, path] = row.split("\t") as [string, string];
                 rules[path] = meta.split(" ")[1] as string;
             }
-            const exclude = join(target, ".git", "info", "exclude");
-            const digest = existsSync(exclude) ? sha256Hex(readFileSync(exclude, "utf8")) : null;
-            this.snapshots.trackIgnoreRules(project, rules, digest);
+            this.snapshots.trackIgnoreRules(project, rules, this.snapshots.excludeDigest(target));
         }
         await this.startArm(true);
     }
@@ -368,8 +370,12 @@ export class HostDriver implements ArmDriver {
             parent = "";
         }
         const contained = parent === dir || parent.startsWith(`${dir}/`);
-        if (!inside || !contained || lstatSync(path, { throwIfNoEntry: false })?.isSymbolicLink()) {
+        const target = lstatSync(path, { throwIfNoEntry: false });
+        if (!inside || !contained || target?.isSymbolicLink()) {
             throw new HarnessFailure(`apply_diff path ${String(e.path)} leaves ${dir}`);
+        }
+        if (target !== undefined && !target.isFile()) {
+            throw new HarnessFailure(`apply_diff path ${String(e.path)} is not a regular file`);
         }
         mkdirSync(dirname(path), { recursive: true });
         writeFileSync(path, String(e.content));
@@ -384,7 +390,13 @@ export class HostDriver implements ArmDriver {
             this.workspaceGit(dir, ["update-index", "--add", "--cacheinfo", entry], scratch);
             const tree = this.workspaceGit(dir, ["write-tree"], scratch);
             rmSync(scratch.GIT_INDEX_FILE, { force: true });
-            this.workspaceGit(dir, ["update-index", "--add", "--cacheinfo", entry]);
+            try {
+                this.workspaceGit(dir, ["update-index", "--add", "--cacheinfo", entry]);
+            } catch (caught) {
+                if (caught instanceof GitBound)
+                    rmSync(join(dir, ".git", "index.lock"), { force: true });
+                throw caught;
+            }
             if (tree === this.workspaceGit(dir, ["rev-parse", `${head}^{tree}`])) return;
             const message = `Add ${String(e.path)}`;
             const commit = this.workspaceGit(
@@ -421,13 +433,30 @@ export class HostDriver implements ArmDriver {
         if (!lstatSync(gitDir, { throwIfNoEntry: false })?.isDirectory()) {
             throw new HarnessFailure(`${gitDir} is not a directory`);
         }
-        for (const entry of readdirSync(gitDir, { recursive: true, withFileTypes: true })) {
-            if (entry.isFile() || entry.isDirectory()) continue;
-            const at = join(relative(dir, entry.parentPath), entry.name);
-            const kind = entry.isSymbolicLink()
-                ? "a symlink; git would write through it"
-                : "not a regular file";
-            throw new HarnessFailure(`${at} is ${kind}`);
+        const deadline = Date.now() + this.o.turnDeadlineMs;
+        let seen = 0;
+        const pending = [gitDir];
+        for (let at = pending.shift(); at !== undefined; at = pending.shift()) {
+            for (const entry of readdirSync(at, { withFileTypes: true })) {
+                if (
+                    ++seen > (this.o.gitDirEntryCap ?? GIT_DIR_ENTRY_CAP) ||
+                    Date.now() > deadline
+                ) {
+                    throw new HarnessFailure(
+                        `${relative(dir, gitDir)} walk: too many entries or timed out`,
+                    );
+                }
+                const path = join(at, entry.name);
+                if (entry.isDirectory()) {
+                    pending.push(path);
+                    continue;
+                }
+                if (entry.isFile()) continue;
+                const kind = entry.isSymbolicLink()
+                    ? "a symlink; git would write through it"
+                    : "not a regular file";
+                throw new HarnessFailure(`${relative(dir, path)} is ${kind}`);
+            }
         }
         if (existsSync(join(gitDir, "objects", "info", "alternates"))) {
             throw new HarnessFailure(".git/objects/info/alternates names another object store");
