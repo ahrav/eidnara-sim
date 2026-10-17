@@ -308,9 +308,17 @@ describe("intrusiveness panel", () => {
         ];
         const journal = turns.flatMap(([event, begin, end]) => [
             entry("BeginTurn", begin, { event }),
-            entry("EndTurn", end, { event, prompt_ms: (end - begin) / 2 }),
+            entry("EndTurn", end, { event, outcome: "ok", prompt_ms: (end - begin) / 2 }),
             entry("UserTurn", end, { event }),
         ]);
+        journal.push(
+            entry("BeginTurn", 7000, { event: "e-9" }),
+            entry("EndTurn", 907_000, {
+                event: "e-9",
+                outcome: "Timed out after 900000 ms",
+                prompt_ms: 900_000,
+            }),
+        );
         const tools = [
             { command: "git restore src/db.rs", exit: 0, scenario_ms: 1, turn: "e-2" },
             { command: "git checkout -- src/lib.rs", exit: 0, scenario_ms: 2, turn: "e-2" },
@@ -353,6 +361,15 @@ describe("intrusiveness panel", () => {
             { command: "git restore b.rs; false", exit: 1, scenario_ms: 3, turn: "e-2" },
             { command: "git restore c.rs && cargo test", exit: 0, scenario_ms: 3, turn: "e-2" },
             { command: "git restore d.rs | tee log", exit: 0, scenario_ms: 3, turn: "e-2" },
+            { command: "git checkout main\necho -- file", exit: 0, scenario_ms: 3, turn: "e-2" },
+            { command: "git checkout main --", exit: 0, scenario_ms: 3, turn: "e-2" },
+            { command: "git restore -- --staged", exit: 0, scenario_ms: 3, turn: "e-2" },
+            {
+                command: 'git commit -m "fix <<EOF"\nbody\nEOF\ngit restore h.rs',
+                exit: 0,
+                scenario_ms: 3,
+                turn: "e-2",
+            },
             { command: "cargo test", exit: 0, scenario_ms: 4, turn: "e-2" },
         ];
         const panel = intrusiveness(run([], dir, new Map(), BASE), arm({ journal, tools }));
@@ -368,14 +385,21 @@ describe("intrusiveness panel", () => {
             'git checkout -- "my file.rs"',
             'git -C "/tmp/my repo" restore a.rs',
             "git restore c.rs && cargo test",
+            "git restore -- --staged",
+            'git commit -m "fix <<EOF"\nbody\nEOF\ngit restore h.rs',
         ]);
         expect(panel.latency_ms).toEqual({ n: 7, p50: 500, p95: 5000 });
         expect(percentile([5, 1, 3, 2, 4], 0.5)).toBe(3);
 
         const grades = [
-            { arm: "eidnara", verdict: "pass", probe_type: "P3" },
-            { arm: "eidnara", verdict: "pass", probe_type: "P13" },
-            { arm: "host", verdict: "pass", probe_type: "P3" },
+            { arm: "eidnara", item: "i-1", version: 1, verdict: "pass", probe_type: "P3" },
+            { arm: "eidnara", item: "i-13", version: 1, verdict: "pass", probe_type: "P13" },
+            { arm: "host", item: "i-1", version: 1, verdict: "pass", probe_type: "P3" },
+            { arm: "eidnara", item: "i-4", version: 1, verdict: "pass", probe_type: "P4" },
+            { arm: "eidnara", item: "i-4", version: 2, verdict: "fail", probe_type: "P4" },
+            { arm: "eidnara", item: "i-5", version: 1, verdict: "fail", probe_type: "P5" },
+            { arm: "eidnara", item: "i-5", version: 3, verdict: "pass", probe_type: "P5" },
+            { arm: "eidnara", item: "i-5", version: 2, verdict: "pass", probe_type: "P5" },
         ] as GradeRecord[];
         const calls = [
             {
@@ -428,7 +452,7 @@ describe("intrusiveness panel", () => {
             ["user-sim", V1_PRICE.input],
         ]);
         expect([cost.usd, cost.harness_usd, cost.passes, cost.usd_per_pass]).toEqual([
-            31, 5, 1, 31,
+            31, 5, 2, 15.5,
         ]);
         expect([cost.memory_writes, cost.writes_with_zero_reads, cost.price_table]).toEqual([
             5,

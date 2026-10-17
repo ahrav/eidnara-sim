@@ -92,8 +92,14 @@ export function costPanel(run: RunLogs, arm: ArmLogs, grades: GradeRecord[]): Co
     const components = componentCosts(arm.calls);
     const sum = (rows: ComponentCost[]) => rows.reduce((s, c) => s + c.usd, 0);
     const usd = sum(components.filter((c) => !HARNESS.has(c.component)));
-    const passes = grades.filter(
-        (g) => g.arm === arm.arm && g.verdict === "pass" && USEFUL.test(g.probe_type),
+    const latest = new Map<string, GradeRecord>();
+    for (const g of grades) {
+        if (g.arm !== arm.arm) continue;
+        const seen = latest.get(g.item);
+        if (seen === undefined || g.version > seen.version) latest.set(g.item, g);
+    }
+    const passes = [...latest.values()].filter(
+        (g) => g.verdict === "pass" && USEFUL.test(g.probe_type),
     ).length;
     const notes = notesOf(run.dir, arm.arm);
     return {

@@ -42,8 +42,8 @@ still closing belongs to the open session.
 |---|---|
 | Internal-string hits | The F7 oracle's patterns over the agent's relayed responses, the text the user-sim reads, each tagged with that source; tool output shown to the agent has no capture to scan |
 | Corrections referencing injected text | Delivered user-sim pushback and redirect replies (the `tape.jsonl` entries an arm's pairing records name by `tape_key`, fallbacks left out) that share a five-word run of Unicode letters, digits, and `_`, `-`, `[`, `]` with a memory note first delivered at least 1 s before the turn's `BeginTurn` (`<arm>/memory.json`; both times in the hosts' faked clock, `base_wall_ms` plus scenario time, whose offset is rounded to whole seconds), where neither four-word half of the run appears in the scripted user turns of the run's `scenario.json` up to and including that turn; a reply whose turn has no `BeginTurn` is left out. `null` when `memory.json` records that the notes could not be read |
-| Reverted edits | Tool runs that exited 0 holding `git revert`, `git restore` (unless `--staged` or `-S`, alone or in a cluster such as `-Sq`, appears anywhere in the invocation without `--worktree` or `-W`), `git checkout ... --`, or `git reset --hard`, with or without `-C` or `-c` options, where every later command in the tool run is joined by `&&`, so the zero exit is the revert's too. Heredoc bodies are removed and quoted strings become one word first, so `echo 'git restore x'` is text and `git -C "a dir" restore f` keeps its shape |
-| Turn latency | p50 and p95 of each turn's `prompt_ms` on `EndTurn`: the host's prompt call alone, on the monotonic clock, after the user-sim has delivered the turn's text |
+| Reverted edits | Tool runs that exited 0 holding `git revert`, `git restore` (unless `--staged` or `-S`, alone or in a cluster such as `-Sq`, appears among the options before `--` without `--worktree` or `-W`), `git checkout ... -- <pathspec>`, or `git reset --hard`, with or without `-C` or `-c` options, where every later command in the tool run is joined by `&&`, so the zero exit is the revert's too. A `git` invocation ends at its line; quoted strings become one word and the body lines of a heredoc opened outside quotes are dropped first, so `echo 'git restore x'` is text and `git -C "a dir" restore f` keeps its shape |
+| Turn latency | p50 and p95 of `prompt_ms` on each `EndTurn` with outcome `ok`: the host's prompt call alone, on the monotonic clock, after the user-sim has delivered the turn's text. Failed turns and hangs are dependability's |
 
 A revert is counted on every arm, so the difference from the host arm is
 the part memory can be held to.
@@ -55,10 +55,13 @@ cache-write tokens by component and prices them at one table, `v1`, for
 every model (USD 5, 25, 0.5, and 6.25 per million tokens); the panel names
 the table. The arm's total leaves out the harness's own user-sim and
 refused calls, which it reports apart, and divides by the arm's
-passing P1 to P12 items for the cost per useful retrieval. The arm
-driver writes `<arm>/memory.json` at `finish` with every memory note and
-its delivery count, from which the panel reports the memory writes and the
-writes with zero later reads.
+passing P1 to P12 items, each item at its highest graded version, for the
+cost per useful retrieval. The arm driver writes `<arm>/memory.json` at
+`finish` for a daemon arm, with every memory note and its delivery count,
+from which the panel reports the memory writes and the writes with zero
+later reads; both are `null` for an arm with no `memory.json` (the host
+arm) and for one whose `memory.json` records that the notes could not be
+read.
 
 `judgeCost(run)` prices the P7 judge calls the grader wrote to
 `judge-calls.jsonl` under its own arm `judge`. A judge call compares a
