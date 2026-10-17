@@ -29,7 +29,7 @@ export function oracleRun(dirs: string[]) {
     return oracleReport(runs);
 }
 
-/** Loads and evaluates one run while holding its lease, so a run still finishing is refused rather than read half-written. */
+/** Loads and evaluates one run while holding its lease, so a run still finishing is refused rather than read half-written; only the tier and activations outlive the call. */
 function oracleOne(dir: string) {
     {
         const manifest = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8"));
@@ -53,7 +53,7 @@ function oracleOne(dir: string) {
         const out = join(dir, "oracles.json");
         writeFileSync(`${out}.tmp`, `${JSON.stringify(result, null, 2)}\n`);
         renameSync(`${out}.tmp`, out);
-        return run;
+        return { tier: run.tier, activations: result.activations };
     }
 }
 

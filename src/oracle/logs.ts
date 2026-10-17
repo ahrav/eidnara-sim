@@ -277,14 +277,27 @@ function turnBounds(journal: Entry[]): Bounds {
     return bounds;
 }
 
-/** A call attributed to a turn started while that turn was open: between its `BeginTurn` and its `EndTurn`. */
-function requireCallsInTurns(calls: CallRecord[], bounds: Bounds): void {
+/**
+ * Every call started before its arm's `EndArm` (the driver stops the host first, so no call
+ * begins after it), and a call attributed to a turn started while that turn was open: between
+ * its `BeginTurn` and its `EndTurn`.
+ */
+function requireCallsInTurns(
+    calls: CallRecord[],
+    bounds: Bounds,
+    armEnds: Map<string, number>,
+): void {
     for (const c of calls) {
-        if (c.turn === null) continue;
-        const b = bounds.get(`${c.arm}/${c.turn}`);
+        const b = c.turn === null ? undefined : bounds.get(`${c.arm}/${c.turn}`);
         if (b && (c.scenario_ms < b.from || c.scenario_ms > b.to)) {
             throw new Error(
                 `call ${c.seq}: starts at ${c.scenario_ms}, outside turn ${c.turn} (${b.from} to ${b.to})`,
+            );
+        }
+        const end = armEnds.get(c.arm);
+        if (end !== undefined && c.scenario_ms > end) {
+            throw new Error(
+                `call ${c.seq}: starts at ${c.scenario_ms}, after arm ${c.arm} ended at ${end}`,
             );
         }
     }
@@ -367,6 +380,9 @@ export function loadRun(dir: string, prereg: Preregistration): RunLogs {
                 throw new Error(`call ${c.seq}: ${field} is not a timestamp`);
             }
         }
+        if (!Number.isSafeInteger(c.scenario_ms) || c.scenario_ms < 0) {
+            throw new Error(`call ${c.seq}: scenario_ms is not a clock reading`);
+        }
         if (c.wall_ms < c.started_wall_ms) {
             throw new Error(`call ${c.seq}: wall_ms precedes started_wall_ms`);
         }
@@ -422,7 +438,13 @@ export function loadRun(dir: string, prereg: Preregistration): RunLogs {
     requireComplete(journal, order, scheduled);
     requireTurnEnds(journal, order, planned);
     const bounds = turnBounds(journal);
-    requireCallsInTurns(calls, bounds);
+    const armEnds = new Map<string, number>();
+    for (const e of journal) {
+        if (e.kind === "EndArm" && typeof e.arm === "string" && !armEnds.has(e.arm)) {
+            armEnds.set(e.arm, e.scenario_ms);
+        }
+    }
+    requireCallsInTurns(calls, bounds, armEnds);
     const arms = order.map((arm) => ({
         arm,
         calls: calls.filter((c) => c.arm === arm),
