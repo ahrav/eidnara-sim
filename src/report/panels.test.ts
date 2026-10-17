@@ -375,6 +375,12 @@ describe("intrusiveness panel", () => {
                 scenario_ms: 3,
                 turn: "e-2",
             },
+            { command: "echo git restore x", exit: 0, scenario_ms: 3, turn: "e-2" },
+            { command: "rg git restore README", exit: 0, scenario_ms: 3, turn: "e-2" },
+            { command: "echo ok # git reset --hard", exit: 0, scenario_ms: 3, turn: "e-2" },
+            { command: "sudo git restore e.rs", exit: 0, scenario_ms: 3, turn: "e-2" },
+            { command: "FOO=1 git restore f.rs", exit: 0, scenario_ms: 3, turn: "e-2" },
+            { command: "(git restore g.rs)", exit: 0, scenario_ms: 3, turn: "e-2" },
             { command: "cargo test", exit: 0, scenario_ms: 4, turn: "e-2" },
         ];
         const panel = intrusiveness(run([], dir, new Map(), BASE), arm({ journal, tools }));
@@ -392,6 +398,9 @@ describe("intrusiveness panel", () => {
             "git restore c.rs && cargo test",
             "git restore -- --staged",
             'git commit -m "fix <<EOF"\nbody\nEOF\ngit restore h.rs',
+            "sudo git restore e.rs",
+            "FOO=1 git restore f.rs",
+            "(git restore g.rs)",
         ]);
         expect(panel.latency_ms).toEqual({ n: 7, p50: 500, p95: 5000 });
         expect(percentile([5, 1, 3, 2, 4], 0.5)).toBe(3);

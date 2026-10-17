@@ -16,8 +16,14 @@ export interface Intrusiveness {
     latency_ms: { n: number; p50: number | null; p95: number | null };
 }
 
-/** Each `git` invocation on one line of a shell command: its subcommand and arguments up to a separator. */
-const GIT = /\bgit[ \t]+(?:-[Cc][ \t]+[^ \t\n]+[ \t]+)*([a-z-]+)((?:[ \t]+[^ \t\n;&|]+)*)/g;
+/**
+ * Each `git` invocation at a command position on one line of a shell command: at the line start or
+ * after a separator or `(`, past any `VAR=value` assignments and `sudo`, `env`, `time`, `nice`,
+ * `nohup`, or `exec` prefixes; its subcommand and arguments run up to the next separator.
+ */
+const GIT =
+    /(?:^|[;&|(][ \t]*)[ \t]*(?:\w+=[^ \t\n]*[ \t]+)*(?:(?:sudo|env|time|nice|nohup|exec)[ \t]+)*git[ \t]+(?:-[Cc][ \t]+[^ \t\n]+[ \t]+)*([a-z-]+)((?:[ \t]+[^ \t\n;&|)]+)*)/gm;
+const COMMENT = /(^|[ \t])#.*$/g;
 const HEREDOC = /<<-?[ \t]*(['"]?)(\w+)\1/g;
 const QUOTED = /'[^'\n]*'|"(?:[^"\\\n]|\\.)*"/g;
 const SEPARATOR = /&&|\|\||[;|&\n]/g;
@@ -75,8 +81,8 @@ const checksOutPaths = (args: string[]) => {
 
 /**
  * The command's lines as the shell runs them: each quoted string becomes one plain word, so later
- * words keep their positions, and the body lines of a heredoc whose `<<` sits outside quotes are
- * dropped.
+ * words keep their positions; a comment (`#` at a word start outside quotes) and the body lines
+ * of a heredoc whose `<<` sits outside quotes are dropped.
  */
 function executable(command: string): string {
     const lines: string[] = [];
@@ -91,7 +97,11 @@ function executable(command: string): string {
             quoted.some(([a, b]) => i >= (a as number) && i < (b as number));
         const heredoc = [...line.matchAll(HEREDOC)].find((m) => !inQuotes(m.index));
         if (heredoc) tag = heredoc[2] as string;
-        lines.push(line.replace(QUOTED, "_"));
+        const comment = [...line.matchAll(COMMENT)].find(
+            (m) => !inQuotes(m.index + (m[1] as string).length),
+        );
+        const code = comment ? line.slice(0, comment.index) : line;
+        lines.push(code.replace(QUOTED, "_"));
     }
     return lines.join("\n");
 }
