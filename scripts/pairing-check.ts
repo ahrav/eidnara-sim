@@ -3,7 +3,7 @@ import { join, resolve } from "node:path";
 import { CORPUS_DIR } from "../src/corpus/sources";
 import { sha256Hex } from "../src/prereg/canonical";
 import { preregistrationHash } from "../src/prereg/validate";
-import { readJournal } from "../src/run/journal";
+import { readJournal, requireComplete } from "../src/run/journal";
 import type { Scenario } from "../src/scenario/compile";
 import { scenarioHash } from "../src/scenario/compile";
 import { loadPrereg } from "../src/scenario/inputs";
@@ -67,10 +67,24 @@ const provenance = turns
         );
     })
     .map((r) => `${r.arm} ${r.event}`);
-const unsent = turns
-    .filter((r) => !r.delivered && script.get(r.event)?.role !== "filler")
-    .map((r) => `${r.arm} ${r.event}`);
 const journal = readJournal(join(dir, "journal.jsonl"));
+const allScheduledIds = scenario.events.slice(0, manifest.events as number).map((e) => e.id);
+let incompleteRun: string[] = [];
+try {
+    requireComplete(journal, manifest.order as string[], allScheduledIds);
+} catch (caught) {
+    incompleteRun = [String((caught as Error).message)];
+}
+// Delivery is read from the journal, which knows whether the host received the text.
+const journalDelivered = new Set(
+    journal
+        .filter((e) => e.kind === "UserTurn" && e.delivered === true && e.recovered !== true)
+        .map((e) => `${e.arm} ${e.event}`),
+);
+const unsent = turns
+    .filter((r) => script.get(r.event)?.role !== "filler")
+    .filter((r) => !r.delivered || !journalDelivered.has(`${r.arm} ${r.event}`))
+    .map((r) => `${r.arm} ${r.event}`);
 const prereg = loadPrereg(manifest.tier);
 if (preregistrationHash(prereg) !== manifest.prereg_sha256) {
     console.error(`the ${manifest.tier} pre-registration differs from the manifest's`);
@@ -190,6 +204,7 @@ const report = {
             .filter((arm) => !journal.some((e) => e.kind === "EndArm" && e.arm === arm))
             .map((arm) => `${arm} EndArm`),
         ...(journal.some((e) => e.kind === "EndRun") ? [] : ["EndRun"]),
+        ...incompleteRun,
     ],
     interrupted_turns: journal
         .filter((e) => e.kind === "Event" && e.outcome === "failed(interrupted)")

@@ -186,6 +186,11 @@ async function loadManifest(o: RunOptions, scenario: Scenario): Promise<Manifest
                 .slice(0, events)
                 .filter((e) => e.kind === "user_turn")
                 .map((e) => e.id),
+            scripted: new Map(
+                scenario.events
+                    .filter((e) => e.kind === "user_turn")
+                    .map((e) => [e.id, String((e as { text?: unknown }).text ?? "")]),
+            ),
         });
     if (existsSync(path)) {
         const manifest = JSON.parse(readFileSync(path, "utf8")) as Manifest;
@@ -517,6 +522,7 @@ async function runArms(
             ...scenario.facts.flatMap((f) => [f.id, f.template]),
             ...scenario.probes.map((p) => p.id),
         ],
+        facts: scenario.facts.flatMap((f) => [f.statement, ...f.cues]),
     });
     const scriptedById = new Map(scripted.map((t) => [t.id, t]));
     const userTurns = (arm: string, session?: string) =>
