@@ -162,6 +162,7 @@ async function loadManifest(o: RunOptions, scenario: Scenario): Promise<Manifest
         scenario_hash: scenario.scenario_hash,
         prereg_sha256: preregistrationHash(loadPrereg(o.tier)),
         events: wanted.events,
+        order: wanted.order,
     });
     if (existsSync(path)) {
         const manifest = JSON.parse(readFileSync(path, "utf8")) as Manifest;

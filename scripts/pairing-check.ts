@@ -4,7 +4,7 @@ import { CORPUS_DIR } from "../src/corpus/sources";
 import { sha256Hex } from "../src/prereg/canonical";
 import { readJournal } from "../src/run/journal";
 import type { Scenario } from "../src/scenario/compile";
-import { type PairingRecord, pairingMismatches, type TurnRecord } from "../src/usersim/usersim";
+import { pairingMismatches, readPairing, type TurnRecord } from "../src/usersim/usersim";
 
 const dir = resolve(process.argv[2] ?? "");
 if (!existsSync(join(dir, "pairing.jsonl"))) {
@@ -13,7 +13,7 @@ if (!existsSync(join(dir, "pairing.jsonl"))) {
 }
 const manifest = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8"));
 const scenario = JSON.parse(readFileSync(join(dir, "scenario.json"), "utf8")) as Scenario;
-const records = readJournal(join(dir, "pairing.jsonl")) as unknown as PairingRecord[];
+const records = readPairing(join(dir, "pairing.jsonl"));
 const first = manifest.order[0] as string;
 const reference = () => first;
 const turns = records.filter((r): r is TurnRecord => r.kind === "turn");

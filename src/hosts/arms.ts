@@ -937,8 +937,10 @@ export class OpencodeSimHost extends SimHost {
             if (first !== null && landed) return { interrupted: true };
         }
         if (first === null) {
-            await this.abortSession().now;
+            const abort = this.abortSession();
+            await abort.now;
             const drained = await Promise.race([settled, this.drained()]);
+            abort.cancel();
             if (drained === null) throw new Error("OpenCode turn still running after abort");
             return { error: `turn deadline ${timeoutMs} ms` };
         }

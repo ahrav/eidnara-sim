@@ -46,6 +46,42 @@ test("the pairing check fails a run that lacks an arm's rate summary, and passes
     expect(whole.exit).toBe(0);
 });
 
+test("the pairing check refuses a pairing row with a wrongly typed field", () => {
+    const events = [
+        { id: "e-1", kind: "user_turn", session: "s-1", index: 0, role: "filler", text: "Go." },
+    ];
+    const bad = {
+        kind: "turn",
+        arm: "a",
+        session: "s-1",
+        event: "e-1",
+        index: "not-an-index",
+        label: "task",
+        delivered: "yes",
+        digest: "d",
+        context_sha256: "c",
+        prefix_sha256: "p",
+        text_sha256: "t",
+        source: "elsewhere",
+    };
+    dir = mkdtempSync(join(tmpdir(), "pairing-check-"));
+    writeFileSync(join(dir, "manifest.json"), JSON.stringify({ order: ["a"], events: 1 }));
+    writeFileSync(join(dir, "scenario.json"), JSON.stringify({ events }));
+    writeFileSync(join(dir, "pairing.jsonl"), `${JSON.stringify(bad)}\n`);
+    writeFileSync(
+        join(dir, "journal.jsonl"),
+        complete("a")
+            .map((e) => `${JSON.stringify(e)}\n`)
+            .join(""),
+    );
+    const r = Bun.spawnSync(["bun", join(ROOT, "scripts/pairing-check.ts"), dir], {
+        stdout: "pipe",
+        stderr: "pipe",
+    });
+    expect(r.exitCode).not.toBe(0);
+    expect(r.stderr.toString()).toContain("index is not an integer");
+});
+
 test("the pairing check fails a run that never reached EndArm for an arm or EndRun", () => {
     const noEndArm = run([rates("a"), rates("b"), endArm("a"), endRun]);
     expect(noEndArm.report.incomplete).toEqual(["b EndArm"]);
@@ -75,6 +111,7 @@ test("a paste turn's record must name the compiled corpus item, whose bytes the 
         label: "paste",
         delivered: true,
         digest: "d",
+        context_sha256: "c",
         prefix_sha256: "p",
         text_sha256: sha256Hex(text),
         source: "script",
@@ -103,6 +140,7 @@ test("the pairing check fails a run whose log lacks a scheduled turn for an arm"
         label: "task",
         delivered: true,
         digest: "d",
+        context_sha256: "c",
         prefix_sha256: "p",
         text_sha256: "t",
         source: "script",

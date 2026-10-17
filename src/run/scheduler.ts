@@ -181,8 +181,11 @@ export class Scheduler {
             this.snapshotTurn(e);
             this.log({ kind: "Event", event: e.event, outcome: e.outcome });
         }
+        const journaled = new Set(kinds("UserTurn").map((e) => e.event));
         for (const e of kinds("BeginTurn").filter((x) => !ended.has(x.event))) {
-            const user = this.o.recoverTurn?.(e.event as string);
+            const user = journaled.has(e.event)
+                ? undefined
+                : this.o.recoverTurn?.(e.event as string);
             if (user) this.log({ kind: "UserTurn", event: e.event, ...user, recovered: true });
             this.log({ kind: "ItemState", event: e.event, state: "failed(interrupted)" });
             this.log({ kind: "Event", event: e.event, outcome: "failed(interrupted)" });

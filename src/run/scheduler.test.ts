@@ -736,6 +736,42 @@ describe("driver lifecycle hooks", () => {
         expect(second.entries[user]).toMatchObject({ label: "pushback", recovered: true });
     });
 
+    test("a turn killed after its user record was journaled is not given a second one on resume", async () => {
+        const path = join(dir(), "j.jsonl");
+        const j = new Journal(path);
+        j.append({ kind: "StartRun", arm: null, scenario_ms: 0 });
+        j.append({ kind: "StartArm", arm: "a", scenario_ms: 0 });
+        j.append({ kind: "Event", arm: "a", scenario_ms: 0, event: "e-000000" });
+        j.append({
+            kind: "BeginTurn",
+            arm: "a",
+            scenario_ms: 1_000,
+            event: "e-000001",
+            probe: null,
+        });
+        j.append({
+            kind: "UserTurn",
+            arm: "a",
+            scenario_ms: 1_000,
+            event: "e-000001",
+            label: "task",
+            delivered: true,
+        });
+        j.close();
+        const second = new Journal(path);
+        await new Scheduler({
+            events: fixtureEvents(2),
+            faults: [],
+            journal: second,
+            settleMs: 0,
+            order: ["a"],
+            drivers: { a: fakeDriver([]) },
+            recoverTurn: () => ({ session: "s-0001", label: "task", delivered: true }),
+        }).run();
+        const users = second.entries.filter((e) => e.kind === "UserTurn" && e.event === "e-000001");
+        expect(users).toHaveLength(1);
+    });
+
     test("an arm killed after its rate summary resumes without a second one", async () => {
         const path = join(dir(), "j.jsonl");
         const events = fixtureEvents(2);

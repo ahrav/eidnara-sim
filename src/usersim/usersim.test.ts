@@ -698,6 +698,21 @@ describe("tape and pairing", () => {
         });
     });
 
+    test("a replay source must have run every arm of this run", () => {
+        const root = dir();
+        writeFileSync(join(root, "tape.jsonl"), "");
+        writeFileSync(join(root, "pairing.jsonl"), "");
+        writeFileSync(
+            join(root, "manifest.json"),
+            JSON.stringify({ seed: 101, scenario_hash: "abc", order: ["eidnara"] }),
+        );
+        const run = { seed: 101, scenario_hash: "abc", order: ["host", "eidnara"] };
+        expect(() => checkTapeSources([join(root, "tape.jsonl")], run)).toThrow("host");
+        expect(() =>
+            checkTapeSources([join(root, "tape.jsonl")], { ...run, order: ["eidnara"] }),
+        ).not.toThrow();
+    });
+
     test("a replay source from another pre-registration is refused", () => {
         const root = dir();
         writeFileSync(join(root, "tape.jsonl"), "");

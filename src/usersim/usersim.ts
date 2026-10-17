@@ -162,7 +162,13 @@ function requireSource(path: string): string {
  */
 export function checkTapeSources(
     tapes: readonly string[],
-    run: { seed: number; scenario_hash: string; prereg_sha256?: string; events?: number },
+    run: {
+        seed: number;
+        scenario_hash: string;
+        prereg_sha256?: string;
+        events?: number;
+        order?: readonly string[];
+    },
 ): void {
     for (const tape of tapes) {
         const path = join(dirname(tape), "manifest.json");
@@ -172,7 +178,15 @@ export function checkTapeSources(
             scenario_hash?: unknown;
             prereg_sha256?: unknown;
             events?: unknown;
+            order?: unknown;
         };
+        // A source that never ran an arm of this run has no reply for it; its reference arm in
+        // particular would go live with no divergence on record.
+        const ran = Array.isArray(manifest.order) ? (manifest.order as unknown[]) : [];
+        const missing = (run.order ?? []).filter((arm) => !ran.includes(arm));
+        if (missing.length > 0) {
+            throw new HarnessFailure(`replay source ${tape} never ran arm ${missing.join(", ")}`);
+        }
         if (run.events !== undefined) {
             // A source cut short of this run's events has no reply for the rest, and a
             // reference arm past its end would go live with no divergence on record.
@@ -199,6 +213,11 @@ export function checkTapeSources(
             throw new HarnessFailure(`replay source ${tape} is from another pre-registration`);
         }
     }
+}
+
+/** Reads a pairing log with every row checked, for a checker that certifies a finished run. */
+export function readPairing(path: string): PairingRecord[] {
+    return jsonl<PairingRecord>(path, "source", pairingRow);
 }
 
 export function tapeDigests(tapes: readonly string[]): string[] {

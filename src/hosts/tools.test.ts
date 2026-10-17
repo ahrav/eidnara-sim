@@ -497,6 +497,28 @@ test("an abort request still open when the turn settles is cancelled before the 
     expect(signal?.aborted).toBe(true);
 });
 
+test("a deadline abort still open when the drained turn settles is cancelled too", async () => {
+    let signal: AbortSignal | undefined;
+    const host = opencodeHost({
+        session: {
+            messages: async () => ({ data: [] }),
+            prompt: () => Bun.sleep(250).then(() => ({ data: { info: {} } })),
+            abort: (o: { signal?: AbortSignal }) =>
+                new Promise((_resolve, reject) => {
+                    signal = o.signal;
+                    o.signal?.addEventListener("abort", () => reject(new Error("cancelled")));
+                }),
+        },
+    });
+    Object.assign(host as unknown as Record<string, unknown>, {
+        abortWaitMs: 50,
+        drainWaitMs: 1_000,
+    });
+    const result = await host.prompt("go", 100);
+    expect(result.error).toContain("turn deadline 100 ms");
+    expect(signal?.aborted).toBe(true);
+});
+
 test("an aborted OpenCode turn whose tool listing then fails keeps the interrupt beside the capture error", async () => {
     let listings = 0;
     const host = opencodeHost({
