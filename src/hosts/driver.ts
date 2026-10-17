@@ -304,12 +304,12 @@ export class HostDriver implements ArmDriver {
         } else if (e.probe && before !== null) {
             await this.o.settle?.();
             try {
-                const nested = this.snapshots.embedded(dir);
+                const { nested, ignoreFiles } = this.snapshots.survey(dir);
                 const after = this.snapshots.tree(dir, nested);
                 const reasons = [
                     nested.length > 0 ? `embedded repository at ${nested.join(", ")}` : null,
                     ...(() => {
-                        const changed = this.snapshots.ignoreChanges(dir, project);
+                        const changed = this.snapshots.ignoreChanges(dir, project, ignoreFiles);
                         return changed.length > 0
                             ? [`ignore rules changed: ${changed.join(", ")}`]
                             : [];

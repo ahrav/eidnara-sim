@@ -63,6 +63,20 @@ export async function gradeRun(dir: string, config: SimConfig | null): Promise<S
     }
 }
 
+/** Yields a JSONL file's non-empty lines one at a time, so a log of large records costs one record of memory. */
+async function* jsonlLines(path: string): AsyncGenerator<string> {
+    const decoder = new TextDecoder();
+    let rest = "";
+    for await (const chunk of Bun.file(path).stream()) {
+        rest += decoder.decode(chunk, { stream: true });
+        const parts = rest.split("\n");
+        rest = parts.pop() ?? "";
+        for (const line of parts) if (line) yield line;
+    }
+    rest += decoder.decode();
+    if (rest) yield rest;
+}
+
 async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
     const manifest = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8"));
     const scenario = JSON.parse(readFileSync(join(dir, "scenario.json"), "utf8")) as Scenario;
@@ -95,11 +109,12 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
         firstOf.add(key);
     }
     const journaled = new Set(named.keys());
+    const probes = new Map(scenario.probes.map((p) => [p.id, p]));
     const snapshots = new Map<string, Snapshot[]>();
     for (const arm of arms) {
         const path = join(dir, arm, "snapshots.jsonl");
         if (!existsSync(path)) continue;
-        for (const line of readFileSync(path, "utf8").split("\n").filter(Boolean)) {
+        for await (const line of jsonlLines(path)) {
             const s = JSON.parse(line) as Snapshot;
             if (s.arm !== arm || !Array.isArray(s.artefacts) || s.artefacts.length === 0) {
                 throw new Error(
@@ -113,8 +128,19 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
                     `snapshot ${s.id} in ${arm}/snapshots.jsonl does not match its journal entry (${entry.arm}, ${entry.item})`,
                 );
             }
+            const probe = entry ? probes.get(s.item) : undefined;
+            if (entry && probe) {
+                const turnOk = probe.event === undefined || s.turn === probe.event;
+                const sessionOk = s.session === undefined || s.session === probe.session;
+                if (!turnOk || !sessionOk) {
+                    throw new Error(
+                        `snapshot ${s.id} is of turn ${s.turn} in session ${String(s.session)}, not the probe's event ${String(probe.event)} in session ${probe.session}`,
+                    );
+                }
+            }
             const key = `${arm}/${s.item}`;
-            snapshots.set(key, [...(snapshots.get(key) ?? []), s]);
+            const kept = entry ? s : { ...s, artefacts: [] };
+            snapshots.set(key, [...(snapshots.get(key) ?? []), kept]);
         }
     }
     const present = new Set([...snapshots.values()].flat().map((s) => s.id));
