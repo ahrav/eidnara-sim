@@ -37,6 +37,8 @@ export interface RunLogs {
     base_wall_ms?: number;
     prereg: Preregistration;
     kinds: Map<string, string>;
+    /** Each scheduled laptop sleep's duration by fault id, from the override the run used or its scenario. */
+    sleeps?: Map<string, number>;
     arms: ArmLogs[];
 }
 
@@ -94,6 +96,7 @@ interface Manifest {
     scenario_hash?: string;
     /** Wall time at scenario time 0; absent in runs recorded before the harness wrote it. */
     base_wall_ms?: number;
+    fault_override?: { id: string; type: string; params?: { duration_ms?: number } }[] | null;
 }
 
 /** Reads one JSON file as the record type its reader names, naming the file when the text does not parse. */
@@ -272,5 +275,19 @@ export function loadRun(dir: string, prereg: Preregistration): RunLogs {
             throw new Error(`arm ${arm.arm} has no daemon.log`);
         }
     }
-    return { dir, tier: manifest.tier, base_wall_ms: manifest.base_wall_ms, prereg, kinds, arms };
+    const faults = manifest.fault_override ?? scenario.faults ?? [];
+    const sleeps = new Map(
+        faults
+            .filter((f) => f.type === "laptop_sleep")
+            .map((f) => [String(f.id), Number(f.params?.duration_ms)]),
+    );
+    return {
+        dir,
+        tier: manifest.tier,
+        base_wall_ms: manifest.base_wall_ms,
+        prereg,
+        kinds,
+        sleeps,
+        arms,
+    };
 }

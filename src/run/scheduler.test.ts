@@ -584,6 +584,49 @@ describe("two sleeps on one event", () => {
     });
 });
 
+describe("store checks already journaled", () => {
+    test("a resumed arm's repeated check for a fault already on record is not journaled again", async () => {
+        const path = join(dir(), "j.jsonl");
+        const j = new Journal(path);
+        const store = { integrity: "ok", segments: 0, overlaps: [], ranges: [] };
+        j.append({ kind: "StartRun", arm: null, scenario_ms: 0 });
+        j.append({ kind: "StartArm", arm: "a", scenario_ms: 0 });
+        j.append({
+            kind: "StoreChecked",
+            arm: "a",
+            scenario_ms: 0,
+            event: null,
+            fault: "r-1",
+            store,
+        });
+        j.close();
+        const resumed = new Journal(path);
+        const driver: ArmDriver = {
+            reset: async () => undefined,
+            event: async (e) =>
+                e.kind === "user_turn"
+                    ? {
+                          stores: [
+                              { fault: "r-1", store },
+                              { fault: "r-2", store },
+                          ],
+                      }
+                    : {},
+            fault: async () => ({}),
+        };
+        await new Scheduler({
+            events: fixtureEvents(1),
+            faults: [],
+            journal: resumed,
+            settleMs: 0,
+            order: ["a"],
+            drivers: { a: driver },
+        }).run();
+        const checks = resumed.entries.filter((e) => e.kind === "StoreChecked");
+        expect(checks.map((e) => e.fault)).toEqual(["r-1", "r-2"]);
+    });
+});
+
 describe("store checks outside turns", () => {
     test("store checks a session end or finish settles are journaled with their event", async () => {
         const j = new Journal(join(dir(), "j.jsonl"));

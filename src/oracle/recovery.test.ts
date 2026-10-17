@@ -237,6 +237,15 @@ describe("recovery oracles", () => {
         const jumped = [entry("AdvanceClock", 5, { fault: "z", from_ms: 0, busy: [] }), ...journal];
         const [ok] = recoveries(run([arm(jumped)]));
         expect([ok?.recovered, ok?.reasons]).toEqual([true, []]);
+        // With the schedule known, the jump must be the scheduled duration.
+        const scheduled = { ...run([arm(jumped)]), sleeps: new Map([["z", 3_600_000]]) };
+        const [short] = recoveries(scheduled);
+        expect([short?.recovered, short?.reasons]).toEqual([
+            false,
+            ["fault not observed: harness interrupted"],
+        ]);
+        const [exact] = recoveries({ ...scheduled, sleeps: new Map([["z", 5]]) });
+        expect([exact?.recovered, exact?.reasons]).toEqual([true, []]);
     });
 
     test("a fail-open publication in every later turn prevents a recovered verdict", () => {
@@ -634,6 +643,17 @@ describe("plugin log attribution", () => {
             entry("EndTurn", 9_900, { wall_ms: 7_000, event: "e-2", outcome: "ok" }),
         ];
         expect(() => recoveries(run([arm(journal)], base))).toThrow("wall_ms");
+    });
+
+    test("a fail-open line without a readable stamp refuses the arm", () => {
+        seq = 0;
+        const journal = [
+            entry("FaultObserved", 0, { fault: "f", type: "plugin_reload", evidence: {} }),
+            entry("BeginTurn", 10, { event: "e-1" }),
+            entry("EndTurn", 20, { event: "e-1", outcome: "ok" }),
+        ];
+        const log = ["[eidnara][s-1] rust pass: decision=error reason=none served_from=raw"];
+        expect(() => recoveries(run([arm(journal, log)]))).toThrow("fail-open");
     });
 
     test("a journal entry without a finite wall time cannot anchor a window", () => {

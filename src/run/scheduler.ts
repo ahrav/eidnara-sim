@@ -90,6 +90,19 @@ export class Scheduler {
         }
     }
 
+    /**
+     * Journals the store checks an outcome returned, one `StoreChecked` per fault per arm: a
+     * resumed driver can take a check again for a fault whose entry already landed.
+     */
+    private logStores(stores: TurnOutcome["stores"], event: string | null): void {
+        for (const s of stores ?? []) {
+            const already = this.o.journal.entries.some(
+                (e) => e.kind === "StoreChecked" && e.arm === this.arm && e.fault === s.fault,
+            );
+            if (!already) this.log({ kind: "StoreChecked", event, ...s });
+        }
+    }
+
     private log(entry: { kind: EntryKind; [field: string]: unknown }): Entry {
         return this.o.journal.append({
             ...entry,
@@ -134,8 +147,7 @@ export class Scheduler {
             await this.idle();
             await this.pendingKill;
             const last = await driver.finish?.();
-            for (const s of last?.stores ?? [])
-                this.log({ kind: "StoreChecked", event: null, ...s });
+            this.logStores(last?.stores, null);
             this.log({ kind: "EndArm" });
         }
         this.arm = null;
@@ -274,8 +286,7 @@ export class Scheduler {
         if (OUTAGE.has(f.type)) this.outage = f.id;
         const { stores, ...evidence } = await driver.fault(f);
         // Store checks an earlier restart owed, settled before this fault took the daemon down.
-        for (const s of (stores as TurnOutcome["stores"]) ?? [])
-            this.log({ kind: "StoreChecked", event: null, ...s });
+        this.logStores(stores as TurnOutcome["stores"], null);
         this.log({ kind: "FaultObserved", fault: f.id, type: f.type, evidence });
     }
 
@@ -308,8 +319,7 @@ export class Scheduler {
             const state = outcome.failed ? "failed" : "completed";
             const item = e.probe ? { probe: e.probe, state } : {};
             // The checks go first: a kill before EndTurn replays the turn with them on record.
-            for (const s of outcome.stores ?? [])
-                this.log({ kind: "StoreChecked", event: e.id, ...s });
+            this.logStores(outcome.stores, e.id);
             const snapshot = outcome.snapshot ? { snapshot: outcome.snapshot } : {};
             const end = { event: e.id, outcome: outcome.failed ?? "ok", ...item, ...snapshot };
             this.log({ kind: "EndTurn", ...end });
@@ -317,8 +327,7 @@ export class Scheduler {
             await Bun.sleep(this.o.settleMs ?? 1_000);
         } else {
             const outcome = await driver.event(e);
-            for (const s of outcome.stores ?? [])
-                this.log({ kind: "StoreChecked", event: e.id, ...s });
+            this.logStores(outcome.stores, e.id);
         }
         if (e.kind === "session_end") {
             for (const f of this.o.faults) {

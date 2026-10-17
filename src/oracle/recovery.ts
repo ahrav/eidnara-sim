@@ -181,7 +181,14 @@ function indexEvidence(arm: ArmLogs, tl: Timeline): Evidence {
     arm.pluginLog.forEach((l, line) => {
         const record = FAIL_OPEN_RECORD.test(l);
         if (!record && !FAIL_OPEN_WARNING.test(l)) return;
-        for (const at of tl.stamps(l)) failOpen.push({ at, line, record });
+        const stamps = tl.stamps(l);
+        // A fail-open line the timeline cannot place is evidence the oracle cannot weigh.
+        if (stamps.length === 0) {
+            throw new Error(
+                `${arm.arm}: plugin log line ${line + 1} is a fail-open record without a placeable stamp`,
+            );
+        }
+        for (const at of stamps) failOpen.push({ at, line, record });
     });
     failOpen.sort((a, b) => a.at - b.at || a.line - b.line);
     return { callsByTurn, failOpen };
@@ -290,15 +297,18 @@ export function recoveries(run: RunLogs): Recovery[] {
         }
         return [...anchors.values()].map((fired): Recovery => {
             // A sleep's evidence is its recorded clock jump: a fault-tagged AdvanceClock that moved
-            // the clock forward with the busy set empty.
-            const jumped = arm.journal.some(
-                (e) =>
+            // the clock forward with the busy set empty, by the scheduled duration when known.
+            const scheduledMs = run.sleeps?.get(String(fired.fault));
+            const jumped = arm.journal.some((e) => {
+                const delta = e.scenario_ms - Number(e.from_ms);
+                return (
                     e.kind === "AdvanceClock" &&
                     e.fault === fired.fault &&
-                    e.scenario_ms - Number(e.from_ms) > 0 &&
+                    (scheduledMs === undefined ? delta > 0 : delta === scheduledMs) &&
                     Array.isArray(e.busy) &&
-                    e.busy.length === 0,
-            );
+                    e.busy.length === 0
+                );
+            });
             const observed =
                 fired.type === "laptop_sleep"
                     ? jumped

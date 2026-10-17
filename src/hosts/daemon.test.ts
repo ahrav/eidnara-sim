@@ -216,6 +216,19 @@ test("a recovery interrupted mid-copy rolls back the partial append before copyi
     expect(existsSync(`${logFile}.source`)).toBe(false);
 });
 
+test("the held stdout of a killed lifetime is recovered from the marker", () => {
+    const dir = mkdtempSync(join(tmpdir(), "sim-daemon-"));
+    const held = join(dir, "daemon.log.held");
+    writeFileSync(held, "stderr line\n");
+    writeFileSync(
+        join(dir, "daemon.log.source"),
+        JSON.stringify({ pending: [held], copying: null, stdout: "stdout line\n" }),
+    );
+    new DaemonStack(stackCtx(dir)).recoverLog();
+    expect(readFileSync(join(dir, "daemon.log"), "utf8")).toBe("stdout line\nstderr line\n");
+    expect(existsSync(join(dir, "daemon.log.source"))).toBe(false);
+});
+
 test("a held log and a live log that are one inode are recovered once", () => {
     const dir = mkdtempSync(join(tmpdir(), "sim-daemon-"));
     const logPath = join(dir, "direct-host.log");

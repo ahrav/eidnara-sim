@@ -113,6 +113,8 @@ function eidnaraUserConfig(connectionFile: string, model: string): Record<string
 interface LogMarker {
     pending: string[];
     copying: { source: string; target_bytes: number } | null;
+    /** A killed lifetime's stdout, held until its log is saved, so a resume saves it too. */
+    stdout?: string;
     /** The daemon process writing the live log, when one is up; recovery stops it before reading. */
     owner?: { pid: number; start: string | null } | null;
 }
@@ -179,6 +181,7 @@ export class DaemonStack {
                 pending: parsed.pending ?? [],
                 copying: parsed.copying ?? null,
                 owner: parsed.owner ?? null,
+                ...(typeof parsed.stdout === "string" ? { stdout: parsed.stdout } : {}),
             };
         } catch {
             throw new Error(`${this.logSourceFile}: unreadable daemon log recovery marker`);
@@ -235,6 +238,12 @@ export class DaemonStack {
      */
     private drain(marker: LogMarker | null, extra: string[]): void {
         let pending = [...(marker?.pending ?? [])];
+        if (marker?.stdout) {
+            // The held stdout goes first, as `restart` would have written it; then the marker drops it.
+            appendFileSync(this.ctx.logFile, marker.stdout);
+            const { stdout: _saved, ...rest } = marker;
+            this.writeMarker(rest);
+        }
         if (marker?.copying) {
             if (existsSync(this.ctx.logFile)) {
                 truncateSync(this.ctx.logFile, marker.copying.target_bytes);
@@ -321,7 +330,12 @@ export class DaemonStack {
         rmSync(this.held, { force: true });
         if (existsSync(live)) linkSync(live, this.held);
         this.heldStdout = stdout;
-        this.writeMarker({ pending: [this.held, live], copying: null, owner: this.owner() });
+        this.writeMarker({
+            pending: [this.held, live],
+            copying: null,
+            owner: this.owner(),
+            stdout,
+        });
     }
 
     /**
