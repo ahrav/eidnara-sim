@@ -119,7 +119,8 @@ An arm label `<arm>~<tag>`, with a lowercase alphanumeric tag such as
 journal entries, and call records (`armBase` and `CONTROL_LABEL` in
 `src/hosts/arms.ts`). `--arms host,host~aa` runs it right after its arm,
 one control per arm, and only for a pair the tier pre-registers in
-`aa_controls.pairs` (S and M); the oracle loader accepts the same orders. A control's reference arm is its own arm,
+`aa_controls.pairs` (S and M); the oracle loader and the A/A report hold a
+manifest order to the same rule (`requireOrder`). A control's reference arm is its own arm,
 so its divergence records and tape replies pair it with that arm; every
 other arm's reference is the first of the order. Both arms of a pair share
 the scenario, the behaviour plan, and the tape, so the control measures
@@ -130,7 +131,9 @@ judgments against the host arm, stay out of the A/A pairing.
 `scripts/aa-report.ts <run>` reads the run's graded items and, for each
 control, pairs every item both arms graded. It holds the run's lease while
 it reads, checks each pairing record's shape and arm (`readPairing`, which
-`pairing-check.ts` shares, refusing a corrupt terminated line), checks each
+`pairing-check.ts` shares, refusing a corrupt terminated line), refuses a
+control whose delivered text differed from its arm's before its recorded
+divergence (`pairingMismatches`, the check `pairing-check.ts` runs), checks each
 latest grade's arm, item, probe type, and version against the run, refuses
 a run graded under another pre-registration or whose scenario no longer
 hashes to the manifest's digest, and records the pre-registration hash it

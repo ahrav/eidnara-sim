@@ -1,14 +1,15 @@
 import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { GradeLog } from "../src/grade/probes";
-import { armBase } from "../src/hosts/arms";
-import type { Tier } from "../src/prereg/schema";
+import { armBase, requireOrder } from "../src/hosts/arms";
+import { ARMS, type Tier } from "../src/prereg/schema";
 import { preregistrationHash } from "../src/prereg/validate";
 import { bootstrapMean, disagreementRate, pairedDiffs } from "../src/report/paired";
 import { releaseLease, takeLease } from "../src/run/journal";
+import { referenceArm } from "../src/run/run";
 import { type Scenario, scenarioHash } from "../src/scenario/compile";
 import { loadPrereg } from "../src/scenario/inputs";
-import { readPairing } from "../src/usersim/usersim";
+import { pairingMismatches, readPairing } from "../src/usersim/usersim";
 
 /** A percentile interval over fewer clusters than this undercovers, so it decides nothing. */
 const MIN_CLUSTERS = 5;
@@ -50,6 +51,7 @@ function report(dir: string) {
         runLevel.has(probeType(metric)) ? "run" : (fact.get(item) ?? item);
     const grades = new GradeLog(join(dir, "grades.jsonl")).latest();
     const order = manifest.order as string[];
+    requireOrder(order, ARMS, prereg.aa_controls?.pairs ?? []);
     const typeOf = new Map(scenario.probes.map((p) => [p.id, p.type]));
     for (const g of grades) {
         const sound =
@@ -62,10 +64,17 @@ function report(dir: string) {
         if (!sound)
             throw new Error(`${dir}/grades.jsonl: ${g.arm}/${g.item} is not a grade of this run`);
     }
-    const pairing = readPairing(join(dir, "pairing.jsonl"), manifest.order as string[]);
-    const controls = (manifest.order as string[]).filter((a) => a.includes("~"));
+    const pairing = readPairing(join(dir, "pairing.jsonl"), order);
+    const mismatched = pairingMismatches(pairing, referenceArm(order));
+    const controls = order.filter((a) => a !== armBase(a));
     const report = controls.map((control) => {
         const arm = armBase(control);
+        const broken = mismatched.filter((m) => m.startsWith(`${control} `));
+        if (broken.length > 0) {
+            throw new Error(
+                `${dir}: ${control} received other text than ${arm} before diverging: ${broken.join(", ")}`,
+            );
+        }
         const metrics = [...pairedDiffs(grades, arm, control)].map(([m, d]) =>
             bootstrapMean(m, d, clusterOf(m), prereg.bootstrap.replicates, prereg.bootstrap.seed),
         );

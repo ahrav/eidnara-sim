@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Command } from "../grade/artefacts";
-import { armBase, CONTROL_LABEL } from "../hosts/arms";
+import { armBase, requireOrder } from "../hosts/arms";
 import { parseStoreCheck, type StoreCheck } from "../hosts/storecheck";
 import { ARMS, type Preregistration } from "../prereg/schema";
 import { type CallRecord, recordProblems } from "../proxy/records";
@@ -134,22 +134,7 @@ export function loadRun(dir: string, prereg: Preregistration): RunLogs {
     }
     const kinds = new Map(scenario.events.map((e) => [String(e.id), String(e.kind)]));
     const order = manifest.order as string[];
-    const pairs = prereg.aa_controls?.pairs ?? [];
-    for (const arm of order) {
-        const base = armBase(arm);
-        const known =
-            (ARMS as readonly string[]).includes(base) &&
-            (arm === base || (CONTROL_LABEL.test(arm) && pairs.some(([x]) => x === base)));
-        if (!known) throw new Error(`manifest arm ${arm} is not a pre-registered arm`);
-    }
-    const controls = order.filter((arm) => arm !== armBase(arm));
-    for (const control of controls) {
-        const base = armBase(control);
-        if (!order.includes(base)) throw new Error(`manifest arm ${control} runs without ${base}`);
-        if (controls.filter((c) => armBase(c) === base).length > 1) {
-            throw new Error(`manifest order runs two A/A controls of ${base}`);
-        }
-    }
+    requireOrder(order, ARMS, prereg.aa_controls?.pairs ?? []);
     const calls = jsonl<CallRecord>(join(dir, "calls.jsonl"));
     const seen = new Set<number>();
     for (const c of calls) {

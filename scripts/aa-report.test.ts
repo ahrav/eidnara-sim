@@ -154,6 +154,38 @@ describe("aa-report", () => {
         expect(lstatSync(join(dir, "aa.json")).isSymbolicLink()).toBe(false);
     });
 
+    test("refuses a manifest order the run command would refuse", () => {
+        for (const order of [
+            ["host", "host~aa", "host~bb"],
+            ["host~aa"],
+            ["host", "host~x/../../outside"],
+            ["host", "eidnara-kl", "eidnara-kl~aa"],
+        ]) {
+            const dir = gradedRun("S", preregistrationHash(loadPrereg("S")));
+            const manifest = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8"));
+            writeFileSync(join(dir, "manifest.json"), JSON.stringify({ ...manifest, order }));
+            expect(() => aaReport(dir)).toThrow(/manifest/);
+        }
+    });
+
+    test("refuses a control whose delivered text differed from its arm's before any divergence", () => {
+        const dir = gradedRun("S", preregistrationHash(loadPrereg("S")));
+        const turn = (arm: string, text_sha256: string) => ({
+            kind: "turn",
+            arm,
+            session: "s-1",
+            event: "e-1",
+            index: 0,
+            text_sha256,
+        });
+        const records = [turn("host", "aaaa"), turn("host~aa", "bbbb")];
+        writeFileSync(
+            join(dir, "pairing.jsonl"),
+            records.map((r) => `${JSON.stringify(r)}\n`).join(""),
+        );
+        expect(() => aaReport(dir)).toThrow(/host~aa s-1 #0/);
+    });
+
     test("a run-level family forms one cluster per run, so one run leaves it uninformative", () => {
         const dir = gradedRun("S", preregistrationHash(loadPrereg("S")));
         const [report] = aaReport(dir);
