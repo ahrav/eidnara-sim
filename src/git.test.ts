@@ -16,3 +16,10 @@ test("git output past the cap is a bounded failure, distinct from a plain error"
     }
     expect(() => git(dir, ["no-such-command"])).not.toThrow(GitBound);
 });
+
+test("an argument list past the OS limit is a bounded failure", () => {
+    const dir = mkdtempSync(join(tmpdir(), "sim-git-"));
+    git(dir, ["init", "-q"]);
+    const many = Array.from({ length: 200_000 }, (_, i) => `:(exclude)dir-${i}/with/a/long/path`);
+    expect(() => git(dir, ["add", "--all", "--", ".", ...many])).toThrow(GitBound);
+});

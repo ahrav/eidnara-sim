@@ -66,9 +66,12 @@ output cap fails the probe turn the same way. A probe turn that adds,
 changes, or removes a `.gitignore`, or edits `.git/info/exclude`, ends
 `failed` with `ignore rules changed: <paths>`, since a rule added in the turn
 would hide that turn's files from the diff; the baseline is the source's
-`.gitignore` blobs and the clone's `exclude` file, recorded at reset; an
-`exclude` path that is a symlink, FIFO, or directory reads as a changed
-rule. The driver waits the scheduler's settle window and then its background
+`.gitignore` blobs and the clone's `exclude` file, recorded at reset. The
+`.gitignore` files are found by name in the workspace walk and hashed from
+disk, so a rule that ignores its own file still surfaces it; an `exclude` or
+`.gitignore` path that is a symlink, FIFO, or directory, or larger than 1 MiB,
+reads as a changed rule. A workspace with more than 1,000 nested
+repositories fails the probe turn before git runs. The driver waits the scheduler's settle window and then its background
 jobs before it takes a probe snapshot, and checks the daemon is alive after
 the prompt and again after the snapshot, reporting an exit once with the
 turn's id.
@@ -117,8 +120,10 @@ or an arm's `EndArm` and one terminal `Event` per scheduled event (SIM-P67),
 drops a cut last line of `grades.jsonl`, requires one `SnapshotArtefacts` entry per arm and item, a row for every
 journaled snapshot id, every snapshot row to name its directory's arm and
 carry grade-class artefacts only, every journaled row to match its journal
-entry's arm and item, and every agent call's model in `calls.jsonl` to be one
-the manifest records, computes every grade before it
+entry's arm and item and the compiled probe's event and session, and every
+agent call's model in `calls.jsonl` to be one
+the manifest records, reads each arm's snapshot log one row at a time and
+keeps the artefacts of journaled rows only, computes every grade before it
 appends any (an item whose answer the proxy truncated is skipped as `answer
 refused`; a structural artefact violation aborts with nothing appended),
 holds P7 grades until the judge gateway has stopped and reports no failed

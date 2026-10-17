@@ -123,12 +123,12 @@ function snapshot(dir: string, arm: string, s: Snapshot, journaled = true): void
 const p5 = fixture("P5-pass");
 const snap = p5.snapshots[0] as Snapshot;
 
-const p7snapshot = (item: string): Snapshot => ({
+const p7snapshot = (item: string, turn = "e-1"): Snapshot => ({
     id: "x",
     item,
     arm: "x",
     session: "s-1",
-    turn: "e-1",
+    turn,
     turn_outcome: "ok",
     artefacts: [
         {
@@ -263,10 +263,11 @@ describe("grade-run", () => {
 
     test("an answer the proxy truncated excludes its item, and grades are appended only once every item is graded", async () => {
         const p8 = fixture("P8-pass");
-        const cut = structuredClone(p8.snapshots[0]) as Snapshot;
+        const cut = { ...structuredClone(p8.snapshots[0]), turn: "e-2" } as Snapshot;
         const calls = cut.artefacts.find((a) => a.class === "proxy-call") as unknown as {
             calls: Record<string, unknown>[];
         };
+        for (const c of calls.calls) if (c.turn === "e-1") c.turn = "e-2";
         (calls.calls.at(-1) as Record<string, unknown>).response_text_truncated = true;
         const dir = run({ probes: [p5.probe, p8.probe] });
         snapshot(dir, "eidnara", snap);
@@ -322,6 +323,12 @@ describe("grade-run", () => {
         expect(() => readFileSync(join(dir, "grades.jsonl"))).toThrow();
     });
 
+    test("a journaled row whose turn differs from the probe's event is refused", async () => {
+        const dir = run({ probes: [p5.probe] });
+        snapshot(dir, "eidnara", { ...snap, turn: "e-9" });
+        await expect(gradeRun(dir, null)).rejects.toThrow("not the probe's event e-1");
+    });
+
     test("a journal naming two first snapshots for one arm and item is refused", async () => {
         const dir = run({ probes: [p5.probe] });
         snapshot(dir, "eidnara", snap);
@@ -341,7 +348,7 @@ describe("grade-run", () => {
 
     test("the judge firewall is checked against every model the manifest records, before any grade is appended", async () => {
         const p7 = fixture("P7-pass");
-        const p7snap = p7snapshot(p7.probe.id);
+        const p7snap = p7snapshot(p7.probe.id, "e-2");
         const dir = run({
             probes: [p5.probe, p7.probe],
             models: ["global.anthropic.claude-opus-5-5", "global.openai.gpt-5.6-luna"],
