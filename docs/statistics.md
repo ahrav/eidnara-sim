@@ -165,9 +165,12 @@ bounds the ratio near 66, five control events and none in treatment near
 1.3), while 100 events in each arm over six runs bound it near 1.14. The tier passes by
 intersection-union:
 every gate component passes at its own alpha, which the verdict lists,
-every CUSUM rule was evaluated, and none stopped the tier. A noninferiority
-or at-most component with an interval decides on its upper end, a
-one-sided test at half its alpha; the at-most sign test compares its
+no CUSUM rule stopped the tier, every CUSUM rule was evaluated with its
+A/A scale, and the input's `incomplete` list, the fixed-N campaign
+requirements still open, is empty; the verdict carries that list, with any
+CUSUM rule without a scale, under `pass.incomplete`. A
+noninferiority or at-most component with an interval decides on its upper
+end, a one-sided test at half its alpha; the at-most sign test compares its
 one-sided p with the family alpha (the pre-registration's "sign test at
 p 0.03" at six paired runs, where six discordant runs give p = 1/64); the
 verdict says so.
@@ -182,12 +185,11 @@ stop, recorded with the metric, the signal index, and the item ids since
 the sum last stood at zero, and a stop withholds the pass; a benefit,
 which moves only the lower sum, stops nothing. The standard deviation is
 finite and positive or the input is refused. A rule without an A/A
-standard deviation, or with no items for its metric, is listed as
-unavailable, and a tier with an unavailable rule gets no pass. The
-verdict lists every rule with its registered `sd_source` and the
-deviation it used, so the A/A report can be checked against it. The
-verdict also carries the
-pre-registration digest, the journal sequence it was evaluated at, the
+standard deviation is listed as unavailable and under `pass.incomplete`,
+and a tier with an unavailable rule gets no pass. The verdict lists every rule with its registered
+`sd_source` and the deviation it used, so the A/A report can be checked
+against it. The verdict also carries the pre-registration digest, the last
+journal sequence read per run id, the
 families with their MDE and margin, and the harm metrics whose verdict is
 `worse` ("memory made it worse"). An evaluation whose output contains the
 word parity is refused.
