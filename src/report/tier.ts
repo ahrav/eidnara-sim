@@ -31,16 +31,20 @@ import type { TierReport } from "./render";
 import { soak, soakByMonth } from "./soak";
 import { propertyWitness } from "./witness";
 
-type VersionRow = { host: string; version: string };
+type VersionRow = { host: string; version: string; path?: string };
 
-/** `<host>@<version>` for each current host, then `upgrade:<host>@<version>` for each next one. */
+/**
+ * `<host>@<version> <path>` for each current host, then `upgrade:<host>@<version> <path>` for
+ * each next one; the path is the probed install, so two artifacts of one version stay apart.
+ */
 export function identityVersions(preflight: {
     hosts?: VersionRow[];
     upgrade?: VersionRow[];
 }): string[] {
+    const name = (h: VersionRow) => `${h.host}@${h.version}${h.path ? ` ${h.path}` : ""}`;
     return [
-        ...(preflight.hosts ?? []).map((h) => `${h.host}@${h.version}`),
-        ...(preflight.upgrade ?? []).map((h) => `upgrade:${h.host}@${h.version}`),
+        ...(preflight.hosts ?? []).map(name),
+        ...(preflight.upgrade ?? []).map((h) => `upgrade:${name(h)}`),
     ];
 }
 

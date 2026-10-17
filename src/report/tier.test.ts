@@ -1798,22 +1798,23 @@ describe("CUSUM scale", () => {
 
 describe("run identity", () => {
     test("the pooled identity names the current host versions and, apart, the upgrade versions", () => {
-        const row = (host: "pi" | "opencode", version: string) => ({
+        const row = (host: "pi" | "opencode", version: string, path?: string) => ({
             host,
             version,
+            ...(path ? { path } : {}),
             transcript_paths: [],
         });
         const preflight = {
-            hosts: [row("pi", "0.80.2"), row("opencode", "1.14.0")],
-            upgrade: [row("pi", "0.87.1")],
+            hosts: [row("pi", "0.80.2", "/i/pi"), row("opencode", "1.14.0")],
+            upgrade: [row("pi", "0.87.1", "/i/pi-next")],
         };
         expect(identityVersions(preflight)).toEqual([
-            "pi@0.80.2",
+            "pi@0.80.2 /i/pi",
             "opencode@1.14.0",
-            "upgrade:pi@0.87.1",
+            "upgrade:pi@0.87.1 /i/pi-next",
         ]);
         expect(identityVersions({ hosts: preflight.hosts })).toEqual([
-            "pi@0.80.2",
+            "pi@0.80.2 /i/pi",
             "opencode@1.14.0",
         ]);
     });

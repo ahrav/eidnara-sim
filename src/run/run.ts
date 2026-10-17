@@ -733,6 +733,7 @@ async function runArms(
                 sampler.stop();
                 await driver.finish();
             },
+            storeChecked: (faults) => driver.storeChecked(faults),
         };
     }
     await scheduler.run();

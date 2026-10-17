@@ -1,17 +1,35 @@
 import { type ChildProcess, spawn } from "node:child_process";
-import { appendFileSync, existsSync, lstatSync } from "node:fs";
+import { appendFileSync, existsSync, lstatSync, readdirSync, readFileSync } from "node:fs";
 import { constants } from "node:os";
 import { killOwnedTree } from "./procs";
 
 export const SIGTERM_EXIT = 143;
 
+/** Whether any process in group `pid` is still runnable; a zombie awaiting its reaper is not. */
 const groupAlive = (pid: number): boolean => {
     try {
         process.kill(-pid, 0);
-        return true;
     } catch {
         return false;
     }
+    let entries: string[];
+    try {
+        entries = readdirSync("/proc");
+    } catch {
+        return true;
+    }
+    for (const entry of entries) {
+        if (!/^\d+$/.test(entry)) continue;
+        let stat: string;
+        try {
+            stat = readFileSync(`/proc/${entry}/stat`, "utf8");
+        } catch {
+            continue;
+        }
+        const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+        if (Number(fields[2]) === pid && fields[0] !== "Z") return true;
+    }
+    return false;
 };
 
 /** SIGKILL for the child's process group and for every owned descendant the process tree shows. */
@@ -98,8 +116,11 @@ export class Children {
             const stop = (reason: StopReason) => {
                 if (stopping) return;
                 stopping = true;
-                child.kill("SIGTERM");
+                // The callback follows a delivered signal; a child already gone was never
+                // stopped by this run, so it hears nothing.
+                const delivered = child.kill("SIGTERM");
                 timers.push(setTimeout(() => kill(child), this.graceMs));
+                if (!delivered) return;
                 // The child is already stopping; a callback failure is recorded, not propagated.
                 try {
                     onStop?.(reason);

@@ -543,6 +543,43 @@ describe("counterfactual preparation", () => {
     });
 });
 
+describe("store checks", () => {
+    test("the driver hears which store checks the journal holds, after they are written", async () => {
+        const j = new Journal(join(dir(), "j.jsonl"));
+        const acked: string[][] = [];
+        const driver: ArmDriver = {
+            ...fakeDriver([]),
+            event: async (e) =>
+                e.kind === "user_turn"
+                    ? {
+                          stores: [
+                              {
+                                  fault: "k",
+                                  store: { integrity: "ok", segments: 0, overlaps: [], ranges: [] },
+                              },
+                          ],
+                      }
+                    : {},
+            storeChecked: (ids) => {
+                expect(j.entries.some((x) => x.kind === "StoreChecked" && x.fault === "k")).toBe(
+                    true,
+                );
+                acked.push(ids);
+            },
+        };
+        await new Scheduler({
+            events: fixtureEvents(1),
+            faults: [],
+            journal: j,
+            settleMs: 0,
+            order: ["a"],
+            drivers: { a: driver },
+        }).run();
+        expect(acked.length).toBeGreaterThan(0);
+        expect(acked[0]).toEqual(["k"]);
+    });
+});
+
 describe("fault delivery", () => {
     test("a fault triggered at a session start reaches the driver with that event", async () => {
         const events = fixtureEvents(1);

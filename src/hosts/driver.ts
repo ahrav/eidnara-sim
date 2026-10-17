@@ -233,10 +233,18 @@ export class HostDriver implements ArmDriver {
                 model: this.o.sideModel ?? this.currentModel(),
             });
             await this.track(this.daemon.start());
+            // A stop that landed during the start owns the daemon it captured; the arm starts
+            // no host behind it.
+            if (this.stopping) return;
             this.recordState();
         }
         this.host = this.newHost();
         this.recordState();
+    }
+
+    /** The scheduler's word that these store checks are in the journal; the state drops them. */
+    storeChecked(faults: readonly string[]): void {
+        this.justChecked = this.justChecked.filter((f) => !faults.includes(f));
     }
 
     async reset(): Promise<void> {
@@ -279,7 +287,7 @@ export class HostDriver implements ArmDriver {
             );
         }
         await this.startArm(false);
-        if (open) await this.event(open);
+        if (open && !this.stopping) await this.event(open);
     }
 
     private async attachSecond(at: ScenarioEvent): Promise<SimHost> {
@@ -482,7 +490,7 @@ export class HostDriver implements ArmDriver {
             if (!this.daemon) return { skipped: "arm runs no daemon" };
             const before = this.daemonPid();
             await this.track(this.daemon.restart());
-            this.storeFaults.push(f.id);
+            if (!this.storeFaults.includes(f.id)) this.storeFaults.push(f.id);
             this.recordState();
             const after = this.daemonPid();
             return {

@@ -46,6 +46,8 @@ export interface ArmDriver {
     ): Promise<void>;
     /** Stops everything the arm runs, after its last event and before `EndArm`. */
     finish?(): Promise<void>;
+    /** Called once the journal holds the `StoreChecked` entries a turn returned. */
+    storeChecked?(faults: string[]): void;
 }
 
 export interface ProxyControl {
@@ -287,6 +289,7 @@ export class Scheduler {
             }
             for (const s of outcome.stores ?? [])
                 this.log({ kind: "StoreChecked", event: e.id, ...s });
+            if (outcome.stores?.length) driver.storeChecked?.(outcome.stores.map((s) => s.fault));
             if (outcome.user) this.log({ kind: "UserTurn", event: e.id, ...outcome.user });
             await Bun.sleep(this.o.settleMs ?? 1_000);
         } else {

@@ -630,6 +630,7 @@ describe("HostDriver faults", () => {
         await stop;
         await reset;
         expect([daemon.stops, daemon.stoppedWhileStarting]).toEqual([1, 0]);
+        expect(driver.host).toBeNull();
     });
 
     test("a stop whose daemon refuses to die keeps the replacement daemon's pid in the arm state", async () => {
@@ -733,6 +734,15 @@ describe("HostDriver faults", () => {
         await driver.stop();
         const stopped = JSON.parse(readFileSync(join(armDir, "state.json"), "utf8"));
         expect(stopped.store_faults).toEqual(["f-daemon_restart"]);
+        await driver.resume(null);
+        await driver.event(ev("session_start", { project: "p" }));
+        await driver.fault(episode("daemon_restart"));
+        const again = await driver.event(ev("user_turn", { project: "p", text: "go", index: 1 }));
+        expect(again.stores?.map((s) => s.fault)).toEqual(["f-daemon_restart"]);
+        driver.storeChecked(["f-daemon_restart"]);
+        await driver.stop();
+        const acked = JSON.parse(readFileSync(join(armDir, "state.json"), "utf8"));
+        expect(acked.store_faults).toEqual([]);
     });
 
     test("the first session after a host upgrade must leave a new transcript in the store", async () => {
