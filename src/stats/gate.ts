@@ -238,6 +238,11 @@ function counts(f: Family, runs: RunPair[]): Stats {
     );
     const t = runs.reduce((s, r) => s + r.treatment, 0);
     const c = runs.reduce((s, r) => s + r.control, 0);
+    if (!Number.isSafeInteger(t) || !Number.isSafeInteger(c)) {
+        throw new StatsRefusal(
+            `${f.id}: the event totals ${t} and ${c} exceed exact integer range`,
+        );
+    }
     const share = c === 0 ? 1 : betaQuantile(1 - num(f.alpha) / 2, t + 1, c);
     const ratioUpper = share >= 1 ? "unbounded" : share / (1 - share);
     return {
@@ -268,6 +273,9 @@ function graded(f: Family, runs: RunPair[], p: Preregistration): Stats {
     const b = bootstrap(diffs, mean, { ...p.bootstrap, alpha: num(f.alpha), bca });
     finiteInterval([b.lo, b.hi], p);
     const detectable = (zSum(f) * sd) / Math.sqrt(n);
+    if (!Number.isFinite(detectable)) {
+        throw new StatsRefusal(`${f.id}: the detectable size overflows at ${n} runs`);
+    }
     return {
         n,
         difference: m,
@@ -381,6 +389,9 @@ function check(p: Preregistration, input: TierInput): void {
     }
     const byMetric = new Map<string, Family>();
     for (const f of p.families) {
+        if (f.analysis_unit === "item" && f.outcome !== "binary") {
+            throw new StatsRefusal(`${f.id}: an item-level family has a binary outcome`);
+        }
         for (const m of f.metrics) {
             if (byMetric.has(m)) throw new StatsRefusal(`${m} is registered in two families`);
             byMetric.set(m, f);

@@ -989,3 +989,42 @@ describe("tier gate review findings, eighth Codex round", () => {
         ).toThrow(StatsRefusal);
     });
 });
+
+describe("tier gate review findings, ninth Codex round", () => {
+    const seq = { journal_seq_at_eval: 7, arms: { control: "host", treatment: "eidnara" } };
+
+    test("event totals stay exact", () => {
+        const big = Number.MAX_SAFE_INTEGER;
+        expect(() =>
+            evaluate([runs("failed_turns", repeat(6, [big, big] as [number, number]))]),
+        ).toThrow(StatsRefusal);
+    });
+
+    test("a detectable size that overflows is refused", () => {
+        const L = loadPrereg("L");
+        const wild = runs(
+            "daemon_rss_growth_bytes_per_session",
+            Array.from({ length: 10 }, (_, i): [number, number] => [0, i % 2 ? 1e200 : -1e200]),
+        );
+        expect(() =>
+            evaluateTier(L, { observations: [wild], excluded: [], asymmetric: [], ...seq }),
+        ).toThrow(StatsRefusal);
+    });
+
+    test("an item-level family is binary", () => {
+        const counted = {
+            ...M,
+            families: M.families.map((f) =>
+                f.id === "probe-P1" ? { ...f, outcome: "count" as const } : f,
+            ),
+        };
+        expect(() =>
+            evaluateTier(counted, {
+                observations: [binary("P1.pass", [[2, 3]])],
+                excluded: [],
+                asymmetric: [],
+                ...seq,
+            }),
+        ).toThrow("probe-P1: an item-level family has a binary outcome");
+    });
+});
