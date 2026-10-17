@@ -147,7 +147,8 @@ count inside the scenario and the journal complete for the manifest order
 and the scheduled events with no corrupt terminated line (`requireComplete`,
 as `grade-run.ts` does), requires a pre-registered seed and the run arms
 in the seed's relative order, requires each paired turn to match one
-journaled, unrecovered `UserTurn` of the same delivery, checks each
+journaled, unrecovered `UserTurn` of the same delivery and label (a reactive
+label from the tape or a live call, a scripted one from the script), checks each
 pairing record's shape and arm (`readPairing`, which
 `pairing-check.ts` shares, refusing a corrupt terminated line), binds each
 record to its scheduled turn's session and index, admits one turn per arm
@@ -155,16 +156,17 @@ and event and one divergence per arm and session, requires each divergence
 to cite its control turn's digest and context and a differing digest the
 reference arm's turn carries, or, against a recorded run, a context no
 manifest tape's pairing log holds together with a source's digest and
-context (the tapes still hashing to the manifest's digests), a divergence
-row at or before any control turn whose digest differs from its arm's, each
-probe or paste turn and each turn delivered from the script alone to carry
-the compiled text, and a turn record from
+context (the tapes still hashing to the manifest's digests), each divergence
+written before its turn, a divergence row at or before any control turn
+whose digest differs from its arm's, each delivered probe or paste turn and
+each turn delivered from the script alone to carry the compiled text, and a turn record from
 each arm of the pair for every scheduled user turn, refuses a
 control whose delivered text differed from its arm's before its recorded
 divergence (`pairingMismatches`, the check `pairing-check.ts` runs), checks each
 grade log's identities (an opponent only on P7, versions 1..n once per item
 and arm) and each latest grade's arm, item, probe type, version, verdict, and
-metrics (booleans or finite numbers, `<type>.pass` stating the verdict)
+metrics (booleans, finite numbers, or categorical strings such as
+`P3.reliance`, which pair nothing; `<type>.pass` stating the verdict)
 against the run and its reached probes, requires each grade
 to name the arm's journaled first snapshot of its item from that arm's turn
 at the probe's event that ended ok, requires both grades of a paired item to carry the same metric keys and

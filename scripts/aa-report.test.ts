@@ -59,7 +59,15 @@ const journal = (order: string[], events: number): Record<string, unknown>[] => 
             return [
                 ...(probe
                     ? [
-                          { kind: "UserTurn", arm, event, delivered: true, scenario_ms: 0 },
+                          {
+                              kind: "UserTurn",
+                              arm,
+                              event,
+                              session: "s-1",
+                              label: "task",
+                              delivered: true,
+                              scenario_ms: 0,
+                          },
                           { kind: "SnapshotArtefacts", arm, item: probe, snapshot, scenario_ms: 0 },
                           { kind: "EndTurn", arm, event, outcome: "ok", snapshot, scenario_ms: 0 },
                       ]
@@ -77,6 +85,21 @@ const N_EVENTS = PROBE_EVENTS.length + 1;
 /** Every scheduled turn of an arm, each delivering `text`. */
 const allTurns = (arm: string, text = "same") =>
     PROBE_EVENTS.map((_, i) => turn(arm, `e-${i + 1}`, text, i));
+
+/** Rows with each divergence placed before the turn it describes, as the runner writes them. */
+const ordered = (rows: Record<string, unknown>[]) => {
+    const turns = rows.filter((r) => r.kind === "turn");
+    const out: Record<string, unknown>[] = [];
+    for (const t of turns) {
+        out.push(
+            ...rows.filter(
+                (d) => d.kind === "divergedAt" && d.arm === t.arm && d.event === t.event,
+            ),
+        );
+        out.push(t);
+    }
+    return out;
+};
 
 function gradedRun(
     tier: string,
@@ -265,14 +288,17 @@ describe("aa-report", () => {
     test("refuses a control whose delivered text differed from its arm's before any divergence", () => {
         const dir = gradedRun("S", preregistrationHash(loadPrereg("S")));
         const records = [
-            ...allTurns("host"),
+            turn("host", "e-1", "aaaa", 0),
+            ...allTurns("host").slice(1),
             turn("host~aa", "e-1", "bbbb", 0),
             ...allTurns("host~aa").slice(1),
         ];
-        writeFileSync(
-            join(dir, "pairing.jsonl"),
-            records.map((r) => `${JSON.stringify(r)}\n`).join(""),
+        const line = (o: unknown) => `${JSON.stringify(o)}\n`;
+        writeFileSync(join(dir, "pairing.jsonl"), records.map(line).join(""));
+        const entries = journal(["host", "host~aa"], N_EVENTS).map((e) =>
+            e.kind === "UserTurn" && e.event === "e-1" ? { ...e, label: "pushback" } : e,
         );
+        writeFileSync(join(dir, "journal.jsonl"), entries.map(line).join(""));
         expect(() => aaReport(dir)).toThrow(/host~aa s-1 #0/);
     });
 
@@ -481,7 +507,12 @@ describe("aa-report", () => {
             d({ reference_digest: "x" }),
         ]) {
             const dir = gradedRun("S", preregistrationHash(loadPrereg("S")));
-            writeFileSync(join(dir, "pairing.jsonl"), [...base, bad].map(line).join(""));
+            writeFileSync(
+                join(dir, "pairing.jsonl"),
+                ordered([...base, bad])
+                    .map(line)
+                    .join(""),
+            );
             expect(() => aaReport(dir)).toThrow(/divergence/);
         }
         const sound = gradedRun("S", preregistrationHash(loadPrereg("S")));
@@ -490,7 +521,7 @@ describe("aa-report", () => {
             ...allTurns("host~aa").map((t) => (t.event === "e-2" ? { ...t, digest: "d2" } : t)),
             d({ digest: "d2", reference_digest: "d" }),
         ];
-        writeFileSync(join(sound, "pairing.jsonl"), rows.map(line).join(""));
+        writeFileSync(join(sound, "pairing.jsonl"), ordered(rows).map(line).join(""));
         expect(aaReport(sound)[0]?.sessions_diverged).toBe(1);
     });
 
@@ -524,7 +555,7 @@ describe("aa-report", () => {
 
     test("a divergence against a recorded run must cite a turn in a manifest tape's pairing log", () => {
         const line = (o: unknown) => `${JSON.stringify(o)}\n`;
-        const recorded = (dir: string, reference_digest: string) => ({
+        const recorded = (reference_digest: string) => ({
             kind: "divergedAt",
             arm: "host~aa",
             session: "s-1",
@@ -540,7 +571,9 @@ describe("aa-report", () => {
         const noTape = gradedRun("S", preregistrationHash(loadPrereg("S")));
         writeFileSync(
             join(noTape, "pairing.jsonl"),
-            [...base, recorded(noTape, "old")].map(line).join(""),
+            ordered([...base, recorded("old")])
+                .map(line)
+                .join(""),
         );
         expect(() => aaReport(noTape)).toThrow(/divergence at e-2/);
         const taped = gradedRun("S", preregistrationHash(loadPrereg("S")));
@@ -558,12 +591,16 @@ describe("aa-report", () => {
         );
         writeFileSync(
             join(taped, "pairing.jsonl"),
-            [...base, recorded(taped, "other")].map(line).join(""),
+            ordered([...base, recorded("other")])
+                .map(line)
+                .join(""),
         );
         expect(() => aaReport(taped)).toThrow(/divergence at e-2/);
         writeFileSync(
             join(taped, "pairing.jsonl"),
-            [...base, recorded(taped, "old")].map(line).join(""),
+            ordered([...base, recorded("old")])
+                .map(line)
+                .join(""),
         );
         expect(aaReport(taped)[0]?.sessions_diverged).toBe(1);
     });
@@ -633,7 +670,9 @@ describe("aa-report", () => {
         };
         writeFileSync(
             join(dir, "pairing.jsonl"),
-            [...allTurns("host"), ...allTurns("host~aa"), d].map(line).join(""),
+            ordered([...allTurns("host"), ...allTurns("host~aa"), d])
+                .map(line)
+                .join(""),
         );
         expect(aaReport(dir)[0]?.sessions_diverged).toBe(1);
     });
@@ -780,7 +819,12 @@ describe("aa-report", () => {
             ...over,
         });
         const base = [...allTurns("host"), ...allTurns("host~aa")];
-        writeFileSync(join(dir, "pairing.jsonl"), [...base, d({})].map(line).join(""));
+        writeFileSync(
+            join(dir, "pairing.jsonl"),
+            ordered([...base, d({})])
+                .map(line)
+                .join(""),
+        );
         expect(aaReport(dir)[0]?.sessions_diverged).toBe(1);
         for (const bad of [
             d({ recorded_context_sha256: "c-other" }),
@@ -791,7 +835,12 @@ describe("aa-report", () => {
                     ? { ...t, context_sha256: "c-src" }
                     : t,
             );
-            writeFileSync(join(dir, "pairing.jsonl"), [...rows, bad].map(line).join(""));
+            writeFileSync(
+                join(dir, "pairing.jsonl"),
+                ordered([...rows, bad])
+                    .map(line)
+                    .join(""),
+            );
             expect(() => aaReport(dir)).toThrow(/divergence at e-2/);
         }
     });
@@ -878,6 +927,97 @@ describe("aa-report", () => {
         ];
         writeFileSync(join(dir, "pairing.jsonl"), rows.map(line).join(""));
         expect(() => aaReport(dir)).toThrow(/e-3.*divergence/);
+    });
+
+    test("the grader's categorical P3.reliance is admitted and left out of the pairing", () => {
+        const dir = gradedRun("S", preregistrationHash(loadPrereg("S")));
+        const rows = ["host", "host~aa"].map((a) => {
+            const g = { ...grade(a, "p-1", "P3", "P3.delta_mem", 0), version: 2 };
+            (g.metrics as Record<string, unknown>)["P3.reliance"] = "stale";
+            return g;
+        });
+        appendFileSync(
+            join(dir, "grades.jsonl"),
+            rows.map((g) => `${JSON.stringify(g)}\n`).join(""),
+        );
+        const [report] = aaReport(dir);
+        expect(report?.metrics.map((m) => m.metric)).not.toContain("P3.reliance");
+        expect(report?.metrics.find((m) => m.metric === "P3.delta_mem")?.n).toBe(6);
+    });
+
+    test("a grade without a snapshot, for an item with no ok snapshot, is refused", () => {
+        const line = (o: unknown) => `${JSON.stringify(o)}\n`;
+        const dir = gradedRun("S", preregistrationHash(loadPrereg("S")));
+        const entries = journal(["host", "host~aa"], N_EVENTS).filter(
+            (e) => !(e.kind === "SnapshotArtefacts" && e.arm === "host~aa" && e.item === "p-1"),
+        );
+        writeFileSync(join(dir, "journal.jsonl"), entries.map(line).join(""));
+        const bare = { ...grade("host~aa", "p-1", "P3", "P3.delta_mem", 1), version: 2 } as Record<
+            string,
+            unknown
+        >;
+        delete bare.snapshot;
+        appendFileSync(join(dir, "grades.jsonl"), line(bare));
+        expect(() => aaReport(dir)).toThrow(/host~aa\/p-1.*snapshot/);
+    });
+
+    test("a divergence row precedes the turn it describes", () => {
+        const line = (o: unknown) => `${JSON.stringify(o)}\n`;
+        const dir = gradedRun("S", preregistrationHash(loadPrereg("S")));
+        const d = {
+            kind: "divergedAt",
+            arm: "host~aa",
+            session: "s-1",
+            event: "e-2",
+            index: 1,
+            digest: "d2",
+            context_sha256: "c",
+            reference_digest: "d",
+            against: "reference",
+        };
+        const control = allTurns("host~aa").map((t) =>
+            t.event === "e-2" ? { ...t, digest: "d2" } : t,
+        );
+        const late = [...allTurns("host"), ...control, d];
+        writeFileSync(join(dir, "pairing.jsonl"), late.map(line).join(""));
+        expect(() => aaReport(dir)).toThrow(/divergence at e-2.*after/);
+        const early = [...allTurns("host"), ...control.slice(0, 1), d, ...control.slice(1)];
+        writeFileSync(join(dir, "pairing.jsonl"), early.map(line).join(""));
+        expect(aaReport(dir)[0]?.sessions_diverged).toBe(1);
+    });
+
+    test("an undelivered trailing filler carries the empty text, as the runner records it", () => {
+        const line = (o: unknown) => `${JSON.stringify(o)}\n`;
+        const dir = gradedRun("S", preregistrationHash(loadPrereg("S")));
+        const skip = (t: ReturnType<typeof turn>) =>
+            t.event === "e-12"
+                ? { ...t, label: "abandon", delivered: false, text_sha256: sha256Hex("") }
+                : t;
+        const rows = [...allTurns("host").map(skip), ...allTurns("host~aa").map(skip)];
+        writeFileSync(join(dir, "pairing.jsonl"), rows.map(line).join(""));
+        const entries = journal(["host", "host~aa"], N_EVENTS).map((e) =>
+            e.kind === "UserTurn" && e.event === "e-12"
+                ? { ...e, label: "abandon", delivered: false }
+                : e,
+        );
+        writeFileSync(join(dir, "journal.jsonl"), entries.map(line).join(""));
+        expect(aaReport(dir)).toHaveLength(1);
+    });
+
+    test("a pairing turn's label matches its journaled UserTurn and agrees with its source", () => {
+        const line = (o: unknown) => `${JSON.stringify(o)}\n`;
+        const relabeled = gradedRun("S", preregistrationHash(loadPrereg("S")));
+        const rows = ["host", "host~aa"].flatMap((a) =>
+            allTurns(a).map((t) => (t.event === "e-2" ? turn(a, "e-2", "edited", 1) : t)),
+        );
+        writeFileSync(join(relabeled, "pairing.jsonl"), rows.map(line).join(""));
+        expect(() => aaReport(relabeled)).toThrow(/e-2.*label/);
+        const inconsistent = gradedRun("S", preregistrationHash(loadPrereg("S")));
+        const odd = ["host", "host~aa"].flatMap((a) =>
+            allTurns(a).map((t) => (t.event === "e-2" ? { ...t, source: "live" } : t)),
+        );
+        writeFileSync(join(inconsistent, "pairing.jsonl"), odd.map(line).join(""));
+        expect(() => aaReport(inconsistent)).toThrow(/e-2.*source/);
     });
 
     test("a run-level family forms one cluster per run, so one run leaves it uninformative", () => {

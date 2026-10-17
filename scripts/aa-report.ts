@@ -31,6 +31,8 @@ const MIN_CLUSTERS = 5;
 const VERDICTS: readonly string[] = ["pass", "fail", "excluded"];
 /** docs/claim-boundary.md: every report carries this document's version. */
 const CLAIM_BOUNDARY = "sim-claim-boundary/v1";
+/** Labels whose text the model writes, so their turns come from the tape or a live call. */
+const REACTIVE = new Set(["pushback", "redirect", "abandon", "clarify"]);
 
 export function aaReport(dir: string) {
     // The lease, the staging file, and aa.json land in `dir` itself, never through a link.
@@ -185,14 +187,18 @@ function report(dir: string) {
             VERDICTS.includes(g.verdict) &&
             typeof g.metrics === "object" &&
             g.metrics !== null;
-        // A metric is a boolean or a finite number, which is all pairedDiffs pairs; the verdict
-        // metric states the verdict.
+        // A metric is a boolean or a finite number, which pairedDiffs pairs, or a categorical
+        // string such as the grader's P3.reliance, which it leaves out; the verdict metric states
+        // the verdict.
         const odd = Object.entries(g.metrics ?? {}).find(
-            ([, v]) => typeof v !== "boolean" && !(typeof v === "number" && Number.isFinite(v)),
+            ([, v]) =>
+                typeof v !== "boolean" &&
+                typeof v !== "string" &&
+                !(typeof v === "number" && Number.isFinite(v)),
         );
         if (odd) {
             throw new Error(
-                `${dir}/grades.jsonl: ${g.arm}/${g.item} ${odd[0]} is not a boolean or a finite number`,
+                `${dir}/grades.jsonl: ${g.arm}/${g.item} ${odd[0]} is not a boolean, a string, or a finite number`,
             );
         }
         const pass = g.metrics?.[`${g.probe_type}.pass`];
@@ -203,7 +209,8 @@ function report(dir: string) {
         }
         if (!sound)
             throw new Error(`${dir}/grades.jsonl: ${g.arm}/${g.item} is not a grade of this run`);
-        if (g.probe_type !== "P7" && g.snapshot !== okSnapshot.get(`${g.arm}/${g.item}`)) {
+        const expected = okSnapshot.get(`${g.arm}/${g.item}`);
+        if (g.probe_type !== "P7" && (expected === undefined || g.snapshot !== expected)) {
             throw new Error(
                 `${dir}/grades.jsonl: ${g.arm}/${g.item} snapshot ${g.snapshot} is not the journaled first snapshot of a turn that ended ok`,
             );
@@ -266,6 +273,12 @@ function report(dir: string) {
                   sources.some((x) => x.context === r.recorded_context_sha256) &&
                   sources.every((x) => x.context !== r.context_sha256)
                 : theirs?.digest === r.reference_digest && r.reference_digest !== r.digest;
+        // The runner writes the divergence before the turn it describes.
+        if (mine && pairing.indexOf(r) > pairing.indexOf(mine)) {
+            throw new Error(
+                `${dir}/pairing.jsonl: ${r.arm} divergence at ${r.event} is recorded after its turn`,
+            );
+        }
         const sound =
             mine?.digest === r.digest && mine.context_sha256 === r.context_sha256 && cited;
         if (!sound) {
@@ -280,7 +293,7 @@ function report(dir: string) {
         if (r.kind !== "turn") continue;
         const e = turnOf.get(r.event) as { role?: string; text?: unknown } | undefined;
         const verbatim = e?.role === "probe" || e?.role === "paste" || r.source === "script";
-        if (!e || !verbatim) continue;
+        if (!e || !verbatim || !r.delivered) continue;
         if (r.text_sha256 !== sha256Hex(String(e.text))) {
             throw new Error(
                 `${dir}/pairing.jsonl: ${r.arm} ${r.event} differs from the compiled text`,
@@ -325,6 +338,18 @@ function report(dir: string) {
                 ) {
                     throw new Error(
                         `${dir}: ${a} ${r.event} has ${mine.length} journaled UserTurn entries matching its pairing record`,
+                    );
+                }
+                // The journal names the turn's label; a reactive label's text came from the tape
+                // or a live call, a scripted label's from the script.
+                if (mine[0]?.label !== r.label) {
+                    throw new Error(
+                        `${dir}: ${a} ${r.event} pairing label ${r.label} differs from the journaled label`,
+                    );
+                }
+                if (r.delivered && REACTIVE.has(r.label) === (r.source === "script")) {
+                    throw new Error(
+                        `${dir}: ${a} ${r.event} label ${r.label} disagrees with source ${r.source}`,
                     );
                 }
             }
