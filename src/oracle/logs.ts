@@ -146,6 +146,9 @@ function requirePidShape(path: string, samples: Sample[]): void {
         if (typeof s.rss === "number" && s.rss < 0) {
             throw new Error(`${path}: line ${i + 1}: rss negative`);
         }
+        if (typeof s.rss === "number" && !Number.isSafeInteger(s.rss)) {
+            throw new Error(`${path}: line ${i + 1}: rss is not a byte count`);
+        }
         if (typeof s.rss === "number" && "pid" in s && s.pid === null) {
             throw new Error(`${path}: line ${i + 1}: numeric rss with a null pid`);
         }
@@ -165,11 +168,18 @@ const TOKEN_FIELDS = [
 function samplesOf(path: string): Sample[] {
     const samples = shaped<Sample>(path, SAMPLE_FIELDS);
     requirePidShape(path, samples);
+    const closed = new Set<string>();
     samples.forEach((s, i) => {
         const prev = samples[i - 1];
         const opens = !prev || prev.pid !== s.pid || prev.start !== s.start;
         if (opens && s.pid !== null && typeof s.rss !== "number") {
             throw new Error(`${path}: line ${i + 1}: lifetime opens without a reading`);
+        }
+        if (opens && prev && prev.pid !== null) closed.add(`${prev.pid}/${prev.start}`);
+        if (opens && s.pid !== null && closed.has(`${s.pid}/${s.start}`)) {
+            throw new Error(
+                `${path}: line ${i + 1}: process ${s.pid}/${s.start} returns after a later lifetime`,
+            );
         }
     });
     samples.forEach((s, i) => {
@@ -284,6 +294,11 @@ export function loadRun(dir: string, prereg: Preregistration): RunLogs {
         if (seen.has(c.seq)) throw new Error(`call ${c.seq}: sequence number repeated`);
         if (c.seq !== i) throw new Error(`call ${c.seq}: expected sequence number ${i}`);
         seen.add(c.seq);
+        for (const field of ["started_wall_ms", "wall_ms"] as const) {
+            if (!Number.isSafeInteger(c[field]) || c[field] < 0) {
+                throw new Error(`call ${c.seq}: ${field} is not a timestamp`);
+            }
+        }
         if (c.wall_ms < c.started_wall_ms) {
             throw new Error(`call ${c.seq}: wall_ms precedes started_wall_ms`);
         }
@@ -340,6 +355,9 @@ export function loadRun(dir: string, prereg: Preregistration): RunLogs {
         tools: toolsOf(join(dir, arm, "tools.jsonl"), turns, bounds, arm),
     }));
     for (const arm of arms) {
+        if (!existsSync(join(dir, arm.arm, "tools.jsonl"))) {
+            throw new Error(`arm ${arm.arm} has no tools.jsonl`);
+        }
         if (arm.arm === "host") continue;
         if (!arm.resources.some((s) => typeof s.rss === "number")) {
             throw new Error(

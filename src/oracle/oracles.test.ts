@@ -86,6 +86,10 @@ describe("oracle report", () => {
         const manifest = { tier: "S", order, events: 1, scenario_hash };
         writeFileSync(join(dir, "manifest.json"), JSON.stringify(manifest));
         writeFileSync(join(dir, "calls.jsonl"), "");
+        for (const arm of manifest.order) {
+            mkdirSync(join(dir, arm), { recursive: true });
+            writeFileSync(join(dir, arm, "tools.jsonl"), "");
+        }
         writeFileSync(join(dir, "scenario.json"), JSON.stringify({ ...scenario, scenario_hash }));
         writeFileSync(
             join(dir, "calls.jsonl"),
@@ -259,6 +263,10 @@ describe("oracle edge cases", () => {
         const manifest = { tier: "S", order: ["host"], events: 1, scenario_hash };
         writeFileSync(join(dir, "manifest.json"), JSON.stringify(manifest));
         writeFileSync(join(dir, "calls.jsonl"), "");
+        for (const arm of manifest.order) {
+            mkdirSync(join(dir, arm), { recursive: true });
+            writeFileSync(join(dir, arm, "tools.jsonl"), "");
+        }
         writeFileSync(join(dir, "scenario.json"), JSON.stringify({ ...scenario, scenario_hash }));
         const entries: Record<string, unknown>[] = [
             { kind: "StartRun", arm: null, order: ["host"], seq: 0, scenario_ms: 0 },
@@ -287,6 +295,10 @@ describe("oracle evidence integrity", () => {
         const manifest = { tier: "S", order: ["host"], events: 1, scenario_hash };
         writeFileSync(join(dir, "manifest.json"), JSON.stringify(manifest));
         writeFileSync(join(dir, "calls.jsonl"), "");
+        for (const arm of manifest.order) {
+            mkdirSync(join(dir, arm), { recursive: true });
+            writeFileSync(join(dir, arm, "tools.jsonl"), "");
+        }
         const journal = [
             { kind: "StartRun", arm: null, order: ["host"], scenario_ms: 0 },
             { kind: "BeginTurn", arm: "host", event: "e-1", scenario_ms: 0 },
@@ -430,6 +442,10 @@ describe("oracle round three", () => {
         const manifest = { tier: "S", order, events: 1, scenario_hash };
         writeFileSync(join(dir, "manifest.json"), JSON.stringify(manifest));
         writeFileSync(join(dir, "calls.jsonl"), "");
+        for (const arm of manifest.order) {
+            mkdirSync(join(dir, arm), { recursive: true });
+            writeFileSync(join(dir, arm, "tools.jsonl"), "");
+        }
         writeFileSync(join(dir, "scenario.json"), JSON.stringify({ ...scenario, scenario_hash }));
         const journal = [
             { kind: "StartRun", arm: null, order, scenario_ms: 0 },
@@ -445,7 +461,7 @@ describe("oracle round three", () => {
         ];
         writeFileSync(join(dir, "journal.jsonl"), journal.map(line).join(""));
         expect(() => loadRun(dir, prereg)).toThrow("arm eidnara has no daemon RSS samples");
-        mkdirSync(join(dir, "eidnara"));
+        mkdirSync(join(dir, "eidnara"), { recursive: true });
         writeFileSync(
             join(dir, "eidnara", "resources.jsonl"),
             line({ scenario_ms: 0, rss: null, pid: null }),
@@ -454,6 +470,7 @@ describe("oracle round three", () => {
         writeFileSync(join(dir, "eidnara", "resources.jsonl"), line({ scenario_ms: 0, rss: 100 }));
         expect(() => loadRun(dir, prereg)).toThrow("arm eidnara has no daemon.log");
         writeFileSync(join(dir, "eidnara", "daemon.log"), "");
+        writeFileSync(join(dir, "eidnara", "tools.jsonl"), "");
         mkdirSync(join(dir, "eidnara", "r"), { recursive: true });
         writeFileSync(join(dir, "eidnara", "r", "eidnara.log"), "");
         expect(loadRun(dir, prereg).arms.map((a) => a.arm)).toEqual(order);
@@ -509,6 +526,10 @@ describe("oracle round four", () => {
         const manifest = { tier: "S", order, events: 1, scenario_hash };
         writeFileSync(join(dir, "manifest.json"), JSON.stringify(manifest));
         writeFileSync(join(dir, "calls.jsonl"), "");
+        for (const arm of manifest.order) {
+            mkdirSync(join(dir, arm), { recursive: true });
+            writeFileSync(join(dir, arm, "tools.jsonl"), "");
+        }
         writeFileSync(join(dir, "scenario.json"), JSON.stringify({ ...scenario, scenario_hash }));
         const journal = [
             { kind: "StartRun", arm: null, order, scenario_ms: 0 },
@@ -519,9 +540,10 @@ describe("oracle round four", () => {
             { kind: "EndRun", arm: null, scenario_ms: 0 },
         ];
         writeFileSync(join(dir, "journal.jsonl"), journal.map(line).join(""));
-        mkdirSync(join(dir, "eidnara"));
+        mkdirSync(join(dir, "eidnara"), { recursive: true });
         writeFileSync(join(dir, "eidnara", "resources.jsonl"), line({ scenario_ms: 0, rss: 100 }));
         writeFileSync(join(dir, "eidnara", "daemon.log"), "");
+        writeFileSync(join(dir, "eidnara", "tools.jsonl"), "");
         mkdirSync(join(dir, "eidnara", "r"), { recursive: true });
         writeFileSync(join(dir, "eidnara", "r", "eidnara.log"), "");
         const { output_tokens: _dropped, ...damaged } = call({ seq: 0 });
@@ -578,6 +600,10 @@ describe("oracle round five", () => {
         const manifest = { tier: "S", order, events: 1, scenario_hash };
         writeFileSync(join(dir, "manifest.json"), JSON.stringify(manifest));
         writeFileSync(join(dir, "calls.jsonl"), "");
+        for (const arm of manifest.order) {
+            mkdirSync(join(dir, arm), { recursive: true });
+            writeFileSync(join(dir, arm, "tools.jsonl"), "");
+        }
         writeFileSync(join(dir, "scenario.json"), JSON.stringify({ ...scenario, scenario_hash }));
         const journal = [
             { kind: "StartRun", arm: null, order, scenario_ms: 0 },
@@ -588,8 +614,9 @@ describe("oracle round five", () => {
             { kind: "EndRun", arm: null, scenario_ms: 0 },
         ];
         writeFileSync(join(dir, "journal.jsonl"), journal.map(line).join(""));
-        mkdirSync(join(dir, "eidnara"));
+        mkdirSync(join(dir, "eidnara"), { recursive: true });
         writeFileSync(join(dir, "eidnara", "daemon.log"), "");
+        writeFileSync(join(dir, "eidnara", "tools.jsonl"), "");
         mkdirSync(join(dir, "eidnara", "r"), { recursive: true });
         writeFileSync(join(dir, "eidnara", "r", "eidnara.log"), "");
         const good = line({ scenario_ms: 0, rss: 100 });
@@ -625,8 +652,10 @@ function completeDir(order: string[]): { dir: string; line: (o: unknown) => stri
     writeFileSync(join(dir, "journal.jsonl"), journal.map(line).join(""));
     writeFileSync(join(dir, "calls.jsonl"), "");
     for (const arm of order) {
-        if (arm === "host" || arm.startsWith("..")) continue;
+        if (arm.startsWith("..")) continue;
         mkdirSync(join(dir, arm));
+        writeFileSync(join(dir, arm, "tools.jsonl"), "");
+        if (arm === "host") continue;
         writeFileSync(
             join(dir, arm, "resources.jsonl"),
             line({ scenario_ms: 0, rss: 100, pid: 1 }),
@@ -790,6 +819,10 @@ describe("oracle round nine", () => {
         const manifest = { tier: "S", order: ["eidnara"], events: 1, scenario_hash };
         writeFileSync(join(dir, "manifest.json"), JSON.stringify(manifest));
         writeFileSync(join(dir, "calls.jsonl"), "");
+        for (const arm of manifest.order) {
+            mkdirSync(join(dir, arm), { recursive: true });
+            writeFileSync(join(dir, arm, "tools.jsonl"), "");
+        }
         const base = [
             { kind: "StartRun", arm: null, order: ["eidnara"], scenario_ms: 0 },
             { kind: "EndArm", arm: "eidnara", scenario_ms: 9 },
@@ -833,6 +866,10 @@ describe("oracle round nine", () => {
         };
         writeFileSync(join(dir, "manifest.json"), JSON.stringify(manifest));
         writeFileSync(join(dir, "calls.jsonl"), "");
+        for (const arm of manifest.order) {
+            mkdirSync(join(dir, arm), { recursive: true });
+            writeFileSync(join(dir, arm, "tools.jsonl"), "");
+        }
         expect(() => loadRun(dir, prereg)).toThrow("manifest events 2 exceeds the scenario's 1");
         writeFileSync(join(dir, "manifest.json"), JSON.stringify({ ...manifest, events: 0 }));
         expect(() => loadRun(dir, prereg)).toThrow("manifest events 0");
@@ -971,6 +1008,10 @@ describe("oracle round eleven", () => {
         const manifest = { tier: "S", order: [], events: 1, scenario_hash: scenario.scenario_hash };
         writeFileSync(join(dir, "manifest.json"), JSON.stringify(manifest));
         writeFileSync(join(dir, "calls.jsonl"), "");
+        for (const arm of manifest.order) {
+            mkdirSync(join(dir, arm), { recursive: true });
+            writeFileSync(join(dir, arm, "tools.jsonl"), "");
+        }
         writeFileSync(
             join(dir, "journal.jsonl"),
             [
@@ -1083,6 +1124,10 @@ describe("oracle round thirteen", () => {
         const manifest = { tier: "S", order: ["eidnara"], events: 1, scenario_hash };
         writeFileSync(join(dir, "manifest.json"), JSON.stringify(manifest));
         writeFileSync(join(dir, "calls.jsonl"), "");
+        for (const arm of manifest.order) {
+            mkdirSync(join(dir, arm), { recursive: true });
+            writeFileSync(join(dir, arm, "tools.jsonl"), "");
+        }
         expect(() => loadRun(dir, prereg)).toThrow("manifest tier S differs from the scenario's M");
     });
 });
@@ -1254,5 +1299,84 @@ describe("oracle round sixteen", () => {
             }),
         );
         expect(oracle(late, "F4")).toEqual([]);
+    });
+});
+
+describe("oracle round seventeen", () => {
+    test("events end in the compiled order, identities never recur, and RSS and wall values are counts", () => {
+        const { dir, line } = completeDir(["eidnara"]);
+        const scenario = {
+            events: [
+                { id: "e-1", kind: "user_turn" },
+                { id: "e-2", kind: "session_end" },
+            ],
+        };
+        const scenario_hash = scenarioHash(scenario);
+        writeFileSync(join(dir, "scenario.json"), JSON.stringify({ ...scenario, scenario_hash }));
+        writeFileSync(
+            join(dir, "manifest.json"),
+            JSON.stringify({ tier: "S", order: ["eidnara"], events: 2, scenario_hash }),
+        );
+        const rows = (first: string, second: string) => [
+            { kind: "StartRun", arm: null, order: ["eidnara"], scenario_ms: 0 },
+            { kind: "BeginTurn", arm: "eidnara", event: "e-1", scenario_ms: 0 },
+            { kind: "EndTurn", arm: "eidnara", event: "e-1", outcome: "ok", scenario_ms: 5 },
+            { kind: "Event", arm: "eidnara", event: first, outcome: "ok", scenario_ms: 5 },
+            { kind: "Event", arm: "eidnara", event: second, outcome: "ok", scenario_ms: 9 },
+            { kind: "EndArm", arm: "eidnara", scenario_ms: 9 },
+            { kind: "EndRun", arm: null, scenario_ms: 9 },
+        ];
+        writeFileSync(join(dir, "journal.jsonl"), rows("e-2", "e-1").map(line).join(""));
+        expect(() => loadRun(dir, prereg)).toThrow(/arm eidnara is incomplete: .*out of order/);
+        writeFileSync(join(dir, "journal.jsonl"), rows("e-1", "e-2").map(line).join(""));
+        const rs = join(dir, "eidnara", "resources.jsonl");
+        const row = (ms: number, pid: number, rss: number) =>
+            line({ scenario_ms: ms, rss, pid, start: String(pid) });
+        writeFileSync(rs, row(0, 1, 100) + row(1, 2, 100) + row(2, 1, 100));
+        expect(() => loadRun(dir, prereg)).toThrow(
+            /resources\.jsonl: line 3: process 1\/1 returns after a later lifetime/,
+        );
+        writeFileSync(rs, line({ scenario_ms: 0, rss: 1e308, pid: 1, start: "1" }));
+        expect(() => loadRun(dir, prereg)).toThrow(
+            /resources\.jsonl: line 1: rss is not a byte count/,
+        );
+        writeFileSync(rs, row(0, 1, 100));
+        writeFileSync(
+            join(dir, "calls.jsonl"),
+            line(call({ seq: 0, started_wall_ms: -1e308, wall_ms: 1e308 })),
+        );
+        expect(() => loadRun(dir, prereg)).toThrow("call 0: started_wall_ms is not a timestamp");
+        writeFileSync(join(dir, "calls.jsonl"), line(call({ seq: 0, scenario_ms: 2 })));
+        expect(loadRun(dir, prereg).arms[0]?.calls).toHaveLength(1);
+        rmSync(join(dir, "eidnara", "tools.jsonl"));
+        expect(() => loadRun(dir, prereg)).toThrow("arm eidnara has no tools.jsonl");
+    });
+
+    test("the RSS slope needs three distinct session counts", () => {
+        const c = Number(prereg.leak_bound.c_bytes_per_session);
+        const ends = [
+            {
+                kind: "Event" as const,
+                arm: "eidnara",
+                event: "end-1",
+                seq: 1,
+                wall_ms: 0,
+                scenario_ms: 1_500,
+            },
+        ];
+        const kinds = new Map([["end-1", "session_end"]]);
+        const resources = [
+            { scenario_ms: 0, rss: 100 * c, pid: 1, start: "1" },
+            { scenario_ms: 1_000, rss: 100 * c, pid: 1, start: "1" },
+            { scenario_ms: 2_000, rss: 101 * c + 1, pid: 1, start: "1" },
+        ];
+        const run: RunLogs = {
+            dir: "",
+            tier: "S",
+            prereg,
+            kinds,
+            arms: [armOf("eidnara", { journal: ends, resources })],
+        };
+        expect(oracle(run, "F5")).toEqual([]);
     });
 });

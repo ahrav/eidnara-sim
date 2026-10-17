@@ -116,10 +116,12 @@ export class SnapshotRecorder {
         for (const name of locks) rmSync(join(this.gitDir, name), { force: true });
     }
 
-    /** Drops a line a kill cut from `snapshots.jsonl` and `tools.jsonl`, so the next record starts at a line boundary. */
+    /** Drops a line a kill cut from `snapshots.jsonl` and `tools.jsonl`, and creates `tools.jsonl` so a run with no tool runs still has its ledger. */
     private dropCutLine(): void {
         keepCompleteLines(join(this.armDir, "snapshots.jsonl"));
-        keepCompleteLines(join(this.armDir, "tools.jsonl"));
+        const tools = join(this.armDir, "tools.jsonl");
+        keepCompleteLines(tools);
+        if (!existsSync(tools)) appendFileSync(tools, "");
     }
 
     /**
