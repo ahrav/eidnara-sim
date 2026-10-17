@@ -627,7 +627,7 @@ describe("tier report", () => {
         );
         const report = tierReport(prereg, [g], boundary);
         expect(report.judge.map((j) => [j.run, j.cost?.usd])).toEqual([[g.run.dir, 5]]);
-        expect(renderTier(report)).toMatch(/\| judge \| judge \| 1 \| 1000000 \|/);
+        expect(renderTier(report)).toContain(`| ${g.run.dir} | judge | 1 | 1000000 |`);
     });
 
     test("the report script refuses --out without a destination", () => {
@@ -708,6 +708,39 @@ describe("tier report", () => {
         const report = tierReport(prereg, [g], boundary);
         expect(new Set(report.soak.map((s) => s.run))).toEqual(new Set([g.run.dir]));
         expect(renderTier(report)).toContain(`| ${g.run.dir} | eidnara | rss | no leak |`);
+    });
+
+    test("a run that stopped before the scenario's last event keeps the campaign incomplete", () => {
+        const g = fixture();
+        g.scenario.events = Array.from({ length: 36 }, (_, i) => ({ id: `e-${i}` })) as never;
+        expect(tierInput(prereg, [g]).incomplete?.filter((x) => x.includes("events"))).toEqual([]);
+        g.identity.events = 30;
+        expect(tierInput(prereg, [g]).incomplete).toContain("run pi/101: 30 of 36 events");
+    });
+
+    test("the registered A/A pairs and repeats are part of completeness", () => {
+        const g = fixture();
+        expect(tierInput(prereg, [g]).incomplete).toContain("A/A eidnara: 0 of 1 control runs");
+        expect(
+            tierInput(prereg, [g]).incomplete?.find((x) => x.startsWith("A/A host")),
+        ).toBeUndefined();
+    });
+
+    test("judge cost rows name their run", () => {
+        const g = fixture();
+        writeFileSync(
+            join(g.run.dir, "judge-calls.jsonl"),
+            `${JSON.stringify({
+                component: "judge",
+                input_tokens: 1_000_000,
+                output_tokens: 0,
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
+            })}\n`,
+        );
+        expect(renderTier(tierReport(prereg, [g], boundary))).toContain(
+            `| ${g.run.dir} | judge | 1 | 1000000 |`,
+        );
     });
 
     test("a planted 4xx difference between the A/A arms fails that falsification check", () => {

@@ -237,7 +237,7 @@ function panels(r: TierReport): string[] {
             r.judge.map(({ run, cost: x }) =>
                 x
                     ? [
-                          "judge",
+                          run,
                           x.component,
                           x.calls,
                           x.input,
@@ -246,7 +246,7 @@ function panels(r: TierReport): string[] {
                           x.cache_write,
                           fmt(x.usd),
                       ]
-                    : ["judge", "-", "-", "-", "-", "-", "-", `${run}: not graded`],
+                    : [run, "-", "-", "-", "-", "-", "-", "not graded"],
             ),
         ),
         ...table(

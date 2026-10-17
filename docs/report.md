@@ -102,9 +102,11 @@ only form the fault-asymmetric stratum; a fault landed where the
 scheduler recorded `FaultObserved` or the proxy stamped a call's
 `fault_ref`, which is how provider faults show. The input's `incomplete`
 list names each pre-registered host and seed without a run, each run whose
-`host` or treatment arm has no `EndArm` entry, each manifest setting
+`host` or treatment arm has no `EndArm` entry, each run whose manifest
+`events` stops short of its scenario's events, each manifest setting
 (`eidnara_commit`, `models`, `context_limit`, `events`) the runs disagree
-on, each run-unit gate metric a run has no value for, each probe type,
+on, each registered A/A pair with fewer control arms across the runs than
+`aa_controls.repeats`, each run-unit gate metric a run has no value for, each probe type,
 P13 and P14 included, with fewer paired items outside the excluded and
 fault-asymmetric sets than `stopping_rule.paired_items_per_probe_type`,
 and each CUSUM rule without its A/A scale; the tier passes only with an

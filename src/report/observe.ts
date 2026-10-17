@@ -270,6 +270,20 @@ function incomplete(
                 );
             }),
         );
+    const truncated = runs.flatMap((g) =>
+        g.identity.events < g.scenario.events.length
+            ? [`run ${runKey(g)}: ${g.identity.events} of ${g.scenario.events.length} events`]
+            : [],
+    );
+    const controls = (p.aa_controls?.pairs ?? []).flatMap(([a]) => {
+        const have = runs.reduce(
+            (s, g) =>
+                s + g.run.arms.filter((x) => x.arm.includes("~") && armBase(x.arm) === a).length,
+            0,
+        );
+        const want = p.aa_controls?.repeats ?? 0;
+        return have < want ? [`A/A ${a}: ${have} of ${want} control runs`] : [];
+    });
     const settings = (Object.keys(runs[0]?.identity ?? {}) as (keyof RunIdentity)[]).flatMap(
         (field) => {
             const values = [...new Set(runs.map((g) => JSON.stringify(g.identity[field])))];
@@ -297,7 +311,15 @@ function incomplete(
                   }, 0);
         return pairs < n ? [`${f.id}: ${pairs} of ${n} paired items`] : [];
     });
-    return [...missing, ...unfinished, ...settings, ...unavailable, ...short];
+    return [
+        ...missing,
+        ...unfinished,
+        ...truncated,
+        ...settings,
+        ...controls,
+        ...unavailable,
+        ...short,
+    ];
 }
 
 function ordered(p: Preregistration, runs: GradedRun[]): GradedRun[] {
