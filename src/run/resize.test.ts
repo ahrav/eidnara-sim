@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { deleteFactNotes, factMatcher } from "../hosts/storecheck";
@@ -261,6 +261,19 @@ describe("counterfactual deletion", () => {
         expect(after.query("select id from notes").all()).toEqual([{ id: 2 }, { id: 4 }]);
         expect(after.query("select note_id from note_deliveries").all()).toEqual([{ note_id: 2 }]);
         expect(after.query("select row from changefeed").all()).toEqual([{ row: 1 }, { row: 3 }]);
+        after.close();
+    });
+
+    test("a store path that is a symlink is refused before any read or delete", async () => {
+        const real = store([[1, "/p/a", "Codename is ember_magpie."]]);
+        const moved = `${real}.real`;
+        renameSync(real, moved);
+        symlinkSync(moved, real);
+        await expect(deleteFactNotes(real, "codename is ember_magpie", [])).rejects.toThrow(
+            /symlink/,
+        );
+        const after = new Database(moved);
+        expect(after.query("select id from notes").all()).toEqual([{ id: 1 }]);
         after.close();
     });
 

@@ -126,6 +126,9 @@ where a shell would expand it.
 After its paired runs finish, a tier runs the profiles its pre-registration
 calls for, all of one profile in parallel and each reported apart under
 `<dir>/<profile>/`, so a profile's load never overlaps the paired runs.
+A profile whose runs each hold one arm of the same host and seed gets no
+paired report; `tier-result.json` lists its runs under `unreported` with
+`reports.<profile>` null, and the command's exit ignores a null report.
 Every profile run takes the first seed's paired-run prefix, so it covers
 the paired runs' items. `tier-result.json` gives each profile's start skew
 from its runs' first journal entries:
