@@ -86,6 +86,9 @@ export class RecordWriter {
     private lastWall = 0;
     readonly records: CallRecord[] = [];
 
+    /** Byte offset in the log where the next record lands; `write` reports each record's placement through `placed`. */
+    protected offset = 0;
+
     /** The record file exists from construction, so a run with no calls still has a `calls.jsonl`. */
     constructor(private readonly path: string | null) {
         if (path) requireAppendable(path);
@@ -94,6 +97,7 @@ export class RecordWriter {
         const text = readFileSync(path, "utf8");
         const complete = text.slice(0, text.lastIndexOf("\n") + 1);
         if (complete.length < text.length) truncateSync(path, Buffer.byteLength(complete));
+        this.offset = Buffer.byteLength(complete);
         const lines = complete.split("\n").filter((l) => l !== "");
         for (const line of lines.reverse()) {
             try {
@@ -113,7 +117,16 @@ export class RecordWriter {
         this.seq++;
         this.lastWall = wall_ms;
         this.records.push(record);
-        if (this.path) appendFileSync(this.path, `${JSON.stringify(record)}\n`);
+        if (this.path) {
+            const line = `${JSON.stringify(record)}\n`;
+            appendFileSync(this.path, line);
+            const length = Buffer.byteLength(line);
+            this.placed(record, this.offset, length);
+            this.offset += length;
+        }
         return record;
     }
+
+    /** Called after each record is appended, with its byte position in the log. */
+    protected placed(_record: CallRecord, _offset: number, _length: number): void {}
 }

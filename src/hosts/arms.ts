@@ -210,11 +210,11 @@ export class DaemonStack {
      * source is removed, so a kill between the two leaves an orphan file, never a lost or
      * doubled lifetime.
      */
-    private absorb(source: string, rest: string[]): void {
+    private absorb(source: string, rest: string[], owner: LogMarker["owner"] = null): void {
         const start = existsSync(this.ctx.logFile) ? statSync(this.ctx.logFile).size : 0;
-        this.writeMarker({ pending: rest, copying: { source, target_bytes: start } });
+        this.writeMarker({ pending: rest, copying: { source, target_bytes: start }, owner });
         appendFileFrom(source, this.ctx.logFile);
-        this.writeMarker({ pending: rest, copying: null });
+        this.writeMarker({ pending: rest, copying: null, owner });
         rmSync(source, { force: true });
     }
 
@@ -384,15 +384,16 @@ export class DaemonStack {
         // The replacement owns the marker from here, so a kill before the logs are saved still
         // lets a resume stop it before starting another daemon against the same store; the held
         // stdout then lands through the marker, so a kill mid-append rolls it back.
+        const owner = this.owner();
         const marker = this.readMarker();
         if (marker) {
-            const owned = { ...marker, owner: this.owner() };
+            const owned = { ...marker, owner };
             this.writeMarker(owned);
             this.saveHeldStdout(owned);
         }
         this.heldStdout = null;
-        this.absorb(this.held, [live]);
-        this.writeMarker({ pending: [live], copying: null, owner: this.owner() });
+        this.absorb(this.held, [live], owner);
+        this.writeMarker({ pending: [live], copying: null, owner });
     }
 
     /**
@@ -873,7 +874,8 @@ export class OpencodeSimHost extends SimHost {
      * unknown. A failed turn whose listing also fails keeps its own error and names the gap.
      */
     async prompt(text: string, timeoutMs: number): Promise<PromptResult> {
-        const started = Date.now();
+        const deadline = Date.now() + timeoutMs;
+        const remaining = () => Math.max(1_000, deadline - Date.now());
         let seen: Set<string>;
         try {
             seen = new Set((await this.messages(timeoutMs)).map((m) => String(m.info?.id)));
@@ -881,10 +883,9 @@ export class OpencodeSimHost extends SimHost {
             return { error: `tool capture: ${String(caught)}`.slice(0, 2000) };
         }
         const startScenario = this.ctx.now?.() ?? 0;
-        const outcome = await this.turn(text, timeoutMs);
-        const remaining = Math.max(1_000, timeoutMs - (Date.now() - started));
+        const outcome = await this.turn(text, remaining());
         try {
-            await this.logTurnTools(seen, startScenario, remaining);
+            await this.logTurnTools(seen, startScenario, remaining());
         } catch (caught) {
             const gap = `tool capture: ${String(caught)}`;
             return { error: (outcome.error ? `${outcome.error} | ${gap}` : gap).slice(0, 2000) };

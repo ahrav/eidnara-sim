@@ -135,3 +135,21 @@ test("procStats reads the process start time from the same /proc snapshot as RSS
     const stats = procStats(process.pid);
     expect(stats?.start ?? null).toBe(processStart(process.pid) ?? "");
 });
+
+test("a sample whose process vanished between the pid read and the snapshot carries a null pid", () => {
+    const dir = mkdtempSync(join(tmpdir(), "sim-sampler-"));
+    const path = join(dir, "resources.jsonl");
+    const sampler = new ResourceSampler({
+        path,
+        intervalMs: 60_000,
+        busyFraction: 0.5,
+        pid: () => 2_147_483_000,
+        storeDir: dir,
+        scenarioMs: () => 7,
+        onBusy: () => {},
+    });
+    const sample = sampler.sample();
+    expect(sample.rss).toBeNull();
+    expect(sample.pid).toBeNull();
+    expect(sample.start).toBeNull();
+});

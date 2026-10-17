@@ -164,6 +164,9 @@ function requirePidShape(path: string, samples: Sample[]): void {
         if (typeof s.rss === "number" && s.rss < 0) {
             throw new Error(`${path}: line ${i + 1}: rss negative`);
         }
+        if (typeof s.rss === "number" && !Number.isSafeInteger(s.rss)) {
+            throw new Error(`${path}: line ${i + 1}: rss is not a byte count`);
+        }
         if (typeof s.rss === "number" && "pid" in s && s.pid === null) {
             throw new Error(`${path}: line ${i + 1}: numeric rss with a null pid`);
         }
@@ -183,11 +186,18 @@ const TOKEN_FIELDS = [
 function samplesOf(path: string): Sample[] {
     const samples = shaped<Sample>(path, SAMPLE_FIELDS);
     requirePidShape(path, samples);
+    const closed = new Set<string>();
     samples.forEach((s, i) => {
         const prev = samples[i - 1];
         const opens = !prev || prev.pid !== s.pid || prev.start !== s.start;
         if (opens && s.pid !== null && typeof s.rss !== "number") {
             throw new Error(`${path}: line ${i + 1}: lifetime opens without a reading`);
+        }
+        if (opens && prev && prev.pid !== null) closed.add(`${prev.pid}/${prev.start}`);
+        if (opens && s.pid !== null && closed.has(`${s.pid}/${s.start}`)) {
+            throw new Error(
+                `${path}: line ${i + 1}: process ${s.pid}/${s.start} returns after a later lifetime`,
+            );
         }
     });
     samples.forEach((s, i) => {
@@ -282,6 +292,9 @@ export function loadRun(dir: string, prereg: Preregistration): RunLogs {
         if (!(ARMS as readonly string[]).includes(arm)) {
             throw new Error(`manifest arm ${arm} is not a pre-registered arm`);
         }
+        if (!prereg.arms.run.includes(arm)) {
+            throw new Error(`manifest arm ${arm} is not in tier ${prereg.tier}'s run`);
+        }
     }
     const count = manifest.events;
     if (!Number.isInteger(count) || count < 1 || count > scenario.events.length) {
@@ -302,6 +315,11 @@ export function loadRun(dir: string, prereg: Preregistration): RunLogs {
         if (seen.has(c.seq)) throw new Error(`call ${c.seq}: sequence number repeated`);
         if (c.seq !== i) throw new Error(`call ${c.seq}: expected sequence number ${i}`);
         seen.add(c.seq);
+        for (const field of ["started_wall_ms", "wall_ms"] as const) {
+            if (!Number.isSafeInteger(c[field]) || c[field] < 0) {
+                throw new Error(`call ${c.seq}: ${field} is not a timestamp`);
+            }
+        }
         if (c.wall_ms < c.started_wall_ms) {
             throw new Error(`call ${c.seq}: wall_ms precedes started_wall_ms`);
         }
@@ -339,6 +357,9 @@ export function loadRun(dir: string, prereg: Preregistration): RunLogs {
         if (e.seq !== undefined && e.seq !== i) {
             throw new Error(`${journalPath}: line ${i + 1}: seq ${String(e.seq)} is not ${i}`);
         }
+        if (!Number.isSafeInteger(e.scenario_ms) || e.scenario_ms < 0) {
+            throw new Error(`${journalPath}: line ${i + 1}: scenario_ms is not a count`);
+        }
         const last = lastMs.get(e.arm);
         if (last !== undefined && e.scenario_ms < last) {
             throw new Error(
@@ -371,6 +392,9 @@ export function loadRun(dir: string, prereg: Preregistration): RunLogs {
             : undefined,
     }));
     for (const arm of arms) {
+        if (!existsSync(join(dir, arm.arm, "tools.jsonl"))) {
+            throw new Error(`arm ${arm.arm} has no tools.jsonl`);
+        }
         if (arm.arm === "host") continue;
         if (!arm.resources.some((s) => typeof s.rss === "number")) {
             throw new Error(

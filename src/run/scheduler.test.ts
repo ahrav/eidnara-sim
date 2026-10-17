@@ -14,6 +14,7 @@ import {
     releaseLease,
     takeLease,
 } from "./journal";
+import { CallIndex, callsOf } from "./run";
 import { type ArmDriver, HarnessFailure, type ScenarioEvent, Scheduler } from "./scheduler";
 
 const ROOT = join(import.meta.dir, "..", "..");
@@ -955,4 +956,35 @@ test("a second resume after an interrupted turn adds no second terminal Event", 
     const terminal = third.entries.filter((e) => e.kind === "Event").map((e) => e.event);
     expect(terminal).toEqual([...new Set(terminal)]);
     expect(terminal.filter((e) => e === "e-000001")).toHaveLength(1);
+});
+
+test("the call index reads one arm and session's records by position, seeded from disk and fed by the writer", () => {
+    const path = join(dir(), "calls.jsonl");
+    const base = {
+        wall_ms: 1,
+        scenario_ms: 5,
+        turn: "e-1",
+        component: "agent",
+        componentSource: "asserted",
+        model: "m",
+        status: 200,
+        finish_reason: "end_turn",
+        error: null,
+        input_tokens: 1,
+        output_tokens: 1,
+        proxy_retries: 0,
+        first_byte_ms: 1,
+        total_ms: 2,
+        fault_ref: null,
+    };
+    const rows = [
+        { ...base, seq: 0, arm: "host", session: "s-1", response_text: "a" },
+        { ...base, seq: 1, arm: "eidnara", session: "s-1", response_text: "b".repeat(5000) },
+        { ...base, seq: 2, arm: "host", session: "s-2", response_text: "c" },
+    ];
+    writeFileSync(path, rows.map((r) => `${JSON.stringify(r)}\n`).join(""));
+    const index = new CallIndex(path);
+    expect(callsOf(index, "host", "s-1", new Map()).map((c) => c.response_text)).toEqual(["a"]);
+    expect(callsOf(index, "eidnara", "s-1", new Map()).map((c) => c.seq)).toEqual([1]);
+    expect(callsOf(index, "host", "s-9", new Map())).toEqual([]);
 });

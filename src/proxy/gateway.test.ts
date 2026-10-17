@@ -524,6 +524,9 @@ describe("call records", () => {
         const record = records.records[0];
         expect(record?.response_text_truncated).toBe(true);
         expect((record?.response_text ?? "").length).toBe(262_144);
+        await hostCall(url, SUMMARIZER_BODY, 5_000);
+        expect(records.records[1]?.response_text).toBeUndefined();
+        expect(records.records[1]?.response_text_truncated).toBeUndefined();
     });
 
     test("a streamed reply with two text blocks records the same text as its non-streaming form", async () => {

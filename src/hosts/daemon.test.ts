@@ -7,6 +7,7 @@ import {
     mkdirSync,
     mkdtempSync,
     readFileSync,
+    renameSync,
     rmSync,
     writeFileSync,
 } from "node:fs";
@@ -605,4 +606,37 @@ test("a stop keeps the shutdown stdout when it rolls back an interrupted copy", 
     expect(saved).toContain("held lifetime\n");
     expect(saved).toContain("live lifetime\n");
     expect(saved).not.toContain("held lif\n");
+});
+
+test("every marker written during a restart keeps the daemon owner", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "sim-daemon-"));
+    const logPath = join(dir, "direct-host.log");
+    const marker = join(dir, "daemon.log.source");
+    writeFileSync(logPath, "old\n");
+    const owners: unknown[] = [];
+    const stack = {
+        logPath,
+        restartHost: async () => {
+            rmSync(logPath);
+            writeFileSync(logPath, "new\n");
+        },
+    };
+    const hh = {
+        __hermeticHostTest: { diagnostics: () => ({ stdout: "", stderr: "", retainedLog: "" }) },
+    };
+    const daemon = new DaemonStack(stackCtx(dir));
+    Object.assign(daemon as unknown as Record<string, unknown>, {
+        stack,
+        hh,
+        pid: () => process.pid,
+        writeMarker: (m: { owner?: unknown }) => {
+            owners.push(m.owner ?? null);
+            const tmp = `${marker}.tmp`;
+            writeFileSync(tmp, JSON.stringify(m));
+            renameSync(tmp, marker);
+        },
+    });
+    await daemon.restart();
+    expect(owners.length).toBeGreaterThan(2);
+    expect(owners.every((o) => o !== null)).toBe(true);
 });

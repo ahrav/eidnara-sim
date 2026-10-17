@@ -1,6 +1,12 @@
 import { expect, test } from "bun:test";
 import { loadConfig } from "../config/config";
-import { type HostContext, OpencodeSimHost, PiSimHost, toolCommand } from "./arms";
+import {
+    type HostContext,
+    OpencodeSimHost,
+    PiSimHost,
+    type PromptResult,
+    toolCommand,
+} from "./arms";
 
 test("a tool run reads as its bash command, or as the tool and its target path", () => {
     expect(toolCommand("bash", { command: "cargo test" })).toBe("cargo test");
@@ -281,6 +287,46 @@ test("reattaching to an OpenCode session reports the tool parts its messages alr
     expect(reported).toEqual([
         { command: "cargo build", exit: 0, scenario_ms: 700, call: "oc:prt-1" },
     ]);
+});
+
+test("a slow pre-turn listing leaves the turn only the remaining deadline", async () => {
+    let listed = 0;
+    let turnDeadline = -1;
+    const client = {
+        session: {
+            messages: async () => {
+                if (listed++ === 0) await Bun.sleep(600);
+                return { data: [] };
+            },
+            prompt: () => new Promise(() => undefined),
+            abort: async () => ({}),
+        },
+    };
+    const host = new OpencodeSimHost({
+        ...({} as HostContext),
+        config: loadConfig(),
+        root: "/x",
+        launcher: "/x/sandbox.sh",
+        now: () => 100,
+    });
+    Object.assign(host as unknown as Record<string, unknown>, {
+        client,
+        sid: "s",
+        oc: { stderr: () => "" },
+    });
+    const original = (host as unknown as { turn: (t: string, ms: number) => Promise<PromptResult> })
+        .turn;
+    (host as unknown as { turn: (t: string, ms: number) => Promise<PromptResult> }).turn = async (
+        _text,
+        ms,
+    ) => {
+        turnDeadline = ms;
+        return { error: "turn deadline" };
+    };
+    void original;
+    await host.prompt("go", 1_600);
+    expect(turnDeadline).toBeGreaterThanOrEqual(1_000);
+    expect(turnDeadline).toBeLessThan(1_100);
 });
 
 test("a Pi turn whose abort never drains kills the Pi process, and later prompts in the session fail fast", async () => {

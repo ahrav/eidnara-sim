@@ -188,3 +188,20 @@ test("P6 without its prior-session diff, P5 without its command log, and P10 wit
     expect(without("P5-pass", (a) => a.class === "command-log")).toThrow("command-log (turn)");
     expect(without("P10-pass", (a) => a.class === "proxy-call")).toThrow("proxy-call");
 });
+
+test("an artefact without its class's payload is refused rather than read as empty evidence", () => {
+    const f = fixture("P2-pass");
+    const snap = structuredClone(f.snapshots[0]) as Snapshot;
+    snap.artefacts = [
+        { id: "d", class: "diff", role: "turn" } as unknown as Snapshot["artefacts"][number],
+    ];
+    expect(() => gradeItem(f.probe, [snap], rules)).toThrow("has no patch");
+    const p13 = fixture("P13-pass");
+    const calls = structuredClone(p13.snapshots[0]) as Snapshot;
+    calls.artefacts = calls.artefacts.map((a) =>
+        a.class === "proxy-call"
+            ? ({ id: a.id, class: "proxy-call" } as unknown as Snapshot["artefacts"][number])
+            : a,
+    );
+    expect(() => gradeItem(p13.probe, [calls], rules)).toThrow("has no calls");
+});
