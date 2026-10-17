@@ -31,7 +31,12 @@ import {
     pinnedTurns,
     realisedRates,
 } from "../src/usersim/plan";
-import { pairingMismatches, readPairing, tapeDigests } from "../src/usersim/usersim";
+import {
+    pairingMismatches,
+    readPairing,
+    type TurnRecord,
+    tapeDigests,
+} from "../src/usersim/usersim";
 
 /** A percentile interval over fewer clusters than this undercovers, so it decides nothing. */
 const MIN_CLUSTERS = 5;
@@ -276,9 +281,11 @@ function report(dir: string) {
         const sources = recorded.get(`${r.arm}/${r.event}`) ?? [];
         const cited =
             r.against === "recorded"
-                ? sources.some((x) => x.digest === r.reference_digest) &&
-                  sources.some((x) => x.context === r.recorded_context_sha256) &&
-                  sources.every((x) => x.context !== r.context_sha256)
+                ? sources.some(
+                      (x) =>
+                          x.digest === r.reference_digest &&
+                          x.context === r.recorded_context_sha256,
+                  ) && sources.every((x) => x.context !== r.context_sha256)
                 : theirs?.digest === r.reference_digest && r.reference_digest !== r.digest;
         // The runner writes the divergence before the turn it describes, and derives a reference
         // divergence from the reference arm's turn, which is on disk before it.
@@ -491,6 +498,8 @@ function report(dir: string) {
                 [],
         ),
     );
+    const twinOf = (a: string) =>
+        a === armBase(a) ? order.find((c) => c !== a && armBase(c) === a) : armBase(a);
     for (const r of pairing) {
         if (r.kind !== "turn") continue;
         const planned = plan.skipped.has(r.event)
@@ -501,6 +510,22 @@ function report(dir: string) {
         if (r.label !== planned && !clarify) {
             throw new Error(
                 `${dir}/pairing.jsonl: ${r.arm} ${r.event} carries label ${r.label}; the seeded plan assigned ${planned}`,
+            );
+        }
+        // The pair compares two agents that received the same inputs: a turn is undelivered on
+        // both sides or neither, and only where the plan abandoned the session's trailing turns.
+        const twin = pairing.find(
+            (x): x is TurnRecord =>
+                x.kind === "turn" && x.event === r.event && x.arm === twinOf(r.arm),
+        );
+        if (twin && twin.delivered !== r.delivered) {
+            throw new Error(
+                `${dir}/pairing.jsonl: ${r.arm} and ${twin.arm} disagree on whether ${r.event} was delivered`,
+            );
+        }
+        if (!r.delivered && !plan.skipped.has(r.event)) {
+            throw new Error(
+                `${dir}/pairing.jsonl: ${r.arm} ${r.event} is undelivered outside the plan's skipped turns`,
             );
         }
     }
@@ -532,6 +557,12 @@ function report(dir: string) {
             );
         }
         rateOutside[arm] = expected.outside;
+        // Rates outside their pre-registered bands are an unregistered condition.
+        if (expected.outside.length > 0) {
+            throw new Error(
+                `${dir}/journal.jsonl: arm ${arm}'s realised rates leave their bands: ${expected.outside.join(", ")}`,
+            );
+        }
     }
     // Staged under an exclusive create at a name of its own, then renamed over `aa.json`, so a
     // symlink at either name is replaced and a leftover of a killed report blocks nothing.

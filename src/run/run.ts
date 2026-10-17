@@ -455,7 +455,7 @@ async function runArms(
 
     const drivers: Record<string, ArmDriver> = {};
     const proxyFaults = scenario.faults.filter((f) => f.seam.layer === "proxy-sink");
-    const injector = new FaultInjector(proxyFaults, new Rng((seed ^ 0x5bd1e995) >>> 0), 120_000);
+    const injector = new FaultInjector(proxyFaults, (seed ^ 0x5bd1e995) >>> 0, 120_000);
     const offsetFile = (arm: string) => join(o.out, arm, "clock", "offset");
     const pairing = new Pairing(
         join(o.out, "pairing.jsonl"),

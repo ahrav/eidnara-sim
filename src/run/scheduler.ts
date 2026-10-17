@@ -44,6 +44,8 @@ export interface ArmDriver {
 export interface ProxyControl {
     arm(id: string): void;
     disarm(id: string): void;
+    /** An arm begins: its fault draws and witnesses start afresh. */
+    begin?(arm: string): void;
 }
 
 export class HarnessFailure extends Error {}
@@ -157,6 +159,7 @@ export class Scheduler {
             if (initial.offset_s !== undefined) this.log({ kind: "ClockOffset", ...initial });
             const driver = this.o.drivers[arm];
             if (!driver) throw new Error(`no driver for arm ${arm}`);
+            this.o.proxy?.begin?.(arm);
             const started = mine.some((e) => e.kind === "StartArm");
             if (!started) {
                 await driver.reset();

@@ -15,9 +15,9 @@ import { basename, dirname, join } from "node:path";
 import type { GradeRecord } from "../src/grade/probes";
 import { sha256Hex } from "../src/prereg/canonical";
 import { preregistrationHash } from "../src/prereg/validate";
-import { type Scenario, scenarioHash } from "../src/scenario/compile";
+import { scenarioHash } from "../src/scenario/compile";
 import { loadPrereg } from "../src/scenario/inputs";
-import { deliveredTurns, type Label, realisedRates } from "../src/usersim/plan";
+import { behaviourPlan, type Label, realisedRates } from "../src/usersim/plan";
 import { tapeDigests } from "../src/usersim/usersim";
 import { aaReport } from "./aa-report";
 
@@ -50,7 +50,7 @@ const turn = (arm: string, event: string, text: string, index = 0) => ({
     source: text === "same" ? "script" : "live",
 });
 
-const journal = (order: string[], events: number): Record<string, unknown>[] => [
+const journal = (order: string[], events: number, tier = "S"): Record<string, unknown>[] => [
     { kind: "StartRun", arm: null, order, scenario_ms: 0 },
     ...order.flatMap((arm) => [
         ...Array.from({ length: events }, (_, i) => {
@@ -76,13 +76,43 @@ const journal = (order: string[], events: number): Record<string, unknown>[] => 
                 { kind: "Event", arm, event, scenario_ms: 0 },
             ];
         }).flat(),
+        ...FILLER_EVENTS.flatMap((e) =>
+            e.kind === "user_turn"
+                ? [
+                      {
+                          kind: "UserTurn",
+                          arm,
+                          event: e.id,
+                          session: e.session,
+                          label: labelOf(String(e.id), tier),
+                          delivered: !planOf(tier).skipped.has(String(e.id)),
+                          scenario_ms: 0,
+                          ...(labelOf(String(e.id), tier) === "interrupt"
+                              ? { interrupted: true }
+                              : {}),
+                      },
+                      { kind: "Event", arm, event: e.id, scenario_ms: 0 },
+                  ]
+                : [{ kind: "Event", arm, event: e.id, scenario_ms: 0 }],
+        ),
         {
             kind: "UserSimRates",
             arm,
             scenario_ms: 0,
             ...realisedRates(
-                PROBE_EVENTS.map(() => ({ session: "s-1", label: "task" as const })),
-                loadPrereg("S"),
+                [
+                    ...Array.from({ length: Math.min(events, PROBE_EVENTS.length) }, () => ({
+                        session: "s-1",
+                        label: "task" as const,
+                    })),
+                    ...FILLER_EVENTS.filter(
+                        (e) => e.kind === "user_turn" && !planOf(tier).skipped.has(String(e.id)),
+                    ).map((e) => ({
+                        session: String(e.session),
+                        label: labelOf(String(e.id), tier),
+                    })),
+                ],
+                loadPrereg(tier as "S" | "M"),
             ),
         },
         { kind: "EndArm", arm, scenario_ms: 0 },
@@ -92,9 +122,86 @@ const journal = (order: string[], events: number): Record<string, unknown>[] => 
 
 const PROBE_EVENTS = [1, 2, 3, 4, 5, 6].flatMap((i) => [`p-${i}`, `q-${i}`]);
 const N_EVENTS = PROBE_EVENTS.length + 1;
-/** Every scheduled turn of an arm, each delivering `text`. */
-const allTurns = (arm: string, text = "same") =>
-    PROBE_EVENTS.map((_, i) => turn(arm, `e-${i + 1}`, text, i));
+/**
+ * Nine filler sessions after the probe session give the seeded plan enough turns and sessions
+ * to realise every rate inside its pre-registered band.
+ */
+const FILLER_SESSIONS = [2, 3, 4, 5, 6, 7, 8, 9, 10];
+const FILLER_EVENTS: Record<string, unknown>[] = FILLER_SESSIONS.flatMap((s) => [
+    ...[0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map((i) => ({
+        id: `f-${s}-${i}`,
+        kind: "user_turn",
+        session: `s-${s}`,
+        index: i,
+        role: "filler",
+        text: `Go ${s} ${i}.`,
+    })),
+    { id: `z-${s}`, kind: "session_end", session: `s-${s}` },
+]);
+const planFor = (tier: string) =>
+    behaviourPlan(
+        [
+            ...PROBE_EVENTS.map((_, i) => ({
+                id: `e-${i + 1}`,
+                session: "s-1",
+                index: i,
+                role: "task",
+            })),
+            ...FILLER_EVENTS.filter((e) => e.kind === "user_turn").map((e) => ({
+                id: String(e.id),
+                session: String(e.session),
+                index: Number(e.index),
+                role: String(e.role),
+            })),
+        ],
+        loadPrereg(tier as "S" | "M"),
+        loadPrereg(tier as "S" | "M").seeds[0] as number,
+    );
+const PLANS = new Map<string, ReturnType<typeof planFor>>();
+const planOf = (tier: string) => {
+    const plan = PLANS.get(tier) ?? planFor(tier);
+    PLANS.set(tier, plan);
+    return plan;
+};
+const PLAN = planOf("S");
+const REACTIVE_LABELS = new Set(["pushback", "redirect", "abandon", "clarify"]);
+const labelOf = (id: string, tier = "S"): Label =>
+    planOf(tier).skipped.has(id) ? "abandon" : (planOf(tier).labels.get(id) ?? "task");
+/** The filler sessions' rows for an arm, labelled as the seeded plan assigns, as the runner writes them. */
+const fillerTurns = (arm: string, tier = "S") =>
+    FILLER_EVENTS.filter((e) => e.kind === "user_turn").map((e) => {
+        const id = String(e.id);
+        const label = labelOf(id, tier);
+        const skipped = planOf(tier).skipped.has(id);
+        const reactive = REACTIVE_LABELS.has(label);
+        const reply = `reply to ${id}`;
+        const delivered = skipped
+            ? ""
+            : reactive
+              ? label === "abandon"
+                  ? reply
+                  : `${reply}\n\n${String(e.text)}`
+              : String(e.text);
+        return {
+            kind: "turn",
+            arm,
+            session: String(e.session),
+            event: id,
+            index: Number(e.index),
+            digest: "d",
+            context_sha256: "c",
+            prefix_sha256: "p",
+            text_sha256: sha256Hex(delivered),
+            label,
+            delivered: !skipped,
+            source: reactive && !skipped ? "tape" : "script",
+        };
+    });
+/** Every scheduled turn of an arm; the probe turns deliver `text`. */
+const allTurns = (arm: string, text = "same", tier = "S") => [
+    ...PROBE_EVENTS.map((_, i) => turn(arm, `e-${i + 1}`, text, i)),
+    ...fillerTurns(arm, tier),
+];
 
 /** Rows with each divergence placed before the turn it describes, as the runner writes them. */
 const ordered = (rows: Record<string, unknown>[]) => {
@@ -110,45 +217,6 @@ const ordered = (rows: Record<string, unknown>[]) => {
     }
     return out;
 };
-
-/**
- * Gives one scenario event `role`, appends `more` events, and re-pins the manifest to the new
- * scenario: its hash and its event count.
- */
-function withRole(dir: string, id: string, role: string, more: Record<string, unknown>[] = []) {
-    const scenario = JSON.parse(readFileSync(join(dir, "scenario.json"), "utf8")) as {
-        events: Record<string, unknown>[];
-    };
-    scenario.events = [...scenario.events.map((e) => (e.id === id ? { ...e, role } : e)), ...more];
-    const manifest = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8")) as Record<
-        string,
-        unknown
-    >;
-    manifest.scenario_hash = scenarioHash(scenario as unknown as Scenario);
-    manifest.events = scenario.events.length;
-    writeFileSync(join(dir, "scenario.json"), JSON.stringify(scenario));
-    writeFileSync(join(dir, "manifest.json"), JSON.stringify(manifest));
-}
-
-/** The journal with each arm's UserSimRates recomputed from its delivered UserTurn rows. */
-function rerated(entries: Record<string, unknown>[]): Record<string, unknown>[] {
-    return entries.map((e) =>
-        e.kind === "UserSimRates"
-            ? {
-                  kind: "UserSimRates",
-                  arm: e.arm,
-                  scenario_ms: 0,
-                  ...realisedRates(
-                      deliveredTurns(entries, e.arm as string).map((t) => ({
-                          session: String(t.session),
-                          label: t.label as Label,
-                      })),
-                      loadPrereg("S"),
-                  ),
-              }
-            : e,
-    );
-}
 
 function gradedRun(
     tier: string,
@@ -180,6 +248,7 @@ function gradedRun(
             text: SCRIPT_TEXT,
         })),
         { id: `e-${N_EVENTS}`, kind: "session_end", session: "s-1" },
+        ...FILLER_EVENTS,
     ];
     probes.push(
         { id: "j-1", type: "P7", fact: "fact-1" },
@@ -190,18 +259,18 @@ function gradedRun(
         tier,
         seed,
         order: ["host", "host~aa"],
-        events: N_EVENTS,
+        events: events.length,
         prereg_sha256,
         scenario_hash: scenario_hash ?? scenarioHash(scenario),
     };
     writeFileSync(join(dir, "manifest.json"), JSON.stringify(manifest));
     writeFileSync(join(dir, "scenario.json"), JSON.stringify(scenario));
     writeFileSync(join(dir, "grades.jsonl"), grades.map(line).join(""));
-    const turns = ["host", "host~aa"].flatMap((arm) => allTurns(arm));
+    const turns = ["host", "host~aa"].flatMap((arm) => allTurns(arm, "same", tier));
     writeFileSync(join(dir, "pairing.jsonl"), turns.map(line).join(""));
     writeFileSync(
         join(dir, "journal.jsonl"),
-        journal(manifest.order, manifest.events).map(line).join(""),
+        journal(manifest.order, N_EVENTS, tier).map(line).join(""),
     );
     return dir;
 }
@@ -210,27 +279,160 @@ describe("aa-report", () => {
     test("a scheduled interrupt the host finished first is journaled task and still reports", () => {
         const dir = gradedRun("S", preregistrationHash(loadPrereg("S")));
         const line = (o: unknown) => `${JSON.stringify(o)}\n`;
-        // With e-1 the scenario's one filler, the seeded plan draws its interrupt there.
-        withRole(dir, "e-1", "filler");
-        const rows = readFileSync(join(dir, "pairing.jsonl"), "utf8")
-            .trim()
-            .split("\n")
-            .map((l) => JSON.parse(l) as Record<string, unknown>);
-        for (const r of rows) {
-            if (r.event === "e-1") r.label = "interrupt";
-        }
-        writeFileSync(join(dir, "pairing.jsonl"), rows.map(line).join(""));
+        const [event] = [...PLAN.labels].filter(([, l]) => l === "interrupt").map(([id]) => id);
         const journal = readFileSync(join(dir, "journal.jsonl"), "utf8")
             .trim()
             .split("\n")
             .map((l) => JSON.parse(l) as Record<string, unknown>);
         for (const e of journal) {
-            if (e.kind !== "UserTurn" || e.event !== "e-1") continue;
-            if (e.arm === "host") Object.assign(e, { label: "task", scheduled: "interrupt" });
-            else e.label = "interrupt";
+            if (e.kind !== "UserTurn" || e.event !== event || e.arm !== "host") continue;
+            delete e.interrupted;
+            Object.assign(e, { label: "task", scheduled: "interrupt" });
         }
-        writeFileSync(join(dir, "journal.jsonl"), rerated(journal).map(line).join(""));
+        // The arm's rate summary follows its journaled labels.
+        const summed = journal.map((e) =>
+            e.kind === "UserSimRates" && e.arm === "host"
+                ? {
+                      kind: "UserSimRates",
+                      arm: e.arm,
+                      scenario_ms: 0,
+                      ...realisedRates(
+                          journal
+                              .filter(
+                                  (t) => t.kind === "UserTurn" && t.arm === "host" && t.delivered,
+                              )
+                              .map((t) => ({
+                                  session: String(t.session),
+                                  label: t.label as Label,
+                              })),
+                          loadPrereg("S"),
+                      ),
+                  }
+                : e,
+        );
+        writeFileSync(join(dir, "journal.jsonl"), summed.map(line).join(""));
         expect(aaReport(dir)).toHaveLength(1);
+    });
+
+    test("a pair whose delivery states differ at a turn is refused", () => {
+        const dir = gradedRun("S", preregistrationHash(loadPrereg("S")));
+        const line = (o: unknown) => `${JSON.stringify(o)}\n`;
+        const rows = allTurns("host").map((t) =>
+            t.event === "e-3" ? { ...t, delivered: false } : t,
+        );
+        writeFileSync(
+            join(dir, "pairing.jsonl"),
+            [...rows, ...allTurns("host~aa")].map(line).join(""),
+        );
+        const entries = journal(["host", "host~aa"], N_EVENTS).map((e) =>
+            e.kind === "UserTurn" && e.arm === "host" && e.event === "e-3"
+                ? { ...e, delivered: false }
+                : e,
+        );
+        writeFileSync(join(dir, "journal.jsonl"), entries.map(line).join(""));
+        expect(() => aaReport(dir)).toThrow(/e-3.*deliver/);
+    });
+
+    test("an undelivered row outside the plan's skipped turns is refused on both sides", () => {
+        const dir = gradedRun("S", preregistrationHash(loadPrereg("S")));
+        const line = (o: unknown) => `${JSON.stringify(o)}\n`;
+        const rows = ["host", "host~aa"].flatMap((a) =>
+            allTurns(a).map((t) => (t.event === "e-3" ? { ...t, delivered: false } : t)),
+        );
+        writeFileSync(join(dir, "pairing.jsonl"), rows.map(line).join(""));
+        const entries = journal(["host", "host~aa"], N_EVENTS).map((e) =>
+            e.kind === "UserTurn" && e.event === "e-3" ? { ...e, delivered: false } : e,
+        );
+        writeFileSync(join(dir, "journal.jsonl"), entries.map(line).join(""));
+        expect(() => aaReport(dir)).toThrow(/e-3.*deliver/);
+    });
+
+    test("an arm whose realised rates leave their bands yields no report", () => {
+        const dir = gradedRun("S", preregistrationHash(loadPrereg("S")));
+        const line = (o: unknown) => `${JSON.stringify(o)}\n`;
+        // Relabel every pushback as task on both sides, with the rate summaries following.
+        const rows = ["host", "host~aa"].flatMap((a) =>
+            allTurns(a).map((t) =>
+                t.label === "pushback"
+                    ? {
+                          ...t,
+                          label: "task",
+                          source: "script",
+                          text_sha256: sha256Hex(`Go ${t.session.slice(2)} ${t.index}.`),
+                      }
+                    : t,
+            ),
+        );
+        writeFileSync(join(dir, "pairing.jsonl"), rows.map(line).join(""));
+        const entries = journal(["host", "host~aa"], N_EVENTS).map((e) =>
+            e.kind === "UserTurn" && e.label === "pushback" ? { ...e, label: "task" } : e,
+        );
+        const summed = entries.map((e) =>
+            e.kind === "UserSimRates"
+                ? {
+                      kind: "UserSimRates",
+                      arm: e.arm,
+                      scenario_ms: 0,
+                      ...realisedRates(
+                          entries
+                              .filter(
+                                  (t) => t.kind === "UserTurn" && t.arm === e.arm && t.delivered,
+                              )
+                              .map((t) => ({
+                                  session: String(t.session),
+                                  label: t.label as Label,
+                              })),
+                          loadPrereg("S"),
+                      ),
+                  }
+                : e,
+        );
+        writeFileSync(join(dir, "journal.jsonl"), summed.map(line).join(""));
+        expect(() => aaReport(dir)).toThrow(/band|plan/);
+    });
+
+    test("a recorded divergence cites one source row for both its digest and its context", () => {
+        const dir = gradedRun("S", preregistrationHash(loadPrereg("S")));
+        const line = (o: unknown) => `${JSON.stringify(o)}\n`;
+        const sources = ["one", "two"].map((name, i) => {
+            const src = mkdtempSync(join(tmpdir(), `sim-aa-source-${name}-`));
+            writeFileSync(join(src, "tape.jsonl"), "");
+            const row = {
+                ...turn("host~aa", "e-2", "same", 1),
+                digest: `d${i}`,
+                context_sha256: `c${i}`,
+            };
+            writeFileSync(join(src, "pairing.jsonl"), line(row));
+            return join(src, "tape.jsonl");
+        });
+        const manifest = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8")) as Record<
+            string,
+            unknown
+        >;
+        manifest.tapes = sources;
+        manifest.tape_sha256 = tapeDigests(sources);
+        writeFileSync(join(dir, "manifest.json"), JSON.stringify(manifest));
+        // Digest from source one, context from source two: a pair no source row holds.
+        const rows = ordered([
+            ...allTurns("host"),
+            ...allTurns("host~aa").map((t) =>
+                t.event === "e-2" ? { ...t, context_sha256: "fresh" } : t,
+            ),
+            {
+                kind: "divergedAt",
+                arm: "host~aa",
+                session: "s-1",
+                event: "e-2",
+                index: 1,
+                digest: "d",
+                context_sha256: "fresh",
+                reference_digest: "d0",
+                recorded_context_sha256: "c1",
+                against: "recorded",
+            },
+        ]);
+        writeFileSync(join(dir, "pairing.jsonl"), rows.map(line).join(""));
+        expect(() => aaReport(dir)).toThrow(/divergence at e-2/);
     });
 
     test("a reference divergence placed ahead of the reference turn is refused", () => {
@@ -1120,58 +1322,10 @@ describe("aa-report", () => {
     });
 
     test("an undelivered trailing filler carries the empty text, as the runner records it", () => {
-        const line = (o: unknown) => `${JSON.stringify(o)}\n`;
         const dir = gradedRun("S", preregistrationHash(loadPrereg("S")));
-        // Eight single-turn task sessions after s-1 give the plan an abandon quota of one; s-1,
-        // whose trailing filler e-12 makes it the one abandonable session, receives it.
-        const extra = [2, 3, 4, 5, 6, 7, 8, 9];
-        withRole(dir, "e-12", "filler", [
-            ...extra.flatMap((k) => [
-                {
-                    id: `x-${k}`,
-                    kind: "user_turn",
-                    session: `s-${k}`,
-                    index: 0,
-                    role: "task",
-                    text: SCRIPT_TEXT,
-                },
-                { id: `y-${k}`, kind: "session_end", session: `s-${k}` },
-            ]),
-        ]);
-        const skip = (t: ReturnType<typeof turn>) =>
-            t.event === "e-12"
-                ? { ...t, label: "abandon", delivered: false, text_sha256: sha256Hex("") }
-                : t;
-        const extraTurns = (arm: string) =>
-            extra.map((k) => ({ ...turn(arm, `x-${k}`, "same", 0), session: `s-${k}` }));
-        const rows = ["host", "host~aa"].flatMap((arm) => [
-            ...allTurns(arm).map(skip),
-            ...extraTurns(arm),
-        ]);
-        writeFileSync(join(dir, "pairing.jsonl"), rows.map(line).join(""));
-        const entries = journal(["host", "host~aa"], N_EVENTS).flatMap((e) => {
-            if (e.kind === "UserTurn" && e.event === "e-12") {
-                return [{ ...e, label: "abandon", delivered: false }];
-            }
-            if (e.kind !== "EndArm") return [e];
-            return [
-                ...extra.flatMap((k) => [
-                    {
-                        kind: "UserTurn",
-                        arm: e.arm,
-                        event: `x-${k}`,
-                        session: `s-${k}`,
-                        label: "task",
-                        delivered: true,
-                        scenario_ms: 0,
-                    },
-                    { kind: "Event", arm: e.arm, event: `x-${k}`, scenario_ms: 0 },
-                    { kind: "Event", arm: e.arm, event: `y-${k}`, scenario_ms: 0 },
-                ]),
-                e,
-            ];
-        });
-        writeFileSync(join(dir, "journal.jsonl"), rerated(entries).map(line).join(""));
+        const skipped = allTurns("host").filter((t) => !t.delivered);
+        expect(skipped.length).toBeGreaterThan(0);
+        for (const t of skipped) expect(t.text_sha256).toBe(sha256Hex(""));
         expect(aaReport(dir)).toHaveLength(1);
     });
 

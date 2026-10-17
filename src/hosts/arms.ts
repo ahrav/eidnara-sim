@@ -1031,7 +1031,10 @@ export class OpencodeSimHost extends SimHost {
      */
     async prompt(text: string, timeoutMs: number, interruptMs?: number): Promise<PromptResult> {
         const deadline = Date.now() + timeoutMs;
+        // The turn gets the deadline's true remainder; the listings after it keep a one-second
+        // floor so a turn that ran to its deadline still has its tools captured.
         const remaining = () => Math.max(1_000, deadline - Date.now());
+        const left = () => deadline - Date.now();
         let seen: Set<string>;
         try {
             const listed = await this.messages(timeoutMs);
@@ -1045,13 +1048,13 @@ export class OpencodeSimHost extends SimHost {
         const startScenario = this.ctx.now?.() ?? 0;
         // The listing spent part of the turn's deadline; a spent deadline sends nothing, and the
         // turn gets the rest under the one-second floor.
-        if (deadline - Date.now() <= 0) {
+        if (left() <= 0) {
             return {
                 error: `turn deadline ${timeoutMs} ms spent before the prompt`,
                 undelivered: true,
             };
         }
-        const outcome = await this.turn(text, remaining(), interruptMs, timeoutMs);
+        const outcome = await this.turn(text, left(), interruptMs, timeoutMs);
         try {
             await this.logTurnTools(seen, startScenario, remaining());
         } catch (caught) {

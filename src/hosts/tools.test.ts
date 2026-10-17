@@ -325,8 +325,9 @@ test("a slow pre-turn listing leaves the turn only the remaining deadline", asyn
     };
     void original;
     await host.prompt("go", 1_600);
-    expect(turnDeadline).toBeGreaterThanOrEqual(1_000);
-    expect(turnDeadline).toBeLessThan(1_100);
+    // The turn gets the deadline's true remainder after the 600 ms listing.
+    expect(turnDeadline).toBeGreaterThan(800);
+    expect(turnDeadline).toBeLessThanOrEqual(1_000);
 });
 
 test("a timed-out message listing aborts its request", async () => {
@@ -801,6 +802,27 @@ test("an OpenCode turn whose deadline is spent before the prompt sends nothing",
     expect(spent.undelivered).toBe(true);
     expect(spent.error).toContain("spent before the prompt");
     expect(prompted).toBe(0);
+});
+
+test("an OpenCode turn gets the deadline's true remainder after the pre-prompt listing", async () => {
+    const host = opencodeHost({
+        session: {
+            messages: () => Bun.sleep(300).then(() => ({ data: [] })),
+            prompt: async () => ({ data: { info: {} } }),
+            abort: async () => ({ data: true }),
+        },
+    });
+    const budgets: number[] = [];
+    Object.assign(host as unknown as Record<string, unknown>, {
+        turn: async (_text: string, timeoutMs: number) => {
+            budgets.push(timeoutMs);
+            return { ok: true, text: "", interrupted: false };
+        },
+        logTurnTools: async () => {},
+    });
+    await host.prompt("go", 1_200);
+    expect(budgets).toHaveLength(1);
+    expect(budgets[0] as number).toBeLessThan(1_000);
 });
 
 test("an OpenCode prompt the server rejected is undelivered", async () => {

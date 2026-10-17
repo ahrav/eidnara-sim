@@ -169,7 +169,7 @@ async function start(
     windowMs = 5_000,
 ) {
     const records = new RecordWriter(null);
-    const injector = new FaultInjector(fault ? [fault] : [], new Rng(7), windowMs);
+    const injector = new FaultInjector(fault ? [fault] : [], 7, windowMs);
     const started: CallStarted[] = [];
     let scenario = 1_000;
     const gateway = new Gateway({
@@ -407,6 +407,25 @@ describe("fault composition at the proxy sink", () => {
 });
 
 describe("witnesses", () => {
+    test("each arm starts an intermittent fault from the same seeded draws and keeps its own witness", () => {
+        const fault: ProxyFault = {
+            id: "f",
+            type: "provider_5xx",
+            strategy: "intermittent",
+            params: { count: 40, probability: 0.5 },
+        };
+        const draws = (injector: FaultInjector, arm: string) => {
+            injector.begin(arm);
+            injector.arm("f");
+            return Array.from({ length: 20 }, (_, i) => injector.take("agent", i) !== null);
+        };
+        const injector = new FaultInjector([fault], 7, 1_000);
+        const first = draws(injector, "host");
+        const second = draws(injector, "host~aa");
+        expect(second).toEqual(first);
+        expect(injector.report().map((w) => w.arm)).toEqual(["host", "host~aa"]);
+    });
+
     test("an armed fault with no later host call is untriggered and excludes the run", async () => {
         const { injector, url } = await start({
             id: "f",
@@ -821,7 +840,7 @@ describe("every request yields one record", () => {
         const gateway = new Gateway({
             upstream: slow,
             records,
-            injector: new FaultInjector([], new Rng(1), 1_000),
+            injector: new FaultInjector([], 1, 1_000),
             rng: new Rng(1),
             clock: { scenarioMs: () => clock },
             scope: () => ({ arm: "a", session: null, turn: null }),

@@ -1,4 +1,4 @@
-import type { Rng } from "../rng";
+import { Rng } from "../rng";
 import type { FaultEpisode, FaultType } from "../scenario/faults";
 import { encodeEvent } from "./eventstream";
 import type { CallRecord, Component } from "./records";
@@ -6,6 +6,8 @@ import type { CallRecord, Component } from "./records";
 export type ProxyFault = Pick<FaultEpisode, "id" | "type" | "strategy" | "params">;
 
 export interface Witness {
+    /** The arm whose calls the witness watched; null before any arm began. */
+    arm: string | null;
     fault: string;
     type: FaultType;
     armed: boolean;
@@ -26,17 +28,33 @@ interface Armed {
 export const TARGET: Component = "agent";
 
 export class FaultInjector {
-    private readonly armed = new Map<string, Armed>();
-    private readonly witnesses = new Map<string, Witness>();
-    private readonly pending: { fault: string; at: number; call: number }[] = [];
+    private armed = new Map<string, Armed>();
+    private current: Map<string, Witness> | null = null;
+    private readonly byArm = new Map<string | null, Map<string, Witness>>();
+    private pending: { fault: string; at: number; call: number }[] = [];
+    private rng: Rng;
 
     constructor(
         private readonly faults: ProxyFault[],
-        private readonly rng: Rng,
+        private readonly seed: number,
         private readonly windowMs: number,
     ) {
-        for (const f of faults) {
-            this.witnesses.set(f.id, {
+        this.rng = new Rng(seed);
+    }
+
+    /** The witnesses of the arm under way; before any arm began, a set under no arm. */
+    private get witnesses(): Map<string, Witness> {
+        this.current ??= this.witnessesFor(null);
+        return this.current;
+    }
+
+    private witnessesFor(arm: string | null): Map<string, Witness> {
+        const held = this.byArm.get(arm);
+        if (held) return held;
+        const fresh = new Map<string, Witness>();
+        for (const f of this.faults) {
+            fresh.set(f.id, {
+                arm,
                 fault: f.id,
                 type: f.type,
                 armed: false,
@@ -45,6 +63,20 @@ export class FaultInjector {
                 proxy_retried: false,
             });
         }
+        this.byArm.set(arm, fresh);
+        return fresh;
+    }
+
+    /**
+     * Starts an arm: the intermittent draws restart from the seed, nothing stays armed or pending
+     * from the arm before, and the arm's witnesses are its own. Two arms under one schedule thus
+     * meet the same fault realisation, and an A/A pair measures the agent rather than the draws.
+     */
+    begin(arm: string): void {
+        this.rng = new Rng(this.seed);
+        this.armed = new Map();
+        this.pending = [];
+        this.current = this.witnessesFor(arm);
     }
 
     arm(id: string): void {
@@ -91,11 +123,15 @@ export class FaultInjector {
         if (record.proxy_retries > 0) w.proxy_retried = true;
     }
 
+    /** Every fault's witness under every arm that began; under no arm when none did. */
     report(): WitnessReport[] {
-        return [...this.witnesses.values()].map((w) => {
-            const fired = w.injected_seq.length > 0 && w.host_observed_seq.length > 0;
-            return { ...w, status: fired ? "fired" : "untriggered" };
-        });
+        const sets = this.byArm.size > 0 ? [...this.byArm.values()] : [this.witnesses];
+        return sets
+            .flatMap((arm) => [...arm.values()])
+            .map((w) => {
+                const fired = w.injected_seq.length > 0 && w.host_observed_seq.length > 0;
+                return { ...w, status: fired ? "fired" : "untriggered" };
+            });
     }
 }
 

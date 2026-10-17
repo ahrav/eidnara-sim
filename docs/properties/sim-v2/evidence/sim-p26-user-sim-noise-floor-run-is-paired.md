@@ -18,7 +18,9 @@ M6 (#1031, with the A/A control from #17) runs a control arm `<arm>~aa` right
 after its arm under the same scenario, behaviour plan, and tape, so matching
 contexts replay the same user-sim reply and the pair measures the noise the
 agent adds on its own, with the user-sim's reply held fixed;
-`scripts/aa-report.ts` names the disagreement rate per metric.
+`scripts/aa-report.ts` names one aggregate `disagreement_rate` per arm and
+control pair, pooled over every paired non-P7 item verdict across probe
+types; its bootstrap differences and intervals are per metric.
 
 Contract versus code: the catalog guarantee says the pair differs only in
 user-sim seed, so the report would measure the simulator's own noise under

@@ -783,6 +783,31 @@ test("the plan the checker rebuilds honours the manifest's fault override", () =
     expect((r.report.plan_label_mismatch as string[]).length).toBeGreaterThan(0);
 });
 
+test("a session whose context leaves every replay source needs its recorded divergence even when digests agree", () => {
+    const source = mkdtempSync(join(tmpdir(), "pairing-check-source-"));
+    const base = fixture();
+    writeFileSync(
+        join(source, "pairing.jsonl"),
+        base.pairing
+            .filter((r) => r.arm === "host")
+            .map((r) => `${JSON.stringify(r)}\n`)
+            .join(""),
+    );
+    writeFileSync(join(source, "tape.jsonl"), "");
+    const f = fixture();
+    f.manifest = { ...f.manifest, tapes: [join(source, "tape.jsonl")] };
+    // The source holds the host arm; both arms reach a context it never held at e-0-3, with
+    // digests still agreeing, and the host arm has no recorded divergence ahead of it.
+    for (const r of f.pairing) {
+        if (r.event === "e-0-3" || (r.session === "s-0" && Number(r.index) > 3)) {
+            r.context_sha256 = "fresh";
+        }
+    }
+    const r = run(f);
+    expect(r.report.missing_divergences).toEqual(["host e-0-3"]);
+    expect(r.exit).toBe(1);
+});
+
 test("a recorded divergence needs a replay source behind it", () => {
     const f = fixture();
     placeBefore(f, "host", "e-0-1", {
@@ -793,6 +818,12 @@ test("a recorded divergence needs a replay source behind it", () => {
         against: "recorded",
     });
     expect(run(f).report.invalid_divergences).toEqual(["host e-0-1"]);
+});
+
+test("the manifest's order must be one the seed admits", () => {
+    const r = run(fixture(["eidnara", "host"]));
+    expect(r.exit).not.toBe(0);
+    expect(r.stderr).toContain("admits");
 });
 
 test("the manifest's arms must be the tier's registered arms", () => {

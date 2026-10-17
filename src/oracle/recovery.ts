@@ -497,7 +497,8 @@ export function recoveries(run: RunLogs): Recovery[] {
                 // The driver skips a daemon fault on the arm that runs no daemon and a store fill on
                 // an arm with no loop-mounted store; every other fault runs on every arm.
                 const skippable =
-                    (RESTARTS.has(base.type) && arm.arm === "host") || base.type === "store_full";
+                    (RESTARTS.has(base.type) && armBase(arm.arm) === "host") ||
+                    base.type === "store_full";
                 if (!skippable) {
                     throw new Error(
                         `${arm.arm}: ${base.fault} (${base.type}) is journaled as skipped, which the driver has no skip path for on this arm`,

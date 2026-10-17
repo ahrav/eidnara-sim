@@ -408,7 +408,7 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
         const gateway = new Gateway({
             upstream: bedrockUpstream(config.bedrock.region, config.bedrock.aws_profile),
             records,
-            injector: new FaultInjector([], new Rng(1), 1_000),
+            injector: new FaultInjector([], 1, 1_000),
             rng: new Rng(manifest.seed),
             clock: { scenarioMs: () => 0 },
             scope: () => ({ arm: "judge", session: null, turn: null }),
