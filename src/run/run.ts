@@ -29,7 +29,7 @@ import {
 import { bedrockEmbedder } from "../scenario/similarity";
 import { behaviourPlan, type Label, realisedRates } from "../usersim/plan";
 import { normaliser, Pairing, proxyUserSim, Tape, UserSim } from "../usersim/usersim";
-import { Journal, readJournal, releaseLease, takeLease } from "./journal";
+import { Journal, releaseLease, takeLease } from "./journal";
 import { plainPath } from "./launcher";
 import { type Preflight, preflight, preflightDrift } from "./preflight";
 import { PRICE_TABLE, type PriceTable } from "./price";
@@ -342,6 +342,14 @@ export async function runTier(o: RunOptions): Promise<void> {
     }
 }
 
+const callRecords = (path: string): CallRecord[] =>
+    existsSync(path)
+        ? readFileSync(path, "utf8")
+              .split("\n")
+              .filter(Boolean)
+              .map((line) => JSON.parse(line) as CallRecord)
+        : [];
+
 function callsOf(
     path: string,
     arm: string,
@@ -350,9 +358,7 @@ function callsOf(
 ): CallView[] {
     if (!existsSync(path)) return [];
     let index: number | undefined;
-    // SAFETY: the caller must supply a journal whose records satisfy CallRecord.
-    const records = readJournal(path) as unknown as CallRecord[];
-    return records
+    return callRecords(path)
         .filter((r) => r.arm === arm && r.session === session)
         .map((r) => {
             index = (r.turn ? turnIndex.get(r.turn) : undefined) ?? index;
@@ -384,8 +390,7 @@ async function runArms(
     const compiled = await loadScenario(o);
     const manifest = await loadManifest(o, compiled);
     const scenario = { ...compiled, faults: manifest.fault_override ?? compiled.faults };
-    // SAFETY: the caller must supply a scenario whose events satisfy ScenarioEvent.
-    const events = scenario.events.slice(0, manifest.events) as unknown as ScenarioEvent[];
+    const events = scenario.events.slice(0, manifest.events) as ScenarioEvent[];
     const hostRow = manifest.preflight.hosts.find((h) => h.host === o.host);
     if (!hostRow) throw new Error(`preflight lists no ${o.host} host`);
     const upgradeRow = manifest.preflight.upgrade?.find((h) => h.host === o.host);
@@ -421,9 +426,7 @@ async function runArms(
             agentText.set(`${r.arm}/${r.session}`, r.response_text);
         }
     };
-    // SAFETY: the caller must supply a calls journal whose records satisfy CallRecord.
-    const priorCalls = readJournal(join(o.out, "calls.jsonl")) as unknown as CallRecord[];
-    for (const r of priorCalls) noteAgent(r);
+    for (const r of callRecords(join(o.out, "calls.jsonl"))) noteAgent(r);
     class RunRecords extends RecordWriter {
         override write(partial: Omit<CallRecord, "seq" | "wall_ms">): CallRecord {
             const record = super.write(partial);
@@ -474,8 +477,7 @@ async function runArms(
     const turnIndex = new Map(
         events.filter((e) => e.index !== undefined).map((e) => [e.id, e.index as number]),
     );
-    // SAFETY: the caller must supply user_turn events that carry id, session, index, role, and text.
-    const scripted = scenario.events.filter((e) => e.kind === "user_turn") as unknown as {
+    const scripted = scenario.events.filter((e) => e.kind === "user_turn") as {
         id: string;
         session: string;
         index: number;
@@ -523,7 +525,13 @@ async function runArms(
             "the eidnara-cf arm deletes through python3, which is not on PATH",
         );
     }
-    if (deletions.size > 0 && !journal.entries.some((e) => e.kind === "StartRun")) {
+    const journaled = (kind: string) => journal.entries.some((e) => e.kind === kind);
+    if (deletions.size > 0 && journaled("StartRun") && !journaled("CounterfactualSample")) {
+        throw new HarnessFailure(
+            "this run started before its counterfactual sample was journaled; start it afresh",
+        );
+    }
+    if (deletions.size > 0 && !journaled("StartRun")) {
         journal.append({
             kind: "CounterfactualSample",
             arm: null,

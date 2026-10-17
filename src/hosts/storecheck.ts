@@ -100,7 +100,6 @@ const runsOf = (text: string, size: number) => {
         w.slice(0, Math.max(0, w.length - size + 1)).map((_, i) => w.slice(i, i + size).join(" ")),
     );
 };
-const literal = (t: string) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /**
  * Notes carry a fact when they share a run of `size` words with its statement that no other
@@ -115,12 +114,11 @@ export function factMatcher(statement: string, others: readonly string[], size: 
     const values = words(statement)
         .filter((t) => /^\[.+\]$/.test(t) || (t.length >= 4 && /[\d_]/.test(t)))
         .map(unbracket)
-        .filter((t) => !sharedWords.has(t))
-        .map((t) => new RegExp(`(^|[^\\w-])${literal(t)}($|[^\\w-])`));
+        .filter((t) => !sharedWords.has(t));
     return (content: string) => {
-        const text = unbracket(content.toLowerCase());
+        const tokens = new Set(words(content).map(unbracket));
         const own = runsOf(content, size);
-        return runs.some((r) => own.has(r)) || values.some((v) => v.test(text));
+        return runs.some((r) => own.has(r)) || values.some((v) => tokens.has(v));
     };
 }
 
