@@ -1287,8 +1287,9 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M7 (#1032); nothing constructs
-it yet
+Exercised: partial - `src/stats/gate.test.ts` constructs excluded and
+fault-asymmetric ids, counts them, and refuses a missing journal sequence; no
+tier run or report path has reached the gate
 Guarantee: SIM-P51: `EvaluateGate` input set equals `CompletedPairs(tier)` at
 `journal_seq_at_eval`, and the verdict carries excluded-pair count and ids.
 Check: `always` - recompute completed pairs at the recorded `seq` and compare to
@@ -1312,8 +1313,9 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M0 (#1024); nothing constructs
-it yet
+Exercised: partial - `src/stats/gate.test.ts` constructs verdicts carrying the
+digest, MDE, margin, n, and resolution ratio; the comparison with the StartRun
+journal hash and a tier run are unreached
 Guarantee: SIM-P52: A verdict records MDE, n, and the pre-registration hash
 journaled at `StartRun`, and the hash matches the pre-registration file.
 Check: `always` - for each verdict, assert MDE and n are present and the hash
@@ -1339,8 +1341,8 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M0 (#1024); nothing constructs
-it yet
+Exercised: partial - `src/stats/gate.test.ts` constructs each verdict kind and
+scans fixtures for the token; no tier run or report has reached the gate
 Guarantee: SIM-P53: The verdict vocabulary is better, worse,
 no-difference-above-X-pp-detectable-at-n, failed-gate(metric, items),
 inconclusive, insufficient-runs, and descriptive, and the string `parity` is
@@ -1367,14 +1369,20 @@ Open questions:
   metric that meets its bound; neither the guarantee nor the report check's
   `VERDICT_KINDS` (`src/prereg/report.ts`) lists it, so the report path has
   no family verdict to map a passing bound family to (needs human input).
+- The gate's null verdict carries the family's scale, not always `pp`:
+  `no-difference-above-X<scale>-detectable-at-n` reads `pp` for binary
+  items, `pp-of-runs` for the sign test, and the registered MDE scale (`ms`,
+  `bytes`, `ratio`) for graded and GLM results, while the guarantee and the
+  report check's `no-difference-above-x-pp-detectable-at-n` name `pp` only
+  (needs human input).
 
 ### sim-p54-pairing-by-item-identity
 
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M7 (#1032); nothing constructs
-it yet
+Exercised: partial - `src/stats/gate.test.ts` constructs two arms graded in
+different orders and pairs them by id; no tier run has reached it
 Guarantee: SIM-P54: McNemar and bootstrap pairs are keyed by `item_id` across
 arms, never by position.
 Check: `always` - assert every pair's two outcomes share `item_id`; positional
@@ -1395,8 +1403,9 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M7 (#1032); nothing constructs
-it yet
+Exercised: partial - `src/stats/gate.test.ts` constructs a harm and a futility
+stop with their windows; the scheduler's continuation of issued items is
+unreached
 Guarantee: SIM-P55: A CUSUM early stop journals the metric, the item ids in the
 stopping window, and `journal_seq_at_eval`, and items already issued continue to
 terminal state.
@@ -1420,8 +1429,8 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M7 (#1032); nothing constructs
-it yet
+Exercised: partial - `src/stats/gate.test.ts` constructs four, six, and
+floor-of-eight run counts; no tier run has reached it
 Guarantee: SIM-P56: A dependability verdict on failed turns or hangs is emitted
 only with at least six paired runs; below that the verdict is
 `insufficient-runs(k)`.
@@ -1482,8 +1491,8 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M7 (#1032); nothing constructs
-it yet
+Exercised: partial - `src/stats/gate.test.ts` constructs a harm metric whose
+Holm-adjusted verdict is `worse`; no tier run has reached it
 Guarantee: SIM-P58: "Memory made it worse" is set iff some harm metric has
 `eidnara < host` with the paired CI excluding zero, and the metric and CI are
 named.

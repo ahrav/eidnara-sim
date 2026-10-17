@@ -58,7 +58,8 @@ issue order) or run pairs. `pairByItem` joins two arms' values by item id
 and orders the pairs by the issue order it is given, so pairing never
 depends on the order either arm graded in. The input also lists the ids
 the missingness policy excludes (each with its arm and reason) and the
-pairs in the fault-asymmetric stratum; both leave the analysis. The
+pairs in the fault-asymmetric stratum; both name items and leave the item
+observations (a run shares no identity namespace with an item). The
 verdict counts exclusions per compared arm, both arms always named, zero
 included, lists the asymmetric stratum, and counts asymmetric pairs per
 metric.

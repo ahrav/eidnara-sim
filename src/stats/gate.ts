@@ -123,7 +123,11 @@ const num = (s: string) => Number(s);
 const mean = (xs: number[]) => xs.reduce((s, v) => s + v, 0) / xs.length;
 const scaled = (x: number | null, f: Family) => {
     const unit = num(f.mde.value) === 0 ? f.margin.value : f.mde.value;
-    return x === null || num(unit) === 0 ? null : x / num(unit);
+    const ratio = x === null || num(unit) === 0 ? null : x / num(unit);
+    if (ratio !== null && !Number.isFinite(ratio)) {
+        throw new StatsRefusal(`${f.id}: the resolution ratio overflows against ${unit}`);
+    }
+    return ratio;
 };
 const oneSided = (f: Family) => f.direction === "noninferiority" || f.direction === "at-most";
 /**
@@ -409,6 +413,11 @@ function check(p: Preregistration, input: TierInput): void {
         if (f.analysis_unit === "item" && f.outcome !== "binary") {
             throw new StatsRefusal(`${f.id}: an item-level family has a binary outcome`);
         }
+        if (
+            ![f.margin.value, f.mde.value, f.alpha, f.power].every((v) => Number.isFinite(num(v)))
+        ) {
+            throw new StatsRefusal(`${f.id}: margin, MDE, alpha, and power are finite numbers`);
+        }
         const bound = BOUND_DIRECTIONS.includes(f.direction);
         if (bound && f.outcome === "binary" && !isShare(num(f.margin.value))) {
             throw new StatsRefusal(`${f.id}: a binary threshold lies in [0, 1]`);
@@ -653,7 +662,7 @@ export function evaluateTier(p: Preregistration, input: TierInput): TierVerdict 
     const kept = input.observations.map((o) => ({
         ...o,
         items: o.items?.filter((x) => keep(x.item)),
-        runs: o.runs?.filter((r) => keep(r.run)),
+        runs: o.runs,
     }));
     const families = p.families.map((f): FamilyResult => {
         const mine = f.metrics.map(
@@ -678,10 +687,7 @@ export function evaluateTier(p: Preregistration, input: TierInput): TierVerdict 
             const { shift: _, ...s } = full;
             const [verdict, passed, failed] = judge(f, o.metric, full, o);
             const raw = input.observations.find((x) => x.metric === o.metric);
-            const ids = [
-                ...(raw?.items ?? []).map((x) => x.item),
-                ...(raw?.runs ?? []).map((r) => r.run),
-            ];
+            const ids = (raw?.items ?? []).map((x) => x.item);
             const asymmetric_pairs = ids.filter((id) => asym.has(id)).length;
             return {
                 metric: o.metric,

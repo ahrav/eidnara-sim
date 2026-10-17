@@ -1288,3 +1288,60 @@ describe("tier gate review findings, thirteenth Codex round", () => {
         ).toThrow("dependability: an at-most count family registers a ratio margin");
     });
 });
+
+describe("tier gate review findings, fourteenth Codex round", () => {
+    const seq = { journal_seq_at_eval: 7, arms: { control: "host", treatment: "eidnara" } };
+
+    test("exclusions and the asymmetric stratum apply to items only", () => {
+        const obs = binary("P8.cross_session_pass_rate", repeat(4, [1, 1] as [number, number]));
+        const turns: Observation = {
+            metric: "failed_turns",
+            unit: "run",
+            cluster_key: "run",
+            runs: [
+                { run: "same-id", control: 0, treatment: 1 },
+                { run: "other", control: 0, treatment: 0 },
+            ],
+        };
+        const v = evaluateTier(S, {
+            observations: [obs, turns],
+            excluded: [{ id: "same-id", arm: "eidnara", reason: "failed(interrupted)" }],
+            asymmetric: [],
+            ...seq,
+        });
+        const m = v.families.find((f) => f.family === "dependability")?.metrics[0];
+        expect([m?.n, m?.verdict]).toEqual([2, "failed-gate(failed_turns, same-id)"]);
+    });
+
+    test("a resolution ratio that overflows is refused", () => {
+        const tiny = {
+            ...M,
+            families: M.families.map((f) =>
+                f.id === "probe-P1" ? { ...f, mde: { value: "1e-308", scale: "pp" as const } } : f,
+            ),
+        };
+        expect(() =>
+            evaluateTier(tiny, {
+                observations: [binary("P1.pass", repeat(40, [0, 0] as [number, number]))],
+                excluded: [],
+                asymmetric: [],
+                ...seq,
+            }),
+        ).toThrow(StatsRefusal);
+    });
+
+    test("a margin, MDE, alpha, or power that is not a finite number is refused", () => {
+        const huge = `1${"0".repeat(400)}`;
+        const wide = {
+            ...M,
+            families: M.families.map((f) =>
+                f.id === "resources"
+                    ? { ...f, margin: { value: huge, scale: "bytes" as const } }
+                    : f,
+            ),
+        };
+        expect(() =>
+            evaluateTier(wide, { observations: [], excluded: [], asymmetric: [], ...seq }),
+        ).toThrow("resources: margin, MDE, alpha, and power are finite numbers");
+    });
+});
