@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import {
     appendFileSync,
     closeSync,
+    constants,
     copyFileSync,
     existsSync,
     lstatSync,
@@ -245,7 +246,9 @@ export class HostDriver implements ArmDriver {
         for (const [project, source] of Object.entries(this.o.projects)) {
             const target = this.workspace(project);
             git(this.o.armRoot, ["clone", "--quiet", "--no-hardlinks", source, target]);
-            copyFileSync(join(target, ".git", "config"), join(this.armDir, `${project}.gitconfig`));
+            const baseline = join(this.armDir, `${project}.gitconfig`);
+            rmSync(baseline, { force: true });
+            copyFileSync(join(target, ".git", "config"), baseline, constants.COPYFILE_EXCL);
             const tracked = ["ls-files", "-z", "--cached", "--ignored", "--exclude-standard"];
             const forced = git(source, tracked).split("\0").filter(Boolean);
             this.snapshots.trackIgnored(project, forced);
@@ -327,6 +330,7 @@ export class HostDriver implements ArmDriver {
             this.applyDiff(e);
             return {};
         }
+        const entered = Date.now();
         const project = this.project(e);
         const dir = this.workspace(project);
         let before: string | null = "";
@@ -347,7 +351,7 @@ export class HostDriver implements ArmDriver {
         // that spent all of it fails here, so the agent never runs past the deadline.
         const deadline =
             typeof e.deadline_ms === "number"
-                ? Math.min(this.o.turnDeadlineMs, e.deadline_ms)
+                ? Math.min(this.o.turnDeadlineMs, e.deadline_ms - (Date.now() - entered))
                 : this.o.turnDeadlineMs;
         if (deadline <= 0) {
             outcome.failed = `turn deadline ${this.o.turnDeadlineMs} ms spent before the prompt`;
@@ -730,6 +734,8 @@ export class HostDriver implements ArmDriver {
         } catch (caught) {
             failure ??= caught;
         }
+        // A fill a session_end never cleared comes off before the mount does.
+        this.clearStoreFill();
         if (this.storeMount) {
             const r = spawnSync("sudo", ["-n", "umount", this.storeMount], { encoding: "utf8" });
             if (r.status === 0) this.storeMount = null;

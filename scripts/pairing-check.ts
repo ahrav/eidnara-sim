@@ -4,7 +4,7 @@ import { CORPUS_DIR } from "../src/corpus/sources";
 import { armBase, requireOrder } from "../src/hosts/arms";
 import { sha256Hex } from "../src/prereg/canonical";
 import { preregistrationHash } from "../src/prereg/validate";
-import { readJournal, requireComplete } from "../src/run/journal";
+import { readJournalStrict, requireComplete } from "../src/run/journal";
 import { referenceArm } from "../src/run/run";
 import type { Scenario } from "../src/scenario/compile";
 import { scenarioHash } from "../src/scenario/compile";
@@ -18,6 +18,19 @@ if (!existsSync(join(dir, "pairing.jsonl"))) {
     process.exit(2);
 }
 const manifest = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8"));
+// The manifest names the run the checker certifies; an order with no arm certifies nothing.
+const order: unknown = manifest.order;
+if (
+    typeof manifest.tier !== "string" ||
+    !Number.isInteger(manifest.events) ||
+    !Array.isArray(order) ||
+    order.length === 0 ||
+    order.some((a) => typeof a !== "string" || a === "") ||
+    new Set(order).size !== order.length
+) {
+    console.error("manifest.json needs a tier, an event count, and a non-empty distinct arm order");
+    process.exit(2);
+}
 const scenarioJson: unknown = JSON.parse(readFileSync(join(dir, "scenario.json"), "utf8"));
 const scenario = scenarioJson as Scenario;
 // The checker certifies against the scenario and pre-registration the manifest attests.
@@ -28,10 +41,9 @@ if (scenarioHash(scenarioJson as Record<string, unknown>) !== manifest.scenario_
 const records = readPairing(join(dir, "pairing.jsonl"), manifest.order as string[]);
 // The order's control structure, as the run command admits it; the arms it names are the
 // manifest's own, which the oracle loader and the A/A report bind to the tier.
-const order = manifest.order as string[];
 requireOrder(
-    order,
-    [...new Set(order.map(armBase))],
+    manifest.order as string[],
+    [...new Set((manifest.order as string[]).map(armBase))],
     loadPrereg(manifest.tier).aa_controls?.pairs ?? [],
 );
 const reference = referenceArm(manifest.order);
@@ -46,6 +58,11 @@ const verbatim = turns.filter((r) => {
     return role === "paste" || role === "probe";
 });
 const altered = verbatim
+    .filter((r) => r.text_sha256 !== sha256Hex(String(script.get(r.event)?.text)))
+    .map((r) => `${r.arm} ${r.event}`);
+// A delivered row sent from the script alone carries the compiled text's hash.
+const scriptAltered = turns
+    .filter((r) => r.delivered && r.source === "script" && script.has(r.event))
     .filter((r) => r.text_sha256 !== sha256Hex(String(script.get(r.event)?.text)))
     .map((r) => `${r.arm} ${r.event}`);
 const corpus = new Map(
@@ -76,7 +93,7 @@ const provenance = turns
         );
     })
     .map((r) => `${r.arm} ${r.event}`);
-const journal = readJournal(join(dir, "journal.jsonl"));
+const journal = readJournalStrict(join(dir, "journal.jsonl"));
 const allScheduledIds = scenario.events.slice(0, manifest.events as number).map((e) => e.id);
 let incompleteRun: string[] = [];
 try {
@@ -106,11 +123,17 @@ const invalidDivergences = records
     .filter((r) => r.kind === "divergedAt")
     .filter((r) => {
         const event = script.get(r.event);
+        const own = turns.find((t) => t.arm === r.arm && t.event === r.event);
+        const ref = turns.find((t) => t.arm === reference(r.arm) && t.event === r.event);
+        const bound =
+            own?.digest === r.digest &&
+            (r.against === "recorded" || ref?.digest === r.reference_digest);
         const differs =
-            r.against === "recorded"
+            bound &&
+            (r.against === "recorded"
                 ? r.recorded_context_sha256 !== undefined &&
                   r.recorded_context_sha256 !== r.context_sha256
-                : r.digest !== r.reference_digest;
+                : r.digest !== r.reference_digest);
         return (
             !event ||
             !arms.has(r.arm) ||
@@ -133,12 +156,31 @@ const journalPairingMismatch = (manifest.order as string[]).flatMap((arm) => {
     const users = journal.filter((e) => e.kind === "UserTurn" && e.arm === arm);
     const counts = new Map<string, number>();
     for (const u of users) counts.set(String(u.event), (counts.get(String(u.event)) ?? 0) + 1);
-    const paired = new Set(turns.filter((r) => r.arm === arm).map((r) => r.event));
+    const paired = new Map(turns.filter((r) => r.arm === arm).map((r) => [r.event, r]));
     const off = new Set<string>();
-    for (const event of paired) if (counts.get(event) !== 1) off.add(event);
+    for (const event of paired.keys()) if (counts.get(event) !== 1) off.add(event);
     for (const event of counts.keys()) if (!paired.has(event)) off.add(event);
+    // The journal row names the pairing row's session and label; a scheduled interrupt the
+    // host finished first is journaled `task` with `scheduled: "interrupt"`.
+    for (const u of users) {
+        const row = paired.get(String(u.event));
+        if (!row) continue;
+        const relabel =
+            row.label === "interrupt" && u.label === "task" && u.scheduled === "interrupt";
+        if (u.session !== row.session || (u.label !== row.label && !relabel))
+            off.add(String(u.event));
+    }
     return [...off].sort().map((event) => `${arm} ${event}`);
 });
+const prefix = new Set(allScheduled.map((e) => e.id));
+const outOfPrefix = [
+    ...new Set([
+        ...turns.filter((r) => !prefix.has(r.event)).map((r) => `${r.arm} ${r.event}`),
+        ...journal
+            .filter((e) => e.kind === "UserTurn" && !prefix.has(String(e.event)))
+            .map((e) => `${e.arm} ${e.event}`),
+    ]),
+].sort();
 // Each arm's summary must equal the rates recomputed from its delivered turns.
 const ratesMismatch = (manifest.order as string[]).filter((arm) => {
     const journaled = journal.find((e) => e.kind === "UserSimRates" && e.arm === arm);
@@ -192,6 +234,8 @@ const report = {
     probe_or_paste_text_altered: altered,
     non_filler_unsent: unsent,
     paste_provenance: provenance,
+    script_text_altered: scriptAltered,
+    out_of_prefix: outOfPrefix,
     rates: journal.filter((e) => e.kind === "UserSimRates"),
     flagged: journal
         .filter((e) => e.kind === "UserSimRates" && (e.outside as string[]).length > 0)
@@ -226,6 +270,8 @@ const failed =
     altered.length +
     unsent.length +
     provenance.length +
+    scriptAltered.length +
+    outOfPrefix.length +
     report.flagged.length +
     report.missing_rates.length +
     report.rates_mismatch.length +

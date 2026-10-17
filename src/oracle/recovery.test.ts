@@ -735,6 +735,76 @@ describe("plugin log attribution", () => {
         expect(r?.reasons).toEqual(["store ranges lack content digests"]);
     });
 
+    test("a span opens at the instant the offset file changed, ahead of its journal entry", () => {
+        seq = 0;
+        const base = 1_000_000_000;
+        // The jump's offset took effect at wall 4_000; its AdvanceClock was appended at 4_050.
+        const journal = [
+            entry("ClockOffset", 0, {
+                wall_ms: 1_000,
+                offset_s: (base - 1_000) / 1000,
+                offset_wall_ms: 1_000,
+            }),
+            entry("FaultObserved", 0, {
+                wall_ms: 1_010,
+                fault: "f",
+                type: "plugin_reload",
+                evidence: {},
+            }),
+            entry("BeginTurn", 0, { wall_ms: 1_100, event: "e-1" }),
+            entry("EndTurn", 900, { wall_ms: 2_000, event: "e-1", outcome: "ok" }),
+            entry("AdvanceClock", 9_000, {
+                wall_ms: 4_050,
+                from_ms: 900,
+                offset_s: (base + 5_000) / 1000,
+                offset_wall_ms: 4_000,
+            }),
+            entry("BeginTurn", 9_000, { wall_ms: 4_100, event: "e-2" }),
+            entry("EndTurn", 9_900, { wall_ms: 5_000, event: "e-2", outcome: "ok" }),
+        ];
+        // A fail-open published at wall 4_020 carries the new offset: it is placed in e-1's window,
+        // which runs to the next turn's start, so e-1 is dirty and e-2 is the first clean turn.
+        const log = [
+            `${stamp(4_020 + base + 5_000)} [eidnara][s-1] rust pass: decision=error served_from=raw`,
+        ];
+        const [r] = recoveries(run([arm(journal, log)], base));
+        expect([r?.recovered, r?.turns_to_first_clean]).toEqual([true, 2]);
+    });
+
+    test("a stamp at the instant an offset changed is placed through both offsets", () => {
+        seq = 0;
+        const base = 1_000_000_000;
+        const journal = [
+            entry("ClockOffset", 0, {
+                wall_ms: 1_000,
+                offset_s: (base - 1_000) / 1000,
+                offset_wall_ms: 1_000,
+            }),
+            entry("FaultObserved", 0, {
+                wall_ms: 1_010,
+                fault: "f",
+                type: "plugin_reload",
+                evidence: {},
+            }),
+            entry("BeginTurn", 0, { wall_ms: 1_100, event: "e-1" }),
+            entry("EndTurn", 900, { wall_ms: 2_000, event: "e-1", outcome: "ok" }),
+            entry("AdvanceClock", 9_000, {
+                wall_ms: 4_050,
+                from_ms: 900,
+                offset_s: (base + 5_000) / 1000,
+                offset_wall_ms: 4_000,
+            }),
+            entry("BeginTurn", 9_000, { wall_ms: 4_100, event: "e-2" }),
+            entry("EndTurn", 9_900, { wall_ms: 5_000, event: "e-2", outcome: "ok" }),
+        ];
+        // Stamped with the old offset in the millisecond the rename landed: wall 4_000 under it.
+        const log = [
+            `${stamp(4_000 + base - 1_000)} [eidnara][s-1] rust pass: decision=error served_from=raw`,
+        ];
+        const [r] = recoveries(run([arm(journal, log)], base));
+        expect([r?.recovered, r?.turns_to_first_clean]).toEqual([true, 2]);
+    });
+
     test("two offsets written in one millisecond give the instant to the newer", () => {
         seq = 0;
         const base = 1_000_000_000;
@@ -819,6 +889,57 @@ describe("plugin log attribution", () => {
             entry("EndTurn", 1_800, { wall_ms: 4_900, event: "e-2", outcome: "ok" }),
         ];
         expect(() => recoveries(run([arm(journal)], base))).toThrow("window");
+    });
+
+    test("an observation whose type differs from its firing refuses the arm", () => {
+        seq = 0;
+        const journal = [
+            entry("FaultFired", 0, { fault: "m", type: "model_switch", layer: "scheduler" }),
+            entry("FaultObserved", 0, {
+                fault: "m",
+                type: "daemon_restart",
+                evidence: { store: store("ok") },
+            }),
+            entry("BeginTurn", 10, { event: "e-1" }),
+            entry("EndTurn", 20, { event: "e-1", outcome: "ok" }),
+        ];
+        expect(() => recoveries(run([arm(journal, [], store("ok"))]))).toThrow("daemon_restart");
+    });
+
+    test("a restart checked twice in one journal refuses the arm", () => {
+        seq = 0;
+        const journal = [
+            entry("FaultObserved", 0, {
+                fault: "k",
+                type: "daemon_restart",
+                evidence: { store: store("ok") },
+            }),
+            entry("BeginTurn", 10, { event: "e-1" }),
+            entry("EndTurn", 20, { event: "e-1", outcome: "ok" }),
+            entry("StoreChecked", 20, { event: "e-1", fault: "k", store: store("ok") }),
+            entry("StoreChecked", 21, { event: "e-1", fault: "k", store: store("*** corrupt") }),
+        ];
+        expect(() => recoveries(run([arm(journal, [], store("ok"))]))).toThrow("checked twice");
+    });
+
+    test("a fault observed twice in one journal refuses the arm", () => {
+        seq = 0;
+        const journal = [
+            entry("FaultFired", 0, { fault: "k", type: "daemon_restart", layer: "scheduler" }),
+            entry("FaultObserved", 0, {
+                fault: "k",
+                type: "daemon_restart",
+                evidence: { store: store("*** corrupt") },
+            }),
+            entry("FaultObserved", 1, {
+                fault: "k",
+                type: "daemon_restart",
+                evidence: { store: store("ok") },
+            }),
+            entry("BeginTurn", 10, { event: "e-1" }),
+            entry("EndTurn", 20, { event: "e-1", outcome: "ok" }),
+        ];
+        expect(() => recoveries(run([arm(journal, [], store("ok"))]))).toThrow("observed twice");
     });
 
     test("a fault fired twice in one journal refuses the arm", () => {

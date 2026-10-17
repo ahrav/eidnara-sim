@@ -164,6 +164,18 @@ export function keepCompleteLines(path: string): number {
  * Every line but the last must parse; a cut last line, which a kill mid-write leaves, is
  * dropped. `bytes` is the length of the complete prefix.
  */
+/**
+ * Reads a finished journal for certification: a cut last line is dropped like `readJournal`,
+ * and a terminated last line that does not parse is refused as corruption.
+ */
+export function readJournalStrict(path: string): Entry[] {
+    const read = readJournal(path);
+    if (!existsSync(path)) return read;
+    const dropped = readFileSync(path).subarray(read.bytes ?? 0);
+    if (dropped.at(-1) === 0x0a) throw new Error(`${path}: last line is corrupt`);
+    return read;
+}
+
 export function readJournal(path: string): Entry[] & { bytes?: number } {
     const entries: Entry[] & { bytes?: number } = [];
     entries.bytes = 0;

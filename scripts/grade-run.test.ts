@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
     appendFileSync,
+    existsSync,
     mkdirSync,
     mkdtempSync,
     readFileSync,
@@ -10,6 +11,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { SimConfig } from "../src/config/config";
 import type { Snapshot } from "../src/grade/artefacts";
 import { canonicalJson, sha256Hex } from "../src/prereg/canonical";
 import { preregistrationHash } from "../src/prereg/validate";
@@ -224,6 +226,57 @@ describe("grade-run", () => {
             host: { "P7 probe turn failed": 1 },
             eidnara: { "P7 pairing lost": 1 },
         });
+    });
+
+    test("a P7 snapshot without its proxy-call artefact aborts grading instead of reading as a refusal", async () => {
+        const p7 = fixture("P7-pass");
+        const dir = run({ probes: [p7.probe] });
+        snapshot(dir, "eidnara", p7snapshot(p7.probe.id));
+        snapshot(dir, "host", {
+            ...p7snapshot(p7.probe.id),
+            artefacts: [{ id: "d", class: "diff", role: "turn", patch: "" }],
+        });
+        await expect(gradeRun(dir, null)).rejects.toThrow("lacks the proxy-call artefact P7 reads");
+        expect(existsSync(join(dir, "grades.jsonl"))).toBe(false);
+    });
+
+    test("a judge output that is a symlink is refused before the judge gateway starts", async () => {
+        const p7 = fixture("P7-pass");
+        const dir = run({ probes: [p7.probe] });
+        snapshot(dir, "eidnara", p7snapshot(p7.probe.id));
+        snapshot(dir, "host", { ...p7snapshot(p7.probe.id), id: "y" });
+        const outside = join(mkdtempSync(join(tmpdir(), "grade-run-out-")), "victim");
+        writeFileSync(outside, "keep me\n");
+        symlinkSync(outside, join(dir, "judgments.jsonl"));
+        const config = { bedrock: { region: "us-east-1", aws_profile: "none" } } as SimConfig;
+        await expect(gradeRun(dir, config)).rejects.toThrow("not a regular file");
+        expect(existsSync(join(dir, "judge-calls.jsonl"))).toBe(false);
+        expect(readFileSync(outside, "utf8")).toBe("keep me\n");
+    });
+
+    test("a journaled snapshot for an item the scenario does not compile aborts grading", async () => {
+        const dir = run({ probes: [p5.probe] });
+        snapshot(dir, "eidnara", snap);
+        snapshot(dir, "host", { ...snap, item: "P5-typo" });
+        await expect(gradeRun(dir, null)).rejects.toThrow("which the scenario does not compile");
+        expect(existsSync(join(dir, "grades.jsonl"))).toBe(false);
+    });
+
+    test("a scenario whose seed or tier differs from the manifest is refused despite a matching digest", async () => {
+        const dir = run({ probes: [p5.probe] });
+        snapshot(dir, "eidnara", snap);
+        const path = join(dir, "scenario.json");
+        const { scenario_hash: _old, ...body } = JSON.parse(readFileSync(path, "utf8"));
+        body.manifest.seed = 2;
+        writeFileSync(
+            path,
+            canonicalJson({ ...body, scenario_hash: sha256Hex(canonicalJson(body)) }),
+        );
+        const manifestPath = join(dir, "manifest.json");
+        const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+        manifest.scenario_hash = sha256Hex(canonicalJson(body));
+        writeFileSync(manifestPath, JSON.stringify(manifest));
+        await expect(gradeRun(dir, null)).rejects.toThrow("seed 2, not the manifest's S seed 1");
     });
 
     test("probes whose turn lies past the run's event prefix are reported as outside the run, for every arm", async () => {

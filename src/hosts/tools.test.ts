@@ -770,6 +770,21 @@ test("the message listing before an OpenCode turn spends the turn's own deadline
     expect(result.error).toContain("turn deadline 1500 ms");
 }, 10_000);
 
+test("an OpenCode abort that answers true while the turn runs on under its deadline is the interrupt even when the deadline then passes", async () => {
+    const host = opencodeHost({
+        session: {
+            messages: async () => ({ data: [] }),
+            prompt: () => Bun.sleep(1_600).then(() => ({ data: { info: {} } })),
+            abort: () => Bun.sleep(300).then(() => ({ data: true })),
+        },
+    });
+    Object.assign(host as unknown as Record<string, unknown>, {
+        abortWaitMs: 50,
+        drainWaitMs: 2_000,
+    });
+    expect(await host.prompt("go", 1_200, 50)).toEqual({ interrupted: true });
+}, 10_000);
+
 test("an aborted OpenCode turn whose tool listing then fails keeps the interrupt beside the capture error", async () => {
     let listings = 0;
     const host = opencodeHost({

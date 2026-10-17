@@ -420,10 +420,29 @@ export class DaemonStack {
     async restart(): Promise<void> {
         if (this.heldStdout === null) this.hold();
         const live = String(this.stack.logPath ?? "");
-        await this.stack.restartHost();
-        // The replacement owns the marker from here, so a kill before the logs are saved still
-        // lets a resume stop it before starting another daemon against the same store; the held
-        // stdout then lands through the marker, so a kill mid-append rolls it back.
+        // The replacement owns the marker from the moment the stack assigns its child, while its
+        // readiness is still awaited, so a kill in that wait still lets a resume stop it before
+        // starting another daemon against the same store.
+        const killed = this.pid();
+        let settled = false;
+        const publish = (async () => {
+            while (!settled) {
+                const pid = this.pid();
+                if (pid !== null && pid !== killed) {
+                    const marker = this.readMarker();
+                    if (marker) this.writeMarker({ ...marker, owner: this.owner() });
+                    return;
+                }
+                await Bun.sleep(5);
+            }
+        })();
+        try {
+            await this.stack.restartHost();
+        } finally {
+            settled = true;
+            await publish;
+        }
+        // The held stdout lands through the marker, so a kill mid-append rolls it back.
         const owner = this.owner();
         const marker = this.readMarker();
         if (marker) {
@@ -471,12 +490,14 @@ export class DaemonStack {
         if (marker?.stdout !== undefined && !sameLifetime) {
             this.drain({ ...marker, pending: marker.pending.filter((p) => p !== live) }, []);
             this.drain(null, [live]);
-            appendFileSync(this.ctx.logFile, stdout);
-            return;
+        } else {
+            if (marker?.stdout !== undefined) this.writeMarker(rest);
+            this.drain(marker ? rest : null, [live]);
         }
-        if (marker?.stdout !== undefined) this.writeMarker(rest);
-        this.drain(marker ? rest : null, [live]);
-        appendFileSync(this.ctx.logFile, stdout);
+        // The final stdout lands through the marker too, so a kill mid-append is rolled back on
+        // resume and the lifetime's stdout is kept whole; the marker is removed once it has landed.
+        this.saveHeldStdout({ pending: [], copying: null, owner: null, stdout });
+        rmSync(this.logSourceFile, { force: true });
     }
 }
 
@@ -1039,7 +1060,13 @@ export class OpencodeSimHost extends SimHost {
             // cannot reach the session's next prompt.
             const landed = await Promise.race([abort.late, Bun.sleep(0).then(() => false)]);
             abort.cancel();
-            if (first !== null && landed) return { interrupted: true };
+            if (landed) {
+                // The abort stopped the prompt, whether the prompt settled before or after the
+                // deadline race ended; it drains like an abort answered in time.
+                const drained = first ?? (await Promise.race([settled, this.drained()]));
+                if (drained === null) throw new Error("OpenCode turn still running after abort");
+                return { interrupted: true };
+            }
         }
         if (first === null) {
             const abort = this.abortSession();

@@ -615,6 +615,22 @@ describe("call records", () => {
         expect(records.records[0]?.response_sha256).toBe(sha256Hex(""));
     });
 
+    test("an upstream failure before any assistant text records no response text", async () => {
+        const upstream = {
+            calls: 0,
+            async converse() {
+                throw Object.assign(new Error("bad request"), {
+                    name: "ValidationException",
+                    $metadata: { httpStatusCode: 400 },
+                });
+            },
+        } as unknown as Upstream;
+        const { records, url } = await start(null, upstream);
+        await hostCallJson(url, AGENT_BODY, 5_000);
+        expect(records.records[0]?.status).toBe(400);
+        expect(records.records[0]?.response_text).toBeUndefined();
+    });
+
     test("a non-streaming agent call records the response text it relayed", async () => {
         const { records, url } = await start(null);
         await hostCallJson(url, AGENT_BODY, 2_000);

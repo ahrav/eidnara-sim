@@ -281,7 +281,8 @@ const CALLS: Evidence = ["proxy-call", null];
  * The artefacts a probe item's grader reads as evidence. A grader reading a missing one would
  * grade an empty default, so a snapshot without it is refused. P6 items open a later session
  * of a project the agent already worked in, so their prior-session diff is always expected;
- * a P13 item reads the turn diff unless its check names commands instead.
+ * a P13 item reads the turn diff unless its check names commands instead; a P7 item's answer
+ * is the last agent call of its turn.
  */
 function evidenceFor(probe: ProbeItem): Evidence[] {
     const check = (probe.check ?? {}) as Check;
@@ -293,6 +294,8 @@ function evidenceFor(probe: ProbeItem): Evidence[] {
         case "P8":
         case "P9":
         case "P14":
+            return [CALLS];
+        case "P7":
             return [CALLS];
         case "P10":
             return [TURN_DIFF, CALLS];

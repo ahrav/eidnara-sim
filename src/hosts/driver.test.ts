@@ -563,6 +563,32 @@ describe("HostDriver lifecycle", () => {
         expect(spent.undelivered).toBe(true);
     });
 
+    test("a probe's pre-turn snapshot spends the turn's shared deadline", async () => {
+        const { driver } = fixture("host", { p: gitRepo() });
+        await driver.reset();
+        const host = new FakeHost({} as HostContext, "/x");
+        driver.host = host as unknown as SimHost;
+        const snapshots = (driver as unknown as { snapshots: { tree: (d: string) => string } })
+            .snapshots;
+        const tree = snapshots.tree.bind(snapshots);
+        snapshots.tree = (d: string) => {
+            const until = Date.now() + 300;
+            while (Date.now() < until) {}
+            return tree(d);
+        };
+        await driver.event(ev("session_start", { session: "s-0" }));
+        await driver.event(
+            ev("user_turn", {
+                id: "e-8",
+                session: "s-0",
+                text: "go",
+                probe: "q-1",
+                deadline_ms: 900,
+            }),
+        );
+        expect(host.deadlines[0]).toBeLessThan(700);
+    });
+
     test("a scheduled interrupt reaches the host's prompt and the turn reports it", async () => {
         const { driver } = fixture("host");
         const host = new FakeHost({} as HostContext, "/x");
@@ -1420,6 +1446,18 @@ test("a tool run reported at its start is on record, and its end report replaces
         { command: "cargo build", exit: 1, scenario_ms: 1, call: "t1" },
         { command: "ls", exit: 0, scenario_ms: 2 },
     ]);
+});
+
+test("a symlink planted at the saved git-config path is never written through on reset", async () => {
+    const { driver, armDir } = fixture("host", { p: gitRepo() });
+    const victim = join(tmp(), "victim");
+    writeFileSync(victim, "keep");
+    mkdirSync(armDir, { recursive: true });
+    symlinkSync(victim, join(armDir, "p.gitconfig"));
+    await driver.reset();
+    expect(readFileSync(victim, "utf8")).toBe("keep");
+    expect(lstatSync(join(armDir, "p.gitconfig")).isSymbolicLink()).toBe(false);
+    expect(readFileSync(join(armDir, "p.gitconfig"), "utf8")).toContain("[core]");
 });
 
 test("a symlink planted at the recorder's staging path is never written through", () => {
