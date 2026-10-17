@@ -70,8 +70,9 @@ The panel lists records by id, without their catalog names.
 
 The run-level checks cover:
 
-- SIM-P02 and SIM-P03: pairing before divergence over turns that have a
-  reference counterpart, divergence records ahead of their turn carrying
+- SIM-P02 and SIM-P03: pairing before divergence over turns below their
+  arm's divergence that have a reference counterpart, divergence records
+  ahead of their turn carrying
   the two turns' digests (a replayed run's against the digest its source
   tape's pairing log recorded), and no turn whose context digest differs
   from its reference arm's without a divergence record;
@@ -87,8 +88,10 @@ The run-level checks cover:
   per arm;
 - SIM-P25: every user turn has a label;
 - SIM-P30: every observed fault was scheduled, and every injected call
-  names a scheduled fault fired before it, before its trigger session
-  ended, and within a bounded fault's count;
+  names a scheduled fault (from the manifest's `fault_override` when the
+  run had one) fired before it, before its trigger session ended, and
+  within a bounded fault's count; the injected calls are the instances,
+  so a run with scheduler faults alone is unreached;
 - SIM-P41: every reached probe has a snapshot, set once, after the
   probe's first `EndTurn` and before any later turn, and every grade
   cites a journaled snapshot of its item;

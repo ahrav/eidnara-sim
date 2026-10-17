@@ -118,8 +118,9 @@ describe("property witness", () => {
                 propertyWitness(catalog, [second(broken)]).map((w) => [w.id, w.status]),
             );
         const sound = status(false);
+        // P30 is reached by injected calls; an observed infrastructure fault alone is none.
         expect(Object.values(sound)).toEqual(
-            ids.map((n) => (n === "P03" ? "unreached" : "witnessed")),
+            ids.map((n) => (n === "P03" || n === "P30" ? "unreached" : "witnessed")),
         );
         expect(Object.values(status(true))).toEqual(ids.map(() => "violated"));
         const busy = propertyWitness(catalog, [second(false, true)]);
@@ -203,6 +204,7 @@ function second(broken: boolean, busy = false): GradedRun {
 
 interface Parts {
     capped?: boolean;
+    fault_override?: object[];
     tapes?: string[];
     events?: object[];
     pairing?: object[];
@@ -222,6 +224,7 @@ function made(p: Parts): GradedRun {
             order: ["host", "eidnara"],
             events: p.capped ? 0 : 3,
             tapes: p.tapes ?? [],
+            fault_override: p.fault_override ?? null,
         }),
     );
     writeFileSync(join(dir, "pairing.jsonl"), lines(p.pairing ?? []));
@@ -263,6 +266,19 @@ describe("property witness evidence", () => {
         expect(
             one("P02", made({ pairing: [turn("host", "a"), turn("eidnara", "a")] })),
         ).toMatchObject({ status: "witnessed", detail: "1 paired user turns" });
+        const diverged = {
+            kind: "divergedAt",
+            arm: "eidnara",
+            session: "s-1",
+            event: "e-1",
+            index: 0,
+            digest: "b",
+            reference_digest: "a",
+            against: "reference",
+        };
+        expect(
+            one("P02", made({ pairing: [turn("host", "a"), diverged, turn("eidnara", "b")] })),
+        ).toMatchObject({ status: "unreached" });
     });
 
     test("SIM-P03 needs the divergence record's hashes to be the turns' digests", () => {
@@ -403,6 +419,20 @@ describe("property witness evidence", () => {
         expect(one("P30", made({ faults, journal: [], calls: [call("f-9", 60)] }))).toMatchObject({
             status: "violated",
         });
+        const observed = { kind: "FaultObserved", scenario_ms: 5, wall_ms: 50, fault: "f-1" };
+        expect(one("P30", made({ faults, journal: [observed] }))).toMatchObject({
+            status: "unreached",
+        });
+        expect(
+            one("P30", made({ faults, journal: [{ ...observed, fault: "f-9" }] })),
+        ).toMatchObject({ status: "violated" });
+        const overridden = made({
+            faults: [],
+            fault_override: faults,
+            journal: [fired],
+            calls: [call("f-1", 60)],
+        });
+        expect(one("P30", overridden)).toMatchObject({ status: "witnessed" });
     });
 
     test("SIM-P30 holds each injected call inside its fault's window: the trigger session, and the count of a bounded fault", () => {

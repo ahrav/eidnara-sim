@@ -168,7 +168,7 @@ an order break, is a D2 caveat for that host.
 The continuity table gives each host and arm's P8 and P9 pass rate, over
 non-excluded items, beside the v1
 harness's cross-session recall (host 0 to 3%, Eidnara 99 to 100%). For
-every pass it counts the passes whose turn ran a reading or searching
-command (`cat`, `grep`, `rg`, `find`, `sqlite3`, Pi's `read`, and the
-like) naming the host's transcript store, so a `host` pass is split
-between transcript search and the rest.
+every pass it counts the passes whose turn ran a simple command whose
+program is a reader or searcher (`cat`, `grep`, `rg`, `find`, `sqlite3`,
+Pi's `read`, and the like) with the host's transcript store among its
+words, so a `host` pass is split between transcript search and the rest.

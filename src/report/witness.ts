@@ -5,6 +5,7 @@ import { canonicalJson } from "../prereg/canonical";
 import { type Entry, readJournal } from "../run/journal";
 import { checkJournal } from "../run/journal-check";
 import { referenceArm } from "../run/run";
+import type { FaultEpisode } from "../scenario/faults";
 import { LABELS, type Label, realisedRates } from "../usersim/plan";
 import { type PairingRecord, pairingMismatches } from "../usersim/usersim";
 import type { GradedRun } from "./observe";
@@ -21,7 +22,12 @@ export interface PropertyWitness {
 interface Ctx {
     g: GradedRun;
     pairing: PairingRecord[];
-    manifest: { order: string[]; events: number; tapes?: string[] };
+    manifest: {
+        order: string[];
+        events: number;
+        tapes?: string[];
+        fault_override?: FaultEpisode[] | null;
+    };
     /** Digests by `arm/event` from the pairing logs of the tapes a replayed run took. */
     recorded: Map<string, string>;
     entries: Entry[];
@@ -98,8 +104,17 @@ const CHECKS: Record<string, Check> = {
             const reference = referenceArm(c.manifest.order);
             const turns = c.pairing.filter((r) => r.kind === "turn");
             const keys = new Set(turns.map((r) => `${r.arm}/${r.event}`));
+            const diverged = new Map(
+                c.pairing
+                    .filter((r) => r.kind === "divergedAt")
+                    .map((r) => [`${r.arm}/${r.session}`, r.index]),
+            );
+            // The property covers indices below the arm's divergence, as the mismatch check does.
             n += turns.filter(
-                (r) => r.arm !== reference(r.arm) && keys.has(`${reference(r.arm)}/${r.event}`),
+                (r) =>
+                    r.arm !== reference(r.arm) &&
+                    keys.has(`${reference(r.arm)}/${r.event}`) &&
+                    r.index < (diverged.get(`${r.arm}/${r.session}`) ?? Number.POSITIVE_INFINITY),
             ).length;
         }
         return outcome(n, bad, "paired user turns");
@@ -217,9 +232,10 @@ const CHECKS: Record<string, Check> = {
         let n = 0;
         const bad: string[] = [];
         for (const c of runs) {
-            const known = (id: unknown) => c.g.scenario.faults.some((f) => f.id === id);
+            // The run executes its manifest's override when `--faults` named one.
+            const faults = c.manifest.fault_override ?? c.g.scenario.faults;
+            const known = (id: unknown) => faults.some((f) => f.id === id);
             for (const e of journalOf(c).filter((x) => x.kind === "FaultObserved")) {
-                n++;
                 if (!known(e.fault)) bad.push(`observed ${e.fault} unscheduled`);
             }
             for (const a of c.g.run.arms) {
@@ -231,7 +247,7 @@ const CHECKS: Record<string, Check> = {
                 for (const call of injected) {
                     n++;
                     const id = call.fault_ref as string;
-                    const fault = c.g.scenario.faults.find((f) => f.id === id);
+                    const fault = faults.find((f) => f.id === id);
                     const before = fired.some(
                         (e) => e.fault === id && e.wall_ms <= call.started_wall_ms,
                     );
@@ -254,11 +270,7 @@ const CHECKS: Record<string, Check> = {
                 }
             }
         }
-        return outcome(
-            n,
-            bad,
-            "observed faults and injected calls, each fault scheduled and inside its window",
-        );
+        return outcome(n, bad, "injected calls, each naming a scheduled fault inside its window");
     },
     "SIM-P41": (runs) => {
         const seen = new Map<string, { n: number; snapshot: unknown }>();

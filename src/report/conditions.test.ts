@@ -156,9 +156,16 @@ test("a transcript path in a command counts as a read only with a reading or sea
     const host = g.run.arms[0] as ArmLogs;
     host.tools = [
         { turn: "e-1", command: "rm -rf ~/.pi/agent/sessions", exit: 0, scenario_ms: 0 },
+        { turn: "e-1", command: "echo cat ~/.pi/agent/sessions", exit: 0, scenario_ms: 0 },
+        {
+            turn: "e-1",
+            command: "grep x f.txt; echo ~/.pi/agent/sessions",
+            exit: 0,
+            scenario_ms: 0,
+        },
         {
             turn: "e-3",
-            command: "sqlite3 ~/.local/share/opencode/opencode.db 'select 1'",
+            command: "cd /tmp && sqlite3 ~/.local/share/opencode/opencode.db 'select 1'",
             exit: 0,
             scenario_ms: 0,
         },

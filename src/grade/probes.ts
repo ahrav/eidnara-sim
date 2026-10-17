@@ -304,13 +304,20 @@ export class GradeLog {
     }
 
     append(record: GradeRecord): void {
-        const expected = this.nextVersion(record.item, record.arm);
-        if (record.version !== expected) {
-            throw new GradeRefused(
-                `grade ${record.item}/${record.arm} v${record.version} expected v${expected}`,
-            );
+        this.appendAll([record]);
+    }
+
+    /** Appends the records in one write, so a kill leaves either all of them or none. */
+    appendAll(records: GradeRecord[]): void {
+        for (const record of records) {
+            const expected = this.nextVersion(record.item, record.arm);
+            if (record.version !== expected) {
+                throw new GradeRefused(
+                    `grade ${record.item}/${record.arm} v${record.version} expected v${expected}`,
+                );
+            }
         }
-        appendFileSync(this.path, `${JSON.stringify(record)}\n`);
+        appendFileSync(this.path, records.map((r) => `${JSON.stringify(r)}\n`).join(""));
     }
 }
 
