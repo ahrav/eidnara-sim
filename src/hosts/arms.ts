@@ -243,8 +243,12 @@ export class DaemonStack {
     /** The old generation's last bytes stream while it is crashed; the new one is attached once started. */
     async restart(): Promise<void> {
         await this.stack.crashHost();
-        await this.stack.startHost();
-        this.attach();
+        // A start that fails still captured the new generation's output; it reaches the log too.
+        try {
+            await this.stack.startHost();
+        } finally {
+            this.attach();
+        }
     }
 
     async stop(): Promise<void> {
@@ -741,7 +745,8 @@ export class OpencodeSimHost extends SimHost {
         const script = [
             "#!/bin/sh",
             `r=${record}`,
-            `printf '%s %s\\n' "$$" "$(awk '{print $22}' /proc/$$/stat)" > "$r.$$" || exit 70`,
+            `s=$(awk '{print $22}' /proc/$$/stat) && [ -n "$s" ] || exit 70`,
+            `printf '%s %s\\n' "$$" "$s" > "$r.$$" || exit 70`,
             `mv -f "$r.$$" "$r" || exit 70`,
             `[ "${harness.pid} $(awk '{print $22}' /proc/${harness.pid}/stat 2>/dev/null)" = ${shellQuote(`${harness.pid} ${harness.start ?? ""}`)} ] || exit 70`,
             `exec ${argv.map(shellQuote).join(" ")} "$@"`,

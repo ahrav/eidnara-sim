@@ -7,6 +7,7 @@ import type { Journal } from "./journal";
 export class Clock {
     private readonly busy = new Set<string>();
     private anchor: number | null = null;
+    private held = false;
 
     constructor(
         private scenario: number,
@@ -30,8 +31,20 @@ export class Clock {
     }
 
     begin(id: string): void {
-        if (this.busy.size === 0) this.anchor = this.wall();
+        if (this.busy.size === 0 && !this.held) this.anchor = this.wall();
         this.busy.add(id);
+    }
+
+    /** Scenario time stands still while held, whatever is busy: an arm has no time of its own before it starts. */
+    hold(): void {
+        this.now();
+        this.anchor = null;
+        this.held = true;
+    }
+
+    release(): void {
+        this.held = false;
+        if (this.busy.size > 0) this.anchor = this.wall();
     }
 
     end(id: string): void {
