@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readdirSync, readFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ProbeItem } from "../scenario/compile";
@@ -125,8 +125,119 @@ describe("grading harness", () => {
         const g = grade("P2-pass");
         log.append(g);
         expect(() => log.append(g)).toThrow("expected v2");
-        log.append({ ...g, version: log.nextVersion(g.item, g.arm) });
+        log.append({ ...g, version: log.nextVersion(g) });
         expect(log.all().map((x) => x.version)).toEqual([1, 2]);
         expect(log.latest().map((x) => x.version)).toEqual([2]);
     });
+
+    test("a grade log reopened over a cut last line drops the cut and allocates the next version", () => {
+        const path = join(mkdtempSync(join(tmpdir(), "sim-grades-")), "grades.jsonl");
+        const g = grade("P2-pass");
+        new GradeLog(path).append(g);
+        appendFileSync(path, '{"item":"P2-a","arm":"eidnara","ver');
+        const reopened = new GradeLog(path);
+        expect(reopened.nextVersion(g)).toBe(2);
+        reopened.append({ ...g, version: 2 });
+        expect(reopened.all().map((x) => x.version)).toEqual([1, 2]);
+        expect(new GradeLog(path).all().map((x) => x.version)).toEqual([1, 2]);
+    });
+});
+
+test("an answer the proxy cut at its cap is refused rather than graded on its prefix", () => {
+    const f = fixture("P8-pass");
+    const snap = structuredClone(f.snapshots[0]) as Snapshot;
+    const calls = snap.artefacts.find((a) => a.class === "proxy-call") as unknown as {
+        calls: Record<string, unknown>[];
+    };
+    const last = calls.calls.at(-1) as Record<string, unknown>;
+    last.response_text_truncated = true;
+    expect(() => gradeItem(f.probe, [snap], rules)).toThrow("truncated");
+});
+
+test("a snapshot without the artefact its grader reads is refused rather than graded on a default", () => {
+    const f = fixture("P2-pass");
+    const snap = structuredClone(f.snapshots[0]) as Snapshot;
+    snap.artefacts = [{ id: "c", class: "command-log", role: "turn", commands: [] }];
+    expect(() => gradeItem(f.probe, [snap], rules)).toThrow("lacks the diff (turn) artefact");
+    const p13 = fixture("P13-pass");
+    const only = structuredClone(p13.snapshots[0]) as Snapshot;
+    only.artefacts = only.artefacts.filter((a) => a.class !== "proxy-call");
+    expect(() => gradeItem(p13.probe, [only], rules)).toThrow("lacks the proxy-call artefact");
+});
+
+test("a fold call that failed is no fold for P13", () => {
+    const f = fixture("P13-pass");
+    const snap = structuredClone(f.snapshots[0]) as Snapshot;
+    const calls = snap.artefacts.find((a) => a.class === "proxy-call") as unknown as {
+        calls: Record<string, unknown>[];
+    };
+    for (const c of calls.calls) if (c.component === "history_summarizer") c.failed = true;
+    const grade = gradeItem(f.probe, [snap], rules);
+    expect(grade?.verdict).toBe("excluded");
+    expect(grade?.reason).toBe("no fold in the item's range");
+});
+
+test("P6 without its prior-session diff, P5 without its command log, and P10 without calls are refused", () => {
+    const without = (name: string, drop: (a: { class: string; role?: string }) => boolean) => {
+        const f = fixture(name);
+        const snap = structuredClone(f.snapshots[0]) as Snapshot;
+        snap.artefacts = snap.artefacts.filter((a) => !drop(a as { class: string; role?: string }));
+        return () => gradeItem(f.probe, [snap], rules);
+    };
+    expect(without("P6-pass", (a) => a.role === "prior-session")).toThrow("diff (prior-session)");
+    expect(without("P5-pass", (a) => a.class === "command-log")).toThrow("command-log (turn)");
+    expect(without("P10-pass", (a) => a.class === "proxy-call")).toThrow("proxy-call");
+});
+
+test("an artefact without its class's payload is refused rather than read as empty evidence", () => {
+    const f = fixture("P2-pass");
+    const snap = structuredClone(f.snapshots[0]) as Snapshot;
+    snap.artefacts = [
+        { id: "d", class: "diff", role: "turn" } as unknown as Snapshot["artefacts"][number],
+    ];
+    expect(() => gradeItem(f.probe, [snap], rules)).toThrow("has no patch");
+    const p13 = fixture("P13-pass");
+    const calls = structuredClone(p13.snapshots[0]) as Snapshot;
+    calls.artefacts = calls.artefacts.map((a) =>
+        a.class === "proxy-call"
+            ? ({ id: a.id, class: "proxy-call" } as unknown as Snapshot["artefacts"][number])
+            : a,
+    );
+    expect(() => gradeItem(p13.probe, [calls], rules)).toThrow("has no calls");
+});
+
+test("test-result and workspace-state artefacts are accepted with their own payloads", () => {
+    const f = fixture("P2-pass");
+    const snap = structuredClone(f.snapshots[0]) as Snapshot;
+    snap.artefacts.push(
+        { id: "t", class: "test-result", command: "cargo test", exit: 0, summary: ["ok"] },
+        { id: "w", class: "workspace-state", files: { "a.rs": "abc" } },
+    );
+    expect(gradeItem(f.probe, [snap], rules)?.verdict).toBe("pass");
+    snap.artefacts.pop();
+    snap.artefacts.push({
+        id: "w2",
+        class: "workspace-state",
+    } as unknown as Snapshot["artefacts"][number]);
+    expect(() => gradeItem(f.probe, [snap], rules)).toThrow("has no files");
+});
+
+test("a command log whose entries lack command text or a time is refused", () => {
+    const p5 = fixture("P5-pass");
+    const snap = structuredClone(p5.snapshots[0]) as Snapshot;
+    snap.artefacts = snap.artefacts.map((a) =>
+        a.class === "command-log" ? { ...a, commands: [{}] } : a,
+    ) as Snapshot["artefacts"];
+    expect(() => gradeItem(p5.probe, [snap], rules)).toThrow("has no commands");
+});
+
+test("a grade log whose restored versions skip or repeat is refused", () => {
+    const dir = mkdtempSync(join(tmpdir(), "grade-log-"));
+    const path = join(dir, "grades.jsonl");
+    const row = (version: number) =>
+        JSON.stringify({ arm: "a", item: "P5-a", probe: "P5", version, verdict: "pass" });
+    writeFileSync(path, `${row(1)}\n${row(3)}\n`);
+    expect(() => new GradeLog(path)).toThrow(/version 3 of .* where version 2 belongs/);
+    writeFileSync(path, `${row(1)}\n${row(1)}\n`);
+    expect(() => new GradeLog(path)).toThrow("where version 2 belongs");
 });

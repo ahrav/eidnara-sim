@@ -40,6 +40,39 @@ export interface HostContext {
     proxyHttp2: string;
     model: string;
     contextLimit: number;
+    now?: () => number;
+    /**
+     * The host invokes `onTool` as it records a run; `drainTools` invokes it for the runs it
+     * adds itself. A run with a `call` id may be reported at its start with a null exit and
+     * again at its end, and the later report replaces the earlier one.
+     */
+    onTool?: (run: ToolRun) => void;
+}
+
+export interface ToolRun {
+    command: string;
+    exit: number | null;
+    scenario_ms: number;
+    /** The host's id for the run, when it reports a start before the end; a later report with the same id replaces the earlier one. */
+    call?: string;
+}
+
+const TARGET_KEYS = ["path", "filePath", "pattern", "file_path"];
+
+export function toolCommand(tool: string, args: Record<string, unknown> | undefined): string {
+    if (typeof args?.command === "string") return args.command;
+    const key = TARGET_KEYS.find((k) => typeof args?.[k] === "string");
+    if (!key || !args) return `${tool} ${JSON.stringify(args ?? {})}`;
+    const rest = Object.entries(args).filter(([k, v]) => k !== key && v !== undefined);
+    const scalars = rest
+        .filter(([, v]) => typeof v !== "string" && typeof v !== "object")
+        .map(([k, v]) => `${k}=${JSON.stringify(v)}`)
+        .sort();
+    const body = rest
+        .filter(([, v]) => typeof v === "string" || typeof v === "object")
+        .map(([, v]) => (typeof v === "string" ? v : JSON.stringify(v)));
+    const head = [`${tool} ${args[key]}`, ...scalars].join(" ");
+    return [head, ...body].join("\n");
 }
 
 export interface PromptResult {
@@ -179,11 +212,71 @@ export abstract class SimHost {
     abstract closeSession(): Promise<void>;
     abstract transcriptEnv(): Record<string, string>;
     abstract hostPid(): number | null;
+
+    private tools: ToolRun[] = [];
+
+    protected logTool(
+        tool: string,
+        args: Record<string, unknown> | undefined,
+        exit: number | null,
+        scenario_ms = this.ctx.now?.() ?? 0,
+        call?: string,
+    ) {
+        const run: ToolRun = { command: toolCommand(tool, args), exit, scenario_ms };
+        if (call) run.call = call;
+        this.tools.push(run);
+        this.ctx.onTool?.(run);
+    }
+
+    protected unfinished(): ToolRun[] {
+        return [];
+    }
+
+    drainTools(): ToolRun[] {
+        const open = this.unfinished();
+        for (const run of open) this.ctx.onTool?.(run);
+        return [...this.tools.splice(0), ...open];
+    }
 }
 
 export class PiSimHost extends SimHost {
     private rpc: Untyped = null;
     readonly agentDir = join(this.ctx.root, "home/.pi/agent");
+    private readonly started = new Map<
+        string,
+        { tool: string; args: Record<string, unknown>; scenario_ms: number }
+    >();
+
+    protected override unfinished(): ToolRun[] {
+        const open = [...this.started.entries()];
+        this.started.clear();
+        return open.map(([call, t]) => ({
+            command: toolCommand(t.tool, t.args),
+            exit: null,
+            scenario_ms: t.scenario_ms,
+            call,
+        }));
+    }
+
+    /**
+     * A tool run is timed from its start event, the moment the action began, and reported to
+     * the recorder at that moment with a null exit, so a kill before the end event leaves the
+     * run on record; the end event reports it again with its exit.
+     */
+    private toolEvent(e: Untyped): void {
+        if (e.type === "tool_execution_start") {
+            const scenario_ms = this.ctx.now?.() ?? 0;
+            this.started.set(e.toolCallId, { tool: e.toolName, args: e.args, scenario_ms });
+            const command = toolCommand(e.toolName, e.args);
+            this.ctx.onTool?.({ command, exit: null, scenario_ms, call: e.toolCallId });
+        }
+        if (e.type !== "tool_execution_end") return;
+        const run = this.started.get(e.toolCallId);
+        this.started.delete(e.toolCallId);
+        if (!run) return;
+        const exit = e.isError === true ? 1 : 0;
+        this.logTool(run.tool, run.args, exit, run.scenario_ms, e.toolCallId);
+    }
 
     private writeConfigs(connectionFile: string | null): void {
         mkdirSync(this.agentDir, { recursive: true });
@@ -260,6 +353,8 @@ export class PiSimHost extends SimHost {
         this.rpc = new rpcClient.PiRpcProcess(child, new rpcClient.PiRpcProtocol(), {
             stderrLimit: 20_000,
         });
+        this.started.clear();
+        this.rpc.onEvent((e: Untyped) => this.toolEvent(e));
         const ready = this.rpc.sendCommand("get_state", {}, { timeoutMs: 120_000 });
         await Promise.race([ready, spawnError]);
     }
@@ -314,6 +409,21 @@ export class PiSimHost extends SimHost {
         return { PI_CODING_AGENT_DIR: this.agentDir };
     }
 }
+
+const NON_INTERACTIVE = ["question", "plan_enter", "plan_exit"].map((permission) => ({
+    permission,
+    action: "deny",
+    pattern: "*",
+}));
+
+/** A tool part's exit by its OpenCode status; a pending or running part has none. */
+const EXIT: Record<string, number> = { completed: 0, error: 1 };
+
+/** An OpenCode tool part's stable id, which keys its run across the turn's listing and a resume. */
+const callId = (part: Untyped): string | undefined => {
+    const id = part.callID ?? part.id;
+    return typeof id === "string" ? `oc:${id}` : undefined;
+};
 
 export class OpencodeSimHost extends SimHost {
     private oc: Untyped = null;
@@ -388,11 +498,12 @@ export class OpencodeSimHost extends SimHost {
             .at(0);
         if (latest) {
             this.sid = String(latest.id);
+            await this.recoverTools(120_000);
             return;
         }
         const created = await this.client.session.create({
             query: { directory: cwd },
-            body: { title: `sim-${session}` },
+            body: { title: `sim-${session}`, permission: NON_INTERACTIVE },
         });
         if (!created.data)
             throw new Error(`session.create failed: ${JSON.stringify(created.error)}`);
@@ -414,7 +525,105 @@ export class OpencodeSimHost extends SimHost {
         return pids.length > 0 ? Math.min(...pids.map(Number)) : null;
     }
 
+    /** Lists the session's messages within `deadlineMs`; a listing that stalls past it throws. */
+    private async messages(
+        deadlineMs: number,
+    ): Promise<Array<{ info: Untyped; parts: Untyped[] }>> {
+        const controller = new AbortController();
+        const call = this.client.session.messages({
+            path: { id: this.sid },
+            signal: controller.signal,
+        });
+        call.catch(() => undefined);
+        const listed = await Promise.race([call, Bun.sleep(deadlineMs).then(() => null)]);
+        if (listed === null) {
+            controller.abort();
+            throw new Error(`session.messages timed out after ${deadlineMs} ms`);
+        }
+        if (listed.error || !listed.data) {
+            throw new Error(`session.messages failed: ${JSON.stringify(listed.error ?? null)}`);
+        }
+        return listed.data as Array<{ info: Untyped; parts: Untyped[] }>;
+    }
+
+    private async logTurnTools(
+        seen: Set<string>,
+        startScenario: number,
+        deadlineMs: number,
+    ): Promise<void> {
+        const listed = await this.messages(deadlineMs);
+        const fresh = listed.filter((m) => !seen.has(String(m.info?.id)));
+        const origin = Math.min(...fresh.map((m) => Number(m.info?.time?.created ?? Infinity)));
+        for (const m of fresh) {
+            for (const part of m.parts.filter((p) => p.type === "tool")) {
+                const at = Number(part.state?.time?.start ?? origin);
+                const ms = startScenario + (Number.isFinite(origin) ? Math.max(0, at - origin) : 0);
+                const exit = EXIT[part.state?.status] ?? null;
+                this.logTool(part.tool, part.state?.input, exit, ms, callId(part));
+            }
+        }
+    }
+
+    /**
+     * On reattaching to a session the killed harness left open, reports every tool part the
+     * session's messages hold, keyed by the part's id, so a run the interrupted turn executed
+     * reaches the recorder; a run it already holds keeps its recorded start time.
+     */
+    async recoverTools(deadlineMs: number): Promise<void> {
+        this.recoverParts(await this.messages(deadlineMs));
+    }
+
+    /**
+     * The message ids the last turn saw before its post-turn listing failed; the next turn's
+     * pre-turn listing reports the tool parts of every message beyond them.
+     */
+    private unlogged: Set<string> | null = null;
+
+    private recoverParts(messages: Array<{ info: Untyped; parts: Untyped[] }>): void {
+        const now = this.ctx.now?.() ?? 0;
+        for (const m of messages) {
+            for (const part of m.parts.filter((p) => p.type === "tool")) {
+                const command = toolCommand(part.tool, part.state?.input);
+                const exit = EXIT[part.state?.status] ?? null;
+                this.ctx.onTool?.({ command, exit, scenario_ms: now, call: callId(part) });
+            }
+        }
+    }
+
+    /**
+     * Runs one turn under `timeoutMs` and then logs the tool parts of the messages it added, on
+     * every outcome: the next turn treats those messages as seen, so a turn that errored or hit
+     * its deadline logs its tools here or never. The deadline also bounds the message listings
+     * before and after the turn: a listing that stalls before the turn fails the turn, and one
+     * that stalls after it fails the turn as a capture gap, since its tool runs are then
+     * unknown. A failed turn whose listing also fails keeps its own error and names the gap.
+     */
     async prompt(text: string, timeoutMs: number): Promise<PromptResult> {
+        const deadline = Date.now() + timeoutMs;
+        const remaining = () => Math.max(1_000, deadline - Date.now());
+        let seen: Set<string>;
+        try {
+            const listed = await this.messages(timeoutMs);
+            if (this.unlogged)
+                this.recoverParts(listed.filter((m) => !this.unlogged?.has(String(m.info?.id))));
+            this.unlogged = null;
+            seen = new Set(listed.map((m) => String(m.info?.id)));
+        } catch (caught) {
+            return { error: `tool capture: ${String(caught)}`.slice(0, 2000) };
+        }
+        const startScenario = this.ctx.now?.() ?? 0;
+        const outcome = await this.turn(text, remaining());
+        try {
+            await this.logTurnTools(seen, startScenario, remaining());
+        } catch (caught) {
+            this.unlogged = seen;
+            const gap = `tool capture: ${String(caught)}`;
+            return { error: (outcome.error ? `${outcome.error} | ${gap}` : gap).slice(0, 2000) };
+        }
+        return outcome;
+    }
+
+    private async turn(text: string, timeoutMs: number): Promise<PromptResult> {
         const model = { providerID: "amazon-bedrock", modelID: this.ctx.model };
         const call = this.client.session.prompt({
             path: { id: this.sid },
@@ -432,7 +641,10 @@ export class OpencodeSimHost extends SimHost {
             if (drained === null) throw new Error("OpenCode turn still running 30 s after abort");
             return { error: `turn deadline ${timeoutMs} ms` };
         }
-        if ("caught" in first) return { error: String(first.caught).slice(0, 2000) };
+        if ("caught" in first) {
+            const tail = String(this.oc?.stderr?.() ?? "").slice(-600);
+            return { error: `${String(first.caught)} | serve stderr: ${tail}`.slice(0, 2000) };
+        }
         const { result } = first;
         if (result.error) return { error: JSON.stringify(result.error).slice(0, 2000) };
         const info = result.data?.info;

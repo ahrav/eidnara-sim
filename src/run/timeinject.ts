@@ -9,7 +9,7 @@ export const FAKETIME_LIB = join(
     VENDOR,
     `libfaketime-${FAKETIME_VERSION}`,
     "src",
-    "libfaketime.so.1",
+    "libfaketimeMT.so.1",
 );
 
 export async function buildFaketime(): Promise<string> {
@@ -28,7 +28,7 @@ export async function buildFaketime(): Promise<string> {
     const src = join(VENDOR, `libfaketime-${FAKETIME_VERSION}`, "src");
     for (const argv of [
         ["tar", "xzf", archive, "-C", VENDOR],
-        ["make", "-C", src, "libfaketime.so.1"],
+        ["make", "-C", src, "libfaketimeMT.so.1"],
     ]) {
         const r = Bun.spawnSync(argv, { stdout: "pipe", stderr: "pipe" });
         if (r.exitCode !== 0) throw new Error(`${argv.join(" ")}: ${r.stderr.toString()}`);

@@ -48,7 +48,13 @@ list. For each arm, it resets the driver, then walks the events:
 
 1. Wait one settle interval after each answered turn (`settleMs`, 1 s by
    default), so a background job the host starts after its answer registers
-   before the clock moves, then wait until the busy set is empty.
+   before the clock moves, then wait until the busy set is empty and no job
+   has started or ended for a further settle interval (every job start and
+   end resets the window, so a job that begins and ends between two polls
+   counts), so a job that starts another after it ends is waited for too; the
+   whole wait shares one liveness deadline (`job_deadline_ms`), checked on
+   every poll, so jobs that keep flickering between polls end the run too.
+   `--events` must lie within the compiled scenario.
 2. Close any outage window from the previous event.
 3. On a laptop sleep, jump by the fault's `duration_ms`; then jump to the
    event's scheduled time if it is still later than now.

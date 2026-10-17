@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sha256Hex } from "../prereg/canonical";
 import { Rng } from "../rng";
@@ -31,6 +32,7 @@ import {
     type RawVerdict,
     referenceDigest,
 } from "./judge";
+import { GradeLog, type GradeRecord, verdictCounts } from "./probes";
 
 const rules = loadPrereg("S").grading;
 const DIR = join(import.meta.dir, "../../tests/fixtures/grade");
@@ -188,6 +190,40 @@ describe("P7 judge path", () => {
         expect(() => p7Pair("q-1", snap("eidnara", "a"), snap("host", " "))).toThrow(
             "answer b is empty",
         );
+    });
+
+    test("a host answer judged against two memory arms keeps one grade per pairing", async () => {
+        const f = load("P7-pass");
+        const log = new GradeLog(join(mkdtempSync(join(tmpdir(), "sim-p7-")), "grades.jsonl"));
+        const graded: GradeRecord[] = [];
+        for (const arm of ["eidnara", "eidnara-kl"]) {
+            const client = scripted(f.judge_verdicts);
+            const judgment = await judgePair(client, f.pair, f.probe.check.judge, []);
+            const pairing = context(f.probe.id, f.pair, f.probe.check.judge, {
+                snapshots: {
+                    a: [snapshotOf(`snap-${arm}`, arm, f.pair.a, f.probe.id)],
+                    b: [snapshotOf("snap-host", "host", f.pair.b, f.probe.id)],
+                },
+            });
+            for (const g of gradeP7(judgment, pairing, rules)) {
+                const record = { ...g, version: log.nextVersion(g) };
+                log.append(record);
+                graded.push(record);
+            }
+        }
+        const latest = log.latest().map((g) => `${g.arm} vs ${g.against} v${g.version}`);
+        expect(latest.sort()).toEqual([
+            "eidnara vs host v1",
+            "eidnara-kl vs host v1",
+            "host vs eidnara v1",
+            "host vs eidnara-kl v1",
+        ]);
+        expect(verdictCounts(graded)).toEqual({
+            "eidnara/P7 vs host": { [f.expect.a]: 1 },
+            "eidnara-kl/P7 vs host": { [f.expect.a]: 1 },
+            "host/P7 vs eidnara": { [f.expect.b]: 1 },
+            "host/P7 vs eidnara-kl": { [f.expect.b]: 1 },
+        });
     });
 
     test("a grade is gate-eligible only with a valid calibration set and a passing permutation check", async () => {

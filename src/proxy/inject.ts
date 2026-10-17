@@ -105,7 +105,8 @@ export function excludedFromFaultMetrics(witnesses: WitnessReport[]): boolean {
 
 export interface Sink {
     status(code: number, headers: Record<string, string>): void;
-    write(chunk: Buffer): void;
+    /** Hands a chunk to the client; false once the client is gone and the chunk cannot reach it. */
+    write(chunk: Buffer): boolean;
     end(): void;
     destroy(): void;
     signal: AbortSignal;
@@ -115,6 +116,8 @@ export interface FaultOutcome {
     status: number;
     finish_reason: string | null;
     error: string | null;
+    /** The assistant text an injected reply carried, as the host received it. */
+    text?: string;
 }
 
 export const sleep = (ms: number, signal: AbortSignal) =>
@@ -205,5 +208,15 @@ export async function writeFault(
         sink.write(Buffer.from(cut ? json.slice(0, json.length / 2) : json));
     }
     sink.end();
-    return { status: 200, finish_reason: finish, error: cut ? "stream cut (injected)" : null };
+    const relayed = events.flatMap(([t, m]) => {
+        const delta = (m as { delta?: { text?: string } }).delta;
+        return t === "contentBlockDelta" && delta?.text ? [delta.text] : [];
+    });
+    const text = cut && !streaming ? "" : relayed.join("");
+    return {
+        status: 200,
+        finish_reason: finish,
+        error: cut ? "stream cut (injected)" : null,
+        text,
+    };
 }

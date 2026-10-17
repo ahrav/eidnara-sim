@@ -103,6 +103,9 @@ type Usage = Record<string, number>;
 type Done = Partial<CallRecord> &
     Pick<CallRecord, "component" | "componentSource" | "model" | "status">;
 
+const RESPONSE_TEXT_LIMIT = 262_144;
+const RELAYED_TEXT = new Set<string>(["agent", "user-sim", "judge"]);
+
 const CLAUDE_5_5 = /anthropic\.claude-(opus|sonnet|haiku)-5-5/;
 
 /**
@@ -147,7 +150,11 @@ export class Gateway {
                 const header = req.headers[COMPONENT_HEADER] as string | undefined;
                 this.handle(req.url ?? "", header, Buffer.concat(chunks), {
                     status: (code, headers) => res.writeHead(code, headers),
-                    write: (chunk) => res.write(chunk),
+                    write: (chunk) => {
+                        if (res.destroyed) return false;
+                        res.write(chunk);
+                        return true;
+                    },
                     end: () => res.end(),
                     destroy: () => res.destroy(),
                     signal: gone.signal,
@@ -169,7 +176,11 @@ export class Gateway {
                         if (live() && !stream.headersSent)
                             stream.respond({ ":status": code, ...h });
                     },
-                    write: (chunk) => live() && stream.write(chunk),
+                    write: (chunk) => {
+                        if (!live()) return false;
+                        stream.write(chunk);
+                        return true;
+                    },
                     end: () => live() && stream.end(),
                     destroy: () => stream.destroy(),
                     signal: gone.signal,
@@ -290,10 +301,15 @@ export class Gateway {
         if (fault) done.fault_ref = fault.id;
         if (fault && fault.type !== "slow_stream") {
             const tool = body.toolConfig?.tools?.[0]?.toolSpec?.name;
-            return {
-                ...done,
-                ...(await writeFault(fault.type, fault.params, streaming, sink, tool)),
-            };
+            const { text, ...outcome } = await writeFault(
+                fault.type,
+                fault.params,
+                streaming,
+                sink,
+                tool,
+            );
+            const relayed = text && RELAYED_TEXT.has(done.component) ? { response_text: text } : {};
+            return { ...done, ...outcome, ...relayed };
         }
         const usage: Usage = {};
         const firstByte = () => {
@@ -303,6 +319,19 @@ export class Gateway {
         const delay = () =>
             fault ? sleep(fault.params.delay_ms ?? 2_000, sink.signal) : undefined;
         let retries = 0;
+        const text: string[] = [];
+        let textLength = 0;
+        let truncated = false;
+        const keep = RELAYED_TEXT.has(done.component);
+        const retain = (piece: string) => {
+            if (!keep) return;
+            const room = RESPONSE_TEXT_LIMIT - textLength;
+            if (piece.length > room) truncated = true;
+            if (room <= 0) return;
+            const kept = piece.slice(0, room);
+            text.push(kept);
+            textLength += kept.length;
+        };
         try {
             const deadlineAt = Date.now() + (this.options.requestDeadlineMs ?? 900_000);
             const response = await sendWithRetry(
@@ -318,25 +347,47 @@ export class Gateway {
                 firstByte();
                 await delay();
                 Object.assign(usage, response.json.usage ?? {});
+                const output = response.json.output as
+                    | { message?: { content?: Array<{ text?: string }> } }
+                    | undefined;
+                const blocks = (output?.message?.content ?? []).map((b) => b.text ?? "");
+                retain(blocks.filter(Boolean).join("\n"));
                 done.finish_reason = (response.json.stopReason as string | undefined) ?? null;
                 sink.status(200, { "content-type": "application/json" });
                 sink.write(Buffer.from(JSON.stringify(response.json)));
             } else {
                 sink.status(200, { "content-type": "application/vnd.amazon.eventstream" });
                 let complete = 0;
-                for await (const event of response.events) {
+                let block: number | null = null;
+                let delivered = true;
+                events: for await (const event of response.events) {
                     for (const [type, member] of Object.entries(event)) {
                         if (member === undefined) continue;
                         firstByte();
                         await delay();
-                        const m = member as { usage?: Usage; stopReason?: string };
+                        if (sink.signal.aborted || !sink.write(encodeEvent(type, member))) {
+                            delivered = false;
+                            break events;
+                        }
+                        const m = member as {
+                            usage?: Usage;
+                            stopReason?: string;
+                            contentBlockIndex?: number;
+                            delta?: { text?: string };
+                        };
+                        if (type === "contentBlockDelta" && m.delta?.text) {
+                            const index = m.contentBlockIndex ?? 0;
+                            if (block !== null && index !== block) retain("\n");
+                            block = index;
+                            retain(m.delta.text);
+                        }
                         if (type === "metadata") Object.assign(usage, m.usage ?? {});
                         if (type === "messageStop") done.finish_reason = m.stopReason ?? null;
                         if (type === "messageStop" || type === "metadata") complete++;
                         if (type.endsWith("Exception")) done.error = type;
-                        sink.write(encodeEvent(type, member));
                     }
                 }
+                if (!delivered) complete = 0;
                 if (complete < 2 && !done.error) {
                     done.finish_reason = "stream_cut";
                     done.error = sink.signal.aborted
@@ -361,8 +412,13 @@ export class Gateway {
                 sink.write(Buffer.from(JSON.stringify({ message: failure.message ?? "error" })));
             } else if (!done.finish_reason) done.finish_reason = "stream_cut";
         }
+        const relayed = text.join("");
+        const cut = truncated ? { response_text_truncated: true as const } : {};
         return {
             ...done,
+            ...(relayed && RELAYED_TEXT.has(done.component)
+                ? { response_text: relayed, ...cut }
+                : {}),
             proxy_retries: retries,
             input_tokens: usage.inputTokens ?? 0,
             output_tokens: usage.outputTokens ?? 0,

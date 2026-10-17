@@ -1,18 +1,31 @@
 import { spawnSync } from "node:child_process";
 import {
+    constants,
+    copyFileSync,
     existsSync,
     lstatSync,
     mkdirSync,
     readFileSync,
     realpathSync,
+    renameSync,
     rmSync,
     writeFileSync,
 } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
+import { GitBound, git } from "../git";
+import type { CallView } from "../grade/artefacts";
 import { processStart, running, stopOwnedTree } from "../run/procs";
 import { type ArmDriver, HarnessFailure, type ScenarioEvent } from "../run/scheduler";
 import type { FaultEpisode } from "../scenario/faults";
-import { DaemonStack, eidnaraOn, type HostContext, makeHost, type SimHost } from "./arms";
+import {
+    DaemonStack,
+    eidnaraOn,
+    type HostContext,
+    makeHost,
+    type SimHost,
+    type ToolRun,
+} from "./arms";
+import { entriesOf, SnapshotRecorder } from "./snapshot";
 
 interface ArmState {
     model: number;
@@ -27,23 +40,23 @@ export interface DriverOptions extends Omit<HostContext, "root" | "model"> {
     turnDeadlineMs: number;
     transcriptPaths: string[];
     loopStore: boolean;
+    callsFor?: (session: string) => CallView[];
+    /** Awaited after a probe turn and before its snapshot, so background calls the turn started are on record. */
+    settle?: () => Promise<void>;
+    /** Entries a walk of a workspace `.git` visits at most; the default is `GIT_DIR_ENTRY_CAP`. */
+    gitDirEntryCap?: number;
     hostFactory?: (ctx: HostContext) => SimHost;
     onDaemonExit: (detail: Record<string, unknown>) => void;
 }
 
-const git = (cwd: string, ...args: string[]) => {
-    const env = {
-        ...process.env,
-        GIT_CONFIG_GLOBAL: "/dev/null",
-        GIT_CONFIG_NOSYSTEM: "1",
-        GIT_AUTHOR_NAME: "sim-user",
-        GIT_AUTHOR_EMAIL: "sim-user@users.noreply.github.com",
-        GIT_COMMITTER_NAME: "sim-user",
-        GIT_COMMITTER_EMAIL: "sim-user@users.noreply.github.com",
-    };
-    const r = spawnSync("git", args, { cwd, env, encoding: "utf8" });
-    if (r.status !== 0) throw new Error(`git ${args.join(" ")}: ${r.stderr}`);
-    return r.stdout.trim();
+/** Entries a walk of the workspace `.git` visits at most; a wider tree stops the run. */
+export const GIT_DIR_ENTRY_CAP = 200_000;
+
+const IDENTITY = {
+    GIT_AUTHOR_NAME: "sim-user",
+    GIT_AUTHOR_EMAIL: "sim-user@users.noreply.github.com",
+    GIT_COMMITTER_NAME: "sim-user",
+    GIT_COMMITTER_EMAIL: "sim-user@users.noreply.github.com",
 };
 
 function run(argv: string[]): string {
@@ -76,7 +89,16 @@ export class HostDriver implements ArmDriver {
     private sessionProject: string | null = null;
     private transcriptsChecked = false;
 
-    constructor(private readonly o: DriverOptions) {}
+    private readonly snapshots: SnapshotRecorder;
+
+    constructor(private readonly o: DriverOptions) {
+        this.snapshots = new SnapshotRecorder(
+            dirname(o.armRoot),
+            o.arm,
+            o.callsFor ?? (() => []),
+            o.turnDeadlineMs,
+        );
+    }
 
     private get armDir(): string {
         return dirname(this.o.armRoot);
@@ -119,7 +141,8 @@ export class HostDriver implements ArmDriver {
     private newHost(): SimHost {
         const make = this.o.hostFactory ?? makeHost;
         const keep = eidnaraOn(this.o.arm) ? [...this.o.keep, this.storeRoot] : this.o.keep;
-        return make({ ...this.o, keep, root: this.o.armRoot, model: this.currentModel() });
+        const onTool = (run: ToolRun) => this.snapshots.addTools([run]);
+        return make({ ...this.o, keep, root: this.o.armRoot, model: this.currentModel(), onTool });
     }
 
     private recordState(): void {
@@ -160,6 +183,7 @@ export class HostDriver implements ArmDriver {
     async reset(): Promise<void> {
         await this.stop();
         this.model = 0;
+        this.snapshots.clear();
         await this.reapStale();
         for (const dir of [this.o.armRoot, this.storeRoot])
             rmSync(dir, { recursive: true, force: true });
@@ -167,7 +191,26 @@ export class HostDriver implements ArmDriver {
         mkdirSync(join(this.o.armRoot, "workspaces"), { recursive: true });
         for (const [project, source] of Object.entries(this.o.projects)) {
             const target = this.workspace(project);
-            git(this.o.armRoot, "clone", "--quiet", "--no-hardlinks", source, target);
+            git(this.o.armRoot, ["clone", "--quiet", "--no-hardlinks", source, target]);
+            const baseline = join(this.armDir, `${project}.gitconfig`);
+            rmSync(baseline, { force: true });
+            copyFileSync(join(target, ".git", "config"), baseline, constants.COPYFILE_EXCL);
+            const tracked = ["ls-files", "-z", "--cached", "--ignored", "--exclude-standard"];
+            const forced = git(source, tracked).split("\0").filter(Boolean);
+            this.snapshots.trackIgnored(project, forced);
+            const rules: Record<string, string> = {};
+            const names = [".gitignore", "**/.gitignore", ".gitattributes", "**/.gitattributes"];
+            const listed = git(source, ["ls-files", "-s", "-z", "--", ...names]);
+            for (const row of listed.split("\0").filter(Boolean)) {
+                const [meta, path] = row.split("\t") as [string, string];
+                rules[path] = meta.split(" ")[1] as string;
+            }
+            this.snapshots.trackIgnoreRules(
+                project,
+                rules,
+                this.snapshots.excludeDigest(target),
+                this.snapshots.excludeDigest(target, "attributes"),
+            );
         }
         await this.startArm(true);
     }
@@ -197,17 +240,23 @@ export class HostDriver implements ArmDriver {
     private async openSession(e: ScenarioEvent, host: SimHost): Promise<void> {
         this.sessionProject = this.project(e);
         const connection = this.daemon?.connectionFile ?? null;
-        await host.openSession(this.workspace(this.sessionProject), e.session, connection);
+        const dir = this.workspace(this.sessionProject);
+        await host.openSession(dir, e.session, connection);
+        this.recordState();
+        this.snapshots.sessionStart(e.session, this.sessionProject, dir);
         this.recordState();
     }
 
-    async event(e: ScenarioEvent): Promise<{ failed?: string }> {
+    async event(e: ScenarioEvent): Promise<{ failed?: string; snapshot?: string }> {
         const host = this.requireHost();
         if (e.kind === "session_start") {
             await this.openSession(e, host);
             return {};
         }
         if (e.kind === "session_end") {
+            const project = this.project(e);
+            host.drainTools();
+            this.snapshots.sessionEnd(e.session, project, this.workspace(project));
             await host.closeSession();
             this.clearStoreFill();
             this.sessionProject = null;
@@ -219,9 +268,64 @@ export class HostDriver implements ArmDriver {
             this.applyDiff(e);
             return {};
         }
+        const project = this.project(e);
+        const dir = this.workspace(project);
+        let before: string | null = "";
+        let beforeFailed = "";
+        if (e.probe) {
+            try {
+                before = this.snapshots.tree(dir);
+            } catch (caught) {
+                if (!(caught instanceof GitBound)) throw caught;
+                before = null;
+                beforeFailed = caught.message;
+            }
+        }
         const result = await host.prompt(String(e.text), this.o.turnDeadlineMs);
-        if (this.daemon && this.daemonPid() === null) this.o.onDaemonExit({ after: e.id });
-        return result.error ? { failed: result.error } : {};
+        let reported = false;
+        const checkDaemon = () => {
+            if (reported || !this.daemon || this.daemonPid() !== null) return;
+            reported = true;
+            this.o.onDaemonExit({ after: e.id });
+        };
+        checkDaemon();
+        const tools = host.drainTools();
+        const outcome: { failed?: string; snapshot?: string } = {};
+        if (result.error) outcome.failed = result.error;
+        if (e.probe && before === null) {
+            const reason = `snapshot before the turn: ${beforeFailed}`;
+            outcome.failed = outcome.failed ? `${outcome.failed} | ${reason}` : reason;
+        } else if (e.probe && before !== null) {
+            await this.o.settle?.();
+            try {
+                const { nested, ignoreFiles } = this.snapshots.survey(dir);
+                const changed = this.snapshots.ignoreChanges(dir, project, ignoreFiles);
+                const after = changed.length > 0 ? before : this.snapshots.tree(dir, nested);
+                const reasons = [
+                    nested.length > 0 ? `embedded repository at ${nested.join(", ")}` : null,
+                    changed.length > 0 ? `rule files changed: ${changed.join(", ")}` : null,
+                ].filter((r): r is string => r !== null);
+                for (const reason of reasons) {
+                    outcome.failed = outcome.failed ? `${outcome.failed} | ${reason}` : reason;
+                }
+                const probe = { probe: e.probe, session: e.session, id: e.id };
+                outcome.snapshot = this.snapshots.capture(
+                    probe,
+                    project,
+                    dir,
+                    before,
+                    tools,
+                    !!outcome.failed,
+                    after,
+                );
+            } catch (caught) {
+                if (!(caught instanceof GitBound)) throw caught;
+                const reason = `snapshot: ${caught.message}`;
+                outcome.failed = outcome.failed ? `${outcome.failed} | ${reason}` : reason;
+            }
+            checkDaemon();
+        }
+        return outcome;
     }
 
     private project(e: ScenarioEvent): string {
@@ -231,22 +335,143 @@ export class HostDriver implements ArmDriver {
     }
 
     private applyDiff(e: ScenarioEvent): void {
-        const dir = realpathSync(this.workspace(this.project(e)));
+        const workspace = this.workspace(this.project(e));
+        const stat = lstatSync(workspace, { throwIfNoEntry: false });
+        if (stat?.isSymbolicLink()) {
+            throw new HarnessFailure(`workspace ${workspace} is a symlink or lies behind one`);
+        }
+        if (!stat?.isDirectory()) {
+            throw new HarnessFailure(`workspace ${workspace} is not a directory`);
+        }
+        const expected = join(realpathSync(this.armDir), relative(this.armDir, workspace));
+        if (realpathSync(workspace) !== expected) {
+            throw new HarnessFailure(`workspace ${workspace} is a symlink or lies behind one`);
+        }
+        const dir = realpathSync(workspace);
         const path = resolve(dir, String(e.path));
-        mkdirSync(dirname(path), { recursive: true });
-        const parent = realpathSync(dirname(path));
-        const inside = parent === dir || parent.startsWith(`${dir}/`);
-        if (!inside || lstatSync(path, { throwIfNoEntry: false })?.isSymbolicLink()) {
+        const inside = path.startsWith(`${dir}/`);
+        const present = (at: string) => lstatSync(at, { throwIfNoEntry: false }) !== undefined;
+        let ancestor = dirname(path);
+        while (inside && ancestor !== dir && !present(ancestor)) ancestor = dirname(ancestor);
+        let parent = "";
+        try {
+            parent = inside ? realpathSync(ancestor) : "";
+        } catch {
+            parent = "";
+        }
+        const contained = parent === dir || parent.startsWith(`${dir}/`);
+        const target = lstatSync(path, { throwIfNoEntry: false });
+        if (!inside || !contained || target?.isSymbolicLink()) {
             throw new HarnessFailure(`apply_diff path ${String(e.path)} leaves ${dir}`);
         }
-        writeFileSync(path, String(e.content));
-        git(dir, "add", "--", path);
-        if (
-            spawnSync("git", ["diff", "--cached", "--quiet", "--", path], { cwd: dir }).status === 0
-        ) {
-            return;
+        if (target !== undefined && !target.isFile()) {
+            throw new HarnessFailure(`apply_diff path ${String(e.path)} is not a regular file`);
         }
-        git(dir, "commit", "--quiet", "--no-verify", "-m", `Add ${String(e.path)}`, "--", path);
+        mkdirSync(dirname(path), { recursive: true });
+        writeFileSync(path, String(e.content));
+        this.withPristineRepo(dir, this.project(e), () => {
+            const blob = this.workspaceGit(dir, ["hash-object", "-w", "--no-filters", "--", path]);
+            const executable = (lstatSync(path).mode & 0o111) !== 0;
+            const entry = `${executable ? "100755" : "100644"},${blob},${relative(dir, path)}`;
+            const head = this.workspaceGit(dir, ["rev-parse", "--verify", "HEAD"]);
+            const scratch = { GIT_INDEX_FILE: join(this.armDir, "apply-diff.index") };
+            rmSync(`${scratch.GIT_INDEX_FILE}.lock`, { force: true });
+            this.workspaceGit(dir, ["read-tree", head], scratch);
+            this.workspaceGit(dir, ["update-index", "--add", "--cacheinfo", entry], scratch);
+            const tree = this.workspaceGit(dir, ["write-tree"], scratch);
+            rmSync(scratch.GIT_INDEX_FILE, { force: true });
+            try {
+                this.workspaceGit(dir, ["update-index", "--add", "--cacheinfo", entry]);
+            } catch (caught) {
+                if (caught instanceof GitBound)
+                    rmSync(join(dir, ".git", "index.lock"), { force: true });
+                throw caught;
+            }
+            if (tree === this.workspaceGit(dir, ["rev-parse", `${head}^{tree}`])) return;
+            const message = `Add ${String(e.path)}`;
+            const commit = this.workspaceGit(
+                dir,
+                ["commit-tree", tree, "-p", head, "-m", message],
+                IDENTITY,
+            );
+            this.workspaceGit(dir, ["update-ref", "HEAD", commit, head]);
+        });
+    }
+
+    /** Workspace git operations override agent-controlled execution settings to constrain which programs git can invoke. */
+    private workspaceGit(dir: string, args: string[], extra: Record<string, string> = {}): string {
+        const gitDir = join(dir, ".git");
+        const scope = {
+            GIT_DIR: gitDir,
+            GIT_WORK_TREE: dir,
+            GIT_NO_REPLACE_OBJECTS: "1",
+            GIT_NAMESPACE: "",
+            ...extra,
+        };
+        const off = [
+            `core.hooksPath=${join(this.armDir, "no-hooks")}`,
+            "core.fsmonitor=false",
+            "commit.gpgsign=false",
+        ];
+        const argv = [...off.flatMap((setting) => ["-c", setting]), ...args];
+        return git(dir, argv, scope, this.o.turnDeadlineMs).trim();
+    }
+
+    /**
+     * The agent can write the workspace repository's config, hooks, and object-store
+     * pointers. While `fn` runs, the repository's config is the clone's baseline, so an
+     * include, filter driver, or command the agent configured is out of git's view; the
+     * agent's config returns afterwards. A symlink under `.git` or an `alternates` file
+     * stops the run.
+     */
+    private withPristineRepo<T>(dir: string, project: string, fn: () => T): T {
+        const gitDir = join(dir, ".git");
+        if (!lstatSync(gitDir, { throwIfNoEntry: false })?.isDirectory()) {
+            throw new HarnessFailure(`${gitDir} is not a directory`);
+        }
+        const deadline = Date.now() + this.o.turnDeadlineMs;
+        let seen = 0;
+        const pending = [gitDir];
+        for (let at = pending.shift(); at !== undefined; at = pending.shift()) {
+            for (const entry of entriesOf(at)) {
+                if (
+                    ++seen > (this.o.gitDirEntryCap ?? GIT_DIR_ENTRY_CAP) ||
+                    Date.now() > deadline
+                ) {
+                    throw new HarnessFailure(
+                        `${relative(dir, gitDir)} walk: too many entries or timed out`,
+                    );
+                }
+                const path = join(at, entry.name);
+                if (entry.isDirectory()) {
+                    pending.push(path);
+                    continue;
+                }
+                if (entry.isFile()) continue;
+                const kind = entry.isSymbolicLink()
+                    ? "a symlink; git would write through it"
+                    : "not a regular file";
+                throw new HarnessFailure(`${relative(dir, path)} is ${kind}`);
+            }
+        }
+        for (const redirect of ["objects/info/alternates", "commondir", "gitdir"]) {
+            if (existsSync(join(gitDir, redirect))) {
+                throw new HarnessFailure(`.git/${redirect} redirects git to another repository`);
+            }
+        }
+        const config = join(gitDir, "config");
+        const aside = join(gitDir, "config.sim-aside");
+        if (existsSync(aside)) renameSync(aside, config);
+        if (!lstatSync(config, { throwIfNoEntry: false })?.isFile()) {
+            throw new HarnessFailure(`${relative(dir, config)} is not a file`);
+        }
+        renameSync(config, aside);
+        try {
+            copyFileSync(join(this.armDir, `${project}.gitconfig`), config);
+            return fn();
+        } finally {
+            renameSync(aside, config);
+        }
     }
 
     private checkTranscripts(host: SimHost): void {

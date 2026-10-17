@@ -27,6 +27,22 @@
           "class": "diff",
           "role": "turn",
           "patch": "diff --git a/src/main.rs b/src/main.rs\n--- a/src/main.rs\n+++ b/src/main.rs\n@@ -1,0 +1,1 @@\n+/// Entry point; listens on 80095 by default.\n"
+        },
+        {
+          "id": "s-P10-b:calls",
+          "class": "proxy-call",
+          "calls": [
+            {
+              "seq": 1,
+              "component": "agent",
+              "turn": "e-1",
+              "scenario_ms": 0,
+              "input_tokens": 5,
+              "output_tokens": 2,
+              "response_text": "Done; the entry point is documented.",
+              "turn_index": 0
+            }
+          ]
         }
       ]
     }

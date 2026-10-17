@@ -22,7 +22,7 @@ any field below.
 | `arm`, `session`, `turn` | The scheduler's scope at receipt |
 | `component`, `componentSource` | The calling component and whether the caller `asserted` it or the proxy `inferred` it |
 | `model`, `status`, `error` | Model id, the HTTP status the gateway sent (0 when it sent none), and the error text or `null` |
-| `finish_reason` | The stream's `messageStop.stopReason` or the response's `stopReason`; `stream_cut` when a stream ended without `messageStop` and `metadata`; `null` when the call had no answer |
+| `finish_reason` | The stream's `messageStop.stopReason` or the response's `stopReason`; `stream_cut` when a stream ended without `messageStop` and `metadata`, or when the client left before it ended (relaying stops at the first event the client cannot receive, and the record holds the text delivered up to it); `null` when the call had no answer |
 | `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens` | Provider usage |
 | `started_wall_ms`, `wall_ms` | Receipt time, and write time clamped so it never decreases in `seq` order (SIM-P15) |
 | `scenario_ms` | The scheduler's clock at receipt (SIM-P15) |

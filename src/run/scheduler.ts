@@ -19,7 +19,7 @@ export interface ArmDriver {
      * session the next event belongs to, or null between sessions.
      */
     resume?(open: ScenarioEvent | null): Promise<void>;
-    event(e: ScenarioEvent): Promise<{ failed?: string }>;
+    event(e: ScenarioEvent): Promise<{ failed?: string; snapshot?: string }>;
     fault(f: FaultEpisode): Promise<Record<string, unknown>>;
     /** Stops everything the arm runs, after its last event and before `EndArm`. */
     finish?(): Promise<void>;
@@ -44,6 +44,8 @@ export interface SchedulerOptions {
     idleLimitMs?: number;
     settleMs?: number;
     onClock?: (arm: string, scenarioMs: number) => void;
+    /** Runs before `EndArm` and `EndRun` are journaled; a throw leaves the arm or run open. */
+    beforeEnd?: () => void;
 }
 
 const PROXY_LAYER = "proxy-sink";
@@ -99,9 +101,11 @@ export class Scheduler {
             await this.idle();
             await this.pendingKill;
             await driver.finish?.();
+            this.o.beforeEnd?.();
             this.log({ kind: "EndArm" });
         }
         this.arm = null;
+        this.o.beforeEnd?.();
         this.log({ kind: "EndRun" });
     }
 
@@ -111,9 +115,13 @@ export class Scheduler {
         const ended = new Set(kinds("EndTurn").map((e) => e.event));
         const begun = new Set(kinds("BeginTurn").map((e) => e.event));
         for (const e of kinds("EndTurn").filter((x) => !done.has(x.event))) {
+            this.snapshotTurn(e);
             this.log({ kind: "Event", event: e.event, outcome: e.outcome });
         }
-        for (const e of kinds("BeginTurn").filter((x) => !ended.has(x.event))) {
+        const interrupted = kinds("BeginTurn").filter(
+            (x) => !ended.has(x.event) && !done.has(x.event),
+        );
+        for (const e of interrupted) {
             this.log({ kind: "ItemState", event: e.event, state: "failed(interrupted)" });
             this.log({ kind: "Event", event: e.event, outcome: "failed(interrupted)" });
         }
@@ -155,13 +163,66 @@ export class Scheduler {
         return start;
     }
 
+    private snapshotted(item: string): boolean {
+        return this.o.journal.entries.some(
+            (x) => x.kind === "SnapshotArtefacts" && x.arm === this.arm && x.item === item,
+        );
+    }
+
+    /**
+     * Journals the first `SnapshotArtefacts` of a probe item from the snapshot its `EndTurn`
+     * names. A resume replays it from the `EndTurn` entry, so a kill between the two leaves
+     * the snapshot id in the journal once the run continues.
+     */
+    private snapshotTurn(end: Record<string, unknown>): void {
+        const item = typeof end.probe === "string" ? end.probe : null;
+        const snapshot = typeof end.snapshot === "string" ? end.snapshot : null;
+        if (item && snapshot && !this.snapshotted(item)) {
+            this.log({ kind: "SnapshotArtefacts", item, snapshot });
+        }
+    }
+
     private async idle(): Promise<void> {
         const limit = Date.now() + (this.o.idleLimitMs ?? Number.POSITIVE_INFINITY);
-        while ((this.clock?.busyIds().length ?? 0) > 0) {
+        await this.quiesce(() => this.clock?.busyIds() ?? [], limit);
+    }
+
+    /**
+     * Waits the settle window, in which a background call the host dispatched after its answer
+     * registers its job, then waits for the background jobs in the busy set, with the turn
+     * itself still open.
+     */
+    async quiesceJobs(): Promise<void> {
+        const settle = this.o.settleMs ?? 1_000;
+        const jobs = () => (this.clock?.busyIds() ?? []).filter((id) => id.startsWith("job:"));
+        const limit = Date.now() + (this.o.idleLimitMs ?? Number.POSITIVE_INFINITY);
+        await Bun.sleep(settle);
+        await this.quiesce(jobs, limit);
+        let quietSince = Date.now();
+        let activity = this.jobActivity;
+        while (Date.now() - quietSince < settle) {
+            await Bun.sleep(this.o.jobPollMs ?? 50);
             if (Date.now() > limit) {
-                const busy = this.clock?.busyIds().join(", ");
                 throw new HarnessFailure(
-                    `busy set held the clock past ${this.o.idleLimitMs} ms: ${busy}`,
+                    `background jobs kept the quiet window open past ${this.o.idleLimitMs} ms`,
+                );
+            }
+            if (this.jobActivity !== activity || jobs().length > 0) {
+                await this.quiesce(jobs, limit);
+                activity = this.jobActivity;
+                quietSince = Date.now();
+            }
+        }
+    }
+
+    /** Counts every job start and end, so a job that begins and ends between two polls still resets the quiet window. */
+    private jobActivity = 0;
+
+    private async quiesce(pending: () => string[], limit: number): Promise<void> {
+        while (pending().length > 0) {
+            if (Date.now() > limit) {
+                throw new HarnessFailure(
+                    `busy set held the clock past ${this.o.idleLimitMs} ms: ${pending().join(", ")}`,
                 );
             }
             await Bun.sleep(this.o.jobPollMs ?? 50);
@@ -209,7 +270,7 @@ export class Scheduler {
             const turn = `turn:${e.id}`;
             this.log({ kind: "BeginTurn", event: e.id, probe: e.probe ?? null });
             clock.begin(turn);
-            let outcome: { failed?: string };
+            let outcome: { failed?: string; snapshot?: string };
             try {
                 outcome = await driver.event(e);
             } finally {
@@ -217,7 +278,10 @@ export class Scheduler {
             }
             const state = outcome.failed ? "failed" : "completed";
             const item = e.probe ? { probe: e.probe, state } : {};
-            this.log({ kind: "EndTurn", event: e.id, outcome: outcome.failed ?? "ok", ...item });
+            const snapshot = outcome.snapshot ? { snapshot: outcome.snapshot } : {};
+            const end = { event: e.id, outcome: outcome.failed ?? "ok", ...item, ...snapshot };
+            this.log({ kind: "EndTurn", ...end });
+            this.snapshotTurn(end);
             await Bun.sleep(this.o.settleMs ?? 1_000);
         } else {
             await driver.event(e);
@@ -233,11 +297,13 @@ export class Scheduler {
     }
 
     jobStart(id: string): void {
+        this.jobActivity++;
         this.clock?.begin(`job:${id}`);
         this.log({ kind: "RegisterJob", job: id });
     }
 
     jobEnd(id: string): void {
+        this.jobActivity++;
         this.log({ kind: "EndJob", job: id });
         this.clock?.end(`job:${id}`);
     }

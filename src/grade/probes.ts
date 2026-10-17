@@ -1,7 +1,9 @@
-import { appendFileSync, existsSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, truncateSync } from "node:fs";
 import type { Preregistration } from "../prereg/schema";
+import { requireAppendable } from "../run/journal";
 import type { ProbeItem } from "../scenario/compile";
 import {
+    type Artefact,
     ArtefactReader,
     assertArtefactsOnly,
     type CallView,
@@ -39,6 +41,27 @@ export interface GradeRecord extends Outcome {
     inputs: string[];
     later_attempts_logged: number;
     pair?: string;
+    /**
+     * The arm a pairwise (P7) grade was judged against. One host answer is judged once per
+     * memory arm, so its grades are distinct records, one per opponent.
+     */
+    against?: string;
+}
+
+export type GradeKey = Pick<GradeRecord, "item" | "arm" | "against">;
+
+const keyOf = (g: GradeKey) => `${g.item}/${g.arm}/${g.against ?? ""}`;
+
+/** Verdict counts by arm and probe type, with a pairwise grade's opponent in its row name. */
+export function verdictCounts(grades: GradeRecord[]): Record<string, Record<string, number>> {
+    const counts: Record<string, Record<string, number>> = {};
+    for (const g of grades) {
+        const row = `${g.arm}/${g.probe_type}${g.against ? ` vs ${g.against}` : ""}`;
+        counts[row] ??= {};
+        const verdicts = counts[row] as Record<string, number>;
+        verdicts[g.verdict] = (verdicts[g.verdict] ?? 0) + 1;
+    }
+    return counts;
 }
 
 const READS = /\b(cat|less|more|head|tail|sed|view|bat|grep|rg)\b|^read /;
@@ -79,8 +102,9 @@ const commandText = (r: ArtefactReader) =>
         .join("\n");
 const work = (r: ArtefactReader) => `${addedLines(r.diff())}\n${commandText(r)}`;
 
+/** The completed fold calls in the item's range; a call that failed produced no fold the host used. */
 function foldsIn(r: ArtefactReader, turns?: [number, number]): CallView[] {
-    const folds = r.calls().filter((c) => FOLDS.includes(c.component));
+    const folds = r.calls().filter((c) => FOLDS.includes(c.component) && !c.failed);
     if (!turns) return folds;
     const [lo, hi] = turns;
     return folds.filter(
@@ -248,6 +272,54 @@ function graderFor(probe: ProbeItem): Grader {
     return grader;
 }
 
+type Evidence = [Artefact["class"], string | null];
+const TURN_DIFF: Evidence = ["diff", "turn"];
+const TURN_COMMANDS: Evidence = ["command-log", "turn"];
+const CALLS: Evidence = ["proxy-call", null];
+
+/**
+ * The artefacts a probe item's grader reads as evidence. A grader reading a missing one would
+ * grade an empty default, so a snapshot without it is refused. P6 items open a later session
+ * of a project the agent already worked in, so their prior-session diff is always expected;
+ * a P13 item reads the turn diff unless its check names commands instead; a P7 item's answer
+ * is the last agent call of its turn.
+ */
+function evidenceFor(probe: ProbeItem): Evidence[] {
+    const check = (probe.check ?? {}) as Check;
+    switch (probe.type) {
+        case "P5":
+            return [TURN_DIFF, TURN_COMMANDS];
+        case "P6":
+            return [TURN_DIFF, ["diff", "prior-session"], TURN_COMMANDS, CALLS];
+        case "P8":
+        case "P9":
+        case "P14":
+            return [CALLS];
+        case "P7":
+            return [CALLS];
+        case "P10":
+            return [TURN_DIFF, CALLS];
+        case "P13":
+            return [["command-log", "session"], CALLS, ...(check.commands_must ? [] : [TURN_DIFF])];
+        default:
+            return [TURN_DIFF];
+    }
+}
+
+export function requireEvidence(probe: ProbeItem, snapshot: Snapshot): void {
+    for (const [cls, role] of evidenceFor(probe)) {
+        const present = snapshot.artefacts.some(
+            (a) => a.class === cls && (role === null || (a as { role?: string }).role === role),
+        );
+        if (!present) {
+            const name = role ? `${cls} (${role})` : cls;
+            throw new GradeRefused(
+                `snapshot ${snapshot.id} lacks the ${name} artefact ${probe.type} reads`,
+            );
+        }
+    }
+}
+
 export function gradeItem(
     probe: ProbeItem,
     snapshots: Snapshot[],
@@ -262,6 +334,7 @@ export function gradeItem(
     assertArtefactsOnly(first);
     const grader = graderFor(probe);
     if (first.turn_outcome === "failed") return null;
+    requireEvidence(probe, first);
     const reader = new ArtefactReader(first);
     const outcome = grader(reader, (probe.check ?? {}) as Check, rules, probe);
     const paired = probe.type === "P1-control" || probe.type === "P1";
@@ -280,37 +353,67 @@ export function gradeItem(
     };
 }
 
+/**
+ * The log's single writer holds the run lease, so the records read at construction plus the
+ * ones appended since are the file's content; each version lookup reads that memory.
+ */
 export class GradeLog {
-    constructor(private readonly path: string) {}
+    private readonly records: GradeRecord[] = [];
+    private readonly newest = new Map<string, number>();
+
+    /** A log reopened over a line cut by a kill mid-append keeps its newline-terminated prefix. */
+    constructor(private readonly path: string) {
+        requireAppendable(path);
+        if (!existsSync(path)) return;
+        const text = readFileSync(path, "utf8");
+        const complete = text.slice(0, text.lastIndexOf("\n") + 1);
+        if (complete.length < text.length) truncateSync(path, Buffer.byteLength(complete));
+        for (const line of complete.split("\n").filter(Boolean)) {
+            const g = JSON.parse(line) as GradeRecord;
+            const key = keyOf(g);
+            const expected = (this.newest.get(key) ?? 0) + 1;
+            if (!Number.isSafeInteger(g.version) || g.version !== expected) {
+                throw new Error(
+                    `grades.jsonl holds version ${String(g.version)} of ${key} where version ${expected} belongs`,
+                );
+            }
+            this.remember(g);
+        }
+    }
+
+    private remember(g: GradeRecord): void {
+        this.records.push(g);
+        const key = keyOf(g);
+        this.newest.set(key, Math.max(this.newest.get(key) ?? 0, g.version));
+    }
 
     all(): GradeRecord[] {
-        if (!existsSync(this.path)) return [];
-        const lines = readFileSync(this.path, "utf8").split("\n").filter(Boolean);
-        return lines.map((l) => JSON.parse(l) as GradeRecord);
+        return [...this.records];
     }
 
     latest(): GradeRecord[] {
         const newest = new Map<string, GradeRecord>();
-        for (const g of this.all()) {
-            const key = `${g.item}/${g.arm}`;
+        for (const g of this.records) {
+            const key = keyOf(g);
             if ((newest.get(key)?.version ?? 0) < g.version) newest.set(key, g);
         }
         return [...newest.values()];
     }
 
-    nextVersion(item: string, arm: string): number {
-        const mine = this.all().filter((g) => g.item === item && g.arm === arm);
-        return mine.length === 0 ? 1 : Math.max(...mine.map((g) => g.version)) + 1;
+    nextVersion(key: GradeKey): number {
+        return (this.newest.get(keyOf(key)) ?? 0) + 1;
     }
 
     append(record: GradeRecord): void {
-        const expected = this.nextVersion(record.item, record.arm);
+        const expected = this.nextVersion(record);
         if (record.version !== expected) {
+            const against = record.against ? ` vs ${record.against}` : "";
             throw new GradeRefused(
-                `grade ${record.item}/${record.arm} v${record.version} expected v${expected}`,
+                `grade ${record.item}/${record.arm}${against} v${record.version} expected v${expected}`,
             );
         }
         appendFileSync(this.path, `${JSON.stringify(record)}\n`);
+        this.remember(record);
     }
 }
 

@@ -61,13 +61,36 @@ the abort call), and wait 30 s for the call to drain; a call still running
 then stops the run. An `apply_diff` event writes its file inside the
 workspace and commits that path alone, so the agent's own uncommitted edits
 stay uncommitted; content already committed adds no commit, and a path that
-resolves outside the workspace through `..` or a symlink stops the run.
+resolves outside the workspace through `..` or a symlink stops the run. The
+commit is built with plumbing (`hash-object --no-filters`, a scratch index
+whose entry keeps the file's executable bit, `commit-tree`, `update-ref`) and every workspace git run pins `GIT_DIR` and
+`GIT_WORK_TREE`, points `core.hooksPath` at an absent directory, turns
+`core.fsmonitor` and `commit.gpgsign` off, and runs with the repository's
+config swapped for the clone's baseline (saved at reset through an exclusive
+create, so a symlink planted at its path is replaced, and the agent's config
+returns afterwards), because the agent can write that config and the harness process
+runs outside the sandbox. The workspace path itself must be a real directory
+under the arm root, an existing ancestor of the diff's path must resolve
+inside it before any directory is created, and a `.git` that is a file or
+symlink, any entry under `.git` that is not a regular file or directory, a missing `.git/config`, or an `objects/info/alternates`, `commondir`, or
+`gitdir` file stops the run before git writes anything; every workspace and
+recorder git run ignores replacement refs (`GIT_NO_REPLACE_OBJECTS=1`); every workspace git run is bounded by the turn
+deadline, the walk of `.git` stops at that deadline or 200,000 entries, a
+target path that exists must be a regular file, and a real-index update
+that times out removes the `index.lock` it left.
 
 Pi runs in RPC mode with `--session-id sim-<session>`, its agent directory,
 settings, and model list under the arm root, and the Eidnara extension from
 the build clone on Eidnara arms. OpenCode runs through the v1 `spawnOpencode`,
 with a wrapper script that launches the pinned binary through the sandbox
-launcher, and titles each session `sim-<session>`. Both reach Bedrock only
+launcher, and titles each session `sim-<session>`. Each OpenCode session
+denies the `question`, `plan_enter`, and `plan_exit` permissions, as
+`opencode run` does for a non-interactive session: in the first live
+OpenCode run, the agent asked the user a question and the turn waited until
+its 900 s deadline. The harness also preloads `libfaketimeMT.so.1`, the
+build that serializes libfaketime's shared state across threads; under the
+single-threaded build, OpenCode crashed with `double free detected` after
+libfaketime read a torn timestamp line. Both reach Bedrock only
 through the proxy, with placeholder AWS credentials.
 
 The launcher binds kept paths read-write and read-only paths read-only.

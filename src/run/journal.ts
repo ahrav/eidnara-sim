@@ -1,9 +1,12 @@
 import {
     closeSync,
     existsSync,
+    fstatSync,
     linkSync,
+    lstatSync,
     openSync,
     readFileSync,
+    readSync,
     renameSync,
     rmSync,
     truncateSync,
@@ -25,6 +28,7 @@ export type EntryKind =
     | "FaultFired"
     | "FaultObserved"
     | "ItemState"
+    | "SnapshotArtefacts"
     | "EndArm"
     | "EndRun";
 
@@ -94,6 +98,52 @@ export function takeLease(dir: string): Lease {
 
 export function releaseLease(dir: string): void {
     rmSync(join(dir, "lease.json"), { force: true });
+}
+
+const TAIL_CHUNK = 1 << 20;
+
+/**
+ * A log the harness appends to must be a regular file or absent; a symlink or other shape at
+ * its path would carry the write elsewhere.
+ */
+export function requireAppendable(path: string): void {
+    const stat = lstatSync(path, { throwIfNoEntry: false });
+    if (stat !== undefined && !stat.isFile()) {
+        throw new Error(`${path} is not a regular file; refusing to write through it`);
+    }
+}
+
+/**
+ * Truncates a JSONL file to its newline-terminated prefix, which drops the line a kill
+ * mid-append left cut, and returns the byte length kept. The file is scanned backwards in
+ * chunks from its end, so a log of large records costs one chunk of memory, and a missing
+ * file reads as empty.
+ */
+export function keepCompleteLines(path: string): number {
+    requireAppendable(path);
+    if (!existsSync(path)) return 0;
+    const fd = openSync(path, "r");
+    try {
+        const size = fstatSync(fd).size;
+        if (size === 0) return 0;
+        const chunk = Buffer.alloc(Math.min(TAIL_CHUNK, size));
+        let end = size;
+        while (end > 0) {
+            const start = Math.max(0, end - chunk.length);
+            const read = readSync(fd, chunk, 0, end - start, start);
+            const newline = chunk.lastIndexOf(0x0a, read - 1);
+            if (newline !== -1) {
+                const keep = start + newline + 1;
+                if (keep < size) truncateSync(path, keep);
+                return keep;
+            }
+            end = start;
+        }
+        truncateSync(path, 0);
+        return 0;
+    } finally {
+        closeSync(fd);
+    }
 }
 
 /**

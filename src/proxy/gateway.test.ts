@@ -1,5 +1,7 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import * as fs from "node:fs";
 import { appendFileSync, mkdtempSync, readFileSync } from "node:fs";
+import { connect as http2Connect } from "node:http2";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { decodeMessages } from "../../tests/eventstream-decode";
@@ -324,6 +326,23 @@ describe("fault composition at the proxy sink", () => {
         expect(injector.report()[0]?.status).toBe("fired");
     });
 
+    test("an injected truncated reply records the text the host saw", async () => {
+        const fault = {
+            id: "t",
+            type: "truncated_length",
+            strategy: "burst",
+            params: { count: 2 },
+        } as ProxyFault;
+        const { injector, records, url } = await start(fault);
+        injector.arm("t");
+        await hostCall(url, AGENT_BODY, 2_000);
+        await hostCallJson(url, AGENT_BODY, 2_000);
+        expect(records.records.map((r) => [r.fault_ref, r.response_text])).toEqual([
+            ["t", "The change is partly"],
+            ["t", "The change is partly"],
+        ]);
+    });
+
     test("slow_stream over an upstream that throttles first records the proxy's retry", async () => {
         const fault = {
             id: "s",
@@ -415,6 +434,57 @@ describe("witnesses", () => {
 });
 
 describe("call records", () => {
+    test("a non-retaining writer reopening a record file reads only its tail", () => {
+        const path = join(mkdtempSync(join(tmpdir(), "records-")), "calls.jsonl");
+        const first = new RecordWriter(path, false);
+        const partial = {
+            arm: "a",
+            session: null,
+            turn: null,
+            component: "agent" as const,
+            componentSource: "inferred" as const,
+            model: "m",
+            status: 200,
+            finish_reason: "end_turn",
+            input_tokens: 1,
+            output_tokens: 1,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            error: null,
+            scenario_ms: 0,
+            first_byte_ms: 1,
+            total_ms: 2,
+            fault_ref: null,
+            started_wall_ms: 0,
+            proxy_retries: 0,
+        };
+        for (let i = 0; i < 3; i++) {
+            first.write({ ...partial, response_text: "x".repeat(2_000_000) });
+        }
+        const reads: number[] = [];
+        const originalRead = fs.readSync;
+        const originalReadFile = fs.readFileSync;
+        const spies = [
+            spyOn(fs, "readSync").mockImplementation(((...a: unknown[]) => {
+                const n = (originalRead as (...x: unknown[]) => number)(...a);
+                reads.push(n);
+                return n;
+            }) as typeof fs.readSync),
+            spyOn(fs, "readFileSync").mockImplementation(((...a: unknown[]) => {
+                const out = (originalReadFile as (...x: unknown[]) => string | Buffer)(...a);
+                reads.push(out.length);
+                return out;
+            }) as typeof fs.readFileSync),
+        ];
+        try {
+            const again = new RecordWriter(path, false);
+            expect(again.write(partial).seq).toBe(3);
+        } finally {
+            for (const spy of spies) spy.mockRestore();
+        }
+        expect(reads.reduce((a, b) => a + b, 0)).toBeLessThan(4_000_000);
+    });
+
     test("a writer reopening a record file continues its sequence after a cut last line", () => {
         const path = join(mkdtempSync(join(tmpdir(), "sim-records-")), "calls.jsonl");
         const first = new RecordWriter(path);
@@ -469,9 +539,79 @@ describe("call records", () => {
             arm: "eidnara",
             session: "s-0001",
         });
-        expect(userSim).toMatchObject({ component: "user-sim", componentSource: "asserted" });
+        expect(userSim).toMatchObject({
+            component: "user-sim",
+            componentSource: "asserted",
+            response_text: "done",
+        });
+        expect(summary?.response_text).toBeUndefined();
         expect((userSim?.wall_ms ?? 0) >= (summary?.wall_ms ?? Infinity)).toBe(true);
         expect(started.map((e) => e.component)).toEqual(["history_summarizer", "user-sim"]);
+    });
+
+    test("a non-streaming agent call records the response text it relayed", async () => {
+        const { records, url } = await start(null);
+        await hostCallJson(url, AGENT_BODY, 2_000);
+        expect(records.records[0]?.response_text).toBe("done");
+    });
+
+    test("a reply past the recorded-text cap is marked truncated", async () => {
+        const long: Upstream = {
+            async converse() {
+                const usage = { inputTokens: 1, outputTokens: 1 };
+                async function* events() {
+                    yield { messageStart: { role: "assistant" } };
+                    for (let i = 0; i < 70; i++) {
+                        const text = "x".repeat(4_096);
+                        yield { contentBlockDelta: { contentBlockIndex: 0, delta: { text } } };
+                    }
+                    yield { contentBlockStop: { contentBlockIndex: 0 } };
+                    yield { messageStop: { stopReason: "end_turn" } };
+                    yield { metadata: { usage, metrics: { latencyMs: 3 } } };
+                }
+                return { events: events() };
+            },
+        };
+        const { records, url } = await start(null, long);
+        await hostCall(url, AGENT_BODY, 5_000);
+        const record = records.records[0];
+        expect(record?.response_text_truncated).toBe(true);
+        expect((record?.response_text ?? "").length).toBe(262_144);
+        await hostCall(url, SUMMARIZER_BODY, 5_000);
+        expect(records.records[1]?.response_text).toBeUndefined();
+        expect(records.records[1]?.response_text_truncated).toBeUndefined();
+    });
+
+    test("a streamed reply with two text blocks records the same text as its non-streaming form", async () => {
+        const usage = { inputTokens: 1, outputTokens: 1 };
+        const twoBlocks: Upstream = {
+            async converse(_m: string, _b: unknown, streaming: boolean) {
+                if (!streaming) {
+                    const message = {
+                        role: "assistant",
+                        content: [{ text: "foo" }, { text: "bar" }],
+                    };
+                    return { json: { output: { message }, stopReason: "end_turn", usage } };
+                }
+                async function* events() {
+                    yield { messageStart: { role: "assistant" } };
+                    yield { contentBlockDelta: { contentBlockIndex: 0, delta: { text: "fo" } } };
+                    yield { contentBlockDelta: { contentBlockIndex: 0, delta: { text: "o" } } };
+                    yield { contentBlockStop: { contentBlockIndex: 0 } };
+                    yield { contentBlockDelta: { contentBlockIndex: 1, delta: { text: "bar" } } };
+                    yield { contentBlockStop: { contentBlockIndex: 1 } };
+                    yield { messageStop: { stopReason: "end_turn" } };
+                    yield { metadata: { usage, metrics: { latencyMs: 3 } } };
+                }
+                return { events: events() };
+            },
+        };
+        const { records, url } = await start(null, twoBlocks);
+        await hostCallJson(url, AGENT_BODY, 2_000);
+        await hostCall(url, AGENT_BODY, 2_000);
+        const [plain, streamed] = records.records;
+        expect(plain?.response_text).toBe("foo\nbar");
+        expect(streamed?.response_text).toBe(plain?.response_text);
     });
 
     test("the writer refuses a record missing any required field", () => {
@@ -607,6 +747,55 @@ describe("every request yields one record", () => {
         gateways.push(gateway);
         await hostCall(gateway.urls[0] as string, AGENT_BODY, 2_000);
         expect(records.records[0]?.scenario_ms).toBe(100);
+    });
+
+    test("text streamed after the client left is recorded as a cut, not as delivered answer", async () => {
+        let release: () => void = () => undefined;
+        const gate = new Promise<void>((resolve) => {
+            release = resolve;
+        });
+        const slow: Upstream = {
+            async converse() {
+                async function* events() {
+                    yield { messageStart: { role: "assistant" } };
+                    yield { contentBlockDelta: { contentBlockIndex: 0, delta: { text: "seen " } } };
+                    await gate;
+                    yield {
+                        contentBlockDelta: { contentBlockIndex: 0, delta: { text: "unseen" } },
+                    };
+                    yield { messageStop: { stopReason: "end_turn" } };
+                    yield {
+                        metadata: {
+                            usage: { inputTokens: 1, outputTokens: 1 },
+                            metrics: { latencyMs: 1 },
+                        },
+                    };
+                }
+                return { events: events() };
+            },
+        };
+        const { gateway, records } = await start(null, slow);
+        const client = http2Connect(gateway.urls[1] as string);
+        try {
+            const request = client.request({
+                ":method": "POST",
+                ":path": "/model/m/converse-stream",
+            });
+            request.end(JSON.stringify(AGENT_BODY));
+            await new Promise<void>((resolve) => request.once("data", () => resolve()));
+            request.close(8);
+            await Bun.sleep(50);
+            release();
+            while (gateway.inFlight > 0) await Bun.sleep(10);
+        } finally {
+            client.close();
+        }
+        expect(records.records[0]).toMatchObject({
+            status: 200,
+            finish_reason: "stream_cut",
+            error: "client disconnected before the stream ended",
+        });
+        expect(records.records[0]?.response_text ?? "").not.toContain("unseen");
     });
 
     test("a forwarded stream without messageStop is recorded as stream_cut", async () => {

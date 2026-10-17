@@ -9,7 +9,7 @@ export const TRANSCRIPT_STORES: TranscriptStore[] = [
     {
         host: "opencode",
         versions: /^1\.1[89]\./,
-        paths: ["$XDG_DATA_HOME/opencode/opencode.db", "$XDG_DATA_HOME/opencode/storage"],
+        paths: ["$XDG_DATA_HOME/opencode/opencode.db"],
     },
 ];
 
