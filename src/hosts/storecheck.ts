@@ -35,21 +35,25 @@ function digest(g: Segment): string {
     return hash.digest("hex").slice(0, 16);
 }
 
+/** A segment coordinate as the store holds it: a non-negative safe integer. */
+const isCoordinate = (n: unknown): n is number =>
+    typeof n === "number" && Number.isSafeInteger(n) && n >= 0;
+
 const isRange = (r: unknown): r is StoreCheck["ranges"][number] =>
     Array.isArray(r) &&
     (r.length === 4 || r.length === 5) &&
     typeof r[0] === "string" &&
-    typeof r[1] === "number" &&
-    typeof r[2] === "number" &&
-    typeof r[3] === "number" &&
+    isCoordinate(r[1]) &&
+    isCoordinate(r[2]) &&
+    isCoordinate(r[3]) &&
     (r.length === 4 || typeof r[4] === "string");
 
 const isOverlap = (o: unknown): o is StoreCheck["overlaps"][number] =>
     typeof o === "object" &&
     o !== null &&
     typeof (o as { session: unknown }).session === "string" &&
-    typeof (o as { first: unknown }).first === "number" &&
-    typeof (o as { second: unknown }).second === "number";
+    isCoordinate((o as { first: unknown }).first) &&
+    isCoordinate((o as { second: unknown }).second);
 
 type Bounds = Pick<Segment, "session_id" | "sequence" | "start_message" | "end_message">;
 

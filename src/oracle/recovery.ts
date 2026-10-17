@@ -45,10 +45,26 @@ interface Timeline {
     stamps(line: string): number[];
 }
 
+/**
+ * The instant a plugin log line's leading stamp names, or null when the line has none or the
+ * stamp names no calendar instant (`Date.parse` would move an impossible day into the next month).
+ */
 function logMs(line: string): number | null {
-    const stamp = /^\[(\d{4}-\d\d-\d\dT[\d:.]+Z)\]/.exec(line)?.[1];
-    const ms = stamp ? Date.parse(stamp) : Number.NaN;
-    return Number.isFinite(ms) ? ms : null;
+    const m = /^\[(\d{4})-(\d\d)-(\d\d)T(\d\d):(\d\d):(\d\d)(?:\.(\d{1,3}))?Z\]/.exec(line);
+    if (!m) return null;
+    const [year, month, day, hour, minute, second] = m.slice(1, 7).map(Number) as number[];
+    const ms = m[7] ? Number(m[7].padEnd(3, "0")) : 0;
+    const date = new Date(
+        Date.UTC(year as number, (month as number) - 1, day, hour, minute, second, ms),
+    );
+    const roundTrips =
+        date.getUTCFullYear() === year &&
+        date.getUTCMonth() + 1 === month &&
+        date.getUTCDate() === day &&
+        date.getUTCHours() === hour &&
+        date.getUTCMinutes() === minute &&
+        date.getUTCSeconds() === second;
+    return roundTrips ? date.getTime() : null;
 }
 
 /**
@@ -196,6 +212,18 @@ function indexEvidence(arm: ArmLogs, tl: Timeline): Evidence {
     return { callsByTurn, failOpen };
 }
 
+/** The first index in `sorted` whose position is past `at`. */
+function upperBound(sorted: FailOpen[], at: number): number {
+    let lo = 0;
+    let hi = sorted.length;
+    while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if ((sorted[mid] as FailOpen).at <= at) lo = mid + 1;
+        else hi = mid;
+    }
+    return lo;
+}
+
 /** The first index in `sorted` whose position is at or past `at`. */
 function lowerBound(sorted: FailOpen[], at: number): number {
     let lo = 0;
@@ -214,8 +242,10 @@ function lowerBound(sorted: FailOpen[], at: number): number {
  * before its record) counts on its own.
  */
 function failOpenCount(evidence: Evidence, from: number, to: number): number {
+    // A line stamped at the instant the next turn begins is ambiguous at millisecond resolution
+    // and counts against both turns, so the upper bound is inclusive.
     const lines = evidence.failOpen
-        .slice(lowerBound(evidence.failOpen, from), lowerBound(evidence.failOpen, to))
+        .slice(lowerBound(evidence.failOpen, from), upperBound(evidence.failOpen, to))
         .sort((a, b) => a.line - b.line);
     let records = 0;
     let unpaired = 0;
@@ -300,9 +330,9 @@ export function recoveries(run: RunLogs): Recovery[] {
         let built: { tl: Timeline; indexed: Evidence } | null = null;
         const evidenceOf = () => {
             if (built) return built;
-            // An arm whose verdicts depend on the plugin log needs that log on disk; the host arm
-            // skips daemon faults and runs no plugin, so its missing log is never consulted.
-            if (arm.pluginLogMissing) {
+            // An arm whose verdicts depend on the plugin log needs that log on disk; the host
+            // control arm runs no plugin, so its faults are judged on its calls and turns alone.
+            if (arm.pluginLogMissing && arm.arm !== "host") {
                 throw new Error(
                     `${arm.arm}: r/eidnara.log is missing, so fail-open evidence cannot be read`,
                 );

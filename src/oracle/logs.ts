@@ -291,6 +291,10 @@ export function loadRun(dir: string, prereg: Preregistration): RunLogs {
         for (const [field, ok] of Object.entries(fields)) {
             if (!ok(e[field])) throw new Error(`${journalPath}: line ${i + 1}: ${field} missing`);
         }
+        // A journal the harness wrote numbers each entry by its line; the oracles order by it.
+        if (e.seq !== undefined && e.seq !== i) {
+            throw new Error(`${journalPath}: line ${i + 1}: seq ${String(e.seq)} is not ${i}`);
+        }
         const last = lastMs.get(e.arm);
         if (last !== undefined && e.scenario_ms < last) {
             throw new Error(
