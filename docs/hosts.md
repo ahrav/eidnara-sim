@@ -66,8 +66,9 @@ commit is built with plumbing (`hash-object --no-filters`, a scratch index
 whose entry keeps the file's executable bit, `commit-tree`, `update-ref`) and every workspace git run pins `GIT_DIR` and
 `GIT_WORK_TREE`, points `core.hooksPath` at an absent directory, turns
 `core.fsmonitor` and `commit.gpgsign` off, and runs with the repository's
-config swapped for the clone's baseline (the agent's config returns
-afterwards), because the agent can write that config and the harness process
+config swapped for the clone's baseline (saved at reset through an exclusive
+create, so a symlink planted at its path is replaced, and the agent's config
+returns afterwards), because the agent can write that config and the harness process
 runs outside the sandbox. The workspace path itself must be a real directory
 under the arm root, an existing ancestor of the diff's path must resolve
 inside it before any directory is created, and a `.git` that is a file or
