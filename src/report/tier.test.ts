@@ -1193,10 +1193,6 @@ describe("tier report", () => {
         expect(tierInput(L, [g]).incomplete).toContain(
             "run pi/301: arms ran one at a time; load_stress requires concurrent arms",
         );
-        const [host, aa] = g.run.arms as [ArmLogs, ArmLogs];
-        (host.journal[0] as Entry).seq = 0;
-        (aa.journal[0] as Entry).seq = 1;
-        expect(tierInput(L, [g]).incomplete?.filter((x) => x.includes("load_stress"))).toEqual([]);
         expect(
             tierInput(prereg, [fixture()]).incomplete?.filter((x) => x.includes("load_stress")),
         ).toEqual([]);
@@ -1559,6 +1555,79 @@ describe("tier report", () => {
                 x.startsWith("runs differ in toolchain"),
             ),
         ).toBeDefined();
+    });
+
+    test("the report script refuses an --out that is a checkout child named with leading dots", () => {
+        const dir = mkdtempSync(join(tmpdir(), "sim-report-"));
+        writeFileSync(join(dir, "manifest.json"), JSON.stringify({ tier: "S" }));
+        const checkout = mkdtempSync(join(tmpdir(), "sim-checkout-"));
+        const config = join(dir, "sim.config.json");
+        writeFileSync(config, JSON.stringify({ eidnara_checkout: checkout }));
+        const r = Bun.spawnSync(
+            ["bun", "scripts/report.ts", dir, "--out", join(checkout, "..reports")],
+            {
+                cwd: join(import.meta.dir, "../.."),
+                env: { ...process.env, SIM_CONFIG: config },
+                stderr: "pipe",
+                stdout: "pipe",
+            },
+        );
+        expect([r.exitCode, r.stderr.toString().includes("eidnara checkout")]).toEqual([2, true]);
+    });
+
+    test("the report script accepts only the registered tier literals", () => {
+        const dir = mkdtempSync(join(tmpdir(), "sim-report-"));
+        writeFileSync(join(dir, "manifest.json"), JSON.stringify({ tier: "../S" }));
+        const r = Bun.spawnSync(["bun", "scripts/report.ts", dir], {
+            cwd: join(import.meta.dir, "../.."),
+            stderr: "pipe",
+            stdout: "pipe",
+        });
+        expect([r.exitCode, r.stderr.toString().includes("tier")]).toEqual([2, true]);
+    });
+
+    test("the load profile needs every registered arm live at one moment", () => {
+        const L = loadPrereg("L");
+        const g = fixture(undefined, { seed: 301 });
+        g.run.arms.push(
+            armLogs("eidnara-kl", () => 0),
+            armLogs("eidnara-cf", () => 0),
+        );
+        let seq = 0;
+        for (const a of g.run.arms) {
+            a.journal.unshift({
+                kind: "StartArm",
+                arm: a.arm,
+                scenario_ms: 0,
+                seq: 0,
+                wall_ms: 0,
+            } as Entry);
+            for (const e of a.journal) e.seq = seq++;
+        }
+        const [host, aa] = g.run.arms as [ArmLogs, ArmLogs];
+        (host.journal[0] as Entry).seq = 0;
+        (aa.journal[0] as Entry).seq = 1;
+        expect(tierInput(L, [g]).incomplete?.filter((x) => x.includes("load_stress"))).toEqual([
+            "run pi/301: arms ran one at a time; load_stress requires concurrent arms",
+        ]);
+        for (const a of g.run.arms) (a.journal[0] as Entry).seq = 0;
+        expect(tierInput(L, [g]).incomplete?.filter((x) => x.includes("load_stress"))).toEqual([]);
+    });
+
+    test("a scheduled proxy fault needs its own witness", () => {
+        const g = fixture();
+        g.scenario.faults.push({
+            id: "f1",
+            type: "provider_5xx",
+            strategy: "single",
+            trigger: { kind: "user_turn", session: "s-0", n: 1 },
+            params: {},
+            seam: { layer: "proxy-sink", legal_outcomes: [] },
+        } as unknown as Scenario["faults"][number]);
+        g.witnesses = [];
+        expect(tierInput(prereg, [g]).incomplete).toContain(
+            "run pi/101: fault witnesses missing for f1",
+        );
     });
 
     test("a planted 4xx difference between the A/A arms fails that falsification check", () => {

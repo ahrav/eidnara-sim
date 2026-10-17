@@ -458,14 +458,19 @@ function incomplete(
     });
     const sequential = p.load_stress?.arms_concurrent
         ? runs.flatMap((g) => {
-              const spans = g.run.arms.flatMap((a) => {
-                  const start = a.journal.find((e) => e.kind === "StartArm")?.seq;
-                  const end = a.journal.find((e) => e.kind === "EndArm")?.seq;
-                  return start === undefined || end === undefined ? [] : [[start, end] as const];
-              });
-              const overlap = spans.some(([s1, e1], i) =>
-                  spans.some(([s2, e2], j) => i !== j && s1 <= e2 && s2 <= e1),
-              );
+              const spans = g.run.arms
+                  .filter((a) => p.arms.run.includes(a.arm))
+                  .flatMap((a) => {
+                      const start = a.journal.find((e) => e.kind === "StartArm")?.seq;
+                      const end = a.journal.find((e) => e.kind === "EndArm")?.seq;
+                      return start === undefined || end === undefined
+                          ? []
+                          : [[start, end] as const];
+                  });
+              const registered = p.arms.run.length;
+              const overlap =
+                  spans.length === registered &&
+                  Math.max(...spans.map(([s]) => s)) <= Math.min(...spans.map(([, e]) => e));
               return spans.length < 2 || overlap
                   ? []
                   : [
@@ -476,11 +481,16 @@ function incomplete(
     const overridden = runs.flatMap((g) =>
         g.identity.fault_override === null ? [] : [`run ${runKey(g)}: fault schedule overridden`],
     );
-    const unwitnessed = runs.flatMap((g) =>
-        g.witnesses === null && g.scenario.faults.some((f) => f.seam.layer === "proxy-sink")
-            ? [`run ${runKey(g)}: fault witnesses missing`]
-            : [],
-    );
+    const unwitnessed = runs.flatMap((g) => {
+        const proxy = g.scenario.faults.filter((f) => f.seam.layer === "proxy-sink");
+        if (proxy.length === 0) return [];
+        if (g.witnesses === null) return [`run ${runKey(g)}: fault witnesses missing`];
+        const seen = new Set(g.witnesses.map((w) => w.fault));
+        const absent = proxy.filter((f) => !seen.has(f.id)).map((f) => f.id);
+        return absent.length
+            ? [`run ${runKey(g)}: fault witnesses missing for ${absent.join(", ")}`]
+            : [];
+    });
     const truncated = runs.flatMap((g) =>
         g.identity.events < g.scenario.events.length
             ? [`run ${runKey(g)}: ${g.identity.events} of ${g.scenario.events.length} events`]

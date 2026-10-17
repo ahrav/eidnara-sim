@@ -78,8 +78,10 @@ no table.
 
 `scripts/report.ts <run dir>... [--out <dir>]` groups the runs by tier and
 writes `report-<tier>.md` and the gate verdict as `report-<tier>.json`
-through staged files renamed into place, or prints the Markdown; it refuses
-an `--out` inside `sim.config.json`'s `eidnara_checkout`. `loadGraded` refuses a run directory whose manifest
+through staged files renamed into place (an unbounded rate ratio is written
+as the string `"Infinity"`), or prints the Markdown; it refuses a manifest
+tier outside the registered literals and an `--out` inside
+`sim.config.json`'s `eidnara_checkout`. `loadGraded` refuses a run directory whose manifest
 records a `prereg_sha256` other than the hash of the tier's current
 pre-registration, or whose `scenario.json` hashes to other than the
 manifest's `scenario_hash`, so a verdict carries the registration and the
@@ -123,7 +125,7 @@ a pre-registered arm (`arms.run`) that has no `EndArm` entry, each run whose man
 `distortions`, its host versions, the scenario's generator, random
 schema, corpus manifest, and embedding model, the tapes it replayed, and the
 preflight's toolchain probes) the runs disagree on, each run with
-scheduled proxy faults and no complete `faults.jsonl` line, each run made
+a scheduled proxy fault without its witness in `faults.jsonl`, each run made
 with a fault override, each run with grades for
 items outside its scenario's probes, for a metric of another probe type
 than the item's, with a binary metric recorded as other than a boolean,
@@ -135,8 +137,8 @@ arm, and their reference arms), or whose records fail the checks of
 `scripts/pairing-check.ts` (`pairingFailures`: a pre-divergence reply
 differing from the reference arm's, an altered probe or paste turn, an
 unsent non-filler turn) or whose `UserSimRates` entry names a rate outside
-its band, each L run whose arms' `StartArm`/`EndArm` spans never overlap
-while `load_stress` registers concurrent arms, each registered A/A pair whose count
+its band, each L run whose registered arms' `StartArm`/`EndArm` spans
+share no common moment while `load_stress` registers concurrent arms, each registered A/A pair whose count
 of control arms that reached `EndArm` across the runs differs from
 `aa_controls.repeats`, each control arm whose pair lacks any registered metric of a P1
 to P12 probe other than P7 (the judge grades P7 for memory arms against
