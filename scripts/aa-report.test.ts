@@ -444,6 +444,66 @@ describe("aa-report", () => {
         expect(report?.claim_boundary).toBe("sim-claim-boundary/v1");
     });
 
+    test("a divergence row must carry the control turn's digest and a differing reference digest", () => {
+        const line = (o: unknown) => `${JSON.stringify(o)}\n`;
+        const d = (over: Record<string, unknown>) => ({
+            kind: "divergedAt",
+            arm: "host~aa",
+            session: "s-1",
+            event: "e-2",
+            index: 1,
+            digest: "d",
+            context_sha256: "c",
+            reference_digest: "r",
+            against: "reference",
+            ...over,
+        });
+        const base = [...allTurns("host"), ...allTurns("host~aa")];
+        for (const bad of [
+            d({ digest: "other" }),
+            d({ reference_digest: "d" }),
+            d({ reference_digest: "x" }),
+        ]) {
+            const dir = gradedRun("S", preregistrationHash(loadPrereg("S")));
+            writeFileSync(join(dir, "pairing.jsonl"), [...base, bad].map(line).join(""));
+            expect(() => aaReport(dir)).toThrow(/divergence/);
+        }
+        const sound = gradedRun("S", preregistrationHash(loadPrereg("S")));
+        const rows = [
+            ...allTurns("host"),
+            ...allTurns("host~aa").map((t) => (t.event === "e-2" ? { ...t, digest: "d2" } : t)),
+            d({ digest: "d2", reference_digest: "d" }),
+        ];
+        writeFileSync(join(sound, "pairing.jsonl"), rows.map(line).join(""));
+        expect(aaReport(sound)[0]?.sessions_diverged).toBe(1);
+    });
+
+    test("refuses a grade metric that is not a finite number", () => {
+        const dir = gradedRun("S", preregistrationHash(loadPrereg("S")));
+        const huge = { ...grade("host", "p-1", "P3", "P3.delta_mem", 0), version: 2 };
+        const text = JSON.stringify(huge).replace('"P3.delta_mem":0', '"P3.delta_mem":1e400');
+        appendFileSync(join(dir, "grades.jsonl"), `${text}\n`);
+        expect(() => aaReport(dir)).toThrow(/P3\.delta_mem/);
+    });
+
+    test("a probe or paste turn whose text differs from the compiled script is refused on both arms", () => {
+        const line = (o: unknown) => `${JSON.stringify(o)}\n`;
+        const dir = gradedRun("S", preregistrationHash(loadPrereg("S")));
+        const scenario = JSON.parse(readFileSync(join(dir, "scenario.json"), "utf8"));
+        scenario.events[0] = { ...scenario.events[0], role: "probe", text: "Where is the config?" };
+        writeFileSync(join(dir, "scenario.json"), JSON.stringify(scenario));
+        const manifest = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8"));
+        writeFileSync(
+            join(dir, "manifest.json"),
+            JSON.stringify({ ...manifest, scenario_hash: scenarioHash(scenario) }),
+        );
+        const rows = ["host", "host~aa"].flatMap((a) =>
+            allTurns(a).map((t) => (t.event === "e-1" ? { ...t, text_sha256: "altered" } : t)),
+        );
+        writeFileSync(join(dir, "pairing.jsonl"), rows.map(line).join(""));
+        expect(() => aaReport(dir)).toThrow(/e-1.*compiled/);
+    });
+
     test("a run-level family forms one cluster per run, so one run leaves it uninformative", () => {
         const dir = gradedRun("S", preregistrationHash(loadPrereg("S")));
         const [report] = aaReport(dir);

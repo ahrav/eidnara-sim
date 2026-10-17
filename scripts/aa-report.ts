@@ -2,6 +2,7 @@ import { existsSync, lstatSync, readFileSync, renameSync, rmSync, writeFileSync 
 import { join, resolve } from "node:path";
 import { GradeLog } from "../src/grade/probes";
 import { armBase, requireOrder } from "../src/hosts/arms";
+import { sha256Hex } from "../src/prereg/canonical";
 import type { Tier } from "../src/prereg/schema";
 import { preregistrationHash } from "../src/prereg/validate";
 import { bootstrapMean, disagreementRate, pairedDiffs } from "../src/report/paired";
@@ -111,6 +112,12 @@ function report(dir: string) {
             VERDICTS.includes(g.verdict) &&
             typeof g.metrics === "object" &&
             g.metrics !== null;
+        const infinite = Object.entries(g.metrics ?? {}).find(
+            ([, v]) => typeof v === "number" && !Number.isFinite(v),
+        );
+        if (infinite) {
+            throw new Error(`${dir}/grades.jsonl: ${g.arm}/${g.item} ${infinite[0]} is not finite`);
+        }
         if (!sound)
             throw new Error(`${dir}/grades.jsonl: ${g.arm}/${g.item} is not a grade of this run`);
     }
@@ -136,7 +143,38 @@ function report(dir: string) {
             );
         }
     }
-    const mismatched = pairingMismatches(pairing, referenceArm(order));
+    const reference = referenceArm(order);
+    const turnDigest = new Map(
+        pairing.filter((r) => r.kind === "turn").map((r) => [`${r.arm}/${r.event}`, r]),
+    );
+    for (const r of pairing) {
+        if (r.kind !== "divergedAt") continue;
+        // A divergence against the reference arm records the control turn's digest and the
+        // reference arm's differing digest at the same event; the record is the evidence.
+        const mine = turnDigest.get(`${r.arm}/${r.event}`);
+        const theirs = turnDigest.get(`${reference(r.arm)}/${r.event}`);
+        const sound =
+            mine?.digest === r.digest &&
+            r.reference_digest !== r.digest &&
+            (r.against === "recorded" || theirs?.digest === r.reference_digest);
+        if (!sound) {
+            throw new Error(
+                `${dir}/pairing.jsonl: ${r.arm} divergence at ${r.event} does not match the turns it cites`,
+            );
+        }
+    }
+    // A probe or paste turn delivers the compiled text verbatim, on every arm.
+    for (const r of pairing) {
+        if (r.kind !== "turn") continue;
+        const e = turnOf.get(r.event) as { role?: string; text?: unknown } | undefined;
+        if (e?.role !== "probe" && e?.role !== "paste") continue;
+        if (r.text_sha256 !== sha256Hex(String(e.text))) {
+            throw new Error(
+                `${dir}/pairing.jsonl: ${r.arm} ${r.event} differs from the compiled text`,
+            );
+        }
+    }
+    const mismatched = pairingMismatches(pairing, reference);
     const controls = order.filter((a) => a !== armBase(a));
     const report = controls.map((control) => {
         const arm = armBase(control);

@@ -146,12 +146,14 @@ and the scheduled events (`requireComplete`, as `grade-run.ts` does), checks eac
 pairing record's shape and arm (`readPairing`, which
 `pairing-check.ts` shares, refusing a corrupt terminated line), binds each
 record to its scheduled turn's session and index, admits one turn per arm
-and event and one divergence per arm and session, requires a turn record
-from each arm of the pair for every scheduled user turn, refuses a
+and event and one divergence per arm and session, requires each divergence
+to cite its control turn's digest and a differing reference digest, each
+probe or paste turn to carry the compiled text, and a turn record from
+each arm of the pair for every scheduled user turn, refuses a
 control whose delivered text differed from its arm's before its recorded
 divergence (`pairingMismatches`, the check `pairing-check.ts` runs), checks each
-latest grade's arm, item, probe type, version, and verdict against the
-run and its reached probes, refuses
+latest grade's arm, item, probe type, version, verdict, and finite metrics
+against the run and its reached probes, refuses
 a run graded under another pre-registration or whose scenario no longer
 hashes to the manifest's digest, requires the manifest's tier and seed to
 match the compiled scenario's, and records the pre-registration hash it
