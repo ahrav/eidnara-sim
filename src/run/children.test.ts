@@ -155,3 +155,11 @@ test("a spawn that fails while its log cannot be written still settles the run",
     const children = new Children({ PATH: "/nonexistent" }, 300);
     expect(await children.run(["-e", "1"], "/nonexistent/dir/log")).toBe(127);
 });
+
+test("a stop callback that throws still stops the child and settles the run", async () => {
+    const children = new Children(process.env, 300);
+    const code = await children.run(IDLE, log(), 100, undefined, () => {
+        throw new Error("marker: ENOSPC");
+    });
+    expect(code).toBe(SIGTERM_EXIT);
+});

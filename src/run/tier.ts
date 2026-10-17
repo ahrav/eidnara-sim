@@ -26,7 +26,9 @@ export function restartFraction(
     tier: Preregistration["tier"],
 ): number {
     if (flag !== undefined) return /^\d*\.?\d+$/.test(flag) ? Number(flag) : Number.NaN;
-    return prior?.restart_at ?? (tier === "XL" ? 0.4 : 0);
+    const saved = prior?.restart_at;
+    if (saved === undefined) return tier === "XL" ? 0.4 : 0;
+    return typeof saved === "number" && Number.isFinite(saved) ? saved : Number.NaN;
 }
 
 /**

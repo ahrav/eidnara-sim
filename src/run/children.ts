@@ -82,9 +82,14 @@ export class Children {
             const stop = (reason: StopReason) => {
                 if (stopping) return;
                 stopping = true;
-                onStop?.(reason);
                 child.kill("SIGTERM");
                 timers.push(setTimeout(() => kill(child), this.graceMs));
+                // The child is already stopping; a callback failure is recorded, not propagated.
+                try {
+                    onStop?.(reason);
+                } catch (caught) {
+                    appendFileSync(log, `stop callback failed: ${(caught as Error).message}\n`);
+                }
             };
             if (limitMs !== undefined && limitMs > 0)
                 timers.push(setTimeout(() => stop("limit"), limitMs));

@@ -81,10 +81,32 @@ export interface Continuity {
 
 const count = (x: unknown): x is number => Number.isSafeInteger(x) && (x as number) >= 0;
 
-export function parseContinuity(value: unknown): Continuity[] {
-    if (!Array.isArray(value)) throw new Error("continuity: expected an array of rows");
+export const CONTINUITY_SCHEMA = "sim-continuity/v1";
+
+/** The continuity file a report writes: its rows with the tier and pre-registration they came from. */
+export interface ContinuityFile {
+    schema: typeof CONTINUITY_SCHEMA;
+    tier: string;
+    prereg_sha256: string;
+    rows: Continuity[];
+}
+
+/** Parses a continuity file as a recall reference from `tier` under the pre-registration hash. */
+export function parseContinuity(value: unknown, tier: string, prereg_sha256: string): Continuity[] {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) {
+        throw new Error("continuity: expected an object with schema, tier, prereg_sha256, rows");
+    }
+    const f = value as Record<string, unknown>;
+    if (f.schema !== CONTINUITY_SCHEMA)
+        throw new Error(`continuity.schema: expected ${CONTINUITY_SCHEMA}`);
+    if (f.tier !== tier)
+        throw new Error(`continuity.tier: expected ${tier}, found ${String(f.tier)}`);
+    if (f.prereg_sha256 !== prereg_sha256) {
+        throw new Error(`continuity.prereg_sha256: expected ${prereg_sha256}`);
+    }
+    if (!Array.isArray(f.rows)) throw new Error("continuity.rows: expected an array of rows");
     const seen = new Set<string>();
-    return value.map((raw, i) => {
+    return f.rows.map((raw, i) => {
         const at = `continuity[${i}]`;
         if (typeof raw !== "object" || raw === null) throw new Error(`${at}: expected an object`);
         const r = raw as Record<string, unknown>;

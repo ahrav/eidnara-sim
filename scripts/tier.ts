@@ -292,7 +292,12 @@ writeAtomic(
             restart_at: restartAt,
             items_per_type: items ?? null,
             models,
-            plan,
+            // Jobs of hosts a previous invocation planned stay in the saved plan, so a later
+            // fraction change is checked against every run that may have begun.
+            plan: [
+                ...plan,
+                ...(prior?.plan ?? []).filter((j) => !plan.some((p) => p.dir === j.dir)),
+            ],
         },
         null,
         2,
@@ -389,10 +394,12 @@ const runJob = async (job: TierJob) => {
                 remaining(),
                 cut === null ? undefined : () => eventsRun(job.dir) >= cut,
                 (reason) => {
-                    requested = reason === "stopWhen";
-                    // The marker lands before the stop is issued, so a parent that dies in
-                    // between leaves a run the next invocation resumes rather than cuts again.
-                    if (requested) writeFileSync(marker, `${new Date().toISOString()}\n`);
+                    if (reason !== "stopWhen") return;
+                    // The marker lands as the stop goes out, so a parent that dies before the
+                    // child exits leaves a run the next invocation resumes rather than cuts
+                    // again; the rerun follows only a marker that was written.
+                    writeFileSync(marker, `${new Date().toISOString()}\n`);
+                    requested = true;
                 },
             );
     if (requested && code === SIGTERM_EXIT && remaining() > 1) {

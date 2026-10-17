@@ -182,6 +182,9 @@ describe("restartFraction", () => {
         expect(restartFraction(undefined, { restart_at: 0 }, "XL")).toBe(0);
         expect(restartFraction(undefined, { restart_at: 0.7 }, "XL")).toBe(0.7);
         expect(restartFraction("0.2", { restart_at: 0.7 }, "XL")).toBe(0.2);
+        for (const saved of ["0", false, [], Number.NaN, Number.POSITIVE_INFINITY]) {
+            expect(restartFraction(undefined, { restart_at: saved as number }, "XL")).toBeNaN();
+        }
     });
 });
 

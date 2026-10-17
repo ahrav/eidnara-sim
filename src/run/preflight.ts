@@ -1,8 +1,9 @@
-import { realpathSync } from "node:fs";
-import { join } from "node:path";
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import type { SimConfig } from "../config/config";
+import { DUMMY_AWS } from "../hosts/arms";
 import { assess, type Interception, interceptionTest, probes } from "./interception";
-import { writeLauncher } from "./launcher";
+import { launch, plainPath, writeLauncher } from "./launcher";
 import { buildFaketime } from "./timeinject";
 import { type ToolchainProbe, toolchainProbe } from "./toolchain";
 import { hostVersion, transcriptPaths } from "./transcripts";
@@ -48,11 +49,33 @@ export function preflightDrift(before: Preflight, now: Preflight): string[] {
     return drift;
 }
 
-export function versionOf(config: SimConfig, host: "pi" | "opencode"): string {
+/**
+ * The host's `--version`, run inside the sandbox when a launcher is given: a scratch HOME, the
+ * placeholder AWS variables the hosts run with, and read-only access to the host install alone.
+ */
+export function versionOf(config: SimConfig, host: "pi" | "opencode", launcher?: string): string {
     const node = realpathSync(Bun.which("node") ?? "node");
-    return hostVersion(
-        host === "pi" ? [node, piCli(config), "--version"] : [config.opencode_binary, "--version"],
-    );
+    const argv =
+        host === "pi" ? [node, piCli(config), "--version"] : [config.opencode_binary, "--version"];
+    if (!launcher) return hostVersion(argv);
+    const home = mkdtempSync(join(dirname(launcher), "probe-home-"));
+    const nodeRoot = resolve(node, "../..");
+    const ro =
+        host === "pi"
+            ? [nodeRoot, config.pi_install]
+            : [nodeRoot, dirname(dirname(dirname(plainPath(config.opencode_binary))))];
+    const env = {
+        HOME: home,
+        PATH: `${join(nodeRoot, "bin")}:/usr/local/bin:/usr/bin:/bin`,
+        PI_OFFLINE: "1",
+        PI_SKIP_VERSION_CHECK: "1",
+        ...DUMMY_AWS,
+    };
+    try {
+        return hostVersion(launch(launcher, [home], env, argv, ro));
+    } finally {
+        rmSync(home, { recursive: true, force: true });
+    }
 }
 
 export async function preflight(config: SimConfig, runRoot: string): Promise<Preflight> {
@@ -75,7 +98,7 @@ export async function preflight(config: SimConfig, runRoot: string): Promise<Pre
         "toolchain caches are read-only, so a dependency missing from them fails to fetch",
     );
     const row = (c: SimConfig, host: "pi" | "opencode") => {
-        const version = versionOf(c, host);
+        const version = versionOf(c, host, launcher);
         return { host, version, transcript_paths: transcriptPaths(host, version) };
     };
     const hosts = (["pi", "opencode"] as const).map((h) => row(config, h));

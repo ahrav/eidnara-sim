@@ -10,9 +10,9 @@ import {
 } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { defaultConfigPath } from "../src/config/config";
-import { TIERS, type Tier } from "../src/prereg/schema";
+import { type Preregistration, TIERS, type Tier } from "../src/prereg/schema";
 import { preregistrationHash } from "../src/prereg/validate";
-import { parseContinuity } from "../src/report/conditions";
+import { CONTINUITY_SCHEMA, type ContinuityFile, parseContinuity } from "../src/report/conditions";
 import type { GradedRun } from "../src/report/observe";
 import { renderTier } from "../src/report/render";
 import { aaScale, type CusumScale, cusumScale, loadGraded, tierReport } from "../src/report/tier";
@@ -42,15 +42,21 @@ if (dirs.length === 0 || dirs.some((d) => !existsSync(join(d, "manifest.json")))
 }
 // The reference is read when the XL report needs it, after any earlier tier in this invocation
 // has written or removed its own continuity file; an absent file is no reference.
-const reference = () => {
+const reference = (prereg: Preregistration) => {
     if (!refPath) return undefined;
     if (!existsSync(refPath)) {
         console.error(`${refPath}: no such recall reference; the XL report has no drift table`);
         return undefined;
     }
+    // The documented reference is the tier XL resizes from, under that tier's registration.
+    const source = prereg.resizing?.source_tier ?? "L";
     return {
         source: refPath,
-        continuity: parseContinuity(JSON.parse(readFileSync(refPath, "utf8"))),
+        continuity: parseContinuity(
+            JSON.parse(readFileSync(refPath, "utf8")),
+            source,
+            preregistrationHash(loadPrereg(source)),
+        ),
     };
 };
 /** The path with its nearest existing ancestor resolved through symlinks. */
@@ -163,7 +169,7 @@ for (const [tier, { prereg, runs }] of loaded) {
         scale,
         catalog,
         resizing?.paired_items_per_probe_type,
-        tier === "XL" ? reference() : undefined,
+        tier === "XL" ? reference(prereg) : undefined,
     );
     violated += report.witness.filter((w) => w.status === "violated").length;
     const text = renderTier(report);
@@ -187,9 +193,13 @@ for (const [tier, { prereg, runs }] of loaded) {
         const sound = report.witness.every((w) => w.status !== "violated");
         if (sound && report.verdict.pass.incomplete.every((x) => x.startsWith("CUSUM "))) {
             const tmpPath = `${continuityPath}.${randomUUID()}.tmp`;
-            writeFileSync(tmpPath, `${JSON.stringify(report.continuity, null, 2)}\n`, {
-                flag: "wx",
-            });
+            const file: ContinuityFile = {
+                schema: CONTINUITY_SCHEMA,
+                tier,
+                prereg_sha256: preregistrationHash(prereg),
+                rows: report.continuity,
+            };
+            writeFileSync(tmpPath, `${JSON.stringify(file, null, 2)}\n`, { flag: "wx" });
             renameSync(tmpPath, continuityPath);
         } else {
             console.error(

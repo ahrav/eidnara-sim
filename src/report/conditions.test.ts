@@ -205,24 +205,40 @@ describe("parseContinuity", () => {
         pass_with_transcript_read: 2,
         v1: null,
     };
+    const file = (rows: unknown[], over: Record<string, unknown> = {}) => ({
+        schema: "sim-continuity/v1",
+        tier: "L",
+        prereg_sha256: "abc",
+        rows,
+        ...over,
+    });
     test("a continuity file written by the report parses back", () => {
-        const parsed: unknown[] = parseContinuity([row, { ...row, probe: "P9" }]);
+        const parsed: unknown[] = parseContinuity(file([row, { ...row, probe: "P9" }]), "L", "abc");
         expect(parsed).toEqual([row, { ...row, probe: "P9" }]);
     });
 
+    test("a reference from another tier or pre-registration is refused", () => {
+        expect(() => parseContinuity(file([row], { tier: "S" }), "L", "abc")).toThrow(
+            "continuity.tier: expected L, found S",
+        );
+        expect(() => parseContinuity(file([row], { prereg_sha256: "zzz" }), "L", "abc")).toThrow(
+            "continuity.prereg_sha256: expected abc",
+        );
+        expect(() => parseContinuity([row], "L", "abc")).toThrow("continuity: expected an object");
+    });
+
     test("a malformed reference is refused by row and field", () => {
-        expect(() => parseContinuity({ rows: [row] })).toThrow("continuity: expected an array");
-        expect(() => parseContinuity([{ ...row, n: "40" }])).toThrow("continuity[0].n");
-        expect(() => parseContinuity([{ ...row, n: 1e20, pass: 5e19 }])).toThrow("continuity[0].n");
-        expect(() => parseContinuity([{ ...row, pass: 41 }])).toThrow("continuity[0].pass");
-        expect(() => parseContinuity([{ ...row, pass: -1 }])).toThrow("continuity[0].pass");
-        expect(() => parseContinuity([{ ...row, pass_with_transcript_read: 39 }])).toThrow(
+        const parseRows = (rows: unknown) => parseContinuity(file(rows as unknown[]), "L", "abc");
+        expect(() => parseRows({ rows: [row] })).toThrow("continuity.rows: expected an array");
+        expect(() => parseRows([{ ...row, n: "40" }])).toThrow("continuity[0].n");
+        expect(() => parseRows([{ ...row, n: 1e20, pass: 5e19 }])).toThrow("continuity[0].n");
+        expect(() => parseRows([{ ...row, pass: 41 }])).toThrow("continuity[0].pass");
+        expect(() => parseRows([{ ...row, pass: -1 }])).toThrow("continuity[0].pass");
+        expect(() => parseRows([{ ...row, pass_with_transcript_read: 39 }])).toThrow(
             "continuity[0].pass_with_transcript_read",
         );
-        expect(() => parseContinuity([{ ...row, probe: "P1" }])).toThrow("continuity[0].probe");
-        expect(() => parseContinuity([row, row])).toThrow(
-            "continuity[1]: duplicates pi/eidnara/P8",
-        );
+        expect(() => parseRows([{ ...row, probe: "P1" }])).toThrow("continuity[0].probe");
+        expect(() => parseRows([row, row])).toThrow("continuity[1]: duplicates pi/eidnara/P8");
     });
 });
 
