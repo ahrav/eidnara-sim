@@ -60,8 +60,6 @@ export class Clock {
         }
         if (target <= this.scenario) return;
         const from_ms = this.scenario;
-        this.scenario = target;
-        this.onAdvance(target);
         this.journal.append({
             ...detail,
             kind: "AdvanceClock",
@@ -70,5 +68,7 @@ export class Clock {
             from_ms,
             busy: [],
         });
+        this.scenario = target;
+        this.onAdvance(target);
     }
 }

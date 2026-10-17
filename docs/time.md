@@ -4,19 +4,37 @@
 
 `writeLauncher(runRoot)` writes `sandbox.sh` into the run root. The script
 runs a command in private mount and PID namespaces through `sudo` and
-`unshare`, masks `/tmp`, the home directory, and the run root with tmpfs,
-binds the kept paths back in, and drops privilege with `setpriv` (same UID
-and GID, no new privileges, no capabilities). `launch(launcher, keep, env,
+`unshare`, mounts a private `/dev/shm`, masks `/tmp`, the home directory,
+and the run root with tmpfs, binds the kept paths back in, and drops
+privilege with `setpriv` (same UID and GID, no new privileges, no
+capabilities). The staging tree for the kept paths and the interposer's
+shared-memory objects live in the private `/dev/shm`, so they end with the
+namespace on every exit path. The privileged part of the script runs with
+`PATH=/usr/sbin:/usr/bin:/sbin:/bin` from `/`, so root's tools come from
+system directories and the harness working directory stays hidden when it
+lies inside a masked tree; the caller's `PATH` reaches the command through
+`env` after the privilege drop, and the command starts in `/`. `unshare`
+runs with `--kill-child`, and the interception test wraps each launch in
+GNU `timeout -s KILL`, which signals the launcher's whole process group;
+`unshare --fork` ignores `TERM` while it waits and namespace PID 1 has no
+`TERM` handler, so `KILL` to the group is what ends a hung probe.
+`launch(launcher, keep, env,
 command)` builds the argv: kept paths, then `--env` and `NAME=value` pairs,
 then `--` and the command. `env` sets those variables after `setpriv`,
 because the setuid `sudo` boundary strips `LD_PRELOAD`. Paths and values
-must be plain words, since the script splits them on spaces.
+must be plain words, since the script splits them on spaces, and kept paths
+must be normalized absolute paths, since the script joins them onto the
+staging directory. `probes` resolves each configured binary to its canonical
+path, so the kept directory and the path the loader reports in its binding
+lines match.
 
 ## Interposer
 
 `buildFaketime()` downloads libfaketime 0.9.10, checks its sha256 against the
-pinned digest, and builds `libfaketimeMT.so.1`, the thread-safe build, under `vendor/build/` (ignored by
-git). `faketimeEnv(file)` preloads it with these settings:
+pinned digest, builds `libfaketimeMT.so.1`, the thread-safe build, in a
+staging directory under `vendor/build/` (ignored by git), and renames the
+finished library into place, so the published path holds only a complete
+build. `faketimeEnv(file)` preloads it with these settings:
 
 | Variable | Value | Effect |
 |---|---|---|
@@ -49,9 +67,10 @@ manifest, and refuses to resume when an interception result changes.
 | Daemon | `LD_DEBUG=bindings direct_host_fixture --help` | The dynamic linker binds the daemon binary's own `clock_gettime` import to `libfaketimeMT.so.1` |
 
 The Pi probe runs Pi's Node runtime, not the Pi CLI, so it shows that the
-runtime Pi runs on reads the interposed clock. A binary that fails is recorded
-`wall_clock_only`, and the run proceeds with that limitation in its
-distortions. If neither Pi nor the daemon is
+runtime Pi runs on reads the interposed clock. A probe is intercepted only
+when it also exits 0 under the interposer; a binary that fails, or outlives
+the 30 s deadline, is recorded `wall_clock_only`, and the run proceeds with
+that limitation in its distortions. If neither Pi nor the daemon is
 intercepted, preflight throws (OQ-9 stop condition). On this host all three
 intercept, which resolves OQ-9 for OpenCode 1.18.22 and 1.19.0.
 
@@ -85,5 +104,11 @@ store's bytes. When the daemon's CPU fraction exceeds the pre-registered
 `liveness_bounds.daemon_busy_cpu_fraction` (0.05, added in pre-registration
 revision 3), the sampler reports busy through `onBusy`; the run command
 registers that as a background job that holds the clock until the fraction
-drops (OQ-2). A sample after a daemon restart, with a new PID, reports no
-fraction.
+drops (OQ-2). `start()` takes the baseline sample at once, so the first
+fraction is available one interval later. A sample with no fraction (a new
+PID after a daemon restart, an unreadable `/proc` entry, or the baseline)
+reports `cpu_fraction: null` and keeps the previous busy state, so a busy
+hold lasts until a same-PID interval measures idleness. RSS comes from
+`VmRSS` in `/proc/<pid>/status` and CPU time from `/proc/<pid>/stat` ticks
+divided by the host's `CLK_TCK`. `store_bytes` is `null` when the store
+directory itself is unreadable.
