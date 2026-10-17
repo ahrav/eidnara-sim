@@ -357,6 +357,11 @@ function check(p: Preregistration, input: TierInput): void {
     const byMetric = new Map(p.families.flatMap((f) => f.metrics.map((m) => [m, f] as const)));
     const seen = new Set<string>();
     const runIds = new Map<string, string>();
+    for (const e of input.excluded) {
+        if (e.arm !== arms.control && e.arm !== arms.treatment) {
+            throw new StatsRefusal(`excluded ${e.id}: arm ${e.arm} is neither compared arm`);
+        }
+    }
     const excludedIds = input.excluded.map((e) => e.id);
     const flagged = [...excludedIds, ...input.asymmetric];
     if (new Set(flagged).size !== flagged.length) {

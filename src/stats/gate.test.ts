@@ -795,3 +795,14 @@ describe("tier gate review findings, third Codex round", () => {
         expect(JSON.parse(JSON.stringify(m)).rate_ratio_upper).toBe("unbounded");
     });
 });
+
+describe("tier gate review findings, fourth Codex round", () => {
+    test("an exclusion names one of the compared arms", () => {
+        const obs = binary("P1.pass", repeat(3, [0, 1] as [number, number]));
+        const id = obs.items?.[0]?.item ?? "";
+        const drop = (arm: string) => [{ id, arm, reason: "failed(interrupted)" }];
+        expect(() => evaluate([obs], { excluded: drop("eidnrara") })).toThrow(StatsRefusal);
+        expect(() => evaluate([obs], { excluded: drop("eidnara-kl") })).toThrow(StatsRefusal);
+        expect(evaluate([obs], { excluded: drop("host") }).excluded_per_arm).toEqual({ host: 1 });
+    });
+});
