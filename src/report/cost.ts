@@ -87,7 +87,9 @@ export function judgeCost(run: RunLogs): ComponentCost | null {
 
 /**
  * Whether `scripts/grade-run.ts` finished over this run's journal, as it stands, with every judge
- * call answered: a run resumed after grading has a later `journal_seq` than the summary names.
+ * call answered and every useful item graded: a run resumed after grading has a later
+ * `journal_seq` than the summary names, and a skipped item (no journaled snapshot, a P7 pair
+ * without two completed snapshots) leaves the pass count short.
  */
 function gradingComplete(run: RunLogs): boolean {
     const path = join(run.dir, "grade-summary.json");
@@ -95,13 +97,31 @@ function gradingComplete(run: RunLogs): boolean {
     const summary = JSON.parse(readFileSync(path, "utf8")) as {
         judge_errors?: number;
         journal_seq?: number;
+        skipped?: Record<string, number>;
     };
-    return summary.judge_errors === 0 && summary.journal_seq === run.journal_seq;
+    const covered = Object.entries(summary.skipped ?? {}).every(
+        ([why, n]) => why === UNGRADED_BY_DESIGN || n === 0,
+    );
+    return summary.judge_errors === 0 && summary.journal_seq === run.journal_seq && covered;
 }
 
-/** The arm's cost at the price table its run recorded; `null` for a run that recorded none. */
+/** The grader's one skip reason that leaves no useful item ungraded: P14 items have no probe turn. */
+const UNGRADED_BY_DESIGN = "P14 has no probe turn";
+
+/**
+ * The arm's cost at the price table its run recorded; `null` for a run that recorded none, and
+ * for an arm with an interrupted turn (`ItemState` `failed(interrupted)` naming its `event`),
+ * whose provider request may have been billed with no `CallRecord` to price.
+ */
 export function costPanel(run: RunLogs, arm: ArmLogs, grades: GradeRecord[]): CostPanel | null {
     if (run.price === null) return null;
+    const interrupted = arm.journal.some(
+        (e) =>
+            e.kind === "ItemState" &&
+            e.state === "failed(interrupted)" &&
+            typeof e.event === "string",
+    );
+    if (interrupted) return null;
     const components = componentCosts(arm.calls, run.price.rates);
     const sum = (rows: ComponentCost[]) => rows.reduce((s, c) => s + c.usd, 0);
     const usd = sum(components.filter((c) => !HARNESS.has(c.component)));

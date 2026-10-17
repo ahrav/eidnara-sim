@@ -391,19 +391,38 @@ describe("intrusiveness panel", () => {
                 deliveries: 1,
                 first_delivery_ms: BASE + 100,
             },
+            {
+                id: 6,
+                content: "Observed: builds cache under /opt/sim/cache for speed.",
+                status: "active",
+                deliveries: 1,
+                first_delivery_ms: BASE + 100,
+            },
         ];
         writeFileSync(join(dir, "eidnara", "memory.json"), JSON.stringify(notes));
         const replies = [
             ["e-1", "pushback", `You ignored my rule: ${rule}`, []],
             ["e-2", "pushback", "Why did you assume the daemon port is 7780 on this machine?", []],
             ["e-3", "pushback", "Where did the cache lives under /var/cache/sim come from?", []],
+            ["e-16", "task", "By the way, alpha 中文 beta gamma delta epsilon zeta matters.", []],
+            [
+                "e-17",
+                "pushback",
+                "I told you alpha 中文 beta gamma delta epsilon zeta matters!",
+                [],
+            ],
             ["e-4", "pushback", "Who said retries stop after nine attempts in the client?", []],
             ["e-5", "task", "Note that the daemon port is 7780 here.", []],
             ["e-6", "pushback", "Is the daemon port is 7780 right?", ["P1"]],
             ["e-7", "pushback", "Who says the daemon port is 7780 on every host?", []],
             ["e-8", "pushback", "Is it alpha beta gamma delta epsilon now?", []],
             ["e-10", "pushback", "Again: the daemon port is 7780 on every host?", []],
-            ["e-15", "redirect", "Stop: the daemon port is 7780 on every host, remember?", []],
+            [
+                "e-15",
+                "redirect",
+                "Stop: builds cache under /opt/sim/cache for speed, remember?",
+                [],
+            ],
         ] as const;
         writeFileSync(
             join(dir, "scenario.json"),
@@ -458,6 +477,8 @@ describe("intrusiveness panel", () => {
             ["e-5", 5000, 6000],
             ["e-6", 5000, 6000],
             ["e-8", 5000, 6000],
+            ["e-16", 5000, 6000],
+            ["e-17", 5000, 6000],
         ];
         const journal = turns.flatMap(([event, begin, end]) => [
             entry("BeginTurn", begin, { event }),
@@ -561,13 +582,16 @@ describe("intrusiveness panel", () => {
             { command: "command -p git restore aa.rs", exit: 0, scenario_ms: 3, turn: "e-2" },
             { command: "printf 'hello\ngit restore f'", exit: 0, scenario_ms: 3, turn: "e-2" },
             { command: 'echo "a\ngit reset --hard\nb"', exit: 0, scenario_ms: 3, turn: "e-2" },
+            { command: "printf x \\\ngit restore f", exit: 0, scenario_ms: 3, turn: "e-2" },
+            { command: "git restore \\\nbb.rs", exit: 0, scenario_ms: 3, turn: "e-2" },
+            { command: "git restore cc.rs;# done", exit: 0, scenario_ms: 3, turn: "e-2" },
             { command: 'git reset "--hard"', exit: 0, scenario_ms: 3, turn: "e-2" },
             { command: "cargo test", exit: 0, scenario_ms: 4, turn: "e-2" },
         ];
         const panel = intrusiveness(run([], dir, new Map(), BASE), arm({ journal, tools }));
         expect(panel.corrections_referencing_injected_text).toEqual([
             { event: "e-2", label: "pushback", quote: "the daemon port is 7780" },
-            { event: "e-15", label: "redirect", quote: "the daemon port is 7780" },
+            { event: "e-15", label: "redirect", quote: "builds cache under opt sim" },
         ]);
         expect(panel.reverted_edits.map((r) => r.command)).toEqual([
             "git restore src/db.rs",
@@ -595,9 +619,11 @@ describe("intrusiveness panel", () => {
             "git restore x.rs; # done",
             "command git restore z.rs",
             "command -p git restore aa.rs",
+            "git restore \\\nbb.rs",
+            "git restore cc.rs;# done",
             'git reset "--hard"',
         ]);
-        expect(panel.latency_ms).toEqual({ n: 8, p50: 500, p95: 5000 });
+        expect(panel.latency_ms).toEqual({ n: 10, p50: 500, p95: 5000 });
         expect(panel.tool_output_hits).toBeNull();
         const skipped = intrusiveness(
             run([], dir, new Map(), BASE),
@@ -610,7 +636,7 @@ describe("intrusiveness panel", () => {
                 ],
             }),
         );
-        expect(skipped.latency_ms).toEqual({ n: 8, p50: 500, p95: 5000 });
+        expect(skipped.latency_ms).toEqual({ n: 10, p50: 500, p95: 5000 });
         const crashWindow = intrusiveness(
             run([], dir, new Map(), BASE),
             arm({
@@ -621,7 +647,7 @@ describe("intrusiveness panel", () => {
                 ],
             }),
         );
-        expect(crashWindow.latency_ms).toEqual({ n: 9, p50: 500, p95: 5000 });
+        expect(crashWindow.latency_ms).toEqual({ n: 11, p50: 500, p95: 5000 });
         const ambiguous = intrusiveness(
             run([], dir, new Map(), BASE),
             arm({
@@ -703,8 +729,27 @@ describe("intrusiveness panel", () => {
         expect(costPanel(run([], dir), arm({ calls }), grades)?.passes).toBeNull();
         writeFileSync(
             join(dir, "grade-summary.json"),
-            JSON.stringify({ judge_errors: 0, journal_seq: 7 }),
+            JSON.stringify({
+                judge_errors: 0,
+                journal_seq: 7,
+                skipped: { "no journaled snapshot": 1, "P14 has no probe turn": 3 },
+            }),
         );
+        expect(costPanel(run([], dir), arm({ calls }), grades)?.passes).toBeNull();
+        writeFileSync(
+            join(dir, "grade-summary.json"),
+            JSON.stringify({
+                judge_errors: 0,
+                journal_seq: 7,
+                skipped: { "P14 has no probe turn": 3 },
+            }),
+        );
+        seq = 0;
+        const interruptedArm = arm({
+            calls,
+            journal: [entry("ItemState", 1, { event: "e-1", state: "failed(interrupted)" })],
+        });
+        expect(costPanel(run([], dir), interruptedArm, grades)).toBeNull();
         const cost = costPanel(run([], dir), arm({ calls }), grades);
         if (cost === null) throw new Error("the run records a price table");
         expect(cost.tokens).toEqual({ input: 2e6, output: 1e6, cache_read: 2e6, cache_write: 0 });
@@ -730,7 +775,7 @@ describe("intrusiveness panel", () => {
             31, 5, 2, 15.5,
         ]);
         expect([cost.memory_writes, cost.writes_with_zero_reads, cost.price_table]).toEqual([
-            5,
+            6,
             1,
             "v1",
         ]);

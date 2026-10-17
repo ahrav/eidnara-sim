@@ -116,16 +116,19 @@ const checksOutPaths = (args: string[]) => {
 /**
  * The command as the shell runs it: each quoted string, across lines too, becomes the one word
  * the shell passes (`"-S"` is `-S`, `"my file"` is `my_file`), so options keep their meaning and
- * later words their positions; a comment (`#` at a word start outside quotes), redirections, and
- * the body lines of a heredoc whose `<<` sits outside quotes are dropped. An unclosed quote runs
- * to the end.
+ * later words their positions; an unquoted backslash-newline joins its lines; a comment (`#` at a
+ * word start or after a control operator, outside quotes), redirections, and the body lines of a
+ * heredoc whose `<<` sits outside quotes are dropped. An unclosed quote runs to the end.
  */
 function executable(command: string): string {
     let out = "";
     let heredoc: string | null = null;
     for (let i = 0; i < command.length; ) {
         const ch = command[i] as string;
-        if (ch === "\n") {
+        if (ch === "\\" && command[i + 1] === "\n") {
+            out += " ";
+            i += 2;
+        } else if (ch === "\n") {
             out += ch;
             i++;
             while (heredoc !== null && i < command.length) {
@@ -141,7 +144,7 @@ function executable(command: string): string {
                 j += ch === '"' && command[j] === "\\" ? 2 : 1;
             out += unquote(command.slice(i, Math.min(j, command.length)) + ch);
             i = j + 1;
-        } else if (ch === "#" && (i === 0 || /[ \t\n]/.test(command[i - 1] as string))) {
+        } else if (ch === "#" && (i === 0 || /[ \t\n;&|(]/.test(command[i - 1] as string))) {
             const end = command.indexOf("\n", i);
             i = end < 0 ? command.length : end;
         } else if (ch === "<" && command[i + 1] === "<" && HEREDOC_OPEN.test(command.slice(i))) {
@@ -255,8 +258,8 @@ export function turnLatencies(arm: ArmLogs): number[] | null {
  * A correction references injected text when a pushback or redirect the agent received shares a
  * five-word run with a memory note whose `first_delivery_ms` is at least `CLOCK_SLACK_MS` before
  * the turn's `BeginTurn` time (`base_wall_ms + scenario_ms`), and neither four-word half of the
- * run is in the scripted user text up to and including that turn: a user restating a rule it
- * gave is quoting itself. The journal must hold the turn's `BeginTurn` and evidence of delivery:
+ * run is in the user's own text up to that turn, the scripted text through the turn itself and
+ * the user-sim's delivered replies before it: a user restating a rule it gave is quoting itself. The journal must hold the turn's `BeginTurn` and evidence of delivery:
  * a `UserTurn` with `delivered: true`, or an `EndTurn` with outcome `ok` and a `prompt_ms`, which
  * a kill between the two writes leaves as the only record of a prompt that ran. A pairing record
  * alone is the user-sim's intent, which a kill before the turn ends leaves undelivered. `null`
@@ -264,18 +267,20 @@ export function turnLatencies(arm: ArmLogs): number[] | null {
  */
 function corrections(run: RunLogs, arm: ArmLogs) {
     const script = scriptedTurns(run.dir);
+    const written = quotableNotes(run.dir, arm.arm);
+    const replies = userSimReplies(run.dir, arm.arm);
+    if (written === null || replies === null) return null;
+    const said = new Map(replies.map((r) => [r.event, r.text]));
     const ownBy = (event: string) => {
         const at = script.findIndex((t) => t.id === event);
-        const texts = script.slice(0, at + 1).flatMap((t) => (t.text === null ? [] : [t.text]));
-        return new Set(texts.flatMap((t) => shingles(t, SHINGLE - 1)));
+        const scripted = script.slice(0, at + 1).flatMap((t) => (t.text === null ? [] : [t.text]));
+        const spoken = script.slice(0, at).flatMap((t) => said.get(t.id) ?? []);
+        return new Set([...scripted, ...spoken].flatMap((t) => shingles(t, SHINGLE - 1)));
     };
     const quoted = (own: Set<string>, s: string) => {
         const words = s.split(" ");
         return own.has(words.slice(1).join(" ")) || own.has(words.slice(0, -1).join(" "));
     };
-    const written = quotableNotes(run.dir, arm.arm);
-    const replies = userSimReplies(run.dir, arm.arm);
-    if (written === null || replies === null) return null;
     const notes = written.filter((n) => n.first_delivery_ms !== null);
     const began = new Map(
         arm.journal

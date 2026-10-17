@@ -56,7 +56,9 @@ const median = (xs: number[]) => {
 /**
  * Consecutive samples from one daemon process, told apart by `pid` and the process's start time.
  * A sample with no process (`pid: null`) is a boundary of its own, and a replacement that reuses
- * the pid after a resume differs in `pid_started`, so each starts a new run.
+ * the pid after a resume differs in `pid_started`, so each starts a new run. A row whose process
+ * stat read failed (`pid` set, `pid_started: null`) carries no value and no identity and is left
+ * out before the split, so it opens no generation.
  */
 function byPid(samples: ArmLogs["resources"]): ArmLogs["resources"][] {
     const process = (s: ArmLogs["resources"][number]) => `${s.pid}/${s.pid_started}`;
@@ -89,7 +91,10 @@ export function soak(run: RunLogs, arm: ArmLogs, resource: Resource): SoakVerdic
         .map((s) => s.wall_ms)
         .filter((w): w is number => typeof w === "number");
     const gaps = walls.slice(1).map((w, i) => w - (walls[i] as number));
-    const generations = (resource === "store_bytes" ? [arm.resources] : byPid(arm.resources))
+    const identified = arm.resources.filter(
+        (s) => !(typeof s.pid === "number" && s.pid_started === null),
+    );
+    const generations = (resource === "store_bytes" ? [arm.resources] : byPid(identified))
         .map((g) => g.filter(sampled))
         .filter((g) => g.length > 0);
     const verdicts = (generations.length === 0 ? [[]] : generations).map((g) =>
