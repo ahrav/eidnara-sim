@@ -1,11 +1,12 @@
 import { spawnSync } from "node:child_process";
 import {
-    appendFileSync,
+    closeSync,
     constants,
     copyFileSync,
     existsSync,
     lstatSync,
     mkdirSync,
+    openSync,
     readFileSync,
     realpathSync,
     renameSync,
@@ -86,6 +87,24 @@ const SUPPORTED = new Set([
     "plugin_reload",
     "model_switch",
 ]);
+
+/**
+ * Creates `path` as an empty regular file when absent and leaves an existing regular file as it
+ * is. The path lies in the evaluated agent's writable tree, so a symlink there is refused rather
+ * than followed, and nothing is created outside the run directory on the agent's behalf.
+ */
+export function createNoFollow(path: string): void {
+    const flags =
+        constants.O_WRONLY | constants.O_CREAT | constants.O_APPEND | constants.O_NOFOLLOW;
+    try {
+        closeSync(openSync(path, flags, 0o644));
+    } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === "ELOOP") {
+            throw new Error(`${path} is a symlink; the plugin log must be a regular file`);
+        }
+        throw err;
+    }
+}
 
 export class HostDriver implements ArmDriver {
     host: SimHost | null = null;
@@ -185,7 +204,7 @@ export class HostDriver implements ArmDriver {
             await this.daemon.start();
             this.recordState();
             this.o.sampleDaemon?.();
-            appendFileSync(join(this.o.armRoot, "eidnara.log"), "");
+            createNoFollow(join(this.o.armRoot, "eidnara.log"));
         }
         this.host = this.newHost();
         this.recordState();

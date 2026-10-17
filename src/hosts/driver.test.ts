@@ -27,7 +27,7 @@ import { HarnessFailure, type ScenarioEvent } from "../run/scheduler";
 import { type FaultType, SEAMS } from "../scenario/faults";
 import { loadPrereg } from "../scenario/inputs";
 import type { DaemonStack, HostContext, PromptResult, SimHost } from "./arms";
-import { type DriverOptions, expandTemplate, HostDriver } from "./driver";
+import { createNoFollow, type DriverOptions, expandTemplate, HostDriver } from "./driver";
 import { SnapshotRecorder } from "./snapshot";
 
 const dirs: string[] = [];
@@ -1456,4 +1456,15 @@ test("a tool run recovered from an earlier turn is logged with no turn, whatever
         ["cargo build", null],
         ["ls", "e-1"],
     ]);
+});
+
+test("the plugin log is created without following a symlink the agent left at its path", () => {
+    const dir = tmp();
+    const target = join(dir, "elsewhere", "eidnara.log");
+    symlinkSync(target, join(dir, "eidnara.log"));
+    expect(() => createNoFollow(join(dir, "eidnara.log"))).toThrow(/eidnara\.log is a symlink/);
+    expect(existsSync(target)).toBe(false);
+    createNoFollow(join(dir, "plain.log"));
+    expect(lstatSync(join(dir, "plain.log")).isFile()).toBe(true);
+    createNoFollow(join(dir, "plain.log"));
 });

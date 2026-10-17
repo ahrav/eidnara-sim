@@ -5,8 +5,8 @@ class fired. Record files are read in 1 MiB chunks and parsed one line at a
 time, so a run's `calls.jsonl` costs its parsed records and never a
 whole-file string. `loadRun` admits a complete run only, through the journal
 check grading uses (`requireComplete`, SIM-P67): every scheduled event
-ended once per arm in the compiled order, an `EndArm` per arm, and an
-`EndRun`; a `scenario.json`
+ended once per arm in the compiled order, an `EndArm` per arm, and one
+arm-less `EndRun` after every `EndArm`; a `scenario.json`
 whose digest differs from the manifest's `scenario_hash` is refused, and so
 is a run with no `calls.jsonl` (the proxy's record writer creates it at
 start), a manifest tier other than the scenario's, a manifest arm outside the
@@ -25,11 +25,15 @@ reading is not a byte count, name a process start time on some rows and not othe
 or null against a pid, pair a reading with a null pid, or carry a negative
 reading or run backwards in scenario time, a journal whose entries run
 backwards in scenario time within an arm or carry a `scenario_ms` that is not
-a non-negative integer, a call attributed to a turn that
+a non-negative integer, a call whose `scenario_ms` is not a non-negative
+integer, a call that starts after its arm's `EndArm` (the driver stops the
+host before the scheduler journals it), a call attributed to a turn that
 starts outside that turn's `BeginTurn` to `EndTurn` interval (a tool run
-likewise, with a second of slack for the host's clock), a daemon arm with no numeric RSS sample, no reading in its final
+likewise, with a second of slack for the host's clock), an arm whose token
+total leaves the exact integer range, a daemon arm with no numeric RSS sample, no reading in its final
 sample, no `daemon.log`, or no `r/eidnara.log` (the driver creates the plugin
-log empty when an Eidnara arm starts), a manifest with no arms, a call whose status is
+log empty when an Eidnara arm starts, refusing a symlink the agent left at
+that path), a manifest with no arms, a call whose status is
 neither the proxy's `0` sentinel nor an HTTP status, whose end precedes its
 start, whose wall times are not timestamps, or whose sequence number breaks
 the file's `0..n-1` order, an arm with no `tools.jsonl` (the recorder creates

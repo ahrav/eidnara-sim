@@ -61,7 +61,12 @@ describe("oracle report", () => {
     test("each tier lists an activation count per oracle and marks zero-activation oracles uncovered", () => {
         const bad = fixtures.find(([f]) => f === "F1-bad.json")?.[1] as Fixture;
         const good = fixtures.find(([f]) => f === "F3-good.json")?.[1] as Fixture;
-        const report = oracleReport([runOf(bad, "S"), runOf(good, "S"), runOf(good, "M")]);
+        const report = oracleReport(
+            [runOf(bad, "S"), runOf(good, "S"), runOf(good, "M")].map((r) => ({
+                tier: r.tier,
+                activations: runOracles(r),
+            })),
+        );
         expect(Object.keys(report).sort()).toEqual(["M", "S"]);
         expect(report.S?.F1).toEqual({
             activations: 1,
@@ -1570,4 +1575,65 @@ test("a record file is read in chunks and parsed line by line, so a line spannin
     expect(run.arms[0]?.calls.map((c) => c.response_text?.length)).toEqual([big.length, 600_000]);
     writeFileSync(join(dir, "calls.jsonl"), `${line(call({ seq: 0 }))}{"seq":`);
     expect(() => loadRun(dir, prereg)).toThrow(/calls\.jsonl: line 2 is cut/);
+});
+
+describe("oracle round twenty-four", () => {
+    test("a call's scenario clock is a whole millisecond", () => {
+        const { dir, line } = completeDir(["eidnara"]);
+        writeFileSync(join(dir, "calls.jsonl"), line(call({ seq: 0, scenario_ms: 0.5 })));
+        expect(() => loadRun(dir, prereg)).toThrow(/call 0: scenario_ms is not a clock reading/);
+        writeFileSync(join(dir, "calls.jsonl"), line(call({ seq: 0, scenario_ms: -1 })));
+        expect(() => loadRun(dir, prereg)).toThrow(/call 0: scenario_ms is not a clock reading/);
+    });
+
+    test("a call starting after its arm's EndArm is refused, whatever its turn", () => {
+        const { dir, line } = completeDir(["eidnara"]);
+        writeFileSync(
+            join(dir, "calls.jsonl"),
+            line(call({ seq: 0, turn: null, component: "title", scenario_ms: 1 })),
+        );
+        expect(() => loadRun(dir, prereg)).toThrow(
+            /call 0: starts at 1, after arm eidnara ended at 0/,
+        );
+    });
+
+    test("one EndRun, with no arm, after every EndArm", () => {
+        const { dir, line } = completeDir(["eidnara"]);
+        const path = join(dir, "journal.jsonl");
+        const entries = readFileSync(path, "utf8")
+            .trim()
+            .split("\n")
+            .map((l) => JSON.parse(l));
+        const endRun = entries.pop();
+        const early = [entries[0], endRun, ...entries.slice(1)];
+        writeFileSync(path, early.map(line).join(""));
+        expect(() => loadRun(dir, prereg)).toThrow(/EndRun before arm eidnara's EndArm/);
+        writeFileSync(path, [...entries, endRun, endRun].map(line).join(""));
+        expect(() => loadRun(dir, prereg)).toThrow(/2 EndRun entries/);
+        writeFileSync(path, [...entries, { ...endRun, arm: "eidnara" }].map(line).join(""));
+        expect(() => loadRun(dir, prereg)).toThrow(/EndRun names arm eidnara/);
+    });
+
+    test("F6 refuses a token total beyond exact integer arithmetic", () => {
+        const big = Number.MAX_SAFE_INTEGER;
+        const run = runWith(
+            armOf("host", {
+                calls: [
+                    call({ seq: 0, arm: "host", input_tokens: big, output_tokens: 0 }),
+                    call({ seq: 1, arm: "host", input_tokens: big, output_tokens: 0 }),
+                ],
+            }),
+            armOf("eidnara", { calls: [call({ seq: 2, input_tokens: 1 })] }),
+        );
+        expect(() => oracle(run, "F6")).toThrow(
+            /arm host: token total exceeds exact integer range/,
+        );
+    });
+
+    test("the tier report takes each run's activations once", () => {
+        const bad = fixtures.find(([f]) => f === "F1-bad.json")?.[1] as Fixture;
+        const run = runOf(bad, "S");
+        const report = oracleReport([{ tier: run.tier, activations: runOracles(run) }]);
+        expect(report.S?.F1?.activations).toBe(1);
+    });
 });
