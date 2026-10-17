@@ -59,7 +59,11 @@ it, and the pid and start time of the daemon writing the live log, so a
 `start` after a harness kill stops a daemon that outlived the harness, then
 saves every dead lifetime's stderr once, rolling back a copy an earlier kill
 cut short; a stop saves every listed log the same way, the copy in progress
-included, before the live one.
+included, before the live one. A killed lifetime's stdout is held in the
+marker with the lifetime that wrote it until it is saved, ahead of its log;
+a stopped lifetime's final stdout is held the same way until it is appended
+after its log, with the log's length before the append, so a resume rolls
+back a cut append and completes it.
 The run's resource sampler takes a sample when each daemon process is up and
 before a fault takes one down; a final sample that cannot be written fails
 the arm's finish after the arm is shut down, so the run is not complete

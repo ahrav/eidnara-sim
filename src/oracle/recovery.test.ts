@@ -920,6 +920,36 @@ describe("plugin log attribution", () => {
         expect(() => recoveries(run([arm(journal, [], store("ok"))]))).toThrow("checked twice");
     });
 
+    test("a scheduled fault journaled under a non-infrastructure type still refuses the arm", () => {
+        seq = 0;
+        const journal = [
+            entry("FaultFired", 0, { fault: "k", type: "provider_5xx", layer: "proxy-sink" }),
+            entry("BeginTurn", 10, { event: "e-1" }),
+            entry("EndTurn", 20, { event: "e-1", outcome: "ok" }),
+        ];
+        const scheduled = {
+            ...run([arm(journal)]),
+            faultTypes: new Map([["k", "daemon_restart"]]),
+        };
+        expect(() => recoveries(scheduled)).toThrow("daemon_restart");
+    });
+
+    test("an observation journaled before its firing refuses the arm", () => {
+        seq = 0;
+        const journal = [
+            entry("FaultObserved", 0, {
+                fault: "k",
+                type: "daemon_restart",
+                evidence: { store: store("ok") },
+            }),
+            entry("FaultFired", 1, { fault: "k", type: "daemon_restart", layer: "scheduler" }),
+            entry("BeginTurn", 10, { event: "e-1" }),
+            entry("EndTurn", 20, { event: "e-1", outcome: "ok" }),
+            entry("StoreChecked", 20, { event: "e-1", fault: "k", store: store("ok") }),
+        ];
+        expect(() => recoveries(run([arm(journal, [], store("ok"))]))).toThrow("before");
+    });
+
     test("a fault observed twice in one journal refuses the arm", () => {
         seq = 0;
         const journal = [

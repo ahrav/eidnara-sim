@@ -338,6 +338,23 @@ export function recoveries(run: RunLogs): Recovery[] {
             }
             observations.set(e.fault, e);
         }
+        // Every journaled fault must be the scheduled one, whatever type the journal names for it.
+        if (run.faultTypes) {
+            for (const e of arm.journal) {
+                if (e.kind !== "FaultFired" && e.kind !== "FaultObserved") continue;
+                const scheduled = run.faultTypes.get(String(e.fault));
+                if (scheduled === undefined) {
+                    throw new Error(
+                        `${arm.arm}: fault ${String(e.fault)} is not in the run's schedule`,
+                    );
+                }
+                if (scheduled !== String(e.type)) {
+                    throw new Error(
+                        `${arm.arm}: fault ${String(e.fault)} is journaled as ${String(e.type)} but scheduled as ${scheduled}`,
+                    );
+                }
+            }
+        }
         // Each infrastructure fault once, anchored at its FaultFired when the journal has one.
         const anchors = new Map<unknown, Entry>();
         for (const e of arm.journal) {
@@ -352,20 +369,6 @@ export function recoveries(run: RunLogs): Recovery[] {
                 anchors.set(e.fault, e);
         }
         if (anchors.size === 0) return [];
-        // A journaled fault must be the scheduled one: same id, same type.
-        for (const anchor of anchors.values()) {
-            const scheduled = run.faultTypes?.get(String(anchor.fault));
-            if (run.faultTypes && scheduled === undefined) {
-                throw new Error(
-                    `${arm.arm}: fault ${String(anchor.fault)} is not in the run's schedule`,
-                );
-            }
-            if (scheduled !== undefined && scheduled !== String(anchor.type)) {
-                throw new Error(
-                    `${arm.arm}: fault ${String(anchor.fault)} is journaled as ${String(anchor.type)} but scheduled as ${scheduled}`,
-                );
-            }
-        }
         // The timeline and evidence index are built once the first fault needs a verdict.
         let built: { tl: Timeline; indexed: Evidence } | null = null;
         const evidenceOf = () => {
@@ -396,6 +399,11 @@ export function recoveries(run: RunLogs): Recovery[] {
                 );
             });
             const observation = observations.get(fired.fault);
+            if (observation && fired.kind === "FaultFired" && observation.seq < fired.seq) {
+                throw new Error(
+                    `${arm.arm}: fault ${String(fired.fault)} is observed before it fires`,
+                );
+            }
             if (observation && observation.type !== fired.type) {
                 throw new Error(
                     `${arm.arm}: fault ${String(fired.fault)} fired as ${String(fired.type)} but observed as ${String(observation.type)}`,
