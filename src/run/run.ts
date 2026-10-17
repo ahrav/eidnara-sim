@@ -169,19 +169,29 @@ async function loadManifest(o: RunOptions, scenario: Scenario): Promise<Manifest
         fault_override: o.faults ?? null,
         tapes: o.tapes ?? [],
     };
-    const sources = (tapes: string[], events: number, order: readonly string[]) =>
+    const sources = (
+        tapes: string[],
+        events: number,
+        order: readonly string[],
+        faultOverride: FaultEpisode[] | null,
+    ) =>
         checkTapeSources(tapes, {
             seed: o.seed,
             scenario_hash: scenario.scenario_hash,
             prereg_sha256: preregistrationHash(loadPrereg(o.tier)),
             events,
             order,
+            fault_override: faultOverride,
+            turns: scenario.events
+                .slice(0, events)
+                .filter((e) => e.kind === "user_turn")
+                .map((e) => e.id),
         });
     if (existsSync(path)) {
         const manifest = JSON.parse(readFileSync(path, "utf8")) as Manifest;
         // A resume checks the sources against the run it continues, whose event count and arm
         // order the manifest holds whether or not this invocation restates them.
-        sources(manifest.tapes, manifest.events, manifest.order);
+        sources(manifest.tapes, manifest.events, manifest.order, manifest.fault_override);
         const given: Record<string, boolean> = {
             order: o.arms !== undefined,
             events: o.events !== undefined,
@@ -217,7 +227,7 @@ async function loadManifest(o: RunOptions, scenario: Scenario): Promise<Manifest
         appendFileSync(join(o.out, "preflight.jsonl"), `${JSON.stringify(checks)}\n`);
         return manifest;
     }
-    sources(wanted.tapes, wanted.events, wanted.order);
+    sources(wanted.tapes, wanted.events, wanted.order, wanted.fault_override);
     const manifest: Manifest = {
         schema: "sim-run-manifest/v1",
         ...wanted,

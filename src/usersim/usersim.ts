@@ -341,6 +341,8 @@ export interface DivergenceRecord {
     reference_digest: string;
     /** The arm's session context at this turn, the chained digests the tape key uses. */
     context_sha256: string;
+    /** For a recorded divergence, the context a replay source recorded for this turn. */
+    recorded_context_sha256?: string;
     /** `recorded` for the same arm in a replayed run, else the reference arm of this run. */
     against: "recorded" | "reference";
 }
@@ -407,12 +409,13 @@ export class Pairing {
         arm: string,
         event: string,
         context: string,
-    ): { none: boolean; matched: boolean; digest?: string } {
+    ): { none: boolean; matched: boolean; digest?: string; context?: string } {
         const entries = this.recorded.get(`${arm}/${event}`) ?? [];
         return {
             none: entries.length === 0,
             matched: entries.some((e) => e.context === context),
             digest: entries[0]?.digest,
+            context: entries[0]?.context,
         };
     }
 
@@ -583,12 +586,19 @@ export class UserSim {
             arm === pairing.reference(arm) ? undefined : pairing.referenceDigest(arm, t.id);
         const against = !recorded.none && !recorded.matched ? "recorded" : "reference";
         const other = against === "recorded" ? recorded.digest : reference;
-        if (!pairing.diverged(arm, t.session) && other !== undefined && other !== digest) {
+        // A recorded divergence is a context that matches no source, whatever this turn's
+        // digest; a reference divergence is a digest that differs from the reference arm's.
+        const diverged =
+            against === "recorded" ? other !== undefined : other !== undefined && other !== digest;
+        if (!pairing.diverged(arm, t.session) && diverged) {
             pairing.append({
                 kind: "divergedAt",
                 ...base,
-                reference_digest: other,
+                reference_digest: other as string,
                 context_sha256: context,
+                ...(against === "recorded" && recorded.context !== undefined
+                    ? { recorded_context_sha256: recorded.context }
+                    : {}),
                 against,
             });
         }

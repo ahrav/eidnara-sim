@@ -83,15 +83,39 @@ const invalidDivergences = records
     .filter((r) => r.kind === "divergedAt")
     .filter((r) => {
         const event = script.get(r.event);
+        const differs =
+            r.against === "recorded"
+                ? r.recorded_context_sha256 !== undefined &&
+                  r.recorded_context_sha256 !== r.context_sha256
+                : r.digest !== r.reference_digest;
         return (
             !event ||
             !arms.has(r.arm) ||
             event.session !== r.session ||
             event.index !== r.index ||
-            r.digest === r.reference_digest
+            !differs
         );
     })
     .map((r) => `${r.arm} ${r.event}`);
+// Every scheduled event of every arm has its Event row, and the journal's user turns and the
+// pairing turns name the same set, one row each.
+const allScheduled = scenario.events.slice(0, manifest.events as number);
+const missingEvents = (manifest.order as string[]).flatMap((arm) => {
+    const seen = new Set(
+        journal.filter((e) => e.kind === "Event" && e.arm === arm).map((e) => String(e.event)),
+    );
+    return allScheduled.filter((e) => !seen.has(e.id)).map((e) => `${arm} ${e.id}`);
+});
+const journalPairingMismatch = (manifest.order as string[]).flatMap((arm) => {
+    const users = journal.filter((e) => e.kind === "UserTurn" && e.arm === arm);
+    const counts = new Map<string, number>();
+    for (const u of users) counts.set(String(u.event), (counts.get(String(u.event)) ?? 0) + 1);
+    const paired = new Set(turns.filter((r) => r.arm === arm).map((r) => r.event));
+    const off = new Set<string>();
+    for (const event of paired) if (counts.get(event) !== 1) off.add(event);
+    for (const event of counts.keys()) if (!paired.has(event)) off.add(event);
+    return [...off].sort().map((event) => `${arm} ${event}`);
+});
 // Each arm's summary must equal the rates recomputed from its delivered turns.
 const ratesMismatch = (manifest.order as string[]).filter((arm) => {
     const journaled = journal.find((e) => e.kind === "UserSimRates" && e.arm === arm);
@@ -155,6 +179,8 @@ const report = {
         (arm) => journal.filter((e) => e.kind === "UserSimRates" && e.arm === arm).length !== 1,
     ),
     misplaced_rows: [...new Set(misplaced)],
+    missing_events: missingEvents,
+    journal_pairing_mismatch: journalPairingMismatch,
     invalid_divergences: invalidDivergences,
     missing_turns: (manifest.order as string[]).flatMap((arm) =>
         scheduled.map((e) => `${arm} ${e.id}`).filter((key) => !recorded.has(key)),
@@ -182,6 +208,8 @@ const failed =
     report.invalid_labels.length +
     report.missing_turns.length +
     report.misplaced_rows.length +
+    report.missing_events.length +
+    report.journal_pairing_mismatch.length +
     report.invalid_divergences.length +
     report.incomplete.length +
     report.interrupted_turns.length;
