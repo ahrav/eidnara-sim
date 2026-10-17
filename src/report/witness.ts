@@ -132,14 +132,15 @@ const CHECKS: Record<string, Check> = {
         return outcome(n, [], "divergences");
     },
     "SIM-P10": (runs) => {
-        if (runs.some((c) => c.manifest.events < c.g.scenario.events.length))
+        const full = runs.filter((c) => c.manifest.events >= c.g.scenario.events.length);
+        if (full.length === 0)
             return {
                 status: "unreached",
                 detail: "a capped prefix cannot match whole-scenario rates",
             };
         let n = 0;
         const bad: string[] = [];
-        for (const c of runs) {
+        for (const c of full) {
             for (const a of c.g.run.arms) {
                 const turns = a.journal
                     .filter((e) => e.kind === "UserTurn" && e.delivered === true)
@@ -260,6 +261,20 @@ const CHECKS: Record<string, Check> = {
             .map(([v, k]) => `v${v} for ${k}`)
             .join(", ");
         return outcome(n, bad, `grade records with increasing versions; the report uses ${named}`);
+    },
+    "SIM-L03": (runs) => {
+        let n = 0;
+        const bad: string[] = [];
+        for (const c of runs) {
+            const start = c.entries.find((e) => e.kind === "StartRun");
+            const end = c.entries.find((e) => e.kind === "EndRun");
+            if (!start || !end) continue;
+            n++;
+            const span = end.wall_ms - start.wall_ms;
+            if (span > c.g.run.prereg.liveness_bounds.tier_wall_budget_ms)
+                bad.push(`${c.g.run.dir} took ${span} ms`);
+        }
+        return outcome(n, bad, "completed runs inside the tier's wall budget");
     },
 };
 

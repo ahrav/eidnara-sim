@@ -12,8 +12,12 @@ export const V1_CONTINUITY: Record<string, [number, number]> = {
     eidnara: [0.99, 1],
 };
 
-const TRANSCRIPT_READ =
+const TRANSCRIPT_PATH =
     /\.pi\/agent\/sessions|PI_CODING_AGENT_DIR\}?\/sessions|XDG_DATA_HOME\}?\/opencode|opencode\.db|opencode\/storage|\/sessions\/\S*\.jsonl/;
+const READ_OP =
+    /\b(cat|less|more|head|tail|sed|awk|grep|rg|find|ls|jq|sqlite3|strings|bat|view)\b|^read /;
+const readsTranscripts = (command: string) =>
+    TRANSCRIPT_PATH.test(command) && READ_OP.test(command);
 
 export interface TranscriptOrder {
     arm: string;
@@ -31,7 +35,8 @@ export interface RunConditions {
     events_run: number;
     scenario_events: number;
     interception: { name: string; intercepted: boolean; wall_clock_only: boolean }[];
-    transcripts: { arm: string; paths: string[]; missing: string[] }[];
+    /** `missing` is null for an arm that never reached its transcript check. */
+    transcripts: { arm: string; paths: string[]; missing: string[] | null }[];
     transcript_order: TranscriptOrder[];
 }
 
@@ -107,8 +112,10 @@ export function runConditions(g: GradedRun): RunConditions {
     const manifest = existsSync(m) ? JSON.parse(readFileSync(m, "utf8")) : {};
     const transcripts = g.run.arms.map((arm) => {
         const p = join(g.run.dir, arm.arm, "transcripts.json");
-        const t = existsSync(p) ? JSON.parse(readFileSync(p, "utf8")) : { paths: [], missing: [] };
-        return { arm: arm.arm, paths: t.paths as string[], missing: t.missing as string[] };
+        const t = existsSync(p)
+            ? JSON.parse(readFileSync(p, "utf8"))
+            : { paths: [], missing: null };
+        return { arm: arm.arm, paths: t.paths as string[], missing: t.missing as string[] | null };
     });
     const probes = (manifest.preflight?.time_injection ?? []) as RunConditions["interception"];
     return {
@@ -157,7 +164,7 @@ export function continuity(runs: GradedRun[]): Continuity[] {
             c.pass++;
             const tools = g.run.arms.find((a) => a.arm === r.arm)?.tools ?? [];
             const turn = turnOf(r);
-            if (tools.some((t) => t.turn === turn && TRANSCRIPT_READ.test(t.command))) {
+            if (tools.some((t) => t.turn === turn && readsTranscripts(t.command))) {
                 c.pass_with_transcript_read++;
             }
         }
@@ -185,7 +192,9 @@ export function renderConditions(conditions: RunConditions[], recall: Continuity
                 c.interception
                     .map((i) => `${i.name} ${i.intercepted ? "intercepted" : "not intercepted"}`)
                     .join(", "),
-                c.transcripts.flatMap((t) => t.missing).join(", ") || "none",
+                c.transcripts
+                    .flatMap((t) => (t.missing === null ? [`${t.arm} unchecked`] : t.missing))
+                    .join(", ") || "none",
             ]),
         ),
         "",

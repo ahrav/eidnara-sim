@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { GradeRecord } from "../grade/probes";
@@ -141,4 +141,32 @@ test("a symlink inside the transcript tree is skipped, so a loop or an escape ca
     symlinkSync("..", join(sessions, "p/loop"));
     symlinkSync("/", join(sessions, "p/root"));
     expect(runConditions(g).transcript_order[0]).toMatchObject({ sessions: 2 });
+});
+
+test("a transcript path in a command counts as a read only with a reading or searching operation", () => {
+    const g = fixture();
+    const host = g.run.arms[0] as ArmLogs;
+    host.tools = [
+        { turn: "e-1", command: "rm -rf ~/.pi/agent/sessions", exit: 0, scenario_ms: 0 },
+        {
+            turn: "e-3",
+            command: "sqlite3 ~/.local/share/opencode/opencode.db 'select 1'",
+            exit: 0,
+            scenario_ms: 0,
+        },
+    ];
+    expect(continuity([g])[0]).toMatchObject({
+        probe: "P8",
+        pass: 2,
+        pass_with_transcript_read: 1,
+    });
+});
+
+test("an arm that never reached its transcript check renders as unchecked, apart from a clean check", () => {
+    const g = fixture();
+    rmSync(join(g.run.dir, "eidnara/transcripts.json"));
+    const c = runConditions(g);
+    expect(c.transcripts[1]).toEqual({ arm: "eidnara", paths: [], missing: null });
+    const text = renderConditions([c], []).join("\n");
+    expect(text).toContain("eidnara unchecked");
 });

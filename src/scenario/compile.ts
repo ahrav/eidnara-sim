@@ -2,6 +2,7 @@ import { sample } from "../corpus/cdf";
 import { type Distributions, table } from "../corpus/distributions";
 import { canonicalJson, sha256Hex } from "../prereg/canonical";
 import type { Preregistration } from "../prereg/schema";
+import { preregistrationHash } from "../prereg/validate";
 import { Rng } from "../rng";
 import { scheduleFaults, validateFault } from "./faults";
 import { bm25Ratio, cosine, type Embedder } from "./similarity";
@@ -618,6 +619,7 @@ export async function compileScenario(input: CompileInput) {
             random_schema_version: 1,
             seed,
             tier: prereg.tier,
+            prereg_sha256: preregistrationHash(prereg),
             corpus_manifest_sha256: input.corpusManifestSha256,
             embedding_model: input.embedder.model,
             cue_probe_similarity: thresholds,

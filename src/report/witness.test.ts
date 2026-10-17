@@ -201,6 +201,7 @@ function second(broken: boolean, busy = false): GradedRun {
 }
 
 interface Parts {
+    capped?: boolean;
     pairing?: object[];
     journal?: object[];
     grades?: object[];
@@ -214,7 +215,7 @@ function made(p: Parts): GradedRun {
     const dir = mkdtempSync(join(tmpdir(), "sim-witness-"));
     writeFileSync(
         join(dir, "manifest.json"),
-        JSON.stringify({ order: ["host", "eidnara"], events: 3 }),
+        JSON.stringify({ order: ["host", "eidnara"], events: p.capped ? 0 : 3 }),
     );
     writeFileSync(join(dir, "pairing.jsonl"), lines(p.pairing ?? []));
     const journal = (p.journal ?? []).map(
@@ -305,6 +306,25 @@ describe("property witness evidence", () => {
         expect(one("P10", made(nagging))).toMatchObject({ status: "violated" });
         const disagree = { journal: [...turns("task"), rates(["pushback_per_turn"])] };
         expect(one("P10", made(disagree))).toMatchObject({ status: "violated" });
+        const capped = made({ capped: true, journal: [...turns("task"), rates([])] });
+        expect(one("P10", capped)).toMatchObject({ status: "unreached" });
+        const mixed = propertyWitness("| SIM-P10 | [x](#x) | safety |", [capped, made(nagging)]);
+        expect(mixed[0]).toMatchObject({ status: "violated" });
+    });
+
+    test("SIM-L03 holds a run's wall span from StartRun to EndRun to the tier's budget", () => {
+        const budget = prereg.liveness_bounds.tier_wall_budget_ms;
+        const span = (end: number) => [
+            { kind: "StartRun", scenario_ms: 0, wall_ms: 1_000 },
+            { kind: "EndRun", scenario_ms: 0, wall_ms: 1_000 + end },
+        ];
+        expect(one("L03", made({ journal: span(budget) }))).toMatchObject({ status: "witnessed" });
+        expect(one("L03", made({ journal: span(budget + 1) }))).toMatchObject({
+            status: "violated",
+        });
+        expect(one("L03", made({ journal: span(1).slice(0, 1) }))).toMatchObject({
+            status: "unreached",
+        });
     });
 
     test("SIM-P30 checks every injected call against a fault fired before it", () => {

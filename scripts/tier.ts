@@ -5,6 +5,7 @@ import { TIERS, type Tier } from "../src/prereg/schema";
 import { Children, SIGTERM_EXIT } from "../src/run/children";
 import { loadScenario } from "../src/run/run";
 import { tierPlan } from "../src/run/tier";
+import { buildFaketime } from "../src/run/timeinject";
 import type { Scenario } from "../src/scenario/compile";
 import { loadPrereg } from "../src/scenario/inputs";
 
@@ -83,7 +84,11 @@ for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
     });
 }
 
-const limit = Math.round(prereg.liveness_bounds.tier_wall_budget_ms * 1.25);
+// Every run's preflight wants the vendored libfaketime; one build here keeps the parallel runs
+// from each extracting and compiling into the same directory.
+await buildFaketime();
+const budget = prereg.liveness_bounds.tier_wall_budget_ms;
+const limit = Math.round(budget * 1.25);
 const started = Date.now();
 const results = await Promise.all(
     plan.map(async (job) => {
@@ -109,15 +114,18 @@ const results = await Promise.all(
             log,
             limit,
         );
+        const run_wall_ms = Date.now() - started;
         const ran = existsSync(join(job.dir, "manifest.json"));
-        const graded = ran ? await run(["grade-run.ts", job.dir], log) : null;
+        const graded = ran ? await run(["grade-run.ts", job.dir], log, limit) : null;
         const aa =
             graded === 0 && job.arms.some((a) => a.includes("~"))
-                ? await run(["aa-report.ts", job.dir], log)
+                ? await run(["aa-report.ts", job.dir], log, limit)
                 : null;
         return {
             ...job,
             run_exit: code,
+            run_wall_ms,
+            over_budget: run_wall_ms > budget,
             grade_exit: graded,
             aa_exit: aa,
             wall_ms: Date.now() - started,
@@ -134,12 +142,12 @@ const report = reported.length
     : null;
 console.log(
     JSON.stringify({
-        results: results.map((r) => [r.dir, r.run_exit, r.grade_exit, r.wall_ms]),
+        results: results.map((r) => [r.dir, r.run_exit, r.over_budget, r.grade_exit, r.wall_ms]),
         report,
         unreported: plan.map((j) => j.dir).filter((d) => !reported.includes(d)),
     }),
 );
 const failed = results.some(
-    (r) => r.run_exit !== 0 || r.grade_exit !== 0 || (r.aa_exit ?? 0) !== 0,
+    (r) => r.run_exit !== 0 || r.over_budget || r.grade_exit !== 0 || (r.aa_exit ?? 0) !== 0,
 );
 process.exit(failed || report !== 0 ? 1 : 0);

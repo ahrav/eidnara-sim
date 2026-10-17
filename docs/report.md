@@ -126,7 +126,8 @@ read from its manifest and arm directories: the events its furthest arm
 reached against the events planned, and the planned prefix against the
 scenario's total when it is a capped prefix; the time
 interception outcome per binary from the preflight; and any transcript
-store path the driver found missing after the first `session_end`. It then
+store path the driver found missing after the first `session_end`, or
+`<arm> unchecked` for an arm that never reached that check. It then
 reads each host's transcripts back, Pi's session files under
 `.pi/agent/sessions` and OpenCode's `session` table in `opencode.db`, and
 compares each `sim-<session>` creation time with the session's scheduled
@@ -139,6 +140,7 @@ an order break, is a D2 caveat for that host.
 The continuity table gives each host and arm's P8 and P9 pass rate, over
 non-excluded items, beside the v1
 harness's cross-session recall (host 0 to 3%, Eidnara 99 to 100%). For
-every pass it counts the passes whose turn ran a command that reads the
-host's transcript store, so a `host` pass is split between transcript
-search and the rest.
+every pass it counts the passes whose turn ran a reading or searching
+command (`cat`, `grep`, `rg`, `find`, `sqlite3`, Pi's `read`, and the
+like) naming the host's transcript store, so a `host` pass is split
+between transcript search and the rest.

@@ -70,7 +70,10 @@ function signal(pids: number[], name: NodeJS.Signals): void {
     for (const pid of pids) {
         try {
             process.kill(pid, name);
-        } catch {}
+        } catch (caught) {
+            const code = (caught as { code?: string }).code;
+            if (code !== "ESRCH" && code !== "EPERM") throw caught;
+        }
     }
 }
 
@@ -81,4 +84,8 @@ export async function stopOwnedTree(rootPid: number, graceMs: number): Promise<b
     const left = targets.filter(running);
     signal(left, "SIGKILL");
     return stopped(left, 2_000);
+}
+
+export function killOwnedTree(rootPid: number): void {
+    signal(ownedProcesses(rootPid), "SIGKILL");
 }

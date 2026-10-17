@@ -1,8 +1,13 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { appendFileSync } from "node:fs";
 import { constants } from "node:os";
+import { killOwnedTree } from "./procs";
 
 export const SIGTERM_EXIT = 143;
+
+const kill = (child: ChildProcess) => {
+    if (child.pid !== undefined) killOwnedTree(child.pid);
+};
 
 /**
  * When `limitMs` expires, a child gets SIGTERM, then SIGKILL after `graceMs` if it is still
@@ -28,7 +33,7 @@ export class Children {
             const timers: ReturnType<typeof setTimeout>[] = [];
             const stop = () => {
                 child.kill("SIGTERM");
-                timers.push(setTimeout(() => child.kill("SIGKILL"), this.graceMs));
+                timers.push(setTimeout(() => kill(child), this.graceMs));
             };
             if (limitMs !== undefined && limitMs > 0) timers.push(setTimeout(stop, limitMs));
             const finish = (code: number) => {
@@ -52,11 +57,11 @@ export class Children {
         const sent = signal === "SIGHUP" ? "SIGTERM" : signal;
         const children = [...this.live];
         const exits = children.map(
-            (child) => new Promise<void>((done) => child.once("exit", () => done())),
+            (child) => new Promise<void>((done) => child.once("close", () => done())),
         );
         for (const child of children) child.kill(sent);
         const backstop = setTimeout(() => {
-            for (const child of children) child.kill("SIGKILL");
+            for (const child of children) kill(child);
         }, this.graceMs);
         await Promise.all(exits);
         clearTimeout(backstop);

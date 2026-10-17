@@ -17,6 +17,8 @@ export function loadPrereg(tier: Tier) {
     return parsePreregistration(JSON.parse(readFileSync(path, "utf8")));
 }
 
+export const corpusManifestHash = () => sha256Hex(read("manifest.json"));
+
 export function loadCompileInput(
     seed: number,
     tier: Tier,
@@ -42,7 +44,7 @@ export function loadCompileInput(
         errorCodes: parseJsonl(
             read("tool-outputs/error-codes.jsonl"),
         ) as CompileInput["errorCodes"],
-        corpusManifestSha256: sha256Hex(read("manifest.json")),
+        corpusManifestSha256: corpusManifestHash(),
         embedder,
     };
 }

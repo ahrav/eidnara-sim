@@ -160,8 +160,11 @@ export class Gateway {
             });
         });
         const h2 = createHttp2Server();
+        // A resumed run's new gateway restarts the connection count, so each record also names
+        // the gateway that wrote it.
+        const gateway = `${process.pid}-${Date.now().toString(36)}`;
         const log = (kind: string, detail: Record<string, unknown>) =>
-            this.options.downstream?.({ kind, wall_ms: Date.now(), ...detail });
+            this.options.downstream?.({ kind, wall_ms: Date.now(), gateway, ...detail });
         const ids = new WeakMap<object, number>();
         let sessions = 0;
         h2.on("session", (session) => {

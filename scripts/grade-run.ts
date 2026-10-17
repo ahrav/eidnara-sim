@@ -14,8 +14,9 @@ import type { Scenario } from "../src/scenario/compile";
 import { loadPrereg } from "../src/scenario/inputs";
 
 const dir = resolve(process.argv[2] ?? "");
+const regrade = process.argv.includes("--regrade");
 if (!process.argv[2] || !existsSync(join(dir, "manifest.json"))) {
-    console.error("usage: bun scripts/grade-run.ts <run dir>");
+    console.error("usage: bun scripts/grade-run.ts <run dir> [--regrade]");
     process.exit(2);
 }
 const config = loadConfig();
@@ -47,6 +48,10 @@ const skipped: Record<string, number> = {};
 const skip = (why: string) => {
     skipped[why] = (skipped[why] ?? 0) + 1;
 };
+/** A grade already on the log for this item, arm, and snapshot stands unless `--regrade` asks anew. */
+const prior = new Set(regrade ? [] : log.latest().map((g) => `${g.item}/${g.arm}/${g.snapshot}`));
+const gradedBefore = (item: string, arm: string, snapshot: string) =>
+    prior.has(`${item}/${arm}/${snapshot}`);
 const append = (g: GradeRecord) => {
     const record = { ...g, version: log.nextVersion(g.item, g.arm) };
     log.append(record);
@@ -57,6 +62,10 @@ for (const probe of scenario.probes.filter((p) => p.type !== "P7")) {
         const mine = snapshots.get(`${arm}/${probe.id}`);
         if (!mine) {
             skip(probe.type === "P14" ? "P14 has no probe turn" : "no journaled snapshot");
+            continue;
+        }
+        if (gradedBefore(probe.id, arm, (mine[0] as Snapshot).id)) {
+            skip("already graded");
             continue;
         }
         const grade = gradeItem(probe, mine, rules);
@@ -74,6 +83,10 @@ const pairs = p7.flatMap((probe) =>
         const b = snapshots.get(`host/${probe.id}`)?.[0];
         if (!a || !b || a.turn_outcome !== "ok" || b.turn_outcome !== "ok") {
             skip("P7 without two completed snapshots");
+            return [];
+        }
+        if (gradedBefore(probe.id, arm, a.id) && gradedBefore(probe.id, "host", b.id)) {
+            skip("already graded");
             return [];
         }
         return [{ probe, arm, a, b }];
