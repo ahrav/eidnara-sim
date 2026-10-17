@@ -5,6 +5,7 @@ import {
     mkdirSync,
     mkdtempSync,
     readFileSync,
+    renameSync,
     rmSync,
     symlinkSync,
     writeFileSync,
@@ -12,7 +13,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SimConfig } from "../src/config/config";
-import type { Snapshot } from "../src/grade/artefacts";
+import type { CallView, Snapshot } from "../src/grade/artefacts";
 import { canonicalJson, sha256Hex } from "../src/prereg/canonical";
 import { preregistrationHash } from "../src/prereg/validate";
 import { releaseLease, takeLease } from "../src/run/journal";
@@ -107,7 +108,27 @@ function run(o: RunOptions): string {
 
 let seq = 0;
 /** Appends a snapshot row and, for its agent calls, the `calls.jsonl` records the proxy would have written. */
-function snapshot(dir: string, arm: string, s: Snapshot, journaled = true): void {
+/** The turn index capture derives for a call: the index of its user turn, else the preceding one. */
+function withTurnIndices(s: Snapshot): Snapshot {
+    let carried: number | undefined;
+    return {
+        ...s,
+        artefacts: s.artefacts.map((a) => {
+            if (a.class !== "proxy-call") return a;
+            const calls = a.calls.map((c) => {
+                const match = /^e-(\d+)$/.exec(c.turn ?? "");
+                const own = match && Number(match[1]) > 0 ? Number(match[1]) - 1 : undefined;
+                carried = own ?? carried;
+                const { turn_index: _old, ...rest } = c;
+                return carried === undefined ? rest : { ...rest, turn_index: carried };
+            });
+            return { ...a, calls };
+        }),
+    } as Snapshot;
+}
+
+function snapshot(dir: string, arm: string, given: Snapshot, journaled = true): void {
+    const s = withTurnIndices(given);
     const row = {
         ...s,
         session: s.session ?? "s-1",
@@ -138,6 +159,7 @@ function snapshot(dir: string, arm: string, s: Snapshot, journaled = true): void
                 wall_ms: 0,
                 scenario_ms: c.scenario_ms,
                 arm,
+                session: row.session,
                 turn: c.turn,
                 component: c.component,
                 model: "global.anthropic.claude-opus-5-5",
@@ -377,6 +399,79 @@ describe("grade-run", () => {
         await expect(gradeRun(dir, null)).rejects.toThrow(
             "holds call 5, which calls.jsonl does not record",
         );
+    });
+
+    test("a snapshot whose calls are reordered or whose turn index is edited is refused", async () => {
+        const p8 = fixture("P8-pass");
+        const base = p8.snapshots[0] as Snapshot;
+        const calls = base.artefacts.find((a) => a.class === "proxy-call");
+        if (calls?.class !== "proxy-call") throw new Error("fixture has no calls");
+        const doubled = {
+            ...base,
+            artefacts: base.artefacts.map((a) =>
+                a.class === "proxy-call"
+                    ? {
+                          ...a,
+                          calls: [
+                              ...a.calls,
+                              { ...(a.calls[0] as CallView), seq: 99, response_text: "later" },
+                          ],
+                      }
+                    : a,
+            ),
+        } as Snapshot;
+        const dir = run({ probes: [p8.probe] });
+        snapshot(dir, "eidnara", doubled);
+        const log = join(dir, "eidnara", "snapshots.jsonl");
+        const row = JSON.parse(readFileSync(log, "utf8").trim());
+        for (const a of row.artefacts) if (a.class === "proxy-call") a.calls.reverse();
+        writeFileSync(log, `${JSON.stringify(row)}\n`);
+        await expect(gradeRun(dir, null)).rejects.toThrow("content that differs from calls.jsonl");
+
+        const shifted = run({ probes: [p8.probe] });
+        snapshot(shifted, "eidnara", base);
+        const log2 = join(shifted, "eidnara", "snapshots.jsonl");
+        const row2 = JSON.parse(readFileSync(log2, "utf8").trim());
+        for (const a of row2.artefacts) {
+            if (a.class !== "proxy-call") continue;
+            for (const c of a.calls) c.turn_index = (c.turn_index ?? 0) + 7;
+        }
+        writeFileSync(log2, `${JSON.stringify(row2)}\n`);
+        await expect(gradeRun(shifted, null)).rejects.toThrow(
+            "content that differs from calls.jsonl",
+        );
+    });
+
+    test("a call log that is a FIFO or symlink is refused before it is streamed", async () => {
+        const p8 = fixture("P8-pass");
+        const dir = run({ probes: [p8.probe] });
+        snapshot(dir, "eidnara", p8.snapshots[0] as Snapshot);
+        const real = join(dir, "calls.real.jsonl");
+        renameSync(join(dir, "calls.jsonl"), real);
+        symlinkSync(real, join(dir, "calls.jsonl"));
+        await expect(gradeRun(dir, null)).rejects.toThrow("not a regular file");
+    });
+
+    test("a turn that ended ok, or named a snapshot, without a journaled snapshot makes the journal invalid", async () => {
+        const named = run({ probes: [p5.probe] });
+        snapshot(named, "eidnara", snap);
+        const journal = join(named, "journal.jsonl");
+        const kept = readFileSync(journal, "utf8")
+            .trim()
+            .split("\n")
+            .filter((l) => JSON.parse(l).kind !== "SnapshotArtefacts");
+        writeFileSync(journal, `${kept.join("\n")}\n`);
+        await expect(gradeRun(named, null)).rejects.toThrow("has no SnapshotArtefacts entry");
+
+        const failed = run({ probes: [p5.probe] });
+        snapshot(failed, "eidnara", snap);
+        appendFileSync(
+            join(failed, "journal.jsonl"),
+            `${JSON.stringify({ seq: 900, wall_ms: 900, kind: "EndTurn", arm: "host", scenario_ms: 0, event: "e-1", outcome: "snapshot: git timed out", probe: p5.probe.id })}\n`,
+        );
+        expect((await gradeRun(failed, null)).skipped).toEqual({
+            host: { "probe turn failed": 1 },
+        });
     });
 
     test("an interrupted run is refused, naming the arm and its event counts", async () => {

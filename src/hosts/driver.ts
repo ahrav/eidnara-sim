@@ -1,6 +1,5 @@
 import { spawnSync } from "node:child_process";
 import {
-    appendFileSync,
     closeSync,
     constants,
     copyFileSync,
@@ -106,6 +105,24 @@ const SUPPORTED = new Set([
     "plugin_reload",
     "model_switch",
 ]);
+
+/**
+ * Creates `path` as an empty regular file when absent and leaves an existing regular file as it
+ * is. The path lies in the evaluated agent's writable tree, so a symlink there is refused rather
+ * than followed, and nothing is created outside the run directory on the agent's behalf.
+ */
+export function createNoFollow(path: string): void {
+    const flags =
+        constants.O_WRONLY | constants.O_CREAT | constants.O_APPEND | constants.O_NOFOLLOW;
+    try {
+        closeSync(openSync(path, flags, 0o644));
+    } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === "ELOOP") {
+            throw new Error(`${path} is a symlink; the plugin log must be a regular file`);
+        }
+        throw err;
+    }
+}
 
 export class HostDriver implements ArmDriver {
     host: SimHost | null = null;
@@ -228,7 +245,7 @@ export class HostDriver implements ArmDriver {
             await this.daemon.start();
             this.recordState();
             this.o.sampleDaemon?.();
-            appendFileSync(join(this.o.armRoot, "eidnara.log"), "");
+            createNoFollow(join(this.o.armRoot, "eidnara.log"));
         }
         this.host = this.newHost();
         this.recordState();
@@ -298,6 +315,7 @@ export class HostDriver implements ArmDriver {
         const connection = this.daemon?.connectionFile ?? null;
         const dir = this.workspace(this.sessionProject);
         await host.openSession(dir, e.session, connection);
+        this.recordState();
         this.snapshots.sessionStart(e.session, this.sessionProject, dir);
         this.recordState();
     }
@@ -334,12 +352,14 @@ export class HostDriver implements ArmDriver {
         const project = this.project(e);
         const dir = this.workspace(project);
         let before: string | null = "";
+        let beforeFailed = "";
         if (e.probe) {
             try {
                 before = this.snapshots.tree(dir);
             } catch (caught) {
                 if (!(caught instanceof GitBound)) throw caught;
                 before = null;
+                beforeFailed = caught.message;
             }
         }
         // A pass served between turns earned its check before this turn's own passes.
@@ -373,21 +393,17 @@ export class HostDriver implements ArmDriver {
         if (result.undelivered) outcome.undelivered = true;
         if (result.error) outcome.failed = result.error;
         if (e.probe && before === null) {
-            const reason = "snapshot: git timed out before the turn";
+            const reason = `snapshot before the turn: ${beforeFailed}`;
             outcome.failed = outcome.failed ? `${outcome.failed} | ${reason}` : reason;
         } else if (e.probe && before !== null) {
             await this.o.settle?.();
             try {
                 const { nested, ignoreFiles } = this.snapshots.survey(dir);
-                const after = this.snapshots.tree(dir, nested);
+                const changed = this.snapshots.ignoreChanges(dir, project, ignoreFiles);
+                const after = changed.length > 0 ? before : this.snapshots.tree(dir, nested);
                 const reasons = [
                     nested.length > 0 ? `embedded repository at ${nested.join(", ")}` : null,
-                    ...(() => {
-                        const changed = this.snapshots.ignoreChanges(dir, project, ignoreFiles);
-                        return changed.length > 0
-                            ? [`rule files changed: ${changed.join(", ")}`]
-                            : [];
-                    })(),
+                    changed.length > 0 ? `rule files changed: ${changed.join(", ")}` : null,
                 ].filter((r): r is string => r !== null);
                 for (const reason of reasons) {
                     outcome.failed = outcome.failed ? `${outcome.failed} | ${reason}` : reason;

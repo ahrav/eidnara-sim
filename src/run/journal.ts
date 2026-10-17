@@ -195,8 +195,10 @@ export function readJournal(path: string): Entry[] & { bytes?: number } {
 
 /**
  * `requireComplete` admits a run whose journal records every scheduled event ended once per
- * arm in the compiled order, an `EndArm` per arm, and an `EndRun`, with the manifest's arm
- * order matching the journaled `StartRun`. The error names the arm and its event counts (SIM-P67).
+ * arm in the compiled order, an `EndArm` per arm, and one arm-less `EndRun` after every
+ * `EndArm`, with the manifest's arm order matching the journaled `StartRun`. The check indexes
+ * the scheduled events once, so it costs one pass over the journal per arm. The error names the
+ * arm and its event counts (SIM-P67).
  */
 export function requireComplete(entries: Entry[], arms: string[], scheduled: string[]): void {
     const started = entries.find((e) => e.kind === "StartRun");
@@ -207,16 +209,27 @@ export function requireComplete(entries: Entry[], arms: string[], scheduled: str
             `manifest order ${JSON.stringify(arms)} differs from the journaled order ${JSON.stringify(journaled)}`,
         );
     }
+    const planned = new Set(scheduled);
+    const endRuns = entries.map((e, i) => [e, i] as const).filter(([e]) => e.kind === "EndRun");
     for (const arm of arms) {
-        const mine = entries.filter((e) => e.arm === arm);
-        const ended = mine.filter((e) => e.kind === "Event").map((e) => String(e.event));
-        const closed = mine.some((e) => e.kind === "EndArm");
+        const ended: string[] = [];
+        let closedAt = -1;
+        for (const [i, e] of entries.entries()) {
+            if (e.arm !== arm) continue;
+            if (e.kind === "Event") ended.push(String(e.event));
+            if (e.kind === "EndArm" && closedAt === -1) closedAt = i;
+        }
         const once = new Set(ended);
         const missing = scheduled.filter((id) => !once.has(id));
-        const stray = ended.filter((id, i) => !scheduled.includes(id) || ended.indexOf(id) !== i);
+        const seen = new Set<string>();
+        const stray: string[] = [];
+        for (const id of ended) {
+            if (!planned.has(id) || seen.has(id)) stray.push(id);
+            seen.add(id);
+        }
         const misordered = ended.findIndex((id, i) => id !== scheduled[i]);
-        if (!closed || missing.length > 0 || stray.length > 0 || misordered !== -1) {
-            const marker = closed ? "EndArm present" : "no EndArm";
+        if (closedAt === -1 || missing.length > 0 || stray.length > 0 || misordered !== -1) {
+            const marker = closedAt !== -1 ? "EndArm present" : "no EndArm";
             const count = `${scheduled.length - missing.length} of ${scheduled.length} events ended`;
             const extra = stray.length > 0 ? `, unexpected or repeated: ${stray.join(", ")}` : "";
             const order =
@@ -225,9 +238,19 @@ export function requireComplete(entries: Entry[], arms: string[], scheduled: str
                     : "";
             throw new Error(`arm ${arm} is incomplete: ${count}, ${marker}${extra}${order}`);
         }
+        if (endRuns.some(([, i]) => i < closedAt)) {
+            throw new Error(`run is incomplete: EndRun before arm ${arm}'s EndArm`);
+        }
     }
-    if (!entries.some((e) => e.kind === "EndRun")) {
+    if (endRuns.length === 0) {
         throw new Error("run is incomplete: the journal has no EndRun");
+    }
+    if (endRuns.length > 1) {
+        throw new Error(`run is incomplete: ${endRuns.length} EndRun entries`);
+    }
+    const [closer] = endRuns[0] as readonly [Entry, number];
+    if (closer.arm !== null && closer.arm !== undefined) {
+        throw new Error(`run is incomplete: EndRun names arm ${String(closer.arm)}`);
     }
 }
 

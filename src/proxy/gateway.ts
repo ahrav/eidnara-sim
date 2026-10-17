@@ -153,7 +153,11 @@ export class Gateway {
                 const header = req.headers[COMPONENT_HEADER] as string | undefined;
                 this.handle(req.url ?? "", header, Buffer.concat(chunks), {
                     status: (code, headers) => res.writeHead(code, headers),
-                    write: (chunk) => res.write(chunk),
+                    write: (chunk) => {
+                        if (res.destroyed) return false;
+                        res.write(chunk);
+                        return true;
+                    },
                     end: () => res.end(),
                     destroy: () => res.destroy(),
                     signal: gone.signal,
@@ -175,7 +179,11 @@ export class Gateway {
                         if (live() && !stream.headersSent)
                             stream.respond({ ":status": code, ...h });
                     },
-                    write: (chunk) => live() && stream.write(chunk),
+                    write: (chunk) => {
+                        if (!live()) return false;
+                        stream.write(chunk);
+                        return true;
+                    },
                     end: () => live() && stream.end(),
                     destroy: () => stream.destroy(),
                     signal: gone.signal,
@@ -365,11 +373,16 @@ export class Gateway {
                 sink.status(200, { "content-type": "application/vnd.amazon.eventstream" });
                 let complete = 0;
                 let block: number | null = null;
-                for await (const event of response.events) {
+                let delivered = true;
+                events: for await (const event of response.events) {
                     for (const [type, member] of Object.entries(event)) {
                         if (member === undefined) continue;
                         firstByte();
                         await delay();
+                        if (sink.signal.aborted || !sink.write(encodeEvent(type, member))) {
+                            delivered = false;
+                            break events;
+                        }
                         const m = member as {
                             usage?: Usage;
                             stopReason?: string;
@@ -386,9 +399,9 @@ export class Gateway {
                         if (type === "messageStop") done.finish_reason = m.stopReason ?? null;
                         if (type === "messageStop" || type === "metadata") complete++;
                         if (type.endsWith("Exception")) done.error = type;
-                        sink.write(encodeEvent(type, member));
                     }
                 }
+                if (!delivered) complete = 0;
                 if (complete < 2 && !done.error) {
                     done.finish_reason = "stream_cut";
                     done.error = sink.signal.aborted

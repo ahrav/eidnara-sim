@@ -155,6 +155,12 @@ interface LogMarker {
     copying: { source: string; target_bytes: number } | null;
     /** A killed lifetime's stdout, held until its log is saved, so a resume saves it too. */
     stdout?: string;
+    /** The lifetime that wrote the held stdout, which can differ from `owner` once a replacement is up. */
+    stdout_owner?: { pid: number; start: string | null } | null;
+    /** A stopped lifetime's final stdout, appended after its logs; kept here until it has landed. */
+    final_stdout?: string;
+    /** The log's length before the final stdout was appended; set while that append is in flight. */
+    final_target?: number;
     /** The log's length before the held stdout was appended; set while that append is in flight. */
     stdout_target?: number;
     /** The daemon process writing the live log, when one is up; recovery stops it before reading. */
@@ -224,6 +230,13 @@ export class DaemonStack {
                 copying: parsed.copying ?? null,
                 owner: parsed.owner ?? null,
                 ...(typeof parsed.stdout === "string" ? { stdout: parsed.stdout } : {}),
+                ...(parsed.stdout_owner !== undefined ? { stdout_owner: parsed.stdout_owner } : {}),
+                ...(typeof parsed.final_stdout === "string"
+                    ? { final_stdout: parsed.final_stdout }
+                    : {}),
+                ...(typeof parsed.final_target === "number"
+                    ? { final_target: parsed.final_target }
+                    : {}),
                 ...(typeof parsed.stdout_target === "number"
                     ? { stdout_target: parsed.stdout_target }
                     : {}),
@@ -250,12 +263,40 @@ export class DaemonStack {
      * source is removed, so a kill between the two leaves an orphan file, never a lost or
      * doubled lifetime.
      */
-    private absorb(source: string, rest: string[], owner: LogMarker["owner"] = null): void {
+    private absorb(
+        source: string,
+        rest: string[],
+        owner: LogMarker["owner"] = null,
+        carry: Pick<LogMarker, "final_stdout" | "final_target"> = {},
+    ): void {
         const start = existsSync(this.ctx.logFile) ? statSync(this.ctx.logFile).size : 0;
-        this.writeMarker({ pending: rest, copying: { source, target_bytes: start }, owner });
+        this.writeMarker({
+            ...carry,
+            pending: rest,
+            copying: { source, target_bytes: start },
+            owner,
+        });
         appendFileFrom(source, this.ctx.logFile);
-        this.writeMarker({ pending: rest, copying: null, owner });
+        this.writeMarker({ ...carry, pending: rest, copying: null, owner });
         rmSync(source, { force: true });
+    }
+
+    /**
+     * Appends a stopped lifetime's final stdout once, after its logs, through the same recorded
+     * rollback point the held stdout uses, so a kill mid-append is rolled back and completed.
+     */
+    private saveFinalStdout(marker: LogMarker): void {
+        const { final_stdout, final_target, ...rest } = marker;
+        if (final_stdout === undefined) return;
+        const start =
+            final_target ?? (existsSync(this.ctx.logFile) ? statSync(this.ctx.logFile).size : 0);
+        if (final_target !== undefined && existsSync(this.ctx.logFile)) {
+            truncateSync(this.ctx.logFile, final_target);
+        } else {
+            this.writeMarker({ ...rest, final_stdout, final_target: start });
+        }
+        appendFileSync(this.ctx.logFile, final_stdout);
+        this.writeMarker(rest);
     }
 
     /**
@@ -289,7 +330,7 @@ export class DaemonStack {
      * marker, written to disk, has dropped the stdout.
      */
     private saveHeldStdout(marker: LogMarker): LogMarker {
-        const { stdout, stdout_target, ...rest } = marker;
+        const { stdout, stdout_target, stdout_owner: _by, ...rest } = marker;
         if (stdout === undefined) return marker;
         const start =
             stdout_target ?? (existsSync(this.ctx.logFile) ? statSync(this.ctx.logFile).size : 0);
@@ -326,11 +367,22 @@ export class DaemonStack {
             seenInodes.add(key);
             return true;
         });
+        const carry = {
+            ...(marker?.final_stdout !== undefined ? { final_stdout: marker.final_stdout } : {}),
+            ...(marker?.final_target !== undefined ? { final_target: marker.final_target } : {}),
+        };
+        // The final stdout rides on every marker write, so a kill at any point still finds it.
+        if (marker?.final_stdout !== undefined) {
+            this.writeMarker({ ...carry, pending, copying: null, owner: marker.owner ?? null });
+        }
         while (pending.length > 0) {
             const [source, ...rest] = pending as [string, ...string[]];
-            if (existsSync(source)) this.absorb(source, rest);
-            else this.writeMarker({ pending: rest, copying: null });
+            if (existsSync(source)) this.absorb(source, rest, null, carry);
+            else this.writeMarker({ ...carry, pending: rest, copying: null });
             pending = rest;
+        }
+        if (marker?.final_stdout !== undefined) {
+            this.saveFinalStdout({ ...carry, pending: [], copying: null, owner: null });
         }
         rmSync(this.logSourceFile, { force: true });
     }
@@ -399,11 +451,13 @@ export class DaemonStack {
         rmSync(this.held, { force: true });
         if (existsSync(live)) linkSync(live, this.held);
         this.heldStdout = stdout;
+        const owner = this.owner();
         this.writeMarker({
             pending: [this.held, live],
             copying: null,
-            owner: this.owner(),
+            owner,
             stdout,
+            stdout_owner: owner,
         });
     }
 
@@ -423,14 +477,15 @@ export class DaemonStack {
         // The replacement owns the marker from the moment the stack assigns its child, while its
         // readiness is still awaited, so a kill in that wait still lets a resume stop it before
         // starting another daemon against the same store.
-        const killed = this.pid();
+        const killed = this.owner();
         let settled = false;
         const publish = (async () => {
             while (!settled) {
-                const pid = this.pid();
-                if (pid !== null && pid !== killed) {
+                // A new lifetime: another pid, or the same pid with another start time.
+                const now = this.owner();
+                if (now && (now.pid !== killed?.pid || now.start !== killed.start)) {
                     const marker = this.readMarker();
-                    if (marker) this.writeMarker({ ...marker, owner: this.owner() });
+                    if (marker) this.writeMarker({ ...marker, owner: now });
                     return;
                 }
                 await Bun.sleep(5);
@@ -470,34 +525,29 @@ export class DaemonStack {
         await stack.terminateHost();
         this.stack = null;
         const { stdout } = this.hh.__hermeticHostTest.diagnostics(stack);
-        // A held stdout belongs to the lifetime the marker names as owner. When that is still the
-        // stack's lifetime (a kill that failed), the stack's stdout covers it and the marker drops
-        // its own; when a replacement came up and then failed, the held copy is the old lifetime's
-        // only stdout and lands ahead of the replacement's output. The stack's stdout goes last,
-        // after any rollback the drains perform, so a rollback cannot erase it.
+        // A held stdout belongs to the lifetime the marker records as its writer. When that is the
+        // lifetime stop terminates (a kill that failed), the stack's stdout covers it and the held
+        // copy is dropped; when a replacement came up, the held copy is the killed lifetime's only
+        // stdout and lands first. The stack's own stdout lands last, after any rollback, through
+        // the marker, so a kill at any point is rolled back and completed on resume.
         const live = String(stack.logPath ?? "");
         const marker = this.readMarker();
+        const writer = marker?.stdout_owner ?? marker?.owner;
         const sameLifetime =
-            marker?.owner?.pid != null &&
-            marker.owner.pid === stackPid &&
-            marker.owner.start === stackStart;
+            writer?.pid != null && writer.pid === stackPid && writer.start === stackStart;
         const {
             stdout: _held,
             stdout_target: _target,
+            stdout_owner: _by,
             ...rest
         } = marker ?? { pending: [], copying: null };
         this.heldStdout = null;
         if (marker?.stdout !== undefined && !sameLifetime) {
             this.drain({ ...marker, pending: marker.pending.filter((p) => p !== live) }, []);
-            this.drain(null, [live]);
-        } else {
-            if (marker?.stdout !== undefined) this.writeMarker(rest);
-            this.drain(marker ? rest : null, [live]);
+            this.drain({ pending: [], copying: null, owner: null, final_stdout: stdout }, [live]);
+            return;
         }
-        // The final stdout lands through the marker too, so a kill mid-append is rolled back on
-        // resume and the lifetime's stdout is kept whole; the marker is removed once it has landed.
-        this.saveHeldStdout({ pending: [], copying: null, owner: null, stdout });
-        rmSync(this.logSourceFile, { force: true });
+        this.drain({ ...rest, final_stdout: stdout }, [live]);
     }
 }
 

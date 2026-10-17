@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync, readSync } from "node:fs";
 import { join } from "node:path";
 import type { Command } from "../grade/artefacts";
 import { armBase, requireOrder } from "../hosts/arms";
@@ -47,21 +47,45 @@ export interface RunLogs {
     arms: ArmLogs[];
 }
 
-/** Evidence files are read strictly: every newline-terminated line must parse. A completed run's writers leave no cut tail. */
+/**
+ * Evidence files are read strictly: every newline-terminated line must parse, and a completed
+ * run's writers leave no cut tail. The file is read in 1 MiB chunks and each line parsed as it
+ * completes, so a large `calls.jsonl` costs its parsed records, never a whole-file string.
+ */
 function jsonl<T>(path: string): T[] {
     if (!existsSync(path)) return [];
-    const lines = readFileSync(path, "utf8").split("\n");
-    return lines.flatMap((text, i) => {
-        if (i === lines.length - 1) {
-            if (text !== "") throw new Error(`${path}: line ${i + 1} is cut`);
-            return [];
-        }
+    const out: T[] = [];
+    const fd = openSync(path, "r");
+    const chunk = new Uint8Array(1 << 20);
+    const decoder = new TextDecoder();
+    let rest = "";
+    let lineNo = 0;
+    const take = (text: string) => {
+        lineNo += 1;
         try {
-            return [JSON.parse(text) as T];
+            out.push(JSON.parse(text) as T);
         } catch {
-            throw new Error(`${path}: line ${i + 1} is corrupt`);
+            throw new Error(`${path}: line ${lineNo} is corrupt`);
         }
-    });
+    };
+    try {
+        for (;;) {
+            const n = readSync(fd, chunk, 0, chunk.length, null);
+            if (n === 0) break;
+            rest += decoder.decode(chunk.subarray(0, n), { stream: true });
+            let cut = rest.indexOf("\n");
+            while (cut !== -1) {
+                take(rest.slice(0, cut));
+                rest = rest.slice(cut + 1);
+                cut = rest.indexOf("\n");
+            }
+        }
+        rest += decoder.decode();
+        if (rest !== "") throw new Error(`${path}: line ${lineNo + 1} is cut`);
+    } finally {
+        closeSync(fd);
+    }
+    return out;
 }
 
 type FieldCheck = (v: unknown) => boolean;
@@ -128,36 +152,49 @@ const lines = (path: string) =>
  */
 function requireTurnEnds(journal: Entry[], arms: string[], events: Scenario["events"]): void {
     const turns = new Set(events.filter((e) => e.kind === "user_turn").map((e) => String(e.id)));
+    const rank: Record<string, number> = { BeginTurn: 0, EndTurn: 1, Event: 2 };
     for (const arm of arms) {
-        const mine = journal.filter((e) => e.arm === arm);
-        for (const e of mine) {
-            if ((e.kind === "EndTurn" || e.kind === "BeginTurn") && !turns.has(String(e.event))) {
-                throw new Error(`arm ${arm}: ${e.kind} for unscheduled event ${String(e.event)}`);
+        const markers = new Map<
+            string,
+            { kinds: string[]; begins: number; ends: number; ended?: Entry; closed?: Entry }
+        >();
+        for (const e of journal) {
+            if (e.arm !== arm || !(String(e.kind) in rank)) continue;
+            const id = String(e.event);
+            if ((e.kind === "EndTurn" || e.kind === "BeginTurn") && !turns.has(id)) {
+                throw new Error(`arm ${arm}: ${e.kind} for unscheduled event ${id}`);
             }
+            const m = markers.get(id) ?? { kinds: [], begins: 0, ends: 0 };
+            m.kinds.push(String(e.kind));
+            if (e.kind === "BeginTurn") m.begins += 1;
+            if (e.kind === "EndTurn") {
+                m.ends += 1;
+                m.ended = e;
+            }
+            if (e.kind === "Event") m.closed = e;
+            markers.set(id, m);
         }
         for (const id of turns) {
-            const order = mine
-                .filter(
-                    (e) =>
-                        ["BeginTurn", "EndTurn", "Event"].includes(String(e.kind)) &&
-                        e.event === id,
-                )
-                .map((e) => String(e.kind));
-            const rank: Record<string, number> = { BeginTurn: 0, EndTurn: 1, Event: 2 };
-            const sorted = order.every(
-                (k, i) => i === 0 || (rank[k] ?? 9) >= (rank[order[i - 1] ?? ""] ?? 9),
+            const m = markers.get(id) ?? { kinds: [], begins: 0, ends: 0 };
+            const sorted = m.kinds.every(
+                (k, i) => i === 0 || (rank[k] ?? 9) >= (rank[m.kinds[i - 1] ?? ""] ?? 9),
             );
             if (!sorted) throw new Error(`arm ${arm}: turn ${id} markers out of order`);
-            const begins = mine.filter((e) => e.kind === "BeginTurn" && e.event === id).length;
-            if (begins !== 1) {
-                const what = begins === 0 ? "no BeginTurn" : `${begins} BeginTurn entries`;
+            if (m.begins !== 1) {
+                const what = m.begins === 0 ? "no BeginTurn" : `${m.begins} BeginTurn entries`;
                 throw new Error(`arm ${arm}: turn ${id} has ${what}`);
             }
-            const ends = mine.filter((e) => e.kind === "EndTurn" && e.event === id).length;
-            const closed = mine.find((e) => e.kind === "Event" && e.event === id);
-            if (ends === 0 && String(closed?.outcome) === "failed(interrupted)") continue;
-            if (ends === 0) throw new Error(`arm ${arm}: turn ${id} has no EndTurn`);
-            if (ends > 1) throw new Error(`arm ${arm}: turn ${id} has ${ends} EndTurn entries`);
+            if (m.ends === 0 && String(m.closed?.outcome) === "failed(interrupted)") continue;
+            if (m.ends === 0) throw new Error(`arm ${arm}: turn ${id} has no EndTurn`);
+            if (m.ends > 1) throw new Error(`arm ${arm}: turn ${id} has ${m.ends} EndTurn entries`);
+            // A turn's Event records its delivery (`ok`) or repeats the turn's own outcome; an Event
+            // recording a failure the EndTurn lacks, an interruption included, contradicts it.
+            const delivered = String(m.closed?.outcome ?? "ok");
+            if (m.ended && delivered !== "ok" && delivered !== String(m.ended.outcome)) {
+                throw new Error(
+                    `arm ${arm}: turn ${id} ended ${String(m.ended.outcome)} but its Event records ${delivered}`,
+                );
+            }
         }
     }
 }
@@ -252,14 +289,27 @@ function turnBounds(journal: Entry[]): Bounds {
     return bounds;
 }
 
-/** A call attributed to a turn started while that turn was open: between its `BeginTurn` and its `EndTurn`. */
-function requireCallsInTurns(calls: CallRecord[], bounds: Bounds): void {
+/**
+ * Every call started before its arm's `EndArm` (the driver stops the host first, so no call
+ * begins after it), and a call attributed to a turn started while that turn was open: between
+ * its `BeginTurn` and its `EndTurn`.
+ */
+function requireCallsInTurns(
+    calls: CallRecord[],
+    bounds: Bounds,
+    armEnds: Map<string, number>,
+): void {
     for (const c of calls) {
-        if (c.turn === null) continue;
-        const b = bounds.get(`${c.arm}/${c.turn}`);
+        const b = c.turn === null ? undefined : bounds.get(`${c.arm}/${c.turn}`);
         if (b && (c.scenario_ms < b.from || c.scenario_ms > b.to)) {
             throw new Error(
                 `call ${c.seq}: starts at ${c.scenario_ms}, outside turn ${c.turn} (${b.from} to ${b.to})`,
+            );
+        }
+        const end = armEnds.get(c.arm);
+        if (end !== undefined && c.scenario_ms > end) {
+            throw new Error(
+                `call ${c.seq}: starts at ${c.scenario_ms}, after arm ${c.arm} ended at ${end}`,
             );
         }
     }
@@ -340,6 +390,9 @@ export function loadRun(dir: string, prereg: Preregistration): RunLogs {
                 throw new Error(`call ${c.seq}: ${field} is not a timestamp`);
             }
         }
+        if (!Number.isSafeInteger(c.scenario_ms) || c.scenario_ms < 0) {
+            throw new Error(`call ${c.seq}: scenario_ms is not a clock reading`);
+        }
         if (c.wall_ms < c.started_wall_ms) {
             throw new Error(`call ${c.seq}: wall_ms precedes started_wall_ms`);
         }
@@ -357,6 +410,9 @@ export function loadRun(dir: string, prereg: Preregistration): RunLogs {
         }
         if ("response_text_truncated" in c && c.response_text_truncated !== true) {
             throw new Error(`call ${c.seq}: response_text_truncated is not true`);
+        }
+        if ("response_text_truncated" in c && typeof c.response_text !== "string") {
+            throw new Error(`call ${c.seq}: response_text_truncated without response_text`);
         }
         const http = Number.isInteger(c.status) && c.status >= 100 && c.status <= 599;
         if (c.status !== 0 && !http) {
@@ -392,7 +448,13 @@ export function loadRun(dir: string, prereg: Preregistration): RunLogs {
     requireComplete(journal, order, scheduled);
     requireTurnEnds(journal, order, planned);
     const bounds = turnBounds(journal);
-    requireCallsInTurns(calls, bounds);
+    const armEnds = new Map<string, number>();
+    for (const e of journal) {
+        if (e.kind === "EndArm" && typeof e.arm === "string" && !armEnds.has(e.arm)) {
+            armEnds.set(e.arm, e.scenario_ms);
+        }
+    }
+    requireCallsInTurns(calls, bounds, armEnds);
     const arms = order.map((arm) => ({
         arm,
         calls: calls.filter((c) => c.arm === arm),

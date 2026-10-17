@@ -1,10 +1,12 @@
 # Failure-class oracles
 
 `src/oracle/` reads a run directory and reports each time a known failure
-class fired. `loadRun` admits a complete run only, through the journal
+class fired. Record files are read in 1 MiB chunks and parsed one line at a
+time, so a run's `calls.jsonl` costs its parsed records and never a
+whole-file string. `loadRun` admits a complete run only, through the journal
 check grading uses (`requireComplete`, SIM-P67): every scheduled event
-ended once per arm in the compiled order, an `EndArm` per arm, and an
-`EndRun`; a `scenario.json`
+ended once per arm in the compiled order, an `EndArm` per arm, and one
+arm-less `EndRun` after every `EndArm`; a `scenario.json`
 whose digest differs from the manifest's `scenario_hash` is refused, and so
 is a run with no `calls.jsonl` (the proxy's record writer creates it at
 start), a manifest tier other than the scenario's, a manifest arm outside the
@@ -23,11 +25,15 @@ reading is not a byte count, name a process start time on some rows and not othe
 or null against a pid, pair a reading with a null pid, or carry a negative
 reading or run backwards in scenario time, a journal whose entries run
 backwards in scenario time within an arm or carry a `scenario_ms` that is not
-a non-negative integer, a call attributed to a turn that
+a non-negative integer, a call whose `scenario_ms` is not a non-negative
+integer, a call that starts after its arm's `EndArm` (the driver stops the
+host before the scheduler journals it), a call attributed to a turn that
 starts outside that turn's `BeginTurn` to `EndTurn` interval (a tool run
-likewise, with a second of slack for the host's clock), a daemon arm with no numeric RSS sample, no reading in its final
+likewise, with a second of slack for the host's clock), an arm whose token
+total leaves the exact integer range, a daemon arm with no numeric RSS sample, no reading in its final
 sample, no `daemon.log`, or no `r/eidnara.log` (the driver creates the plugin
-log empty when an Eidnara arm starts), a manifest with no arms, a call whose status is
+log empty when an Eidnara arm starts, refusing a symlink the agent left at
+that path), a manifest with no arms, a call whose status is
 neither the proxy's `0` sentinel nor an HTTP status, whose end precedes its
 start, whose wall times are not timestamps, or whose sequence number breaks
 the file's `0..n-1` order, an arm with no `tools.jsonl` (the recorder creates
@@ -51,7 +57,7 @@ happened, and the evidence.
 | F4 hang | A turn that hit its deadline (the harness's own wording: OpenCode's `turn deadline <N> ms` or Pi's `Timed out after <N>ms`) with no agent call, or whose recorded activity up to the turn end (the turn start, each call's span from start to completion clamped to the end, tool starts, the turn end) leaves a gap above `oracles.hang_quiet_ms`, so a turn active to its deadline is a long turn and a tool that waited on until the deadline is a hang; a turn that began and saw no agent call or turn end within `oracles.hang_quiet_ms` (five minutes, SIM-P39), whatever its outcome (an auxiliary call or a tool start alone is not agent activity); or an agent call that completed, whatever its status, and was followed by no tool start, other same-turn model or persistence call starting at or after its end (a `title` call is neither), or turn end within that bound: one activation per turn, its evidence naming every silent window; a tool that starts within a second of the call's end counts as progress however long it runs in a turn that completed, and its silence counts in a turn that hit the deadline |
 | F5 RSS growth | A daemon lifetime's final RSS sample at or above `2 x RSS(0) + sessions x leak_bound.c_bytes_per_session` (SIM-P57's `RSS(T)` bound; a spike freed before the end is not a leak), or an RSS-per-session slope above that bound with a fit at or above `leak_bound.r2_threshold` over at least three distinct session counts; each daemon lifetime (the samples sharing a pid and process start time) is read on its own, with its first sample as RSS(0) and sessions counted from its start, so a restart hides no leak. The sampler records a sample when each daemon process is up (reset, resume, and after a fault's restart), one before a fault takes a daemon down, and a final sample when the arm finishes; a run whose daemon arm has no numeric RSS sample is refused by `loadRun` rather than read as leak-free |
 | F6 cost | An arm whose total tokens exceed `oracles.cost_ratio_max` (1.5) times the host arm's, or that makes more title calls than the host arm: one activation per arm and run, its evidence naming each exceeded bound; until the report prices tokens (M7) this is a token ratio |
-| F7 visible internal text | An agent response carrying plugin markup or diagnostics: history-segment tags, `eidnara` tags, context-researcher augmentation, `[eidnara]` log prefixes, or pass fields such as `row_version` and `served_from`; read from the recorded response text, the first 262,144 characters; a call whose text ran past that cap carries `response_text_truncated` |
+| F7 visible internal text | An agent response carrying plugin markup or diagnostics: history-segment tags, `eidnara` tags, context-researcher augmentation, `[eidnara] ` log prefixes at a line start (a Markdown link to the project is prose), or pass fields such as `row_version` and `served_from`; read from the recorded response text, the first 262,144 characters; a call whose text ran past that cap carries `response_text_truncated` beside the retained prefix |
 | F8 invalid memory-capture array | A plugin or daemon log line where the daemon refused capture output (`memory capture output rejected`, or the refusal reason: schema mismatch, unsupported version, size or decision bounds, an unclosed code fence, missing or unknown source ids) |
 | F9 compaction ownership gap | An arm with host compaction off (`eidnara`, `eidnara-cf`) whose agent conversation overflowed (an agent-component or turn-level F1) and that made no native-compaction call |
 
@@ -111,8 +117,16 @@ For each fault the oracle reports `turns_to_first_clean` and `recovered`,
 which is false with no clean turn after the fault, and lists the reasons.
 The infrastructure faults are the scenario compiler's set
 (`src/scenario/faults.ts`) plus `host_upgrade` and `two_hosts_one_daemon`.
-A fault an arm skipped, such as a daemon fault on the `host` arm, has
-`recovered: null` and the skip as its reason, so tallies leave it out.
+A fault an arm skipped has `recovered: null` and the skip as its reason, so
+tallies leave it out. The driver skips a daemon fault on the `host` arm and
+a `store_full` on an arm with no loop-mounted store; a skip journaled for
+any other fault, or a daemon fault skipped on another arm, refuses the arm.
+A `model_switch` turn is clean only when an agent call in it names the
+switched model, which the observation records. The oracle also refuses a
+journal whose fault ids are not nonempty strings,
+whose fired or observed types differ from the schedule, whose observation
+precedes its firing, whose sleep jump follows its firing, or whose store
+check for a restart precedes that restart's observation.
 
 A daemon restart (`daemon_restart`, `daemon_sigkill_mid_fold`) also needs a
 sound store, which three checks of the store (`src/hosts/storecheck.ts`)
@@ -145,9 +159,10 @@ pass after a crash folds from the surviving history and removes nothing
 further. The oracle checks it as: each segment the crash check listed is
 still present at the post-crash check with the same bounds and the same
 digest of its message ids, title, and content, so a segment refolded within
-the same bounds reads as changed. A check recorded before ranges carried
-digests compares bounds only, which cannot certify the rule; the oracle names
-that as a reason and withholds `recovered`. A host compaction in the
+the same bounds reads as changed. A check states its format (`format: 2`
+once ranges carry digests); a check recorded before that format compares
+bounds only, which cannot certify the rule, so the oracle names that as a
+reason and withholds `recovered`, for an empty store too. A host compaction in the
 same turn can also remove segments under the contract's compaction rule;
 the reason names the segments, so a maintainer can tell the two apart from
 the turn's calls. `recovered` needs all three checks present, each with

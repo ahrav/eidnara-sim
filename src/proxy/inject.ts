@@ -105,7 +105,8 @@ export function excludedFromFaultMetrics(witnesses: WitnessReport[]): boolean {
 
 export interface Sink {
     status(code: number, headers: Record<string, string>): void;
-    write(chunk: Buffer): void;
+    /** Hands a chunk to the client; false once the client is gone and the chunk cannot reach it. */
+    write(chunk: Buffer): boolean;
     end(): void;
     destroy(): void;
     signal: AbortSignal;

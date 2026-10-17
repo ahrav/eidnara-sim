@@ -50,16 +50,22 @@ export function faketimeEnv(file: string): Record<string, string> {
     };
 }
 
-/** What an offset write left for the journal: the whole seconds and the wall instant of the rename. */
+/**
+ * What an offset write left for the journal: the whole seconds and the wall bounds of the rename
+ * that put them in effect. A process reads the new offset from no earlier than `offset_wall_ms`
+ * and the old one from no later than `offset_settled_ms`.
+ */
 export interface OffsetWrite {
     offset_s: number;
     offset_wall_ms: number;
+    offset_settled_ms: number;
 }
 
 /**
  * The offset targets `baseMs + scenarioMs` at wall time `wallMs`, with up to 500 ms of rounding
  * error. The returned record names the whole seconds the processes read from the rename on and
- * the wall instant of that rename, so the journal can place log stamps by the offset in effect.
+ * the wall instants around that rename, so the journal can place log stamps by the offset in
+ * effect, placing a stamp from inside the rename through both offsets.
  */
 export function writeOffset(
     file: string,
@@ -71,8 +77,9 @@ export function writeOffset(
     mkdirSync(dirname(file), { recursive: true });
     const staged = `${file}.${process.pid}`;
     writeFileSync(staged, `${seconds >= 0 ? "+" : ""}${seconds}\n`);
+    const before = Date.now();
     renameSync(staged, file);
-    return { offset_s: seconds, offset_wall_ms: Date.now() };
+    return { offset_s: seconds, offset_wall_ms: before, offset_settled_ms: Date.now() };
 }
 
 export function readOffsetSeconds(file: string): number {

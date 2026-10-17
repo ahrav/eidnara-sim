@@ -25,8 +25,8 @@ entries of different arms are not ordered by scenario time.
 |---|---|
 | `StartRun`, `EndRun` | The run starts (with the arm order) and ends |
 | `StartArm`, `EndArm` | An arm starts, after its driver's reset, and finishes |
-| `AdvanceClock` | The clock jumps; carries `from_ms`, an empty `busy` list, the next event id or the laptop-sleep fault, `offset_s`, the whole-second offset the arm's processes read from then on, and `offset_wall_ms`, the wall instant it took effect (`docs/time.md`) |
-| `ClockOffset` | The arm starts; carries `offset_s` and `offset_wall_ms` for the time until the first jump |
+| `AdvanceClock` | The clock jumps; carries `from_ms`, an empty `busy` list, the next event id or the laptop-sleep fault, `offset_s`, the whole-second offset the arm's processes read from then on, and `offset_wall_ms` and `offset_settled_ms`, the wall instants before and after the rename that put it in effect (`docs/time.md`) |
+| `ClockOffset` | The arm starts; carries `offset_s`, `offset_wall_ms`, and `offset_settled_ms` for the time until the first jump |
 | `BeginTurn` | A user turn is delivered |
 | `EndTurn` | The turn is answered; a probe turn carries `probe` and `state` (`completed` or `failed`) |
 | `RegisterJob`, `EndJob` | A background job starts and ends |
@@ -50,9 +50,11 @@ list. For each arm, it resets the driver, then walks the events:
 
 1. Wait one settle interval after each answered turn (`settleMs`, 1 s by
    default), so a background job the host starts after its answer registers
-   before the clock moves, then wait until the busy set is empty and stays
-   empty for a further settle interval, so a job that starts another after
-   it ends is waited for too.
+   before the clock moves, then wait until the busy set is empty and no job
+   has started or ended for a further settle interval (every job start and
+   end resets the window, so a job that begins and ends between two polls
+   counts), so a job that starts another after it ends is waited for too; the
+   whole wait shares one liveness deadline (`job_deadline_ms`).
 2. Close any outage window from the previous event.
 3. For each laptop sleep keyed on the event, jump by its `duration_ms`, one
    `AdvanceClock` each; then jump to the event's scheduled time if it is still

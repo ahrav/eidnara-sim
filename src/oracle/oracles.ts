@@ -44,7 +44,7 @@ export const INTERNAL_TEXT = [
     /<\/?history[_-]segments?\b/i,
     /<\/?eidnara[\w-]*>/i,
     /context[_-]researcher[_-]augmentation/i,
-    /\[eidnara\]/i,
+    /^\s*\[eidnara\] /m,
     /\b(row_version|served_from|invocation_bytes|emergency_wait)\b/,
     /\bdecision=(SOFT|HARD)/,
 ];
@@ -206,14 +206,24 @@ function f5(arm: ArmLogs, run: RunLogs): Activation[] {
     const { c_bytes_per_session: c, r2_threshold } = run.prereg.leak_bound;
     const ends = arm.journal
         .filter((e) => e.kind === "Event" && run.kinds.get(String(e.event)) === "session_end")
-        .map((e) => e.scenario_ms);
+        .map((e) => e.scenario_ms)
+        .sort((a, b) => a - b);
+    const sessionsAt = (ms: number) => {
+        let lo = 0;
+        let hi = ends.length;
+        while (lo < hi) {
+            const mid = (lo + hi) >>> 1;
+            if ((ends[mid] as number) <= ms) lo = mid + 1;
+            else hi = mid;
+        }
+        return lo;
+    };
     const samples = arm.resources.filter((s) => typeof s.rss === "number");
     const out: Activation[] = [];
     const lives = lifetimes(samples);
     for (const life of lives) {
         const first = life[0] as Sample;
         const scope = lives.length > 1 ? `daemon ${first.pid}` : "run";
-        const sessionsAt = (ms: number) => ends.filter((end) => end <= ms).length;
         const offset = sessionsAt(first.scenario_ms);
         const points = life.map((s) => ({
             x: sessionsAt(s.scenario_ms) - offset,
@@ -249,6 +259,9 @@ export function ledger(arm: ArmLogs): Ledger {
         tokens[c.component] = (tokens[c.component] ?? 0) + TOKENS(c);
     }
     const total = Object.values(tokens).reduce((a, b) => a + b, 0);
+    if (!Number.isSafeInteger(total)) {
+        throw new Error(`arm ${arm.arm}: token total exceeds exact integer range`);
+    }
     return { tokens, total, title_calls: arm.calls.filter((c) => c.component === "title").length };
 }
 
@@ -349,10 +362,13 @@ export interface OracleCount {
     by_component: Record<string, number>;
 }
 
-export function oracleReport(runs: RunLogs[]): Record<string, Record<OracleId, OracleCount>> {
+/** The tier report counts activations already evaluated per run, so a run's evidence is released once its oracles have run. */
+export function oracleReport(
+    runs: Array<{ tier: string; activations: Activation[] }>,
+): Record<string, Record<OracleId, OracleCount>> {
     const tiers = new Map<string, Activation[]>();
     for (const run of runs)
-        tiers.set(run.tier, [...(tiers.get(run.tier) ?? []), ...runOracles(run)]);
+        tiers.set(run.tier, [...(tiers.get(run.tier) ?? []), ...run.activations]);
     const report: Record<string, Record<OracleId, OracleCount>> = {};
     for (const [tier, acts] of tiers) {
         report[tier] = Object.fromEntries(

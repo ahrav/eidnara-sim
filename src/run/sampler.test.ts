@@ -153,3 +153,31 @@ test("a sample whose process vanished between the pid read and the snapshot carr
     expect(sample.pid).toBeNull();
     expect(sample.start).toBeNull();
 });
+
+test("a CPU baseline belongs to one process lifetime, so a reused pid starts a fresh baseline", () => {
+    const dir = mkdtempSync(join(tmpdir(), "sim-sampler-"));
+    const path = join(dir, "resources.jsonl");
+    let start = "100";
+    const sampler = new ResourceSampler({
+        path,
+        intervalMs: 60_000,
+        busyFraction: 0.5,
+        pid: () => 7,
+        stats: () => ({ rss: 4096, cpuMs: start === "100" ? 5_000_000 : 0, start }),
+        storeDir: dir,
+        scenarioMs: () => 7,
+        onBusy: () => {},
+    });
+    sampler.start();
+    start = "200";
+    const spin = Date.now() + 5;
+    while (Date.now() < spin) {}
+    sampler.observe();
+    sampler.stop();
+    const lines = readFileSync(path, "utf8")
+        .trim()
+        .split("\n")
+        .map((l) => JSON.parse(l));
+    expect(lines.map((l) => l.start)).toEqual(["100", "200", "200"]);
+    expect(lines[1]?.cpu_fraction).toBeNull();
+});
