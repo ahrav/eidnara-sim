@@ -15,8 +15,8 @@ import { basename, dirname, join } from "node:path";
 import type { GradeRecord } from "../src/grade/probes";
 import { preregistrationHash } from "../src/prereg/validate";
 import { scenarioHash } from "../src/scenario/compile";
-import { tapeDigests } from "../src/usersim/usersim";
 import { loadPrereg } from "../src/scenario/inputs";
+import { tapeDigests } from "../src/usersim/usersim";
 import { aaReport } from "./aa-report";
 
 const grade = (arm: string, item: string, type: string, metric: string, value: number) => ({
