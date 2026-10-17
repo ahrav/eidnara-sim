@@ -450,6 +450,8 @@ describe("oracle round three", () => {
         writeFileSync(join(dir, "eidnara", "resources.jsonl"), line({ scenario_ms: 0, rss: 100 }));
         expect(() => loadRun(dir, prereg)).toThrow("arm eidnara has no daemon.log");
         writeFileSync(join(dir, "eidnara", "daemon.log"), "");
+        mkdirSync(join(dir, "eidnara", "r"), { recursive: true });
+        writeFileSync(join(dir, "eidnara", "r", "eidnara.log"), "");
         expect(loadRun(dir, prereg).arms.map((a) => a.arm)).toEqual(order);
     });
 });
@@ -515,6 +517,8 @@ describe("oracle round four", () => {
         mkdirSync(join(dir, "eidnara"));
         writeFileSync(join(dir, "eidnara", "resources.jsonl"), line({ scenario_ms: 0, rss: 100 }));
         writeFileSync(join(dir, "eidnara", "daemon.log"), "");
+        mkdirSync(join(dir, "eidnara", "r"), { recursive: true });
+        writeFileSync(join(dir, "eidnara", "r", "eidnara.log"), "");
         const { output_tokens: _dropped, ...damaged } = call({ seq: 0 });
         writeFileSync(join(dir, "calls.jsonl"), line(damaged));
         expect(() => loadRun(dir, prereg)).toThrow("call 0: output_tokens missing");
@@ -580,6 +584,8 @@ describe("oracle round five", () => {
         writeFileSync(join(dir, "journal.jsonl"), journal.map(line).join(""));
         mkdirSync(join(dir, "eidnara"));
         writeFileSync(join(dir, "eidnara", "daemon.log"), "");
+        mkdirSync(join(dir, "eidnara", "r"), { recursive: true });
+        writeFileSync(join(dir, "eidnara", "r", "eidnara.log"), "");
         const good = line({ scenario_ms: 0, rss: 100 });
         writeFileSync(
             join(dir, "eidnara", "resources.jsonl"),
@@ -618,6 +624,8 @@ function completeDir(order: string[]): { dir: string; line: (o: unknown) => stri
             line({ scenario_ms: 0, rss: 100, pid: 1 }),
         );
         writeFileSync(join(dir, arm, "daemon.log"), "");
+        mkdirSync(join(dir, arm, "r"));
+        writeFileSync(join(dir, arm, "r", "eidnara.log"), "");
     }
     return { dir, line };
 }
@@ -1122,5 +1130,29 @@ describe("oracle round fourteen", () => {
         expect(oracle(hit, "F4").map((a) => a.evidence)).toEqual([
             "turn deadline with no model call",
         ]);
+    });
+});
+
+describe("oracle round fifteen", () => {
+    test("a tool run attributed to a turn starts inside that turn, and an Eidnara arm has its plugin log", () => {
+        const { dir, line } = completeDir(["eidnara"]);
+        const journal = [
+            { kind: "StartRun", arm: null, order: ["eidnara"], scenario_ms: 0 },
+            { kind: "BeginTurn", arm: "eidnara", event: "e-1", scenario_ms: 10_000 },
+            { kind: "EndTurn", arm: "eidnara", event: "e-1", outcome: "ok", scenario_ms: 20_000 },
+            { kind: "Event", arm: "eidnara", event: "e-1", outcome: "ok", scenario_ms: 20_000 },
+            { kind: "EndArm", arm: "eidnara", scenario_ms: 20_000 },
+            { kind: "EndRun", arm: null, scenario_ms: 20_000 },
+        ];
+        writeFileSync(join(dir, "journal.jsonl"), journal.map(line).join(""));
+        const tools = join(dir, "eidnara", "tools.jsonl");
+        writeFileSync(tools, line({ turn: "e-1", command: "ls", exit: 0, scenario_ms: 25_000 }));
+        expect(() => loadRun(dir, prereg)).toThrow(
+            /tools\.jsonl: line 1: starts at 25000, outside turn e-1/,
+        );
+        writeFileSync(tools, line({ turn: "e-1", command: "ls", exit: 0, scenario_ms: 9_500 }));
+        expect(loadRun(dir, prereg).arms[0]?.tools).toHaveLength(1);
+        rmSync(join(dir, "eidnara", "r", "eidnara.log"));
+        expect(() => loadRun(dir, prereg)).toThrow("arm eidnara has no r/eidnara.log");
     });
 });

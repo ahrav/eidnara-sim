@@ -599,14 +599,22 @@ export class PiSimHost extends SimHost {
     private drainWaitMs = 30_000;
 
     /**
-     * Runs one turn. A turn that fails or times out is aborted; a Pi that then reports no
-     * `agent_end` within the drain wait is still running the old turn, so its process is
+     * Runs one turn. A turn that fails or times out is aborted; an `agent_end` that already
+     * arrived settles the drain, otherwise a fresh waiter runs for the drain wait. A Pi that
+     * reports no `agent_end` in that time is still running the old turn, so its process is
      * killed and the session's later prompts fail at once. A tool event from that turn can
      * then never land on a later turn's record.
      */
     async prompt(text: string, timeoutMs: number): Promise<PromptResult> {
         if (!this.rpc) return { error: "Pi process killed after an undrained abort" };
         const end = this.agentEnd(timeoutMs);
+        let ended = false;
+        end.then(
+            () => {
+                ended = true;
+            },
+            () => undefined,
+        );
         try {
             const response = await this.rpc.sendCommand("prompt", { message: text }, { timeoutMs });
             if (response.success === false) {
@@ -619,7 +627,7 @@ export class PiSimHost extends SimHost {
                 ? { error: String(last.errorMessage ?? "error") }
                 : {};
         } catch (caught) {
-            const drained = Promise.race([end, this.agentEnd(this.drainWaitMs)]);
+            const drained = ended ? Promise.resolve() : this.agentEnd(this.drainWaitMs);
             await this.rpc.sendCommand("abort", {}, { timeoutMs: 60_000 }).catch(() => undefined);
             const settled = await drained.then(
                 () => true,
