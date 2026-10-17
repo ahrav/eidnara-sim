@@ -87,6 +87,9 @@ class FakeHost {
     hostPid() {
         return this.pid;
     }
+    hostIdentity() {
+        return this.pid === null ? null : { pid: this.pid, start: processStart(this.pid) };
+    }
 }
 
 function fixture(
@@ -450,7 +453,7 @@ touch ${escaped}
         "a daemon restart refuses a runtime directory the host replaced with a symlink",
         async () => {
             const daemonFactory = () =>
-                ({ ...fakeDaemon(null), start: async () => undefined }) as unknown as DaemonStack;
+                ({ ...fakeDaemon(10), start: async () => undefined }) as unknown as DaemonStack;
             const { driver, root } = fixture("eidnara", {}, { daemonFactory });
             try {
                 await driver.reset();
@@ -734,7 +737,7 @@ touch ${escaped}
         "a link the host left at the arm root's runtime name does not block a restart",
         async () => {
             const daemonFactory = () =>
-                ({ ...fakeDaemon(null), start: async () => undefined }) as unknown as DaemonStack;
+                ({ ...fakeDaemon(10), start: async () => undefined }) as unknown as DaemonStack;
             const { driver, root } = fixture("eidnara", {}, { daemonFactory });
             try {
                 await driver.reset();
@@ -847,7 +850,7 @@ touch ${escaped}
     });
 
     test.skipIf(!sandbox)("a hook that moves .git out of the workspace stops the run", async () => {
-        const { driver } = fixture("host", { p: gitRepo() });
+        const { driver, armDir } = fixture("host", { p: gitRepo() });
         try {
             await driver.reset();
             const ws = driver.workspace("p");
@@ -859,10 +862,62 @@ touch ${escaped}
             await expect(
                 driver.event(ev("apply_diff", { path: "a.txt", content: "A" })),
             ).rejects.toThrow("workspace's own directory");
+            const state = JSON.parse(readFileSync(join(armDir, "state.json"), "utf8"));
+            expect(state.git).toMatchObject({ project: "p" });
         } finally {
             await driver.stop().catch(() => undefined);
         }
     });
+
+    test("a daemon gone when the session cannot open is reported before the failure surfaces", async () => {
+        const { driver, exits, transcripts } = fixture("eidnara");
+        const gone = spawnSync("true").pid as number;
+        const host = new FakeHost({} as HostContext, transcripts);
+        host.onSpawn = () => {
+            throw new Error("readiness failed");
+        };
+        driver.host = host as unknown as SimHost;
+        driver.daemon = fakeDaemon(gone) as unknown as DaemonStack;
+        await expect(driver.event(ev("session_start", { id: "e-3" }))).rejects.toThrow(
+            "readiness failed",
+        );
+        expect(exits).toEqual([{ after: "e-3" }]);
+    });
+
+    test("a daemon gone when the host's prompt rejects is reported before the rejection surfaces", async () => {
+        const { driver, exits, transcripts } = fixture("eidnara");
+        const gone = spawnSync("true").pid as number;
+        const host = new FakeHost({} as HostContext, transcripts);
+        host.onPrompt = () => {
+            throw new Error("connection lost");
+        };
+        driver.host = host as unknown as SimHost;
+        driver.daemon = fakeDaemon(gone) as unknown as DaemonStack;
+        await expect(driver.event(ev("user_turn", { id: "e-7", text: "hi" }))).rejects.toThrow(
+            "connection lost",
+        );
+        expect(exits).toEqual([{ after: "e-7" }]);
+    });
+
+    test.skipIf(!sandbox)(
+        "a timeout planted in the workspace is never the one that runs git",
+        async () => {
+            const { driver } = fixture("host", { p: gitRepo() });
+            const path = process.env.PATH;
+            try {
+                await driver.reset();
+                const ws = driver.workspace("p");
+                writeFileSync(join(ws, "timeout"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+                process.env.PATH = `.:${path}`;
+                await driver.event(ev("apply_diff", { path: "a.txt", content: "A" }));
+                const log = spawnSync("git", ["-C", ws, "log", "--oneline"], { encoding: "utf8" });
+                expect(log.stdout.trim().split("\n")).toHaveLength(2);
+            } finally {
+                process.env.PATH = path;
+                await driver.stop().catch(() => undefined);
+            }
+        },
+    );
 
     test("a daemon whose process has exited is reported with the event id", async () => {
         const { driver, exits, transcripts } = fixture("eidnara");
@@ -1272,6 +1327,14 @@ describe("HostDriver faults", () => {
             pid_after: 11,
             restarted_by: "harness",
         });
+    });
+
+    test("a daemon fault on a daemon already gone stops the run instead of restarting it", async () => {
+        const { driver } = fixture("eidnara");
+        const gone = spawnSync("true").pid as number;
+        driver.daemon = fakeDaemon(gone) as unknown as DaemonStack;
+        await expect(driver.fault(episode("daemon_restart"))).rejects.toThrow("already gone");
+        expect(driver.daemonPid()).toBe(gone);
     });
 
     test("a model switch moves later sessions to the next model and keeps the daemon", async () => {

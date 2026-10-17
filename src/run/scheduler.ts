@@ -131,24 +131,34 @@ export class Scheduler {
             const mine = entries.filter((e) => e.arm === arm);
             if (mine.some((e) => e.kind === "EndArm")) continue;
             this.arm = arm;
-            const start = mine.at(-1)?.scenario_ms ?? 0;
+            const started = mine.some((e) => e.kind === "StartArm");
+            // An arm that never started begins at scenario zero; the entries a failed attempt's
+            // cleanup left carry that cleanup's time, which is no time of the arm's own.
+            const start = started ? (mine.at(-1)?.scenario_ms ?? 0) : 0;
             const onClock = (ms: number) => this.o.onClock?.(arm, ms);
             this.clock = new Clock(start, this.o.journal, undefined, onClock);
             const driver = this.o.drivers[arm] as ArmDriver;
-            const started = mine.some((e) => e.kind === "StartArm");
             // A fresh arm's processes start under the published clock; on a resume, the killed
             // harness's processes read the shared clock too, so they are gone before the restored
             // time reaches it.
-            await this.orFinish(driver, async () => {
-                if (started) {
-                    await driver.reap?.();
-                    onClock(start);
-                } else {
-                    onClock(start);
-                    await driver.reset();
-                    this.log({ kind: "StartArm" });
-                }
-            });
+            // The arm's time begins at StartArm; a job the finish of a failed reset starts is
+            // journaled at the arm's start time, so a retry begins there too.
+            const clock = this.clock;
+            if (!started) clock.hold();
+            try {
+                await this.orFinish(driver, async () => {
+                    if (started) {
+                        await driver.reap?.();
+                        onClock(start);
+                    } else {
+                        onClock(start);
+                        await driver.reset();
+                        this.log({ kind: "StartArm" });
+                    }
+                });
+            } finally {
+                clock.release();
+            }
             this.resume(mine);
             this.o.onArmReady?.(arm);
             const done = new Set(
@@ -191,11 +201,15 @@ export class Scheduler {
             this.outage = null;
             await this.idle();
         });
-        await driver.finish?.();
-        // A job the shutdown itself started holds the clock too; it ends before the arm does.
-        await this.pendingKill;
-        this.outage = null;
-        await this.idle();
+        // A job the shutdown itself started holds the clock too; it ends before the arm does,
+        // and before a failed finish surfaces.
+        try {
+            await driver.finish?.();
+        } finally {
+            await this.pendingKill;
+            this.outage = null;
+            await this.idle();
+        }
     }
 
     /** A failure waits for a mid-fold restart in flight, finishes the driver, and surfaces as itself. */

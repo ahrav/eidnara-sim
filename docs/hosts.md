@@ -138,8 +138,10 @@ the `git add` and `git commit` run inside the arm's sandbox under the turn
 deadline, with the selected workspace and a harness-owned git home
 (`<arm>/git-home`) kept and the sibling workspaces, the host's home, and
 the daemon's store masked, with the hosts' read-only paths (toolchains, the interposer, the
-build clone, the Pi, Node, and OpenCode installs) read-only and a fresh
-environment, and only against a `.git` that is the workspace's own directory, so a hook,
+build clone, the Pi, Node, and OpenCode installs) read-only, a fresh
+environment, and the system path alone (`/usr/local/bin:/usr/bin:/bin`) for
+resolving `timeout` and `git`, since the sandbox enters the workspace before
+it resolves them, and only against a `.git` that is the workspace's own directory, so a hook,
 filter, or config the agent planted in the repository acts with the host's
 own view of the filesystem and sees none of the harness's variables, and a
 hook that hangs stops the run instead of the harness. The run's pid is in
@@ -246,7 +248,9 @@ pid and start time of the daemon and of the host while a session is open,
 replacing the file whole so a kill mid-write leaves the previous state. Pi's
 pid is recorded as soon as its process exists, before the readiness wait, and
 the launcher runs only once that record is written (the gating shell waits
-on a pipe the driver releases after the write);
+on a pipe the driver releases after the write; the record carries the start
+time captured at the launch, and a launch whose start the kernel did not
+report is killed unreleased and fails the session);
 OpenCode's once `spawnOpencode` returns, before the SDK setup; the OpenCode
 wrapper also writes its own pid and start time to `<arm>/opencode.launch`
 (staged and renamed whole; a record it cannot write ends the wrapper before
@@ -325,7 +329,9 @@ through the driver's `supports`, so a resume cannot heal it; provider faults
 belong to the proxy and the sleep to the clock, so `supports` accepts them.
 A daemon that exits outside an
 outage window stops the run with `HarnessFailure`; the driver checks the
-daemon after every turn and at every `session_end`.
+daemon after every turn, including a turn whose prompt rejected (the daemon's
+exit is the cause of a lost connection, so it is reported first), and at
+every `session_end`.
 
 ## Limits
 

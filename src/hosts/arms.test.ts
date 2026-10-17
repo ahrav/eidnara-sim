@@ -329,6 +329,25 @@ test("the OpenCode wrapper stops before the launcher when the harness that spawn
     expect(existsSync(join(dirname(ctx.root), "opencode.launch"))).toBe(true);
 });
 
+test("the OpenCode wrapper stops before the launcher when its own start time cannot be read", async () => {
+    const run = runDir();
+    const ctx = { ...context(run), host: "opencode" as const };
+    const host = new OpencodeSimHost(ctx);
+    const path = (host as Untyped).writeWrapper(["/bin/sh", "-c", "touch ran"]) as string;
+    const fakebin = join(run, "fakebin");
+    mkdirSync(fakebin);
+    writeFileSync(join(fakebin, "awk"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+    const r = Bun.spawnSync([path], {
+        cwd: run,
+        env: { ...process.env, PATH: `${fakebin}:${process.env.PATH}` },
+        stdout: "pipe",
+        stderr: "pipe",
+    });
+    expect(r.exitCode).toBe(70);
+    expect(existsSync(join(run, "ran"))).toBe(false);
+    expect(existsSync(join(dirname(ctx.root), "opencode.launch"))).toBe(false);
+});
+
 test("the OpenCode wrapper lives outside every path the sandbox keeps writable", async () => {
     const ctx = { ...context(runDir()), host: "opencode" as const };
     const host = new OpencodeSimHost(ctx);
@@ -337,7 +356,7 @@ test("the OpenCode wrapper lives outside every path the sandbox keeps writable",
     const record = join(dirname(ctx.root), "opencode.launch");
     const harness = `${process.pid} ${processStart(process.pid)}`;
     expect(await Bun.file(path).text()).toBe(
-        `#!/bin/sh\nr='${record}'\nprintf '%s %s\\n' "$$" "$(awk '{print $22}' /proc/$$/stat)" > "$r.$$" || exit 70\nmv -f "$r.$$" "$r" || exit 70\n[ "${process.pid} $(awk '{print $22}' /proc/${process.pid}/stat 2>/dev/null)" = '${harness}' ] || exit 70\nexec '/x/sandbox.sh' '--' '/x/opencode' "$@"\n`,
+        `#!/bin/sh\nr='${record}'\ns=$(awk '{print $22}' /proc/$$/stat) && [ -n "$s" ] || exit 70\nprintf '%s %s\\n' "$$" "$s" > "$r.$$" || exit 70\nmv -f "$r.$$" "$r" || exit 70\n[ "${process.pid} $(awk '{print $22}' /proc/${process.pid}/stat 2>/dev/null)" = '${harness}' ] || exit 70\nexec '/x/sandbox.sh' '--' '/x/opencode' "$@"\n`,
     );
 });
 
@@ -354,6 +373,26 @@ test("a Pi session whose readiness check fails stops the launcher tree it spawne
     const child = (globalThis as Untyped).__simPiChild;
     try {
         expect(outcome).toContain("get_state failed");
+        expect(await gone(child.pid)).toBe(true);
+    } finally {
+        child.kill("SIGKILL");
+        await host.closeSession().catch(() => undefined);
+    }
+});
+
+test("a Pi launch whose start identity cannot be read is killed before the gate opens", async () => {
+    const run = runDir();
+    const checkout = fakeV1(run);
+    const ctx = context(run);
+    const config = { ...ctx.config, eidnara_checkout: checkout, pi_install: checkout };
+    const host = new PiSimHost({ ...ctx, config, procStart: () => null });
+    const outcome = await host.openSession(join(run, "arm"), "s1", null).then(
+        () => "opened",
+        (e: unknown) => String(e),
+    );
+    const child = (globalThis as Untyped).__simPiChild;
+    try {
+        expect(outcome).toContain("start identity");
         expect(await gone(child.pid)).toBe(true);
     } finally {
         child.kill("SIGKILL");
@@ -1240,6 +1279,26 @@ test("a restart records the old daemon's output after it is killed and before th
     await stack.restart();
     expect(calls).toEqual(["crash", "start"]);
     expect(readFileSync(join(run, "daemon.log"), "utf8")).toBe("before kill\nlast bytes\n");
+});
+
+test("a restart whose new start fails still records the output that start captured", async () => {
+    const run = runDir();
+    const stack = daemonStack(run);
+    const old = fakeChild();
+    const inner = {
+        child: old,
+        stdout: "",
+        stderr: "",
+        crashHost: async () => undefined,
+        startHost: async () => {
+            inner.stderr = "boot failed: port in use\n";
+            throw new Error("daemon did not become ready");
+        },
+    };
+    (stack as Untyped).stack = inner;
+    (stack as Untyped).attach();
+    await expect(stack.restart()).rejects.toThrow("did not become ready");
+    expect(readFileSync(join(run, "daemon.log"), "utf8")).toContain("boot failed: port in use");
 });
 
 test("a Pi turn ending just before its deadline still waits the full quiet window", async () => {

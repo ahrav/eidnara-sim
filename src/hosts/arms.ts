@@ -94,6 +94,8 @@ export interface HostContext {
     contextLimit: number;
     /** Runs once the host process exists, before its readiness wait. */
     onSpawn?: () => void;
+    /** Reads a process's start identity; the default reads `/proc`. */
+    procStart?: (pid: number) => string | null;
 }
 
 export interface PromptResult {
@@ -241,8 +243,12 @@ export class DaemonStack {
     /** The old generation's last bytes stream while it is crashed; the new one is attached once started. */
     async restart(): Promise<void> {
         await this.stack.crashHost();
-        await this.stack.startHost();
-        this.attach();
+        // A start that fails still captured the new generation's output; it reaches the log too.
+        try {
+            await this.stack.startHost();
+        } finally {
+            this.attach();
+        }
     }
 
     async stop(): Promise<void> {
@@ -368,6 +374,12 @@ export abstract class SimHost {
     abstract closeSession(): Promise<void>;
     abstract transcriptEnv(): Record<string, string>;
     abstract hostPid(): number | null;
+
+    /** The launch identity the state records: the pid and the start captured when it was launched. */
+    hostIdentity(): { pid: number; start: string | null } | null {
+        const pid = this.hostPid();
+        return pid === null ? null : { pid, start: (this.ctx.procStart ?? processStart)(pid) };
+    }
 }
 
 export class PiSimHost extends SimHost {
@@ -456,7 +468,8 @@ export class PiSimHost extends SimHost {
             env,
             stdio: ["pipe", "pipe", "pipe", "pipe"],
         });
-        this.launchStart = child.pid === undefined ? null : processStart(child.pid);
+        const read = this.ctx.procStart ?? processStart;
+        this.launchStart = child.pid === undefined ? null : read(child.pid);
         const spawnError = new Promise<never>((_, reject) => child.once("error", reject));
         spawnError.catch(() => undefined);
         this.rpc = new rpcClient.PiRpcProcess(child, new rpcClient.PiRpcProtocol(), {
@@ -464,6 +477,11 @@ export class PiSimHost extends SimHost {
         });
         const gate = child.stdio[3] as import("node:stream").Writable | null;
         try {
+            // The record names the launch by pid and start; a start the kernel did not report
+            // leaves nothing the next reap could match, so the gated shell ends unreleased.
+            if (this.launchStart === null) {
+                throw new Error(`Pi launch ${child.pid} has no start identity`);
+            }
             this.ctx.onSpawn?.();
         } catch (caught) {
             gate?.destroy();
@@ -486,6 +504,11 @@ export class PiSimHost extends SimHost {
 
     hostPid(): number | null {
         return this.rpc?.child?.pid ?? null;
+    }
+
+    override hostIdentity(): { pid: number; start: string | null } | null {
+        const pid = this.hostPid();
+        return pid === null ? null : { pid, start: this.launchStart };
     }
 
     // Pi emits `agent_end` with `willRetry: true` before it retries a failed request itself,
@@ -722,7 +745,8 @@ export class OpencodeSimHost extends SimHost {
         const script = [
             "#!/bin/sh",
             `r=${record}`,
-            `printf '%s %s\\n' "$$" "$(awk '{print $22}' /proc/$$/stat)" > "$r.$$" || exit 70`,
+            `s=$(awk '{print $22}' /proc/$$/stat) && [ -n "$s" ] || exit 70`,
+            `printf '%s %s\\n' "$$" "$s" > "$r.$$" || exit 70`,
             `mv -f "$r.$$" "$r" || exit 70`,
             `[ "${harness.pid} $(awk '{print $22}' /proc/${harness.pid}/stat 2>/dev/null)" = ${shellQuote(`${harness.pid} ${harness.start ?? ""}`)} ] || exit 70`,
             `exec ${argv.map(shellQuote).join(" ")} "$@"`,
