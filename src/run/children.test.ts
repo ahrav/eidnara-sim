@@ -1,8 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Children, SIGTERM_EXIT } from "./children";
+import { running } from "./procs";
 
 const log = () => join(mkdtempSync(join(tmpdir(), "sim-children-")), "log");
 const IDLE = ["-e", "setInterval(() => {}, 1000)"];
@@ -38,4 +39,31 @@ test("a hangup stops children with SIGTERM, the signal every run tears down on",
     await Bun.sleep(300);
     await children.stopAll("SIGHUP");
     expect(await handled).toBe(SIGTERM_EXIT);
+});
+
+test("a stalled teardown's SIGKILL reaches the child's descendants", async () => {
+    const children = new Children(process.env, 300);
+    const path = log();
+    const code = await children.run(
+        [
+            "-e",
+            "const p = Bun.spawn(['sleep', '60']); console.log(p.pid); process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)",
+        ],
+        path,
+        300,
+    );
+    expect(code).toBe(137);
+    const grandchild = Number(readFileSync(path, "utf8").trim());
+    await Bun.sleep(100);
+    expect(running(grandchild)).toBe(false);
+});
+
+test("stopAll settles when a child's spawn failed", async () => {
+    const children = new Children({ PATH: "/nonexistent" }, 300);
+    const failed = children.run(["-e", "1"], log());
+    const stopped = children.stopAll("SIGTERM");
+    expect(
+        await Promise.race([stopped.then(() => "settled"), Bun.sleep(2_000).then(() => "hung")]),
+    ).toBe("settled");
+    expect(await failed).toBe(127);
 });

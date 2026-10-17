@@ -5,9 +5,18 @@ import { TIERS, type Tier } from "../src/prereg/schema";
 import { tierInput } from "../src/report/observe";
 import { aaScale, loadGraded } from "../src/report/tier";
 import { Children, SIGTERM_EXIT } from "../src/run/children";
+import { releaseLease, takeLease } from "../src/run/journal";
 import { gradedMainRuns, resizeFromM } from "../src/run/resize";
 import { loadScenario } from "../src/run/run";
-import { compressFaults, profileJobs, type TierJob, tierPlan } from "../src/run/tier";
+import {
+    compressFaults,
+    planConflicts,
+    profileJobs,
+    runSpan,
+    type TierJob,
+    tierPlan,
+} from "../src/run/tier";
+import { buildFaketime } from "../src/run/timeinject";
 import type { Scenario } from "../src/scenario/compile";
 import { loadPrereg } from "../src/scenario/inputs";
 
@@ -57,6 +66,21 @@ if (!Number.isInteger(turnMs) || turnMs <= 0) fail("--turn-ms must be a positive
 if (new Set(hosts).size !== hosts.length || !hosts.every((h) => prereg.hosts.includes(h)))
     fail(`--hosts must name distinct hosts from ${prereg.hosts.join(",")}`);
 mkdirSync(out, { recursive: true });
+// One invocation per output directory: a second would resume runs the first still drives and
+// grade their directories while they change.
+try {
+    takeLease(out);
+} catch (caught) {
+    fail(String((caught as Error).message));
+}
+const exit = (code: number): never => {
+    releaseLease(out);
+    process.exit(code);
+};
+const refuse = (why: string): never => {
+    console.error(`${why}\n${USAGE}`);
+    return exit(2);
+};
 
 const resizing = join(out, `${tier}-resizing.json`);
 const from = arg("resize-from");
@@ -64,11 +88,17 @@ if (prereg.resizing && from && !existsSync(resizing)) {
     const m = loadPrereg(prereg.resizing.source_tier);
     for (const name of ["tier-plan.json", "tier-result.json"]) {
         if (!existsSync(join(resolve(from), name)))
-            fail(`${from} holds no ${name}; the ${m.tier} tier has not finished`);
+            refuse(`${from} holds no ${name}; the ${m.tier} tier has not finished`);
     }
-    const { main, ungraded } = gradedMainRuns(resolve(from), m);
+    const { main, ungraded } = (() => {
+        try {
+            return gradedMainRuns(resolve(from), m);
+        } catch (caught) {
+            return refuse(String((caught as Error).message));
+        }
+    })();
     if (main.length === 0 || ungraded.length > 0)
-        fail(`the ${m.tier} paired runs are not all graded: ${ungraded.join(", ") || "none"}`);
+        refuse(`the ${m.tier} paired runs are not all graded: ${ungraded.join(", ") || "none"}`);
     const runs = main.map((d) => loadGraded(d, m));
     const sized = {
         recorded_at: new Date().toISOString(),
@@ -79,7 +109,7 @@ if (prereg.resizing && from && !existsSync(resizing)) {
     writeFileSync(resizing, `${JSON.stringify(sized, null, 2)}\n`);
 }
 if (prereg.resizing && !existsSync(resizing))
-    fail(`${tier} starts only after ${resizing} records the resizing; pass --resize-from`);
+    refuse(`${tier} starts only after ${resizing} records the resizing; pass --resize-from`);
 const items = prereg.resizing
     ? (JSON.parse(readFileSync(resizing, "utf8")) as { paired_items_per_probe_type: number })
           .paired_items_per_probe_type
@@ -95,6 +125,13 @@ const plan: TierJob[] = [
     ...tierPlan(prereg, scenarios, hosts, out, turnMs),
     ...profileJobs(prereg, scenarios, hosts, out, turnMs),
 ];
+const conflicts = planConflicts(plan);
+if (conflicts.length > 0) {
+    console.error(
+        `${conflicts.join("\n")}\n--turn-ms must keep the prefix of a run that has a manifest`,
+    );
+    exit(2);
+}
 writeFileSync(
     priorPlan,
     `${JSON.stringify({ tier, turn_ms: turnMs, items_per_type: items ?? null, plan }, null, 2)}\n`,
@@ -103,8 +140,11 @@ console.log(
     JSON.stringify(plan.map((j) => [j.group, j.dir, j.events, j.user_turns, j.arms.join(",")])),
 );
 const empty = plan.filter((j) => j.events === 0).map((j) => j.dir);
-if (empty.length > 0) fail(`no session fits the wall budget for ${empty.join(", ")}`);
-if (flags.has("plan-only")) process.exit(0);
+if (empty.length > 0) {
+    console.error(`no session fits the wall budget for ${empty.join(", ")}\n${USAGE}`);
+    exit(2);
+}
+if (flags.has("plan-only")) exit(0);
 
 const bin = resolve(dirname(config.opencode_binary), "../../.bin");
 const env = { ...process.env, PATH: `${bin}:${process.env.PATH}` };
@@ -114,19 +154,33 @@ const run = (args: string[], log: string, limitMs?: number) =>
 for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
     process.on(signal, async () => {
         await children.stopAll(signal);
-        process.exit(signal === "SIGINT" ? 130 : SIGTERM_EXIT);
+        exit(signal === "SIGINT" ? 130 : SIGTERM_EXIT);
     });
 }
 
-const limit = Math.round(prereg.liveness_bounds.tier_wall_budget_ms * 1.25);
+// Every run's preflight wants the vendored libfaketime; one build here keeps the parallel runs
+// from each extracting and compiling into the same directory.
+await buildFaketime();
+const budget = prereg.liveness_bounds.tier_wall_budget_ms;
+const limit = Math.round(budget * 1.25);
 const started = Date.now();
-const firstEntryMs = (dir: string) => {
-    const path = join(dir, "journal.jsonl");
-    if (!existsSync(path)) return null;
-    return Number(JSON.parse(readFileSync(path, "utf8").split("\n")[0] || "{}").wall_ms ?? NaN);
+// A job that throws in orchestration stops the sibling runs before the command exits, so no
+// run outlives the lease on this directory.
+const supervised = async <T>(work: () => Promise<T>): Promise<T> => {
+    try {
+        return await work();
+    } catch (caught) {
+        console.error(caught);
+        await children.stopAll("SIGTERM");
+        return exit(1);
+    }
 };
 const runJob = async (job: TierJob) => {
     mkdirSync(job.dir, { recursive: true });
+    // A resumed run keeps the budget it started with: its wall time counts from its
+    // journaled StartRun, and the child gets what remains of the limit. A run that
+    // journaled EndRun is complete and is left as it finished.
+    const span = runSpan(job.dir, started);
     const scenario = scenarios.get(job.seed) as Scenario;
     if (!existsSync(join(job.dir, "scenario.json")))
         writeFileSync(join(job.dir, "scenario.json"), `${JSON.stringify(scenario)}\n`);
@@ -134,34 +188,49 @@ const runJob = async (job: TierJob) => {
     const faults = compressFaults(scenario, job.events);
     const moved = JSON.stringify(faults) !== JSON.stringify(scenario.faults);
     if (moved) writeFileSync(join(job.dir, "faults.json"), `${JSON.stringify(faults)}\n`);
-    const code = await run(
-        [
-            "run-tier.ts",
-            ...["--tier", tier, "--seed", String(job.seed), "--out", job.dir, "--host", job.host],
-            ...["--arms", job.arms.join(","), "--events", String(job.events), ...job.extra],
-            ...(moved ? ["--faults", join(job.dir, "faults.json")] : []),
-        ],
+    const code =
+        span.ended !== undefined
+            ? 0
+            : await run(
+                  [
+                      "run-tier.ts",
+                      ...["--tier", tier, "--seed", String(job.seed), "--out", job.dir],
+                      ...["--host", job.host, "--arms", job.arms.join(",")],
+                      ...["--events", String(job.events), ...job.extra],
+                      ...(moved ? ["--faults", join(job.dir, "faults.json")] : []),
+                  ],
+                  log,
+                  Math.max(1, limit - (started - span.started)),
+              );
+    const run_wall_ms = (span.ended ?? Date.now()) - span.started;
+    const start_ms = existsSync(join(job.dir, "journal.jsonl")) ? span.started : null;
+    return {
+        ...job,
         log,
-        limit,
-    );
-    return { ...job, log, start_ms: firstEntryMs(job.dir), run_exit: code };
+        start_ms,
+        run_exit: code,
+        run_wall_ms,
+        over_budget: run_wall_ms > budget,
+    };
 };
 const gradeJob = async (ran: Awaited<ReturnType<typeof runJob>>) => {
     const { log, ...job } = ran;
     const graded = existsSync(join(job.dir, "manifest.json"))
-        ? await run(["grade-run.ts", job.dir], log)
+        ? await run(["grade-run.ts", job.dir], log, limit)
         : null;
     const aa =
         graded === 0 && job.arms.some((a) => a.includes("~"))
-            ? await run(["aa-report.ts", job.dir], log)
+            ? await run(["aa-report.ts", job.dir], log, limit)
             : null;
     return { ...job, grade_exit: graded, aa_exit: aa, wall_ms: Date.now() - started };
 };
 const groups = [...new Set(plan.map((j) => j.group))];
 const results: Awaited<ReturnType<typeof gradeJob>>[] = [];
 for (const group of groups) {
-    const ran = await Promise.all(plan.filter((j) => j.group === group).map(runJob));
-    results.push(...(await Promise.all(ran.map(gradeJob))));
+    const ran = await supervised(() =>
+        Promise.all(plan.filter((j) => j.group === group).map(runJob)),
+    );
+    results.push(...(await supervised(() => Promise.all(ran.map(gradeJob)))));
 }
 const skew = (group: string) => {
     const starts = results
@@ -170,10 +239,12 @@ const skew = (group: string) => {
     return starts.length ? Math.max(...starts) - Math.min(...starts) : null;
 };
 const reports: Record<string, number | null> = {};
+const reported: string[] = [];
 for (const group of groups) {
     const dirs = results
         .filter((r) => r.group === group && existsSync(join(r.dir, "manifest.json")))
         .map((r) => r.dir);
+    reported.push(...dirs);
     const target = group === "main" ? out : join(out, group);
     reports[group] = dirs.length
         ? await run(["report.ts", ...dirs, "--out", target], join(out, "report.log"))
@@ -186,11 +257,19 @@ writeFileSync(
 );
 console.log(
     JSON.stringify({
-        results: results.map((r) => [r.group, r.dir, r.run_exit, r.grade_exit, r.wall_ms]),
+        results: results.map((r) => [
+            r.group,
+            r.dir,
+            r.run_exit,
+            r.over_budget,
+            r.grade_exit,
+            r.wall_ms,
+        ]),
         reports,
+        unreported: plan.map((j) => j.dir).filter((d) => !reported.includes(d)),
     }),
 );
 const failed = results.some(
-    (r) => r.run_exit !== 0 || r.grade_exit !== 0 || (r.aa_exit ?? 0) !== 0,
+    (r) => r.run_exit !== 0 || r.over_budget || r.grade_exit !== 0 || (r.aa_exit ?? 0) !== 0,
 );
-process.exit(failed || Object.values(reports).some((r) => r !== 0) ? 1 : 0);
+exit(failed || Object.values(reports).some((r) => r !== 0) ? 1 : 0);

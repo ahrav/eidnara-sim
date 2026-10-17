@@ -132,29 +132,31 @@ const CHECKS: Record<string, Check> = {
         return outcome(n, [], "divergences");
     },
     "SIM-P10": (runs) => {
-        if (runs.some((c) => c.manifest.events < c.g.scenario.events.length))
+        const full = runs.filter((c) => c.manifest.events >= c.g.scenario.events.length);
+        if (full.length === 0)
             return {
                 status: "unreached",
                 detail: "a capped prefix cannot match whole-scenario rates",
             };
         let n = 0;
         const bad: string[] = [];
-        for (const c of runs) {
+        for (const c of full) {
             for (const a of c.g.run.arms) {
+                // UserSimRates is journaled before EndArm, so its presence marks a completed arm.
+                const journaled = a.journal.find((e) => e.kind === "UserSimRates");
+                if (!journaled) continue;
                 const turns = a.journal
                     .filter((e) => e.kind === "UserTurn" && e.delivered === true)
                     .map((e) => ({ session: String(e.session), label: e.label as Label }));
-                if (turns.length === 0) continue;
                 n++;
                 const { outside } = realisedRates(turns, c.g.run.prereg);
                 if (outside.length > 0) bad.push(`${a.arm}: ${outside}`);
-                const journaled = a.journal.find((e) => e.kind === "UserSimRates");
-                const summary = (journaled?.outside as string[] | undefined) ?? [];
+                const summary = (journaled.outside as string[] | undefined) ?? [];
                 if (summary.join() !== outside.join())
                     bad.push(`${a.arm}: journaled rates say ${summary.join() || "all in band"}`);
             }
         }
-        return outcome(n, bad, "arms with realised rates");
+        return outcome(n, bad, "completed arms with realised rates");
     },
     "SIM-P11": (runs) =>
         journalCheck(
@@ -202,20 +204,40 @@ const CHECKS: Record<string, Check> = {
             }
             for (const a of c.g.run.arms) {
                 const fired = a.journal.filter((e) => e.kind === "FaultFired");
-                for (const call of a.calls.filter((x) => typeof x.fault_ref === "string")) {
+                const injected = a.calls
+                    .filter((x) => typeof x.fault_ref === "string")
+                    .sort((x, y) => x.seq - y.seq);
+                const counted = new Map<string, number>();
+                for (const call of injected) {
                     n++;
+                    const id = call.fault_ref as string;
+                    const fault = c.g.scenario.faults.find((f) => f.id === id);
                     const before = fired.some(
-                        (e) => e.fault === call.fault_ref && e.wall_ms <= call.started_wall_ms,
+                        (e) => e.fault === id && e.wall_ms <= call.started_wall_ms,
                     );
-                    if (!known(call.fault_ref) || !before)
-                        bad.push(`call ${call.seq} names ${call.fault_ref}, not fired before it`);
+                    if (!fault || !before) {
+                        bad.push(`call ${call.seq} names ${id}, not fired before it`);
+                        continue;
+                    }
+                    // The window closes at the trigger session's end, and for a bounded fault
+                    // after its count of calls.
+                    const closed = windowClose(c, a.journal, fault.trigger.session);
+                    if (closed !== undefined && call.started_wall_ms > closed)
+                        bad.push(`call ${call.seq} names ${id} after its session ended`);
+                    const seen = (counted.get(id) ?? 0) + 1;
+                    counted.set(id, seen);
+                    const limit =
+                        fault.strategy === "persistent"
+                            ? Number.POSITIVE_INFINITY
+                            : (fault.params.count ?? fault.params.calls ?? 1);
+                    if (seen > limit) bad.push(`call ${call.seq} names ${id} beyond its count`);
                 }
             }
         }
         return outcome(
             n,
             bad,
-            "observed faults and injected calls, each fault scheduled and fired",
+            "observed faults and injected calls, each fault scheduled and inside its window",
         );
     },
     "SIM-P41": (runs) => {
@@ -227,6 +249,19 @@ const CHECKS: Record<string, Check> = {
                 const prior = seen.get(key);
                 seen.set(key, { n: (prior?.n ?? 0) + 1, snapshot: prior?.snapshot ?? e.snapshot });
             }
+            for (const a of c.g.run.arms) {
+                const ends = a.journal.filter((e) => e.kind === "EndTurn");
+                const probes = new Set(ends.filter((e) => e.probe).map((e) => String(e.probe)));
+                for (const probe of probes) {
+                    const first = ends.find((e) => e.probe === probe) as Entry;
+                    const snap = a.journal.find(
+                        (e) => e.kind === "SnapshotArtefacts" && e.item === probe,
+                    );
+                    if (!snap) bad.push(`${a.arm}/${probe} reached without a snapshot`);
+                    else if (ends.some((e) => e.seq > first.seq && e.seq < snap.seq))
+                        bad.push(`${a.arm}/${probe} snapshot after a later turn`);
+                }
+            }
             for (const r of c.g.grades) {
                 const s = seen.get(`${c.g.run.dir}/${r.arm}/${r.item}`);
                 if (!s) bad.push(`${r.arm}/${r.item} graded without a journaled snapshot`);
@@ -235,7 +270,11 @@ const CHECKS: Record<string, Check> = {
             }
         }
         bad.unshift(...[...seen].filter(([, s]) => s.n > 1).map(([k]) => `${k} set twice`));
-        return outcome(seen.size, bad, "item snapshots set once and cited by their grades");
+        return outcome(
+            seen.size,
+            bad,
+            "item snapshots, each set once at the probe's first turn and cited by its grades",
+        );
     },
     "SIM-P42": (runs) => {
         let n = 0;
@@ -261,7 +300,28 @@ const CHECKS: Record<string, Check> = {
             .join(", ");
         return outcome(n, bad, `grade records with increasing versions; the report uses ${named}`);
     },
+    "SIM-L03": (runs) => {
+        let n = 0;
+        const bad: string[] = [];
+        for (const c of runs) {
+            const start = c.entries.find((e) => e.kind === "StartRun");
+            const end = c.entries.find((e) => e.kind === "EndRun");
+            if (!start || !end) continue;
+            n++;
+            const span = end.wall_ms - start.wall_ms;
+            if (span > c.g.run.prereg.liveness_bounds.tier_wall_budget_ms)
+                bad.push(`${c.g.run.dir} took ${span} ms`);
+        }
+        return outcome(n, bad, "completed runs inside the tier's wall budget");
+    },
 };
+
+/** Wall time of the journaled `Event` that ended `session` in this arm, if it happened. */
+function windowClose(c: Ctx, journal: Entry[], session: string): number | undefined {
+    const end = c.g.scenario.events.find((e) => e.kind === "session_end" && e.session === session);
+    if (!end) return undefined;
+    return journal.find((e) => e.kind === "Event" && e.event === end.id)?.wall_ms;
+}
 
 type JournalReport = ReturnType<typeof checkJournal>;
 const jumps = (r: JournalReport) => r.next_event_jumps + r.sleep_jumps;

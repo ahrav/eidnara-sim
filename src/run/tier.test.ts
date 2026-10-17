@@ -1,12 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Scenario } from "../scenario/compile";
 import type { FaultEpisode } from "../scenario/faults";
 import { loadPrereg } from "../scenario/inputs";
-import { capEvents, compressFaults, tierPlan } from "./tier";
+import { capEvents, compressFaults, planConflicts, runSpan, type TierJob, tierPlan } from "./tier";
 
 const event = (kind: string, i: number) => ({
     id: `e-${i}`,
@@ -116,4 +116,45 @@ test("the tier command refuses an unknown flag before it plans anything", () => 
     expect(r.status).toBe(2);
     expect(r.stderr).toContain("--host");
     expect(existsSync(join(out, "tier-plan.json"))).toBe(false);
+});
+
+test("the tier command refuses an output directory another invocation holds", () => {
+    const out = mkdtempSync(join(tmpdir(), "sim-tier-"));
+    writeFileSync(
+        join(out, "lease.json"),
+        JSON.stringify({ pid: process.pid, host: hostname(), started_wall_ms: Date.now() }),
+    );
+    const r = spawnSync("bun", ["scripts/tier.ts", "--tier", "S", "--out", out, "--plan-only"], {
+        encoding: "utf8",
+    });
+    expect(r.status).toBe(2);
+    expect(r.stderr).toContain("leased");
+    expect(existsSync(join(out, "tier-plan.json"))).toBe(false);
+});
+
+describe("tier resume", () => {
+    test("a run's span is its journaled StartRun and EndRun, so a resumed run keeps its wall budget and a completed one is left alone", () => {
+        const dir = mkdtempSync(join(tmpdir(), "sim-tier-"));
+        expect(runSpan(dir, 5_000)).toEqual({ started: 5_000 });
+        const entry = (kind: string, wall_ms: number) =>
+            JSON.stringify({ kind, arm: null, seq: 0, scenario_ms: 0, wall_ms });
+        writeFileSync(join(dir, "journal.jsonl"), `${entry("StartRun", 1_000)}\n`);
+        expect(runSpan(dir, 5_000)).toEqual({ started: 1_000 });
+        writeFileSync(
+            join(dir, "journal.jsonl"),
+            `${entry("StartRun", 1_000)}\n${entry("EndRun", 4_000)}\n`,
+        );
+        expect(runSpan(dir, 5_000)).toEqual({ started: 1_000, ended: 4_000 });
+    });
+
+    test("a plan whose prefix differs from an existing manifest's is a conflict", () => {
+        const out = mkdtempSync(join(tmpdir(), "sim-tier-"));
+        const job = { dir: join(out, "S-101-pi"), events: 7 } as TierJob;
+        expect(planConflicts([job])).toEqual([]);
+        mkdirSync(job.dir);
+        writeFileSync(join(job.dir, "manifest.json"), JSON.stringify({ events: 7 }));
+        expect(planConflicts([job])).toEqual([]);
+        writeFileSync(join(job.dir, "manifest.json"), JSON.stringify({ events: 5 }));
+        expect(planConflicts([job])).toEqual([`${job.dir} ran 5 events, the plan says 7`]);
+    });
 });

@@ -5,16 +5,17 @@ import { armBase } from "../hosts/arms";
 import { loadRun } from "../oracle/logs";
 import { oracleReport } from "../oracle/oracles";
 import { recoveries } from "../oracle/recovery";
+import { canonicalJson, sha256Hex } from "../prereg/canonical";
 import type { Preregistration } from "../prereg/schema";
 import { preregistrationHash } from "../prereg/validate";
 import type { Scenario } from "../scenario/compile";
 import { evaluateTier, falsificationSet, type TierInput } from "../stats/gate";
 import { clopperPearson } from "../stats/tests";
 import { continuity, runConditions } from "./conditions";
-import { costPanel } from "./cost";
+import { costPanel, judgeCost } from "./cost";
 import { falsificationPairs } from "./falsify";
 import { intrusiveness } from "./intrusive";
-import { asymmetric, type GradedRun, runKey, tierInput, userTexts } from "./observe";
+import { asymmetric, type GradedRun, runKey, tierInput } from "./observe";
 import type { TierReport } from "./render";
 import { soak } from "./soak";
 import { propertyWitness } from "./witness";
@@ -25,6 +26,7 @@ export function loadGraded(dir: string, prereg: Preregistration): GradedRun {
         host: string;
         prereg_sha256: string;
         fault_override: Scenario["faults"] | null;
+        scenario_hash: string;
     };
     const current = preregistrationHash(prereg);
     if (manifest.prereg_sha256 !== current) {
@@ -32,8 +34,15 @@ export function loadGraded(dir: string, prereg: Preregistration): GradedRun {
             `${dir}: ran under pre-registration ${manifest.prereg_sha256}; the report uses ${current}`,
         );
     }
-    const grades = join(dir, "grades.jsonl");
     const scenario = read("scenario.json") as Scenario;
+    const { scenario_hash: _, ...body } = scenario;
+    const actual = sha256Hex(canonicalJson(body));
+    if (actual !== manifest.scenario_hash) {
+        throw new Error(
+            `${dir}: scenario.json hashes to ${actual}; the manifest ran scenario ${manifest.scenario_hash}`,
+        );
+    }
+    const grades = join(dir, "grades.jsonl");
     return {
         run: loadRun(dir, prereg),
         scenario: { ...scenario, faults: manifest.fault_override ?? scenario.faults },
@@ -51,25 +60,25 @@ const sd = (xs: number[]) => {
 
 export type CusumScale = NonNullable<TierInput["cusum_sd"]>;
 
-const controlArm = (runs: GradedRun[]) =>
-    runs.flatMap((g) => g.run.arms.map((a) => a.arm)).find((a) => a.includes("~"));
+const controlArms = (runs: GradedRun[]) => [
+    ...new Set(runs.flatMap((g) => g.run.arms.map((a) => a.arm)).filter((a) => a.includes("~"))),
+];
 
-/**
- * The CUSUM rules' scale from the runs' A/A control (`<arm>~<tag>`): the standard deviation of
- * its paired item differences, over the per-item maximum across the harm metrics and over the
- * P1 items.
- */
 export function aaScale(prereg: Preregistration, runs: GradedRun[]): CusumScale | undefined {
-    const control = controlArm(runs);
-    if (!control) return undefined;
-    const aa = tierInput(prereg, runs, control, armBase(control));
+    const controls = controlArms(runs).sort();
+    if (controls.length === 0) return undefined;
     const diffs = (family: string) => {
         const metrics = prereg.families.find((f) => f.id === family)?.metrics ?? [];
         const best = new Map<string, number>();
-        for (const o of aa.observations.filter((x) => metrics.includes(x.metric))) {
-            for (const x of o.items ?? []) {
-                const d = x.treatment - x.control;
-                best.set(x.item, Math.max(best.get(x.item) ?? Number.NEGATIVE_INFINITY, d));
+        for (const control of controls) {
+            const aa = tierInput(prereg, runs, control, armBase(control));
+            const asym = new Set(aa.asymmetric);
+            for (const o of aa.observations.filter((x) => metrics.includes(x.metric))) {
+                for (const x of (o.items ?? []).filter((x) => !asym.has(x.item))) {
+                    const key = `${control}/${x.item}`;
+                    const d = x.treatment - x.control;
+                    best.set(key, Math.max(best.get(key) ?? Number.NEGATIVE_INFINITY, d));
+                }
             }
         }
         return [...best.values()];
@@ -90,6 +99,11 @@ export function cusumScale(
     return scale;
 }
 
+function falsificationPairsOf(prereg: Preregistration, g: GradedRun): [string, string][] {
+    const controls = controlArms([g]).sort();
+    return controls.length ? controls.map((c) => [armBase(c), c]) : [["host", prereg.arms.default]];
+}
+
 export function tierReport(
     prereg: Preregistration,
     runs: GradedRun[],
@@ -98,16 +112,16 @@ export function tierReport(
     catalog = "",
 ): TierReport {
     const arms = [...new Set(runs.flatMap((g) => g.run.arms.map((a) => a.arm)))];
-    const control = controlArm(runs);
-    const pair: [string, string] = control
-        ? [armBase(control), control]
-        : ["host", prereg.arms.default];
     const input = tierInput(prereg, runs);
     input.cusum_sd = scale;
     const falsify: Record<string, { control: number; treatment: number }[]> = {};
+    const pairs = new Map<string, [string, string]>();
     for (const g of runs) {
-        for (const [k, v] of Object.entries(falsificationPairs(g, ...pair)))
-            falsify[k] = [...(falsify[k] ?? []), ...v];
+        for (const pair of falsificationPairsOf(prereg, g)) {
+            pairs.set(pair.join("/"), pair);
+            for (const [k, v] of Object.entries(falsificationPairs(g, ...pair)))
+                falsify[k] = [...(falsify[k] ?? []), ...v];
+        }
     }
     const perArm = runs.flatMap((g) => g.run.arms.map((arm) => ({ g, arm })));
     const dropped = new Set([...input.excluded.map((e) => e.id), ...input.asymmetric]);
@@ -123,7 +137,7 @@ export function tierReport(
     return {
         tier: prereg.tier,
         treatment: prereg.arms.default,
-        falsification_pair: pair,
+        falsification_pairs: [...pairs.values()],
         observed,
         runs: runs.map((g) => g.run.dir),
         arms,
@@ -137,10 +151,11 @@ export function tierReport(
                 (["rss", "heap", "store_bytes"] as const).map((r) => soak(g.run, arm, r)),
             ),
         intrusiveness: perArm.map(({ g, arm }) => ({
-            ...intrusiveness(g.run, arm, userTexts(g)),
+            ...intrusiveness(g.run, arm),
             run: g.run.dir,
         })),
         cost: perArm.map(({ g, arm }) => costPanel(g.run, arm, g.grades)),
+        judge: runs.map((g) => ({ run: g.run.dir, cost: judgeCost(g.run) })),
         falsification: falsificationSet(prereg, falsify),
         aa: runs.flatMap((g) => {
             const path = join(g.run.dir, "aa.json");

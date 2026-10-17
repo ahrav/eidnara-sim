@@ -7,9 +7,14 @@ import { loadPrereg } from "../src/scenario/inputs";
 
 const args = process.argv.slice(2);
 const at = args.indexOf("--out");
-const out = at < 0 ? null : resolve(args[at + 1] ?? ".");
+const dest = at < 0 ? undefined : args[at + 1];
+const out = dest === undefined ? null : resolve(dest);
 const dirs = args.filter((_, i) => at < 0 || (i !== at && i !== at + 1)).map((d) => resolve(d));
-if (dirs.length === 0 || dirs.some((d) => !existsSync(join(d, "manifest.json")))) {
+if (
+    (at >= 0 && dest === undefined) ||
+    dirs.length === 0 ||
+    dirs.some((d) => !existsSync(join(d, "manifest.json")))
+) {
     console.error("usage: bun scripts/report.ts <run dir>... [--out <dir>]");
     process.exit(2);
 }

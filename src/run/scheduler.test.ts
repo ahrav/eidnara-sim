@@ -148,7 +148,9 @@ describe("Scheduler", () => {
         const driver: ArmDriver = {
             ...fakeDriver([]),
             event: async (e) =>
-                e.kind === "user_turn" ? { user: { label: "pushback", delivered: true } } : {},
+                e.kind === "user_turn"
+                    ? { prompt_ms: 1234, user: { label: "pushback", delivered: true } }
+                    : {},
         };
         await new Scheduler({
             events: fixtureEvents(2),
@@ -165,6 +167,7 @@ describe("Scheduler", () => {
         for (const u of users) {
             const end = j.entries.find((e) => e.kind === "EndTurn" && e.event === u.event);
             expect(end && end.seq < u.seq).toBe(true);
+            expect(end?.prompt_ms).toBe(1234);
             expect(u.label).toBe("pushback");
         }
         expect(kinds.slice(-3)).toEqual(["UserSimRates", "EndArm", "EndRun"]);
@@ -425,6 +428,21 @@ describe("resume", () => {
             (e, b) => e.some((x) => x.kind === "EndArm" && x.arm === "host") && inFlight(e, b),
         );
         expect(resumed.filter((e) => e.arm === "host")).toEqual([]);
+    }, 60_000);
+
+    test("a completed run started again appends nothing and exits clean", async () => {
+        const d = dir();
+        const spawn = () =>
+            Bun.spawn(["bun", "tests/run-fixture.ts", d, "300", "0"], {
+                cwd: ROOT,
+                stdout: "ignore",
+                stderr: "inherit",
+            });
+        expect(await spawn().exited).toBe(0);
+        const done = readJournal(join(d, "journal.jsonl"));
+        expect(done.at(-1)?.kind).toBe("EndRun");
+        expect(await spawn().exited).toBe(0);
+        expect(readJournal(join(d, "journal.jsonl"))).toEqual(done);
     }, 60_000);
 });
 

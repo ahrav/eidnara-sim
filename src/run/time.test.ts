@@ -210,6 +210,11 @@ describe("ResourceSampler", () => {
         expect(lines).toHaveLength(3);
         expect(lines[0]).toMatchObject({ scenario_ms: 42, pid: process.pid });
         expect(lines[0].rss).toBeGreaterThan(0);
+        sampler.start();
+        sampler.stop();
+        expect(readFileSync(path, "utf8").trim().split("\n")).toHaveLength(4);
+        sampler.stop();
+        expect(readFileSync(path, "utf8").trim().split("\n")).toHaveLength(4);
         expect(lines[0].store_bytes).toBeGreaterThan(0);
     });
 });

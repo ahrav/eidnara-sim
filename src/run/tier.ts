@@ -1,6 +1,9 @@
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { Preregistration } from "../prereg/schema";
 import type { Scenario } from "../scenario/compile";
 import type { FaultEpisode } from "../scenario/faults";
+import { readJournal } from "./journal";
 
 export interface TierJob {
     host: "pi" | "opencode";
@@ -178,5 +181,30 @@ export function compressFaults(scenario: Scenario, events: number): FaultEpisode
         if (!session) return f;
         const params = sleep ? { ...f.params, duration_ms: gap.get(session) ?? 0 } : f.params;
         return { ...f, trigger: { ...f.trigger, session }, params };
+    });
+}
+
+/**
+ * When the run began and, for a completed run, ended: its journaled `StartRun` and `EndRun`,
+ * with `now` standing in for a run with no journal yet.
+ */
+export function runSpan(dir: string, now: number): { started: number; ended?: number } {
+    const path = join(dir, "journal.jsonl");
+    if (!existsSync(path)) return { started: now };
+    const entries = readJournal(path);
+    const started = entries.find((e) => e.kind === "StartRun")?.wall_ms ?? now;
+    const ended = entries.find((e) => e.kind === "EndRun")?.wall_ms;
+    return ended === undefined ? { started } : { started, ended };
+}
+
+/** Jobs whose planned prefix differs from the events their existing manifest ran. */
+export function planConflicts(plan: TierJob[]): string[] {
+    return plan.flatMap((job) => {
+        const path = join(job.dir, "manifest.json");
+        if (!existsSync(path)) return [];
+        const ran = Number(JSON.parse(readFileSync(path, "utf8")).events);
+        return ran === job.events
+            ? []
+            : [`${job.dir} ran ${ran} events, the plan says ${job.events}`];
     });
 }

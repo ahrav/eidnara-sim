@@ -18,9 +18,14 @@ import { bedrockUpstream, Gateway } from "../proxy/gateway";
 import { FaultInjector } from "../proxy/inject";
 import { type CallRecord, type Component, RecordWriter } from "../proxy/records";
 import { Rng } from "../rng";
-import { compileScenario, type Scenario } from "../scenario/compile";
+import { compileScenario, GENERATOR_VERSION, type Scenario } from "../scenario/compile";
 import type { FaultEpisode } from "../scenario/faults";
-import { loadCompileInput, loadPrereg } from "../scenario/inputs";
+import {
+    compileInputsHash,
+    corpusManifestHash,
+    loadCompileInput,
+    loadPrereg,
+} from "../scenario/inputs";
 import { bedrockEmbedder } from "../scenario/similarity";
 import { behaviourPlan, type Label, realisedRates } from "../usersim/plan";
 import { normaliser, Pairing, proxyUserSim, Tape, UserSim } from "../usersim/usersim";
@@ -133,6 +138,23 @@ export async function loadScenario(
         throw new HarnessFailure(
             `scenario.json is ${tier} seed ${seed}, not ${o.tier} seed ${o.seed}`,
         );
+    }
+    // A run with a manifest keeps the scenario it ran; a new run takes only a scenario compiled
+    // from the current generator, corpus, and pre-registration.
+    if (!existsSync(join(o.out, "manifest.json"))) {
+        const current: Record<string, string> = {
+            generator_version: GENERATOR_VERSION,
+            corpus_manifest_sha256: corpusManifestHash(),
+            compile_inputs_sha256: compileInputsHash(),
+            prereg_sha256: preregistrationHash(loadPrereg(o.tier)),
+        };
+        const manifest = scenario.manifest as Record<string, unknown>;
+        const stale = Object.keys(current).filter((k) => manifest[k] !== current[k]);
+        if (stale.length > 0) {
+            throw new HarnessFailure(
+                `${path} was compiled from other inputs (${stale.join(", ")}); remove it to recompile`,
+            );
+        }
     }
     return scenario;
 }

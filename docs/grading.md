@@ -52,9 +52,14 @@ so a resumed arm reopens its session with the same start tree and commands.
 The harness captures no `test-result` or `workspace-state` artefact yet;
 the graders read neither.
 
-`scripts/grade-run.ts <run dir>` grades every snapshot the journal names
-into `grades.jsonl` and judges each P7 item for each memory arm against the
-host arm, through a gateway it starts for the judge. It prints the verdict
+`scripts/grade-run.ts <run dir> [--regrade]` grades every snapshot the
+journal names into `grades.jsonl` and judges each P7 item for each memory
+arm against the host arm, through a gateway it starts for the judge. An
+item whose latest grade already cites its snapshot is skipped as `already
+graded`, so grading a run again is free of judge calls and leaves earlier
+judgments as they stand; `--regrade` grades every item anew as a further
+version. The printed summary covers the run's latest grades, and
+`graded` counts the ones this invocation added. It prints the verdict
 counts per arm and probe type, the skipped items by reason, the summed
 `P11.weighted_score` per arm, Δmem per memory arm, and the judge errors,
 and exits 1 when a judge call failed. The scenario plants no canary

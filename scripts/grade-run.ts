@@ -14,8 +14,9 @@ import type { Scenario } from "../src/scenario/compile";
 import { loadPrereg } from "../src/scenario/inputs";
 
 const dir = resolve(process.argv[2] ?? "");
+const regrade = process.argv.includes("--regrade");
 if (!process.argv[2] || !existsSync(join(dir, "manifest.json"))) {
-    console.error("usage: bun scripts/grade-run.ts <run dir>");
+    console.error("usage: bun scripts/grade-run.ts <run dir> [--regrade]");
     process.exit(2);
 }
 const config = loadConfig();
@@ -47,6 +48,10 @@ const skipped: Record<string, number> = {};
 const skip = (why: string) => {
     skipped[why] = (skipped[why] ?? 0) + 1;
 };
+/** A grade already on the log for this item, arm, and snapshot stands unless `--regrade` asks anew. */
+const prior = new Set(regrade ? [] : log.latest().map((g) => `${g.item}/${g.arm}/${g.snapshot}`));
+const gradedBefore = (item: string, arm: string, snapshot: string) =>
+    prior.has(`${item}/${arm}/${snapshot}`);
 const append = (g: GradeRecord) => {
     const record = { ...g, version: log.nextVersion(g.item, g.arm) };
     log.append(record);
@@ -57,6 +62,10 @@ for (const probe of scenario.probes.filter((p) => p.type !== "P7")) {
         const mine = snapshots.get(`${arm}/${probe.id}`);
         if (!mine) {
             skip(probe.type === "P14" ? "P14 has no probe turn" : "no journaled snapshot");
+            continue;
+        }
+        if (gradedBefore(probe.id, arm, (mine[0] as Snapshot).id)) {
+            skip("already graded");
             continue;
         }
         const grade = gradeItem(probe, mine, rules);
@@ -74,6 +83,10 @@ const pairs = p7.flatMap((probe) =>
         const b = snapshots.get(`host/${probe.id}`)?.[0];
         if (!a || !b || a.turn_outcome !== "ok" || b.turn_outcome !== "ok") {
             skip("P7 without two completed snapshots");
+            return [];
+        }
+        if (gradedBefore(probe.id, arm, a.id) && gradedBefore(probe.id, "host", b.id)) {
+            skip("already graded");
             return [];
         }
         return [{ probe, arm, a, b }];
@@ -115,8 +128,10 @@ if (pairs.length > 0) {
     }
 }
 
+// The summary describes the run's current grades, the ones kept from earlier invocations included.
+const current = log.latest();
 const summary: Record<string, Record<string, number>> = {};
-for (const g of graded) {
+for (const g of current) {
     const key = `${g.arm}/${g.probe_type}`;
     summary[key] ??= {};
     const row = summary[key] as Record<string, number>;
@@ -124,15 +139,22 @@ for (const g of graded) {
 }
 const p11 = Object.fromEntries(
     arms.map((arm) => {
-        const mine = graded.filter((g) => g.arm === arm && g.probe_type === "P11");
+        const mine = current.filter((g) => g.arm === arm && g.probe_type === "P11");
         const score = mine.reduce((n, g) => n + Number(g.metrics["P11.weighted_score"] ?? 0), 0);
         return [arm, { n: mine.length, weighted_score: score }];
     }),
 );
-const delta = memoryArms.map((arm) => ({ arm, delta_mem: deltaMem(log.latest(), arm) }));
+const delta = memoryArms.map((arm) => ({ arm, delta_mem: deltaMem(current, arm) }));
 console.log(
     JSON.stringify(
-        { verdicts: summary, skipped, p11, p3: delta, judge_errors: judgeErrors },
+        {
+            verdicts: summary,
+            graded: graded.length,
+            skipped,
+            p11,
+            p3: delta,
+            judge_errors: judgeErrors,
+        },
         null,
         2,
     ),
