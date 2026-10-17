@@ -12,7 +12,8 @@ export interface Activation {
     component?: string;
 }
 
-const OVERFLOW =
+/** A model call the context limit refused, in every wording the gateways use. */
+export const OVERFLOW =
     /prompt is too long|ContextOverflow|input is too long|too many total text bytes|exceeds? the (model's )?(maximum )?context (window|length)/i;
 const ARRAY_SHAPE = [
     /must alternate between user and assistant/i,

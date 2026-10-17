@@ -1,6 +1,8 @@
+import type { StoreCheck } from "../hosts/storecheck";
 import type { FaultEpisode } from "../scenario/faults";
 import { Clock } from "./clock";
 import type { Entry, EntryKind, Journal } from "./journal";
+import type { OffsetWrite } from "./timeinject";
 
 export interface ScenarioEvent {
     id: string;
@@ -12,6 +14,13 @@ export interface ScenarioEvent {
     [field: string]: unknown;
 }
 
+export interface TurnOutcome {
+    failed?: string;
+    snapshot?: string;
+    /** Store checks the arm owed daemon restarts, one `StoreChecked` entry each. */
+    stores?: { fault: string; store: StoreCheck }[];
+}
+
 export interface ArmDriver {
     reset(): Promise<void>;
     /**
@@ -19,10 +28,13 @@ export interface ArmDriver {
      * session the next event belongs to, or null between sessions.
      */
     resume?(open: ScenarioEvent | null): Promise<void>;
-    event(e: ScenarioEvent): Promise<{ failed?: string; snapshot?: string }>;
+    event(e: ScenarioEvent): Promise<TurnOutcome>;
     fault(f: FaultEpisode): Promise<Record<string, unknown>>;
-    /** Stops everything the arm runs, after its last event and before `EndArm`. */
-    finish?(): Promise<void>;
+    /**
+     * Stops everything the arm runs, after its last event and before `EndArm`; store checks it
+     * still owed are journaled.
+     */
+    finish?(): Promise<TurnOutcome | undefined>;
 }
 
 export interface ProxyControl {
@@ -43,7 +55,13 @@ export interface SchedulerOptions {
     /** The longest the busy set may hold the clock before the run stops. */
     idleLimitMs?: number;
     settleMs?: number;
-    onClock?: (arm: string, scenarioMs: number) => void;
+    /**
+     * Runs at each arm's start and at every clock jump. A returned record carries the whole-second
+     * clock offset the arm's processes now read and the wall instant it took effect, journaled as
+     * `offset_s` and `offset_wall_ms`: on a `ClockOffset` entry at the arm's start, and on the
+     * jump's own `AdvanceClock` entry otherwise.
+     */
+    onClock?: (arm: string, scenarioMs: number) => OffsetWrite | undefined;
     /** Runs before `EndArm` and `EndRun` are journaled; a throw leaves the arm or run open. */
     beforeEnd?: () => void;
 }
@@ -59,7 +77,45 @@ export class Scheduler {
     private readonly fired = new Set<string>();
     private pendingKill: Promise<unknown> | null = null;
 
-    constructor(private readonly o: SchedulerOptions) {}
+    constructor(private readonly o: SchedulerOptions) {
+        const seen = new Set<string>();
+        let sleepMs = 0;
+        for (const f of o.faults) {
+            if (typeof f.id !== "string" || f.id === "") {
+                throw new Error(`fault id must be a non-empty string, got ${JSON.stringify(f.id)}`);
+            }
+            if (seen.has(f.id)) throw new Error(`fault id ${f.id} is scheduled twice`);
+            seen.add(f.id);
+            const duration = f.params.duration_ms;
+            // A jump is a whole count of milliseconds the journal can hold as a safe integer.
+            const positive =
+                typeof duration === "number" && Number.isSafeInteger(duration) && duration > 0;
+            if (f.type === "laptop_sleep" && !positive) {
+                throw new Error(`laptop_sleep ${f.id} needs a positive duration_ms`);
+            }
+            if (f.type === "laptop_sleep") sleepMs += duration as number;
+        }
+        // The clock's final position, every sleep included, is a safe integer too.
+        const last = Math.max(0, ...o.events.map((e) => e.scenario_ms));
+        if (!Number.isSafeInteger(last + sleepMs)) {
+            throw new Error(
+                `sleeps advance the clock past ${Number.MAX_SAFE_INTEGER} ms, which the journal cannot hold`,
+            );
+        }
+    }
+
+    /**
+     * Journals the store checks an outcome returned, one `StoreChecked` per fault per arm: a
+     * resumed driver can take a check again for a fault whose entry already landed.
+     */
+    private logStores(stores: TurnOutcome["stores"], event: string | null): void {
+        for (const s of stores ?? []) {
+            const already = this.o.journal.entries.some(
+                (e) => e.kind === "StoreChecked" && e.arm === this.arm && e.fault === s.fault,
+            );
+            if (!already) this.log({ kind: "StoreChecked", event, ...s });
+        }
+    }
 
     private log(entry: { kind: EntryKind; [field: string]: unknown }): Entry {
         return this.o.journal.append({
@@ -79,9 +135,10 @@ export class Scheduler {
             if (mine.some((e) => e.kind === "EndArm")) continue;
             this.arm = arm;
             const start = mine.at(-1)?.scenario_ms ?? 0;
-            const onClock = (ms: number) => this.o.onClock?.(arm, ms);
-            this.clock = new Clock(start, this.o.journal, Date.now, onClock);
-            onClock(start);
+            const offsetAt = (ms: number): Partial<OffsetWrite> => this.o.onClock?.(arm, ms) ?? {};
+            this.clock = new Clock(start, this.o.journal, Date.now, offsetAt);
+            const initial = offsetAt(start);
+            if (initial.offset_s !== undefined) this.log({ kind: "ClockOffset", ...initial });
             const driver = this.o.drivers[arm];
             if (!driver) throw new Error(`no driver for arm ${arm}`);
             const started = mine.some((e) => e.kind === "StartArm");
@@ -100,7 +157,8 @@ export class Scheduler {
             for (const e of pending) await this.step(driver, e);
             await this.idle();
             await this.pendingKill;
-            await driver.finish?.();
+            const last = await driver.finish?.();
+            this.logStores(last?.stores, null);
             this.o.beforeEnd?.();
             this.log({ kind: "EndArm" });
         }
@@ -130,6 +188,16 @@ export class Scheduler {
             this.log({ kind: "EndJob", job: e.job, interrupted: true });
         }
         const observed = new Set(kinds("FaultObserved").map((e) => e.fault));
+        const firedIds = new Set(kinds("FaultFired").map((e) => e.fault));
+        // A sleep's jump is journaled before its FaultFired; a jump without one has fired.
+        for (const jump of kinds("AdvanceClock").filter((e) => e.fault !== undefined)) {
+            const f = this.o.faults.find((x) => x.id === jump.fault);
+            if (!f || firedIds.has(f.id)) continue;
+            this.fired.add(`${this.arm}/${f.id}`);
+            this.log({ kind: "FaultFired", fault: f.id, type: f.type, layer: f.seam.layer });
+            const evidence = { clock_advanced_ms: jump.scenario_ms - Number(jump.from_ms) };
+            this.log({ kind: "FaultObserved", fault: f.id, type: f.type, evidence });
+        }
         for (const fired of kinds("FaultFired")) {
             const f = this.o.faults.find((x) => x.id === fired.fault);
             this.fired.add(`${this.arm}/${fired.fault}`);
@@ -245,9 +313,15 @@ export class Scheduler {
             this.o.proxy?.arm(f.id);
             return;
         }
-        if (f.type === "laptop_sleep") return;
+        if (f.type === "laptop_sleep") {
+            const evidence = { clock_advanced_ms: f.params.duration_ms ?? 0 };
+            this.log({ kind: "FaultObserved", fault: f.id, type: f.type, evidence });
+            return;
+        }
         if (OUTAGE.has(f.type)) this.outage = f.id;
-        const evidence = await driver.fault(f);
+        const { stores, ...evidence } = await driver.fault(f);
+        // Store checks an earlier restart owed, settled before this fault took the daemon down.
+        this.logStores(stores as TurnOutcome["stores"], null);
         this.log({ kind: "FaultObserved", fault: f.id, type: f.type, evidence });
     }
 
@@ -257,12 +331,13 @@ export class Scheduler {
         this.outage = null;
         const clock = this.clock as Clock;
         const faults = this.faultsAt(e);
-        const sleep = faults.find((f) => f.type === "laptop_sleep");
         const arm = this.arm ?? "";
-        if (sleep)
+        // Every sleep keyed on this event jumps the clock by its own duration, one entry each.
+        for (const sleep of faults.filter((f) => f.type === "laptop_sleep")) {
             clock.advanceTo(clock.now() + (sleep.params.duration_ms ?? 0), arm, {
                 fault: sleep.id,
             });
+        }
         clock.advanceTo(e.scenario_ms, arm, { next_event: e.id });
         this.session = e.session;
         for (const f of faults) await this.fire(driver, f);
@@ -270,7 +345,7 @@ export class Scheduler {
             const turn = `turn:${e.id}`;
             this.log({ kind: "BeginTurn", event: e.id, probe: e.probe ?? null });
             clock.begin(turn);
-            let outcome: { failed?: string; snapshot?: string };
+            let outcome: TurnOutcome;
             try {
                 outcome = await driver.event(e);
             } finally {
@@ -278,13 +353,16 @@ export class Scheduler {
             }
             const state = outcome.failed ? "failed" : "completed";
             const item = e.probe ? { probe: e.probe, state } : {};
+            // The checks go first: a kill before EndTurn replays the turn with them on record.
+            this.logStores(outcome.stores, e.id);
             const snapshot = outcome.snapshot ? { snapshot: outcome.snapshot } : {};
             const end = { event: e.id, outcome: outcome.failed ?? "ok", ...item, ...snapshot };
             this.log({ kind: "EndTurn", ...end });
             this.snapshotTurn(end);
             await Bun.sleep(this.o.settleMs ?? 1_000);
         } else {
-            await driver.event(e);
+            const outcome = await driver.event(e);
+            this.logStores(outcome.stores, e.id);
         }
         if (e.kind === "session_end") {
             for (const f of this.o.faults) {

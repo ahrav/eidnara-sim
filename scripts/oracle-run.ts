@@ -2,6 +2,7 @@ import { existsSync, readFileSync, realpathSync, renameSync, writeFileSync } fro
 import { join } from "node:path";
 import { loadRun } from "../src/oracle/logs";
 import { ledger, oracleReport, runOracles } from "../src/oracle/oracles";
+import { recoveries } from "../src/oracle/recovery";
 import { TIERS, type Tier } from "../src/prereg/schema";
 import { preregistrationHash } from "../src/prereg/validate";
 import { releaseLease, takeLease } from "../src/run/journal";
@@ -12,8 +13,19 @@ export function runDirs(args: string[]): string[] {
     return [...new Set(args.map((d) => realpathSync(d)))];
 }
 
-/** Writes each run's `oracles.json` through a rename, so a symlink at that name is replaced, never followed. */
+/**
+ * Writes each run's `oracles.json` (activations, ledgers, recoveries, digest) through a rename,
+ * so a symlink at that name is replaced, never followed, and reports the tiers.
+ */
 export function oracleRun(dirs: string[]) {
+    return oracleRunWithRecoveries(dirs).oracles;
+}
+
+/**
+ * The tier report with every run's recovery rows, each tagged with its run, from the one pass
+ * made under each run's lease.
+ */
+export function oracleRunWithRecoveries(dirs: string[]) {
     const runs = dirs.map((dir) => {
         takeLease(dir);
         try {
@@ -22,10 +34,13 @@ export function oracleRun(dirs: string[]) {
             releaseLease(dir);
         }
     });
-    return oracleReport(runs);
+    return {
+        oracles: oracleReport(runs),
+        recoveries: runs.flatMap((r) => r.recoveries.map((row) => ({ run: r.dir, ...row }))),
+    };
 }
 
-/** Loads and evaluates one run while holding its lease, so a run still finishing is refused rather than read half-written; only the tier and activations outlive the call. */
+/** Loads and evaluates one run while holding its lease, so a run still finishing is refused rather than read half-written; the tier, activations, and recovery rows outlive the call. */
 function oracleOne(dir: string) {
     {
         const manifest = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8"));
@@ -40,11 +55,21 @@ function oracleOne(dir: string) {
         }
         const run = loadRun(dir, prereg);
         const ledgers = Object.fromEntries(run.arms.map((a) => [a.arm, ledger(a)]));
-        const result = { prereg_sha256, activations: runOracles(run), ledgers };
+        const result = {
+            prereg_sha256,
+            activations: runOracles(run),
+            ledgers,
+            recoveries: recoveries(run),
+        };
         const out = join(dir, "oracles.json");
         writeFileSync(`${out}.tmp`, `${JSON.stringify(result, null, 2)}\n`);
         renameSync(`${out}.tmp`, out);
-        return { tier: run.tier, activations: result.activations };
+        return {
+            dir,
+            tier: run.tier,
+            activations: result.activations,
+            recoveries: result.recoveries,
+        };
     }
 }
 
@@ -54,5 +79,6 @@ if (import.meta.main) {
         console.error("usage: bun scripts/oracle-run.ts <run dir>...");
         process.exit(2);
     }
-    console.log(JSON.stringify(oracleRun(runDirs(args)), null, 2));
+    const dirs = runDirs(args);
+    console.log(JSON.stringify(oracleRunWithRecoveries(dirs), null, 2));
 }

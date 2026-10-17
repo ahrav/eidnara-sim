@@ -59,7 +59,11 @@ it, and the pid and start time of the daemon writing the live log, so a
 `start` after a harness kill stops a daemon that outlived the harness, then
 saves every dead lifetime's stderr once, rolling back a copy an earlier kill
 cut short; a stop saves every listed log the same way, the copy in progress
-included, before the live one.
+included, before the live one. A killed lifetime's stdout is held in the
+marker with the lifetime that wrote it until it is saved, ahead of its log;
+a stopped lifetime's final stdout is held the same way until it is appended
+after its log, with the log's length before the append, so a resume rolls
+back a cut append and completes it.
 The run's resource sampler takes a sample when each daemon process is up and
 before a fault takes one down; a final sample that cannot be written fails
 the arm's finish after the arm is shut down, so the run is not complete
@@ -153,10 +157,13 @@ store sits under the user's home.
 
 ## Resume
 
-The driver keeps `<arm>/state.json` current with the model index and the
+The driver keeps `<arm>/state.json` current with the model index, the
+daemon restarts whose `StoreChecked` entry the journal may still lack (each
+with its plugin-log mark), and the
 pid and start time of the daemon and of the host while a session is open.
 A new harness process calls `resume(open)` on an arm that has `StartArm` and
-no `EndArm`. The driver restores the model index, stops each recorded process
+no `EndArm`. The driver restores the model index and the owed store checks,
+stops each recorded process
 whose start time still matches, unmounts a store left mounted, mounts the
 existing store image, starts the daemon against the existing store, and, when
 the next event is inside a session, opens that session again. Pi reopens the
@@ -178,17 +185,18 @@ transcript-store paths for the host version with the host's own variables
 
 The scheduler opens an outage window before a daemon fault and closes it at
 the next event. The harness owns every daemon restart, through the hermetic
-host stack's `restartHost`, which sends SIGKILL and starts the fixture
-against the same store (OQ-10).
+host stack's `crashHost`, which sends SIGKILL, and `restartHost`, which
+starts the fixture against the same store (OQ-10); the driver inspects the
+store between the two.
 
 | Fault | Mechanism | Evidence |
 |---|---|---|
-| `daemon_sigkill_mid_fold` | The session's first observed history-summarizer call fires it; SIGKILL and restart | `pid_before`, `pid_after`, `restarted_by: harness` |
+| `daemon_sigkill_mid_fold` | The session's first observed history-summarizer call fires it; SIGKILL and restart | `pid_before`, `pid_after`, `restarted_by: harness`, and the store check between the SIGKILL and the replacement's start (`docs/oracles.md`); the first turn boundary, session end, or finish at which the plugin log shows a pass the replacement served (`served_from=transform` past the log's length at the restart), or a later daemon fault before it kills the daemon, journals a second check as `StoreChecked` |
 | `daemon_restart` | At `session_start`, SIGKILL and restart | As above |
 | `store_full` | When the scenario schedules `store_full`, each Eidnara arm's store lives on a sparse 2 GiB ext4 loop mount (`nosuid,nodev,noexec`) at `<arm>/s`, room for the daemon to materialize its harness closures twice, with its image outside the sandbox's kept paths; the fault fills it, and `session_end` removes the ballast | `avail_kb: 0`; any other value stops the run |
 | `plugin_reload` | The host process and its plugin start afresh at every `session_start` | The reload note |
 | `model_switch` | Later sessions use the next configured model; the daemon keeps running with its summarizer model | The new model id |
-| `laptop_sleep` | One event-free clock jump (`docs/run.md`) | The `AdvanceClock` entry |
+| `laptop_sleep` | One event-free clock jump (`docs/run.md`) | The `AdvanceClock` entry, and `clock_advanced_ms` |
 
 `plugin_reload` and `model_switch` fire between sessions; one fired inside a
 session stops the run, and so does a fault type with no mechanism here

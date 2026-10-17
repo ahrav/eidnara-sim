@@ -29,6 +29,7 @@ const fixtures = readdirSync(DIR)
 const runOf = (f: Fixture, tier = "S"): RunLogs => ({
     dir: "",
     tier,
+    base_wall_ms: 0,
     prereg,
     kinds: new Map(Object.entries(f.kinds)),
     arms: f.arms,
@@ -184,6 +185,7 @@ const armOf = (arm: string, over: Partial<ArmLogs>): ArmLogs => ({
 const runWith = (...arms: ArmLogs[]): RunLogs => ({
     dir: "",
     tier: "S",
+    base_wall_ms: 0,
     prereg,
     kinds: new Map(),
     arms,
@@ -351,6 +353,7 @@ describe("oracle evidence integrity", () => {
         const run: RunLogs = {
             dir: "",
             tier: "S",
+            base_wall_ms: 0,
             prereg,
             kinds,
             arms: [armOf("eidnara", { journal: ends, resources })],
@@ -866,6 +869,15 @@ describe("oracle round nine", () => {
         expect(loadRun(dir, prereg).arms[0]?.journal).toHaveLength(4);
         write([base[0], began, event("failed(interrupted)"), base[1], base[2]]);
         expect(loadRun(dir, prereg).arms[0]?.journal).toHaveLength(3);
+        // A turn's two closures agree on its outcome, and an interrupted turn has no EndTurn.
+        write([base[0], began, ended, event("failed(interrupted)"), base[1], base[2]]);
+        expect(() => loadRun(dir, prereg)).toThrow(
+            "arm eidnara: turn e-1 ended ok but its Event records failed(interrupted)",
+        );
+        write([base[0], began, ended, event("failed(timeout)"), base[1], base[2]]);
+        expect(() => loadRun(dir, prereg)).toThrow(
+            "arm eidnara: turn e-1 ended ok but its Event records failed(timeout)",
+        );
     });
 
     test("a manifest claiming more events than the scenario holds is refused", () => {
@@ -970,6 +982,7 @@ describe("oracle round ten", () => {
         const run: RunLogs = {
             dir: "",
             tier: "S",
+            base_wall_ms: 0,
             prereg,
             kinds: new Map(),
             arms: [

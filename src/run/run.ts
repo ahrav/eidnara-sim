@@ -500,11 +500,16 @@ async function runArms(
                 return driver.fault(f);
             },
             finish: async () => {
+                // The sampler's stop can fail the run; the arm still finishes and its checks land.
+                let stopped: unknown = null;
                 try {
                     sampler.stop();
-                } finally {
-                    await driver.finish();
+                } catch (caught) {
+                    stopped = caught;
                 }
+                const last = await driver.finish();
+                if (stopped) throw stopped;
+                return last;
             },
         };
     }

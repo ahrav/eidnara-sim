@@ -24,11 +24,13 @@ export type EntryKind =
     | "RegisterJob"
     | "EndJob"
     | "AdvanceClock"
+    | "ClockOffset"
     | "Event"
     | "FaultFired"
     | "FaultObserved"
     | "ItemState"
     | "SnapshotArtefacts"
+    | "StoreChecked"
     | "EndArm"
     | "EndRun";
 

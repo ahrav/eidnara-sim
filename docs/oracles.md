@@ -68,8 +68,10 @@ refused calls, and per-arm totals are the sum of the per-component totals
 
 `oracleReport(runs)` groups activations by tier and, for each oracle, gives
 the count, the count per arm and per component (the call's component for
-F1 and F2, `transform` for F3, `memory_capture` for F8), and `uncovered: true` when it never fired in that tier.
+F1 and F2, `transform` for F3, `memory_capture` for F8), and
+`uncovered: true` when it never fired in that tier.
 `scripts/oracle-run.ts <run dir>...` writes each run's activations, ledgers,
+recoveries,
 and the pre-registration digest it used to `<run>/oracles.json`, warns when
 that digest differs from the one the run's manifest recorded, and prints the
 report. It holds each run directory's lease while it reads, so a run still
@@ -87,6 +89,113 @@ the agent under test shares that process's uid, so a tool it runs could alter
 the file. `daemon.log` is written outside the sandbox and carries the F8
 refusals too; F3's `served_from=raw` lines exist only in the plugin log, so
 F3 reads evidence the evaluated agent could touch.
+
+## Recovery
+
+`recoveries(run)` reads each infrastructure fault the journal observed and
+the turns that end after it, starting with the turn a mid-turn fault such
+as `daemon_sigkill_mid_fold` interrupted, whose window opens at the fault.
+A clean turn ends `ok`, has no gateway 4xx and no overflow among its calls,
+and has no fail-open publication in the plugin log (`serving the input
+unchanged`, `decision=error`) from its start until the next turn starts. A
+pass the daemon declined by policy, such as `declined:invocation_budget`,
+also serves raw history and counts toward F3, and leaves the turn clean.
+The plugin stamps its log in the host's faked clock: wall time plus the
+whole-second offset the harness journaled as `offset_s` at the arm's start
+(`ClockOffset`) and on each clock jump (`AdvanceClock`). The oracle maps a stamp back to wall time through each
+offset whose span contains the result and reads the turns' windows in the
+journal's `wall_ms`; when an offset shrank, a stamp can fall in two spans and
+counts in both turns. A journal without offsets, recorded
+before the harness journaled them, is read as `base_wall_ms` plus
+scenario time, which the offset's rounding and the idle wall time since the
+last jump can skew; a journal whose turns began before its first offset is
+refused, since neither reading covers its prefix. A stalled
+daemon gives a turn that looks clean to the agent, and its fail-open
+publication keeps the turn from counting.
+
+For each fault the oracle reports `turns_to_first_clean` and `recovered`,
+which is false with no clean turn after the fault, and lists the reasons.
+The infrastructure faults are the scenario compiler's set
+(`src/scenario/faults.ts`) plus `host_upgrade` and `two_hosts_one_daemon`.
+A fault an arm skipped has `recovered: null` and the skip as its reason, so
+tallies leave it out. The driver skips a daemon fault on the `host` arm and
+a `store_full` on an arm with no loop-mounted store; a skip journaled for
+any other fault, or a daemon fault skipped on another arm, refuses the arm.
+A `model_switch` turn is clean only when an agent call in it names the
+switched model, which the observation records. The oracle also refuses a
+journal whose fault ids are not nonempty strings,
+whose fired or observed types differ from the schedule, whose observation
+precedes its firing, whose sleep jump follows its firing, or whose store
+check for a restart precedes that restart's observation.
+
+A daemon restart (`daemon_restart`, `daemon_sigkill_mid_fold`) also needs a
+sound store, which three checks of the store (`src/hosts/storecheck.ts`)
+judge. The arm driver checks the store after the SIGKILL and before the
+replacement daemon starts, which shows the state the crash left and keeps
+the replacement's startup out of the baseline; at the first turn boundary
+(a turn's start, or its end after its background jobs settle) at which the
+plugin log, past its length at the restart, shows a pass the replacement
+served (`served_from=transform`), so the check follows the turn whose passes
+include the first pass after the crash, or else at the session's end, the
+arm's finish, or a later daemon fault before it kills the daemon, and journals
+that
+check as `StoreChecked` with the fault's id (`event` names the turn or
+session end, or is null at finish), one entry per restart it settles, written
+before the turn's `EndTurn`; and
+`finish` checks the final store after the daemon
+stops and writes it to `<arm>/store-check.json`. Each check runs SQLite's
+`integrity_check`, lists every history segment, and looks for segments of
+one session whose message ranges overlap; the memory store refuses such a
+segment on write ("ranges must be strictly increasing",
+`crates/memory-store/src/lib.rs` in eidnara), so a stored overlap or a
+duplicated segment means a write bypassed that refusal. A segment whose own
+bounds are inverted passes SQLite's pragma, so the check appends it to the
+integrity string (`ok; inverted range <session>/<sequence>`). A store that
+fails to open reports `error: <reason>` as its integrity.
+
+The wire contract's post-crash rule (`docs/host-wire-protocol.md` in
+eidnara, the revert paragraph of the transform section) is that the next
+pass after a crash folds from the surviving history and removes nothing
+further. The oracle checks it as: each segment the crash check listed is
+still present at the post-crash check with the same bounds and the same
+digest of its message ids, title, and content, so a segment refolded within
+the same bounds reads as changed. A check states its format (`format: 2`
+once ranges carry digests); a check recorded before that format compares
+bounds only, which cannot certify the rule, so the oracle names that as a
+reason and withholds `recovered`, for an empty store too. A host compaction in the
+same turn can also remove segments under the contract's compaction rule;
+the reason names the segments, so a maintainer can tell the two apart from
+the turn's calls. `recovered` needs all three checks present, each with
+integrity `ok` and no overlap, and the surviving segments kept; a missing
+check is a reason of its own. `two_hosts_one_daemon` has no mechanism yet
+(`docs/hosts.md`), so no run observes it, and the oracle has no check for
+two clients reading one proposal.
+
+The recorded `witness-8` eidnara arm reaches a clean turn after each of its
+five faults: the laptop sleep, the restart, and the plugin reload at the
+first later turn, and the model switch and full store at the second, because
+the turn on the full store published a fail-open pass. The sleep's row comes
+from its `FaultFired` and clock jump, since that run predates the sleep's
+`FaultObserved` entry; the run also predates the store check, so its restart
+is unrecovered for want of one.
+
+In the live `recovery-3` run (S seed 101, Pi, eidnara arm, a 30000-token
+context limit so that sessions fold), the daemon took a SIGKILL during the
+history-summarizer calls of `s-0004` and `s-0005` and a restart at
+`s-0005`'s start. Each restart left the one segment of `s-0003`; each
+post-crash check and the final store kept it with integrity `ok` and no
+overlap, by bounds. The `s-0005` faults reach a clean turn at the first
+turn. The `s-0004` kill reaches one at the second: in the turn it cut, the
+plugin logged a failed pass (`connection generation retired`) about a second
+after the restart. The final store holds two segments of `s-0005` and none
+of `s-0004`, whose only fold the kill cut. The run is the fixture
+`tests/fixtures/recovery/recovery-3-eidnara.json`. Its store checks predate
+the content digests, so the oracle withholds `recovered` from all three
+faults with the reason `store ranges lack content digests`; a test that
+empties its post-crash segment lists adds the removed segment as a second
+reason. In `recovery-2`, a restart of an empty store behaved the same way,
+and the plugin logged two `declined:invocation_budget` passes, which count
+toward F3 and leave their turns clean.
 
 ## Fixtures
 

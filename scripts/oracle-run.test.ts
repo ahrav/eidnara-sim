@@ -14,7 +14,7 @@ import { preregistrationHash } from "../src/prereg/validate";
 import { releaseLease, takeLease } from "../src/run/journal";
 import { scenarioHash } from "../src/scenario/compile";
 import { loadPrereg } from "../src/scenario/inputs";
-import { oracleRun, runDirs } from "./oracle-run";
+import { oracleRun, oracleRunWithRecoveries, runDirs } from "./oracle-run";
 
 test("a run directory named twice, directly or through a symlink, is one run", () => {
     const root = mkdtempSync(join(tmpdir(), "sim-oracle-run-"));
@@ -86,6 +86,16 @@ test("oracleRun writes each run's activations, ledgers, and digest, and reports 
     expect(written.ledgers.eidnara.total).toBe(5);
     expect(report.S?.F1.activations).toBe(1);
     expect(report.S?.F2.uncovered).toBe(true);
+});
+
+test("the recovery rows the command prints come from the leased pass, tagged with their run", () => {
+    const root = mkdtempSync(join(tmpdir(), "sim-oracle-run-"));
+    const digest = preregistrationHash(loadPrereg("S"));
+    const dir = completeRun(root, "S", digest);
+    const { oracles, recoveries } = oracleRunWithRecoveries([dir]);
+    const written = JSON.parse(readFileSync(join(dir, "oracles.json"), "utf8"));
+    expect(oracles.S?.F1.activations).toBe(1);
+    expect(recoveries).toEqual(written.recoveries.map((r: object) => ({ run: dir, ...r })));
 });
 
 test("oracleRun refuses a run whose manifest names an unknown tier", () => {

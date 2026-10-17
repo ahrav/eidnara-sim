@@ -5,8 +5,10 @@ Scope: the v2 live-slice harness in this tree, specified by
 follow `docs/properties/METHOD.md`. The spec names its full catalog at
 `research/sim-design/property-catalog-sim-v2.md` (2026-10-12 revision); that
 file is unavailable, so these records are reconstructed from the condensed
-index in the spec body. Every record is PROPOSED: `Exercised: not yet` and
-`Confidence: low`, because no harness surface exists to verify against.
+index in the spec body. Every record is PROPOSED. Each record's `Exercised`
+and `Confidence` lines are its own; most read `not yet` and `low`, because no
+harness surface existed to verify against when they were written, and the
+records M5 has since exercised say so individually.
 
 Stable ids: `SIM-P01` to `SIM-P77` carry the spec's proposed records, and
 `SIM-L01` to `SIM-L03` carry the liveness bounds OQ-6 asked for and M0
@@ -1245,19 +1247,25 @@ Open questions: None.
 Type: reachability
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M5 (#1029); nothing constructs
-it yet
+Exercised: partial - the live S run `recovery-3` at a 30000-token context
+limit produced folds (`tests/fixtures/recovery/recovery-3-eidnara.json`); no
+retained run records the default limit, and no check counts them
 Guarantee: SIM-P48: A fold or host compaction occurs at least once per campaign.
 Check: `sometimes` - observe at least one fold or compaction event; without one
 P13 and SIM-P47 are vacuous.
 Fault/timing angle: none.
-Required faults and enabling state: forced p90 sessions.
-Confidence: low - [evidence](evidence/sim-p48-fold-observed-in-campaign.md).
-PROPOSED: reconstructed from the condensed index in spec #1007; no
-implementation exists to verify against, and a default tier run reaches it.
+Required faults and enabling state: sessions past the fold threshold, by forced
+p90 sessions or a lowered context limit.
+Confidence: medium - [evidence](evidence/sim-p48-fold-observed-in-campaign.md).
+Verified from the recorded fixture's `history_summarizer` call records and
+final store.
+PROPOSED: reconstructed from the condensed index in spec #1007; one live S run
+has since reached it at a lowered context limit.
 Existing check: none
 Impact: Fold fidelity is never measured.
-Open questions: None.
+Open questions:
+- Does a run at the default context limit fold? No retained artifact records
+  one; unresolved, needs a default-limit S run.
 
 ### sim-p49-p1-control-instance-paired
 

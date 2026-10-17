@@ -25,13 +25,15 @@ entries of different arms are not ordered by scenario time.
 |---|---|
 | `StartRun`, `EndRun` | The run starts (with the arm order) and ends |
 | `StartArm`, `EndArm` | An arm starts, after its driver's reset, and finishes |
-| `AdvanceClock` | The clock jumps; carries `from_ms`, an empty `busy` list, and the next event id or the laptop-sleep fault |
+| `AdvanceClock` | The clock jumps; carries `from_ms`, an empty `busy` list, the next event id or the laptop-sleep fault, `offset_s`, the whole-second offset the arm's processes read from then on, and `offset_wall_ms` and `offset_settled_ms`, the wall instants before and after the rename that put it in effect (`docs/time.md`) |
+| `ClockOffset` | The arm starts; carries `offset_s`, `offset_wall_ms`, and `offset_settled_ms` for the time until the first jump |
 | `BeginTurn` | A user turn is delivered |
 | `EndTurn` | The turn is answered; a probe turn carries `probe` and `state` (`completed` or `failed`) |
 | `RegisterJob`, `EndJob` | A background job starts and ends |
 | `FaultFired`, `FaultObserved` | A scheduled fault fires, and the driver returns its evidence |
 | `ItemState` | On resume, an in-flight turn or a scheduler fault without evidence is `failed(interrupted)`; the daemon exits |
 | `Event` | A scheduled event is complete, with its outcome |
+| `StoreChecked` | A store check a daemon restart owed is settled; carries the fault id, the check, and the turn or session end that settled it, or `event: null` at finish (`docs/oracles.md`) |
 
 ## Clock
 
@@ -56,8 +58,9 @@ list. For each arm, it resets the driver, then walks the events:
    every poll, so jobs that keep flickering between polls end the run too.
    `--events` must lie within the compiled scenario.
 2. Close any outage window from the previous event.
-3. On a laptop sleep, jump by the fault's `duration_ms`; then jump to the
-   event's scheduled time if it is still later than now.
+3. For each laptop sleep keyed on the event, jump by its `duration_ms`, one
+   `AdvanceClock` each; then jump to the event's scheduled time if it is still
+   later than now.
 4. Fire the faults keyed on the event. Provider faults are armed on the proxy
    at the Nth user turn of their session. Scheduler faults call the driver's
    `fault` and journal its evidence. The mid-fold SIGKILL, the daemon restart,

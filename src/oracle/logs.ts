@@ -1,6 +1,7 @@
 import { closeSync, existsSync, openSync, readFileSync, readSync } from "node:fs";
 import { join } from "node:path";
 import type { Command } from "../grade/artefacts";
+import { parseStoreCheck, type StoreCheck } from "../hosts/storecheck";
 import { ARMS, type Preregistration } from "../prereg/schema";
 import { type CallRecord, recordProblems } from "../proxy/records";
 import { type Entry, requireComplete } from "../run/journal";
@@ -18,16 +19,30 @@ export interface ArmLogs {
     calls: CallRecord[];
     journal: Entry[];
     pluginLog: string[];
+    /** Set when `<arm>/r/eidnara.log` is absent, so an empty log reads as missing evidence. */
+    pluginLogMissing?: true;
     daemonLog: string[];
     resources: Sample[];
     tools: (Command & { turn: string | null })[];
+    /** The arm's store at the end of the run (`<arm>/store-check.json`), absent when unchecked. */
+    finalStore?: StoreCheck;
 }
 
 export interface RunLogs {
     dir: string;
     tier: string;
+    /**
+     * Wall time at scenario time 0, from the manifest; a journal without clock offsets places
+     * plugin log stamps as `base_wall_ms + scenario_ms`. Absent in a run recorded before the
+     * harness wrote it, which the recovery oracle refuses when it has stamps to place.
+     */
+    base_wall_ms?: number;
     prereg: Preregistration;
     kinds: Map<string, string>;
+    /** Each scheduled laptop sleep's duration by fault id, from the override the run used or its scenario. */
+    sleeps?: Map<string, number>;
+    /** Each scheduled fault's type by id, from the same source, so a journaled fault must match its schedule. */
+    faultTypes?: Map<string, string>;
     arms: ArmLogs[];
 }
 
@@ -108,6 +123,9 @@ interface Manifest {
     events: number;
     tier: string;
     scenario_hash?: string;
+    /** Wall time at scenario time 0; absent in runs recorded before the harness wrote it. */
+    base_wall_ms?: number;
+    fault_override?: { id: string; type: string; params?: { duration_ms?: number } }[] | null;
 }
 
 /** Reads one JSON file as the record type its reader names, naming the file when the text does not parse. */
@@ -137,7 +155,7 @@ function requireTurnEnds(journal: Entry[], arms: string[], events: Scenario["eve
     for (const arm of arms) {
         const markers = new Map<
             string,
-            { kinds: string[]; begins: number; ends: number; closed?: Entry }
+            { kinds: string[]; begins: number; ends: number; ended?: Entry; closed?: Entry }
         >();
         for (const e of journal) {
             if (e.arm !== arm || !(String(e.kind) in rank)) continue;
@@ -148,7 +166,10 @@ function requireTurnEnds(journal: Entry[], arms: string[], events: Scenario["eve
             const m = markers.get(id) ?? { kinds: [], begins: 0, ends: 0 };
             m.kinds.push(String(e.kind));
             if (e.kind === "BeginTurn") m.begins += 1;
-            if (e.kind === "EndTurn") m.ends += 1;
+            if (e.kind === "EndTurn") {
+                m.ends += 1;
+                m.ended = e;
+            }
             if (e.kind === "Event") m.closed = e;
             markers.set(id, m);
         }
@@ -165,6 +186,14 @@ function requireTurnEnds(journal: Entry[], arms: string[], events: Scenario["eve
             if (m.ends === 0 && String(m.closed?.outcome) === "failed(interrupted)") continue;
             if (m.ends === 0) throw new Error(`arm ${arm}: turn ${id} has no EndTurn`);
             if (m.ends > 1) throw new Error(`arm ${arm}: turn ${id} has ${m.ends} EndTurn entries`);
+            // A turn's Event records its delivery (`ok`) or repeats the turn's own outcome; an Event
+            // recording a failure the EndTurn lacks, an interruption included, contradicts it.
+            const delivered = String(m.closed?.outcome ?? "ok");
+            if (m.ended && delivered !== "ok" && delivered !== String(m.ended.outcome)) {
+                throw new Error(
+                    `arm ${arm}: turn ${id} ended ${String(m.ended.outcome)} but its Event records ${delivered}`,
+                );
+            }
         }
     }
 }
@@ -401,6 +430,10 @@ export function loadRun(dir: string, prereg: Preregistration): RunLogs {
         for (const [field, ok] of Object.entries(fields)) {
             if (!ok(e[field])) throw new Error(`${journalPath}: line ${i + 1}: ${field} missing`);
         }
+        // A journal the harness wrote numbers each entry by its line; the oracles order by it.
+        if (e.seq !== undefined && e.seq !== i) {
+            throw new Error(`${journalPath}: line ${i + 1}: seq ${String(e.seq)} is not ${i}`);
+        }
         if (!Number.isSafeInteger(e.scenario_ms) || e.scenario_ms < 0) {
             throw new Error(`${journalPath}: line ${i + 1}: scenario_ms is not a count`);
         }
@@ -428,9 +461,18 @@ export function loadRun(dir: string, prereg: Preregistration): RunLogs {
         calls: calls.filter((c) => c.arm === arm),
         journal: journal.filter((e) => e.arm === arm),
         pluginLog: lines(join(dir, arm, "r", "eidnara.log")),
+        ...(existsSync(join(dir, arm, "r", "eidnara.log"))
+            ? {}
+            : { pluginLogMissing: true as const }),
         daemonLog: lines(join(dir, arm, "daemon.log")),
         resources: samplesOf(join(dir, arm, "resources.jsonl")),
         tools: toolsOf(join(dir, arm, "tools.jsonl"), turns, bounds, arm),
+        finalStore: existsSync(join(dir, arm, "store-check.json"))
+            ? parseStoreCheck(
+                  JSON.parse(readFileSync(join(dir, arm, "store-check.json"), "utf8")),
+                  `${arm}/store-check.json`,
+              )
+            : undefined,
     }));
     for (const arm of arms) {
         if (!existsSync(join(dir, arm.arm, "tools.jsonl"))) {
@@ -452,5 +494,21 @@ export function loadRun(dir: string, prereg: Preregistration): RunLogs {
             throw new Error(`arm ${arm.arm} has no r/eidnara.log`);
         }
     }
-    return { dir, tier: manifest.tier, prereg, kinds, arms };
+    const faults = manifest.fault_override ?? scenario.faults ?? [];
+    const sleeps = new Map(
+        faults
+            .filter((f) => f.type === "laptop_sleep")
+            .map((f) => [String(f.id), Number(f.params?.duration_ms)]),
+    );
+    const faultTypes = new Map(faults.map((f) => [String(f.id), String(f.type)]));
+    return {
+        dir,
+        tier: manifest.tier,
+        base_wall_ms: manifest.base_wall_ms,
+        prereg,
+        kinds,
+        sleeps,
+        faultTypes,
+        arms,
+    };
 }

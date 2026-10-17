@@ -93,7 +93,7 @@ const PROVIDER_FAULTS: FaultType[] = [
     "schema_wrong_tool_call",
     "slow_stream",
 ];
-const INFRA_FAULTS: FaultType[] = [
+export const INFRA_FAULTS: FaultType[] = [
     "daemon_sigkill_mid_fold",
     "daemon_restart",
     "store_full",
