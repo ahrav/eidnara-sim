@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { loadConfig } from "../src/config/config";
 import type { Snapshot } from "../src/grade/artefacts";
@@ -41,13 +41,14 @@ if (sha256Hex(canonicalJson(scenarioBody)) !== manifest.scenario_hash) {
     process.exit(2);
 }
 const rules = prereg.grading;
+const summaryPath = join(dir, "grade-summary.json");
+rmSync(summaryPath, { force: true });
 const log = new GradeLog(join(dir, "grades.jsonl"));
 const arms = manifest.order as string[];
 
+const journal = readJournal(join(dir, "journal.jsonl"));
 const journaled = new Set(
-    readJournal(join(dir, "journal.jsonl"))
-        .filter((e) => e.kind === "SnapshotArtefacts")
-        .map((e) => String(e.snapshot)),
+    journal.filter((e) => e.kind === "SnapshotArtefacts").map((e) => String(e.snapshot)),
 );
 const snapshots = new Map<string, Snapshot[]>();
 for (const arm of arms) {
@@ -180,18 +181,20 @@ const p11 = Object.fromEntries(
     }),
 );
 const delta = memoryArms.map((arm) => ({ arm, delta_mem: deltaMem(current, arm) }));
-console.log(
-    JSON.stringify(
-        {
-            verdicts: summary,
-            graded: graded.length,
-            skipped,
-            p11,
-            p3: delta,
-            judge_errors: judgeErrors,
-        },
-        null,
-        2,
-    ),
+const report = JSON.stringify(
+    {
+        verdicts: summary,
+        graded: graded.length,
+        skipped,
+        p11,
+        p3: delta,
+        judge_errors: judgeErrors,
+        journal_seq: journal.at(-1)?.seq ?? 0,
+    },
+    null,
+    2,
 );
+writeFileSync(`${summaryPath}.tmp`, `${report}\n`);
+renameSync(`${summaryPath}.tmp`, summaryPath);
+console.log(report);
 if (judgeErrors > 0) process.exit(1);

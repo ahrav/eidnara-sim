@@ -35,11 +35,20 @@ export function loadGraded(dir: string, prereg: Preregistration): GradedRun {
         prereg_sha256: string;
         scenario_hash: string;
         fault_override: Scenario["faults"] | null;
-        preflight?: { distortions?: string[]; hosts?: { host: string; version: string }[] };
+        preflight?: {
+            distortions?: string[];
+            hosts?: { host: string; version: string }[];
+            toolchain?: unknown[];
+        };
         tapes?: string[];
     } & Omit<
         RunIdentity,
-        "distortions" | "host_versions" | "scenario_provenance" | "fault_override" | "tapes"
+        | "distortions"
+        | "host_versions"
+        | "scenario_provenance"
+        | "fault_override"
+        | "tapes"
+        | "toolchain"
     >;
     const current = preregistrationHash(prereg);
     if (manifest.prereg_sha256 !== current) {
@@ -86,10 +95,13 @@ export function loadGraded(dir: string, prereg: Preregistration): GradedRun {
         embedding_model?: string;
     };
     const hostP7 = (r: GradeRecord) => r.probe_type === "P7" && armBase(r.arm) === "host";
-    const grades = [
-        ...log.latest().filter((r) => !hostP7(r)),
-        ...[...judged.values()].filter((r) => hostP7(r) && counterpart(r, prereg.arms.default)),
-    ];
+    const hostRows = new Map<string, GradeRecord>();
+    for (const r of [...judged.values()].filter(
+        (r) => hostP7(r) && counterpart(r, prereg.arms.default),
+    )) {
+        if ((hostRows.get(r.item)?.version ?? 0) < r.version) hostRows.set(r.item, r);
+    }
+    const grades = [...log.latest().filter((r) => !hostP7(r)), ...hostRows.values()];
     const run = loadRun(dir, prereg);
     return {
         run,
@@ -112,6 +124,7 @@ export function loadGraded(dir: string, prereg: Preregistration): GradedRun {
             tapes: (manifest.tapes ?? []).map((t) =>
                 existsSync(t) ? sha256Hex(readFileSync(t, "utf8")) : `missing:${t}`,
             ),
+            toolchain: (manifest.preflight?.toolchain ?? []).map((t) => canonicalJson(t)),
         },
         witnesses: reports === null ? null : [...witnesses.values()],
         pairing,
