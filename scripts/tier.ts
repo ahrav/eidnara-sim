@@ -213,7 +213,8 @@ const runJob = async (job: TierJob) => {
     // A resumed run keeps the budget it started with: its wall time counts from its
     // journaled StartRun, and the child gets what remains of the limit. A run that
     // journaled EndRun is complete and is left as it finished.
-    const span = runSpan(job.dir, started);
+    const launched = Date.now();
+    const span = runSpan(job.dir, launched);
     const scenario = scenarios.get(job.seed) as Scenario;
     if (!existsSync(join(job.dir, "scenario.json")))
         writeFileSync(join(job.dir, "scenario.json"), `${JSON.stringify(scenario)}\n`);
@@ -251,7 +252,9 @@ const runJob = async (job: TierJob) => {
     }
     const restarted = existsSync(marker);
     const run_wall_ms = (span.ended ?? Date.now()) - span.started;
-    const start_ms = existsSync(join(job.dir, "journal.jsonl")) ? span.started : null;
+    const start_ms = existsSync(join(job.dir, "journal.jsonl"))
+        ? runSpan(job.dir, launched).started
+        : null;
     return {
         ...job,
         log,
@@ -332,11 +335,16 @@ for (const group of groups) {
     const dirs = results
         .filter((r) => r.group === group && existsSync(join(r.dir, "manifest.json")))
         .map((r) => r.dir);
-    reported.push(...dirs);
+    const identities = new Set(
+        results.filter((r) => dirs.includes(r.dir)).map((r) => `${r.host}/${r.seed}`),
+    );
+    const paired = identities.size === dirs.length;
+    if (paired) reported.push(...dirs);
     const target = group === "main" ? out : join(out, group);
-    reports[group] = dirs.length
-        ? await run(["report.ts", ...dirs, "--out", target], join(out, "report.log"))
-        : null;
+    reports[group] =
+        dirs.length && paired
+            ? await run(["report.ts", ...dirs, "--out", target], join(out, "report.log"))
+            : null;
 }
 const start_skew_ms = Object.fromEntries(groups.map((g) => [g, skew(g)]));
 writeFileSync(
@@ -366,4 +374,4 @@ const failed =
     results.some(
         (r) => r.run_exit !== 0 || r.over_budget || r.grade_exit !== 0 || (r.aa_exit ?? 0) !== 0,
     );
-exit(failed || Object.values(reports).some((r) => r !== 0) ? 1 : 0);
+exit(failed || Object.values(reports).some((r) => r !== null && r !== 0) ? 1 : 0);

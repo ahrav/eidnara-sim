@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import { existsSync } from "node:fs";
+import { existsSync, lstatSync } from "node:fs";
 
 export interface StoreCheck {
     integrity: string;
@@ -163,6 +163,9 @@ export async function deleteFactNotes(
     statement: string,
     others: readonly string[] = [],
 ): Promise<Deletion> {
+    if (lstatSync(path).isSymbolicLink()) {
+        throw new Error(`${path} is a symlink; the deletion opens only the arm's own store file`);
+    }
     const carries = factMatcher(statement, others, 4);
     const ids = readNotes(path)
         .filter((n) => carries(n.content))

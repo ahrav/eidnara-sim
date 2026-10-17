@@ -330,11 +330,11 @@ function panels(r: TierReport): string[] {
     ];
 }
 
-function counterfactualText(c: Counterfactual): string {
+export function counterfactualText(c: Counterfactual): string {
     const deletion = (d: Counterfactual["deletions"][number]) =>
         d.skipped
-            ? `${d.probe} skipped (${d.skipped})`
-            : `${d.probe} deleted ${d.deleted}, ${d.remaining} left`;
+            ? `${d.run} ${d.probe} skipped (${d.skipped})`
+            : `${d.run} ${d.probe} deleted ${d.deleted}, ${d.remaining} left`;
     return [
         `${c.verified} of ${c.attempted} attempted deletions verified.`,
         `Of ${c.memory_passes} verified items the memory arm passed, ${c.flips} fail with the fact's memory deleted:`,

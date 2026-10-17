@@ -14,7 +14,7 @@ import { loadPrereg } from "../scenario/inputs";
 import { falsificationPairs } from "./falsify";
 import { percentile } from "./intrusive";
 import { type GradedRun, tierInput } from "./observe";
-import { renderTier } from "./render";
+import { counterfactualText, renderTier } from "./render";
 import { aaScale, counterfactual, cusumScale, loadGraded, tierReport } from "./tier";
 
 const prereg = loadPrereg("S");
@@ -710,18 +710,17 @@ describe("counterfactual attribution", () => {
         });
     });
 
-    test("a deletion verified in one run leaves the same probe unverified in another", () => {
+    test("a deletion verified in one run leaves the same probe unverified in another, and the panel names each run", () => {
         const failed = deletion("q-1", { skipped: "deletion failed" });
         const other = {
             ...g,
             run: { ...g.run, dir: "/r2", arms: [arm("eidnara"), arm("eidnara-cf", [failed])] },
         } as unknown as GradedRun;
-        expect(counterfactual([g, other])).toMatchObject({
-            attempted: 5,
-            verified: 2,
-            memory_passes: 2,
-            flips: 1,
-        });
+        const panel = counterfactual([g, other]);
+        expect(panel).toMatchObject({ attempted: 5, verified: 2, memory_passes: 2, flips: 1 });
+        const text = counterfactualText(panel as NonNullable<typeof panel>);
+        expect(text).toContain("/r q-1 deleted 1, 0 left");
+        expect(text).toContain("/r2 q-1 skipped (deletion failed)");
     });
 
     test("probes in a session where a fault fired in one arm alone leave the attribution and placebo counts", () => {
