@@ -263,6 +263,21 @@ export function runSpan(dir: string, now: number): { started: number; ended?: nu
     return ended === undefined ? { started } : { started, ended };
 }
 
+/**
+ * Completed or begun runs whose manifest records another fault schedule than the plan compresses
+ * their prefix to; `null` faults means the scenario's own schedule.
+ */
+export function scheduleConflicts(plan: [TierJob, FaultEpisode[] | null][]): string[] {
+    return plan.flatMap(([job, faults]) => {
+        const path = join(job.dir, "manifest.json");
+        if (!existsSync(path)) return [];
+        const ran = JSON.parse(readFileSync(path, "utf8")).fault_override ?? null;
+        return JSON.stringify(ran) === JSON.stringify(faults)
+            ? []
+            : [`${job.dir} ran another fault schedule than the plan compresses to`];
+    });
+}
+
 /** Jobs whose planned prefix differs from the events their existing manifest ran. */
 export function planConflicts(plan: TierJob[]): string[] {
     return plan.flatMap((job) => {

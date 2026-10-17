@@ -647,6 +647,18 @@ describe("HostDriver faults", () => {
         expect(JSON.parse(readFileSync(join(armDir, "state.json"), "utf8"))).toEqual(recorded);
     });
 
+    test("a second client that lost its process still leaves its session owed after a stop", async () => {
+        const { driver, hosts, armDir } = fixture("eidnara", { p: "/repo" });
+        driver.daemon = fakeDaemon(10) as unknown as DaemonStack;
+        const at = ev("session_start", { project: "p" });
+        await driver.fault(episode("two_hosts_one_daemon"), at);
+        const second = hosts.at(-1) as FakeHost;
+        second.pid = null;
+        await driver.stop();
+        const state = JSON.parse(readFileSync(join(armDir, "state.json"), "utf8"));
+        expect(state.second_owed).toBe("s-0000");
+    });
+
     test("a resume into a session whose second client was recorded reattaches one", async () => {
         const { driver, hosts, armDir } = fixture("eidnara", { p: "/repo" });
         const o = (driver as unknown as { o: DriverOptions }).o;
@@ -738,6 +750,15 @@ describe("HostDriver faults", () => {
         await driver.event(ev("session_start"));
         await Bun.sleep(20);
         writeFileSync(join(sessions, "new.jsonl"), "{}");
+        await driver.stop();
+        const reopened = new HostDriver(o);
+        await reopened.resume(ev("session_start"));
+        await reopened.event(ev("session_end"));
+        await reopened.stop();
+        await driver.resume(null);
+        await driver.event(ev("session_start"));
+        await Bun.sleep(20);
+        writeFileSync(join(sessions, "again.jsonl"), "{}");
         await driver.event(ev("session_end"));
         symlinkSync("/", join(sessions, "escape"));
         await driver.fault(episode("host_upgrade"));

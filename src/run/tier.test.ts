@@ -16,6 +16,7 @@ import {
     restartCut,
     restartFraction,
     runSpan,
+    scheduleConflicts,
     type TierJob,
     tierPlan,
     uncuttableRuns,
@@ -303,4 +304,28 @@ test("the tier command refuses an output directory inside the Eidnara checkout",
     expect(r.status).toBe(2);
     expect(r.stderr).toContain("Eidnara checkout");
     expect(existsSync(out)).toBe(false);
+});
+
+describe("scheduleConflicts", () => {
+    test("a completed run whose manifest ran another fault schedule than the plan compresses to is a conflict", () => {
+        const out = mkdtempSync(join(tmpdir(), "sim-tier-"));
+        const job = { dir: join(out, "XL-101-pi"), events: 7 } as TierJob;
+        const f = (session: string) =>
+            ({ id: "f-1", trigger: { session } }) as unknown as FaultEpisode;
+        expect(scheduleConflicts([[job, [f("s-1")]]])).toEqual([]);
+        mkdirSync(job.dir);
+        writeFileSync(
+            join(job.dir, "manifest.json"),
+            JSON.stringify({ events: 7, fault_override: [f("s-1")] }),
+        );
+        expect(scheduleConflicts([[job, [f("s-1")]]])).toEqual([]);
+        writeFileSync(
+            join(job.dir, "manifest.json"),
+            JSON.stringify({ events: 7, fault_override: null }),
+        );
+        expect(scheduleConflicts([[job, [f("s-1")]]])).toEqual([
+            `${job.dir} ran another fault schedule than the plan compresses to`,
+        ]);
+        expect(scheduleConflicts([[job, null]])).toEqual([]);
+    });
 });

@@ -29,6 +29,8 @@ interface ArmState {
     second?: { pid: number; start: string | null; session?: string } | null;
     /** A session owed a second client again, kept until that client is attached. */
     second_owed?: string | null;
+    /** The transcript store's newest mtime when an upgraded host's first session opened. */
+    transcript_mark?: number | null;
     /** Daemon restarts whose post-crash store check is still owed. */
     store_faults?: string[];
     daemon: { pid: number; start: string | null } | null;
@@ -195,7 +197,8 @@ export class HostDriver implements ArmDriver {
                 return p && this.secondSession ? { ...p, session: this.secondSession } : p;
             })(),
             store_faults: [...this.storeFaults, ...this.justChecked],
-            second_owed: this.secondOwed,
+            second_owed: this.secondOwed ?? this.secondSession,
+            transcript_mark: this.storeMarkAtOpen,
         };
         mkdirSync(this.armDir, { recursive: true });
         writeFileSync(this.stateFile, JSON.stringify(state));
@@ -257,6 +260,7 @@ export class HostDriver implements ArmDriver {
             (this.upgraded ? record.fresh === true : record.fresh !== false) &&
             JSON.stringify(record.templates ?? null) === JSON.stringify(this.transcriptPaths());
         this.secondOwed = state?.second?.session ?? state?.second_owed ?? null;
+        this.storeMarkAtOpen = state?.transcript_mark ?? null;
         await this.reapStale();
         await this.startArm(false);
         if (open) await this.event(open);
@@ -299,7 +303,11 @@ export class HostDriver implements ArmDriver {
         this.sessionProject = this.project(e);
         const connection = this.daemon?.connectionFile ?? null;
         const dir = this.workspace(this.sessionProject);
-        if (this.upgraded && !this.transcriptsChecked) this.storeMarkAtOpen = this.storeMark(host);
+        // The mark from a session a stop interrupted stays, so the reopened session's check
+        // measures the whole session rather than the part after the resume.
+        if (this.upgraded && !this.transcriptsChecked && this.storeMarkAtOpen === null) {
+            this.storeMarkAtOpen = this.storeMark(host);
+        }
         await this.open(host, dir, e.session, connection);
         this.snapshots.sessionStart(e.session, this.sessionProject, dir);
         this.recordState();

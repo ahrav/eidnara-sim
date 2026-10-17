@@ -216,7 +216,17 @@ const modelConflicts = arg("models")
       })
     : [];
 if (modelConflicts.length > 0) refuse(modelConflicts.join("\n"));
-const conflicts = planConflicts(plan);
+const conflicts = [
+    ...planConflicts(plan),
+    ...scheduleConflicts(
+        plan.map((j) => {
+            const scenario = scenarios.get(j.seed) as Scenario;
+            const faults = compressFaults(scenario, j.events);
+            const moved = JSON.stringify(faults) !== JSON.stringify(scenario.faults);
+            return [j, moved ? faults : null];
+        }),
+    ),
+];
 if (conflicts.length > 0) {
     console.error(
         `${conflicts.join("\n")}\n--turn-ms must keep the prefix of a run that has a manifest`,
@@ -354,10 +364,12 @@ const runJob = async (job: TierJob) => {
                 cut === null ? undefined : () => eventsRun(job.dir) >= cut,
                 (reason) => {
                     requested = reason === "stopWhen";
+                    // The marker lands before the stop is issued, so a parent that dies in
+                    // between leaves a run the next invocation resumes rather than cuts again.
+                    if (requested) writeFileSync(marker, `${new Date().toISOString()}\n`);
                 },
             );
     if (requested && code === SIGTERM_EXIT && remaining() > 1) {
-        writeFileSync(marker, `${new Date().toISOString()}\n`);
         code = await run(args, log, remaining());
     }
     const restarted = existsSync(marker);
