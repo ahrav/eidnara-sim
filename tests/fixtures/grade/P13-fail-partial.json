@@ -1,0 +1,90 @@
+{
+  "provenance": "constructed",
+  "probe": {
+    "id": "P13-c",
+    "type": "P13",
+    "fact": "f-1",
+    "project": "mini-redis",
+    "session": "s-1",
+    "text": "Do the task.",
+    "check": {
+      "commands_must": [
+        "git commit[^\\n]*\\[ember_magpie\\]"
+      ],
+      "turns": [
+        0,
+        30
+      ]
+    },
+    "event": "e-1"
+  },
+  "snapshots": [
+    {
+      "id": "s-P13-c",
+      "item": "P13-c",
+      "arm": "eidnara",
+      "session": "s-1",
+      "turn": "e-1",
+      "turn_outcome": "ok",
+      "artefacts": [
+        {
+          "id": "c1",
+          "class": "command-log",
+          "commands": [
+            {
+              "command": "sed -i 's/Db/Keyspace/' src/db.rs",
+              "exit": 0,
+              "scenario_ms": 100
+            },
+            {
+              "command": "sed -i 's/Db/Keyspace/' src/db.rs",
+              "exit": 0,
+              "scenario_ms": 900
+            },
+            {
+              "command": "git commit -m '[ember_magpie] rename'",
+              "exit": 0,
+              "scenario_ms": 950
+            }
+          ],
+          "role": "session"
+        },
+        {
+          "id": "p1",
+          "class": "proxy-call",
+          "calls": [
+            {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "seq": 5,
+              "arm": "eidnara",
+              "session": "s-1",
+              "component": "history_summarizer",
+              "turn": "e-0",
+              "scenario_ms": 500,
+              "input_tokens": 20000,
+              "output_tokens": 2000,
+              "turn_index": 5,
+              "status": 200,
+              "error": null
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "expect": {
+    "verdict": "fail",
+    "metrics": {
+      "P13.fold_fidelity_score": 0.6666666666666666,
+      "P13.rule_kept": true,
+      "P13.ratio_in_bounds": true,
+      "P13.repeated_action": true,
+      "P13.folds": 1
+    },
+    "inputs": [
+      "c1",
+      "p1"
+    ]
+  }
+}

@@ -134,6 +134,23 @@ export interface Preregistration {
     };
     bootstrap: { replicates: number; seed: number };
     leak_bound: { c_bytes_per_session: number; r2_threshold: string; sample_interval_ms: number };
+    /** Probe grading rules (M5), added in revision 4 before any run. */
+    grading: {
+        first_attempt_only: true;
+        lookup_match: "whole-word";
+        abstain_rule: "leading-UNKNOWN";
+        /** P11 weights a false-positive injection this many times a hit (SIM-P50). */
+        p11_false_positive_weight: string;
+        /** Bounds on summary tokens per folded input token for a P13 fold. */
+        p13_reduction_ratio: { min: string; max: string };
+        judge: {
+            model: string;
+            cross_judge: string;
+            calibration_min_pairs: number;
+            human_sample_percent: number;
+            arm_identification_ceiling_percent: number;
+        };
+    };
     families: Family[];
     /** S and M only: same-arm pairs under different labels, each run `repeats` times. */
     aa_controls?: { pairs: string[][]; repeats: number };

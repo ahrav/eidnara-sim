@@ -13,9 +13,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SimConfig } from "../config/config";
 import { canonicalJson, sha256Hex } from "../prereg/canonical";
+import { preregistrationHash } from "../prereg/validate";
 import { Rng } from "../rng";
-import type { Scenario } from "../scenario/compile";
+import { GENERATOR_VERSION, type Scenario } from "../scenario/compile";
 import { type FaultEpisode, SEAMS, scheduleFaults } from "../scenario/faults";
+import { corpusInputsSha256, loadPrereg } from "../scenario/inputs";
 import type { Entry } from "./journal";
 import type { Preflight } from "./preflight";
 import {
@@ -64,8 +66,14 @@ const config = {
 
 function scenarioBody(seed = 101, tier = "S") {
     return {
-        schema: "test",
-        manifest: { seed, tier },
+        schema: GENERATOR_VERSION,
+        manifest: {
+            seed,
+            tier,
+            generator_version: GENERATOR_VERSION,
+            preregistration_sha256: preregistrationHash(loadPrereg("S")),
+            corpus_inputs_sha256: corpusInputsSha256(),
+        },
         projects: [],
         sessions: [
             { id: "s-0000", requests: 2 },
@@ -501,6 +509,32 @@ describe("run inputs", () => {
         const altered = { ...scenarioBody(), events: [] };
         writeScenario(out, altered, good.scenario_hash);
         await expect(loadScenario(o)).rejects.toThrow(/does not hash to its scenario_hash/);
+    });
+
+    test("scenario.json from another generator is refused for reuse", async () => {
+        const out = dir();
+        const body = scenarioBody();
+        writeScenario(out, {
+            ...body,
+            manifest: { ...body.manifest, generator_version: "sim-scenario/v1" },
+        });
+        const o = { config, out, seed: 101, tier: "S" as const };
+        await expect(loadScenario(o)).rejects.toThrow(/from generator sim-scenario\/v1/);
+    });
+
+    test("scenario.json compiled from other inputs than the pre-registration names is refused", async () => {
+        for (const manifest of [
+            { preregistration_sha256: "0".repeat(64) },
+            { corpus_inputs_sha256: "0".repeat(64) },
+        ]) {
+            const out = dir();
+            const body = scenarioBody();
+            writeScenario(out, { ...body, manifest: { ...body.manifest, ...manifest } });
+            const o = { config, out, seed: 101, tier: "S" as const };
+            await expect(loadScenario(o)).rejects.toThrow(
+                /scenario\.json was compiled (with|from)/,
+            );
+        }
     });
 
     test("a fault override must be an array of episodes valid against the compiled scenario", () => {

@@ -14,8 +14,8 @@ v2 harness before any harness code existed.
 Every P1 item has a no-cue control instance with the same task, and the report
 pairs them.
 
-No harness code, test, or run exists yet. The surface lands in M2
-(#1026).
+M5 (#1029) labels each P1 and P1-control grade with its fact id, so the pair is
+joined by fact; a test grades a recorded control and a P1 item of the same fact.
 
 ## Failure scenario
 

@@ -1,0 +1,54 @@
+{
+  "provenance": "constructed",
+  "probe": {
+    "id": "P5-b",
+    "type": "P5",
+    "fact": "f-1",
+    "project": "mini-redis",
+    "session": "s-1",
+    "text": "Do the task.",
+    "check": {
+      "must_not": [
+        "static\\s+\\w+\\s*:\\s*.*Mutex",
+        "lazy_static",
+        "OnceLock<.*Mutex"
+      ]
+    },
+    "event": "e-1"
+  },
+  "snapshots": [
+    {
+      "id": "s-P5-b",
+      "item": "P5-b",
+      "arm": "eidnara",
+      "session": "s-1",
+      "turn": "e-1",
+      "turn_outcome": "ok",
+      "artefacts": [
+        {
+          "id": "d1",
+          "class": "diff",
+          "role": "turn",
+          "patch": "diff --git a/src/db.rs b/src/db.rs\n--- a/src/db.rs\n+++ b/src/db.rs\n@@ -1,0 +1,1 @@\n+static STORE: Mutex<HashMap<String, Bytes>> = Mutex::new(HashMap::new());\n"
+        },
+        {
+          "id": "c1",
+          "class": "command-log",
+          "role": "turn",
+          "commands": []
+        }
+      ]
+    }
+  ],
+  "expect": {
+    "verdict": "fail",
+    "reason": "reused the rejected approach",
+    "metrics": {
+      "P5.pass": false
+    },
+    "inputs": [
+      "c1",
+      "d1"
+    ]
+  }
+}

@@ -1,0 +1,63 @@
+{
+  "provenance": "constructed",
+  "probe": {
+    "id": "P5-c",
+    "type": "P5",
+    "fact": "f-1",
+    "project": "mini-redis",
+    "session": "s-1",
+    "text": "Do the task.",
+    "check": {
+      "must_not": [
+        "^(?:export\\s+)?const\\s+\\w+\\s*=\\s*new\\s+(?:Weak)?Map\\("
+      ]
+    },
+    "event": "e-1"
+  },
+  "snapshots": [
+    {
+      "id": "s-P5-c",
+      "item": "P5-c",
+      "arm": "eidnara",
+      "session": "s-1",
+      "turn": "e-1",
+      "turn_outcome": "ok",
+      "artefacts": [
+        {
+          "id": "d1",
+          "class": "diff",
+          "role": "turn",
+          "patch": ""
+        },
+        {
+          "id": "c1",
+          "class": "command-log",
+          "role": "turn",
+          "commands": [
+            {
+              "command": "ls src",
+              "exit": 0,
+              "scenario_ms": 0
+            },
+            {
+              "command": "cat > src/cache.ts <<'EOF'\nimport x from 'y';\nconst cache = new Map();\nEOF",
+              "exit": 0,
+              "scenario_ms": 1
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "expect": {
+    "verdict": "fail",
+    "reason": "reused the rejected approach",
+    "metrics": {
+      "P5.pass": false
+    },
+    "inputs": [
+      "c1",
+      "d1"
+    ]
+  }
+}

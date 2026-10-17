@@ -1070,8 +1070,9 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M5 (#1029); nothing constructs
-it yet
+Exercised: partial - the M5 grading unit (#1029) exercises the grader on
+recorded fixtures in `src/grade/probes.test.ts`; run and report wiring lands in
+later units
 Guarantee: SIM-P40: Each grade record lists its input artefact ids, every id is
 of class diff, command-log, test-result, workspace-state, or proxy-call, and
 classes transcript and agent self-report never appear.
@@ -1081,9 +1082,12 @@ Fault/timing angle: none.
 Required faults and enabling state: grades for every programmatic probe type.
 Confidence: low -
 [evidence](evidence/sim-p40-grade-inputs-are-artefacts-only.md). PROPOSED:
-reconstructed from the condensed index in spec #1007; no implementation exists
-to verify against, and a default tier run reaches it.
-Existing check: none
+reconstructed from the condensed index in spec #1007; the M5 grading unit
+(#1029) implements the grader and run and report wiring is still absent, and a
+default tier run reaches it.
+Existing check: `src/grade/probes.test.ts`, grading harness: a snapshot carrying
+a transcript artefact is refused, and every fixture grade lists exactly the
+artefact ids its grader read; status unaudited
 Impact: A system that restates a rule and then violates it scores as compliant.
 Open questions: None.
 
@@ -1092,8 +1096,9 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M5 (#1029); nothing constructs
-it yet
+Exercised: partial - the M5 grading unit (#1029) exercises the grader on
+recorded fixtures in `src/grade/probes.test.ts`; run and report wiring lands in
+later units
 Guarantee: SIM-P41: `SnapshotArtefacts` appears exactly once per item and arm,
 at the first `EndTurn` of the probe task, and grades reference that snapshot id.
 Check: `always` - count `SnapshotArtefacts` per item and arm, assert exactly one
@@ -1103,9 +1108,11 @@ retry.
 Required faults and enabling state: a probe turn followed by pushback.
 Confidence: low -
 [evidence](evidence/sim-p41-first-attempt-snapshot-set-once.md). PROPOSED:
-reconstructed from the condensed index in spec #1007; no implementation exists
-to verify against, and a default tier run reaches it.
-Existing check: none
+reconstructed from the condensed index in spec #1007; the M5 grading unit
+(#1029) implements the grader and run and report wiring is still absent, and a
+default tier run reaches it.
+Existing check: `src/grade/probes.test.ts`, grading harness: only the first
+attempt is graded and later snapshots are counted; status unaudited
 Impact: A later corrected attempt is graded as the first.
 Open questions: None.
 
@@ -1114,8 +1121,9 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M5 (#1029); nothing constructs
-it yet
+Exercised: partial - the M5 grading unit (#1029) exercises the grader on
+recorded fixtures in `src/grade/probes.test.ts`; run and report wiring lands in
+later units
 Guarantee: SIM-P42: For an item and arm, grade versions are strictly increasing,
 the report names the version used, and no journal entry rewrites an earlier
 version.
@@ -1125,9 +1133,12 @@ Fault/timing angle: none.
 Required faults and enabling state: a regrade after a grader fix.
 Confidence: low -
 [evidence](evidence/sim-p42-grade-is-versioned-not-overwritten.md). PROPOSED:
-reconstructed from the condensed index in spec #1007; no implementation exists
-to verify against, and a default tier run reaches it.
-Existing check: none
+reconstructed from the condensed index in spec #1007; the M5 grading unit
+(#1029) implements the grader and run and report wiring is still absent, and a
+default tier run reaches it.
+Existing check: `src/grade/probes.test.ts`, grading harness: grade versions for
+one item and arm strictly increase and an out-of-order version is refused;
+status unaudited
 Impact: A report silently uses a different grade than the one recorded.
 Open questions: None.
 
@@ -1200,8 +1211,9 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M5 (#1029); nothing constructs
-it yet
+Exercised: partial - the M5 grading unit (#1029) exercises the grader on
+recorded fixtures in `src/grade/probes.test.ts`; run and report wiring lands in
+later units
 Guarantee: SIM-P46: An item whose probe turn ended `failed` has no grade version
 and is counted in dependability metrics; recall and harm rates name their
 excluded-failed count.
@@ -1211,9 +1223,11 @@ Fault/timing angle: provider faults fail turns.
 Required faults and enabling state: a provider fault during a probe turn.
 Confidence: low -
 [evidence](evidence/sim-p46-failed-turn-item-is-not-a-grade.md). PROPOSED:
-reconstructed from the condensed index in spec #1007; no implementation exists
-to verify against, and a default tier run reaches it.
-Existing check: none
+reconstructed from the condensed index in spec #1007; the M5 grading unit
+(#1029) implements the grader and run and report wiring is still absent, and a
+default tier run reaches it.
+Existing check: `src/grade/probes.test.ts`, grading harness: a probe turn that
+failed has no grade, before any grader is selected; status unaudited
 Impact: An arm is penalised in recall for provider faults it did not cause, or
 failures vanish.
 Open questions:
@@ -1225,8 +1239,10 @@ Open questions:
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M5 (#1029); nothing constructs
-it yet
+Exercised: partial - the M5 grading unit (#1029) exercises item-level P13
+grading on recorded fixtures in `src/grade/probes.test.ts`; one record per fold
+and run wiring
+remain open
 Guarantee: SIM-P47: Every observed fold or host compaction event, a
 `history_summarizer` or `native_compaction` call followed by a context-size
 drop, yields one P13 record naming the event.
@@ -1235,9 +1251,14 @@ P13 record cites it.
 Fault/timing angle: a fold killed mid-way yields a partial event.
 Required faults and enabling state: a p90 session.
 Confidence: low - [evidence](evidence/sim-p47-fold-event-yields-p13-record.md).
-PROPOSED: reconstructed from the condensed index in spec #1007; no
-implementation exists to verify against, and a default tier run reaches it.
-Existing check: none
+PROPOSED:
+reconstructed from the condensed index in spec #1007; the M5 grading unit
+(#1029) implements the grader and run and report wiring is still absent, and a
+default tier run reaches it.
+Existing check: `src/grade/probes.test.ts`, recorded fixtures: the P13 fixtures
+grade one record per item from the folds in its range and count them in
+`P13.folds`; one record per fold, naming the fold event, remains untested;
+status unaudited
 Impact: Fold fidelity is measured on a subset of folds.
 Open questions: None.
 
@@ -1265,8 +1286,9 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M2 (#1026); nothing constructs
-it yet
+Exercised: partial - the M5 grading unit (#1029) exercises the grader on
+recorded fixtures in `src/grade/probes.test.ts`; run and report wiring lands in
+later units
 Guarantee: SIM-P49: Every P1 item has a no-cue control instance with the same
 task, and the report pairs them.
 Check: `always` - for each P1 item, assert a control instance with the same task
@@ -1274,9 +1296,12 @@ exists and the report pairs them.
 Fault/timing angle: none.
 Required faults and enabling state: a probe plan with P1 items.
 Confidence: low - [evidence](evidence/sim-p49-p1-control-instance-paired.md).
-PROPOSED: reconstructed from the condensed index in spec #1007; no
-implementation exists to verify against, and a default tier run reaches it.
-Existing check: none
+PROPOSED:
+reconstructed from the condensed index in spec #1007; the M5 grading unit
+(#1029) implements the grader and run and report wiring is still absent, and a
+default tier run reaches it.
+Existing check: `src/grade/probes.test.ts`, grading harness: P1 and its control
+are paired by fact under separate metrics; status unaudited
 Impact: P1 compliance cannot be separated from the task's base rate.
 Open questions: None.
 
@@ -1285,8 +1310,9 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M5 (#1029); nothing constructs
-it yet
+Exercised: partial - the M5 grading unit (#1029) exercises the grader on
+recorded fixtures in `src/grade/probes.test.ts`; run and report wiring lands in
+later units
 Guarantee: SIM-P50: The P11 harm score weights a false positive at twice a hit,
 and the weight is in the pre-registration record.
 Check: `always` - assert the P11 score formula uses the pre-registered weight of
@@ -1295,9 +1321,11 @@ Fault/timing angle: none.
 Required faults and enabling state: P11 items.
 Confidence: low -
 [evidence](evidence/sim-p50-p11-false-positive-weight-applied.md). PROPOSED:
-reconstructed from the condensed index in spec #1007; no implementation exists
-to verify against, and a default tier run reaches it.
-Existing check: none
+reconstructed from the condensed index in spec #1007; the M5 grading unit
+(#1029) implements the grader and run and report wiring is still absent, and a
+default tier run reaches it.
+Existing check: `src/grade/probes.test.ts`, grading harness: P11 scores a hit +1
+and a false-positive injection minus the pre-registered weight; status unaudited
 Impact: Wrong-project injection is under-penalised.
 Open questions: None.
 

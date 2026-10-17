@@ -14,8 +14,8 @@ v2 harness before any harness code existed.
 An item whose probe turn ended `failed` has no grade version and is counted in
 dependability metrics; recall and harm rates name their excluded-failed count.
 
-No harness code, test, or run exists yet. The surface lands in M5
-(#1029).
+M5 (#1029) returns no grade for a snapshot whose probe turn failed; a test
+checks it.
 
 ## Failure scenario
 

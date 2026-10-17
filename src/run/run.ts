@@ -17,15 +17,15 @@ import type { SimConfig } from "../config/config";
 import type { ArmName } from "../hosts/arms";
 import { HostDriver } from "../hosts/driver";
 import { canonicalJson, sha256Hex } from "../prereg/canonical";
-import type { Tier } from "../prereg/schema";
+import type { Preregistration, Tier } from "../prereg/schema";
 import { preregistrationHash } from "../prereg/validate";
 import { bedrockUpstream, Gateway } from "../proxy/gateway";
 import { FaultInjector } from "../proxy/inject";
 import { RecordWriter, readRecords } from "../proxy/records";
 import { Rng } from "../rng";
-import { compileScenario, type Scenario } from "../scenario/compile";
+import { compileScenario, type Scenario, scenarioInputMismatch } from "../scenario/compile";
 import { type FaultEpisode, type FaultType, SEAMS, validateFault } from "../scenario/faults";
-import { loadCompileInput, loadPrereg } from "../scenario/inputs";
+import { corpusInputsSha256, loadCompileInput, loadPrereg } from "../scenario/inputs";
 import { bedrockEmbedder } from "../scenario/similarity";
 import { writeAtomic } from "./atomic";
 import { type Entry, Journal, releaseLease, takeLease } from "./journal";
@@ -512,6 +512,16 @@ export function requirePlainCache(cache: string, checkout: string): void {
 }
 
 /** `scenario.json` is accepted only when its body still hashes to its `scenario_hash`. */
+/** One parsed pre-registration per run options object, so every startup step reads the same revision. */
+const preregs = new WeakMap<object, Preregistration>();
+function preregOf(o: Pick<RunOptions, "tier">): Preregistration {
+    const cached = preregs.get(o);
+    if (cached) return cached;
+    const loaded = loadPrereg(o.tier);
+    preregs.set(o, loaded);
+    return loaded;
+}
+
 export async function loadScenario(o: Pick<RunOptions, "config" | "out" | "seed" | "tier">) {
     const path = join(o.out, "scenario.json");
     if (!existsSync(path)) {
@@ -530,6 +540,11 @@ export async function loadScenario(o: Pick<RunOptions, "config" | "out" | "seed"
             `scenario.json does not hash to its scenario_hash ${scenario_hash}`,
         );
     }
+    const stale = scenarioInputMismatch(scenario, {
+        preregistration_sha256: preregistrationHash(preregOf(o)),
+        corpus_inputs_sha256: corpusInputsSha256(),
+    });
+    if (stale) throw new HarnessFailure(stale);
     const { seed, tier } = scenario.manifest as { seed: number; tier: string };
     if (seed !== o.seed || tier !== o.tier) {
         throw new HarnessFailure(
@@ -721,7 +736,7 @@ function validateEpisodes(raw: unknown[], scenario: Scenario, source: string): v
 
 /** The pre-registered arm order for this seed, which `order_by_seed` may permute. */
 function seedOrder(o: RunOptions): readonly string[] {
-    const prereg = loadPrereg(o.tier);
+    const prereg = preregOf(o);
     const index = prereg.seeds.indexOf(o.seed);
     if (index < 0) throw new HarnessFailure(`seed ${o.seed} is not pre-registered for ${o.tier}`);
     return prereg.arms.order_by_seed[index] ?? prereg.arms.run;
@@ -803,9 +818,9 @@ function linkTarget(link: string, root: string, seen: Set<string>): string {
 const OPENCODE_SDK = "packages/e2e-tests/node_modules/@opencode-ai/sdk";
 
 /** Every input the manifest pins besides the scenario hash, recomputed from the live environment. */
-export function runIdentity(config: SimConfig, tier: Tier, projects: string[]) {
+export function runIdentity(config: SimConfig, prereg: Preregistration, projects: string[]) {
     return {
-        prereg_sha256: preregistrationHash(loadPrereg(tier)),
+        prereg_sha256: preregistrationHash(prereg),
         ...eidnaraIdentity(config.eidnara_checkout),
         ...simIdentity(),
         binaries: binaryDigests(config),
@@ -925,7 +940,7 @@ export async function loadManifest(
         scenario_hash: scenario.scenario_hash,
         ...runIdentity(
             o.config,
-            o.tier,
+            preregOf(o),
             scenario.projects.map((p) => p.id),
         ),
     });
@@ -1045,7 +1060,7 @@ export async function runTier(o: RunOptions): Promise<void> {
     requireOutsideIdentity(o.out);
     requirePinnedPath(o.config);
     mkdirSync(o.out, { recursive: true });
-    requirePlainArtifacts(o.out, loadPrereg(o.tier).arms.run);
+    requirePlainArtifacts(o.out, preregOf(o).arms.run);
     takeLease(o.out);
     const cleanup: Array<() => Promise<void> | void> = [() => releaseLease(o.out)];
     let done: Promise<void> | null = null;
@@ -1153,7 +1168,7 @@ async function runArms(
         holds.set(timer, end);
     };
     const { config, seed } = o;
-    const prereg = loadPrereg(o.tier);
+    const prereg = preregOf(o);
     const wallBudgetMs = prereg.liveness_bounds.tier_wall_budget_ms;
     const budget = setTimeout(() => {
         stop.reason ??= `tier wall budget of ${wallBudgetMs} ms exhausted`;

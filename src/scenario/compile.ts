@@ -7,7 +7,7 @@ import { scheduleFaults, validateFault } from "./faults";
 import { bm25Ratio, cosine, type Embedder } from "./similarity";
 import { Tokens } from "./tokens";
 
-export const GENERATOR_VERSION = "sim-scenario/v1";
+export const GENERATOR_VERSION = "sim-scenario/v2";
 
 export const MANNER_WEIGHTS = {
     correction: 0.35,
@@ -46,7 +46,7 @@ export interface CompileInput {
     projects: Project[];
     pastes: { id: string; content: string }[];
     errorCodes: { id: string; code: string; context: string }[];
-    corpusManifestSha256: string;
+    corpusInputsSha256: string;
     embedder: Embedder;
 }
 
@@ -454,12 +454,16 @@ export async function compileScenario(input: CompileInput) {
             addProbe("P2", project.id, outText, mustNot, fromConveyed);
             addProbe("P11", twinOf(project.id), probeText, mustNot, later(twinOf(project.id)));
         } else if (host) {
-            addProbe("P13", project.id, probeText, check, [host], () =>
+            const turns: [number, number] = [conveyed.index + 1, turnHi];
+            const ranged = { ...(check as Record<string, unknown>), turns };
+            const placed = addProbe("P13", project.id, probeText, ranged, [host], () =>
                 range(turnHi - third, turnHi),
             );
+            turns[1] = placed.index + 1;
         } else if (f.type === "P4") {
             const out = slot % 2 === 1;
-            const c = out ? renderDeep(tpl.out_check ?? tpl.check, vars) : check;
+            const scoped = out ? renderDeep(tpl.out_check ?? tpl.check, vars) : check;
+            const c = { ...(scoped as Record<string, unknown>), scope: out ? "out" : "in" };
             addProbe("P4", project.id, out ? outText : probeText, c, fromConveyed);
         } else if (f.type === "P6") {
             const opening = fromConveyed.filter((x) => !turns.has(key(x.id, 0)));
@@ -583,6 +587,10 @@ export async function compileScenario(input: CompileInput) {
         ),
     );
     for (const p of probes) if (p.text) p.event = probeEvent.get(p.id);
+    const lastTurnEvent = new Map<string, string>();
+    for (const e of events)
+        if (e.kind === "user_turn") lastTurnEvent.set(e.session as string, e.id);
+    for (const p of probes) if (p.type === "P14") p.event = lastTurnEvent.get(p.session);
     const lastCue = new Map<unknown, number>();
     events.forEach((e, i) => {
         if (e.fact && e.role !== "probe") lastCue.set(e.fact, i);
@@ -616,7 +624,8 @@ export async function compileScenario(input: CompileInput) {
             random_schema_version: 1,
             seed,
             tier: prereg.tier,
-            corpus_manifest_sha256: input.corpusManifestSha256,
+            corpus_inputs_sha256: input.corpusInputsSha256,
+            preregistration_sha256: sha256Hex(canonicalJson(prereg)),
             embedding_model: input.embedder.model,
             cue_probe_similarity: thresholds,
             within_session_gap_scale: Math.round(withinScale * 1e6) / 1e6,
@@ -636,3 +645,26 @@ export async function compileScenario(input: CompileInput) {
 }
 
 export type Scenario = Awaited<ReturnType<typeof compileScenario>>;
+
+export interface ScenarioInputs {
+    preregistration_sha256: string;
+    corpus_inputs_sha256: string;
+}
+
+/** A cached scenario is reusable only when the current generator and the named inputs produced it. */
+export function scenarioInputMismatch(scenario: Scenario, inputs: ScenarioInputs): string | null {
+    const m = scenario.manifest;
+    if (scenario.schema !== GENERATOR_VERSION) {
+        return `scenario.json has schema ${scenario.schema}, not ${GENERATOR_VERSION}`;
+    }
+    if (m.generator_version !== GENERATOR_VERSION) {
+        return `scenario.json is from generator ${m.generator_version}, not ${GENERATOR_VERSION}`;
+    }
+    if (m.preregistration_sha256 !== inputs.preregistration_sha256) {
+        return `scenario.json was compiled with pre-registration ${m.preregistration_sha256}, not ${inputs.preregistration_sha256}`;
+    }
+    if (m.corpus_inputs_sha256 !== inputs.corpus_inputs_sha256) {
+        return `scenario.json was compiled from corpus ${m.corpus_inputs_sha256}, not ${inputs.corpus_inputs_sha256}`;
+    }
+    return null;
+}

@@ -452,7 +452,8 @@
                 "check": {
                     "must_not": [
                         "{value}"
-                    ]
+                    ],
+                    "answer_must_not": "{value}"
                 }
             },
             {

@@ -1,0 +1,85 @@
+{
+  "provenance": "constructed",
+  "probe": {
+    "id": "P13-a",
+    "type": "P13",
+    "fact": "f-1",
+    "project": "mini-redis",
+    "session": "s-1",
+    "text": "Do the task.",
+    "check": {
+      "commands_must": [
+        "git commit[^\\n]*\\[ember_magpie\\]"
+      ],
+      "turns": [
+        0,
+        30
+      ]
+    },
+    "event": "e-1"
+  },
+  "snapshots": [
+    {
+      "id": "s-P13-a",
+      "item": "P13-a",
+      "arm": "eidnara",
+      "session": "s-1",
+      "turn": "e-1",
+      "turn_outcome": "ok",
+      "artefacts": [
+        {
+          "id": "c1",
+          "class": "command-log",
+          "commands": [
+            {
+              "command": "cargo test",
+              "exit": 0,
+              "scenario_ms": 100
+            },
+            {
+              "command": "git commit -m '[ember_magpie] add cap'",
+              "exit": 0,
+              "scenario_ms": 900
+            }
+          ],
+          "role": "session"
+        },
+        {
+          "id": "p1",
+          "class": "proxy-call",
+          "calls": [
+            {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "seq": 5,
+              "arm": "eidnara",
+              "session": "s-1",
+              "component": "history_summarizer",
+              "turn": "e-0",
+              "scenario_ms": 500,
+              "input_tokens": 20000,
+              "output_tokens": 2000,
+              "turn_index": 5,
+              "status": 200,
+              "error": null
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "expect": {
+    "verdict": "pass",
+    "metrics": {
+      "P13.fold_fidelity_score": 1,
+      "P13.rule_kept": true,
+      "P13.ratio_in_bounds": true,
+      "P13.repeated_action": false,
+      "P13.folds": 1
+    },
+    "inputs": [
+      "c1",
+      "p1"
+    ]
+  }
+}

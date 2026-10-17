@@ -1,0 +1,51 @@
+{
+  "provenance": "constructed",
+  "probe": {
+    "id": "P4-b",
+    "type": "P4",
+    "fact": "f-1",
+    "project": "mini-redis",
+    "session": "s-1",
+    "text": "Do the task.",
+    "check": {
+      "must": [
+        "debug!"
+      ],
+      "must_not": [
+        "trace!"
+      ],
+      "scope": "out"
+    },
+    "event": "e-1"
+  },
+  "snapshots": [
+    {
+      "id": "s-P4-b",
+      "item": "P4-b",
+      "arm": "eidnara",
+      "session": "s-1",
+      "turn": "e-1",
+      "turn_outcome": "ok",
+      "artefacts": [
+        {
+          "id": "d1",
+          "class": "diff",
+          "role": "turn",
+          "patch": "diff --git a/src/server.rs b/src/server.rs\n--- a/src/server.rs\n+++ b/src/server.rs\n@@ -1,0 +1,1 @@\n+trace!(addr = %addr, \"listening\");\n"
+        }
+      ]
+    }
+  ],
+  "expect": {
+    "verdict": "fail",
+    "reason": "missing the expected rule; collapsed a still-valid fact",
+    "metrics": {
+      "P4.pass": false,
+      "P4.harm": true,
+      "P4.collapsed": true
+    },
+    "inputs": [
+      "d1"
+    ]
+  }
+}
