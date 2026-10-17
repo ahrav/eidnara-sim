@@ -198,6 +198,7 @@ export function soakByMonth(
             resources: arm.resources.filter((s) => inMonth(s.scenario_ms)),
             journal: arm.journal.filter((e) => inMonth(e.scenario_ms)),
         };
-        return { month: month + 1, ...soak(run, slice, resource) };
-    });
+        const verdict = soak(run, slice, resource);
+        return verdict ? [{ month: month + 1, ...verdict }] : [];
+    }).flat();
 }
