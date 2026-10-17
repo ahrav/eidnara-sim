@@ -30,7 +30,9 @@ export function loadGraded(dir: string, prereg: Preregistration): GradedRun {
         scenario_hash: string;
         fault_override: Scenario["faults"] | null;
         preflight?: { distortions?: string[]; hosts?: { host: string; version: string }[] };
-    } & Omit<RunIdentity, "distortions" | "host_versions">;
+    } & Omit<RunIdentity, "distortions" | "host_versions" | "side_model"> & {
+            side_model?: string | null;
+        };
     const current = preregistrationHash(prereg);
     if (manifest.prereg_sha256 !== current) {
         throw new Error(
@@ -52,7 +54,7 @@ export function loadGraded(dir: string, prereg: Preregistration): GradedRun {
         const key = `${g.item}/${g.arm}/${g.inputs.join("\n")}`;
         if ((judged.get(key)?.version ?? 0) < g.version) judged.set(key, g);
     }
-    const { eidnara_commit, models, context_limit, events } = manifest;
+    const { eidnara_commit, models, context_limit, events, side_model, user_sim_model } = manifest;
     const witnesses = new Map<string, WitnessReport>();
     const faults = join(dir, "faults.jsonl");
     // SAFETY: each line of faults.jsonl is a JSON-serialized WitnessReport[] from injector.report().
@@ -85,6 +87,8 @@ export function loadGraded(dir: string, prereg: Preregistration): GradedRun {
             events,
             distortions: manifest.preflight?.distortions ?? [],
             host_versions: (manifest.preflight?.hosts ?? []).map((h) => `${h.host}@${h.version}`),
+            side_model: side_model ?? null,
+            user_sim_model,
         },
         witnesses: reports === null ? null : [...witnesses.values()],
     };

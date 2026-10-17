@@ -1,6 +1,8 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import type { Tier } from "../src/prereg/schema";
+import { preregistrationHash } from "../src/prereg/validate";
+import type { GradedRun } from "../src/report/observe";
 import { renderTier } from "../src/report/render";
 import { aaScale, type CusumScale, cusumScale, loadGraded, tierReport } from "../src/report/tier";
 import { loadPrereg } from "../src/scenario/inputs";
@@ -38,7 +40,7 @@ const scales = new Map(
         return [tier, { scale: aaScale(t.prereg, t.runs), complete }];
     }),
 );
-const recorded = (tier: Tier, dirs: string[]) => {
+const recorded = (tier: Tier, dirs: string[], runs: GradedRun[]) => {
     const texts = dirs.map((d) => {
         const parents = [dirname(d), dirname(dirname(d))];
         const beside = parents.map((p) => join(p, `${tier}-resizing.json`)).find(existsSync);
@@ -55,16 +57,34 @@ const recorded = (tier: Tier, dirs: string[]) => {
         );
         process.exit(2);
     }
-    return text === null
-        ? undefined
-        : (JSON.parse(text) as {
-              cusum_sd: CusumScale | null;
-              paired_items_per_probe_type: number;
-          });
+    if (text === null) return undefined;
+    const record = JSON.parse(text) as {
+        cusum_sd: CusumScale | null;
+        paired_items_per_probe_type: number;
+        target_prereg_sha256: string;
+    };
+    const prereg = loadPrereg(tier);
+    if (record.target_prereg_sha256 !== preregistrationHash(prereg)) {
+        console.error(
+            `the ${tier}-resizing.json beside the runs was recorded under another ${tier} pre-registration`,
+        );
+        process.exit(2);
+    }
+    const want = Math.ceil(
+        record.paired_items_per_probe_type / (prereg.seeds.length * prereg.hosts.length),
+    );
+    const other = runs.filter((g) => g.scenario.manifest.probes_per_type !== want);
+    if (other.length > 0) {
+        console.error(
+            `runs compiled for another count than the resizing record: ${other.map((g) => g.run.dir).join(", ")}`,
+        );
+        process.exit(2);
+    }
+    return record;
 };
 let violated = 0;
 for (const [tier, { prereg, runs }] of loaded) {
-    const resizing = recorded(tier, byTier.get(tier) ?? []);
+    const resizing = recorded(tier, byTier.get(tier) ?? [], runs);
     const scale = cusumScale(prereg, scales, resizing?.cusum_sd ?? undefined);
     const report = tierReport(
         prereg,

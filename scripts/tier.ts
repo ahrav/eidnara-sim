@@ -22,7 +22,7 @@ import type { Scenario } from "../src/scenario/compile";
 import { loadPrereg } from "../src/scenario/inputs";
 
 const USAGE =
-    "usage: bun scripts/tier.ts --tier S --out <dir> [--hosts pi,opencode] [--turn-ms N] [--resize-from <M tier dir>] [--plan-only]";
+    "usage: bun scripts/tier.ts --tier S --out <dir> [--hosts pi,opencode] [--turn-ms N] [--resize-from <M tier dir>] [--models a,b] [--plan-only]";
 const fail = (why: string): never => {
     console.error(`${why}\n${USAGE}`);
     process.exit(2);
@@ -33,6 +33,7 @@ const FLAGS: Record<string, boolean> = {
     hosts: true,
     "turn-ms": true,
     "resize-from": true,
+    models: true,
     "plan-only": false,
 };
 const flags = new Map<string, string>();
@@ -117,6 +118,9 @@ if (prereg.resizing && from && !existsSync(resizing)) {
     if (main.length === 0 || ungraded.length > 0)
         refuse(`the ${m.tier} paired runs are not all graded: ${ungraded.join(", ") || "none"}`);
     const runs = main.map((d) => loadGraded(d, m));
+    const input = tierInput(m, runs);
+    const open = (input.incomplete ?? []).filter((x) => !x.startsWith("CUSUM "));
+    if (open.length > 0) refuse(`the ${m.tier} campaign is incomplete: ${open.join("; ")}`);
     const sized = {
         recorded_at: new Date().toISOString(),
         source_dir: resolve(from),
@@ -124,7 +128,7 @@ if (prereg.resizing && from && !existsSync(resizing)) {
         target_prereg_sha256: preregistrationHash(prereg),
         runs: main,
         cusum_sd: aaScale(m, runs) ?? null,
-        ...resizeFromM(prereg, tierInput(m, runs)),
+        ...resizeFromM(prereg, input),
     };
     writeFileSync(resizing, `${JSON.stringify(sized, null, 2)}\n`);
 }
@@ -150,6 +154,12 @@ for (const seed of prereg.seeds) {
     mkdirSync(dir, { recursive: true });
     scenarios.set(seed, await loadScenario({ config, tier, seed, out: dir }, items));
 }
+const models = arg("models")?.split(",") ?? [config.agent_model];
+const switches = [...scenarios.values()].some((s) =>
+    s.faults.some((f) => f.type === "model_switch"),
+);
+if (switches && new Set(models).size < 2)
+    refuse(`the ${tier} scenarios schedule a model_switch; --models must list two distinct models`);
 const plan: TierJob[] = [
     ...tierPlan(prereg, scenarios, hosts, out, turnMs),
     ...profileJobs(prereg, scenarios, hosts, out, turnMs),
@@ -163,7 +173,7 @@ if (conflicts.length > 0) {
 }
 writeAtomic(
     priorPlan,
-    `${JSON.stringify({ tier, turn_ms: turnMs, items_per_type: items ?? null, plan }, null, 2)}\n`,
+    `${JSON.stringify({ tier, turn_ms: turnMs, items_per_type: items ?? null, models, plan }, null, 2)}\n`,
 );
 console.log(
     JSON.stringify(plan.map((j) => [j.group, j.dir, j.events, j.user_turns, j.arms.join(",")])),
@@ -227,6 +237,7 @@ const runJob = async (job: TierJob) => {
                       ...["--tier", tier, "--seed", String(job.seed), "--out", job.dir],
                       ...["--host", job.host, "--arms", job.arms.join(",")],
                       ...["--events", String(job.events), ...job.extra],
+                      ...(arg("models") ? ["--models", models.join(",")] : []),
                       ...(moved ? ["--faults", join(job.dir, "faults.json")] : []),
                   ],
                   log,
