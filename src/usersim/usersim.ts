@@ -1,9 +1,9 @@
-import { appendFileSync, existsSync, lstatSync, readFileSync, truncateSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, truncateSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { sha256Hex } from "../prereg/canonical";
 import type { NormalisationRule } from "../prereg/schema";
 import { COMPONENT_HEADER } from "../proxy/classify";
-import { readJournal } from "../run/journal";
+import { readJournal, requireAppendable } from "../run/journal";
 import { HarnessFailure } from "../run/scheduler";
 import { markerHits } from "../scenario/compile";
 import { LABELS, type Label, type Plan } from "./plan";
@@ -99,11 +99,17 @@ type RowCheck = (row: Record<string, unknown>) => string[];
 
 function jsonl<T>(path: string, role: "own" | "source", check: RowCheck): T[] {
     if (role === "source") requireSource(path);
-    if (!existsSync(path)) return [];
-    // The run's own log is truncated and appended by path, so it must be a regular file.
-    if (role === "own" && lstatSync(path).isSymbolicLink()) {
-        throw new HarnessFailure(`${path} is a symlink`);
+    // The run's own log is truncated and appended by path, so it must be a regular file, and
+    // it exists from the start so a run that needs no entry can still be named as a source.
+    if (role === "own") {
+        try {
+            requireAppendable(path);
+        } catch (caught) {
+            throw new HarnessFailure(String((caught as Error).message));
+        }
+        if (!existsSync(path)) writeFileSync(path, "");
     }
+    if (!existsSync(path)) return [];
     const read = readJournal(path);
     const dropped = readFileSync(path).subarray(read.bytes ?? 0);
     // A kill mid-append leaves an unterminated tail; a terminated line that does not parse is
@@ -174,6 +180,8 @@ export function checkTapeSources(
         fault_override?: unknown;
         /** The ids of this run's user turns; the source must hold a record for each per arm. */
         turns?: readonly string[];
+        /** Scripted text by turn id; with it, every recorded reactive turn needs its tape entry. */
+        scripted?: ReadonlyMap<string, string>;
     },
 ): void {
     for (const tape of tapes) {
@@ -229,11 +237,28 @@ export function checkTapeSources(
         if (run.turns !== undefined) {
             // A dropped row leaves a turn with no recorded context to match; the source must
             // hold one record per arm and turn of this run.
-            const recorded = new Set(
-                readPairing(pairingBeside(tape))
-                    .filter((r) => r.kind === "turn")
-                    .map((r) => `${r.arm} ${r.event}`),
-            );
+            const rows = readPairing(pairingBeside(tape)).filter((r) => r.kind === "turn");
+            const recorded = new Set(rows.map((r) => `${r.arm} ${r.event}`));
+            if (run.scripted !== undefined) {
+                // A recorded reactive turn replays only through its tape entry; a dropped entry
+                // would send the replay live under a matching context.
+                const keys = new Set(readJournal(tape).map((e) => (e as { key?: unknown }).key));
+                const unkeyed = rows
+                    .filter((r) => r.kind === "turn" && r.source !== "script" && r.delivered)
+                    .filter((r) => {
+                        const text = run.scripted?.get(r.event);
+                        if (text === undefined) return false;
+                        return !keys.has(
+                            tapeKey(run.seed, r.event, r.label, r.context_sha256, text),
+                        );
+                    })
+                    .map((r) => `${r.arm} ${r.event}`);
+                if (unkeyed.length > 0) {
+                    throw new HarnessFailure(
+                        `replay source ${tape} lacks replies for ${unkeyed.join(", ")}`,
+                    );
+                }
+            }
             const missing = (run.order ?? []).flatMap(
                 (arm) =>
                     run.turns
@@ -256,6 +281,17 @@ export function readPairing(path: string, arms?: readonly string[]): PairingReco
         }
     });
     return rows;
+}
+
+/** The tape key of a reply: seed, event, label, the session context, and the scripted text. */
+export function tapeKey(
+    seed: number,
+    event: string,
+    label: string,
+    context: string,
+    scriptText: string,
+): string {
+    return sha256Hex(`${seed}/${event}/${label}/${context}/${sha256Hex(scriptText)}`);
 }
 
 export function tapeDigests(tapes: readonly string[]): string[] {
@@ -561,6 +597,8 @@ export interface UserSimOptions {
     normalise: (text: string) => string;
     /** Ledger and probe keys the delivered text must never carry. */
     keys: readonly string[];
+    /** Rendered ledger statements and cues a generated reply must never repeat. */
+    facts?: readonly string[];
 }
 
 /**
@@ -664,10 +702,7 @@ export class UserSim {
         digest: string,
         lastAgent: string,
     ) {
-        // The scripted text is part of the key, so a tape from another scenario that shares the
-        // seed and event ids never answers for an edited task.
-        const scripted = sha256Hex(t.text);
-        const key = sha256Hex(`${this.o.seed}/${t.id}/${label}/${context}/${scripted}`);
+        const key = tapeKey(this.o.seed, t.id, label, context, t.text);
         const taped = this.o.tape.get(key);
         let got = taped;
         if (got === undefined) {
@@ -681,7 +716,9 @@ export class UserSim {
         const hits = markerHits(got.text, this.o.keys);
         const cut = NORMAL_STOPS.has(got.stop) ? [] : [got.stop];
         const empty = got.text === "" ? ["empty"] : [];
-        const fallback = [...empty, ...cut, ...hits];
+        // The script conveys each fact once; a reply that repeats one conveys it again.
+        const fact = (this.o.facts ?? []).some((f) => got.text.includes(f)) ? ["fact"] : [];
+        const fallback = [...empty, ...cut, ...hits, ...fact];
         if (fallback.length === 0) return { text: got.text, source };
         return { text: FALLBACK[label] ?? "", source, fallback };
     }

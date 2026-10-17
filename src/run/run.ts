@@ -45,7 +45,7 @@ import {
     tapeDigests,
     UserSim,
 } from "../usersim/usersim";
-import { Journal, releaseLease, takeLease } from "./journal";
+import { Journal, releaseLease, requireAppendable, takeLease } from "./journal";
 import { plainPath } from "./launcher";
 import { type Preflight, preflight } from "./preflight";
 import { ResourceSampler } from "./sampler";
@@ -209,6 +209,11 @@ async function loadManifest(o: RunOptions, scenario: Scenario): Promise<Manifest
                 .slice(0, events)
                 .filter((e) => e.kind === "user_turn")
                 .map((e) => e.id),
+            scripted: new Map(
+                scenario.events
+                    .filter((e) => e.kind === "user_turn")
+                    .map((e) => [e.id, String((e as { text?: unknown }).text ?? "")]),
+            ),
         });
     if (existsSync(path)) {
         const manifest = JSON.parse(readFileSync(path, "utf8")) as Manifest;
@@ -310,6 +315,7 @@ export class CallIndex {
     private readonly places = new Map<string, Array<[number, number]>>();
 
     constructor(private readonly path: string) {
+        requireAppendable(path);
         if (!existsSync(path)) return;
         const fd = openSync(path, "r");
         try {
@@ -344,7 +350,9 @@ export class CallIndex {
 
     private remember(record: CallRecord, offset: number, length: number): void {
         const key = `${record.arm}/${record.session}`;
-        this.places.set(key, [...(this.places.get(key) ?? []), [offset, length]]);
+        const list = this.places.get(key);
+        if (list) list.push([offset, length]);
+        else this.places.set(key, [[offset, length]]);
     }
 
     add(record: CallRecord, offset: number, length: number): void {
@@ -367,6 +375,23 @@ export class CallIndex {
     }
 }
 
+/** The grade-facing view of one call record, without its turn index, which depends on the scenario. */
+export function projectCall(r: CallRecord): Omit<CallView, "turn_index"> {
+    return {
+        seq: r.seq,
+        component: r.component,
+        turn: r.turn,
+        scenario_ms: r.scenario_ms,
+        input_tokens: r.input_tokens,
+        output_tokens: r.output_tokens,
+        ...(r.response_text ? { response_text: r.response_text } : {}),
+        ...(r.response_text_truncated ? { response_text_truncated: true } : {}),
+        ...(r.status >= 400 || r.error !== null || r.finish_reason === "stream_cut"
+            ? { failed: true }
+            : {}),
+    };
+}
+
 export function callsOf(
     index: CallIndex,
     arm: string,
@@ -376,20 +401,8 @@ export function callsOf(
     let turn: number | undefined;
     return index.records(arm, session).map((r) => {
         turn = (r.turn ? turnIndex.get(r.turn) : undefined) ?? turn;
-        return {
-            seq: r.seq,
-            component: r.component,
-            turn: r.turn,
-            ...(turn === undefined ? {} : { turn_index: turn }),
-            scenario_ms: r.scenario_ms,
-            input_tokens: r.input_tokens,
-            output_tokens: r.output_tokens,
-            ...(r.response_text ? { response_text: r.response_text } : {}),
-            ...(r.response_text_truncated ? { response_text_truncated: true } : {}),
-            ...(r.status >= 400 || r.error !== null || r.finish_reason === "stream_cut"
-                ? { failed: true }
-                : {}),
-        };
+        const view = projectCall(r);
+        return turn === undefined ? view : { ...view, turn_index: turn };
     });
 }
 
@@ -430,6 +443,7 @@ async function runArms(
         drivers: drivers as Record<string, ArmDriver>,
         proxy: injector,
         idleLimitMs: prereg.liveness_bounds.job_deadline_ms,
+        beforeEnd: () => requireRecorded(gateway),
         onClock: (arm, ms) => writeOffset(offsetFile(arm), manifest.base_wall_ms, ms),
         armSummary: (arm) => {
             const turns = userTurns(arm).map((e) => ({
@@ -478,7 +492,7 @@ async function runArms(
     }
     const gateway = new Gateway({
         upstream: bedrockUpstream(config.bedrock.region, config.bedrock.aws_profile),
-        records: new RunRecords(callsPath),
+        records: new RunRecords(callsPath, false),
         injector,
         rng: new Rng((seed ^ 0x27d4eb2f) >>> 0),
         clock: { scenarioMs: now },
@@ -540,6 +554,7 @@ async function runArms(
             ...scenario.facts.flatMap((f) => [f.id, f.template]),
             ...scenario.probes.map((p) => p.id),
         ],
+        facts: scenario.facts.flatMap((f) => [f.statement, ...f.cues]),
     });
     const scriptedById = new Map(scripted.map((t) => [t.id, t]));
     const userTurns = (arm: string, session?: string) =>

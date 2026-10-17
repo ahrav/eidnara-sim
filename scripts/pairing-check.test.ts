@@ -46,7 +46,7 @@ function fixture(arms: string[] = ["a", "b"]): Fixture {
             });
         }
     }
-    const journal: Row[] = [];
+    const journal: Row[] = [{ kind: "StartRun", arm: null, order: arms }];
     const pairing: Row[] = [];
     for (const arm of arms) {
         const turns: { session: string; label: Label }[] = [];
@@ -172,13 +172,46 @@ test("the pairing check fails a run that never reached EndArm for an arm or EndR
     const f = fixture();
     f.journal = drop(f.journal, (r) => !(r.kind === "EndArm" && r.arm === "b"));
     const noEndArm = run(f);
-    expect(noEndArm.report.incomplete).toEqual(["b EndArm"]);
+    expect(noEndArm.report.incomplete).toContain("b EndArm");
     expect(noEndArm.exit).toBe(1);
     const g = fixture();
     g.journal = drop(g.journal, (r) => r.kind !== "EndRun");
     const noEndRun = run(g);
-    expect(noEndRun.report.incomplete).toEqual(["EndRun"]);
+    expect(noEndRun.report.incomplete).toContain("EndRun");
     expect(noEndRun.exit).toBe(1);
+});
+
+test("a non-filler turn the host never received fails the check even when its pairing row says delivered", () => {
+    const f = fixture();
+    find(f.events, (e) => e.id === "e-1-1").role = "conveyance";
+    f.manifest = { ...f.manifest, scenario_hash: scenarioHash({ events: f.events }) };
+    find(
+        f.journal,
+        (r) => r.kind === "UserTurn" && r.arm === "b" && r.event === "e-1-1",
+    ).delivered = false;
+    const rates = find(f.journal, (r) => r.kind === "UserSimRates" && r.arm === "b");
+    const turns = f.journal
+        .filter((r) => r.kind === "UserTurn" && r.arm === "b" && r.delivered === true)
+        .map((r) => ({ session: String(r.session), label: r.label as Label }));
+    Object.assign(rates, realisedRates(turns, prereg));
+    const r = run(f);
+    expect(r.report.non_filler_unsent).toEqual(["b e-1-1"]);
+    expect(r.exit).toBe(1);
+});
+
+test("the journal's events must appear once each, in compiled order, under the journaled arm order", () => {
+    const f = fixture();
+    expect(run(f).exit).toBe(0);
+    const g = fixture();
+    g.journal.push({ kind: "Event", arm: "b", event: "e-0-0", outcome: "ok" });
+    const dup = run(g);
+    expect(dup.exit).toBe(1);
+    expect(String(dup.report.incomplete)).toContain("repeated");
+    const h = fixture();
+    (h.journal[0] as Row).order = ["b", "a"];
+    const order = run(h);
+    expect(order.exit).toBe(1);
+    expect(String(order.report.incomplete)).toContain("order");
 });
 
 test("the pairing check requires an Event row for every scheduled event of every arm", () => {

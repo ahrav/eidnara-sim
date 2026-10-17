@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+    appendFileSync,
     existsSync,
     mkdirSync,
     mkdtempSync,
@@ -1463,5 +1464,103 @@ describe("oracle round eighteen", () => {
         );
         expect(oracle(streamed, "F1")).toEqual([]);
         expect(oracle(streamed, "F9")).toEqual([]);
+    });
+});
+
+describe("oracle round nineteen", () => {
+    const beginTurn = (arm: string, event: string, scenario_ms: number) => ({
+        kind: "BeginTurn" as const,
+        arm,
+        event,
+        seq: 0,
+        wall_ms: 0,
+        scenario_ms,
+    });
+
+    test("a tool start does not end the initial agent-call silence window", () => {
+        const tooled = runWith(
+            armOf("eidnara", {
+                tools: [{ turn: "e-1", command: "ls", exit: 0, scenario_ms: 240_000 }],
+                journal: [beginTurn("eidnara", "e-1", 0), endTurn("eidnara", "e-1", 600_001)],
+            }),
+        );
+        expect(oracle(tooled, "F4").map((a) => a.evidence)).toEqual([
+            "turn began, then 600 s with no tool run, call, or turn end",
+        ]);
+    });
+
+    test("a call active through a deadline is activity for its whole span", () => {
+        const spanning = runWith(
+            armOf("eidnara", {
+                calls: [call({ seq: 0, scenario_ms: 0, started_wall_ms: 0, wall_ms: 1_000_000 })],
+                journal: [
+                    beginTurn("eidnara", "e-1", 0),
+                    endTurn("eidnara", "e-1", 900_000, "turn deadline 900000 ms"),
+                ],
+            }),
+        );
+        expect(oracle(spanning, "F4")).toEqual([]);
+    });
+
+    test("a turn's markers come in BeginTurn, EndTurn, Event order", () => {
+        const { dir, line } = completeDir(["eidnara"]);
+        const journal = [
+            { kind: "StartRun", arm: null, order: ["eidnara"], scenario_ms: 0 },
+            { kind: "EndTurn", arm: "eidnara", event: "e-1", outcome: "ok", scenario_ms: 0 },
+            { kind: "BeginTurn", arm: "eidnara", event: "e-1", scenario_ms: 600_001 },
+            { kind: "Event", arm: "eidnara", event: "e-1", outcome: "ok", scenario_ms: 600_001 },
+            { kind: "EndArm", arm: "eidnara", scenario_ms: 600_001 },
+            { kind: "EndRun", arm: null, scenario_ms: 600_001 },
+        ];
+        writeFileSync(join(dir, "journal.jsonl"), journal.map(line).join(""));
+        expect(() => loadRun(dir, prereg)).toThrow("arm eidnara: turn e-1 markers out of order");
+    });
+});
+
+describe("oracle round twenty", () => {
+    test("sample timestamps and start ticks have the sampler's shapes, and the journal tail parses", () => {
+        const { dir, line } = completeDir(["eidnara"]);
+        const rs = join(dir, "eidnara", "resources.jsonl");
+        writeFileSync(rs, line({ scenario_ms: 1e308, rss: 100, pid: 1, start: "1" }));
+        expect(() => loadRun(dir, prereg)).toThrow(
+            /resources\.jsonl: line 1: scenario_ms is not a count/,
+        );
+        writeFileSync(rs, line({ scenario_ms: 0, rss: 100, pid: 1, start: "-1" }));
+        expect(() => loadRun(dir, prereg)).toThrow(
+            /resources\.jsonl: line 1: start is not a clock tick/,
+        );
+        writeFileSync(rs, line({ scenario_ms: 0, rss: 100, pid: 1, start: "1" }));
+        appendFileSync(join(dir, "journal.jsonl"), '{"kind": \n');
+        expect(() => loadRun(dir, prereg)).toThrow(/journal\.jsonl: line \d+ is corrupt/);
+    });
+});
+
+describe("oracle round twenty-one", () => {
+    test("a start tick needs a pid and the canonical decimal shape", () => {
+        const { dir, line } = completeDir(["eidnara"]);
+        const rs = join(dir, "eidnara", "resources.jsonl");
+        writeFileSync(rs, line({ scenario_ms: 0, rss: 100, start: "1" }));
+        expect(() => loadRun(dir, prereg)).toThrow(/resources\.jsonl: line 1: start without a pid/);
+        writeFileSync(rs, line({ scenario_ms: 0, rss: 100, pid: 1, start: "01" }));
+        expect(() => loadRun(dir, prereg)).toThrow(
+            /resources\.jsonl: line 1: start is not a clock tick/,
+        );
+        writeFileSync(rs, line({ scenario_ms: 0, rss: 100, pid: 1, start: "0" }));
+        expect(loadRun(dir, prereg).arms[0]?.resources).toHaveLength(1);
+    });
+
+    test("a title call after an agent call is not follow-up progress", () => {
+        const titled = runWith(
+            armOf("eidnara", {
+                calls: [
+                    call({ seq: 0, scenario_ms: 10_000, started_wall_ms: 0, wall_ms: 400 }),
+                    call({ seq: 1, component: "title", scenario_ms: 12_000 }),
+                ],
+                journal: [endTurn("eidnara", "e-1", 10_400 + 600_000)],
+            }),
+        );
+        expect(oracle(titled, "F4").map((a) => a.evidence)).toEqual([
+            "call 0 completed, then 600 s with no tool run, call, or turn end",
+        ]);
     });
 });

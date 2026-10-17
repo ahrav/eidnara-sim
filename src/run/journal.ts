@@ -202,13 +202,15 @@ export function requireComplete(entries: Entry[], arms: string[], scheduled: str
         const once = new Set(ended);
         const missing = scheduled.filter((id) => !once.has(id));
         const stray = ended.filter((id, i) => !scheduled.includes(id) || ended.indexOf(id) !== i);
-        const ordered = ended.every((id, i) => id === scheduled[i]);
-        if (!closed || missing.length > 0 || stray.length > 0 || !ordered) {
+        const misordered = ended.findIndex((id, i) => id !== scheduled[i]);
+        if (!closed || missing.length > 0 || stray.length > 0 || misordered !== -1) {
             const marker = closed ? "EndArm present" : "no EndArm";
             const count = `${scheduled.length - missing.length} of ${scheduled.length} events ended`;
             const extra = stray.length > 0 ? `, unexpected or repeated: ${stray.join(", ")}` : "";
             const order =
-                !ordered && stray.length === 0 && missing.length === 0 ? ", out of order" : "";
+                misordered !== -1 && missing.length === 0 && stray.length === 0
+                    ? `, out of order from ${ended[misordered]}`
+                    : "";
             throw new Error(`arm ${arm} is incomplete: ${count}, ${marker}${extra}${order}`);
         }
     }

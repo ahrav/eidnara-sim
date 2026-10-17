@@ -64,6 +64,8 @@ export interface ToolRun {
     scenario_ms: number;
     /** The host's id for the run, when it reports a start before the end; a later report with the same id replaces the earlier one. */
     call?: string;
+    /** Set on a run reported after its turn, at recovery time; the recorder attributes it to no turn. */
+    recovered?: true;
 }
 
 const TARGET_KEYS = ["path", "filePath", "pattern", "file_path"];
@@ -443,6 +445,9 @@ export class DaemonStack {
     async stop(): Promise<void> {
         const stack = this.stack;
         if (!stack) return;
+        // The lifetime's identity is read while it is alive; after termination /proc has no start.
+        const stackPid = this.pid(stack);
+        const stackStart = stackPid === null ? null : processStart(stackPid);
         await stack.terminateHost();
         this.stack = null;
         const { stdout } = this.hh.__hermeticHostTest.diagnostics(stack);
@@ -453,11 +458,10 @@ export class DaemonStack {
         // after any rollback the drains perform, so a rollback cannot erase it.
         const live = String(stack.logPath ?? "");
         const marker = this.readMarker();
-        const stackPid = this.pid(stack);
         const sameLifetime =
             marker?.owner?.pid != null &&
             marker.owner.pid === stackPid &&
-            marker.owner.start === processStart(stackPid as number);
+            marker.owner.start === stackStart;
         const {
             stdout: _held,
             stdout_target: _target,
@@ -680,7 +684,8 @@ export class PiSimHost extends SimHost {
     /**
      * Runs one turn. A turn that fails or times out is aborted; an `agent_end` that already
      * arrived (checked after one event-loop tick, so a same-tick end counts) settles the drain,
-     * otherwise a fresh waiter runs for the drain wait. A Pi that
+     * otherwise a fresh waiter, armed before that tick so no end falls between listeners, runs
+     * for the drain wait. A Pi that
      * reports no `agent_end` in that time is still running the old turn, so its process is
      * killed and the session's later prompts fail at once. A tool event from that turn can
      * then never land on a later turn's record.
@@ -718,9 +723,10 @@ export class PiSimHost extends SimHost {
                 ? { error: String(last.errorMessage ?? "error") }
                 : {};
         } catch (caught) {
+            const fresh = this.agentEnd(this.drainWaitMs);
             await Bun.sleep(0);
-            const drained = ended ? Promise.resolve() : this.agentEnd(this.drainWaitMs);
-            await this.rpc.sendCommand("abort", {}, { timeoutMs: 60_000 }).catch(() => undefined);
+            const drained = ended ? Promise.resolve() : fresh;
+            this.rpc.sendCommand("abort", {}, { timeoutMs: 60_000 }).catch(() => undefined);
             const settled = await drained.then(
                 () => true,
                 () => false,
@@ -870,10 +876,17 @@ export class OpencodeSimHost extends SimHost {
     private async messages(
         deadlineMs: number,
     ): Promise<Array<{ info: Untyped; parts: Untyped[] }>> {
-        const call = this.client.session.messages({ path: { id: this.sid } });
+        const controller = new AbortController();
+        const call = this.client.session.messages({
+            path: { id: this.sid },
+            signal: controller.signal,
+        });
         call.catch(() => undefined);
         const listed = await Promise.race([call, Bun.sleep(deadlineMs).then(() => null)]);
-        if (listed === null) throw new Error(`session.messages timed out after ${deadlineMs} ms`);
+        if (listed === null) {
+            controller.abort();
+            throw new Error(`session.messages timed out after ${deadlineMs} ms`);
+        }
         if (listed.error || !listed.data) {
             throw new Error(`session.messages failed: ${JSON.stringify(listed.error ?? null)}`);
         }
@@ -904,12 +917,28 @@ export class OpencodeSimHost extends SimHost {
      * reaches the recorder; a run it already holds keeps its recorded start time.
      */
     async recoverTools(deadlineMs: number): Promise<void> {
+        this.recoverParts(await this.messages(deadlineMs));
+    }
+
+    /**
+     * The message ids the last turn saw before its post-turn listing failed; the next turn's
+     * pre-turn listing reports the tool parts of every message beyond them.
+     */
+    private unlogged: Set<string> | null = null;
+
+    private recoverParts(messages: Array<{ info: Untyped; parts: Untyped[] }>): void {
         const now = this.ctx.now?.() ?? 0;
-        for (const m of await this.messages(deadlineMs)) {
+        for (const m of messages) {
             for (const part of m.parts.filter((p) => p.type === "tool")) {
                 const command = toolCommand(part.tool, part.state?.input);
                 const exit = EXIT[part.state?.status] ?? null;
-                this.ctx.onTool?.({ command, exit, scenario_ms: now, call: callId(part) });
+                this.ctx.onTool?.({
+                    command,
+                    exit,
+                    scenario_ms: now,
+                    call: callId(part),
+                    recovered: true,
+                });
             }
         }
     }
@@ -927,7 +956,11 @@ export class OpencodeSimHost extends SimHost {
         const remaining = () => Math.max(1_000, deadline - Date.now());
         let seen: Set<string>;
         try {
-            seen = new Set((await this.messages(timeoutMs)).map((m) => String(m.info?.id)));
+            const listed = await this.messages(timeoutMs);
+            if (this.unlogged)
+                this.recoverParts(listed.filter((m) => !this.unlogged?.has(String(m.info?.id))));
+            this.unlogged = null;
+            seen = new Set(listed.map((m) => String(m.info?.id)));
         } catch (caught) {
             return { error: `tool capture: ${String(caught)}`.slice(0, 2000), undelivered: true };
         }
@@ -937,6 +970,7 @@ export class OpencodeSimHost extends SimHost {
         try {
             await this.logTurnTools(seen, startScenario, remaining());
         } catch (caught) {
+            this.unlogged = seen;
             const gap = `tool capture: ${String(caught)}`;
             return {
                 ...outcome,

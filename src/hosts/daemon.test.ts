@@ -1,7 +1,6 @@
 import { expect, test } from "bun:test";
 import {
     appendFileSync,
-    chmodSync,
     existsSync,
     linkSync,
     mkdirSync,
@@ -295,19 +294,24 @@ test("the recovery marker names the held and the live log through a restart, so 
 test("the marker leaves the copying state before the saved source is removed", async () => {
     const dir = mkdtempSync(join(tmpdir(), "sim-daemon-"));
     const logFile = join(dir, "daemon.log");
-    const locked = join(dir, "locked");
-    mkdirSync(locked);
-    const logPath = join(locked, "direct-host.log");
+    const logPath = join(dir, "direct-host.log");
     writeFileSync(logPath, "daemon: memory capture output rejected\n");
     writeFileSync(`${logFile}.source`, JSON.stringify({ pending: [logPath], copying: null }));
-    chmodSync(locked, 0o555);
-    try {
-        await expect(new DaemonStack(stackCtx(dir)).recoverLog()).rejects.toThrow();
-        expect(readFileSync(logFile, "utf8")).toBe("daemon: memory capture output rejected\n");
-        expect(JSON.parse(readFileSync(`${logFile}.source`, "utf8")).copying).toBeNull();
-    } finally {
-        chmodSync(locked, 0o755);
-    }
+    const daemon = new DaemonStack(stackCtx(dir));
+    const seen: { copying: unknown; sourceExists: boolean }[] = [];
+    Object.assign(daemon as unknown as Record<string, unknown>, {
+        writeMarker: (m: { copying: unknown }) => {
+            seen.push({ copying: m.copying, sourceExists: existsSync(logPath) });
+            const tmp = `${logFile}.source.tmp`;
+            writeFileSync(tmp, JSON.stringify(m));
+            renameSync(tmp, `${logFile}.source`);
+        },
+    });
+    await daemon.recoverLog();
+    const committed = seen.find((m) => m.copying === null);
+    expect(committed?.sourceExists).toBe(true);
+    expect(readFileSync(logFile, "utf8")).toBe("daemon: memory capture output rejected\n");
+    expect(existsSync(logPath)).toBe(false);
 });
 
 test("a stop after a failed restart saves every log the marker still lists", async () => {
@@ -445,6 +449,34 @@ test("a restart saves the held stdout through the marker, so a kill mid-append r
     expect(seen[0]).not.toHaveProperty("stdout");
     expect(seen[0]).not.toHaveProperty("stdout_target");
     expect(readFileSync(join(dir, "daemon.log"), "utf8")).toBe("out\nold\n");
+});
+
+test("a stop after a failed kill recognises the lifetime it terminates itself", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "sim-daemon-"));
+    const logPath = join(dir, "direct-host.log");
+    writeFileSync(logPath, "stderr\n");
+    const child = Bun.spawn(["sleep", "300"]);
+    const stack = {
+        logPath,
+        child: { pid: child.pid },
+        crashHost: async () => {
+            throw new Error("kill refused");
+        },
+        terminateHost: async () => {
+            child.kill();
+            await child.exited;
+        },
+    };
+    const hh = {
+        __hermeticHostTest: {
+            diagnostics: () => ({ stdout: "ready\n", stderr: "", retainedLog: "" }),
+        },
+    };
+    const daemon = new DaemonStack(stackCtx(dir));
+    Object.assign(daemon as unknown as Record<string, unknown>, { stack, hh });
+    await expect(daemon.crash()).rejects.toThrow("kill refused");
+    await daemon.stop();
+    expect(readFileSync(join(dir, "daemon.log"), "utf8")).toBe("stderr\nready\n");
 });
 
 test("a stop treats a reused pid with another start time as a new lifetime", async () => {

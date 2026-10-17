@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fixtureEvents } from "../../tests/run-fixture";
@@ -1002,6 +1002,64 @@ test("a harness killed between a probe's EndTurn and its SnapshotArtefacts journ
     expect(kinds.indexOf("SnapshotArtefacts:q-1")).toBeLessThan(kinds.indexOf("Event:e-000001"));
 });
 
+test("quiescing jobs waits through a gap between one background job ending and the next starting", async () => {
+    const j = new Journal(join(dir(), "j.jsonl"));
+    let scheduler: Scheduler | null = null;
+    let settled = false;
+    const driver: ArmDriver = {
+        reset: async () => undefined,
+        event: async (e) => {
+            if (e.kind !== "user_turn") return {};
+            setTimeout(() => scheduler?.jobStart("history_summarizer-0"), 10);
+            setTimeout(() => scheduler?.jobEnd("history_summarizer-0"), 40);
+            setTimeout(() => scheduler?.jobStart("native_compaction-0"), 70);
+            setTimeout(() => scheduler?.jobEnd("native_compaction-0"), 160);
+            await scheduler?.quiesceJobs();
+            settled = true;
+            return {};
+        },
+        fault: async () => ({}),
+    };
+    scheduler = new Scheduler({
+        events: fixtureEvents(1),
+        faults: [],
+        journal: j,
+        settleMs: 50,
+        jobPollMs: 5,
+        order: ["a"],
+        drivers: { a: driver },
+    });
+    await scheduler.run();
+    expect(settled).toBe(true);
+    const kinds = j.entries.map((e) => `${e.kind}:${e.job ?? e.event ?? ""}`);
+    expect(kinds.indexOf("EndJob:native_compaction-0")).toBeLessThan(
+        kinds.indexOf("EndTurn:e-000001"),
+    );
+});
+
+test("recording failures found before EndArm leave the arm open", async () => {
+    const j = new Journal(join(dir(), "j.jsonl"));
+    const driver: ArmDriver = {
+        reset: async () => undefined,
+        event: async () => ({}),
+        fault: async () => ({}),
+    };
+    const scheduler = new Scheduler({
+        events: fixtureEvents(1),
+        faults: [],
+        journal: j,
+        order: ["a"],
+        drivers: { a: driver },
+        beforeEnd: () => {
+            throw new Error("1 call record(s) failed to append");
+        },
+    });
+    await expect(scheduler.run()).rejects.toThrow("failed to append");
+    const kinds = j.entries.map((e) => e.kind);
+    expect(kinds).not.toContain("EndArm");
+    expect(kinds).not.toContain("EndRun");
+});
+
 test("quiescing jobs waits for background jobs while the turn itself stays open", async () => {
     const j = new Journal(join(dir(), "j.jsonl"));
     let scheduler: Scheduler | null = null;
@@ -1122,6 +1180,9 @@ test("the call index reads one arm and session's records by position, seeded fro
         { ...base, seq: 2, arm: "host", session: "s-2", response_text: "c" },
     ];
     writeFileSync(path, rows.map((r) => `${JSON.stringify(r)}\n`).join(""));
+    const link = join(dir(), "calls.jsonl");
+    symlinkSync(path, link);
+    expect(() => new CallIndex(link)).toThrow("regular file");
     const index = new CallIndex(path);
     expect(callsOf(index, "host", "s-1", new Map()).map((c) => c.response_text)).toEqual(["a"]);
     expect(callsOf(index, "eidnara", "s-1", new Map()).map((c) => c.seq)).toEqual([1]);

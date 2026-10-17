@@ -1,5 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { appendFileSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+    appendFileSync,
+    existsSync,
+    mkdirSync,
+    mkdtempSync,
+    readFileSync,
+    symlinkSync,
+    writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadPrereg } from "../scenario/inputs";
@@ -308,10 +316,9 @@ describe("tape and pairing", () => {
     test("a named replay source must exist, with its pairing log beside it", () => {
         const root = dir();
         const missing = join(root, "gone", "tape.jsonl");
-        expect(() => new Tape(join(root, "tape.jsonl"), [missing])).toThrow("gone");
-        expect(() => new Pairing(join(root, "pairing.jsonl"), () => "a", [missing])).toThrow(
-            "gone",
-        );
+        const own = dir();
+        expect(() => new Tape(join(own, "tape.jsonl"), [missing])).toThrow("gone");
+        expect(() => new Pairing(join(own, "pairing.jsonl"), () => "a", [missing])).toThrow("gone");
         expect(() => tapeDigests([missing])).toThrow("gone");
         writeFileSync(missing.replace("gone/tape.jsonl", "tape.jsonl"), "");
         expect(() => tapeDigests([join(root, "tape.jsonl")])).toThrow("pairing.jsonl");
@@ -854,6 +861,63 @@ describe("tape and pairing", () => {
         expect(() => checkTapeSources([join(first, "tape.jsonl")], run)).toThrow("a e-5");
     });
 
+    test("a replay source must hold the taped reply for every recorded reactive turn", async () => {
+        const first = dir();
+        const recordedRun = sim(first, counting());
+        await play(recordedRun.user, "a", outputs);
+        writeFileSync(
+            join(first, "manifest.json"),
+            JSON.stringify({ seed: 101, scenario_hash: "abc", order: ["a"], events: 5 }),
+        );
+        writeFileSync(join(first, "journal.jsonl"), '{"kind":"EndRun"}\n');
+        const run = {
+            seed: 101,
+            scenario_hash: "abc",
+            order: ["a"],
+            events: 5,
+            turns: script.map((t) => t.id),
+            scripted: new Map(script.map((t) => [t.id, t.text])),
+        };
+        expect(() => checkTapeSources([join(first, "tape.jsonl")], run)).not.toThrow();
+        const rows = readFileSync(join(first, "tape.jsonl"), "utf8").trim().split("\n");
+        writeFileSync(join(first, "tape.jsonl"), `${rows.slice(1).join("\n")}\n`);
+        expect(() => checkTapeSources([join(first, "tape.jsonl")], run)).toThrow("a e-2");
+    });
+
+    test("a run's own logs are created as empty regular files, and any other object there is refused", () => {
+        const root = dir();
+        new Tape(join(root, "tape.jsonl"));
+        new Pairing(join(root, "pairing.jsonl"), () => "a");
+        expect(existsSync(join(root, "tape.jsonl"))).toBe(true);
+        expect(existsSync(join(root, "pairing.jsonl"))).toBe(true);
+        const other = dir();
+        mkdirSync(join(other, "tape.jsonl"));
+        expect(() => new Tape(join(other, "tape.jsonl"))).toThrow("regular file");
+    });
+
+    test("a generated reply that repeats a rendered ledger fact falls back", async () => {
+        const replies = [
+            { text: "The API key is in config/secrets.toml, as you said.", stop: "end_turn" },
+        ];
+        const llm: Llm = async () => replies.shift() ?? { text: "Fine.", stop: "end_turn" };
+        const root = dir();
+        const pairing = new Pairing(join(root, "pairing.jsonl"), () => "a");
+        const user = new UserSim({
+            seed: 101,
+            plan,
+            tape: new Tape(join(root, "tape.jsonl")),
+            pairing,
+            llm,
+            normalise: normaliser(prereg.divergence_policy.normalisation),
+            keys: ["f-0000"],
+            facts: ["The API key is in config/secrets.toml"],
+        });
+        const d = await user.deliver("a", script[1] as ScriptTurn, "I read the parser.");
+        expect(d.text).toStartWith("I'm not convinced by that.");
+        const last = pairing.records.at(-1) as { fallback?: string[] };
+        expect(last.fallback).toEqual(["fact"]);
+    });
+
     test("a replay source from another pre-registration is refused", () => {
         const root = dir();
         writeFileSync(join(root, "tape.jsonl"), "");
@@ -922,9 +986,9 @@ describe("tape and pairing", () => {
         const target = join(root, "elsewhere.jsonl");
         writeFileSync(target, "");
         symlinkSync(target, join(root, "tape.jsonl"));
-        expect(() => new Tape(join(root, "tape.jsonl"))).toThrow("symlink");
+        expect(() => new Tape(join(root, "tape.jsonl"))).toThrow("regular file");
         symlinkSync(target, join(root, "pairing.jsonl"));
-        expect(() => new Pairing(join(root, "pairing.jsonl"), () => "a")).toThrow("symlink");
+        expect(() => new Pairing(join(root, "pairing.jsonl"), () => "a")).toThrow("regular file");
     });
 
     test("a complete but corrupt last line in a replay source is refused", () => {

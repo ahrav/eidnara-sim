@@ -1050,7 +1050,7 @@ Status: active
 Exercised: partial - `src/oracle/oracles.test.ts` constructs the deadline
 turns, a completed call with no follow-up, a sub-second call followed by
 silence, and a persistence call inside the window, on fixtures and constructed
-logs; a live run has not yet produced a journal
+logs; no tier run has exercised it yet
 Guarantee: SIM-P39: A turn is `hang` iff its wall duration exceeds 5 minutes
 with no call record from the agent's component in that window, or a completed
 model call is followed by no persistence or tool execution within the bound; the

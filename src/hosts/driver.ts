@@ -112,7 +112,7 @@ export class HostDriver implements ArmDriver {
     private model = 0;
     private storeMount: string | null = null;
     private sessionProject: string | null = null;
-    /** Host-reported tool runs carry the active user turn id, or null between turns. */
+    /** Host-reported tool runs carry the active user turn id, or null between turns and for runs recovered from an earlier turn. */
     private turn: string | null = null;
     private transcriptsChecked = false;
 
@@ -180,7 +180,8 @@ export class HostDriver implements ArmDriver {
         const make = this.o.hostFactory ?? makeHost;
         const arm = armBase(this.o.arm);
         const keep = eidnaraOn(arm) ? [...this.o.keep, this.storeRoot] : this.o.keep;
-        const onTool = (run: ToolRun) => this.snapshots.addTools([run], this.turn);
+        const onTool = (run: ToolRun) =>
+            this.snapshots.addTools([run], run.recovered ? null : this.turn);
         return make({
             ...this.o,
             arm,

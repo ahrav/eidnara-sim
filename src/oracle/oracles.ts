@@ -31,6 +31,15 @@ const CAPTURE_REFUSED =
 /** The harness's own wording for a turn that hit its deadline: OpenCode's `turn deadline <N> ms`, Pi's `Timed out after <N>ms`. */
 const DEADLINE = /turn deadline \d+ ms|Timed out after \d+ ?ms/;
 const HARNESS = new Set(["user-sim", "judge", "rejected"]);
+/** Calls that count as progress after a completed agent call: model work and persistence (SIM-P39); a title call is neither. */
+const PROGRESS = new Set([
+    "agent",
+    "native_compaction",
+    "history_summarizer",
+    "memory_capture",
+    "memory_classifier",
+    "context_researcher",
+]);
 export const INTERNAL_TEXT = [
     /<\/?history[_-]segments?\b/i,
     /<\/?eidnara[\w-]*>/i,
@@ -77,28 +86,52 @@ function f1(arm: ArmLogs): Activation[] {
     return [...calls, ...turns];
 }
 
+/** Groups records by the key `by` yields, so each turn's evidence is one lookup rather than a scan. */
+function byKey<T>(items: T[], by: (item: T) => string | null): Map<string, T[]> {
+    const groups = new Map<string, T[]>();
+    for (const item of items) {
+        const key = by(item);
+        if (key === null) continue;
+        const group = groups.get(key);
+        if (group) group.push(item);
+        else groups.set(key, [item]);
+    }
+    return groups;
+}
+
 function f4(arm: ArmLogs, quietMs: number): Activation[] {
     const out: Activation[] = [];
+    const callsByTurn = byKey(arm.calls, (c) => c.turn);
+    const toolsByTurn = byKey(arm.tools, (t) => t.turn);
+    const begins = new Map(
+        arm.journal.filter((b) => b.kind === "BeginTurn").map((b) => [String(b.event), b]),
+    );
     for (const e of arm.journal) {
         if (e.kind !== "EndTurn") continue;
         const turn = String(e.event);
-        const turnCalls = arm.calls.filter((c) => c.turn === turn);
+        const turnCalls = callsByTurn.get(turn) ?? [];
         const calls = turnCalls.filter((c) => c.component === "agent");
-        const tools = arm.tools.filter((t) => t.turn === turn).map((t) => t.scenario_ms);
-        const began = arm.journal.find((b) => b.kind === "BeginTurn" && b.event === e.event);
+        const tools = (toolsByTurn.get(turn) ?? []).map((t) => t.scenario_ms);
+        const began = begins.get(turn);
         if (DEADLINE.test(String(e.outcome))) {
-            const points = [
-                ...(began ? [began.scenario_ms] : []),
-                ...turnCalls.flatMap((c) => [
+            const end = e.scenario_ms;
+            const spans = [
+                ...(began ? [[began.scenario_ms, began.scenario_ms]] : []),
+                ...turnCalls.map((c) => [
                     c.scenario_ms,
-                    c.scenario_ms + (c.wall_ms - c.started_wall_ms),
+                    Math.min(end, c.scenario_ms + (c.wall_ms - c.started_wall_ms)),
                 ]),
-                ...tools,
-                e.scenario_ms,
+                ...tools.map((ms) => [ms, ms]),
+                [end, end],
             ]
-                .filter((ms) => ms <= e.scenario_ms)
-                .sort((a, b) => a - b);
-            const gap = Math.max(0, ...points.slice(1).map((ms, i) => ms - (points[i] as number)));
+                .filter(([from]) => (from as number) <= end)
+                .sort((a, b) => (a[0] as number) - (b[0] as number)) as [number, number][];
+            let covered = spans[0]?.[1] ?? end;
+            let gap = 0;
+            for (const [from, to] of spans) {
+                gap = Math.max(gap, from - covered);
+                covered = Math.max(covered, to);
+            }
             if (calls.length === 0 || gap > quietMs) {
                 const what =
                     calls.length === 0 ? "with no model call" : `after ${calls.length} model calls`;
@@ -121,12 +154,15 @@ function f4(arm: ArmLogs, quietMs: number): Activation[] {
         const silence = "with no tool run, call, or turn end";
         if (began) {
             const starts = calls.map((c) => c.scenario_ms);
-            const quiet = quietAfter(began.scenario_ms, [...starts, e.scenario_ms]);
+            const next = Math.min(...starts.filter((ms) => ms >= began.scenario_ms), e.scenario_ms);
+            const quiet = next - began.scenario_ms;
             if (quiet > quietMs) windows.push(`turn began, then ${Math.round(quiet / 1000)} s`);
         }
         for (const c of calls) {
             const done = c.scenario_ms + (c.wall_ms - c.started_wall_ms);
-            const others = turnCalls.filter((x) => x !== c).map((x) => x.scenario_ms);
+            const others = turnCalls
+                .filter((x) => x !== c && PROGRESS.has(x.component))
+                .map((x) => x.scenario_ms);
             const quiet = quietAfter(done, [...others, e.scenario_ms]);
             if (quiet > quietMs)
                 windows.push(`call ${c.seq} completed, then ${Math.round(quiet / 1000)} s`);
@@ -159,7 +195,8 @@ function lifetimes(samples: Sample[]): Sample[][] {
     const same = (a: Sample, b: Sample) => a.pid === b.pid && a.start === b.start;
     for (const s of samples) {
         const last = out.at(-1);
-        if (last && last[0] && same(last[0], s)) last.push(s);
+        const head = last?.[0];
+        if (last && head && same(head, s)) last.push(s);
         else out.push([s]);
     }
     return out;

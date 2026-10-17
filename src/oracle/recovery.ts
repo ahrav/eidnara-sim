@@ -329,8 +329,13 @@ export function recoveries(run: RunLogs): Recovery[] {
         const anchors = new Map<unknown, Entry>();
         for (const e of arm.journal) {
             const anchored = anchors.get(e.fault);
-            if (e.kind === "FaultFired" && INFRA.has(String(e.type))) anchors.set(e.fault, e);
-            else if (e.kind === "FaultObserved" && INFRA.has(String(e.type)) && !anchored)
+            if (e.kind === "FaultFired" && INFRA.has(String(e.type))) {
+                // The scheduler fires each fault once; a second firing is a malformed journal.
+                if (anchored?.kind === "FaultFired") {
+                    throw new Error(`${arm.arm}: fault ${String(e.fault)} is fired twice`);
+                }
+                anchors.set(e.fault, e);
+            } else if (e.kind === "FaultObserved" && INFRA.has(String(e.type)) && !anchored)
                 anchors.set(e.fault, e);
         }
         if (anchors.size === 0) return [];

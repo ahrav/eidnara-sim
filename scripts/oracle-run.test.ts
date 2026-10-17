@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import {
+    existsSync,
     lstatSync,
     mkdirSync,
     mkdtempSync,
@@ -10,6 +11,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { preregistrationHash } from "../src/prereg/validate";
+import { releaseLease, takeLease } from "../src/run/journal";
 import { scenarioHash } from "../src/scenario/compile";
 import { loadPrereg } from "../src/scenario/inputs";
 import { oracleRun, runDirs } from "./oracle-run";
@@ -103,4 +105,18 @@ test("oracles.json replaces a symlink left in the run directory instead of writi
     expect(readFileSync(target, "utf8")).toBe("keep me\n");
     expect(lstatSync(join(dir, "oracles.json")).isSymbolicLink()).toBe(false);
     expect(JSON.parse(readFileSync(join(dir, "oracles.json"), "utf8")).prereg_sha256).toBe(digest);
+});
+
+test("oracleRun refuses a run directory another process holds the lease on", () => {
+    const root = mkdtempSync(join(tmpdir(), "sim-oracle-run-"));
+    const digest = preregistrationHash(loadPrereg("S"));
+    const dir = completeRun(root, "S", digest);
+    takeLease(dir);
+    try {
+        expect(() => oracleRun([dir])).toThrow(/is leased by pid/);
+    } finally {
+        releaseLease(dir);
+    }
+    oracleRun([dir]);
+    expect(existsSync(join(dir, "lease.json"))).toBe(false);
 });
