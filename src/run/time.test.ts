@@ -512,4 +512,81 @@ describe("ResourceSampler", () => {
         expect(lines[0].rss).toBeGreaterThan(0);
         expect(lines[0].store_bytes).toBeGreaterThan(0);
     });
+
+    test("a busy callback that throws inside an interval sample still reaches onError once", async () => {
+        const path = join(mkdtempSync(join(tmpdir(), "samp-")), "resources.jsonl");
+        const errors: string[] = [];
+        const sampler = new ResourceSampler({
+            path,
+            intervalMs: 20,
+            busyFraction: -1,
+            pid: () => process.pid,
+            storeDir: import.meta.dir,
+            scenarioMs: () => 0,
+            onBusy: () => {
+                throw new Error("journal closed");
+            },
+            onError: (caught) => void errors.push((caught as Error).message),
+        });
+        sampler.start();
+        await Bun.sleep(120);
+        expect(errors).toEqual(["journal closed"]);
+        expect(() => sampler.stop()).not.toThrow();
+    });
+
+    test("a cut final sample is dropped when the sampler reopens its file", () => {
+        const path = join(mkdtempSync(join(tmpdir(), "samp-")), "resources.jsonl");
+        writeFileSync(path, '{"wall_ms":1}\n{"wall_ms":2,"sce');
+        const sampler = new ResourceSampler({
+            path,
+            intervalMs: 60_000,
+            busyFraction: 0.2,
+            pid: () => process.pid,
+            storeDir: import.meta.dir,
+            scenarioMs: () => 0,
+            onBusy: () => undefined,
+        });
+        sampler.sample();
+        const lines = readFileSync(path, "utf8").trim().split("\n");
+        expect(lines).toHaveLength(2);
+        expect(() => lines.map((l) => JSON.parse(l))).not.toThrow();
+    });
+
+    test("an interval sample that fails reports through onError and stops the timer", async () => {
+        const dir = mkdtempSync(join(tmpdir(), "samp-"));
+        const errors: string[] = [];
+        const sampler = new ResourceSampler({
+            path: join(dir, "resources.jsonl"),
+            intervalMs: 20,
+            busyFraction: 0.2,
+            pid: () => process.pid,
+            storeDir: import.meta.dir,
+            scenarioMs: () => 0,
+            onBusy: () => undefined,
+            onError: (caught) => void errors.push((caught as NodeJS.ErrnoException).code ?? "?"),
+        });
+        sampler.start();
+        rmSync(dir, { recursive: true, force: true });
+        await Bun.sleep(120);
+        expect(errors).toEqual(["ENOENT"]);
+        sampler.stop();
+    });
+
+    test("start takes the baseline sample at once, so the next sample yields a CPU fraction", async () => {
+        const path = join(mkdtempSync(join(tmpdir(), "samp-")), "resources.jsonl");
+        const sampler = new ResourceSampler({
+            path,
+            intervalMs: 60_000,
+            busyFraction: 0.2,
+            pid: () => process.pid,
+            storeDir: import.meta.dir,
+            scenarioMs: () => 0,
+            onBusy: () => undefined,
+        });
+        sampler.start();
+        expect(readFileSync(path, "utf8").trim().split("\n")).toHaveLength(1);
+        await Bun.sleep(20);
+        expect(sampler.sample().cpu_fraction).not.toBeNull();
+        sampler.stop();
+    });
 });

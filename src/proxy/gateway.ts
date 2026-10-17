@@ -1,6 +1,10 @@
 import { createServer as createHttp1Server, type Server } from "node:http";
-import { createServer as createHttp2Server, type Http2Server } from "node:http2";
-import type { AddressInfo } from "node:net";
+import {
+    createServer as createHttp2Server,
+    type Http2Server,
+    type ServerHttp2Session,
+} from "node:http2";
+import type { AddressInfo, Socket } from "node:net";
 import {
     BedrockRuntimeClient,
     ConverseCommand,
@@ -80,6 +84,14 @@ export interface Scope {
     turn: string | null;
 }
 
+interface Arrival {
+    scope: Scope;
+    call: number;
+    wall: number;
+    mono: number;
+    scenario: number;
+}
+
 export interface CallStarted {
     kind: "call_started";
     component: Component;
@@ -92,63 +104,244 @@ export interface GatewayOptions {
     injector: FaultInjector;
     rng: Rng;
     clock: { scenarioMs(): number };
+    /** Read when a request's first byte arrives; the call keeps that scope through its upload. */
     scope: () => Scope;
-    observe?: (event: CallStarted) => void;
+    /**
+     * Sees every request as its first byte arrives, before the body is complete. A returned
+     * function runs once the call is classified and `observe` has seen it, or once the request is
+     * rejected, so the hold it represents hands over to the classified call without a gap.
+     */
+    arrival?: () => unknown;
+    /**
+     * A returned function runs once the call's record is written, or once the write failed. A
+     * hook that throws is recorded in `failures`; the call itself is still served.
+     */
+    observe?: (event: CallStarted) => unknown;
     requestDeadlineMs?: number;
+    /** How long `stop` waits for aborted in-flight handlers to finish writing their records. */
+    drainMs?: number;
+    /** The first arrival ordinal to assign; a resume passes one past the persisted maximum. */
+    firstArrival?: number;
 }
 
 const ROUTE = /^\/model\/([^/]+)\/(converse-stream|converse)$/;
 const MAX_BODY = 32 * 1024 * 1024;
+
+/** Buffers a request body up to `MAX_BODY`; bytes past the limit are counted and dropped. */
+class Body {
+    private readonly chunks: Buffer[] = [];
+    total = 0;
+    /** Set when the request's `end` fired, so an abort before it releases the arrival hold. */
+    complete = false;
+    /** Set once an abandoned upload has been recorded, so the record is written once. */
+    aborted = false;
+
+    push(chunk: Buffer): void {
+        this.total += chunk.length;
+        if (this.total <= MAX_BODY) this.chunks.push(chunk);
+    }
+
+    bytes(): Buffer {
+        return Buffer.concat(this.chunks);
+    }
+}
 type Usage = Record<string, number>;
 type Done = Partial<CallRecord> &
     Pick<CallRecord, "component" | "componentSource" | "model" | "status">;
 
+const CLAUDE_5_5 = /anthropic\.claude-(opus|sonnet|haiku)-5-5/;
+
+/**
+ * Removes the sampling fields Claude 5.5 models on Bedrock refuse: any `temperature`, and
+ * `thinking` of type `enabled`. Returns the removed values keyed by field path.
+ */
+export function stripUnsupported(
+    model: string,
+    body: ConverseBody,
+): Record<string, unknown> | undefined {
+    if (!CLAUDE_5_5.test(model)) return undefined;
+    const removed: Record<string, unknown> = {};
+    const inference = body.inferenceConfig as { temperature?: number } | undefined;
+    if (inference?.temperature !== undefined) {
+        removed["inferenceConfig.temperature"] = inference.temperature;
+        delete inference.temperature;
+    }
+    const extra = body.additionalModelRequestFields as { thinking?: { type?: string } } | undefined;
+    if (extra?.thinking?.type === "enabled") {
+        removed["additionalModelRequestFields.thinking"] = extra.thinking;
+        delete extra.thinking;
+    }
+    return Object.keys(removed).length > 0 ? removed : undefined;
+}
+
 export class Gateway {
     private servers: (Server | Http2Server)[] = [];
+    private readonly sessions = new Set<ServerHttp2Session>();
+    /** Open HTTP/1 sockets, destroyed on stop so a client mid-upload cannot hold the close. */
+    private readonly sockets = new Set<Socket>();
     inFlight = 0;
     readonly failures: Error[] = [];
-    private calls = 0;
+    private readonly active = new Map<Promise<void>, AbortController>();
+    /** Uploads still streaming in, by the closure that records them as abandoned. */
+    private readonly uploads = new Set<() => void>();
+    /** Arrival ordinals continue after the highest one the persisted records carry. */
+    private calls: number;
+    /** Set once `stop` returns; a handler that settles afterwards persists nothing. */
+    private closed = false;
     readonly urls: string[] = [];
 
-    constructor(private readonly options: GatewayOptions) {}
+    constructor(private readonly options: GatewayOptions) {
+        this.calls = (options.firstArrival ?? 0) | 0;
+    }
+
+    /** What a request is at its first byte: its scope, call order, and wall and monotonic start. */
+    private arrival(): Arrival {
+        return {
+            scope: this.options.scope(),
+            call: this.calls++,
+            wall: Date.now(),
+            mono: performance.now(),
+            scenario: this.options.clock.scenarioMs(),
+        };
+    }
+
+    /** An upload the client abandoned still yields one `rejected` record (status 499), once. */
+    private abortedUpload(
+        path: string,
+        body: Body,
+        release: () => void,
+        arrived: Arrival,
+        gone: AbortController,
+    ): void {
+        if (body.complete || body.aborted) return;
+        body.aborted = true;
+        const silent: Sink = {
+            status: () => undefined,
+            write: () => undefined,
+            end: () => undefined,
+            destroy: () => undefined,
+            signal: gone.signal,
+        };
+        const reason = `upload aborted after ${body.total} bytes`;
+        this.track(this.handle(path, undefined, body, silent, release, arrived, reason), gone);
+    }
+
+    /** A hook that throws is recorded as a failure; the request itself still runs. */
+    private arrive(): () => void {
+        let release: unknown;
+        try {
+            release = this.options.arrival?.();
+        } catch (caught) {
+            this.failures.push(caught as Error);
+        }
+        const once = { done: false };
+        return () => {
+            if (once.done || typeof release !== "function") return;
+            once.done = true;
+            try {
+                (release as () => void)();
+            } catch (caught) {
+                this.failures.push(caught as Error);
+            }
+        };
+    }
+
+    private track(handled: Promise<void>, gone: AbortController): void {
+        const settled: Promise<void> = handled
+            .catch((caught) => void this.failures.push(caught as Error))
+            .finally(() => this.active.delete(settled));
+        this.active.set(settled, gone);
+    }
 
     async start(): Promise<void> {
         const h1 = createHttp1Server((req, res) => {
-            const chunks: Buffer[] = [];
+            const body = new Body();
             const gone = new AbortController();
-            res.on("close", () => !res.writableFinished && gone.abort());
-            req.on("data", (c: Buffer) => chunks.push(c));
+            const arrived = this.arrival();
+            const release = this.arrive();
+            const abandoned = () => {
+                this.uploads.delete(abandoned);
+                gone.abort();
+                if (!body.complete) this.abortedUpload(req.url ?? "", body, release, arrived, gone);
+            };
+            this.uploads.add(abandoned);
+            res.on("close", () => !res.writableFinished && abandoned());
+            req.on("aborted", abandoned);
+            req.on("error", abandoned);
+            req.on("data", (c: Buffer) => body.push(c));
             req.on("end", () => {
+                this.uploads.delete(abandoned);
+                body.complete = true;
                 const header = req.headers[COMPONENT_HEADER] as string | undefined;
-                this.handle(req.url ?? "", header, Buffer.concat(chunks), {
-                    status: (code, headers) => res.writeHead(code, headers),
-                    write: (chunk) => res.write(chunk),
-                    end: () => res.end(),
-                    destroy: () => res.destroy(),
-                    signal: gone.signal,
-                }).catch((caught) => this.failures.push(caught as Error));
+                this.track(
+                    this.handle(
+                        req.url ?? "",
+                        header,
+                        body,
+                        {
+                            status: (code, headers) => res.writeHead(code, headers),
+                            write: (chunk) => res.write(chunk),
+                            end: () => res.end(),
+                            destroy: () => res.destroy(),
+                            signal: gone.signal,
+                        },
+                        release,
+                        arrived,
+                    ),
+                    gone,
+                );
             });
         });
+        h1.on("connection", (socket) => {
+            this.sockets.add(socket);
+            socket.on("close", () => this.sockets.delete(socket));
+        });
         const h2 = createHttp2Server();
+        h2.on("session", (session) => {
+            this.sessions.add(session);
+            session.on("close", () => this.sessions.delete(session));
+        });
         h2.on("stream", (stream, headers) => {
-            const chunks: Buffer[] = [];
+            const body = new Body();
             const gone = new AbortController();
-            stream.on("close", () => !stream.writableFinished && gone.abort());
-            stream.on("data", (c: Buffer) => chunks.push(c));
-            stream.on("error", () => undefined);
+            const arrived = this.arrival();
+            const release = this.arrive();
+            const abandoned = () => {
+                this.uploads.delete(abandoned);
+                gone.abort();
+                const path = String(headers[":path"] ?? "");
+                if (!body.complete) this.abortedUpload(path, body, release, arrived, gone);
+            };
+            this.uploads.add(abandoned);
+            stream.on("close", () => !stream.writableFinished && abandoned());
+            stream.on("aborted", abandoned);
+            stream.on("data", (c: Buffer) => body.push(c));
+            stream.on("error", abandoned);
             stream.on("end", () => {
+                this.uploads.delete(abandoned);
+                body.complete = true;
                 const live = () => !stream.destroyed;
                 const header = headers[COMPONENT_HEADER] as string | undefined;
-                this.handle(String(headers[":path"] ?? ""), header, Buffer.concat(chunks), {
-                    status: (code, h) => {
-                        if (live() && !stream.headersSent)
-                            stream.respond({ ":status": code, ...h });
-                    },
-                    write: (chunk) => live() && stream.write(chunk),
-                    end: () => live() && stream.end(),
-                    destroy: () => stream.destroy(),
-                    signal: gone.signal,
-                }).catch((caught) => this.failures.push(caught as Error));
+                this.track(
+                    this.handle(
+                        String(headers[":path"] ?? ""),
+                        header,
+                        body,
+                        {
+                            status: (code, h) => {
+                                if (live() && !stream.headersSent)
+                                    stream.respond({ ":status": code, ...h });
+                            },
+                            write: (chunk) => live() && stream.write(chunk),
+                            end: () => live() && stream.end(),
+                            destroy: () => stream.destroy(),
+                            signal: gone.signal,
+                        },
+                        release,
+                        arrived,
+                    ),
+                    gone,
+                );
             });
         });
         this.servers = [h1, h2];
@@ -158,14 +351,52 @@ export class Gateway {
         }
     }
 
+    /** `drainMs` bounds the wait for the aborted in-flight handlers to write their records. */
+    /** Idempotent: a second call after the gateway closed returns at once. */
     async stop(): Promise<void> {
-        (this.servers[0] as Server | undefined)?.closeAllConnections();
-        await Promise.all(
+        if (this.closed) return;
+        const closed = Promise.all(
             this.servers.map((s) => new Promise<void>((done) => s.close(() => done()))),
         );
+        (this.servers[0] as Server | undefined)?.closeAllConnections();
+        for (const socket of this.sockets) socket.destroy();
+        for (const session of this.sessions) session.destroy();
+        // A partial upload joins `active` here, before the drain check, so its 499 record is
+        // written and counted whatever order the socket's own events fire in.
+        for (const abandon of [...this.uploads]) abandon();
+        for (const gone of this.active.values()) gone.abort();
+        await closed;
+        if (this.active.size === 0) {
+            this.closed = true;
+            return;
+        }
+        const drainMs = this.options.drainMs ?? 10_000;
+        const drained = await new Promise<boolean>((done) => {
+            const timer = setTimeout(() => done(false), drainMs);
+            Promise.all(this.active.keys()).then(() => {
+                clearTimeout(timer);
+                done(true);
+            });
+        });
+        if (!drained) {
+            const n = this.active.size;
+            this.failures.push(
+                new Error(`${n} proxy handler(s) still active ${drainMs} ms after stop`),
+            );
+        }
+        this.closed = true;
     }
 
-    private async handle(path: string, header: string | undefined, raw: Buffer, outer: Sink) {
+    private async handle(
+        path: string,
+        header: string | undefined,
+        body: Body,
+        outer: Sink,
+        release: () => void,
+        arrived: Arrival,
+        aborted?: string,
+    ) {
+        const { scope } = arrived;
         let sent = 0;
         const sink: Sink & { sent: () => number } = {
             ...outer,
@@ -176,9 +407,10 @@ export class Gateway {
             sent: () => sent,
         };
         const base = {
-            ...this.options.scope(),
-            started_wall_ms: Date.now(),
-            scenario_ms: this.options.clock.scenarioMs(),
+            ...scope,
+            arrival: arrived.call,
+            started_wall_ms: arrived.wall,
+            scenario_ms: arrived.scenario,
             input_tokens: 0,
             output_tokens: 0,
             cache_read_tokens: 0,
@@ -190,39 +422,77 @@ export class Gateway {
             error: null,
         };
         this.inFlight++;
-        const call = this.calls++;
+        const call = arrived.call;
         let done: Done = {
             component: "rejected",
             componentSource: "inferred",
             model: "",
             status: 500,
         };
+        const after: { ended: (() => void) | null } = { ended: null };
         try {
-            done = await this.serve(path, header, raw, sink, call, (d) => {
-                done = d;
-            });
+            if (aborted) throw Object.assign(new Error(aborted), { name: "UploadAborted" });
+            done = await this.serve(
+                path,
+                header,
+                body,
+                sink,
+                call,
+                (d) => {
+                    done = d;
+                },
+                (end) => {
+                    after.ended = end;
+                },
+                release,
+                scope.arm,
+                arrived.mono,
+                arrived.wall,
+            );
         } catch (caught) {
-            done = { ...done, error: `${(caught as Error).name}: ${(caught as Error).message}` };
-            sink.status(500, { "content-type": "application/json" });
+            const failure = caught as Error;
+            const status = failure.name === "UploadAborted" ? 499 : 500;
+            const error = status === 499 ? failure.message : `${failure.name}: ${failure.message}`;
+            done = { ...done, error };
+            sink.status(status, { "content-type": "application/json" });
         }
         sink.end();
         try {
+            if (this.closed) {
+                this.failures.push(
+                    new Error("a proxy handler settled after stop; its record was dropped"),
+                );
+                return;
+            }
             const record = this.options.records.write({ ...base, ...done, status: sent });
             this.options.injector.observe(record, call);
         } finally {
             this.inFlight--;
+            release();
+            if (!this.closed) {
+                try {
+                    after.ended?.();
+                } catch (caught) {
+                    this.failures.push(caught as Error);
+                }
+            }
         }
     }
 
     private async serve(
         path: string,
         header: string | undefined,
-        raw: Buffer,
+        received: Body,
         sink: Sink & { sent: () => number },
         call: number,
         progress: (d: Done) => void,
+        onEnd: (end: () => void) => void,
+        release: () => void,
+        arm: string,
+        started: number,
+        arrivedWall: number,
     ): Promise<Done> {
-        const started = performance.now();
+        const raw = received.bytes();
         const route = ROUTE.exec(path.split("?", 1)[0] ?? "");
         const parse = <T>(f: () => T): T | undefined => {
             try {
@@ -231,12 +501,17 @@ export class Gateway {
                 return undefined;
             }
         };
-        const body = parse(() => JSON.parse(raw.toString("utf8")) as ConverseBody);
+        let body: ConverseBody | undefined;
+        try {
+            body = JSON.parse(raw.toString("utf8")) as ConverseBody;
+        } catch {
+            body = undefined;
+        }
         const model = parse(() => decodeURIComponent(route?.[1] ?? ""));
         const problem = !route
             ? [404, `unknown operation ${path}`]
-            : raw.length > MAX_BODY
-              ? [413, `body of ${raw.length} bytes over the limit`]
+            : received.total > MAX_BODY
+              ? [413, `body of ${received.total} bytes over the limit`]
               : model === undefined
                 ? [400, "malformed model id"]
                 : !body || typeof body !== "object"
@@ -256,8 +531,18 @@ export class Gateway {
         const streaming = route[2] === "converse-stream";
         const tag = classify(body, header);
         const done: Done = { ...tag, model, status: 200 };
+        const stripped = stripUnsupported(model, body);
+        if (stripped) done.stripped = stripped;
         progress(done);
-        const fault = this.options.injector.take(tag.component, call);
+        const event = { kind: "call_started", component: tag.component, wall_ms: Date.now() };
+        try {
+            const ended = this.options.observe?.(event as CallStarted);
+            if (typeof ended === "function") onEnd(ended as () => void);
+        } catch (caught) {
+            this.failures.push(caught as Error);
+        }
+        release();
+        const fault = this.options.injector.take(tag.component, call, arm, arrivedWall);
         if (fault) done.fault_ref = fault.id;
         if (fault && fault.type !== "slow_stream") {
             const tool = body.toolConfig?.tools?.[0]?.toolSpec?.name;
@@ -270,8 +555,6 @@ export class Gateway {
         const firstByte = () => {
             if (done.first_byte_ms != null) return;
             done.first_byte_ms = performance.now() - started;
-            const event = { kind: "call_started", component: tag.component, wall_ms: Date.now() };
-            this.options.observe?.(event as CallStarted);
         };
         const delay = () =>
             fault ? sleep(fault.params.delay_ms ?? 2_000, sink.signal) : undefined;

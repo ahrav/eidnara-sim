@@ -389,11 +389,15 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M4 (#1028); nothing constructs
-it yet
+Exercised: partial - `src/run/scheduler.test.ts` (Clock refuses to advance
+while busy; every scheduler run asserts an empty busy set at each
+`AdvanceClock`) and the live witness (`tests/witness-faults.ts`, `checkJournal`
+`advance_while_busy`) establish the jump clause; the wall-speed clause (an
+open interval's `scenario_ms` moves only by wall-clock progression) has no
+check yet; see `evidence/sim-p12-clock-advances-only-when-idle.md`
 Guarantee: SIM-P12: Every `AdvanceClock` entry is preceded by `busy_set` empty
-at the same sequence, and no `scenario_ms` change appears between a `BeginTurn`
-or `RegisterJob` and the matching `EndTurn` or `EndJob`.
+at the same sequence, and between a `BeginTurn` or `RegisterJob` and the
+matching `EndTurn` or `EndJob` `scenario_ms` moves only at wall speed.
 Check: `always` - for each `AdvanceClock`, assert the busy set is empty at that
 `seq`, and for each open turn or job interval assert `scenario_ms` changes only
 by wall-clock progression; a jump mid-turn shows a turn a time it never lived
@@ -402,10 +406,12 @@ Fault/timing angle: a background job registered from a proxy observation can
 arrive after the scheduler decided to jump.
 Required faults and enabling state: a turn followed by a fold or memory-capture
 job that outlives the turn.
-Confidence: low - [evidence](evidence/sim-p12-clock-advances-only-when-idle.md).
-PROPOSED: reconstructed from the condensed index in spec #1007; no
-implementation exists to verify against, and a default tier run reaches it.
-Existing check: none
+Confidence: medium - [evidence](evidence/sim-p12-clock-advances-only-when-idle.md).
+M4 (#1028) implements the surface; the unit tests and the live witness named
+under Existing check construct the record, and a default tier run reaches it.
+Existing check: `src/run/scheduler.test.ts` (`Clock` refuses `advanceTo` while
+busy; `invariants()` asserts an empty busy set at every `AdvanceClock`),
+`src/run/journal-check.ts` `advance_while_busy` (run by `tests/witness-faults.ts`)
 Impact: A fold or capture job sees a simulated gap mid-execution and its timing
 metrics are invalid.
 Open questions:
@@ -418,8 +424,9 @@ Open questions:
 Type: reachability
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M4 (#1028); nothing constructs
-it yet
+Exercised: yes - `src/run/scheduler.test.ts` (a job registered after a turn
+holds the clock) and the live witness (`checkJournal` `jobs_held_after_turn`,
+required non-empty); see `evidence/sim-p13-background-job-holds-clock.md`
 Guarantee: SIM-P13: A background job is in `busy_set` while no turn is in
 `busy_set`.
 Check: `sometimes` - observe at least one journal state where the busy set holds
@@ -428,10 +435,12 @@ does the job hold the clock on its own.
 Fault/timing angle: none.
 Required faults and enabling state: a fold or memory-capture job that outlives
 its triggering turn.
-Confidence: low - [evidence](evidence/sim-p13-background-job-holds-clock.md).
-PROPOSED: reconstructed from the condensed index in spec #1007; no
-implementation exists to verify against, and a default tier run reaches it.
-Existing check: none
+Confidence: medium - [evidence](evidence/sim-p13-background-job-holds-clock.md).
+M4 (#1028) implements the surface; the unit tests and the live witness named
+under Existing check construct the record, and a default tier run reaches it.
+Existing check: `src/run/scheduler.test.ts` ("a background job registered after a
+turn ends holds the clock until it ends"), `src/run/journal-check.ts`
+`jobs_held_after_turn`, required non-empty by `tests/witness-faults.ts`
 Impact: The job-holds-clock branch is never exercised and SIM-P12's job half is
 untested.
 Open questions: None.
@@ -441,8 +450,9 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M4 (#1028); nothing constructs
-it yet
+Exercised: yes - `src/run/scheduler.test.ts` (each jump lands on the next
+event) and the live witness (`checkJournal` `off_schedule_jumps`); see
+`evidence/sim-p14-idle-jump-lands-on-next-event.md`
 Guarantee: SIM-P14: After `AdvanceClock`, `scenario_ms` equals the earliest
 scheduled event time greater than the previous value.
 Check: `always` - for each `AdvanceClock`, assert the new `scenario_ms` equals
@@ -450,10 +460,12 @@ the minimum scheduled event time above the old value; a jump past an event skips
 it.
 Fault/timing angle: a laptop-sleep fault inserts a jump of its own duration.
 Required faults and enabling state: a scenario with idle gaps between events.
-Confidence: low - [evidence](evidence/sim-p14-idle-jump-lands-on-next-event.md).
-PROPOSED: reconstructed from the condensed index in spec #1007; no
-implementation exists to verify against, and a default tier run reaches it.
-Existing check: none
+Confidence: medium - [evidence](evidence/sim-p14-idle-jump-lands-on-next-event.md).
+M4 (#1028) implements the surface; the unit tests and the live witness named
+under Existing check construct the record, and a default tier run reaches it.
+Existing check: `src/run/scheduler.test.ts` (every jump lands on the next
+event), `src/run/journal-check.ts` `off_schedule_jumps` and
+`jump_origin_mismatch` (run by `tests/witness-faults.ts`)
 Impact: Events are skipped or issued late and the scenario differs from its
 compiled plan.
 Open questions: None.
@@ -487,8 +499,10 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M4 (#1028); nothing constructs
-it yet
+Exercised: yes - `src/run/time.test.ts` (per-binary interception) and the run
+command's `Preflight` journal entry before `StartRun`, which the live witness
+requires with every binary intercepted; see
+`evidence/sim-p16-faketime-verified-per-binary-before-start.md`
 Guarantee: SIM-P16: `StartRun` is preceded by a journaled interception test per
 host binary (Pi, OpenCode, daemon) that read a faked time; a failure records the
 binary wall-clock-only or refuses the run.
@@ -499,16 +513,18 @@ Fault/timing angle: the setuid sandbox boundary strips `LD_*`, so injection must
 follow privilege drop.
 Required faults and enabling state: the real sandbox launcher, the interposer on
 a kept mount, and each host binary.
-Confidence: low -
-[evidence](evidence/sim-p16-faketime-verified-per-binary-before-start.md).
-PROPOSED: reconstructed from the condensed index in spec #1007; no
-implementation exists to verify against, and a default tier run reaches it.
-Existing check: none
+Confidence: medium - [evidence](evidence/sim-p16-faketime-verified-per-binary-before-start.md).
+M4 (#1028) implements the surface; the unit tests and the live witness named
+under Existing check construct the record, and a default tier run reaches it.
+OQ-9 (whether the Bun-compiled OpenCode binary reads time through libc) is
+closed: the 2026-10-16 live witness's `Preflight` entries record OpenCode
+1.18.22 as intercepted.
+Existing check: `src/run/time.test.ts` (per-binary interception), the
+`Preflight` journal entry `src/run/run.ts` writes before `StartRun`, required
+by `tests/witness-faults.ts` with `pi`, `opencode`, and `daemon` intercepted
 Impact: A binary silently runs on wall time and every scenario-time claim about
 it is false.
-Open questions:
-- OQ-9: whether the Bun-compiled OpenCode binary reads time through libc.
-  Unresolved, needs the per-binary interception test at the first S `StartRun`.
+Open questions: None.
 
 ### sim-p17-long-idle-gaps-reached
 
@@ -537,8 +553,11 @@ Open questions: None.
 Type: safety
 Reachability: explicit-config-only
 Status: active
-Exercised: not yet - the harness surface lands in M4 (#1028); nothing constructs
-it yet
+Exercised: partial - `src/run/scheduler.test.ts` (one fault-tagged jump onto
+the session's first event with no event inside) and the live witness
+(`checkJournal` `events_inside_sleep`, `repeated_sleeps`, one tagged jump per
+arm and sleep); the 2026-10-16 witness run predates the current jump shape;
+see `evidence/sim-p18-sleep-fault-is-event-free-jump.md`
 Guarantee: SIM-P18: A laptop-sleep fault produces exactly one `AdvanceClock`,
 carrying the fault id, that spans the idle gap before its session with
 `busy_set` empty and no events inside the gap.
@@ -547,12 +566,12 @@ id that lands on the session's first event, an empty busy set at that `seq`,
 and no event with `scenario_ms` inside the gap.
 Fault/timing angle: a sleep scheduled while a job is busy must wait for the job.
 Required faults and enabling state: a scheduled laptop-sleep fault.
-Confidence: low -
-[evidence](evidence/sim-p18-sleep-fault-is-event-free-jump.md). PROPOSED:
-reconstructed from the condensed index in spec #1007; no implementation exists
-to verify against, and reached only when the tier schedules faults or the
-counterfactual arm.
-Existing check: none
+Confidence: low - [evidence](evidence/sim-p18-sleep-fault-is-event-free-jump.md).
+M4 (#1028) implements the surface; the unit tests and the live witness named
+under Existing check construct the record, and the 2026-10-16 live witness predates the current sleep-jump shape, so a new run must confirm it; reached only when the tier schedules faults or the counterfactual arm.
+Existing check: `src/run/scheduler.test.ts` ("a laptop sleep is one event-free
+jump"), `src/run/journal-check.ts` `events_inside_sleep`, `repeated_sleeps`,
+`sleep_jump_faults`, required per arm and sleep by `tests/witness-faults.ts`
 Impact: The sleep fault tests a different condition than the one scheduled.
 Open questions: None.
 
@@ -1548,19 +1567,23 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M4 (#1028); nothing constructs
-it yet
+Exercised: partial - `src/run/scheduler.test.ts` (resume reissues no completed
+event) and the live witness `resume` run (no turn rebilled, call `seq`
+contiguous) cover the reissue half; call records carry no `call_id`, so the
+repeated-`call_id` half is not yet representable; see
+`evidence/sim-p62-resume-does-not-reissue-completed-items.md`
 Guarantee: SIM-P62: After `ResumeRun`, no `BeginTurn` appears for an item
 already terminal, and no call record repeats a pre-interrupt `call_id`.
 Check: `always` - after resume, assert no `BeginTurn` for terminal items and no
 duplicate `call_id`.
 Fault/timing angle: an interrupt between `EndTurn` and its journal entry.
 Required faults and enabling state: a harness kill at varied points.
-Confidence: low -
-[evidence](evidence/sim-p62-resume-does-not-reissue-completed-items.md).
-PROPOSED: reconstructed from the condensed index in spec #1007; no
-implementation exists to verify against, and a default tier run reaches it.
-Existing check: none
+Confidence: low - [evidence](evidence/sim-p62-resume-does-not-reissue-completed-items.md).
+M4 (#1028) implements the surface; the unit tests and the live witness named
+under Existing check construct the record, and the repeated-`call_id` half has no check yet; a default tier run reaches it.
+Existing check: `src/run/scheduler.test.ts` (resume reissues no completed
+event), `tests/witness-faults.ts` `resume` (no turn rebilled, contiguous call
+`seq`); none for the repeated-`call_id` half
 Impact: Completed items are re-billed and double-counted.
 Open questions: None.
 
@@ -1569,8 +1592,10 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M4 (#1028); nothing constructs
-it yet
+Exercised: yes - `src/run/scheduler.test.ts` (one `failed(interrupted)` marker
+and `Event` per interrupted turn, idempotent across a second resume) and the
+live witness `resume` run (exactly one of each for `e-000007`); see
+`evidence/sim-p63-in-flight-item-resolved-once-on-resume.md`
 Guarantee: SIM-P63: An item `issued` but not `attempted` at interrupt becomes
 exactly one of `failed(interrupted)` or `reissued(marker)`, and its
 pre-interrupt calls are billed once.
@@ -1578,11 +1603,12 @@ Check: `always` - for each in-flight item at interrupt, assert exactly one
 resolution and single billing of its calls.
 Fault/timing angle: the interrupt lands mid-turn.
 Required faults and enabling state: a harness kill while an item is issued.
-Confidence: low -
-[evidence](evidence/sim-p63-in-flight-item-resolved-once-on-resume.md).
-PROPOSED: reconstructed from the condensed index in spec #1007; no
-implementation exists to verify against, and a default tier run reaches it.
-Existing check: none
+Confidence: medium - [evidence](evidence/sim-p63-in-flight-item-resolved-once-on-resume.md).
+M4 (#1028) implements the surface; the unit tests and the live witness named
+under Existing check construct the record, and a default tier run reaches it.
+Existing check: `src/run/scheduler.test.ts` ("a second resume does not repeat an
+earlier resume's recovery entries"), `tests/witness-faults.ts` `resume`
+(exactly one `ItemState failed(interrupted)` and one `Event` for `e-000007`)
 Impact: An interrupted item is counted twice or vanishes.
 Open questions:
 - OQ-1 is resolved in the M0 pre-registration: an in-flight item at interrupt is
@@ -1594,18 +1620,20 @@ Open questions:
 Type: reachability
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M4 (#1028); nothing constructs
-it yet
+Exercised: yes - the live witness `resume` run kills the harness while
+`e-000007` has `BeginTurn` and no `EndTurn` (`mid_turn` required); see
+`evidence/sim-p64-interrupt-mid-turn-exercised.md`
 Guarantee: SIM-P64: A harness kill lands while an item is `issued` at least once
 per campaign.
 Check: `sometimes` - observe at least one interrupt with an issued item; only
 then does SIM-P63 run.
 Fault/timing angle: none.
 Required faults and enabling state: a scheduled harness kill.
-Confidence: low - [evidence](evidence/sim-p64-interrupt-mid-turn-exercised.md).
-PROPOSED: reconstructed from the condensed index in spec #1007; no
-implementation exists to verify against, and a default tier run reaches it.
-Existing check: none
+Confidence: medium - [evidence](evidence/sim-p64-interrupt-mid-turn-exercised.md).
+M4 (#1028) implements the surface; the unit tests and the live witness named
+under Existing check construct the record, and a default tier run reaches it.
+Existing check: `tests/witness-faults.ts` `resume` (SIGKILL while `e-000007` has
+`BeginTurn` and no `EndTurn`, `mid_turn` required)
 Impact: The in-flight resolution path is never exercised.
 Open questions: None.
 

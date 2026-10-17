@@ -12,16 +12,19 @@ v2 harness before any harness code existed.
 ## Evidence trail
 
 Every `AdvanceClock` entry is preceded by `busy_set` empty at the same sequence,
-and no `scenario_ms` change appears between a `BeginTurn` or `RegisterJob` and
-the matching `EndTurn` or `EndJob`.
-
-No harness code, test, or run exists yet. The surface lands in M4
-(#1028).
+and between a `BeginTurn` or `RegisterJob` and the matching `EndTurn` or
+`EndJob` `scenario_ms` moves only at wall speed.
 
 M4 (#1028) advances scenario time only through `Clock.advanceTo`, which refuses
 while any turn or job is busy. The tests rebuild the busy set from the
 journal's turn and job entries and check that it is empty at every
 `AdvanceClock`.
+
+The live witness (`tests/witness-faults.ts`, `docs/run-command.md`) on 2026-10-16
+journaled 167 entries over the `host` and `eidnara` arms on Pi; `checkJournal`
+found no `AdvanceClock` while a turn or job was open across 7 event jumps and
+2 sleep jumps, with jobs registered from proxy observations of background
+calls and from the daemon CPU sampler.
 
 ## Failure scenario
 

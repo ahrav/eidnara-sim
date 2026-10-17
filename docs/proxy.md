@@ -29,6 +29,8 @@ any field below.
 | `first_byte_ms` | Milliseconds from receipt to the first answer byte, or `null` |
 | `proxy_retries` | Retries the proxy itself made upstream |
 | `fault_ref` | The injected fault episode, or `null` |
+| `stripped` | Request fields the proxy removed, keyed by path; present only when it removed one |
+| `arrival` | The request's arrival ordinal within its proxy process, assigned at the first byte; a resume replays records by this ordinal, falling back to `started_wall_ms` then `seq` for records written before it existed |
 
 ## Component tags
 
@@ -44,9 +46,26 @@ offering the `bash` tool as the agent, and `other` for the rest. A request
 the gateway refuses is `rejected`.
 
 `GatewayOptions.observe` receives a `call_started` event with the component
-when a call's first answer byte arrives. The M4 scheduler uses the
+when the gateway classifies a call, before it forwards or faults the call, so
+a call that upstream refuses is observed too. The run uses the
 `history_summarizer` event to fire the mid-fold SIGKILL (OQ-8, observation
-half) and the `memory_capture` event for capture-timed faults.
+half) and every background component's event to register a job that holds
+the clock until the call's record is written.
+
+## Sampling fields
+
+Claude 5.5 models on Bedrock refuse two fields Eidnara's history summarizer
+sends. In the first live runs every summarizer call to Opus 5.5 failed with
+HTTP 400: ``temperature` may only be set to 1 when thinking is enabled`, and,
+with the temperature removed, `"thinking.type.enabled" is not supported for
+this model`. A direct `aws bedrock-runtime converse` call with
+`temperature: 0` returned ``temperature` is deprecated for this model` from
+both Haiku 5.5 and Opus 5.5. For a request whose model id names a Claude 5.5
+model, the gateway removes `inferenceConfig.temperature` and an
+`additionalModelRequestFields.thinking` of type `enabled` before forwarding
+and records the removed values in `stripped`, so the model samples with its
+defaults and each changed call is visible. Requests to every other model pass
+unchanged. The v1 A/B gateway removed the same `thinking` field.
 
 ## Upstream retry
 
@@ -86,14 +105,52 @@ it, and the record's `proxy_retries` is 0.
 
 ## Witnesses
 
-For each episode, `FaultInjector.report()` returns whether it was armed, the
+For each episode and arm, `FaultInjector.report(arm)` returns whether it was armed there, the
 `seq` of every injected record, the `seq` of the first later agent call that
 started within the window after each injection (host-observed; a faulted
-retry under a persistent or burst episode counts), and whether the proxy
-retried. An episode is `fired` only with both an injected record
+retry under a persistent or burst episode counts; a pending injection waits
+for that earliest-started call's record however late it completes, even when
+a later-started call completes first; the window opens at the injected
+request's first byte, so a live run and a restored one agree), and whether
+the proxy retried. An episode is `fired` only with both an injected record
 and a host-observed call (SIM-P31); otherwise it is `untriggered`, and
 `excludedFromFaultMetrics` reports that the run leaves fault metrics
-(SIM-P32).
+(SIM-P32). Witness state is keyed by arm and episode: the scheduler arms a
+fault for the arm it is running, `take` injects only faults armed for the
+calling arm, and an observation counts only for the arm that made the call,
+so one arm's injection and retry cannot stand in for another arm's.
+A multi-call episode whose restored injections already reach its
+count is not injected again. `FaultInjector.restore(records)` rebuilds both sequences from the call
+records an earlier invocation of the same run persisted, replayed in
+arrival order (wall-time order for records without an arrival ordinal), so a resumed run
+reports a fault that fired before a hard kill (its `armed` bit also comes
+from the journal's `FaultFired` entries, so an armed episode whose target
+never called the proxy still reports `armed: true`), and arming an episode after
+`restore` continues a burst or intermittent window from the injections
+already made; an intermittent window's unsuccessful attempts and its RNG
+position are not persisted, so a resumed window grants its remaining
+attempts from the injections alone.
+
+A call's record is written when its response ends; a harness killed while a
+response streams leaves no record for that attempt, and the resumed run
+marks the open turn interrupted rather than reissuing it.
+
+`Gateway.stop()` closes every connection (destroying the HTTP/1 sockets it
+tracked, so a client mid-upload cannot hold the close), records every upload
+still streaming as abandoned (status 499) so it joins the in-flight handlers
+before the drain is judged, aborts those handlers, and
+waits up to `drainMs` (ten seconds by default) for them to write their call
+records, returning as soon as they have; a handler still active when the
+wait ends is recorded in `gateway.failures` alongside any handler failure.
+Request bodies are buffered up to 32 MiB; bytes past the limit are counted
+and dropped, and the request is answered 413 with one record. The
+`arrival` hook sees each request at its first byte and may return a function
+that runs once the call is classified or rejected, or once the client
+abandons the upload; the run holds the clock with it for every request. The run's scope (arm, session, turn) is read at the
+request's first byte and kept for the call's record. The `observe` hook sees
+each classified call as it starts and may return a function, which the gateway calls once that call's
+record is written or its write failed; the run uses it to end the background
+job the call registered.
 
 ## Tests
 
@@ -102,4 +159,5 @@ strategy on both routes against a scripted upstream and a host stand-in that
 issues one call at a time with its own timeout. Each case checks that the host saw the
 fault, that every injected record has `proxy_retries` 0, and that the host's
 next call started within the window. The tests also cover records, tags,
-rejected requests, untriggered witnesses, and the seeded backoff sequence.
+rejected requests, untriggered witnesses, witnesses restored from persisted
+records, the drain on `stop`, and the seeded backoff sequence.

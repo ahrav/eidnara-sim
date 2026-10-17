@@ -11,11 +11,9 @@ v2 harness before any harness code existed.
 
 ## Evidence trail
 
-A laptop-sleep fault produces exactly one `AdvanceClock` of the scheduled
-duration with `busy_set` empty and no events inside the gap.
-
-No harness code, test, or run exists yet. The surface lands in M4
-(#1028).
+A laptop-sleep fault produces exactly one `AdvanceClock`, spanning the idle
+gap that remains before its session's first event, with `busy_set` empty and
+no events inside the gap.
 
 M4 (#1028) makes a scheduled laptop sleep the one jump onto its session's
 first event, journaled with the fault id, whatever kind of event opens the
@@ -28,6 +26,15 @@ criterion ("exactly one jump with no events inside", with every `AdvanceClock`
 landing on the earliest later event). The condensed index's "of the scheduled
 duration" cannot hold exactly, because the previous session's last turn runs
 at wall speed and consumes part of the nominal gap.
+
+The live witness (`tests/witness-faults.ts`, `docs/run-command.md`) on 2026-10-16
+fired a laptop sleep at a session start on both arms; the journal check found
+no unrun event inside either sleep jump. That run predates the jump described
+above (its scheduler sized the sleep jump to the configured `duration_ms` and
+then jumped again to the session start), so it does not evidence the
+remaining-gap jump; the checker now judges a sleep jump by its landing on the
+session's first event, and the next witness run must show one `AdvanceClock`
+per sleep, tagged with the fault id, landing on that event.
 
 ## Failure scenario
 

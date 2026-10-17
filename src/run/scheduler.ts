@@ -31,9 +31,10 @@ export interface ArmDriver {
     finish?(): Promise<void>;
 }
 
+/** Proxy faults arm per arm, since each arm executes the schedule on its own. */
 export interface ProxyControl {
-    arm(id: string): void;
-    disarm(id: string): void;
+    arm(id: string, arm: string): void;
+    disarm(id: string, arm: string): void;
 }
 
 export class HarnessFailure extends Error {}
@@ -53,8 +54,16 @@ export interface SchedulerOptions {
     drivers: Record<string, ArmDriver>;
     proxy?: ProxyControl;
     jobPollMs?: number;
+    /** The longest the busy set may hold the clock before the run stops. */
+    idleLimitMs?: number;
     settleMs?: number;
     onClock?: (arm: string, scenarioMs: number) => void;
+    /** Runs before `EndArm` and before `EndRun`; a throw leaves the entry unwritten. */
+    verify?: (point: "EndArm" | "EndRun") => void | Promise<void>;
+    /** A reason to stop; the idle wait and each step check it and fail with `HarnessFailure`. */
+    stopped?: () => string | null;
+    /** Runs once an arm's `StartArm` is journaled (or its processes reaped), before its first step. */
+    onArmReady?: (arm: string) => void;
 }
 
 const PROXY_LAYER = "proxy-sink";
@@ -68,6 +77,7 @@ export class Scheduler {
     /** Faults the journal fired and never observed on the arm being resumed. */
     private interrupted: string[] = [];
     private readonly fired = new Set<string>();
+    private readonly jobStarted = new Map<string, number>();
     private pendingKill: Promise<unknown> | null = null;
 
     constructor(private readonly o: SchedulerOptions) {
@@ -150,6 +160,7 @@ export class Scheduler {
                 clock.release();
             }
             this.resume(mine);
+            this.o.onArmReady?.(arm);
             const done = new Set(
                 this.o.journal.entries
                     .filter((e) => e.arm === arm && e.kind === "Event")
@@ -160,13 +171,21 @@ export class Scheduler {
             this.pendingKill = null;
             this.outage = null;
             this.session = null;
+            await this.o.verify?.("EndArm");
+            this.checkStop();
             this.log({ kind: "EndArm" });
         }
         this.arm = null;
+        await this.o.verify?.("EndRun");
+        this.checkStop();
         this.log({ kind: "EndRun" });
     }
 
-    /** Resume continues a failed arm whose journal ends before `EndArm`. */
+    /**
+     * Resume continues a failed arm whose journal ends before `EndArm`. The arm finishes only
+     * after the busy set drains twice: once after its last event, and once after the driver's
+     * shutdown, which can still register a job.
+     */
     private async runArm(
         driver: ArmDriver,
         started: boolean,
@@ -179,6 +198,7 @@ export class Scheduler {
             }
             for (const e of pending) await this.step(driver, e);
             await this.pendingKill;
+            this.outage = null;
             await this.idle();
         });
         // A job the shutdown itself started holds the clock too; it ends before the arm does,
@@ -186,6 +206,8 @@ export class Scheduler {
         try {
             await driver.finish?.();
         } finally {
+            await this.pendingKill;
+            this.outage = null;
             await this.idle();
         }
     }
@@ -252,11 +274,12 @@ export class Scheduler {
             );
             if (end && done.has(end.id)) continue;
             const t = f.trigger;
+            const index = t.kind === "user_turn" ? t.n - 1 : 0;
             const target = this.o.events.find(
-                (e) => t.kind === "user_turn" && e.session === t.session && e.index === t.n - 1,
+                (e) => e.kind === "user_turn" && e.session === t.session && e.index === index,
             );
-            if (f.strategy === "persistent" || (target && !begun.has(target.id)))
-                this.o.proxy?.arm(f.id);
+            if (f.strategy !== "single" || (target && !begun.has(target.id)))
+                this.o.proxy?.arm(f.id, this.arm as string);
         }
     }
 
@@ -271,8 +294,28 @@ export class Scheduler {
         return start;
     }
 
+    /**
+     * Each live job may hold the clock for `idleLimitMs` of wall time from its own `RegisterJob`,
+     * measured on the monotonic clock so a wall-clock step does not move the deadline. `counts`
+     * selects which busy ids are waited for; a failure path leaves the ids it inherited open.
+     */
     private async idle(counts: (id: string) => boolean = () => true): Promise<void> {
-        while ((this.clock?.busyIds() ?? []).some(counts)) await Bun.sleep(this.o.jobPollMs ?? 50);
+        const limitMs = this.o.idleLimitMs ?? Number.POSITIVE_INFINITY;
+        const entered = performance.now();
+        while ((this.clock?.busyIds() ?? []).some(counts)) {
+            this.checkStop();
+            const live = [...this.jobStarted.entries()]
+                .filter(([id]) => counts(id))
+                .map(([, at]) => at);
+            const oldest = live.length > 0 ? Math.min(...live) : entered;
+            if (performance.now() > oldest + limitMs) {
+                const busy = this.clock?.busyIds().filter(counts).join(", ");
+                throw new HarnessFailure(
+                    `busy set held the clock past ${this.o.idleLimitMs} ms: ${busy}`,
+                );
+            }
+            await Bun.sleep(this.o.jobPollMs ?? 50);
+        }
     }
 
     private faultsAt(e: ScenarioEvent): FaultEpisode[] {
@@ -288,7 +331,7 @@ export class Scheduler {
         this.fired.add(`${this.arm}/${f.id}`);
         this.log({ kind: "FaultFired", fault: f.id, type: f.type, layer: f.seam.layer });
         if (f.seam.layer === PROXY_LAYER) {
-            this.o.proxy?.arm(f.id);
+            this.o.proxy?.arm(f.id, this.arm as string);
             return;
         }
         if (f.type === "laptop_sleep") return;
@@ -311,9 +354,15 @@ export class Scheduler {
         );
     }
 
+    private checkStop(): void {
+        const reason = this.o.stopped?.();
+        if (reason) throw new HarnessFailure(`run stopping: ${reason}`);
+    }
+
     private async step(driver: ArmDriver, e: ScenarioEvent): Promise<void> {
         await this.pendingKill;
         await this.idle();
+        this.checkStop();
         this.outage = null;
         const clock = this.clock as Clock;
         const sleep = this.sleepBefore(e);
@@ -342,7 +391,7 @@ export class Scheduler {
         if (e.kind === "session_end") {
             for (const f of this.o.faults) {
                 if (f.trigger.session === e.session && f.seam.layer === PROXY_LAYER)
-                    this.o.proxy?.disarm(f.id);
+                    this.o.proxy?.disarm(f.id, arm);
             }
             this.session = null;
         }
@@ -350,14 +399,21 @@ export class Scheduler {
         this.log({ kind: "Event", event: e.id, outcome: outcome.failed ?? "ok" });
     }
 
+    /** The journal entry lands first, so a failed append leaves the busy set untouched. */
     jobStart(id: string): void {
-        this.clock?.begin(`job:${id}`);
         this.log({ kind: "RegisterJob", job: id });
+        this.jobStarted.set(id, performance.now());
+        this.clock?.begin(`job:${id}`);
     }
 
+    /** The busy set clears whether or not the `EndJob` append succeeds; the failure still throws. */
     jobEnd(id: string): void {
-        this.log({ kind: "EndJob", job: id });
-        this.clock?.end(`job:${id}`);
+        try {
+            this.log({ kind: "EndJob", job: id });
+        } finally {
+            this.jobStarted.delete(id);
+            this.clock?.end(`job:${id}`);
+        }
     }
 
     observe(component: string, driver: ArmDriver): void {

@@ -1,10 +1,21 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { request } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { decodeMessages } from "../../tests/eventstream-decode";
 import { Rng } from "../rng";
 import type { FaultType } from "../scenario/faults";
 import { classify } from "./classify";
 import { encodeEvent } from "./eventstream";
-import { backoffMs, type CallStarted, Gateway, sendWithRetry, type Upstream } from "./gateway";
+import {
+    backoffMs,
+    type CallStarted,
+    Gateway,
+    type Scope,
+    sendWithRetry,
+    type Upstream,
+} from "./gateway";
 import { excludedFromFaultMetrics, FaultInjector, type ProxyFault } from "./inject";
 import { type CallRecord, RecordWriter, recordProblems } from "./records";
 
@@ -64,10 +75,11 @@ async function hostCall(
     body: unknown,
     timeoutMs: number,
     header?: string,
+    model = "m",
 ): Promise<HostResult> {
     const result: HostResult = { status: 0, events: [], gaps: [], timedOut: false };
     try {
-        const response = await fetch(`${url}/model/m/converse-stream`, {
+        const response = await fetch(`${url}/model/${model}/converse-stream`, {
             method: "POST",
             body: JSON.stringify(body),
             headers: header ? { "x-sim-component": header } : {},
@@ -165,18 +177,22 @@ async function start(
     const injector = new FaultInjector(fault ? [fault] : [], new Rng(7), windowMs);
     const started: CallStarted[] = [];
     let scenario = 1_000;
+    const scope = { arm: "eidnara", session: "s-0001", turn: "e-000001" };
     const gateway = new Gateway({
         upstream,
         records,
         injector,
         rng: new Rng(42),
         clock: { scenarioMs: () => (scenario += 10) },
-        scope: () => ({ arm: "eidnara", session: "s-0001", turn: "e-000001" }),
+        scope: () => ({ ...scope }),
         observe: (e) => started.push(e),
     });
     await gateway.start();
     gateways.push(gateway);
-    return { gateway, records, injector, started, url: gateway.urls[0] as string };
+    const setArm = (arm: string) => {
+        scope.arm = arm;
+    };
+    return { gateway, records, injector, started, setArm, url: gateway.urls[0] as string };
 }
 
 async function hostCallJson(url: string, body: unknown, timeoutMs: number): Promise<JsonResult> {
@@ -258,14 +274,14 @@ describe("fault composition at the proxy sink", () => {
                     >;
                     const fault = { id: "fault-000", type, strategy, params } as ProxyFault;
                     const { gateway, records, injector, url } = await start(fault);
-                    injector.arm("fault-000");
+                    injector.arm("fault-000", "eidnara");
                     const seen: boolean[] = [];
                     for (let call = 0; call < 12; call++) {
                         if (route === "converse")
                             seen.push(hostSeesJson(type, await hostCallJson(url, AGENT_BODY, 300)));
                         else seen.push(hostSees(type, await hostCall(url, AGENT_BODY, 300)));
                     }
-                    if (strategy === "persistent") injector.disarm("fault-000");
+                    if (strategy === "persistent") injector.disarm("fault-000", "eidnara");
                     await hostCall(url, AGENT_BODY, 300);
                     while (gateway.inFlight > 0) await Bun.sleep(10);
                     expect(records.records).toHaveLength(13);
@@ -285,7 +301,7 @@ describe("fault composition at the proxy sink", () => {
                     const hits = byStart.slice(0, 12).map((r) => r.fault_ref === "fault-000");
                     expect(hits).toEqual(expected);
                     for (const r of injected) expect(r.proxy_retries).toBe(0);
-                    const report = injector.report();
+                    const report = injector.report("eidnara");
                     expect(report[0]?.status).toBe("fired");
                     expect(report[0]?.proxy_retried).toBe(false);
                     expect(excludedFromFaultMetrics(report)).toBe(false);
@@ -313,11 +329,11 @@ describe("fault composition at the proxy sink", () => {
             params: {},
         } as ProxyFault;
         const { injector, url } = await start(fault, scriptedUpstream(), 100);
-        injector.arm("p");
+        injector.arm("p", "eidnara");
         for (let i = 0; i < 3; i++) await hostCall(url, AGENT_BODY, 1_000);
         await Bun.sleep(150);
         await hostCall(url, AGENT_BODY, 1_000);
-        expect(injector.report()[0]?.status).toBe("fired");
+        expect(injector.report("eidnara")[0]?.status).toBe("fired");
     });
 
     test("slow_stream over an upstream that throttles first records the proxy's retry", async () => {
@@ -328,11 +344,11 @@ describe("fault composition at the proxy sink", () => {
             params: { count: 1, delay_ms: 10 },
         } as ProxyFault;
         const { injector, records, url } = await start(fault, scriptedUpstream(1));
-        injector.arm("s");
+        injector.arm("s", "eidnara");
         await hostCall(url, AGENT_BODY, 20_000);
         await hostCall(url, AGENT_BODY, 20_000);
         expect(records.records[0]?.proxy_retries).toBe(1);
-        expect(injector.report()[0]?.proxy_retried).toBe(true);
+        expect(injector.report("eidnara")[0]?.proxy_retried).toBe(true);
     }, 30_000);
 
     test("a fault applies only to the agent component", async () => {
@@ -342,7 +358,7 @@ describe("fault composition at the proxy sink", () => {
             strategy: "single",
             params: { count: 1 },
         });
-        injector.arm("f");
+        injector.arm("f", "eidnara");
         expect((await hostCall(url, SUMMARIZER_BODY, 1_000)).status).toBe(200);
         expect((await hostCall(url, AGENT_BODY, 1_000)).status).toBe(429);
         expect(records.records.map((r) => [r.component, r.fault_ref])).toEqual([
@@ -353,6 +369,23 @@ describe("fault composition at the proxy sink", () => {
 });
 
 describe("witnesses", () => {
+    test("stop waits for an aborted in-flight handler to write its record", async () => {
+        const blocking: Upstream = {
+            async converse(_m, _b, _s, signal) {
+                await new Promise<void>((done) => signal.addEventListener("abort", () => done()));
+                await Bun.sleep(80);
+                throw Object.assign(new Error("aborted"), { name: "AbortError" });
+            },
+        };
+        const { gateway, records, started, url } = await start(null, blocking);
+        const call = hostCall(url, AGENT_BODY, 5_000);
+        while (started.length === 0) await Bun.sleep(5);
+        await gateway.stop();
+        expect(records.records).toHaveLength(1);
+        expect(records.records[0]?.error).toMatch(/AbortError/);
+        await call;
+    });
+
     test("an armed fault with no later host call is untriggered and excludes the run", async () => {
         const { injector, url } = await start({
             id: "f",
@@ -360,12 +393,357 @@ describe("witnesses", () => {
             strategy: "single",
             params: { count: 1 },
         });
-        injector.arm("f");
+        injector.arm("f", "eidnara");
         await hostCall(url, AGENT_BODY, 1_000);
-        const [w] = injector.report();
+        const [w] = injector.report("eidnara");
         expect(w?.injected_seq.length).toBe(1);
         expect(w?.status).toBe("untriggered");
-        expect(excludedFromFaultMetrics(injector.report())).toBe(true);
+        expect(excludedFromFaultMetrics(injector.report("eidnara"))).toBe(true);
+    });
+
+    test("a resumed injector rebuilds its witnesses from the persisted call records", async () => {
+        const fault: ProxyFault = {
+            id: "f",
+            type: "provider_5xx",
+            strategy: "single",
+            params: { count: 1 },
+        };
+        const { injector, records, url } = await start(fault);
+        injector.arm("f", "eidnara");
+        await hostCall(url, AGENT_BODY, 1_000);
+        await hostCall(url, AGENT_BODY, 1_000);
+        expect(injector.report("eidnara")[0]?.status).toBe("fired");
+        const resumed = new FaultInjector([fault], new Rng(7), 5_000);
+        (resumed as { restore?: (prior: CallRecord[]) => void }).restore?.(records.records);
+        expect(resumed.report("eidnara")[0]).toMatchObject({
+            status: "fired",
+            armed: true,
+            injected_seq: [0],
+            host_observed_seq: [1],
+        });
+        expect(excludedFromFaultMetrics(resumed.report("eidnara"))).toBe(false);
+    });
+
+    test("witnesses are kept per arm: one arm's injection and retry do not fire another arm's", async () => {
+        const fault: ProxyFault = {
+            id: "f",
+            type: "provider_5xx",
+            strategy: "single",
+            params: { count: 1 },
+        };
+        const { injector, setArm, url } = await start(fault);
+        setArm("host");
+        injector.arm("f", "host");
+        await hostCall(url, AGENT_BODY, 1_000);
+        setArm("eidnara");
+        await hostCall(url, AGENT_BODY, 1_000);
+        expect(injector.report("host")[0]).toMatchObject({
+            arm: "host",
+            status: "untriggered",
+            injected_seq: [0],
+            host_observed_seq: [],
+        });
+        expect(injector.report("eidnara")[0]).toMatchObject({
+            arm: "eidnara",
+            armed: false,
+            status: "untriggered",
+        });
+        setArm("host");
+        await hostCall(url, AGENT_BODY, 1_000);
+        expect(injector.report("host")[0]).toMatchObject({
+            status: "fired",
+            host_observed_seq: [2],
+        });
+        expect(injector.report("eidnara")[0]?.status).toBe("untriggered");
+    });
+
+    test("arming after restore continues a burst from the injections already made", async () => {
+        const fault: ProxyFault = {
+            id: "b",
+            type: "provider_5xx",
+            strategy: "burst",
+            params: { count: 3 },
+        };
+        const { injector, records, url } = await start(fault);
+        injector.arm("b", "eidnara");
+        await hostCall(url, AGENT_BODY, 1_000);
+        const resumed = new FaultInjector([fault], new Rng(7), 5_000);
+        resumed.restore(records.records);
+        resumed.arm("b", "eidnara");
+        expect(resumed.take("agent", 10, "eidnara")?.id).toBe("b");
+        expect(resumed.take("agent", 11, "eidnara")?.id).toBe("b");
+        expect(resumed.take("agent", 12, "eidnara")).toBeNull();
+    });
+
+    test("the witnessed retry is the first later call to start, even when a later one completes first", async () => {
+        const fault: ProxyFault = {
+            id: "f",
+            type: "provider_5xx",
+            strategy: "single",
+            params: { count: 1 },
+        };
+        const releases: Array<() => void> = [];
+        const slowFirst: Upstream = {
+            async converse(m, b, streaming, signal) {
+                if (releases.length === 0) {
+                    await new Promise<void>((done) => releases.push(done));
+                }
+                return scriptedUpstream().converse(m, b, streaming, signal);
+            },
+        };
+        const { injector, records, started, url } = await start(fault, slowFirst);
+        injector.arm("f", "eidnara");
+        await hostCall(url, AGENT_BODY, 1_000);
+        const first = hostCall(url, AGENT_BODY, 5_000);
+        while (started.length < 2) await Bun.sleep(5);
+        await hostCall(url, AGENT_BODY, 1_000);
+        releases[0]?.();
+        await first;
+        expect(records.records.map((r) => r.arrival)).toEqual([0, 2, 1]);
+        expect(injector.report("eidnara")[0]).toMatchObject({
+            status: "fired",
+            host_observed_seq: [2],
+        });
+    });
+
+    test("a later-started call that completes first does not expire an earlier eligible retry", () => {
+        const fault: ProxyFault = {
+            id: "f",
+            type: "provider_5xx",
+            strategy: "single",
+            params: { count: 1 },
+        };
+        const injector = new FaultInjector([fault], new Rng(7), 5_000);
+        injector.arm("f", "eidnara");
+        const base = { ...RECORD, arm: "eidnara" };
+        expect(injector.take("agent", 0, "eidnara")?.id).toBe("f");
+        const at = Date.now();
+        injector.observe({ ...base, seq: 0, wall_ms: at, fault_ref: "f", started_wall_ms: at }, 0);
+        const slowRetry = { ...base, seq: 2, wall_ms: at + 9_000, started_wall_ms: at + 1_000 };
+        const laterBackground = {
+            ...base,
+            seq: 1,
+            wall_ms: at + 8_000,
+            component: "memory_capture" as const,
+            started_wall_ms: at + 7_000,
+        };
+        injector.observe(laterBackground, 2);
+        injector.observe(slowRetry, 1);
+        expect(injector.report("eidnara")[0]).toMatchObject({
+            status: "fired",
+            host_observed_seq: [2],
+        });
+    });
+
+    test("restore matches observations by request start, not by record order", () => {
+        const fault: ProxyFault = {
+            id: "f",
+            type: "provider_timeout",
+            strategy: "single",
+            params: { count: 1 },
+        };
+        const at = Date.now();
+        const base = { ...RECORD, arm: "eidnara" };
+        const retryFirst = { ...base, seq: 0, wall_ms: at + 2_000, started_wall_ms: at + 1_000 };
+        const injectedLater = {
+            ...base,
+            seq: 1,
+            wall_ms: at + 30_000,
+            started_wall_ms: at,
+            fault_ref: "f",
+        };
+        const resumed = new FaultInjector([fault], new Rng(7), 5_000);
+        resumed.restore([retryFirst, injectedLater]);
+        expect(resumed.report("eidnara")[0]).toMatchObject({
+            status: "fired",
+            injected_seq: [1],
+            host_observed_seq: [0],
+        });
+    });
+
+    test("a handler that settles after stop gave up on it writes nothing and is reported", async () => {
+        let finish: (() => void) | null = null;
+        const stuck: Upstream = {
+            converse: () =>
+                new Promise((resolve) => {
+                    finish = () => resolve({ json: { stopReason: "end_turn", usage: {} } });
+                }),
+        };
+        const records = new RecordWriter(null);
+        const ended: string[] = [];
+        const gateway = new Gateway({
+            upstream: stuck,
+            records,
+            injector: new FaultInjector([], new Rng(1), 1_000),
+            rng: new Rng(1),
+            clock: { scenarioMs: () => 0 },
+            scope: () => ({ arm: "a", session: null, turn: null }),
+            observe: () => () => ended.push("ended"),
+            drainMs: 50,
+        });
+        await gateway.start();
+        const call = hostCallJson(gateway.urls[0] as string, AGENT_BODY, 2_000);
+        while (!finish) await Bun.sleep(5);
+        await gateway.stop();
+        (finish as unknown as () => void)();
+        await call;
+        await Bun.sleep(50);
+        expect(records.records).toHaveLength(0);
+        expect(ended).toEqual([]);
+        expect(gateway.failures.map((f) => f.message)).toEqual([
+            "1 proxy handler(s) still active 50 ms after stop",
+            "a proxy handler settled after stop; its record was dropped",
+        ]);
+    });
+
+    test("a slow upload's record carries its first-byte time and call order", async () => {
+        const records = new RecordWriter(null);
+        const gateway = new Gateway({
+            upstream: scriptedUpstream(),
+            records,
+            injector: new FaultInjector([], new Rng(1), 1_000),
+            rng: new Rng(1),
+            clock: { scenarioMs: () => 0 },
+            scope: () => ({ arm: "a", session: null, turn: null }),
+        });
+        await gateway.start();
+        gateways.push(gateway);
+        const url = new URL(`${gateway.urls[0]}/model/m/converse-stream`);
+        const body = JSON.stringify(AGENT_BODY);
+        const req = request({
+            host: url.hostname,
+            port: url.port,
+            method: "POST",
+            path: url.pathname,
+            headers: { "content-length": String(Buffer.byteLength(body)) },
+        });
+        const done = new Promise<void>((resolve) =>
+            req.on("response", (res) => res.on("data", () => undefined).on("end", resolve)),
+        );
+        const before = Date.now();
+        req.write(body.slice(0, 10));
+        await Bun.sleep(300);
+        await hostCall(gateway.urls[0] as string, SUMMARIZER_BODY, 2_000);
+        req.end(body.slice(10));
+        await done;
+        const slow = records.records.find((r) => r.component === "agent");
+        expect((slow?.started_wall_ms ?? 0) - before).toBeLessThan(150);
+        expect(records.records.map((r) => r.component)).toEqual(["history_summarizer", "agent"]);
+    });
+
+    test("a gateway continues arrival ordinals after the persisted ones", async () => {
+        const records = new RecordWriter(null);
+        const gateway = new Gateway({
+            upstream: scriptedUpstream(),
+            records,
+            injector: new FaultInjector([], new Rng(1), 1_000),
+            rng: new Rng(1),
+            clock: { scenarioMs: () => 0 },
+            scope: () => ({ arm: "a", session: null, turn: null }),
+            firstArrival: 7,
+        });
+        await gateway.start();
+        gateways.push(gateway);
+        await hostCall(gateway.urls[0] as string, AGENT_BODY, 2_000);
+        expect(records.records[0]?.arrival).toBe(7);
+        expect(recordProblems({ ...RECORD, seq: 0, wall_ms: 1, arrival: "0" })).toEqual([
+            "arrival invalid",
+        ]);
+    });
+
+    test("restore orders same-millisecond requests by their arrival ordinal, not their seq", () => {
+        const fault: ProxyFault = {
+            id: "f",
+            type: "provider_5xx",
+            strategy: "single",
+            params: { count: 1 },
+        };
+        const at = Date.now();
+        const base = { ...RECORD, arm: "eidnara", started_wall_ms: at };
+        const earlierButLater = { ...base, seq: 1, wall_ms: at + 50, arrival: 0 };
+        const injected = { ...base, seq: 0, wall_ms: at + 10, arrival: 1, fault_ref: "f" };
+        const retry = { ...base, seq: 2, wall_ms: at + 60, arrival: 2 };
+        const stepped = { ...retry, started_wall_ms: at - 5_000 };
+        const resumed = new FaultInjector([fault], new Rng(7), 5_000);
+        resumed.restore([injected, earlierButLater, stepped]);
+        expect(resumed.report("eidnara")[0]).toMatchObject({
+            status: "fired",
+            injected_seq: [0],
+            host_observed_seq: [2],
+        });
+    });
+
+    test("a burst that already made every injection is not injected again after resume", async () => {
+        const fault: ProxyFault = {
+            id: "b",
+            type: "provider_5xx",
+            strategy: "burst",
+            params: { count: 2 },
+        };
+        const { injector, records, url } = await start(fault);
+        injector.arm("b", "eidnara");
+        await hostCall(url, AGENT_BODY, 1_000);
+        await hostCall(url, AGENT_BODY, 1_000);
+        expect(records.records.map((r) => r.fault_ref)).toEqual(["b", "b"]);
+        const resumed = new FaultInjector([fault], new Rng(7), 5_000);
+        resumed.restore(records.records);
+        resumed.arm("b", "eidnara");
+        expect(resumed.take("agent", 10, "eidnara")).toBeNull();
+    });
+
+    test("an observe hook that throws becomes a gateway failure and the call still completes", async () => {
+        const records = new RecordWriter(null);
+        const gateway = new Gateway({
+            upstream: scriptedUpstream(),
+            records,
+            injector: new FaultInjector([], new Rng(1), 1_000),
+            rng: new Rng(1),
+            clock: { scenarioMs: () => 0 },
+            scope: () => ({ arm: "a", session: null, turn: null }),
+            observe: () => {
+                throw new Error("RegisterJob append failed");
+            },
+        });
+        await gateway.start();
+        gateways.push(gateway);
+        expect((await hostCall(gateway.urls[0] as string, AGENT_BODY, 2_000)).status).toBe(200);
+        expect(records.records[0]).toMatchObject({ status: 200, error: null });
+        expect(gateway.failures.map((f) => f.message)).toEqual(["RegisterJob append failed"]);
+    });
+
+    test("stop reports handlers that outlive the drain timeout as a failure", async () => {
+        const stuck: Upstream = {
+            converse: () => new Promise(() => undefined),
+        };
+        const records = new RecordWriter(null);
+        const started: CallStarted[] = [];
+        const gateway = new Gateway({
+            upstream: stuck,
+            records,
+            injector: new FaultInjector([], new Rng(1), 1_000),
+            rng: new Rng(1),
+            clock: { scenarioMs: () => 0 },
+            scope: () => ({ arm: "a", session: null, turn: null }),
+            observe: (e) => started.push(e),
+            drainMs: 100,
+        });
+        await gateway.start();
+        const call = hostCall(gateway.urls[0] as string, AGENT_BODY, 2_000);
+        while (started.length === 0) await Bun.sleep(5);
+        await gateway.stop();
+        expect(gateway.failures.map((f) => f.message)).toEqual([
+            "1 proxy handler(s) still active 100 ms after stop",
+        ]);
+        await call;
+    });
+
+    test("a body over the limit is refused as it uploads, with one 413 record", async () => {
+        const { records, url } = await start(null);
+        const big = Buffer.alloc(33 * 1024 * 1024, 0x20);
+        const r = await fetch(`${url}/model/m/converse`, { method: "POST", body: big });
+        expect(r.status).toBe(413);
+        expect(records.records.map((x) => [x.component, x.status])).toEqual([["rejected", 413]]);
+        expect(records.records[0]?.error).toMatch(/34603008 bytes over the limit/);
     });
 
     test("a fault never armed is untriggered", async () => {
@@ -376,7 +754,7 @@ describe("witnesses", () => {
             params: { count: 1 },
         });
         await hostCall(url, AGENT_BODY, 1_000);
-        expect(injector.report()[0]).toMatchObject({
+        expect(injector.report("eidnara")[0]).toMatchObject({
             armed: false,
             injected_seq: [],
             status: "untriggered",
@@ -390,10 +768,10 @@ describe("witnesses", () => {
             strategy: "single",
             params: { count: 1 },
         });
-        injector.arm("f");
+        injector.arm("f", "eidnara");
         await hostCall(url, AGENT_BODY, 1_000);
         await hostCall(url, SUMMARIZER_BODY, 1_000);
-        expect(injector.report()[0]?.status).toBe("untriggered");
+        expect(injector.report("eidnara")[0]?.status).toBe("untriggered");
     });
 
     test("a host call outside the window does not witness the fault", async () => {
@@ -402,15 +780,358 @@ describe("witnesses", () => {
             scriptedUpstream(),
             50,
         );
-        injector.arm("f");
+        injector.arm("f", "eidnara");
         await hostCall(url, AGENT_BODY, 1_000);
         await Bun.sleep(120);
         await hostCall(url, AGENT_BODY, 1_000);
-        expect(injector.report()[0]?.status).toBe("untriggered");
+        expect(injector.report("eidnara")[0]?.status).toBe("untriggered");
     });
 });
 
+const RECORD = {
+    arm: "a",
+    session: null,
+    turn: null,
+    component: "agent",
+    componentSource: "inferred",
+    model: "m",
+    status: 200,
+    finish_reason: "end_turn",
+    input_tokens: 1,
+    output_tokens: 1,
+    cache_read_tokens: 0,
+    cache_write_tokens: 0,
+    started_wall_ms: 1,
+    scenario_ms: 0,
+    first_byte_ms: null,
+    proxy_retries: 0,
+    fault_ref: null,
+    error: null,
+} as const;
+
 describe("call records", () => {
+    test("arrival holds from the first byte of a slow upload until the call is classified", async () => {
+        const log: string[] = [];
+        const records = new RecordWriter(null);
+        const gateway = new Gateway({
+            upstream: scriptedUpstream(),
+            records,
+            injector: new FaultInjector([], new Rng(1), 1_000),
+            rng: new Rng(1),
+            clock: { scenarioMs: () => 0 },
+            scope: () => ({ arm: "a", session: null, turn: null }),
+            arrival: () => {
+                log.push("arrived");
+                return () => log.push("released");
+            },
+            observe: (e) => {
+                log.push(`observed:${e.component}`);
+                return () => log.push("ended");
+            },
+        });
+        await gateway.start();
+        gateways.push(gateway);
+        const url = new URL(`${gateway.urls[0]}/model/m/converse-stream`);
+        const body = JSON.stringify(SUMMARIZER_BODY);
+        const req = request({
+            host: url.hostname,
+            port: url.port,
+            method: "POST",
+            path: url.pathname,
+            headers: { "content-length": String(Buffer.byteLength(body)) },
+        });
+        const done = new Promise<void>((resolve) =>
+            req.on("response", (res) => res.on("data", () => undefined).on("end", resolve)),
+        );
+        req.write(body.slice(0, 10));
+        await Bun.sleep(150);
+        expect(log).toEqual(["arrived"]);
+        req.end(body.slice(10));
+        await done;
+        expect(log).toEqual(["arrived", "observed:history_summarizer", "released", "ended"]);
+    });
+
+    test("a call is attributed to the scope at its first byte, not at the end of its upload", async () => {
+        const scope: Scope = { arm: "a", session: "s-0001", turn: "e-000003" };
+        const records = new RecordWriter(null);
+        const gateway = new Gateway({
+            upstream: scriptedUpstream(),
+            records,
+            injector: new FaultInjector([], new Rng(1), 1_000),
+            rng: new Rng(1),
+            clock: { scenarioMs: () => 0 },
+            scope: () => ({ ...scope }),
+        });
+        await gateway.start();
+        gateways.push(gateway);
+        const url = new URL(`${gateway.urls[0]}/model/m/converse-stream`);
+        const body = JSON.stringify(SUMMARIZER_BODY);
+        const req = request({
+            host: url.hostname,
+            port: url.port,
+            method: "POST",
+            path: url.pathname,
+            headers: { "content-length": String(Buffer.byteLength(body)) },
+        });
+        const done = new Promise<void>((resolve) =>
+            req.on("response", (res) => res.on("data", () => undefined).on("end", resolve)),
+        );
+        req.write(body.slice(0, 10));
+        await Bun.sleep(100);
+        scope.turn = null;
+        req.end(body.slice(10));
+        await done;
+        expect(records.records[0]).toMatchObject({ turn: "e-000003", session: "s-0001" });
+    });
+
+    test("an arrival hook that throws becomes a gateway failure and the call still completes", async () => {
+        const records = new RecordWriter(null);
+        const gateway = new Gateway({
+            upstream: scriptedUpstream(),
+            records,
+            injector: new FaultInjector([], new Rng(1), 1_000),
+            rng: new Rng(1),
+            clock: { scenarioMs: () => 0 },
+            scope: () => ({ arm: "a", session: null, turn: null }),
+            arrival: () => {
+                throw new Error("RegisterJob append failed");
+            },
+        });
+        await gateway.start();
+        gateways.push(gateway);
+        expect((await hostCall(gateway.urls[0] as string, AGENT_BODY, 2_000)).status).toBe(200);
+        expect(records.records).toHaveLength(1);
+        expect(gateway.failures.map((f) => f.message)).toEqual(["RegisterJob append failed"]);
+    });
+
+    test("an upload the client abandons still yields one rejected record", async () => {
+        const records = new RecordWriter(null);
+        const gateway = new Gateway({
+            upstream: scriptedUpstream(),
+            records,
+            injector: new FaultInjector([], new Rng(1), 1_000),
+            rng: new Rng(1),
+            clock: { scenarioMs: () => 7 },
+            scope: () => ({ arm: "a", session: "s", turn: "t" }),
+        });
+        await gateway.start();
+        gateways.push(gateway);
+        const url = new URL(`${gateway.urls[0]}/model/m/converse`);
+        const req = request({
+            host: url.hostname,
+            port: url.port,
+            method: "POST",
+            path: url.pathname,
+            headers: { "content-length": "100" },
+        });
+        req.on("error", () => undefined);
+        req.write("partial");
+        await Bun.sleep(100);
+        req.destroy();
+        await Bun.sleep(200);
+        expect(records.records).toHaveLength(1);
+        expect(records.records[0]).toMatchObject({
+            component: "rejected",
+            status: 499,
+            turn: "t",
+            scenario_ms: 7,
+            error: "upload aborted after 7 bytes",
+        });
+    });
+
+    test("a stop with an upload still streaming records it as rejected before reporting drained", async () => {
+        const records = new RecordWriter(null);
+        const gateway = new Gateway({
+            upstream: scriptedUpstream(),
+            records,
+            injector: new FaultInjector([], new Rng(1), 1_000),
+            rng: new Rng(1),
+            clock: { scenarioMs: () => 7 },
+            scope: () => ({ arm: "a", session: "s", turn: "t" }),
+        });
+        await gateway.start();
+        gateways.push(gateway);
+        const url = new URL(`${gateway.urls[0]}/model/m/converse`);
+        const req = request({
+            host: url.hostname,
+            port: url.port,
+            method: "POST",
+            path: url.pathname,
+            headers: { "content-length": "100" },
+        });
+        req.on("error", () => undefined);
+        req.write("partial");
+        await Bun.sleep(100);
+        await gateway.stop();
+        expect(records.records).toHaveLength(1);
+        expect(records.records[0]).toMatchObject({ component: "rejected", status: 499 });
+        req.destroy();
+    });
+
+    test("scenario time is read at a request's first byte", async () => {
+        let clock = 100;
+        const records = new RecordWriter(null);
+        const gateway = new Gateway({
+            upstream: scriptedUpstream(),
+            records,
+            injector: new FaultInjector([], new Rng(1), 1_000),
+            rng: new Rng(1),
+            clock: { scenarioMs: () => clock },
+            scope: () => ({ arm: "a", session: null, turn: null }),
+        });
+        await gateway.start();
+        gateways.push(gateway);
+        const url = new URL(`${gateway.urls[0]}/model/m/converse-stream`);
+        const body = JSON.stringify(AGENT_BODY);
+        const req = request({
+            host: url.hostname,
+            port: url.port,
+            method: "POST",
+            path: url.pathname,
+            headers: { "content-length": String(Buffer.byteLength(body)) },
+        });
+        const done = new Promise<void>((resolve) =>
+            req.on("response", (res) => res.on("data", () => undefined).on("end", resolve)),
+        );
+        req.write(body.slice(0, 10));
+        await Bun.sleep(100);
+        clock = 900;
+        req.end(body.slice(10));
+        await done;
+        expect(records.records[0]?.scenario_ms).toBe(100);
+    });
+
+    test("an upload the client abandons releases its arrival hold", async () => {
+        const log: string[] = [];
+        const gateway = new Gateway({
+            upstream: scriptedUpstream(),
+            records: new RecordWriter(null),
+            injector: new FaultInjector([], new Rng(1), 1_000),
+            rng: new Rng(1),
+            clock: { scenarioMs: () => 0 },
+            scope: () => ({ arm: "a", session: null, turn: null }),
+            arrival: () => {
+                log.push("arrived");
+                return () => log.push("released");
+            },
+        });
+        await gateway.start();
+        gateways.push(gateway);
+        const url = new URL(`${gateway.urls[0]}/model/m/converse`);
+        const req = request({
+            host: url.hostname,
+            port: url.port,
+            method: "POST",
+            path: url.pathname,
+            headers: { "content-length": "100" },
+        });
+        req.on("error", () => undefined);
+        req.write("partial");
+        await Bun.sleep(100);
+        expect(log).toEqual(["arrived"]);
+        req.destroy();
+        await Bun.sleep(200);
+        expect(log).toEqual(["arrived", "released"]);
+    });
+
+    test("a function returned by observe runs once the call's record is written, even when the write fails", async () => {
+        const records = new RecordWriter(null);
+        const seen: string[] = [];
+        let refuse = false;
+        const writer = {
+            records: records.records,
+            write: (partial: Omit<CallRecord, "seq" | "wall_ms">) => {
+                if (refuse) throw new Error("refused");
+                return records.write(partial);
+            },
+        } as unknown as RecordWriter;
+        const gateway = new Gateway({
+            upstream: scriptedUpstream(),
+            records: writer,
+            injector: new FaultInjector([], new Rng(1), 1_000),
+            rng: new Rng(1),
+            clock: { scenarioMs: () => 0 },
+            scope: () => ({ arm: "a", session: null, turn: null }),
+            observe: (e) => () => void seen.push(`${e.component}:${records.records.length}`),
+        });
+        await gateway.start();
+        gateways.push(gateway);
+        await hostCall(gateway.urls[0] as string, SUMMARIZER_BODY, 2_000);
+        expect(seen).toEqual(["history_summarizer:1"]);
+        refuse = true;
+        await hostCall(gateway.urls[0] as string, SUMMARIZER_BODY, 2_000);
+        expect(seen).toEqual(["history_summarizer:1", "history_summarizer:1"]);
+        expect(gateway.failures.map((f) => f.message)).toEqual(["refused"]);
+    });
+
+    test("a writer reopening a record file continues its sequence after a cut last line", () => {
+        const path = join(mkdtempSync(join(tmpdir(), "sim-records-")), "calls.jsonl");
+        const first = new RecordWriter(path);
+        const base = {
+            arm: "a",
+            session: null,
+            turn: null,
+            component: "agent",
+            componentSource: "inferred",
+            model: "m",
+            status: 200,
+            finish_reason: "end_turn",
+            input_tokens: 1,
+            output_tokens: 1,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            started_wall_ms: 1,
+            scenario_ms: 0,
+            first_byte_ms: null,
+            proxy_retries: 0,
+            fault_ref: null,
+            error: null,
+        } as const;
+        first.write(base);
+        first.write(base);
+        appendFileSync(path, '{"seq":2,"cut');
+        const second = new RecordWriter(path);
+        expect(second.write(base).seq).toBe(2);
+        const seqs = readFileSync(path, "utf8")
+            .trim()
+            .split("\n")
+            .map((l) => JSON.parse(l).seq);
+        expect(seqs).toEqual([0, 1, 2]);
+    });
+
+    test("a complete line that is valid JSON but not a record, or out of sequence, refuses the writer", () => {
+        const dir = mkdtempSync(join(tmpdir(), "sim-records-"));
+        const path = join(dir, "calls.jsonl");
+        const first = new RecordWriter(path);
+        first.write(RECORD);
+        first.write(RECORD);
+        const good = readFileSync(path, "utf8");
+        writeFileSync(path, `${good}{}\n`);
+        expect(() => new RecordWriter(path)).toThrow(/line 3 is corrupt: seq missing/);
+        const [l0, l1] = good.trim().split("\n") as [string, string];
+        writeFileSync(path, `${l1}\n${l0}\n`);
+        expect(() => new RecordWriter(path)).toThrow(/line 1 is corrupt: seq 1 at position 0/);
+    });
+
+    test("a failed append leaves the sequence where it was", () => {
+        const dir = mkdtempSync(join(tmpdir(), "sim-records-"));
+        const path = join(dir, "sub", "calls.jsonl");
+        const writer = new RecordWriter(path);
+        expect(() => writer.write(RECORD)).toThrow(/ENOENT/);
+        mkdirSync(join(dir, "sub"));
+        expect(writer.write(RECORD).seq).toBe(0);
+        expect(readFileSync(path, "utf8").trim().split("\n")).toHaveLength(1);
+    });
+
+    test("a corrupt complete last line refuses the writer instead of resuming before it", () => {
+        const path = join(mkdtempSync(join(tmpdir(), "sim-records-")), "calls.jsonl");
+        new RecordWriter(path).write(RECORD);
+        const text = `${readFileSync(path, "utf8")}{"seq":1,"wall_ms":6,\n`;
+        writeFileSync(path, text);
+        expect(() => new RecordWriter(path)).toThrow(/line 2 is corrupt: not JSON/);
+        expect(readFileSync(path, "utf8")).toBe(text);
+    });
+
     test("a forwarded call records tags, finish_reason, tokens, both times, and proxy retries", async () => {
         const upstream = scriptedUpstream();
         const { records, started, url } = await start(null, upstream);
@@ -606,6 +1327,68 @@ describe("every request yields one record", () => {
             [200, "stream_cut", "ModelStreamErrorException: boom"],
         ]);
         expect(gateway.inFlight).toBe(0);
+    });
+
+    test("a Claude 5.5 request loses temperature and enabled thinking, recorded; other models keep both", async () => {
+        const seen: unknown[] = [];
+        const upstream = scriptedUpstream();
+        const recording: Upstream = {
+            converse: (m, b, streaming, signal) => {
+                seen.push(structuredClone(b));
+                return upstream.converse(m, b, streaming, signal);
+            },
+        };
+        const { records, url } = await start(null, recording);
+        const opus = "global.anthropic.claude-opus-5-5";
+        const body = {
+            ...SUMMARIZER_BODY,
+            inferenceConfig: { temperature: 0, maxTokens: 64 },
+            additionalModelRequestFields: { thinking: { type: "enabled", budget_tokens: 1024 } },
+        };
+        await hostCall(url, body, 2_000, undefined, opus);
+        const agent = {
+            ...AGENT_BODY,
+            additionalModelRequestFields: { thinking: { type: "disabled" } },
+        };
+        await hostCall(url, agent, 2_000, undefined, opus);
+        await hostCall(url, body, 2_000, undefined, "us.anthropic.claude-haiku-4-5-20251001-v1:0");
+        const forwarded = seen as {
+            inferenceConfig?: unknown;
+            additionalModelRequestFields?: unknown;
+        }[];
+        expect(forwarded.map((b) => [b.inferenceConfig, b.additionalModelRequestFields])).toEqual([
+            [{ maxTokens: 64 }, {}],
+            [undefined, { thinking: { type: "disabled" } }],
+            [
+                { temperature: 0, maxTokens: 64 },
+                { thinking: { type: "enabled", budget_tokens: 1024 } },
+            ],
+        ]);
+        expect(records.records.map((r) => r.stripped)).toEqual([
+            {
+                "inferenceConfig.temperature": 0,
+                "additionalModelRequestFields.thinking": { type: "enabled", budget_tokens: 1024 },
+            },
+            undefined,
+            undefined,
+        ]);
+    });
+
+    test("a call upstream refuses is still observed when it is classified", async () => {
+        const refusing: Upstream = {
+            async converse() {
+                throw Object.assign(new Error("bad temperature"), {
+                    name: "ValidationException",
+                    $metadata: { httpStatusCode: 400 },
+                });
+            },
+        };
+        const { records, started, url } = await start(null, refusing);
+        await hostCall(url, SUMMARIZER_BODY, 2_000);
+        expect(records.records.map((r) => [r.component, r.status])).toEqual([
+            ["history_summarizer", 400],
+        ]);
+        expect(started.map((e) => e.component)).toEqual(["history_summarizer"]);
     });
 
     test("malformed paths and bodies are rejected; odd but parseable bodies are forwarded", async () => {

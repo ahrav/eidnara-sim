@@ -20,6 +20,9 @@ bun run catalog:check    # check docs/properties/sim-v2 against METHOD.md
 bun run corpus:verify    # rebuild the corpus in place; fail on any change
 bun run corpus:repos     # clone repositories and twins, run their suites offline
 bun scripts/compile-scenario.ts --tier S --seed 101   # compile a scenario (docs/scenario.md)
+scripts/eidnara-build.sh <checkout> <clone>            # build eidnara artefacts in a clone (docs/hosts.md)
+PATH=<pinned opencode .bin>:$PATH bun scripts/run-tier.ts --tier S --seed 101 --out runs/S-101-pi   # run or resume a tier (docs/run-command.md)
+bun tests/witness-faults.ts runs/witness             # live fault and resume witness (docs/run-command.md)
 ```
 
 ## Layout
@@ -32,5 +35,5 @@ bun scripts/compile-scenario.ts --tier S --seed 101   # compile a scenario (docs
 | `corpus/` | fitted distributions, tool-output samples, error codes, repositories (see `docs/corpus.md`) |
 | `sim.config.json` | paths to the eidnara checkout, plugin builds, daemon, hosts, and Bedrock profile; `SIM_CONFIG` overrides the file |
 | `scripts/` | repository checks |
-| `src/` | harness source; `src/proxy/` is the capture proxy (see `docs/proxy.md`) |
+| `src/` | harness source; `src/proxy/` is the capture proxy (`docs/proxy.md`), `src/run/` the journal, clock, scheduler, and run command (`docs/run.md`, `docs/time.md`, `docs/run-command.md`), `src/hosts/` the arm drivers (`docs/hosts.md`) |
 | `runs/` | run data, journals, reports (git-ignored) |
