@@ -1,14 +1,16 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Command } from "../grade/artefacts";
-import type { StoreCheck } from "../hosts/storecheck";
-import type { Preregistration } from "../prereg/schema";
-import type { CallRecord } from "../proxy/records";
-import { type Entry, readJournal } from "../run/journal";
+import { armBase } from "../hosts/arms";
+import { parseStoreCheck, type StoreCheck } from "../hosts/storecheck";
+import { ARMS, type Preregistration } from "../prereg/schema";
+import { type CallRecord, recordProblems } from "../proxy/records";
+import { type Entry, readJournal, requireComplete } from "../run/journal";
 import type { Sample as ResourceSample } from "../run/sampler";
-import type { Scenario } from "../scenario/compile";
+import { type Scenario, scenarioHash } from "../scenario/compile";
 
-export type Sample = Pick<ResourceSample, "scenario_ms" | "rss">;
+/** `pid` tells daemon lifetimes apart; a record without one is read as a single lifetime. */
+export type Sample = Pick<ResourceSample, "scenario_ms" | "rss"> & { pid?: number | null };
 
 export interface ArmLogs {
     arm: string;
@@ -32,8 +34,67 @@ export interface RunLogs {
     arms: ArmLogs[];
 }
 
+/** Evidence files are read strictly: every newline-terminated line must parse. A completed run's writers leave no cut tail. */
 function jsonl<T>(path: string): T[] {
-    return existsSync(path) ? (readJournal(path) as unknown as T[]) : [];
+    if (!existsSync(path)) return [];
+    const lines = readFileSync(path, "utf8").split("\n");
+    return lines.flatMap((text, i) => {
+        if (i === lines.length - 1) {
+            if (text !== "") throw new Error(`${path}: line ${i + 1} is cut`);
+            return [];
+        }
+        try {
+            return [JSON.parse(text) as T];
+        } catch {
+            throw new Error(`${path}: line ${i + 1} is corrupt`);
+        }
+    });
+}
+
+type FieldCheck = (v: unknown) => boolean;
+const num: FieldCheck = (v) => Number.isFinite(v);
+const numOrNull: FieldCheck = (v) => v === null || Number.isFinite(v);
+const str: FieldCheck = (v) => typeof v === "string";
+const strOrNull: FieldCheck = (v) => v === null || typeof v === "string";
+const SAMPLE_FIELDS: Record<string, FieldCheck> = { scenario_ms: num, rss: numOrNull };
+const TOOL_FIELDS: Record<string, FieldCheck> = {
+    turn: strOrNull,
+    command: str,
+    exit: numOrNull,
+    scenario_ms: num,
+};
+
+/** Reads a JSONL evidence file whose records must carry the named fields with the named shapes. */
+function shaped<T>(path: string, fields: Record<string, FieldCheck>): T[] {
+    const rows = jsonl<Record<string, unknown>>(path);
+    rows.forEach((row, i) => {
+        for (const [field, ok] of Object.entries(fields)) {
+            if (!ok(row[field])) throw new Error(`${path}: line ${i + 1}: ${field} missing`);
+        }
+        if ("pid" in row && !numOrNull(row.pid))
+            throw new Error(`${path}: line ${i + 1}: pid missing`);
+    });
+    // SAFETY: every row carries each field in `fields` with its checked shape, which is the record type `T` names.
+    return rows as unknown as T[];
+}
+
+interface Manifest {
+    order: string[];
+    events: number;
+    tier: string;
+    scenario_hash?: string;
+    /** Wall time at scenario time 0; absent in runs recorded before the harness wrote it. */
+    base_wall_ms?: number;
+}
+
+/** Reads one JSON file as the record type its reader names, naming the file when the text does not parse. */
+function readJson<T>(path: string): T {
+    const text = readFileSync(path, "utf8");
+    try {
+        return JSON.parse(text) as T;
+    } catch {
+        throw new Error(`${path}: not valid JSON`);
+    }
 }
 
 const lines = (path: string) =>
@@ -43,23 +104,99 @@ const lines = (path: string) =>
               .filter((l) => l !== "")
         : [];
 
+/**
+ * Every scheduled user turn has one `EndTurn` per arm, the record F1 and F4 read; the one
+ * exception is a turn the resume path closed as `failed(interrupted)`, which has none.
+ */
+function requireTurnEnds(journal: Entry[], arms: string[], events: Scenario["events"]): void {
+    for (const arm of arms) {
+        const mine = journal.filter((e) => e.arm === arm);
+        for (const event of events) {
+            if (event.kind !== "user_turn") continue;
+            const id = String(event.id);
+            const ends = mine.filter((e) => e.kind === "EndTurn" && e.event === id).length;
+            const closed = mine.find((e) => e.kind === "Event" && e.event === id);
+            if (ends === 0 && String(closed?.outcome) === "failed(interrupted)") continue;
+            if (ends === 0) throw new Error(`arm ${arm}: turn ${id} has no EndTurn`);
+            if (ends > 1) throw new Error(`arm ${arm}: turn ${id} has ${ends} EndTurn entries`);
+        }
+    }
+}
+
 export function loadRun(dir: string, prereg: Preregistration): RunLogs {
-    const manifest = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8"));
-    const scenario = JSON.parse(readFileSync(join(dir, "scenario.json"), "utf8")) as Scenario;
+    const manifest = readJson<Manifest>(join(dir, "manifest.json"));
+    const scenario = readJson<Scenario>(join(dir, "scenario.json"));
+    const digest = scenarioHash(scenario);
+    if (digest !== manifest.scenario_hash) {
+        throw new Error(
+            `scenario_hash ${digest} differs from the manifest's ${manifest.scenario_hash}`,
+        );
+    }
     const kinds = new Map(scenario.events.map((e) => [String(e.id), String(e.kind)]));
+    const order = manifest.order as string[];
+    for (const arm of order) {
+        if (!(ARMS as readonly string[]).includes(armBase(arm))) {
+            throw new Error(`manifest arm ${arm} is not a pre-registered arm`);
+        }
+    }
     const calls = jsonl<CallRecord>(join(dir, "calls.jsonl"));
-    const journal = readJournal(join(dir, "journal.jsonl"));
-    const arms = (manifest.order as string[]).map((arm) => ({
+    const seen = new Set<number>();
+    for (const c of calls) {
+        const problems = recordProblems({ ...c });
+        if (problems.length > 0) throw new Error(`call ${c.seq}: ${problems.join(", ")}`);
+        if (!order.includes(c.arm))
+            throw new Error(`call ${c.seq}: arm ${c.arm} is not in the manifest`);
+        if (seen.has(c.seq)) throw new Error(`call ${c.seq}: sequence number repeated`);
+        seen.add(c.seq);
+    }
+    const journalPath = join(dir, "journal.jsonl");
+    const journal = readJournal(journalPath);
+    journal.forEach((e, i) => {
+        const fields: Record<string, FieldCheck> = { kind: str, arm: strOrNull, scenario_ms: num };
+        if (["BeginTurn", "EndTurn", "Event"].includes(String(e.kind))) fields.event = str;
+        if (e.kind === "EndTurn") fields.outcome = str;
+        for (const [field, ok] of Object.entries(fields)) {
+            if (!ok(e[field])) throw new Error(`${journalPath}: line ${i + 1}: ${field} missing`);
+        }
+    });
+    const count = manifest.events;
+    if (!Number.isInteger(count) || count < 1 || count > scenario.events.length) {
+        throw new Error(
+            `manifest events ${count} exceeds the scenario's ${scenario.events.length}`,
+        );
+    }
+    const scheduled = scenario.events.slice(0, count).map((e) => String(e.id));
+    requireComplete(journal, order, scheduled);
+    requireTurnEnds(journal, order, scenario.events.slice(0, count));
+    const arms = order.map((arm) => ({
         arm,
         calls: calls.filter((c) => c.arm === arm),
         journal: journal.filter((e) => e.arm === arm),
         pluginLog: lines(join(dir, arm, "r", "eidnara.log")),
         daemonLog: lines(join(dir, arm, "daemon.log")),
-        resources: jsonl<Sample>(join(dir, arm, "resources.jsonl")),
-        tools: jsonl<Command & { turn: string | null }>(join(dir, arm, "tools.jsonl")),
+        resources: shaped<Sample>(join(dir, arm, "resources.jsonl"), SAMPLE_FIELDS),
+        tools: shaped<Command & { turn: string | null }>(
+            join(dir, arm, "tools.jsonl"),
+            TOOL_FIELDS,
+        ),
         finalStore: existsSync(join(dir, arm, "store-check.json"))
-            ? (JSON.parse(readFileSync(join(dir, arm, "store-check.json"), "utf8")) as StoreCheck)
+            ? parseStoreCheck(
+                  JSON.parse(readFileSync(join(dir, arm, "store-check.json"), "utf8")),
+                  `${arm}/store-check.json`,
+              )
             : undefined,
     }));
-    return { dir, tier: manifest.tier, base_wall_ms: manifest.base_wall_ms, prereg, kinds, arms };
+    for (const arm of arms) {
+        if (armBase(arm.arm) === "host") continue;
+        if (!arm.resources.some((s) => typeof s.rss === "number")) {
+            throw new Error(
+                `arm ${arm.arm} has no daemon RSS samples in ${arm.arm}/resources.jsonl`,
+            );
+        }
+        if (!existsSync(join(dir, arm.arm, "daemon.log"))) {
+            throw new Error(`arm ${arm.arm} has no daemon.log`);
+        }
+    }
+    const base_wall_ms = manifest.base_wall_ms as number;
+    return { dir, tier: manifest.tier, base_wall_ms, prereg, kinds, arms };
 }

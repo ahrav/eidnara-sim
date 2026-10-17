@@ -19,6 +19,8 @@ export interface Command {
     command: string;
     exit: number | null;
     scenario_ms: number;
+    /** The host's id for the run, when it reported a start before the end. */
+    call?: string;
 }
 
 export interface CommandLog {
@@ -52,6 +54,8 @@ export interface CallView {
     input_tokens: number;
     output_tokens: number;
     response_text?: string;
+    /** The proxy cut `response_text` at its cap; the answer is a prefix and is refused as grade input. */
+    response_text_truncated?: boolean;
     label?: string;
 }
 
@@ -67,12 +71,17 @@ export interface Snapshot {
     id: string;
     item: string;
     arm: string;
+    /** The scenario session the probe turn belongs to. */
+    session?: string;
     turn: string;
     turn_outcome: "ok" | "failed";
     artefacts: Artefact[];
 }
 
 export class GradeRefused extends Error {}
+
+/** A refusal that concerns one item's answer evidence; the grader excludes the item. */
+export class AnswerRefused extends GradeRefused {}
 
 export function assertArtefactsOnly(snapshot: Snapshot): void {
     for (const a of snapshot.artefacts as Array<{ id: string; class: string }>) {
@@ -113,6 +122,10 @@ export class ArtefactReader {
     }
 
     answer(): string {
-        return this.turnCalls().at(-1)?.response_text ?? "";
+        const last = this.turnCalls().at(-1);
+        if (last?.response_text_truncated) {
+            throw new AnswerRefused(`call ${last.seq}: the proxy truncated the answer at its cap`);
+        }
+        return last?.response_text ?? "";
     }
 }

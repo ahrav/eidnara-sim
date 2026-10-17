@@ -1,10 +1,19 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import {
     appendFileSync,
+    closeSync,
+    existsSync,
+    linkSync,
     mkdirSync,
+    openSync,
     readdirSync,
     readFileSync,
+    readSync,
     realpathSync,
+    renameSync,
+    rmSync,
+    statSync,
+    truncateSync,
     writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -41,20 +50,32 @@ export interface HostContext {
     model: string;
     contextLimit: number;
     now?: () => number;
+    /**
+     * The host invokes `onTool` as it records a run; `drainTools` invokes it for the runs it
+     * adds itself. A run with a `call` id may be reported at its start with a null exit and
+     * again at its end, and the later report replaces the earlier one.
+     */
+    onTool?: (run: ToolRun) => void;
 }
 
 export interface ToolRun {
     command: string;
     exit: number | null;
     scenario_ms: number;
+    /** The host's id for the run, when it reports a start before the end; a later report with the same id replaces the earlier one. */
+    call?: string;
 }
+
+const TARGET_KEYS = ["path", "filePath", "pattern", "file_path"];
 
 export function toolCommand(tool: string, args: Record<string, unknown> | undefined): string {
     if (typeof args?.command === "string") return args.command;
-    const target = args?.path ?? args?.filePath ?? args?.pattern ?? args?.file_path;
-    return typeof target === "string"
-        ? `${tool} ${target}`
-        : `${tool} ${JSON.stringify(args ?? {})}`;
+    const key = TARGET_KEYS.find((k) => typeof args?.[k] === "string");
+    if (!key || !args) return `${tool} ${JSON.stringify(args ?? {})}`;
+    const body = Object.entries(args)
+        .filter(([k, v]) => k !== key && (typeof v === "string" || typeof v === "object"))
+        .map(([, v]) => (typeof v === "string" ? v : JSON.stringify(v)));
+    return [`${tool} ${args[key]}`, ...body].join("\n");
 }
 
 export interface PromptResult {
@@ -88,6 +109,11 @@ function eidnaraUserConfig(connectionFile: string, model: string): Record<string
     };
 }
 
+interface LogMarker {
+    pending: string[];
+    copying: { source: string; target_bytes: number } | null;
+}
+
 export interface DaemonContext {
     config: SimConfig;
     root: string;
@@ -99,8 +125,25 @@ export interface DaemonContext {
     model: string;
 }
 
+/** Appends `source` to `target` a megabyte at a time, so a long daemon log stays off the heap. */
+function appendFileFrom(source: string, target: string): void {
+    const fd = openSync(source, "r");
+    try {
+        const chunk = Buffer.alloc(1 << 20);
+        for (;;) {
+            const read = readSync(fd, chunk, 0, chunk.length, null);
+            if (read === 0) break;
+            appendFileSync(target, chunk.subarray(0, read));
+        }
+    } finally {
+        closeSync(fd);
+    }
+}
+
 export class DaemonStack {
     private stack: Untyped = null;
+    /** The v1 hermetic-host module the stack came from. */
+    private hh: Untyped = null;
     connectionFile = "";
 
     constructor(private readonly ctx: DaemonContext) {}
@@ -109,10 +152,77 @@ export class DaemonStack {
         return this.stack?.child?.pid ?? null;
     }
 
+    /** Names the marker a `start` after a harness kill reads to find the logs still to save. */
+    private get logSourceFile(): string {
+        return `${this.ctx.logFile}.source`;
+    }
+
+    /**
+     * The marker lists the stderr logs not yet saved to `daemon.log`, in order, and the copy
+     * in progress with `daemon.log`'s length before it. It is replaced through a rename.
+     */
+    private writeMarker(marker: LogMarker): void {
+        const tmp = `${this.logSourceFile}.tmp`;
+        writeFileSync(tmp, JSON.stringify(marker));
+        renameSync(tmp, this.logSourceFile);
+    }
+
+    private readMarker(): LogMarker | null {
+        if (!existsSync(this.logSourceFile)) return null;
+        const text = readFileSync(this.logSourceFile, "utf8");
+        try {
+            const parsed = JSON.parse(text) as Partial<LogMarker>;
+            return { pending: parsed.pending ?? [], copying: parsed.copying ?? null };
+        } catch {
+            throw new Error(`${this.logSourceFile}: unreadable daemon log recovery marker`);
+        }
+    }
+
+    /** Records the live stack's stderr log as the one log still to save. */
+    noteLogSource(): void {
+        this.writeMarker({ pending: [String(this.stack?.logPath ?? "")], copying: null });
+    }
+
+    /** Appends one log to `daemon.log` exactly once, then removes it and takes it off the marker. */
+    private absorb(source: string, rest: string[]): void {
+        const start = existsSync(this.ctx.logFile) ? statSync(this.ctx.logFile).size : 0;
+        this.writeMarker({ pending: rest, copying: { source, target_bytes: start } });
+        appendFileFrom(source, this.ctx.logFile);
+        rmSync(source, { force: true });
+        this.writeMarker({ pending: rest, copying: null });
+    }
+
+    /**
+     * Saves every log the marker lists that still exists, in order. A copy an earlier kill
+     * cut short is rolled back to the length the marker recorded before it runs again, so each
+     * log is appended once. A clean `stop` or `restart` leaves no log behind, so this finds
+     * one only after a kill.
+     */
+    recoverLog(): void {
+        const marker = this.readMarker();
+        if (!marker) return;
+        let pending = [...marker.pending];
+        if (marker.copying) {
+            if (existsSync(this.ctx.logFile)) {
+                truncateSync(this.ctx.logFile, marker.copying.target_bytes);
+            }
+            pending = [marker.copying.source, ...pending];
+        }
+        while (pending.length > 0) {
+            const [source, ...rest] = pending as [string, ...string[]];
+            if (source !== "" && existsSync(source)) this.absorb(source, rest);
+            else this.writeMarker({ pending: rest, copying: null });
+            pending = rest;
+        }
+        rmSync(this.logSourceFile, { force: true });
+    }
+
     async start(): Promise<void> {
+        this.recoverLog();
         const { config } = this.ctx;
         const hr = await v1(config, "packages/e2e-tests/src/bedrock-peer/harness-runtime.ts");
         const hh = await v1(config, "packages/e2e-tests/src/rust-runner/hermetic-host.ts");
+        this.hh = hh;
         const sources = hr.detectHarnessRuntimeSources();
         if (!sources.ok) throw new Error(`harness runtime sources: ${sources.reason}`);
         const runtimeDir = join(this.ctx.root, "runtime");
@@ -141,23 +251,69 @@ export class DaemonStack {
             daemonEnv: faketimeEnv(this.ctx.offsetFile),
         });
         this.connectionFile = this.stack.connectionFile;
+        this.noteLogSource();
     }
 
-    private saveLog(): void {
-        if (this.stack) appendFileSync(this.ctx.logFile, this.stack.hostLog());
+    /**
+     * Appends the daemon's stdout and stderr since the last host start, each line once. The
+     * v1 stack keeps the last 256 KiB of each stream in memory and writes every stderr chunk
+     * to a log file it truncates at each host start, so stderr is read whole from that file
+     * (`logPath`, a private field the stack's own `diagnostics` view reads the same way) and
+     * stdout from the `diagnostics` view.
+     */
+    private get held(): string {
+        return `${this.ctx.logFile}.held`;
     }
 
+    /** The dying lifetime's stdout, held with its log until the replacement is up. */
+    private heldStdout: string | null = null;
+
+    /**
+     * Holds the live lifetime's output for `restart` to save once the old daemon is dead. `held`
+     * is a hard link to the live log: the stack replaces the log path when the new daemon
+     * starts, and the link keeps the old inode readable until the old daemon's last write has
+     * landed. The marker names the held log and the live one, so a kill at any point leaves
+     * both findable; it names the live one alone once the held copy is saved.
+     */
+    private hold(): void {
+        const { stdout } = this.hh.__hermeticHostTest.diagnostics(this.stack);
+        const live = String(this.stack.logPath ?? "");
+        rmSync(this.held, { force: true });
+        if (existsSync(live)) linkSync(live, this.held);
+        this.heldStdout = stdout;
+        this.writeMarker({ pending: [this.held, live], copying: null });
+    }
+
+    /**
+     * Kills the daemon by SIGKILL; the store stays as the kill left it until `restart`, which
+     * saves the dead lifetime's held log.
+     */
+    async crash(): Promise<void> {
+        this.hold();
+        await this.stack.crashHost();
+    }
+
+    /** Starts the replacement daemon, killing the current one first unless `crash` already did. */
     async restart(): Promise<void> {
-        this.saveLog();
+        if (this.heldStdout === null) this.hold();
+        const live = String(this.stack.logPath ?? "");
         await this.stack.restartHost();
+        appendFileSync(this.ctx.logFile, this.heldStdout ?? "");
+        this.heldStdout = null;
+        this.absorb(this.held, [live]);
     }
 
+    /** Stops the daemon, then saves its stdout and its whole stderr log; nothing is left to recover. */
     async stop(): Promise<void> {
         const stack = this.stack;
         if (!stack) return;
-        this.saveLog();
+        const { stdout } = this.hh.__hermeticHostTest.diagnostics(stack);
         await stack.terminateHost();
         this.stack = null;
+        appendFileSync(this.ctx.logFile, stdout);
+        const live = String(stack.logPath ?? "");
+        if (live !== "" && existsSync(live)) this.absorb(live, []);
+        rmSync(this.logSourceFile, { force: true });
     }
 }
 
@@ -205,10 +361,14 @@ export abstract class SimHost {
     protected logTool(
         tool: string,
         args: Record<string, unknown> | undefined,
-        failed: boolean,
+        exit: number | null,
         scenario_ms = this.ctx.now?.() ?? 0,
+        call?: string,
     ) {
-        this.tools.push({ command: toolCommand(tool, args), exit: failed ? 1 : 0, scenario_ms });
+        const run: ToolRun = { command: toolCommand(tool, args), exit, scenario_ms };
+        if (call) run.call = call;
+        this.tools.push(run);
+        this.ctx.onTool?.(run);
     }
 
     protected unfinished(): ToolRun[] {
@@ -216,7 +376,9 @@ export abstract class SimHost {
     }
 
     drainTools(): ToolRun[] {
-        return [...this.tools.splice(0), ...this.unfinished()];
+        const open = this.unfinished();
+        for (const run of open) this.ctx.onTool?.(run);
+        return [...this.tools.splice(0), ...open];
     }
 }
 
@@ -225,17 +387,38 @@ export class PiSimHost extends SimHost {
     readonly agentDir = join(this.ctx.root, "home/.pi/agent");
     private readonly started = new Map<
         string,
-        { tool: string; args: Record<string, unknown>; ms: number }
+        { tool: string; args: Record<string, unknown>; scenario_ms: number }
     >();
 
     protected override unfinished(): ToolRun[] {
-        const open = [...this.started.values()];
+        const open = [...this.started.entries()];
         this.started.clear();
-        return open.map((t) => ({
+        return open.map(([call, t]) => ({
             command: toolCommand(t.tool, t.args),
             exit: null,
-            scenario_ms: t.ms,
+            scenario_ms: t.scenario_ms,
+            call,
         }));
+    }
+
+    /**
+     * A tool run is timed from its start event, the moment the action began, and reported to
+     * the recorder at that moment with a null exit, so a kill before the end event leaves the
+     * run on record; the end event reports it again with its exit.
+     */
+    private toolEvent(e: Untyped): void {
+        if (e.type === "tool_execution_start") {
+            const scenario_ms = this.ctx.now?.() ?? 0;
+            this.started.set(e.toolCallId, { tool: e.toolName, args: e.args, scenario_ms });
+            const command = toolCommand(e.toolName, e.args);
+            this.ctx.onTool?.({ command, exit: null, scenario_ms, call: e.toolCallId });
+        }
+        if (e.type !== "tool_execution_end") return;
+        const run = this.started.get(e.toolCallId);
+        this.started.delete(e.toolCallId);
+        if (!run) return;
+        const exit = e.isError === true ? 1 : 0;
+        this.logTool(run.tool, run.args, exit, run.scenario_ms, e.toolCallId);
     }
 
     private writeConfigs(connectionFile: string | null): void {
@@ -313,18 +496,8 @@ export class PiSimHost extends SimHost {
         this.rpc = new rpcClient.PiRpcProcess(child, new rpcClient.PiRpcProtocol(), {
             stderrLimit: 20_000,
         });
-        const started = this.started;
-        started.clear();
-        this.rpc.onEvent((e: Untyped) => {
-            if (e.type === "tool_execution_start") {
-                const ms = this.ctx.now?.() ?? 0;
-                started.set(e.toolCallId, { tool: e.toolName, args: e.args, ms });
-            }
-            if (e.type !== "tool_execution_end") return;
-            const run = started.get(e.toolCallId);
-            started.delete(e.toolCallId);
-            if (run) this.logTool(run.tool, run.args, e.isError === true, run.ms);
-        });
+        this.started.clear();
+        this.rpc.onEvent((e: Untyped) => this.toolEvent(e));
         const ready = this.rpc.sendCommand("get_state", {}, { timeoutMs: 120_000 });
         await Promise.race([ready, spawnError]);
     }
@@ -342,7 +515,17 @@ export class PiSimHost extends SimHost {
         return end;
     }
 
+    /** How long an aborted turn may take to report `agent_end` before the Pi process is killed. */
+    private drainWaitMs = 30_000;
+
+    /**
+     * Runs one turn. A turn that fails or times out is aborted; a Pi that then reports no
+     * `agent_end` within the drain wait is still running the old turn, so its process is
+     * killed and the session's later prompts fail at once. A tool event from that turn can
+     * then never land on a later turn's record.
+     */
     async prompt(text: string, timeoutMs: number, interruptMs?: number): Promise<PromptResult> {
+        if (!this.rpc) return { error: "Pi process killed after an undrained abort" };
         const end = this.agentEnd(timeoutMs);
         try {
             const response = await this.rpc.sendCommand("prompt", { message: text }, { timeoutMs });
@@ -351,22 +534,35 @@ export class PiSimHost extends SimHost {
             }
             const cut = interruptMs === undefined ? null : Bun.sleep(interruptMs).then(() => null);
             const first = await Promise.race(cut ? [end, cut] : [end]);
+            // A failed abort is read off `end` like a landed one: the original waiter still
+            // holds the agent's ending, or waits on for it under the turn deadline.
             if (first === null) {
-                await this.rpc.sendCommand("abort", {}, { timeoutMs: 60_000 });
-                await end;
-                return { interrupted: true };
+                await this.rpc
+                    .sendCommand("abort", {}, { timeoutMs: 60_000 })
+                    .catch(() => undefined);
             }
-            const outcome = first;
+            // The interrupt is read off the agent's own last message: an abort that reached Pi
+            // after the agent had finished leaves a stop reason other than `aborted`.
+            const outcome = first ?? (await end);
             const messages = (outcome.messages ?? []) as Array<Record<string, Untyped>>;
             const last = messages.filter((m) => m.role === "assistant").at(-1);
+            if (last?.stopReason === "aborted") return { interrupted: true };
             return last?.stopReason === "error"
                 ? { error: String(last.errorMessage ?? "error") }
                 : {};
         } catch (caught) {
-            const drained = this.agentEnd(30_000);
+            const drained = this.agentEnd(this.drainWaitMs);
             await this.rpc.sendCommand("abort", {}, { timeoutMs: 60_000 }).catch(() => undefined);
-            await drained.catch(() => undefined);
-            return { error: String(caught).slice(0, 2000) };
+            const settled = await drained.then(
+                () => true,
+                () => false,
+            );
+            const error = String(caught).slice(0, 2000);
+            if (settled) return { error };
+            await this.closeSession();
+            return {
+                error: `${error} | Pi process killed after an undrained abort`.slice(0, 2000),
+            };
         }
     }
 
@@ -392,6 +588,9 @@ const NON_INTERACTIVE = ["question", "plan_enter", "plan_exit"].map((permission)
     action: "deny",
     pattern: "*",
 }));
+
+/** A tool part's exit by its OpenCode status; a pending or running part has none. */
+const EXIT: Record<string, number> = { completed: 0, error: 1 };
 
 export class OpencodeSimHost extends SimHost {
     private oc: Untyped = null;
@@ -492,26 +691,75 @@ export class OpencodeSimHost extends SimHost {
         return pids.length > 0 ? Math.min(...pids.map(Number)) : null;
     }
 
-    private async messages(): Promise<Array<{ info: Untyped; parts: Untyped[] }>> {
-        const listed = await this.client.session.messages({ path: { id: this.sid } });
-        return (listed.data ?? []) as Array<{ info: Untyped; parts: Untyped[] }>;
+    /** Lists the session's messages within `deadlineMs`; a listing that stalls past it throws. */
+    private async messages(
+        deadlineMs: number,
+    ): Promise<Array<{ info: Untyped; parts: Untyped[] }>> {
+        const call = this.client.session.messages({ path: { id: this.sid } });
+        const listed = await Promise.race([call, Bun.sleep(deadlineMs).then(() => null)]);
+        if (listed === null) throw new Error(`session.messages timed out after ${deadlineMs} ms`);
+        if (listed.error || !listed.data) {
+            throw new Error(`session.messages failed: ${JSON.stringify(listed.error ?? null)}`);
+        }
+        return listed.data as Array<{ info: Untyped; parts: Untyped[] }>;
     }
 
-    private async logTurnTools(seen: Set<string>, startScenario: number): Promise<void> {
-        const fresh = (await this.messages()).filter((m) => !seen.has(String(m.info?.id)));
+    private async logTurnTools(
+        seen: Set<string>,
+        startScenario: number,
+        deadlineMs: number,
+    ): Promise<void> {
+        const listed = await this.messages(deadlineMs);
+        const fresh = listed.filter((m) => !seen.has(String(m.info?.id)));
         const origin = Math.min(...fresh.map((m) => Number(m.info?.time?.created ?? Infinity)));
         for (const m of fresh) {
             for (const part of m.parts.filter((p) => p.type === "tool")) {
                 const at = Number(part.state?.time?.start ?? origin);
                 const ms = startScenario + (Number.isFinite(origin) ? Math.max(0, at - origin) : 0);
-                this.logTool(part.tool, part.state?.input, part.state?.status === "error", ms);
+                this.logTool(part.tool, part.state?.input, EXIT[part.state?.status] ?? null, ms);
             }
         }
     }
 
+    /**
+     * Runs one turn and then logs the tool parts of the messages it added, on every outcome:
+     * the next turn treats those messages as seen, so a turn that errored or hit its deadline
+     * logs its tools here or never. A failed turn whose listing also fails keeps its own
+     * error and names the capture gap.
+     */
+    /**
+     * Runs one turn under `timeoutMs`, which also bounds the message listings before and
+     * after it. A listing that stalls before the turn fails the turn; one that stalls after it
+     * fails the turn as a capture gap, since its tool runs are then unknown.
+     */
     async prompt(text: string, timeoutMs: number, interruptMs?: number): Promise<PromptResult> {
-        const seen = new Set((await this.messages()).map((m) => String(m.info?.id)));
+        const started = Date.now();
+        let seen: Set<string>;
+        try {
+            seen = new Set((await this.messages(timeoutMs)).map((m) => String(m.info?.id)));
+        } catch (caught) {
+            return { error: `tool capture: ${String(caught)}`.slice(0, 2000) };
+        }
         const startScenario = this.ctx.now?.() ?? 0;
+        const outcome = await this.turn(text, timeoutMs, interruptMs);
+        const remaining = Math.max(1_000, timeoutMs - (Date.now() - started));
+        try {
+            await this.logTurnTools(seen, startScenario, remaining);
+        } catch (caught) {
+            const gap = `tool capture: ${String(caught)}`;
+            return {
+                ...outcome,
+                error: (outcome.error ? `${outcome.error} | ${gap}` : gap).slice(0, 2000),
+            };
+        }
+        return outcome;
+    }
+
+    private async turn(
+        text: string,
+        timeoutMs: number,
+        interruptMs?: number,
+    ): Promise<PromptResult> {
         const model = { providerID: "amazon-bedrock", modelID: this.ctx.model };
         const call = this.client.session.prompt({
             path: { id: this.sid },
@@ -522,24 +770,27 @@ export class OpencodeSimHost extends SimHost {
             (caught: unknown) => ({ caught }),
         );
         const wait = Math.min(timeoutMs, interruptMs ?? timeoutMs);
-        const first = await Promise.race([settled, Bun.sleep(wait).then(() => null)]);
+        let first = await Promise.race([settled, Bun.sleep(wait).then(() => null)]);
         if (first === null) {
-            const abort = this.client.session.abort({ path: { id: this.sid } });
-            await Promise.race([abort.catch(() => undefined), Bun.sleep(5_000)]);
+            // `session.abort` answers true once it stopped a running prompt; a refusal, an error,
+            // or a stall leaves the turn to end as it would have, and it is reported as it ended.
+            const abort = this.client.session
+                .abort({ path: { id: this.sid } })
+                .then((r: Untyped) => r?.data === true && !r?.error)
+                .catch(() => false);
+            const aborted = await Promise.race([abort, Bun.sleep(5_000).then(() => false)]);
             const drained = await Promise.race([settled, Bun.sleep(30_000).then(() => null)]);
             if (drained === null) throw new Error("OpenCode turn still running 30 s after abort");
-            await this.logTurnTools(seen, startScenario).catch(() => undefined);
-            if (wait < timeoutMs) return { interrupted: true };
-            return { error: `turn deadline ${timeoutMs} ms` };
+            if (wait >= timeoutMs) return { error: `turn deadline ${timeoutMs} ms` };
+            if (aborted) return { interrupted: true };
+            first = drained;
         }
         if ("caught" in first) {
-            await this.logTurnTools(seen, startScenario).catch(() => undefined);
             const tail = String(this.oc?.stderr?.() ?? "").slice(-600);
             return { error: `${String(first.caught)} | serve stderr: ${tail}`.slice(0, 2000) };
         }
         const { result } = first;
         if (result.error) return { error: JSON.stringify(result.error).slice(0, 2000) };
-        await this.logTurnTools(seen, startScenario);
         const info = result.data?.info;
         return info?.error ? { error: JSON.stringify(info.error).slice(0, 2000) } : {};
     }

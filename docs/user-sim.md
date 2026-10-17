@@ -25,7 +25,7 @@ stream, so every arm of one seed gets the same plan. Each label is one of
 | Label | Per | Eligible turns | Effect |
 |---|---|---|---|
 | `paste` | every paste turn | `paste` role | The compiled paste, verbatim |
-| `abandon` | session | the first of a session's trailing filler turns | A reply that drops the work; the later trailing fillers are never sent |
+| `abandon` | session | the first of a session's trailing filler turns, after the last turn a fault fires at | A reply that drops the work; the later trailing fillers are never sent |
 | `redirect` | session | a filler turn after the first | A change of direction, then the task |
 | `interrupt` | delivered turn | filler turns | The task, then a hard abort through the host's abort path after a delay drawn from `user_sim.interrupt_after_ms` |
 | `pushback` | delivered turn | filler, conveyance, update, and reversal turns after the first | A challenge to the agent's last reply, then the script text |
@@ -41,19 +41,34 @@ band.
 
 An interrupt aborts Pi through its RPC `abort` command and OpenCode through
 `session.abort`, then waits for the turn to drain. The turn ends `ok` with
-`interrupted: true`; an agent that finished before the delay leaves the
-journal label `task` with `scheduled: "interrupt"`, so the journaled labels
-and the realised interrupt rate count only the turns that were aborted.
+`interrupted: true` when the abort landed: Pi's last assistant message
+stopped with `aborted`, or OpenCode's `session.abort` answered `true`. An
+agent that finished before the delay, or an abort that was refused or lost,
+leaves the turn reported as it ended, and the journal label `task` with
+`scheduled: "interrupt"`, so the journaled labels and the realised interrupt
+rate count only the turns that were aborted. A turn a fault fires at is
+never skipped by an abandon, so the fault meets that turn's agent call.
 
 ## Tape and divergence
 
 The first arm of the run's order is the reference. Each reply is keyed by
-seed, event, label, and the digest of the agent's last reply (the last
-agent call of the session whose response carried text) after the
-pre-registered normalisation (`divergence_policy.normalisation`: ISO-8601
-timestamps, durations, pids, temp paths, run ids). `<run>/tape.jsonl`
-records every reply; `--tapes` adds earlier runs' tapes to replay from. A
-reply whose key is on the tape is replayed with no model call.
+seed, event, label, the scripted text, and the session's context: the
+chained digests of the agent's last reply before each turn so far (the last
+agent call of the session whose response carried text, after the
+pre-registered normalisation `divergence_policy.normalisation`: ISO-8601
+timestamps, durations, pids, temp paths, run ids). Two arms, or two runs,
+whose agent outputs matched through the session so far share a key, so the
+later one replays the earlier one's reply; an output that differed anywhere
+earlier in the session gives another key. `<run>/tape.jsonl`
+records every reply, replayed ones included; `--tapes` adds earlier runs'
+tapes to replay from, and each must exist with its `pairing.jsonl` beside
+it. A reply whose key is on the tape is replayed with no model call. The
+proxy record keeps the first 262,144 characters of a reply; a cut reply is
+keyed by the digest of its whole text as well, so replies that differ only
+past the cut never pair, and its label and persona prompt read the recorded
+tail. A cut last line in either log, left by a kill mid-append, is dropped on
+the next open and the log cut back to it; a complete line that does not
+parse is refused.
 
 Before each turn the user-sim appends a record to `<run>/pairing.jsonl`:
 arm, session, event, index, label, the digest, a hash of the agent-visible
@@ -61,16 +76,16 @@ prefix (the session's agent replies and user texts so far), the hash
 of the delivered text, and its source (`script`, `tape`, or `live`). When a
 non-reference arm's digest first differs from the reference arm's at the
 same event, a `divergedAt` record with the index and both digests comes
-first. From then on that session's reply keys also carry the arm, so the
-arm's replies come from a replay of its own recorded run or from a live
-call. An arm that has not diverged reuses its reference arm's replies, and
-through it the replies of the arm that reference reuses. In a replay
-(`--tapes`), the pairing logs beside the replayed tapes give each arm's
-recorded digests; an arm whose digest first differs from its own recorded
-one gets a `divergedAt` record with `against: "recorded"`, ahead of the
-comparison with its reference arm. A reply that is empty, cut at `user_sim.max_tokens`, or carries a
-probe-announcement marker or a ledger key is replaced by a fixed line for
-its label, and the record lists the cause in `fallback`.
+first; from that turn on the arm's context differs from the reference's, so
+its replies come from an arm or run that shared its outputs, or from a live
+call. In a replay (`--tapes`), the pairing logs beside the replayed tapes
+give each arm's recorded digests; an arm whose digest matches none of them
+gets a `divergedAt` record with `against: "recorded"`, ahead of the
+comparison with its reference arm. A reply that is empty, that stopped for any reason other than `end_turn`
+or `stop_sequence` (`max_tokens`, a guardrail or content filter, a context
+window overflow), or that carries a probe-announcement marker or a ledger
+key is replaced by a fixed line for its label, and the record lists the
+cause in `fallback`.
 The whole delivered text is checked against the markers again before it is
 sent, and a hit stops the run.
 
@@ -89,10 +104,12 @@ band.
 ## Journal
 
 The scheduler journals each turn's `UserTurn` (session, label, `delivered`,
-and `interrupted`) after its `EndTurn`, and each arm's `UserSimRates` before
-its `EndArm`: the rates over the turns it delivered and the rates outside
-their band. A run cut short of its scenario can leave a band and is
-flagged. The P14 grader reads the `UserTurn` labels of the session, since a
+and `interrupted`) before its `EndTurn`, so a resume that reads the
+`EndTurn` as the whole turn has the user record too, and each arm's
+`UserSimRates` before its `EndArm`: the rates over the turns it delivered
+and the rates outside their band. A run cut short of its scenario can leave
+a band and is flagged, and `scripts/pairing-check.ts` fails a run that lacks
+an arm's `UserSimRates`. The P14 grader reads the `UserTurn` labels of the session, since a
 replayed reply makes no model call.
 
 ## A/A control

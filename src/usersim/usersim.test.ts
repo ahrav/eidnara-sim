@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadPrereg } from "../scenario/inputs";
@@ -10,8 +10,10 @@ import {
     Pairing,
     type PairingRecord,
     pairingMismatches,
+    proxyUserSim,
     type ScriptTurn,
     Tape,
+    tapeDigests,
     UserSim,
 } from "./usersim";
 
@@ -65,6 +67,23 @@ describe("behaviour plan", () => {
         expect([...skippedSessions].every((s) => abandoned.has(s))).toBe(true);
     });
 
+    test("a fault's trigger turn is never skipped by an abandon", () => {
+        const turns: PlanTurn[] = [];
+        for (let s = 0; s < 10; s++) {
+            for (let i = 0; i < 3; i++) {
+                turns.push({ id: `e-${s}-${i}`, session: `s-${s}`, index: i, role: "filler" });
+            }
+        }
+        const free = behaviourPlan(turns, prereg, 101);
+        expect(free.skipped.size).toBeGreaterThan(0);
+        const pinned = new Set(turns.filter((t) => t.index === 2).map((t) => t.id));
+        const plan = behaviourPlan(turns, prereg, 101, pinned);
+        expect([...plan.skipped].filter((id) => pinned.has(id))).toEqual([]);
+        for (const t of turns.filter((x) => plan.labels.get(x.id) === "abandon")) {
+            expect(t.index).toBe(2);
+        }
+    });
+
     test("a run cut short of its scenario is flagged when a rate leaves its band", () => {
         const plan = behaviourPlan(recorded.turns, prereg, 101);
         const first = delivered(recorded.turns.slice(0, 12), plan);
@@ -84,6 +103,8 @@ describe("digest normalisation", () => {
         );
         expect(a).toBe(b);
         expect(n("no change here")).toBe("no change here");
+        expect(n("Use /tmp/a?")).toBe("Use <tmp>?");
+        expect(n("Wrote /tmp/x/out.log.")).toBe("Wrote <tmp>.");
         expect(() => normaliser(["iso-8601-timestamps", "colours"])).toThrow(
             "unknown rule colours",
         );
@@ -156,6 +177,104 @@ async function play(user: UserSim, arm: string, agent: string[]) {
 }
 
 describe("tape and pairing", () => {
+    test("a named replay source must exist, with its pairing log beside it", () => {
+        const root = dir();
+        const missing = join(root, "gone", "tape.jsonl");
+        expect(() => new Tape(join(root, "tape.jsonl"), [missing])).toThrow("gone");
+        expect(() => new Pairing(join(root, "pairing.jsonl"), () => "a", [missing])).toThrow(
+            "gone",
+        );
+        expect(() => tapeDigests([missing])).toThrow("gone");
+        writeFileSync(missing.replace("gone/tape.jsonl", "tape.jsonl"), "");
+        expect(() => tapeDigests([join(root, "tape.jsonl")])).toThrow("pairing.jsonl");
+        writeFileSync(join(root, "pairing.jsonl"), "");
+        const [before] = tapeDigests([join(root, "tape.jsonl")]);
+        appendFileSync(join(root, "pairing.jsonl"), '{"kind":"turn"}\n');
+        expect(tapeDigests([join(root, "tape.jsonl")])[0]).not.toBe(before);
+    });
+
+    test("a cut last line in a tape or pairing log is dropped, and the next append lands on a whole line", async () => {
+        const root = dir();
+        const first = sim(root, counting());
+        await play(first.user, "a", outputs);
+        const tapePath = join(root, "tape.jsonl");
+        const pairPath = join(root, "pairing.jsonl");
+        const whole = {
+            tape: readFileSync(tapePath, "utf8"),
+            pairing: readFileSync(pairPath, "utf8"),
+        };
+        appendFileSync(tapePath, '{"key":"cut');
+        appendFileSync(pairPath, '{"kind":"turn","arm":"a"');
+        const again = sim(root, counting());
+        expect(again.pairing.records).toHaveLength(whole.pairing.trim().split("\n").length);
+        const t: ScriptTurn = { id: "e-7", session: "s-2", index: 1, role: "filler", text: "Go." };
+        await again.user.deliver("a", t, "Hmm?");
+        for (const p of [tapePath, pairPath]) {
+            for (const line of readFileSync(p, "utf8").trim().split("\n")) JSON.parse(line);
+        }
+        expect(readFileSync(tapePath, "utf8")).toStartWith(whole.tape);
+        expect(readFileSync(pairPath, "utf8")).toStartWith(whole.pairing);
+    });
+
+    test("a reply found on a source tape is copied into the run's own tape", async () => {
+        const first = dir();
+        await play(sim(first, counting()).user, "a", outputs);
+        const second = dir();
+        const again = sim(second, counting(), "a", [join(first, "tape.jsonl")]);
+        await play(again.user, "a", outputs);
+        expect(readFileSync(join(second, "tape.jsonl"), "utf8")).toBe(
+            readFileSync(join(first, "tape.jsonl"), "utf8"),
+        );
+    });
+
+    test("an arm replayed on its own keeps the tape ownership its recorded divergence gave it", async () => {
+        const first = dir();
+        const changed = outputs.map((o, i) => (i === 2 ? `${o} Also fixed a typo.` : o));
+        const recordedRun = sim(first, counting());
+        await play(recordedRun.user, "a", outputs);
+        const b = await play(recordedRun.user, "b", changed);
+        const replay = counting();
+        const alone = sim(dir(), replay, "b", [join(first, "tape.jsonl")]);
+        expect(await play(alone.user, "b", changed)).toEqual(b);
+        expect(replay.calls).toBe(0);
+    });
+
+    test("a digest matching any replay source is paired with that source, not the last one named", async () => {
+        const first = dir();
+        await play(sim(first, counting()).user, "a", outputs);
+        const second = dir();
+        const changed = outputs.map((o, i) => (i === 2 ? `${o} Also fixed a typo.` : o));
+        await play(sim(second, counting()).user, "a", changed);
+        const replay = counting();
+        const both = [join(first, "tape.jsonl"), join(second, "tape.jsonl")];
+        const again = sim(dir(), replay, "a", both);
+        await play(again.user, "a", outputs);
+        expect(replay.calls).toBe(0);
+        expect(again.pairing.records.filter((r) => r.kind === "divergedAt")).toEqual([]);
+    });
+
+    test("a reply the proxy cut is paired by its whole text and read from its real tail", async () => {
+        const llm = counting();
+        const { user, pairing } = sim(dir(), llm);
+        const head = "x".repeat(40);
+        const t = script[1] as ScriptTurn;
+        await user.deliver("a", t, { text: head, sha256: "a".repeat(64), tail: "so far." });
+        await user.deliver("b", t, { text: head, sha256: "b".repeat(64), tail: "so far." });
+        const digests = pairing.records
+            .filter((r): r is Extract<PairingRecord, { kind: "turn" }> => r.kind === "turn")
+            .map((r) => r.digest);
+        expect(digests[0]).not.toBe(digests[1]);
+        expect(pairing.records.filter((r) => r.kind === "divergedAt")).toHaveLength(1);
+        const q: ScriptTurn = { id: "e-7", session: "s-2", index: 1, role: "filler", text: "Go." };
+        const d = await user.deliver("a", q, {
+            text: head,
+            sha256: "c".repeat(64),
+            tail: "Which?",
+        });
+        expect(d.label).toBe("clarify");
+        expect(llm.prompts.at(-1)).toContain("Which?");
+    });
+
     test("a replay against the recorded agent outputs repeats the user text with no live call", async () => {
         const first = dir();
         const live = counting();
@@ -175,23 +294,44 @@ describe("tape and pairing", () => {
 
     test("one changed agent output gives one divergence record, written before the turn, and live replies after it", async () => {
         const root = dir();
-        const llm = counting();
+        const inner = counting();
+        const onDisk = () =>
+            readFileSync(join(root, "pairing.jsonl"), "utf8")
+                .trim()
+                .split("\n")
+                .map((l) => JSON.parse(l) as PairingRecord);
+        const seenAtCall: PairingRecord[][] = [];
+        const llm: Llm & { calls: number } = Object.assign(
+            async (prompt: string) => {
+                seenAtCall.push(onDisk());
+                return inner(prompt);
+            },
+            { calls: 0 },
+        );
         const { user, pairing } = sim(root, llm);
         const reference = await play(user, "a", outputs);
-        const before = llm.calls;
+        const before = inner.calls;
         const changed = [...outputs];
         changed[2] = "Added parser_test.rs and fixed a typo.";
         const texts: string[] = [];
         for (const [i, t] of script.entries()) {
             texts.push((await user.deliver("b", t, changed[i] ?? "")).text);
-            const onDisk = readFileSync(join(root, "pairing.jsonl"), "utf8").trim().split("\n");
-            const last = JSON.parse(onDisk.at(-1) ?? "{}") as PairingRecord;
+            const last = onDisk().at(-1) as PairingRecord;
             expect([last.kind, last.event]).toEqual(["turn", t.id]);
         }
         const divergences = pairing.records.filter((r) => r.kind === "divergedAt");
         expect(divergences).toHaveLength(1);
         expect(divergences[0]).toMatchObject({ arm: "b", session: "s-1", event: "e-3", index: 2 });
-        expect(llm.calls - before).toBe(2);
+        // The live call for e-3 found the divergence on disk, and no turn record for e-3 yet.
+        const atLiveCall = seenAtCall[before] ?? [];
+        expect(atLiveCall.at(-1)).toMatchObject({ kind: "divergedAt", arm: "b", event: "e-3" });
+        expect(
+            atLiveCall.some((r) => r.kind === "turn" && r.arm === "b" && r.event === "e-3"),
+        ).toBe(false);
+        const order = pairing.records.map((r) => `${r.kind}:${r.arm}:${r.event}`);
+        expect(order.indexOf("divergedAt:b:e-3")).toBeLessThan(order.indexOf("turn:b:e-3"));
+        const llmCalls = inner.calls;
+        expect(llmCalls - before).toBe(2);
         expect(texts.slice(0, 2)).toEqual(reference.slice(0, 2));
         expect(texts[2]).not.toBe(reference[2]);
         expect(pairingMismatches(pairing.records, () => "a")).toEqual([]);
@@ -304,5 +444,113 @@ describe("tape and pairing", () => {
         const sent = await user.deliver("a", abandon, "ok");
         expect(sent.text).not.toContain("Next.");
         expect(pairing.records.at(-2)).toMatchObject({ event: "e-10", delivered: false });
+    });
+
+    test("a taped reply is not reused for the same event once its scripted text differs", async () => {
+        const first = dir();
+        await play(sim(first, counting()).user, "a", outputs);
+        const replay = counting();
+        const again = sim(dir(), replay, "a", [join(first, "tape.jsonl")]);
+        const edited = script.map((t) =>
+            t.id === "e-2" ? { ...t, text: "Now add two tests." } : t,
+        );
+        for (const [i, t] of edited.entries()) await again.user.deliver("a", t, outputs[i] ?? "");
+        expect(replay.calls).toBe(1);
+        expect(replay.prompts[0]).toContain("Now add two tests.");
+    });
+
+    test("a proxied user-sim reply joins every text block of the response", async () => {
+        const server = Bun.serve({
+            port: 0,
+            fetch: async () =>
+                Response.json({
+                    output: {
+                        message: {
+                            content: [{ text: "First." }, { toolUse: {} }, { text: "Second?" }],
+                        },
+                    },
+                    stopReason: "end_turn",
+                }),
+        });
+        try {
+            const llm = proxyUserSim(`http://127.0.0.1:${server.port}`, "m", 100);
+            expect(await llm("hi")).toEqual({ text: "First.\nSecond?", stop: "end_turn" });
+        } finally {
+            server.stop(true);
+        }
+    });
+
+    test("a digest matching one source replays from it even when another source diverged there", async () => {
+        const first = dir();
+        await play(sim(first, counting()).user, "a", outputs);
+        const second = dir();
+        const changed = outputs.map((o, i) => (i === 2 ? `${o} Also fixed a typo.` : o));
+        const diverging = sim(second, counting(), "a", [join(first, "tape.jsonl")]);
+        await play(diverging.user, "a", changed);
+        expect(diverging.pairing.records.filter((r) => r.kind === "divergedAt")).toHaveLength(1);
+        const replay = counting();
+        const both = [join(first, "tape.jsonl"), join(second, "tape.jsonl")];
+        const again = sim(dir(), replay, "a", both);
+        await play(again.user, "a", outputs);
+        expect(replay.calls).toBe(0);
+    });
+
+    test("two non-reference arms with the same agent outputs share replies after both left the reference", async () => {
+        const llm = counting();
+        const { user, pairing } = sim(dir(), llm);
+        await play(user, "a", outputs);
+        const changed = outputs.map((o, i) => (i === 2 ? `${o} Also fixed a typo.` : o));
+        const b = await play(user, "b", changed);
+        const before = llm.calls;
+        expect(await play(user, "c", changed)).toEqual(b);
+        expect(llm.calls).toBe(before);
+        const diverged = pairing.records.filter((r) => r.kind === "divergedAt").map((r) => r.arm);
+        expect(diverged).toEqual(["b", "c"]);
+    });
+
+    test("a complete but corrupt last line in a replay source is refused", () => {
+        const root = dir();
+        writeFileSync(
+            join(root, "tape.jsonl"),
+            '{"key":"k","text":"t","stop":"end_turn"}\nnot json\n',
+        );
+        writeFileSync(join(root, "pairing.jsonl"), "");
+        expect(() => new Tape(join(dir(), "tape.jsonl"), [join(root, "tape.jsonl")])).toThrow(
+            "corrupt",
+        );
+    });
+
+    test("a reply that stopped for any reason other than a normal end falls back", async () => {
+        const replies = [
+            { text: "Blocked by policy.", stop: "guardrail_intervened" },
+            { text: "Partial", stop: "model_context_window_exceeded" },
+            { text: "Fine.", stop: "stop_sequence" },
+        ];
+        const llm: Llm = async () => replies.shift() ?? { text: "", stop: "end_turn" };
+        const { user, pairing } = sim(dir(), llm);
+        const texts = await play(user, "a", outputs);
+        expect(texts[1]).toStartWith("I'm not convinced by that.");
+        expect(texts[2]).toStartWith("I'm not convinced by that.");
+        expect(texts[3]).toStartWith("Fine.");
+        const fallbacks = pairing.records.map((r) => (r.kind === "turn" ? r.fallback : undefined));
+        expect(fallbacks.slice(1, 4)).toEqual([
+            ["guardrail_intervened"],
+            ["model_context_window_exceeded"],
+            undefined,
+        ]);
+    });
+
+    test("a delivered text that carries a ledger key or probe id stops the run", async () => {
+        const { user } = sim(dir(), counting());
+        const leak: ScriptTurn = {
+            id: "e-8",
+            session: "s-2",
+            index: 2,
+            role: "filler",
+            text: "Check f-0000 again.",
+        };
+        await expect(user.deliver("a", leak, "ok")).rejects.toThrow(
+            "e-8: delivered text carries markers f-0000",
+        );
     });
 });

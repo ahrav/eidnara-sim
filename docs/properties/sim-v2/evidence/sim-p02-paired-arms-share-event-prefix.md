@@ -14,10 +14,20 @@ v2 harness before any harness code existed.
 For arms A and B of one run and every `event_idx < divergence_idx(A, B)`, the
 delivered user text, pasted bytes, and fault parameters are byte-identical.
 
-No harness code, test, or run exists yet. The surface lands in M6
-(#1031).
+M6 (#1031) sends probe, paste, and task text as compiled and taped replies
+keyed by the normalised digest of the agent's last reply, so paired arms
+receive identical text until a digest differs. `pairingMismatches` and
+`scripts/pairing-check.ts` compare delivered-text hashes before the recorded
+divergence index. In the live `usersim-1` run (S seed 101, Pi, host and
+eidnara, 45 events) the check found no mismatch before divergence. Fault
+parameters come from the one compiled schedule both arms read.
 
-M6 (#1031) sends probe, paste, and task text as compiled and taped replies keyed by the normalised digest of the agent's last reply, so paired arms receive identical text until a digest differs. `pairingMismatches` and `scripts/pairing-check.ts` compare delivered-text hashes before the recorded divergence index. In the live `usersim-1` run (S seed 101, Pi, host and eidnara, 45 events) the check found no mismatch before divergence. Fault parameters come from the one compiled schedule both arms read.
+Contract versus code: the catalog guarantee indexes pairing by a run-wide
+`event_idx` and a per-pair `divergence_idx(A, B)`. The code
+(`src/usersim/usersim.ts`, `Pairing`) records `divergedAt` per arm and session
+with the session's turn `index`, compares each arm with the run's first arm
+only, and keeps the records in `<run>/pairing.jsonl` rather than the journal.
+Both are cited here; the catalog record is not revised.
 
 ## Failure scenario
 
@@ -40,5 +50,6 @@ one scheduled fault before divergence.
 - Findings: OQ-3 policy half is resolved in the M0 pre-registration: the divergence hash
   is the normalised last agent output. Whether that hash diverges too early on
   long tool output is measured at S (needs human input if it does).
-- Missing evidence: a harness run that exercises the record.
+- Missing evidence: a full-tier run; the `usersim-1` smoke run (S seed 101,
+  45 events) and the `src/usersim/usersim.test.ts` cases are the evidence so far.
 - Conclusion: resolved with answer

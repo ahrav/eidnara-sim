@@ -11,6 +11,7 @@ import {
     MARGIN_SCALES,
     MIN_PAIRED_RUNS_FOR_RUN_GATE,
     MULTIPLICITY,
+    NORMALISATION_RULES,
     needsPairedRuns,
     OUTCOMES,
     PREREG_SCHEMA,
@@ -125,7 +126,7 @@ const PREREG_SHAPE: Shape = {
     },
     divergence_policy: {
         hash_input: literal("normalised-last-agent-output"),
-        normalisation: list(text),
+        normalisation: list(oneOf(NORMALISATION_RULES)),
         diagnostic_hash: literal("agent-visible-prefix"),
         on_divergence: literal("record-then-live"),
     },
@@ -307,6 +308,10 @@ function checkGrading(p: Preregistration, errors: string[]): void {
     }
     for (const field of ["human_sample_percent", "arm_identification_ceiling_percent"] as const) {
         if (g.judge[field] > 100) errors.push(`grading.judge.${field}: at most 100`);
+    }
+    const ratio = Number(p.oracles.cost_ratio_max);
+    if (!(ratio > 0 && Number.isFinite(ratio))) {
+        errors.push("oracles.cost_ratio_max: must be positive and finite");
     }
 }
 

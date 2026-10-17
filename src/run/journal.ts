@@ -21,6 +21,7 @@ export type EntryKind =
     | "RegisterJob"
     | "EndJob"
     | "AdvanceClock"
+    | "ClockOffset"
     | "Event"
     | "FaultFired"
     | "FaultObserved"
@@ -101,6 +102,18 @@ export function releaseLease(dir: string): void {
 }
 
 /**
+ * Truncates a JSONL file to its newline-terminated prefix, which drops the line a kill
+ * mid-append left cut, and returns that prefix; a missing file reads as empty.
+ */
+export function keepCompleteLines(path: string): string {
+    if (!existsSync(path)) return "";
+    const text = readFileSync(path, "utf8");
+    const complete = text.slice(0, text.lastIndexOf("\n") + 1);
+    if (complete.length < text.length) truncateSync(path, Buffer.byteLength(complete));
+    return complete;
+}
+
+/**
  * Every line but the last must parse; a cut last line, which a kill mid-write leaves, is
  * dropped. `bytes` is the length of the complete prefix.
  */
@@ -119,6 +132,39 @@ export function readJournal(path: string): Entry[] & { bytes?: number } {
         }
     });
     return entries;
+}
+
+/**
+ * `requireComplete` admits a run whose journal records every scheduled event ended once per
+ * arm, an `EndArm` per arm, and an `EndRun`, with the manifest's arm order matching the
+ * journaled `StartRun`. The error names the arm and its event counts (SIM-P67).
+ */
+export function requireComplete(entries: Entry[], arms: string[], scheduled: string[]): void {
+    const started = entries.find((e) => e.kind === "StartRun");
+    const journaled = Array.isArray(started?.order) ? started.order : null;
+    const malformed = arms.some((a) => typeof a !== "string") || new Set(arms).size !== arms.length;
+    if (malformed || !journaled || JSON.stringify(journaled) !== JSON.stringify(arms)) {
+        throw new Error(
+            `manifest order ${JSON.stringify(arms)} differs from the journaled order ${JSON.stringify(journaled)}`,
+        );
+    }
+    for (const arm of arms) {
+        const mine = entries.filter((e) => e.arm === arm);
+        const ended = mine.filter((e) => e.kind === "Event").map((e) => String(e.event));
+        const closed = mine.some((e) => e.kind === "EndArm");
+        const once = new Set(ended);
+        const missing = scheduled.filter((id) => !once.has(id));
+        const stray = ended.filter((id, i) => !scheduled.includes(id) || ended.indexOf(id) !== i);
+        if (!closed || missing.length > 0 || stray.length > 0) {
+            const marker = closed ? "EndArm present" : "no EndArm";
+            const count = `${scheduled.length - missing.length} of ${scheduled.length} events ended`;
+            const extra = stray.length > 0 ? `, unexpected or repeated: ${stray.join(", ")}` : "";
+            throw new Error(`arm ${arm} is incomplete: ${count}, ${marker}${extra}`);
+        }
+    }
+    if (!entries.some((e) => e.kind === "EndRun")) {
+        throw new Error("run is incomplete: the journal has no EndRun");
+    }
 }
 
 export class Journal {

@@ -32,6 +32,10 @@ const unsent = turns
     .filter((r) => !r.delivered && script.get(r.event)?.role !== "filler")
     .map((r) => `${r.arm} ${r.event}`);
 const journal = readJournal(join(dir, "journal.jsonl"));
+const scheduled = scenario.events
+    .slice(0, manifest.events as number)
+    .filter((e) => e.kind === "user_turn");
+const recorded = new Set(turns.map((r) => `${r.arm} ${r.event}`));
 const report = {
     reference: Object.fromEntries(manifest.order.map((a: string) => [a, reference(a)])),
     mismatches_before_divergence: pairingMismatches(records, reference),
@@ -50,11 +54,24 @@ const report = {
     flagged: journal
         .filter((e) => e.kind === "UserSimRates" && (e.outside as string[]).length > 0)
         .map((e) => `${e.arm}: ${(e.outside as string[]).join(", ")}`),
+    missing_rates: (manifest.order as string[]).filter(
+        (arm) => journal.filter((e) => e.kind === "UserSimRates" && e.arm === arm).length !== 1,
+    ),
+    missing_turns: (manifest.order as string[]).flatMap((arm) =>
+        scheduled.map((e) => `${arm} ${e.id}`).filter((key) => !recorded.has(key)),
+    ),
+    interrupted_turns: journal
+        .filter((e) => e.kind === "Event" && e.outcome === "failed(interrupted)")
+        .map((e) => `${e.arm} ${e.event}`)
+        .filter((key) => recorded.has(key)),
 };
 console.log(JSON.stringify(report, null, 2));
 const failed =
     report.mismatches_before_divergence.length +
     altered.length +
     unsent.length +
-    report.flagged.length;
+    report.flagged.length +
+    report.missing_rates.length +
+    report.missing_turns.length +
+    report.interrupted_turns.length;
 process.exit(failed > 0 ? 1 : 0);

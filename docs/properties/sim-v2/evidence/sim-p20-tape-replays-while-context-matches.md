@@ -15,10 +15,11 @@ A sibling arm in `replaying` mode receives the tape's text for `event_idx` when
 its context hash equals the tape's recorded hash, and no user-sim model call is
 made for that event.
 
-No harness code, test, or run exists yet. The surface lands in M6
-(#1031).
-
-M6 (#1031) replays a reply from the tape when its key (seed, event, label, normalised digest) matches, with no model call; tests replay a one-arm and a two-arm run against their recorded outputs with zero live calls.
+M6 (#1031) replays a reply from the tape when its key (seed, event, label,
+normalised digest) matches, with no model call; tests replay a one-arm and a
+two-arm run against their recorded outputs with zero live calls. A reply the
+proxy record cut at 262,144 characters is keyed by the digest of the whole text
+as well, so two replies that differ only past the cut never pair.
 
 ## Failure scenario
 
@@ -37,5 +38,6 @@ Two arms of one seed with matching outputs at least once.
 ### Q: OQ-3
 - Sources examined: spec #1007 Open Questions; the M0 pre-registration files.
 - Findings: OQ-3: see SIM-P02.
-- Missing evidence: a harness run that exercises the record.
+- Missing evidence: a full-tier run; the `usersim-1` smoke run (S seed 101,
+  45 events) and the `src/usersim/usersim.test.ts` cases are the evidence so far.
 - Conclusion: unresolved, needs a harness run

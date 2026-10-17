@@ -23,7 +23,15 @@ import type { FaultEpisode } from "../scenario/faults";
 import { loadCompileInput, loadPrereg } from "../scenario/inputs";
 import { bedrockEmbedder } from "../scenario/similarity";
 import { behaviourPlan, type Label, realisedRates } from "../usersim/plan";
-import { normaliser, Pairing, proxyUserSim, Tape, UserSim } from "../usersim/usersim";
+import {
+    type AgentReply,
+    normaliser,
+    Pairing,
+    proxyUserSim,
+    Tape,
+    tapeDigests,
+    UserSim,
+} from "../usersim/usersim";
 import { Journal, readJournal, releaseLease, takeLease } from "./journal";
 import { plainPath } from "./launcher";
 import { type Preflight, preflight } from "./preflight";
@@ -59,6 +67,8 @@ interface Manifest {
     eidnara_commit: string;
     fault_override: FaultEpisode[] | null;
     tapes: string[];
+    /** One digest per entry of `tapes`, over the tape and the pairing log beside it. */
+    tape_sha256: string[];
     prereg_sha256: string;
     base_wall_ms: number;
     preflight: Preflight;
@@ -187,9 +197,10 @@ async function loadManifest(o: RunOptions, scenario: Scenario): Promise<Manifest
             scenario_hash: scenario.scenario_hash,
             prereg_sha256: preregistrationHash(loadPrereg(o.tier)),
             eidnara_commit: gitHead(o.config.eidnara_checkout),
+            tape_sha256: tapeDigests(manifest.tapes),
         };
         const changed = Object.entries(digests).filter(
-            ([k, v]) => manifest[k as keyof Manifest] !== v,
+            ([k, v]) => !sameJson(manifest[k as keyof Manifest], v),
         );
         if (changed.length > 0) {
             const names = changed.map(([k]) => k).join(", ");
@@ -208,6 +219,7 @@ async function loadManifest(o: RunOptions, scenario: Scenario): Promise<Manifest
         scenario_hash: scenario.scenario_hash,
         eidnara_commit: gitHead(o.config.eidnara_checkout),
         prereg_sha256: preregistrationHash(loadPrereg(o.tier)),
+        tape_sha256: tapeDigests(wanted.tapes),
         base_wall_ms: Date.now(),
         preflight: checks,
     };
@@ -273,6 +285,7 @@ function callsOf(
                 input_tokens: r.input_tokens,
                 output_tokens: r.output_tokens,
                 ...(r.response_text ? { response_text: r.response_text } : {}),
+                ...(r.response_text_truncated ? { response_text_truncated: true } : {}),
             };
         });
 }
@@ -321,10 +334,14 @@ async function runArms(
     const scope = { arm: "", session: null as string | null, turn: null as string | null };
     const jobs = new Map<string, string[]>();
     let jobSeq = journal.entries.filter((e) => e.kind === "RegisterJob").length;
-    const agentText = new Map<string, string>();
+    const agentText = new Map<string, AgentReply>();
     const noteAgent = (r: CallRecord) => {
         if (r.component === "agent" && r.response_text) {
-            agentText.set(`${r.arm}/${r.session}`, r.response_text);
+            agentText.set(`${r.arm}/${r.session}`, {
+                text: r.response_text,
+                ...(r.response_sha256 ? { sha256: r.response_sha256 } : {}),
+                ...(r.response_tail ? { tail: r.response_tail } : {}),
+            });
         }
     };
     for (const r of readJournal(join(o.out, "calls.jsonl"))) noteAgent(r as unknown as CallRecord);
@@ -375,9 +392,17 @@ async function runArms(
         role: string;
         text: string;
     }[];
+    const pinned = new Set(
+        scenario.faults.flatMap((f) => {
+            const t = f.trigger;
+            if (t.kind !== "user_turn") return [];
+            const hit = events.find((e) => e.session === t.session && e.index === t.n - 1);
+            return hit ? [hit.id] : [];
+        }),
+    );
     const userSim = new UserSim({
         seed,
-        plan: behaviourPlan(scripted, prereg, seed),
+        plan: behaviourPlan(scripted, prereg, seed, pinned),
         tape: new Tape(join(o.out, "tape.jsonl"), manifest.tapes),
         pairing: new Pairing(
             join(o.out, "pairing.jsonl"),
@@ -395,6 +420,7 @@ async function runArms(
             ...scenario.probes.map((p) => p.id),
         ],
     });
+    const scriptedById = new Map(scripted.map((t) => [t.id, t]));
     const userTurns = (arm: string, session?: string) =>
         journal.entries.filter(
             (e) =>
@@ -403,7 +429,8 @@ async function runArms(
                 e.delivered === true &&
                 (session === undefined || e.session === session),
         );
-    const lastAgent = (arm: string, session: string) => agentText.get(`${arm}/${session}`) ?? "";
+    const lastAgent = (arm: string, session: string): AgentReply =>
+        agentText.get(`${arm}/${session}`) ?? { text: "" };
     for (const arm of manifest.order) {
         const armRoot = join(o.out, arm, "r");
         mkdirSync(dirname(offsetFile(arm)), { recursive: true });
@@ -424,6 +451,7 @@ async function runArms(
             transcriptPaths: hostRow.transcript_paths,
             loopStore,
             onDaemonExit: (detail) => scheduler.daemonExited(detail),
+            sampleDaemon: () => sampler.observe(),
             callsFor: (session) => [
                 ...callsOf(join(o.out, "calls.jsonl"), arm, session, turnIndex).filter(
                     (c) => c.component !== "user-sim",
@@ -439,6 +467,7 @@ async function runArms(
                     label: String(e.label),
                 })),
             ],
+            settle: () => scheduler.quiesceJobs(),
             now,
         });
         let cpuJob: string | null = null;
@@ -461,8 +490,11 @@ async function runArms(
             onBusy,
         });
         cleanup.push(async () => {
-            sampler.stop();
-            await driver.stop();
+            try {
+                sampler.stop();
+            } finally {
+                await driver.stop();
+            }
         });
         drivers[arm] = {
             reset: async () => {
@@ -485,7 +517,7 @@ async function runArms(
                 scope.turn = e.kind === "user_turn" ? e.id : null;
                 try {
                     if (e.kind !== "user_turn") return await driver.event(e);
-                    const turn = scripted.find((t) => t.id === e.id);
+                    const turn = scriptedById.get(e.id);
                     if (!turn) throw new HarnessFailure(`${e.id}: no scripted user turn`);
                     const d = await userSim.deliver(arm, turn, lastAgent(arm, e.session));
                     const user = { session: e.session, label: d.label, delivered: d.delivered };
@@ -508,8 +540,16 @@ async function runArms(
                 return driver.fault(f);
             },
             finish: async () => {
-                sampler.stop();
-                await driver.finish();
+                // The sampler's stop can fail the run; the arm still finishes and its checks land.
+                let stopped: unknown = null;
+                try {
+                    sampler.stop();
+                } catch (caught) {
+                    stopped = caught;
+                }
+                const last = await driver.finish();
+                if (stopped) throw stopped;
+                return last;
             },
         };
     }

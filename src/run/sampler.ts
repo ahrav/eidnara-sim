@@ -1,5 +1,6 @@
 import { appendFileSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { keepCompleteLines } from "./journal";
 
 const TICKS_PER_SECOND = 100;
 const PAGE_BYTES = 4096;
@@ -64,7 +65,7 @@ export class ResourceSampler {
         },
     ) {}
 
-    sample(): Sample {
+    sample(transitions = true): Sample {
         const pid = this.o.pid();
         const stats = pid === null ? null : procStats(pid);
         const wall = Date.now();
@@ -74,7 +75,7 @@ export class ResourceSampler {
         }
         this.last = stats && pid !== null ? { pid, wall, cpu: stats.cpuMs } : null;
         const busy = fraction !== null && fraction > this.o.busyFraction;
-        if (busy !== this.busy) {
+        if (transitions && busy !== this.busy) {
             this.busy = busy;
             this.o.onBusy(busy);
         }
@@ -91,14 +92,33 @@ export class ResourceSampler {
         return s;
     }
 
+    /** The first sample is taken at once, so RSS(0) precedes any session's work; a line a kill cut goes first. */
     start(): void {
-        this.timer ??= setInterval(() => this.sample(), this.o.intervalMs);
+        if (this.timer) return;
+        keepCompleteLines(this.o.path);
+        this.sample();
+        this.timer = setInterval(() => this.sample(), this.o.intervalMs);
     }
 
+    /** Takes a sample now: the first one when sampling has yet to start, an extra one otherwise. */
+    observe(): void {
+        if (this.timer) this.sample();
+        else this.start();
+    }
+
+    /**
+     * A running sampler takes a final sample before its timer goes, so the last interval's
+     * growth is on record and reports no busy transition, so no job outlives the arm. A final
+     * sample that cannot be written throws after the timer and busy state are cleared; the
+     * caller shuts the arm down in a `finally` and the error keeps the run from ending as
+     * complete evidence.
+     */
     stop(): void {
-        if (this.timer) clearInterval(this.timer);
+        if (!this.timer) return;
+        clearInterval(this.timer);
         this.timer = null;
         if (this.busy) this.o.onBusy(false);
         this.busy = false;
+        this.sample(false);
     }
 }

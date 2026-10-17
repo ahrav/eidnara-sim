@@ -22,4 +22,4 @@ declined the change because mini-redis has no multi-key GET.
 The P7 files hold an answer pair and the judge's two verdicts, scripted for
 the test; `P7-pass` and `P7-fail` are the pairs the live judge
 (`global.openai.gpt-5.6-luna`) graded the same way on 2026-10-16, recorded
-with its identity in `sim-runs/judge-smoke/judgments.json`.
+with its identity in `runs/judge-smoke/judgments.json`.

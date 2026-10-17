@@ -38,8 +38,14 @@ export interface CallRecord {
     error: string | null;
     /** Request fields the proxy removed before forwarding, keyed by field path. */
     stripped?: Record<string, unknown>;
-    /** The response text the proxy relayed for agent, user-sim, and judge calls, first 32,768 characters. */
+    /** The response text the proxy relayed for agent, user-sim, and judge calls, first 262,144 characters. */
     response_text?: string;
+    /** Set when the relayed text ran past that cap, so `response_text` is a prefix. */
+    response_text_truncated?: true;
+    /** SHA-256 of the whole relayed text, present with `response_text`. */
+    response_sha256?: string;
+    /** The last 6,000 characters of the relayed text, present when `response_text` cut it. */
+    response_tail?: string;
 }
 
 const NUMBERS = [

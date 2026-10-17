@@ -1,15 +1,25 @@
 import { spawnSync } from "node:child_process";
 import {
+    closeSync,
+    copyFileSync,
     existsSync,
+    fstatSync,
     lstatSync,
     mkdirSync,
+    openSync,
+    readdirSync,
     readFileSync,
+    readSync,
     realpathSync,
+    renameSync,
     rmSync,
+    statSync,
     writeFileSync,
 } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
+import { GitBound, git } from "../git";
 import type { CallView } from "../grade/artefacts";
+import { sha256Hex } from "../prereg/canonical";
 import { processStart, running, stopOwnedTree } from "../run/procs";
 import {
     type ArmDriver,
@@ -18,7 +28,15 @@ import {
     type TurnOutcome,
 } from "../run/scheduler";
 import type { FaultEpisode } from "../scenario/faults";
-import { armBase, DaemonStack, eidnaraOn, type HostContext, makeHost, type SimHost } from "./arms";
+import {
+    armBase,
+    DaemonStack,
+    eidnaraOn,
+    type HostContext,
+    makeHost,
+    type SimHost,
+    type ToolRun,
+} from "./arms";
 import { SnapshotRecorder } from "./snapshot";
 import { checkStore } from "./storecheck";
 
@@ -26,6 +44,8 @@ interface ArmState {
     model: number;
     daemon: { pid: number; start: string | null } | null;
     host: { pid: number; start: string | null } | null;
+    /** Daemon restarts whose store check the journal may still lack, each with its plugin-log mark. */
+    store_faults: Record<string, number>;
 }
 
 export interface DriverOptions extends Omit<HostContext, "root" | "model" | "arm"> {
@@ -38,23 +58,22 @@ export interface DriverOptions extends Omit<HostContext, "root" | "model" | "arm
     transcriptPaths: string[];
     loopStore: boolean;
     callsFor?: (session: string) => CallView[];
+    /** Awaited after a probe turn and before its snapshot, so background calls the turn started are on record. */
+    settle?: () => Promise<void>;
     hostFactory?: (ctx: HostContext) => SimHost;
     onDaemonExit: (detail: Record<string, unknown>) => void;
+    /**
+     * Called when a daemon process is up (at reset, resume, and after a fault's restart) and
+     * before a fault takes one down, so each daemon lifetime has a first and a last sample.
+     */
+    sampleDaemon?: () => void;
 }
 
-const git = (cwd: string, ...args: string[]) => {
-    const env = {
-        ...process.env,
-        GIT_CONFIG_GLOBAL: "/dev/null",
-        GIT_CONFIG_NOSYSTEM: "1",
-        GIT_AUTHOR_NAME: "sim-user",
-        GIT_AUTHOR_EMAIL: "sim-user@users.noreply.github.com",
-        GIT_COMMITTER_NAME: "sim-user",
-        GIT_COMMITTER_EMAIL: "sim-user@users.noreply.github.com",
-    };
-    const r = spawnSync("git", args, { cwd, env, encoding: "utf8" });
-    if (r.status !== 0) throw new Error(`git ${args.join(" ")}: ${r.stderr}`);
-    return r.stdout.trim();
+const IDENTITY = {
+    GIT_AUTHOR_NAME: "sim-user",
+    GIT_AUTHOR_EMAIL: "sim-user@users.noreply.github.com",
+    GIT_COMMITTER_NAME: "sim-user",
+    GIT_COMMITTER_EMAIL: "sim-user@users.noreply.github.com",
 };
 
 function run(argv: string[]): string {
@@ -71,6 +90,9 @@ export function expandTemplate(template: string, env: Record<string, string>): s
     });
 }
 
+/** A transform pass the daemon answered, as the plugin logs it. */
+const SERVED_PASS = /rust pass: .*served_from=transform/;
+
 const SUPPORTED = new Set([
     "daemon_sigkill_mid_fold",
     "daemon_restart",
@@ -85,14 +107,28 @@ export class HostDriver implements ArmDriver {
     private model = 0;
     private storeMount: string | null = null;
     private sessionProject: string | null = null;
+    /** Host-reported tool runs carry the active user turn id, or null between turns. */
+    private turn: string | null = null;
     private transcriptsChecked = false;
 
     private readonly snapshots: SnapshotRecorder;
-    /** Daemon restarts that the end of the current or next turn owes a store check. */
-    private storeFaults: string[] = [];
+    /**
+     * Daemon restarts owed a store check, each with the plugin log's length between the kill and
+     * the replacement's start. The check runs at the end of the first turn whose log, past that
+     * mark, shows a pass the daemon served (`served_from=transform`): the wire contract's first
+     * pass after the crash.
+     */
+    private storeFaults = new Map<string, number>();
+    /** A daemon restart in progress; the turn it interrupts ends after it and fails with it. */
+    private restarting: Promise<unknown> = Promise.resolve();
 
     constructor(private readonly o: DriverOptions) {
-        this.snapshots = new SnapshotRecorder(dirname(o.armRoot), o.arm, o.callsFor ?? (() => []));
+        this.snapshots = new SnapshotRecorder(
+            dirname(o.armRoot),
+            o.arm,
+            o.callsFor ?? (() => []),
+            o.turnDeadlineMs,
+        );
     }
 
     get armDir(): string {
@@ -137,7 +173,15 @@ export class HostDriver implements ArmDriver {
         const make = this.o.hostFactory ?? makeHost;
         const arm = armBase(this.o.arm);
         const keep = eidnaraOn(arm) ? [...this.o.keep, this.storeRoot] : this.o.keep;
-        return make({ ...this.o, arm, keep, root: this.o.armRoot, model: this.currentModel() });
+        const onTool = (run: ToolRun) => this.snapshots.addTools([run], this.turn);
+        return make({
+            ...this.o,
+            arm,
+            keep,
+            root: this.o.armRoot,
+            model: this.currentModel(),
+            onTool,
+        });
     }
 
     private recordState(): void {
@@ -147,9 +191,13 @@ export class HostDriver implements ArmDriver {
             model: this.model,
             daemon: proc(this.daemonPid()),
             host: proc(this.sessionProject === null ? null : (this.host?.hostPid() ?? null)),
+            store_faults: Object.fromEntries(this.storeFaults),
         };
         mkdirSync(this.armDir, { recursive: true });
-        writeFileSync(this.stateFile, JSON.stringify(state));
+        // Staged and renamed, so a kill mid-write leaves the previous state, never a torn file.
+        const staged = `${this.stateFile}.${process.pid}`;
+        writeFileSync(staged, JSON.stringify(state));
+        renameSync(staged, this.stateFile);
     }
 
     private readState(): ArmState | null {
@@ -170,6 +218,7 @@ export class HostDriver implements ArmDriver {
             });
             await this.daemon.start();
             this.recordState();
+            this.o.sampleDaemon?.();
         }
         this.host = this.newHost();
         this.recordState();
@@ -186,13 +235,35 @@ export class HostDriver implements ArmDriver {
         mkdirSync(join(this.o.armRoot, "workspaces"), { recursive: true });
         for (const [project, source] of Object.entries(this.o.projects)) {
             const target = this.workspace(project);
-            git(this.o.armRoot, "clone", "--quiet", "--no-hardlinks", source, target);
+            git(this.o.armRoot, ["clone", "--quiet", "--no-hardlinks", source, target]);
+            copyFileSync(join(target, ".git", "config"), join(this.armDir, `${project}.gitconfig`));
+            const tracked = ["ls-files", "-z", "--cached", "--ignored", "--exclude-standard"];
+            const forced = git(source, tracked).split("\0").filter(Boolean);
+            this.snapshots.trackIgnored(project, forced);
+            const rules: Record<string, string> = {};
+            const listed = git(source, [
+                "ls-files",
+                "-s",
+                "-z",
+                "--",
+                ".gitignore",
+                "**/.gitignore",
+            ]);
+            for (const row of listed.split("\0").filter(Boolean)) {
+                const [meta, path] = row.split("\t") as [string, string];
+                rules[path] = meta.split(" ")[1] as string;
+            }
+            const exclude = join(target, ".git", "info", "exclude");
+            const digest = existsSync(exclude) ? sha256Hex(readFileSync(exclude, "utf8")) : null;
+            this.snapshots.trackIgnoreRules(project, rules, digest);
         }
         await this.startArm(true);
     }
 
     async resume(open: ScenarioEvent | null): Promise<void> {
-        this.model = this.readState()?.model ?? 0;
+        const state = this.readState();
+        this.model = state?.model ?? 0;
+        this.storeFaults = new Map(Object.entries(state?.store_faults ?? {}));
         const checked = join(this.armDir, "transcripts.json");
         this.transcriptsChecked =
             existsSync(checked) && JSON.parse(readFileSync(checked, "utf8")).missing.length === 0;
@@ -224,20 +295,26 @@ export class HostDriver implements ArmDriver {
 
     async event(e: ScenarioEvent): Promise<TurnOutcome> {
         const host = this.requireHost();
+        // The scheduler journals the previous turn's store checks before it sends the next event,
+        // so the recorded obligations drop them here, not when the checks are returned.
+        this.recordState();
         if (e.kind === "session_start") {
             await this.openSession(e, host);
             return {};
         }
         if (e.kind === "session_end") {
             const project = this.project(e);
-            this.snapshots.addTools(host.drainTools(), null);
-            this.snapshots.sessionEnd(project, this.workspace(project));
+            host.drainTools();
+            this.snapshots.sessionEnd(e.session, project, this.workspace(project));
             await host.closeSession();
             this.clearStoreFill();
             this.sessionProject = null;
             this.recordState();
             if (!this.transcriptsChecked) this.checkTranscripts(host);
-            return {};
+            // The session's background passes have settled by now, so a check they earned runs
+            // here, after the state write, so the recorded obligation outlives the journal append.
+            const stores = this.owedStores();
+            return stores ? { stores } : {};
         }
         if (e.kind === "apply_diff") {
             this.applyDiff(e);
@@ -245,30 +322,74 @@ export class HostDriver implements ArmDriver {
         }
         const project = this.project(e);
         const dir = this.workspace(project);
-        const before = e.probe ? this.snapshots.tree(dir) : "";
-        const interruptMs = typeof e.interrupt_ms === "number" ? e.interrupt_ms : undefined;
-        const result = await host.prompt(String(e.text), this.o.turnDeadlineMs, interruptMs);
-        if (this.daemon && this.daemonPid() === null) this.o.onDaemonExit({ after: e.id });
-        const tools = host.drainTools();
-        this.snapshots.addTools(tools, e.id);
-        const outcome: TurnOutcome = result.interrupted ? { user: { interrupted: true } } : {};
-        if (result.error) outcome.failed = result.error;
-        if (this.storeFaults.length > 0 && this.daemon) {
-            const store = checkStore(this.storeDb);
-            outcome.stores = this.storeFaults.map((fault) => ({ fault, store }));
-            this.storeFaults = [];
-        }
+        let before: string | null = "";
         if (e.probe) {
-            const probe = { probe: e.probe, session: e.session, id: e.id };
-            outcome.snapshot = this.snapshots.capture(
-                probe,
-                project,
-                dir,
-                before,
-                tools,
-                !!result.error,
-            );
+            try {
+                before = this.snapshots.tree(dir);
+            } catch (caught) {
+                if (!(caught instanceof GitBound)) throw caught;
+                before = null;
+            }
         }
+        // A pass served between turns earned its check before this turn's own passes.
+        const outcome: TurnOutcome = {};
+        const owedBefore = this.owedStores();
+        if (owedBefore) outcome.stores = owedBefore;
+        const interruptMs = typeof e.interrupt_ms === "number" ? e.interrupt_ms : undefined;
+        this.turn = e.id;
+        const result = await host.prompt(String(e.text), this.o.turnDeadlineMs, interruptMs);
+        let reported = false;
+        const checkDaemon = () => {
+            if (reported || !this.daemon || this.daemonPid() !== null) return;
+            reported = true;
+            this.o.onDaemonExit({ after: e.id });
+        };
+        checkDaemon();
+        const tools = host.drainTools();
+        this.turn = null;
+        if (result.interrupted) outcome.user = { interrupted: true };
+        if (result.error) outcome.failed = result.error;
+        if (e.probe && before === null) {
+            const reason = "snapshot: git timed out before the turn";
+            outcome.failed = outcome.failed ? `${outcome.failed} | ${reason}` : reason;
+        } else if (e.probe && before !== null) {
+            await this.o.settle?.();
+            try {
+                const nested = this.snapshots.embedded(dir);
+                const after = this.snapshots.tree(dir, nested);
+                const reasons = [
+                    nested.length > 0 ? `embedded repository at ${nested.join(", ")}` : null,
+                    ...(() => {
+                        const changed = this.snapshots.ignoreChanges(dir, project);
+                        return changed.length > 0
+                            ? [`ignore rules changed: ${changed.join(", ")}`]
+                            : [];
+                    })(),
+                ].filter((r): r is string => r !== null);
+                for (const reason of reasons) {
+                    outcome.failed = outcome.failed ? `${outcome.failed} | ${reason}` : reason;
+                }
+                const probe = { probe: e.probe, session: e.session, id: e.id };
+                outcome.snapshot = this.snapshots.capture(
+                    probe,
+                    project,
+                    dir,
+                    before,
+                    tools,
+                    !!outcome.failed,
+                    after,
+                );
+            } catch (caught) {
+                if (!(caught instanceof GitBound)) throw caught;
+                const reason = `snapshot: ${caught.message}`;
+                outcome.failed = outcome.failed ? `${outcome.failed} | ${reason}` : reason;
+            }
+            checkDaemon();
+        }
+        // After the turn and, for a probe, its settled background jobs: the check this turn earned.
+        await this.restarting;
+        const owedAfter = this.owedStores();
+        if (owedAfter) outcome.stores = [...(outcome.stores ?? []), ...owedAfter];
         return outcome;
     }
 
@@ -279,22 +400,108 @@ export class HostDriver implements ArmDriver {
     }
 
     private applyDiff(e: ScenarioEvent): void {
-        const dir = realpathSync(this.workspace(this.project(e)));
+        const workspace = this.workspace(this.project(e));
+        const stat = lstatSync(workspace, { throwIfNoEntry: false });
+        if (stat?.isSymbolicLink()) {
+            throw new HarnessFailure(`workspace ${workspace} is a symlink or lies behind one`);
+        }
+        if (!stat?.isDirectory()) {
+            throw new HarnessFailure(`workspace ${workspace} is not a directory`);
+        }
+        const expected = join(realpathSync(this.armDir), relative(this.armDir, workspace));
+        if (realpathSync(workspace) !== expected) {
+            throw new HarnessFailure(`workspace ${workspace} is a symlink or lies behind one`);
+        }
+        const dir = realpathSync(workspace);
         const path = resolve(dir, String(e.path));
-        mkdirSync(dirname(path), { recursive: true });
-        const parent = realpathSync(dirname(path));
-        const inside = parent === dir || parent.startsWith(`${dir}/`);
-        if (!inside || lstatSync(path, { throwIfNoEntry: false })?.isSymbolicLink()) {
+        const inside = path.startsWith(`${dir}/`);
+        const present = (at: string) => lstatSync(at, { throwIfNoEntry: false }) !== undefined;
+        let ancestor = dirname(path);
+        while (inside && ancestor !== dir && !present(ancestor)) ancestor = dirname(ancestor);
+        let parent = "";
+        try {
+            parent = inside ? realpathSync(ancestor) : "";
+        } catch {
+            parent = "";
+        }
+        const contained = parent === dir || parent.startsWith(`${dir}/`);
+        if (!inside || !contained || lstatSync(path, { throwIfNoEntry: false })?.isSymbolicLink()) {
             throw new HarnessFailure(`apply_diff path ${String(e.path)} leaves ${dir}`);
         }
+        mkdirSync(dirname(path), { recursive: true });
         writeFileSync(path, String(e.content));
-        git(dir, "add", "--", path);
-        if (
-            spawnSync("git", ["diff", "--cached", "--quiet", "--", path], { cwd: dir }).status === 0
-        ) {
-            return;
+        this.withPristineRepo(dir, this.project(e), () => {
+            const blob = this.workspaceGit(dir, ["hash-object", "-w", "--no-filters", "--", path]);
+            const executable = (lstatSync(path).mode & 0o111) !== 0;
+            const entry = `${executable ? "100755" : "100644"},${blob},${relative(dir, path)}`;
+            const head = this.workspaceGit(dir, ["rev-parse", "--verify", "HEAD"]);
+            const scratch = { GIT_INDEX_FILE: join(this.armDir, "apply-diff.index") };
+            rmSync(`${scratch.GIT_INDEX_FILE}.lock`, { force: true });
+            this.workspaceGit(dir, ["read-tree", head], scratch);
+            this.workspaceGit(dir, ["update-index", "--add", "--cacheinfo", entry], scratch);
+            const tree = this.workspaceGit(dir, ["write-tree"], scratch);
+            rmSync(scratch.GIT_INDEX_FILE, { force: true });
+            this.workspaceGit(dir, ["update-index", "--add", "--cacheinfo", entry]);
+            if (tree === this.workspaceGit(dir, ["rev-parse", `${head}^{tree}`])) return;
+            const message = `Add ${String(e.path)}`;
+            const commit = this.workspaceGit(
+                dir,
+                ["commit-tree", tree, "-p", head, "-m", message],
+                IDENTITY,
+            );
+            this.workspaceGit(dir, ["update-ref", "HEAD", commit, head]);
+        });
+    }
+
+    /** Workspace git operations override agent-controlled execution settings to constrain which programs git can invoke. */
+    private workspaceGit(dir: string, args: string[], extra: Record<string, string> = {}): string {
+        const gitDir = join(dir, ".git");
+        const scope = { GIT_DIR: gitDir, GIT_WORK_TREE: dir, ...extra };
+        const off = [
+            `core.hooksPath=${join(this.armDir, "no-hooks")}`,
+            "core.fsmonitor=false",
+            "commit.gpgsign=false",
+        ];
+        const argv = [...off.flatMap((setting) => ["-c", setting]), ...args];
+        return git(dir, argv, scope, this.o.turnDeadlineMs).trim();
+    }
+
+    /**
+     * The agent can write the workspace repository's config, hooks, and object-store
+     * pointers. While `fn` runs, the repository's config is the clone's baseline, so an
+     * include, filter driver, or command the agent configured is out of git's view; the
+     * agent's config returns afterwards. A symlink under `.git` or an `alternates` file
+     * stops the run.
+     */
+    private withPristineRepo<T>(dir: string, project: string, fn: () => T): T {
+        const gitDir = join(dir, ".git");
+        if (!lstatSync(gitDir, { throwIfNoEntry: false })?.isDirectory()) {
+            throw new HarnessFailure(`${gitDir} is not a directory`);
         }
-        git(dir, "commit", "--quiet", "--no-verify", "-m", `Add ${String(e.path)}`, "--", path);
+        for (const entry of readdirSync(gitDir, { recursive: true, withFileTypes: true })) {
+            if (entry.isFile() || entry.isDirectory()) continue;
+            const at = join(relative(dir, entry.parentPath), entry.name);
+            const kind = entry.isSymbolicLink()
+                ? "a symlink; git would write through it"
+                : "not a regular file";
+            throw new HarnessFailure(`${at} is ${kind}`);
+        }
+        if (existsSync(join(gitDir, "objects", "info", "alternates"))) {
+            throw new HarnessFailure(".git/objects/info/alternates names another object store");
+        }
+        const config = join(gitDir, "config");
+        const aside = join(gitDir, "config.sim-aside");
+        if (existsSync(aside)) renameSync(aside, config);
+        if (!lstatSync(config, { throwIfNoEntry: false })?.isFile()) {
+            throw new HarnessFailure(`${relative(dir, config)} is not a file`);
+        }
+        renameSync(config, aside);
+        try {
+            copyFileSync(join(this.armDir, `${project}.gitconfig`), config);
+            return fn();
+        } finally {
+            renameSync(aside, config);
+        }
     }
 
     private checkTranscripts(host: SimHost): void {
@@ -312,18 +519,10 @@ export class HostDriver implements ArmDriver {
             throw new HarnessFailure(`fault type ${f.type} has no mechanism`);
         if (f.type === "daemon_sigkill_mid_fold" || f.type === "daemon_restart") {
             if (!this.daemon) return { skipped: "arm runs no daemon" };
-            const before = this.daemonPid();
-            await this.daemon.restart();
-            this.storeFaults.push(f.id);
-            this.recordState();
-            const after = this.daemonPid();
-            return {
-                signal: "SIGKILL",
-                pid_before: before,
-                pid_after: after,
-                restarted_by: "harness",
-                store: checkStore(this.storeDb),
-            };
+            const restart = this.restartDaemon(this.daemon, f.id);
+            restart.catch(() => undefined);
+            this.restarting = restart;
+            return restart;
         }
         if (f.type === "store_full") return this.fillStore();
         if (this.sessionProject !== null) {
@@ -336,6 +535,69 @@ export class HostDriver implements ArmDriver {
         this.host = this.newHost();
         this.recordState();
         return { model: this.currentModel() };
+    }
+
+    private async restartDaemon(
+        daemon: DaemonStack,
+        fault: string,
+    ): Promise<Record<string, unknown>> {
+        const before = daemon.pid();
+        // An earlier restart's check that a served pass has earned is taken from this daemon.
+        const stores = this.owedStores();
+        this.o.sampleDaemon?.();
+        await daemon.crash();
+        const store = checkStore(this.storeDb);
+        // Marked before the start, so a pass the replacement serves while its start settles counts.
+        const mark = this.pluginLogLength();
+        await daemon.restart();
+        this.storeFaults.set(fault, mark);
+        this.recordState();
+        this.o.sampleDaemon?.();
+        return {
+            signal: "SIGKILL",
+            pid_before: before,
+            pid_after: daemon.pid(),
+            restarted_by: "harness",
+            store,
+            ...(stores ? { stores } : {}),
+        };
+    }
+
+    /** The store checks whose restart the plugin log now shows a served pass after, if any. */
+    private owedStores(): TurnOutcome["stores"] {
+        const passed = [...this.storeFaults].filter(([, mark]) => this.passedSince(mark));
+        if (passed.length === 0 || !this.daemon) return undefined;
+        const store = checkStore(this.storeDb);
+        for (const [fault] of passed) this.storeFaults.delete(fault);
+        return passed.map(([fault]) => ({ fault, store }));
+    }
+
+    private get pluginLog(): string {
+        return join(this.o.armRoot, "eidnara.log");
+    }
+
+    private pluginLogLength(): number {
+        return existsSync(this.pluginLog) ? statSync(this.pluginLog).size : 0;
+    }
+
+    /** Whether the plugin log, past `mark`, records a pass the daemon served. */
+    private passedSince(mark: number): boolean {
+        if (!existsSync(this.pluginLog)) return false;
+        // Only the suffix past the mark is read, so a long-lived obligation stays cheap to check.
+        const fd = openSync(this.pluginLog, "r");
+        try {
+            const length = Math.max(0, fstatSync(fd).size - mark);
+            const suffix = Buffer.alloc(length);
+            let read = 0;
+            while (read < length) {
+                const n = readSync(fd, suffix, read, length - read, mark + read);
+                if (n === 0) break;
+                read += n;
+            }
+            return SERVED_PASS.test(suffix.subarray(0, read).toString("utf8"));
+        } finally {
+            closeSync(fd);
+        }
     }
 
     private mountStore(fresh: boolean): void {
@@ -369,8 +631,11 @@ export class HostDriver implements ArmDriver {
         return join(this.dataDir, "eidnara", "context", "store.db");
     }
 
-    async finish(): Promise<void> {
+    /** Settles the store checks the arm still owes, then stops everything it runs. */
+    async finish(): Promise<TurnOutcome> {
+        const stores = this.owedStores();
         await this.stop(true);
+        return stores ? { stores } : {};
     }
 
     async stop(checkFinalStore = false): Promise<void> {

@@ -158,8 +158,17 @@ describe("clock hook", () => {
             order: ["a"],
             drivers: { a: driver },
             settleMs: 0,
-            onClock: (arm, ms) => void calls.push([arm, ms]),
+            onClock: (arm, ms) => {
+                calls.push([arm, ms]);
+                return ms / 1000 + 7;
+            },
         }).run();
+        // The arm's start writes a ClockOffset; every jump carries its offset on the AdvanceClock
+        // entry itself, so a kill between the two cannot leave the clock advanced without its jump.
+        const offsets = j.entries.filter((e) => typeof e.offset_s === "number");
+        expect(offsets.map((e) => [e.kind, e.scenario_ms, e.offset_s])).toEqual(
+            calls.map(([, ms], i) => [i === 0 ? "ClockOffset" : "AdvanceClock", ms, ms / 1000 + 7]),
+        );
         expect(calls[0]).toEqual(["a", 0]);
         expect(calls[1]).toEqual(["a", 5_000]);
         expect(calls.at(-1)?.[1] ?? 0).toBeGreaterThanOrEqual(9_000);
