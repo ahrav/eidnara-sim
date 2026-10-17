@@ -5,7 +5,13 @@ import { armBase, requireOrder } from "../src/hosts/arms";
 import { ARMS, type Tier } from "../src/prereg/schema";
 import { preregistrationHash } from "../src/prereg/validate";
 import { bootstrapMean, disagreementRate, pairedDiffs } from "../src/report/paired";
-import { readJournal, releaseLease, requireComplete, takeLease } from "../src/run/journal";
+import {
+    readJournal,
+    releaseLease,
+    requireComplete,
+    stagingPath,
+    takeLease,
+} from "../src/run/journal";
 import { referenceArm } from "../src/run/run";
 import { type Scenario, scenarioHash } from "../src/scenario/compile";
 import { loadPrereg } from "../src/scenario/inputs";
@@ -35,6 +41,12 @@ function report(dir: string) {
         );
     }
     const scenario = JSON.parse(readFileSync(join(dir, "scenario.json"), "utf8")) as Scenario;
+    const compiled = scenario.manifest as { seed: number; tier: string };
+    if (compiled.tier !== manifest.tier || compiled.seed !== manifest.seed) {
+        throw new Error(
+            `${dir}: scenario.json is ${compiled.tier} seed ${compiled.seed}, the manifest ${manifest.tier} seed ${manifest.seed}`,
+        );
+    }
     const scenario_hash = scenarioHash(scenario);
     if (scenario_hash !== manifest.scenario_hash) {
         throw new Error(
@@ -92,6 +104,17 @@ function report(dir: string) {
                 `${dir}: ${control} received other text than ${arm} before diverging: ${broken.join(", ")}`,
             );
         }
+        const graded = (a: string, verdict: (v: string) => boolean) =>
+            grades.filter((g) => g.arm === a && verdict(g.verdict)).map((g) => g.item);
+        const excluded = Object.fromEntries(
+            [arm, control].map((a) => [a, graded(a, (v) => v === "excluded").length]),
+        );
+        const kept = (a: string) => new Set(graded(a, (v) => v !== "excluded"));
+        const [mineItems, theirItems] = [kept(control), kept(arm)];
+
+        const unpaired_items = [...new Set([...mineItems, ...theirItems])]
+            .filter((i) => !(mineItems.has(i) && theirItems.has(i)))
+            .sort();
         const metrics = [...pairedDiffs(grades, arm, control)].map(([m, d]) =>
             bootstrapMean(m, d, clusterOf(m), prereg.bootstrap.replicates, prereg.bootstrap.seed),
         );
@@ -111,16 +134,18 @@ function report(dir: string) {
             intervals_missing_zero: informative.filter((m) => !m.covers_zero).map((m) => m.metric),
             expected_by_chance: 0.05 * informative.length,
             uninformative: metrics.filter((m) => m.clusters < MIN_CLUSTERS).map((m) => m.metric),
+            excluded,
+            unpaired_items,
             disagreement_rate: disagreementRate(grades, arm, control),
             sessions: sessions.size,
             sessions_diverged: diverged.length,
             divergence_indices: diverged.map((r) => r.index),
         };
     });
-    // Staged under an exclusive create, which refuses an existing path or symlink, then renamed
-    // over `aa.json`, so neither name is written through.
+    // Staged under an exclusive create at a name of its own, then renamed over `aa.json`, so a
+    // symlink at either name is replaced and a leftover of a killed report blocks nothing.
     const out = join(dir, "aa.json");
-    const staged = `${out}.${process.pid}.tmp`;
+    const staged = stagingPath(out);
     try {
         writeFileSync(staged, `${JSON.stringify(report, null, 2)}\n`, { flag: "wx" });
         renameSync(staged, out);

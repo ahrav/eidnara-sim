@@ -72,9 +72,10 @@ function gradedRun(
         ]),
     ) as GradeRecord[];
     const events = [1, 2, 3].map((i) => ({ id: `e-${i}`, kind: "user_turn" }));
-    const scenario = { probes, events };
+    const scenario = { manifest: { tier, seed: 101 }, probes, events };
     const manifest = {
         tier,
+        seed: 101,
         order: ["host", "host~aa"],
         events: 3,
         prereg_sha256,
@@ -149,13 +150,36 @@ describe("aa-report", () => {
         expect(() => aaReport(dir)).toThrow(/last line is corrupt/);
     });
 
-    test("a staging file left as a symlink is refused, never written through", () => {
+    test("a staging file left by a killed report does not block the next one", () => {
         const dir = gradedRun("S", preregistrationHash(loadPrereg("S")));
-        const target = join(dir, "elsewhere.json");
-        writeFileSync(target, "keep me\n");
-        symlinkSync(target, join(dir, `aa.json.${process.pid}.tmp`));
-        expect(() => aaReport(dir)).toThrow(/EEXIST/);
-        expect(readFileSync(target, "utf8")).toBe("keep me\n");
+        writeFileSync(join(dir, `aa.json.${process.pid}.tmp`), "{");
+        expect(aaReport(dir)).toHaveLength(1);
+        expect(JSON.parse(readFileSync(join(dir, "aa.json"), "utf8"))).toHaveLength(1);
+    });
+
+    test("refuses a manifest whose tier or seed differs from the compiled scenario's", () => {
+        const relabeled = gradedRun("S", preregistrationHash(loadPrereg("M")));
+        const manifest = JSON.parse(readFileSync(join(relabeled, "manifest.json"), "utf8"));
+        writeFileSync(join(relabeled, "manifest.json"), JSON.stringify({ ...manifest, tier: "M" }));
+        expect(() => aaReport(relabeled)).toThrow(/scenario.json is S seed 101/);
+        const reseeded = gradedRun("S", preregistrationHash(loadPrereg("S")));
+        const m2 = JSON.parse(readFileSync(join(reseeded, "manifest.json"), "utf8"));
+        writeFileSync(join(reseeded, "manifest.json"), JSON.stringify({ ...m2, seed: 102 }));
+        expect(() => aaReport(reseeded)).toThrow(/scenario.json is S seed 101/);
+    });
+
+    test("a grade excluded on one side is reported per arm with its item, and pairs nothing", () => {
+        const dir = gradedRun("S", preregistrationHash(loadPrereg("S")));
+        const excluded = {
+            ...grade("host", "p-1", "P3", "P3.delta_mem", 0),
+            version: 2,
+            verdict: "excluded",
+        };
+        appendFileSync(join(dir, "grades.jsonl"), `${JSON.stringify(excluded)}\n`);
+        const [report] = aaReport(dir);
+        expect(report?.excluded).toEqual({ host: 1, "host~aa": 0 });
+        expect(report?.unpaired_items).toEqual(["p-1"]);
+        expect(report?.metrics.find((m) => m.metric === "P3.delta_mem")?.n).toBe(5);
     });
 
     test("with no informative metric the report draws no interval conclusion", () => {

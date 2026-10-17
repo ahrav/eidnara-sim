@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fixtureEvents } from "../../tests/run-fixture";
@@ -157,20 +157,11 @@ describe("Journal and lease", () => {
         expect(() => takeLease(d)).toThrow(/on elsewhere/);
     });
 
-    test("a lease staging symlink is refused, never written through", () => {
-        const d = dir();
-        const target = join(d, "elsewhere.json");
-        writeFileSync(target, "keep me\n");
-        symlinkSync(target, join(d, `lease.${process.pid}.tmp`));
-        expect(() => takeLease(d)).toThrow(/EEXIST/);
-        expect(readFileSync(target, "utf8")).toBe("keep me\n");
-    });
-
-    test("a killed holder's staging file under the same pid is replaced, so the run resumes", () => {
+    test("staging files left by killed holders, under any pid or host, block nothing", () => {
         const d = dir();
         writeFileSync(join(d, `lease.${process.pid}.tmp`), "{}");
+        writeFileSync(join(d, `lease.${require("node:os").hostname()}.${process.pid}.tmp`), "{}");
         expect(takeLease(d).pid).toBe(process.pid);
-        expect(existsSync(join(d, `lease.${process.pid}.tmp`))).toBe(false);
         releaseLease(d);
     });
 
