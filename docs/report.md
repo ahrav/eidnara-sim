@@ -36,9 +36,9 @@ still closing belongs to the open session.
 | Metric | Source |
 |---|---|
 | Internal-string hits | The F7 oracle's patterns over the agent's relayed responses, the text the user-sim reads, each tagged with that source; tool output shown to the agent has no capture to scan |
-| Corrections referencing injected text | Delivered user-sim pushback and redirect replies (the tape entries an arm's pairing records name, fallbacks left out) that share a five-word run with a memory note first delivered at or before the turn's `BeginTurn` (`<arm>/memory.json`; both times in the hosts' faked clock, `base_wall_ms` plus scenario time), where neither four-word half of the run appears in the scripted user turns of the run's `scenario.json`; a reply whose turn has no `BeginTurn` is left out |
-| Reverted edits | Tool runs of `git revert`, `git restore` (unless `--staged` or `-S` appears anywhere in the invocation without `--worktree` or `-W`), `git checkout ... --` within one command, or `git reset --hard`, with or without `-C` or `-c` options |
-| Turn latency | p50 and p95 of each turn's wall time from `BeginTurn` to `EndTurn` |
+| Corrections referencing injected text | Delivered user-sim pushback and redirect replies (the tape entries an arm's pairing records name, fallbacks left out) that share a five-word run with a memory note first delivered at or before the turn's `BeginTurn` (`<arm>/memory.json`; both times in the hosts' faked clock, `base_wall_ms` plus scenario time), where neither four-word half of the run appears in the scripted user turns of the run's `scenario.json`; a reply whose turn has no `BeginTurn` is left out. `null` when `memory.json` records that the notes could not be read |
+| Reverted edits | Tool runs that exited 0 of `git revert`, `git restore` (unless `--staged` or `-S`, alone or in a cluster such as `-Sq`, appears anywhere in the invocation without `--worktree` or `-W`), `git checkout ... --` within one command, or `git reset --hard`, with or without `-C` or `-c` options |
+| Turn latency | p50 and p95 of each turn's `prompt_ms` on `EndTurn`: the host's prompt call alone, after the user-sim has delivered the turn's text |
 
 A revert is counted on every arm, so the difference from the host arm is
 the part memory can be held to.

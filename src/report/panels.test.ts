@@ -270,7 +270,7 @@ describe("intrusiveness panel", () => {
         ];
         const journal = turns.flatMap(([event, begin, end]) => [
             entry("BeginTurn", begin, { event }),
-            entry("EndTurn", end, { event }),
+            entry("EndTurn", end, { event, prompt_ms: (end - begin) / 2 }),
             entry("UserTurn", end, { event }),
         ]);
         const tools = [
@@ -296,6 +296,12 @@ describe("intrusiveness panel", () => {
                 turn: "e-2",
             },
             { command: "git checkout main && echo -- x", exit: 0, scenario_ms: 3, turn: "e-2" },
+            { command: "git restore -Sq src/lib.rs", exit: 0, scenario_ms: 3, turn: "e-2" },
+            { command: "git restore -qS src/lib.rs", exit: 0, scenario_ms: 3, turn: "e-2" },
+            { command: "git restore -SW src/lib.rs", exit: 0, scenario_ms: 3, turn: "e-2" },
+            { command: "git restore missing.rs", exit: 1, scenario_ms: 3, turn: "e-2" },
+            { command: "git reset --hard", exit: null, scenario_ms: 3, turn: "e-2" },
+            { command: "git reset -q --hard HEAD~1", exit: 0, scenario_ms: 3, turn: "e-2" },
             { command: "cargo test", exit: 0, scenario_ms: 4, turn: "e-2" },
         ];
         const panel = intrusiveness(run([], dir, new Map(), BASE), arm({ journal, tools }));
@@ -306,8 +312,10 @@ describe("intrusiveness panel", () => {
             "git restore src/db.rs",
             "git checkout -- src/lib.rs",
             "git restore --staged --worktree src/lib.rs",
+            "git restore -SW src/lib.rs",
+            "git reset -q --hard HEAD~1",
         ]);
-        expect(panel.latency_ms).toEqual({ n: 6, p50: 1000, p95: 10000 });
+        expect(panel.latency_ms).toEqual({ n: 6, p50: 500, p95: 5000 });
         expect(percentile([5, 1, 3, 2, 4], 0.5)).toBe(3);
 
         const grades = [
@@ -352,5 +360,9 @@ describe("intrusiveness panel", () => {
             1,
             "v1",
         ]);
+
+        writeFileSync(join(dir, "eidnara", "memory.json"), "null\n");
+        const unavailable = intrusiveness(run([], dir, new Map(), BASE), arm({ journal, tools }));
+        expect(unavailable.corrections_referencing_injected_text).toBeNull();
     });
 });

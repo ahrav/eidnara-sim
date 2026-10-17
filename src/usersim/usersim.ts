@@ -78,13 +78,18 @@ interface Taped {
 /** User-sim replies keyed by seed, event, label, and the normalised agent-output digest. */
 export class Tape {
     private readonly entries = new Map<string, Taped>();
+    private readonly own = new Set<string>();
 
     constructor(
         private readonly path: string,
         sources: readonly string[] = [],
     ) {
-        for (const p of [...sources, path]) {
+        for (const p of sources) {
             for (const e of jsonl<TapeEntry>(p)) this.entries.set(e.key, e);
+        }
+        for (const e of jsonl<TapeEntry>(path)) {
+            this.entries.set(e.key, e);
+            this.own.add(e.key);
         }
     }
 
@@ -92,9 +97,11 @@ export class Tape {
         return this.entries.get(key);
     }
 
+    /** Appends the entry to this run's tape unless that file already holds its key. */
     put(entry: TapeEntry): void {
-        if (this.entries.has(entry.key)) return;
+        if (this.own.has(entry.key)) return;
         this.entries.set(entry.key, entry);
+        this.own.add(entry.key);
         appendFileSync(this.path, `${JSON.stringify(entry)}\n`);
     }
 }
@@ -345,8 +352,8 @@ export class UserSim {
             const script = label === "abandon" || FACT_ROLES.has(t.role) ? null : t.text;
             const live = await this.o.llm(persona(label, script, lastAgent));
             got = { text: live.text.trim(), stop: live.stop };
-            this.o.tape.put({ key, event: t.id, label, digest, ...got });
         }
+        this.o.tape.put({ key, event: t.id, label, digest, ...got });
         const source: "tape" | "live" = taped === undefined ? "live" : "tape";
         const hits = markerHits(got.text, this.o.keys);
         const cut = got.stop === "max_tokens" ? ["max_tokens"] : [];

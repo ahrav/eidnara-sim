@@ -10,28 +10,29 @@ import type { PairingRecord } from "../usersim/usersim";
 export interface Intrusiveness {
     arm: string;
     internal_string_hits: { source: "agent-response"; at: string; evidence: string }[];
-    corrections_referencing_injected_text: { event: string; label: string; quote: string }[];
+    /** `null` when the arm's `memory.json` records that its notes could not be read. */
+    corrections_referencing_injected_text: { event: string; label: string; quote: string }[] | null;
     reverted_edits: { turn: string | null; command: string }[];
     latency_ms: { n: number; p50: number | null; p95: number | null };
 }
 
-/**
- * A `git restore` reverts working-tree edits unless it names `--staged` or `-S` without
- * `--worktree` or `-W`; both long and short forms may follow other options.
- */
-const REVERT =
-    /\bgit\s+(?:-[Cc]\s+\S+\s+)*(?:revert\b|restore\b(?:(?=(?:\s+[^\s;&|]+)*?\s+(?:--worktree|-W)\b)|(?!(?:\s+[^\s;&|]+)*?\s+(?:--staged|-S)\b))|checkout\b(?:\s+[^\s;&|]+)*?\s+--(?=\s)|reset\s+--hard\b)/;
+/** Each `git` invocation in a shell command: its subcommand and the arguments up to a separator. */
+const GIT = /\bgit\s+(?:-[Cc]\s+\S+\s+)*([a-z-]+)((?:\s+[^\s;&|]+)*)/g;
 const SHINGLE = 5;
 
 function jsonl<T>(path: string): T[] {
     return existsSync(path) ? (readJournal(path) as unknown as T[]) : [];
 }
 
-export function notesOf(dir: string, arm: string): MemoryNote[] | null {
+/**
+ * The arm's memory notes: `undefined` when the arm wrote no `memory.json`, `null` when it wrote
+ * one recording that the notes could not be read.
+ */
+export function notesOf(dir: string, arm: string): MemoryNote[] | null | undefined {
     const path = join(dir, arm, "memory.json");
     return existsSync(path)
         ? (JSON.parse(readFileSync(path, "utf8")) as MemoryNote[] | null)
-        : null;
+        : undefined;
 }
 
 function scriptedText(dir: string): string[] {
@@ -43,7 +44,29 @@ function scriptedText(dir: string): string[] {
         .map((e) => e.text as string);
 }
 
-export const isRevert = (command: string) => REVERT.test(command);
+const hasFlag = (args: string[], long: string, short: string) =>
+    args.some((a) => a === long || (/^-[A-Za-z]+$/.test(a) && a.includes(short)));
+
+/**
+ * A `git restore` reverts working-tree edits unless `--staged`/`-S` is given without
+ * `--worktree`/`-W`; short options may be clustered, as in `-Sq`.
+ */
+const restoresWorktree = (args: string[]) =>
+    hasFlag(args, "--worktree", "W") || !hasFlag(args, "--staged", "S");
+
+export function isRevert(command: string): boolean {
+    for (const [, sub, rest] of command.matchAll(GIT)) {
+        const args = (rest ?? "")
+            .trim()
+            .split(/\s+/)
+            .filter((a) => a !== "");
+        if (sub === "revert") return true;
+        if (sub === "reset" && args.includes("--hard")) return true;
+        if (sub === "checkout" && args.includes("--")) return true;
+        if (sub === "restore" && restoresWorktree(args)) return true;
+    }
+    return false;
+}
 
 const shingles = (text: string, size = SHINGLE) => {
     const words = text.toLowerCase().match(/[\w[\]-]+/g) ?? [];
@@ -75,13 +98,12 @@ export function percentile(values: number[], q: number): number | null {
     return sorted[Math.min(sorted.length - 1, Math.ceil(q * sorted.length) - 1)] ?? null;
 }
 
+/** Each turn's `prompt_ms` from `EndTurn`: the host's prompt call, after the user-sim delivered. */
 export function turnLatencies(arm: ArmLogs): number[] {
-    const begins = new Map(
-        arm.journal.filter((e) => e.kind === "BeginTurn").map((e) => [String(e.event), e.wall_ms]),
-    );
     return arm.journal
-        .filter((e) => e.kind === "EndTurn" && begins.has(String(e.event)))
-        .map((e) => e.wall_ms - (begins.get(String(e.event)) as number));
+        .filter((e) => e.kind === "EndTurn")
+        .map((e) => e.prompt_ms)
+        .filter((ms): ms is number => typeof ms === "number");
 }
 
 /**
@@ -96,7 +118,9 @@ function corrections(run: RunLogs, arm: ArmLogs) {
         const words = s.split(" ");
         return own.has(words.slice(1).join(" ")) || own.has(words.slice(0, -1).join(" "));
     };
-    const notes = (notesOf(run.dir, arm.arm) ?? []).filter((n) => n.first_delivery_ms !== null);
+    const written = notesOf(run.dir, arm.arm);
+    if (written === null) return null;
+    const notes = (written ?? []).filter((n) => n.first_delivery_ms !== null);
     const began = new Map(
         arm.journal
             .filter((e) => e.kind === "BeginTurn")
@@ -127,7 +151,7 @@ export function intrusiveness(run: RunLogs, arm: ArmLogs): Intrusiveness {
             .map((a) => ({ source: "agent-response" as const, at: a.at, evidence: a.evidence })),
         corrections_referencing_injected_text: corrections(run, arm),
         reverted_edits: arm.tools
-            .filter((t) => isRevert(t.command))
+            .filter((t) => t.exit === 0 && isRevert(t.command))
             .map((t) => ({ turn: t.turn, command: t.command.slice(0, 200) })),
         latency_ms: {
             n: latencies.length,
