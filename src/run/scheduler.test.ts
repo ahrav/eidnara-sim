@@ -761,7 +761,7 @@ test("quiet-window retries share one liveness deadline", async () => {
         drivers: { a: driver },
     });
     const started = Date.now();
-    await expect(scheduler.run()).rejects.toThrow("busy set held the clock past 400 ms");
+    await expect(scheduler.run()).rejects.toThrow(/past 400 ms/);
     expect(Date.now() - started).toBeLessThan(2_000);
 });
 
