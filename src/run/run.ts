@@ -1,26 +1,35 @@
+import { randomUUID } from "node:crypto";
 import {
     appendFileSync,
     existsSync,
+    constants as fsConstants,
     mkdirSync,
+    openSync,
     readFileSync,
     renameSync,
     writeFileSync,
+    writeSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import type { SimConfig } from "../config/config";
 import type { CallView } from "../grade/artefacts";
 import { armBase } from "../hosts/arms";
 import { HostDriver } from "../hosts/driver";
-import { canonicalJson } from "../prereg/canonical";
+import { canonicalJson, sha256Hex } from "../prereg/canonical";
 import type { Tier } from "../prereg/schema";
 import { preregistrationHash } from "../prereg/validate";
 import { bedrockUpstream, Gateway } from "../proxy/gateway";
 import { FaultInjector } from "../proxy/inject";
 import { type CallRecord, type Component, RecordWriter } from "../proxy/records";
 import { Rng } from "../rng";
-import { compileScenario, type Scenario } from "../scenario/compile";
+import { compileScenario, GENERATOR_VERSION, type Scenario } from "../scenario/compile";
 import type { FaultEpisode } from "../scenario/faults";
-import { loadCompileInput, loadPrereg } from "../scenario/inputs";
+import {
+    compileInputsHash,
+    corpusManifestHash,
+    loadCompileInput,
+    loadPrereg,
+} from "../scenario/inputs";
 import { bedrockEmbedder } from "../scenario/similarity";
 import { behaviourPlan, type Label, realisedRates } from "../usersim/plan";
 import { normaliser, Pairing, proxyUserSim, Tape, UserSim } from "../usersim/usersim";
@@ -60,6 +69,8 @@ interface Manifest {
     eidnara_commit: string;
     fault_override: FaultEpisode[] | null;
     tapes: string[];
+    /** By tape path, the sha256 of the sibling pairing log as the run began. */
+    tape_pairing_sha256: Record<string, string>;
     prereg_sha256: string;
     base_wall_ms: number;
     /** The rates the cost panel prices this run's calls at, fixed when the run starts. */
@@ -91,9 +102,15 @@ export function requirePinnedPath(config: SimConfig): void {
     }
 }
 
-function writeAtomic(path: string, text: string): void {
-    writeFileSync(`${path}.${process.pid}`, text);
-    renameSync(`${path}.${process.pid}`, path);
+/**
+ * Writes `text` beside `path` and renames it in, so a reader sees the whole file or none. The
+ * staging file is created exclusively under a random name, so a link planted at a guessable
+ * path is never written through.
+ */
+export function writeAtomic(path: string, text: string): void {
+    const staged = `${path}.${randomUUID()}.tmp`;
+    writeFileSync(staged, text, { flag: "wx" });
+    renameSync(staged, path);
 }
 
 function gitHead(dir: string): string {
@@ -102,21 +119,45 @@ function gitHead(dir: string): string {
     return r.stdout.toString().trim();
 }
 
-async function loadScenario(o: RunOptions): Promise<Scenario> {
+export async function loadScenario(
+    o: Pick<RunOptions, "config" | "tier" | "seed" | "out">,
+): Promise<Scenario> {
     const path = join(o.out, "scenario.json");
     if (!existsSync(path)) {
         const { aws_profile, region } = o.config.bedrock;
         const cache = join(ROOT, "runs/scenarios/embeddings.jsonl");
+        mkdirSync(dirname(cache), { recursive: true });
         const embedder = bedrockEmbedder(aws_profile, region, cache);
         const compiled = await compileScenario(loadCompileInput(o.seed, o.tier, embedder));
         writeAtomic(path, `${canonicalJson(compiled)}\n`);
     }
     const scenario = JSON.parse(readFileSync(path, "utf8")) as Scenario;
+    const { scenario_hash, ...body } = scenario;
+    if (sha256Hex(canonicalJson(body)) !== scenario_hash) {
+        throw new HarnessFailure(`${path} hashes to other than its scenario_hash`);
+    }
     const { seed, tier } = scenario.manifest as { seed: number; tier: string };
     if (seed !== o.seed || tier !== o.tier) {
         throw new HarnessFailure(
             `scenario.json is ${tier} seed ${seed}, not ${o.tier} seed ${o.seed}`,
         );
+    }
+    // A run with a manifest keeps the scenario it ran; a new run takes only a scenario compiled
+    // from the current generator, corpus, and pre-registration.
+    if (!existsSync(join(o.out, "manifest.json"))) {
+        const current: Record<string, string> = {
+            generator_version: GENERATOR_VERSION,
+            corpus_manifest_sha256: corpusManifestHash(),
+            compile_inputs_sha256: compileInputsHash(),
+            prereg_sha256: preregistrationHash(loadPrereg(o.tier)),
+        };
+        const manifest = scenario.manifest as Record<string, unknown>;
+        const stale = Object.keys(current).filter((k) => manifest[k] !== current[k]);
+        if (stale.length > 0) {
+            throw new HarnessFailure(
+                `${path} was compiled from other inputs (${stale.join(", ")}); remove it to recompile`,
+            );
+        }
     }
     return scenario;
 }
@@ -169,6 +210,14 @@ async function loadManifest(o: RunOptions, scenario: Scenario): Promise<Manifest
         fault_override: o.faults ?? null,
         tapes: o.tapes ?? [],
     };
+    // The sibling pairing log of each replayed tape, as it stood when the run began, so the
+    // report can tell a source that changed afterwards.
+    const tapePairing = Object.fromEntries(
+        (o.tapes ?? []).flatMap((t) => {
+            const log = join(dirname(t), "pairing.jsonl");
+            return existsSync(log) ? [[t, sha256Hex(readFileSync(log, "utf8"))]] : [];
+        }),
+    );
     if (existsSync(path)) {
         const manifest = JSON.parse(readFileSync(path, "utf8")) as Manifest;
         const given: Record<string, boolean> = {
@@ -211,6 +260,7 @@ async function loadManifest(o: RunOptions, scenario: Scenario): Promise<Manifest
         scenario_hash: scenario.scenario_hash,
         eidnara_commit: gitHead(o.config.eidnara_checkout),
         prereg_sha256: preregistrationHash(loadPrereg(o.tier)),
+        tape_pairing_sha256: tapePairing,
         base_wall_ms: Date.now(),
         price_table: PRICE_TABLE,
         preflight: checks,
@@ -341,6 +391,11 @@ async function runArms(
             return record;
         }
     }
+    // The diagnostics file is opened once without following symlinks, like a child's log.
+    const downstreamFd = openSync(
+        join(o.out, "downstream.jsonl"),
+        fsConstants.O_WRONLY | fsConstants.O_APPEND | fsConstants.O_CREAT | fsConstants.O_NOFOLLOW,
+    );
     const gateway = new Gateway({
         upstream: bedrockUpstream(config.bedrock.region, config.bedrock.aws_profile),
         records: new RunRecords(join(o.out, "calls.jsonl")),
@@ -348,6 +403,16 @@ async function runArms(
         rng: new Rng((seed ^ 0x27d4eb2f) >>> 0),
         clock: { scenarioMs: now },
         scope: () => ({ ...scope }),
+        downstream: (e) => {
+            // The sink runs inside an HTTP/2 event listener; a failed write ends the run through
+            // its signal path rather than escaping as an uncaught exception.
+            try {
+                writeSync(downstreamFd, `${JSON.stringify(e)}\n`);
+            } catch (caught) {
+                console.error(`downstream.jsonl: ${(caught as Error).message}`);
+                process.kill(process.pid, "SIGTERM");
+            }
+        },
         observe: (e) => {
             const driver = drivers[scope.arm];
             if (driver) scheduler.observe(e.component, driver);

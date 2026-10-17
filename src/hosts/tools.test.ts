@@ -26,7 +26,7 @@ test("an OpenCode turn logs only its own messages' tools, timed in OpenCode's cl
         ],
     };
     const fresh = {
-        info: { id: "m2", time: { created: fakeNow } },
+        info: { id: "m2", role: "assistant", finish: "stop", time: { created: fakeNow } },
         parts: [
             {
                 type: "tool",
@@ -61,4 +61,67 @@ test("an OpenCode turn logs only its own messages' tools, timed in OpenCode's cl
     });
     expect(await host.prompt("go", 5_000)).toEqual({});
     expect(host.drainTools()).toEqual([{ command: "cargo test", exit: 1, scenario_ms: 2_100 }]);
+    // One listing before the prompt and one after it: tool logging and finish validation share it.
+    expect(calls).toBe(2);
+});
+
+test("an OpenCode turn whose last assistant step has not finished is a failed turn, and the session is aborted first", async () => {
+    let aborted = 0;
+    const step = (finish?: string) => ({
+        info: { id: "m", role: "assistant", finish },
+        parts: [],
+    });
+    const early = (finish?: string) => ({
+        error: `the turn returned before its last assistant step finished (${finish})`,
+    });
+    for (const [finish, want] of [
+        ["stop", {}],
+        ["tool-calls", early("tool-calls")],
+        [undefined, early(undefined)],
+    ] as const) {
+        let calls = 0;
+        const client = {
+            session: {
+                messages: async () => ({ data: calls++ === 0 ? [] : [step(finish)] }),
+                prompt: async () => ({ data: { info: {} } }),
+                abort: async () => {
+                    aborted++;
+                    return {};
+                },
+            },
+        };
+        const host = new OpencodeSimHost({
+            ...({} as HostContext),
+            config: loadConfig(),
+            root: "/x",
+            launcher: "/x/sandbox.sh",
+            now: () => 0,
+        });
+        Object.assign(host as unknown as Record<string, unknown>, { client, sid: "s", oc: {} });
+        expect(await host.prompt("go", 5_000)).toEqual(want);
+    }
+    // The two unfinished cases each aborted the session before the turn failed.
+    expect(aborted).toBe(2);
+});
+
+test("an OpenCode turn that leaves no assistant message of its own is a failed turn", async () => {
+    const prior = { info: { id: "m0", role: "assistant", finish: "stop" }, parts: [] };
+    const client = {
+        session: {
+            messages: async () => ({ data: [prior] }),
+            prompt: async () => ({ data: { info: {} } }),
+            abort: async () => ({}),
+        },
+    };
+    const host = new OpencodeSimHost({
+        ...({} as HostContext),
+        config: loadConfig(),
+        root: "/x",
+        launcher: "/x/sandbox.sh",
+        now: () => 0,
+    });
+    Object.assign(host as unknown as Record<string, unknown>, { client, sid: "s", oc: {} });
+    expect(await host.prompt("go", 5_000)).toEqual({
+        error: "the turn returned without an assistant message of its own",
+    });
 });

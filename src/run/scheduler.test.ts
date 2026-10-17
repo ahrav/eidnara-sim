@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { fixtureEvents } from "../../tests/run-fixture";
 import type { FaultEpisode } from "../scenario/faults";
@@ -111,6 +111,19 @@ describe("Journal and lease", () => {
         const again = new Journal(path);
         again.append({ kind: "EndArm", arm: "b", scenario_ms: 1 });
         expect(readJournal(path).map((e) => e.seq)).toEqual([0, 1, 2, 3]);
+    });
+
+    test("releasing a lease removes only this process's own", () => {
+        const d = dir();
+        writeFileSync(
+            join(d, "lease.json"),
+            JSON.stringify({ pid: 2 ** 22 - 1, host: hostname(), started_wall_ms: 0 }),
+        );
+        releaseLease(d);
+        expect(existsSync(join(d, "lease.json"))).toBe(true);
+        takeLease(d);
+        releaseLease(d);
+        expect(existsSync(join(d, "lease.json"))).toBe(false);
     });
 
     test("one live process holds the lease; a dead holder's lease is taken over", () => {
@@ -428,6 +441,21 @@ describe("resume", () => {
             (e, b) => e.some((x) => x.kind === "EndArm" && x.arm === "host") && inFlight(e, b),
         );
         expect(resumed.filter((e) => e.arm === "host")).toEqual([]);
+    }, 60_000);
+
+    test("a completed run started again appends nothing and exits clean", async () => {
+        const d = dir();
+        const spawn = () =>
+            Bun.spawn(["bun", "tests/run-fixture.ts", d, "300", "0"], {
+                cwd: ROOT,
+                stdout: "ignore",
+                stderr: "inherit",
+            });
+        expect(await spawn().exited).toBe(0);
+        const done = readJournal(join(d, "journal.jsonl"));
+        expect(done.at(-1)?.kind).toBe("EndRun");
+        expect(await spawn().exited).toBe(0);
+        expect(readJournal(join(d, "journal.jsonl"))).toEqual(done);
     }, 60_000);
 });
 

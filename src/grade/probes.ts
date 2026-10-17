@@ -1,5 +1,8 @@
-import { appendFileSync, existsSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, truncateSync } from "node:fs";
+import { join } from "node:path";
+import { sha256Hex } from "../prereg/canonical";
 import type { Preregistration } from "../prereg/schema";
+import { readJournal } from "../run/journal";
 import type { ProbeItem } from "../scenario/compile";
 import {
     ArtefactReader,
@@ -38,6 +41,8 @@ export interface GradeRecord extends Outcome {
     snapshot: string;
     inputs: string[];
     later_attempts_logged: number;
+    /** The digest of the grader's source files that produced the record. */
+    grader?: string;
     pair?: string;
 }
 
@@ -280,13 +285,23 @@ export function gradeItem(
     };
 }
 
+/**
+ * A digest over the grader's own source files, so a grade carries the implementation that made
+ * it and a rerun under another one grades again.
+ */
+export const graderDigest = (): string =>
+    sha256Hex(
+        ["artefacts.ts", "judge.ts", "probes.ts", "text.ts", "../../scripts/grade-run.ts"]
+            .map((f) => readFileSync(join(import.meta.dir, f), "utf8"))
+            .join("\n"),
+    );
+
 export class GradeLog {
     constructor(private readonly path: string) {}
 
+    /** Every complete record; one a kill cut short at the end of the file is left out. */
     all(): GradeRecord[] {
-        if (!existsSync(this.path)) return [];
-        const lines = readFileSync(this.path, "utf8").split("\n").filter(Boolean);
-        return lines.map((l) => JSON.parse(l) as GradeRecord);
+        return readJournal(this.path) as unknown as GradeRecord[];
     }
 
     latest(): GradeRecord[] {
@@ -304,13 +319,21 @@ export class GradeLog {
     }
 
     append(record: GradeRecord): void {
-        const expected = this.nextVersion(record.item, record.arm);
-        if (record.version !== expected) {
-            throw new GradeRefused(
-                `grade ${record.item}/${record.arm} v${record.version} expected v${expected}`,
-            );
+        this.appendAll([record]);
+    }
+
+    /** Appends the records in one write, so a kill leaves either all of them or none. */
+    appendAll(records: GradeRecord[]): void {
+        for (const record of records) {
+            const expected = this.nextVersion(record.item, record.arm);
+            if (record.version !== expected) {
+                throw new GradeRefused(
+                    `grade ${record.item}/${record.arm} v${record.version} expected v${expected}`,
+                );
+            }
         }
-        appendFileSync(this.path, `${JSON.stringify(record)}\n`);
+        if (existsSync(this.path)) truncateSync(this.path, readJournal(this.path).bytes ?? 0);
+        appendFileSync(this.path, records.map((r) => `${JSON.stringify(r)}\n`).join(""));
     }
 }
 

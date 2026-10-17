@@ -10,8 +10,8 @@ import { loadPrereg } from "../src/scenario/inputs";
 import type { PairingRecord } from "../src/usersim/usersim";
 
 const dir = resolve(process.argv[2] ?? "");
-if (!existsSync(join(dir, "grades.jsonl"))) {
-    console.error("usage: bun scripts/aa-report.ts <graded run dir>");
+if (!existsSync(join(dir, "manifest.json"))) {
+    console.error("usage: bun scripts/aa-report.ts <run dir>");
     process.exit(2);
 }
 const manifest = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8"));
@@ -19,7 +19,8 @@ const { bootstrap, aa_controls } = loadPrereg(manifest.tier as Tier);
 const scenario = JSON.parse(readFileSync(join(dir, "scenario.json"), "utf8")) as Scenario;
 const fact = new Map(scenario.probes.map((p) => [p.id, p.fact ?? p.id]));
 const clusterOf = (item: string) => fact.get(item) ?? item;
-const grades = new GradeLog(join(dir, "grades.jsonl")).latest();
+const graded = join(dir, "grades.jsonl");
+const grades = existsSync(graded) ? new GradeLog(graded).latest() : [];
 const pairing = readJournal(join(dir, "pairing.jsonl")) as unknown as PairingRecord[];
 /** A percentile interval over fewer clusters than this undercovers, so it decides nothing. */
 const MIN_CLUSTERS = 5;
@@ -39,7 +40,9 @@ const report = controls.map((control) => {
         control,
         metrics,
         method: "ledger-fact cluster percentile bootstrap, 95%",
-        every_interval_covers_zero: informative.every((m) => m.covers_zero),
+        every_interval_covers_zero:
+            informative.length > 0 ? informative.every((m) => m.covers_zero) : null,
+        graded_items: grades.filter((g) => g.arm === arm || g.arm === control).length,
         intervals_missing_zero: informative.filter((m) => !m.covers_zero).map((m) => m.metric),
         expected_by_chance: 0.05 * informative.length,
         uninformative: metrics.filter((m) => m.clusters < MIN_CLUSTERS).map((m) => m.metric),

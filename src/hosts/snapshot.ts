@@ -6,10 +6,12 @@ import {
     readFileSync,
     renameSync,
     rmSync,
+    truncateSync,
     writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
 import type { Artefact, CallView, Command, Snapshot } from "../grade/artefacts";
+import { readJournal } from "../run/journal";
 
 function git(dir: string, args: string[], index: string): string {
     const env = { ...process.env, GIT_INDEX_FILE: index, GIT_CONFIG_GLOBAL: "/dev/null" };
@@ -38,6 +40,10 @@ export class SnapshotRecorder {
         private readonly callsFor: (session: string) => CallView[],
     ) {
         mkdirSync(armDir, { recursive: true });
+        // A record a kill cut short ends the log without its newline; a recorder rebuilt for the
+        // arm drops it once, so later records start lines of their own.
+        const log = join(armDir, "snapshots.jsonl");
+        if (existsSync(log)) truncateSync(log, readJournal(log).bytes ?? 0);
         this.index = join(armDir, "snapshot.index");
         this.stateFile = join(armDir, "snapshot-state.json");
         this.state = existsSync(this.stateFile)

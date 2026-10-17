@@ -52,9 +52,25 @@ so a resumed arm reopens its session with the same start tree and commands.
 The harness captures no `test-result` or `workspace-state` artefact yet;
 the graders read neither.
 
-`scripts/grade-run.ts <run dir>` grades every snapshot the journal names
-into `grades.jsonl` and judges each P7 item for each memory arm against the
-host arm, through a gateway it starts for the judge. It prints the verdict
+`scripts/grade-run.ts <run dir> [--regrade]` grades every snapshot the
+journal names (a snapshot record a kill cut short is dropped on read, and
+the recorder drops it before its next write) into `grades.jsonl` and judges each P7 item for each memory
+arm against the host arm, through a gateway it starts for the judge. It
+exits 2 before writing when the manifest's `prereg_sha256` is not the
+hash of the tier's current pre-registration, whose rules the grades
+derive from, or when `scenario.json` hashes to other than the manifest's
+`scenario_hash`, whose checks they derive from. An
+item whose latest grade already cites its snapshot is skipped as `already
+graded` when the same grader made it (each record carries `grader`, a
+digest of the grader's source files and of `scripts/grade-run.ts`; a
+grade from another implementation is made again; the digest covers those
+files, so a change confined to a module they import leaves it unchanged), so grading a run again is free of judge calls and leaves
+earlier judgments as they stand; a P7 pair's two grades land in one write, host
+side first, and the memory arm's grade means its pair stands (the host
+snapshot is shared by every memory arm's pair). A grade record a kill cut
+short at the end of the log is dropped on read and before the next write. `--regrade` grades every item
+anew as a further version. The printed summary covers the run's latest grades, and
+`graded` counts the ones this invocation added. It prints the verdict
 counts per arm and probe type, the skipped items by reason, the summed
 `P11.weighted_score` per arm, Δmem per memory arm, and the judge errors,
 removes any `grade-summary.json` in the run directory when it starts and

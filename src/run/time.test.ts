@@ -43,6 +43,16 @@ describe("time injection", () => {
     test("the launcher refuses paths and values the shell would split", () => {
         expect(() => launch("/x/sandbox.sh", ["/a b"], {}, ["true"])).toThrow(/must match/);
         expect(() => launch("/x/sandbox.sh", [], { A: "x y" }, ["true"])).toThrow(/plain word/);
+        expect(launch("/x/sandbox.sh", [], { A: "/runs/host~aa/clock" }, ["true"])).toContain(
+            "A=/runs/host~aa/clock",
+        );
+        expect(launch("/x/sandbox.sh", ["/runs/host~aa/r"], {}, ["true"])[1]).toBe(
+            "/runs/host~aa/r",
+        );
+        expect(() => launch("/x/sandbox.sh", ["/runs/~aa"], {}, ["true"])).toThrow(/must match/);
+        for (const value of ["~/clock", "a:~/b", "x=~y"]) {
+            expect(() => launch("/x/sandbox.sh", [], { A: value }, ["true"])).toThrow(/plain word/);
+        }
         expect(launch("/x/sandbox.sh", ["/k"], { A: "1" }, ["true"], ["/r"])).toEqual([
             "/x/sandbox.sh",
             "/k",

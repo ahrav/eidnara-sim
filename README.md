@@ -28,6 +28,7 @@ bun scripts/oracle-run.ts runs/S-101-pi                # failure-class oracles o
 bun scripts/pairing-check.ts runs/S-101-pi             # user-sim pairing, divergence, and rates (docs/user-sim.md)
 bun scripts/aa-report.ts runs/S-102-aa                 # A/A noise floor over a graded run (docs/user-sim.md)
 bun scripts/report.ts runs/S-101-pi runs/S-102-pi --out runs   # per-tier report and gate verdict (docs/report.md)
+bun scripts/tier.ts --tier S --out runs/tier-S          # a whole tier, capped to its wall budget (docs/tier.md)
 ```
 
 ## Layout
@@ -35,7 +36,7 @@ bun scripts/report.ts runs/S-101-pi runs/S-102-pi --out runs   # per-tier report
 | Path | Contents |
 | --- | --- |
 | `AGENTS.md`, `REVIEW.md` | agent and review guidance |
-| `docs/` | system documents (claim boundary, eval-core mapping), agent guidance, property catalog |
+| `docs/` | system documents (claim boundary, eval-core mapping), agent guidance, property catalog, and the gap log of Eidnara findings from live runs (`docs/gap-log.md`) |
 | `prereg/` | frozen per-tier pre-registrations (`sim-prereg/v1`) |
 | `corpus/` | fitted distributions, tool-output samples, error codes, repositories (see `docs/corpus.md`) |
 | `sim.config.json` | paths to the eidnara checkout, plugin builds, daemon, hosts, and Bedrock profile; `SIM_CONFIG` overrides the file |

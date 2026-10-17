@@ -96,8 +96,17 @@ export function takeLease(dir: string): Lease {
     throw new Error(`could not lease ${dir}`);
 }
 
+/** Whether a live process on this host, or any process on another host, holds the directory. */
+export function leaseHeld(dir: string): boolean {
+    const held = readLease(join(dir, "lease.json"));
+    return held !== null && (held.host !== hostname() || alive(held.pid));
+}
+
+/** Removes the lease when this process holds it; another holder's lease stays. */
 export function releaseLease(dir: string): void {
-    rmSync(join(dir, "lease.json"), { force: true });
+    const held = readLease(join(dir, "lease.json"));
+    if (held === null || (held.pid === process.pid && held.host === hostname()))
+        rmSync(join(dir, "lease.json"), { force: true });
 }
 
 /**

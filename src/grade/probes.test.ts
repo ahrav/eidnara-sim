@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readdirSync, readFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ProbeItem } from "../scenario/compile";
@@ -129,4 +129,23 @@ describe("grading harness", () => {
         expect(log.all().map((x) => x.version)).toEqual([1, 2]);
         expect(log.latest().map((x) => x.version)).toEqual([2]);
     });
+});
+
+test("a grade record a kill cut short at the end of the log is dropped on read and before the next append", () => {
+    const path = join(mkdtempSync(join(tmpdir(), "sim-grade-log-")), "grades.jsonl");
+    const record = (version: number) =>
+        ({
+            item: "q",
+            arm: "eidnara",
+            probe_type: "P1",
+            version,
+            snapshot: "s",
+            verdict: "pass",
+        }) as GradeRecord;
+    const log = new GradeLog(path);
+    log.append(record(1));
+    appendFileSync(path, '{"item":"q","arm":"eidnara","ver');
+    expect(log.all()).toHaveLength(1);
+    log.append(record(2));
+    expect(log.all().map((g) => g.version)).toEqual([1, 2]);
 });

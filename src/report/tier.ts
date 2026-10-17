@@ -13,6 +13,7 @@ import { readJournal } from "../run/journal";
 import type { Scenario } from "../scenario/compile";
 import { evaluateTier, falsificationSet, type TierInput } from "../stats/gate";
 import type { PairingRecord } from "../usersim/usersim";
+import { continuity, runConditions } from "./conditions";
 import { costPanel, judgeCost } from "./cost";
 import { falsificationPairs } from "./falsify";
 import { intrusiveness } from "./intrusive";
@@ -26,6 +27,7 @@ import {
 } from "./observe";
 import type { TierReport } from "./render";
 import { soak } from "./soak";
+import { propertyWitness } from "./witness";
 
 export function loadGraded(dir: string, prereg: Preregistration): GradedRun {
     const manifest = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8")) as {
@@ -89,6 +91,7 @@ export function loadGraded(dir: string, prereg: Preregistration): GradedRun {
         generator_version?: string;
         random_schema_version?: number;
         corpus_manifest_sha256?: string;
+        compile_inputs_sha256?: string;
         embedding_model?: string;
     };
     const hostP7 = (r: GradeRecord) => r.probe_type === "P7" && armBase(r.arm) === "host";
@@ -113,7 +116,7 @@ export function loadGraded(dir: string, prereg: Preregistration): GradedRun {
             events,
             distortions: manifest.preflight?.distortions ?? [],
             host_versions: (manifest.preflight?.hosts ?? []).map((h) => `${h.host}@${h.version}`),
-            scenario_provenance: `${sm.generator_version}/${sm.random_schema_version}/${sm.corpus_manifest_sha256}/${sm.embedding_model}`,
+            scenario_provenance: `${sm.generator_version}/${sm.random_schema_version}/${sm.corpus_manifest_sha256}/${sm.compile_inputs_sha256}/${sm.embedding_model}`,
             fault_override:
                 manifest.fault_override == null
                     ? null
@@ -122,6 +125,7 @@ export function loadGraded(dir: string, prereg: Preregistration): GradedRun {
                 existsSync(t) ? sha256Hex(readFileSync(t, "utf8")) : `missing:${t}`,
             ),
             toolchain: (manifest.preflight?.toolchain ?? []).map((t) => canonicalJson(t)),
+            grader: [...new Set(grades.map((g) => g.grader ?? "unrecorded"))].sort(),
         },
         witnesses: reports === null ? null : [...witnesses.values()],
         pairing,
@@ -190,6 +194,7 @@ export function tierReport(
     given: GradedRun[],
     claimBoundary: string,
     scale: CusumScale | undefined = aaScale(prereg, given),
+    catalog = "",
 ): TierReport {
     const runs = ordered(prereg, given);
     const arms = [...new Set(runs.flatMap((g) => g.run.arms.map((a) => a.arm)))];
@@ -263,5 +268,8 @@ export function tierReport(
         }),
         prereg,
         claim_boundary: claimBoundary,
+        witness: propertyWitness(catalog, runs),
+        conditions: runs.map(runConditions),
+        continuity: continuity(runs),
     };
 }

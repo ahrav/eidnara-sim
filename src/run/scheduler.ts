@@ -83,6 +83,7 @@ export class Scheduler {
 
     async run(): Promise<void> {
         const entries = this.o.journal.entries;
+        if (entries.some((e) => e.kind === "EndRun")) return;
         if (!entries.some((e) => e.kind === "StartRun")) {
             this.log({ kind: "StartRun", order: this.o.order });
         }

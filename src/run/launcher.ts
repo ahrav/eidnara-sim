@@ -3,8 +3,9 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 const UNSHARE_ARGS = ["--mount", "--pid", "--fork", "--mount-proc", "--propagation", "private"];
-const PLAIN_PATH = /^\/[A-Za-z0-9._@+/-]*$/;
-const PLAIN_VALUE = /^[A-Za-z0-9._@+/:,=-]*$/;
+const PLAIN_PATH = /^\/(?!.*\/~)[A-Za-z0-9._@+/~-]*$/;
+/** A tilde is plain mid-word only; at a word start or after `:` or `=` a shell would expand it. */
+const PLAIN_VALUE = /^(?!~)(?!.*[:=]~)[A-Za-z0-9._@+/:,=~-]*$/;
 
 export const shellQuote = (arg: string) => `'${arg.replaceAll("'", "'\\''")}'`;
 

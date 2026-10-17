@@ -3,9 +3,11 @@ import type { OracleCount } from "../oracle/oracles";
 import type { Recovery } from "../oracle/recovery";
 import type { Preregistration } from "../prereg/schema";
 import type { TierVerdict, ZeroEffect } from "../stats/gate";
+import { type Continuity, type RunConditions, renderConditions } from "./conditions";
 import type { ComponentCost, CostPanel } from "./cost";
 import type { Intrusiveness } from "./intrusive";
 import type { SoakVerdict } from "./soak";
+import type { PropertyWitness } from "./witness";
 
 export interface TierReport {
     tier: string;
@@ -28,6 +30,9 @@ export interface TierReport {
     aa: unknown[];
     prereg: Preregistration;
     claim_boundary: string;
+    witness: PropertyWitness[];
+    conditions: RunConditions[];
+    continuity: Continuity[];
 }
 
 const fmt = (x: number | null | undefined, digits = 2) =>
@@ -336,11 +341,13 @@ function panels(r: TierReport): string[] {
 }
 
 export function renderTier(r: TierReport): string {
+    const count = (status: string) => r.witness.filter((w) => w.status === status).length;
     const lines = [
         `# Tier ${r.tier} report`,
         "",
         `Runs: ${r.runs.join(", ")}. Arms: ${r.arms.join(", ")}.`,
         "",
+        ...renderConditions(r.conditions, r.continuity),
         `Clock distortions: ${
             r.distortions.some((d) => d.distortions.length)
                 ? r.distortions
@@ -353,6 +360,19 @@ export function renderTier(r: TierReport): string {
         ...accuracy(r),
         ...gates(r),
         ...panels(r),
+        "## Property witness",
+        "",
+        `Violated: ${
+            r.witness
+                .filter((w) => w.status === "violated")
+                .map((w) => w.id)
+                .join(", ") || "none"
+        }. Unreached: ${count("unreached")}. Without a run-level check: ${count("unchecked")} of ${r.witness.length}.`,
+        "",
+        ...table(
+            ["record", "status", "detail"],
+            r.witness.map((w) => [w.id, w.status, w.detail.replaceAll("|", "/")]),
+        ),
         "## Claim boundary",
         "",
         r.claim_boundary.trim(),

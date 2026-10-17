@@ -9,24 +9,16 @@ function statFields(pid: number): string[] | null {
     }
 }
 
-function childrenOf(pid: number): number[] {
-    let tasks: string[];
-    try {
-        tasks = readdirSync(`/proc/${pid}/task`);
-    } catch {
-        return [];
+/** Every live process by parent, from one scan of `/proc`, so a tree is found on any kernel. */
+function childrenByParent(): Map<number, number[]> {
+    const out = new Map<number, number[]>();
+    for (const entry of readdirSync("/proc")) {
+        if (!/^\d+$/.test(entry)) continue;
+        const ppid = Number(statFields(Number(entry))?.[1]);
+        if (!Number.isFinite(ppid)) continue;
+        out.set(ppid, [...(out.get(ppid) ?? []), Number(entry)]);
     }
-    return tasks.flatMap((tid) => {
-        try {
-            const listed = readFileSync(`/proc/${pid}/task/${tid}/children`, "utf8");
-            return listed
-                .split(" ")
-                .filter((c) => c.trim() !== "")
-                .map(Number);
-        } catch {
-            return [];
-        }
-    });
+    return out;
 }
 
 function ownedBy(pid: number, uid: number | undefined): boolean {
@@ -39,11 +31,12 @@ function ownedBy(pid: number, uid: number | undefined): boolean {
 
 export function ownedProcesses(rootPid: number): number[] {
     const uid = process.getuid?.();
+    const children = childrenByParent();
     const out: number[] = [];
     const queue = [rootPid];
     for (let next = queue.shift(); next !== undefined; next = queue.shift()) {
         if (ownedBy(next, uid)) out.push(next);
-        queue.push(...childrenOf(next));
+        queue.push(...(children.get(next) ?? []));
     }
     return out;
 }
@@ -70,7 +63,10 @@ function signal(pids: number[], name: NodeJS.Signals): void {
     for (const pid of pids) {
         try {
             process.kill(pid, name);
-        } catch {}
+        } catch (caught) {
+            const code = (caught as { code?: string }).code;
+            if (code !== "ESRCH" && code !== "EPERM") throw caught;
+        }
     }
 }
 
@@ -81,4 +77,8 @@ export async function stopOwnedTree(rootPid: number, graceMs: number): Promise<b
     const left = targets.filter(running);
     signal(left, "SIGKILL");
     return stopped(left, 2_000);
+}
+
+export function killOwnedTree(rootPid: number): void {
+    signal(ownedProcesses(rootPid), "SIGKILL");
 }

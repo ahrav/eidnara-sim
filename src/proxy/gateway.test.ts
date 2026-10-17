@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { appendFileSync, mkdtempSync, readFileSync } from "node:fs";
+import { connect, constants } from "node:http2";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { decodeMessages } from "../../tests/eventstream-decode";
@@ -168,6 +169,7 @@ async function start(
     const records = new RecordWriter(null);
     const injector = new FaultInjector(fault ? [fault] : [], new Rng(7), windowMs);
     const started: CallStarted[] = [];
+    const downstream: Record<string, unknown>[] = [];
     let scenario = 1_000;
     const gateway = new Gateway({
         upstream,
@@ -177,10 +179,11 @@ async function start(
         clock: { scenarioMs: () => (scenario += 10) },
         scope: () => ({ arm: "eidnara", session: "s-0001", turn: "e-000001" }),
         observe: (e) => started.push(e),
+        downstream: (e) => downstream.push(e),
     });
     await gateway.start();
     gateways.push(gateway);
-    return { gateway, records, injector, started, url: gateway.urls[0] as string };
+    return { gateway, records, injector, started, downstream, url: gateway.urls[0] as string };
 }
 
 async function hostCallJson(url: string, body: unknown, timeoutMs: number): Promise<JsonResult> {
@@ -751,5 +754,101 @@ describe("every request yields one record", () => {
         const walls = records.records.map((r) => r.wall_ms);
         expect([...walls].sort((a, b) => a - b)).toEqual(walls);
         expect(new Set(records.records.map((r) => r.scenario_ms)).size).toBe(3);
+    });
+});
+
+describe("downstream diagnostics", () => {
+    test("a host that resets its HTTP/2 stream mid-response leaves a stream_reset record", async () => {
+        const slow: Upstream = {
+            async converse() {
+                async function* events() {
+                    yield { messageStart: { role: "assistant" } };
+                    await Bun.sleep(300);
+                    yield { messageStop: { stopReason: "end_turn" } };
+                }
+                return { events: events() };
+            },
+        };
+        const { gateway, downstream } = await start(null, slow);
+        const session = connect(gateway.urls[1] as string);
+        const stream = session.request({ ":method": "POST", ":path": "/model/m/converse-stream" });
+        stream.on("error", () => undefined);
+        stream.once("data", () => stream.close(constants.NGHTTP2_CANCEL));
+        stream.end(JSON.stringify(AGENT_BODY));
+        await Bun.sleep(600);
+        session.close();
+        expect(downstream).toContainEqual(
+            expect.objectContaining({
+                kind: "stream_reset",
+                code: constants.NGHTTP2_CANCEL,
+                arm: "eidnara",
+                session: "s-0001",
+                h2_session: 0,
+            }),
+        );
+    });
+
+    test("a stream cancelled with NO_ERROR mid-response is recorded and aborts the provider call", async () => {
+        const signals: AbortSignal[] = [];
+        const slow: Upstream = {
+            async converse(_m, _b, _s, signal) {
+                signals.push(signal);
+                async function* events() {
+                    yield { messageStart: { role: "assistant" } };
+                    await Bun.sleep(300);
+                    yield { messageStop: { stopReason: "end_turn" } };
+                }
+                return { events: events() };
+            },
+        };
+        const { gateway, downstream } = await start(null, slow);
+        const session = connect(gateway.urls[1] as string);
+        const stream = session.request({ ":method": "POST", ":path": "/model/m/converse-stream" });
+        stream.on("error", () => undefined);
+        stream.once("data", () => stream.close(constants.NGHTTP2_NO_ERROR));
+        stream.end(JSON.stringify(AGENT_BODY));
+        await Bun.sleep(600);
+        session.close();
+        expect(downstream).toContainEqual(
+            expect.objectContaining({ kind: "stream_reset", code: constants.NGHTTP2_NO_ERROR }),
+        );
+        expect(signals.map((s) => s.aborted)).toEqual([true]);
+    });
+
+    test("downstream records name the gateway process that wrote them, so a resumed run's connection numbers stay distinct", async () => {
+        const slow: Upstream = {
+            async converse() {
+                async function* events() {
+                    yield { messageStart: { role: "assistant" } };
+                    await Bun.sleep(300);
+                    yield { messageStop: { stopReason: "end_turn" } };
+                }
+                return { events: events() };
+            },
+        };
+        const ids: unknown[] = [];
+        for (let i = 0; i < 2; i++) {
+            const { gateway, downstream } = await start(null, slow);
+            const session = connect(gateway.urls[1] as string);
+            const stream = session.request({
+                ":method": "POST",
+                ":path": "/model/m/converse-stream",
+            });
+            stream.on("error", () => undefined);
+            stream.once("data", () => stream.close(constants.NGHTTP2_CANCEL));
+            stream.end(JSON.stringify(AGENT_BODY));
+            await Bun.sleep(600);
+            session.close();
+            await gateway.stop();
+            const reset = downstream.find((e) => e.kind === "stream_reset") as Record<
+                string,
+                unknown
+            >;
+            expect(reset).toMatchObject({ h2_session: 0 });
+            ids.push(reset.gateway);
+            await Bun.sleep(5);
+        }
+        expect(typeof ids[0]).toBe("string");
+        expect(ids[0]).not.toBe(ids[1]);
     });
 });
