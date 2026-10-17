@@ -357,6 +357,21 @@ describe("fault composition at the proxy sink", () => {
         expect(records.records[0]?.response_sha256).toBe(sha256Hex(""));
     });
 
+    test("an injected provider error records no response text", async () => {
+        const fault = {
+            id: "p",
+            type: "provider_429",
+            strategy: "single",
+            params: {},
+        } as ProxyFault;
+        const { injector, records, url } = await start(fault);
+        injector.arm("p");
+        await hostCallJson(url, AGENT_BODY, 2_000);
+        expect(records.records[0]?.fault_ref).toBe("p");
+        expect(records.records[0]?.response_text).toBeUndefined();
+        expect(records.records[0]?.response_sha256).toBeUndefined();
+    });
+
     test("slow_stream over an upstream that throttles first records the proxy's retry", async () => {
         const fault = {
             id: "s",

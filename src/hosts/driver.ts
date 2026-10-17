@@ -339,6 +339,7 @@ export class HostDriver implements ArmDriver {
                 : this.o.turnDeadlineMs;
         if (deadline <= 0) {
             outcome.failed = `turn deadline ${this.o.turnDeadlineMs} ms spent before the prompt`;
+            outcome.undelivered = true;
             return outcome;
         }
         this.turn = e.id;
@@ -353,6 +354,7 @@ export class HostDriver implements ArmDriver {
         const tools = host.drainTools();
         this.turn = null;
         if (result.interrupted) outcome.user = { interrupted: true };
+        if (result.undelivered) outcome.undelivered = true;
         if (result.error) outcome.failed = result.error;
         if (e.probe && before === null) {
             const reason = "snapshot: git timed out before the turn";

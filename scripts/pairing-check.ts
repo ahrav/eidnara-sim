@@ -2,8 +2,10 @@ import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { CORPUS_DIR } from "../src/corpus/sources";
 import { sha256Hex } from "../src/prereg/canonical";
+import { preregistrationHash } from "../src/prereg/validate";
 import { readJournal } from "../src/run/journal";
 import type { Scenario } from "../src/scenario/compile";
+import { scenarioHash } from "../src/scenario/compile";
 import { loadPrereg } from "../src/scenario/inputs";
 import { deliveredTurns, type Label, realisedRates } from "../src/usersim/plan";
 import { pairingMismatches, readPairing, type TurnRecord } from "../src/usersim/usersim";
@@ -14,7 +16,13 @@ if (!existsSync(join(dir, "pairing.jsonl"))) {
     process.exit(2);
 }
 const manifest = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8"));
-const scenario = JSON.parse(readFileSync(join(dir, "scenario.json"), "utf8")) as Scenario;
+const scenarioJson: unknown = JSON.parse(readFileSync(join(dir, "scenario.json"), "utf8"));
+const scenario = scenarioJson as Scenario;
+// The checker certifies against the scenario and pre-registration the manifest attests.
+if (scenarioHash(scenarioJson as Record<string, unknown>) !== manifest.scenario_hash) {
+    console.error(`scenario.json does not match the manifest's scenario hash`);
+    process.exit(2);
+}
 const records = readPairing(join(dir, "pairing.jsonl"));
 const first = manifest.order[0] as string;
 const reference = () => first;
@@ -64,6 +72,26 @@ const unsent = turns
     .map((r) => `${r.arm} ${r.event}`);
 const journal = readJournal(join(dir, "journal.jsonl"));
 const prereg = loadPrereg(manifest.tier);
+if (preregistrationHash(prereg) !== manifest.prereg_sha256) {
+    console.error(`the ${manifest.tier} pre-registration differs from the manifest's`);
+    process.exit(2);
+}
+// A divergence row is a cutoff only at its compiled event, for a known arm, with digests that
+// differ.
+const arms = new Set(manifest.order as string[]);
+const invalidDivergences = records
+    .filter((r) => r.kind === "divergedAt")
+    .filter((r) => {
+        const event = script.get(r.event);
+        return (
+            !event ||
+            !arms.has(r.arm) ||
+            event.session !== r.session ||
+            event.index !== r.index ||
+            r.digest === r.reference_digest
+        );
+    })
+    .map((r) => `${r.arm} ${r.event}`);
 // Each arm's summary must equal the rates recomputed from its delivered turns.
 const ratesMismatch = (manifest.order as string[]).filter((arm) => {
     const journaled = journal.find((e) => e.kind === "UserSimRates" && e.arm === arm);
@@ -115,6 +143,7 @@ const report = {
         (arm) => journal.filter((e) => e.kind === "UserSimRates" && e.arm === arm).length !== 1,
     ),
     misplaced_rows: [...new Set(misplaced)],
+    invalid_divergences: invalidDivergences,
     missing_turns: (manifest.order as string[]).flatMap((arm) =>
         scheduled.map((e) => `${arm} ${e.id}`).filter((key) => !recorded.has(key)),
     ),
@@ -140,6 +169,7 @@ const failed =
     report.rates_mismatch.length +
     report.missing_turns.length +
     report.misplaced_rows.length +
+    report.invalid_divergences.length +
     report.incomplete.length +
     report.interrupted_turns.length;
 process.exit(failed > 0 ? 1 : 0);

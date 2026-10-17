@@ -303,9 +303,12 @@ export class Gateway {
                 sink,
                 tool,
             );
-            const relayed = RELAYED_TEXT.has(done.component)
-                ? { response_text: text ?? "", response_sha256: sha256Hex(text ?? "") }
-                : {};
+            // A provider error or timeout produced no assistant output, so no text is recorded;
+            // an injected empty reply is recorded as the empty text it was.
+            const relayed =
+                RELAYED_TEXT.has(done.component) && text !== undefined
+                    ? { response_text: text, response_sha256: sha256Hex(text) }
+                    : {};
             return { ...done, ...outcome, ...relayed };
         }
         const usage: Usage = {};

@@ -20,6 +20,8 @@ export interface TurnOutcome {
     stores?: { fault: string; store: StoreCheck }[];
     /** The user turn the user-sim sent or skipped, journaled as `UserTurn`. */
     user?: Record<string, unknown>;
+    /** The host never received the turn's text. */
+    undelivered?: boolean;
 }
 
 export interface ArmDriver {

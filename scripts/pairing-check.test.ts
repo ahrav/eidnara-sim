@@ -3,6 +3,8 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sha256Hex } from "../src/prereg/canonical";
+import { preregistrationHash } from "../src/prereg/validate";
+import { scenarioHash } from "../src/scenario/compile";
 import { loadPrereg } from "../src/scenario/inputs";
 import { type Label, realisedRates } from "../src/usersim/plan";
 
@@ -14,11 +16,20 @@ function run(
     journal: object[],
     events: object[] = [],
     pairing: object[] = [],
-): { exit: number; report: Record<string, unknown> } {
+    manifestExtra: object = {},
+): { exit: number; report: Record<string, unknown>; stderr: string } {
     dir = mkdtempSync(join(tmpdir(), "pairing-check-"));
-    const manifest = { tier: "S", order: ["a", "b"], events: events.length };
+    const scenario = { events, scenario_hash: scenarioHash({ events }) };
+    const manifest = {
+        tier: "S",
+        order: ["a", "b"],
+        events: events.length,
+        scenario_hash: scenario.scenario_hash,
+        prereg_sha256: preregistrationHash(prereg),
+        ...manifestExtra,
+    };
     writeFileSync(join(dir, "manifest.json"), JSON.stringify(manifest));
-    writeFileSync(join(dir, "scenario.json"), JSON.stringify({ events }));
+    writeFileSync(join(dir, "scenario.json"), JSON.stringify(scenario));
     writeFileSync(
         join(dir, "pairing.jsonl"),
         pairing.map((e) => `${JSON.stringify(e)}\n`).join(""),
@@ -31,7 +42,12 @@ function run(
         stdout: "pipe",
         stderr: "pipe",
     });
-    return { exit: r.exitCode, report: JSON.parse(r.stdout.toString()) };
+    const stdout = r.stdout.toString();
+    return {
+        exit: r.exitCode,
+        report: stdout.trim() === "" ? {} : JSON.parse(stdout),
+        stderr: r.stderr.toString(),
+    };
 }
 
 const prereg = loadPrereg("S");
@@ -106,11 +122,18 @@ test("the pairing check refuses a pairing row with a wrongly typed field", () =>
         source: "elsewhere",
     };
     dir = mkdtempSync(join(tmpdir(), "pairing-check-"));
+    const scenario = { events, scenario_hash: scenarioHash({ events }) };
     writeFileSync(
         join(dir, "manifest.json"),
-        JSON.stringify({ tier: "S", order: ["a"], events: 1 }),
+        JSON.stringify({
+            tier: "S",
+            order: ["a"],
+            events: 1,
+            scenario_hash: scenario.scenario_hash,
+            prereg_sha256: preregistrationHash(prereg),
+        }),
     );
-    writeFileSync(join(dir, "scenario.json"), JSON.stringify({ events }));
+    writeFileSync(join(dir, "scenario.json"), JSON.stringify(scenario));
     writeFileSync(join(dir, "pairing.jsonl"), `${JSON.stringify(bad)}\n`);
     writeFileSync(
         join(dir, "journal.jsonl"),
@@ -189,6 +212,62 @@ test("a pairing row must sit at its compiled event's session and index, once", (
     ]);
     expect(bad.report.misplaced_rows).toEqual(["a e-2", "b e-1"]);
     expect(bad.exit).toBe(1);
+});
+
+test("the pairing check refuses a scenario or pre-registration other than the manifest's", () => {
+    const other = run(complete("a", "b"), [], [], { scenario_hash: "0".repeat(64) });
+    expect(other.exit).not.toBe(0);
+    expect(other.stderr).toContain("scenario");
+    const prereg = run(complete("a", "b"), [], [], { prereg_sha256: "0".repeat(64) });
+    expect(prereg.exit).not.toBe(0);
+    expect(prereg.stderr).toContain("pre-registration");
+});
+
+test("a divergence row counts as a cutoff only at its compiled event with differing digests", () => {
+    const events = [
+        { id: "e-1", kind: "user_turn", session: "s-1", index: 0, role: "filler", text: "Go." },
+        { id: "e-2", kind: "user_turn", session: "s-1", index: 1, role: "filler", text: "On." },
+    ];
+    const turn = (arm: string, event: string, index: number, text: string) => ({
+        kind: "turn",
+        arm,
+        session: "s-1",
+        event,
+        index,
+        label: "task",
+        delivered: true,
+        digest: "d",
+        context_sha256: "c",
+        prefix_sha256: "p",
+        text_sha256: sha256Hex(text),
+        source: "script",
+    });
+    const diverged = (event: string, index: number, digest: string) => ({
+        kind: "divergedAt",
+        arm: "b",
+        session: "s-1",
+        event,
+        index,
+        digest,
+        reference_digest: "r",
+        context_sha256: "c",
+        against: "reference",
+    });
+    const rows = [
+        turn("a", "e-1", 0, "x"),
+        turn("a", "e-2", 1, "x"),
+        turn("b", "e-1", 0, "x"),
+        turn("b", "e-2", 1, "y"),
+    ];
+    const sameDigest = run(complete("a", "b"), events, [diverged("e-1", 0, "r"), ...rows]);
+    expect(sameDigest.report.invalid_divergences).toEqual(["b e-1"]);
+    expect(sameDigest.exit).toBe(1);
+    const misplaced = run(complete("a", "b"), events, [diverged("e-1", 5, "d2"), ...rows]);
+    expect(misplaced.report.invalid_divergences).toEqual(["b e-1"]);
+    expect(misplaced.exit).toBe(1);
+    const real = run(complete("a", "b"), events, [diverged("e-2", 1, "d2"), ...rows]);
+    expect(real.report.invalid_divergences).toEqual([]);
+    expect(real.exit).toBe(0);
 });
 
 test("the pairing check fails a run that never reached EndArm for an arm or EndRun", () => {

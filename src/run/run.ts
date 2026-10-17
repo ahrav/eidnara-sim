@@ -374,7 +374,8 @@ async function runArms(
     const compiled = await loadScenario(o);
     const manifest = await loadManifest(o, compiled);
     const scenario = { ...compiled, faults: manifest.fault_override ?? compiled.faults };
-    const events = scenario.events.slice(0, manifest.events) as unknown as ScenarioEvent[];
+    const allEvents = scenario.events as unknown as ScenarioEvent[];
+    const events = allEvents.slice(0, manifest.events);
     const hostRow = manifest.preflight.hosts.find((h) => h.host === o.host);
     if (!hostRow) throw new Error(`preflight lists no ${o.host} host`);
 
@@ -480,7 +481,9 @@ async function runArms(
         text: string;
         paste?: { sample_id: string; bytes: number };
     }[];
-    const pinned = pinnedTurns(events, scenario.faults);
+    // Pinning reads the whole scenario, so a shorter `--events` run labels its prefix the way
+    // a full run of the seed does.
+    const pinned = pinnedTurns(allEvents, scenario.faults);
     const tape = new Tape(join(o.out, "tape.jsonl"), manifest.tapes);
     // Both loaders have read the sources; the bytes they read must be the ones the manifest
     // attests.
@@ -627,7 +630,13 @@ async function runArms(
                     const cut = d.label !== "interrupt" || out.user?.interrupted === true;
                     const label = cut ? d.label : "task";
                     const scheduled = cut ? {} : { scheduled: "interrupt" };
-                    return { ...out, user: { ...user, ...out.user, label, ...scheduled } };
+                    // A turn the host never received counts as undelivered, whatever the
+                    // user-sim decided.
+                    const delivered = d.delivered && !out.undelivered;
+                    return {
+                        ...out,
+                        user: { ...user, ...out.user, label, delivered, ...scheduled },
+                    };
                 } finally {
                     scope.turn = null;
                 }
