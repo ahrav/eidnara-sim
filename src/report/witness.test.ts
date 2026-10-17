@@ -77,12 +77,13 @@ function run(broken: boolean): GradedRun {
         tools: [],
     };
     const scenario = { events: [], faults: [], probes: [] } as unknown as Scenario;
+    // The witness reads the run, scenario, and grades; the rest of a GradedRun is left out.
     return {
         run: { dir, tier: "S", base_wall_ms: 0, prereg, kinds: new Map(), arms: [arm] },
         scenario,
         grades: [],
         host: "pi",
-    };
+    } as unknown as GradedRun;
 }
 
 describe("property witness", () => {
