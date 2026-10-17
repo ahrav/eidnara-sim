@@ -237,6 +237,11 @@ describe("statistics against published references", () => {
         expect(() => negativeBinomial([[1], [1]], [1, 2, 100])).toThrow(RangeError);
         expect(() => mcnemarExact(1.5, 2)).toThrow(RangeError);
         expect(() => mcnemarExact(-1, 2)).toThrow(RangeError);
+        expect(() => signTest(-1, 6)).toThrow(RangeError);
+        expect(() => signTest(7, 6)).toThrow(RangeError);
+        expect(() => signTest(1.5, 6)).toThrow(RangeError);
+        expect(() => newcombe(10, -1, 2, 5)).toThrow(RangeError);
+        expect(() => newcombe(10, 0.5, 2, 5)).toThrow(RangeError);
     });
 
     test("the negative-binomial alternation has room to settle a slowly converging theta", () => {

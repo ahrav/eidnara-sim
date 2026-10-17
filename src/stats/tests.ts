@@ -1,8 +1,15 @@
 import { Rng } from "../rng";
 import { betaQuantile, binomialCdf, digamma, normalCdf, normalQuantile } from "./dist";
 
+function counts(fn: string, values: readonly number[]): void {
+    if (!values.every((v) => Number.isInteger(v) && v >= 0))
+        throw new RangeError(`${fn}: counts must be nonnegative integers`);
+}
+
 /** Two-sided exact binomial test of `x` successes in `n` at one half: the sign test. */
 export function signTest(x: number, n: number): number {
+    counts("signTest", [x, n]);
+    if (x > n) throw new RangeError("signTest: more successes than trials");
     if (n === 0) return 1;
     return Math.min(1, 2 * binomialCdf(Math.min(x, n - x), n, 0.5));
 }
@@ -18,8 +25,7 @@ export interface McNemar {
 
 /** The exact McNemar test on the discordant counts, with R `exact2x2::mcnemar.exact` limits. */
 export function mcnemarExact(b: number, c: number, alpha = 0.05): McNemar {
-    if (![b, c].every((v) => Number.isInteger(v) && v >= 0))
-        throw new RangeError("mcnemarExact: the discordant counts must be nonnegative integers");
+    counts("mcnemarExact", [b, c]);
     const n = b + c;
     const lo = b === 0 ? 0 : betaQuantile(alpha / 2, b, c + 1);
     const hi = c === 0 ? 1 : betaQuantile(1 - alpha / 2, b + 1, c);
@@ -51,6 +57,7 @@ export function newcombe(
 ): [number, number] {
     const n = a + b + c + d;
     if (n === 0) throw new RangeError("newcombe: an empty table has no difference");
+    counts("newcombe", [a, b, c, d]);
     const z = normalQuantile(1 - alpha / 2);
     const [p1, p2] = [(a + b) / n, (a + c) / n];
     const [l1, u1] = wilson(a + b, n, z);
@@ -280,8 +287,7 @@ export function negativeBinomial(x: number[][], y: number[], iterations = 200): 
         throw new RangeError("negativeBinomial: an empty design has no fit");
     if (x.length !== y.length)
         throw new RangeError("negativeBinomial: the design and the response differ in length");
-    if (!y.every((v) => Number.isInteger(v) && v >= 0))
-        throw new RangeError("negativeBinomial: the response must be nonnegative integer counts");
+    counts("negativeBinomial", y);
     let beta = new Array<number>(p).fill(0);
     let m = y.map((v) => v + 0.1);
     let theta = 1;
