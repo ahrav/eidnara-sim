@@ -14,8 +14,10 @@ v2 harness before any harness code existed.
 A verdict records MDE, n, and the pre-registration hash journaled at `StartRun`,
 and the hash matches the pre-registration file.
 
-No harness code, test, or run exists yet. The surface lands in M0
-(#1024).
+`src/prereg/validate.test.ts` constructs reports that `checkReport`
+(`src/prereg/report.ts`) refuses for a missing family, another
+pre-registration hash, or a verdict without `n` and MDE. The verdict emitter
+and the `StartRun` journal land in M7 (#1032); no run exists yet.
 
 ## Failure scenario
 

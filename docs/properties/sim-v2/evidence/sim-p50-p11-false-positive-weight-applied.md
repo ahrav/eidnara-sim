@@ -14,8 +14,10 @@ v2 harness before any harness code existed.
 The P11 harm score weights a false positive at twice a hit, and the weight is in
 the pre-registration record.
 
-No harness code, test, or run exists yet. The surface lands in M5
-(#1029).
+Every tier file carries `grading.p11_false_positive_weight: "2"`, and
+`src/prereg/validate.test.ts` shows the validator refuses its removal or a
+non-positive value by name, so the pre-registration hash binds the weight. The P11
+score formula lands in M5 (#1029); no run exists yet.
 
 Pre-registration revision 4 records `grading.p11_false_positive_weight` as 2, and M5 (#1029) scores each P11 item +1 for a hit and minus that weight for an injection in `P11.weighted_score`; a test checks both values and a changed weight.
 
@@ -33,4 +35,16 @@ P11 items.
 
 ## Investigation log
 
-No open questions.
+### Q: How does a weighted P11 score enter a binary harm family?
+- Sources examined: spec #1007 (SIM-P50: "the P11 harm score weights a false
+  positive at 2x a hit"; harm metrics as noninferiority with a 10 pp margin;
+  binary outcomes by exact McNemar with Newcombe CI); `prereg/*.json` harm
+  family (`outcome: binary`, `interval_method:
+  exact-mcnemar-newcombe-cluster-bootstrap`, metrics `P2.harm` to `P11.harm`).
+- Findings: the registered interval analyses paired 0/1 outcomes; a weighted
+  score takes more than two values. The spec gives no rule that reduces the
+  P11 score to the 0/1 event the harm gate needs, and the P11 grader (M5,
+  #1029) does not exist yet.
+- Missing evidence: the M5 grader's definition of `P11.harm` as a per-item
+  event, or a separate graded analysis for P11.
+- Conclusion: needs human input

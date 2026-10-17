@@ -32,4 +32,12 @@ A run with a model switch.
 
 ## Investigation log
 
-No open questions.
+### Q: How does a model-switch run meet the fixed-model boundary?
+- Sources examined: `docs/claim-boundary.md` ("the agent model is fixed per
+  run"); spec #1007 fault catalogue (model switch as a scheduled fault); this
+  record's exception for scheduled model switches.
+- Findings: the guarantee permits a config change by scheduled model switch; the
+  boundary states the agent model is fixed per run; no record or policy says how
+  observations across the switch enter a paired gate.
+- Missing evidence: a decision on exclusion, stratification, or boundary text.
+- Conclusion: needs human input

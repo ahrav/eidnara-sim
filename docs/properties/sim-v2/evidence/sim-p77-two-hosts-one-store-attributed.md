@@ -38,4 +38,4 @@ Two host clients attached to one daemon.
   whether the plugin reconnects after SIGKILL without a host restart.
   Unresolved, observed at L and XL (needs human input).
 - Missing evidence: a harness run that exercises the record.
-- Conclusion: unresolved, needs a harness run
+- Conclusion: needs human input

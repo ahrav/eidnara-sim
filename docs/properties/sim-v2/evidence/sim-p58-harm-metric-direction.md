@@ -31,4 +31,17 @@ Harm family results.
 
 ## Investigation log
 
-No open questions.
+### Q: Does `eidnara < host` mean harm?
+- Sources examined: spec #1007 property index, SIM-P58; `prereg/*.json`
+  `stopping_rule.cusum[0]` (kind `harm`, statistic `eidnara minus host`); spec
+  #1007 statistics section (harm metrics as noninferiority with a 10 pp margin
+  on host minus eidnara).
+- Findings: the pre-registration fixes the convention before any run: the harm
+  metrics are rates (SIM-P46), the harm CUSUM alarms when `eidnara minus host`
+  grows, and the harm gate is noninferiority against a 10 pp margin, so a
+  higher value is worse and harm is `eidnara > host`. The spec index writes
+  `eidnara < host`, which reads correctly only for a metric that scores higher
+  when memory does better.
+- Missing evidence: a correction of the spec index text, which lives in the
+  eidnara tracker and is outside this tree.
+- Conclusion: needs human input

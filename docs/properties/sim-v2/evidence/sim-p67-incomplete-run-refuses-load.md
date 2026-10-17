@@ -33,4 +33,12 @@ A run interrupted without resume.
 
 ## Investigation log
 
-No open questions.
+### Q: Does an early-stopped run load?
+- Sources examined: spec #1007 (CUSUM harm or futility stop; "a stopped tier
+  yields no pass claim"); SIM-P55; this record's guarantee.
+- Findings: the guarantee refuses an arm with fewer terminal items than
+  scheduled; an early stop leaves scheduled items unissued by design, so a
+  literal reading refuses every stopped run and its harm result.
+- Missing evidence: the journal's stop marker (M4) and the loader's treatment
+  of it.
+- Conclusion: needs human input

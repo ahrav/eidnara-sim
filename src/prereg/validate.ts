@@ -9,6 +9,7 @@ import {
     HOSTS,
     INTERVAL_METHODS,
     MARGIN_SCALES,
+    MIN_FORCED_P90_SESSIONS,
     MIN_PAIRED_RUNS_FOR_RUN_GATE,
     MULTIPLICITY,
     needsPairedRuns,
@@ -39,12 +40,34 @@ const nonNegInt: Check = (v) =>
     Number.isSafeInteger(v) && (v as number) >= 0 ? null : "expected a non-negative integer";
 const decimal: Check = (v) =>
     isCanonicalDecimal(v) ? null : "expected a canonical decimal string";
+const positiveDecimal: Check = (v) =>
+    isCanonicalDecimal(v) && Number(v) > 0 ? null : "expected a positive canonical decimal";
+const intRange =
+    (low: number, high: number): Check =>
+    (v) =>
+        Number.isSafeInteger(v) && (v as number) >= low && (v as number) <= high
+            ? null
+            : `expected ${low} to ${high}`;
 const unitRate: Check = (v) =>
     isCanonicalDecimal(v) && Number(v) > 0 && Number(v) < 1
         ? null
         : "expected a canonical decimal in (0, 1)";
 const text: Check = (v) =>
     typeof v === "string" && v.trim() !== "" ? null : "expected a non-blank string";
+const atLeast =
+    (floor: number): Check =>
+    (v) =>
+        Number.isSafeInteger(v) && (v as number) >= floor ? null : `at least ${floor}`;
+/** True when `actual` holds exactly the strings of `expected`, in any order, without repeats. */
+function sameSet(actual: unknown, expected: readonly string[]): boolean {
+    if (!Array.isArray(actual) || actual.length !== expected.length) return false;
+    const want = new Set(expected);
+    return new Set(actual).size === want.size && actual.every((x) => want.has(x as string));
+}
+const exactSet =
+    (expected: readonly string[], name: string): Check =>
+    (v) =>
+        sameSet(v, expected) ? null : `expected ${name}`;
 const list =
     (item: Check, distinct = true): Check =>
     (v) => {
@@ -67,6 +90,15 @@ interface Shape {
 }
 
 const MARGIN_SHAPE: Shape = { value: decimal, scale: oneOf(MARGIN_SCALES) };
+/** The paired interval each outcome kind takes (spec #1007, Intervals). */
+const INTERVALS_FOR: Record<string, readonly string[]> = {
+    binary: ["exact-mcnemar-newcombe-cluster-bootstrap"],
+    graded: ["paired-percentile-bootstrap", "paired-bca-bootstrap"],
+    count: ["negative-binomial-glm", "paired-sign-test"],
+    slope: ["slope-paired-bootstrap"],
+};
+/** The divergence normalisers OQ-3 fixes (#1024). */
+const NORMALISERS = ["iso-8601-timestamps", "durations", "pids", "temp-paths", "run-ids"];
 
 const FAMILY_SHAPE: Shape = {
     id: text,
@@ -96,12 +128,12 @@ const PREREG_SHAPE: Shape = {
         run: list(oneOf(ARMS)),
         order_by_seed: list(list(oneOf(ARMS)), false),
     },
-    hosts: list(oneOf(HOSTS)),
+    hosts: exactSet(HOSTS, "pi and opencode"),
     seeds: list(nonNegInt),
     scenario: {
         simulated_days: posInt,
         sessions_per_project: posInt,
-        forced_p90_sessions: posInt,
+        forced_p90_sessions: atLeast(MIN_FORCED_P90_SESSIONS),
         cue_probe_similarity: { bm25_max: unitRate, cosine_max: unitRate, embedding_model: text },
     },
     stopping_rule: {
@@ -113,7 +145,7 @@ const PREREG_SHAPE: Shape = {
             statistic: text,
             sd_source: text,
             k: decimal,
-            h: decimal,
+            h: positiveDecimal,
         }),
     },
     missingness_policy: {
@@ -124,7 +156,7 @@ const PREREG_SHAPE: Shape = {
     },
     divergence_policy: {
         hash_input: literal("normalised-last-agent-output"),
-        normalisation: list(text),
+        normalisation: exactSet(NORMALISERS, NORMALISERS.join(", ")),
         diagnostic_hash: literal("agent-visible-prefix"),
         on_divergence: literal("record-then-live"),
     },
@@ -134,7 +166,7 @@ const PREREG_SHAPE: Shape = {
         tier_wall_budget_ms: posInt,
         daemon_busy_cpu_fraction: unitRate,
     },
-    bootstrap: { replicates: posInt, seed: nonNegInt },
+    bootstrap: { replicates: intRange(40, 10000), seed: nonNegInt },
     leak_bound: { c_bytes_per_session: posInt, r2_threshold: unitRate, sample_interval_ms: posInt },
     grading: {
         first_attempt_only: literal(true),
@@ -177,7 +209,23 @@ const TIER_SECTIONS: Record<string, { tiers: readonly string[]; shape: Shape }> 
     },
 };
 
-export const HARM_METRIC_COUNT = 5;
+/** The five harm metrics the harm family is Holm-corrected over (spec #1007). */
+export const HARM_METRICS = ["P2.harm", "P3.harm", "P4.harm", "P10.harm", "P11.harm"];
+/** `pp` and `ratio` both measure a rate; every other scale is its own dimension. */
+function scaleGroup(scale: string): string {
+    return scale === "pp" || scale === "ratio" ? "rate" : scale;
+}
+/** The arm set each tier runs (spec #1007): `eidnara-kl` at S, M, L; `eidnara-cf` at L alone. */
+const TIER_ARMS: Record<string, readonly string[]> = {
+    S: ["host", "eidnara", "eidnara-kl"],
+    M: ["host", "eidnara", "eidnara-kl"],
+    L: ["host", "eidnara", "eidnara-kl", "eidnara-cf"],
+    XL: ["host", "eidnara"],
+};
+/** The A/A pairs S and M register, sorted as `arm/arm`. */
+const AA_CONTROL_PAIRS = ["eidnara/eidnara", "host/host"];
+/** M repeats its A/A pairs this many times before a pipeline false-positive rate is claimed. */
+export const AA_REPEATS_FOR_FALSE_POSITIVE_RATE = 5;
 
 function isObject(value: unknown): value is Obj {
     return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -202,7 +250,7 @@ function checkShape(
     }
     for (const [field, check] of Object.entries(shape)) {
         const at = path === "" ? field : `${path}.${field}`;
-        if (!(field in value)) errors.push(`${at}: missing`);
+        if (!Object.hasOwn(value, field)) errors.push(`${at}: missing`);
         else if (typeof check === "function") {
             const error = check(value[field]);
             if (error) errors.push(`${at}: ${error}`);
@@ -217,7 +265,7 @@ function checkShape(
         } else checkShape(value[field], check, at, errors);
     }
     for (const field of Object.keys(value)) {
-        if (!(field in shape) && !extra.includes(field)) {
+        if (!Object.hasOwn(shape, field) && !extra.includes(field)) {
             errors.push(`${path === "" ? field : `${path}.${field}`}: unknown field`);
         }
     }
@@ -253,24 +301,75 @@ function checkFamilies(p: Preregistration, errors: string[]): void {
         if (f.min_paired_runs > runs) {
             errors.push(`${at}.min_paired_runs: exceeds the ${runs} paired runs the tier produces`);
         }
+        if (scaleGroup(f.mde.scale) !== scaleGroup(f.margin.scale)) {
+            errors.push(
+                `${at}.mde.scale: ${f.mde.scale} is not comparable with the ${f.margin.scale} margin`,
+            );
+        }
+        if (f.direction === "zero-tolerance" && Number(f.margin.value) !== 0) {
+            errors.push(`${at}.margin.value: a zero-tolerance gate has a margin of 0`);
+        }
+        if (f.direction === "zero-tolerance" && f.margin.scale !== "count") {
+            errors.push(`${at}.margin.scale: a zero-tolerance gate counts events`);
+        }
+        if ((f.analysis_unit === "run") !== (f.cluster_key === "run")) {
+            errors.push(
+                f.analysis_unit === "run"
+                    ? `${at}.cluster_key: a run-level family clusters by run`
+                    : `${at}.cluster_key: an item-level family clusters by ledger_fact_id`,
+            );
+        }
+        if (f.direction === "superiority-two-sided" && Number(f.mde.value) <= 0) {
+            errors.push(`${at}.mde.value: a superiority family detects a positive effect`);
+        }
         if (
-            f.id === "harm" &&
-            (f.multiplicity !== "holm" || f.metrics.length !== HARM_METRIC_COUNT)
+            f.interval_method !== "none" &&
+            !INTERVALS_FOR[f.outcome]?.includes(f.interval_method)
         ) {
             errors.push(
-                `${at}: the harm family is Holm-corrected over exactly ${HARM_METRIC_COUNT} metrics`,
+                `${at}.interval_method: ${f.interval_method} does not analyse a ${f.outcome} outcome`,
+            );
+        }
+        if (
+            f.id === "resources" &&
+            (f.margin.scale !== "bytes" ||
+                Number(f.margin.value) !== p.leak_bound.c_bytes_per_session)
+        ) {
+            errors.push(
+                `${at}.margin: the resources margin is leak_bound.c_bytes_per_session in bytes`,
+            );
+        }
+        if (f.id === "harm" && (f.multiplicity !== "holm" || !sameSet(f.metrics, HARM_METRICS))) {
+            errors.push(
+                `${at}: the harm family is Holm-corrected over exactly ${HARM_METRICS.join(", ")}`,
             );
         }
     });
     for (const id of REQUIRED_FAMILIES) if (!seen.has(id)) errors.push(`families[${id}]: missing`);
     p.stopping_rule.cusum.forEach((c, i) => {
         if (!seen.has(c.metric)) errors.push(`stopping_rule.cusum[${i}].metric: names no family`);
+        else if (c.kind === "harm" && c.metric !== "harm") {
+            errors.push(`stopping_rule.cusum[${i}].metric: a harm CUSUM monitors the harm family`);
+        } else if (p.families.find((f) => f.id === c.metric)?.analysis_unit !== "item") {
+            errors.push(
+                `stopping_rule.cusum[${i}].metric: a CUSUM takes one value per paired item, so it monitors an item-level family`,
+            );
+        }
     });
 }
 
+function checkScenario(p: Preregistration, errors: string[]): void {
+    if (p.scenario.forced_p90_sessions > p.scenario.sessions_per_project) {
+        errors.push(
+            `scenario.forced_p90_sessions: exceeds the ${p.scenario.sessions_per_project} sessions a project holds`,
+        );
+    }
+}
+
 function checkArms(p: Preregistration, errors: string[]): void {
-    if (!(p.arms.run.includes("host") && p.arms.run.includes("eidnara"))) {
-        errors.push("arms.run: must include host and eidnara");
+    const arms = TIER_ARMS[p.tier] ?? [];
+    if (!sameSet(p.arms.run, arms)) {
+        errors.push(`arms.run: tier ${p.tier} runs exactly ${arms.join(", ")}`);
     }
     if (p.arms.order_by_seed.length !== p.seeds.length) {
         errors.push("arms.order_by_seed: needs one order per seed");
@@ -280,12 +379,38 @@ function checkArms(p: Preregistration, errors: string[]): void {
             errors.push(`aa_controls.pairs[${i}]: expected one run arm twice`);
         }
     });
-    const runSet = [...p.arms.run].sort().join(",");
+    if (p.aa_controls) {
+        const pairs = p.aa_controls.pairs.map((pair) => pair.join("/")).sort();
+        if (!sameSet(pairs, AA_CONTROL_PAIRS)) {
+            errors.push("aa_controls.pairs: expected host/host and eidnara/eidnara");
+        }
+        if (p.tier === "M" && p.aa_controls.repeats < AA_REPEATS_FOR_FALSE_POSITIVE_RATE) {
+            errors.push(
+                `aa_controls.repeats: M repeats each A/A pair at least ${AA_REPEATS_FOR_FALSE_POSITIVE_RATE} times`,
+            );
+        }
+    }
     p.arms.order_by_seed.forEach((order, i) => {
-        if ([...order].sort().join(",") !== runSet) {
+        if (!sameSet(order, p.arms.run)) {
             errors.push(`arms.order_by_seed[${i}]: is not a permutation of arms.run`);
         }
     });
+    const orders = p.arms.order_by_seed.map((order) => order.join(","));
+    if (new Set(orders).size !== orders.length) {
+        errors.push("arms.order_by_seed: seeds share an arm order");
+    }
+    const firsts = [...new Set(p.arms.order_by_seed.map((order) => order[0]))];
+    if (p.seeds.length >= p.arms.run.length && !sameSet(firsts, p.arms.run)) {
+        errors.push("arms.order_by_seed: every arm runs first for exactly one seed");
+    }
+    if (p.seeds.length === p.arms.run.length) {
+        const square = p.arms.run.every((_, position) =>
+            sameSet([...new Set(p.arms.order_by_seed.map((order) => order[position]))], p.arms.run),
+        );
+        if (!square) {
+            errors.push("arms.order_by_seed: every arm runs once in every position");
+        }
+    }
 }
 
 function checkGrading(p: Preregistration, errors: string[]): void {
@@ -308,13 +433,17 @@ export function validatePreregistration(value: unknown): string[] {
     checkShape(value, PREREG_SHAPE, "", errors, Object.keys(TIER_SECTIONS));
     for (const [field, { tiers, shape }] of Object.entries(TIER_SECTIONS)) {
         const required = tiers.includes(value.tier as string);
-        if (required && !(field in value)) errors.push(`${field}: missing`);
+        if (required && !Object.hasOwn(value, field)) errors.push(`${field}: missing`);
         else if (required) checkShape(value[field], shape, field, errors);
-        else if (field in value) errors.push(`${field}: allowed only at tier ${tiers.join(", ")}`);
+        else if (Object.hasOwn(value, field)) {
+            errors.push(`${field}: allowed only at tier ${tiers.join(", ")}`);
+        }
     }
     if (errors.length > 0) return errors;
+    // SAFETY: This cast requires value to satisfy every Preregistration invariant.
     const p = value as unknown as Preregistration;
     checkFamilies(p, errors);
+    checkScenario(p, errors);
     checkArms(p, errors);
     checkGrading(p, errors);
     return errors;

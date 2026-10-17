@@ -66,6 +66,10 @@ export interface Margin {
  */
 export interface Family {
     id: string;
+    /**
+     * A gate family passes when every metric passes at `alpha` under `multiplicity`; one failing
+     * metric fails the gate and is named in the verdict.
+     */
     metrics: string[];
     outcome: (typeof OUTCOMES)[number];
     treatment_unit: "run";
@@ -100,7 +104,11 @@ export interface Preregistration {
     tier: Tier;
     revision: number;
     frozen: true;
-    /** `order_by_seed[i]` is the arm execution order for `seeds[i]`. */
+    /**
+     * Every gate contrasts `default` against `host` (D1); `eidnara-kl` and `eidnara-cf` are
+     * comparison arms with no registered gate. `order_by_seed[i]` is the arm execution order for
+     * `seeds[i]`.
+     */
     arms: { default: "eidnara"; run: string[]; order_by_seed: string[][] };
     hosts: string[];
     seeds: number[];
@@ -166,6 +174,8 @@ export interface Preregistration {
 
 /** A run-level gate with a paired claim needs six paired runs (SIM-P56); a bound gate needs none. */
 export const MIN_PAIRED_RUNS_FOR_RUN_GATE = 6;
+/** A compiled scenario holds at least three sessions in the p90 request-count regime (SIM-P09). */
+export const MIN_FORCED_P90_SESSIONS = 3;
 
 export function needsPairedRuns(f: Family): boolean {
     return (

@@ -5,8 +5,10 @@ Scope: the v2 live-slice harness in this tree, specified by
 follow `docs/properties/METHOD.md`. The spec names its full catalog at
 `research/sim-design/property-catalog-sim-v2.md` (2026-10-12 revision); that
 file is unavailable, so these records are reconstructed from the condensed
-index in the spec body. Every record is PROPOSED: `Exercised: not yet` and
-`Confidence: low`, because no harness surface exists to verify against.
+index in the spec body. Every record is PROPOSED at `Confidence: low`. Four
+records (`SIM-P50`, `SIM-P52`, `SIM-P53`, `SIM-P56`) are `Exercised: partial`
+through the M0 validator and report check in `src/prereg/`; every other record
+is `Exercised: not yet`, because no harness surface exists to verify against.
 
 Stable ids: `SIM-P01` to `SIM-P77` carry the spec's proposed records, and
 `SIM-L01` to `SIM-L03` carry the liveness bounds OQ-6 asked for and M0
@@ -14,11 +16,13 @@ pre-registers. Each id is the slug prefix and opens the `Guarantee:` line.
 
 ## Reachability classes
 
-- `default-production`: a default tier run with no scheduled faults reaches the
-  surface.
-- `explicit-config-only`: the surface runs only when a tier schedules faults,
-  the counterfactual arm, or two host clients on one daemon.
-- `test-only`: no record uses it; every surface runs in real tier runs.
+- `default-production`: a default tier run reaches the surface. Every campaign
+  schedules one harness kill while an item is issued (SIM-P64), so the journal
+  and resume records that need an interrupt are reached by default.
+- `explicit-config-only`: the surface runs only when a tier schedules provider
+  or infrastructure faults, the counterfactual arm, or two host clients on one
+  daemon.
+- `test-only`: a surface only a test constructs; no record carries this class.
 
 `scripts/check-catalog.ts` checks the record schema and field order against
 `METHOD.md`, the index against the records, and one evidence file per record.
@@ -261,7 +265,11 @@ PROPOSED: reconstructed from the condensed index in spec #1007; no
 implementation exists to verify against, and a default tier run reaches it.
 Existing check: none
 Impact: A probe tests a fact that was never conveyed and is scored as a miss.
-Open questions: None.
+Open questions:
+- A conveyance turn that ends `failed` or times out still reaches `EndTurn`, so
+  the ordering check passes while the fact was never delivered. Whether the
+  dependent probe is issued and scored, excluded with a reason, or refused is a
+  design decision for M4 (needs human input).
 
 ### sim-p07-probe-text-never-announces-probe
 
@@ -411,6 +419,10 @@ Open questions:
 - OQ-2: busy-set membership for daemon-internal work with no proxy call. The M4
   ticket resolves it as daemon CPU time above a pre-registered threshold; the
   threshold value is unresolved, needs the M4 sampler data.
+- The guarantee forbids any `scenario_ms` change inside a busy interval while
+  the check allows wall-clock progression, and the spec's hybrid clock runs at
+  wall rate while busy. Which reading the oracle enforces is a design decision
+  for M4 (needs human input).
 
 ### sim-p13-background-job-holds-clock
 
@@ -548,8 +560,7 @@ Required faults and enabling state: a scheduled laptop-sleep fault.
 Confidence: low -
 [evidence](evidence/sim-p18-sleep-fault-is-event-free-jump.md). PROPOSED:
 reconstructed from the condensed index in spec #1007; no implementation exists
-to verify against, and reached only when the tier schedules faults or the
-counterfactual arm.
+to verify against, and reached only when the tier schedules a sleep fault.
 Existing check: none
 Impact: The sleep fault tests a different condition than the one scheduled.
 Open questions: None.
@@ -729,14 +740,20 @@ rate.
 Check: `always` - for the noise-floor pair, assert equal `scenario_hash` and arm
 config, different user-sim seeds, and a reported disagreement rate.
 Fault/timing angle: none.
-Required faults and enabling state: an A/A run per tier.
+Required faults and enabling state: an A/A run at S or M, the tiers whose
+pre-registration carries `aa_controls` (host/host and eidnara/eidnara; M repeats
+five times); L and XL register no A/A pairs, and L standardises its CUSUM on
+M's.
 Confidence: low -
 [evidence](evidence/sim-p26-user-sim-noise-floor-run-is-paired.md). PROPOSED:
 reconstructed from the condensed index in spec #1007; no implementation exists
-to verify against, and a default tier run reaches it.
+to verify against, and a default S or M run reaches it.
 Existing check: none
 Impact: The user-sim's own noise is read as a treatment effect.
-Open questions: None.
+Open questions:
+- The spec places A/A controls at S and M only, and L's harm CUSUM takes its
+  spread from M's pairs. Whether L needs its own noise-floor pair before its
+  gates are read is a design decision (needs human input).
 
 ## Capture proxy and faults
 
@@ -823,7 +840,7 @@ Required faults and enabling state: a fault schedule with windows that close.
 Confidence: low - [evidence](evidence/sim-p30-no-unscheduled-fault.md).
 PROPOSED: reconstructed from the condensed index in spec #1007; no
 implementation exists to verify against, and reached only when the tier
-schedules faults or the counterfactual arm.
+schedules faults.
 Existing check: none
 Impact: Faults the schedule did not plan corrupt both arms' metrics.
 Open questions: None.
@@ -849,7 +866,7 @@ Confidence: low -
 [evidence](evidence/sim-p31-fault-counts-only-when-observed-at-target.md).
 PROPOSED: reconstructed from the condensed index in spec #1007; no
 implementation exists to verify against, and reached only when the tier
-schedules faults or the counterfactual arm.
+schedules faults.
 Existing check: none
 Impact: A fault that never reached its target is counted as survived.
 Open questions:
@@ -875,7 +892,7 @@ Confidence: low -
 [evidence](evidence/sim-p32-missed-fault-excludes-run-from-fault-metrics.md).
 PROPOSED: reconstructed from the condensed index in spec #1007; no
 implementation exists to verify against, and reached only when the tier
-schedules faults or the counterfactual arm.
+schedules faults.
 Existing check: none
 Impact: Recovery is reported for faults that never happened.
 Open questions: None.
@@ -895,8 +912,7 @@ Required faults and enabling state: a fault keyed on a component event that does
 not occur in its window.
 Confidence: low - [evidence](evidence/sim-p33-missed-fault-occurs.md). PROPOSED:
 reconstructed from the condensed index in spec #1007; no implementation exists
-to verify against, and reached only when the tier schedules faults or the
-counterfactual arm.
+to verify against, and reached only when the tier schedules faults.
 Existing check: none
 Impact: The exclusion path of SIM-P32 is never exercised.
 Open questions: None.
@@ -920,7 +936,7 @@ L, and XL.
 Confidence: low - [evidence](evidence/sim-p34-each-fault-kind-triggers.md).
 PROPOSED: reconstructed from the condensed index in spec #1007; no
 implementation exists to verify against, and reached only when the tier
-schedules faults or the counterfactual arm.
+schedules faults.
 Existing check: none
 Impact: A fault kind's recovery path is never tested.
 Open questions:
@@ -1155,7 +1171,11 @@ test; the journal entry and the verdict naming the sample land with M7.
 Existing check: `src/grade/judge.test.ts` (human-check sample) covers the count
 and the seeded reproducibility; status unaudited
 Impact: Judge calibration drifts with no human anchor.
-Open questions: None.
+Open questions:
+- The guarantee requires the sample to be journaled as `human_check_pending`
+  before the verdict and names no completion. Whether the tier verdict waits for
+  the human labels and their comparison result, or stays provisional while
+  checks are pending, is a design decision for M5 (needs human input).
 
 ### sim-p45-issued-items-stay-in-denominator
 
@@ -1269,8 +1289,9 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M5 (#1029); nothing constructs
-it yet
+Exercised: partial - `src/prereg/validate.test.ts` removes
+`grading.p11_false_positive_weight` from each tier file and the validator
+refuses it by name; the P11 score formula lands in M5 (#1029)
 Guarantee: SIM-P50: The P11 harm score weights a false positive at twice a hit,
 and the weight is in the pre-registration record.
 Check: `always` - assert the P11 score formula uses the pre-registered weight of
@@ -1279,11 +1300,20 @@ Fault/timing angle: none.
 Required faults and enabling state: P11 items.
 Confidence: low -
 [evidence](evidence/sim-p50-p11-false-positive-weight-applied.md). PROPOSED:
-reconstructed from the condensed index in spec #1007; no implementation exists
+reconstructed from the condensed index in spec #1007; only the validator exists
 to verify against, and a default tier run reaches it.
-Existing check: none
+Existing check: `src/prereg/validate.test.ts`: the validator requires
+`grading.p11_false_positive_weight` to be a positive decimal in every tier file
+(each carries `"2"`) and refuses its removal or a non-positive value by name; the score formula has no check; status
+unaudited
 Impact: Wrong-project injection is under-penalised.
-Open questions: None.
+Open questions:
+- The P11 score weights a false positive at twice a hit, so `P11.harm` is not a
+  0/1 outcome, while the harm family registers `outcome: binary` with the exact
+  McNemar/Newcombe interval over its five metrics. Whether `P11.harm` enters the
+  harm gate as the binary event "any false positive" with the weight applied
+  only to the descriptive score, or needs its own graded analysis, is a design
+  decision for M5 and M7 (needs human input).
 
 ## Metrics and gates
 
@@ -1313,8 +1343,9 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M0 (#1024); nothing constructs
-it yet
+Exercised: partial - `src/prereg/validate.test.ts` constructs reports that
+`checkReport` refuses for a missing family, another hash, or a verdict without
+`n` and MDE; the verdict emitter and the `StartRun` journal land in M7 (#1032)
 Guarantee: SIM-P52: A verdict records MDE, n, and the pre-registration hash
 journaled at `StartRun`, and the hash matches the pre-registration file.
 Check: `always` - for each verdict, assert MDE and n are present and the hash
@@ -1324,8 +1355,8 @@ Fault/timing angle: none.
 Required faults and enabling state: a tier report and its pre-registration file.
 Confidence: low -
 [evidence](evidence/sim-p52-gate-carries-preregistered-mde.md). PROPOSED:
-reconstructed from the condensed index in spec #1007; no implementation exists
-to verify against, and a default tier run reaches it.
+reconstructed from the condensed index in spec #1007; only the report check
+exists to verify against, and a default tier run reaches it.
 Existing check: `src/prereg/validate.test.ts`, report check: a report missing a
 family, under another pre-registration hash, or with a verdict the family's
 claim does not allow is refused by name; status unaudited
@@ -1337,28 +1368,30 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M0 (#1024); nothing constructs
-it yet
+Exercised: partial - `src/prereg/validate.test.ts` constructs a report carrying
+the token `parity`, which `checkReport` refuses; the report emitter lands in M7
+(#1032)
 Guarantee: SIM-P53: The verdict vocabulary is better, worse,
 no-difference-above-X-pp-detectable-at-n, failed-gate(metric, items),
-inconclusive, insufficient-runs, and descriptive, and the string `parity` is
-absent from every report.
+inconclusive, insufficient-runs, passed-gate, and descriptive, and the string
+`parity` is absent from every report.
 Check: `always(!X)` - X is the token `parity` in any report; a forbidden state
 scanned over the whole report, so `always(!X)`.
 Fault/timing angle: none.
 Required faults and enabling state: any tier report.
 Confidence: low - [evidence](evidence/sim-p53-parity-never-emitted.md).
-PROPOSED: reconstructed from the condensed index in spec #1007; no
-implementation exists to verify against, and a default tier run reaches it.
+PROPOSED: reconstructed from the condensed index in spec #1007; only the report
+check exists to verify against, and a default tier run reaches it.
 Existing check: `src/prereg/validate.test.ts`, report check: the token `parity`
 anywhere in a report, in any case, is refused; status unaudited
 Impact: A null at small n is read as equivalence.
 Open questions:
-- The verdict vocabulary adds three kinds to the spec index's four:
+- The verdict vocabulary adds four kinds to the spec index's four:
   `inconclusive` from the M7 statistics ticket (#1032), `insufficient-runs` from
-  SIM-P56, and `descriptive` for a family the pre-registration does not gate.
-  Whether the spec index should list them is a design decision (needs human
-  input).
+  SIM-P56, `passed-gate` for a bound gate every run satisfied or a margin gate
+  whose interval stays inside its margin, and `descriptive` for a family the
+  pre-registration does not gate. Whether the spec index should list them is a
+  design decision (needs human input).
 
 ### sim-p54-pairing-by-item-identity
 
@@ -1407,8 +1440,10 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M7 (#1032); nothing constructs
-it yet
+Exercised: partial - `src/prereg/validate.test.ts` constructs a run-level gate
+below six paired runs, which the validator refuses, and a report verdict below
+the family's floor, which `checkReport` refuses unless it reads
+`insufficient-runs`; the verdict emitter lands in M7 (#1032)
 Guarantee: SIM-P56: A dependability verdict on failed turns or hangs is emitted
 only with at least six paired runs; below that the verdict is
 `insufficient-runs(k)`.
@@ -1421,8 +1456,9 @@ Fault/timing angle: none.
 Required faults and enabling state: a tier with fewer than six paired runs.
 Confidence: low -
 [evidence](evidence/sim-p56-failed-turn-claim-needs-six-paired-runs.md).
-PROPOSED: reconstructed from the condensed index in spec #1007; no
-implementation exists to verify against, and a default tier run reaches it.
+PROPOSED: reconstructed from the condensed index in spec #1007; only the
+validator and report check exist to verify against, and a default tier run
+reaches it.
 Existing check: `src/prereg/validate.test.ts`: the validator refuses a run-level
 gate with a paired interval below six paired runs, and the report check refuses
 any verdict but `insufficient-runs` below the family's floor; status unaudited
@@ -1458,7 +1494,15 @@ reconstructed from the condensed index in spec #1007; no implementation exists
 to verify against, and a default tier run reaches it.
 Existing check: none
 Impact: The observed linear RSS growth is missed or misreported.
-Open questions: None.
+Open questions:
+- The spec's soak verdict adds a return-to-baseline check to the slope, R
+  squared, and bound, and `leak_bound` pre-registers `c`, `r2_threshold`, and
+  the sample interval only; the recovery tolerance is unregistered, so it is
+  chosen at M7 unless a field is added (needs human input).
+- The spec samples RSS, heap, external, and store bytes; the resources family
+  gates RSS, heap, and store growth and registers no external-memory metric.
+  Whether external growth is gated or sampled only is a design decision (needs
+  human input).
 
 ### sim-p58-harm-metric-direction
 
@@ -1479,7 +1523,15 @@ PROPOSED: reconstructed from the condensed index in spec #1007; no
 implementation exists to verify against, and a default tier run reaches it.
 Existing check: none
 Impact: Harm is reported in the wrong direction or not at all.
-Open questions: None.
+Open questions:
+- The comparator's sign. The frozen pre-registration fixes the convention: the
+  harm metrics are rates (SIM-P46 names them "harm rates"), the harm CUSUM
+  alarms when the paired difference `eidnara minus host` grows, and the harm
+  gate is noninferiority against a 10 pp margin, so a higher value is worse and
+  harm is `eidnara > host`. The spec index (#1007, SIM-P58) writes `eidnara <
+  host`, which reads correctly only for a metric that scores higher when memory
+  does better. The record keeps the spec's wording (METHOD rule 3); the spec
+  text needs a correction in the eidnara tracker (needs human input).
 
 ### sim-p59-internal-string-scan-on-user-visible-only
 
@@ -1604,7 +1656,7 @@ per campaign.
 Check: `sometimes` - observe at least one interrupt with an issued item; only
 then does SIM-P63 run.
 Fault/timing angle: none.
-Required faults and enabling state: a scheduled harness kill.
+Required faults and enabling state: the harness kill every campaign schedules.
 Confidence: low - [evidence](evidence/sim-p64-interrupt-mid-turn-exercised.md).
 PROPOSED: reconstructed from the condensed index in spec #1007; no
 implementation exists to verify against, and a default tier run reaches it.
@@ -1671,7 +1723,12 @@ PROPOSED: reconstructed from the condensed index in spec #1007; no
 implementation exists to verify against, and a default tier run reaches it.
 Existing check: none
 Impact: A partial run is analysed as complete.
-Open questions: None.
+Open questions:
+- A CUSUM harm or futility stop ends a tier before every scheduled item is
+  issued, and SIM-P55 then requires only the issued items to reach a terminal
+  state. Whether `LoadRun` accepts a journaled early stop with its stop and done
+  markers as complete, so the stopped tier's result can be analysed, is a design
+  decision for M4 and M7 (needs human input).
 
 ### sim-p68-clock-restored-on-resume
 
@@ -1712,8 +1769,7 @@ Required faults and enabling state: an L run with the `eidnara-cf` arm.
 Confidence: low -
 [evidence](evidence/sim-p69-cf-deletion-recorded-with-identity.md). PROPOSED:
 reconstructed from the condensed index in spec #1007; no implementation exists
-to verify against, and reached only when the tier schedules faults or the
-counterfactual arm.
+to verify against, and reached only when the tier runs the counterfactual arm.
 Existing check: none
 Impact: Attribution cannot name the deleted object.
 Open questions:
@@ -1736,8 +1792,8 @@ Fault/timing angle: the store may reject or defer the deletion.
 Required faults and enabling state: a deletion against a live daemon.
 Confidence: low - [evidence](evidence/sim-p70-cf-deletion-verified.md).
 PROPOSED: reconstructed from the condensed index in spec #1007; no
-implementation exists to verify against, and reached only when the tier
-schedules faults or the counterfactual arm.
+implementation exists to verify against, and reached only when the tier runs the
+counterfactual arm.
 Existing check: none
 Impact: A flip is attributed to a deletion that did not happen.
 Open questions: None.
@@ -1758,8 +1814,8 @@ Required faults and enabling state: an L run with both arms.
 Confidence: low -
 [evidence](evidence/sim-p71-cf-arm-paired-to-eidnara-until-deletion.md).
 PROPOSED: reconstructed from the condensed index in spec #1007; no
-implementation exists to verify against, and reached only when the tier
-schedules faults or the counterfactual arm.
+implementation exists to verify against, and reached only when the tier runs the
+counterfactual arm.
 Existing check: none
 Impact: The counterfactual differs from the treatment for reasons other than the
 deletion.
@@ -1782,8 +1838,7 @@ Required faults and enabling state: targets with one and with several deletions.
 Confidence: low -
 [evidence](evidence/sim-p72-cf-attribution-is-single-object.md). PROPOSED:
 reconstructed from the condensed index in spec #1007; no implementation exists
-to verify against, and reached only when the tier schedules faults or the
-counterfactual arm.
+to verify against, and reached only when the tier runs the counterfactual arm.
 Existing check: none
 Impact: A flip is attributed to the wrong object.
 Open questions: None.
@@ -1804,8 +1859,8 @@ Fault/timing angle: none.
 Required faults and enabling state: an L scenario compile.
 Confidence: low - [evidence](evidence/sim-p73-cf-sample-is-preregistered.md).
 PROPOSED: reconstructed from the condensed index in spec #1007; no
-implementation exists to verify against, and reached only when the tier
-schedules faults or the counterfactual arm.
+implementation exists to verify against, and reached only when the tier runs the
+counterfactual arm.
 Existing check: none
 Impact: The counterfactual sample is chosen after seeing outcomes.
 Open questions: None.
@@ -1825,8 +1880,7 @@ Fault/timing angle: none.
 Required faults and enabling state: an L run with sampled P1 items.
 Confidence: low - [evidence](evidence/sim-p74-cf-flip-occurs.md). PROPOSED:
 reconstructed from the condensed index in spec #1007; no implementation exists
-to verify against, and reached only when the tier schedules faults or the
-counterfactual arm.
+to verify against, and reached only when the tier runs the counterfactual arm.
 Existing check: none
 Impact: Memory attribution is never demonstrated.
 Open questions: None.
@@ -1852,7 +1906,11 @@ PROPOSED: reconstructed from the condensed index in spec #1007; no
 implementation exists to verify against, and a default tier run reaches it.
 Existing check: none
 Impact: Arms differ in more than the treatment.
-Open questions: None.
+Open questions:
+- The scheduled model-switch fault lets an arm's agent model change mid-run,
+  while `docs/claim-boundary.md` fixes the agent model per run. Whether a run
+  with a model switch is excluded from paired gates, forms its own stratum, or
+  qualifies the boundary is a design decision (needs human input).
 
 ### sim-p76-kl-arm-has-host-compaction-on
 
@@ -1892,8 +1950,7 @@ Required faults and enabling state: two host clients attached to one daemon.
 Confidence: low -
 [evidence](evidence/sim-p77-two-hosts-one-store-attributed.md). PROPOSED:
 reconstructed from the condensed index in spec #1007; no implementation exists
-to verify against, and reached only when the tier schedules faults or the
-counterfactual arm.
+to verify against, and reached only when two host clients attach to one daemon.
 Existing check: none
 Impact: Effects of one client are attributed to the other.
 Open questions:
@@ -1991,7 +2048,7 @@ Open questions:
   feed P13; P43 and P44 gate P7.
 - Gates: SIM-P51 to P58 consume the pre-registration; P52 and P53 are checked
   at M0 by `checkReport`; P56 is also enforced by the pre-registration
-  validator.
+  validator, and P50's weight is required by it.
 - Journal: SIM-P60 to P68 share the sequence authority; P66 regenerates every
   observable from it.
 - Counterfactual: SIM-P69 to P74 share the deletion record; P73 is fixed at

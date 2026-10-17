@@ -35,7 +35,10 @@ boundary, and every report carries this document's version,
 3. **Scheduler-order independence.** Arms run sequentially per seed under one
    scheduler, with order alternating across seeds. A result holds for that
    order; the harness makes no claim that a different interleaving gives the
-   same result.
+   same result. L's load-stress profile (`load_stress` in `prereg/L.json`) runs
+   the arms concurrently with start skew recorded; its result holds for that
+   overlap under the dependability family's margins, and makes no claim about
+   provider or scheduler interference beyond what the skew records.
 4. **Hosts other than Pi and OpenCode.** Results hold for the pinned versions
    of those two hosts recorded in each run manifest.
 

@@ -14,8 +14,10 @@ v2 harness before any harness code existed.
 A dependability verdict on failed turns or hangs is emitted only with at least
 six paired runs; below that the verdict is `insufficient-runs(k)`.
 
-No harness code, test, or run exists yet. The surface lands in M7
-(#1032).
+`src/prereg/validate.test.ts` constructs a run-level gate below six paired
+runs, which `validatePreregistration` refuses, and a report verdict below the
+family's floor, which `checkReport` refuses unless it is `insufficient-runs`.
+The verdict emitter lands in M7 (#1032); no run exists yet.
 
 ## Failure scenario
 
@@ -41,4 +43,4 @@ A tier with fewer than six paired runs.
   gate at S fits the spec's "S and M run-level numbers are descriptive" is a
   design decision (needs human input).
 - Missing evidence: a harness run that exercises the record.
-- Conclusion: unresolved, needs a harness run
+- Conclusion: needs human input

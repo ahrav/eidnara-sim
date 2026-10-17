@@ -90,6 +90,175 @@ describe("catalog checker", () => {
         );
     });
 
+    test("refuses an index row whose displayed id is not the slug's prefix", () => {
+        const path = copy();
+        edit(path, "| SIM-P01 | [sim-p01-", "| SIM-P77 | [sim-p01-");
+        expect(checkCatalog(path, METHOD, IDS)).toContain(
+            "catalog: index row SIM-P77 links sim-p01-scenario-compile-is-deterministic",
+        );
+    });
+
+    test("refuses a blank Open questions field", () => {
+        const path = copy();
+        edit(path, "Open questions: None.", "Open questions:");
+        expect(checkCatalog(path, METHOD, IDS)).toContain(
+            "sim-p01-scenario-compile-is-deterministic: Open questions is neither None. nor a list",
+        );
+    });
+
+    test("refuses an index row whose type, check, or reachability differs from its record", () => {
+        const path = copy();
+        edit(
+            path,
+            "| SIM-P01 | [sim-p01-scenario-compile-is-deterministic](#sim-p01-scenario-compile-is-deterministic) | safety | `always` | default-production |",
+            "| SIM-P01 | [sim-p01-scenario-compile-is-deterministic](#sim-p01-scenario-compile-is-deterministic) | liveness | `unreachable` | test-only |",
+        );
+        expect(checkCatalog(path, METHOD, IDS)).toContain(
+            "catalog: index row SIM-P01 reads liveness, `unreachable`, test-only; the record reads safety, `always`, default-production",
+        );
+    });
+
+    test("refuses an index row whose link is malformed", () => {
+        const path = copy();
+        edit(
+            path,
+            "| SIM-P02 | [sim-p02-",
+            "| SIM-P99 | [sim-p99-extra](#sim-p99-other) | safety | `always` | test-only | M0 |\n| SIM-P02 | [sim-p02-",
+        );
+        expect(checkCatalog(path, METHOD, IDS)).toContain(
+            "catalog: index row malformed: | SIM-P99 | [sim-p99-extra](#sim-p99-other) | safety | `always` | test-only | M0 |",
+        );
+    });
+
+    test("refuses a blank free-text field", () => {
+        const path = copy();
+        edit(path, /Impact: [^\n]*\n(?:[^\n]+\n)*?(?=Open questions:)/, "Impact:\n");
+        expect(checkCatalog(path, METHOD, IDS)).toContain(
+            "sim-p01-scenario-compile-is-deterministic: Impact is blank",
+        );
+    });
+
+    test("refuses an empty open-question list entry", () => {
+        const path = copy();
+        edit(path, "Open questions: None.", "Open questions:\n- ");
+        expect(checkCatalog(path, METHOD, IDS)).toContain(
+            "sim-p01-scenario-compile-is-deterministic: Open questions has an empty entry",
+        );
+    });
+
+    test("refuses a Check with no condition after its semantics, an undeclared field line, and an empty evidence section", () => {
+        const path = copy();
+        edit(
+            path,
+            /Check: `always` - [^\n]*\n(?:[^\n]+\n)*?(?=Fault\/timing angle:)/,
+            "Check: `always`\n",
+        );
+        edit(path, "Impact: Arms of one seed", "Impact: Arms of one seed\nID: extra");
+        const evidence = join(dir, "evidence/sim-p01-scenario-compile-is-deterministic.md");
+        writeFileSync(
+            evidence,
+            "# sim-p01-scenario-compile-is-deterministic\n\n## Discovery trigger\n\n## Evidence trail\n\nx\n\n## Failure scenario\n\nx\n\n## Timing windows and dependencies\n\nx\n\n## What a test must construct\n\nx\n\n## Investigation log\n\nx\n",
+        );
+        const errors = checkCatalog(path, METHOD, IDS);
+        expect(errors).toContain(
+            "sim-p01-scenario-compile-is-deterministic: Check states no condition after its semantics",
+        );
+        expect(errors).toContain("sim-p01-scenario-compile-is-deterministic: undeclared field ID");
+        expect(errors).toContain(
+            "sim-p01-scenario-compile-is-deterministic: evidence section ## Discovery trigger is empty",
+        );
+    });
+
+    test("refuses a pre-field line, a bare Exercised state, a compact index row, and fenced headings", () => {
+        const path = copy();
+        edit(
+            path,
+            "### sim-p02-paired-arms-share-event-prefix\n",
+            "### sim-p02-paired-arms-share-event-prefix\nStray: line\n",
+        );
+        edit(
+            path,
+            /Exercised: not yet - [^\n]*\n(?:[^\n]+\n)*?(?=Guarantee: SIM-P03)/,
+            "Exercised: not yet -\n",
+        );
+        edit(
+            path,
+            "| SIM-P04 | [sim-p04-",
+            "|SIM-P99|[phantom](#phantom)|safety|`always`|default-production|M0|\n| SIM-P04 | [sim-p04-",
+        );
+        writeFileSync(
+            join(dir, "evidence/sim-p05-scheduled-events-identical-across-arms.md"),
+            "# sim-p05-scheduled-events-identical-across-arms\n\n ````md\n```\n## Discovery trigger\nx\n## Evidence trail\nx\n## Failure scenario\nx\n## Timing windows and dependencies\nx\n## What a test must construct\nx\n## Investigation log\nx\n````\n",
+        );
+        const errors = checkCatalog(path, METHOD, IDS);
+        expect(errors).toContain(
+            "sim-p02-paired-arms-share-event-prefix: text before the first field: Stray: line",
+        );
+        expect(errors).toContain(
+            "sim-p03-divergence-is-recorded-never-hidden: Exercised states nothing after its value",
+        );
+        expect(errors).toContain(
+            "catalog: index row malformed: |SIM-P99|[phantom](#phantom)|safety|`always`|default-production|M0|",
+        );
+        expect(errors).toContain(
+            "sim-p05-scheduled-events-identical-across-arms: evidence lacks ## Discovery trigger",
+        );
+    });
+
+    test("refuses a blank milestone cell and out-of-order evidence headings", () => {
+        const path = copy();
+        edit(path, /^(\| SIM-P06 \|.*\| )M\d+ \|$/m, "$1 |");
+        const evidence = join(dir, "evidence/sim-p07-probe-text-never-announces-probe.md");
+        const text = readFileSync(evidence, "utf8");
+        writeFileSync(
+            evidence,
+            text
+                .replace(
+                    "## Discovery trigger\n",
+                    "## Investigation log\n\nx\n\n## Discovery trigger\n",
+                )
+                .replace(
+                    /\n## Investigation log\n(?![\s\S]*## Investigation log)/,
+                    "\n## Investigation log two\n",
+                ),
+        );
+        const errors = checkCatalog(path, METHOD, IDS);
+        expect(errors.some((e) => e.startsWith("catalog: index row malformed: | SIM-P06 |"))).toBe(
+            true,
+        );
+        expect(errors).toContain(
+            "sim-p07-probe-text-never-announces-probe: evidence heading ## Investigation log is out of order",
+        );
+    });
+
+    test("refuses a Confidence line with nothing after its link and a fenced record", () => {
+        const path = copy();
+        edit(
+            path,
+            /Confidence: low -\n\[evidence\]\(evidence\/sim-p02-paired-arms-share-event-prefix\.md\)\.[^\n]*\n(?:[^\n]+\n)*?(?=Existing check:)/,
+            "Confidence: low - [evidence](evidence/sim-p02-paired-arms-share-event-prefix.md).\n",
+        );
+        edit(
+            path,
+            "### sim-p03-divergence-is-recorded-never-hidden\n",
+            "```\n### sim-p03-divergence-is-recorded-never-hidden\n",
+        );
+        edit(path, "\n### sim-p04-", "\n```\n### sim-p04-");
+        const errors = checkCatalog(path, METHOD, IDS);
+        expect(errors).toContain(
+            "sim-p02-paired-arms-share-event-prefix: Confidence states nothing after its evidence link",
+        );
+        expect(errors).toContain("catalog: id SIM-P03 appears 0 times");
+    });
+
+    test("refuses a Guarantee that carries its id and no claim", () => {
+        const path = copy();
+        edit(path, /Guarantee: SIM-P01:[^\n]*\n(?:[^\n]+\n)*?(?=Check:)/, "Guarantee: SIM-P01:\n");
+        expect(checkCatalog(path, METHOD, IDS)).toContain(
+            "catalog: SIM-P01 Guarantee states no claim",
+        );
+    });
+
     test("refuses a record without its evidence file and an id that is missing", () => {
         const path = copy();
         unlinkSync(join(dir, "evidence/sim-p05-scheduled-events-identical-across-arms.md"));

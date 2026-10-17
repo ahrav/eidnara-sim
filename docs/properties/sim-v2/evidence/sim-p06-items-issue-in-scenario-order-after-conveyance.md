@@ -39,4 +39,12 @@ ends `failed`.
 
 ## Investigation log
 
-No open questions.
+### Q: What happens to a probe whose conveyance failed?
+- Sources examined: spec #1007 index (SIM-P06); this record's fault angle ("a
+  conveyance turn that fails or times out leaves the probe without its fact");
+  SIM-P45 and SIM-P46 on excluded and failed items.
+- Findings: the guarantee orders the probe after the conveyance `EndTurn` and
+  says nothing about the conveyance outcome; a failed conveyance satisfies it
+  and the probe then measures a delivery failure as a recall miss.
+- Missing evidence: the M4 scheduler's rule for a dependency that failed.
+- Conclusion: needs human input

@@ -25,9 +25,9 @@ const PATH_FIELDS = ["eidnara_checkout", "daemon_binary", "pi_install", "opencod
 
 export class ConfigError extends Error {}
 
-/** The default config file at the sim tree root, overridable by `SIM_CONFIG`. */
+/** The default config file at the sim tree root, overridable by a non-empty `SIM_CONFIG`. */
 export function defaultConfigPath(): string {
-    return process.env.SIM_CONFIG ?? resolve(import.meta.dir, "../../sim.config.json");
+    return process.env.SIM_CONFIG || resolve(import.meta.dir, "../../sim.config.json");
 }
 
 /** Parses and shape-checks a config value; every path must be absolute. */
@@ -70,7 +70,7 @@ export function parseConfig(value: unknown): SimConfig {
     }
     const bedrock = v.bedrock as Record<string, unknown> | undefined;
     for (const field of ["aws_profile", "region"] as const) {
-        if (typeof bedrock?.[field] !== "string" || bedrock[field] === "") {
+        if (typeof bedrock?.[field] !== "string" || bedrock[field].trim() === "") {
             throw new ConfigError(`config.bedrock.${field}: missing`);
         }
     }

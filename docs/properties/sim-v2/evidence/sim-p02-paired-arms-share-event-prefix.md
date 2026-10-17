@@ -39,4 +39,5 @@ one scheduled fault before divergence.
   is the normalised last agent output. Whether that hash diverges too early on
   long tool output is measured at S (needs human input if it does).
 - Missing evidence: a harness run that exercises the record.
-- Conclusion: resolved with answer
+- Conclusion: unresolved, needs the S measurement of divergence on long tool
+  output
