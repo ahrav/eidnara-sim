@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
     appendFileSync,
     type Dirent,
@@ -169,9 +169,11 @@ export class SnapshotRecorder {
         }
     }
 
+    /** Writes the state through a fresh, exclusively created staging file, so a symlink planted at a fixed staging path is never followed. */
     private save(): void {
-        writeFileSync(`${this.stateFile}.tmp`, JSON.stringify(this.state));
-        renameSync(`${this.stateFile}.tmp`, this.stateFile);
+        const staging = `${this.stateFile}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
+        writeFileSync(staging, JSON.stringify(this.state), { flag: "wx" });
+        renameSync(staging, this.stateFile);
     }
 
     /**

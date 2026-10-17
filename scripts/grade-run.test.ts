@@ -131,14 +131,13 @@ function snapshot(dir: string, arm: string, s: Snapshot, journaled = true): void
     const calls = s.artefacts.find((a) => a.class === "proxy-call");
     if (calls?.class === "proxy-call" && journaled) {
         for (const c of calls.calls) {
-            if (c.component !== "agent") continue;
             const record = {
                 seq: c.seq,
                 wall_ms: 0,
                 scenario_ms: c.scenario_ms,
                 arm,
                 turn: c.turn,
-                component: "agent",
+                component: c.component,
                 model: "global.anthropic.claude-opus-5-5",
                 status: 200,
                 error: null,
@@ -258,6 +257,39 @@ describe("grade-run", () => {
         expect((await gradeRun(dir, null)).versions).toEqual({ "2": 1 });
     });
 
+    test("a journal whose events are complete but reordered is refused", async () => {
+        const dir = run({ probes: [p5.probe, { ...p5.probe, id: "P5-b" }] });
+        snapshot(dir, "host", snap);
+        snapshot(dir, "eidnara", snap);
+        const path = join(dir, "journal.jsonl");
+        const lines = readFileSync(path, "utf8").trim().split("\n");
+        const idx = (id: string) =>
+            lines.findIndex((l) => {
+                const e = JSON.parse(l);
+                return e.kind === "Event" && e.arm === "eidnara" && e.event === id;
+            });
+        const [a, b] = [idx("e-1"), idx("e-2")];
+        [lines[a], lines[b]] = [lines[b] as string, lines[a] as string];
+        writeFileSync(path, `${lines.join("\n")}\n`);
+        await expect(gradeRun(dir, null)).rejects.toThrow("out of order from e-2");
+    });
+
+    test("a journaled snapshot's fold calls must be recorded in calls.jsonl too", async () => {
+        const p13 = fixture("P13-pass");
+        const dir = run({ probes: [p13.probe] });
+        snapshot(dir, "host", p13.snapshots[0] as Snapshot);
+        snapshot(dir, "eidnara", p13.snapshots[0] as Snapshot);
+        const path = join(dir, "calls.jsonl");
+        const kept = readFileSync(path, "utf8")
+            .trim()
+            .split("\n")
+            .filter((l) => JSON.parse(l).arm !== "eidnara");
+        writeFileSync(path, `${kept.join("\n")}\n`);
+        await expect(gradeRun(dir, null)).rejects.toThrow(
+            "holds call 5, which calls.jsonl does not record",
+        );
+    });
+
     test("an interrupted run is refused, naming the arm and its event counts", async () => {
         const dir = run({ probes: [p5.probe], interrupted: { eidnara: 1 } });
         snapshot(dir, "host", snap);
@@ -369,7 +401,7 @@ describe("grade-run", () => {
         }
         writeFileSync(path, `${JSON.stringify(row)}\n`);
         await expect(gradeRun(edited, null)).rejects.toThrow(
-            "content that differs from calls.jsonl",
+            "with content that differs from calls.jsonl",
         );
         const earlier = run({ probes: [p8.probe, { ...p8.probe, id: "P8-b" }] });
         const base = p8.snapshots[0] as Snapshot;
@@ -386,7 +418,7 @@ describe("grade-run", () => {
         }
         writeFileSync(log, `${JSON.stringify(first)}\n${JSON.stringify(second)}\n`);
         await expect(gradeRun(earlier, null)).rejects.toThrow(
-            "content that differs from calls.jsonl",
+            "with content that differs from calls.jsonl",
         );
     });
 

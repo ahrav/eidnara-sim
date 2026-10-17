@@ -83,11 +83,16 @@ function requireComplete(entries: Entry[], arms: string[], scheduled: string[]):
         const once = new Set(ended);
         const missing = scheduled.filter((id) => !once.has(id));
         const stray = ended.filter((id, i) => !scheduled.includes(id) || ended.indexOf(id) !== i);
-        if (!closed || missing.length > 0 || stray.length > 0) {
+        const misordered = ended.findIndex((id, i) => id !== scheduled[i]);
+        if (!closed || missing.length > 0 || stray.length > 0 || misordered !== -1) {
             const marker = closed ? "EndArm present" : "no EndArm";
             const count = `${scheduled.length - missing.length} of ${scheduled.length} events ended`;
             const extra = stray.length > 0 ? `, unexpected or repeated: ${stray.join(", ")}` : "";
-            throw new Error(`arm ${arm} is incomplete: ${count}, ${marker}${extra}`);
+            const order =
+                misordered !== -1 && missing.length === 0 && stray.length === 0
+                    ? `, out of order from ${ended[misordered]}`
+                    : "";
+            throw new Error(`arm ${arm} is incomplete: ${count}, ${marker}${extra}${order}`);
         }
     }
     if (!entries.some((e) => e.kind === "EndRun")) {
@@ -217,11 +222,10 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
             const calls = s.artefacts.find((a) => a.class === "proxy-call");
             if (calls?.class !== "proxy-call") continue;
             for (const c of calls.calls) {
-                if (c.component === "agent")
-                    wanted.set(`${s.arm}/${c.seq}`, [
-                        ...(wanted.get(`${s.arm}/${c.seq}`) ?? []),
-                        { snapshot: s.id, call: c },
-                    ]);
+                wanted.set(`${s.arm}/${c.seq}`, [
+                    ...(wanted.get(`${s.arm}/${c.seq}`) ?? []),
+                    { snapshot: s.id, call: c },
+                ]);
             }
         }
     }
@@ -230,11 +234,10 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
     if (existsSync(callsPath)) {
         for await (const line of jsonlLines(callsPath)) {
             const r = JSON.parse(line) as CallRecord;
-            if (r.component !== "agent") continue;
             if (typeof r.model !== "string" || typeof r.seq !== "number") {
                 throw new Error(`calls.jsonl record ${String(r.seq)} names no model`);
             }
-            agentModels.add(r.model);
+            if (r.component === "agent") agentModels.add(r.model);
             const copies = wanted.get(`${r.arm}/${r.seq}`);
             if (!copies) continue;
             const expected = canonicalJson(projectCall(r));
@@ -242,7 +245,7 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
                 const { turn_index: _turn, ...stored } = held.call;
                 if (canonicalJson(stored) !== expected) {
                     throw new Error(
-                        `snapshot ${held.snapshot} holds agent call ${r.seq} with content that differs from calls.jsonl`,
+                        `snapshot ${held.snapshot} holds call ${r.seq} with content that differs from calls.jsonl`,
                     );
                 }
             }
@@ -260,7 +263,7 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
         const [key, copies] = orphan;
         const snapshot = copies[0]?.snapshot ?? "?";
         throw new Error(
-            `snapshot ${snapshot} holds agent call ${key.split("/").pop()}, which calls.jsonl does not record for arm ${key.split("/")[0]}`,
+            `snapshot ${snapshot} holds call ${key.split("/").pop()}, which calls.jsonl does not record for arm ${key.split("/")[0]}`,
         );
     }
     const attempts = (arm: string, item: string): Snapshot[] | undefined => {
