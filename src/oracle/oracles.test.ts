@@ -486,6 +486,10 @@ describe("oracle round three", () => {
         expect(() => loadRun(two.dir, prereg)).toThrow("two A/A controls of host");
         const alone = completeDir(["host~aa", "eidnara"]);
         expect(() => loadRun(alone.dir, prereg)).toThrow("host~aa runs without host");
+        const before = completeDir(["host~aa", "host"]);
+        expect(() => loadRun(before.dir, prereg)).toThrow("host~aa runs apart from host");
+        const apart = completeDir(["host", "eidnara", "host~aa"]);
+        expect(() => loadRun(apart.dir, prereg)).toThrow("host~aa runs apart from host");
     });
 
     test("a control of host runs no daemon, so it loads without RSS samples or a daemon.log", () => {

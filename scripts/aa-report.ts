@@ -69,6 +69,16 @@ function report(dir: string) {
     const controls = order.filter((a) => a !== armBase(a));
     const report = controls.map((control) => {
         const arm = armBase(control);
+        const events = (a: string) =>
+            new Set(pairing.filter((r) => r.kind === "turn" && r.arm === a).map((r) => r.event));
+        const [mine, theirs] = [events(control), events(arm)];
+        const unpaired = [...mine, ...theirs].filter((e) => !(mine.has(e) && theirs.has(e)));
+        if (mine.size === 0) throw new Error(`${dir}: no paired turns for ${control}`);
+        if (unpaired.length > 0) {
+            throw new Error(
+                `${dir}: turns without a counterpart between ${arm} and ${control}: ${unpaired.join(", ")}`,
+            );
+        }
         const broken = mismatched.filter((m) => m.startsWith(`${control} `));
         if (broken.length > 0) {
             throw new Error(

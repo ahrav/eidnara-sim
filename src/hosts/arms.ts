@@ -99,7 +99,7 @@ export const CONTROL_LABEL = /^[a-z-]+~[a-z0-9]+$/;
 
 /**
  * Admits a manifest order of pre-registered arms and A/A controls: a control's label matches
- * `CONTROL_LABEL`, its arm is in the order and in `pairs`, and each arm has at most one.
+ * `CONTROL_LABEL`, its arm is in `pairs` and runs right before it, and each arm has at most one.
  */
 export function requireOrder(
     order: readonly string[],
@@ -117,6 +117,9 @@ export function requireOrder(
     for (const control of controls) {
         const base = armBase(control);
         if (!order.includes(base)) throw new Error(`manifest arm ${control} runs without ${base}`);
+        if (order.indexOf(control) !== order.indexOf(base) + 1) {
+            throw new Error(`manifest arm ${control} runs apart from ${base}`);
+        }
         if (controls.filter((c) => armBase(c) === base).length > 1) {
             throw new Error(`manifest order runs two A/A controls of ${base}`);
         }

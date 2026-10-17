@@ -27,6 +27,16 @@ const grade = (arm: string, item: string, type: string, metric: string, value: n
     metrics: { [`${type}.pass`]: true, [metric]: value },
 });
 
+const turn = (arm: string, event: string, text_sha256: string, index = 0) => ({
+    kind: "turn",
+    arm,
+    session: "s-1",
+    event,
+    index,
+    digest: "d",
+    text_sha256,
+});
+
 function gradedRun(
     tier: string,
     prereg_sha256: string,
@@ -55,7 +65,10 @@ function gradedRun(
     writeFileSync(join(dir, "manifest.json"), JSON.stringify(manifest));
     writeFileSync(join(dir, "scenario.json"), JSON.stringify(scenario));
     writeFileSync(join(dir, "grades.jsonl"), grades.map(line).join(""));
-    writeFileSync(join(dir, "pairing.jsonl"), "");
+    const turns = ["host", "host~aa"].flatMap((arm) =>
+        [1, 2, 3].map((i) => turn(arm, `e-${i}`, "same")),
+    );
+    writeFileSync(join(dir, "pairing.jsonl"), turns.map(line).join(""));
     return dir;
 }
 
@@ -158,6 +171,8 @@ describe("aa-report", () => {
         for (const order of [
             ["host", "host~aa", "host~bb"],
             ["host~aa"],
+            ["host~aa", "host"],
+            ["host", "eidnara", "host~aa"],
             ["host", "host~x/../../outside"],
             ["host", "eidnara-kl", "eidnara-kl~aa"],
         ]) {
@@ -170,21 +185,27 @@ describe("aa-report", () => {
 
     test("refuses a control whose delivered text differed from its arm's before any divergence", () => {
         const dir = gradedRun("S", preregistrationHash(loadPrereg("S")));
-        const turn = (arm: string, text_sha256: string) => ({
-            kind: "turn",
-            arm,
-            session: "s-1",
-            event: "e-1",
-            index: 0,
-            digest: "d",
-            text_sha256,
-        });
-        const records = [turn("host", "aaaa"), turn("host~aa", "bbbb")];
+        const records = [turn("host", "e-1", "aaaa"), turn("host~aa", "e-1", "bbbb")];
         writeFileSync(
             join(dir, "pairing.jsonl"),
             records.map((r) => `${JSON.stringify(r)}\n`).join(""),
         );
         expect(() => aaReport(dir)).toThrow(/host~aa s-1 #0/);
+    });
+
+    test("refuses a run whose pairing log lacks a turn on either side", () => {
+        const line = (o: unknown) => `${JSON.stringify(o)}\n`;
+        const empty = gradedRun("S", preregistrationHash(loadPrereg("S")));
+        writeFileSync(join(empty, "pairing.jsonl"), "");
+        expect(() => aaReport(empty)).toThrow(/no paired turns/);
+        const lost = gradedRun("S", preregistrationHash(loadPrereg("S")));
+        const kept = [
+            turn("host", "e-1", "same"),
+            turn("host~aa", "e-1", "same"),
+            turn("host~aa", "e-2", "same"),
+        ];
+        writeFileSync(join(lost, "pairing.jsonl"), kept.map(line).join(""));
+        expect(() => aaReport(lost)).toThrow(/e-2/);
     });
 
     test("a run-level family forms one cluster per run, so one run leaves it uninformative", () => {
