@@ -328,7 +328,7 @@ describe("tier gates", () => {
                 control: 0.45,
                 treatment: 0.45 + d,
             })),
-            gateway_4xx_rate_without_faults: noise.map((d) => ({ control: 0, treatment: 1 + d })),
+            gateway_4xx_rate_without_faults: noise.map((d) => ({ control: 0, treatment: 0.5 + d })),
         });
         const by = Object.fromEntries(out.map((z) => [z.check, z.zero_effect]));
         expect(by).toEqual({
@@ -866,5 +866,32 @@ describe("tier gate review findings, fifth Codex round", () => {
             arms: { control: "host", treatment: XL.arms.default },
         });
         expect(metric(v, "latency", "turn_latency_p95_delta_ms")?.verdict).toBe("descriptive");
+    });
+});
+
+describe("tier gate review findings, sixth Codex round", () => {
+    test("an event count is an integer; a cost is any non-negative amount", () => {
+        expect(() =>
+            evaluate([runs("failed_turns", repeat(6, [1.5, 0] as [number, number]))]),
+        ).toThrow(StatsRefusal);
+        expect(() =>
+            evaluate([runs("internal_string_hits", repeat(6, [0, 0.5] as [number, number]))]),
+        ).toThrow(StatsRefusal);
+        expect(() =>
+            evaluate([runs("usd_per_component", repeat(6, [1.25, 1.5] as [number, number]))]),
+        ).not.toThrow();
+    });
+
+    test("falsification values stay in their measurement domain", () => {
+        const rate = Array.from({ length: 4 }, () => ({ control: 2, treatment: 3 }));
+        expect(() => falsificationSet(S, { gateway_4xx_rate_without_faults: rate })).toThrow(
+            StatsRefusal,
+        );
+        const negative = Array.from({ length: 4 }, () => ({ control: -5, treatment: 10 }));
+        expect(() => falsificationSet(S, { wall_ms_per_scripted_idle_gap: negative })).toThrow(
+            StatsRefusal,
+        );
+        const fine = Array.from({ length: 4 }, (_, i) => ({ control: 100, treatment: 100 + i }));
+        expect(() => falsificationSet(S, { wall_ms_per_scripted_idle_gap: fine })).not.toThrow();
     });
 });

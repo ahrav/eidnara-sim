@@ -48,8 +48,9 @@ A metric with no pre-registration entry is refused by name, and so is a
 metric observed twice, an observation whose unit or cluster key differs
 from its family's, an observation carrying runs for an item unit or items
 for a run unit, a control or treatment value that is not finite, a binary
-family's value other than 0 or 1, a negative count, a `pp`-scale graded
-value outside [0, 1], an item whose issue order is not a non-negative
+family's value other than 0 or 1, a negative count, a fractional event
+count (a count family whose margin has a scale; the cost family's amounts
+are unrestricted), a `pp`-scale graded value outside [0, 1], an item whose issue order is not a non-negative
 integer or whose ledger-fact cluster differs between observations, an item or run identity repeated
 within an observation, an issue order shared by two items or an item with
 two orders, an id listed twice across the excluded and fault-asymmetric
@@ -144,6 +145,7 @@ word parity is refused.
 scheduled faults, pre-divergence pushback rate, wall time per scripted
 idle gap): each check's paired differences get a bootstrap interval, and
 a zero effect is an interval that covers zero. With fewer than two pairs
-a check has no result. A name outside the set, a value that is not finite,
-a bootstrap plan below 40 replicates, or an interval that is not finite is
-refused.
+a check has no result. A name outside the set, a value that is not finite
+or outside the check's domain (the three rates lie in [0, 1], the idle-gap
+wall time is non-negative), a bootstrap plan below 40 replicates, or an
+interval that is not finite is refused.

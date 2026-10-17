@@ -411,6 +411,13 @@ function check(p: Preregistration, input: TierInput): void {
             throw new StatsRefusal(`${o.metric}: a count is at least 0 in both arms`);
         }
         if (
+            f.outcome === "count" &&
+            f.margin.scale !== "none" &&
+            !own.every((x) => Number.isInteger(x.control) && Number.isInteger(x.treatment))
+        ) {
+            throw new StatsRefusal(`${o.metric}: an event count is an integer in both arms`);
+        }
+        if (
             f.outcome === "graded" &&
             f.mde.scale === "pp" &&
             !own.every((x) => isShare(x.control) && isShare(x.treatment))
@@ -628,6 +635,9 @@ export const FALSIFICATION = [
     "pre_divergence_pushback_rate",
     "wall_ms_per_scripted_idle_gap",
 ] as const;
+/** The first three checks are rates in [0, 1]; the idle-gap wall time is a non-negative duration. */
+const inDomain = (check: string, v: number) =>
+    check === "wall_ms_per_scripted_idle_gap" ? v >= 0 : isShare(v);
 
 export interface ZeroEffect {
     check: string;
@@ -650,12 +660,12 @@ export function falsificationSet(
         if (!(FALSIFICATION as readonly string[]).includes(name)) {
             throw new StatsRefusal(`${name} is not in the falsification set`);
         }
-        if (
-            !(pairs[name] ?? []).every(
-                (x) => Number.isFinite(x.control) && Number.isFinite(x.treatment),
-            )
-        ) {
+        const values = (pairs[name] ?? []).flatMap((x) => [x.control, x.treatment]);
+        if (!values.every(Number.isFinite)) {
             throw new StatsRefusal(`${name}: every control and treatment value is finite`);
+        }
+        if (!values.every((v) => inDomain(name, v))) {
+            throw new StatsRefusal(`${name}: every value lies in the check's measurement domain`);
         }
     }
     return FALSIFICATION.map((check) => {
