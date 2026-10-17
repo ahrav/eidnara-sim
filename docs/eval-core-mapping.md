@@ -86,7 +86,7 @@ counterpart holds part of the value; the note names the rest), `extension`
 | `grading.p13_reduction_ratio` | none | extension | Summary output tokens per summarized input token a P13 fold must fall between. |
 | `grading.p13_reduction_ratio.min` | none | extension | Lower bound, a decimal in (0, 1). |
 | `grading.p13_reduction_ratio.max` | none | extension | Upper bound, a decimal in (0, 1). |
-| `grading.judge` | `JudgeIdentity`, `SamplingPlan`, `PermutationCheck` | partial | The P7 judge settings. |
+| `grading.judge` | `JudgeIdentity`, `SamplingPlan`, `PermutationCheck` | partial | The P7 judge settings. The calibration set the sim validates (`sim-judge-calibration/v1`) carries the judge identity, a label per pair, and the human-labelled pair ids; eval-core's `CalibrationSet` (`eval-judge/v1`) holds human labels alone with the floor from `SamplingPlan`. `eval-judge/v2` would carry the judge identity and per-pair labels. |
 | `grading.judge.model` | `JudgeIdentity` provider profile | partial | The P7 judge model (D4). |
 | `grading.judge.cross_judge` | none | extension | The model that re-judges the calibration set (D4); `eval-judge/v2` would add a second judge identity. |
 | `grading.judge.calibration_min_pairs` | `HUMAN_SAMPLE_MIN_PAIRS` | mapped | The calibration floor of 20 pairs. |

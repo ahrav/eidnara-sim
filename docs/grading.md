@@ -124,10 +124,155 @@ is a point estimate with its item count; its interval comes with the paired
 statistics (M7). A P13 item needs `must` or `commands_must` besides its
 range.
 
+## P7 judge path
+
+P7 is the one judge-graded probe. `src/grade/judge.ts` re-implements the
+eval-core judge contract (`crates/eval-core/src/judge.rs`), which TypeScript
+cannot call, and the divergences are listed below.
+
+1. `p7Pair` builds the pair from the two arms' snapshots of one P7 item:
+   it refuses a snapshot of another item or one snapshot on both sides
+   (two runs of one arm, as in an A/A pair, are distinct snapshots),
+   refuses a snapshot with a non-grade artefact, returns null when either
+   probe turn ended `failed` (SIM-P46), reads each probe turn's last agent
+   answer from the `proxy-call` artefact, refuses an answer that is empty
+   after normalisation, and
+   returns the snapshot ids, arm names, and the artefact ids it read as the
+   grades' inputs.
+2. `blind` takes a pair of answers to one P7 item, the memory arm's as `a`
+   and the host arm's as `b`, and refuses either answer, or the reference
+   reason, when it carries a
+   canary or names an arm. Names are matched as whole words after folding
+   case and separators, applying compatibility decomposition (NFKD, which
+   also folds full-width, circled, and mathematical letters), and dropping
+   invisible characters and
+   every combining mark (eval-core drops the
+   combining diacritics block only); an invisible character is tried both
+   as nothing and as a word separator, so `eid\u200bnara` and `arm\u200ba`
+   both match, the normalised text is checked as well as the raw text, so
+   `Ei**dnara` matches, and canaries and one-word arm names are also
+   matched with every separator removed, so `eid-nara` and `CAN-ARY-7f3`
+   match. Blinding covers the forms an agent's answer takes when it
+   mentions an arm through formatting, encoding, or spacing; it is a safety
+   net under the structural guarantee that no arm is told its label, and
+   adversarial obfuscation (entity references nested inside entity
+   references, letters of a multi-word label split by punctuation, and
+   confusable or mixed-script homoglyphs) is outside what it refuses. The
+   arm names are eval-core's six plus `eidnara`, `host arm`, and
+   `memory arm`. HTML comments and tags are dropped, the common and
+   numeric entities decoded (an entity outside the code-point range is
+   dropped, any other named entity becomes a space), markup the decoding
+   exposed is dropped again, invisible characters are dropped, Markdown
+   links and images, inline or reference-style, keep
+   their label and lose their destination, identifier, and definition line, doubled or tripled emphasis marks (`**`, `***`, `__`, `___`), backticks, heading
+   marks, bullet marks, and code fence lines (a line that starts with three
+   backticks and holds no further backtick, whatever its info string) are
+   stripped and whitespace
+   collapsed before the judge sees either answer; backticks inside a line
+   are removed and the text between them stays.
+3. `judgePair` shows the pair in both orders, under the rubric and the
+   item's reference reason (normalised like the answers), and reads one
+   verdict per order: `first`,
+   `second`, `both`, or `neither`. eval-core's verdicts are `first`,
+   `second`, and `tie`; recall needs `both` and `neither` to tell two
+   recalls apart from none. Unswapped verdicts that disagree make the pair
+   `Inconsistent`, which grades as excluded with that reason and is never
+   averaged. A reply that is not exactly one verdict word, with trailing
+   `.` or `!` at most, refuses the call.
+4. The judgment records each answer's length after normalisation, and
+   `longer_recalled_alone` records whether the longer answer was the one
+   recalled alone, for the verbosity audit.
+5. `gradeP7` takes the judgment, the compiled P7 probe, and each arm's
+   snapshots in attempt order, requires every snapshot to come from the
+   probe's session and, when the probe names its event, from that turn,
+   grades the first snapshot of each arm and
+   counts the rest as later attempts (as `gradeItem` does), rebuilds the
+   pair from those two snapshots (so the arms, snapshot ids, artefact
+   inputs, answer digests, and lengths it records all come from the
+   snapshots that produced the judged answers) and the reference digest
+   from the probe's `check.judge`, and writes one grade per arm for the
+   item, the exact
+   answers, and the reference reason the judgment names (the judgment
+   carries the answers' and the reference's digests), and only when the
+   judgment's
+   recall is the one its two order verdicts imply, each of which must be one
+   of the four verdict words, and its answer lengths and
+   `longer_recalled_alone` are the ones the pair and that recall imply. Each grade carries the judge model,
+   the prompt and rubric digests, both order verdicts, both answer lengths
+   and `longer_recalled_alone`, the calibration digest, and the permutation
+   check's result and counts. It computes the digest and runs the check
+   itself and records a refusal of either as `refused: <reason>`, so
+   `gate_eligible` is true only when the judgment's judge identity, the
+   calibration set's judge identity, and the permutation evidence's judge
+   identity all equal the pre-registered judge's (`grading.judge.model`
+   with the current prompt and rubric digests), the recall is consistent,
+   the set validates, the permutation check passes, and a cross-judge record
+   carries the pre-registered cross-judge's identity
+   (`grading.judge.cross_judge`) and the set's digest (recorded as
+   `cross_judge: valid`; absent evidence reads `none`).
+6. `permutationCheck` refuses counts that are not safe whole numbers and arm
+   identification above the pre-registered 60% ceiling, correct or inverted,
+   compared in exact integer arithmetic.
+7. `calibrationDigest` validates a calibration set: at least 20 pairs, and a
+   human sample of at least 10% rounded up and never below 20 pairs. Only a
+   set that passes gets a digest; a blank pair id, a human label naming no
+   pair or naming one twice, a label other than `a`, `b`, `both`, or
+   `neither`, labels that are not an object keyed by pair id, a human id
+   that is not a string, and another
+   schema are refused. The set holds the judge identity,
+   a label per pair, and the ids of the human-labelled pairs under the sim's
+   own schema literal, `sim-judge-calibration/v1`, which also prefixes the
+   digest; eval-core's
+   `CalibrationSet` (`eval-judge/v1`) holds human labels alone and takes the
+   human floor from the campaign's `SamplingPlan`, which the sim does not
+   have yet, and `docs/eval-core-mapping.md` names the fields `eval-judge/v2`
+   would carry. The maintainer's 20 labelled anchor pairs
+   do not exist yet, so P7 grades carry `calibration_digest: none` and stay
+   out of gates.
+8. `humanCheckSample` draws the 10% of P7 items, rounded up, to journal as
+   `human_check_pending` (SIM-P44).
+
+`proxyJudge` sends each verdict request through the capture proxy with the
+`judge` component header, bounded by a per-call deadline (900 s by default)
+covering the request and the body read, whose expiry is a judge refusal. A
+reply whose `stopReason` is not `end_turn` (a truncated or filtered
+generation) is a judge refusal before its text is read. It refuses a judge model from the agent model's
+family (SIM-P43), where the family is the provider segment of the model id
+(`provider.model` or `region.provider.model`), and a model id whose provider
+it does not know; an unreachable gateway, a reply that is not JSON, one that
+carries no text block, or one whose text blocks together are not one verdict
+word is a judge refusal. The
+pre-registered judge is `global.openai.gpt-5.6-luna`.
+On 2026-10-16 the two P7 fixtures went through the gateway to that model,
+and the real verdicts (`first`, then `second`, and the reverse) graded as
+the fixtures record. The run's records (`judge-calls.jsonl` with the four
+`judge` call records, `judgments.json` with the verdicts) are run data under
+`runs/judge-smoke/` on the host that ran it; run data is never committed, so
+this claim is checked against that host's records, and the fixtures' own
+verdicts are scripted.
+
+The judge identity is the model id with the prompt and rubric digests; the
+prompt digest covers `PREPROCESSING_VERSION` (`sim-judge-preprocessing/v2`),
+which changes whenever normalisation, folding, or the arm tokens change what
+the judge sees, so judgments and calibration sets made under older
+preprocessing stop matching;
+eval-core's `JudgeIdentity` also names the provider and tokenizer profile,
+and digests a rubric document under `eval-judge-rubric/v1` where the sim
+digests the rubric text.
+
+The pre-registered cross-judge (`grading.judge.cross_judge`, Haiku 5.5)
+re-judges the calibration set, so it waits on the maintainer's anchor pairs
+too. Its model shares the agent's family, which `proxyJudge` refuses for
+judging arm answers; calibration judging will need its own entry point.
+Until then `P7Context.cross_judge` is the record that entry point will
+produce (its identity and the digest of the set it labelled), gate
+eligibility requires it, and the agreement rule between the two judges'
+labels is still to be pre-registered.
+
 ## Fixtures
 
 `tests/fixtures/grade/` holds a known pass and a known fail for every
-programmatic probe type, extra fixtures for each branch a grader can take,
+probe type (P7's as an answer pair with scripted judge verdicts), extra fixtures for each branch a grader can take,
 and P1 control items (`tests/fixtures/grade/README.md` gives their
 provenance). The P1 and P1 control items come from live runs; the others
 are constructed from compiled checks, because those probe types have not

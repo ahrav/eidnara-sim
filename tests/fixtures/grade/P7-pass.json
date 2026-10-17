@@ -1,0 +1,28 @@
+{
+  "provenance": "constructed from the compiled P7 check of seed 101 (S); judge_verdicts are scripted; the live judge returned the same verdicts on 2026-10-16 (runs/judge-smoke)",
+  "probe": {
+    "id": "q-0054",
+    "type": "P7",
+    "fact": "f-0036",
+    "project": "mini-redis",
+    "session": "s-0019",
+    "text": "Remind me what drove us to keep frame decoding free of heap use?",
+    "check": {
+      "judge": "The tawny-heron-84 load test showed allocation dominating p99 latency."
+    },
+    "event": "e-000388"
+  },
+  "pair": {
+    "id": "q-0054",
+    "a": "The **tawny-heron-84** load test showed that allocations dominated p99 latency, so decoding avoids the heap.",
+    "b": "We wanted the decoder to be simpler to read."
+  },
+  "judge_verdicts": {
+    "a_then_b": "first",
+    "b_then_a": "second"
+  },
+  "expect": {
+    "a": "pass",
+    "b": "fail"
+  }
+}
