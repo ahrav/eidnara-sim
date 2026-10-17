@@ -31,6 +31,10 @@ export function pattern(source: string): RegExp {
 /** Hunk lines and header lines of a unified diff, told apart by position: a header precedes its first `@@`. */
 /** A Git header path token with its `a/` or `b/` prefix removed and C-style quoting decoded. */
 function gitPath(token: string): string {
+    return decodePath(token).replace(/^[ab]\//, "");
+}
+/** A header path token with C-style quoting decoded; the directories are literal. */
+function decodePath(token: string): string {
     const quoted = token.startsWith('"') && token.endsWith('"');
     const raw = quoted ? token.slice(1, -1) : token;
     const bytes: number[] = [];
@@ -61,9 +65,7 @@ function gitPath(token: string): string {
             i++;
         } else bytes.push(92);
     }
-    return Buffer.from(bytes)
-        .toString("utf8")
-        .replace(/^[ab]\//, "");
+    return Buffer.from(bytes).toString("utf8");
 }
 
 const HUNK_HEADER = /^@@ -(\d+)(,\d+)? \+(\d+)(,\d+)? @@/;
@@ -97,12 +99,32 @@ function binaryNote(line: string, labelText: string | null): boolean {
     return false;
 }
 
-/** A `---`/`+++` header's path: the token before any tab-separated timestamp, decoded, or null for `/dev/null`. */
-function headerPath(rest: string): string | null {
+/**
+ * A `---`/`+++` header's path: the token before any tab-separated timestamp, decoded, or null for
+ * `/dev/null`. Under a `diff --git` label the `a/` and `b/` prefixes are Git's and come off; in a
+ * plain patch they are directories.
+ */
+function headerPath(rest: string, git: boolean): string | null {
     const token = rest.startsWith('"') ? rest : (rest.split("\t")[0] as string);
     if (token === "/dev/null") return null;
-    return gitPath(token);
+    return git ? gitPath(token) : decodePath(token);
 }
+
+/** Each metadata line's payload grammar, as `git apply` reads it. */
+const META_GRAMMAR: Record<string, RegExp> = {
+    index: /^[0-9a-f]{1,64}\.\.[0-9a-f]{1,64}( [0-7]{6})?$/,
+    "old mode": /^[0-7]{6}$/,
+    "new mode": /^[0-7]{6}$/,
+    "deleted file mode": /^[0-7]{6}$/,
+    "new file mode": /^[0-7]{6}$/,
+    "similarity index": /^(100|[1-9]?\d)%$/,
+    "dissimilarity index": /^(100|[1-9]?\d)%$/,
+    "rename from": /^.+$/,
+    "rename to": /^.+$/,
+    "copy from": /^.+$/,
+    "copy to": /^.+$/,
+    "GIT binary patch": /^$/,
+};
 
 interface Scan {
     ok: boolean;
@@ -255,14 +277,14 @@ function scanDiff(patch: string): Scan {
                 close();
                 headersDone = false;
             }
-            const old = headerPath(line.slice(4));
+            const old = headerPath(line.slice(4), inFile);
             if (old !== null) paths.push(old);
             oldName = old;
             opened = true;
             pendingNew = true;
         } else if (line.startsWith("+++ ")) {
             if (!pendingNew) fail();
-            const next = headerPath(line.slice(4));
+            const next = headerPath(line.slice(4), inFile);
             if (next === null) deleted = true;
             else {
                 paths.push(next);
@@ -291,12 +313,12 @@ function scanDiff(patch: string): Scan {
             if (kind === "Binary files") {
                 if (binaryNote(line, labelText)) meta.add("differ");
                 else fail();
-            } else if (kind === "GIT binary patch") meta.add("binary");
-            else if (kind === "literal" || kind === "delta") fail();
+            } else if (kind === "literal" || kind === "delta") fail();
             else {
-                meta.add(kind);
-                if (/^(rename|copy) (from|to)$/.test(kind))
-                    from[kind] = line.slice(kind.length + 1);
+                const payload = line.slice(kind.length).replace(/^ /, "");
+                if (!(META_GRAMMAR[kind] as RegExp).test(payload)) fail();
+                meta.add(kind === "GIT binary patch" ? "binary" : kind);
+                if (/^(rename|copy) (from|to)$/.test(kind)) from[kind] = payload;
             }
         } else {
             fail();

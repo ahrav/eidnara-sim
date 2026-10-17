@@ -1042,7 +1042,7 @@ describe("grading harness", () => {
         const snap = structuredClone(f.snapshots[0]) as Snapshot;
         const prior = snap.artefacts.find((a) => a.class === "diff" && a.role === "prior-session");
         if (prior?.class !== "diff") throw new Error("fixture lacks prior diff");
-        prior.patch = "--- a/src/old.ts\n+++ /dev/null\n@@ -1 +0,0 @@\n-gone\n";
+        prior.patch = "--- src/old.ts\n+++ /dev/null\n@@ -1 +0,0 @@\n-gone\n";
         const log = snap.artefacts.find((a) => a.class === "command-log" && a.role === "turn");
         if (log?.class !== "command-log") throw new Error("fixture lacks command-log");
         log.commands.push({ command: "cat src/old.ts", exit: 1, scenario_ms: 10 });
@@ -1563,6 +1563,78 @@ describe("grading harness", () => {
         expect(run("( exit 0 ); cat src/connection.rs")).toBe(1);
         expect(run("{ false && exit 0; }; cat src/connection.rs")).toBe(1);
         expect(run("{ exit 0; } | cat; cat src/connection.rs")).toBe(1);
+    });
+
+    test("plain headers keep their directories; Git labels strip a/ and b/", () => {
+        const f = fixture("P6-pass");
+        const run = (patch: string, cmd: string) => {
+            const snap = structuredClone(f.snapshots[0]) as Snapshot;
+            const prior = snap.artefacts.find(
+                (a) => a.class === "diff" && a.role === "prior-session",
+            );
+            if (prior?.class !== "diff") throw new Error("fixture lacks prior diff");
+            prior.patch = patch;
+            const log = snap.artefacts.find((a) => a.class === "command-log" && a.role === "turn");
+            if (log?.class !== "command-log") throw new Error("fixture lacks command-log");
+            log.commands.push({ command: cmd, exit: 0, scenario_ms: 10 });
+            return gradeItem(f.probe, [snap], rules)?.metrics["P6.reread_files"];
+        };
+        const plain = "--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n";
+        expect(run(plain, "cat b/x")).toBe(1);
+        expect(run(plain, "cat x")).toBe(0);
+        const git = "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n";
+        expect(run(git, "cat x")).toBe(1);
+        expect(run(git, "cat b/x")).toBe(0);
+    });
+
+    test("metadata lines carry their full grammar", () => {
+        const f = fixture("P2-pass");
+        const run = (patch: string) => {
+            const snap = structuredClone(f.snapshots[0]) as Snapshot;
+            const diff = snap.artefacts.find((a) => a.class === "diff");
+            if (diff?.class !== "diff") throw new Error("fixture lacks diff");
+            diff.patch = patch;
+            return () =>
+                gradeItem(f.probe, [snap], rules) as NonNullable<ReturnType<typeof gradeItem>>;
+        };
+        expect(run("diff --git a/x b/x\nold mode nonsense\nnew mode nonsense\n")).toThrow("patch");
+        expect(run("diff --git a/x b/x\nnew file mode 100644\nindex nonsense\n")).toThrow("patch");
+        expect(
+            run("diff --git a/x b/y\nsimilarity index lots\nrename from x\nrename to y\n"),
+        ).toThrow("patch");
+        expect(
+            run("diff --git a/x b/y\nsimilarity index 90%\nrename from \nrename to y\n"),
+        ).toThrow("patch");
+        expect(
+            run("diff --git a/x b/x\nnew file mode 100644\nindex 0000000..e69de29 100644\n")()
+                .verdict,
+        ).toBe("pass");
+        expect(
+            run("diff --git a/x b/x\nold mode 100644\nnew mode 100755\nindex e69de29..e69de29\n")()
+                .verdict,
+        ).toBe("pass");
+    });
+
+    test("a guarded exit after a sure success ends the list, and grouped commands are classified", () => {
+        const f = fixture("P6-pass");
+        const run = (cmd: string, metric = "P6.reread_files") => {
+            const snap = structuredClone(f.snapshots[0]) as Snapshot;
+            const log = snap.artefacts.find((a) => a.class === "command-log" && a.role === "turn");
+            if (log?.class !== "command-log") throw new Error("fixture lacks command-log");
+            log.commands.push({ command: cmd, exit: 0, scenario_ms: 10 });
+            return gradeItem(f.probe, [snap], rules)?.metrics[metric];
+        };
+        expect(run("true && exit 0; cat src/connection.rs")).toBe(0);
+        expect(run(": && exit 0; cat src/connection.rs")).toBe(0);
+        expect(run("test -f x && exit 0; cat src/connection.rs")).toBe(1);
+        expect(run("{ cat src/connection.rs; }")).toBe(1);
+        expect(run("(cat src/connection.rs)")).toBe(1);
+        expect(run("( cargo test )", "P6.ran_tests")).toBe(true);
+        expect(run("{ true; { cat src/connection.rs; }; }")).toBe(1);
+        expect(run("(exit 0; cat src/connection.rs)")).toBe(0);
+        expect(run("A=$(printf x) cat src/connection.rs")).toBe(1);
+        expect(run("A=${B:-y z} cat src/connection.rs")).toBe(1);
+        expect(run("A=`printf x` cat src/connection.rs")).toBe(1);
     });
 
     test("a check pattern that is empty after its prefix or fails to compile is refused", () => {

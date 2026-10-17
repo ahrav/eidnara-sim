@@ -254,49 +254,86 @@ function splitShell(command: string): Segment[] {
 }
 
 /** The exit code belongs to the last list of a command, so only an `&&` segment there is established by it. */
+/** A `{ ...; }` group or `( ... )` subshell: its bracket and body, with any trailing redirections. */
+const GROUP = /^([{(])\s*([\s\S]*?)\s*([)}])(?:\s[^{}()]*)?$/;
+const groupBody = (seg: string): { brace: boolean; body: string } | null => {
+    const m = GROUP.exec(unprefixed(seg));
+    if (!m) return null;
+    const brace = m[1] === "{";
+    if (brace !== (m[3] === "}")) return null;
+    return { brace, body: m[2] as string };
+};
 /**
- * Whether segment `i` ends the current shell: an unconditional, foreground `exit` or
- * command-bearing `exec`, or a `{ ...; }` group run in the current shell whose body does so.
- * A pipeline member, a background job, and a `( ... )` subshell end their own process only.
+ * The parts of a command list that are sure to run: every part guarded by `;`, `&`, or a newline,
+ * and an `&&` continuation whose whole guard chain is `true` or `:`; a `||` continuation and an
+ * `&&` continuation after any other command depend on a status the text does not carry.
  */
-const terminalAt = (parts: Segment[], i: number, guard: string): boolean => {
+const sureParts = (parts: Segment[]): boolean[] => {
+    const sure: boolean[] = [];
+    let chainSure = true;
+    for (const [i, p] of parts.entries()) {
+        const guard = p.op;
+        if (/^[;&\n]$/.test(guard)) chainSure = true;
+        else if (guard === "&&")
+            chainSure = chainSure && /^(true|:)$/.test(unprefixed(parts[i - 1]?.seg ?? ""));
+        else if (guard === "||") chainSure = false;
+        sure.push(guard === "|" ? (sure[i - 1] ?? true) : chainSure);
+    }
+    return sure;
+};
+/**
+ * Whether segment `i` ends the current shell: a sure, foreground `exit` or command-bearing
+ * `exec`, or a `{ ...; }` group run in the current shell whose body does so. A pipeline member,
+ * a background job, and a `( ... )` subshell end their own process only.
+ */
+const terminalAt = (parts: Segment[], i: number, sure: boolean): boolean => {
     const own = (parts[i] as Segment).op;
     const next = parts[i + 1]?.op ?? ";";
-    if (own === "|" || next === "|" || next === "&" || !/^[;&\n]$/.test(guard)) return false;
+    if (own === "|" || next === "|" || next === "&" || !sure) return false;
     return terminates((parts[i] as Segment).seg);
 };
 const terminates = (segment: string): boolean => {
-    const seg = unprefixed(segment);
-    if (/^exit\b|^exec\s+[^\s<>&\d]/.test(seg)) return true;
-    const group = /^\{\s+([\s\S]*?)\s*\}$/.exec(seg);
-    if (!group) return false;
-    const inner = splitShell(group[1] as string);
-    let guard = ";";
-    return inner.some((p, i) => {
-        guard = p.op === "|" ? guard : p.op;
-        return terminalAt(inner, i, guard);
-    });
+    if (/^exit\b|^exec\s+[^\s<>&\d]/.test(unprefixed(segment))) return true;
+    const group = groupBody(segment);
+    if (!group?.brace) return false;
+    const inner = splitShell(group.body);
+    const sure = sureParts(inner);
+    return inner.some((_p, i) => terminalAt(inner, i, sure[i] as boolean));
 };
-const executedParts = (x: Command): Segment[] => {
-    const parts = splitShell(x.command);
+/**
+ * The reachable parts of one command list given its exit status: a number, null for a command
+ * cut off before it finished, or undefined for a completed group whose own status is unrecorded.
+ */
+const reachableParts = (command: string, exit: number | null | undefined): Segment[] => {
+    const parts = splitShell(command);
     let guard = ";";
     const guarded = parts.map((p) => {
         guard = p.op === "|" ? guard : p.op;
         return { ...p, op: guard };
     });
+    const sure = sureParts(parts);
     const lastList = guarded.reduce((n, p, i) => (/^[;&\n]$/.test(p.op) ? i : n), 0);
     const mixed = guarded.slice(lastList).some((p) => p.op === "||");
     const firstListEnd = guarded.findIndex((p, i) => i > 0 && /^[;&\n]$/.test(p.op));
-    const exitAt = guarded.findIndex((p, i) => terminalAt(parts, i, p.op));
+    const exitAt = guarded.findIndex((_p, i) => terminalAt(parts, i, sure[i] as boolean));
     const afterExit = exitAt < 0 ? guarded.length : exitAt + 1;
-    const unfinished = x.exit === null && firstListEnd >= 0 ? firstListEnd : guarded.length;
+    const unfinished = exit === null && firstListEnd >= 0 ? firstListEnd : guarded.length;
     const reached = Math.min(afterExit, unfinished);
     return guarded
         .slice(0, reached)
         .filter(
-            (p, i) => p.op !== "||" && (p.op !== "&&" || (x.exit === 0 && i >= lastList && !mixed)),
+            (p, i) =>
+                (sure[i] as boolean) || (p.op === "&&" && exit === 0 && i >= lastList && !mixed),
         );
 };
+/** A group or subshell part opens into its body's reachable parts; the body's own status is unknown. */
+const flattened = (p: Segment): Segment[] => {
+    const group = groupBody(p.seg);
+    if (!group) return [p];
+    return reachableParts(group.body, undefined).flatMap(flattened);
+};
+const executedParts = (x: Command): Segment[] =>
+    reachableParts(x.command, x.exit).flatMap(flattened);
 const executed = (x: Command): string[] => executedParts(x).map((p) => unprefixed(p.seg));
 /** Shell words of a segment, with quotes grouping and removed. */
 const shellWords = (segment: string): string[] => {
@@ -405,13 +442,22 @@ const unprefixed = (seg: string): string => {
         if (!m) return rest;
         let i = m[0].length;
         let quote = "";
+        /** Open `$(`, `${`, and backtick substitutions, inside which whitespace belongs to the value. */
+        const nest: string[] = [];
         while (i < rest.length) {
             const ch = rest[i] as string;
             if (quote) {
                 if (ch === quote) quote = "";
+            } else if (nest.at(-1) === "`") {
+                if (ch === "`") nest.pop();
             } else if (ch === "'" || ch === '"') quote = ch;
             else if (ch === "\\") i++;
-            else if (/\s/.test(ch)) break;
+            else if (ch === "`") nest.push("`");
+            else if (ch === "$" && (rest[i + 1] === "(" || rest[i + 1] === "{")) {
+                nest.push(rest[i + 1] === "(" ? ")" : "}");
+                i++;
+            } else if (nest.length > 0 && ch === nest.at(-1)) nest.pop();
+            else if (nest.length === 0 && /\s/.test(ch)) break;
             i++;
         }
         if (i >= rest.length) return rest;
