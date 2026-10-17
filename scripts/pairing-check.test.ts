@@ -153,6 +153,44 @@ test("the pairing check recomputes each arm's rates from its delivered turns", (
     expect(thin.exit).toBe(1);
 });
 
+test("a pairing row must sit at its compiled event's session and index, once", () => {
+    const events = [
+        { id: "e-1", kind: "user_turn", session: "s-1", index: 0, role: "filler", text: "Go." },
+        { id: "e-2", kind: "user_turn", session: "s-1", index: 1, role: "filler", text: "On." },
+    ];
+    const row = (arm: string, event: string, session: string, index: number) => ({
+        kind: "turn",
+        arm,
+        session,
+        event,
+        index,
+        label: "task",
+        delivered: true,
+        digest: "d",
+        context_sha256: "c",
+        prefix_sha256: "p",
+        text_sha256: "t",
+        source: "script",
+    });
+    const good = run(complete("a", "b"), events, [
+        row("a", "e-1", "s-1", 0),
+        row("a", "e-2", "s-1", 1),
+        row("b", "e-1", "s-1", 0),
+        row("b", "e-2", "s-1", 1),
+    ]);
+    expect(good.report.misplaced_rows).toEqual([]);
+    expect(good.exit).toBe(0);
+    const bad = run(complete("a", "b"), events, [
+        row("a", "e-1", "s-1", 0),
+        row("a", "e-2", "s-9", 1),
+        row("b", "e-1", "s-1", 0),
+        row("b", "e-1", "s-1", 0),
+        row("b", "e-2", "s-1", 1),
+    ]);
+    expect(bad.report.misplaced_rows).toEqual(["a e-2", "b e-1"]);
+    expect(bad.exit).toBe(1);
+});
+
 test("the pairing check fails a run that never reached EndArm for an arm or EndRun", () => {
     const noEndArm = run([rates("a"), rates("b"), endArm("a"), endRun]);
     expect(noEndArm.report.incomplete).toEqual(["b EndArm"]);

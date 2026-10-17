@@ -788,6 +788,41 @@ describe("tape and pairing", () => {
         ).not.toThrow();
     });
 
+    test("a replay source under another fault override is refused", () => {
+        const root = dir();
+        writeFileSync(join(root, "tape.jsonl"), "");
+        writeFileSync(join(root, "pairing.jsonl"), "");
+        writeFileSync(
+            join(root, "manifest.json"),
+            JSON.stringify({ seed: 101, scenario_hash: "abc", fault_override: [{ id: "f" }] }),
+        );
+        const run = { seed: 101, scenario_hash: "abc", fault_override: null };
+        expect(() => checkTapeSources([join(root, "tape.jsonl")], run)).toThrow("fault");
+        expect(() =>
+            checkTapeSources([join(root, "tape.jsonl")], { ...run, fault_override: [{ id: "f" }] }),
+        ).not.toThrow();
+    });
+
+    test("a replay source must hold a turn record for every arm and event of this run", () => {
+        const first = dir();
+        const recordedRun = sim(first, counting());
+        const a = script.slice(0, 4);
+        for (const [i, t] of a.entries()) recordedRun.user.deliver("a", t, outputs[i] ?? "");
+        writeFileSync(
+            join(first, "manifest.json"),
+            JSON.stringify({ seed: 101, scenario_hash: "abc", order: ["a"], events: 5 }),
+        );
+        writeFileSync(join(first, "journal.jsonl"), '{"kind":"EndRun"}\n');
+        const run = {
+            seed: 101,
+            scenario_hash: "abc",
+            order: ["a"],
+            events: 5,
+            turns: script.map((t) => t.id),
+        };
+        expect(() => checkTapeSources([join(first, "tape.jsonl")], run)).toThrow("a e-5");
+    });
+
     test("a replay source from another pre-registration is refused", () => {
         const root = dir();
         writeFileSync(join(root, "tape.jsonl"), "");

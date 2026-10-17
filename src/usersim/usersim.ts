@@ -168,6 +168,9 @@ export function checkTapeSources(
         prereg_sha256?: string;
         events?: number;
         order?: readonly string[];
+        fault_override?: unknown;
+        /** The ids of this run's user turns; the source must hold a record for each per arm. */
+        turns?: readonly string[];
     },
 ): void {
     for (const tape of tapes) {
@@ -179,7 +182,15 @@ export function checkTapeSources(
             prereg_sha256?: unknown;
             events?: unknown;
             order?: unknown;
+            fault_override?: unknown;
         };
+        // The fault schedule pins turns and so fixes the labels in every tape key.
+        if (
+            run.fault_override !== undefined &&
+            JSON.stringify(manifest.fault_override ?? null) !== JSON.stringify(run.fault_override)
+        ) {
+            throw new HarnessFailure(`replay source ${tape} ran under another fault override`);
+        }
         // A source that never ran an arm of this run has no reply for it; its reference arm in
         // particular would go live with no divergence on record.
         const ran = Array.isArray(manifest.order) ? (manifest.order as unknown[]) : [];
@@ -211,6 +222,24 @@ export function checkTapeSources(
         }
         if (run.prereg_sha256 !== undefined && manifest.prereg_sha256 !== run.prereg_sha256) {
             throw new HarnessFailure(`replay source ${tape} is from another pre-registration`);
+        }
+        if (run.turns !== undefined) {
+            // A dropped row leaves a turn with no recorded context to match; the source must
+            // hold one record per arm and turn of this run.
+            const recorded = new Set(
+                readPairing(pairingBeside(tape))
+                    .filter((r) => r.kind === "turn")
+                    .map((r) => `${r.arm} ${r.event}`),
+            );
+            const missing = (run.order ?? []).flatMap(
+                (arm) =>
+                    run.turns
+                        ?.filter((id) => !recorded.has(`${arm} ${id}`))
+                        .map((id) => `${arm} ${id}`) ?? [],
+            );
+            if (missing.length > 0) {
+                throw new HarnessFailure(`replay source ${tape} lacks turns ${missing.join(", ")}`);
+            }
         }
     }
 }

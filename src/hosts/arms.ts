@@ -880,7 +880,13 @@ export class OpencodeSimHost extends SimHost {
             return { error: `tool capture: ${String(caught)}`.slice(0, 2000) };
         }
         const startScenario = this.ctx.now?.() ?? 0;
-        const outcome = await this.turn(text, timeoutMs, interruptMs);
+        // The listing spent part of the turn's deadline; the turn gets the rest.
+        const outcome = await this.turn(
+            text,
+            Math.max(1, timeoutMs - (Date.now() - started)),
+            interruptMs,
+            timeoutMs,
+        );
         const remaining = Math.max(1_000, timeoutMs - (Date.now() - started));
         try {
             await this.logTurnTools(seen, startScenario, remaining);
@@ -923,6 +929,7 @@ export class OpencodeSimHost extends SimHost {
         text: string,
         timeoutMs: number,
         interruptMs?: number,
+        wholeMs = timeoutMs,
     ): Promise<PromptResult> {
         const model = { providerID: "amazon-bedrock", modelID: this.ctx.model };
         const call = this.client.session.prompt({
@@ -960,7 +967,7 @@ export class OpencodeSimHost extends SimHost {
             const drained = await Promise.race([settled, this.drained()]);
             abort.cancel();
             if (drained === null) throw new Error("OpenCode turn still running after abort");
-            return { error: `turn deadline ${timeoutMs} ms` };
+            return { error: `turn deadline ${wholeMs} ms` };
         }
         if ("caught" in first) {
             const tail = String(this.oc?.stderr?.() ?? "").slice(-600);

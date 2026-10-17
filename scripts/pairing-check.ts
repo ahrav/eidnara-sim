@@ -80,6 +80,17 @@ const scheduled = scenario.events
     .slice(0, manifest.events as number)
     .filter((e) => e.kind === "user_turn");
 const recorded = new Set(turns.map((r) => `${r.arm} ${r.event}`));
+// A row certifies its turn only at the compiled event's session and index, and only once.
+const seenRows = new Set<string>();
+const misplaced = turns
+    .filter((r) => {
+        const key = `${r.arm} ${r.event}`;
+        const event = script.get(r.event);
+        const dup = seenRows.has(key);
+        seenRows.add(key);
+        return dup || !event || event.session !== r.session || event.index !== r.index;
+    })
+    .map((r) => `${r.arm} ${r.event}`);
 const report = {
     reference: first,
     mismatches_before_divergence: pairingMismatches(records, reference),
@@ -103,6 +114,7 @@ const report = {
     missing_rates: (manifest.order as string[]).filter(
         (arm) => journal.filter((e) => e.kind === "UserSimRates" && e.arm === arm).length !== 1,
     ),
+    misplaced_rows: [...new Set(misplaced)],
     missing_turns: (manifest.order as string[]).flatMap((arm) =>
         scheduled.map((e) => `${arm} ${e.id}`).filter((key) => !recorded.has(key)),
     ),
@@ -127,6 +139,7 @@ const failed =
     report.missing_rates.length +
     report.rates_mismatch.length +
     report.missing_turns.length +
+    report.misplaced_rows.length +
     report.incomplete.length +
     report.interrupted_turns.length;
 process.exit(failed > 0 ? 1 : 0);

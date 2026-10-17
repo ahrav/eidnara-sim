@@ -562,6 +562,20 @@ test("a deadline abort still open when the drained turn settles is cancelled too
     expect(signal?.aborted).toBe(true);
 });
 
+test("the message listing before an OpenCode turn spends the turn's own deadline", async () => {
+    let listings = 0;
+    const host = opencodeHost({
+        session: {
+            messages: () => Bun.sleep(listings++ === 0 ? 300 : 0).then(() => ({ data: [] })),
+            prompt: () => Bun.sleep(400).then(() => ({ data: { info: {} } })),
+            abort: async () => ({ data: true }),
+        },
+    });
+    Object.assign(host as unknown as Record<string, unknown>, { drainWaitMs: 1_000 });
+    const result = await host.prompt("go", 500);
+    expect(result.error).toContain("turn deadline 500 ms");
+});
+
 test("an aborted OpenCode turn whose tool listing then fails keeps the interrupt beside the capture error", async () => {
     let listings = 0;
     const host = opencodeHost({
