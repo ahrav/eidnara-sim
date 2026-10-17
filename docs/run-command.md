@@ -29,7 +29,8 @@ an array of complete episodes (known type and strategy, numeric params with
 probabilities in [0, 1], positive integer counts, non-negative durations and
 timeouts, a `single` strategy for scheduler-layer faults (`persistent` for
 `store_full`), `count` for a `burst`, and `probability` and `calls` for an
-`intermittent`, a seam, unique ids, and a `session_start` trigger for the
+`intermittent`, a seam, ids unique among the faults and distinct from every
+scenario event id, and a `session_start` trigger for the
 between-session faults `laptop_sleep`, `daemon_restart`, `plugin_reload`,
 `model_switch`, and `store_full`) valid against the compiled scenario
 (`validateFault`); the compiled scenario's own faults pass the same checks
@@ -71,7 +72,11 @@ output directory that already holds call, fault, or preflight evidence, a
 `s`, `store.img`, `daemon.log`, `transcripts.json`, `resources.jsonl`,
 `state.json`), since a fresh run would extend or delete them; a
 `journal.jsonl` with bytes but no complete entry is refused rather than
-truncated. Every staged write (scenario, manifest, clock
+truncated. A fresh run writes `attempt.json` before its preflight, so the
+scratch that preflight creates (`toolbin`, `interception`, `hostbin`) is
+recognized as this harness's own and removed when a failed or killed first
+preflight left it behind; without that marker those directories are refused
+like the other artifacts. Every staged write (scenario, manifest, clock
 offset, `state.json`, the sandbox launcher) creates its staging file
 exclusively without following a link, then renames it into place, and the
 toolchain wrappers are created exclusively after removing any planted name.
@@ -89,13 +94,16 @@ toolchain wrappers are created exclusively after removing any planted name.
    whose start is still pending is stopped rather than orphaned. Later
    signals wait for the teardown. The tier's `tier_wall_budget_ms` starts a
    timer at the same point; once it fires, every driver call refuses the
-   same way, the scheduler's idle wait and next step fail at once, and a
-   call that was in flight when it fired fails on return, so the run stops
-   before `EndArm` and fails. A turn or job in flight is bounded by its own
-   deadline (15 or 20 minutes), so the overrun past the budget is at most
-   that long.
+   same way, the scheduler's idle wait and next step fail at once, a
+   call that was in flight when it fired fails on return, and a call still
+   blocked thirty seconds after it fired is abandoned, so the run proceeds to
+   teardown (which stops the drivers and their process trees) and fails
+   before `EndArm`. A turn or job in flight is bounded by its own deadline
+   (15 or 20 minutes), so the overrun past the budget is at most that long.
 2. Open the journal, and compile the scenario into `scenario.json` on the
-   first invocation. Every invocation recomputes the SHA-256 of the file's
+   first invocation (the shared embedding cache `runs/scenarios/embeddings.jsonl`,
+   its staging file, and its directory must be plain entries resolving inside
+   this tree's `runs/` and outside the Eidnara checkout). Every invocation recomputes the SHA-256 of the file's
    body and refuses a `scenario.json` whose `scenario_hash` differs, one
    compiled for another tier or seed, one whose project ids are not plain
    names, one with a repeated event id, an unknown event kind, a non-numeric
@@ -261,7 +269,8 @@ so folds happen within six sessions, and writes `witness.json`:
 `--summarize` rebuilds `witness.json` from an existing directory. The
 script exits nonzero when a run it started exits unexpectedly, never
 reaches the awaited state within twenty minutes, or runs past the S wall
-budget plus five minutes (it is then killed and reported `timed_out`), or
+budget plus five minutes counted from its launch (it is then killed and
+reported `timed_out`), or
 when a check fails:
 `scheduled` exits 0, `rogue` exits nonzero with the daemon-exit refusal,
 `resume` is killed with 137 while `e-000007` has `BeginTurn` and no
@@ -271,8 +280,12 @@ failed(interrupted)` and one `Event failed(interrupted)`, both for
 in `EndRun` with contiguous call `seq` values from 0 and no journal
 invariant violation (including a repeated sleep jump). The summary parses
 final journals and call records strictly; a corrupt or unterminated final line
-fails the witness, while polling during a run tolerates an unterminated final
-line. Every case needs its launch outcome in `outcome.json`; each cached
+or a call row that fails the `CallRecord` schema fails the witness, while
+polling during a run tolerates an unterminated final line. Every case needs
+its launch outcome recorded as an object in `outcome.json`, and each case's
+exit, kill, and rebilling assertions run unconditionally on it; the `rogue`
+outcome must record the SIGKILL the script sent to the daemon `state.json`
+named (`rogue_killed`, with no `rogue_kill_error`); each cached
 `scenario.json` must still hash to its `scenario_hash`, each `manifest.json`
 must name that hash, carry the case's prescribed tier, seed, arms, event
 count, context limit, models, and fault override, and match the digest its
@@ -288,7 +301,9 @@ The scheduled and resume runs must also show their evidence per arm: every
 deterministic fault of the set fired, every fault with a mechanism observed
 (on `eidnara`, the restart with a new daemon pid and `restarted_by: harness`,
 the full store with `avail_kb: 0`, and the model switch's boundary: sessions
-before its trigger used the first model, sessions from it on the second),
+before its trigger used the first model, sessions from it on the second,
+where each agent call is placed by the session the scenario schedules for
+its turn and a call whose recorded session differs from that fails the check),
 exactly one jump tagged with each sleep episode's id per arm, agent calls on both configured models, and no duplicate `Event` entry
 (the mid-fold kills fire only when a summarizer call happens, so they are not
 required; `plugin_reload` has no startup record to inspect beyond the

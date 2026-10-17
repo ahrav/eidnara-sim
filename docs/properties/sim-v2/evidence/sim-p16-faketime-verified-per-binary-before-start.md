@@ -47,9 +47,15 @@ The real sandbox launcher, the interposer on a kept mount, and each host binary.
 ## Investigation log
 
 ### Q: OQ-9
-- Sources examined: spec #1007 Open Questions; the M0 pre-registration files.
-- Findings: OQ-9: whether the Bun-compiled OpenCode binary reads time through libc.
-  Unresolved, needs the per-binary interception test at the first S
-  `StartRun`.
-- Missing evidence: a harness run that exercises the record.
-- Conclusion: unresolved, needs a harness run
+- Sources examined: spec #1007 Open Questions; the M0 pre-registration files;
+  `src/run/time.test.ts`; the `Preflight` journal entries of the 2026-10-16
+  live witness runs (`witness-8`, `docs/run-command.md`).
+- Findings: OQ-9 asked whether the Bun-compiled OpenCode binary reads time
+  through libc. The per-binary interception test launches OpenCode 1.18.22
+  under the real sandbox launcher with the interposer and requires a jumped
+  clock and a kept 100 ms timer; `src/run/time.test.ts` passes on this host,
+  and every `Preflight` entry of the `scheduled`, `rogue`, and `resume`
+  journals records `opencode` as intercepted.
+- Missing evidence: none for this release; a later OpenCode release is
+  re-tested by the same preflight before each `StartRun`.
+- Conclusion: resolved, OpenCode reads time through libc and is intercepted.

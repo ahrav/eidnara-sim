@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+    existsSync,
     linkSync,
     mkdirSync,
     mkdtempSync,
@@ -167,6 +168,17 @@ describe("run inputs", () => {
         expect(() => requireFreshArmRoots(out, ["host", "eidnara"])).not.toThrow();
         mkdirSync(join(out, "eidnara", "r"), { recursive: true });
         expect(() => requireFreshArmRoots(out, ["host", "eidnara"])).toThrow(/has no journal/);
+    });
+
+    test("preflight scratch from an earlier recorded fresh attempt is removed, other evidence refused", () => {
+        const out = dir();
+        mkdirSync(join(out, "toolbin"));
+        expect(() => requireFreshArmRoots(out, ["host"])).toThrow(/toolbin exists/);
+        writeFileSync(join(out, "attempt.json"), "{}\n");
+        expect(() => requireFreshArmRoots(out, ["host"])).not.toThrow();
+        expect(existsSync(join(out, "toolbin"))).toBe(false);
+        writeFileSync(join(out, "calls.jsonl"), "");
+        expect(() => requireFreshArmRoots(out, ["host"])).toThrow(/calls.jsonl exists/);
     });
 
     test("the pinned OpenCode release must be the first PATH entry that resolves opencode", () => {

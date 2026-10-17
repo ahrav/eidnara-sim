@@ -124,6 +124,8 @@ const ARTIFACTS = [
     "preflight.jsonl",
     "calls.jsonl",
     "faults.jsonl",
+    "attempt.json",
+    `attempt.json.${process.pid}`,
 ];
 
 /**
@@ -351,16 +353,23 @@ export function manifestIdentity(manifest: Manifest): string {
     return sha256Hex(canonicalJson(fields));
 }
 
-/** A run with no journal yet owns no evidence or arm payload; any such existing file is refused. */
+/** Written before a fresh run's preflight; names the scratch directories that preflight creates. */
+const ATTEMPT = "attempt.json";
+const PREFLIGHT_SCRATCH = ["toolbin", "interception", "hostbin"];
+
+/**
+ * A run with no journal yet owns no evidence or arm payload; any such existing file is refused.
+ * Preflight scratch left by an earlier fresh attempt of this harness (recorded in `attempt.json`
+ * before preflight ran) is this harness's own and is removed, so a failed first preflight leaves
+ * a directory the next invocation can use.
+ */
 export function requireFreshArmRoots(out: string, arms: readonly string[]): void {
-    const evidence = [
-        "calls.jsonl",
-        "faults.jsonl",
-        "preflight.jsonl",
-        "toolbin",
-        "interception",
-        "hostbin",
-    ];
+    const attempt = lstatSync(join(out, ATTEMPT), { throwIfNoEntry: false });
+    if (attempt?.isFile()) {
+        for (const scratch of PREFLIGHT_SCRATCH)
+            rmSync(join(out, scratch), { recursive: true, force: true });
+    }
+    const evidence = ["calls.jsonl", "faults.jsonl", "preflight.jsonl", ...PREFLIGHT_SCRATCH];
     const perArm = [
         "r",
         "s",
@@ -478,6 +487,30 @@ export function requireDeclaredProjects(scenario: Scenario): void {
 
 const EVENT_KINDS = new Set(["session_start", "user_turn", "apply_diff", "session_end"]);
 
+/**
+ * The shared embedding cache, its staging file, and its directory are plain entries that resolve
+ * inside this tree's `runs/`, so the embedder's append and the CLI's write reach no other file.
+ */
+export function requirePlainCache(cache: string, checkout: string): void {
+    const runs = realpathSync(join(ROOT, "runs"));
+    const dir = realpathSync(dirname(cache));
+    if (dir !== runs && !dir.startsWith(`${runs}/`)) {
+        throw new HarnessFailure(`${dirname(cache)} resolves to ${dir}, outside ${runs}`);
+    }
+    const real = realpathSync(checkout);
+    if (dir === real || dir.startsWith(`${real}/`)) {
+        throw new HarnessFailure(`${dirname(cache)} resolves inside the Eidnara checkout`);
+    }
+    for (const path of [cache, `${cache}.${process.pid}.tmp`]) {
+        const stat = lstatSync(path, { throwIfNoEntry: false });
+        if (!stat) continue;
+        if (stat.isSymbolicLink()) throw new HarnessFailure(`${path} is a symlink`);
+        if (!stat.isFile()) throw new HarnessFailure(`${path} is not a regular file`);
+        if (stat.nlink > 1) throw new HarnessFailure(`${path} has ${stat.nlink} links`);
+        if (path !== cache) rmSync(path, { force: true });
+    }
+}
+
 /** `scenario.json` is accepted only when its body still hashes to its `scenario_hash`. */
 export async function loadScenario(o: Pick<RunOptions, "config" | "out" | "seed" | "tier">) {
     const path = join(o.out, "scenario.json");
@@ -485,6 +518,7 @@ export async function loadScenario(o: Pick<RunOptions, "config" | "out" | "seed"
         const { aws_profile, region } = o.config.bedrock;
         const cache = join(ROOT, "runs/scenarios/embeddings.jsonl");
         mkdirSync(dirname(cache), { recursive: true });
+        requirePlainCache(cache, o.config.eidnara_checkout);
         const embedder = bedrockEmbedder(aws_profile, region, cache);
         const compiled = await compileScenario(loadCompileInput(o.seed, o.tier, embedder));
         writeAtomic(path, `${canonicalJson(compiled)}\n`);
@@ -638,6 +672,7 @@ function validateEpisodes(raw: unknown[], scenario: Scenario, source: string): v
     const turns = new Map(scenario.sessions.map((x) => [x.id, x.requests]));
     const ids = new Set<string>();
     const perSession = new Set<string>();
+    const eventIds = new Set(scenario.events.map((e) => String(e.id)));
     raw.forEach((value, i) => {
         const problems = episodeProblems(value);
         if (problems.length > 0) {
@@ -645,6 +680,9 @@ function validateEpisodes(raw: unknown[], scenario: Scenario, source: string): v
         }
         const episode = value as FaultEpisode;
         if (ids.has(episode.id)) throw new HarnessFailure(`${source}: duplicate id ${episode.id}`);
+        if (eventIds.has(episode.id)) {
+            throw new HarnessFailure(`${source}: id ${episode.id} is also a scenario event id`);
+        }
         ids.add(episode.id);
         if (episode.type === "daemon_sigkill_mid_fold" || episode.type === "laptop_sleep") {
             const key = `${episode.type}/${episode.trigger.session}`;
@@ -976,6 +1014,9 @@ interface Stop {
     reason: string | null;
     /** Every driver call in flight; a signal teardown waits for them up to `SIGNAL_GRACE_MS`. */
     active: Set<Promise<unknown>>;
+    /** Resolves once `reason` is set, so a blocked driver call stops waiting after the grace. */
+    raised: Promise<void>;
+    raise: () => void;
 }
 
 const SIGNAL_GRACE_MS = 30_000;
@@ -1012,10 +1053,15 @@ export async function runTier(o: RunOptions): Promise<void> {
         done ??= runSteps(cleanup.splice(0));
         return done;
     };
-    const stop: Stop = { reason: null, active: new Set() };
+    let raise = () => undefined as void;
+    const raised = new Promise<void>((done) => {
+        raise = done;
+    });
+    const stop: Stop = { reason: null, active: new Set(), raised, raise };
     const onSignal = (signal: NodeJS.Signals) => {
         if (done) return;
         stop.reason ??= `signal ${signal}`;
+        stop.raise();
         const settled = Promise.allSettled([...stop.active]);
         void Promise.race([settled, Bun.sleep(SIGNAL_GRACE_MS)])
             .then(() => teardown())
@@ -1048,17 +1094,29 @@ async function runArms(
     const guard = () => {
         if (stop.reason) throw new HarnessFailure(`run stopping: ${stop.reason}`);
     };
-    /** Each driver call runs between two stop checks and is recorded while in flight. */
+    /**
+     * Each driver call runs between two stop checks and is recorded while in flight. A call still
+     * blocked `SIGNAL_GRACE_MS` after a stop is raised is abandoned: the failure reaches teardown,
+     * which stops the drivers and their process trees, so the tier budget ends the run.
+     */
     const tracked = async <T>(call: () => Promise<T>): Promise<T> => {
         guard();
         const active = call();
         stop.active.add(active);
+        const abandoned = stop.raised
+            .then(() => Bun.sleep(SIGNAL_GRACE_MS))
+            .then(() => {
+                throw new HarnessFailure(
+                    `run stopping: ${stop.reason}; a driver call is still blocked`,
+                );
+            });
         try {
-            const result = await active;
+            const result = await Promise.race([active, abandoned]);
             guard();
             return result;
         } finally {
             stop.active.delete(active);
+            active.catch(() => undefined);
         }
     };
     let samplerFailure: unknown = null;
@@ -1077,6 +1135,7 @@ async function runArms(
             } catch (caught) {
                 samplerFailure ??= caught;
                 stop.reason ??= `post-turn hold failed: ${(caught as Error).message}`;
+                stop.raise();
             }
         };
         const timer = setTimeout(() => {
@@ -1086,6 +1145,7 @@ async function runArms(
             } catch (caught) {
                 samplerFailure ??= caught;
                 stop.reason ??= `sampler failed: ${(caught as Error).message}`;
+                stop.raise();
             } finally {
                 end();
             }
@@ -1097,6 +1157,7 @@ async function runArms(
     const wallBudgetMs = prereg.liveness_bounds.tier_wall_budget_ms;
     const budget = setTimeout(() => {
         stop.reason ??= `tier wall budget of ${wallBudgetMs} ms exhausted`;
+        stop.raise();
     }, wallBudgetMs);
     budget.unref();
     cleanup.push(() => clearTimeout(budget));
@@ -1109,6 +1170,10 @@ async function runArms(
             );
         }
         requireFreshArmRoots(o.out, loadPrereg(o.tier).arms.run);
+        writeAtomic(
+            join(o.out, ATTEMPT),
+            `${JSON.stringify({ pid: process.pid, started_wall_ms: Date.now() })}\n`,
+        );
     }
     const journal = new Journal(journalPath);
     cleanup.push(() => journal.close());
@@ -1290,6 +1355,7 @@ async function runArms(
             onError: (caught) => {
                 samplerFailure ??= caught;
                 stop.reason ??= `sampler failed: ${(caught as Error).message}`;
+                stop.raise();
             },
         });
         samplers.set(arm, sampler);
@@ -1302,11 +1368,11 @@ async function runArms(
                     await driver.reset();
                     sampler.start();
                 }),
-            resume: (open) =>
+            resume: (open, interrupted) =>
                 tracked(async () => {
                     scope.arm = arm;
                     scope.session = open?.session ?? null;
-                    await driver.resume(open);
+                    await driver.resume(open, interrupted);
                     sampler.start();
                 }),
             event: (e) =>

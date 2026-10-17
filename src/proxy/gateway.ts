@@ -4,7 +4,7 @@ import {
     type Http2Server,
     type ServerHttp2Session,
 } from "node:http2";
-import type { AddressInfo } from "node:net";
+import type { AddressInfo, Socket } from "node:net";
 import {
     BedrockRuntimeClient,
     ConverseCommand,
@@ -177,9 +177,13 @@ export function stripUnsupported(
 export class Gateway {
     private servers: (Server | Http2Server)[] = [];
     private readonly sessions = new Set<ServerHttp2Session>();
+    /** Open HTTP/1 sockets, destroyed on stop so a client mid-upload cannot hold the close. */
+    private readonly sockets = new Set<Socket>();
     inFlight = 0;
     readonly failures: Error[] = [];
     private readonly active = new Map<Promise<void>, AbortController>();
+    /** Uploads still streaming in, by the closure that records them as abandoned. */
+    private readonly uploads = new Set<() => void>();
     /** Arrival ordinals continue after the highest one the persisted records carry. */
     private calls: number;
     /** Set once `stop` returns; a handler that settles afterwards persists nothing. */
@@ -256,14 +260,17 @@ export class Gateway {
             const arrived = this.arrival();
             const release = this.arrive();
             const abandoned = () => {
+                this.uploads.delete(abandoned);
                 gone.abort();
                 if (!body.complete) this.abortedUpload(req.url ?? "", body, release, arrived, gone);
             };
+            this.uploads.add(abandoned);
             res.on("close", () => !res.writableFinished && abandoned());
             req.on("aborted", abandoned);
             req.on("error", abandoned);
             req.on("data", (c: Buffer) => body.push(c));
             req.on("end", () => {
+                this.uploads.delete(abandoned);
                 body.complete = true;
                 const header = req.headers[COMPONENT_HEADER] as string | undefined;
                 this.track(
@@ -285,6 +292,10 @@ export class Gateway {
                 );
             });
         });
+        h1.on("connection", (socket) => {
+            this.sockets.add(socket);
+            socket.on("close", () => this.sockets.delete(socket));
+        });
         const h2 = createHttp2Server();
         h2.on("session", (session) => {
             this.sessions.add(session);
@@ -296,15 +307,18 @@ export class Gateway {
             const arrived = this.arrival();
             const release = this.arrive();
             const abandoned = () => {
+                this.uploads.delete(abandoned);
                 gone.abort();
                 const path = String(headers[":path"] ?? "");
                 if (!body.complete) this.abortedUpload(path, body, release, arrived, gone);
             };
+            this.uploads.add(abandoned);
             stream.on("close", () => !stream.writableFinished && abandoned());
             stream.on("aborted", abandoned);
             stream.on("data", (c: Buffer) => body.push(c));
             stream.on("error", abandoned);
             stream.on("end", () => {
+                this.uploads.delete(abandoned);
                 body.complete = true;
                 const live = () => !stream.destroyed;
                 const header = headers[COMPONENT_HEADER] as string | undefined;
@@ -345,7 +359,11 @@ export class Gateway {
             this.servers.map((s) => new Promise<void>((done) => s.close(() => done()))),
         );
         (this.servers[0] as Server | undefined)?.closeAllConnections();
+        for (const socket of this.sockets) socket.destroy();
         for (const session of this.sessions) session.destroy();
+        // A partial upload joins `active` here, before the drain check, so its 499 record is
+        // written and counted whatever order the socket's own events fire in.
+        for (const abandon of [...this.uploads]) abandon();
         for (const gone of this.active.values()) gone.abort();
         await closed;
         if (this.active.size === 0) {

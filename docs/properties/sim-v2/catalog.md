@@ -516,14 +516,15 @@ a kept mount, and each host binary.
 Confidence: medium - [evidence](evidence/sim-p16-faketime-verified-per-binary-before-start.md).
 M4 (#1028) implements the surface; the unit tests and the live witness named
 under Existing check construct the record, and a default tier run reaches it.
+OQ-9 (whether the Bun-compiled OpenCode binary reads time through libc) is
+closed: the 2026-10-16 live witness's `Preflight` entries record OpenCode
+1.18.22 as intercepted.
 Existing check: `src/run/time.test.ts` (per-binary interception), the
 `Preflight` journal entry `src/run/run.ts` writes before `StartRun`, required
 by `tests/witness-faults.ts` with `pi`, `opencode`, and `daemon` intercepted
 Impact: A binary silently runs on wall time and every scenario-time claim about
 it is false.
-Open questions:
-- OQ-9: whether the Bun-compiled OpenCode binary reads time through libc.
-  Unresolved, needs the per-binary interception test at the first S `StartRun`.
+Open questions: None.
 
 ### sim-p17-long-idle-gaps-reached
 

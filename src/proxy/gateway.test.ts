@@ -939,6 +939,35 @@ describe("call records", () => {
         });
     });
 
+    test("a stop with an upload still streaming records it as rejected before reporting drained", async () => {
+        const records = new RecordWriter(null);
+        const gateway = new Gateway({
+            upstream: scriptedUpstream(),
+            records,
+            injector: new FaultInjector([], new Rng(1), 1_000),
+            rng: new Rng(1),
+            clock: { scenarioMs: () => 7 },
+            scope: () => ({ arm: "a", session: "s", turn: "t" }),
+        });
+        await gateway.start();
+        gateways.push(gateway);
+        const url = new URL(`${gateway.urls[0]}/model/m/converse`);
+        const req = request({
+            host: url.hostname,
+            port: url.port,
+            method: "POST",
+            path: url.pathname,
+            headers: { "content-length": "100" },
+        });
+        req.on("error", () => undefined);
+        req.write("partial");
+        await Bun.sleep(100);
+        await gateway.stop();
+        expect(records.records).toHaveLength(1);
+        expect(records.records[0]).toMatchObject({ component: "rejected", status: 499 });
+        req.destroy();
+    });
+
     test("scenario time is read at a request's first byte", async () => {
         let clock = 100;
         const records = new RecordWriter(null);

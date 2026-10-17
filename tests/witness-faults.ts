@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { join, resolve } from "node:path";
 import { loadConfig } from "../src/config/config";
 import { canonicalJson, sha256Hex } from "../src/prereg/canonical";
+import { recordProblems } from "../src/proxy/records";
 import { checkJournal, type Schedule } from "../src/run/journal-check";
 import { processStart } from "../src/run/procs";
 import { manifestIdentity, pinnedBin, requireJournalShape, runIdentity } from "../src/run/run";
@@ -75,13 +76,18 @@ const FAULT_SETS: Record<string, FaultEpisode[]> = {
     resume: RESUME_FAULTS,
 };
 
+/** Each child's run limit counts from its launch, whatever the witness awaits in between. */
+const launched = new WeakMap<ReturnType<typeof Bun.spawn>, number>();
+
 function launch(dir: string, args: string[]) {
     mkdirSync(out, { recursive: true });
     const faults = `${dir}.faults.json`;
     writeFileSync(faults, JSON.stringify(FAULT_SETS[dir.split("/").at(-1) ?? ""] ?? []));
     const argv = ["bun", "scripts/run-tier.ts", "--tier", "S", "--seed", "101", "--out", dir];
     argv.push("--faults", faults, "--context-limit", "24000", ...args);
-    return Bun.spawn(argv, { cwd: ROOT, env, stdout: "inherit", stderr: "pipe" });
+    const child = Bun.spawn(argv, { cwd: ROOT, env, stdout: "inherit", stderr: "pipe" });
+    launched.set(child, Date.now());
+    return child;
 }
 
 const WAIT_MS = 20 * 60_000;
@@ -120,10 +126,14 @@ const RUN_LIMIT_MS = loadPrereg("S").liveness_bounds.tier_wall_budget_ms + 5 * 6
 
 async function finished(child: ReturnType<typeof launch>) {
     const limit = { hit: false };
-    const timer = setTimeout(() => {
-        limit.hit = true;
-        child.kill("SIGKILL");
-    }, RUN_LIMIT_MS);
+    const deadline = (launched.get(child) ?? Date.now()) + RUN_LIMIT_MS;
+    const timer = setTimeout(
+        () => {
+            limit.hit = true;
+            child.kill("SIGKILL");
+        },
+        Math.max(0, deadline - Date.now()),
+    );
     const code = await child.exited;
     clearTimeout(timer);
     const stderr = (await new Response(child.stderr).text()).slice(-2000);
@@ -162,6 +172,7 @@ if (only.includes("rogue")) {
     if (typeof pid === "number" && Number.isInteger(pid) && pid > 1 && same) {
         try {
             process.kill(pid, "SIGKILL");
+            outcome.rogue_killed = { pid, start };
         } catch (caught) {
             outcome.rogue_kill_error = String(caught);
         }
@@ -229,8 +240,18 @@ function summarize(dir: string) {
     const manifestEvents = (manifest as { events?: number }).events ?? scenario.events.length;
     const journal = lines(join(dir, "journal.jsonl"), true);
     const calls = lines(join(dir, "calls.jsonl"), true);
+    calls.forEach((row, i) => {
+        const problems = recordProblems(row);
+        if (problems.length > 0) {
+            throw new Error(`${dir}/calls.jsonl row ${i} is malformed: ${problems.join(", ")}`);
+        }
+    });
     const perArm = (arm: string, kind: string) =>
         journal.filter((e) => e.arm === arm && e.kind === kind);
+    /** Each scheduled turn's session, from the scenario; an agent call must carry the same. */
+    const turnSession = new Map(
+        scenario.events.map((e) => [String(e.id), String(e.session)] as const),
+    );
     const arms = [
         ...new Set(journal.map((e) => e.arm).filter((a) => typeof a === "string")),
     ] as string[];
@@ -357,7 +378,11 @@ function summarize(dir: string) {
                     agent_models_by_session: calls
                         .filter((c) => c.arm === arm && c.component === "agent")
                         .reduce<Record<string, string[]>>((acc, c) => {
-                            const key = String(c.session);
+                            const scheduled = turnSession.get(String(c.turn));
+                            const key =
+                                scheduled !== undefined && scheduled === c.session
+                                    ? scheduled
+                                    : `unscoped:${String(c.turn)}/${String(c.session)}`;
                             const seen = acc[key] ?? [];
                             if (!seen.includes(String(c.model))) seen.push(String(c.model));
                             acc[key] = seen;
@@ -551,6 +576,11 @@ const mechanismEvidence = (name: string, arm: string, a: ArmSummary, expected: F
             const [first, second] = models.split(",");
             const switched = f.trigger.session;
             const sessions = Object.entries(a.agent_models_by_session);
+            const unscoped = sessions.filter(([sid]) => sid.startsWith("unscoped:"));
+            check(
+                unscoped.length === 0,
+                `${name}/${arm}: every agent call carries its scheduled turn's session (unscoped: ${unscoped.map(([k]) => k).join(", ") || "none"})`,
+            );
             const before = sessions.filter(([sid]) => sid < switched);
             const after = sessions.filter(([sid]) => sid >= switched);
             check(
@@ -604,8 +634,9 @@ const PRESCRIBED = {
 } as const;
 for (const name of ["scheduled", "rogue", "resume"] as const) {
     check(summary[name] !== null, `${name}: run directory present (every case is required)`);
+    const recorded = outcome[name];
     check(
-        outcome[name] !== undefined,
+        typeof recorded === "object" && recorded !== null && !Array.isArray(recorded),
         `${name}: launch outcome recorded in outcome.json (every case's exit is required)`,
     );
     const b = summary[name]?.bindings;
@@ -634,7 +665,11 @@ for (const name of ["scheduled", "rogue", "resume"] as const) {
         `${name}: run directory matches the current runtime identity (stale: ${stale.join(", ") || "none"})`,
     );
 }
-if (run("scheduled")) check(run("scheduled")?.code === 0, "scheduled: exit 0");
+check(run("scheduled")?.code === 0, "scheduled: exit 0");
+check(
+    !(run("scheduled") as { timed_out?: boolean } | undefined)?.timed_out,
+    "scheduled: within the run limit",
+);
 if (summary.scheduled) {
     check(invariantsClean("scheduled"), "scheduled: EndRun, unique seq, clean invariants");
     const real = summary.scheduled.invariants.jobs_held_after_turn.filter(
@@ -654,21 +689,35 @@ if (summary.rogue) {
         "rogue/eidnara: the journal records exactly one unexpected daemon exit (ItemState daemon_exit, expected false)",
     );
 }
-if (run("rogue")) {
-    const rogue = outcome.rogue as { code: number; stderr: string };
-    check(rogue.code !== 0, "rogue: nonzero exit");
-    check(rogue.stderr.includes("outside a scheduled outage window"), "rogue: daemon exit refused");
-}
-if (outcome.resume) {
-    const resume = outcome.resume as { killed: Run; mid_turn: boolean; second: Run; rebilled: [] };
-    check(resume.killed?.code === 137, "resume: first run killed with 137");
-    check(resume.mid_turn, "resume: kill landed with e-000007 open");
-    check(resume.second?.code === 0, "resume: second run exit 0");
+{
+    const rogue = outcome.rogue as { code?: number; stderr?: string } | undefined;
+    check(typeof rogue?.code === "number" && rogue.code !== 0, "rogue: nonzero exit");
     check(
-        !(resume.second as { timed_out?: boolean } | undefined)?.timed_out,
+        typeof rogue?.stderr === "string" &&
+            rogue.stderr.includes("outside a scheduled outage window"),
+        "rogue: daemon exit refused",
+    );
+    const killed = outcome.rogue_killed as { pid?: unknown; start?: unknown } | undefined;
+    check(
+        typeof killed?.pid === "number" && outcome.rogue_kill_error === undefined,
+        `rogue: the witness sent SIGKILL to the daemon named by state.json (${String(outcome.rogue_kill_error ?? "sent")})`,
+    );
+}
+{
+    const resume = outcome.resume as
+        | { killed?: Run; mid_turn?: boolean; second?: Run; rebilled?: unknown[] }
+        | undefined;
+    check(resume?.killed?.code === 137, "resume: first run killed with 137");
+    check(resume?.mid_turn === true, "resume: kill landed with e-000007 open");
+    check(resume?.second?.code === 0, "resume: second run exit 0");
+    check(
+        !(resume?.second as { timed_out?: boolean } | undefined)?.timed_out,
         "resume: second run within the run limit",
     );
-    check(resume.rebilled.length === 0, "resume: no turn rebilled");
+    check(
+        Array.isArray(resume?.rebilled) && resume.rebilled.length === 0,
+        "resume: no turn rebilled",
+    );
 }
 if (summary.resume) {
     check(invariantsClean("resume"), "resume: EndRun, unique seq, clean invariants");

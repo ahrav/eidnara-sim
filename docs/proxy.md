@@ -135,7 +135,10 @@ A call's record is written when its response ends; a harness killed while a
 response streams leaves no record for that attempt, and the resumed run
 marks the open turn interrupted rather than reissuing it.
 
-`Gateway.stop()` closes every connection, aborts the in-flight handlers, and
+`Gateway.stop()` closes every connection (destroying the HTTP/1 sockets it
+tracked, so a client mid-upload cannot hold the close), records every upload
+still streaming as abandoned (status 499) so it joins the in-flight handlers
+before the drain is judged, aborts those handlers, and
 waits up to `drainMs` (ten seconds by default) for them to write their call
 records, returning as soon as they have; a handler still active when the
 wait ends is recorded in `gateway.failures` alongside any handler failure.
