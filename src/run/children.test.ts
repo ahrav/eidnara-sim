@@ -28,3 +28,14 @@ describe("tier children", () => {
         expect(Date.now() - started).toBeLessThan(100);
     });
 });
+
+test("a hangup stops children with SIGTERM, the signal every run tears down on", async () => {
+    const children = new Children(process.env, 300);
+    const handled = children.run(
+        ["-e", "process.on('SIGTERM', () => process.exit(143)); setInterval(() => {}, 1000)"],
+        log(),
+    );
+    await Bun.sleep(300);
+    await children.stopAll("SIGHUP");
+    expect(await handled).toBe(SIGTERM_EXIT);
+});

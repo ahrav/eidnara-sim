@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { GradeRecord } from "../grade/probes";
@@ -133,4 +133,12 @@ describe("run conditions", () => {
             },
         ]);
     });
+});
+
+test("a symlink inside the transcript tree is skipped, so a loop or an escape cannot derail the walk", () => {
+    const g = fixture();
+    const sessions = join(g.run.dir, "host/r/home/.pi/agent/sessions");
+    symlinkSync("..", join(sessions, "p/loop"));
+    symlinkSync("/", join(sessions, "p/root"));
+    expect(runConditions(g).transcript_order[0]).toMatchObject({ sessions: 2 });
 });

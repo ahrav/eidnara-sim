@@ -49,11 +49,12 @@ export class Children {
     /** Signals every live child, SIGKILLs any still live after `graceMs`, and spawns no more. */
     async stopAll(signal: NodeJS.Signals): Promise<void> {
         this.stopping = true;
+        const sent = signal === "SIGHUP" ? "SIGTERM" : signal;
         const children = [...this.live];
         const exits = children.map(
             (child) => new Promise<void>((done) => child.once("exit", () => done())),
         );
-        for (const child of children) child.kill(signal);
+        for (const child of children) child.kill(sent);
         const backstop = setTimeout(() => {
             for (const child of children) child.kill("SIGKILL");
         }, this.graceMs);

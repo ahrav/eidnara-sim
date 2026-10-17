@@ -26,7 +26,7 @@ test("an OpenCode turn logs only its own messages' tools, timed in OpenCode's cl
         ],
     };
     const fresh = {
-        info: { id: "m2", time: { created: fakeNow } },
+        info: { id: "m2", role: "assistant", finish: "stop", time: { created: fakeNow } },
         parts: [
             {
                 type: "tool",
@@ -76,9 +76,10 @@ test("an OpenCode turn whose last assistant step has not finished is a failed tu
         ["tool-calls", early("tool-calls")],
         [undefined, early(undefined)],
     ] as const) {
+        let calls = 0;
         const client = {
             session: {
-                messages: async () => ({ data: [step(finish)] }),
+                messages: async () => ({ data: calls++ === 0 ? [] : [step(finish)] }),
                 prompt: async () => ({ data: { info: {} } }),
                 abort: async () => ({}),
             },
@@ -93,4 +94,26 @@ test("an OpenCode turn whose last assistant step has not finished is a failed tu
         Object.assign(host as unknown as Record<string, unknown>, { client, sid: "s", oc: {} });
         expect(await host.prompt("go", 5_000)).toEqual(want);
     }
+});
+
+test("an OpenCode turn that leaves no assistant message of its own is a failed turn", async () => {
+    const prior = { info: { id: "m0", role: "assistant", finish: "stop" }, parts: [] };
+    const client = {
+        session: {
+            messages: async () => ({ data: [prior] }),
+            prompt: async () => ({ data: { info: {} } }),
+            abort: async () => ({}),
+        },
+    };
+    const host = new OpencodeSimHost({
+        ...({} as HostContext),
+        config: loadConfig(),
+        root: "/x",
+        launcher: "/x/sandbox.sh",
+        now: () => 0,
+    });
+    Object.assign(host as unknown as Record<string, unknown>, { client, sid: "s", oc: {} });
+    expect(await host.prompt("go", 5_000)).toEqual({
+        error: "the turn returned without an assistant message of its own",
+    });
 });
