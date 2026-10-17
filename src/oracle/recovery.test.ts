@@ -149,6 +149,10 @@ describe("recovery oracles", () => {
         expect(() => recoveries(run([arm(journal(ok, bogus), [], ok)]))).toThrow("store check");
         const badRange = { ...ok, ranges: [["s", 1, 0]] };
         expect(() => recoveries(run([arm(journal(ok, badRange), [], ok)]))).toThrow("store check");
+        for (const coordinate of [Number.POSITIVE_INFINITY, 1.5, -1]) {
+            const odd = { ...ok, ranges: [["s", 1, 0, coordinate, "d"]] };
+            expect(() => recoveries(run([arm(journal(ok, odd), [], ok)]))).toThrow("store check");
+        }
         const miscounted = { ...ok, segments: 2 };
         expect(() => recoveries(run([arm(journal(ok, miscounted), [], ok)]))).toThrow(
             "store check",
@@ -429,6 +433,48 @@ describe("evidence presence", () => {
         ];
         const absent = { ...arm(journal), pluginLogMissing: true as const };
         expect(() => recoveries(run([absent]))).toThrow("eidnara.log");
+        // The host arm skips daemon faults and runs no plugin, so its missing log is no evidence.
+        const skipped = [
+            entry("FaultObserved", 0, {
+                fault: "k",
+                type: "daemon_restart",
+                evidence: { skipped: "arm runs no daemon" },
+            }),
+        ];
+        const host = { ...arm(skipped), arm: "host", pluginLogMissing: true as const };
+        expect(recoveries(run([host])).map((r) => r.recovered)).toEqual([null]);
+        // The host arm runs no plugin, so its faults are judged without a plugin log.
+        const hostReload = { ...arm(journal), arm: "host", pluginLogMissing: true as const };
+        expect(recoveries(run([hostReload])).map((r) => r.recovered)).toEqual([true]);
+    });
+
+    test("a fail-open stamp that parses to no instant refuses the arm", () => {
+        seq = 0;
+        const journal = [
+            entry("FaultObserved", 0, { fault: "f", type: "plugin_reload", evidence: {} }),
+            entry("BeginTurn", 10, { event: "e-1" }),
+            entry("EndTurn", 20, { event: "e-1", outcome: "ok" }),
+        ];
+        for (const stamp of ["2026-13-45T99:99:99.000Z", "2026-02-30T00:00:00.000Z"]) {
+            const log = [`[${stamp}] [eidnara][s-1] rust pass: decision=error served_from=raw`];
+            expect(() => recoveries(run([arm(journal, log)]))).toThrow("fail-open");
+        }
+    });
+
+    test("a fail-open stamped at the instant the next turn begins counts against both turns", () => {
+        seq = 0;
+        const journal = [
+            entry("FaultObserved", 0, { fault: "f", type: "plugin_reload", evidence: {} }),
+            entry("BeginTurn", 10, { event: "e-1" }),
+            entry("EndTurn", 20, { event: "e-1", outcome: "ok" }),
+            entry("BeginTurn", 30, { event: "e-2" }),
+            entry("EndTurn", 40, { event: "e-2", outcome: "ok" }),
+        ];
+        const log = [`${stamp(30)} [eidnara][s-1] rust pass: decision=error served_from=raw`];
+        const [r] = recoveries(run([arm(journal.slice(0, 4), log)]));
+        expect(r?.reasons).toEqual(["e-1: 1 fail-open publications"]);
+        const [both] = recoveries(run([arm(journal, log)]));
+        expect([both?.recovered, both?.turns_to_first_clean]).toEqual([false, null]);
     });
 });
 
@@ -656,6 +702,38 @@ describe("plugin log attribution", () => {
         ];
         const [r] = recoveries(run([arm(journal, [], store("ok"))]));
         expect(r?.reasons).toEqual(["store ranges lack content digests"]);
+    });
+
+    test("two offsets written in one millisecond give the instant to the newer", () => {
+        seq = 0;
+        const base = 1_000_000_000;
+        const journal = [
+            entry("ClockOffset", 0, { wall_ms: 5_000, offset_s: (base - 5_000) / 1000 }),
+            entry("AdvanceClock", 1_000, {
+                wall_ms: 5_000,
+                from_ms: 0,
+                fault: "z1",
+                offset_s: (base - 4_000) / 1000,
+                busy: [],
+            }),
+            entry("AdvanceClock", 3_000, {
+                wall_ms: 5_000,
+                from_ms: 1_000,
+                fault: "z2",
+                offset_s: (base - 2_000) / 1000,
+                busy: [],
+            }),
+            entry("FaultObserved", 3_000, {
+                wall_ms: 5_010,
+                fault: "f",
+                type: "plugin_reload",
+                evidence: {},
+            }),
+            entry("BeginTurn", 3_000, { wall_ms: 5_100, event: "e-1" }),
+            entry("EndTurn", 3_900, { wall_ms: 6_000, event: "e-1", outcome: "ok" }),
+        ];
+        const [r] = recoveries(run([arm(journal)], base));
+        expect([r?.recovered, r?.turns_to_first_clean]).toEqual([true, 1]);
     });
 
     test("clock offset spans must run forward in wall time", () => {

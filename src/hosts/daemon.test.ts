@@ -229,6 +229,23 @@ test("the held stdout of a killed lifetime is recovered from the marker", () => 
     expect(existsSync(join(dir, "daemon.log.source"))).toBe(false);
 });
 
+test("a held stdout appended before a kill is rolled back and appended once", () => {
+    const dir = mkdtempSync(join(tmpdir(), "sim-daemon-"));
+    const logFile = join(dir, "daemon.log");
+    writeFileSync(logFile, "earlier\nstdout line\n");
+    writeFileSync(
+        join(dir, "daemon.log.source"),
+        JSON.stringify({
+            pending: [],
+            copying: null,
+            stdout: "stdout line\n",
+            stdout_target: "earlier\n".length,
+        }),
+    );
+    new DaemonStack(stackCtx(dir)).recoverLog();
+    expect(readFileSync(logFile, "utf8")).toBe("earlier\nstdout line\n");
+});
+
 test("a held log and a live log that are one inode are recovered once", () => {
     const dir = mkdtempSync(join(tmpdir(), "sim-daemon-"));
     const logPath = join(dir, "direct-host.log");
@@ -337,6 +354,29 @@ test("stdout the daemon wrote while handling SIGTERM is saved", async () => {
     expect(readFileSync(join(dir, "daemon.log"), "utf8")).toBe(
         "ready\ndaemon: memory capture output rejected\n",
     );
+});
+
+test("a stop after a failed crash saves the stack's stdout once, superseding the held copy", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "sim-daemon-"));
+    const logPath = join(dir, "direct-host.log");
+    writeFileSync(logPath, "stderr\n");
+    const stack = {
+        logPath,
+        crashHost: async () => {
+            throw new Error("kill refused");
+        },
+        terminateHost: async () => {},
+    };
+    const hh = {
+        __hermeticHostTest: {
+            diagnostics: () => ({ stdout: "ready\n", stderr: "", retainedLog: "" }),
+        },
+    };
+    const daemon = new DaemonStack(stackCtx(dir));
+    Object.assign(daemon as unknown as Record<string, unknown>, { stack, hh });
+    await expect(daemon.crash()).rejects.toThrow("kill refused");
+    await daemon.stop();
+    expect(readFileSync(join(dir, "daemon.log"), "utf8")).toBe("ready\nstderr\n");
 });
 
 test("recovery stops a daemon the marker still names as live before saving its log", async () => {

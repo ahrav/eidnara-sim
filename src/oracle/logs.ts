@@ -191,9 +191,11 @@ function samplesOf(path: string): Sample[] {
     return samples;
 }
 
-/** A call attributed to a turn started while that turn was open: between its `BeginTurn` and its `EndTurn`. */
-function requireCallsInTurns(calls: CallRecord[], journal: Entry[]): void {
-    const bounds = new Map<string, { from: number; to: number }>();
+type Bounds = Map<string, { from: number; to: number }>;
+
+/** Each turn's journaled interval per arm: `BeginTurn` to `EndTurn`, open-ended where one is absent. */
+function turnBounds(journal: Entry[]): Bounds {
+    const bounds: Bounds = new Map();
     for (const e of journal) {
         if (e.kind !== "BeginTurn" && e.kind !== "EndTurn") continue;
         const key = `${e.arm}/${String(e.event)}`;
@@ -205,6 +207,11 @@ function requireCallsInTurns(calls: CallRecord[], journal: Entry[]): void {
         else b.to = e.scenario_ms;
         bounds.set(key, b);
     }
+    return bounds;
+}
+
+/** A call attributed to a turn started while that turn was open: between its `BeginTurn` and its `EndTurn`. */
+function requireCallsInTurns(calls: CallRecord[], bounds: Bounds): void {
     for (const c of calls) {
         if (c.turn === null) continue;
         const b = bounds.get(`${c.arm}/${c.turn}`);
@@ -216,11 +223,28 @@ function requireCallsInTurns(calls: CallRecord[], journal: Entry[]): void {
     }
 }
 
-function toolsOf(path: string, turns: Set<string>): (Command & { turn: string | null })[] {
+/** A tool start lands on the host's clock up to this much before the proxy's record of the same moment. */
+const TOOL_SLACK_MS = 1_000;
+
+function toolsOf(
+    path: string,
+    turns: Set<string>,
+    bounds: Bounds,
+    arm: string,
+): (Command & { turn: string | null })[] {
     const tools = shaped<Command & { turn: string | null }>(path, TOOL_FIELDS);
     tools.forEach((t, i) => {
-        if (t.turn !== null && !turns.has(t.turn)) {
+        if (t.turn === null) return;
+        if (!turns.has(t.turn)) {
             throw new Error(`${path}: line ${i + 1}: turn ${t.turn} is not a scheduled user turn`);
+        }
+        const b = bounds.get(`${arm}/${t.turn}`);
+        const early = b !== undefined && t.scenario_ms < b.from - TOOL_SLACK_MS;
+        const late = b !== undefined && t.scenario_ms > b.to + TOOL_SLACK_MS;
+        if (b && (early || late)) {
+            throw new Error(
+                `${path}: line ${i + 1}: starts at ${t.scenario_ms}, outside turn ${t.turn} (${b.from} to ${b.to})`,
+            );
         }
     });
     return tools;
@@ -291,6 +315,10 @@ export function loadRun(dir: string, prereg: Preregistration): RunLogs {
         for (const [field, ok] of Object.entries(fields)) {
             if (!ok(e[field])) throw new Error(`${journalPath}: line ${i + 1}: ${field} missing`);
         }
+        // A journal the harness wrote numbers each entry by its line; the oracles order by it.
+        if (e.seq !== undefined && e.seq !== i) {
+            throw new Error(`${journalPath}: line ${i + 1}: seq ${String(e.seq)} is not ${i}`);
+        }
         const last = lastMs.get(e.arm);
         if (last !== undefined && e.scenario_ms < last) {
             throw new Error(
@@ -302,7 +330,8 @@ export function loadRun(dir: string, prereg: Preregistration): RunLogs {
     const scheduled = planned.map((e) => String(e.id));
     requireComplete(journal, order, scheduled);
     requireTurnEnds(journal, order, planned);
-    requireCallsInTurns(calls, journal);
+    const bounds = turnBounds(journal);
+    requireCallsInTurns(calls, bounds);
     const arms = order.map((arm) => ({
         arm,
         calls: calls.filter((c) => c.arm === arm),
@@ -313,7 +342,7 @@ export function loadRun(dir: string, prereg: Preregistration): RunLogs {
             : { pluginLogMissing: true as const }),
         daemonLog: lines(join(dir, arm, "daemon.log")),
         resources: samplesOf(join(dir, arm, "resources.jsonl")),
-        tools: toolsOf(join(dir, arm, "tools.jsonl"), turns),
+        tools: toolsOf(join(dir, arm, "tools.jsonl"), turns, bounds, arm),
         finalStore: existsSync(join(dir, arm, "store-check.json"))
             ? parseStoreCheck(
                   JSON.parse(readFileSync(join(dir, arm, "store-check.json"), "utf8")),
@@ -333,6 +362,9 @@ export function loadRun(dir: string, prereg: Preregistration): RunLogs {
         }
         if (!existsSync(join(dir, arm.arm, "daemon.log"))) {
             throw new Error(`arm ${arm.arm} has no daemon.log`);
+        }
+        if (!existsSync(join(dir, arm.arm, "r", "eidnara.log"))) {
+            throw new Error(`arm ${arm.arm} has no r/eidnara.log`);
         }
     }
     const faults = manifest.fault_override ?? scenario.faults ?? [];

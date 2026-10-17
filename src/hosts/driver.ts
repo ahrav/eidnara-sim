@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 import {
+    appendFileSync,
     closeSync,
     copyFileSync,
     existsSync,
@@ -215,6 +216,7 @@ export class HostDriver implements ArmDriver {
             await this.daemon.start();
             this.recordState();
             this.o.sampleDaemon?.();
+            appendFileSync(join(this.o.armRoot, "eidnara.log"), "");
         }
         this.host = this.newHost();
         this.recordState();

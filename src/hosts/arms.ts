@@ -117,6 +117,8 @@ interface LogMarker {
     copying: { source: string; target_bytes: number } | null;
     /** A killed lifetime's stdout, held until its log is saved, so a resume saves it too. */
     stdout?: string;
+    /** The log's length before the held stdout was appended; set while that append is in flight. */
+    stdout_target?: number;
     /** The daemon process writing the live log, when one is up; recovery stops it before reading. */
     owner?: { pid: number; start: string | null } | null;
 }
@@ -184,6 +186,9 @@ export class DaemonStack {
                 copying: parsed.copying ?? null,
                 owner: parsed.owner ?? null,
                 ...(typeof parsed.stdout === "string" ? { stdout: parsed.stdout } : {}),
+                ...(typeof parsed.stdout_target === "number"
+                    ? { stdout_target: parsed.stdout_target }
+                    : {}),
             };
         } catch {
             throw new Error(`${this.logSourceFile}: unreadable daemon log recovery marker`);
@@ -242,10 +247,20 @@ export class DaemonStack {
      */
     private drain(marker: LogMarker | null, extra: string[]): void {
         let pending = [...(marker?.pending ?? [])];
-        if (marker?.stdout) {
-            // The held stdout goes first, as `restart` would have written it; then the marker drops it.
-            appendFileSync(this.ctx.logFile, marker.stdout);
-            const { stdout: _saved, ...rest } = marker;
+        if (marker?.stdout !== undefined) {
+            // The held stdout goes first, as `restart` would have written it. The marker records
+            // the log's length before the append, so an append a kill cut short is rolled back
+            // to that length and runs again; then the marker drops the stdout.
+            const { stdout, stdout_target, ...rest } = marker;
+            const start =
+                stdout_target ??
+                (existsSync(this.ctx.logFile) ? statSync(this.ctx.logFile).size : 0);
+            if (stdout_target !== undefined && existsSync(this.ctx.logFile)) {
+                truncateSync(this.ctx.logFile, stdout_target);
+            } else {
+                this.writeMarker({ ...rest, stdout, stdout_target: start });
+            }
+            appendFileSync(this.ctx.logFile, stdout);
             this.writeMarker(rest);
         }
         if (marker?.copying) {
@@ -379,8 +394,17 @@ export class DaemonStack {
         await stack.terminateHost();
         this.stack = null;
         const { stdout } = this.hh.__hermeticHostTest.diagnostics(stack);
+        // The stack's stdout covers a held copy from a kill that failed, so the marker drops its own.
+        const marker = this.readMarker();
+        const {
+            stdout: _held,
+            stdout_target: _target,
+            ...rest
+        } = marker ?? { pending: [], copying: null };
+        if (marker?.stdout !== undefined) this.writeMarker(rest);
         appendFileSync(this.ctx.logFile, stdout);
-        this.drain(this.readMarker(), [String(stack.logPath ?? "")]);
+        this.heldStdout = null;
+        this.drain(marker ? rest : null, [String(stack.logPath ?? "")]);
     }
 }
 
@@ -586,14 +610,22 @@ export class PiSimHost extends SimHost {
     private drainWaitMs = 30_000;
 
     /**
-     * Runs one turn. A turn that fails or times out is aborted; a Pi that then reports no
-     * `agent_end` within the drain wait is still running the old turn, so its process is
+     * Runs one turn. A turn that fails or times out is aborted; an `agent_end` that already
+     * arrived settles the drain, otherwise a fresh waiter runs for the drain wait. A Pi that
+     * reports no `agent_end` in that time is still running the old turn, so its process is
      * killed and the session's later prompts fail at once. A tool event from that turn can
      * then never land on a later turn's record.
      */
     async prompt(text: string, timeoutMs: number, interruptMs?: number): Promise<PromptResult> {
         if (!this.rpc) return { error: "Pi process killed after an undrained abort" };
         const end = this.agentEnd(timeoutMs);
+        let ended = false;
+        end.then(
+            () => {
+                ended = true;
+            },
+            () => undefined,
+        );
         try {
             const response = await this.rpc.sendCommand("prompt", { message: text }, { timeoutMs });
             if (response.success === false) {
@@ -618,7 +650,7 @@ export class PiSimHost extends SimHost {
                 ? { error: String(last.errorMessage ?? "error") }
                 : {};
         } catch (caught) {
-            const drained = Promise.race([end, this.agentEnd(this.drainWaitMs)]);
+            const drained = ended ? Promise.resolve() : this.agentEnd(this.drainWaitMs);
             await this.rpc.sendCommand("abort", {}, { timeoutMs: 60_000 }).catch(() => undefined);
             const settled = await drained.then(
                 () => true,
