@@ -5,10 +5,10 @@ Scope: the v2 live-slice harness in this tree, specified by
 follow `docs/properties/METHOD.md`. The spec names its full catalog at
 `research/sim-design/property-catalog-sim-v2.md` (2026-10-12 revision); that
 file is unavailable, so these records are reconstructed from the condensed
-index in the spec body. Every record is PROPOSED at `Confidence: low`. Four
-records (`SIM-P50`, `SIM-P52`, `SIM-P53`, `SIM-P56`) are `Exercised: partial`
-through the M0 validator and report check in `src/prereg/`; every other record
-is `Exercised: not yet`, because no harness surface exists to verify against.
+index in the spec body. Every record is PROPOSED with `Confidence: low`. A
+record whose surface has landed says `Exercised: partial` and names the tests
+that cover it; the rest say `Exercised: not yet` because no harness surface
+exists to verify against. No run has exercised any record.
 
 Stable ids: `SIM-P01` to `SIM-P77` carry the spec's proposed records, and
 `SIM-L01` to `SIM-L03` carry the liveness bounds OQ-6 asked for and M0
@@ -474,8 +474,8 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M3 (#1027); nothing constructs
-it yet
+Exercised: partial - `src/proxy/gateway.test.ts` checks `scenario_ms` at receipt
+and non-decreasing `wall_ms` on concurrent calls; no run constructs it yet
 Guarantee: SIM-P15: Every call record has `scenario_ms` equal to the clock at
 receipt and a `wall_ms`, and `wall_ms` is non-decreasing in sequence order.
 Check: `always` - for each call record, compare `scenario_ms` to the journaled
@@ -486,10 +486,11 @@ value consistently.
 Required faults and enabling state: proxy traffic during and around an idle
 jump.
 Confidence: low -
-[evidence](evidence/sim-p15-proxy-record-carries-both-times.md). PROPOSED:
-reconstructed from the condensed index in spec #1007; no implementation exists
-to verify against, and a default tier run reaches it.
-Existing check: none
+[evidence](evidence/sim-p15-proxy-record-carries-both-times.md). The M3 proxy
+(#1027) implements it and unit tests cover it; no run has exercised it.
+Existing check: `src/proxy/gateway.test.ts`: `a record's scenario_ms is the
+clock at receipt and wall_ms never decreases`, `scenario_ms is the clock at
+receipt, before the upstream answers`
 Impact: Latency and age cannot be reconstructed for a call.
 Open questions: None.
 
@@ -762,8 +763,8 @@ Open questions:
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M3 (#1027); nothing constructs
-it yet
+Exercised: partial - `src/proxy/gateway.test.ts` checks one record for rejected,
+forwarded, and throwing requests; no run constructs it yet
 Guarantee: SIM-P27: Proxy requests received equal call records journaled per
 arm, including refused requests recorded as `rejected`.
 Check: `always` - compare the proxy's received-request counter to journaled call
@@ -773,10 +774,12 @@ Fault/timing angle: a client disconnect mid-stream must still yield one record.
 Required faults and enabling state: a run with a refused request and a client
 disconnect.
 Confidence: low -
-[evidence](evidence/sim-p27-every-request-yields-one-record.md). PROPOSED:
-reconstructed from the condensed index in spec #1007; no implementation exists
-to verify against, and a default tier run reaches it.
-Existing check: none
+[evidence](evidence/sim-p27-every-request-yields-one-record.md). The M3 proxy
+(#1027) implements it and unit tests cover it; no run has exercised it.
+Existing check: `src/proxy/gateway.test.ts`: `an unknown route and a malformed
+body are recorded as rejected`, `an upstream stream that throws before its first
+event still yields one record`, `an HTTP/1.1 upload the client abandons yields
+one status-0 record`
 Impact: Cost and fault evidence silently drop calls.
 Open questions: None.
 
@@ -785,8 +788,8 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M3 (#1027); nothing constructs
-it yet
+Exercised: partial - `src/proxy/gateway.test.ts` checks asserted and inferred
+tags and the writer's refusal of an unknown component; no run constructs it yet
 Guarantee: SIM-P28: Every record has exactly one component in the fixed set, and
 unknown shapes map to `other`, never dropped.
 Check: `always` - assert every call record carries exactly one component from
@@ -795,10 +798,11 @@ Fault/timing angle: none.
 Required faults and enabling state: traffic from every component, plus one
 unrecognised request shape.
 Confidence: low -
-[evidence](evidence/sim-p28-component-classification-is-total.md). PROPOSED:
-reconstructed from the condensed index in spec #1007; no implementation exists
-to verify against, and a default tier run reaches it.
-Existing check: none
+[evidence](evidence/sim-p28-component-classification-is-total.md). The M3 proxy
+(#1027) implements it and unit tests cover it; no run has exercised it.
+Existing check: `src/proxy/gateway.test.ts`: `harness components assert their
+tag; host calls are inferred`, `the writer refuses a record missing any required
+field`
 Impact: Cost by component does not sum to the total.
 Open questions: None.
 
@@ -807,18 +811,20 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M3 (#1027); nothing constructs
-it yet
+Exercised: partial - `src/proxy/gateway.test.ts` checks `end_turn` on a forwarded
+call and `stream_cut` on a cut stream; no run constructs it yet
 Guarantee: SIM-P29: Every forwarded record carries the provider `finish_reason`
 or an explicit `stream_cut` marker.
 Check: `always` - assert each forwarded record has `finish_reason` or
 `stream_cut`; a record with neither hides a truncated response.
 Fault/timing angle: a stream cut mid-body has no provider finish reason.
 Required faults and enabling state: a truncated-stream fault.
-Confidence: low - [evidence](evidence/sim-p29-finish-reason-recorded.md).
-PROPOSED: reconstructed from the condensed index in spec #1007; no
-implementation exists to verify against, and a default tier run reaches it.
-Existing check: none
+Confidence: low - [evidence](evidence/sim-p29-finish-reason-recorded.md). The M3
+proxy (#1027) implements it and unit tests cover it; no run has exercised it.
+Existing check: `src/proxy/gateway.test.ts`: `a forwarded call records tags,
+finish_reason, tokens, both times, and proxy retries`, `a forwarded stream
+without messageStop is recorded as stream_cut`, `an answer without a stop reason
+is stream_cut on both routes`
 Impact: The fold-lag and truncation failure classes cannot be told apart.
 Open questions: None.
 
@@ -827,8 +833,8 @@ Open questions: None.
 Type: safety
 Reachability: explicit-config-only
 Status: active
-Exercised: not yet - the harness surface lands in M3 (#1027); nothing constructs
-it yet
+Exercised: partial - `src/proxy/gateway.test.ts` checks an unarmed episode
+injects nothing; no run constructs it yet
 Guarantee: SIM-P30: Every record with `fault_ref` set names a fault instance in
 state `armed` or `triggered` at that sequence.
 Check: `always(!X)` - X is a record whose `fault_ref` names no armed or
@@ -837,11 +843,10 @@ triggered instance; a forbidden state checked over every record, so
 Fault/timing angle: a fault decorator left armed after its window injects into
 later calls.
 Required faults and enabling state: a fault schedule with windows that close.
-Confidence: low - [evidence](evidence/sim-p30-no-unscheduled-fault.md).
-PROPOSED: reconstructed from the condensed index in spec #1007; no
-implementation exists to verify against, and reached only when the tier
-schedules faults.
-Existing check: none
+Confidence: low - [evidence](evidence/sim-p30-no-unscheduled-fault.md). The M3
+proxy (#1027) implements it and unit tests cover it; no run has exercised it.
+Existing check: `src/proxy/gateway.test.ts`: `a fault never armed is
+untriggered`
 Impact: Faults the schedule did not plan corrupt both arms' metrics.
 Open questions: None.
 
@@ -850,8 +855,8 @@ Open questions: None.
 Type: safety
 Reachability: explicit-config-only
 Status: active
-Exercised: not yet - the harness surface lands in M3 (#1027); nothing constructs
-it yet
+Exercised: partial - `src/proxy/gateway.test.ts` checks `fired` requires an
+injected record and an in-window agent call; no run constructs it yet
 Guarantee: SIM-P31: A fault instance is `triggered` only with evidence: for
 provider faults, a call record from the target component carrying `fault_ref`;
 for infrastructure faults, the observing oracle's record from the target
@@ -863,11 +868,11 @@ host SDK must see them.
 Required faults and enabling state: each fault kind with its target component
 active.
 Confidence: low -
-[evidence](evidence/sim-p31-fault-counts-only-when-observed-at-target.md).
-PROPOSED: reconstructed from the condensed index in spec #1007; no
-implementation exists to verify against, and reached only when the tier
-schedules faults.
-Existing check: none
+[evidence](evidence/sim-p31-fault-counts-only-when-observed-at-target.md). The
+M3 proxy (#1027) implements it and unit tests cover it; no run has exercised it.
+Existing check: `src/proxy/gateway.test.ts`: the `fault composition at the proxy
+sink` matrix, `a call from another component inside the window does not witness
+the fault`
 Impact: A fault that never reached its target is counted as survived.
 Open questions:
 - OQ-8: the evidence shape proving a SIGKILL landed inside an in-progress fold.
@@ -902,18 +907,19 @@ Open questions: None.
 Type: reachability
 Reachability: explicit-config-only
 Status: active
-Exercised: not yet - the harness surface lands in M3 (#1027); nothing constructs
-it yet
+Exercised: partial - `src/proxy/gateway.test.ts` checks `untriggered` with no
+later call and with a call outside the window; no run constructs it yet
 Guarantee: SIM-P33: A scheduled fault ends `missed` at least once per campaign.
 Check: `sometimes` - observe at least one `missed` instance in the campaign; the
 missed path is a situation, and only a real miss exercises SIM-P32.
 Fault/timing angle: none.
 Required faults and enabling state: a fault keyed on a component event that does
 not occur in its window.
-Confidence: low - [evidence](evidence/sim-p33-missed-fault-occurs.md). PROPOSED:
-reconstructed from the condensed index in spec #1007; no implementation exists
-to verify against, and reached only when the tier schedules faults.
-Existing check: none
+Confidence: low - [evidence](evidence/sim-p33-missed-fault-occurs.md). The M3
+proxy (#1027) implements it and unit tests cover it; no run has exercised it.
+Existing check: `src/proxy/gateway.test.ts`: `an armed fault with no later host
+call is untriggered and excludes the run`, `a host call outside the window does
+not witness the fault`
 Impact: The exclusion path of SIM-P32 is never exercised.
 Open questions: None.
 
@@ -922,8 +928,9 @@ Open questions: None.
 Type: reachability
 Reachability: explicit-config-only
 Status: active
-Exercised: not yet - the harness surface lands in M3 (#1027); nothing constructs
-it yet
+Exercised: partial - `src/proxy/gateway.test.ts` triggers each of the eight
+provider fault types under each strategy on both routes; the eight
+infrastructure kinds land with the M4 scheduler; no run constructs it yet
 Guarantee: SIM-P34: Each fault kind triggers at least once: 429, 5xx, timeout,
 `finish_reason=length`, silent cut, empty content, schema-wrong tool call, slow
 stream, SIGKILL mid-fold, restart between sessions, ENOSPC, plugin reload, host
@@ -933,11 +940,11 @@ executes with a `triggered` outcome; `reachable` is per-kind location coverage.
 Fault/timing angle: SIGKILL must land inside an in-progress fold.
 Required faults and enabling state: the full fault catalogue scheduled across M,
 L, and XL.
-Confidence: low - [evidence](evidence/sim-p34-each-fault-kind-triggers.md).
-PROPOSED: reconstructed from the condensed index in spec #1007; no
-implementation exists to verify against, and reached only when the tier
-schedules faults.
-Existing check: none
+Confidence: low - [evidence](evidence/sim-p34-each-fault-kind-triggers.md). The
+M3 proxy (#1027) implements the provider-fault half and unit tests cover it; the
+infrastructure half lands in M4; no run has exercised it.
+Existing check: `src/proxy/gateway.test.ts`: the `fault composition at the proxy
+sink` matrix (provider kinds only)
 Impact: A fault kind's recovery path is never tested.
 Open questions:
 - OQ-8: see SIM-P31 for the mid-fold SIGKILL evidence shape.

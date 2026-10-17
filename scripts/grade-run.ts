@@ -547,7 +547,7 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
     if (pairs.length > 0 && config) {
         for (const name of ["judge-calls.jsonl", "judgments.jsonl"])
             requireAppendable(join(dir, name));
-        const records = new RecordWriter(join(dir, "judge-calls.jsonl"));
+        const records = new RecordWriter(join(dir, "judge-calls.jsonl"), { resume: true });
         const gateway = new Gateway({
             upstream: bedrockUpstream(config.bedrock.region, config.bedrock.aws_profile),
             records,

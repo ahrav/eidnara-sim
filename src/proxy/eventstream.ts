@@ -11,12 +11,21 @@ export function crc32(bytes: Uint8Array): number {
 /** The header type tag of a UTF-8 string value. */
 const STRING_HEADER = 7;
 
+/** The format caps a string header value at 32,767 UTF-8 bytes and a header name at 255; a cut lands on a code point boundary. */
+function clamp(text: string, max: number): Buffer {
+    const bytes = Buffer.from(text, "utf8");
+    if (bytes.length <= max) return bytes;
+    let end = max;
+    while (end > 0 && ((bytes[end] ?? 0) & 0xc0) === 0x80) end--;
+    return bytes.subarray(0, end);
+}
+
 /** One event stream message whose headers are all strings. */
 export function encodeMessage(headers: Record<string, string>, payload: Uint8Array): Buffer {
     const encodedHeaders = Buffer.concat(
         Object.entries(headers).map(([name, value]) => {
-            const nameBytes = Buffer.from(name, "utf8");
-            const valueBytes = Buffer.from(value, "utf8");
+            const nameBytes = clamp(name, 255);
+            const valueBytes = clamp(value, 32_767);
             const header = Buffer.alloc(1 + nameBytes.length + 1 + 2 + valueBytes.length);
             let at = header.writeUInt8(nameBytes.length, 0);
             at += nameBytes.copy(header, at);
@@ -37,6 +46,25 @@ export function encodeMessage(headers: Record<string, string>, payload: Uint8Arr
     return message;
 }
 
+/** A JSON value whose binary members are already base64 text. */
+type WireJson = string | number | boolean | null | WireJson[] | { [key: string]: WireJson };
+
+function toWire(value: unknown): WireJson {
+    if (value instanceof Uint8Array) return Buffer.from(value).toString("base64");
+    if (Array.isArray(value)) return value.map(toWire);
+    if (value !== null && typeof value === "object") {
+        const out: { [key: string]: WireJson } = Object.create(null);
+        for (const [k, v] of Object.entries(value)) out[k] = toWire(v);
+        return out;
+    }
+    return value as WireJson;
+}
+
+/** `toWire` converts `Buffer` and `Uint8Array` values to base64 strings before `JSON.stringify` applies its `toJSON()` protocol. */
+export function wireJson(value: unknown): string {
+    return JSON.stringify(toWire(value));
+}
+
 /** One `converse-stream` event: its `:event-type` and the JSON member it carries. */
 export function encodeEvent(eventType: string, member: unknown): Buffer {
     return encodeMessage(
@@ -45,6 +73,24 @@ export function encodeEvent(eventType: string, member: unknown): Buffer {
             ":content-type": "application/json",
             ":message-type": "event",
         },
-        Buffer.from(JSON.stringify(member), "utf8"),
+        Buffer.from(wireJson(member), "utf8"),
+    );
+}
+
+export function encodeException(exceptionType: string, member: unknown): Buffer {
+    return encodeMessage(
+        {
+            ":exception-type": exceptionType,
+            ":content-type": "application/json",
+            ":message-type": "exception",
+        },
+        Buffer.from(wireJson(member), "utf8"),
+    );
+}
+
+export function encodeError(code: string, message: string): Buffer {
+    return encodeMessage(
+        { ":error-code": code, ":error-message": message, ":message-type": "error" },
+        Buffer.alloc(0),
     );
 }

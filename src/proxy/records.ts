@@ -1,4 +1,14 @@
-import { appendFileSync, closeSync, openSync, readSync } from "node:fs";
+import {
+    closeSync,
+    constants,
+    fstatSync,
+    ftruncateSync,
+    openSync,
+    readSync,
+    realpathSync,
+    writeSync,
+} from "node:fs";
+import { dirname, resolve } from "node:path";
 import { keepCompleteLines } from "../run/journal";
 
 export const COMPONENTS = [
@@ -80,7 +90,6 @@ export function recordProblems(value: Record<string, unknown>): string[] {
     return problems;
 }
 
-/** `wall_ms` is the write-time Unix timestamp in milliseconds, clamped to the preceding record's value. */
 /** The last newline-terminated line of a file whose complete prefix ends at `end`, read backwards in chunks. */
 function lastLine(path: string, end: number): string | null {
     const fd = openSync(path, "r");
@@ -105,50 +114,120 @@ function lastLine(path: string, end: number): string | null {
     }
 }
 
+/**
+ * Opens the journal without following a symlink in any path component, so a linked file or a
+ * linked parent is refused. A fresh journal is created exclusively, so an existing path is
+ * refused; a resumed one opens an existing regular file or creates it.
+ */
+function openJournal(given: string, resume: boolean): number {
+    const path = resolve(given);
+    const parent = dirname(path);
+    let real: string;
+    try {
+        real = realpathSync(parent);
+    } catch (caught) {
+        throw new Error(`journal refused: ${path} (${(caught as Error).message})`);
+    }
+    if (real !== parent) throw new Error(`journal refused: ${parent} resolves through a link`);
+    const exclusive = resume ? 0 : constants.O_EXCL;
+    const flags = constants.O_WRONLY | constants.O_CREAT | exclusive | constants.O_NOFOLLOW;
+    let fd: number;
+    try {
+        fd = openSync(path, flags, 0o600);
+    } catch (caught) {
+        throw new Error(`journal refused: ${path} (${(caught as Error).message})`);
+    }
+    if (!fstatSync(fd).isFile()) throw new Error(`journal refused: ${path} is not a regular file`);
+    return fd;
+}
+
+/** `wall_ms` is the write-time Unix timestamp in milliseconds, clamped to the preceding record's value and to the record's own `started_wall_ms`. */
 export class RecordWriter {
     private seq = 0;
     private lastWall = 0;
+    private bytes = 0;
+    private uncertain: Error | null = null;
+    private fd: number | null;
+    private closed = false;
     readonly records: CallRecord[] = [];
-
-    /** Byte offset in the log where the next record lands; `write` reports each record's placement through `placed`. */
-    protected offset = 0;
+    private readonly retain: boolean;
 
     /**
-     * `retain` keeps every record in `records` for callers that read them back in memory; a
-     * run-long writer passes false, since its records live on disk and in the call index.
+     * `resume` reopens an existing journal: a line a kill cut mid-append is dropped and the
+     * sequence continues after the last complete record. `retain` keeps every record in
+     * `records` for callers that read them back in memory; a run-long writer passes false,
+     * since its records live on disk and in the call index.
      */
-    constructor(
-        private readonly path: string | null,
-        private readonly retain = true,
-    ) {
-        if (!path) return;
-        this.offset = keepCompleteLines(path);
-        if (this.offset === 0) return;
-        const last = lastLine(path, this.offset);
+    constructor(path: string | null, options: { resume?: boolean; retain?: boolean } = {}) {
+        this.retain = options.retain ?? true;
+        const resume = options.resume ?? false;
+        this.fd = path === null ? null : openJournal(path, resume);
+        if (path === null || !resume) return;
+        this.bytes = keepCompleteLines(path);
+        if (this.bytes === 0) return;
+        const last = lastLine(path, this.bytes);
         if (last === null) return;
         const record = JSON.parse(last) as CallRecord;
         this.seq = record.seq + 1;
         this.lastWall = record.wall_ms;
     }
 
+    /** Releases the journal descriptor; later writes throw. Calling it again has no effect. */
+    close(): void {
+        if (this.closed) return;
+        this.closed = true;
+        if (this.fd !== null) closeSync(this.fd);
+        this.fd = null;
+    }
+
     write(partial: Omit<CallRecord, "seq" | "wall_ms">): CallRecord {
-        const wall_ms = Math.max(this.lastWall, Date.now());
-        const record = { ...partial, seq: this.seq, wall_ms } as CallRecord;
-        const problems = recordProblems(record as unknown as Record<string, unknown>);
+        if (this.closed) throw new Error("journal refused: the writer is closed");
+        if (this.uncertain) {
+            throw new Error(
+                `journal refused: an earlier append left it uncertain (${this.uncertain.message})`,
+            );
+        }
+        const wall_ms = Math.max(this.lastWall, partial.started_wall_ms, Date.now());
+        const record = { ...partial, seq: this.seq, wall_ms };
+        const problems = recordProblems(record);
         if (problems.length > 0) throw new Error(`call record refused: ${problems.join(", ")}`);
+        if (this.fd !== null) {
+            const offset = this.bytes;
+            const length = this.append(this.fd, `${JSON.stringify(record)}\n`);
+            this.placed(record, offset, length);
+        }
         this.seq++;
         this.lastWall = wall_ms;
         if (this.retain) this.records.push(record);
-        if (this.path) {
-            const line = `${JSON.stringify(record)}\n`;
-            appendFileSync(this.path, line);
-            const length = Buffer.byteLength(line);
-            this.placed(record, this.offset, length);
-            this.offset += length;
-        }
         return record;
     }
 
     /** Called after each record is appended, with its byte position in the log. */
     protected placed(_record: CallRecord, _offset: number, _length: number): void {}
+
+    /** On append failure, RecordWriter attempts to truncate the file to its successfully appended byte count; if truncation fails, subsequent write calls throw. */
+    private append(fd: number, line: string): number {
+        const bytes = Buffer.from(line, "utf8");
+        try {
+            let written = 0;
+            while (written < bytes.length) {
+                written += writeSync(
+                    fd,
+                    bytes,
+                    written,
+                    bytes.length - written,
+                    this.bytes + written,
+                );
+            }
+            this.bytes += bytes.length;
+            return bytes.length;
+        } catch (caught) {
+            try {
+                ftruncateSync(fd, this.bytes);
+            } catch {
+                this.uncertain = caught as Error;
+            }
+            throw caught;
+        }
+    }
 }

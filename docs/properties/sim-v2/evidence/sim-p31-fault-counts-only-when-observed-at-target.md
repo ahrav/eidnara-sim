@@ -15,9 +15,6 @@ A fault instance is `triggered` only with evidence: for provider faults, a call
 record from the target component carrying `fault_ref`; for infrastructure
 faults, the observing oracle's record from the target component.
 
-No harness code, test, or run exists yet. The surface lands in M3
-(#1027).
-
 M3 (#1027) counts an episode as `fired` only with an injected record and a
 host-observed agent call within the window after the injection. Tests run every
 provider fault type under every strategy against a host stand-in and check both

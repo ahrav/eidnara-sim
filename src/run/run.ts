@@ -450,7 +450,7 @@ async function runArms(
     }
     const gateway = new Gateway({
         upstream: bedrockUpstream(config.bedrock.region, config.bedrock.aws_profile),
-        records: new RunRecords(callsPath, false),
+        records: new RunRecords(callsPath, { resume: true, retain: false }),
         injector,
         rng: new Rng((seed ^ 0x27d4eb2f) >>> 0),
         clock: { scenarioMs: now },
