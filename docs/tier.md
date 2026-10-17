@@ -170,7 +170,9 @@ schedule adds `host_upgrade` and `two_hosts_one_daemon` (`docs/hosts.md`).
 Each XL paired run is stopped once with SIGTERM when its journal holds
 `--restart-at` (0.4 by default at XL, a decimal fraction in [0, 1); an
 empty or non-numeric value is refused; recorded in `tier-plan.json` as
-`restart_at` and reused by a rerun without the flag, like `turn_ms`) of its
+`restart_at` and reused by a rerun without the flag, like `turn_ms`; a
+fraction whose first reachable event count is a run's last event is refused,
+since that stop could not land before the run ends) of its
 planned events across its arms, checked every 30 s,
 and resumed from its journal within the rest of its wall limit. The restart writes `<run>/restarted`,
 so a rerun of the command neither restarts that run again nor reports it

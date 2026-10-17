@@ -6,7 +6,7 @@ import { join } from "node:path";
 import type { Scenario } from "../scenario/compile";
 import type { FaultEpisode } from "../scenario/faults";
 import { loadPrereg } from "../scenario/inputs";
-import { capEvents, compressFaults, restartFraction, tierPlan } from "./tier";
+import { capEvents, compressFaults, restartCut, restartFraction, tierPlan } from "./tier";
 
 const event = (kind: string, i: number) => ({
     id: `e-${i}`,
@@ -139,5 +139,15 @@ describe("restartFraction syntax", () => {
         expect(restartFraction(" ", { restart_at: 0.3 }, "XL")).toBeNaN();
         expect(restartFraction("0.25", null, "XL")).toBe(0.25);
         expect(restartFraction("0", null, "XL")).toBe(0);
+    });
+});
+
+describe("restartCut", () => {
+    test("the cut is the first event count at or past the fraction, and none when that is the last event", () => {
+        expect(restartCut(0.4, 50, 2)).toBe(40);
+        expect(restartCut(0.405, 50, 2)).toBe(41);
+        expect(restartCut(0, 50, 2)).toBeNull();
+        expect(restartCut(0.995, 50, 2)).toBeNull();
+        expect(restartCut(0.99, 50, 2)).toBe(99);
     });
 });

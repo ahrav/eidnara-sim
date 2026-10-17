@@ -27,6 +27,17 @@ export function restartFraction(
 }
 
 /**
+ * The journal `Event` threshold for requesting a paired run's restart: the first count at or past
+ * `restartAt` of the planned events across `arms`. Null when that count is the run's last event
+ * or `restartAt` is 0.
+ */
+export function restartCut(restartAt: number, events: number, arms: number): number | null {
+    const total = events * arms;
+    const cut = Math.ceil(restartAt * total);
+    return restartAt > 0 && cut < total ? cut : null;
+}
+
+/**
  * The longest prefix of the scenario that ends on a session end and whose user turns, run once
  * per arm at `turnMs` each, fit inside the tier's wall budget.
  */

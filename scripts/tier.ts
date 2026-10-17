@@ -10,6 +10,7 @@ import { loadScenario } from "../src/run/run";
 import {
     compressFaults,
     profileJobs,
+    restartCut,
     restartFraction,
     type TierJob,
     tierPlan,
@@ -117,6 +118,11 @@ console.log(
 );
 const empty = plan.filter((j) => j.events === 0).map((j) => j.dir);
 if (empty.length > 0) fail(`no session fits the wall budget for ${empty.join(", ")}`);
+const uncuttable = plan
+    .filter((j) => j.group === "main" && restartCut(restartAt, j.events, j.arms.length) === null)
+    .map((j) => j.dir);
+if (restartAt > 0 && uncuttable.length > 0)
+    fail(`--restart-at ${restartAt} first stops at the last event of ${uncuttable.join(", ")}`);
 if (flags.has("plan-only")) process.exit(0);
 
 const bin = resolve(dirname(config.opencode_binary), "../../.bin");
@@ -166,11 +172,21 @@ const runJob = async (job: TierJob) => {
         ...(moved ? ["--faults", join(job.dir, "faults.json")] : []),
     ];
     const marker = join(job.dir, "restarted");
-    const due = restartAt * job.events * job.arms.length;
-    const cut = restartAt > 0 && job.group === "main" && !existsSync(marker);
+    const due = job.group === "main" ? restartCut(restartAt, job.events, job.arms.length) : null;
+    const cut = due !== null && !existsSync(marker) ? due : null;
     const t0 = Date.now();
-    let code = await run(args, log, limit, cut ? () => eventsRun(job.dir) >= due : undefined);
-    if (cut && code === SIGTERM_EXIT && eventsRun(job.dir) >= due && Date.now() - t0 < limit) {
+    let code = await run(
+        args,
+        log,
+        limit,
+        cut === null ? undefined : () => eventsRun(job.dir) >= cut,
+    );
+    if (
+        cut !== null &&
+        code === SIGTERM_EXIT &&
+        eventsRun(job.dir) >= cut &&
+        Date.now() - t0 < limit
+    ) {
         writeFileSync(marker, `${new Date().toISOString()}\n`);
         code = await run(args, log, limit - (Date.now() - t0));
     }
