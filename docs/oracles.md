@@ -16,8 +16,10 @@ rows and not others, name a process start time on some rows and not others
 or null against a pid, pair a reading with a null pid, or carry a negative
 reading or run backwards in scenario time, a journal whose entries run
 backwards in scenario time within an arm, a call attributed to a turn that
-starts outside that turn's `BeginTurn` to `EndTurn` interval, a daemon arm with no numeric RSS sample, no reading in its final
-sample, or no `daemon.log`, a manifest with no arms, a call whose status is
+starts outside that turn's `BeginTurn` to `EndTurn` interval (a tool run
+likewise, with a second of slack for the host's clock), a daemon arm with no numeric RSS sample, no reading in its final
+sample, no `daemon.log`, or no `r/eidnara.log` (the driver creates the plugin
+log empty when an Eidnara arm starts), a manifest with no arms, a call whose status is
 neither the proxy's `0` sentinel nor an HTTP status, whose end precedes its
 start, or whose sequence number breaks the file's `0..n-1` order, a call record that fails the proxy's
 record contract (`recordProblems`), names an arm outside the manifest, or
