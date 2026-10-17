@@ -10,6 +10,7 @@ import {
     capEvents,
     compressFaults,
     planConflicts,
+    restartConflicts,
     restartCut,
     restartFraction,
     runSpan,
@@ -234,5 +235,20 @@ describe("uncuttableRuns", () => {
         expect(uncuttableRuns(plan, 0.4)).toEqual([]);
         expect(uncuttableRuns(plan, 0.9)).toEqual(["/r/b"]);
         expect(uncuttableRuns(plan, 0)).toEqual([]);
+    });
+});
+
+describe("restartConflicts", () => {
+    test("a changed fraction is a conflict once a paired run has begun", () => {
+        const out = mkdtempSync(join(tmpdir(), "sim-tier-"));
+        const job = { dir: join(out, "XL-101-pi"), group: "main" } as TierJob;
+        expect(restartConflicts([job], 0.4, 0.7)).toEqual([]);
+        mkdirSync(job.dir);
+        writeFileSync(join(job.dir, "journal.jsonl"), "");
+        expect(restartConflicts([job], 0.4, 0.7)).toEqual([
+            `${job.dir} began under --restart-at 0.4; the plan now says 0.7`,
+        ]);
+        expect(restartConflicts([job], 0.7, 0.7)).toEqual([]);
+        expect(restartConflicts([job], undefined, 0.7)).toEqual([]);
     });
 });

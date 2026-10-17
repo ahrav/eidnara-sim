@@ -221,7 +221,9 @@ Each XL paired run is stopped once with SIGTERM when its journal holds
 empty or non-numeric value is refused; recorded in `tier-plan.json` as
 `restart_at` and reused by a rerun without the flag, like `turn_ms`; a
 fraction whose first reachable event count is a run's last event is refused
-before the plan is saved, since that stop could not land before the run ends; a cut one event before
+before the plan is saved, since that stop could not land before the run ends;
+an explicit fraction that differs from the saved one is refused once a paired
+run has begun; a cut one event before
 the end can still miss when the run finishes within that second) of its
 planned events across its arms, checked every second,
 and resumed from its journal within the rest of its wall limit. The restart writes `<run>/restarted` only when the journal check requested
@@ -244,7 +246,9 @@ sessions alone, and the whole-span soak verdict stays the gate's input.
 `scripts/report.ts --recall-reference <dir>/continuity-L.json` (shape-checked
 row by row: counts with `pass_with_transcript_read <= pass <= n`, one row per
 host, arm, and probe) adds a recall
-drift table to the XL report alone, with counts and four-decimal rates: each host, arm, and probe's P8 or P9 pass
+drift table to the XL report alone, with counts and four-decimal rates (a
+reference row for an arm XL ran but has no row for appears with no rate; a
+reference-only arm is left out): each host, arm, and probe's P8 or P9 pass
 rate against the L tier's 95% Clopper-Pearson interval for the same row,
 `drift` when outside it. A report of a complete campaign writes its
 continuity rows to `continuity-<tier>.json` beside `report-<tier>.json` for

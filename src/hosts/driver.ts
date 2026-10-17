@@ -153,8 +153,9 @@ export class HostDriver implements ArmDriver {
         const make = this.o.hostFactory ?? makeHost;
         const arm = armBase(this.o.arm);
         const keep = eidnaraOn(arm) ? [...this.o.keep, this.storeRoot] : this.o.keep;
-        const up = this.upgraded ? (this.o.config.upgrade ?? {}) : {};
-        const config = { ...this.o.config, ...up };
+        const field = this.o.host === "pi" ? "pi_install" : "opencode_binary";
+        const next = this.upgraded ? this.o.config.upgrade?.[field] : undefined;
+        const config = next ? { ...this.o.config, [field]: next } : this.o.config;
         return make({
             ...this.o,
             config,
@@ -240,7 +241,26 @@ export class HostDriver implements ArmDriver {
             JSON.stringify(record.templates ?? null) === JSON.stringify(this.transcriptPaths());
         await this.reapStale();
         await this.startArm(false);
-        if (open) await this.event(open);
+        if (!open) return;
+        // A second client the stopped run had attached to this session is attached again, so
+        // the session keeps both clients on the daemon; its fixed turn already ran.
+        if (state?.second && this.daemon) await this.attachSecond(open);
+        await this.event(open);
+    }
+
+    private async attachSecond(at: ScenarioEvent): Promise<SimHost> {
+        const second = this.newHost();
+        this.second = second;
+        await this.open(
+            second,
+            this.workspace(this.project(at)),
+            `${at.session}-b`,
+            this.daemon?.connectionFile ?? null,
+        );
+        if (this.stopping)
+            throw new HarnessFailure("the arm stopped while the second client opened");
+        this.recordState();
+        return second;
     }
 
     private async reapStale(): Promise<void> {
@@ -327,7 +347,6 @@ export class HostDriver implements ArmDriver {
             const store = checkStore(this.storeDb);
             outcome.stores = this.storeFaults.map((fault) => ({ fault, store }));
             this.storeFaults = [];
-            this.recordState();
         }
         if (e.probe) {
             const probe = { probe: e.probe, session: e.session, id: e.id };
@@ -470,21 +489,9 @@ export class HostDriver implements ArmDriver {
         if (!at || at.kind !== "session_start") {
             throw new HarnessFailure("two_hosts_one_daemon fires at a session_start");
         }
-        const second = this.newHost();
         const session = `${at.session}-b`;
-        this.second = second;
         try {
-            await this.open(
-                second,
-                this.workspace(this.project(at)),
-                session,
-                this.daemon.connectionFile,
-            );
-            if (this.stopping || this.second !== second) {
-                await second.closeSession();
-                throw new HarnessFailure("the arm stopped while the second client opened");
-            }
-            this.recordState();
+            const second = await this.attachSecond(at);
             const result = await second.prompt(SECOND_CLIENT_PROMPT, this.o.turnDeadlineMs);
             this.snapshots.addTools(second.drainTools(), session);
             return {
@@ -495,7 +502,8 @@ export class HostDriver implements ArmDriver {
                 attached_until: "the primary session's session_end, or the run's stop",
             };
         } catch (caught) {
-            await this.closeSecond().catch(() => undefined);
+            // A stop in progress owns the second client's close.
+            if (!this.stopping) await this.closeSecond().catch(() => undefined);
             throw caught;
         }
     }
@@ -561,7 +569,7 @@ export class HostDriver implements ArmDriver {
         const host = this.host;
         const daemon = this.daemon;
         const second = this.second;
-        this.writeState();
+        if (host || daemon || second) this.writeState();
         this.host = null;
         this.daemon = null;
         this.second = null;

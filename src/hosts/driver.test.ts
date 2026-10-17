@@ -543,8 +543,7 @@ describe("HostDriver faults", () => {
         release();
         await stop;
         await expect(fault).rejects.toThrow("the arm stopped while the second client opened");
-        expect(second.closed).toBeGreaterThanOrEqual(1);
-        expect(second.closedWhileOpening).toBe(0);
+        expect([second.closed, second.closedWhileOpening]).toEqual([1, 0]);
     });
 
     test("the second client's tool runs are recorded under its session", async () => {
@@ -636,6 +635,61 @@ describe("HostDriver faults", () => {
         await fault.catch(() => undefined);
         const state = JSON.parse(readFileSync(join(armDir, "state.json"), "utf8"));
         expect(state.daemon?.pid).toBe(11);
+    });
+
+    test("a fresh driver's stop leaves a recorded arm state for reapStale to read", async () => {
+        const { driver, armDir } = fixture("host");
+        mkdirSync(armDir, { recursive: true });
+        const recorded = { model: 0, daemon: { pid: 4242, start: "7" }, host: null, second: null };
+        writeFileSync(join(armDir, "state.json"), JSON.stringify(recorded));
+        await driver.stop();
+        expect(JSON.parse(readFileSync(join(armDir, "state.json"), "utf8"))).toEqual(recorded);
+    });
+
+    test("a resume into a session whose second client was recorded reattaches one", async () => {
+        const { driver, hosts, armDir } = fixture("eidnara", { p: "/repo" });
+        const o = (driver as unknown as { o: DriverOptions }).o;
+        o.daemonFactory = () => fakeDaemon(10) as unknown as DaemonStack;
+        const factory = o.hostFactory as (ctx: HostContext) => SimHost;
+        o.hostFactory = (ctx) => {
+            const h = factory(ctx) as unknown as FakeHost;
+            h.pid = process.pid;
+            return h as unknown as SimHost;
+        };
+        mkdirSync(armDir, { recursive: true });
+        const dead = Bun.spawnSync(["true"]).pid;
+        writeFileSync(
+            join(armDir, "state.json"),
+            JSON.stringify({
+                model: 0,
+                daemon: null,
+                host: null,
+                second: { pid: dead, start: null },
+            }),
+        );
+        const inner = driver as unknown as Record<string, unknown>;
+        const noop = () => undefined;
+        inner.snapshots = { sessionStart: noop, sessionEnd: noop, addTools: noop };
+        await driver.resume(ev("session_start", { project: "p" }));
+        expect(hosts.map((h) => h.opened[0])).toContain(`s-0000-b@${driver.workspace("p")}`);
+        expect(inner.second).not.toBeNull();
+        const state = JSON.parse(readFileSync(join(armDir, "state.json"), "utf8"));
+        expect(state.second).not.toBeNull();
+        await driver.stop();
+    });
+
+    test("the store faults a turn checked stay recorded until the journal has the checks", async () => {
+        const { driver, armDir } = fixture("eidnara", { p: gitRepo() });
+        const o = (driver as unknown as { o: DriverOptions }).o;
+        o.daemonFactory = () => fakeDaemon(10) as unknown as DaemonStack;
+        await driver.reset();
+        await driver.event(ev("session_start", { project: "p" }));
+        await driver.fault(episode("daemon_restart"));
+        const out = await driver.event(ev("user_turn", { project: "p", text: "go", index: 0 }));
+        expect(out.stores?.map((s) => s.fault)).toEqual(["f-daemon_restart"]);
+        const state = JSON.parse(readFileSync(join(armDir, "state.json"), "utf8"));
+        expect(state.store_faults).toEqual(["f-daemon_restart"]);
+        await driver.stop();
     });
 
     test("the store checks a daemon restart owes survive a resume through the arm state", async () => {

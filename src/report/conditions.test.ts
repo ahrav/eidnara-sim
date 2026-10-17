@@ -175,6 +175,17 @@ describe("recall drift", () => {
             "| pi | eidnara | P8 | 10/20 | 0.5000 | 38/40 [0.8308, 0.9939] | drift |",
         );
     });
+
+    test("a reference row for an arm the campaign ran shows as missing; a reference-only arm is left out", () => {
+        const p9 = { ...row("eidnara", 30, 29), probe: "P9" as const };
+        const reference = [row("eidnara", 40, 38), p9, row("eidnara-cf", 40, 1)];
+        const drift = recallDrift([row("eidnara", 20, 10)], reference);
+        expect(drift.map((d) => [d.arm, d.probe, d.rate, d.drift])).toEqual([
+            ["eidnara", "P8", 0.5, true],
+            ["eidnara", "P9", null, null],
+        ]);
+        expect(renderDrift(drift, "L").join("\n")).toContain("| pi | eidnara | P9 | 0/0 | - |");
+    });
 });
 
 describe("parseContinuity", () => {

@@ -40,6 +40,18 @@ export function restartCut(restartAt: number, events: number, arms: number): num
     return restartAt > 0 && cut < total ? cut : null;
 }
 
+/** The paired runs that began under a saved restart fraction the chosen one would change. */
+export function restartConflicts(
+    plan: TierJob[],
+    saved: number | undefined,
+    chosen: number,
+): string[] {
+    if (saved === undefined || saved === chosen) return [];
+    return plan
+        .filter((j) => j.group === "main" && existsSync(join(j.dir, "journal.jsonl")))
+        .map((j) => `${j.dir} began under --restart-at ${saved}; the plan now says ${chosen}`);
+}
+
 /** The paired runs a positive `restartAt` has no cut for, named before the plan is saved. */
 export function uncuttableRuns(plan: TierJob[], restartAt: number): string[] {
     if (!(restartAt > 0)) return [];

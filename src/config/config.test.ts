@@ -24,6 +24,9 @@ test("a missing or relative path is refused by field name", () => {
     expect(parseConfig({ ...base, upgrade: { opencode_binary: "/next/oc" } }).upgrade).toEqual({
         opencode_binary: "/next/oc",
     });
+    expect(() =>
+        parseConfig({ ...base, upgrade: { pi_install: "/next/pi", toolchain: null } }),
+    ).toThrow("config.upgrade.toolchain: unknown field");
     for (const upgrade of [null, "/next/pi", ["/next/pi"]]) {
         expect(() => parseConfig({ ...base, upgrade })).toThrow(
             "config.upgrade: expected an object of next host paths",

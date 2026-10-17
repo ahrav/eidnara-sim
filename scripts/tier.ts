@@ -13,6 +13,7 @@ import {
     compressFaults,
     planConflicts,
     profileJobs,
+    restartConflicts,
     restartCut,
     restartFraction,
     runSpan,
@@ -170,6 +171,11 @@ if (conflicts.length > 0) {
 const uncuttable = uncuttableRuns(plan, restartAt);
 if (uncuttable.length > 0)
     refuse(`--restart-at ${restartAt} first stops at the last event of ${uncuttable.join(", ")}`);
+const rethreshold = restartConflicts(plan, prior?.restart_at, restartAt);
+if (rethreshold.length > 0)
+    refuse(
+        `${rethreshold.join("\n")}\n--restart-at must keep the fraction a begun run started under`,
+    );
 writeAtomic(
     priorPlan,
     `${JSON.stringify(
