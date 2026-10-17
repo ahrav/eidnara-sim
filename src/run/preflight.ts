@@ -23,6 +23,21 @@ export function piCli(config: SimConfig): string {
 
 const sameJson = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 
+type VersionRow = { host: "pi" | "opencode"; version: string };
+
+/** A `config.upgrade` target must resolve to a version other than the host's current one. */
+export function requireUpgradeMoves(hosts: VersionRow[], upgrade: VersionRow[]): void {
+    const fields = { pi: "pi_install", opencode: "opencode_binary" } as const;
+    for (const next of upgrade) {
+        const current = hosts.find((h) => h.host === next.host);
+        if (current && current.version === next.version) {
+            throw new Error(
+                `config.upgrade.${fields[next.host]}: resolves to the current version ${next.version}`,
+            );
+        }
+    }
+}
+
 export function preflightDrift(before: Preflight, now: Preflight): string[] {
     const intercepted = (p: Preflight) => p.time_injection.map((t) => [t.name, t.intercepted]);
     const versions = (p: Preflight) =>
@@ -68,6 +83,7 @@ export async function preflight(config: SimConfig, runRoot: string): Promise<Pre
     const upgrade = (["pi", "opencode"] as const)
         .filter((h) => config.upgrade?.[fields[h]])
         .map((h) => row({ ...config, ...config.upgrade }, h));
+    requireUpgradeMoves(hosts, upgrade);
     const offset = join(runRoot, "interception", "offset");
     const toolchain = await toolchainProbe(config, launcher, offset);
     return { launcher, time_injection, distortions, hosts, upgrade, toolchain };

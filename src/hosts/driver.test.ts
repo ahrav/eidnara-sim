@@ -713,8 +713,21 @@ describe("HostDriver faults", () => {
         await driver.fault(episode("host_upgrade"));
         await driver.event(ev("session_start"));
         await expect(driver.event(ev("session_end"))).rejects.toThrow("no new transcript");
+        const resumed = new HostDriver(o);
+        await resumed.resume(null);
+        expect((resumed as unknown as { transcriptsChecked: boolean }).transcriptsChecked).toBe(
+            false,
+        );
+        await resumed.stop();
         await driver.event(ev("session_start"));
+        await Bun.sleep(20);
         writeFileSync(join(sessions, "new.jsonl"), "{}");
+        await driver.event(ev("session_end"));
+        symlinkSync("/", join(sessions, "escape"));
+        await driver.fault(episode("host_upgrade"));
+        await driver.event(ev("session_start"));
+        await Bun.sleep(20);
+        writeFileSync(join(sessions, "newer.jsonl"), "{}");
         await driver.event(ev("session_end"));
     });
 

@@ -130,15 +130,19 @@ for (const [tier, { prereg, runs }] of loaded) {
             join(out, `report-${tier}.json`),
             `${JSON.stringify(report.verdict, null, 2)}\n`,
         );
-        // Only a complete campaign's continuity rows serve as another tier's recall reference.
-        if (report.verdict.pass.incomplete.every((x) => x.startsWith("CUSUM "))) {
+        // Only a complete, sound campaign's continuity rows serve as another tier's recall
+        // reference: no violated property witness and nothing incomplete beyond a CUSUM scale.
+        const sound = report.witness.every((w) => w.status !== "violated");
+        if (sound && report.verdict.pass.incomplete.every((x) => x.startsWith("CUSUM "))) {
             writeFileSync(
                 join(out, `continuity-${tier}.json`),
                 `${JSON.stringify(report.continuity, null, 2)}\n`,
             );
         } else {
             rmSync(join(out, `continuity-${tier}.json`), { force: true });
-            console.error(`${tier}: campaign incomplete; no continuity-${tier}.json written`);
+            console.error(
+                `${tier}: campaign ${sound ? "incomplete" : "unsound"}; no continuity-${tier}.json written`,
+            );
         }
     } else console.log(text);
 }

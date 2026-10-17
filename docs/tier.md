@@ -258,6 +258,7 @@ report in the same invocation settles its file first, with counts and
 four-decimal rates (a reference row for an arm XL ran but has no row for
 appears with no rate; a reference-only arm is left out): each host, arm, and probe's P8 or P9 pass
 rate against the L tier's 95% Clopper-Pearson interval for the same row,
-`drift` when outside it. A report of a complete campaign writes its
-continuity rows to `continuity-<tier>.json` beside `report-<tier>.json` for
-this use; an incomplete one writes none and removes a stale one.
+`drift` when outside it. A report of a complete campaign with no violated
+property witness writes its continuity rows to `continuity-<tier>.json` beside
+`report-<tier>.json` for this use; an incomplete or unsound one writes none
+and removes a stale one.

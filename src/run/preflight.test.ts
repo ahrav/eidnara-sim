@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { type Preflight, preflightDrift } from "./preflight";
+import { type Preflight, preflightDrift, requireUpgradeMoves } from "./preflight";
 
 const probe = (name: string, intercepted: boolean) => ({
     name,
@@ -40,4 +40,11 @@ test("a changed current or next host version names host versions", () => {
     expect(preflightDrift(before, next)).toEqual(["host versions"]);
     const dropped = { ...before, upgrade: [] };
     expect(preflightDrift(before, dropped)).toEqual(["host versions"]);
+});
+
+test("an upgrade target that resolves to the current version is a misconfiguration", () => {
+    expect(() => requireUpgradeMoves(before.hosts, before.upgrade)).not.toThrow();
+    expect(() => requireUpgradeMoves(before.hosts, [host("pi", "0.80.2")])).toThrow(
+        "config.upgrade.pi_install: resolves to the current version 0.80.2",
+    );
 });

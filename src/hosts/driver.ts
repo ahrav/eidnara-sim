@@ -7,7 +7,6 @@ import {
     readFileSync,
     realpathSync,
     rmSync,
-    statSync,
     writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -251,6 +250,7 @@ export class HostDriver implements ArmDriver {
         this.transcriptsChecked =
             record !== null &&
             record.missing.length === 0 &&
+            record.fresh !== false &&
             JSON.stringify(record.templates ?? null) === JSON.stringify(this.transcriptPaths());
         this.secondOwed = state?.second?.session ?? null;
         await this.reapStale();
@@ -416,9 +416,11 @@ export class HostDriver implements ArmDriver {
     /** The newest modification time under the store paths, so a new transcript shows as a change. */
     private storeMark(host: SimHost): number {
         const env = host.transcriptEnv();
+        // Symlinks are skipped: the host writes into this tree, and a link could lead out of it.
         const newest = (path: string): number => {
             if (!existsSync(path)) return 0;
-            const st = statSync(path);
+            const st = lstatSync(path);
+            if (st.isSymbolicLink()) return 0;
             if (!st.isDirectory()) return st.mtimeMs;
             return Math.max(st.mtimeMs, ...readdirSync(path).map((f) => newest(join(path, f))));
         };
@@ -431,12 +433,14 @@ export class HostDriver implements ArmDriver {
         const paths = templates.map((t) => expandTemplate(t, env));
         const missing = paths.filter((p) => !existsSync(p));
         const after = this.upgraded ? "first session_end after host_upgrade" : "first session_end";
-        const record = { checked_after: after, templates, paths, missing };
-        writeFileSync(join(this.armDir, "transcripts.json"), JSON.stringify(record));
-        if (missing.length > 0) throw new Error(`transcript store missing: ${missing.join(", ")}`);
         // An upgraded host shares its store path with the version before it, so the check also
         // requires the session that just ended to have changed the store.
-        if (this.storeMarkAtOpen !== null && this.storeMark(host) <= this.storeMarkAtOpen) {
+        const fresh =
+            this.storeMarkAtOpen === null ? null : this.storeMark(host) > this.storeMarkAtOpen;
+        const record = { checked_after: after, templates, paths, missing, fresh };
+        writeFileSync(join(this.armDir, "transcripts.json"), JSON.stringify(record));
+        if (missing.length > 0) throw new Error(`transcript store missing: ${missing.join(", ")}`);
+        if (fresh === false) {
             throw new Error(`no new transcript in ${paths.join(", ")} after the upgraded session`);
         }
         this.storeMarkAtOpen = null;
