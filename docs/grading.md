@@ -63,18 +63,24 @@ The nested-repository check and the recorder's workspace path check run
 before any walk of the workspace, and the walk itself stops at the bound or
 at 200,000 entries, failing the probe turn. A `git diff` past the 256 MiB
 output cap fails the probe turn the same way. A probe turn that adds,
-changes, or removes a `.gitignore`, or edits `.git/info/exclude`, ends
-`failed` with `ignore rules changed: <paths>`, since a rule added in the turn
-would hide that turn's files from the diff; the baseline is the source's
-`.gitignore` blobs and the clone's `exclude` file, recorded at reset. The
-`.gitignore` files are found by name in the workspace walk and hashed from
-disk, so a rule that ignores its own file still surfaces it; an `exclude` or
-`.gitignore` path that is a symlink, FIFO, or directory, or larger than 1 MiB,
-reads as a changed rule. A workspace with more than 1,000 nested
+changes, or removes a `.gitignore` or `.gitattributes`, or edits
+`.git/info/exclude` or `.git/info/attributes`, ends `failed` with
+`rule files changed: <paths>`: a rule added in the turn would hide that turn's
+files from the diff, and an attribute (`ident`, `eol`, a clean driver) would
+rewrite the content git indexes. The baseline is the source's `.gitignore` and
+`.gitattributes` blobs and the clone's `exclude` and `attributes` files,
+recorded at reset. The rule files are found by name in the workspace walk and
+hashed from disk, so a rule that ignores its own file still surfaces it; a rule
+path that is a symlink, FIFO, or directory, or larger than 1 MiB, reads as a
+changed rule. A workspace with more than 1,000 nested
 repositories fails the probe turn before git runs. The driver waits the scheduler's settle window and then its background
 jobs before it takes a probe snapshot, and checks the daemon is alive after
 the prompt and again after the snapshot, reporting an exit once with the
-turn's id.
+turn's id. A proxy call record the gateway failed to write stops the run at
+the next snapshot or at the run's end, so `calls.jsonl` never silently lacks a
+call the host made. The grade, judge-call, and judgment logs must be regular
+files or absent; a symlink at any of those paths stops grading before a
+write.
 The snapshot tree adds, with `--force`, the paths the project's source
 repository tracks although its ignore rules match them (the driver lists
 them from the source at reset), so a change to such a file is in the diff.

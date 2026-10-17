@@ -351,7 +351,10 @@ async function runArms(
             loopStore,
             onDaemonExit: (detail) => scheduler.daemonExited(detail),
             sampleDaemon: () => sampler.observe(),
-            callsFor: (session) => callsOf(join(o.out, "calls.jsonl"), arm, session, turnIndex),
+            callsFor: (session) => {
+                requireRecorded(gateway);
+                return callsOf(join(o.out, "calls.jsonl"), arm, session, turnIndex);
+            },
             settle: () => scheduler.quiesceJobs(),
             now,
         });
@@ -420,4 +423,15 @@ async function runArms(
         };
     }
     await scheduler.run();
+    requireRecorded(gateway);
+}
+
+/**
+ * A call record the gateway failed to write leaves `calls.jsonl` short of a call the host made,
+ * so the run stops rather than snapshot or end on incomplete evidence.
+ */
+function requireRecorded(gateway: Gateway): void {
+    if (gateway.failures.length === 0) return;
+    const causes = gateway.failures.map((f) => f.message).join("; ");
+    throw new HarnessFailure(`proxy call recording failed: ${causes}`);
 }

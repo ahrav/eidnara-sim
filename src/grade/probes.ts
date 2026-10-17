@@ -1,5 +1,6 @@
 import { appendFileSync, existsSync, readFileSync, truncateSync } from "node:fs";
 import type { Preregistration } from "../prereg/schema";
+import { requireAppendable } from "../run/journal";
 import type { ProbeItem } from "../scenario/compile";
 import {
     type Artefact,
@@ -359,6 +360,7 @@ export class GradeLog {
 
     /** A log reopened over a line cut by a kill mid-append keeps its newline-terminated prefix. */
     constructor(private readonly path: string) {
+        requireAppendable(path);
         if (!existsSync(path)) return;
         const text = readFileSync(path, "utf8");
         const complete = text.slice(0, text.lastIndexOf("\n") + 1);
