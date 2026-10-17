@@ -95,14 +95,20 @@ function requireComplete(entries: Entry[], arms: string[], scheduled: string[]):
 /** Yields a JSONL file's non-empty lines one at a time, so a log of large records costs one record of memory. */
 async function* jsonlLines(path: string): AsyncGenerator<string> {
     const decoder = new TextDecoder();
-    let rest = "";
+    const pending: string[] = [];
     for await (const chunk of Bun.file(path).stream()) {
-        rest += decoder.decode(chunk, { stream: true });
-        const parts = rest.split("\n");
-        rest = parts.pop() ?? "";
-        for (const line of parts) if (line) yield line;
+        let piece = decoder.decode(chunk, { stream: true });
+        for (let at = piece.indexOf("\n"); at !== -1; at = piece.indexOf("\n")) {
+            pending.push(piece.slice(0, at));
+            const line = pending.join("");
+            pending.length = 0;
+            if (line) yield line;
+            piece = piece.slice(at + 1);
+        }
+        if (piece) pending.push(piece);
     }
-    rest += decoder.decode();
+    pending.push(decoder.decode());
+    const rest = pending.join("");
     if (rest) yield rest;
 }
 
@@ -178,16 +184,37 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
     if (lost.length > 0) {
         throw new Error(`journaled snapshots have no row in snapshots.jsonl: ${lost.join(", ")}`);
     }
-    const agentModels = new Set(
-        readJournal(join(dir, "calls.jsonl"))
-            .filter((r) => r.component === "agent" && typeof r.model === "string")
-            .map((r) => String(r.model)),
+    const recorded = new Map<string, { arm: string; model: string }>();
+    for (const r of readJournal(join(dir, "calls.jsonl"))) {
+        if (r.component !== "agent") continue;
+        if (typeof r.model !== "string" || typeof r.seq !== "number") {
+            throw new Error(`calls.jsonl record ${String(r.seq)} names no model`);
+        }
+        recorded.set(`${String(r.arm)}/${r.seq}`, { arm: String(r.arm), model: r.model });
+    }
+    const unrecorded = [...new Set([...recorded.values()].map((c) => c.model))].filter(
+        (m) => !models.includes(m),
     );
-    const unrecorded = [...agentModels].filter((m) => !models.includes(m));
     if (unrecorded.length > 0) {
         throw new Error(
             `agent calls used models the manifest does not record: ${unrecorded.join(", ")}`,
         );
+    }
+    for (const rows of snapshots.values()) {
+        for (const s of rows) {
+            if (!journaled.has(s.id)) continue;
+            const calls = s.artefacts.find((a) => a.class === "proxy-call");
+            if (calls?.class !== "proxy-call") continue;
+            for (const c of calls.calls) {
+                if (c.component !== "agent") continue;
+                const record = recorded.get(`${s.arm}/${c.seq}`);
+                if (!record) {
+                    throw new Error(
+                        `snapshot ${s.id} holds agent call ${c.seq}, which calls.jsonl does not record for arm ${s.arm}`,
+                    );
+                }
+            }
+        }
     }
     const attempts = (arm: string, item: string): Snapshot[] | undefined => {
         const rows = snapshots.get(`${arm}/${item}`) ?? [];

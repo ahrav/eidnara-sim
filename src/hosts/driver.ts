@@ -4,7 +4,6 @@ import {
     existsSync,
     lstatSync,
     mkdirSync,
-    readdirSync,
     readFileSync,
     realpathSync,
     renameSync,
@@ -25,7 +24,7 @@ import {
     type SimHost,
     type ToolRun,
 } from "./arms";
-import { SnapshotRecorder } from "./snapshot";
+import { entriesOf, SnapshotRecorder } from "./snapshot";
 
 interface ArmState {
     model: number;
@@ -432,7 +431,7 @@ export class HostDriver implements ArmDriver {
         let seen = 0;
         const pending = [gitDir];
         for (let at = pending.shift(); at !== undefined; at = pending.shift()) {
-            for (const entry of readdirSync(at, { withFileTypes: true })) {
+            for (const entry of entriesOf(at)) {
                 if (
                     ++seen > (this.o.gitDirEntryCap ?? GIT_DIR_ENTRY_CAP) ||
                     Date.now() > deadline
