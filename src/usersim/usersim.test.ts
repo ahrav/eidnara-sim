@@ -10,6 +10,7 @@ import {
     Pairing,
     type PairingRecord,
     pairingMismatches,
+    proxyUserSim,
     type ScriptTurn,
     Tape,
     tapeDigests,
@@ -443,6 +444,40 @@ describe("tape and pairing", () => {
         const sent = await user.deliver("a", abandon, "ok");
         expect(sent.text).not.toContain("Next.");
         expect(pairing.records.at(-2)).toMatchObject({ event: "e-10", delivered: false });
+    });
+
+    test("a taped reply is not reused for the same event once its scripted text differs", async () => {
+        const first = dir();
+        await play(sim(first, counting()).user, "a", outputs);
+        const replay = counting();
+        const again = sim(dir(), replay, "a", [join(first, "tape.jsonl")]);
+        const edited = script.map((t) =>
+            t.id === "e-2" ? { ...t, text: "Now add two tests." } : t,
+        );
+        for (const [i, t] of edited.entries()) await again.user.deliver("a", t, outputs[i] ?? "");
+        expect(replay.calls).toBe(1);
+        expect(replay.prompts[0]).toContain("Now add two tests.");
+    });
+
+    test("a proxied user-sim reply joins every text block of the response", async () => {
+        const server = Bun.serve({
+            port: 0,
+            fetch: async () =>
+                Response.json({
+                    output: {
+                        message: {
+                            content: [{ text: "First." }, { toolUse: {} }, { text: "Second?" }],
+                        },
+                    },
+                    stopReason: "end_turn",
+                }),
+        });
+        try {
+            const llm = proxyUserSim(`http://127.0.0.1:${server.port}`, "m", 100);
+            expect(await llm("hi")).toEqual({ text: "First.\nSecond?", stop: "end_turn" });
+        } finally {
+            server.stop(true);
+        }
     });
 
     test("a delivered text that carries a ledger key or probe id stops the run", async () => {

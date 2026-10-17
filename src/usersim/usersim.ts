@@ -26,7 +26,10 @@ export function proxyUserSim(gatewayUrl: string, model: string, maxTokens: numbe
             output?: { message?: { content?: Array<{ text?: string }> } };
             stopReason?: string;
         };
-        const text = body.output?.message?.content?.find((b) => b.text !== undefined)?.text ?? "";
+        const text = (body.output?.message?.content ?? [])
+            .map((b) => b.text)
+            .filter((t): t is string => typeof t === "string")
+            .join("\n");
         return { text, stop: body.stopReason ?? "unknown" };
     };
 }
@@ -422,8 +425,11 @@ export class UserSim {
         lastAgent: string,
     ) {
         const owner = this.o.pairing.owner(arm, t.session, t.index);
+        // The scripted text is part of the key, so a tape from another scenario that shares the
+        // seed and event ids never answers for an edited task.
+        const scripted = sha256Hex(t.text);
         const key = sha256Hex(
-            `${owner === "" ? "" : `${owner}/`}${this.o.seed}/${t.id}/${label}/${digest}`,
+            `${owner === "" ? "" : `${owner}/`}${this.o.seed}/${t.id}/${label}/${digest}/${scripted}`,
         );
         const taped = this.o.tape.get(key);
         let got = taped;

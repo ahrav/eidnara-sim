@@ -598,6 +598,38 @@ describe("store checks outside turns", () => {
 });
 
 describe("driver lifecycle hooks", () => {
+    test("an arm killed after its rate summary resumes without a second one", async () => {
+        const path = join(dir(), "j.jsonl");
+        const events = fixtureEvents(2);
+        const first = new Journal(path);
+        const run = (journal: Journal, armSummary: () => object) =>
+            new Scheduler({
+                events,
+                faults: [],
+                journal,
+                settleMs: 0,
+                order: ["a"],
+                drivers: { a: fakeDriver([]) },
+                armSummary,
+            }).run();
+        await expect(
+            run(first, () => {
+                throw new Error("harness killed");
+            }),
+        ).rejects.toThrow("harness killed");
+        first.append({
+            kind: "UserSimRates",
+            arm: "a",
+            scenario_ms: first.entries.at(-1)?.scenario_ms ?? 0,
+            rates: { arm: "a" },
+        });
+        first.close();
+        const second = new Journal(path);
+        await run(second, () => ({ rates: { arm: "a" } }));
+        expect(second.entries.filter((e) => e.kind === "UserSimRates")).toHaveLength(1);
+        expect(second.entries.filter((e) => e.kind === "EndArm")).toHaveLength(1);
+    });
+
     test("a resumed arm gets the open session, its open jobs end, and finish precedes EndArm", async () => {
         const path = join(dir(), "j.jsonl");
         const events = fixtureEvents(3);

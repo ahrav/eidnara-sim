@@ -66,4 +66,8 @@ test("the pairing check fails a run whose log lacks a scheduled turn for an arm"
     const whole = run([rates("a"), rates("b")], events, [turn("a"), turn("b")]);
     expect(whole.report.missing_turns).toEqual([]);
     expect(whole.exit).toBe(0);
+    const cut = { kind: "Event", arm: "b", event: "e-1", outcome: "failed(interrupted)" };
+    const interrupted = run([rates("a"), rates("b"), cut], events, [turn("a"), turn("b")]);
+    expect(interrupted.report.interrupted_turns).toEqual(["b e-1"]);
+    expect(interrupted.exit).toBe(1);
 });

@@ -125,7 +125,9 @@ export class Scheduler {
             const last = await driver.finish?.();
             for (const s of last?.stores ?? [])
                 this.log({ kind: "StoreChecked", event: null, ...s });
-            const rates = this.o.armSummary?.(arm);
+            // A kill between the summary and EndArm resumes here; the arm keeps its one summary.
+            const summarised = mine.some((e) => e.kind === "UserSimRates");
+            const rates = summarised ? undefined : this.o.armSummary?.(arm);
             if (rates) this.log({ kind: "UserSimRates", ...rates });
             this.log({ kind: "EndArm" });
         }

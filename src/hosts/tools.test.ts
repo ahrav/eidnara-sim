@@ -275,6 +275,23 @@ test("an OpenCode interrupt counts only when the abort landed; a turn that ran t
     expect(await aborted.prompt("go", 5_000, 50)).toEqual({ interrupted: true });
 });
 
+test("an aborted OpenCode turn whose tool listing then fails keeps the interrupt beside the capture error", async () => {
+    let listings = 0;
+    const host = opencodeHost({
+        session: {
+            messages: async () => {
+                if (listings++ === 0) return { data: [] };
+                throw new Error("listing stalled");
+            },
+            prompt: () => Bun.sleep(300).then(() => ({ data: { info: {} } })),
+            abort: async () => ({ data: true }),
+        },
+    });
+    const result = await host.prompt("go", 5_000, 50);
+    expect(result.interrupted).toBe(true);
+    expect(result.error).toStartWith("tool capture:");
+});
+
 test("a Pi interrupt counts only when the agent's last message was aborted", async () => {
     const run = (stopReason: string) => {
         const host = new PiSimHost({

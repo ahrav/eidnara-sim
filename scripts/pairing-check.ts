@@ -60,6 +60,10 @@ const report = {
     missing_turns: (manifest.order as string[]).flatMap((arm) =>
         scheduled.map((e) => `${arm} ${e.id}`).filter((key) => !recorded.has(key)),
     ),
+    interrupted_turns: journal
+        .filter((e) => e.kind === "Event" && e.outcome === "failed(interrupted)")
+        .map((e) => `${e.arm} ${e.event}`)
+        .filter((key) => recorded.has(key)),
 };
 console.log(JSON.stringify(report, null, 2));
 const failed =
@@ -68,5 +72,6 @@ const failed =
     unsent.length +
     report.flagged.length +
     report.missing_rates.length +
-    report.missing_turns.length;
+    report.missing_turns.length +
+    report.interrupted_turns.length;
 process.exit(failed > 0 ? 1 : 0);

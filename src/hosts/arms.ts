@@ -630,7 +630,10 @@ export class OpencodeSimHost extends SimHost {
             await this.logTurnTools(seen, startScenario, remaining);
         } catch (caught) {
             const gap = `tool capture: ${String(caught)}`;
-            return { error: (outcome.error ? `${outcome.error} | ${gap}` : gap).slice(0, 2000) };
+            return {
+                ...outcome,
+                error: (outcome.error ? `${outcome.error} | ${gap}` : gap).slice(0, 2000),
+            };
         }
         return outcome;
     }
