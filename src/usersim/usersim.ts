@@ -11,16 +11,34 @@ import type { Label, Plan } from "./plan";
 /** One model call: the user's reply text and the model's stop reason. */
 export type Llm = (prompt: string) => Promise<{ text: string; stop: string }>;
 
-export function proxyUserSim(gatewayUrl: string, model: string, maxTokens: number): Llm {
+/**
+ * `deadlineMs` bounds the whole call; the user-sim speaks before the host turn opens, so no
+ * turn deadline covers a gateway that never answers.
+ */
+export function proxyUserSim(
+    gatewayUrl: string,
+    model: string,
+    maxTokens: number,
+    deadlineMs: number,
+): Llm {
     return async (prompt) => {
-        const response = await fetch(`${gatewayUrl}/model/${encodeURIComponent(model)}/converse`, {
-            method: "POST",
-            headers: { [COMPONENT_HEADER]: "user-sim", "content-type": "application/json" },
-            body: JSON.stringify({
-                messages: [{ role: "user", content: [{ text: prompt }] }],
-                inferenceConfig: { maxTokens },
-            }),
-        });
+        let response: Response;
+        try {
+            response = await fetch(`${gatewayUrl}/model/${encodeURIComponent(model)}/converse`, {
+                method: "POST",
+                headers: { [COMPONENT_HEADER]: "user-sim", "content-type": "application/json" },
+                body: JSON.stringify({
+                    messages: [{ role: "user", content: [{ text: prompt }] }],
+                    inferenceConfig: { maxTokens },
+                }),
+                signal: AbortSignal.timeout(deadlineMs),
+            });
+        } catch (caught) {
+            if ((caught as { name?: string }).name === "TimeoutError") {
+                throw new HarnessFailure(`user-sim call timed out after ${deadlineMs} ms`);
+            }
+            throw caught;
+        }
         if (!response.ok) throw new HarnessFailure(`user-sim call failed: ${response.status}`);
         const body = (await response.json()) as {
             output?: { message?: { content?: Array<{ text?: string }> } };
@@ -85,6 +103,31 @@ const pairingBeside = (tape: string) => join(dirname(tape), "pairing.jsonl");
 function requireSource(path: string): string {
     if (!existsSync(path)) throw new HarnessFailure(`replay source ${path} does not exist`);
     return path;
+}
+
+/**
+ * A replay source must come from a run of the same seed and scenario: its `manifest.json`,
+ * beside the tape, names both. A tape from another run would share event ids and digests
+ * while its keys never match, so every reply would go live with no divergence on record.
+ */
+export function checkTapeSources(
+    tapes: readonly string[],
+    run: { seed: number; scenario_hash: string },
+): void {
+    for (const tape of tapes) {
+        const path = join(dirname(tape), "manifest.json");
+        if (!existsSync(path)) throw new HarnessFailure(`replay source ${path} does not exist`);
+        const manifest = JSON.parse(readFileSync(path, "utf8")) as {
+            seed?: unknown;
+            scenario_hash?: unknown;
+        };
+        if (manifest.seed !== run.seed) {
+            throw new HarnessFailure(`replay source ${tape} is from seed ${manifest.seed}`);
+        }
+        if (manifest.scenario_hash !== run.scenario_hash) {
+            throw new HarnessFailure(`replay source ${tape} is from another scenario`);
+        }
+    }
 }
 
 export function tapeDigests(tapes: readonly string[]): string[] {

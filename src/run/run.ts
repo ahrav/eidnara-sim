@@ -25,6 +25,7 @@ import { bedrockEmbedder } from "../scenario/similarity";
 import { behaviourPlan, type Label, realisedRates } from "../usersim/plan";
 import {
     type AgentReply,
+    checkTapeSources,
     normaliser,
     Pairing,
     proxyUserSim,
@@ -156,6 +157,7 @@ async function loadManifest(o: RunOptions, scenario: Scenario): Promise<Manifest
         fault_override: o.faults ?? null,
         tapes: o.tapes ?? [],
     };
+    checkTapeSources(wanted.tapes, { seed: o.seed, scenario_hash: scenario.scenario_hash });
     if (existsSync(path)) {
         const manifest = JSON.parse(readFileSync(path, "utf8")) as Manifest;
         const given: Record<string, boolean> = {
@@ -393,6 +395,7 @@ async function runArms(
             gateway.urls[0] as string,
             prereg.user_sim.model,
             prereg.user_sim.max_tokens,
+            prereg.liveness_bounds.job_deadline_ms,
         ),
         normalise: normaliser(prereg.divergence_policy.normalisation),
         keys: [

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { loadPrereg } from "../scenario/inputs";
 import { behaviourPlan, type Label, type Plan, type PlanTurn, realisedRates } from "./plan";
 import {
+    checkTapeSources,
     type Llm,
     normaliser,
     Pairing,
@@ -65,6 +66,25 @@ describe("behaviour plan", () => {
             recorded.turns.filter((t) => plan.labels.get(t.id) === "abandon").map((t) => t.session),
         );
         expect([...skippedSessions].every((s) => abandoned.has(s))).toBe(true);
+    });
+
+    test("a fault's trigger turn is never interrupted", () => {
+        const turns: PlanTurn[] = [];
+        for (let s = 0; s < 40; s++) {
+            for (let i = 0; i < 4; i++) {
+                turns.push({ id: `e-${s}-${i}`, session: `s-${s}`, index: i, role: "filler" });
+            }
+        }
+        const pinned = new Set(turns.filter((t) => t.index === 1).map((t) => t.id));
+        const free = behaviourPlan(turns, prereg, 102);
+        expect([...free.labels].some(([id, l]) => l === "interrupt" && pinned.has(id))).toBe(true);
+        const plan = behaviourPlan(turns, prereg, 102, pinned);
+        expect([...plan.labels].filter(([id, l]) => l === "interrupt" && pinned.has(id))).toEqual(
+            [],
+        );
+        expect([...plan.labels.values()].filter((l) => l === "interrupt").length).toBeGreaterThan(
+            0,
+        );
     });
 
     test("a fault's trigger turn is never skipped by an abandon", () => {
@@ -459,6 +479,39 @@ describe("tape and pairing", () => {
         expect(replay.prompts[0]).toContain("Now add two tests.");
     });
 
+    test("a proxied user-sim call that never answers fails the run at its deadline", async () => {
+        const server = Bun.serve({ port: 0, fetch: () => new Promise<Response>(() => {}) });
+        try {
+            const llm = proxyUserSim(`http://127.0.0.1:${server.port}`, "m", 100, 200);
+            await expect(llm("hi")).rejects.toThrow("user-sim call timed out after 200 ms");
+        } finally {
+            server.stop(true);
+        }
+    });
+
+    test("a replay source from another seed or scenario is refused", () => {
+        const root = dir();
+        writeFileSync(join(root, "tape.jsonl"), "");
+        writeFileSync(join(root, "pairing.jsonl"), "");
+        const run = { seed: 101, scenario_hash: "abc" };
+        expect(() => checkTapeSources([join(root, "tape.jsonl")], run)).toThrow("manifest.json");
+        writeFileSync(
+            join(root, "manifest.json"),
+            JSON.stringify({ seed: 102, scenario_hash: "abc" }),
+        );
+        expect(() => checkTapeSources([join(root, "tape.jsonl")], run)).toThrow("seed 102");
+        writeFileSync(
+            join(root, "manifest.json"),
+            JSON.stringify({ seed: 101, scenario_hash: "zzz" }),
+        );
+        expect(() => checkTapeSources([join(root, "tape.jsonl")], run)).toThrow("scenario");
+        writeFileSync(
+            join(root, "manifest.json"),
+            JSON.stringify({ seed: 101, scenario_hash: "abc" }),
+        );
+        expect(() => checkTapeSources([join(root, "tape.jsonl")], run)).not.toThrow();
+    });
+
     test("a proxied user-sim reply joins every text block of the response", async () => {
         const server = Bun.serve({
             port: 0,
@@ -473,7 +526,7 @@ describe("tape and pairing", () => {
                 }),
         });
         try {
-            const llm = proxyUserSim(`http://127.0.0.1:${server.port}`, "m", 100);
+            const llm = proxyUserSim(`http://127.0.0.1:${server.port}`, "m", 100, 5_000);
             expect(await llm("hi")).toEqual({ text: "First.\nSecond?", stop: "end_turn" });
         } finally {
             server.stop(true);

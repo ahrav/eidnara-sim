@@ -42,8 +42,9 @@ function sample<T>(items: T[], n: number, rng: Rng): T[] {
  * Rounded quotas, capped by the eligible turns, bring the rates over a whole scenario close to
  * the pre-registered targets: abandon and redirect per session, then interrupt and pushback per
  * delivered turn. Probe turns are delivered as compiled and carry `task`; pastes carry `paste`.
- * `pinned` turns, the ones a fault fires at, are always sent: an abandon skips only the trailing
- * fillers after the last of them, so a fault armed for a turn meets that turn's agent call.
+ * `pinned` turns, the ones a fault fires at, are always sent and never interrupted: an abandon
+ * skips only the trailing fillers after the last of them, and the interrupt draw leaves them
+ * out, so a fault armed for a turn meets that turn's agent call and runs to its own outcome.
  */
 export function behaviourPlan(
     turns: PlanTurn[],
@@ -86,7 +87,7 @@ export function behaviourPlan(
         if (turn) labels.set(turn.id, "redirect");
     }
     const delivered = turns.length - skipped.size;
-    const fillers = turns.filter((t) => t.role === "filler" && free(t));
+    const fillers = turns.filter((t) => t.role === "filler" && free(t) && !pinned.has(t.id));
     for (const t of sample(fillers, quota("interrupt_per_turn", delivered), rng)) {
         labels.set(t.id, "interrupt");
         interruptMs.set(t.id, delay.min + Math.floor(rng.next() * (delay.max - delay.min + 1)));

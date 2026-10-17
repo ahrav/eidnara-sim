@@ -752,6 +752,22 @@ export class OpencodeSimHost extends SimHost {
         return outcome;
     }
 
+    /** How long an aborted turn may take to settle before the run is stopped. */
+    private drainWaitMs = 30_000;
+
+    private drained(): Promise<null> {
+        return Bun.sleep(this.drainWaitMs).then(() => null);
+    }
+
+    /** Asks OpenCode to abort the session's running prompt; true once it reports it did. */
+    private async abortSession(): Promise<boolean> {
+        const abort = this.client.session
+            .abort({ path: { id: this.sid } })
+            .then((r: Untyped) => r?.data === true && !r?.error)
+            .catch(() => false);
+        return Promise.race([abort, Bun.sleep(5_000).then(() => false)]);
+    }
+
     private async turn(
         text: string,
         timeoutMs: number,
@@ -768,19 +784,21 @@ export class OpencodeSimHost extends SimHost {
         );
         const wait = Math.min(timeoutMs, interruptMs ?? timeoutMs);
         let first = await Promise.race([settled, Bun.sleep(wait).then(() => null)]);
-        if (first === null) {
+        if (first === null && wait < timeoutMs) {
             // `session.abort` answers true once it stopped a running prompt; a refusal, an error,
-            // or a stall leaves the turn to end as it would have, and it is reported as it ended.
-            const abort = this.client.session
-                .abort({ path: { id: this.sid } })
-                .then((r: Untyped) => r?.data === true && !r?.error)
-                .catch(() => false);
-            const aborted = await Promise.race([abort, Bun.sleep(5_000).then(() => false)]);
-            const drained = await Promise.race([settled, Bun.sleep(30_000).then(() => null)]);
-            if (drained === null) throw new Error("OpenCode turn still running 30 s after abort");
-            if (wait >= timeoutMs) return { error: `turn deadline ${timeoutMs} ms` };
-            if (aborted) return { interrupted: true };
-            first = drained;
+            // or a stall leaves the turn to run on under its own deadline, reported as it ends.
+            if (await this.abortSession()) {
+                const drained = await Promise.race([settled, this.drained()]);
+                if (drained === null) throw new Error("OpenCode turn still running after abort");
+                return { interrupted: true };
+            }
+            first = await Promise.race([settled, Bun.sleep(timeoutMs - wait).then(() => null)]);
+        }
+        if (first === null) {
+            await this.abortSession();
+            const drained = await Promise.race([settled, this.drained()]);
+            if (drained === null) throw new Error("OpenCode turn still running after abort");
+            return { error: `turn deadline ${timeoutMs} ms` };
         }
         if ("caught" in first) {
             const tail = String(this.oc?.stderr?.() ?? "").slice(-600);
