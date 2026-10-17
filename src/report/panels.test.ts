@@ -206,6 +206,17 @@ describe("soak verdict", () => {
         expect([again?.verdict, again?.generations, again?.generation]).toEqual(["leak", 2, 1]);
     });
 
+    test("the sampling cadence counts every sampler row, including those taken with the daemon down", () => {
+        seq = 0;
+        const kinds = new Map<string, string>();
+        const resources = [
+            { scenario_ms: 0, wall_ms: 0, pid: 1, rss: 100 * MB, store_bytes: 0 },
+            { scenario_ms: 10_000, wall_ms: 10_000, pid: null, rss: null, store_bytes: 0 },
+            { scenario_ms: 20_000, wall_ms: 20_000, pid: 2, rss: 100 * MB, store_bytes: 0 },
+        ];
+        expect(soak(run([], "", kinds), arm({ resources }), "rss")?.max_gap_ms).toBe(10_000);
+    });
+
     test("heap evidence is unavailable when samples from before the field remain", () => {
         const { kinds, journal, resources } = sessions(20, () => 100 * MB);
         const withHeap = resources.map((r) => ({ ...r, heap: 50 * MB }));
@@ -240,7 +251,7 @@ describe("soak verdict", () => {
         const journal = [entry("Event", 999, { event: "end-0", wall_ms: 1_500 })];
         const resources = [
             { scenario_ms: 0, wall_ms: 0, rss: 100 * MB, store_bytes: 0 },
-            { scenario_ms: 999, wall_ms: 1_000, rss: 300 * MB, store_bytes: 0 },
+            { scenario_ms: 999, wall_ms: 1_500, rss: 300 * MB, store_bytes: 0 },
             { scenario_ms: 999, wall_ms: 2_000, rss: 100 * MB, store_bytes: 0 },
         ];
         const v = soak(run([], "", kinds), arm({ journal, resources }), "rss");
@@ -281,6 +292,15 @@ describe("intrusiveness panel", () => {
             ],
         };
         expect(intrusiveness(run([truncated]), truncated).internal_string_hits).toBeNull();
+        seq = 0;
+        const interrupted = {
+            ...first,
+            journal: [
+                entry("BeginTurn", 0, { event: "e-1" }),
+                entry("ItemState", 1, { event: "e-1", state: "failed(interrupted)" }),
+            ],
+        };
+        expect(intrusiveness(run([interrupted]), interrupted).internal_string_hits).toBeNull();
     });
 
     test("a correction counts only when it quotes a note delivered earlier that the user never wrote", () => {
@@ -472,6 +492,10 @@ describe("intrusiveness panel", () => {
             },
             { command: "echo $(git restore nonexistent)", exit: 0, scenario_ms: 3, turn: "e-2" },
             { command: 'git restore "-S" p.rs', exit: 0, scenario_ms: 3, turn: "e-2" },
+            { command: "true || git restore q.rs", exit: 0, scenario_ms: 3, turn: "e-2" },
+            { command: "git restore r.rs\n", exit: 0, scenario_ms: 3, turn: "e-2" },
+            { command: "git restore s.rs\n\n# done\n", exit: 0, scenario_ms: 3, turn: "e-2" },
+            { command: "false || git restore t.rs", exit: 0, scenario_ms: 3, turn: "e-2" },
             { command: 'git reset "--hard"', exit: 0, scenario_ms: 3, turn: "e-2" },
             { command: "cargo test", exit: 0, scenario_ms: 4, turn: "e-2" },
         ];
@@ -497,6 +521,8 @@ describe("intrusiveness panel", () => {
             "env FOO=1 git reset --hard",
             "git restore k.rs 2>&1",
             "git restore l.rs >/dev/null 2>&1 && echo ok",
+            "git restore r.rs\n",
+            "git restore s.rs\n\n# done\n",
             'git reset "--hard"',
         ]);
         expect(panel.latency_ms).toEqual({ n: 7, p50: 500, p95: 5000 });

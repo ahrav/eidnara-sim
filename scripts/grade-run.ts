@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { loadConfig } from "../src/config/config";
 import type { Snapshot } from "../src/grade/artefacts";
@@ -22,6 +22,8 @@ const config = loadConfig();
 const manifest = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8"));
 const scenario = JSON.parse(readFileSync(join(dir, "scenario.json"), "utf8")) as Scenario;
 const rules = loadPrereg(manifest.tier).grading;
+const summaryPath = join(dir, "grade-summary.json");
+rmSync(summaryPath, { force: true });
 const log = new GradeLog(join(dir, "grades.jsonl"));
 const arms = manifest.order as string[];
 
@@ -135,6 +137,7 @@ const report = JSON.stringify(
     null,
     2,
 );
-writeFileSync(join(dir, "grade-summary.json"), `${report}\n`);
+writeFileSync(`${summaryPath}.tmp`, `${report}\n`);
+renameSync(`${summaryPath}.tmp`, summaryPath);
 console.log(report);
 if (judgeErrors > 0) process.exit(1);

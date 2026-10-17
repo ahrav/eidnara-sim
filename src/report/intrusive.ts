@@ -12,8 +12,10 @@ import type { PairingRecord } from "../usersim/usersim";
 export interface Intrusiveness {
     arm: string;
     /**
-     * `null` when an agent response reached the proxy's `RESPONSE_TEXT_LIMIT`, since the recorded
-     * text may lack the suffix the user saw and a scan of it cannot clear the arm.
+     * `null` when an agent response reached the proxy's `RESPONSE_TEXT_LIMIT`, or a turn was
+     * interrupted (`ItemState` `failed(interrupted)`): the recorded text may lack the suffix the
+     * user saw, or a streamed response has no record at all, so a scan of the records cannot
+     * clear the arm.
      */
     internal_string_hits: { source: "agent-response"; at: string; evidence: string }[] | null;
     /**
@@ -37,9 +39,10 @@ export interface Intrusiveness {
  * after a separator or a grouping `(` (a `$(` substitution's status is the outer command's, so it
  * is no position), past any `VAR=value` assignments and `sudo`, `env`, `time`, `nice`, `nohup`,
  * or `exec` prefixes with their options; its subcommand and arguments run up to the next separator.
+ * Group 1 is the separator before it: after `||` the shell may have skipped the invocation.
  */
 const GIT =
-    /(?:^|[;&|][ \t]*|(?<!\$)\([ \t]*)[ \t]*(?:\w+=[^ \t\n]*[ \t]+)*(?:(?:sudo|env|time|nice|nohup|exec)(?:[ \t]+(?:-[^ \t\n]*|\w+=[^ \t\n]*))*[ \t]+)*git[ \t]+(?:-[Cc][ \t]+[^ \t\n]+[ \t]+)*([a-z-]+)((?:[ \t]+[^ \t\n;&|)]+)*)/gm;
+    /(^|&&|\|\||[;&|]|(?<!\$)\()[ \t]*(?:\w+=[^ \t\n]*[ \t]+)*(?:(?:sudo|env|time|nice|nohup|exec)(?:[ \t]+(?:-[^ \t\n]*|\w+=[^ \t\n]*))*[ \t]+)*git[ \t]+(?:-[Cc][ \t]+[^ \t\n]+[ \t]+)*([a-z-]+)((?:[ \t]+[^ \t\n;&|)]+)*)/gm;
 const COMMENT = /(^|[ \t])#.*$/g;
 /** Redirections (`2>&1`, `&>f`, `>f`, `<f`), which are part of a command rather than separators. */
 const REDIRECT = /[ \t]*(?:\d*[<>]{1,2}&?\d*|&>>?)[ \t]*[^ \t\n;&|)]*/g;
@@ -147,13 +150,16 @@ const reverts = (sub: string, args: string[]) =>
 
 /**
  * Whether a zero exit status of the whole command establishes that a reverting `git` invocation
- * in it succeeded: every command after that invocation is joined by `&&`, so the shell ran them
- * only after the revert exited 0 and the final status is theirs only when all succeeded.
+ * in it ran and succeeded: it does not follow `||`, which may have skipped it, and every command
+ * after it is joined by `&&`, so the shell ran them only after the revert exited 0 and the final
+ * status is theirs only when all succeeded. Trailing whitespace and comment-only lines are no
+ * commands.
  */
 export function isRevert(command: string): boolean {
-    const shell = executable(command);
+    const shell = executable(command).trimEnd();
     for (const m of shell.matchAll(GIT)) {
-        const [, sub, rest] = m;
+        const [, before, sub, rest] = m;
+        if (before === "||") continue;
         const args = (rest ?? "")
             .trim()
             .split(/\s+/)
@@ -282,9 +288,10 @@ function corrections(run: RunLogs, arm: ArmLogs) {
 
 export function intrusiveness(run: RunLogs, arm: ArmLogs): Intrusiveness {
     const latencies = turnLatencies(arm);
-    const cut = arm.calls.some(
-        (c) => c.component === "agent" && (c.response_text?.length ?? 0) >= RESPONSE_TEXT_LIMIT,
-    );
+    const cut =
+        arm.calls.some(
+            (c) => c.component === "agent" && (c.response_text?.length ?? 0) >= RESPONSE_TEXT_LIMIT,
+        ) || arm.journal.some((e) => e.kind === "ItemState" && e.state === "failed(interrupted)");
     return {
         arm: arm.arm,
         internal_string_hits: cut

@@ -21,7 +21,10 @@ export interface SoakVerdict {
     };
     returned_to_baseline: boolean | null;
     windows: { warmup: number; steady: number; cooldown: number };
-    /** The longest wall-time gap between samples, against `leak_bound.sample_interval_ms`. */
+    /**
+     * The longest wall-time gap between sampler rows, those taken with the daemon down included,
+     * against `leak_bound.sample_interval_ms`.
+     */
     max_gap_ms: number | null;
     /**
      * Daemon processes the samples span: each `pid` run is its own memory trajectory, and the
@@ -75,8 +78,9 @@ export function soak(run: RunLogs, arm: ArmLogs, resource: Resource): SoakVerdic
         .map((e) => e.wall_ms);
     const sampled = (s: ArmLogs["resources"][number]) =>
         typeof s[resource] === "number" && typeof s.wall_ms === "number";
-    const all = arm.resources.filter(sampled);
-    const walls = all.map((s) => s.wall_ms as number);
+    const walls = arm.resources
+        .map((s) => s.wall_ms)
+        .filter((w): w is number => typeof w === "number");
     const gaps = walls.slice(1).map((w, i) => w - (walls[i] as number));
     const generations = (resource === "store_bytes" ? [arm.resources] : byPid(arm.resources))
         .map((g) => g.filter(sampled))
@@ -112,7 +116,7 @@ function evaluate(
     const first = generation.findIndex((s) => (s[resource] as number) > 0);
     const samples = first < 0 ? [] : generation.slice(first);
     const completed = (s: (typeof samples)[number]) =>
-        ends.filter((ms) => ms <= (s.wall_ms as number)).length;
+        ends.filter((ms) => ms < (s.wall_ms as number)).length;
     const before = samples[0] === undefined ? 0 : completed(samples[0]);
     const points = samples.map((s) => ({ x: completed(s) - before, y: s[resource] as number }));
     const tenth = Math.max(1, Math.floor(points.length / 10));
