@@ -157,8 +157,13 @@ paired runs, the `main` group of its `tier-plan.json`, and refuses until
 that plan is the M tier's with a run for every pre-registered host and
 seed and its `tier-result.json` records a zero `run_exit` and `grade_exit`
 for each of them, so an interrupted run or grading, a partial campaign,
-and the profiles' changed models never enter it. The record is written
-through a rename, so a killed command leaves no partial file. Fault-asymmetric
+and the profiles' changed models never enter it, and while the M
+directory holds a live lease, so a campaign still being graded never
+enters it. The record names its source directory and both
+pre-registration hashes; a later invocation refuses a record of another
+L pre-registration, or a `--resize-from` naming another source or an M
+pre-registration the record did not see. The record is written through a
+rename, so a killed command leaves no partial file. Fault-asymmetric
 pairs leave the discordance and design effect, as they leave the M gates.
 It applies the pre-registered rule (`src/run/resize.ts`) to each
 superiority and noninferiority item metric:
@@ -190,7 +195,11 @@ delete runs through `python3`'s `sqlite3`, which registers the store's
 caller-scope functions so its ownership triggers admit a delete inside
 the note's own project and report no facade authority drain, so the
 authority triggers stay inactive for the delete; a failed delete is
-journaled as skipped. A run with an `eidnara-cf` arm stops at start when
+journaled as skipped, and the child is stopped with the arm when the run
+is torn down. The grader marks the arm's grade for a sampled probe whose
+deletion was skipped, deleted nothing, or left matching notes as
+`excluded(cf-unverified)`, so the gates never read an outcome from an
+intervention of unknown effect. A run with an `eidnara-cf` arm stops at start when
 `python3` is not on `PATH`.
 
 The report's counterfactual panel counts a sampled item only when its own

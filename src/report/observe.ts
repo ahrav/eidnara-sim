@@ -376,6 +376,12 @@ export function tierInput(
     }
     const asym = asymmetric(runs, control, treatment);
     const dropped = new Set(asym);
+    const fixedN = (pairs: ItemPair[]) =>
+        items === undefined
+            ? pairs
+            : [...pairs]
+                  .sort((a, b) => a.order - b.order || (a.item < b.item ? -1 : 1))
+                  .slice(0, items);
     const observations: Observation[] = p.families.flatMap((f) =>
         f.metrics.map(
             (metric): Observation =>
@@ -384,7 +390,7 @@ export function tierInput(
                           metric,
                           unit: "item",
                           cluster_key: f.cluster_key,
-                          items: itemPairs(runs, metric, control, treatment),
+                          items: fixedN(itemPairs(runs, metric, control, treatment)),
                       }
                     : {
                           metric,

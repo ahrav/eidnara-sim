@@ -26,11 +26,24 @@ const rules = loadPrereg(manifest.tier).grading;
 const log = new GradeLog(join(dir, "grades.jsonl"));
 const arms = manifest.order as string[];
 
+const journal = readJournal(join(dir, "journal.jsonl"));
 const journaled = new Set(
-    readJournal(join(dir, "journal.jsonl"))
-        .filter((e) => e.kind === "SnapshotArtefacts")
-        .map((e) => String(e.snapshot)),
+    journal.filter((e) => e.kind === "SnapshotArtefacts").map((e) => String(e.snapshot)),
 );
+const verifiedDeletion = new Set(
+    journal
+        .filter(
+            (e) =>
+                e.kind === "CounterfactualDeletion" &&
+                e.skipped === undefined &&
+                ((e.deleted as unknown[] | undefined)?.length ?? 0) > 0 &&
+                Number(e.remaining ?? 1) === 0,
+        )
+        .map((e) => `${e.arm}/${e.probe}`),
+);
+const sampled = new Set((scenario.cf_deletions ?? []).map((d) => d.probe));
+const unverified = (arm: string, probe: string) =>
+    armBase(arm) === "eidnara-cf" && sampled.has(probe) && !verifiedDeletion.has(`${arm}/${probe}`);
 const snapshots = new Map<string, Snapshot[]>();
 for (const arm of arms) {
     const path = join(dir, arm, "snapshots.jsonl");
@@ -69,8 +82,10 @@ for (const probe of scenario.probes.filter((p) => p.type !== "P7")) {
             continue;
         }
         const grade = gradeItem(probe, mine, rules);
-        if (grade) append(grade);
-        else skip("probe turn failed");
+        if (!grade) skip("probe turn failed");
+        else if (unverified(arm, probe.id)) {
+            append({ ...grade, verdict: "excluded", reason: "cf-unverified", metrics: {} });
+        } else append(grade);
     }
 }
 

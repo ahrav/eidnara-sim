@@ -55,6 +55,7 @@ export function loadGraded(dir: string, prereg: Preregistration): GradedRun {
     const { eidnara_commit, models, context_limit, events } = manifest;
     const witnesses = new Map<string, WitnessReport>();
     const faults = join(dir, "faults.jsonl");
+    // SAFETY: each line of faults.jsonl is a JSON-serialized WitnessReport[] from injector.report().
     const reports = existsSync(faults)
         ? (readJournal(faults) as unknown as WitnessReport[][])
         : null;
@@ -117,7 +118,8 @@ export function cusumScale(
     for (const rule of prereg.stopping_rule.cusum) {
         const named = /^the (\w+) tier's/.exec(rule.sd_source)?.[1] ?? prereg.tier;
         const source = scales.get(named);
-        scale[rule.kind] = source?.complete ? source.scale?.[rule.kind] : recorded?.[rule.kind];
+        scale[rule.kind] =
+            recorded?.[rule.kind] ?? (source?.complete ? source.scale?.[rule.kind] : undefined);
     }
     return scale;
 }
