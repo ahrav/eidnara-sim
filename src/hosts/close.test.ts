@@ -40,3 +40,24 @@ test("a host whose process survives its close keeps reporting that process", asy
     await expect(oc.closeSession()).rejects.toThrow("survived SIGKILL");
     expect(oc.hostPid()).toBe(4242);
 });
+
+class CountingPi extends PiSimHost {
+    stops = 0;
+    protected override async stopTree(): Promise<void> {
+        this.stops++;
+        await Bun.sleep(20);
+    }
+}
+
+test("two concurrent closes of one host run its shutdown once", async () => {
+    const pi = new CountingPi(ctx());
+    Object.assign(pi as unknown as Record<string, unknown>, {
+        rpc: {
+            child: { pid: 4242, stdin: { end: () => undefined } },
+            shutdown: async () => undefined,
+        },
+    });
+    await Promise.all([pi.closeSession(), pi.closeSession()]);
+    expect(pi.stops).toBe(1);
+    expect(pi.hostPid()).toBeNull();
+});

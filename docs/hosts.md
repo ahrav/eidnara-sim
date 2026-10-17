@@ -43,7 +43,8 @@ SIGTERM so its store stays on disk, appends the daemon's output to
 there before each restart. `stop` first waits for a host `openSession` or a daemon
 start or restart still in flight, so a process spawned moments before a stop is closed
 rather than leaked, and a host whose process survives its close keeps
-reporting that process so the stop's `state.json` record names it; `state.json`
+reporting that process so the stop's `state.json` record names it; concurrent
+closes of one host share a single shutdown; `state.json`
 also carries the daemon restarts whose store check the next turn still owes
 until the state is next written after that turn, so a resumed arm emits the
 check again rather than losing it; a fresh driver's `stop` leaves a recorded

@@ -86,7 +86,9 @@ integrity `ok` and no overlap, and the surviving segments kept; a missing
 check is a reason of its own. After `two_hosts_one_daemon`, recovery reads
 the turns that follow like any other fault, and the second client's own turn
 must have ended `ok` (the evidence's `outcome`); a failed one is a reason and
-leaves the fault unrecovered. The oracle has no check that both clients read
+leaves the fault unrecovered. An infrastructure fault a harness stop
+interrupted after `FaultFired` (`ItemState failed(interrupted)`, no
+`FaultObserved`) is reported unrecovered with that reason. The oracle has no check that both clients read
 the same proposal for one causal identity.
 
 The recorded `witness-8` eidnara arm reaches a clean turn after each of its

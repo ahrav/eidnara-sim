@@ -199,6 +199,25 @@ describe("recovery oracles", () => {
         expect([ok?.recovered, ok?.reasons]).toEqual([true, []]);
     });
 
+    test("an infrastructure fault a harness stop interrupted is reported, unrecovered", () => {
+        seq = 0;
+        const journal = [
+            entry("FaultFired", 0, { fault: "r", type: "daemon_restart", layer: "scheduler" }),
+            entry("ItemState", 1, { fault: "r", state: "failed(interrupted)" }),
+            entry("BeginTurn", 10, { event: "e-1" }),
+            entry("EndTurn", 20, { event: "e-1", outcome: "ok" }),
+        ];
+        const got = recoveries(run([arm(journal)])).map((r) => [
+            r.fault,
+            r.type,
+            r.recovered,
+            r.reasons,
+        ]);
+        expect(got).toEqual([
+            ["r", "daemon_restart", false, ["interrupted by a harness stop before its evidence"]],
+        ]);
+    });
+
     test("the store check reports integrity and overlapping history segments", () => {
         const path = join(mkdtempSync(join(tmpdir(), "sim-store-")), "store.db");
         const db = new Database(path);

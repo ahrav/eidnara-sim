@@ -259,4 +259,4 @@ reference-only arm is left out): each host, arm, and probe's P8 or P9 pass
 rate against the L tier's 95% Clopper-Pearson interval for the same row,
 `drift` when outside it. A report of a complete campaign writes its
 continuity rows to `continuity-<tier>.json` beside `report-<tier>.json` for
-this use; an incomplete one writes none.
+this use; an incomplete one writes none and removes a stale one.

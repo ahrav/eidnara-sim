@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import type { Tier } from "../src/prereg/schema";
 import { preregistrationHash } from "../src/prereg/validate";
@@ -123,7 +123,10 @@ for (const [tier, { prereg, runs }] of loaded) {
                 join(out, `continuity-${tier}.json`),
                 `${JSON.stringify(report.continuity, null, 2)}\n`,
             );
-        } else console.error(`${tier}: campaign incomplete; no continuity-${tier}.json written`);
+        } else {
+            rmSync(join(out, `continuity-${tier}.json`), { force: true });
+            console.error(`${tier}: campaign incomplete; no continuity-${tier}.json written`);
+        }
     } else console.log(text);
 }
 // A violated property means the runs broke an invariant the verdict rests on; the report stays

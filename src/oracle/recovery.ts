@@ -98,61 +98,87 @@ function storeReasons(checks: Checks): string[] {
 }
 
 export function recoveries(run: RunLogs): Recovery[] {
-    return run.arms.flatMap((arm) =>
+    return run.arms.flatMap((arm) => [...observedRecoveries(run, arm), ...interrupted(arm)]);
+}
+
+/** Infrastructure faults a harness stop interrupted after `FaultFired`, each unrecovered. */
+function interrupted(arm: ArmLogs): Recovery[] {
+    const types = new Map(
         arm.journal
-            .filter((e) => e.kind === "FaultObserved" && INFRA.has(String(e.type)))
-            .map((e): Recovery => {
-                const evidence = (e.evidence ?? {}) as {
-                    skipped?: unknown;
-                    store?: StoreCheck;
-                    outcome?: unknown;
-                };
-                const base = { arm: arm.arm, fault: String(e.fault), type: String(e.type) };
-                if (evidence.skipped !== undefined) {
-                    const reasons = [`skipped: ${String(evidence.skipped)}`];
-                    return { ...base, turns_to_first_clean: null, recovered: null, reasons };
-                }
-                const turns = turnsAfter(arm, e);
-                const dirty = turns.map((t) => dirtyReasons(arm, t, run.base_wall_ms));
-                const index = dirty.findIndex((r) => r.length === 0);
-                const reasons =
-                    index < 0
-                        ? turns.flatMap((t, i) => (dirty[i] ?? []).map((r) => `${t.event}: ${r}`))
-                        : [];
-                if (turns.length === 0) reasons.push("no later turn");
-                const ownTurnFailed = evidence.outcome !== undefined && evidence.outcome !== "ok";
-                if (ownTurnFailed) {
-                    reasons.push(
-                        `the fault's own turn ended ${String(evidence.outcome).slice(0, 80)}`,
-                    );
-                }
-                const result = {
-                    ...base,
-                    turns_to_first_clean: index < 0 ? null : index + 1,
-                    reasons,
-                };
-                if (!RESTARTS.has(base.type)) {
-                    return { ...result, recovered: index >= 0 && !ownTurnFailed };
-                }
-                const pass = arm.journal.find(
-                    (x) => x.kind === "StoreChecked" && x.seq > e.seq && x.fault === base.fault,
-                );
-                const checks: Checks = {
-                    after_restart: evidence.store,
-                    post_crash_pass: pass?.store as StoreCheck | undefined,
-                    final: arm.finalStore,
-                };
-                const store = storeReasons(checks);
-                const summary = Object.fromEntries(
-                    Object.entries(checks).map(([k, c]) => [k, c?.integrity ?? "unchecked"]),
-                );
-                reasons.push(...store);
-                return {
-                    ...result,
-                    reasons,
-                    recovered: index >= 0 && store.length === 0,
-                    store: summary,
-                };
-            }),
+            .filter((e) => e.kind === "FaultFired")
+            .map((e) => [String(e.fault), String(e.type)] as const),
     );
+    return arm.journal
+        .filter(
+            (e) =>
+                e.kind === "ItemState" &&
+                e.fault !== undefined &&
+                e.state === "failed(interrupted)",
+        )
+        .map((e) => ({ fault: String(e.fault), type: types.get(String(e.fault)) ?? "" }))
+        .filter((f) => INFRA.has(f.type))
+        .map((f) => ({
+            arm: arm.arm,
+            fault: f.fault,
+            type: f.type,
+            turns_to_first_clean: null,
+            recovered: false,
+            reasons: ["interrupted by a harness stop before its evidence"],
+        }));
+}
+
+function observedRecoveries(run: RunLogs, arm: ArmLogs): Recovery[] {
+    return arm.journal
+        .filter((e) => e.kind === "FaultObserved" && INFRA.has(String(e.type)))
+        .map((e): Recovery => {
+            const evidence = (e.evidence ?? {}) as {
+                skipped?: unknown;
+                store?: StoreCheck;
+                outcome?: unknown;
+            };
+            const base = { arm: arm.arm, fault: String(e.fault), type: String(e.type) };
+            if (evidence.skipped !== undefined) {
+                const reasons = [`skipped: ${String(evidence.skipped)}`];
+                return { ...base, turns_to_first_clean: null, recovered: null, reasons };
+            }
+            const turns = turnsAfter(arm, e);
+            const dirty = turns.map((t) => dirtyReasons(arm, t, run.base_wall_ms));
+            const index = dirty.findIndex((r) => r.length === 0);
+            const reasons =
+                index < 0
+                    ? turns.flatMap((t, i) => (dirty[i] ?? []).map((r) => `${t.event}: ${r}`))
+                    : [];
+            if (turns.length === 0) reasons.push("no later turn");
+            const ownTurnFailed = evidence.outcome !== undefined && evidence.outcome !== "ok";
+            if (ownTurnFailed) {
+                reasons.push(`the fault's own turn ended ${String(evidence.outcome).slice(0, 80)}`);
+            }
+            const result = {
+                ...base,
+                turns_to_first_clean: index < 0 ? null : index + 1,
+                reasons,
+            };
+            if (!RESTARTS.has(base.type)) {
+                return { ...result, recovered: index >= 0 && !ownTurnFailed };
+            }
+            const pass = arm.journal.find(
+                (x) => x.kind === "StoreChecked" && x.seq > e.seq && x.fault === base.fault,
+            );
+            const checks: Checks = {
+                after_restart: evidence.store,
+                post_crash_pass: pass?.store as StoreCheck | undefined,
+                final: arm.finalStore,
+            };
+            const store = storeReasons(checks);
+            const summary = Object.fromEntries(
+                Object.entries(checks).map(([k, c]) => [k, c?.integrity ?? "unchecked"]),
+            );
+            reasons.push(...store);
+            return {
+                ...result,
+                reasons,
+                recovered: index >= 0 && store.length === 0,
+                store: summary,
+            };
+        });
 }
