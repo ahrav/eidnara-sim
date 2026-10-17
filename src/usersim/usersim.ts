@@ -6,7 +6,7 @@ import { COMPONENT_HEADER } from "../proxy/classify";
 import { readJournal } from "../run/journal";
 import { HarnessFailure } from "../run/scheduler";
 import { markerHits } from "../scenario/compile";
-import type { Label, Plan } from "./plan";
+import { LABELS, type Label, type Plan } from "./plan";
 
 /**
  * One model call. `system` carries the persona and its instructions; `user` carries the data
@@ -95,7 +95,9 @@ export function normaliser(rules: readonly string[]): (text: string) => string {
  * leaves, is dropped, and a corrupt earlier line is refused. The run's own log is cut back to
  * its complete prefix so the next append starts a whole line; a replay source must exist.
  */
-function jsonl<T>(path: string, role: "own" | "source", fields: readonly string[]): T[] {
+type RowCheck = (row: Record<string, unknown>) => string[];
+
+function jsonl<T>(path: string, role: "own" | "source", check: RowCheck): T[] {
     if (role === "source") requireSource(path);
     const read = readJournal(path);
     if (!existsSync(path)) return [];
@@ -105,17 +107,46 @@ function jsonl<T>(path: string, role: "own" | "source", fields: readonly string[
     // corruption, which no truncation may paper over.
     if (dropped.endsWith("\n")) throw new HarnessFailure(`${path}: last line is corrupt`);
     read.forEach((row, i) => {
-        const missing = fields.filter((f) => !(f in row));
-        if (missing.length > 0) {
-            throw new HarnessFailure(`${path}: line ${i + 1} lacks ${missing.join(", ")}`);
+        const problems = check(row as unknown as Record<string, unknown>);
+        if (problems.length > 0) {
+            throw new HarnessFailure(`${path}: line ${i + 1}: ${problems.join(", ")}`);
         }
     });
     if (role === "own") truncateSync(path, read.bytes ?? 0);
     return read as unknown as T[];
 }
 
-const TAPE_FIELDS = ["key", "event", "label", "digest", "text", "stop"] as const;
-const PAIRING_FIELDS = ["kind", "arm", "session", "event", "index", "digest"] as const;
+const strings = (row: Record<string, unknown>, names: readonly string[]) =>
+    names.filter((n) => typeof row[n] !== "string").map((n) => `${n} is not a string`);
+const oneOf = (row: Record<string, unknown>, name: string, allowed: readonly string[]) =>
+    allowed.includes(row[name] as string) ? [] : [`${name} is not one of ${allowed.join(", ")}`];
+
+const tapeRow: RowCheck = (row) => [
+    ...strings(row, ["key", "event", "digest", "text", "stop"]),
+    ...oneOf(row, "label", LABELS),
+];
+
+const pairingRow: RowCheck = (row) => {
+    const shared = [
+        ...strings(row, ["arm", "session", "event", "digest"]),
+        ...(Number.isInteger(row.index) ? [] : ["index is not an integer"]),
+    ];
+    if (row.kind === "divergedAt") {
+        return [
+            ...shared,
+            ...strings(row, ["reference_digest"]),
+            ...oneOf(row, "against", ["recorded", "reference"]),
+        ];
+    }
+    if (row.kind !== "turn") return [...shared, "kind is not turn or divergedAt"];
+    return [
+        ...shared,
+        ...strings(row, ["context_sha256", "prefix_sha256", "text_sha256"]),
+        ...oneOf(row, "label", LABELS),
+        ...oneOf(row, "source", ["script", "tape", "live"]),
+        ...(typeof row.delivered === "boolean" ? [] : ["delivered is not a boolean"]),
+    ];
+};
 
 const pairingBeside = (tape: string) => join(dirname(tape), "pairing.jsonl");
 
@@ -131,7 +162,7 @@ function requireSource(path: string): string {
  */
 export function checkTapeSources(
     tapes: readonly string[],
-    run: { seed: number; scenario_hash: string; prereg_sha256?: string },
+    run: { seed: number; scenario_hash: string; prereg_sha256?: string; events?: number },
 ): void {
     for (const tape of tapes) {
         const path = join(dirname(tape), "manifest.json");
@@ -140,7 +171,24 @@ export function checkTapeSources(
             seed?: unknown;
             scenario_hash?: unknown;
             prereg_sha256?: unknown;
+            events?: unknown;
         };
+        if (run.events !== undefined) {
+            // A source cut short of this run's events has no reply for the rest, and a
+            // reference arm past its end would go live with no divergence on record.
+            const journal = join(dirname(tape), "journal.jsonl");
+            if (!existsSync(journal)) {
+                throw new HarnessFailure(`replay source ${journal} does not exist`);
+            }
+            if (!readJournal(journal).some((e) => e.kind === "EndRun")) {
+                throw new HarnessFailure(`replay source ${tape} is from a run without EndRun`);
+            }
+            if (typeof manifest.events !== "number" || manifest.events < run.events) {
+                throw new HarnessFailure(
+                    `replay source ${tape} covers ${manifest.events} events, this run ${run.events}`,
+                );
+            }
+        }
         if (manifest.seed !== run.seed) {
             throw new HarnessFailure(`replay source ${tape} is from seed ${manifest.seed}`);
         }
@@ -193,9 +241,9 @@ export class Tape {
         sources: readonly string[] = [],
     ) {
         for (const p of sources) {
-            for (const e of jsonl<TapeEntry>(p, "source", TAPE_FIELDS)) this.entries.set(e.key, e);
+            for (const e of jsonl<TapeEntry>(p, "source", tapeRow)) this.entries.set(e.key, e);
         }
-        for (const e of jsonl<TapeEntry>(path, "own", TAPE_FIELDS)) {
+        for (const e of jsonl<TapeEntry>(path, "own", tapeRow)) {
             this.entries.set(e.key, e);
             this.own.add(e.key);
         }
@@ -228,6 +276,8 @@ export interface TurnRecord {
     text_sha256: string;
     source: "script" | "tape" | "live";
     fallback?: string[];
+    /** The corpus item a paste turn delivered, by id and byte length. */
+    paste?: { sample_id: string; bytes: number };
 }
 
 export interface DivergenceRecord {
@@ -270,14 +320,11 @@ export class Pairing {
         readonly reference: (arm: string) => string,
         sources: readonly string[] = [],
     ) {
-        this.records = jsonl<PairingRecord>(path, "own", PAIRING_FIELDS);
+        this.records = jsonl<PairingRecord>(path, "own", pairingRow);
         for (const r of this.records) this.index(r);
         for (const p of sources) {
-            for (const r of jsonl<PairingRecord>(p, "source", PAIRING_FIELDS)) {
+            for (const r of jsonl<PairingRecord>(p, "source", pairingRow)) {
                 if (r.kind !== "turn") continue;
-                if (typeof r.context_sha256 !== "string") {
-                    throw new HarnessFailure(`${p}: ${r.arm}/${r.event} lacks context_sha256`);
-                }
                 const key = `${r.arm}/${r.event}`;
                 const entry = { context: r.context_sha256, digest: r.digest };
                 this.recorded.set(key, [...(this.recorded.get(key) ?? []), entry]);
@@ -350,6 +397,7 @@ export interface ScriptTurn {
     index: number;
     role: string;
     text: string;
+    paste?: { sample_id: string; bytes: number };
 }
 
 /**
@@ -505,6 +553,7 @@ export class UserSim {
             text_sha256: sha256Hex(text),
             source: reply?.source ?? "script",
             ...(reply?.fallback ? { fallback: reply.fallback } : {}),
+            ...(t.paste ? { paste: t.paste } : {}),
         });
         const interruptMs = plan.interruptMs.get(t.id);
         return {

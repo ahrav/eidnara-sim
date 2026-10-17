@@ -161,6 +161,7 @@ async function loadManifest(o: RunOptions, scenario: Scenario): Promise<Manifest
         seed: o.seed,
         scenario_hash: scenario.scenario_hash,
         prereg_sha256: preregistrationHash(loadPrereg(o.tier)),
+        events: wanted.events,
     });
     if (existsSync(path)) {
         const manifest = JSON.parse(readFileSync(path, "utf8")) as Manifest;
@@ -380,6 +381,7 @@ async function runArms(
         index: number;
         role: string;
         text: string;
+        paste?: { sample_id: string; bytes: number };
     }[];
     const pinned = pinnedTurns(events, scenario.faults);
     const userSim = new UserSim({

@@ -859,13 +859,14 @@ export class OpencodeSimHost extends SimHost {
      * it did within the wait; `late` settles with the request's eventual answer, so an abort
      * that lands after the wait is still read as the interrupt.
      */
-    private abortSession(): { now: Promise<boolean>; late: Promise<boolean> } {
+    private abortSession(): { now: Promise<boolean>; late: Promise<boolean>; cancel: () => void } {
+        const controller = new AbortController();
         const late: Promise<boolean> = this.client.session
-            .abort({ path: { id: this.sid } })
+            .abort({ path: { id: this.sid }, signal: controller.signal })
             .then((r: Untyped) => r?.data === true && !r?.error)
             .catch(() => false);
         const now = Promise.race([late, Bun.sleep(this.abortWaitMs).then(() => false)]);
-        return { now, late };
+        return { now, late, cancel: () => controller.abort() };
     }
 
     private async turn(
@@ -895,8 +896,10 @@ export class OpencodeSimHost extends SimHost {
             }
             first = await Promise.race([settled, Bun.sleep(timeoutMs - wait).then(() => null)]);
             // The request outlived its wait; an answer that arrived with the prompt's end
-            // means the abort, not the agent, ended the turn.
+            // means the abort ended the turn. A request still open is cancelled here, so it
+            // cannot reach the session's next prompt.
             const landed = await Promise.race([abort.late, Bun.sleep(0).then(() => false)]);
+            abort.cancel();
             if (first !== null && landed) return { interrupted: true };
         }
         if (first === null) {

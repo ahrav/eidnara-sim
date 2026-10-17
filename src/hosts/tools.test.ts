@@ -421,6 +421,24 @@ test("an OpenCode abort that answers after its wait but stopped the prompt still
     expect(await host.prompt("go", 20_000, 50)).toEqual({ interrupted: true });
 }, 15_000);
 
+test("an abort request still open when the turn settles is cancelled before the next prompt", async () => {
+    let signal: AbortSignal | undefined;
+    const host = opencodeHost({
+        session: {
+            messages: async () => ({ data: [] }),
+            prompt: () => Bun.sleep(300).then(() => ({ data: { info: {} } })),
+            abort: (o: { signal?: AbortSignal }) =>
+                new Promise((_resolve, reject) => {
+                    signal = o.signal;
+                    o.signal?.addEventListener("abort", () => reject(new Error("cancelled")));
+                }),
+        },
+    });
+    Object.assign(host as unknown as Record<string, unknown>, { abortWaitMs: 50 });
+    expect(await host.prompt("go", 5_000, 50)).toEqual({});
+    expect(signal?.aborted).toBe(true);
+});
+
 test("an aborted OpenCode turn whose tool listing then fails keeps the interrupt beside the capture error", async () => {
     let listings = 0;
     const host = opencodeHost({

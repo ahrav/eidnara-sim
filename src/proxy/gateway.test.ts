@@ -342,6 +342,21 @@ describe("fault composition at the proxy sink", () => {
         ]);
     });
 
+    test("an injected empty reply records an empty response text", async () => {
+        const fault = {
+            id: "e",
+            type: "empty_content",
+            strategy: "single",
+            params: {},
+        } as ProxyFault;
+        const { injector, records, url } = await start(fault);
+        injector.arm("e");
+        await hostCallJson(url, AGENT_BODY, 2_000);
+        expect(records.records[0]?.fault_ref).toBe("e");
+        expect(records.records[0]?.response_text).toBe("");
+        expect(records.records[0]?.response_sha256).toBe(sha256Hex(""));
+    });
+
     test("slow_stream over an upstream that throttles first records the proxy's retry", async () => {
         const fault = {
             id: "s",

@@ -1,7 +1,8 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { sha256Hex } from "../src/prereg/canonical";
 
 const ROOT = join(import.meta.dir, "..");
 let dir = "";
@@ -52,6 +53,40 @@ test("the pairing check fails a run that never reached EndArm for an arm or EndR
     const noEndRun = run([rates("a"), rates("b"), endArm("a"), endArm("b")]);
     expect(noEndRun.report.incomplete).toEqual(["EndRun"]);
     expect(noEndRun.exit).toBe(1);
+});
+
+test("a paste turn's record must name the compiled corpus item, whose bytes the compiled text carries", () => {
+    const samples = readFileSync(join(ROOT, "corpus/tool-outputs/samples.jsonl"), "utf8")
+        .trim()
+        .split("\n")
+        .map((l) => JSON.parse(l) as { id: string; content: string });
+    const sample = samples[0] as { id: string; content: string };
+    const text = `Here's what I'm seeing:\n\`\`\`\n${sample.content}\n\`\`\``;
+    const paste = { sample_id: sample.id, bytes: Buffer.byteLength(sample.content) };
+    const events = [
+        { id: "e-1", kind: "user_turn", session: "s-1", index: 0, role: "paste", text, paste },
+    ];
+    const turn = (arm: string, p: object) => ({
+        kind: "turn",
+        arm,
+        session: "s-1",
+        event: "e-1",
+        index: 0,
+        label: "paste",
+        delivered: true,
+        digest: "d",
+        prefix_sha256: "p",
+        text_sha256: sha256Hex(text),
+        source: "script",
+        paste: p,
+    });
+    const good = run(complete("a", "b"), events, [turn("a", paste), turn("b", paste)]);
+    expect(good.report.paste_provenance).toEqual([]);
+    expect(good.exit).toBe(0);
+    const wrong = { ...paste, bytes: paste.bytes + 1 };
+    const bad = run(complete("a", "b"), events, [turn("a", paste), turn("b", wrong)]);
+    expect(bad.report.paste_provenance).toEqual(["b e-1"]);
+    expect(bad.exit).toBe(1);
 });
 
 test("the pairing check fails a run whose log lacks a scheduled turn for an arm", () => {
