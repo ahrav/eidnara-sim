@@ -86,8 +86,10 @@ export class RecordWriter {
     private lastWall = 0;
     readonly records: CallRecord[] = [];
 
+    /** The record file exists from construction, so a run with no calls still has a `calls.jsonl`. */
     constructor(private readonly path: string | null) {
         if (path) requireAppendable(path);
+        if (path && !existsSync(path)) appendFileSync(path, "");
         if (!path || !existsSync(path)) return;
         const text = readFileSync(path, "utf8");
         const complete = text.slice(0, text.lastIndexOf("\n") + 1);

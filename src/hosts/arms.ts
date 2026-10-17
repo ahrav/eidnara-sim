@@ -334,9 +334,10 @@ export class DaemonStack {
     }
 
     /**
-     * Stops the daemon, then saves its stdout (read after termination, so a line written while
-     * handling SIGTERM is in it) and every log the marker still lists, the live one included;
-     * nothing is left to recover.
+     * Stops the daemon, then saves every log the marker still lists, the live one included,
+     * and last its stdout (read after termination, so a line written while handling SIGTERM
+     * is in it, and appended after any rollback so the rollback cannot erase it); nothing is
+     * left to recover.
      */
     async stop(): Promise<void> {
         const stack = this.stack;
@@ -344,8 +345,8 @@ export class DaemonStack {
         await stack.terminateHost();
         this.stack = null;
         const { stdout } = this.hh.__hermeticHostTest.diagnostics(stack);
-        appendFileSync(this.ctx.logFile, stdout);
         this.drain(this.readMarker(), [String(stack.logPath ?? "")]);
+        appendFileSync(this.ctx.logFile, stdout);
     }
 }
 
@@ -552,7 +553,8 @@ export class PiSimHost extends SimHost {
 
     /**
      * Runs one turn. A turn that fails or times out is aborted; an `agent_end` that already
-     * arrived settles the drain, otherwise a fresh waiter runs for the drain wait. A Pi that
+     * arrived (checked after one event-loop tick, so a same-tick end counts) settles the drain,
+     * otherwise a fresh waiter runs for the drain wait. A Pi that
      * reports no `agent_end` in that time is still running the old turn, so its process is
      * killed and the session's later prompts fail at once. A tool event from that turn can
      * then never land on a later turn's record.
@@ -579,6 +581,7 @@ export class PiSimHost extends SimHost {
                 ? { error: String(last.errorMessage ?? "error") }
                 : {};
         } catch (caught) {
+            await Bun.sleep(0);
             const drained = ended ? Promise.resolve() : this.agentEnd(this.drainWaitMs);
             await this.rpc.sendCommand("abort", {}, { timeoutMs: 60_000 }).catch(() => undefined);
             const settled = await drained.then(

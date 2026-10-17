@@ -68,8 +68,9 @@ function shaped<T>(path: string, fields: Record<string, FieldCheck>): T[] {
         for (const [field, ok] of Object.entries(fields)) {
             if (!ok(row[field])) throw new Error(`${path}: line ${i + 1}: ${field} missing`);
         }
-        if ("pid" in row && !numOrNull(row.pid))
-            throw new Error(`${path}: line ${i + 1}: pid missing`);
+        const pidOk =
+            row.pid === null || (Number.isSafeInteger(row.pid) && (row.pid as number) > 0);
+        if ("pid" in row && !pidOk) throw new Error(`${path}: line ${i + 1}: pid missing`);
         if ("start" in row && !strOrNull(row.start)) {
             throw new Error(`${path}: line ${i + 1}: start missing`);
         }
@@ -166,6 +167,13 @@ function samplesOf(path: string): Sample[] {
     requirePidShape(path, samples);
     samples.forEach((s, i) => {
         const prev = samples[i - 1];
+        const opens = !prev || prev.pid !== s.pid || prev.start !== s.start;
+        if (opens && s.pid !== null && typeof s.rss !== "number") {
+            throw new Error(`${path}: line ${i + 1}: lifetime opens without a reading`);
+        }
+    });
+    samples.forEach((s, i) => {
+        const prev = samples[i - 1];
         if (prev && s.scenario_ms < prev.scenario_ms) {
             throw new Error(
                 `${path}: line ${i + 1}: scenario_ms ${s.scenario_ms} precedes ${prev.scenario_ms}`,
@@ -207,7 +215,7 @@ function requireCallsInTurns(calls: CallRecord[], bounds: Bounds): void {
     }
 }
 
-/** A tool start lands on the host's clock up to this much before the proxy's record of the same moment. */
+/** A tool start lands on the host's clock up to this much after the turn's journaled end. */
 const TOOL_SLACK_MS = 1_000;
 
 function toolsOf(
@@ -223,7 +231,7 @@ function toolsOf(
             throw new Error(`${path}: line ${i + 1}: turn ${t.turn} is not a scheduled user turn`);
         }
         const b = bounds.get(`${arm}/${t.turn}`);
-        const early = b !== undefined && t.scenario_ms < b.from - TOOL_SLACK_MS;
+        const early = b !== undefined && t.scenario_ms < b.from;
         const late = b !== undefined && t.scenario_ms > b.to + TOOL_SLACK_MS;
         if (b && (early || late)) {
             throw new Error(
@@ -265,6 +273,7 @@ export function loadRun(dir: string, prereg: Preregistration): RunLogs {
     }
     const planned = scenario.events.slice(0, count);
     const turns = new Set(planned.filter((e) => e.kind === "user_turn").map((e) => String(e.id)));
+    if (!existsSync(join(dir, "calls.jsonl"))) throw new Error("run has no calls.jsonl");
     const calls = jsonl<CallRecord>(join(dir, "calls.jsonl"));
     const seen = new Set<number>();
     calls.forEach((c, i) => {
@@ -283,6 +292,15 @@ export function loadRun(dir: string, prereg: Preregistration): RunLogs {
         }
         for (const field of TOKEN_FIELDS) {
             if (c[field] < 0) throw new Error(`call ${c.seq}: ${field} negative`);
+            if (!Number.isSafeInteger(c[field])) {
+                throw new Error(`call ${c.seq}: ${field} is not a count`);
+            }
+        }
+        if ("response_text" in c && typeof c.response_text !== "string") {
+            throw new Error(`call ${c.seq}: response_text is not a string`);
+        }
+        if ("response_text_truncated" in c && c.response_text_truncated !== true) {
+            throw new Error(`call ${c.seq}: response_text_truncated is not true`);
         }
         const http = Number.isInteger(c.status) && c.status >= 100 && c.status <= 599;
         if (c.status !== 0 && !http) {

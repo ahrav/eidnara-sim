@@ -47,7 +47,7 @@ test("daemon.log holds each daemon output line once; the v1 stack's hostLog repe
     };
     Object.assign(daemon as unknown as Record<string, unknown>, { stack, hh });
     await daemon.stop();
-    expect(readFileSync(logFile, "utf8")).toBe("ready\nmemory capture output rejected\n");
+    expect(readFileSync(logFile, "utf8")).toBe("memory capture output rejected\nready\n");
 });
 
 test("daemon.log keeps the whole stderr of a lifetime, past the 256 KiB tail the stack retains in memory", async () => {
@@ -80,7 +80,7 @@ test("daemon.log keeps the whole stderr of a lifetime, past the 256 KiB tail the
     Object.assign(daemon as unknown as Record<string, unknown>, { stack, hh });
     await daemon.stop();
     const saved = readFileSync(logFile, "utf8");
-    expect(saved.startsWith("ready\n")).toBe(true);
+    expect(saved.endsWith("ready\n")).toBe(true);
     expect(saved).toContain(refusal);
     expect(saved.length).toBe("ready\n".length + refusal.length + filler.length);
 });
@@ -366,4 +366,40 @@ test("recovery saves two names of one inode once", async () => {
     expect(readFileSync(join(dir, "daemon.log"), "utf8")).toBe("one lifetime\n");
     expect(existsSync(held)).toBe(false);
     expect(existsSync(logPath)).toBe(false);
+});
+
+test("a stop keeps the shutdown stdout when it rolls back an interrupted copy", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "sim-daemon-"));
+    const logFile = join(dir, "daemon.log");
+    const held = join(dir, "daemon.log.held");
+    const logPath = join(dir, "direct-host.log");
+    writeFileSync(logFile, "earlier\n");
+    writeFileSync(held, "held lifetime\n");
+    writeFileSync(logPath, "live lifetime\n");
+    appendFileSync(logFile, "held lif");
+    writeFileSync(
+        `${logFile}.source`,
+        JSON.stringify({
+            pending: [logPath],
+            copying: { source: held, target_bytes: "earlier\n".length },
+        }),
+    );
+    const stack = { logPath, terminateHost: async () => {} };
+    const hh = {
+        __hermeticHostTest: {
+            diagnostics: () => ({
+                stdout: "daemon: memory capture output rejected\n",
+                stderr: "",
+                retainedLog: "",
+            }),
+        },
+    };
+    const daemon = new DaemonStack(stackCtx(dir));
+    Object.assign(daemon as unknown as Record<string, unknown>, { stack, hh });
+    await daemon.stop();
+    const saved = readFileSync(logFile, "utf8");
+    expect(saved).toContain("daemon: memory capture output rejected\n");
+    expect(saved).toContain("held lifetime\n");
+    expect(saved).toContain("live lifetime\n");
+    expect(saved).not.toContain("held lif\n");
 });
