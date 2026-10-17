@@ -18,8 +18,9 @@ M7 (#1032) names each harm metric whose verdict is `worse` in
 `memory_made_it_worse` with its interval. `worse` for a harm metric means the
 treatment arm's harm rate is higher: the Holm-adjusted exact McNemar is
 significant, the interval excludes zero, and the shift is toward more harm. The
-guarantee above states the condition as `eidnara < host`; the two directions
-disagree, see the investigation log.
+guarantee above states the condition as `eidnara < host` and "the paired CI
+excludes zero"; the direction and the Holm correction both disagree with it,
+see the investigation log and the catalog's open questions.
 
 ## Failure scenario
 

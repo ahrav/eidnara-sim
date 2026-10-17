@@ -1480,3 +1480,53 @@ describe("tier gate review findings, sixteenth Codex round", () => {
         expect([m?.verdict, m?.passed]).toEqual(["inconclusive", false]);
     });
 });
+
+describe("tier gate review findings, seventeenth Codex round", () => {
+    const seq = { journal_seq_at_eval: 7, arms: { control: "host", treatment: "eidnara" } };
+    const input = { observations: [], excluded: [], asymmetric: [], ...seq };
+    const withFamily = (id: string, patch: object) => ({
+        ...M,
+        families: M.families.map((f) => (f.id === id ? { ...f, ...patch } : f)),
+    });
+
+    test("falsification collections are arrays of pair records", () => {
+        type Pairs = { control: number; treatment: number }[];
+        expect(() =>
+            falsificationSet(S, { gateway_4xx_rate_without_faults: {} as unknown as Pairs }),
+        ).toThrow(StatsRefusal);
+        expect(() =>
+            falsificationSet(S, { gateway_4xx_rate_without_faults: [null] as unknown as Pairs }),
+        ).toThrow(StatsRefusal);
+    });
+
+    test("a metric name carries a known polarity", () => {
+        expect(() =>
+            evaluateTier(withFamily("probe-P1", { metrics: ["accuracy"] }), input),
+        ).toThrow("probe-P1: accuracy has no registered polarity");
+        for (const tier of ["S", "M", "L", "XL"] as const) {
+            const p = loadPrereg(tier);
+            expect(() =>
+                evaluateTier(p, { ...input, arms: { control: "host", treatment: p.arms.default } }),
+            ).not.toThrow();
+        }
+    });
+
+    test("the excluded and asymmetric fields are arrays of records", () => {
+        type Excluded = { id: string; arm: string; reason: string }[];
+        expect(() => evaluateTier(M, { ...input, excluded: {} as unknown as Excluded })).toThrow(
+            StatsRefusal,
+        );
+        expect(() =>
+            evaluateTier(M, { ...input, excluded: [null] as unknown as Excluded }),
+        ).toThrow(StatsRefusal);
+        expect(() => evaluateTier(M, { ...input, asymmetric: {} as unknown as string[] })).toThrow(
+            StatsRefusal,
+        );
+    });
+
+    test("noninferiority is registered for binary items only", () => {
+        expect(() =>
+            evaluateTier(withFamily("dependability", { direction: "noninferiority" }), input),
+        ).toThrow("dependability: noninferiority is a binary item claim");
+    });
+});

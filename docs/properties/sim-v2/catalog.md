@@ -1513,6 +1513,13 @@ Open questions:
 - The guarantee says `eidnara < host`; the registered harm metrics are harm
   indicators, so the implementation flags `eidnara > host`. Which scale the
   property compares needs stating (needs human input).
+- The guarantee's condition is "the paired CI excludes zero"; the spec's
+  gates line makes the "memory made it worse" family Holm-corrected, and the
+  implementation follows the latter: a metric whose interval excludes zero
+  but whose Holm-adjusted p exceeds alpha is omitted (six 0-to-1
+  discordances in 40 items give an interval near [3, 29] pp, raw p 0.031,
+  Holm p 0.156). Which condition the property means needs stating (needs
+  human input).
 
 ### sim-p59-internal-string-scan-on-user-visible-only
 

@@ -141,7 +141,14 @@ const zSum = (f: Family) => {
             : num(f.alpha) / 2;
     return normalQuantile(1 - tail) + normalQuantile(num(f.power));
 };
-const higherIsBetter = (metric: string) => /\.pass$|pass_rate$|fidelity_score$/.test(metric);
+/** Metric names whose higher value favours the treatment; every other registered name is lower-is-better. */
+const HIGHER_IS_BETTER = /\.pass$|pass_rate$|fidelity_score$/;
+/** Lower-is-better names: harm indicators, event counts, latency and growth deltas, and costs. */
+const LOWER_IS_BETTER =
+    /\.harm$|^failed_turns$|^hangs$|_count$|_delta_ms$|_bytes_per_session$|^internal_string_hits$|^user_corrections_referencing_injected_text$|^reverted_memory_edits$|^usd_/;
+const higherIsBetter = (metric: string) => HIGHER_IS_BETTER.test(metric);
+const hasPolarity = (metric: string) =>
+    HIGHER_IS_BETTER.test(metric) || LOWER_IS_BETTER.test(metric);
 const empty = (method: string): Stats => ({
     n: 0,
     difference: 0,
@@ -439,6 +446,12 @@ function check(p: Preregistration, input: TierInput): void {
         if (f.analysis_unit === "item" && f.outcome !== "binary") {
             throw new StatsRefusal(`${f.id}: an item-level family has a binary outcome`);
         }
+        if (f.direction === "noninferiority" && f.outcome !== "binary") {
+            throw new StatsRefusal(`${f.id}: noninferiority is a binary item claim`);
+        }
+        for (const m of f.metrics) {
+            if (!hasPolarity(m)) throw new StatsRefusal(`${f.id}: ${m} has no registered polarity`);
+        }
         if (
             ![f.margin.value, f.mde.value, f.alpha, f.power].every((v) => Number.isFinite(num(v)))
         ) {
@@ -495,6 +508,13 @@ function check(p: Preregistration, input: TierInput): void {
     }
     const seen = new Set<string>();
     const runIds = new Map<string, Set<string>>();
+    const records = (xs: unknown) =>
+        Array.isArray(xs) && xs.every((x) => typeof x === "object" && x !== null);
+    if (!records(input.excluded) || !Array.isArray(input.asymmetric)) {
+        throw new StatsRefusal(
+            "excluded is an array of exclusion records and asymmetric an array of ids",
+        );
+    }
     for (const e of input.excluded) {
         if (e.arm !== arms.control && e.arm !== arms.treatment) {
             throw new StatsRefusal(`excluded ${e.id}: arm ${e.arm} is neither compared arm`);
@@ -848,7 +868,11 @@ export function falsificationSet(
         if (!(FALSIFICATION as readonly string[]).includes(name)) {
             throw new StatsRefusal(`${name} is not in the falsification set`);
         }
-        const values = (pairs[name] ?? []).flatMap((x) => [x.control, x.treatment]);
+        const list = pairs[name] ?? [];
+        if (!Array.isArray(list) || !list.every((x) => typeof x === "object" && x !== null)) {
+            throw new StatsRefusal(`${name}: an array of pair records`);
+        }
+        const values = list.flatMap((x) => [x.control, x.treatment]);
         if (!values.every(Number.isFinite)) {
             throw new StatsRefusal(`${name}: every control and treatment value is finite`);
         }

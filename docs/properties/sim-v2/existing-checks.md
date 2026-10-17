@@ -1,8 +1,9 @@
 # Existing checks: world simulation v2
 
-No check in this tree exercises a v2 harness surface yet. The v1 harness in
-the eidnara repository (`packages/e2e-tests/src/ab-eval/`, read at
-`bb866266c`) holds the closest prior art. Each analog is `unaudited`; none
+The checks in this tree that exercise a v2 harness surface are listed in
+the M0 and M7 tables below; the rest of the surface has none yet. The v1
+harness in the eidnara repository (`packages/e2e-tests/src/ab-eval/`, read
+at `bb866266c`) holds the closest prior art. Each analog is `unaudited`; none
 removes a record, and none checks a v2 obligation as written.
 
 | v1 check | Nearest records | Status |
