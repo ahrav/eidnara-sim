@@ -1,4 +1,6 @@
-import { appendFileSync, existsSync, truncateSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, truncateSync } from "node:fs";
+import { join } from "node:path";
+import { sha256Hex } from "../prereg/canonical";
 import type { Preregistration } from "../prereg/schema";
 import { readJournal } from "../run/journal";
 import type { ProbeItem } from "../scenario/compile";
@@ -39,6 +41,8 @@ export interface GradeRecord extends Outcome {
     snapshot: string;
     inputs: string[];
     later_attempts_logged: number;
+    /** The digest of the grader's source files that produced the record. */
+    grader?: string;
     pair?: string;
 }
 
@@ -280,6 +284,17 @@ export function gradeItem(
         ...outcome,
     };
 }
+
+/**
+ * A digest over the grader's own source files, so a grade carries the implementation that made
+ * it and a rerun under another one grades again.
+ */
+export const graderDigest = (): string =>
+    sha256Hex(
+        ["artefacts.ts", "judge.ts", "probes.ts", "text.ts"]
+            .map((f) => readFileSync(join(import.meta.dir, f), "utf8"))
+            .join("\n"),
+    );
 
 export class GradeLog {
     constructor(private readonly path: string) {}

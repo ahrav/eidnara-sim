@@ -58,15 +58,16 @@ export function tierPlan(
         })),
     );
     const planned = jobs.map((job, n) => {
-        const controls =
-            n < repeats
-                ? (prereg.aa_controls?.pairs ?? [])
-                      .filter(([arm, twin]) => arm === twin)
-                      .map(([arm]) => arm as string)
-                      .filter((arm) => job.order.includes(arm as never))
-                      .map((arm) => `${arm}~aa`)
-                : [];
-        return { ...job, arms: [...job.order, ...controls] };
+        const paired = new Set(
+            (prereg.aa_controls?.pairs ?? [])
+                .filter(([arm, twin]) => arm === twin)
+                .map(([arm]) => arm as string),
+        );
+        // Each control follows its arm, the order armOrder() persists in the manifest.
+        const arms = (job.order as string[]).flatMap((arm) =>
+            n < repeats && paired.has(arm) ? [arm, `${arm}~aa`] : [arm],
+        );
+        return { ...job, arms };
     });
     // Every run shares the prefix that fits the run with the most arms.
     const widest = Math.max(...planned.map((j) => j.arms.length));
@@ -226,9 +227,26 @@ export function planConflicts(plan: TierJob[]): string[] {
     return plan.flatMap((job) => {
         const path = join(job.dir, "manifest.json");
         if (!existsSync(path)) return [];
-        const ran = Number(JSON.parse(readFileSync(path, "utf8")).events);
-        return ran === job.events
-            ? []
-            : [`${job.dir} ran ${ran} events, the plan says ${job.events}`];
+        const m = JSON.parse(readFileSync(path, "utf8")) as {
+            events: number;
+            order?: string[];
+            host?: string;
+            seed?: number;
+        };
+        const out: string[] = [];
+        if (Number(m.events) !== job.events)
+            out.push(`${job.dir} ran ${m.events} events, the plan says ${job.events}`);
+        if (m.order && m.order.join(",") !== job.arms.join(","))
+            out.push(
+                `${job.dir} ran arms ${m.order.join(",")}, the plan says ${job.arms.join(",")}`,
+            );
+        if (
+            (m.host !== undefined && m.host !== job.host) ||
+            (m.seed !== undefined && m.seed !== job.seed)
+        )
+            out.push(
+                `${job.dir} ran host ${m.host} seed ${m.seed}, the plan says ${job.host} ${job.seed}`,
+            );
+        return out;
     });
 }

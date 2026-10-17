@@ -20,11 +20,13 @@ run directory keeps its `tier.log`. The command exits 1 when any run,
 grading, A/A report, or the tier report fails or any run exceeded
 `liveness_bounds.tier_wall_budget_ms` (SIM-L03) or the report's
 property witness holds a violated record, and 2 on a malformed flag, a
-plan where no session fits the budget, a `--turn-ms` whose prefix differs
-from one a run with a manifest ran, an unreadable `tier-plan.json` with
-no `--turn-ms` to replace it, an `--out` inside the Eidnara checkout, or
-an output directory another invocation holds (`<dir>/lease.json`). Every
-exit, a thrown setup error included, releases that lease. SIGINT, SIGTERM, or
+plan where no session fits the budget, a plan whose prefix, arms, host,
+or seed differ from what a run with a manifest ran, an unreadable
+`tier-plan.json` with no `--turn-ms` to replace it, an `--out` resolving
+(symlinks included) inside the Eidnara checkout, a generated directory
+(`scenarios-<seed>`, a run) that is a symlink, or an output directory
+another invocation holds (`<dir>/lease.json`). Every exit, a thrown setup
+error or a signal during setup included, releases that lease. SIGINT, SIGTERM, or
 SIGHUP to the command reaches every child it started, SIGKILLs any still
 live a minute later together with its descendants, and starts no further
 grading or report; each run tears down and stays resumable.
@@ -32,8 +34,9 @@ grading or report; each run tears down and stays resumable.
 A seed's scenario is compiled once into `<dir>/scenarios-<seed>/` and
 copied into each new run directory. A cached scenario whose body no
 longer hashes to its `scenario_hash`, or compiled from another generator
-version, corpus manifest, fact bank, repository list, or pre-registration,
-is refused for a new run; a run that already has a manifest keeps the
+version, pre-registration, or corpus (the bytes of the manifest, fact
+bank, repository list, distributions, and tool outputs), is refused for a
+new run; a run that already has a manifest keeps the
 scenario it ran. The libfaketime build's download,
 extraction, and compilation each end within ten minutes; invocations
 serialise on a lease over `vendor/build`, and the finished tree is
@@ -44,7 +47,8 @@ renamed into place, so another command sees a complete library or none.
 Each run gets its seed's pre-registered arm order. The A/A controls
 (`<arm>~aa` for every pair in `aa_controls` whose arm is in the order)
 ride on exactly `aa_controls.repeats` of the runs, seeds varying first so
-they spread across hosts, which is the count the report's completeness
+they spread across hosts, each control right after its arm as the run's
+manifest orders them, which is the count the report's completeness
 check wants; a host and seed selection planning fewer runs than that
 exits 2. Every arm of every run runs the same prefix of the scenario: the
 longest one that ends on a session end and whose user turns, at
@@ -107,10 +111,12 @@ The run-level checks cover:
 
 - SIM-P02 and SIM-P03: pairing before divergence over turns below their
   arm's divergence that have a reference counterpart, each delivered as
-  its counterpart was, divergence records
-  ahead of their turn carrying
+  its counterpart was and both journaled as sent, divergence records
+  (those whose turns are on the log) ahead of their turn carrying
   the two turns' digests (a replayed run's against the digest its source
-  tape's pairing log recorded, which must be present), and no turn whose
+  tape's pairing log recorded, which must be present and must still hash
+  to the `tape_pairing_sha256` the run's manifest took at its start), and
+  no turn whose
   context digest differs
   from its reference arm's without a divergence record;
 - SIM-P04: a divergence occurred;
@@ -123,9 +129,12 @@ The run-level checks cover:
   `checkJournal` over the entries in `seq` order, a repeated or
   non-integer `seq` counting as a break;
 - SIM-P15: proxy records carry both times, with wall time in `seq` order
-  per arm, and each call's scenario time within 5 s of the clock the
-  arm's journal implies at the call's start (wall pace while a turn or job
-  is open, held while idle, jumping where an entry says);
+  per arm, a receipt time that is finite and at or before completion and
+  that the journal has begun by, and each call's scenario time within 5 s
+  of the clock the arm's journal implies at the call's start (wall pace
+  while a turn or job is open, closed by `EndTurn`, `EndJob`, or the
+  interrupted `ItemState` a resume writes, held while idle, jumping where
+  an entry says);
 - SIM-P25: every user turn has a label;
 - SIM-P30: every observed fault was scheduled, and every injected call
   names a scheduled fault (from the manifest's `fault_override` when the
@@ -139,8 +148,8 @@ The run-level checks cover:
   grade, earlier versions included, cites a journaled snapshot of its
   item;
 - SIM-P42: grade versions are positive integers that only increase, the
-  report grades at the latest version, and the panel names the versions
-  used;
+  report grades at the latest version (for a P7 row, the latest of its
+  judgment, by inputs), and the panel names the versions used;
 - SIM-L03: each completed run's wall time from `StartRun` to `EndRun`,
   both finite and in order, is inside the tier's wall budget.
 

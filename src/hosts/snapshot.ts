@@ -40,6 +40,10 @@ export class SnapshotRecorder {
         private readonly callsFor: (session: string) => CallView[],
     ) {
         mkdirSync(armDir, { recursive: true });
+        // A record a kill cut short ends the log without its newline; a recorder rebuilt for the
+        // arm drops it once, so later records start lines of their own.
+        const log = join(armDir, "snapshots.jsonl");
+        if (existsSync(log)) truncateSync(log, readJournal(log).bytes ?? 0);
         this.index = join(armDir, "snapshot.index");
         this.stateFile = join(armDir, "snapshot-state.json");
         this.state = existsSync(this.stateFile)
@@ -127,11 +131,7 @@ export class SnapshotRecorder {
             turn_outcome: failed ? "failed" : "ok",
             artefacts,
         };
-        // A record a kill cut short ends the file without its newline; it is dropped so the
-        // next record starts a line of its own.
-        const path = join(this.armDir, "snapshots.jsonl");
-        if (existsSync(path)) truncateSync(path, readJournal(path).bytes ?? 0);
-        appendFileSync(path, `${JSON.stringify(snapshot)}\n`);
+        appendFileSync(join(this.armDir, "snapshots.jsonl"), `${JSON.stringify(snapshot)}\n`);
         return id;
     }
 }

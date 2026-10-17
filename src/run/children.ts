@@ -69,7 +69,11 @@ export class Children {
                 done(code);
             };
             child.on("error", (e) => {
-                appendFileSync(log, `spawn failed: ${e.message}\n`);
+                try {
+                    appendFileSync(log, `spawn failed: ${e.message}\n`);
+                } catch (caught) {
+                    console.error(`${log}: ${(caught as Error).message}`);
+                }
                 finish(127);
             });
             child.on("exit", (code, signal) =>

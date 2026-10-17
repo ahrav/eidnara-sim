@@ -1,8 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ArmLogs } from "../oracle/logs";
+import { sha256Hex } from "../prereg/canonical";
 import type { Entry } from "../run/journal";
 import type { Scenario } from "../scenario/compile";
 import { loadPrereg } from "../scenario/inputs";
@@ -44,16 +45,19 @@ function run(broken: boolean): GradedRun {
         reference_digest: "b",
         against: "reference",
     };
+    const hostLater = { ...turn("host", "e-2", "w"), index: 1, digest: "b" };
     const pairing = broken
         ? [
               turn("host", "e-1", "t"),
               turn("eidnara", "e-1", "u"),
+              hostLater,
               { ...turn("eidnara", "e-2", "v"), index: 1 },
               diverged,
           ]
         : [
               turn("host", "e-1", "t"),
               turn("eidnara", "e-1", "t"),
+              hostLater,
               diverged,
               { ...turn("eidnara", "e-2", "v"), index: 1 },
           ];
@@ -62,25 +66,37 @@ function run(broken: boolean): GradedRun {
     const entry = (kind: string, scenario_ms: number, extra: object = {}) =>
         ({ kind, arm: "eidnara", scenario_ms, seq: seq++, wall_ms: 0, ...extra }) as Entry;
     const journal = [
-        entry("UserTurn", 10, { event: "e-1", label: broken ? "nagging" : "task" }),
+        entry("UserTurn", 10, { event: "e-1", label: "task", arm: "host", delivered: true }),
+        entry("UserTurn", 10, {
+            event: "e-1",
+            label: broken ? "nagging" : "task",
+            delivered: true,
+        }),
         entry("EndTurn", 15, { event: "e-1", outcome: "ok", probe: "q-1" }),
         entry("SnapshotArtefacts", 20, { item: "q-1" }),
         entry(broken ? "SnapshotArtefacts" : "Event", broken ? 5 : 30, { item: "q-1" }),
     ];
     writeFileSync(join(dir, "journal.jsonl"), lines(journal));
-    const arm: ArmLogs = {
-        arm: "eidnara",
+    const armOf = (name: string): ArmLogs => ({
+        arm: name,
         calls: [],
-        journal,
+        journal: journal.filter((e) => e.arm === name),
         pluginLog: [],
         daemonLog: [],
         resources: [],
         tools: [],
-    };
+    });
     const scenario = { events: [], faults: [], probes: [] } as unknown as Scenario;
     // The witness reads the run, scenario, and grades; the rest of a GradedRun is left out.
     return {
-        run: { dir, tier: "S", base_wall_ms: 0, prereg, kinds: new Map(), arms: [arm] },
+        run: {
+            dir,
+            tier: "S",
+            base_wall_ms: 0,
+            prereg,
+            kinds: new Map(),
+            arms: [armOf("host"), armOf("eidnara")],
+        },
         scenario,
         grades: [],
         host: "pi",
@@ -182,7 +198,12 @@ function second(broken: boolean, busy = false): GradedRun {
     const cited = broken ? "eidnara:q-1:e-2" : "eidnara:q-1:e-1";
     const grades = broken ? [grade(1, cited), grade(1, cited)] : [grade(1, cited)];
     writeFileSync(join(dir, "grades.jsonl"), lines(grades));
-    const call = (s: number, wall_ms: number) => ({ seq: s, scenario_ms: 10, wall_ms });
+    const call = (s: number, wall_ms: number) => ({
+        seq: s,
+        scenario_ms: 10,
+        wall_ms,
+        started_wall_ms: wall_ms,
+    });
     const arm = {
         arm: "eidnara",
         journal,
@@ -206,6 +227,8 @@ function second(broken: boolean, busy = false): GradedRun {
 }
 
 interface Parts {
+    arms?: string[];
+    tape_pairing_sha256?: Record<string, string>;
     capped?: boolean;
     fault_override?: object[];
     tapes?: string[];
@@ -227,6 +250,7 @@ function made(p: Parts): GradedRun {
             order: ["host", "eidnara"],
             events: p.capped ? 0 : 3,
             tapes: p.tapes ?? [],
+            tape_pairing_sha256: p.tape_pairing_sha256 ?? {},
             fault_override: p.fault_override ?? null,
         }),
     );
@@ -236,11 +260,19 @@ function made(p: Parts): GradedRun {
     );
     writeFileSync(join(dir, "journal.jsonl"), lines(journal));
     writeFileSync(join(dir, "grades.jsonl"), lines(p.grades ?? []));
-    const arm = { arm: "eidnara", journal, calls: p.calls ?? [], tools: [] } as unknown as ArmLogs;
+    const arms = (p.arms ?? ["eidnara"]).map(
+        (name) =>
+            ({
+                arm: name,
+                journal: journal.filter((e) => e.arm === name),
+                calls: name === "eidnara" ? (p.calls ?? []) : [],
+                tools: [],
+            }) as unknown as ArmLogs,
+    );
     const events = [{ id: "e-1", scenario_ms: 10 }, ...(p.events ?? [])];
     const scenario = { events, faults: p.faults ?? [], probes: [] } as unknown as Scenario;
     return {
-        run: { dir, tier: "S", base_wall_ms: 0, prereg, kinds: new Map(), arms: [arm] },
+        run: { dir, tier: "S", base_wall_ms: 0, prereg, kinds: new Map(), arms },
         scenario,
         grades: p.used ?? p.grades ?? [],
     } as unknown as GradedRun;
@@ -266,8 +298,16 @@ describe("property witness evidence", () => {
         expect(one("P02", made({ pairing: [turn("host", "a")] }))).toMatchObject({
             status: "unreached",
         });
+        const sent = ["host", "eidnara"].map((arm) => ({
+            kind: "UserTurn",
+            arm,
+            scenario_ms: 1,
+            event: "e-1",
+            delivered: true,
+        }));
+        const both = { journal: sent, arms: ["host", "eidnara"] };
         expect(
-            one("P02", made({ pairing: [turn("host", "a"), turn("eidnara", "a")] })),
+            one("P02", made({ ...both, pairing: [turn("host", "a"), turn("eidnara", "a")] })),
         ).toMatchObject({ status: "witnessed", detail: "1 paired user turns" });
         const diverged = {
             kind: "divergedAt",
@@ -287,6 +327,21 @@ describe("property witness evidence", () => {
             status: "violated",
             detail: expect.stringContaining("delivered"),
         });
+        // A pairing record is written before the prompt; a pair counts once both arms journaled
+        // the turn.
+        const journaled = [
+            { kind: "UserTurn", arm: "host", scenario_ms: 1, event: "e-1", delivered: true },
+        ];
+        expect(
+            one(
+                "P02",
+                made({
+                    pairing: [turn("host", "a"), turn("eidnara", "a")],
+                    journal: journaled,
+                    arms: ["host", "eidnara"],
+                }),
+            ),
+        ).toMatchObject({ status: "unreached" });
     });
 
     test("SIM-P03 needs the divergence record's hashes to be the turns' digests", () => {
@@ -327,10 +382,45 @@ describe("property witness evidence", () => {
             });
         expect(one("P03", run("r")).status).toBe("witnessed");
         expect(one("P03", run("x")).status).toBe("violated");
+        // The run recorded the source log's digest at its start; a source changed since is
+        // no corroboration.
+        const digest = sha256Hex(readFileSync(join(source, "pairing.jsonl"), "utf8"));
+        const pinned = (tape_pairing_sha256: Record<string, string>) =>
+            made({
+                tapes: [join(source, "tape.jsonl")],
+                tape_pairing_sha256,
+                pairing: [turn("host", "b"), diverged("r"), turn("eidnara", "b")],
+            });
+        expect(one("P03", pinned({ [join(source, "tape.jsonl")]: digest })).status).toBe(
+            "witnessed",
+        );
+        expect(one("P03", pinned({ [join(source, "tape.jsonl")]: "0".repeat(64) }))).toMatchObject({
+            status: "violated",
+            detail: expect.stringContaining("changed since the run"),
+        });
         rmSync(join(source, "pairing.jsonl"));
         expect(one("P03", run("r"))).toMatchObject({
             status: "violated",
             detail: expect.stringContaining("source digest"),
+        });
+    });
+
+    test("SIM-P03 counts a divergence only once both turns it describes are on the log", () => {
+        const diverged = {
+            kind: "divergedAt",
+            arm: "eidnara",
+            session: "s-1",
+            event: "e-1",
+            index: 0,
+            digest: "b",
+            reference_digest: "a",
+            against: "reference",
+        };
+        expect(one("P03", made({ pairing: [turn("host", "a"), diverged] }))).toMatchObject({
+            status: "unreached",
+        });
+        expect(one("P03", made({ pairing: [diverged, turn("eidnara", "b")] }))).toMatchObject({
+            status: "unreached",
         });
     });
 
@@ -610,6 +700,31 @@ describe("property witness evidence", () => {
             status: "violated",
             detail: expect.stringContaining("version"),
         });
+        // Two memory arms judge the same P7 item against the host, each judgment writing its own
+        // host row; the report's host row follows the judgment it reports, by its inputs.
+        const p7 = (arm: string, version: number, inputs: string[]) => ({
+            item: "q-7",
+            arm,
+            probe_type: "P7",
+            version,
+            snapshot: `s-${arm}`,
+            inputs,
+        });
+        const log = [
+            p7("eidnara", 1, ["a", "h"]),
+            p7("host", 1, ["a", "h"]),
+            p7("eidnara-kl", 1, ["k", "h"]),
+            p7("host", 2, ["k", "h"]),
+        ];
+        expect(
+            one(
+                "P42",
+                made({
+                    grades: log,
+                    used: [p7("eidnara", 1, ["a", "h"]), p7("host", 1, ["a", "h"])],
+                }),
+            ),
+        ).toMatchObject({ status: "witnessed" });
     });
 
     test("SIM-P15 holds each call's scenario time to the clock the journal implies at its start", () => {
@@ -641,6 +756,32 @@ describe("property witness evidence", () => {
         expect(one("P15", made({ journal, calls: [call(99_000, 1_200)] }))).toMatchObject({
             status: "violated",
             detail: expect.stringContaining("clock"),
+        });
+        // A turn a kill cut is closed on resume by its interrupted ItemState, so the clock holds.
+        const interrupted = [
+            { kind: "BeginTurn", seq: 0, scenario_ms: 100, wall_ms: 1_000, event: "e-1" },
+            {
+                kind: "ItemState",
+                seq: 1,
+                scenario_ms: 100,
+                wall_ms: 9_000,
+                event: "e-1",
+                state: "failed(interrupted)",
+            },
+        ];
+        expect(
+            one("P15", made({ journal: interrupted, calls: [call(100, 20_000)] })),
+        ).toMatchObject({
+            status: "witnessed",
+        });
+        expect(one("P15", made({ journal, calls: [call(100, 10)] }))).toMatchObject({
+            status: "violated",
+            detail: expect.stringContaining("before the journal"),
+        });
+        expect(
+            one("P15", made({ journal, calls: [{ ...call(100, 1_200), started_wall_ms: "x" }] })),
+        ).toMatchObject({
+            status: "violated",
         });
     });
 

@@ -221,7 +221,7 @@ function panels(r: TierReport): string[] {
                 return [
                     i.run,
                     i.arm,
-                    i.internal_string_hits.length,
+                    i.internal_string_hits?.length ?? "-",
                     i.corrections_referencing_injected_text?.length ?? "-",
                     i.reverted_edits.length,
                     fmt(i.latency_ms?.p50, 0),
@@ -300,7 +300,7 @@ function panels(r: TierReport): string[] {
             r.cost.map((c) => [
                 c.run,
                 c.arm,
-                c.passes,
+                c.passes ?? "-",
                 fmt(c.usd_per_pass),
                 c.memory_writes ?? "-",
                 c.writes_with_zero_reads ?? "-",

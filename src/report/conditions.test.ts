@@ -262,3 +262,18 @@ test("a transcripts.json of the wrong shape reads as an unchecked arm", () => {
     );
     expect(runConditions(g).transcripts[1]).toEqual({ arm: "eidnara", paths: [], missing: null });
 });
+
+test("an OpenCode store that cannot be opened or queried reads as missing transcripts, and the report goes on", () => {
+    const g = fixture();
+    writeFileSync(join(g.run.dir, "eidnara/opencode.db"), "this is not a database");
+    expect(runConditions(g).transcript_order[1]).toMatchObject({
+        sessions: 0,
+        missing: ["s-1", "s-2"],
+    });
+});
+
+test("a transcripts.json holding null reads as an unchecked arm", () => {
+    const g = fixture();
+    writeFileSync(join(g.run.dir, "eidnara/transcripts.json"), "null");
+    expect(runConditions(g).transcripts[1]).toEqual({ arm: "eidnara", paths: [], missing: null });
+});

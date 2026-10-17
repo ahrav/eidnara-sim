@@ -183,3 +183,17 @@ test("a scenario that no longer hashes to the manifest's scenario_hash is refuse
     expect(r.stderr).toContain("scenario_hash");
     expect(existsSync(join(dir, "grades.jsonl"))).toBe(false);
 });
+
+test("grades from another grader implementation are graded again", () => {
+    const dir = runDir();
+    expect(grade(dir).status).toBe(0);
+    const path = join(dir, "grades.jsonl");
+    const [record] = readFileSync(path, "utf8").trim().split("\n");
+    expect(JSON.parse(record as string).grader).toMatch(/^[0-9a-f]{64}$/);
+    writeFileSync(
+        path,
+        `${JSON.stringify({ ...JSON.parse(record as string), grader: "0".repeat(64) })}\n`,
+    );
+    expect(grade(dir).status).toBe(0);
+    expect(versions(dir)).toEqual([1, 2]);
+});

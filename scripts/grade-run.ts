@@ -3,7 +3,7 @@ import { join, resolve } from "node:path";
 import { loadConfig } from "../src/config/config";
 import type { Snapshot } from "../src/grade/artefacts";
 import { gradeP7, judgePair, p7Pair, proxyJudge } from "../src/grade/judge";
-import { deltaMem, GradeLog, type GradeRecord, gradeItem } from "../src/grade/probes";
+import { deltaMem, GradeLog, type GradeRecord, gradeItem, graderDigest } from "../src/grade/probes";
 import { armBase } from "../src/hosts/arms";
 import { canonicalJson, sha256Hex } from "../src/prereg/canonical";
 import { preregistrationHash } from "../src/prereg/validate";
@@ -79,9 +79,15 @@ const skipped: Record<string, number> = {};
 const skip = (why: string) => {
     skipped[why] = (skipped[why] ?? 0) + 1;
 };
-/** A grade already on the log for this item, arm, and snapshot stands unless `--regrade` asks anew. */
+// A grade already on the log for this item, arm, and snapshot, made by this grader, stands
+// unless `--regrade` asks anew; a grade from another grader implementation is made again.
+const grader = graderDigest();
 const latest = log.latest();
-const prior = new Set(regrade ? [] : latest.map((g) => `${g.item}/${g.arm}/${g.snapshot}`));
+const prior = new Set(
+    regrade
+        ? []
+        : latest.filter((g) => g.grader === grader).map((g) => `${g.item}/${g.arm}/${g.snapshot}`),
+);
 const standsExcluded = new Set(
     latest.filter((g) => g.reason === "cf-unverified").map((g) => `${g.item}/${g.arm}`),
 );
@@ -89,7 +95,7 @@ const gradedBefore = (item: string, arm: string, snapshot: string) =>
     prior.has(`${item}/${arm}/${snapshot}`) &&
     !(unverified(arm, item) && !standsExcluded.has(`${item}/${arm}`));
 const append = (...grades: GradeRecord[]) => {
-    const records = grades.map((g) => ({ ...g, version: log.nextVersion(g.item, g.arm) }));
+    const records = grades.map((g) => ({ ...g, version: log.nextVersion(g.item, g.arm), grader }));
     log.appendAll(records);
     graded.push(...records);
 };
