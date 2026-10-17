@@ -44,22 +44,25 @@ the missingness policy excludes (each with its arm and reason) and the
 pairs in the fault-asymmetric stratum; both leave the analysis, and the
 verdict counts them per arm and per metric.
 
-A metric with no pre-registration entry is refused by name, and so is a
-metric observed twice, an observation whose unit or cluster key differs
-from its family's, an observation carrying runs for an item unit or items
-for a run unit, a control or treatment value that is not finite, a binary
-family's value other than 0 or 1, a negative count, a fractional event
-count (a count family whose margin has a scale; the cost family's amounts
-are unrestricted), a `pp`-scale graded value outside [0, 1], an item whose issue order is not a non-negative
-integer or whose ledger-fact cluster differs between observations, an item or run identity repeated
-within an observation, an issue order shared by two items or an item with
-two orders, an id listed twice across the excluded and fault-asymmetric
-lists, a run-level family whose metrics come from different run sets, a
-bootstrap plan below 40 replicates (eval-core's floor), and a bootstrap
-interval that is not finite. A metric whose name ends in
-`_delta_ms` or names a growth per session arrives as the paired delta in
-the treatment value with 0 as control, so a bound on it is a bound on the
-delta. The input names the compared arms, which are `host` against the
+A metric with no pre-registration entry is refused by name, and so is a metric
+registered in two families, a metric observed twice, an observation whose unit
+or cluster key differs from its family's, an observation carrying runs for an
+item unit or items for a run unit, a control or treatment value that is not
+finite, a binary family's value other than 0 or 1, a negative count, a
+fractional event count (a count family whose margin has a scale; the cost
+family's amounts are unrestricted), a `pp`-scale graded value outside [0, 1], an
+item whose issue order is not a non-negative integer or whose ledger-fact
+cluster differs between observations, an item or run identity repeated within an
+observation, an issue order shared by two items or an item with two orders, an
+exclusion listed twice for one arm (an item both arms failed is excluded once
+per arm), an asymmetric id listed twice or also excluded, an exclusion
+attributed to an arm other than the two compared, a run-level family whose
+metrics come from different run sets, a bootstrap plan below 40 replicates
+(eval-core's floor), and a bootstrap interval that is not finite. A metric whose
+name ends in `_delta_ms` or names a growth per session arrives as the paired
+delta in the treatment value with 0 as control, so a bound on it is a bound on
+the delta.
+The input names the compared arms, which are `host` against the
 pre-registration's default arm (D1), and the journal sequence whose
 completed pairs it was built from, a non-negative integer; the verdict
 repeats both so the input set can be recomputed. Every registered metric
@@ -84,7 +87,10 @@ labels, which is where the harm family's "memory made it worse" claim
 comes from; the family's noninferiority pass is decided per metric as
 described below. X is the detectable
 difference at that n: for binary items a normal approximation in Connor's
-form, `(z(1 - alpha/2) + z(power)) * sqrt(discordant) / n`, with the
+form, `(z(1 - alpha/2) + z(power)) * sqrt(discordant) / n`, where a Holm
+family with a one-sided claim is planned at its first step, `z(1 - alpha/m)`
+over its `m` metrics (one-sided 0.01 for the harm family, the level
+`docs/eval-core-mapping.md` registers its power at), with the
 observed discordant count in place of the planned one and without
 Connor's variance correction; for graded runs the same approximation with
 the sample standard deviation of the differences; for the sign test the
