@@ -1,4 +1,11 @@
-import { appendFileSync, existsSync, readFileSync, truncateSync, writeFileSync } from "node:fs";
+import {
+    appendFileSync,
+    existsSync,
+    lstatSync,
+    readFileSync,
+    truncateSync,
+    writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 import { sha256Hex } from "../prereg/canonical";
 import type { NormalisationRule } from "../prereg/schema";
@@ -122,6 +129,7 @@ function jsonl<T>(path: string, role: "own" | "source", check: RowCheck): T[] {
         }
     });
     if (role === "own") truncateSync(path, read.bytes ?? 0);
+    // SAFETY: `check` accepted every row above as a T, field by field.
     return read as unknown as T[];
 }
 
@@ -160,8 +168,55 @@ const pairingRow: RowCheck = (row) => {
 const pairingBeside = (tape: string) => join(dirname(tape), "pairing.jsonl");
 
 function requireSource(path: string): string {
-    if (!existsSync(path)) throw new HarnessFailure(`replay source ${path} does not exist`);
+    const stat = lstatSync(path, { throwIfNoEntry: false });
+    if (stat === undefined) throw new HarnessFailure(`replay source ${path} does not exist`);
+    // A FIFO, directory, or device in a source's place would block or fail the read.
+    if (!stat.isFile()) throw new HarnessFailure(`replay source ${path} is not a regular file`);
     return path;
+}
+
+/**
+ * The reactive rows of a pairing log whose reply is missing from, or differs on, the tape at
+ * `tapePath`: the key built from the row must name an entry for its event and label, the
+ * entry's text and stop must give the fallback causes the row records, and the text the row
+ * delivered must hash to the row's `text_sha256`.
+ */
+export function tapeMismatches(
+    tapePath: string,
+    rows: readonly PairingRecord[],
+    seed: number,
+    scripted: ReadonlyMap<string, string>,
+): string[] {
+    const entries = new Map(jsonl<TapeEntry>(tapePath, "source", tapeRow).map((t) => [t.key, t]));
+    return rows
+        .filter((r): r is TurnRecord => r.kind === "turn" && r.source !== "script" && r.delivered)
+        .filter((r) => {
+            const text = scripted.get(r.event);
+            if (text === undefined) return false;
+            const entry = entries.get(tapeKey(seed, r.event, r.label, r.context_sha256, text));
+            if (!entry || entry.event !== r.event || entry.label !== r.label) return true;
+            // The entry's stop and text give the causes a replay recomputes; the row recorded
+            // the same ones or the replay delivers another text.
+            const recorded = new Set(
+                (r.fallback ?? []).filter(
+                    (c) =>
+                        c === "empty" ||
+                        (!NORMAL_STOPS.has(c) && !["fact"].includes(c) && STOP_REASONS.has(c)),
+                ),
+            );
+            const expected = new Set<string>();
+            if (entry.text === "") expected.add("empty");
+            if (!NORMAL_STOPS.has(entry.stop)) expected.add(entry.stop);
+            if (
+                [...expected].some((c) => !recorded.has(c)) ||
+                [...recorded].some((c) => !expected.has(c))
+            )
+                return true;
+            const reply = r.fallback ? (FALLBACK[r.label] ?? "") : entry.text;
+            const delivered = r.label === "abandon" ? reply : `${reply}\n\n${text}`;
+            return sha256Hex(delivered) !== r.text_sha256;
+        })
+        .map((r) => `${r.arm} ${r.event}`);
 }
 
 /**
@@ -242,29 +297,7 @@ export function checkTapeSources(
             if (run.scripted !== undefined) {
                 // A recorded reactive turn replays only through its tape entry; a dropped entry
                 // would send the replay live under a matching context.
-                const entries = new Map(
-                    readJournal(tape).map((e) => {
-                        const t = e as unknown as TapeEntry;
-                        return [t.key, t];
-                    }),
-                );
-                const unkeyed = rows
-                    .filter((r) => r.kind === "turn" && r.source !== "script" && r.delivered)
-                    .filter((r) => {
-                        const text = run.scripted?.get(r.event);
-                        if (text === undefined || r.kind !== "turn") return false;
-                        const entry = entries.get(
-                            tapeKey(run.seed, r.event, r.label, r.context_sha256, text),
-                        );
-                        if (!entry || entry.event !== r.event || entry.label !== r.label)
-                            return true;
-                        // The row's delivered text is the taped reply ahead of the script, or
-                        // the label's fixed line when the reply fell back.
-                        const reply = r.fallback ? (FALLBACK[r.label] ?? "") : entry.text;
-                        const delivered = r.label === "abandon" ? reply : `${reply}\n\n${text}`;
-                        return sha256Hex(delivered) !== r.text_sha256;
-                    })
-                    .map((r) => `${r.arm} ${r.event}`);
+                const unkeyed = tapeMismatches(tape, rows, run.seed, run.scripted);
                 if (unkeyed.length > 0) {
                     throw new HarnessFailure(
                         `replay source ${tape} lacks replies for ${unkeyed.join(", ")}`,
@@ -555,6 +588,18 @@ const FACT_ROLES = new Set(["conveyance", "update", "reversal"]);
 
 /** Converse stop reasons of a reply the model finished on its own terms. */
 const NORMAL_STOPS = new Set(["end_turn", "stop_sequence"]);
+/** Every stop reason a reply can carry, so a fallback cause reads apart from a marker hit. */
+const STOP_REASONS = new Set([
+    "end_turn",
+    "stop_sequence",
+    "max_tokens",
+    "tool_use",
+    "guardrail_intervened",
+    "content_filtered",
+    "model_context_window_exceeded",
+    "malformed_model_output",
+    "unknown",
+]);
 
 const FALLBACK: Partial<Record<Label, string>> = {
     pushback: "I'm not convinced by that. Take another look at your last change before moving on.",

@@ -8,7 +8,12 @@ import type { Scenario } from "../src/scenario/compile";
 import { scenarioHash } from "../src/scenario/compile";
 import { loadPrereg } from "../src/scenario/inputs";
 import { deliveredTurns, LABELS, type Label, realisedRates } from "../src/usersim/plan";
-import { pairingMismatches, readPairing, type TurnRecord } from "../src/usersim/usersim";
+import {
+    pairingMismatches,
+    readPairing,
+    type TurnRecord,
+    tapeMismatches,
+} from "../src/usersim/usersim";
 
 const dir = resolve(process.argv[2] ?? "");
 if (!existsSync(join(dir, "pairing.jsonl"))) {
@@ -169,7 +174,11 @@ const invalidDivergences = records
         const own = turns.find((t) => t.arm === r.arm && t.event === r.event);
         const ref = turns.find((t) => t.arm === reference() && t.event === r.event);
         // The record is on disk before the turn it describes, so it precedes that turn's row.
-        const ahead = own !== undefined && records.indexOf(r) < records.indexOf(own);
+        const at = records.indexOf(r);
+        const ahead =
+            own !== undefined &&
+            at < records.indexOf(own) &&
+            (r.against === "recorded" || (ref !== undefined && records.indexOf(ref) < at));
         const bound =
             ahead &&
             own?.digest === r.digest &&
@@ -213,7 +222,10 @@ const journalPairingMismatch = (manifest.order as string[]).flatMap((arm) => {
         const row = paired.get(String(u.event));
         if (!row) continue;
         const relabel =
-            row.label === "interrupt" && u.label === "task" && u.scheduled === "interrupt";
+            row.label === "interrupt" &&
+            u.label === "task" &&
+            u.scheduled === "interrupt" &&
+            u.interrupted !== true;
         if (u.session !== row.session || (u.label !== row.label && !relabel))
             off.add(String(u.event));
         if (u.delivered === true && !row.delivered) off.add(String(u.event));
@@ -236,6 +248,24 @@ const liveBeforeDivergence = turns
         (r) => r.index < (divergenceAt.get(`${r.arm}/${r.session}`) ?? Number.POSITIVE_INFINITY),
     )
     .map((r) => `${r.arm} ${r.event}`);
+// A tape-backed row replays only through the run's own tape; its reply must still be there.
+const scriptedText = new Map(
+    scenario.events
+        .filter((e) => e.kind === "user_turn")
+        .map((e) => [e.id, String((e as { text?: unknown }).text ?? "")]),
+);
+const tapeMissing = existsSync(join(dir, "tape.jsonl"))
+    ? tapeMismatches(join(dir, "tape.jsonl"), records, manifest.seed as number, scriptedText)
+    : turns.filter((r) => r.source === "tape").map((r) => `${r.arm} ${r.event}`);
+// Every arm-scoped row names an arm the manifest ran.
+const unknownArms = [
+    ...new Set(
+        [
+            ...records.map((r) => r.arm),
+            ...journal.filter((e) => e.kind === "UserTurn").map((e) => String(e.arm)),
+        ].filter((a) => !arms.has(a)),
+    ),
+].sort();
 const prefix = new Set(allScheduled.map((e) => e.id));
 const outOfPrefix = [
     ...new Set([
@@ -300,6 +330,8 @@ const report = {
     undelivered_turns: undeliveredTurns,
     source_label_mismatch: sourceLabelMismatch,
     live_before_divergence: liveBeforeDivergence,
+    tape_missing: tapeMissing,
+    unknown_arms: unknownArms,
     paste_provenance: provenance,
     script_text_altered: scriptAltered,
     out_of_prefix: outOfPrefix,
@@ -339,6 +371,8 @@ const failed =
     undeliveredTurns.length +
     sourceLabelMismatch.length +
     liveBeforeDivergence.length +
+    tapeMissing.length +
+    unknownArms.length +
     provenance.length +
     scriptAltered.length +
     outOfPrefix.length +

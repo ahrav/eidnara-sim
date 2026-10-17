@@ -329,6 +329,11 @@ function checkUserSim(p: Preregistration, errors: string[]): void {
     if (u.interrupt_after_ms.min > u.interrupt_after_ms.max) {
         errors.push("user_sim.interrupt_after_ms: min must not exceed max");
     }
+    if (u.interrupt_after_ms.max >= p.liveness_bounds.turn_deadline_ms) {
+        errors.push(
+            "user_sim.interrupt_after_ms: max must be below liveness_bounds.turn_deadline_ms",
+        );
+    }
 }
 
 /** Every refusal, each naming the field path it applies to; an empty list means accepted. */

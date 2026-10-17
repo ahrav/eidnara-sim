@@ -173,9 +173,12 @@ Open questions:
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: partial - M6 (#1031) tests read `<run>/pairing.jsonl` inside the
-live-call spy and after each delivery; `usersim-1` recorded three divergences;
-no full-tier run yet
+Exercised: partial - M6 (#1031) tests prove the `divergedAt` record is on disk
+before the diverging arm's own live call and before its turn record; arms run
+one after another, so the ordering against the reference arm's later inputs that
+the guarantee names is not what the test proves, and the record carries the
+arm's context hash beside the two digests (see the evidence); no full-tier run
+yet
 Guarantee: SIM-P03: If the agent-visible context hash differs at `event_idx`
 between two arms, a divergence record with that index and both hashes exists
 before the next `IssueUserText` for either arm.
