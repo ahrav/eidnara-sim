@@ -72,17 +72,19 @@ The run-level checks cover:
   its reference arm's without a divergence record;
 - SIM-P04: a divergence occurred;
 - SIM-P10: user-sim rates recomputed from the journaled turn labels
-  inside their bands, agreeing with the journaled summary, on uncapped
-  runs only;
+  inside their bands, agreeing with the journaled summary, over the
+  completed arms (those with a `UserSimRates` entry) of uncapped runs;
 - SIM-P11, SIM-P12, and SIM-P14: the journal's order, idle jumps, and
   scheduled jumps, from `checkJournal`;
 - SIM-P15: proxy records carry both times, with wall time in `seq` order
   per arm;
 - SIM-P25: every user turn has a label;
 - SIM-P30: every observed fault was scheduled, and every injected call
-  names a scheduled fault fired before it;
-- SIM-P41: each item's snapshot is set once, and every grade cites a
-  journaled snapshot of its item;
+  names a scheduled fault fired before it, before its trigger session
+  ended, and within a bounded fault's count;
+- SIM-P41: every reached probe has a snapshot, set once, right after the
+  probe's first `EndTurn`, and every grade cites a journaled snapshot of
+  its item;
 - SIM-P42: grade versions only increase, the report grades at the latest
   version, and the panel names the versions used;
 - SIM-L03: each completed run's wall time from `StartRun` to `EndRun` is

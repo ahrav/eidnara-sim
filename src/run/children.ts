@@ -5,8 +5,15 @@ import { killOwnedTree } from "./procs";
 
 export const SIGTERM_EXIT = 143;
 
+/** SIGKILL for the child's process group and for every owned descendant the process tree shows. */
 const kill = (child: ChildProcess) => {
-    if (child.pid !== undefined) killOwnedTree(child.pid);
+    if (child.pid === undefined) return;
+    killOwnedTree(child.pid);
+    try {
+        process.kill(-child.pid, "SIGKILL");
+    } catch (caught) {
+        if ((caught as { code?: string }).code !== "ESRCH") throw caught;
+    }
 };
 
 /**
@@ -25,7 +32,11 @@ export class Children {
     run(argv: string[], log: string, limitMs?: number): Promise<number> {
         if (this.stopping) return Promise.resolve(SIGTERM_EXIT);
         return new Promise<number>((done) => {
-            const child = spawn("bun", argv, { env: this.env, stdio: ["ignore", "pipe", "pipe"] });
+            const child = spawn("bun", argv, {
+                env: this.env,
+                stdio: ["ignore", "pipe", "pipe"],
+                detached: true,
+            });
             this.live.add(child);
             const sink = (chunk: Buffer) => appendFileSync(log, chunk);
             child.stdout?.on("data", sink);
