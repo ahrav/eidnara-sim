@@ -439,14 +439,15 @@ export class DaemonStack {
         // The replacement owns the marker from the moment the stack assigns its child, while its
         // readiness is still awaited, so a kill in that wait still lets a resume stop it before
         // starting another daemon against the same store.
-        const killed = this.pid();
+        const killed = this.owner();
         let settled = false;
         const publish = (async () => {
             while (!settled) {
-                const pid = this.pid();
-                if (pid !== null && pid !== killed) {
+                // A new lifetime: another pid, or the same pid with another start time.
+                const now = this.owner();
+                if (now && (now.pid !== killed?.pid || now.start !== killed.start)) {
                     const marker = this.readMarker();
-                    if (marker) this.writeMarker({ ...marker, owner: this.owner() });
+                    if (marker) this.writeMarker({ ...marker, owner: now });
                     return;
                 }
                 await Bun.sleep(5);

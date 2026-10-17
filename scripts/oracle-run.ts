@@ -18,6 +18,14 @@ export function runDirs(args: string[]): string[] {
  * so a symlink at that name is replaced, never followed, and reports the tiers.
  */
 export function oracleRun(dirs: string[]) {
+    return oracleRunWithRecoveries(dirs).oracles;
+}
+
+/**
+ * The tier report with every run's recovery rows, each tagged with its run, from the one pass
+ * made under each run's lease.
+ */
+export function oracleRunWithRecoveries(dirs: string[]) {
     const runs = dirs.map((dir) => {
         takeLease(dir);
         try {
@@ -26,10 +34,13 @@ export function oracleRun(dirs: string[]) {
             releaseLease(dir);
         }
     });
-    return oracleReport(runs);
+    return {
+        oracles: oracleReport(runs),
+        recoveries: runs.flatMap((r) => r.recoveries.map((row) => ({ run: r.dir, ...row }))),
+    };
 }
 
-/** Loads and evaluates one run while holding its lease, so a run still finishing is refused rather than read half-written; only the tier and activations outlive the call. */
+/** Loads and evaluates one run while holding its lease, so a run still finishing is refused rather than read half-written; the tier, activations, and recovery rows outlive the call. */
 function oracleOne(dir: string) {
     {
         const manifest = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8"));
@@ -53,18 +64,13 @@ function oracleOne(dir: string) {
         const out = join(dir, "oracles.json");
         writeFileSync(`${out}.tmp`, `${JSON.stringify(result, null, 2)}\n`);
         renameSync(`${out}.tmp`, out);
-        return { tier: run.tier, activations: result.activations };
-    }
-}
-
-/** Every run's recovery rows from the `oracles.json` files `oracleRun` wrote, each with its run. */
-function recoveryRows(dirs: string[]): Record<string, unknown>[] {
-    return dirs.flatMap((dir) => {
-        const written = JSON.parse(readFileSync(join(dir, "oracles.json"), "utf8")) as {
-            recoveries: Record<string, unknown>[];
+        return {
+            dir,
+            tier: run.tier,
+            activations: result.activations,
+            recoveries: result.recoveries,
         };
-        return written.recoveries.map((r) => ({ run: dir, ...r }));
-    });
+    }
 }
 
 if (import.meta.main) {
@@ -74,6 +80,5 @@ if (import.meta.main) {
         process.exit(2);
     }
     const dirs = runDirs(args);
-    const oracles = oracleRun(dirs);
-    console.log(JSON.stringify({ oracles, recoveries: recoveryRows(dirs) }, null, 2));
+    console.log(JSON.stringify(oracleRunWithRecoveries(dirs), null, 2));
 }

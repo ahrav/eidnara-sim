@@ -657,6 +657,45 @@ test("the marker names the replacement daemon as soon as it is up", async () => 
     expect(owners).toEqual([process.pid]);
 });
 
+test("the marker names a replacement that reused the killed daemon's pid by its start time", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "sim-daemon-"));
+    const logPath = join(dir, "direct-host.log");
+    const marker = join(dir, "daemon.log.source");
+    writeFileSync(logPath, "old\n");
+    let start = "100";
+    const stack = {
+        logPath,
+        child: { pid: process.pid },
+        crashHost: async () => {},
+        restartHost: async () => {
+            // The replacement comes up under the same pid with a later start, then readiness waits.
+            start = "200";
+            rmSync(logPath);
+            writeFileSync(logPath, "new\n");
+            await Bun.sleep(80);
+        },
+    };
+    const hh = {
+        __hermeticHostTest: { diagnostics: () => ({ stdout: "", stderr: "", retainedLog: "" }) },
+    };
+    const daemon = new DaemonStack(stackCtx(dir));
+    Object.assign(daemon as unknown as Record<string, unknown>, {
+        stack,
+        hh,
+        owner: () => ({ pid: process.pid, start }),
+    });
+    const owners: unknown[] = [];
+    const absorb = (daemon as unknown as { absorb: (s: string, r: string[]) => void }).absorb.bind(
+        daemon,
+    );
+    (daemon as unknown as { absorb: (s: string, r: string[]) => void }).absorb = (s, r) => {
+        owners.push(JSON.parse(readFileSync(marker, "utf8")).owner?.start);
+        absorb(s, r);
+    };
+    await daemon.restart();
+    expect(owners).toEqual(["200"]);
+});
+
 test("recovery stops a daemon the marker still names as live before saving its log", async () => {
     const dir = mkdtempSync(join(tmpdir(), "sim-daemon-"));
     const logPath = join(dir, "direct-host.log");

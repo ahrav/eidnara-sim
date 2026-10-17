@@ -117,8 +117,14 @@ For each fault the oracle reports `turns_to_first_clean` and `recovered`,
 which is false with no clean turn after the fault, and lists the reasons.
 The infrastructure faults are the scenario compiler's set
 (`src/scenario/faults.ts`) plus `host_upgrade` and `two_hosts_one_daemon`.
-A fault an arm skipped, such as a daemon fault on the `host` arm, has
-`recovered: null` and the skip as its reason, so tallies leave it out.
+A fault an arm skipped has `recovered: null` and the skip as its reason, so
+tallies leave it out. The driver skips a daemon fault on the `host` arm and
+a `store_full` on an arm with no loop-mounted store; a skip journaled for
+any other fault, or a daemon fault skipped on another arm, refuses the arm.
+The oracle also refuses a journal whose fault ids are not nonempty strings,
+whose fired or observed types differ from the schedule, whose observation
+precedes its firing, whose sleep jump follows its firing, or whose store
+check for a restart precedes that restart's observation.
 
 A daemon restart (`daemon_restart`, `daemon_sigkill_mid_fold`) also needs a
 sound store, which three checks of the store (`src/hosts/storecheck.ts`)
@@ -151,9 +157,10 @@ pass after a crash folds from the surviving history and removes nothing
 further. The oracle checks it as: each segment the crash check listed is
 still present at the post-crash check with the same bounds and the same
 digest of its message ids, title, and content, so a segment refolded within
-the same bounds reads as changed. A check recorded before ranges carried
-digests compares bounds only, which cannot certify the rule; the oracle names
-that as a reason and withholds `recovered`. A host compaction in the
+the same bounds reads as changed. A check states its format (`format: 2`
+once ranges carry digests); a check recorded before that format compares
+bounds only, which cannot certify the rule, so the oracle names that as a
+reason and withholds `recovered`, for an empty store too. A host compaction in the
 same turn can also remove segments under the contract's compaction rule;
 the reason names the segments, so a maintainer can tell the two apart from
 the turn's calls. `recovered` needs all three checks present, each with

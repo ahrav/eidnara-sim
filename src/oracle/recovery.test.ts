@@ -51,6 +51,7 @@ function arm(journal: Entry[], pluginLog: string[] = [], finalStore?: StoreCheck
 const SEGMENT: StoreCheck["ranges"][number] = ["s", 1, 0, 9, "00000000000000d1"];
 const store = (integrity: string, overlaps = 0, ranges = [SEGMENT]): StoreCheck => ({
     integrity,
+    format: 2,
     segments: ranges.length,
     overlaps: Array.from({ length: overlaps }, () => ({ session: "s", first: 1, second: 2 })),
     ranges,
@@ -149,6 +150,13 @@ describe("recovery oracles", () => {
         expect(() => recoveries(run([arm(journal(ok, bogus), [], ok)]))).toThrow("store check");
         const badRange = { ...ok, ranges: [["s", 1, 0]] };
         expect(() => recoveries(run([arm(journal(ok, badRange), [], ok)]))).toThrow("store check");
+        // The format states what the ranges carry: digests on all of them, or on none before it.
+        const { format: _f, ...unversioned } = ok;
+        expect(() => recoveries(run([arm(journal(ok, unversioned), [], ok)]))).toThrow("format");
+        const bare = { ...ok, ranges: [["s", 1, 0, 9]] };
+        expect(() => recoveries(run([arm(journal(ok, bare), [], ok)]))).toThrow("format");
+        const future = { ...ok, format: 3 };
+        expect(() => recoveries(run([arm(journal(ok, future), [], ok)]))).toThrow("store check");
         for (const coordinate of [Number.POSITIVE_INFINITY, 1.5, -1]) {
             const odd = { ...ok, ranges: [["s", 1, 0, coordinate, "d"]] };
             expect(() => recoveries(run([arm(journal(ok, odd), [], ok)]))).toThrow("store check");
@@ -166,6 +174,7 @@ describe("recovery oracles", () => {
         expect(() => recoveries(run([arm(journal(ok, twice), [], ok)]))).toThrow("store check");
         // Sessions compare as SQLite's BINARY collation orders them, so "Z" sorts before "a".
         const binary = {
+            format: 2,
             integrity: "ok",
             segments: 3,
             overlaps: [{ session: "a", first: 1, second: 2 }],
@@ -211,7 +220,7 @@ describe("recovery oracles", () => {
         expect(() => recoveries(run([arm(skippedBy({}))]))).toThrow("skipped");
         expect(() => recoveries(run([arm(skippedBy(""))]))).toThrow("skipped");
         expect(parseStoreCheck(ok, "x")).toEqual(ok);
-        const legacy = { ...ok, ranges: [["s", 1, 0, 9]] };
+        const { format: _legacyFormat, ...legacy } = { ...ok, ranges: [["s", 1, 0, 9]] };
         expect(parseStoreCheck(legacy, "x").ranges as unknown[]).toEqual([["s", 1, 0, 9]]);
     });
 
@@ -261,7 +270,11 @@ describe("recovery oracles", () => {
             false,
             ["fault not observed: harness interrupted"],
         ]);
-        const jumped = [entry("AdvanceClock", 5, { fault: "z", from_ms: 0, busy: [] }), ...journal];
+        // The scheduler journals the jump before it fires the sleep.
+        const jumped = [
+            entry("AdvanceClock", 5, { fault: "z", from_ms: 0, busy: [], seq: -1 }),
+            ...journal,
+        ];
         const [ok] = recoveries(run([arm(jumped)]));
         expect([ok?.recovered, ok?.reasons]).toEqual([true, []]);
         // With the schedule known, the jump must be the scheduled duration.
@@ -339,6 +352,7 @@ describe("recovery oracles", () => {
             ["store integrity, final: error: file is not a database"],
         ]);
         const overlapping: StoreCheck = {
+            format: 2,
             integrity: "ok",
             segments: 2,
             overlaps: [{ session: "s", first: 1, second: 2 }],
@@ -371,7 +385,9 @@ describe("recovery oracles", () => {
             entry("BeginTurn", 10, { event: "e-1" }),
             entry("EndTurn", 20, { event: "e-1", outcome: "ok" }),
         ];
-        const got = recoveries(run([arm(journal)])).map((r) => [r.fault, r.recovered, r.reasons]);
+        const host = arm(journal.map((e) => ({ ...e, arm: "host" }) as Entry));
+        host.arm = "host";
+        const got = recoveries(run([host])).map((r) => [r.fault, r.recovered, r.reasons]);
         expect(got).toEqual([
             ["k", null, ["skipped: arm runs no daemon"]],
             ["z", true, []],
@@ -613,6 +629,50 @@ describe("recovery windows", () => {
         expect([dirty?.recovered, dirty?.reasons]).toEqual([false, ["e-1: gateway 4xx"]]);
     });
 
+    test("a call started after a mid-turn fault dirties the turn even when the wall clock stepped back", () => {
+        seq = 0;
+        const base = 1_000_000_000;
+        const journal = [
+            entry("ClockOffset", 0, {
+                wall_ms: 1_000,
+                offset_s: (base - 1_000) / 1000,
+                offset_wall_ms: 1_000,
+            }),
+            entry("BeginTurn", 10, { wall_ms: 1_010, event: "e-1" }),
+            entry("FaultFired", 20, {
+                wall_ms: 1_020,
+                fault: "k",
+                type: "daemon_sigkill_mid_fold",
+            }),
+            entry("FaultObserved", 21, {
+                wall_ms: 1_021,
+                fault: "k",
+                type: "daemon_sigkill_mid_fold",
+                evidence: { store: store("ok") },
+            }),
+            entry("EndTurn", 30, { wall_ms: 1_030, event: "e-1", outcome: "ok" }),
+            entry("StoreChecked", 30, {
+                wall_ms: 1_030,
+                event: "e-1",
+                fault: "k",
+                store: store("ok"),
+            }),
+        ];
+        // Started 5 ms after the fault by the monotone clock; the wall clock had stepped back 100 ms.
+        const stepped = {
+            turn: "e-1",
+            status: 400,
+            error: null,
+            started_wall_ms: 925,
+            wall_ms: 927,
+            scenario_ms: 25,
+        } as unknown as ArmLogs["calls"][number];
+        const a = arm(journal, [], store("ok"));
+        a.calls = [stepped];
+        const [r] = recoveries(run([a], base));
+        expect([r?.recovered, r?.reasons]).toEqual([false, ["e-1: gateway 4xx"]]);
+    });
+
     test("a clean turn's window closes when the next turn begins, even if that turn never ends", () => {
         seq = 0;
         const journal = [
@@ -718,7 +778,10 @@ describe("plugin log attribution", () => {
 
     test("a legacy crash check and a digest-bearing post-crash check compare by bounds", () => {
         seq = 0;
-        const legacy = { ...store("ok"), ranges: [["s", 1, 0, 9]] } as unknown as StoreCheck;
+        const { format: _f, ...legacy } = {
+            ...store("ok"),
+            ranges: [["s", 1, 0, 9]],
+        } as unknown as StoreCheck;
         const journal = [
             entry("FaultObserved", 0, {
                 fault: "k",
@@ -918,6 +981,127 @@ describe("plugin log attribution", () => {
             entry("StoreChecked", 21, { event: "e-1", fault: "k", store: store("*** corrupt") }),
         ];
         expect(() => recoveries(run([arm(journal, [], store("ok"))]))).toThrow("checked twice");
+    });
+
+    test("an empty store checked before the digest format withholds recovery", () => {
+        seq = 0;
+        const { format: _f, ...legacy } = store("ok", 0, []);
+        const journal = [
+            entry("FaultObserved", 0, {
+                fault: "k",
+                type: "daemon_restart",
+                evidence: { store: legacy },
+            }),
+            entry("BeginTurn", 10, { event: "e-1" }),
+            entry("EndTurn", 20, { event: "e-1", outcome: "ok" }),
+            entry("StoreChecked", 20, { event: "e-1", fault: "k", store: legacy }),
+        ];
+        const [r] = recoveries(run([arm(journal, [], { ...legacy })]));
+        expect(r?.recovered).toBe(false);
+        expect(r?.reasons).toContain("store ranges lack content digests");
+    });
+
+    test("a store check journaled between a firing and its observation is not the post-crash pass", () => {
+        seq = 0;
+        const journal = [
+            entry("FaultFired", 0, { fault: "k", type: "daemon_restart", layer: "scheduler" }),
+            entry("StoreChecked", 1, { event: "e-0", fault: "k", store: store("ok") }),
+            entry("FaultObserved", 2, {
+                fault: "k",
+                type: "daemon_restart",
+                evidence: { store: store("ok") },
+            }),
+            entry("BeginTurn", 10, { event: "e-1" }),
+            entry("EndTurn", 20, { event: "e-1", outcome: "ok" }),
+        ];
+        expect(() => recoveries(run([arm(journal, [], store("ok"))]))).toThrow("before");
+    });
+
+    test("a sleep's jump journaled after its firing is not the sleep's evidence", () => {
+        seq = 0;
+        const journal = [
+            entry("FaultFired", 0, { fault: "z", type: "laptop_sleep", layer: "scheduler" }),
+            entry("BeginTurn", 10, { event: "e-1" }),
+            entry("EndTurn", 20, { event: "e-1", outcome: "ok" }),
+            entry("AdvanceClock", 1_020, { from_ms: 20, busy: [], fault: "z" }),
+        ];
+        expect(() => recoveries(run([arm(journal)]))).toThrow("before");
+    });
+
+    test("an offset on an entry other than ClockOffset or AdvanceClock refuses the arm", () => {
+        seq = 0;
+        const journal = [
+            entry("ClockOffset", 0, { wall_ms: 1_000, offset_s: 0, offset_wall_ms: 1_000 }),
+            entry("FaultObserved", 0, {
+                wall_ms: 1_010,
+                fault: "f",
+                type: "plugin_reload",
+                evidence: {},
+            }),
+            entry("BeginTurn", 0, { wall_ms: 1_100, event: "e-1", offset_s: 7.5 }),
+            entry("EndTurn", 900, { wall_ms: 2_000, event: "e-1", outcome: "ok" }),
+        ];
+        expect(() => recoveries(run([arm(journal)], 1_000))).toThrow("offset_s");
+    });
+
+    test("a fractional offset refuses the arm", () => {
+        seq = 0;
+        const journal = [
+            entry("ClockOffset", 0, { wall_ms: 1_000, offset_s: 0.5, offset_wall_ms: 1_000 }),
+            entry("FaultObserved", 0, {
+                wall_ms: 1_010,
+                fault: "f",
+                type: "plugin_reload",
+                evidence: {},
+            }),
+            entry("BeginTurn", 0, { wall_ms: 1_100, event: "e-1" }),
+            entry("EndTurn", 900, { wall_ms: 2_000, event: "e-1", outcome: "ok" }),
+        ];
+        expect(() => recoveries(run([arm(journal)], 1_000))).toThrow("whole");
+    });
+
+    test("a fault id that is not a nonempty string refuses the arm", () => {
+        seq = 0;
+        const journal = [
+            entry("FaultFired", 0, { fault: 1, type: "plugin_reload", layer: "scheduler" }),
+            entry("FaultObserved", 0, { fault: "1", type: "plugin_reload", evidence: {} }),
+            entry("BeginTurn", 10, { event: "e-1" }),
+            entry("EndTurn", 20, { event: "e-1", outcome: "ok" }),
+        ];
+        expect(() => recoveries(run([arm(journal)]))).toThrow("fault id");
+    });
+
+    test("a skip on a fault the driver always runs refuses the arm", () => {
+        seq = 0;
+        const journal = [
+            entry("FaultObserved", 0, {
+                fault: "f",
+                type: "plugin_reload",
+                evidence: { skipped: "arm runs no daemon" },
+            }),
+            entry("BeginTurn", 10, { event: "e-1" }),
+            entry("EndTurn", 20, { event: "e-1", outcome: "ok" }),
+        ];
+        expect(() => recoveries(run([arm(journal)]))).toThrow("skip");
+    });
+
+    test("a skip of a daemon fault on an arm that runs a daemon refuses the arm", () => {
+        seq = 0;
+        const journal = [
+            entry("FaultObserved", 0, {
+                fault: "k",
+                type: "daemon_restart",
+                evidence: { skipped: "arm runs no daemon" },
+            }),
+            entry("BeginTurn", 10, { event: "e-1" }),
+            entry("EndTurn", 20, { event: "e-1", outcome: "ok" }),
+        ];
+        expect(() => recoveries(run([arm(journal)]))).toThrow("skip");
+        const host = arm(journal);
+        host.arm = "host";
+        host.journal = journal.map((e) => ({ ...e, arm: "host" }) as Entry);
+        const [r] = recoveries(run([host]));
+        expect([r?.recovered, r?.reasons]).toEqual([null, ["skipped: arm runs no daemon"]]);
     });
 
     test("a scheduled fault journaled under a non-infrastructure type still refuses the arm", () => {

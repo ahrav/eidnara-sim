@@ -2,7 +2,12 @@ import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 
+/** The check format whose ranges carry content digests; checks recorded before it have no format. */
+export const DIGEST_FORMAT = 2;
+
 export interface StoreCheck {
+    /** The check's format; `DIGEST_FORMAT` once ranges carry digests, absent on earlier checks. */
+    format?: number;
     /** SQLite's `integrity_check` result, followed by any segment whose own bounds are inverted. */
     integrity: string;
     segments: number;
@@ -113,9 +118,17 @@ export function parseStoreCheck(value: unknown, where: string): StoreCheck {
         Array.isArray(v.ranges) &&
         v.ranges.every(isRange) &&
         Number.isInteger(v.segments) &&
-        v.segments === v.ranges.length;
+        v.segments === v.ranges.length &&
+        (v.format === undefined || v.format === DIGEST_FORMAT);
     if (!sound) throw new Error(`${where}: store check has an unexpected shape`);
     const check = v as StoreCheck;
+    // A check's format states what its ranges carry: digests on every range in the digest
+    // format, bounds alone before it.
+    const digested = check.ranges.filter((r) => r.length === 5).length;
+    const expected = check.format === DIGEST_FORMAT ? check.ranges.length : 0;
+    if (digested !== expected) {
+        throw new Error(`${where}: store check's ranges disagree with its format`);
+    }
     // Derived in the live check's order, whatever order the artifact lists its ranges in.
     const bounds = check.ranges
         .map(([session_id, sequence, start_message, end_message]) => ({
@@ -146,12 +159,13 @@ export function parseStoreCheck(value: unknown, where: string): StoreCheck {
 }
 
 export function checkStore(path: string): StoreCheck {
-    if (!existsSync(path)) return { integrity: "missing", segments: 0, overlaps: [], ranges: [] };
+    const empty = { format: DIGEST_FORMAT, segments: 0, overlaps: [], ranges: [] };
+    if (!existsSync(path)) return { ...empty, integrity: "missing" };
     try {
         return inspect(path);
     } catch (caught) {
         const message = caught instanceof Error ? caught.message : String(caught);
-        return { integrity: `error: ${message}`, segments: 0, overlaps: [], ranges: [] };
+        return { ...empty, integrity: `error: ${message}` };
     }
 }
 
@@ -185,7 +199,13 @@ function inspect(path: string): StoreCheck {
         }
         const { overlaps, inverted } = derive(bounds);
         checks.push(...inverted);
-        return { integrity: checks.join("; "), segments: ranges.length, overlaps, ranges };
+        return {
+            format: DIGEST_FORMAT,
+            integrity: checks.join("; "),
+            segments: ranges.length,
+            overlaps,
+            ranges,
+        };
     } finally {
         db.close();
     }

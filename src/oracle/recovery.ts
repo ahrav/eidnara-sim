@@ -1,4 +1,4 @@
-import { parseStoreCheck, type StoreCheck } from "../hosts/storecheck";
+import { DIGEST_FORMAT, parseStoreCheck, type StoreCheck } from "../hosts/storecheck";
 import type { Entry } from "../run/journal";
 import { INFRA_FAULTS } from "../scenario/faults";
 import type { ArmLogs, RunLogs } from "./logs";
@@ -30,6 +30,8 @@ interface Turn {
     event: string;
     /** Where the turn's log window opens on the arm's timeline: its start, or the fault inside it. */
     from: number;
+    /** The same opening on the monotone scenario clock, which wall steps leave in order. */
+    fromScenario: number;
     end: Entry;
     next: number;
 }
@@ -91,6 +93,19 @@ function timeline(arm: ArmLogs, base: number): Timeline {
         return value;
     };
     const offsets = arm.journal.filter((e) => e.offset_s !== undefined);
+    // The harness writes offsets on ClockOffset and AdvanceClock entries, as whole seconds.
+    for (const e of offsets) {
+        if (e.kind !== "ClockOffset" && e.kind !== "AdvanceClock") {
+            throw new Error(
+                `${arm.arm}: journal entry ${String(e.seq)} (${e.kind}) carries offset_s, which belongs to clock entries`,
+            );
+        }
+        if (!Number.isInteger(e.offset_s)) {
+            throw new Error(
+                `${arm.arm}: journal entry ${String(e.seq)} (${e.kind}) has an offset_s that is not a whole second`,
+            );
+        }
+    }
     const first = offsets[0];
     if (first && arm.journal.some((e) => e.kind === "BeginTurn" && e.seq < first.seq)) {
         throw new Error(
@@ -174,8 +189,14 @@ function turnsAfter(arm: ArmLogs, fault: Entry, tl: Timeline): Turn[] {
         }
         const begin = begins.get(String(e.event));
         if (e.seq > fault.seq && endsTurn(e) && begin) {
-            const from = begin.seq < fault.seq ? tl.at(fault) : tl.at(begin);
-            turns.push({ event: String(e.event), from, end: e, next: Number.POSITIVE_INFINITY });
+            const opener = begin.seq < fault.seq ? fault : begin;
+            turns.push({
+                event: String(e.event),
+                from: tl.at(opener),
+                fromScenario: opener.scenario_ms,
+                end: e,
+                next: Number.POSITIVE_INFINITY,
+            });
         }
     }
     for (const t of turns) {
@@ -279,9 +300,11 @@ export function dirtyReasons(evidence: Evidence, turn: Turn, tl: Timeline): stri
     const reasons: string[] = [];
     if (String(turn.end.outcome) !== "ok")
         reasons.push(`turn ended ${String(turn.end.outcome).slice(0, 80)}`);
-    // The turn's calls, from where its window opens: a mid-turn fault excludes the calls before it.
+    // The turn's calls, from where its window opens: a mid-turn fault excludes the calls before
+    // it. A call that started after the opening on the monotone clock is inside the window even
+    // when a backward wall step placed its completion before it.
     const calls = (evidence.callsByTurn.get(turn.event) ?? []).filter(
-        (c) => tl.done(c) >= turn.from,
+        (c) => tl.done(c) >= turn.from || c.scenario_ms >= turn.fromScenario,
     );
     if (calls.some((c) => c.status >= 400 && c.status < 500)) reasons.push("gateway 4xx");
     if (calls.some((c) => OVERFLOW.test(c.error ?? ""))) reasons.push("overflow");
@@ -314,10 +337,12 @@ function storeReasons(checks: Checks, postCrash = true): string[] {
     }
     if (!postCrash) return reasons;
     const after = checks.after_crash?.ranges ?? [];
-    const compared = [...after, ...(checks.post_crash_pass?.ranges ?? [])];
-    // Checks recorded before ranges carried digests compare bounds only, which cannot certify
-    // the rule, so they withhold recovery while still reporting what they can.
-    const digests = compared.every((r) => r.length === 5);
+    // Checks recorded before the digest format compare bounds only, which cannot certify the
+    // rule, so they withhold recovery while still reporting what they can. The format is the
+    // check's own statement, so an empty legacy store withholds too.
+    const digests = [checks.after_crash, checks.post_crash_pass].every(
+        (c) => c === undefined || c.format === DIGEST_FORMAT,
+    );
     if (!digests) reasons.push("store ranges lack content digests");
     const kept = new Set((checks.post_crash_pass?.ranges ?? []).map((r) => key(r, digests)));
     const lost = checks.post_crash_pass ? after.filter((r) => !kept.has(key(r, digests))) : [];
@@ -337,6 +362,16 @@ export function recoveries(run: RunLogs): Recovery[] {
                 throw new Error(`${arm.arm}: fault ${String(e.fault)} is observed twice`);
             }
             observations.set(e.fault, e);
+        }
+        // Fault ids are nonempty strings, as the scheduler's input requires; the maps below key
+        // on them as given, so another shape would split one fault into two.
+        for (const e of arm.journal) {
+            if (e.fault === undefined || e.fault === null) continue;
+            if (typeof e.fault !== "string" || e.fault === "") {
+                throw new Error(
+                    `${arm.arm}: journal entry ${String(e.seq)} (${e.kind}) has a fault id that is not a nonempty string`,
+                );
+            }
         }
         // Every journaled fault must be the scheduled one, whatever type the journal names for it.
         if (run.faultTypes) {
@@ -388,7 +423,7 @@ export function recoveries(run: RunLogs): Recovery[] {
             // A sleep's evidence is its recorded clock jump: a fault-tagged AdvanceClock that moved
             // the clock forward with the busy set empty, by the scheduled duration when known.
             const scheduledMs = run.sleeps?.get(String(fired.fault));
-            const jumped = arm.journal.some((e) => {
+            const jumps = arm.journal.filter((e) => {
                 const delta = e.scenario_ms - Number(e.from_ms);
                 return (
                     e.kind === "AdvanceClock" &&
@@ -398,6 +433,14 @@ export function recoveries(run: RunLogs): Recovery[] {
                     e.busy.length === 0
                 );
             });
+            // The scheduler writes a sleep's jump before it fires; a jump after the anchor is a
+            // malformed journal.
+            if (jumps.some((e) => e.seq > fired.seq)) {
+                throw new Error(
+                    `${arm.arm}: sleep ${String(fired.fault)} has its clock jump journaled after it fires, rather than before`,
+                );
+            }
+            const jumped = jumps.length > 0;
             const observation = observations.get(fired.fault);
             if (observation && fired.kind === "FaultFired" && observation.seq < fired.seq) {
                 throw new Error(
@@ -425,6 +468,15 @@ export function recoveries(run: RunLogs): Recovery[] {
                 if (typeof evidence.skipped !== "string" || evidence.skipped === "") {
                     throw new Error(
                         `${arm.arm}: ${base.fault} FaultObserved has a skipped field that is not a reason`,
+                    );
+                }
+                // The driver skips a daemon fault on the arm that runs no daemon and a store fill on
+                // an arm with no loop-mounted store; every other fault runs on every arm.
+                const skippable =
+                    (RESTARTS.has(base.type) && arm.arm === "host") || base.type === "store_full";
+                if (!skippable) {
+                    throw new Error(
+                        `${arm.arm}: ${base.fault} (${base.type}) is journaled as skipped, which the driver has no skip path for on this arm`,
                     );
                 }
                 const reasons = [`skipped: ${evidence.skipped}`];
@@ -472,7 +524,13 @@ export function recoveries(run: RunLogs): Recovery[] {
             const passes = arm.journal.filter(
                 (x) => x.kind === "StoreChecked" && x.seq > fired.seq && x.fault === base.fault,
             );
-            // The scheduler journals one check per restart; a second is a malformed journal.
+            // The scheduler journals one check per restart, after the restart's observation; a
+            // check between the firing and the observation, or a second one, is a malformed journal.
+            if (observed && passes.some((x) => x.seq < observed.seq)) {
+                throw new Error(
+                    `${arm.arm}: restart ${base.fault} has a store check journaled before its observation`,
+                );
+            }
             if (passes.length > 1) {
                 throw new Error(`${arm.arm}: restart ${base.fault} is checked twice`);
             }

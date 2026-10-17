@@ -624,7 +624,7 @@ describe("HostDriver faults", () => {
             pid_before: 10,
             pid_after: 11,
             restarted_by: "harness",
-            store: { integrity: "missing", segments: 0, overlaps: [], ranges: [] },
+            store: { format: 2, integrity: "missing", segments: 0, overlaps: [], ranges: [] },
         });
         expect(seen).toEqual([10, 11]);
     });
@@ -724,7 +724,7 @@ describe("HostDriver faults", () => {
         pluginLog(driver, PASS);
         const first = await driver.event(ev("user_turn", { id: "e-1", text: "go" }));
         const second = await driver.event(ev("user_turn", { id: "e-2", text: "go" }));
-        const store = { integrity: "missing", segments: 0, overlaps: [], ranges: [] };
+        const store = { format: 2, integrity: "missing", segments: 0, overlaps: [], ranges: [] };
         expect(first.stores).toEqual([
             { fault: "f-daemon_restart", store },
             { fault: "f-daemon_sigkill_mid_fold", store },
@@ -912,7 +912,13 @@ describe("HostDriver faults", () => {
         await driver.finish();
         expect(stopped).toBe(true);
         const check = JSON.parse(readFileSync(join(driver.armDir, "store-check.json"), "utf8"));
-        expect(check).toEqual({ integrity: "ok", segments: 0, overlaps: [], ranges: [] });
+        expect(check).toEqual({
+            format: 2,
+            integrity: "ok",
+            segments: 0,
+            overlaps: [],
+            ranges: [],
+        });
     });
 
     test("a model switch moves later sessions to the next model and keeps the daemon", async () => {
