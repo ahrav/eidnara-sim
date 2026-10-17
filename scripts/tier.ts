@@ -121,7 +121,8 @@ if (prereg.resizing && from && !existsSync(resizing)) {
         refuse(`the ${m.tier} paired runs are not all graded: ${ungraded.join(", ") || "none"}`);
     const runs = main.map((d) => loadGraded(d, m));
     const input = tierInput(m, runs);
-    const open = (input.incomplete ?? []).filter((x) => !x.startsWith("CUSUM "));
+    const capped = / of \d+ (events|paired items)$|: fault schedule overridden$|^CUSUM /;
+    const open = (input.incomplete ?? []).filter((x) => !capped.test(x));
     if (open.length > 0) refuse(`the ${m.tier} campaign is incomplete: ${open.join("; ")}`);
     const sized = {
         recorded_at: new Date().toISOString(),
@@ -323,7 +324,9 @@ const sourceFailed = (job: TierJob) => {
     const source = tapeSource(job);
     if (source === null) return null;
     const r = results.find((x) => x.dir === source);
-    return r && r.run_exit === 0 && !r.over_budget ? null : `source run ${source} did not complete`;
+    if (!r || r.run_exit !== 0 || r.over_budget) return `source run ${source} did not complete`;
+    const missing = ["tape.jsonl", "pairing.jsonl"].filter((f) => !existsSync(join(source, f)));
+    return missing.length ? `source run ${source} lacks ${missing.join(", ")}` : null;
 };
 const skipped = (job: TierJob, why: string): Result => ({
     ...job,

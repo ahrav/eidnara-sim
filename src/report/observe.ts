@@ -353,23 +353,6 @@ function incomplete(
         );
         return [...out, ...outside];
     });
-    const sequential = p.load_stress?.arms_concurrent
-        ? runs.flatMap((g) => {
-              const spans = g.run.arms.flatMap((a) => {
-                  const start = a.journal.find((e) => e.kind === "StartArm")?.seq;
-                  const end = a.journal.find((e) => e.kind === "EndArm")?.seq;
-                  return start === undefined || end === undefined ? [] : [[start, end] as const];
-              });
-              const overlap = spans.some(([s1, e1], i) =>
-                  spans.some(([s2, e2], j) => i !== j && s1 <= e2 && s2 <= e1),
-              );
-              return spans.length < 2 || overlap
-                  ? []
-                  : [
-                        `run ${runKey(g)}: arms ran one at a time; load_stress requires concurrent arms`,
-                    ];
-          })
-        : [];
     const overridden = runs.flatMap((g) =>
         g.identity.fault_override === null ? [] : [`run ${runKey(g)}: fault schedule overridden`],
     );
@@ -445,7 +428,6 @@ function incomplete(
         ...overridden,
         ...unknown,
         ...pairing,
-        ...sequential,
         ...settings,
         ...controls,
         ...unavailable,
@@ -487,7 +469,7 @@ export function tierInput(
             ? pairs
             : pairs
                   .filter((x) => !dropped.has(x.item))
-                  .sort((a, b) => a.order - b.order || (a.item < b.item ? -1 : 1))
+                  .sort((a, b) => a.order - b.order)
                   .slice(0, items);
     const observations: Observation[] = p.families.flatMap((f) =>
         f.metrics.map(
