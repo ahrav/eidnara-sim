@@ -392,8 +392,17 @@ export class DaemonStack {
         await stack.terminateHost();
         this.stack = null;
         const { stdout } = this.hh.__hermeticHostTest.diagnostics(stack);
+        // The stack's stdout covers a held copy from a kill that failed, so the marker drops its own.
+        const marker = this.readMarker();
+        const {
+            stdout: _held,
+            stdout_target: _target,
+            ...rest
+        } = marker ?? { pending: [], copying: null };
+        if (marker?.stdout !== undefined) this.writeMarker(rest);
         appendFileSync(this.ctx.logFile, stdout);
-        this.drain(this.readMarker(), [String(stack.logPath ?? "")]);
+        this.heldStdout = null;
+        this.drain(marker ? rest : null, [String(stack.logPath ?? "")]);
     }
 }
 
