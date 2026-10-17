@@ -284,7 +284,7 @@ const unknownArms = [
 // A sibling arm's first turn whose digest leaves the reference's has its divergence row ahead
 // of it, or the divergence is hidden.
 const missingDivergences = (manifest.order as string[])
-    .filter((arm) => arm !== reference())
+    .filter((arm) => arm !== reference(arm))
     .flatMap((arm) => {
         const sessions = new Map<string, TurnRecord[]>();
         for (const t of turns.filter((r) => r.arm === arm)) {
@@ -294,7 +294,7 @@ const missingDivergences = (manifest.order as string[])
             const first = rows
                 .sort((x, y) => x.index - y.index)
                 .find((t) => {
-                    const ref = turns.find((r) => r.arm === reference() && r.event === t.event);
+                    const ref = turns.find((r) => r.arm === reference(arm) && r.event === t.event);
                     return ref !== undefined && ref.digest !== t.digest;
                 });
             if (!first) return [];
