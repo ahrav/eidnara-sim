@@ -696,7 +696,12 @@ export class HostDriver implements ArmDriver {
             await daemon?.stop();
             if (daemon && checkFinalStore) {
                 const check = checkStore(this.storeDb);
-                writeFileSync(join(this.armDir, "store-check.json"), `${JSON.stringify(check)}\n`);
+                // Staged under an exclusive create and renamed into place, so a link left at the
+                // report's path is replaced rather than written through.
+                const report = join(this.armDir, "store-check.json");
+                const staged = `${report}.${process.pid}`;
+                writeFileSync(staged, `${JSON.stringify(check)}\n`, { flag: "wx" });
+                renameSync(staged, report);
             }
         } catch (caught) {
             failure ??= caught;

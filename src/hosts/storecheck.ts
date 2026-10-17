@@ -39,6 +39,9 @@ function digest(g: Segment): string {
 const isCoordinate = (n: unknown): n is number =>
     typeof n === "number" && Number.isSafeInteger(n) && n >= 0;
 
+/** The digest `inspect` emits: the first sixteen hex characters of a SHA-256. */
+const DIGEST = /^[0-9a-f]{16}$/;
+
 const isRange = (r: unknown): r is StoreCheck["ranges"][number] =>
     Array.isArray(r) &&
     (r.length === 4 || r.length === 5) &&
@@ -46,7 +49,7 @@ const isRange = (r: unknown): r is StoreCheck["ranges"][number] =>
     isCoordinate(r[1]) &&
     isCoordinate(r[2]) &&
     isCoordinate(r[3]) &&
-    (r.length === 4 || typeof r[4] === "string");
+    (r.length === 4 || (typeof r[4] === "string" && DIGEST.test(r[4])));
 
 const isOverlap = (o: unknown): o is StoreCheck["overlaps"][number] =>
     typeof o === "object" &&
@@ -123,7 +126,8 @@ export function parseStoreCheck(value: unknown, where: string): StoreCheck {
         }))
         .sort(
             (a, b) =>
-                a.session_id.localeCompare(b.session_id) ||
+                // SQLite's BINARY collation: byte order, which places "Z" before "a".
+                Buffer.compare(Buffer.from(a.session_id), Buffer.from(b.session_id)) ||
                 a.start_message - b.start_message ||
                 a.end_message - b.end_message ||
                 a.sequence - b.sequence,

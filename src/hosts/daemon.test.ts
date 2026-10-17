@@ -362,6 +362,7 @@ test("a stop after a failed crash saves the stack's stdout once, superseding the
     writeFileSync(logPath, "stderr\n");
     const stack = {
         logPath,
+        child: { pid: process.pid },
         crashHost: async () => {
             throw new Error("kill refused");
         },
@@ -377,6 +378,67 @@ test("a stop after a failed crash saves the stack's stdout once, superseding the
     await expect(daemon.crash()).rejects.toThrow("kill refused");
     await daemon.stop();
     expect(readFileSync(join(dir, "daemon.log"), "utf8")).toBe("ready\nstderr\n");
+});
+
+test("a stop after a replacement that failed to come up keeps the killed lifetime's held stdout", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "sim-daemon-"));
+    const logPath = join(dir, "direct-host.log");
+    writeFileSync(logPath, "old stderr\n");
+    let stdout = "old stdout\n";
+    const stack = {
+        logPath,
+        child: { pid: process.pid },
+        crashHost: async () => {},
+        restartHost: async () => {
+            stack.child = { pid: process.ppid };
+            stdout = "new stdout\n";
+            rmSync(logPath);
+            writeFileSync(logPath, "new stderr\n");
+            throw new Error("replacement never became ready");
+        },
+        terminateHost: async () => {},
+    };
+    const hh = {
+        __hermeticHostTest: { diagnostics: () => ({ stdout, stderr: "", retainedLog: "" }) },
+    };
+    const daemon = new DaemonStack(stackCtx(dir));
+    Object.assign(daemon as unknown as Record<string, unknown>, { stack, hh });
+    await expect(daemon.restart()).rejects.toThrow("never became ready");
+    await daemon.stop();
+    expect(readFileSync(join(dir, "daemon.log"), "utf8")).toBe(
+        "old stdout\nold stderr\nnew stdout\nnew stderr\n",
+    );
+});
+
+test("the marker names the replacement daemon as soon as it is up", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "sim-daemon-"));
+    const logPath = join(dir, "direct-host.log");
+    const marker = join(dir, "daemon.log.source");
+    writeFileSync(logPath, "old\n");
+    const owners: unknown[] = [];
+    const stack = {
+        logPath,
+        child: { pid: process.ppid },
+        restartHost: async () => {
+            stack.child = { pid: process.pid };
+            rmSync(logPath);
+            writeFileSync(logPath, "new\n");
+        },
+    };
+    const hh = {
+        __hermeticHostTest: { diagnostics: () => ({ stdout: "", stderr: "", retainedLog: "" }) },
+    };
+    const daemon = new DaemonStack(stackCtx(dir));
+    Object.assign(daemon as unknown as Record<string, unknown>, { stack, hh });
+    const absorb = (daemon as unknown as { absorb: (s: string, r: string[]) => void }).absorb.bind(
+        daemon,
+    );
+    (daemon as unknown as { absorb: (s: string, r: string[]) => void }).absorb = (s, r) => {
+        owners.push(JSON.parse(readFileSync(marker, "utf8")).owner?.pid);
+        absorb(s, r);
+    };
+    await daemon.restart();
+    expect(owners).toEqual([process.pid]);
 });
 
 test("recovery stops a daemon the marker still names as live before saving its log", async () => {

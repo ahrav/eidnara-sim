@@ -41,6 +41,8 @@ export interface RunLogs {
     kinds: Map<string, string>;
     /** Each scheduled laptop sleep's duration by fault id, from the override the run used or its scenario. */
     sleeps?: Map<string, number>;
+    /** Each scheduled fault's type by id, from the same source, so a journaled fault must match its schedule. */
+    faultTypes?: Map<string, string>;
     arms: ArmLogs[];
 }
 
@@ -373,6 +375,7 @@ export function loadRun(dir: string, prereg: Preregistration): RunLogs {
             .filter((f) => f.type === "laptop_sleep")
             .map((f) => [String(f.id), Number(f.params?.duration_ms)]),
     );
+    const faultTypes = new Map(faults.map((f) => [String(f.id), String(f.type)]));
     return {
         dir,
         tier: manifest.tier,
@@ -380,6 +383,7 @@ export function loadRun(dir: string, prereg: Preregistration): RunLogs {
         prereg,
         kinds,
         sleeps,
+        faultTypes,
         arms,
     };
 }

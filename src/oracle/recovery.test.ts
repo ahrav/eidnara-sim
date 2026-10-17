@@ -48,7 +48,7 @@ function arm(journal: Entry[], pluginLog: string[] = [], finalStore?: StoreCheck
         finalStore,
     };
 }
-const SEGMENT: StoreCheck["ranges"][number] = ["s", 1, 0, 9, "d1"];
+const SEGMENT: StoreCheck["ranges"][number] = ["s", 1, 0, 9, "00000000000000d1"];
 const store = (integrity: string, overlaps = 0, ranges = [SEGMENT]): StoreCheck => ({
     integrity,
     segments: ranges.length,
@@ -153,25 +153,42 @@ describe("recovery oracles", () => {
             const odd = { ...ok, ranges: [["s", 1, 0, coordinate, "d"]] };
             expect(() => recoveries(run([arm(journal(ok, odd), [], ok)]))).toThrow("store check");
         }
+        // A fifth field is the emitted digest: sixteen lowercase hex characters.
+        for (const digest of ["x", "", "ABCDEF0123456789", "0123456789abcdef0"]) {
+            const fake = { ...ok, ranges: [["s", 1, 0, 9, digest]] };
+            expect(() => recoveries(run([arm(journal(ok, fake), [], ok)]))).toThrow("store check");
+        }
+        // Sessions compare as SQLite's BINARY collation orders them, so "Z" sorts before "a".
+        const binary = {
+            integrity: "ok",
+            segments: 3,
+            overlaps: [{ session: "a", first: 1, second: 2 }],
+            ranges: [
+                ["Z", 1, 0, 9, "0123456789abcdef"],
+                ["a", 1, 0, 9, "0123456789abcdef"],
+                ["a", 2, 5, 12, "0123456789abcdef"],
+            ],
+        } as StoreCheck;
+        expect(parseStoreCheck(binary, "x")).toEqual(binary);
         const miscounted = { ...ok, segments: 2 };
         expect(() => recoveries(run([arm(journal(ok, miscounted), [], ok)]))).toThrow(
             "store check",
         );
         // Derived facts must agree with the ranges: overlaps and inverted bounds are recomputed.
         const hidden = store("ok", 0, [
-            ["s", 1, 0, 10, "a"],
-            ["s", 2, 5, 20, "b"],
+            ["s", 1, 0, 10, "000000000000000a"],
+            ["s", 2, 5, 20, "000000000000000b"],
         ]);
         expect(() => recoveries(run([arm(journal(ok, hidden), [], ok)]))).toThrow("store check");
-        const inverted = store("ok", 0, [["s", 1, 9, 2, "a"]]);
+        const inverted = store("ok", 0, [["s", 1, 9, 2, "000000000000000a"]]);
         expect(() => recoveries(run([arm(journal(ok, inverted), [], ok)]))).toThrow("store check");
         const declared = { ...inverted, integrity: "ok; inverted range s/1" };
         expect(parseStoreCheck(declared, "x")).toEqual(declared);
         // Ranges listed out of canonical order still derive the overlap they hide.
         const interleaved = store("ok", 0, [
-            ["s", 1, 0, 10, "a"],
-            ["t", 1, 0, 5, "c"],
-            ["s", 2, 5, 20, "b"],
+            ["s", 1, 0, 10, "000000000000000a"],
+            ["t", 1, 0, 5, "000000000000000c"],
+            ["s", 2, 5, 20, "000000000000000b"],
         ]);
         expect(() => recoveries(run([arm(journal(ok, interleaved), [], ok)]))).toThrow(
             "store check",
@@ -297,7 +314,13 @@ describe("recovery oracles", () => {
             return [r?.recovered, r?.reasons];
         };
         const [clean] = recoveries(
-            run([arm(journal(ok, store("ok", 0, [SEGMENT, ["s", 2, 10, 19, "d2"]])), [], ok)]),
+            run([
+                arm(
+                    journal(ok, store("ok", 0, [SEGMENT, ["s", 2, 10, 19, "00000000000000d2"]])),
+                    [],
+                    ok,
+                ),
+            ]),
         );
         expect(clean?.recovered).toBe(true);
         expect(clean?.store).toEqual({ after_crash: "ok", post_crash_pass: "ok", final: "ok" });
@@ -313,19 +336,19 @@ describe("recovery oracles", () => {
             integrity: "ok",
             segments: 2,
             overlaps: [{ session: "s", first: 1, second: 2 }],
-            ranges: [SEGMENT, ["s", 2, 5, 12, "d2"]],
+            ranges: [SEGMENT, ["s", 2, 5, 12, "00000000000000d2"]],
         };
         expect(verdict(ok, overlapping, ok)).toEqual([
             false,
             ["1 overlapping history segments, post crash pass"],
         ]);
-        expect(verdict(ok, store("ok", 0, [["s", 1, 0, 12, "d1"]]), ok)).toEqual([
+        expect(verdict(ok, store("ok", 0, [["s", 1, 0, 12, "00000000000000d1"]]), ok)).toEqual([
             false,
-            ["post-crash pass removed or changed segments s/1/0/9/d1"],
+            ["post-crash pass removed or changed segments s/1/0/9/00000000000000d1"],
         ]);
-        expect(verdict(ok, store("ok", 0, [["s", 1, 0, 9, "d9"]]), ok)).toEqual([
+        expect(verdict(ok, store("ok", 0, [["s", 1, 0, 9, "00000000000000d9"]]), ok)).toEqual([
             false,
-            ["post-crash pass removed or changed segments s/1/0/9/d1"],
+            ["post-crash pass removed or changed segments s/1/0/9/00000000000000d1"],
         ]);
         expect(verdict(undefined, ok, ok)).toEqual([false, ["store unchecked: after crash"]]);
         expect(verdict(ok, undefined, ok)).toEqual([false, ["store unchecked: post crash pass"]]);
@@ -769,6 +792,46 @@ describe("plugin log attribution", () => {
         ];
         const log = ["[eidnara][s-1] rust pass: decision=error reason=none served_from=raw"];
         expect(() => recoveries(run([arm(journal, log)]))).toThrow("fail-open");
+    });
+
+    test("a turn whose window would close before it opens refuses the arm", () => {
+        seq = 0;
+        const base = 1_000_000_000;
+        const journal = [
+            entry("ClockOffset", 0, { wall_ms: 1_000, offset_s: (base - 1_000) / 1000 }),
+            entry("FaultObserved", 0, {
+                wall_ms: 1_010,
+                fault: "f",
+                type: "plugin_reload",
+                evidence: {},
+            }),
+            entry("BeginTurn", 0, { wall_ms: 5_000, event: "e-1" }),
+            entry("EndTurn", 900, { wall_ms: 5_900, event: "e-1", outcome: "ok" }),
+            entry("BeginTurn", 900, { wall_ms: 4_000, event: "e-2" }),
+            entry("EndTurn", 1_800, { wall_ms: 4_900, event: "e-2", outcome: "ok" }),
+        ];
+        expect(() => recoveries(run([arm(journal)], base))).toThrow("window");
+    });
+
+    test("a journaled fault whose type differs from its schedule refuses the arm", () => {
+        seq = 0;
+        const journal = [
+            entry("FaultObserved", 0, { fault: "k", type: "plugin_reload", evidence: {} }),
+            entry("BeginTurn", 10, { event: "e-1" }),
+            entry("EndTurn", 20, { event: "e-1", outcome: "ok" }),
+        ];
+        const scheduled = {
+            ...run([arm(journal)]),
+            faultTypes: new Map([["k", "daemon_restart"]]),
+        };
+        expect(() => recoveries(scheduled)).toThrow("daemon_restart");
+        const unknown = {
+            ...run([arm(journal)]),
+            faultTypes: new Map([["other", "plugin_reload"]]),
+        };
+        expect(() => recoveries(unknown)).toThrow("schedule");
+        const agreed = { ...run([arm(journal)]), faultTypes: new Map([["k", "plugin_reload"]]) };
+        expect(recoveries(agreed).map((r) => r.recovered)).toEqual([true]);
     });
 
     test("a journal entry without a finite wall time cannot anchor a window", () => {

@@ -5,6 +5,7 @@ import {
     appendFileSync,
     closeSync,
     existsSync,
+    lstatSync,
     mkdirSync,
     mkdtempSync,
     openSync,
@@ -863,6 +864,23 @@ describe("HostDriver faults", () => {
         expect(folded.stores?.map((s) => s.fault)).toEqual(["f-daemon_restart"]);
         const after = await driver.event(ev("user_turn", { id: "e-4", text: "go" }));
         expect(after.stores).toBeUndefined();
+    });
+
+    test("the final store check replaces a symlink at its path without writing through it", async () => {
+        const { driver, armDir } = fixture("eidnara");
+        driver.daemon = fakeDaemon(10) as unknown as DaemonStack;
+        mkdirSync(dirname(driver.storeDb), { recursive: true });
+        new Database(driver.storeDb).run(SEGMENTS_DDL);
+        const target = join(armDir, "elsewhere.json");
+        writeFileSync(target, "untouched\n");
+        mkdirSync(armDir, { recursive: true });
+        symlinkSync(target, join(armDir, "store-check.json"));
+        await driver.finish();
+        expect(readFileSync(target, "utf8")).toBe("untouched\n");
+        expect(lstatSync(join(armDir, "store-check.json")).isSymbolicLink()).toBe(false);
+        expect(JSON.parse(readFileSync(join(armDir, "store-check.json"), "utf8")).integrity).toBe(
+            "ok",
+        );
     });
 
     test("finish stops the daemon and writes the final store check", async () => {

@@ -155,8 +155,8 @@ export class DaemonStack {
 
     constructor(private readonly ctx: DaemonContext) {}
 
-    pid(): number | null {
-        return this.stack?.child?.pid ?? null;
+    pid(stack: Untyped = this.stack): number | null {
+        return stack?.child?.pid ?? null;
     }
 
     /** Names the marker a `start` after a harness kill reads to find the logs still to save. */
@@ -375,6 +375,10 @@ export class DaemonStack {
         if (this.heldStdout === null) this.hold();
         const live = String(this.stack.logPath ?? "");
         await this.stack.restartHost();
+        // The replacement owns the marker from here, so a kill before the logs are saved still
+        // lets a resume stop it before starting another daemon against the same store.
+        const marker = this.readMarker();
+        if (marker) this.writeMarker({ ...marker, owner: this.owner() });
         appendFileSync(this.ctx.logFile, this.heldStdout ?? "");
         this.heldStdout = null;
         this.absorb(this.held, [live]);
@@ -392,17 +396,29 @@ export class DaemonStack {
         await stack.terminateHost();
         this.stack = null;
         const { stdout } = this.hh.__hermeticHostTest.diagnostics(stack);
-        // The stack's stdout covers a held copy from a kill that failed, so the marker drops its own.
+        // A held stdout belongs to the lifetime the marker names as owner. When that is still the
+        // stack's lifetime (a kill that failed), the stack's stdout covers it and the marker drops
+        // its own; when a replacement came up and then failed, the held copy is the old lifetime's
+        // only stdout and lands ahead of the replacement's.
+        const live = String(stack.logPath ?? "");
         const marker = this.readMarker();
+        const sameLifetime = marker?.owner?.pid != null && marker.owner.pid === this.pid(stack);
         const {
             stdout: _held,
             stdout_target: _target,
             ...rest
         } = marker ?? { pending: [], copying: null };
+        this.heldStdout = null;
+        if (marker?.stdout !== undefined && !sameLifetime) {
+            // The old lifetime's stdout and held log land first, then the replacement's output.
+            this.drain({ ...marker, pending: marker.pending.filter((p) => p !== live) }, []);
+            appendFileSync(this.ctx.logFile, stdout);
+            this.drain(null, [live]);
+            return;
+        }
         if (marker?.stdout !== undefined) this.writeMarker(rest);
         appendFileSync(this.ctx.logFile, stdout);
-        this.heldStdout = null;
-        this.drain(marker ? rest : null, [String(stack.logPath ?? "")]);
+        this.drain(marker ? rest : null, [live]);
     }
 }
 
