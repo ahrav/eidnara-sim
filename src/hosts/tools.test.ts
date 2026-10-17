@@ -247,6 +247,42 @@ test("a Pi tool run is timed from its start event, and an unfinished one keeps i
     ]);
 });
 
+test("reattaching to an OpenCode session reports the tool parts its messages already hold", async () => {
+    const reported: unknown[] = [];
+    const part = {
+        type: "tool",
+        id: "prt-1",
+        tool: "bash",
+        state: { input: { command: "cargo build" }, status: "completed", time: { start: 5 } },
+    };
+    const client = {
+        session: {
+            messages: async () => ({
+                data: [{ info: { id: "m1", time: { created: 1 } }, parts: [part] }],
+            }),
+            prompt: async () => ({ data: { info: {} } }),
+            abort: async () => ({}),
+        },
+    };
+    const host = new OpencodeSimHost({
+        ...({} as HostContext),
+        config: loadConfig(),
+        root: "/x",
+        launcher: "/x/sandbox.sh",
+        now: () => 700,
+        onTool: (run) => void reported.push(run),
+    });
+    Object.assign(host as unknown as Record<string, unknown>, {
+        client,
+        sid: "s",
+        oc: { stderr: () => "" },
+    });
+    await host.recoverTools(1_000);
+    expect(reported).toEqual([
+        { command: "cargo build", exit: 0, scenario_ms: 700, call: "oc:prt-1" },
+    ]);
+});
+
 test("a Pi turn whose abort never drains kills the Pi process, and later prompts in the session fail fast", async () => {
     const reported: unknown[] = [];
     const host = new PiSimHost({
