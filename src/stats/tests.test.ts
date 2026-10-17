@@ -210,6 +210,16 @@ describe("statistics against published references", () => {
         near(fit.theta / 15113.7489, 1, 1e-4);
     });
 
+    test("the negative-binomial theta score stays accurate for counts above the harmonic cutoff", () => {
+        const y = [962, 1040, 952, 1019, 1041, 1033, 1006, 983, 990, 1040];
+        const fit = negativeBinomial(
+            y.map(() => [1]),
+            y,
+        );
+        expect(fit.converged).toBe(true);
+        near(fit.theta / 4181996.5, 1, 1e-3);
+    });
+
     test("the negative-binomial separation check is invariant to predictor units", () => {
         const rows = readFileSync(join(FIXTURES, "quine.csv"), "utf8")
             .trim()
@@ -335,6 +345,8 @@ describe("statistics against published references", () => {
         const started = performance.now();
         near(signTest(50_000_000, 100_000_000), 1, 1e-3);
         expect(performance.now() - started).toBeLessThan(1000);
+        expect(() => signTest(5_000_000_000, 10_000_000_000)).toThrow(/at most/);
+        expect(() => mcnemarExact(5_000_000_000, 5_000_000_000)).toThrow(/at most/);
     });
 
     test("the normal distribution functions invert each other", () => {

@@ -6,9 +6,16 @@ function counts(fn: string, values: readonly number[]): void {
         throw new RangeError(`${fn}: counts must be nonnegative integers`);
 }
 
+const TRIALS_MAX = 1e8;
+
+function trials(fn: string, n: number): void {
+    if (n > TRIALS_MAX) throw new RangeError(`${fn}: at most ${TRIALS_MAX} trials`);
+}
+
 /** Two-sided exact binomial test of `x` successes in `n` at one half: the sign test. */
 export function signTest(x: number, n: number): number {
     counts("signTest", [x, n]);
+    trials("signTest", n);
     if (x > n) throw new RangeError("signTest: more successes than trials");
     if (n === 0) return 1;
     return Math.min(1, 2 * binomialCdf(Math.min(x, n - x), n, 0.5));
@@ -26,6 +33,7 @@ export interface McNemar {
 /** The exact McNemar test on the discordant counts, with R `exact2x2::mcnemar.exact` limits. */
 export function mcnemarExact(b: number, c: number, alpha = 0.05): McNemar {
     counts("mcnemarExact", [b, c]);
+    trials("mcnemarExact", b + c);
     const n = b + c;
     const lo = b === 0 ? 0 : betaQuantile(alpha / 2, b, c + 1);
     const hi = c === 0 ? 1 : betaQuantile(1 - alpha / 2, b + 1, c);
@@ -236,6 +244,25 @@ const THETA_MIN = 1e-8;
 
 const HARMONIC_MAX = 1000;
 
+/**
+ * `digamma(t + y) - digamma(t)` for a count `y`: the harmonic sum up to `HARMONIC_MAX`, and
+ * above it the difference of the asymptotic expansions, whose leading term is `log1p(y / t)`,
+ * when `t >= 6`.
+ */
+function psiDiff(y: number, t: number): number {
+    if (y <= HARMONIC_MAX) {
+        let sum = 0;
+        for (let k = 0; k < y; k++) sum += 1 / (t + k);
+        return sum;
+    }
+    if (t < 6) return digamma(y + t) - digamma(t);
+    const tail = (x: number) => {
+        const f = 1 / (x * x);
+        return -0.5 / x - f * (1 / 12 - f * (1 / 120 - f * (1 / 252 - f / 240)));
+    };
+    return Math.log1p(y / t) + tail(t + y) - tail(t);
+}
+
 function weightedCross(x: number[][], w: number[], v?: number[]): number[][] {
     const p = (x[0] ?? []).length;
     const column = (a: number, b: (row: number[], i: number) => number) =>
@@ -254,10 +281,7 @@ function weightedCross(x: number[][], w: number[], v?: number[]): number[][] {
 function thetaScore(y: number[], m: number[], t: number): number {
     return y.reduce((s, yi, j) => {
         const u = m[j] as number;
-        let psi = 0;
-        if (yi <= HARMONIC_MAX) for (let k = 0; k < yi; k++) psi += 1 / (t + k);
-        else psi = digamma(yi + t) - digamma(t);
-        return s + psi - Math.log1p(u / t) + (u - yi) / (t + u);
+        return s + psiDiff(yi, t) - Math.log1p(u / t) + (u - yi) / (t + u);
     }, 0);
 }
 
@@ -313,7 +337,8 @@ export function negativeBinomial(x: number[][], y: number[], iterations = 200): 
             stable = moved < 1e-10;
         }
         const t = thetaAt(y, m);
-        const done = stable && Math.abs(t - theta) < 1e-8 * theta;
+        const done =
+            stable && (Math.abs(t - theta) < 1e-8 * theta || Math.abs(1 / t - 1 / theta) < 1e-12);
         theta = t;
         if (done) {
             settled = true;
