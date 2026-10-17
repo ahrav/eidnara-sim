@@ -7,6 +7,7 @@ import { preregistrationHash } from "../src/prereg/validate";
 import { scenarioHash } from "../src/scenario/compile";
 import { loadPrereg } from "../src/scenario/inputs";
 import { type Label, realisedRates } from "../src/usersim/plan";
+import { tapeKey } from "../src/usersim/usersim";
 
 const ROOT = join(import.meta.dir, "..");
 const prereg = loadPrereg("S");
@@ -18,6 +19,7 @@ interface Fixture {
     events: Row[];
     journal: Row[];
     pairing: Row[];
+    tape: Row[];
     manifest: Row;
 }
 
@@ -48,12 +50,30 @@ function fixture(arms: string[] = ["a", "b"]): Fixture {
     }
     const journal: Row[] = [{ kind: "StartRun", arm: null, order: arms }];
     const pairing: Row[] = [];
+    const tape: Row[] = [];
     for (const arm of arms) {
         const turns: { session: string; label: Label }[] = [];
         for (const e of events) {
             const [, s, i] = String(e.id).split("-").map(Number) as [number, number, number];
             const label = labelAt(s, i);
             turns.push({ session: String(e.session), label });
+            const reactive = ["pushback", "redirect", "abandon", "clarify"].includes(label);
+            const reply = `reply to ${e.id}`;
+            const delivered = reactive
+                ? label === "abandon"
+                    ? reply
+                    : `${reply}\n\n${String(e.text)}`
+                : String(e.text);
+            if (reactive && arm === arms[0]) {
+                tape.push({
+                    key: tapeKey(101, String(e.id), label, "c", String(e.text)),
+                    event: e.id,
+                    label,
+                    digest: "d",
+                    text: reply,
+                    stop: "end_turn",
+                });
+            }
             pairing.push({
                 kind: "turn",
                 arm,
@@ -65,10 +85,8 @@ function fixture(arms: string[] = ["a", "b"]): Fixture {
                 digest: "d",
                 context_sha256: "c",
                 prefix_sha256: "p",
-                text_sha256: sha256Hex(String(e.text)),
-                source: ["pushback", "redirect", "abandon", "clarify"].includes(label)
-                    ? "tape"
-                    : "script",
+                text_sha256: sha256Hex(delivered),
+                source: reactive ? "tape" : "script",
             });
             journal.push({
                 kind: "UserTurn",
@@ -101,7 +119,7 @@ function fixture(arms: string[] = ["a", "b"]): Fixture {
         scenario_hash: scenarioHash(scenarioOf(events)),
         prereg_sha256: preregistrationHash(prereg),
     };
-    return { events, journal, pairing, manifest };
+    return { events, journal, pairing, tape, manifest };
 }
 
 const CORPUS_MANIFEST_SHA = sha256Hex(readFileSync(join(ROOT, "corpus/manifest.json"), "utf8"));
@@ -124,6 +142,7 @@ function run(f: Fixture): { exit: number; report: Record<string, unknown>; stder
         join(dir, "journal.jsonl"),
         f.journal.map((e) => `${JSON.stringify(e)}\n`).join(""),
     );
+    writeFileSync(join(dir, "tape.jsonl"), f.tape.map((e) => `${JSON.stringify(e)}\n`).join(""));
     const r = Bun.spawnSync(["bun", join(ROOT, "scripts/pairing-check.ts"), dir], {
         stdout: "pipe",
         stderr: "pipe",
@@ -319,7 +338,11 @@ test("a divergence row counts as a cutoff only at its compiled event with differ
     expect(misplaced.exit).toBe(1);
     const h = fixture();
     find(h.pairing, (r) => r.arm === "b" && r.event === "e-0-1").digest = "d2";
-    h.pairing.unshift({ ...diverged("e-0-1", 1, "d2"), reference_digest: "d" });
+    h.pairing.splice(
+        h.pairing.findIndex((r) => r.arm === "b" && r.event === "e-0-1"),
+        0,
+        { ...diverged("e-0-1", 1, "d2"), reference_digest: "d" },
+    );
     const real = run(h);
     expect(real.report.invalid_divergences).toEqual([]);
     expect(real.exit).toBe(0);
@@ -341,18 +364,25 @@ test("a recorded divergence is valid when the arm's context left the recorded on
     expect(run(g).report.invalid_divergences).toEqual(["a e-0-1"]);
 });
 
+const placeBefore = (f: Fixture, arm: string, event: string, row: Row) =>
+    f.pairing.splice(
+        f.pairing.findIndex((r) => r.arm === arm && r.event === event),
+        0,
+        row,
+    );
+
 test("a divergence row's digests must be the turn rows' digests at that event", () => {
     const f = fixture();
     find(f.pairing, (r) => r.arm === "b" && r.event === "e-0-1").digest = "d2";
-    f.pairing.unshift({ ...diverged("e-0-1", 1, "d2"), reference_digest: "d" });
+    placeBefore(f, "b", "e-0-1", { ...diverged("e-0-1", 1, "d2"), reference_digest: "d" });
     expect(run(f).report.invalid_divergences).toEqual([]);
     const g = fixture();
     find(g.pairing, (r) => r.arm === "b" && r.event === "e-0-1").digest = "d2";
-    g.pairing.unshift({ ...diverged("e-0-1", 1, "zz"), reference_digest: "d" });
+    placeBefore(g, "b", "e-0-1", { ...diverged("e-0-1", 1, "zz"), reference_digest: "d" });
     expect(run(g).report.invalid_divergences).toEqual(["b e-0-1"]);
     const h = fixture();
     find(h.pairing, (r) => r.arm === "b" && r.event === "e-0-1").digest = "d2";
-    h.pairing.unshift({ ...diverged("e-0-1", 1, "d2"), reference_digest: "r" });
+    placeBefore(h, "b", "e-0-1", { ...diverged("e-0-1", 1, "d2"), reference_digest: "r" });
     expect(run(h).report.invalid_divergences).toEqual(["b e-0-1"]);
 });
 
@@ -372,6 +402,7 @@ test("a journal user turn must carry its pairing row's session and label, with t
     );
     relabelled.label = "task";
     relabelled.scheduled = "interrupt";
+    delete relabelled.interrupted;
     const rates = find(g.journal, (r) => r.kind === "UserSimRates" && r.arm === "a");
     const turns = g.journal
         .filter((r) => r.kind === "UserTurn" && r.arm === "a")
@@ -611,6 +642,64 @@ test("a sibling arm's live reply before its divergence fails the check", () => {
     g.pairing.unshift({ ...diverged("e-0-2", 2, "d2"), reference_digest: "d" });
     find(g.pairing, (r) => r.arm === "b" && r.event === "e-0-3").source = "live";
     expect(run(g).report.live_before_divergence).toEqual([]);
+});
+
+test("a tape-backed row needs its reply on the run's own tape", () => {
+    const f = fixture();
+    const r = run(f);
+    expect(r.report.tape_missing).toEqual([]);
+    expect(r.exit).toBe(0);
+    const g = fixture();
+    g.tape = [];
+    const gone = run(g);
+    expect((gone.report.tape_missing as string[]).length).toBeGreaterThan(0);
+    expect(gone.exit).toBe(1);
+});
+
+test("a task relabel of a scheduled interrupt cannot also report the interruption", () => {
+    const f = fixture();
+    const row = find(
+        f.journal,
+        (r) => r.kind === "UserTurn" && r.arm === "a" && r.event === "e-0-5",
+    );
+    row.label = "task";
+    row.scheduled = "interrupt";
+    row.interrupted = true;
+    const rates = find(f.journal, (r) => r.kind === "UserSimRates" && r.arm === "a");
+    Object.assign(
+        rates,
+        realisedRates(
+            f.journal
+                .filter((r) => r.kind === "UserTurn" && r.arm === "a")
+                .map((r) => ({ session: String(r.session), label: r.label as Label })),
+            prereg,
+        ),
+    );
+    expect(run(f).report.journal_pairing_mismatch).toEqual(["a e-0-5"]);
+});
+
+test("a reference divergence needs the reference turn's row ahead of it", () => {
+    const f = fixture();
+    find(f.pairing, (r) => r.arm === "b" && r.event === "e-0-1").digest = "d2";
+    const at = f.pairing.findIndex((r) => r.arm === "a" && r.event === "e-0-1");
+    f.pairing.splice(at, 0, { ...diverged("e-0-1", 1, "d2"), reference_digest: "d" });
+    expect(run(f).report.invalid_divergences).toEqual(["b e-0-1"]);
+});
+
+test("evidence for an arm the manifest never ran fails the check", () => {
+    const f = fixture();
+    f.pairing.push({ ...find(f.pairing, (r) => r.arm === "a" && r.event === "e-0-0"), arm: "zz" });
+    f.journal.push({
+        kind: "UserTurn",
+        arm: "zz",
+        session: "s-0",
+        event: "e-0-0",
+        label: "pushback",
+        delivered: true,
+    });
+    const r = run(f);
+    expect(r.report.unknown_arms).toEqual(["zz"]);
+    expect(r.exit).toBe(1);
 });
 
 test("the pairing check refuses a pairing row with a wrongly typed field", () => {

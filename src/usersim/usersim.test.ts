@@ -967,6 +967,39 @@ describe("tape and pairing", () => {
         expect(() => checkTapeSources([join(first, "tape.jsonl")], run)).toThrow("a e-2");
     });
 
+    test("a replay source's taped reply must still classify as its pairing row did", async () => {
+        const first = dir();
+        await play(sim(first, counting()).user, "a", outputs);
+        writeFileSync(
+            join(first, "manifest.json"),
+            JSON.stringify({ seed: 101, scenario_hash: "abc", order: ["a"], events: 5 }),
+        );
+        writeFileSync(join(first, "journal.jsonl"), '{"kind":"EndRun"}\n');
+        const run = {
+            seed: 101,
+            scenario_hash: "abc",
+            order: ["a"],
+            events: 5,
+            turns: script.map((t) => t.id),
+            scripted: new Map(script.map((t) => [t.id, t.text])),
+        };
+        const rows = readFileSync(join(first, "tape.jsonl"), "utf8").trim().split("\n");
+        const edited = rows.map((l, i) =>
+            i === 0 ? JSON.stringify({ ...JSON.parse(l), stop: "max_tokens" }) : l,
+        );
+        writeFileSync(join(first, "tape.jsonl"), `${edited.join("\n")}\n`);
+        expect(() => checkTapeSources([join(first, "tape.jsonl")], run)).toThrow("a e-2");
+    });
+
+    test("a replay source artefact that is not a regular file is refused", () => {
+        const root = dir();
+        mkdirSync(join(root, "tape.jsonl"));
+        writeFileSync(join(root, "pairing.jsonl"), "");
+        expect(() => new Tape(join(dir(), "tape.jsonl"), [join(root, "tape.jsonl")])).toThrow(
+            "regular file",
+        );
+    });
+
     test("a replay source from another pre-registration is refused", () => {
         const root = dir();
         writeFileSync(join(root, "tape.jsonl"), "");
