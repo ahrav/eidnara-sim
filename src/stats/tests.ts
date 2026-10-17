@@ -205,7 +205,7 @@ export interface NegBinFit {
     theta: number;
     /**
      * False when an iteration limit ran out, a number is not finite, or the arms separate (a
-     * coefficient past 30 in magnitude); its numbers are then not estimates.
+     * fitted log-mean past 30 in magnitude); its numbers are then not estimates.
      */
     converged: boolean;
 }
@@ -225,19 +225,19 @@ function weightedCross(x: number[][], w: number[], v?: number[]): number[][] {
     );
 }
 
-/** The derivative of the log-likelihood in theta at fixed means `m`. */
+/**
+ * The derivative of the log-likelihood in theta at fixed means `m`. The rearranged terms
+ * reduce cancellation at large `t`.
+ */
 function thetaScore(y: number[], m: number[], t: number): number {
     return y.reduce((s, yi, j) => {
         const u = m[j] as number;
-        return (
-            s +
-            digamma(yi + t) -
-            digamma(t) +
-            Math.log(t) +
-            1 -
-            Math.log(t + u) -
-            (yi + t) / (t + u)
-        );
+        let psi = digamma(yi + t) - digamma(t);
+        if (Number.isInteger(yi) && yi >= 0) {
+            psi = 0;
+            for (let k = 0; k < yi; k++) psi += 1 / (t + k);
+        }
+        return s + psi - Math.log1p(u / t) + (u - yi) / (t + u);
     }, 0);
 }
 
@@ -288,7 +288,7 @@ export function negativeBinomial(x: number[][], y: number[], iterations = 50): N
             stable = moved < 1e-10;
         }
         const t = thetaAt(y, mu());
-        const done = stable && (Math.abs(t - theta) < 1e-10 * theta || t >= THETA_MAX);
+        const done = stable && Math.abs(t - theta) < 1e-8 * theta;
         theta = t;
         if (done) {
             settled = true;
@@ -305,6 +305,6 @@ export function negativeBinomial(x: number[][], y: number[], iterations = 50): N
         ),
     );
     const finite = [...beta, ...se, theta].every(Number.isFinite);
-    const converged = settled && finite && beta.every((b) => Math.abs(b) <= 30);
+    const converged = settled && finite && mu().every((u) => Math.abs(Math.log(u)) <= 30);
     return { coefficients: beta, se, theta, converged };
 }

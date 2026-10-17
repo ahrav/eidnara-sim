@@ -161,6 +161,60 @@ describe("statistics against published references", () => {
         expect(fit.converged).toBe(false);
     });
 
+    test("the negative-binomial fit refits the coefficients at the capped theta before converging", () => {
+        const x = [
+            [1, -2.5],
+            [1, -1.5],
+            [1, -0.5],
+            [1, 0.5],
+            [1, 1.5],
+            [1, 2.5],
+        ];
+        const y = [0, 1, 2, 2, 3, 3];
+        const fit = negativeBinomial(x, y);
+        expect(fit.theta).toBe(1e8);
+        expect(fit.converged).toBe(true);
+        const score = [0, 1].map((j) =>
+            x.reduce((s, row, i) => {
+                const eta = row.reduce((e, v, k) => e + v * (fit.coefficients[k] as number), 0);
+                return s + (row[j] as number) * ((y[i] as number) - Math.exp(eta));
+            }, 0),
+        );
+        score.forEach((g) => {
+            near(g, 0, 1e-6);
+        });
+    });
+
+    test("the negative-binomial theta score keeps its sign for a large finite dispersion", () => {
+        const x = Array.from({ length: 10 }, (_, i) => [1, (i - 4.5) / 10]);
+        const fit = negativeBinomial(x, [0, 1, 1, 2, 1, 4, 0, 2, 4, 1]);
+        expect(fit.converged).toBe(true);
+        near(fit.theta / 15113.7489, 1, 1e-4);
+    });
+
+    test("the negative-binomial separation check is invariant to predictor units", () => {
+        const rows = readFileSync(join(FIXTURES, "quine.csv"), "utf8")
+            .trim()
+            .split("\n")
+            .slice(1)
+            .map((l) => l.split(","));
+        const y = rows.map((c) => Number(c[5]));
+        const design = (scale: number) =>
+            rows.map((c) => [
+                1,
+                Number(c[1] === "N"),
+                Number(c[2] === "M"),
+                Number(c[3] === "F1"),
+                Number(c[3] === "F2"),
+                Number(c[3] === "F3"),
+                scale * Number(c[4] === "SL"),
+            ]);
+        const unit = negativeBinomial(design(1), y);
+        const milli = negativeBinomial(design(0.001), y);
+        expect([unit.converged, milli.converged]).toEqual([true, true]);
+        near((milli.coefficients[6] as number) / 1000, unit.coefficients[6] as number, 1e-6);
+    });
+
     test("the binomial mass keeps representable tails and exact half probabilities", () => {
         near(binomialPmf(500, 1000, 0.2) / 3.1032622600153052e-99, 1, 1e-9);
         expect(binomialPmf(0, 6, 0.5)).toBe(1 / 64);
