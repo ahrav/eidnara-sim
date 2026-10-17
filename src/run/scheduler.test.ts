@@ -535,6 +535,13 @@ describe("fault schedule validity", () => {
         expect(() => new Scheduler({ ...base, faults: [text] })).toThrow(
             "laptop_sleep f-sleep needs a positive duration_ms",
         );
+        const numbered = { ...twice, id: 1 as unknown as string };
+        expect(() => new Scheduler({ ...base, faults: [numbered] })).toThrow(
+            "fault id must be a non-empty string",
+        );
+        expect(() => new Scheduler({ ...base, faults: [{ ...twice, id: "" }] })).toThrow(
+            "fault id must be a non-empty string",
+        );
     });
 });
 

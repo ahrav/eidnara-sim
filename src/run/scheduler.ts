@@ -76,6 +76,9 @@ export class Scheduler {
     constructor(private readonly o: SchedulerOptions) {
         const seen = new Set<string>();
         for (const f of o.faults) {
+            if (typeof f.id !== "string" || f.id === "") {
+                throw new Error(`fault id must be a non-empty string, got ${JSON.stringify(f.id)}`);
+            }
             if (seen.has(f.id)) throw new Error(`fault id ${f.id} is scheduled twice`);
             seen.add(f.id);
             const duration = f.params.duration_ms;
