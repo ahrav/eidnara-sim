@@ -118,6 +118,8 @@ export interface TurnRecord {
     prefix_sha256: string;
     text_sha256: string;
     source: "script" | "tape" | "live";
+    /** The tape key of a `tape` or `live` reply, which `<run>/tape.jsonl` holds. */
+    tape_key?: string;
     fallback?: string[];
 }
 
@@ -324,6 +326,7 @@ export class UserSim {
             prefix_sha256: prefix,
             text_sha256: sha256Hex(text),
             source: reply?.source ?? "script",
+            ...(reply ? { tape_key: reply.key } : {}),
             ...(reply?.fallback ? { fallback: reply.fallback } : {}),
         });
         const interruptMs = plan.interruptMs.get(t.id);
@@ -359,8 +362,8 @@ export class UserSim {
         const cut = got.stop === "max_tokens" ? ["max_tokens"] : [];
         const empty = got.text === "" ? ["empty"] : [];
         const fallback = [...empty, ...cut, ...hits];
-        if (fallback.length === 0) return { text: got.text, source };
-        return { text: FALLBACK[label] ?? "", source, fallback };
+        if (fallback.length === 0) return { key, text: got.text, source };
+        return { key, text: FALLBACK[label] ?? "", source, fallback };
     }
 }
 

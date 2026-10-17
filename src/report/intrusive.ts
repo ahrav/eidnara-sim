@@ -18,6 +18,8 @@ export interface Intrusiveness {
 
 /** Each `git` invocation in a shell command: its subcommand and the arguments up to a separator. */
 const GIT = /\bgit\s+(?:-[Cc]\s+\S+\s+)*([a-z-]+)((?:\s+[^\s;&|]+)*)/g;
+const HEREDOC = /<<-?\s*(['"]?)(\w+)\1[^\n]*\n[\s\S]*?\n\s*\2(?=\n|$)/g;
+const QUOTED = /'[^']*'|"(?:[^"\\]|\\.)*"/g;
 const SHINGLE = 5;
 
 function jsonl<T>(path: string): T[] {
@@ -35,13 +37,15 @@ export function notesOf(dir: string, arm: string): MemoryNote[] | null | undefin
         : undefined;
 }
 
-function scriptedText(dir: string): string[] {
+/** The scenario's events in order, with the text of each scripted user turn. */
+function scriptedTurns(dir: string): { id: string; text: string | null }[] {
     const path = join(dir, "scenario.json");
     if (!existsSync(path)) return [];
     const scenario = JSON.parse(readFileSync(path, "utf8")) as Scenario;
-    return scenario.events
-        .filter((e) => e.kind === "user_turn" && typeof e.text === "string")
-        .map((e) => e.text as string);
+    return scenario.events.map((e) => ({
+        id: String(e.id),
+        text: e.kind === "user_turn" && typeof e.text === "string" ? e.text : null,
+    }));
 }
 
 const hasFlag = (args: string[], long: string, short: string) =>
@@ -54,8 +58,11 @@ const hasFlag = (args: string[], long: string, short: string) =>
 const restoresWorktree = (args: string[]) =>
     hasFlag(args, "--worktree", "W") || !hasFlag(args, "--staged", "S");
 
+/** The command with heredoc bodies and quoted strings removed, leaving the words the shell runs. */
+const executable = (command: string) => command.replace(HEREDOC, " ").replace(QUOTED, " ");
+
 export function isRevert(command: string): boolean {
-    for (const [, sub, rest] of command.matchAll(GIT)) {
+    for (const [, sub, rest] of executable(command).matchAll(GIT)) {
         const args = (rest ?? "")
             .trim()
             .split(/\s+/)
@@ -69,7 +76,7 @@ export function isRevert(command: string): boolean {
 }
 
 const shingles = (text: string, size = SHINGLE) => {
-    const words = text.toLowerCase().match(/[\w[\]-]+/g) ?? [];
+    const words = text.toLowerCase().match(/[\p{L}\p{N}_[\]-]+/gu) ?? [];
     return words
         .slice(0, Math.max(0, words.length - size + 1))
         .map((_, i) => words.slice(i, i + size).join(" "));
@@ -79,15 +86,13 @@ export function userSimReplies(
     dir: string,
     arm: string,
 ): { event: string; label: string; text: string }[] {
-    const tape = jsonl<{ event: string; label: string; digest: string; text: string }>(
+    const tape = jsonl<{ key: string; event: string; label: string; digest: string; text: string }>(
         join(dir, "tape.jsonl"),
     );
     return jsonl<PairingRecord>(join(dir, "pairing.jsonl")).flatMap((r) => {
         if (r.kind !== "turn" || r.arm !== arm || r.source === "script") return [];
         if (!r.delivered || (r.fallback?.length ?? 0) > 0) return [];
-        const hit = tape.find(
-            (t) => t.event === r.event && t.label === r.label && t.digest === r.digest,
-        );
+        const hit = tape.find((t) => t.key === r.tape_key);
         return hit ? [{ event: r.event, label: r.label, text: hit.text }] : [];
     });
 }
@@ -110,11 +115,17 @@ export function turnLatencies(arm: ArmLogs): number[] {
  * A correction references injected text when a pushback or redirect the agent received shares a
  * five-word run with a memory note whose `first_delivery_ms` is at or before the turn's
  * `BeginTurn` time (`base_wall_ms + scenario_ms`), and neither four-word half of the run is in
- * the scenario's scripted user text: a user restating a rule it gave is quoting itself.
+ * the scripted user text up to and including that turn: a user restating a rule it gave is
+ * quoting itself.
  */
 function corrections(run: RunLogs, arm: ArmLogs) {
-    const own = new Set(scriptedText(run.dir).flatMap((t) => shingles(t, SHINGLE - 1)));
-    const quoted = (s: string) => {
+    const script = scriptedTurns(run.dir);
+    const ownBy = (event: string) => {
+        const at = script.findIndex((t) => t.id === event);
+        const texts = script.slice(0, at + 1).flatMap((t) => (t.text === null ? [] : [t.text]));
+        return new Set(texts.flatMap((t) => shingles(t, SHINGLE - 1)));
+    };
+    const quoted = (own: Set<string>, s: string) => {
         const words = s.split(" ");
         return own.has(words.slice(1).join(" ")) || own.has(words.slice(0, -1).join(" "));
     };
@@ -131,11 +142,12 @@ function corrections(run: RunLogs, arm: ArmLogs) {
         .flatMap((r) => {
             const at = began.get(r.event);
             if (at === undefined) return [];
+            const own = ownBy(r.event);
             const injected = new Set(
                 notes
                     .filter((n) => (n.first_delivery_ms as number) <= at)
                     .flatMap((n) => shingles(n.content))
-                    .filter((s) => !quoted(s)),
+                    .filter((s) => !quoted(own, s)),
             );
             const quote = shingles(r.text).find((s) => injected.has(s));
             return quote ? [{ event: r.event, label: r.label, quote }] : [];

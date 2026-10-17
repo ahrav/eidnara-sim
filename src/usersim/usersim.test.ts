@@ -178,6 +178,8 @@ describe("tape and pairing", () => {
                 .split("\n")
                 .map((l) => (JSON.parse(l) as { key: string }).key);
         expect(keys(second)).toEqual(keys(first));
+        const taped = again.pairing.records.filter((r) => r.kind === "turn" && r.source === "tape");
+        expect(taped.map((r) => (r.kind === "turn" ? r.tape_key : undefined))).toEqual(keys(first));
     });
 
     test("one changed agent output gives one divergence record, written before the turn, and live replies after it", async () => {

@@ -6,7 +6,7 @@ import type { GradeRecord } from "../grade/probes";
 import type { ArmLogs, RunLogs } from "../oracle/logs";
 import type { Entry } from "../run/journal";
 import { loadPrereg } from "../scenario/inputs";
-import { costPanel, V1_PRICE } from "./cost";
+import { costPanel, judgeCost, V1_PRICE } from "./cost";
 import { intrusiveness, percentile } from "./intrusive";
 import { soak } from "./soak";
 
@@ -210,6 +210,13 @@ describe("intrusiveness panel", () => {
                 deliveries: 1,
                 first_delivery_ms: BASE + 5_500,
             },
+            {
+                id: 5,
+                content: "Observed: alpha 中文 beta gamma delta epsilon zeta.",
+                status: "active",
+                deliveries: 1,
+                first_delivery_ms: BASE + 100,
+            },
         ];
         writeFileSync(join(dir, "eidnara", "memory.json"), JSON.stringify(notes));
         const replies = [
@@ -220,23 +227,29 @@ describe("intrusiveness panel", () => {
             ["e-5", "task", "Note that the daemon port is 7780 here.", []],
             ["e-6", "pushback", "Is the daemon port is 7780 right?", ["P1"]],
             ["e-7", "pushback", "Who says the daemon port is 7780 on every host?", []],
+            ["e-8", "pushback", "Is it alpha beta gamma delta epsilon now?", []],
         ] as const;
         writeFileSync(
             join(dir, "scenario.json"),
             JSON.stringify({
                 events: [
                     { id: "e-1", kind: "user_turn", text: `Remember: ${rule}` },
+                    ...replies.slice(1).map(([id]) => ({ id, kind: "user_turn", text: "Go on." })),
+                    { id: "e-9", kind: "user_turn", text: "Keep the daemon port is 7780 as is." },
                     { id: "end-1", kind: "session_end" },
                 ],
             }),
         );
-        const tape = replies.map(([event, label, text]) => ({
-            key: event,
-            event,
-            label,
-            digest: "d",
-            text,
-        }));
+        const tape = [
+            { key: "e-2/other-arm", event: "e-2", label: "pushback", digest: "d", text: "Fine." },
+            ...replies.map(([event, label, text]) => ({
+                key: event,
+                event,
+                label,
+                digest: "d",
+                text,
+            })),
+        ];
         writeFileSync(
             join(dir, "tape.jsonl"),
             `${tape.map((t) => JSON.stringify(t)).join("\n")}\n`,
@@ -253,6 +266,7 @@ describe("intrusiveness panel", () => {
             prefix_sha256: "p",
             text_sha256: "t",
             source: "live",
+            tape_key: event,
             ...(fallback.length ? { fallback } : {}),
         }));
         writeFileSync(
@@ -267,6 +281,7 @@ describe("intrusiveness panel", () => {
             ["e-4", 5000, 6000],
             ["e-5", 5000, 6000],
             ["e-6", 5000, 6000],
+            ["e-8", 5000, 6000],
         ];
         const journal = turns.flatMap(([event, begin, end]) => [
             entry("BeginTurn", begin, { event }),
@@ -302,6 +317,14 @@ describe("intrusiveness panel", () => {
             { command: "git restore missing.rs", exit: 1, scenario_ms: 3, turn: "e-2" },
             { command: "git reset --hard", exit: null, scenario_ms: 3, turn: "e-2" },
             { command: "git reset -q --hard HEAD~1", exit: 0, scenario_ms: 3, turn: "e-2" },
+            { command: "echo 'git restore src/x.rs'", exit: 0, scenario_ms: 3, turn: "e-2" },
+            {
+                command: "cat > notes.md <<'EOF'\nRun git reset --hard to start over.\nEOF",
+                exit: 0,
+                scenario_ms: 3,
+                turn: "e-2",
+            },
+            { command: 'git checkout -- "my file.rs"', exit: 0, scenario_ms: 3, turn: "e-2" },
             { command: "cargo test", exit: 0, scenario_ms: 4, turn: "e-2" },
         ];
         const panel = intrusiveness(run([], dir, new Map(), BASE), arm({ journal, tools }));
@@ -314,8 +337,9 @@ describe("intrusiveness panel", () => {
             "git restore --staged --worktree src/lib.rs",
             "git restore -SW src/lib.rs",
             "git reset -q --hard HEAD~1",
+            'git checkout -- "my file.rs"',
         ]);
-        expect(panel.latency_ms).toEqual({ n: 6, p50: 500, p95: 5000 });
+        expect(panel.latency_ms).toEqual({ n: 7, p50: 500, p95: 5000 });
         expect(percentile([5, 1, 3, 2, 4], 0.5)).toBe(3);
 
         const grades = [
@@ -346,7 +370,28 @@ describe("intrusiveness panel", () => {
                 cache_write_tokens: 0,
             },
         ] as ArmLogs["calls"];
+        writeFileSync(
+            join(dir, "judge-calls.jsonl"),
+            `${JSON.stringify({
+                component: "judge",
+                arm: "judge",
+                input_tokens: 2e6,
+                output_tokens: 1e6,
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
+            })}\n`,
+        );
         const cost = costPanel(run([], dir), arm({ calls }), grades);
+        expect(judgeCost(run([], dir))).toEqual({
+            component: "judge",
+            calls: 1,
+            input: 2e6,
+            output: 1e6,
+            cache_read: 0,
+            cache_write: 0,
+            usd: 2 * V1_PRICE.input + V1_PRICE.output,
+        });
+        expect(judgeCost(run([], mkdtempSync(join(tmpdir(), "sim-panel-"))))).toBeNull();
         expect(cost.components.map((c) => [c.component, c.usd])).toEqual([
             ["history_summarizer", V1_PRICE.output + 2 * V1_PRICE.cache_read],
             ["agent", V1_PRICE.input],
@@ -356,7 +401,7 @@ describe("intrusiveness panel", () => {
             31, 5, 1, 31,
         ]);
         expect([cost.memory_writes, cost.writes_with_zero_reads, cost.price_table]).toEqual([
-            4,
+            5,
             1,
             "v1",
         ]);

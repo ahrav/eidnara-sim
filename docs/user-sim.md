@@ -59,7 +59,8 @@ is replayed with no model call.
 Before each turn the user-sim appends a record to `<run>/pairing.jsonl`:
 arm, session, event, index, label, the digest, a hash of the agent-visible
 prefix (the session's agent replies and user texts so far), the hash
-of the delivered text, and its source (`script`, `tape`, or `live`). When a
+of the delivered text, its source (`script`, `tape`, or `live`), and for a
+`tape` or `live` reply the `tape_key` of its `tape.jsonl` entry. When a
 non-reference arm's digest first differs from the reference arm's at the
 same event, a `divergedAt` record with the index and both digests comes
 first. From then on that session's reply keys also carry the arm, so the
