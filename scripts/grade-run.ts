@@ -46,16 +46,38 @@ rmSync(summaryPath, { force: true });
 const log = new GradeLog(join(dir, "grades.jsonl"));
 const arms = manifest.order as string[];
 
+/** Complete lines of a snapshots file; a record a kill cut short at the end is left out. */
+const snapshotLines = (path: string): Snapshot[] =>
+    readFileSync(path, "utf8")
+        .split("\n")
+        .slice(0, -1)
+        .filter(Boolean)
+        .map((line) => JSON.parse(line) as Snapshot);
 const journal = readJournal(join(dir, "journal.jsonl"));
 const journaled = new Set(
     journal.filter((e) => e.kind === "SnapshotArtefacts").map((e) => String(e.snapshot)),
 );
+const verifiedDeletion = new Set(
+    journal
+        .filter(
+            (e) =>
+                e.kind === "CounterfactualDeletion" &&
+                e.skipped === undefined &&
+                Array.isArray(e.deleted) &&
+                e.deleted.length > 0 &&
+                e.deleted.every((id) => Number.isInteger(id)) &&
+                e.remaining === 0,
+        )
+        .map((e) => `${e.arm}/${e.probe}`),
+);
+const sampled = new Set((scenario.cf_deletions ?? []).map((d) => d.probe));
+const unverified = (arm: string, probe: string) =>
+    armBase(arm) === "eidnara-cf" && sampled.has(probe) && !verifiedDeletion.has(`${arm}/${probe}`);
 const snapshots = new Map<string, Snapshot[]>();
 for (const arm of arms) {
     const path = join(dir, arm, "snapshots.jsonl");
     if (!existsSync(path)) continue;
-    // readJournal drops a record a kill cut short at the end of the file.
-    for (const s of readJournal(path) as unknown as Snapshot[]) {
+    for (const s of snapshotLines(path)) {
         if (!journaled.has(s.id)) continue;
         const key = `${arm}/${s.item}`;
         snapshots.set(key, [...(snapshots.get(key) ?? []), s]);
@@ -70,16 +92,18 @@ const skip = (why: string) => {
 // A grade already on the log for this item, arm, and snapshot, made by this grader, stands
 // unless `--regrade` asks anew; a grade from another grader implementation is made again.
 const grader = graderDigest();
+const latest = log.latest();
 const prior = new Set(
     regrade
         ? []
-        : log
-              .latest()
-              .filter((g) => g.grader === grader)
-              .map((g) => `${g.item}/${g.arm}/${g.snapshot}`),
+        : latest.filter((g) => g.grader === grader).map((g) => `${g.item}/${g.arm}/${g.snapshot}`),
+);
+const standsExcluded = new Set(
+    latest.filter((g) => g.reason === "cf-unverified").map((g) => `${g.item}/${g.arm}`),
 );
 const gradedBefore = (item: string, arm: string, snapshot: string) =>
-    prior.has(`${item}/${arm}/${snapshot}`);
+    prior.has(`${item}/${arm}/${snapshot}`) &&
+    !(unverified(arm, item) && !standsExcluded.has(`${item}/${arm}`));
 const append = (...grades: GradeRecord[]) => {
     const records = grades.map((g) => ({ ...g, version: log.nextVersion(g.item, g.arm), grader }));
     log.appendAll(records);
@@ -97,8 +121,10 @@ for (const probe of scenario.probes.filter((p) => p.type !== "P7")) {
             continue;
         }
         const grade = gradeItem(probe, mine, rules);
-        if (grade) append(grade);
-        else skip("probe turn failed");
+        if (!grade) skip("probe turn failed");
+        else if (unverified(arm, probe.id)) {
+            append({ ...grade, verdict: "excluded", reason: "cf-unverified", metrics: {} });
+        } else append(grade);
     }
 }
 

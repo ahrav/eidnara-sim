@@ -5,7 +5,6 @@ import { join } from "node:path";
 import type { GradeRecord } from "../grade/probes";
 import type { ArmLogs } from "../oracle/logs";
 import { canonicalJson, sha256Hex } from "../prereg/canonical";
-import type { Preregistration } from "../prereg/schema";
 import { preregistrationHash } from "../prereg/validate";
 import type { CallRecord } from "../proxy/records";
 import type { Entry } from "../run/journal";
@@ -15,9 +14,15 @@ import { loadPrereg } from "../scenario/inputs";
 import { falsificationPairs } from "./falsify";
 import { percentile } from "./intrusive";
 import { type GradedRun, tierInput } from "./observe";
-import { renderTier } from "./render";
-import * as tier from "./tier";
-import { aaScale, loadGraded, tierReport } from "./tier";
+import { counterfactualText, renderTier } from "./render";
+import {
+    aaScale,
+    counterfactual,
+    cusumScale,
+    identityVersions,
+    loadGraded,
+    tierReport,
+} from "./tier";
 
 const prereg = loadPrereg("S");
 const boundary = readFileSync(join(import.meta.dir, "../../docs/claim-boundary.md"), "utf8");
@@ -91,6 +96,8 @@ const identity = (commit = "abc") => ({
     events: 36,
     distortions: [] as string[],
     host_versions: ["pi@1", "opencode@1"],
+    side_model: null as string | null,
+    user_sim_model: "u",
     scenario_provenance: "gen1/1/abc",
     fault_override: null as string | null,
     tapes: [] as string[],
@@ -257,11 +264,6 @@ const judgment = (
     verdict: pass ? "pass" : "fail",
     metrics: { "P7.pass": pass, gate_eligible: eligible },
 });
-
-declare const cusumScaleShape: (
-    p: Preregistration,
-    scales: Map<string, { scale: Record<string, number | undefined>; complete: boolean }>,
-) => Record<string, number | undefined>;
 
 const loadPairing = (g: GradedRun): GradedRun => ({
     ...g,
@@ -497,6 +499,44 @@ describe("tier report", () => {
         expect(report.observed["P8.cross_session_pass_rate"]).toEqual([1]);
     });
 
+    test("a scheduler fault a restart interrupted in one arm puts its session's probes in the asymmetric stratum", () => {
+        const g = asymmetricFixture(() => undefined);
+        const push = (name: string, extra: Record<string, unknown>) =>
+            arm(g, name).journal.push({
+                arm: name,
+                scenario_ms: 0,
+                seq: 9_000,
+                wall_ms: 0,
+                ...extra,
+            } as Entry);
+        push("host", {
+            kind: "FaultObserved",
+            fault: "f1",
+            type: "daemon_restart",
+            evidence: { skipped: "arm runs no daemon" },
+        });
+        push("eidnara", {
+            kind: "FaultFired",
+            fault: "f1",
+            type: "daemon_restart",
+            layer: "scheduler",
+        });
+        push("eidnara", { kind: "ItemState", fault: "f1", state: "failed(interrupted)" });
+        const report = tierReport(prereg, [g], boundary);
+        expect(report.verdict.asymmetric_stratum).toEqual(["pi/101/q-0", "pi/101/q-p8-0"]);
+    });
+
+    test("the recall drift table is an XL report's alone", () => {
+        const g = fixture();
+        const reference = { source: "L", continuity: tierReport(prereg, [g], boundary).continuity };
+        const l = { ...prereg, tier: "L" as const };
+        expect(tierReport(l, [g], boundary, undefined, "", undefined, reference).drift).toBeNull();
+        const xl = { ...prereg, tier: "XL" as const };
+        expect(
+            tierReport(xl, [g], boundary, undefined, "", undefined, reference).drift,
+        ).not.toBeNull();
+    });
+
     test("a proxy fault that landed in one arm's calls alone puts its session's probes in the asymmetric stratum", () => {
         const g = asymmetricFixture((host) => {
             (host.calls[0] as CallRecord).fault_ref = "f1";
@@ -524,6 +564,13 @@ describe("tier report", () => {
         expect(full).toContain("probe-P13: 0 of 24 paired items");
         expect(full).toContain("probe-P14: 0 of 24 paired items");
         expect(full.find((x) => x.startsWith("probe-P8"))).toBeUndefined();
+        const resized = tierReport(prereg, all, boundary, undefined, "", 40).verdict;
+        expect(resized.pass.incomplete).toContain("probe-P1: 0 of 40 paired items");
+        expect(resized.prereg_sha256).toBe(preregistrationHash(prereg));
+        const capped = tierInput(prereg, all, undefined, undefined, 2).observations;
+        const withItems = capped.filter((o) => (o.items?.length ?? 0) > 0);
+        expect(withItems.length).toBeGreaterThan(0);
+        for (const o of withItems) expect(o.items?.length).toBeLessThanOrEqual(2);
     });
 
     test("a tier whose CUSUM scale comes from another tier's A/A pairs takes that scale", () => {
@@ -782,6 +829,11 @@ describe("tier report", () => {
         const b = fixture(undefined, { host: "opencode", commit: "def" });
         expect(tierInput(prereg, [a, b]).incomplete).toContain(
             "runs differ in eidnara_commit: abc, def",
+        );
+        const haiku = fixture(undefined, { host: "opencode" });
+        haiku.identity = { ...haiku.identity, side_model: "haiku" };
+        expect(tierInput(prereg, [a, haiku]).incomplete).toContain(
+            "runs differ in side_model: , haiku",
         );
     });
 
@@ -1065,14 +1117,13 @@ describe("tier report", () => {
 
     test("a source tier lends its CUSUM scale only when its own campaign is complete", () => {
         const L = loadPrereg("L");
-        const g = fixture();
         const scale = { harm: 0.5, futility: 0.5 };
-        const cusumScale =
-            (tier as { cusumScale?: typeof cusumScaleShape }).cusumScale ?? (() => undefined);
-        expect(cusumScale(L, new Map([["M", { scale, complete: false }]]))).toEqual({});
+        expect(cusumScale(L, new Map([["M", { scale, complete: false }]]))).toEqual({
+            harm: undefined,
+            futility: undefined,
+        });
         expect(cusumScale(L, new Map([["M", { scale, complete: true }]]))).toEqual(scale);
         expect(cusumScale(prereg, new Map([["S", { scale, complete: true }]]))).toEqual(scale);
-        expect(g.host).toBe("pi");
     });
 
     test("A/A reports name their run", () => {
@@ -1194,26 +1245,10 @@ describe("tier report", () => {
         ).toBeDefined();
     });
 
-    test("an L run whose arms ran one after another lacks the registered load profile", () => {
+    test("the paired runs' sequential arms leave an L campaign complete; the load profile is reported apart", () => {
         const L = loadPrereg("L");
         const g = fixture(undefined, { seed: 301 });
-        for (const a of g.run.arms) {
-            a.journal.unshift({
-                kind: "StartArm",
-                arm: a.arm,
-                scenario_ms: 0,
-                seq: 0,
-                wall_ms: 0,
-            } as Entry);
-        }
-        let seq = 0;
-        for (const a of g.run.arms) for (const e of a.journal) e.seq = seq++;
-        expect(tierInput(L, [g]).incomplete).toContain(
-            "run pi/301: arms ran one at a time; load_stress requires concurrent arms",
-        );
-        expect(
-            tierInput(prereg, [fixture()]).incomplete?.filter((x) => x.includes("load_stress")),
-        ).toEqual([]);
+        expect(tierInput(L, [g]).incomplete?.filter((x) => x.includes("load_stress"))).toEqual([]);
     });
 
     test("every item-unit family metric counts toward the fixed-N completeness", () => {
@@ -1605,34 +1640,6 @@ describe("tier report", () => {
         expect([r.exitCode, r.stderr.toString().includes("tier")]).toEqual([2, true]);
     });
 
-    test("the load profile needs every registered arm live at one moment", () => {
-        const L = loadPrereg("L");
-        const g = fixture(undefined, { seed: 301 });
-        g.run.arms.push(
-            armLogs("eidnara-kl", () => 0),
-            armLogs("eidnara-cf", () => 0),
-        );
-        let seq = 0;
-        for (const a of g.run.arms) {
-            a.journal.unshift({
-                kind: "StartArm",
-                arm: a.arm,
-                scenario_ms: 0,
-                seq: 0,
-                wall_ms: 0,
-            } as Entry);
-            for (const e of a.journal) e.seq = seq++;
-        }
-        const [host, aa] = g.run.arms as [ArmLogs, ArmLogs];
-        (host.journal[0] as Entry).seq = 0;
-        (aa.journal[0] as Entry).seq = 1;
-        expect(tierInput(L, [g]).incomplete?.filter((x) => x.includes("load_stress"))).toEqual([
-            "run pi/301: arms ran one at a time; load_stress requires concurrent arms",
-        ]);
-        for (const a of g.run.arms) (a.journal[0] as Entry).seq = 0;
-        expect(tierInput(L, [g]).incomplete?.filter((x) => x.includes("load_stress"))).toEqual([]);
-    });
-
     test("a scheduled proxy fault needs its own witness", () => {
         const g = fixture();
         g.scenario.faults.push({
@@ -1655,5 +1662,178 @@ describe("tier report", () => {
             (z) => z.check === "gateway_4xx_rate_without_faults",
         );
         expect([fourxx?.zero_effect, fourxx?.difference]).toEqual([false, 0.5]);
+    });
+
+    test("failed turns count a turn the resumed run marked interrupted, once per turn", () => {
+        const g = fixture();
+        const eidnara = g.run.arms.find((a) => a.arm === "eidnara") as ArmLogs;
+        const last = eidnara.journal.at(-1) as Entry;
+        for (let i = 0; i < 2; i++) {
+            eidnara.journal.push({
+                ...last,
+                seq: last.seq + 1 + i,
+                kind: "ItemState",
+                event: "e-cut",
+                state: "failed(interrupted)",
+            } as Entry);
+        }
+        const report = tierReport(prereg, [g], boundary);
+        expect(report.observed.failed_turns).toEqual([1]);
+    });
+
+    test("monthly soak rows name their run and show return to baseline", () => {
+        const g = fixture();
+        const xl = { ...prereg, tier: "XL" as const };
+        const report = tierReport(xl, [g], boundary);
+        expect(report.soak_by_month.map((s) => [s.run, s.arm, s.month])).toEqual([
+            [g.run.dir, "eidnara", 1],
+        ]);
+        const text = renderTier(report);
+        expect(text).toContain(
+            "| run | arm | month | verdict | samples | sessions | slope MB/session | R2 | bound | returned |",
+        );
+        expect(text).toContain(`| ${g.run.dir} | eidnara | 1 | no leak | 48 | 12 |`);
+        expect(text).toContain("| holds | true |");
+    });
+});
+
+describe("counterfactual attribution", () => {
+    const arm = (name: string, journal: object[] = []) =>
+        ({ arm: name, journal, calls: [], resources: [], tools: [] }) as unknown as ArmLogs;
+    const grade = (a: string, item: string, verdict: string) =>
+        ({ arm: a, item, verdict }) as unknown as GradeRecord;
+    const deletion = (probe: string, extra: object) => ({
+        kind: "CounterfactualDeletion",
+        probe,
+        ...extra,
+    });
+    const g = {
+        run: {
+            dir: "/r",
+            arms: [
+                arm("eidnara"),
+                arm("eidnara-cf", [
+                    deletion("q-1", { deleted: [4], remaining: 0 }),
+                    deletion("q-2", { deleted: [], remaining: 0 }),
+                    deletion("q-3", { skipped: "no store yet" }),
+                    deletion("q-4", { deleted: [5], remaining: 0 }),
+                ]),
+            ],
+        },
+        scenario: {
+            manifest: { seed: 101 },
+            faults: [],
+            cf_deletions: ["q-1", "q-2", "q-3", "q-4"].map((probe) => ({ probe })),
+            probes: ["q-1", "q-2", "q-3", "q-4", "q-5", "q-6"].map((id) => ({ id, type: "P1" })),
+        },
+        grades: [
+            ...["q-1", "q-2", "q-3", "q-4", "q-5", "q-6"].map((i) => grade("eidnara", i, "pass")),
+            grade("eidnara-cf", "q-1", "fail"),
+            grade("eidnara-cf", "q-2", "fail"),
+            grade("eidnara-cf", "q-3", "fail"),
+            grade("eidnara-cf", "q-4", "pass"),
+            grade("eidnara-cf", "q-5", "fail"),
+            grade("eidnara-cf", "q-6", "pass"),
+        ],
+    } as unknown as GradedRun;
+
+    test("only verified deletions count, beside the placebo flip rate on unsampled items", () => {
+        expect(counterfactual([g])).toMatchObject({
+            attempted: 4,
+            verified: 2,
+            memory_passes: 2,
+            flips: 1,
+            attribution_rate: 0.5,
+            placebo: { memory_passes: 2, flips: 1, rate: 0.5 },
+        });
+    });
+
+    test("a deletion verified in one run leaves the same probe unverified in another, and the panel names each run", () => {
+        const failed = deletion("q-1", { skipped: "deletion failed" });
+        const other = {
+            ...g,
+            run: { ...g.run, dir: "/r2", arms: [arm("eidnara"), arm("eidnara-cf", [failed])] },
+        } as unknown as GradedRun;
+        const panel = counterfactual([g, other]);
+        expect(panel).toMatchObject({ attempted: 5, verified: 2, memory_passes: 2, flips: 1 });
+        const text = counterfactualText(panel as NonNullable<typeof panel>);
+        expect(text).toContain("/r q-1 deleted 1, 0 left");
+        expect(text).toContain("/r2 q-1 skipped (deletion failed)");
+    });
+
+    test("probes in a session where a fault fired in one arm alone leave the attribution and placebo counts", () => {
+        const observed = { kind: "FaultObserved", fault: "fault-000", type: "daemon_restart" };
+        const lonely = {
+            ...g,
+            host: "pi",
+            run: {
+                ...g.run,
+                arms: [arm("eidnara", [observed]), g.run.arms[1]],
+            },
+            scenario: {
+                ...g.scenario,
+                faults: [{ id: "fault-000", trigger: { kind: "session_start", session: "s-9" } }],
+                probes: ["q-1", "q-2", "q-3", "q-4", "q-5", "q-6"].map((id) => ({
+                    id,
+                    type: "P1",
+                    session: id === "q-1" || id === "q-5" ? "s-9" : "s-1",
+                })),
+            },
+        } as unknown as GradedRun;
+        expect(counterfactual([lonely])).toMatchObject({
+            attempted: 4,
+            verified: 2,
+            memory_passes: 1,
+            flips: 0,
+            placebo: { memory_passes: 1, flips: 0 },
+        });
+    });
+
+    test("runs that hold the counterfactual arm without the memory arm give no panel", () => {
+        const alone = { ...g, run: { ...g.run, arms: [g.run.arms[1]] } } as unknown as GradedRun;
+        expect(counterfactual([alone])).toBeNull();
+    });
+});
+
+describe("CUSUM scale", () => {
+    test("L's rules take M's A/A scale from the invocation, else the scale recorded beside the runs", () => {
+        const L = loadPrereg("L");
+        const recorded = { harm: 0.5, futility: 0.25 };
+        expect(cusumScale(L, new Map(), recorded)).toEqual(recorded);
+        const m = { scale: { harm: 0.7, futility: 0.1 }, complete: true };
+        expect(cusumScale(L, new Map([["M", m]]), recorded)).toEqual(recorded);
+        expect(cusumScale(L, new Map([["M", m]]), { harm: 0.5 })).toEqual({
+            harm: 0.5,
+            futility: 0.1,
+        });
+        expect(cusumScale(L, new Map([["M", { ...m, complete: false }]]))).toEqual({
+            harm: undefined,
+            futility: undefined,
+        });
+        expect(cusumScale(L, new Map())).toEqual({ harm: undefined, futility: undefined });
+    });
+});
+
+describe("run identity", () => {
+    test("the pooled identity names the current host versions and, apart, the upgrade versions", () => {
+        const row = (host: "pi" | "opencode", version: string, path?: string) => ({
+            host,
+            version,
+            ...(path ? { path } : {}),
+            transcript_paths: [],
+        });
+        const preflight = {
+            hosts: [row("pi", "0.80.2", "/i/pi"), row("opencode", "1.14.0")],
+            upgrade: [row("pi", "0.87.1", "/i/pi-next")],
+        };
+        expect(identityVersions(preflight)).toEqual([
+            "pi@0.80.2 /i/pi",
+            "opencode@1.14.0",
+            "upgrade:pi@0.87.1 /i/pi-next",
+        ]);
+        expect(identityVersions({ hosts: preflight.hosts })).toEqual([
+            "pi@0.80.2 /i/pi",
+            "opencode@1.14.0",
+        ]);
     });
 });

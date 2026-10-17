@@ -32,9 +32,22 @@ export interface ArmDriver {
      */
     resume?(open: ScenarioEvent | null): Promise<void>;
     event(e: ScenarioEvent): Promise<TurnOutcome>;
-    fault(f: FaultEpisode): Promise<Record<string, unknown>>;
+    /** `at` is the scenario event a fault fired at, when a compiled event triggered it. */
+    fault(f: FaultEpisode, at?: ScenarioEvent): Promise<Record<string, unknown>>;
+    /**
+     * Runs the counterfactual deletions due before `e`, passing each to `log` as it returns,
+     * which journals it before the next one starts; `done(probe)` holds for a deletion already
+     * journaled at `e`, which a resumed arm skips.
+     */
+    prepare?(
+        e: ScenarioEvent,
+        log: (deletion: Record<string, unknown>) => void,
+        done: (probe: string) => boolean,
+    ): Promise<void>;
     /** Stops everything the arm runs, after its last event and before `EndArm`. */
     finish?(): Promise<void>;
+    /** Called once the journal holds the `StoreChecked` entries a turn returned. */
+    storeChecked?(faults: string[]): void;
 }
 
 export interface ProxyControl {
@@ -61,7 +74,7 @@ export interface SchedulerOptions {
 }
 
 const PROXY_LAYER = "proxy-sink";
-const OUTAGE = new Set(["daemon_sigkill_mid_fold", "daemon_restart", "host_upgrade"]);
+const OUTAGE = new Set(["daemon_sigkill_mid_fold", "daemon_restart"]);
 
 export class Scheduler {
     clock: Clock | null = null;
@@ -200,7 +213,7 @@ export class Scheduler {
         });
     }
 
-    private async fire(driver: ArmDriver, f: FaultEpisode): Promise<void> {
+    private async fire(driver: ArmDriver, f: FaultEpisode, at?: ScenarioEvent): Promise<void> {
         this.fired.add(`${this.arm}/${f.id}`);
         this.log({ kind: "FaultFired", fault: f.id, type: f.type, layer: f.seam.layer });
         if (f.seam.layer === PROXY_LAYER) {
@@ -213,7 +226,14 @@ export class Scheduler {
             return;
         }
         if (OUTAGE.has(f.type)) this.outage = f.id;
-        const evidence = await driver.fault(f);
+        const owner = `fault:${f.id}`;
+        this.clock?.begin(owner);
+        let evidence: Record<string, unknown>;
+        try {
+            evidence = await driver.fault(f, at);
+        } finally {
+            this.clock?.end(owner);
+        }
         this.log({ kind: "FaultObserved", fault: f.id, type: f.type, evidence });
     }
 
@@ -231,7 +251,20 @@ export class Scheduler {
             });
         clock.advanceTo(e.scenario_ms, arm, { next_event: e.id });
         this.session = e.session;
-        for (const f of faults) await this.fire(driver, f);
+        for (const f of faults) await this.fire(driver, f, e);
+        const done = (probe: string) =>
+            this.o.journal.entries.some(
+                (x) =>
+                    x.kind === "CounterfactualDeletion" &&
+                    x.arm === this.arm &&
+                    x.event === e.id &&
+                    x.probe === probe,
+            );
+        await driver.prepare?.(
+            e,
+            (d) => this.log({ kind: "CounterfactualDeletion", event: e.id, ...d }),
+            done,
+        );
         if (e.kind === "user_turn") {
             const turn = `turn:${e.id}`;
             this.log({ kind: "BeginTurn", event: e.id, probe: e.probe ?? null });
@@ -256,6 +289,7 @@ export class Scheduler {
             }
             for (const s of outcome.stores ?? [])
                 this.log({ kind: "StoreChecked", event: e.id, ...s });
+            if (outcome.stores?.length) driver.storeChecked?.(outcome.stores.map((s) => s.fault));
             if (outcome.user) this.log({ kind: "UserTurn", event: e.id, ...outcome.user });
             await Bun.sleep(this.o.settleMs ?? 1_000);
         } else {

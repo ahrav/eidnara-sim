@@ -106,8 +106,11 @@ label, with its own directories, journal entries, and call records
 (`armBase` in `src/hosts/arms.ts`). `--arms host,host~aa` runs it right
 after its arm, once, and only for a pair the tier pre-registers in
 `aa_controls.pairs` (S and M). A control's reference arm is its own arm,
-so its divergence records and tape replies pair it with that arm; every
-other arm's reference is the first of the order. Both arms of a pair share
+so its divergence records and tape replies pair it with that arm. At L,
+`eidnara` and `eidnara-cf` are each other's reference when the other ran
+earlier in the seed's order, so the pair shares one tape until the first
+deletion changes the counterfactual arm's context; every other arm's
+reference is the first of the order. Both arms of a pair share
 the scenario, the behaviour plan, and the tape, so the control measures
 the noise the agent and the user-sim add on their own. `grade-run.ts`
 judges a control of `host` against nothing, and P7 grades, which come from

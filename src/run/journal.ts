@@ -29,6 +29,9 @@ export type EntryKind =
     | "StoreChecked"
     | "UserTurn"
     | "UserSimRates"
+    | "CounterfactualSample"
+    | "DeleteMemoryObject"
+    | "CounterfactualDeletion"
     | "EndArm"
     | "EndRun";
 

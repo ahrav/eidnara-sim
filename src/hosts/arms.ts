@@ -40,6 +40,8 @@ export interface HostContext {
     proxyHttp2: string;
     model: string;
     contextLimit: number;
+    /** The model of Eidnara's own summarizer and researcher calls; the agent model by default. */
+    sideModel?: string;
     now?: () => number;
 }
 
@@ -68,6 +70,10 @@ export const eidnaraOn = (arm: ArmName) => arm !== "host";
 /** An A/A control arm `host~aa` runs as `host` under its own label. */
 export const armBase = (label: string) => label.split("~")[0] as ArmName;
 const modelRef = (model: string) => `amazon-bedrock/${model}`;
+
+export function piModels(ctx: Pick<HostContext, "model" | "sideModel">): string[] {
+    return [...new Set([ctx.model, ...(ctx.sideModel ? [ctx.sideModel] : [])])];
+}
 
 function eidnaraUserConfig(connectionFile: string, model: string): Record<string, unknown> {
     return {
@@ -196,7 +202,17 @@ export abstract class SimHost {
 
     abstract openSession(cwd: string, session: string, connection: string | null): Promise<void>;
     abstract prompt(text: string, timeoutMs: number, interruptMs?: number): Promise<PromptResult>;
-    abstract closeSession(): Promise<void>;
+    private closing: Promise<void> | null = null;
+
+    /** Closes the session; concurrent callers share one in-progress close. */
+    closeSession(): Promise<void> {
+        this.closing ??= this.shutdownSession().finally(() => {
+            this.closing = null;
+        });
+        return this.closing;
+    }
+
+    protected abstract shutdownSession(): Promise<void>;
     abstract transcriptEnv(): Record<string, string>;
     abstract hostPid(): number | null;
 
@@ -244,7 +260,7 @@ export class PiSimHost extends SimHost {
             packages: [],
             defaultProvider: "amazon-bedrock",
             defaultModel: this.ctx.model,
-            enabledModels: [modelRef(this.ctx.model)],
+            enabledModels: piModels(this.ctx).map(modelRef),
             compaction: { enabled: this.ctx.arm === "host" || this.ctx.arm === "eidnara-kl" },
             retry: { enabled: true },
             defaultThinkingLevel: "off",
@@ -252,22 +268,22 @@ export class PiSimHost extends SimHost {
             enableInstallTelemetry: false,
         };
         writeFileSync(join(this.agentDir, "settings.json"), JSON.stringify(settings, null, 2));
-        const model = {
-            id: this.ctx.model,
-            name: this.ctx.model,
+        const models = piModels(this.ctx).map((id) => ({
+            id,
+            name: id,
             api: "bedrock-converse-stream",
             reasoning: false,
             input: ["text"],
             contextWindow: this.ctx.contextLimit,
             maxTokens: 8192,
             cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
-        };
-        const providers = { "amazon-bedrock": { baseUrl: this.ctx.proxyHttp2, models: [model] } };
+        }));
+        const providers = { "amazon-bedrock": { baseUrl: this.ctx.proxyHttp2, models } };
         writeFileSync(join(this.agentDir, "models.json"), JSON.stringify({ providers }, null, 2));
         if (connectionFile) {
             const dir = join(this.ctx.root, "home/config/eidnara");
             mkdirSync(dir, { recursive: true });
-            const config = eidnaraUserConfig(connectionFile, this.ctx.model);
+            const config = eidnaraUserConfig(connectionFile, this.ctx.sideModel ?? this.ctx.model);
             writeFileSync(join(dir, "eidnara.jsonc"), JSON.stringify(config, null, 2));
         }
     }
@@ -370,9 +386,8 @@ export class PiSimHost extends SimHost {
         }
     }
 
-    async closeSession(): Promise<void> {
+    protected async shutdownSession(): Promise<void> {
         const rpc = this.rpc;
-        this.rpc = null;
         if (!rpc) return;
         rpc.child.stdin?.end();
         try {
@@ -380,6 +395,7 @@ export class PiSimHost extends SimHost {
         } finally {
             await rpc.shutdown(10_000);
         }
+        this.rpc = null;
     }
 
     transcriptEnv(): Record<string, string> {
@@ -429,7 +445,10 @@ export class OpencodeSimHost extends SimHost {
             mkdirSync(d, { recursive: true });
         const eidnara = connection
             ? {
-                  eidnaraConfig: eidnaraUserConfig(connection, this.ctx.model),
+                  eidnaraConfig: eidnaraUserConfig(
+                      connection,
+                      this.ctx.sideModel ?? this.ctx.model,
+                  ),
                   userHostConnectionFile: connection,
               }
             : {};
@@ -558,17 +577,17 @@ export class OpencodeSimHost extends SimHost {
         return { error: `the turn returned before its last assistant step finished (${finish})` };
     }
 
-    async closeSession(): Promise<void> {
+    protected async shutdownSession(): Promise<void> {
         const oc = this.oc;
-        const pid = this.hostPid();
-        this.oc = null;
-        this.client = null;
         if (!oc) return;
+        const pid = this.hostPid();
         try {
             await this.stopTree(pid);
         } finally {
             await oc.kill();
         }
+        this.oc = null;
+        this.client = null;
     }
 
     transcriptEnv(): Record<string, string> {

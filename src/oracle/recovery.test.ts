@@ -183,6 +183,44 @@ describe("recovery oracles", () => {
         ]);
     });
 
+    test("a second client whose own turn failed is not a recovered fault, however clean the later turns", () => {
+        seq = 0;
+        const journal = (outcome: string) => [
+            entry("FaultObserved", 0, {
+                fault: "b",
+                type: "two_hosts_one_daemon",
+                evidence: { second_session: "s-1-b", outcome },
+            }),
+            entry("BeginTurn", 10, { event: "e-1" }),
+            entry("EndTurn", 20, { event: "e-1", outcome: "ok" }),
+        ];
+        const [failed] = recoveries(run([arm(journal("timed out after 600000 ms"))]));
+        expect([failed?.recovered, failed?.turns_to_first_clean]).toEqual([false, 1]);
+        expect(failed?.reasons).toEqual(["the fault's own turn ended timed out after 600000 ms"]);
+        const [ok] = recoveries(run([arm(journal("ok"))]));
+        expect([ok?.recovered, ok?.reasons]).toEqual([true, []]);
+    });
+
+    test("an infrastructure fault a harness stop interrupted is reported, unrecovered", () => {
+        seq = 0;
+        const journal = [
+            entry("FaultFired", 0, { fault: "r", type: "daemon_restart", layer: "scheduler" }),
+            entry("ItemState", 1, { fault: "r", state: "failed(interrupted)" }),
+            entry("ItemState", 2, { fault: "r", state: "failed(interrupted)" }),
+            entry("BeginTurn", 10, { event: "e-1" }),
+            entry("EndTurn", 20, { event: "e-1", outcome: "ok" }),
+        ];
+        const got = recoveries(run([arm(journal)])).map((r) => [
+            r.fault,
+            r.type,
+            r.recovered,
+            r.reasons,
+        ]);
+        expect(got).toEqual([
+            ["r", "daemon_restart", false, ["interrupted by a harness stop before its evidence"]],
+        ]);
+    });
+
     test("the store check reports integrity and overlapping history segments", () => {
         const path = join(mkdtempSync(join(tmpdir(), "sim-store-")), "store.db");
         const db = new Database(path);

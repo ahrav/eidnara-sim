@@ -174,3 +174,31 @@ function evaluate(
         returned_to_baseline: returned,
     };
 }
+
+const MONTH_MS = 30 * 24 * 3_600_000;
+
+/**
+ * One within-month soak verdict per 30 days of scenario time the arm's journal or samples
+ * reach. Each verdict uses that month's samples and sessions; the last month may be partial.
+ */
+export function soakByMonth(
+    run: RunLogs,
+    arm: ArmLogs,
+    resource: Resource,
+): (SoakVerdict & { month: number })[] {
+    const last = Math.max(
+        0,
+        ...arm.resources.map((s) => s.scenario_ms),
+        ...arm.journal.map((e) => e.scenario_ms),
+    );
+    return Array.from({ length: Math.floor(last / MONTH_MS) + 1 }, (_, month) => {
+        const inMonth = (ms: number) => ms >= month * MONTH_MS && ms < (month + 1) * MONTH_MS;
+        const slice: ArmLogs = {
+            ...arm,
+            resources: arm.resources.filter((s) => inMonth(s.scenario_ms)),
+            journal: arm.journal.filter((e) => inMonth(e.scenario_ms)),
+        };
+        const verdict = soak(run, slice, resource);
+        return verdict ? [{ month: month + 1, ...verdict }] : [];
+    }).flat();
+}

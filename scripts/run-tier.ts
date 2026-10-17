@@ -7,7 +7,7 @@ import type { FaultEpisode } from "../src/scenario/faults";
 
 const USAGE = `usage: --tier S --seed 101 --out <run dir> [--host pi|opencode] [--arms a,b]
     [--events N] [--faults <episodes.json>] [--context-limit N] [--models a,b]
-    [--tapes <tape.jsonl>,...]`;
+    [--tapes <tape.jsonl>,...] [--side-model <id>] [--user-sim-model <id>]`;
 const arg = (name: string) => {
     const i = process.argv.indexOf(`--${name}`);
     return i < 0 ? undefined : process.argv[i + 1];
@@ -45,4 +45,6 @@ await runTier({
     tapes: arg("tapes")
         ?.split(",")
         .map((p) => resolve(p)),
+    sideModel: arg("side-model"),
+    userSimModel: arg("user-sim-model"),
 });

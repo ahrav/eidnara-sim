@@ -18,6 +18,20 @@ test("a missing or relative path is refused by field name", () => {
         "config.bedrock.aws_profile: missing",
     );
     expect(() => parseConfig({ ...base, agent_model: "" })).toThrow("config.agent_model: missing");
+    expect(() => parseConfig({ ...base, upgrade: { pi_install: "next/pi" } })).toThrow(
+        "config.upgrade.pi_install: not an absolute path",
+    );
+    expect(parseConfig({ ...base, upgrade: { opencode_binary: "/next/oc" } }).upgrade).toEqual({
+        opencode_binary: "/next/oc",
+    });
+    expect(() =>
+        parseConfig({ ...base, upgrade: { pi_install: "/next/pi", toolchain: null } }),
+    ).toThrow("config.upgrade.toolchain: unknown field");
+    for (const upgrade of [null, "/next/pi", ["/next/pi"]]) {
+        expect(() => parseConfig({ ...base, upgrade })).toThrow(
+            "config.upgrade: expected an object of next host paths",
+        );
+    }
     expect(() => parseConfig({ ...base, toolchain: { ...base.toolchain, bin: ["bin"] } })).toThrow(
         "config.toolchain.bin: expected absolute paths",
     );

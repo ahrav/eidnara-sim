@@ -25,8 +25,8 @@ function fakeDriver(
             if (turnMs) await Bun.sleep(turnMs);
             return {};
         },
-        fault: async (f) => {
-            log.push(`fault:${f.id}`);
+        fault: async (f, at) => {
+            log.push(`fault:${f.id}@${at?.id ?? "-"}`);
             return { pid_before: 1, pid_after: 2 };
         },
     };
@@ -502,6 +502,126 @@ describe("resume of fired faults", () => {
             }),
         );
         expect(resumed.entries.filter((e) => e.kind === "FaultFired")).toHaveLength(2);
+    });
+});
+
+describe("counterfactual preparation", () => {
+    test("each deletion is journaled before the next starts and before the turn", async () => {
+        const path = join(dir(), "j.jsonl");
+        const events = fixtureEvents(1);
+        const start = events.find((e) => e.kind === "session_start") as ScenarioEvent;
+        const journal = new Journal(path);
+        const seen: string[] = [];
+        const driver: ArmDriver = {
+            ...fakeDriver([]),
+            prepare: async (e, log, done) => {
+                if (e.id !== start.id) return;
+                for (const probe of ["q-1", "q-2"]) {
+                    if (done(probe)) continue;
+                    seen.push(probe);
+                    log({ probe, deleted: [1] });
+                    if (probe === "q-1") {
+                        const logged = journal.entries.filter(
+                            (x) => x.kind === "CounterfactualDeletion",
+                        );
+                        expect(logged.map((x) => x.probe)).toEqual(["q-1"]);
+                    }
+                }
+            },
+        };
+        await new Scheduler({
+            events,
+            faults: [],
+            journal,
+            settleMs: 0,
+            order: ["a"],
+            drivers: { a: driver },
+        }).run();
+        const kinds = journal.entries.map((x) => x.kind);
+        expect(kinds.indexOf("CounterfactualDeletion")).toBeLessThan(kinds.indexOf("BeginTurn"));
+        expect(seen).toEqual(["q-1", "q-2"]);
+    });
+});
+
+describe("store checks", () => {
+    test("the driver hears which store checks the journal holds, after they are written", async () => {
+        const j = new Journal(join(dir(), "j.jsonl"));
+        const acked: string[][] = [];
+        const driver: ArmDriver = {
+            ...fakeDriver([]),
+            event: async (e) =>
+                e.kind === "user_turn"
+                    ? {
+                          stores: [
+                              {
+                                  fault: "k",
+                                  store: { integrity: "ok", segments: 0, overlaps: [], ranges: [] },
+                              },
+                          ],
+                      }
+                    : {},
+            storeChecked: (ids) => {
+                expect(j.entries.some((x) => x.kind === "StoreChecked" && x.fault === "k")).toBe(
+                    true,
+                );
+                acked.push(ids);
+            },
+        };
+        await new Scheduler({
+            events: fixtureEvents(1),
+            faults: [],
+            journal: j,
+            settleMs: 0,
+            order: ["a"],
+            drivers: { a: driver },
+        }).run();
+        expect(acked.length).toBeGreaterThan(0);
+        expect(acked[0]).toEqual(["k"]);
+    });
+});
+
+describe("fault delivery", () => {
+    test("a fault triggered at a session start reaches the driver with that event", async () => {
+        const events = fixtureEvents(1);
+        const start = events.find((e) => e.kind === "session_start") as ScenarioEvent;
+        const log: string[] = [];
+        await new Scheduler({
+            events,
+            faults: [episode("f", "daemon_restart", { kind: "session_start", session: "s-0000" })],
+            journal: new Journal(join(dir(), "j.jsonl")),
+            settleMs: 0,
+            order: ["a"],
+            drivers: { a: fakeDriver(log) },
+        }).run();
+        expect(log).toContain(`fault:f@${start.id}`);
+    });
+
+    test("scenario time runs while a scheduler fault's mechanism is under way", async () => {
+        const events = fixtureEvents(1);
+        const j = new Journal(join(dir(), "j.jsonl"));
+        let scheduler: Scheduler | null = null;
+        const seen: number[] = [];
+        const driver: ArmDriver = {
+            ...fakeDriver([]),
+            fault: async () => {
+                seen.push(scheduler?.clock?.now() ?? -1);
+                await Bun.sleep(40);
+                seen.push(scheduler?.clock?.now() ?? -1);
+                return {};
+            },
+        };
+        scheduler = new Scheduler({
+            events,
+            faults: [episode("f", "daemon_restart", { kind: "session_start", session: "s-0000" })],
+            journal: j,
+            settleMs: 0,
+            order: ["a"],
+            drivers: { a: driver },
+        });
+        await scheduler.run();
+        expect(seen).toHaveLength(2);
+        expect((seen[1] as number) - (seen[0] as number)).toBeGreaterThanOrEqual(30);
+        invariants(j.entries);
     });
 });
 

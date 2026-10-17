@@ -9,7 +9,7 @@ import { PRICE_TABLE } from "../run/price";
 import { loadPrereg } from "../scenario/inputs";
 import { costPanel, judgeCost } from "./cost";
 import { intrusiveness, percentile } from "./intrusive";
-import { soak } from "./soak";
+import { soak, soakByMonth } from "./soak";
 
 const prereg = loadPrereg("S");
 const MB = 1024 * 1024;
@@ -866,5 +866,41 @@ describe("intrusiveness panel", () => {
         writeFileSync(join(dir, "eidnara", "memory.json"), "null\n");
         const unavailable = intrusiveness(run([], dir, new Map(), BASE), arm({ journal, tools }));
         expect(unavailable.corrections_referencing_injected_text).toBeNull();
+    });
+});
+
+describe("soak by month", () => {
+    test("a run spanning two months gets a verdict per month over that month's samples", () => {
+        const DAY = 86_400_000;
+        const resources = Array.from({ length: 60 }, (_, d) => ({
+            scenario_ms: d * DAY,
+            wall_ms: d * 10_000,
+            rss: d < 30 ? 100 * MB : 100 * MB + (d - 30) * 40 * MB,
+        }));
+        seq = 0;
+        const journal = Array.from({ length: 60 }, (_, d) =>
+            entry("Event", d * DAY + 1, { event: `end-${d}`, wall_ms: d * 10_000 + 1 }),
+        );
+        const kinds = new Map(Array.from({ length: 60 }, (_, d) => [`end-${d}`, "session_end"]));
+        const months = soakByMonth(run([], "", kinds), arm({ journal, resources }), "rss");
+        expect(months.map((m) => [m.month, m.verdict, m.samples, m.sessions])).toEqual([
+            [1, "no leak", 30, 30],
+            [2, "leak", 30, 30],
+        ]);
+        const short = arm({ journal, resources: resources.slice(0, 20) });
+        expect(
+            soakByMonth(run([], "", kinds), short, "rss").map((m) => [
+                m.month,
+                m.verdict,
+                m.samples,
+            ]),
+        ).toEqual([
+            [1, "no leak", 20],
+            [2, "insufficient samples", 0],
+        ]);
+        const none = arm({ journal: journal.slice(0, 5), resources: [] });
+        expect(soakByMonth(run([], "", kinds), none, "rss").map((m) => m.verdict)).toEqual([
+            "insufficient samples",
+        ]);
     });
 });

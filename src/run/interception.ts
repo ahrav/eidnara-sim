@@ -4,11 +4,13 @@ import { launch } from "./launcher";
 import { FAKETIME_LIB, faketimeEnv, writeOffset } from "./timeinject";
 
 export interface BinaryProbe {
-    name: "pi" | "opencode" | "daemon";
+    name: "pi" | "opencode" | "opencode-upgrade" | "daemon";
     path: string;
     keep: string[];
     argv: string[];
     env?: Record<string, string>;
+    /** Paths the probe may read but must leave as they are, such as the Eidnara checkout. */
+    readOnly?: string[];
     mode: "prints-time" | "binds-clock";
 }
 
@@ -83,10 +85,13 @@ export function interceptionTest(
         const keep = [dirname(dirname(FAKETIME_LIB)), clockDir, ...b.keep];
         const env = { ...faketimeEnv(offset), ...b.env };
         const wallBefore = Date.now();
-        const r = Bun.spawnSync(launch(launcher, keep, env, b.argv), {
+        // The probe runs from an allowlisted environment: the sandbox preserves whatever it
+        // is handed, so the tier process's own variables stay out of it.
+        const r = Bun.spawnSync(launch(launcher, keep, env, b.argv, b.readOnly ?? []), {
             stdout: "pipe",
             stderr: "pipe",
             timeout: 30_000,
+            env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: clockDir, ...env },
         });
         const wall = Date.now() - wallBefore;
         let evidence: Record<string, unknown> = { exit: r.exitCode, wall_ms: wall };

@@ -16,11 +16,18 @@ export interface McNemar {
     ci: [number, number];
 }
 
+/** The Clopper-Pearson interval for `x` successes in `n` trials, `n > 0`. */
+export function clopperPearson(x: number, n: number, alpha = 0.05): [number, number] {
+    return [
+        x === 0 ? 0 : betaQuantile(alpha / 2, x, n - x + 1),
+        x === n ? 1 : betaQuantile(1 - alpha / 2, x + 1, n - x),
+    ];
+}
+
 /** The exact McNemar test on the discordant counts, with R `exact2x2::mcnemar.exact` limits. */
 export function mcnemarExact(b: number, c: number, alpha = 0.05): McNemar {
     const n = b + c;
-    const lo = b === 0 ? 0 : betaQuantile(alpha / 2, b, c + 1);
-    const hi = c === 0 ? 1 : betaQuantile(1 - alpha / 2, b + 1, c);
+    const [lo, hi] = clopperPearson(b, n, alpha);
     const odds = (p: number) => (p >= 1 ? Number.POSITIVE_INFINITY : p / (1 - p));
     return {
         b,

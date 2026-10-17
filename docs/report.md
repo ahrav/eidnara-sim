@@ -138,7 +138,7 @@ treatment arm (`arms.default`, `eidnara`) against `host`:
 | Family metrics | Observation |
 |---|---|
 | `<type>.pass`, `<type>.harm` | Per probe item, both arms' grade metric joined by item id across runs (`<host>/<seed>/<item>`), clustered by `<seed>/<ledger fact>`, in issue order; `P8` and `P9` cross-session rates read `P8.pass` and `P9.pass` |
-| `failed_turns`, `hangs` | Per run (`<tier>-<host>-<seed>`), the distinct turns with an `EndTurn` outcome other than `ok` or an `Event` outcome `failed(interrupted)` (which a resume records for a turn without an `EndTurn`), and F4 activations |
+| `failed_turns`, `hangs` | Per run (`<tier>-<host>-<seed>`), the distinct turns with an `EndTurn` outcome other than `ok` or marked `failed(interrupted)` on resume (`Event` outcome or `ItemState`, recorded for a turn without an `EndTurn`), and F4 activations |
 | `turn_latency_p50_delta_ms`, `turn_latency_p95_delta_ms` | Per run, the treatment minus control percentile of turn wall time; a control arm without turn latencies leaves the run out |
 | `daemon_rss_growth_bytes_per_session`, `daemon_heap_growth_bytes_per_session`, `store_growth_bytes_per_session` | Per run, the treatment minus control soak slope, with a `host` control that runs no daemon counted as zero; the heap is the daemon's anonymous resident memory (`RssAnon`), which the sampler records as `heap` |
 | `internal_string_hits`, `user_corrections_referencing_injected_text` | Per run, the panel's counts; a run without `calls.jsonl`, or with a completed turn no agent call with a response covers, has no hit count, and a daemon arm without `memory.json`, whose notes could not be read, or whose replies name a `tape_key` with no `tape.jsonl` has no corrections count; either leaves the observation |
@@ -172,8 +172,7 @@ arm, and their reference arms), or whose records fail the checks of
 `scripts/pairing-check.ts` (`pairingFailures`: a pre-divergence reply
 differing from the reference arm's, an altered probe or paste turn, an
 unsent non-filler turn) or whose `UserSimRates` entry names a rate outside
-its band, each L run whose registered arms' `StartArm`/`EndArm` spans
-share no common moment while `load_stress` registers concurrent arms, each registered A/A pair whose count
+its band, each registered A/A pair whose count
 of control arms that reached `EndArm` across the runs differs from
 `aa_controls.repeats`, each control arm whose pair lacks any registered metric of a P1
 to P12 probe other than P7 (the judge grades P7 for memory arms against
@@ -193,10 +192,19 @@ set's pairs keep one order whatever order the directories arrive in.
 fault-asymmetric items: the standard deviation of their paired item
 differences, over the per-item maximum across the harm metrics, as the
 harm statistic is built, and over the P1 items.
-`cusumScale` gives each rule the scale of the tier its `sd_source` names
-once that tier's own campaign is complete, so L's rules take M's A/A pairs
-when the complete M runs are in the same `scripts/report.ts` invocation.
-The scale pools the controls that reached `EndArm`.
+`cusumScale` gives each rule the scale the `cusum_sd` of
+`<tier>-resizing.json` beside the run directories recorded from the
+complete source campaign, else the scale of the tier its `sd_source`
+names when that tier's complete runs are in the same `scripts/report.ts`
+invocation. The scale pools the controls that reached `EndArm`. The same
+file's `paired_items_per_probe_type` is the count the campaign-completeness
+check uses for a resized tier and the number of pairs per item metric the
+analysis reads, in issue order, so a compile rounded up per seed never
+adds pairs past the recorded count; it is passed beside the
+pre-registration so the verdict keeps the registered hash. A tier that
+pre-registers resizing is reported only with its record, every run of
+the tier binds to one identical record, and runs beside different
+records are refused as one campaign.
 
 The falsification set (`src/report/falsify.ts`) pairs, per run, each A/A
 control with its arm, or else the treatment with `host`, and pools the
