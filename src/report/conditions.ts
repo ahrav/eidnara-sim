@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { GradeRecord } from "../grade/probes";
 import { armBase } from "../hosts/arms";
@@ -84,7 +84,8 @@ function files(dir: string): string[] {
     if (!existsSync(dir)) return [];
     return readdirSync(dir).flatMap((f) => {
         const p = join(dir, f);
-        return statSync(p).isDirectory() ? files(p) : [p];
+        const stat = lstatSync(p);
+        return stat.isDirectory() ? files(p) : stat.isFile() ? [p] : [];
     });
 }
 

@@ -547,10 +547,14 @@ export class OpencodeSimHost extends SimHost {
         await this.logTurnTools(seen, startScenario);
         const info = result.data?.info;
         if (info?.error) return { error: JSON.stringify(info.error).slice(0, 2000) };
-        const last = (await this.messages()).filter((m) => m.info?.role === "assistant").at(-1);
-        if (last?.info?.error) return { error: JSON.stringify(last.info.error).slice(0, 2000) };
-        const finish = last?.info?.finish;
-        return !last || finish === "stop" || finish === "length"
+        const own = (await this.messages()).filter(
+            (m) => m.info?.role === "assistant" && !seen.has(String(m.info?.id)),
+        );
+        const last = own.at(-1);
+        if (!last) return { error: "the turn returned without an assistant message of its own" };
+        if (last.info?.error) return { error: JSON.stringify(last.info.error).slice(0, 2000) };
+        const finish = last.info?.finish;
+        return finish === "stop" || finish === "length"
             ? {}
             : { error: `the turn returned before its last assistant step finished (${finish})` };
     }

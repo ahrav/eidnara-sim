@@ -179,13 +179,15 @@ export class Gateway {
             const gone = new AbortController();
             const opened = { ...this.options.scope(), h2_session: ids.get(stream.session ?? {}) };
             stream.on("close", () => {
-                if (stream.rstCode)
+                // A peer can cancel a response with RST_STREAM(NO_ERROR), whose rstCode is 0.
+                const cut = stream.aborted || !stream.writableFinished;
+                if (cut || stream.rstCode)
                     log("stream_reset", {
                         ...opened,
                         code: stream.rstCode,
                         finished: stream.writableFinished,
                     });
-                if (!stream.writableFinished) gone.abort();
+                if (cut) gone.abort();
             });
             stream.on("data", (c: Buffer) => chunks.push(c));
             stream.on("error", () => undefined);

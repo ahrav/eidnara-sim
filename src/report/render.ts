@@ -28,7 +28,7 @@ export interface TierReport {
     oracles: Record<string, OracleCount>;
     recoveries: (Recovery & { run: string })[];
     soak: SoakVerdict[];
-    intrusiveness: Intrusiveness[];
+    intrusiveness: (Intrusiveness & { run: string })[];
     cost: CostPanel[];
     falsification: ZeroEffect[];
     aa: unknown[];
@@ -106,6 +106,7 @@ function gates(r: TierReport): string[] {
         }.`,
         `Pre-registration ${v.prereg_sha256}. Excluded per arm: ${JSON.stringify(v.excluded_per_arm)}. Fault-asymmetric stratum: ${v.asymmetric_stratum.length} pairs.`,
         `CUSUM stops: ${v.stops.map((s) => `${s.kind} on ${s.metric} at ${s.signal_index} (${s.window.join(" ")})`).join("; ") || "none"}${v.cusum_unavailable.length ? `; unavailable: ${v.cusum_unavailable.join("; ")}` : ""}.`,
+        `Campaign: ${v.pass.incomplete.length ? v.pass.incomplete.join("; ") : "complete"}.`,
         "",
         ...table(
             [
@@ -239,7 +240,9 @@ function panels(r: TierReport): string[] {
                 "p95 delta ms",
             ],
             r.intrusiveness.map((i) => {
-                const host = r.intrusiveness.find((x) => x.arm === "host")?.latency_ms;
+                const host = r.intrusiveness.find(
+                    (x) => x.run === i.run && x.arm === "host",
+                )?.latency_ms;
                 const delta = (a: number | null, b: number | null | undefined) =>
                     a === null || b === null || b === undefined ? null : a - b;
                 return [

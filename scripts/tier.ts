@@ -3,9 +3,9 @@ import { dirname, join, resolve } from "node:path";
 import { loadConfig } from "../src/config/config";
 import { TIERS, type Tier } from "../src/prereg/schema";
 import { tierInput } from "../src/report/observe";
-import { loadGraded } from "../src/report/tier";
+import { aaScale, loadGraded } from "../src/report/tier";
 import { Children, SIGTERM_EXIT } from "../src/run/children";
-import { resizeFromM } from "../src/run/resize";
+import { gradedMainRuns, resizeFromM } from "../src/run/resize";
 import { loadScenario } from "../src/run/run";
 import {
     compressFaults,
@@ -19,10 +19,32 @@ import { loadPrereg } from "../src/scenario/inputs";
 
 const USAGE =
     "usage: bun scripts/tier.ts --tier S --out <dir> [--hosts pi,opencode] [--turn-ms N] [--resize-from <M tier dir>] [--restart-at <fraction>] [--plan-only]";
-const arg = (name: string) => {
-    const i = process.argv.indexOf(`--${name}`);
-    return i < 0 ? undefined : process.argv[i + 1];
+const fail = (why: string) => {
+    console.error(`${why}\n${USAGE}`);
+    process.exit(2);
 };
+const FLAGS: Record<string, boolean> = {
+    tier: true,
+    out: true,
+    hosts: true,
+    "turn-ms": true,
+    "resize-from": true,
+    "restart-at": true,
+    "plan-only": false,
+};
+const flags = new Map<string, string>();
+const argv = process.argv.slice(2);
+for (let i = 0; i < argv.length; i++) {
+    const token = argv[i] as string;
+    const name = token.startsWith("--") ? token.slice(2) : "";
+    const takesValue = FLAGS[name];
+    if (takesValue === undefined) fail(`unknown argument ${token}`);
+    if (flags.has(name)) fail(`${token} given twice`);
+    const value = takesValue ? argv[++i] : "";
+    if (value === undefined || value.startsWith("--")) fail(`${token} needs a value`);
+    flags.set(name, value as string);
+}
+const arg = (name: string) => flags.get(name);
 const tier = arg("tier") as Tier;
 const outArg = arg("out");
 if (!TIERS.includes(tier) || !outArg) {
@@ -38,10 +60,6 @@ const prior = existsSync(priorPlan)
     ? (JSON.parse(readFileSync(priorPlan, "utf8")) as { turn_ms?: number; restart_at?: number })
     : null;
 const turnMs = Number(arg("turn-ms") ?? prior?.turn_ms ?? 75_000);
-const fail = (why: string) => {
-    console.error(`${why}\n${USAGE}`);
-    process.exit(2);
-};
 if (!Number.isInteger(turnMs) || turnMs <= 0) fail("--turn-ms must be a positive integer");
 const restartAt = restartFraction(arg("restart-at"), prior, tier);
 if (!(restartAt >= 0 && restartAt < 1)) fail("--restart-at must be a fraction in [0, 1)");
@@ -53,18 +71,18 @@ const resizing = join(out, `${tier}-resizing.json`);
 const from = arg("resize-from");
 if (prereg.resizing && from && !existsSync(resizing)) {
     const m = loadPrereg(prereg.resizing.source_tier);
-    const mPlan = join(resolve(from), "tier-plan.json");
-    if (!existsSync(mPlan)) fail(`${from} holds no tier-plan.json`);
-    const main = (JSON.parse(readFileSync(mPlan, "utf8")).plan as TierJob[])
-        .filter((j) => j.group === "main")
-        .map((j) => j.dir);
-    const ungraded = main.filter((d) => !existsSync(join(d, "grades.jsonl")));
+    for (const name of ["tier-plan.json", "tier-result.json"]) {
+        if (!existsSync(join(resolve(from), name)))
+            fail(`${from} holds no ${name}; the ${m.tier} tier has not finished`);
+    }
+    const { main, ungraded } = gradedMainRuns(resolve(from), m);
     if (main.length === 0 || ungraded.length > 0)
         fail(`the ${m.tier} paired runs are not all graded: ${ungraded.join(", ") || "none"}`);
     const runs = main.map((d) => loadGraded(d, m));
     const sized = {
         recorded_at: new Date().toISOString(),
         runs: main,
+        cusum_sd: aaScale(m, runs) ?? null,
         ...resizeFromM(prereg, tierInput(m, runs)),
     };
     writeFileSync(resizing, `${JSON.stringify(sized, null, 2)}\n`);
@@ -99,7 +117,7 @@ console.log(
 );
 const empty = plan.filter((j) => j.events === 0).map((j) => j.dir);
 if (empty.length > 0) fail(`no session fits the wall budget for ${empty.join(", ")}`);
-if (process.argv.includes("--plan-only")) process.exit(0);
+if (flags.has("plan-only")) process.exit(0);
 
 const bin = resolve(dirname(config.opencode_binary), "../../.bin");
 const env = { ...process.env, PATH: `${bin}:${process.env.PATH}` };

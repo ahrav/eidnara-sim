@@ -55,7 +55,10 @@ writes with zero later reads.
 
 `scripts/report.ts <run dir>... [--out <dir>]` groups the runs by tier and
 writes `report-<tier>.md` and the gate verdict as `report-<tier>.json`, or
-prints the Markdown. Each run directory needs `grades.jsonl` from
+prints the Markdown. `loadGraded` refuses a run directory whose manifest
+records a `prereg_sha256` other than the hash of the tier's current
+pre-registration, so a verdict carries the registration its runs were made
+under. Each run directory needs `grades.jsonl` from
 `scripts/grade-run.ts` for its probe items; a run without one reports its
 run-level metrics alone.
 
@@ -64,27 +67,36 @@ treatment arm (`arms.default`, `eidnara`) against `host`:
 
 | Family metrics | Observation |
 |---|---|
-| `<type>.pass`, `<type>.harm` | Per probe item, both arms' grade metric joined by item id across runs (`<seed>/<item>`), clustered by `<seed>/<ledger fact>`, in issue order; `P8` and `P9` cross-session rates read `P8.pass` and `P9.pass` |
-| `failed_turns`, `hangs` | Per run, turns with an `EndTurn` outcome other than `ok` or marked `failed(interrupted)` on resume, each turn once; and F4 activations |
-| `turn_latency_p50_delta_ms`, `turn_latency_p95_delta_ms` | Per run, the treatment minus control percentile of turn wall time |
+| `<type>.pass`, `<type>.harm` | Per probe item, both arms' grade metric joined by item id across runs (`<host>/<seed>/<item>`), clustered by `<seed>/<ledger fact>`, in issue order; `P8` and `P9` cross-session rates read `P8.pass` and `P9.pass` |
+| `failed_turns`, `hangs` | Per run (`<tier>-<host>-<seed>`), turns with an `EndTurn` outcome other than `ok` plus the turns a kill interrupted (`ItemState` or `Event` `failed(interrupted)`, which a resume records without an `EndTurn`), each turn once; and F4 activations |
+| `turn_latency_p50_delta_ms`, `turn_latency_p95_delta_ms` | Per run, the treatment minus control percentile of turn wall time; a control arm without turn latencies leaves the run out |
 | `daemon_rss_growth_bytes_per_session`, `daemon_heap_growth_bytes_per_session`, `store_growth_bytes_per_session` | Per run, the treatment minus control soak slope, with a `host` control that runs no daemon counted as zero; the heap is the daemon's anonymous resident memory (`RssAnon`), which the sampler records as `heap` |
-| intrusiveness metrics | Per run, the panel's counts |
+| `internal_string_hits`, `user_corrections_referencing_injected_text` | Per run, the panel's counts |
+| `reverted_memory_edits` | Per run, the treatment's reverted edits minus the control's; the zero-tolerance bound fails a run whose difference is above zero |
 | `usd_per_component`, `usd_per_useful_retrieval` | Per run, the cost panel's total and cost per pass |
-| `P13.fold_fidelity_score`, `P14.post_compaction_correction_count` | Per run, the mean and the sum of the item metric |
+| `P13.fold_fidelity_score`, `P14.post_compaction_correction_count` | Per run, the mean and the sum of the item metric over the items both arms graded without exclusion |
 
 Graded items the treatment or control arm excluded are listed as
-excluded, and probe items of a
-session where a fault fired in one arm only form the fault-asymmetric
-stratum. When the runs hold an A/A control (`<arm>~<tag>`), the standard
-deviation of its paired item differences sets the CUSUM rules' scale: over
-the per-item maximum across the harm metrics, as the harm statistic is
-built, and over the P1 items.
+excluded, and probe items of a session where a fault landed in one arm
+only form the fault-asymmetric stratum; a fault landed where the
+scheduler recorded `FaultObserved` or the proxy stamped a call's
+`fault_ref`, which is how provider faults show. The input's `incomplete`
+list names each pre-registered host and seed without a run and each probe
+type with fewer paired items than `stopping_rule.paired_items_per_probe_type`;
+the tier passes only with an empty list. `aaScale` takes the CUSUM rules'
+scale from the runs' A/A control (`<arm>~<tag>`): the standard deviation
+of its paired item differences, over the per-item maximum across the harm
+metrics, as the harm statistic is built, and over the P1 items.
+`scripts/report.ts` gives each rule the scale of the tier its `sd_source`
+names, so L's rules take M's A/A pairs when the M runs are in the same
+invocation.
 
 The falsification set (`src/report/falsify.ts`) pairs the A/A control with
 its arm, or else the treatment with `host`: P1-control pass per item, the
 gateway 4xx share per session with no scheduled fault, the pushback share
 per session before the treatment's divergence index, and the wall time the
-harness spent before each scripted clock jump. On an A/B pair the daemon arm's
+harness spent from the preceding scripted event's completion (its `Event`
+entry) to each scripted clock jump. On an A/B pair the daemon arm's
 background work holds the clock, so the idle-gap check measures that work
 there; the set is a zero-effect check on an A/A pair, and the report says
 which pair it used.
@@ -97,12 +109,14 @@ and the resources gate fails until the run is repeated.
 sweep report's layout, the gate verdict with every metric's n, difference,
 interval, p, detectable difference, resolution ratio, verdict, and gate
 result (a bound family shows its observed per-run values, or a binary
-metric's treatment rate), the harm
+metric's treatment rate over the pairs the verdict kept), the campaign's
+open requirements, the harm
 panel, oracle activations with the uncovered list, recovery, soak for the
-daemon arms with the longest sampling gap, intrusiveness with each arm's latency delta against `host`,
+daemon arms with the longest sampling gap, intrusiveness with each arm's latency delta against its run's `host`,
 cost, the falsification set, the A/A reports (`<run>/aa.json`, or a note
 that control arms ran without one), the claim boundary, and the
-pre-registration. It refuses a report whose own text, outside the
+pre-registration. The intrusiveness table takes each arm's latency delta
+against the `host` arm of the same run. It refuses a report whose own text, outside the
 attached boundary and pre-registration, contains the word parity.
 
 ## Run conditions and continuity

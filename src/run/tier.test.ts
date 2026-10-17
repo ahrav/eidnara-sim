@@ -1,4 +1,8 @@
 import { describe, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { Scenario } from "../scenario/compile";
 import type { FaultEpisode } from "../scenario/faults";
 import { loadPrereg } from "../scenario/inputs";
@@ -81,6 +85,37 @@ describe("tier plan", () => {
             "s-1",
         ]);
     });
+
+    test("a moved laptop sleep lasts the idle gap before the session it lands on", () => {
+        const at = { "s-1": 0, "s-2": 50_000, "s-3": 400_000 };
+        const events = Object.entries(at).flatMap(([session, start]) => [
+            { id: `${session}-start`, kind: "session_start", session, scenario_ms: start },
+            { id: `${session}-0`, kind: "user_turn", session, scenario_ms: start + 1_000 },
+            { id: `${session}-end`, kind: "session_end", session, scenario_ms: start + 2_000 },
+        ]);
+        const sleep = {
+            id: "sleep",
+            type: "laptop_sleep",
+            trigger: { kind: "session_start", session: "s-far" },
+            params: { duration_ms: 9_999_999 },
+        } as unknown as FaultEpisode;
+        const s = { events, sessions: [], faults: [sleep] } as unknown as Scenario;
+        const [moved] = compressFaults(s, events.length);
+        expect(moved?.trigger.session).toBe("s-2");
+        expect(moved?.params.duration_ms).toBe(50_000 - 2_000);
+    });
+});
+
+test("the tier command refuses an unknown flag before it plans anything", () => {
+    const out = mkdtempSync(join(tmpdir(), "sim-tier-"));
+    const r = spawnSync(
+        "bun",
+        ["scripts/tier.ts", "--tier", "S", "--out", out, "--host", "pi", "--plan-only"],
+        { encoding: "utf8" },
+    );
+    expect(r.status).toBe(2);
+    expect(r.stderr).toContain("--host");
+    expect(existsSync(join(out, "tier-plan.json"))).toBe(false);
 });
 
 describe("restartFraction", () => {

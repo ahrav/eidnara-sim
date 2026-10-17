@@ -4,7 +4,7 @@ import { GradeLog, type GradeRecord } from "../grade/probes";
 import { type Entry, readJournal } from "../run/journal";
 import { checkJournal } from "../run/journal-check";
 import { referenceArm } from "../run/run";
-import { LABELS } from "../usersim/plan";
+import { LABELS, type Label, realisedRates } from "../usersim/plan";
 import { type PairingRecord, pairingMismatches } from "../usersim/usersim";
 import type { GradedRun } from "./observe";
 
@@ -82,13 +82,24 @@ const CHECKS: Record<string, Check> = {
         const bad = runs.flatMap((c) =>
             pairingMismatches(c.pairing, referenceArm(c.manifest.order)),
         );
-        const n = runs.reduce((s, c) => s + c.pairing.filter((r) => r.kind === "turn").length, 0);
+        let n = 0;
+        for (const c of runs) {
+            const reference = referenceArm(c.manifest.order);
+            const turns = c.pairing.filter((r) => r.kind === "turn");
+            const keys = new Set(turns.map((r) => `${r.arm}/${r.event}`));
+            n += turns.filter(
+                (r) => r.arm !== reference(r.arm) && keys.has(`${reference(r.arm)}/${r.event}`),
+            ).length;
+        }
         return outcome(n, bad, "paired user turns");
     },
     "SIM-P03": (runs) => {
         const bad: string[] = [];
         let n = 0;
         for (const c of runs) {
+            const reference = referenceArm(c.manifest.order);
+            const turnOf = (arm: string, event: string) =>
+                c.pairing.find((x) => x.kind === "turn" && x.arm === arm && x.event === event);
             c.pairing.forEach((r, i) => {
                 if (r.kind !== "divergedAt") return;
                 n++;
@@ -96,10 +107,22 @@ const CHECKS: Record<string, Check> = {
                     (x) => x.kind === "turn" && x.arm === r.arm && x.event === r.event,
                 );
                 if (turn >= 0 && turn < i) bad.push(`${r.arm} ${r.event}`);
+                const own = turnOf(r.arm, r.event);
+                const other =
+                    r.against === "reference" ? turnOf(reference(r.arm), r.event) : undefined;
+                if (
+                    (own && own.digest !== r.digest) ||
+                    (other && other.digest !== r.reference_digest)
+                )
+                    bad.push(`${r.arm} ${r.event} hashes differ from its turns'`);
             });
             bad.push(...hiddenDivergences(c));
         }
-        return outcome(n, bad, "divergence records, each ahead of its turn, none hidden");
+        return outcome(
+            n,
+            bad,
+            "divergence records, each ahead of its turn with its hashes, none hidden",
+        );
     },
     "SIM-P04": (runs) => {
         const n = runs.reduce(
@@ -114,11 +137,24 @@ const CHECKS: Record<string, Check> = {
                 status: "unreached",
                 detail: "a capped prefix cannot match whole-scenario rates",
             };
-        const rates = runs.flatMap((c) => journalOf(c).filter((e) => e.kind === "UserSimRates"));
-        const bad = rates
-            .filter((e) => (e.outside as string[]).length > 0)
-            .map((e) => `${e.arm}: ${e.outside}`);
-        return outcome(rates.length, bad, "arms with realised rates");
+        let n = 0;
+        const bad: string[] = [];
+        for (const c of runs) {
+            for (const a of c.g.run.arms) {
+                const turns = a.journal
+                    .filter((e) => e.kind === "UserTurn" && e.delivered === true)
+                    .map((e) => ({ session: String(e.session), label: e.label as Label }));
+                if (turns.length === 0) continue;
+                n++;
+                const { outside } = realisedRates(turns, c.g.run.prereg);
+                if (outside.length > 0) bad.push(`${a.arm}: ${outside}`);
+                const journaled = a.journal.find((e) => e.kind === "UserSimRates");
+                const summary = (journaled?.outside as string[] | undefined) ?? [];
+                if (summary.join() !== outside.join())
+                    bad.push(`${a.arm}: journaled rates say ${summary.join() || "all in band"}`);
+            }
+        }
+        return outcome(n, bad, "arms with realised rates");
     },
     "SIM-P11": (runs) =>
         journalCheck(
@@ -156,18 +192,30 @@ const CHECKS: Record<string, Check> = {
         return outcome(turns.length, bad, "labelled user turns");
     },
     "SIM-P30": (runs) => {
-        const observed = runs.flatMap((c) =>
-            journalOf(c)
-                .filter((e) => e.kind === "FaultObserved")
-                .map((e) => ({
-                    id: String(e.fault),
-                    known: c.g.scenario.faults.some((f) => f.id === e.fault),
-                })),
-        );
+        let n = 0;
+        const bad: string[] = [];
+        for (const c of runs) {
+            const known = (id: unknown) => c.g.scenario.faults.some((f) => f.id === id);
+            for (const e of journalOf(c).filter((x) => x.kind === "FaultObserved")) {
+                n++;
+                if (!known(e.fault)) bad.push(`observed ${e.fault} unscheduled`);
+            }
+            for (const a of c.g.run.arms) {
+                const fired = a.journal.filter((e) => e.kind === "FaultFired");
+                for (const call of a.calls.filter((x) => typeof x.fault_ref === "string")) {
+                    n++;
+                    const before = fired.some(
+                        (e) => e.fault === call.fault_ref && e.wall_ms <= call.started_wall_ms,
+                    );
+                    if (!known(call.fault_ref) || !before)
+                        bad.push(`call ${call.seq} names ${call.fault_ref}, not fired before it`);
+                }
+            }
+        }
         return outcome(
-            observed.length,
-            observed.filter((o) => !o.known).map((o) => o.id),
-            "observed faults, all scheduled",
+            n,
+            bad,
+            "observed faults and injected calls, each fault scheduled and fired",
         );
     },
     "SIM-P41": (runs) => {
@@ -181,7 +229,8 @@ const CHECKS: Record<string, Check> = {
             }
             for (const r of c.g.grades) {
                 const s = seen.get(`${c.g.run.dir}/${r.arm}/${r.item}`);
-                if (s && s.snapshot !== undefined && s.snapshot !== r.snapshot)
+                if (!s) bad.push(`${r.arm}/${r.item} graded without a journaled snapshot`);
+                else if (s.snapshot !== undefined && s.snapshot !== r.snapshot)
                     bad.push(`${r.arm}/${r.item} grades ${r.snapshot}`);
             }
         }
@@ -191,6 +240,7 @@ const CHECKS: Record<string, Check> = {
     "SIM-P42": (runs) => {
         let n = 0;
         const bad: string[] = [];
+        const used = new Map<number, number>();
         for (const c of runs) {
             const versions = new Map<string, number>();
             for (const r of c.grades) {
@@ -199,8 +249,17 @@ const CHECKS: Record<string, Check> = {
                 if (r.version <= (versions.get(key) ?? 0)) bad.push(key);
                 versions.set(key, r.version);
             }
+            for (const r of c.g.grades) {
+                used.set(r.version, (used.get(r.version) ?? 0) + 1);
+                if (r.version !== versions.get(`${r.arm}/${r.item}`))
+                    bad.push(`${r.arm}/${r.item} reported at v${r.version}, not the latest`);
+            }
         }
-        return outcome(n, bad, "grade records with increasing versions");
+        const named = [...used]
+            .sort(([a], [b]) => a - b)
+            .map(([v, k]) => `v${v} for ${k}`)
+            .join(", ");
+        return outcome(n, bad, `grade records with increasing versions; the report uses ${named}`);
     },
 };
 
@@ -231,7 +290,7 @@ function journalCheck(
 
 export function propertyWitness(catalog: string, runs: GradedRun[]): PropertyWitness[] {
     const ctx = runs.map(context);
-    return [...catalog.matchAll(/^\| (SIM-P\d+) \|/gm)].map(([, id]) => {
+    return [...catalog.matchAll(/^\| (SIM-[A-Z]\d+) \|/gm)].map(([, id]) => {
         const check = CHECKS[id as string];
         const result = check
             ? check(ctx)

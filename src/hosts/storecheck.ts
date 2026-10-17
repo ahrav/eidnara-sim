@@ -91,8 +91,9 @@ export interface Deletion {
 }
 
 const words = (text: string) => text.toLowerCase().match(/[\w[\]-]+/g) ?? [];
+const unbracket = (t: string) => t.replace(/[[\]]/g, "");
 const runsOf = (text: string, size: number) => {
-    const w = words(text).map((t) => t.replace(/[[\]]/g, ""));
+    const w = words(text).map(unbracket);
     return new Set(
         w.slice(0, Math.max(0, w.length - size + 1)).map((_, i) => w.slice(i, i + size).join(" ")),
     );
@@ -107,14 +108,15 @@ const literal = (t: string) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
  */
 export function factMatcher(statement: string, others: readonly string[], size: number) {
     const shared = new Set(others.flatMap((o) => [...runsOf(o, size)]));
-    const sharedWords = new Set(others.flatMap(words));
+    const sharedWords = new Set(others.flatMap(words).map(unbracket));
     const runs = [...runsOf(statement, size)].filter((r) => !shared.has(r));
     const values = words(statement)
         .filter((t) => /^\[.+\]$/.test(t) || (t.length >= 4 && /[\d_]/.test(t)))
+        .map(unbracket)
         .filter((t) => !sharedWords.has(t))
-        .map((t) => new RegExp(`(^|[^\\w-])${literal(t.replace(/[[\]]/g, ""))}($|[^\\w-])`));
+        .map((t) => new RegExp(`(^|[^\\w-])${literal(t)}($|[^\\w-])`));
     return (content: string) => {
-        const text = content.toLowerCase().replace(/[[\]]/g, "");
+        const text = unbracket(content.toLowerCase());
         const own = runsOf(content, size);
         return runs.some((r) => own.has(r)) || values.some((v) => v.test(text));
     };

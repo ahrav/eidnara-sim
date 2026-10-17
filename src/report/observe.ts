@@ -14,6 +14,7 @@ export interface GradedRun {
     run: RunLogs;
     scenario: Scenario;
     grades: GradeRecord[];
+    host: string;
 }
 
 const ALIASES: Record<string, string> = {
@@ -21,7 +22,10 @@ const ALIASES: Record<string, string> = {
     "P9.cross_session_pass_rate": "P9.pass",
 };
 
-type RunValue = (g: GradedRun, arm: ArmLogs) => number | null;
+/** The prefix that keeps one seed's items apart across the tier's hosts: `<host>/<seed>`. */
+const runKey = (g: GradedRun) => `${g.host}/${g.scenario.manifest.seed}`;
+
+type RunValue = (g: GradedRun, arm: ArmLogs, other: ArmLogs) => number | null;
 
 export const userTexts = (g: GradedRun) =>
     g.scenario.events.flatMap((e) =>
@@ -34,11 +38,18 @@ const panelOf = (g: GradedRun, arm: ArmLogs) => {
     return cached;
 };
 
-function values(g: GradedRun, arm: string, metric: string): number[] {
-    return g.grades
-        .filter((r) => r.arm === arm && r.verdict !== "excluded")
-        .map((r) => r.metrics[metric])
-        .filter((v): v is number => typeof v === "number");
+function values(g: GradedRun, arm: string, metric: string, other: string): Map<string, number> {
+    const of = (a: string) =>
+        new Map(
+            g.grades
+                .filter((r) => r.arm === a && r.verdict !== "excluded")
+                .flatMap((r) => {
+                    const v = r.metrics[metric];
+                    return typeof v === "number" ? [[r.item, v] as const] : [];
+                }),
+        );
+    const theirs = of(other);
+    return new Map([...of(arm)].filter(([item]) => theirs.has(item)));
 }
 const total = (xs: number[]) => xs.reduce((s, x) => s + x, 0);
 const latency =
@@ -51,12 +62,16 @@ const slope =
         soak(run, arm, resource).slope_per_session;
 const graded =
     (metric: string, reduce: (xs: number[]) => number): RunValue =>
-    (g, arm) => {
-        const v = values(g, arm.arm, metric);
+    (g, arm, other) => {
+        const v = [...values(g, arm.arm, metric, other.arm).values()];
         return v.length === 0 ? null : reduce(v);
     };
 
-const RUN_VALUES: Record<string, { value: RunValue; delta: boolean }> = {
+/**
+ * `delta` metrics observe treatment minus control; `hostless` ones measure the daemon, so a
+ * `host` control that runs none counts as zero.
+ */
+const RUN_VALUES: Record<string, { value: RunValue; delta: boolean; hostless?: true }> = {
     failed_turns: {
         value: (_, arm) =>
             new Set(
@@ -64,6 +79,7 @@ const RUN_VALUES: Record<string, { value: RunValue; delta: boolean }> = {
                     .filter(
                         (e) =>
                             (e.kind === "EndTurn" && e.outcome !== "ok") ||
+                            (e.kind === "Event" && e.outcome === "failed(interrupted)") ||
                             (e.kind === "ItemState" &&
                                 e.event !== undefined &&
                                 e.state === "failed(interrupted)"),
@@ -79,9 +95,9 @@ const RUN_VALUES: Record<string, { value: RunValue; delta: boolean }> = {
     },
     turn_latency_p50_delta_ms: { value: latency(0.5), delta: true },
     turn_latency_p95_delta_ms: { value: latency(0.95), delta: true },
-    daemon_rss_growth_bytes_per_session: { value: slope("rss"), delta: true },
-    daemon_heap_growth_bytes_per_session: { value: slope("heap"), delta: true },
-    store_growth_bytes_per_session: { value: slope("store_bytes"), delta: true },
+    daemon_rss_growth_bytes_per_session: { value: slope("rss"), delta: true, hostless: true },
+    daemon_heap_growth_bytes_per_session: { value: slope("heap"), delta: true, hostless: true },
+    store_growth_bytes_per_session: { value: slope("store_bytes"), delta: true, hostless: true },
     internal_string_hits: {
         value: (g, arm) => panelOf(g, arm).internal_string_hits.length,
         delta: false,
@@ -92,7 +108,7 @@ const RUN_VALUES: Record<string, { value: RunValue; delta: boolean }> = {
     },
     reverted_memory_edits: {
         value: (g, arm) => panelOf(g, arm).reverted_edits.length,
-        delta: false,
+        delta: true,
     },
     usd_per_component: {
         value: ({ run, grades }, arm) => costPanel(run, arm, grades).usd,
@@ -121,6 +137,7 @@ function itemPairs(
     const source = ALIASES[metric] ?? metric;
     return runs.flatMap((g) => {
         const seed = String(g.scenario.manifest.seed);
+        const key = runKey(g);
         const of = (arm: string) =>
             new Map(
                 g.grades
@@ -136,7 +153,7 @@ function itemPairs(
             of(treatment),
             (item) => `${seed}/${fact.get(item) ?? item}`,
             (item) => issue.get(item) ?? 0,
-        ).map((x) => ({ ...x, item: `${seed}/${x.item}` }));
+        ).map((x) => ({ ...x, item: `${key}/${x.item}` }));
     });
 }
 
@@ -151,10 +168,10 @@ function runPairs(
     return runs.flatMap((g) => {
         const [c, t] = [control, treatment].map((a) => g.run.arms.find((x) => x.arm === a));
         if (!c || !t) return [];
-        const [raw, tv] = [def.value(g, c), def.value(g, t)];
-        const cv = raw === null && def.delta && armBase(c.arm) === "host" ? 0 : raw;
+        const [raw, tv] = [def.value(g, c, t), def.value(g, t, c)];
+        const cv = raw === null && def.hostless && armBase(c.arm) === "host" ? 0 : raw;
         if (tv === null || cv === null) return [];
-        const run = `${g.run.tier}-${g.scenario.manifest.seed}`;
+        const run = `${g.run.tier}-${g.host}-${g.scenario.manifest.seed}`;
         return [
             def.delta
                 ? { run, control: 0, treatment: tv - cv }
@@ -163,27 +180,53 @@ function runPairs(
     });
 }
 
+/**
+ * The faults that landed in an arm: those the scheduler observed, and those the proxy
+ * recorded on the arm's calls as `fault_ref`.
+ */
 function asymmetric(runs: GradedRun[], control: string, treatment: string): string[] {
     return runs.flatMap((g) => {
-        const fired = (arm: string) =>
-            new Set(
-                (g.run.arms.find((a) => a.arm === arm)?.journal ?? [])
-                    .filter(
-                        (e) =>
-                            e.kind === "FaultObserved" &&
-                            (e.evidence as { skipped?: unknown } | undefined)?.skipped ===
-                                undefined,
-                    )
-                    .map((e) => String(e.fault)),
+        const fired = (name: string) => {
+            const arm = g.run.arms.find((a) => a.arm === name);
+            const observed = (arm?.journal ?? [])
+                .filter(
+                    (e) =>
+                        e.kind === "FaultObserved" &&
+                        (e.evidence as { skipped?: unknown } | undefined)?.skipped === undefined,
+                )
+                .map((e) => String(e.fault));
+            const injected = (arm?.calls ?? []).flatMap((c) =>
+                c.fault_ref === null ? [] : [c.fault_ref],
             );
+            return new Set([...observed, ...injected]);
+        };
         const [c, t] = [fired(control), fired(treatment)];
         const lonely = g.scenario.faults.filter((f) => c.has(f.id) !== t.has(f.id));
         const sessions = new Set(lonely.map((f) => f.trigger.session));
-        const seed = String(g.scenario.manifest.seed);
         return g.scenario.probes
             .filter((p) => sessions.has(p.session))
-            .map((p) => `${seed}/${p.id}`);
+            .map((p) => `${runKey(g)}/${p.id}`);
     });
+}
+
+/**
+ * What the fixed-N campaign still lacks: a pre-registered host and seed without a run, or a
+ * probe type with fewer completed paired items than `paired_items_per_probe_type`.
+ */
+function incomplete(p: Preregistration, runs: GradedRun[], observations: Observation[]): string[] {
+    const present = new Set(runs.map(runKey));
+    const missing = p.hosts.flatMap((host) =>
+        p.seeds.flatMap((seed) =>
+            present.has(`${host}/${seed}`) ? [] : [`missing run ${host}/${seed}`],
+        ),
+    );
+    const n = p.stopping_rule.paired_items_per_probe_type;
+    const short = p.families.flatMap((f) => {
+        if (!/^probe-P\d+$/.test(f.id) || f.analysis_unit !== "item") return [];
+        const pairs = observations.find((o) => o.metric === f.metrics[0])?.items?.length ?? 0;
+        return pairs < n ? [`${f.id}: ${pairs} of ${n} paired items`] : [];
+    });
+    return [...missing, ...short];
 }
 
 export function tierInput(
@@ -214,10 +257,15 @@ export function tierInput(
         g.grades
             .filter((r) => r.verdict === "excluded" && [control, treatment].includes(r.arm))
             .map((r) => ({
-                id: `${g.scenario.manifest.seed}/${r.item}`,
+                id: `${runKey(g)}/${r.item}`,
                 arm: r.arm,
                 reason: r.reason ?? "excluded",
             })),
     );
-    return { observations, excluded, asymmetric: asymmetric(runs, control, treatment) };
+    return {
+        observations,
+        excluded,
+        asymmetric: asymmetric(runs, control, treatment),
+        incomplete: incomplete(p, runs, observations),
+    };
 }

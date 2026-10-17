@@ -30,15 +30,19 @@ stopped at the limit; the report's run-conditions panel gives the events
 each run reached against its plan.
 
 A scheduled fault whose trigger session lies past the prefix moves into
-it (`compressFaults`): the faults keep their order and spread evenly over
-the prefix's sessions, each onto the first session from its place that
-has enough user turns for a turn-triggered fault, or that is in the p90
-regime (else the longest session) for a summarizer-triggered one; a
+it (`compressFaults`): each fault's index in the schedule sets where its
+search starts, spread evenly over the prefix's sessions, and the search
+wraps around the prefix, so two moved faults can land in either session
+order. Each lands on the first session from its start that has enough
+user turns for a turn-triggered fault, that is in the p90 regime (else
+the longest session) for a summarizer-triggered one, or that has an idle
+gap before it for a laptop sleep, whose duration becomes that gap; a
 session-start fault never lands on the prefix's first session, as the
 compiler never schedules one there. The
 moved schedule goes to `<run>/faults.json` and the run's `--faults`, so
-the manifest records it; a fault no prefix session can host keeps its
-trigger and stays untriggered.
+the manifest records it, and the report reads the schedule from the
+manifest; a fault no prefix session can host keeps its trigger and stays
+untriggered.
 
 The prefix is a cap on the pre-registered scenario, so a tier report
 covers fewer items than the pre-registered `paired_items_per_probe_type`;
@@ -62,20 +66,27 @@ The panel lists records by id, without their catalog names.
 
 The run-level checks cover:
 
-- SIM-P02 and SIM-P03: pairing before divergence, divergence records
-  ahead of their turn, and no turn whose context digest differs from its
-  reference arm's without a divergence record;
+- SIM-P02 and SIM-P03: pairing before divergence over turns that have a
+  reference counterpart, divergence records ahead of their turn carrying
+  the two turns' digests, and no turn whose context digest differs from
+  its reference arm's without a divergence record;
 - SIM-P04: a divergence occurred;
-- SIM-P10: user-sim rates inside their bands, on uncapped runs only;
+- SIM-P10: user-sim rates recomputed from the journaled turn labels
+  inside their bands, agreeing with the journaled summary, on uncapped
+  runs only;
 - SIM-P11, SIM-P12, and SIM-P14: the journal's order, idle jumps, and
   scheduled jumps, from `checkJournal`;
 - SIM-P15: proxy records carry both times, with wall time in `seq` order
   per arm;
 - SIM-P25: every user turn has a label;
-- SIM-P30: every observed fault was scheduled;
-- SIM-P41: each item's snapshot is set once, and its latest grade cites
-  that snapshot;
-- SIM-P42: grade versions only increase.
+- SIM-P30: every observed fault was scheduled, and every injected call
+  names a scheduled fault fired before it;
+- SIM-P41: each item's snapshot is set once, and every grade cites a
+  journaled snapshot of its item;
+- SIM-P42: grade versions only increase, the report grades at the latest
+  version, and the panel names the versions used.
+
+The liveness records SIM-L01 to SIM-L03 appear as unchecked.
 
 ## Sandbox labels
 
@@ -104,14 +115,16 @@ M's six paired runs (three seeds on two hosts) each carry `host~aa` and
 
 L starts only after `<dir>/L-resizing.json` records its paired items per
 probe type. `--resize-from <M tier dir>` computes it from the M tier's
-paired runs, the `main` group of its `tier-plan.json`, and refuses while
-any of them is ungraded, so the profiles' changed models never enter it.
+paired runs, the `main` group of its `tier-plan.json`, and refuses until
+its `tier-result.json` records a zero `grade_exit` for each of them, so an
+interrupted grading or the profiles' changed models never enter it.
 It applies the pre-registered rule (`src/run/resize.ts`) to each
 superiority and noninferiority item metric:
 the discordance M observed, the ledger-fact design effect from M's
 intraclass correlation, and the n that reaches the family's L effect at
 its power, with Holm's first step over the harm family's metrics; L's count is the
-largest n, and a type M never saw discordant keeps the planning count.
+largest n, where a type M never saw discordant counts as the planning
+count, so L never falls below it.
 The L scenarios are compiled with that count.
 
 ## Counterfactual arm

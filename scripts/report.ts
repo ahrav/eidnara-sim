@@ -1,9 +1,9 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import type { Tier } from "../src/prereg/schema";
 import { parseContinuity } from "../src/report/conditions";
 import { renderTier } from "../src/report/render";
-import { loadGraded, tierReport } from "../src/report/tier";
+import { aaScale, type CusumScale, cusumScale, loadGraded, tierReport } from "../src/report/tier";
 import { loadPrereg } from "../src/scenario/inputs";
 
 const args = process.argv.slice(2);
@@ -36,15 +36,20 @@ for (const dir of dirs) {
     const tier = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8")).tier as Tier;
     byTier.set(tier, [...(byTier.get(tier) ?? []), dir]);
 }
-for (const [tier, list] of byTier) {
-    const prereg = loadPrereg(tier);
-    const report = tierReport(
-        prereg,
-        list.map((d) => loadGraded(d, prereg)),
-        boundary,
-        catalog,
-        reference,
-    );
+const loaded = new Map(
+    [...byTier].map(([tier, list]) => {
+        const prereg = loadPrereg(tier);
+        return [tier, { prereg, runs: list.map((d) => loadGraded(d, prereg)) }] as const;
+    }),
+);
+const scales = new Map([...loaded].map(([tier, t]) => [tier, aaScale(t.prereg, t.runs)]));
+const recorded = (tier: Tier, dirs: string[]): CusumScale | undefined => {
+    const beside = dirs.map((d) => join(dirname(d), `${tier}-resizing.json`)).find(existsSync);
+    return beside ? (JSON.parse(readFileSync(beside, "utf8")).cusum_sd ?? undefined) : undefined;
+};
+for (const [tier, { prereg, runs }] of loaded) {
+    const scale = cusumScale(prereg, scales, recorded(tier, byTier.get(tier) ?? []));
+    const report = tierReport(prereg, runs, boundary, scale, catalog, reference);
     const text = renderTier(report);
     if (out) {
         mkdirSync(out, { recursive: true });

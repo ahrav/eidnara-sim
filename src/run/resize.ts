@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { Preregistration } from "../prereg/schema";
 import { normalQuantile } from "../stats/dist";
 import type { TierInput } from "../stats/gate";
@@ -20,6 +22,38 @@ export interface Resizing {
     paired_items_per_probe_type: number;
 }
 
+export function gradedMainRuns(
+    dir: string,
+    m?: Pick<Preregistration, "tier" | "hosts" | "seeds">,
+): { main: string[]; ungraded: string[] } {
+    const read = (name: string) => JSON.parse(readFileSync(join(dir, name), "utf8"));
+    const planned = read("tier-plan.json") as {
+        tier: string;
+        plan: { group: string; dir: string; host: string; seed: number }[];
+    };
+    if (m && planned.tier !== m.tier) {
+        throw new Error(`${dir} holds a ${planned.tier} tier plan; resizing reads ${m.tier}`);
+    }
+    const jobs = planned.plan.filter((j) => j.group === "main");
+    const have = new Set(jobs.map((j) => `${j.seed}-${j.host}`));
+    const missing = (m?.hosts ?? [])
+        .flatMap((h) => (m?.seeds ?? []).map((s) => `${s}-${h}`))
+        .filter((k) => !have.has(k));
+    if (missing.length > 0) {
+        throw new Error(`${dir} plans no ${m?.tier} paired run for ${missing.join(", ")}`);
+    }
+    const main = jobs.map((j) => j.dir);
+    const results = read("tier-result.json").results as {
+        dir: string;
+        run_exit: number | null;
+        grade_exit: number | null;
+    }[];
+    const done = new Set(
+        results.filter((r) => r.run_exit === 0 && r.grade_exit === 0).map((r) => r.dir),
+    );
+    return { main, ungraded: main.filter((d) => !done.has(d)) };
+}
+
 /** One-way ANOVA intraclass correlation of item differences within ledger facts, in [0, 1]. */
 export function icc(groups: number[][]): number {
     const sizes = groups.map((g) => g.length);
@@ -40,16 +74,23 @@ export function icc(groups: number[][]): number {
     return denom <= 0 ? 0 : Math.min(1, Math.max(0, (msb - msw) / denom));
 }
 
-/** L's paired items per probe type from M's observed discordance, by the pre-registered rule. */
+/**
+ * L's paired items per probe type from M's observed discordance, by the pre-registered rule: the
+ * largest n over the item metrics, where a metric M never saw discordant counts as the planning
+ * size.
+ */
 export function resizeFromM(l: Preregistration, m: TierInput): Resizing {
     const planning =
         l.resizing?.planning_paired_items_per_probe_type ??
         l.stopping_rule.paired_items_per_probe_type;
+    const asym = new Set(m.asymmetric);
     const per_type = l.families
         .filter((f) => f.analysis_unit === "item" && f.direction !== "descriptive")
         .flatMap((f) =>
             f.metrics.map((metric): TypeSize => {
-                const items = m.observations.find((o) => o.metric === metric)?.items ?? [];
+                const items = (m.observations.find((o) => o.metric === metric)?.items ?? []).filter(
+                    (x) => !asym.has(x.item),
+                );
                 const harm = f.direction === "noninferiority";
                 const effect = Number(harm ? f.margin.value : f.mde.value) / 100;
                 const za = normalQuantile(1 - Number(f.alpha) / (harm ? f.metrics.length : 2));
@@ -84,7 +125,7 @@ export function resizeFromM(l: Preregistration, m: TierInput): Resizing {
                 };
             }),
         );
-    const sized = per_type.map((t) => t.n).filter((n): n is number => n !== null);
+    const sized = per_type.map((t) => t.n ?? planning);
     return {
         source_tier: l.resizing?.source_tier ?? "M",
         planning,
