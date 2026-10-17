@@ -130,7 +130,7 @@ if (prereg.resizing && from && !existsSync(resizing)) {
         cusum_sd: aaScale(m, runs) ?? null,
         ...resizeFromM(prereg, input),
     };
-    writeFileSync(resizing, `${JSON.stringify(sized, null, 2)}\n`);
+    writeAtomic(resizing, `${JSON.stringify(sized, null, 2)}\n`);
 }
 const record = recorded();
 if (prereg.resizing && !record)

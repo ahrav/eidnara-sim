@@ -1,5 +1,6 @@
 import { Database } from "bun:sqlite";
-import { existsSync, lstatSync } from "node:fs";
+import { existsSync, lstatSync, realpathSync } from "node:fs";
+import { join, relative } from "node:path";
 
 export interface StoreCheck {
     integrity: string;
@@ -163,9 +164,18 @@ export async function deleteFactNotes(
     statement: string,
     others: readonly string[] = [],
     onSpawn: (child: ReturnType<typeof Bun.spawn>) => void = () => undefined,
+    within?: string,
 ): Promise<Deletion> {
     if (lstatSync(path).isSymbolicLink()) {
         throw new Error(`${path} is a symlink; the deletion opens only the arm's own store file`);
+    }
+    if (
+        within !== undefined &&
+        realpathSync(path) !== join(realpathSync(within), relative(within, path))
+    ) {
+        throw new Error(
+            `${path} resolves outside ${within}; the deletion opens only the arm's own store file`,
+        );
     }
     const carries = factMatcher(statement, others, 4);
     const ids = readNotes(path)

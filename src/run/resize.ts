@@ -43,13 +43,15 @@ export function gradedMainRuns(
         throw new Error(`${dir} plans no ${m?.tier} paired run for ${missing.join(", ")}`);
     }
     const main = jobs.map((j) => j.dir);
-    const results = read("tier-result.json").results as {
-        dir: string;
-        run_exit: number | null;
-        grade_exit: number | null;
-    }[];
+    const result = read("tier-result.json") as {
+        reports?: Record<string, number | null>;
+        results: { dir: string; run_exit: number | null; grade_exit: number | null }[];
+    };
+    if (result.reports?.main !== 0) {
+        throw new Error(`${dir} recorded a main report exit of ${result.reports?.main ?? "none"}`);
+    }
     const done = new Set(
-        results.filter((r) => r.run_exit === 0 && r.grade_exit === 0).map((r) => r.dir),
+        result.results.filter((r) => r.run_exit === 0 && r.grade_exit === 0).map((r) => r.dir),
     );
     return { main, ungraded: main.filter((d) => !done.has(d)) };
 }

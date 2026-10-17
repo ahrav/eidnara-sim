@@ -62,9 +62,14 @@ const skip = (why: string) => {
     skipped[why] = (skipped[why] ?? 0) + 1;
 };
 /** A grade already on the log for this item, arm, and snapshot stands unless `--regrade` asks anew. */
-const prior = new Set(regrade ? [] : log.latest().map((g) => `${g.item}/${g.arm}/${g.snapshot}`));
+const latest = log.latest();
+const prior = new Set(regrade ? [] : latest.map((g) => `${g.item}/${g.arm}/${g.snapshot}`));
+const standsExcluded = new Set(
+    latest.filter((g) => g.reason === "cf-unverified").map((g) => `${g.item}/${g.arm}`),
+);
 const gradedBefore = (item: string, arm: string, snapshot: string) =>
-    prior.has(`${item}/${arm}/${snapshot}`);
+    prior.has(`${item}/${arm}/${snapshot}`) &&
+    !(unverified(arm, item) && !standsExcluded.has(`${item}/${arm}`));
 const append = (...grades: GradeRecord[]) => {
     const records = grades.map((g) => ({ ...g, version: log.nextVersion(g.item, g.arm) }));
     log.appendAll(records);

@@ -2,7 +2,7 @@ import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { deleteFactNotes, factMatcher } from "../hosts/storecheck";
 import type { Scenario } from "../scenario/compile";
 import { loadPrereg } from "../scenario/inputs";
@@ -111,6 +111,14 @@ describe("L resizing from M", () => {
             { dir: c, run_exit: 0, grade_exit: 0 },
         ];
         writeFileSync(join(dir, "tier-result.json"), JSON.stringify({ results }));
+        expect(() => gradedMainRuns(dir)).toThrow(/main report exit of none/);
+        const reports = { main: 1 };
+        writeFileSync(join(dir, "tier-result.json"), JSON.stringify({ reports, results }));
+        expect(() => gradedMainRuns(dir)).toThrow(/main report exit of 1/);
+        writeFileSync(
+            join(dir, "tier-result.json"),
+            JSON.stringify({ reports: { main: 0 }, results }),
+        );
         expect(gradedMainRuns(dir)).toEqual({ main: [a, b], ungraded: [b] });
     });
 
@@ -120,7 +128,10 @@ describe("L resizing from M", () => {
         const plan = [{ group: "main", dir: a, host: "pi", seed: 201 }];
         writeFileSync(join(dir, "tier-plan.json"), JSON.stringify({ tier: "M", plan }));
         const results = [{ dir: a, run_exit: 1, grade_exit: 0 }];
-        writeFileSync(join(dir, "tier-result.json"), JSON.stringify({ results }));
+        writeFileSync(
+            join(dir, "tier-result.json"),
+            JSON.stringify({ reports: { main: 0 }, results }),
+        );
         expect(gradedMainRuns(dir).ungraded).toEqual([a]);
     });
 
@@ -135,7 +146,10 @@ describe("L resizing from M", () => {
         });
         const full = M.hosts.flatMap((h) => M.seeds.map((s) => job(h, s)));
         const results = full.map((j) => ({ dir: j.dir, run_exit: 0, grade_exit: 0 }));
-        writeFileSync(join(dir, "tier-result.json"), JSON.stringify({ results }));
+        writeFileSync(
+            join(dir, "tier-result.json"),
+            JSON.stringify({ reports: { main: 0 }, results }),
+        );
         writeFileSync(join(dir, "tier-plan.json"), JSON.stringify({ tier: "S", plan: full }));
         expect(() => gradedMainRuns(dir, M)).toThrow(/S tier plan/);
         const pi = full.filter((j) => j.host === "pi");
@@ -275,6 +289,16 @@ describe("counterfactual deletion", () => {
         const after = new Database(moved);
         expect(after.query("select id from notes").all()).toEqual([{ id: 1 }]);
         after.close();
+        const root = mkdtempSync(join(tmpdir(), "sim-cf-root-"));
+        const target = store([[1, "/p/a", "Codename is ember_magpie."]]);
+        symlinkSync(dirname(target), join(root, "context"));
+        const viaLink = join(root, "context", "store.db");
+        await expect(
+            deleteFactNotes(viaLink, "codename is ember_magpie", [], () => undefined, root),
+        ).rejects.toThrow(/resolves outside/);
+        const kept = new Database(target);
+        expect(kept.query("select id from notes").all()).toEqual([{ id: 1 }]);
+        kept.close();
     });
 
     test("a four-word run unique to the fact deletes; one shared with another fact, or three words, does not", () => {

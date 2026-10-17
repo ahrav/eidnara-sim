@@ -143,12 +143,13 @@ export function profileJobs(
 export function compressFaults(scenario: Scenario, events: number): FaultEpisode[] {
     const prefix = scenario.events.slice(0, events);
     const gap = new Map<string, number>();
-    prefix.forEach((e, i) => {
-        const before = prefix[i - 1];
-        if (e.kind === "session_start" && before) {
-            gap.set(String(e.session), Number(e.scenario_ms) - Number(before.scenario_ms));
+    let lastEnd: number | null = null;
+    for (const e of prefix) {
+        if (e.kind === "session_start" && lastEnd !== null) {
+            gap.set(String(e.session), Number(e.scenario_ms) - lastEnd);
         }
-    });
+        if (e.kind === "session_end") lastEnd = Number(e.scenario_ms);
+    }
     const ended = new Set(
         prefix.filter((e) => e.kind === "session_end").map((e) => String(e.session)),
     );

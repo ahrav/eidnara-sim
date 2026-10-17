@@ -30,8 +30,9 @@ export function loadGraded(dir: string, prereg: Preregistration): GradedRun {
         scenario_hash: string;
         fault_override: Scenario["faults"] | null;
         preflight?: { distortions?: string[]; hosts?: { host: string; version: string }[] };
-    } & Omit<RunIdentity, "distortions" | "host_versions" | "side_model"> & {
+    } & Omit<RunIdentity, "distortions" | "host_versions" | "side_model" | "user_sim_model"> & {
             side_model?: string | null;
+            user_sim_model?: string;
         };
     const current = preregistrationHash(prereg);
     if (manifest.prereg_sha256 !== current) {
@@ -88,7 +89,7 @@ export function loadGraded(dir: string, prereg: Preregistration): GradedRun {
             distortions: manifest.preflight?.distortions ?? [],
             host_versions: (manifest.preflight?.hosts ?? []).map((h) => `${h.host}@${h.version}`),
             side_model: side_model ?? null,
-            user_sim_model,
+            user_sim_model: user_sim_model ?? prereg.user_sim.model,
         },
         witnesses: reports === null ? null : [...witnesses.values()],
     };

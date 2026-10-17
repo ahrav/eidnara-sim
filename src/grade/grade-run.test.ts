@@ -83,6 +83,59 @@ test("a counterfactual target whose deletion went unverified is graded excluded(
         verdict: "excluded",
         reason: "cf-unverified",
     });
+    expect(grade(dir).status).toBe(0);
+    expect(versions(dir)).toEqual([1, 1]);
+});
+
+test("a cached counterfactual grade is re-versioned once its deletion reads unverified", () => {
+    const { probe, snapshots } = JSON.parse(readFileSync(FIXTURE, "utf8"));
+    const dir = runDir();
+    writeFileSync(
+        join(dir, "manifest.json"),
+        JSON.stringify({ tier: "L", seed: 301, order: ["eidnara-cf"] }),
+    );
+    writeFileSync(join(dir, "scenario.json"), JSON.stringify({ probes: [probe] }));
+    const entry = (e: object) =>
+        `${JSON.stringify({ seq: 0, scenario_ms: 0, wall_ms: 0, ...e })}\n`;
+    const snapshot = entry({
+        kind: "SnapshotArtefacts",
+        arm: "eidnara-cf",
+        item: probe.id,
+        snapshot: snapshots[0].id,
+    });
+    writeFileSync(join(dir, "journal.jsonl"), snapshot);
+    mkdirSync(join(dir, "eidnara-cf"));
+    writeFileSync(
+        join(dir, "eidnara-cf/snapshots.jsonl"),
+        `${JSON.stringify({ ...snapshots[0], arm: "eidnara-cf" })}\n`,
+    );
+    expect(grade(dir).status).toBe(0);
+    expect(versions(dir)).toEqual([1]);
+    writeFileSync(
+        join(dir, "scenario.json"),
+        JSON.stringify({ probes: [probe], cf_deletions: [{ probe: probe.id }] }),
+    );
+    writeFileSync(
+        join(dir, "journal.jsonl"),
+        snapshot +
+            entry({
+                kind: "CounterfactualDeletion",
+                arm: "eidnara-cf",
+                probe: probe.id,
+                skipped: "x",
+            }),
+    );
+    expect(grade(dir).status).toBe(0);
+    const grades = readFileSync(join(dir, "grades.jsonl"), "utf8")
+        .split("\n")
+        .filter(Boolean)
+        .map((l) => JSON.parse(l));
+    expect(grades.map((g) => [g.version, g.verdict])).toEqual([
+        [1, "pass"],
+        [2, "excluded"],
+    ]);
+    expect(grade(dir).status).toBe(0);
+    expect(versions(dir)).toEqual([1, 2]);
 });
 
 test("grading a run again leaves the grades that already cite their snapshot; --regrade appends new versions", () => {

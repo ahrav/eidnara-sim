@@ -62,7 +62,8 @@ wraps around the prefix, so two moved faults can land in either session
 order. Each lands on the first session from its start that has enough
 user turns for a turn-triggered fault, that is in the p90 regime (else
 the longest session) for a summarizer-triggered one, or that has an idle
-gap before it for a laptop sleep, whose duration becomes that gap; a
+gap before it for a laptop sleep, measured from the preceding session's
+end, whose duration becomes that gap; a
 session-start fault never lands on the prefix's first session, as the
 compiler never schedules one there. The
 moved schedule goes to `<run>/faults.json` and the run's `--faults`, so
@@ -159,7 +160,8 @@ probe type. `--resize-from <M tier dir>` computes it from the M tier's
 paired runs, the `main` group of its `tier-plan.json`, and refuses until
 that plan is the M tier's with a run for every pre-registered host and
 seed and its `tier-result.json` records a zero `run_exit` and `grade_exit`
-for each of them, so an interrupted run or grading, a partial campaign,
+for each of them and a zero exit for the main report, so an interrupted
+run or grading, a report whose witness found a violation, a partial campaign,
 and the profiles' changed models never enter it; while the M directory
 holds a live lease, so a campaign still being graded never enters it; and
 while the M report's campaign-completeness list holds anything besides
@@ -200,8 +202,9 @@ delete runs through `python3`'s `sqlite3`, which registers the store's
 caller-scope functions so its ownership triggers admit a delete inside
 the note's own project and report no facade authority drain, so the
 authority triggers stay inactive for the delete; a failed delete is
-journaled as skipped, and the child is stopped with the arm when the run
-is torn down. Each deleted note is journaled first as its own
+journaled as skipped, as is a store path that is a symlink or resolves
+outside the arm's data directory, and the child is stopped with the arm
+when the run is torn down. Each deleted note is journaled first as its own
 `DeleteMemoryObject` entry with the object id, its kind, the target probe,
 and the scenario time. The grader marks the arm's grade for a sampled probe whose
 deletion was skipped, deleted nothing, or left matching notes as
