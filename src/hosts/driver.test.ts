@@ -1144,9 +1144,9 @@ test("an embedded repository whose name is pathspec magic removes only itself fr
 test("tool reports append to the command log instead of rewriting the recorder state", () => {
     const armDir = tmp();
     const recorder = new SnapshotRecorder(armDir, "eidnara", () => []);
-    recorder.addTools([{ command: "a", exit: 0, scenario_ms: 1 }]);
+    recorder.addTools([{ command: "a", exit: 0, scenario_ms: 1 }], null);
     const stateBefore = statSync(join(armDir, "snapshot-state.json"), { throwIfNoEntry: false });
-    recorder.addTools([{ command: "b", exit: 0, scenario_ms: 2 }]);
+    recorder.addTools([{ command: "b", exit: 0, scenario_ms: 2 }], null);
     const stateAfter = statSync(join(armDir, "snapshot-state.json"), { throwIfNoEntry: false });
     expect(stateAfter?.mtimeMs ?? null).toBe(stateBefore?.mtimeMs ?? null);
     const lines = readFileSync(join(armDir, "commands.jsonl"), "utf8").trim().split("\n");
