@@ -152,6 +152,16 @@ describe("recovery oracles", () => {
         expect(() => recoveries(run([arm(journal(ok, miscounted), [], ok)]))).toThrow(
             "store check",
         );
+        // Derived facts must agree with the ranges: overlaps and inverted bounds are recomputed.
+        const hidden = store("ok", 0, [
+            ["s", 1, 0, 10, "a"],
+            ["s", 2, 5, 20, "b"],
+        ]);
+        expect(() => recoveries(run([arm(journal(ok, hidden), [], ok)]))).toThrow("store check");
+        const inverted = store("ok", 0, [["s", 1, 9, 2, "a"]]);
+        expect(() => recoveries(run([arm(journal(ok, inverted), [], ok)]))).toThrow("store check");
+        const declared = { ...inverted, integrity: "ok; inverted range s/1" };
+        expect(parseStoreCheck(declared, "x")).toEqual(declared);
         expect(parseStoreCheck(ok, "x")).toEqual(ok);
         const legacy = { ...ok, ranges: [["s", 1, 0, 9]] };
         expect(parseStoreCheck(legacy, "x").ranges as unknown[]).toEqual([["s", 1, 0, 9]]);
@@ -186,6 +196,20 @@ describe("recovery oracles", () => {
         ];
         const [r] = recoveries(run([arm(journal)]));
         expect([r?.recovered, r?.reasons]).toEqual([
+            false,
+            ["fault not observed: harness interrupted"],
+        ]);
+        const claimed = [
+            journal[0] as Entry,
+            entry("FaultObserved", 0, {
+                fault: "z",
+                type: "laptop_sleep",
+                evidence: { clock_advanced_ms: 5 },
+            }),
+            ...journal.slice(1),
+        ];
+        const [unjumped] = recoveries(run([arm(claimed)]));
+        expect([unjumped?.recovered, unjumped?.reasons]).toEqual([
             false,
             ["fault not observed: harness interrupted"],
         ]);
@@ -251,7 +275,13 @@ describe("recovery oracles", () => {
             false,
             ["store integrity, final: error: file is not a database"],
         ]);
-        expect(verdict(ok, store("ok", 1), ok)).toEqual([
+        const overlapping: StoreCheck = {
+            integrity: "ok",
+            segments: 2,
+            overlaps: [{ session: "s", first: 1, second: 2 }],
+            ranges: [SEGMENT, ["s", 2, 5, 12, "d2"]],
+        };
+        expect(verdict(ok, overlapping, ok)).toEqual([
             false,
             ["1 overlapping history segments, post crash pass"],
         ]);
@@ -273,6 +303,7 @@ describe("recovery oracles", () => {
         const skipped = { skipped: "arm runs no daemon" };
         const journal = [
             entry("FaultObserved", 0, { fault: "k", type: "daemon_restart", evidence: skipped }),
+            entry("AdvanceClock", 1, { fault: "z", from_ms: 0, busy: [] }),
             entry("FaultObserved", 1, { fault: "z", type: "laptop_sleep", evidence: {} }),
             entry("BeginTurn", 10, { event: "e-1" }),
             entry("EndTurn", 20, { event: "e-1", outcome: "ok" }),

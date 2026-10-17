@@ -292,8 +292,11 @@ export function recoveries(run: RunLogs): Recovery[] {
                     e.busy.length === 0,
             );
             const observed =
-                observations.get(fired.fault) ??
-                (fired.type === "laptop_sleep" && jumped ? fired : undefined);
+                fired.type === "laptop_sleep"
+                    ? jumped
+                        ? (observations.get(fired.fault) ?? fired)
+                        : undefined
+                    : observations.get(fired.fault);
             const evidence = (observed?.evidence ?? {}) as {
                 skipped?: unknown;
                 store?: StoreCheck;
