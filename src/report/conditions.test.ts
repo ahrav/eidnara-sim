@@ -188,3 +188,10 @@ test("a reached session with no transcript in the store is named as missing", ()
     expect(c.transcript_order[1]).toMatchObject({ arm: "eidnara", sessions: 1, missing: ["s-2"] });
     expect(renderConditions([c], []).join("\n")).toContain("| s-2 |");
 });
+
+test("a truncated transcripts.json reads as an unchecked arm instead of failing the report", () => {
+    const g = fixture();
+    writeFileSync(join(g.run.dir, "eidnara/transcripts.json"), "");
+    const c = runConditions(g);
+    expect(c.transcripts[1]).toEqual({ arm: "eidnara", paths: [], missing: null });
+});

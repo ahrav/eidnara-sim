@@ -64,12 +64,17 @@ export function tierPlan(
     );
 }
 
-/** When the run began: its journaled `StartRun`, or `now` for a run with no journal yet. */
-export function runStartedMs(dir: string, now: number): number {
+/**
+ * When the run began and, for a completed run, ended: its journaled `StartRun` and `EndRun`,
+ * with `now` standing in for a run with no journal yet.
+ */
+export function runSpan(dir: string, now: number): { started: number; ended?: number } {
     const path = join(dir, "journal.jsonl");
-    if (!existsSync(path)) return now;
-    const start = readJournal(path).find((e) => e.kind === "StartRun");
-    return start ? start.wall_ms : now;
+    if (!existsSync(path)) return { started: now };
+    const entries = readJournal(path);
+    const started = entries.find((e) => e.kind === "StartRun")?.wall_ms ?? now;
+    const ended = entries.find((e) => e.kind === "EndRun")?.wall_ms;
+    return ended === undefined ? { started } : { started, ended };
 }
 
 /** Jobs whose planned prefix differs from the events their existing manifest ran. */

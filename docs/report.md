@@ -152,7 +152,8 @@ reached against the events planned, and the planned prefix against the
 scenario's total when it is a capped prefix; the time
 interception outcome per binary from the preflight; and any transcript
 store path the driver found missing after the first `session_end`, or
-`<arm> unchecked` for an arm that never reached that check. It then
+`<arm> unchecked` for an arm that never reached that check or whose
+`transcripts.json` a stop cut short. It then
 reads each host's transcripts back, Pi's session files under
 `.pi/agent/sessions` and OpenCode's `session` table in `opencode.db`, and
 compares each `sim-<session>` creation time with the session's scheduled

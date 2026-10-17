@@ -121,10 +121,15 @@ export function runConditions(g: GradedRun): RunConditions {
     const manifest = existsSync(m) ? JSON.parse(readFileSync(m, "utf8")) : {};
     const transcripts = g.run.arms.map((arm) => {
         const p = join(g.run.dir, arm.arm, "transcripts.json");
-        const t = existsSync(p)
-            ? JSON.parse(readFileSync(p, "utf8"))
-            : { paths: [], missing: null };
-        return { arm: arm.arm, paths: t.paths as string[], missing: t.missing as string[] | null };
+        // An absent or cut file (the driver writes it in one call a kill can interrupt) is an
+        // unchecked arm.
+        let t = { paths: [] as string[], missing: null as string[] | null };
+        try {
+            if (existsSync(p)) t = JSON.parse(readFileSync(p, "utf8"));
+        } catch {
+            t = { paths: [], missing: null };
+        }
+        return { arm: arm.arm, paths: t.paths, missing: t.missing };
     });
     const probes = (manifest.preflight?.time_injection ?? []) as RunConditions["interception"];
     return {

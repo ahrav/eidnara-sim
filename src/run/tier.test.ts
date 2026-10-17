@@ -5,7 +5,7 @@ import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Scenario } from "../scenario/compile";
 import { loadPrereg } from "../scenario/inputs";
-import { capEvents, planConflicts, runStartedMs, type TierJob, tierPlan } from "./tier";
+import { capEvents, planConflicts, runSpan, type TierJob, tierPlan } from "./tier";
 
 const event = (kind: string, i: number) => ({
     id: `e-${i}`,
@@ -75,14 +75,18 @@ test("the tier command refuses an output directory another invocation holds", ()
 });
 
 describe("tier resume", () => {
-    test("a run's start is its journaled StartRun, so a resumed run keeps its wall budget", () => {
+    test("a run's span is its journaled StartRun and EndRun, so a resumed run keeps its wall budget and a completed one is left alone", () => {
         const dir = mkdtempSync(join(tmpdir(), "sim-tier-"));
-        expect(runStartedMs(dir, 5_000)).toBe(5_000);
+        expect(runSpan(dir, 5_000)).toEqual({ started: 5_000 });
+        const entry = (kind: string, wall_ms: number) =>
+            JSON.stringify({ kind, arm: null, seq: 0, scenario_ms: 0, wall_ms });
+        writeFileSync(join(dir, "journal.jsonl"), `${entry("StartRun", 1_000)}\n`);
+        expect(runSpan(dir, 5_000)).toEqual({ started: 1_000 });
         writeFileSync(
             join(dir, "journal.jsonl"),
-            `${JSON.stringify({ kind: "StartRun", arm: null, seq: 0, scenario_ms: 0, wall_ms: 1_000 })}\n`,
+            `${entry("StartRun", 1_000)}\n${entry("EndRun", 4_000)}\n`,
         );
-        expect(runStartedMs(dir, 5_000)).toBe(1_000);
+        expect(runSpan(dir, 5_000)).toEqual({ started: 1_000, ended: 4_000 });
     });
 
     test("a plan whose prefix differs from an existing manifest's is a conflict", () => {

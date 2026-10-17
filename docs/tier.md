@@ -4,7 +4,10 @@
 [--plan-only]` runs one tier end to end. It compiles each seed's scenario,
 plans one run per pre-registered host and seed, builds the vendored
 libfaketime once, starts the runs in parallel, grades each one, reports
-its A/A pairs, and writes the tier report. `<dir>/tier-plan.json` holds
+its A/A pairs, and writes the tier report. A run whose journal already
+holds `EndRun` is complete and is graded and reported as it finished. A
+job that fails in orchestration stops the sibling runs before the command
+exits. `<dir>/tier-plan.json` holds
 the plan and `<dir>/tier-result.json` the outcome of each run, with the
 run's own wall time and whether it exceeded the tier's wall budget; each
 run directory keeps its `tier.log`. The command exits 1 when any run,
@@ -19,9 +22,10 @@ grading or report; each run tears down and stays resumable.
 
 A seed's scenario is compiled once into `<dir>/scenarios-<seed>/` and
 copied into each new run directory. A cached scenario compiled from
-another generator version, corpus manifest, or pre-registration is
-refused for a new run; a run that already has a manifest keeps the
-scenario it ran.
+another generator version, corpus manifest, fact bank, repository list,
+or pre-registration is refused for a new run; a run that already has a
+manifest keeps the scenario it ran. The libfaketime build's download,
+extraction, and compilation each end within ten minutes.
 
 ## Plan
 

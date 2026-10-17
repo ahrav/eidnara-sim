@@ -5,7 +5,7 @@ import { TIERS, type Tier } from "../src/prereg/schema";
 import { Children, SIGTERM_EXIT } from "../src/run/children";
 import { releaseLease, takeLease } from "../src/run/journal";
 import { loadScenario } from "../src/run/run";
-import { planConflicts, runStartedMs, tierPlan } from "../src/run/tier";
+import { planConflicts, runSpan, tierPlan } from "../src/run/tier";
 import { buildFaketime } from "../src/run/timeinject";
 import type { Scenario } from "../src/scenario/compile";
 import { loadPrereg } from "../src/scenario/inputs";
@@ -112,50 +112,76 @@ await buildFaketime();
 const budget = prereg.liveness_bounds.tier_wall_budget_ms;
 const limit = Math.round(budget * 1.25);
 const started = Date.now();
-const results = await Promise.all(
-    plan.map(async (job) => {
-        mkdirSync(job.dir, { recursive: true });
-        // A resumed run keeps the budget it started with: its wall time counts from its
-        // journaled StartRun, and the child gets what remains of the limit.
-        const runStarted = runStartedMs(job.dir, started);
-        if (!existsSync(join(job.dir, "scenario.json"))) {
-            writeFileSync(
-                join(job.dir, "scenario.json"),
-                `${JSON.stringify(scenarios.get(job.seed))}\n`,
-            );
-        }
-        const log = join(job.dir, "tier.log");
-        const args = ["run-tier.ts", "--tier", tier, "--seed", String(job.seed), "--out", job.dir];
-        const code = await run(
-            [
-                ...args,
-                "--host",
-                job.host,
-                "--arms",
-                job.arms.join(","),
-                "--events",
-                String(job.events),
-            ],
-            log,
-            Math.max(1, limit - (started - runStarted)),
-        );
-        const run_wall_ms = Date.now() - runStarted;
-        const ran = existsSync(join(job.dir, "manifest.json"));
-        const graded = ran ? await run(["grade-run.ts", job.dir], log, limit) : null;
-        const aa =
-            graded === 0 && job.arms.some((a) => a.includes("~"))
-                ? await run(["aa-report.ts", job.dir], log, limit)
-                : null;
-        return {
-            ...job,
-            run_exit: code,
-            run_wall_ms,
-            over_budget: run_wall_ms > budget,
-            grade_exit: graded,
-            aa_exit: aa,
-            wall_ms: Date.now() - started,
-        };
-    }),
+// A job that throws in orchestration stops the sibling runs before the command exits, so no
+// run outlives the lease on this directory.
+const supervised = async <T>(work: () => Promise<T>): Promise<T> => {
+    try {
+        return await work();
+    } catch (caught) {
+        console.error(caught);
+        await children.stopAll("SIGTERM");
+        return exit(1);
+    }
+};
+const results = await supervised(() =>
+    Promise.all(
+        plan.map(async (job) => {
+            mkdirSync(job.dir, { recursive: true });
+            // A resumed run keeps the budget it started with: its wall time counts from its
+            // journaled StartRun, and the child gets what remains of the limit. A run that
+            // journaled EndRun is complete and is left as it finished.
+            const span = runSpan(job.dir, started);
+            const runStarted = span.started;
+            if (!existsSync(join(job.dir, "scenario.json"))) {
+                writeFileSync(
+                    join(job.dir, "scenario.json"),
+                    `${JSON.stringify(scenarios.get(job.seed))}\n`,
+                );
+            }
+            const log = join(job.dir, "tier.log");
+            const args = [
+                "run-tier.ts",
+                "--tier",
+                tier,
+                "--seed",
+                String(job.seed),
+                "--out",
+                job.dir,
+            ];
+            const code =
+                span.ended !== undefined
+                    ? 0
+                    : await run(
+                          [
+                              ...args,
+                              "--host",
+                              job.host,
+                              "--arms",
+                              job.arms.join(","),
+                              "--events",
+                              String(job.events),
+                          ],
+                          log,
+                          Math.max(1, limit - (started - runStarted)),
+                      );
+            const run_wall_ms = (span.ended ?? Date.now()) - runStarted;
+            const ran = existsSync(join(job.dir, "manifest.json"));
+            const graded = ran ? await run(["grade-run.ts", job.dir], log, limit) : null;
+            const aa =
+                graded === 0 && job.arms.some((a) => a.includes("~"))
+                    ? await run(["aa-report.ts", job.dir], log, limit)
+                    : null;
+            return {
+                ...job,
+                run_exit: code,
+                run_wall_ms,
+                over_budget: run_wall_ms > budget,
+                grade_exit: graded,
+                aa_exit: aa,
+                wall_ms: Date.now() - started,
+            };
+        }),
+    ),
 );
 writeFileSync(
     join(out, "tier-result.json"),

@@ -48,6 +48,7 @@ export interface CompileInput {
     pastes: { id: string; content: string }[];
     errorCodes: { id: string; code: string; context: string }[];
     corpusManifestSha256: string;
+    compileInputsSha256: string;
     embedder: Embedder;
 }
 
@@ -621,6 +622,7 @@ export async function compileScenario(input: CompileInput) {
             tier: prereg.tier,
             prereg_sha256: preregistrationHash(prereg),
             corpus_manifest_sha256: input.corpusManifestSha256,
+            compile_inputs_sha256: input.compileInputsSha256,
             embedding_model: input.embedder.model,
             cue_probe_similarity: thresholds,
             within_session_gap_scale: Math.round(withinScale * 1e6) / 1e6,

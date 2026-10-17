@@ -3,7 +3,9 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "../config/config";
+import { preregistrationHash } from "../prereg/validate";
 import { GENERATOR_VERSION } from "../scenario/compile";
+import { corpusManifestHash, loadPrereg } from "../scenario/inputs";
 import { loadScenario } from "./run";
 
 const stale = (manifest: object) => {
@@ -20,10 +22,20 @@ test("a cached scenario compiled from other inputs is refused for a new run", as
     const out = stale({
         generator_version: GENERATOR_VERSION,
         corpus_manifest_sha256: "0".repeat(64),
+        compile_inputs_sha256: "0".repeat(64),
         prereg_sha256: "0".repeat(64),
     });
     await expect(loadScenario({ config, tier: "S", seed: 101, out })).rejects.toThrow(
-        /corpus_manifest_sha256|prereg_sha256/,
+        /corpus_manifest_sha256, compile_inputs_sha256, prereg_sha256/,
+    );
+    const facts = stale({
+        generator_version: GENERATOR_VERSION,
+        corpus_manifest_sha256: corpusManifestHash(),
+        compile_inputs_sha256: "0".repeat(64),
+        prereg_sha256: preregistrationHash(loadPrereg("S")),
+    });
+    await expect(loadScenario({ config, tier: "S", seed: 101, out: facts })).rejects.toThrow(
+        /\(compile_inputs_sha256\)/,
     );
     writeFileSync(join(out, "manifest.json"), "{}");
     await expect(loadScenario({ config, tier: "S", seed: 101, out })).resolves.toMatchObject({

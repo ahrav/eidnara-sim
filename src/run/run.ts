@@ -20,7 +20,12 @@ import { type CallRecord, type Component, RecordWriter } from "../proxy/records"
 import { Rng } from "../rng";
 import { compileScenario, GENERATOR_VERSION, type Scenario } from "../scenario/compile";
 import type { FaultEpisode } from "../scenario/faults";
-import { corpusManifestHash, loadCompileInput, loadPrereg } from "../scenario/inputs";
+import {
+    compileInputsHash,
+    corpusManifestHash,
+    loadCompileInput,
+    loadPrereg,
+} from "../scenario/inputs";
 import { bedrockEmbedder } from "../scenario/similarity";
 import { behaviourPlan, type Label, realisedRates } from "../usersim/plan";
 import { normaliser, Pairing, proxyUserSim, Tape, UserSim } from "../usersim/usersim";
@@ -123,6 +128,7 @@ export async function loadScenario(
         const current: Record<string, string> = {
             generator_version: GENERATOR_VERSION,
             corpus_manifest_sha256: corpusManifestHash(),
+            compile_inputs_sha256: compileInputsHash(),
             prereg_sha256: preregistrationHash(loadPrereg(o.tier)),
         };
         const manifest = scenario.manifest as Record<string, unknown>;

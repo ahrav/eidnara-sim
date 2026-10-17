@@ -19,6 +19,13 @@ export function loadPrereg(tier: Tier) {
 
 export const corpusManifestHash = () => sha256Hex(read("manifest.json"));
 
+/** The corpus files compile reads beyond those the manifest hashes. */
+const DIRECT_INPUTS = ["manifest.json", "fact-bank.json", "repos.json"];
+
+/** One digest over every corpus file the compiler reads, through the manifest's own hashes. */
+export const compileInputsHash = () =>
+    sha256Hex(DIRECT_INPUTS.map((f) => `${f}:${sha256Hex(read(f))}`).join("\n"));
+
 export function loadCompileInput(
     seed: number,
     tier: Tier,
@@ -45,6 +52,7 @@ export function loadCompileInput(
             read("tool-outputs/error-codes.jsonl"),
         ) as CompileInput["errorCodes"],
         corpusManifestSha256: corpusManifestHash(),
+        compileInputsSha256: compileInputsHash(),
         embedder,
     };
 }

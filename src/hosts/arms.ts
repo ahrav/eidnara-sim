@@ -497,7 +497,11 @@ export class OpencodeSimHost extends SimHost {
         return (listed.data ?? []) as Array<{ info: Untyped; parts: Untyped[] }>;
     }
 
-    private async logTurnTools(seen: Set<string>, startScenario: number): Promise<void> {
+    /** Logs the tools of the turn's own messages and returns those messages. */
+    private async logTurnTools(
+        seen: Set<string>,
+        startScenario: number,
+    ): Promise<Array<{ info: Untyped; parts: Untyped[] }>> {
         const fresh = (await this.messages()).filter((m) => !seen.has(String(m.info?.id)));
         const origin = Math.min(...fresh.map((m) => Number(m.info?.time?.created ?? Infinity)));
         for (const m of fresh) {
@@ -507,6 +511,7 @@ export class OpencodeSimHost extends SimHost {
                 this.logTool(part.tool, part.state?.input, part.state?.status === "error", ms);
             }
         }
+        return fresh;
     }
 
     async prompt(text: string, timeoutMs: number, interruptMs?: number): Promise<PromptResult> {
@@ -539,13 +544,10 @@ export class OpencodeSimHost extends SimHost {
         }
         const { result } = first;
         if (result.error) return { error: JSON.stringify(result.error).slice(0, 2000) };
-        await this.logTurnTools(seen, startScenario);
+        const fresh = await this.logTurnTools(seen, startScenario);
         const info = result.data?.info;
         if (info?.error) return { error: JSON.stringify(info.error).slice(0, 2000) };
-        const own = (await this.messages()).filter(
-            (m) => m.info?.role === "assistant" && !seen.has(String(m.info?.id)),
-        );
-        const last = own.at(-1);
+        const last = fresh.filter((m) => m.info?.role === "assistant").at(-1);
         if (!last) return { error: "the turn returned without an assistant message of its own" };
         if (last.info?.error) return { error: JSON.stringify(last.info.error).slice(0, 2000) };
         const finish = last.info?.finish;

@@ -61,6 +61,8 @@ test("an OpenCode turn logs only its own messages' tools, timed in OpenCode's cl
     });
     expect(await host.prompt("go", 5_000)).toEqual({});
     expect(host.drainTools()).toEqual([{ command: "cargo test", exit: 1, scenario_ms: 2_100 }]);
+    // One listing before the prompt and one after it: tool logging and finish validation share it.
+    expect(calls).toBe(2);
 });
 
 test("an OpenCode turn whose last assistant step has not finished is a failed turn", async () => {
