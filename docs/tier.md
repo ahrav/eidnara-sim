@@ -260,7 +260,10 @@ and resumed from its journal within the rest of its wall limit. The restart writ
 the stop (an outside SIGTERM at the same point leaves no marker),
 so a rerun of the command neither restarts that run again nor reports it
 unrestarted; `tier-result.json` records `restarted` per run, and the
-command exits 1 naming any paired run without a restart.
+command exits 1 naming any paired run without a restart and leaves the main
+report unpublished for it. A saved `tier-plan.json` from another tier is
+refused; an unreadable one is replaced when `--turn-ms` (and `--restart-at`
+at XL) are given.
 The stop lands wherever the run is when the check fires: a run stopped by
 the scheduled restart logs no `EndTurn` for the turn, or no `FaultObserved`
 for the scheduler fault, the stop cut, so the resumed run marks that item
@@ -284,4 +287,5 @@ rate against the L tier's 95% Clopper-Pearson interval for the same row,
 `drift` when outside it. A report of a complete campaign with no violated
 property witness writes its continuity rows to `continuity-<tier>.json` beside
 `report-<tier>.json` for this use; an incomplete or unsound one writes none
-and removes a stale one.
+and removes a stale one; the previous reference is removed before the new
+report files land.

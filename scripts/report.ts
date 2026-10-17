@@ -136,6 +136,10 @@ for (const [tier, { prereg, runs }] of loaded) {
     const text = renderTier(report);
     if (out) {
         mkdirSync(out, { recursive: true });
+        // The previous continuity reference goes first, so a failure while the new report
+        // files land leaves no stale reference beside them.
+        const continuityPath = join(out, `continuity-${tier}.json`);
+        rmSync(continuityPath, { force: true });
         const staged = [
             [join(out, `report-${tier}.md`), text],
             [join(out, `report-${tier}.json`), `${JSON.stringify(report.verdict, null, 2)}\n`],
@@ -148,7 +152,6 @@ for (const [tier, { prereg, runs }] of loaded) {
         // Only a complete, sound campaign's continuity rows serve as another tier's recall
         // reference: no violated property witness and nothing incomplete beyond a CUSUM scale.
         const sound = report.witness.every((w) => w.status !== "violated");
-        const continuityPath = join(out, `continuity-${tier}.json`);
         if (sound && report.verdict.pass.incomplete.every((x) => x.startsWith("CUSUM "))) {
             const tmpPath = `${continuityPath}.${randomUUID()}.tmp`;
             writeFileSync(tmpPath, `${JSON.stringify(report.continuity, null, 2)}\n`, {
@@ -156,7 +159,6 @@ for (const [tier, { prereg, runs }] of loaded) {
             });
             renameSync(tmpPath, continuityPath);
         } else {
-            rmSync(continuityPath, { force: true });
             console.error(
                 `${tier}: campaign ${sound ? "incomplete" : "unsound"}; no continuity-${tier}.json written`,
             );

@@ -64,13 +64,26 @@ const config = loadConfig();
 const prereg = loadPrereg(tier);
 const hosts = (arg("hosts") ?? prereg.hosts.join(",")).split(",") as ("pi" | "opencode")[];
 const priorPlan = join(out, "tier-plan.json");
-const prior = ((): { turn_ms?: number; restart_at?: number; plan?: TierJob[] } | null => {
+type PriorPlan = { tier?: Tier; turn_ms?: number; restart_at?: number; plan?: TierJob[] };
+// The saved plan supplies turn_ms and restart_at. Explicit flags for both (restart_at only
+// matters at XL) replace an unreadable plan; a plan from another tier is refused.
+const prior = ((): PriorPlan | null => {
     if (!existsSync(priorPlan)) return null;
+    const replaced =
+        arg("turn-ms") !== undefined && (tier !== "XL" || arg("restart-at") !== undefined);
+    let parsed: PriorPlan;
     try {
-        return JSON.parse(readFileSync(priorPlan, "utf8"));
+        parsed = JSON.parse(readFileSync(priorPlan, "utf8"));
     } catch {
-        return fail(`${priorPlan} is unreadable; pass --turn-ms to replace it`);
+        if (replaced) return null;
+        return fail(
+            `${priorPlan} is unreadable; pass --turn-ms${tier === "XL" ? " and --restart-at" : ""} to replace it`,
+        );
     }
+    if (parsed.tier !== undefined && parsed.tier !== tier) {
+        return fail(`${priorPlan} belongs to tier ${parsed.tier}; use another --out for ${tier}`);
+    }
+    return parsed;
 })();
 const turnMs = Number(arg("turn-ms") ?? prior?.turn_ms ?? 75_000);
 if (!Number.isInteger(turnMs) || turnMs <= 0) fail("--turn-ms must be a positive integer");
@@ -429,6 +442,19 @@ const skew = (group: string) => {
         .map((r) => r.start_ms as number);
     return starts.length ? Math.max(...starts) - Math.min(...starts) : null;
 };
+// A paired run that missed its scheduled restart leaves the main report unpublished: the
+// campaign did not exercise the restart it pre-registered.
+const unrestarted = results
+    .filter(
+        (r) =>
+            restartAt > 0 &&
+            r.group === "main" &&
+            r.skipped === undefined &&
+            !r.leased_elsewhere &&
+            !r.restarted,
+    )
+    .map((r) => r.dir);
+if (unrestarted.length > 0) console.error(`no harness restart in ${unrestarted.join(", ")}`);
 const reports: Record<string, number | null> = {};
 const reported: string[] = [];
 for (const group of groups) {
@@ -446,8 +472,9 @@ for (const group of groups) {
     const paired = identities.size === dirs.length;
     if (paired) reported.push(...dirs);
     const target = group === "main" ? out : join(out, group);
+    const restartMissing = group === "main" && unrestarted.length > 0;
     reports[group] =
-        dirs.length && paired
+        dirs.length && paired && !restartMissing
             ? await run(["report.ts", ...dirs, "--out", target], join(out, "report.log"))
             : null;
 }
@@ -470,17 +497,6 @@ console.log(
         unreported: plan.map((j) => j.dir).filter((d) => !reported.includes(d)),
     }),
 );
-const unrestarted = results
-    .filter(
-        (r) =>
-            restartAt > 0 &&
-            r.group === "main" &&
-            r.skipped === undefined &&
-            !r.leased_elsewhere &&
-            !r.restarted,
-    )
-    .map((r) => r.dir);
-if (unrestarted.length > 0) console.error(`no harness restart in ${unrestarted.join(", ")}`);
 const failed =
     unrestarted.length > 0 ||
     results.some(

@@ -671,6 +671,9 @@ async function runArms(
                 for (const c of deletions.get(e.id) ?? []) {
                     if (done(c.probe)) continue;
                     const result = await driver.deleteFact(c.statement, othersOf(c.fact));
+                    // A stop that landed during the deletion leaves it unjournaled, so the
+                    // resumed run performs it again instead of recording a killed attempt.
+                    guard();
                     for (const id of "deleted" in result ? result.deleted : []) {
                         journal.append({
                             kind: "DeleteMemoryObject",
