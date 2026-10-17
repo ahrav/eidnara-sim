@@ -244,17 +244,23 @@ export interface DivergenceRecord {
 
 export type PairingRecord = TurnRecord | DivergenceRecord;
 
-/** The pairing log's records, each checked for its kind, arm, session, and index before use. */
+/** The pairing log's records, each checked for its kind's full shape and for an arm the manifest names. */
 export function readPairing(path: string, arms: readonly string[]): PairingRecord[] {
     const rows = jsonl<unknown>(path, "source", PAIRING_FIELDS);
     rows.forEach((row, i) => {
         const r = row as Record<string, unknown>;
-        const shaped =
-            (r.kind === "turn" || r.kind === "divergedAt") &&
+        const strings = (names: readonly string[]) => names.every((n) => typeof r[n] === "string");
+        const shared =
             typeof r.arm === "string" &&
             arms.includes(r.arm) &&
-            typeof r.session === "string" &&
-            typeof r.index === "number";
+            typeof r.index === "number" &&
+            strings(["session", "event", "digest"]);
+        const shaped =
+            shared &&
+            (r.kind === "turn"
+                ? strings(["text_sha256", "prefix_sha256", "label", "source"]) &&
+                  typeof r.delivered === "boolean"
+                : r.kind === "divergedAt" && strings(["reference_digest", "against"]));
         if (!shaped) throw new HarnessFailure(`${path}: line ${i + 1}: not a pairing record`);
     });
     // SAFETY: every row passed the kind, arm, session, and index checks above.

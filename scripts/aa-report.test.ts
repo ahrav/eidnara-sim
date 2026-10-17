@@ -36,7 +36,12 @@ const turn = (arm: string, event: string, text_sha256: string, index = 0) => ({
     event,
     index,
     digest: "d",
+    context_sha256: "c",
+    prefix_sha256: "p",
     text_sha256,
+    label: "task",
+    delivered: true,
+    source: "script",
 });
 
 const journal = (order: string[], events: number) => [
@@ -71,7 +76,8 @@ function gradedRun(
             grade(arm, `q-${i}`, "P13", "P13.fold_fidelity_score", i % 2),
         ]),
     ) as GradeRecord[];
-    const events = [1, 2, 3].map((i) => ({ id: `e-${i}`, kind: "user_turn" }));
+    const events = [1, 2, 3].map((i) => ({ id: `e-${i}`, kind: "user_turn", probe: `p-${i}` }));
+    probes.push({ id: "j-1", type: "P7", fact: "fact-1" });
     const scenario = { manifest: { tier, seed: 101 }, probes, events };
     const manifest = {
         tier,
@@ -145,8 +151,8 @@ describe("aa-report", () => {
 
     test("refuses a pairing log whose terminated last line is corrupt", () => {
         const dir = gradedRun("S", preregistrationHash(loadPrereg("S")));
-        const turn = { kind: "turn", arm: "host~aa", session: "s-1", index: 0 };
-        writeFileSync(join(dir, "pairing.jsonl"), `${JSON.stringify(turn)}\n{corrupt\n`);
+        const first = turn("host~aa", "e-1", "same");
+        writeFileSync(join(dir, "pairing.jsonl"), `${JSON.stringify(first)}\n{corrupt\n`);
         expect(() => aaReport(dir)).toThrow(/last line is corrupt/);
     });
 
@@ -194,6 +200,8 @@ describe("aa-report", () => {
             '{"kind":"divergedAt","arm":"host~aa","session":"s-1","index":"1"}',
             '{"kind":"turn","arm":"eidnara","session":"s-1","index":1}',
             '{"kind":"other","arm":"host~aa","session":"s-1","index":1}',
+            '{"kind":"turn","arm":"host~aa","session":"s-1","event":"e-1","index":0,"digest":"d"}',
+            '{"kind":"divergedAt","arm":"host~aa","session":"s-1","event":"e-1","index":0,"digest":"d"}',
         ];
         for (const record of bad) {
             const dir = gradedRun("S", preregistrationHash(loadPrereg("S")));
@@ -230,7 +238,11 @@ describe("aa-report", () => {
 
     test("refuses a control whose delivered text differed from its arm's before any divergence", () => {
         const dir = gradedRun("S", preregistrationHash(loadPrereg("S")));
-        const records = [turn("host", "e-1", "aaaa"), turn("host~aa", "e-1", "bbbb")];
+        const records = [
+            turn("host", "e-1", "aaaa"),
+            turn("host~aa", "e-1", "bbbb"),
+            ...["e-2", "e-3"].flatMap((e) => [turn("host", e, "same"), turn("host~aa", e, "same")]),
+        ];
         writeFileSync(
             join(dir, "pairing.jsonl"),
             records.map((r) => `${JSON.stringify(r)}\n`).join(""),
@@ -242,15 +254,15 @@ describe("aa-report", () => {
         const line = (o: unknown) => `${JSON.stringify(o)}\n`;
         const empty = gradedRun("S", preregistrationHash(loadPrereg("S")));
         writeFileSync(join(empty, "pairing.jsonl"), "");
-        expect(() => aaReport(empty)).toThrow(/no paired turns/);
+        expect(() => aaReport(empty)).toThrow(/host has no pairing record for e-1, e-2, e-3/);
         const lost = gradedRun("S", preregistrationHash(loadPrereg("S")));
         const kept = [
+            ...["e-1", "e-2", "e-3"].map((e) => turn("host~aa", e, "same")),
             turn("host", "e-1", "same"),
-            turn("host~aa", "e-1", "same"),
-            turn("host~aa", "e-2", "same"),
+            turn("host", "e-3", "same"),
         ];
         writeFileSync(join(lost, "pairing.jsonl"), kept.map(line).join(""));
-        expect(() => aaReport(lost)).toThrow(/e-2/);
+        expect(() => aaReport(lost)).toThrow(/host has no pairing record for e-2/);
     });
 
     test("refuses a run whose journal is missing, incomplete, or ordered otherwise", () => {
@@ -288,6 +300,45 @@ describe("aa-report", () => {
         expect(() => aaReport(link)).toThrow(/is not a directory/);
         expect(existsSync(join(real, "lease.json"))).toBe(false);
         expect(existsSync(join(real, "aa.json"))).toBe(false);
+    });
+
+    test("refuses a pairing log missing a scheduled turn on both sides", () => {
+        const dir = gradedRun("S", preregistrationHash(loadPrereg("S")));
+        const line = (o: unknown) => `${JSON.stringify(o)}\n`;
+        const kept = ["host", "host~aa"].map((a) => turn(a, "e-1", "same"));
+        writeFileSync(join(dir, "pairing.jsonl"), kept.map(line).join(""));
+        expect(() => aaReport(dir)).toThrow(/e-2, e-3/);
+    });
+
+    test("refuses a grade whose verdict is outside pass, fail, excluded", () => {
+        const dir = gradedRun("S", preregistrationHash(loadPrereg("S")));
+        const bogus = {
+            ...grade("host", "p-1", "P3", "P3.delta_mem", 0),
+            version: 2,
+            verdict: "bogus",
+        };
+        appendFileSync(join(dir, "grades.jsonl"), `${JSON.stringify(bogus)}\n`);
+        expect(() => aaReport(dir)).toThrow(/grades\.jsonl/);
+    });
+
+    test("probes the run reached but neither arm graded are counted as missing per arm", () => {
+        const dir = gradedRun("S", preregistrationHash(loadPrereg("S")));
+        const kept = readFileSync(join(dir, "grades.jsonl"), "utf8")
+            .split("\n")
+            .filter((l) => l !== "" && !l.includes('"item":"p-1"'));
+        writeFileSync(join(dir, "grades.jsonl"), `${kept.join("\n")}\n`);
+        const [report] = aaReport(dir);
+        expect(report?.missing).toEqual({ host: 1, "host~aa": 1 });
+        expect(report?.unpaired_items).toEqual([]);
+    });
+
+    test("P7 grades, judged against the host arm, stay out of the missingness diagnostics", () => {
+        const dir = gradedRun("S", preregistrationHash(loadPrereg("S")));
+        const judged = grade("host", "j-1", "P7", "P7.score", 1);
+        appendFileSync(join(dir, "grades.jsonl"), `${JSON.stringify(judged)}\n`);
+        const [report] = aaReport(dir);
+        expect(report?.unpaired_items).toEqual([]);
+        expect(report?.excluded).toEqual({ host: 0, "host~aa": 0 });
     });
 
     test("a run-level family forms one cluster per run, so one run leaves it uninformative", () => {

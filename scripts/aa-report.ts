@@ -19,6 +19,7 @@ import { pairingMismatches, readPairing } from "../src/usersim/usersim";
 
 /** A percentile interval over fewer clusters than this undercovers, so it decides nothing. */
 const MIN_CLUSTERS = 5;
+const VERDICTS: readonly string[] = ["pass", "fail", "excluded"];
 
 export function aaReport(dir: string) {
     // The lease, the staging file, and aa.json land in `dir` itself, never through a link.
@@ -70,6 +71,12 @@ function report(dir: string) {
     const order = manifest.order as string[];
     requireOrder(order, ARMS, prereg.aa_controls?.pairs ?? []);
     const scheduled = scenario.events.slice(0, manifest.events).map((e) => String(e.id));
+    const prefix = scenario.events.slice(0, manifest.events);
+    const userTurns = prefix.filter((e) => e.kind === "user_turn").map((e) => String(e.id));
+    const reached = prefix.flatMap((e) => {
+        const probe = (e as { probe?: string }).probe;
+        return probe === undefined ? [] : [probe];
+    });
     requireComplete(readJournal(join(dir, "journal.jsonl")), order, scheduled);
     const typeOf = new Map(scenario.probes.map((p) => [p.id, p.type]));
     for (const g of grades) {
@@ -77,7 +84,7 @@ function report(dir: string) {
             order.includes(g.arm) &&
             typeOf.get(g.item) === g.probe_type &&
             Number.isInteger(g.version) &&
-            typeof g.verdict === "string" &&
+            VERDICTS.includes(g.verdict) &&
             typeof g.metrics === "object" &&
             g.metrics !== null;
         if (!sound)
@@ -88,15 +95,14 @@ function report(dir: string) {
     const controls = order.filter((a) => a !== armBase(a));
     const report = controls.map((control) => {
         const arm = armBase(control);
-        const events = (a: string) =>
-            new Set(pairing.filter((r) => r.kind === "turn" && r.arm === a).map((r) => r.event));
-        const [mine, theirs] = [events(control), events(arm)];
-        const unpaired = [...mine, ...theirs].filter((e) => !(mine.has(e) && theirs.has(e)));
-        if (mine.size === 0) throw new Error(`${dir}: no paired turns for ${control}`);
-        if (unpaired.length > 0) {
-            throw new Error(
-                `${dir}: turns without a counterpart between ${arm} and ${control}: ${unpaired.join(", ")}`,
+        for (const a of [arm, control]) {
+            const delivered = new Set(
+                pairing.filter((r) => r.kind === "turn" && r.arm === a).map((r) => r.event),
             );
+            const lost = userTurns.filter((e) => !delivered.has(e));
+            if (lost.length > 0) {
+                throw new Error(`${dir}: ${a} has no pairing record for ${lost.join(", ")}`);
+            }
         }
         const broken = mismatched.filter((m) => m.startsWith(`${control} `));
         if (broken.length > 0) {
@@ -104,8 +110,17 @@ function report(dir: string) {
                 `${dir}: ${control} received other text than ${arm} before diverging: ${broken.join(", ")}`,
             );
         }
+        // P7 grades come from judgments against the host arm, so they stay out of the pairing.
+        const diagnosed = grades.filter((g) => g.probe_type !== "P7");
         const graded = (a: string, verdict: (v: string) => boolean) =>
-            grades.filter((g) => g.arm === a && verdict(g.verdict)).map((g) => g.item);
+            diagnosed.filter((g) => g.arm === a && verdict(g.verdict)).map((g) => g.item);
+        const missing = Object.fromEntries(
+            [arm, control].map((a) => {
+                const mine = new Set(graded(a, () => true));
+                const none = [...reached].filter((id) => typeOf.get(id) !== "P7" && !mine.has(id));
+                return [a, none.length];
+            }),
+        );
         const excluded = Object.fromEntries(
             [arm, control].map((a) => [a, graded(a, (v) => v === "excluded").length]),
         );
@@ -135,6 +150,7 @@ function report(dir: string) {
             expected_by_chance: 0.05 * informative.length,
             uninformative: metrics.filter((m) => m.clusters < MIN_CLUSTERS).map((m) => m.metric),
             excluded,
+            missing,
             unpaired_items,
             disagreement_rate: disagreementRate(grades, arm, control),
             sessions: sessions.size,
