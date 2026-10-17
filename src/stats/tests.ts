@@ -1,5 +1,5 @@
 import { Rng } from "../rng";
-import { betaQuantile, binomialCdf, digamma, normalCdf, normalQuantile, trigamma } from "./dist";
+import { betaQuantile, binomialCdf, digamma, normalCdf, normalQuantile } from "./dist";
 
 /** Two-sided exact binomial test of `x` successes in `n` at one half: the sign test. */
 export function signTest(x: number, n: number): number {
@@ -149,8 +149,13 @@ export function bootstrap<T>(
     );
     if (!o.bca)
         return { estimate, lo: percentile(reps, alpha / 2), hi: percentile(reps, 1 - alpha / 2) };
-    const below =
-        reps.filter((r) => r < estimate).length + reps.filter((r) => r === estimate).length / 2;
+    const below = Math.min(
+        reps.length - 0.5,
+        Math.max(
+            0.5,
+            reps.filter((r) => r < estimate).length + reps.filter((r) => r === estimate).length / 2,
+        ),
+    );
     const z0 = normalQuantile(below / reps.length);
     const a = acceleration(xs, stat);
     const adjust = (q: number) => {
@@ -208,6 +213,8 @@ export interface NegBinFit {
 /** Above this theta the counts carry no overdispersion, and the fit is Poisson. */
 const THETA_MAX = 1e8;
 
+const THETA_MIN = 1e-8;
+
 function weightedCross(x: number[][], w: number[], v?: number[]): number[][] {
     const p = (x[0] ?? []).length;
     const column = (a: number, b: (row: number[], i: number) => number) =>
@@ -218,21 +225,44 @@ function weightedCross(x: number[][], w: number[], v?: number[]): number[][] {
     );
 }
 
-function thetaStep(y: number[], m: number[], t: number): number {
-    let [score, info] = [0, 0];
-    y.forEach((yi, j) => {
+/** The derivative of the log-likelihood in theta at fixed means `m`. */
+function thetaScore(y: number[], m: number[], t: number): number {
+    return y.reduce((s, yi, j) => {
         const u = m[j] as number;
-        score +=
-            digamma(yi + t) - digamma(t) + Math.log(t) + 1 - Math.log(t + u) - (yi + t) / (t + u);
-        info += -trigamma(yi + t) + trigamma(t) - 1 / t + 2 / (t + u) - (yi + t) / (t + u) ** 2;
-    });
-    return score / info;
+        return (
+            s +
+            digamma(yi + t) -
+            digamma(t) +
+            Math.log(t) +
+            1 -
+            Math.log(t + u) -
+            (yi + t) / (t + u)
+        );
+    }, 0);
+}
+
+/**
+ * `thetaAt` estimates the score's root at fixed means `m` by bisection in log theta. The sign
+ * at `THETA_MAX` comes from the score's large-theta limit, `-sum((y - m)^2 - y) / (2 theta^2)`,
+ * because the direct sum is rounding noise there.
+ */
+function thetaAt(y: number[], m: number[]): number {
+    const excess = y.reduce((s, yi, j) => s + (yi - (m[j] as number)) ** 2 - yi, 0);
+    if (excess <= 0) return THETA_MAX;
+    if (thetaScore(y, m, THETA_MIN) <= 0) return THETA_MIN;
+    let [lo, hi] = [Math.log(THETA_MIN), Math.log(THETA_MAX)];
+    for (let i = 0; i < 100 && hi - lo > 1e-12; i++) {
+        const mid = (lo + hi) / 2;
+        if (thetaScore(y, m, Math.exp(mid)) > 0) lo = mid;
+        else hi = mid;
+    }
+    return Math.exp((lo + hi) / 2);
 }
 
 /**
  * A negative-binomial GLM with log link, fitted as R `MASS::glm.nb` does: iteratively
- * reweighted least squares for the coefficients alternating with Newton steps for theta,
- * which stops at `THETA_MAX` when the counts are not overdispersed.
+ * reweighted least squares for the coefficients alternating with the theta that maximises
+ * the likelihood at the current means.
  */
 export function negativeBinomial(x: number[][], y: number[], iterations = 50): NegBinFit {
     const p = (x[0] ?? []).length;
@@ -244,7 +274,8 @@ export function negativeBinomial(x: number[][], y: number[], iterations = 50): N
         x.map((row) => Math.exp(row.reduce((s, v, j) => s + v * (beta[j] as number), 0)));
     const weights = (m: number[]) => m.map((u) => u / (1 + u / theta));
     for (let outer = 0; outer < iterations; outer++) {
-        for (let inner = 0; inner < 25; inner++) {
+        let stable = false;
+        for (let inner = 0; inner < 25 && !stable; inner++) {
             const m = mu();
             const w = weights(m);
             const z = m.map((u, i) => Math.log(u) + ((y[i] as number) - u) / u);
@@ -254,16 +285,10 @@ export function negativeBinomial(x: number[][], y: number[], iterations = 50): N
                 0,
             );
             beta = next;
-            if (moved < 1e-10) break;
+            stable = moved < 1e-10;
         }
-        const m = mu();
-        let t = theta;
-        for (let i = 0; i < 50 && t < THETA_MAX; i++) {
-            const step = thetaStep(y, m, t);
-            t = Math.min(THETA_MAX, Math.max(t + step, 1e-8));
-            if (!Number.isFinite(step) || Math.abs(step) < 1e-12 * t) break;
-        }
-        const done = Math.abs(t - theta) < 1e-10 * theta || t >= THETA_MAX;
+        const t = thetaAt(y, mu());
+        const done = stable && (Math.abs(t - theta) < 1e-10 * theta || t >= THETA_MAX);
         theta = t;
         if (done) {
             settled = true;

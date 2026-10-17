@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { normalCdf, normalQuantile } from "./dist";
+import { binomialPmf, normalCdf, normalQuantile } from "./dist";
 import {
     acceleration,
     bootstrap,
@@ -94,6 +94,14 @@ describe("statistics against published references", () => {
         expect(p.lo).toBeLessThan(b.lo);
     });
 
+    test("BCa stays finite when every replicate falls on one side of the estimate", () => {
+        const xs = Array.from({ length: 12 }, (_, i) => i);
+        const b = bootstrap(xs, (x) => new Set(x).size, { replicates: 2000, seed: 1, bca: true });
+        expect(Number.isFinite(b.lo)).toBe(true);
+        expect(Number.isFinite(b.hi)).toBe(true);
+        expect(b.lo).toBeLessThanOrEqual(b.hi);
+    });
+
     test("the negative-binomial GLM reproduces MASS glm.nb on the quine absences", () => {
         const r = ref.negative_binomial;
         const rows = readFileSync(join(FIXTURES, "quine.csv"), "utf8")
@@ -131,6 +139,32 @@ describe("statistics against published references", () => {
         (r.standard_errors as number[]).forEach((want, i) => {
             near(fit.se[i] as number, want, 1e-4);
         });
+    });
+
+    test("the negative-binomial theta finds the overdispersed maximum of an intercept-only fit", () => {
+        const fit = negativeBinomial([[1], [1], [1], [1]], [8, 3, 0, 0]);
+        expect(fit.converged).toBe(true);
+        near(fit.coefficients[0] as number, Math.log(2.75), 1e-6);
+        near(fit.theta, 0.40095, 1e-4);
+    });
+
+    test("the negative-binomial fit reports a separated slope as unconverged even when theta hits its cap", () => {
+        const fit = negativeBinomial(
+            [
+                [1, 0],
+                [1, 0],
+                [1, 1],
+                [1, 1],
+            ],
+            [0, 0, 100, 100],
+        );
+        expect(fit.converged).toBe(false);
+    });
+
+    test("the binomial mass keeps representable tails and exact half probabilities", () => {
+        near(binomialPmf(500, 1000, 0.2) / 3.1032622600153052e-99, 1, 1e-9);
+        expect(binomialPmf(0, 6, 0.5)).toBe(1 / 64);
+        expect(binomialPmf(3, 6, 0.5)).toBe(20 / 64);
     });
 
     test("the normal distribution functions invert each other", () => {

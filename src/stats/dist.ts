@@ -14,15 +14,18 @@ export function logGamma(x: number): number {
     return 0.5 * Math.log(2 * Math.PI) + (z + 0.5) * Math.log(t) - t + Math.log(a);
 }
 
+const MIN_NORMAL = 2 ** -1022;
+
 export function binomialPmf(k: number, n: number, p: number): number {
     if (k < 0 || k > n) return 0;
     if (p === 0) return k === 0 ? 1 : 0;
     if (p === 1) return k === n ? 1 : 0;
-    if (n <= 1000) {
+    const [pk, qk] = [p ** k, (1 - p) ** (n - k)];
+    if (n <= 1000 && pk >= MIN_NORMAL && qk >= MIN_NORMAL) {
         let choose = 1;
         for (let i = 1; i <= Math.min(k, n - k); i++)
             choose = (choose * (n - Math.min(k, n - k) + i)) / i;
-        return choose * p ** k * (1 - p) ** (n - k);
+        return choose * pk * qk;
     }
     const log = logGamma(n + 1) - logGamma(k + 1) - logGamma(n - k + 1);
     return Math.exp(log + k * Math.log(p) + (n - k) * Math.log(1 - p));
@@ -138,17 +141,6 @@ export function digamma(x: number): number {
     }
     const f = 1 / (y * y);
     return r + Math.log(y) - 0.5 / y - f * (1 / 12 - f * (1 / 120 - f * (1 / 252 - f / 240)));
-}
-
-export function trigamma(x: number): number {
-    let r = 0;
-    let y = x;
-    while (y < 6) {
-        r += 1 / (y * y);
-        y += 1;
-    }
-    const f = 1 / (y * y);
-    return r + 1 / y + f / 2 + (f / y) * (1 / 6 - f * (1 / 30 - f / 42));
 }
 
 /** The upper tail `1 - normalCdf(x)`, computed directly so it keeps precision far out. */
