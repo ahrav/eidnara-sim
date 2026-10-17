@@ -926,3 +926,45 @@ describe("oracle round ten", () => {
         expect(oracle(leaked, "F5").map((a) => a.at)).toEqual(["session 0"]);
     });
 });
+
+describe("oracle round eleven", () => {
+    test("a negative RSS reading, or a null final reading on a daemon arm, refuses the run", () => {
+        const { dir, line } = completeDir(["eidnara"]);
+        const rs = join(dir, "eidnara", "resources.jsonl");
+        writeFileSync(
+            rs,
+            line({ scenario_ms: 0, rss: -1, pid: 1 }) + line({ scenario_ms: 1, rss: 0, pid: 1 }),
+        );
+        expect(() => loadRun(dir, prereg)).toThrow(/resources\.jsonl: line 1: rss negative/);
+        writeFileSync(
+            rs,
+            line({ scenario_ms: 0, rss: 100, pid: 1 }) +
+                line({ scenario_ms: 1, rss: null, pid: null }),
+        );
+        expect(() => loadRun(dir, prereg)).toThrow("arm eidnara: final RSS sample has no reading");
+    });
+
+    test("a manifest with no arms, or a call with an impossible status, refuses the run", () => {
+        const { dir, line } = completeDir(["eidnara"]);
+        const scenario = JSON.parse(readFileSync(join(dir, "scenario.json"), "utf8"));
+        const manifest = { tier: "S", order: [], events: 1, scenario_hash: scenario.scenario_hash };
+        writeFileSync(join(dir, "manifest.json"), JSON.stringify(manifest));
+        writeFileSync(
+            join(dir, "journal.jsonl"),
+            [
+                { kind: "StartRun", arm: null, order: [], scenario_ms: 0 },
+                { kind: "EndRun", arm: null, scenario_ms: 0 },
+            ]
+                .map(line)
+                .join(""),
+        );
+        expect(() => loadRun(dir, prereg)).toThrow("manifest names no arms");
+        const whole = completeDir(["eidnara"]);
+        writeFileSync(join(whole.dir, "calls.jsonl"), whole.line(call({ seq: 0, status: 450.5 })));
+        expect(() => loadRun(whole.dir, prereg)).toThrow(
+            "call 0: status 450.5 is not an HTTP status",
+        );
+        writeFileSync(join(whole.dir, "calls.jsonl"), whole.line(call({ seq: 0, status: 0 })));
+        expect(loadRun(whole.dir, prereg).arms[0]?.calls).toHaveLength(1);
+    });
+});

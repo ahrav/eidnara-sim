@@ -11,8 +11,10 @@ outside 1 to the scenario's length, a scheduled user turn without one
 `failed(interrupted)` has no `EndTurn`), a `BeginTurn` or `EndTurn` for an
 unscheduled event, a call or tool run naming a turn outside the schedule, a
 call with a negative token count, resource samples that name a pid on some
-rows and not others or pair a reading with a null pid, a daemon arm with no
-numeric RSS sample or no `daemon.log`, a call record that fails the proxy's
+rows and not others, pair a reading with a null pid, or carry a negative
+reading, a daemon arm with no numeric RSS sample, no reading in its final
+sample, or no `daemon.log`, a manifest with no arms, a call whose status is
+neither the proxy's `0` sentinel nor an HTTP status, a call record that fails the proxy's
 record contract (`recordProblems`), names an arm outside the manifest, or
 repeats a sequence number, a journal entry, resource sample, or tool run
 missing a field (an `EndTurn` needs its `outcome`), or an evidence file with

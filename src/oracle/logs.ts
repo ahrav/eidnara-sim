@@ -132,6 +132,9 @@ function requirePidShape(path: string, samples: Sample[]): void {
         throw new Error(`${path}: pid present on some samples and absent on others`);
     }
     samples.forEach((s, i) => {
+        if (typeof s.rss === "number" && s.rss < 0) {
+            throw new Error(`${path}: line ${i + 1}: rss negative`);
+        }
         if (typeof s.rss === "number" && "pid" in s && s.pid === null) {
             throw new Error(`${path}: line ${i + 1}: numeric rss with a null pid`);
         }
@@ -172,6 +175,7 @@ export function loadRun(dir: string, prereg: Preregistration): RunLogs {
     }
     const kinds = new Map(scenario.events.map((e) => [String(e.id), String(e.kind)]));
     const order = manifest.order as string[];
+    if (order.length === 0) throw new Error("manifest names no arms");
     for (const arm of order) {
         if (!(ARMS as readonly string[]).includes(arm)) {
             throw new Error(`manifest arm ${arm} is not a pre-registered arm`);
@@ -199,6 +203,10 @@ export function loadRun(dir: string, prereg: Preregistration): RunLogs {
         }
         for (const field of TOKEN_FIELDS) {
             if (c[field] < 0) throw new Error(`call ${c.seq}: ${field} negative`);
+        }
+        const http = Number.isInteger(c.status) && c.status >= 100 && c.status <= 599;
+        if (c.status !== 0 && !http) {
+            throw new Error(`call ${c.seq}: status ${c.status} is not an HTTP status`);
         }
     }
     const journalPath = join(dir, "journal.jsonl");
@@ -229,6 +237,9 @@ export function loadRun(dir: string, prereg: Preregistration): RunLogs {
             throw new Error(
                 `arm ${arm.arm} has no daemon RSS samples in ${arm.arm}/resources.jsonl`,
             );
+        }
+        if (typeof arm.resources.at(-1)?.rss !== "number") {
+            throw new Error(`arm ${arm.arm}: final RSS sample has no reading`);
         }
         if (!existsSync(join(dir, arm.arm, "daemon.log"))) {
             throw new Error(`arm ${arm.arm} has no daemon.log`);

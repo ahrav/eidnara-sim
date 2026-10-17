@@ -49,14 +49,16 @@ stdout and stderr to the arm's `daemon.log` before each restart and at stop,
 each line once: stderr copied a megabyte at a time from the log file the v1
 stack writes each chunk to and truncates at each host start, stdout from the
 stack's `diagnostics` view, which keeps the last 256 KiB. The copy runs
-after the daemon is dead, so the log holds its last write: a stop terminates
-first, and a restart holds the live log through a hard link while the stack
-replaces it. Each saved file is removed once copied. `daemon.log.source`
-lists the logs still to save (the held link and the live file across a
-restart, the live file otherwise) and the copy in progress with
-`daemon.log`'s length before it, so a `start` after a harness kill saves
-every dead lifetime's stderr first, once, rolling back a copy an earlier kill
-cut short.
+after the daemon is dead, so the log holds its last write and stdout holds
+what the daemon printed while handling SIGTERM: a stop terminates first, and
+a restart holds the live log through a hard link while the stack replaces
+it. Each saved file is removed once copied. `daemon.log.source` lists the
+logs still to save (the held link and the live file across a restart, the
+live file otherwise), the copy in progress with `daemon.log`'s length before
+it, and the pid and start time of the daemon writing the live log, so a
+`start` after a harness kill stops a daemon that outlived the harness, then
+saves every dead lifetime's stderr once, rolling back a copy an earlier kill
+cut short; a stop after a failed restart saves every listed log too.
 The run's resource sampler takes a sample when each daemon process is up and
 before a fault takes one down; a final sample that cannot be written fails
 the arm's finish after the arm is shut down, so the run is not complete
