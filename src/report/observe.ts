@@ -27,6 +27,10 @@ export interface GradedRun {
     pairing: PairingRecord[] | null;
     /** Whether `calls.jsonl` is present, the capture the F7 scan reads. */
     captured: boolean;
+    /** Whether `tape.jsonl` is present, which the corrections scan reads replies from. */
+    tape: boolean;
+    /** The arms with a `tools.jsonl`, the capture the revert scan reads. */
+    tooled: Set<string>;
 }
 
 /** The manifest fields a tier's runs share for their evidence to pool. */
@@ -43,6 +47,8 @@ export interface RunIdentity {
     scenario_provenance: string;
     /** The digest of `manifest.fault_override`, or `null` for the scenario's own schedule. */
     fault_override: string | null;
+    /** `manifest.tapes`, each as the digest of its file or `missing:<path>`. */
+    tapes: string[];
 }
 
 const ALIASES: Record<string, string> = {
@@ -65,6 +71,36 @@ export const judgmentKey = (r: GradeRecord) =>
     ].join("|");
 
 const probeIds = (g: GradedRun) => new Set(g.scenario.probes.map((p) => p.id));
+const probeTypes = (g: GradedRun) => new Map(g.scenario.probes.map((p) => [p.id, p.type]));
+
+/** Whether `metric`, a `<type>.<name>` grade metric, belongs to a probe of `type`. */
+const ofType = (metric: string, type: string | undefined) => metric.split(".")[0] === type;
+
+/** The registered domain of a numeric grade metric. */
+const inDomain = (metric: string, v: number) =>
+    metric === "P13.fold_fidelity_score"
+        ? v >= 0 && v <= 1
+        : metric === "P14.post_compaction_correction_count"
+          ? Number.isInteger(v) && v >= 0
+          : Number.isFinite(v);
+
+/** The arm's `~` controls that reached `EndArm`. */
+export const controlArmsOf = (g: GradedRun) =>
+    g.run.arms
+        .filter((a) => a.arm.includes("~") && a.journal.some((e) => e.kind === "EndArm"))
+        .map((a) => a.arm);
+
+/** Whether every turn that ended `ok` has a call record, the capture the F7 scan reads. */
+function callsCoverTurns(arm: ArmLogs): boolean {
+    const called = new Set(
+        arm.calls
+            .filter((c) => c.component === "agent" && typeof c.response_text === "string")
+            .map((c) => c.turn),
+    );
+    return arm.journal
+        .filter((e) => e.kind === "EndTurn" && e.outcome === "ok")
+        .every((e) => called.has(String(e.event)));
+}
 
 /** The prefix that keeps one seed's items apart across the tier's hosts: `<host>/<seed>`. */
 const runKey = (g: GradedRun) => `${g.host}/${g.scenario.manifest.seed}`;
@@ -92,10 +128,17 @@ function values(
     const of = (a: string) =>
         new Map(
             g.grades
-                .filter((r) => r.arm === a && r.verdict !== "excluded" && probeIds(g).has(r.item))
+                .filter(
+                    (r) =>
+                        r.arm === a &&
+                        r.verdict !== "excluded" &&
+                        ofType(metric, probeTypes(g).get(r.item)),
+                )
                 .flatMap((r) => {
                     const v = r.metrics[metric];
-                    return typeof v === "number" && !dropped.has(`${runKey(g)}/${r.item}`)
+                    return typeof v === "number" &&
+                        inDomain(metric, v) &&
+                        !dropped.has(`${runKey(g)}/${r.item}`)
                         ? [[r.item, v] as const]
                         : [];
                 }),
@@ -113,7 +156,7 @@ const latency =
 const slope =
     (resource: "rss" | "heap" | "store_bytes"): RunValue =>
     ({ run }, arm) =>
-        soak(run, arm, resource).slope_per_session;
+        soak(run, arm, resource)?.slope_per_session ?? null;
 const graded =
     (metric: string, reduce: (xs: number[]) => number): RunValue =>
     (g, arm, pairing) => {
@@ -150,18 +193,23 @@ const RUN_VALUES: Record<string, { value: RunValue; delta: boolean; hostless?: t
     daemon_heap_growth_bytes_per_session: { value: slope("heap"), delta: true, hostless: true },
     store_growth_bytes_per_session: { value: slope("store_bytes"), delta: true, hostless: true },
     internal_string_hits: {
-        value: (g, arm) => (g.captured ? panelOf(g, arm).internal_string_hits.length : null),
+        value: (g, arm) =>
+            g.captured && callsCoverTurns(arm)
+                ? (panelOf(g, arm).internal_string_hits?.length ?? null)
+                : null,
         delta: false,
     },
     user_corrections_referencing_injected_text: {
         value: (g, arm) =>
-            armBase(arm.arm) !== "host" && notesOf(g.run.dir, arm.arm) === undefined
+            (armBase(arm.arm) !== "host" && notesOf(g.run.dir, arm.arm) === undefined) ||
+            (!g.tape &&
+                (g.pairing ?? []).some((r) => r.kind === "turn" && r.arm === arm.arm && r.tape_key))
                 ? null
                 : (panelOf(g, arm).corrections_referencing_injected_text?.length ?? null),
         delta: false,
     },
     reverted_memory_edits: {
-        value: (g, arm) => panelOf(g, arm).reverted_edits.length,
+        value: (g, arm) => (g.tooled.has(arm.arm) ? panelOf(g, arm).reverted_edits.length : null),
         delta: true,
     },
     usd_per_component: {
@@ -193,22 +241,26 @@ function itemPairs(
     return runs.flatMap((g) => {
         const seed = String(g.scenario.manifest.seed);
         const key = runKey(g);
-        const known = probeIds(g);
+        const types = probeTypes(g);
         const records = (arm: string) =>
             (p7 ? g.judged : g.grades).filter(
                 (r) =>
                     r.arm === arm &&
-                    known.has(r.item) &&
+                    ofType(source, types.get(r.item)) &&
                     r.verdict !== "excluded" &&
                     typeof r.metrics[source] === "boolean" &&
-                    r.metrics.gate_eligible !== false,
+                    (!p7 || r.metrics.gate_eligible === true),
             );
         const value = (r: GradeRecord) => Number(r.metrics[source] === true);
         const theirs = records(treatment);
-        const mine = records(control).filter(
-            (c) =>
-                !p7 || theirs.some((t) => t.item === c.item && judgmentKey(t) === judgmentKey(c)),
-        );
+        const paired = (a: GradeRecord, b: GradeRecord) =>
+            a.item === b.item && judgmentKey(a) === judgmentKey(b);
+        const matched = p7
+            ? theirs
+                  .filter((t) => records(control).some((c) => paired(c, t)))
+                  .sort((x, y) => x.version - y.version)
+            : theirs;
+        const mine = records(control).filter((c) => !p7 || matched.some((t) => paired(c, t)));
         const byItem = (rs: GradeRecord[]) => new Map(rs.map((r) => [r.item, value(r)] as const));
         const fact = new Map(g.scenario.probes.map((p) => [p.id, p.fact ?? p.id]));
         const issue = new Map(
@@ -216,7 +268,7 @@ function itemPairs(
         );
         return pairByItem(
             byItem(mine),
-            byItem(theirs),
+            byItem(matched),
             (item) => `${seed}/${fact.get(item) ?? item}`,
             (item) => issue.get(item) ?? 0,
         ).map((x) => ({ ...x, item: `${key}/${x.item}` }));
@@ -316,13 +368,29 @@ function incomplete(
             .filter((f) => f.analysis_unit === "item")
             .flatMap((f) => f.metrics.map((m) => ALIASES[m] ?? m)),
     );
+    const numeric = new Set(
+        p.families
+            .filter((f) => f.analysis_unit === "run")
+            .flatMap((f) => f.metrics.filter((m) => /^P\d+\./.test(m))),
+    );
     const unknown = runs.flatMap((g) => {
         const known = probeIds(g);
         const items = [...new Set(g.grades.filter((r) => !known.has(r.item)).map((r) => r.item))];
+        const types = probeTypes(g);
         const malformed = [...g.grades, ...g.judged].flatMap((r) =>
-            Object.entries(r.metrics)
-                .filter(([k, v]) => binary.has(k) && typeof v !== "boolean")
-                .map(([k]) => `run ${runKey(g)}: ${k} is not a boolean for ${r.arm} ${r.item}`),
+            Object.entries(r.metrics).flatMap(([k, v]) => {
+                if (!(binary.has(k) || numeric.has(k))) return [];
+                const type = types.get(r.item);
+                if (type && !ofType(k, type))
+                    return [
+                        `run ${runKey(g)}: ${k} recorded for ${r.arm} ${r.item}, a ${type} probe`,
+                    ];
+                if (binary.has(k) && typeof v !== "boolean")
+                    return [`run ${runKey(g)}: ${k} is not a boolean for ${r.arm} ${r.item}`];
+                if (numeric.has(k) && (typeof v !== "number" || !inDomain(k, v)))
+                    return [`run ${runKey(g)}: ${k} out of range for ${r.arm} ${r.item}`];
+                return [];
+            }),
         );
         return [
             ...(items.length
@@ -334,6 +402,19 @@ function incomplete(
     const pairing = runs.flatMap((g) => {
         if (g.pairing === null) return [`run ${runKey(g)}: pairing records missing`];
         const order = g.run.arms.map((a) => a.arm);
+        const scripted = g.scenario.events
+            .filter((e) => (e as { kind?: string }).kind === "user_turn")
+            .map((e) => String(e.id));
+        const recorded = new Set(
+            g.pairing.flatMap((r) => (r.kind === "turn" ? [`${r.arm}/${r.event}`] : [])),
+        );
+        const gaps = [control, treatment].flatMap((a) => {
+            const missing = scripted.filter((id) => !recorded.has(`${a}/${id}`));
+            return missing.length ? [`${a}: ${missing.join(" ")}`] : [];
+        });
+        const uncovered = gaps.length
+            ? [`run ${runKey(g)}: pairing records missing for ${gaps.join("; ")}`]
+            : [];
         const failures = pairingFailures(g.pairing, g.scenario, referenceArm(order));
         const out = Object.entries(failures).flatMap(([kind, list]) =>
             list.length
@@ -348,7 +429,7 @@ function incomplete(
                         `run ${runKey(g)}: ${a.arm} user-sim rates outside band: ${(e.outside as string[]).join(", ")}`,
                 ),
         );
-        return [...out, ...outside];
+        return [...uncovered, ...out, ...outside];
     });
     const sequential = p.load_stress?.arms_concurrent
         ? runs.flatMap((g) => {
@@ -395,6 +476,35 @@ function incomplete(
         const want = p.aa_controls?.repeats ?? 0;
         return have === want ? [] : [`A/A ${a}: ${have} of ${want} control runs`];
     });
+    const coverage = runs.flatMap((g) => {
+        const byType = new Map<string, string[]>();
+        for (const pr of g.scenario.probes) {
+            if (/^P([1-9]|1[0-2])$/.test(pr.type) && pr.type !== "P7")
+                byType.set(pr.type, [...(byType.get(pr.type) ?? []), pr.id]);
+        }
+        return controlArmsOf(g).flatMap((c) => {
+            const graded = (arm: string, type: string) =>
+                new Set(
+                    g.grades
+                        .filter(
+                            (r) =>
+                                r.arm === arm &&
+                                r.verdict !== "excluded" &&
+                                typeof r.metrics[`${type}.pass`] === "boolean",
+                        )
+                        .map((r) => r.item),
+                );
+            return [...byType].flatMap(([type, ids]) => {
+                const [mine, theirs] = [graded(c, type), graded(armBase(c), type)];
+                const both = ids.filter((id) => mine.has(id) && theirs.has(id)).length;
+                return both === ids.length
+                    ? []
+                    : [
+                          `run ${runKey(g)}: control ${c} covers ${both} of ${ids.length} ${type} probes`,
+                      ];
+            });
+        });
+    });
     const shared: (keyof RunIdentity)[] = [
         "eidnara_commit",
         "models",
@@ -402,6 +512,7 @@ function incomplete(
         "distortions",
         "host_versions",
         "scenario_provenance",
+        "tapes",
     ];
     const settings = shared.flatMap((field) => {
         const values = [...new Set(runs.map((g) => JSON.stringify(g.identity[field])))];
@@ -443,6 +554,7 @@ function incomplete(
         ...sequential,
         ...settings,
         ...controls,
+        ...coverage,
         ...unavailable,
         ...short,
     ];

@@ -17,7 +17,14 @@ import { continuity, runConditions } from "./conditions";
 import { costPanel, judgeCost } from "./cost";
 import { falsificationPairs } from "./falsify";
 import { intrusiveness } from "./intrusive";
-import { type GradedRun, judgmentKey, ordered, type RunIdentity, tierInput } from "./observe";
+import {
+    controlArmsOf,
+    type GradedRun,
+    judgmentKey,
+    ordered,
+    type RunIdentity,
+    tierInput,
+} from "./observe";
 import type { TierReport } from "./render";
 import { soak } from "./soak";
 import { propertyWitness } from "./witness";
@@ -29,9 +36,10 @@ export function loadGraded(dir: string, prereg: Preregistration): GradedRun {
         scenario_hash: string;
         fault_override: Scenario["faults"] | null;
         preflight?: { distortions?: string[]; hosts?: { host: string; version: string }[] };
+        tapes?: string[];
     } & Omit<
         RunIdentity,
-        "distortions" | "host_versions" | "scenario_provenance" | "fault_override"
+        "distortions" | "host_versions" | "scenario_provenance" | "fault_override" | "tapes"
     >;
     const current = preregistrationHash(prereg);
     if (manifest.prereg_sha256 !== current) {
@@ -82,8 +90,9 @@ export function loadGraded(dir: string, prereg: Preregistration): GradedRun {
         ...log.latest().filter((r) => !hostP7(r)),
         ...[...judged.values()].filter((r) => hostP7(r) && counterpart(r, prereg.arms.default)),
     ];
+    const run = loadRun(dir, prereg);
     return {
-        run: loadRun(dir, prereg),
+        run,
         scenario: { ...scenario, faults: manifest.fault_override ?? scenario.faults },
         grades,
         judged: [...judged.values()],
@@ -100,10 +109,17 @@ export function loadGraded(dir: string, prereg: Preregistration): GradedRun {
                 manifest.fault_override == null
                     ? null
                     : sha256Hex(canonicalJson(manifest.fault_override)),
+            tapes: (manifest.tapes ?? []).map((t) =>
+                existsSync(t) ? sha256Hex(readFileSync(t, "utf8")) : `missing:${t}`,
+            ),
         },
         witnesses: reports === null ? null : [...witnesses.values()],
         pairing,
         captured: existsSync(join(dir, "calls.jsonl")),
+        tape: existsSync(join(dir, "tape.jsonl")),
+        tooled: new Set(
+            run.arms.filter((a) => existsSync(join(dir, a.arm, "tools.jsonl"))).map((a) => a.arm),
+        ),
     };
 }
 
@@ -116,14 +132,7 @@ const sd = (xs: number[]) => {
 
 export type CusumScale = NonNullable<TierInput["cusum_sd"]>;
 
-const controlArms = (runs: GradedRun[]) => [
-    ...new Set(
-        runs
-            .flatMap((g) => g.run.arms)
-            .filter((a) => a.arm.includes("~") && a.journal.some((e) => e.kind === "EndArm"))
-            .map((a) => a.arm),
-    ),
-];
+const controlArms = (runs: GradedRun[]) => [...new Set(runs.flatMap(controlArmsOf))];
 
 /** The scale each CUSUM rule's `sd_source` names, lent by a tier only when its campaign is complete. */
 export function cusumScale(
@@ -220,10 +229,10 @@ export function tierReport(
         soak: perArm
             .filter(({ arm }) => armBase(arm.arm) !== "host")
             .flatMap(({ g, arm }) =>
-                (["rss", "heap", "store_bytes"] as const).map((r) => ({
-                    ...soak(g.run, arm, r),
-                    run: g.run.dir,
-                })),
+                (["rss", "heap", "store_bytes"] as const).flatMap((r) => {
+                    const verdict = soak(g.run, arm, r);
+                    return verdict ? [{ ...verdict, run: g.run.dir }] : [];
+                }),
             ),
         intrusiveness: perArm.map(({ g, arm }) => ({
             ...intrusiveness(g.run, arm),

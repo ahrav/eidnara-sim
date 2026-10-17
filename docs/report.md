@@ -78,10 +78,11 @@ no table.
 
 `scripts/report.ts <run dir>... [--out <dir>]` groups the runs by tier and
 writes `report-<tier>.md` and the gate verdict as `report-<tier>.json`
-through staged files renamed into place, or prints the Markdown. It exits
-1 after writing when the property witness holds a violated record, so a
-verdict over runs that broke an invariant does not pass unremarked.
-`loadGraded` refuses a run directory whose manifest
+through staged files renamed into place, or prints the Markdown; it refuses
+an `--out` inside `sim.config.json`'s `eidnara_checkout`. It exits 1 after
+writing when the property witness holds a violated record, so a verdict
+over runs that broke an invariant does not pass unremarked. `loadGraded`
+refuses a run directory whose manifest
 records a `prereg_sha256` other than the hash of the tier's current
 pre-registration, or whose `scenario.json` hashes to other than the
 manifest's `scenario_hash`, so a verdict carries the registration and the
@@ -91,10 +92,11 @@ proxy's fault witnesses, a fault once `fired` staying fired. `grades.jsonl` give
 run its latest grade per item and arm, and every P7 judgment (latest per
 item, arm, and `inputs`), so a P7 pair takes the host grade from the same
 judgment as the treatment's (same `inputs` and judge verdicts, so a
-re-grade interrupted between its two appends pairs nothing), a P7
+re-grade interrupted between its two appends pairs nothing, and an item
+with several complete judgments takes the newest), a P7
 exclusion counts against its own judgment, and the host's P7 row in the accuracy and cost panels is its
-judgment against `arms.default`; a judgment whose `gate_eligible` is false
-pairs nothing. Each run directory needs `grades.jsonl` from
+judgment against `arms.default`; a judgment pairs only with `gate_eligible`
+recorded `true`. Each run directory needs `grades.jsonl` from
 `scripts/grade-run.ts` for its probe items; a run without one reports its
 run-level metrics alone.
 
@@ -107,8 +109,8 @@ treatment arm (`arms.default`, `eidnara`) against `host`:
 | `failed_turns`, `hangs` | Per run (`<tier>-<host>-<seed>`), the distinct turns with an `EndTurn` outcome other than `ok` or an `Event` outcome `failed(interrupted)` (which a resume records for a turn without an `EndTurn`), and F4 activations |
 | `turn_latency_p50_delta_ms`, `turn_latency_p95_delta_ms` | Per run, the treatment minus control percentile of turn wall time; a control arm without turn latencies leaves the run out |
 | `daemon_rss_growth_bytes_per_session`, `daemon_heap_growth_bytes_per_session`, `store_growth_bytes_per_session` | Per run, the treatment minus control soak slope, with a `host` control that runs no daemon counted as zero; the heap is the daemon's anonymous resident memory (`RssAnon`), which the sampler records as `heap` |
-| `internal_string_hits`, `user_corrections_referencing_injected_text` | Per run, the panel's counts; a run without `calls.jsonl` has no hit count, and a daemon arm without `memory.json`, or whose notes could not be read, has no corrections count; either leaves the observation |
-| `reverted_memory_edits` | Per run, the treatment's reverted edits minus the control's; the zero-tolerance bound fails a run whose difference is above zero |
+| `internal_string_hits`, `user_corrections_referencing_injected_text` | Per run, the panel's counts; a run without `calls.jsonl`, or with a completed turn no agent call with a response covers, has no hit count, and a daemon arm without `memory.json`, whose notes could not be read, or whose replies name a `tape_key` with no `tape.jsonl` has no corrections count; either leaves the observation |
+| `reverted_memory_edits` | Per run, the treatment's reverted edits minus the control's; an arm without `tools.jsonl` has no count and leaves the observation; the zero-tolerance bound fails a run whose difference is above zero |
 | `usd_per_component`, `usd_per_useful_retrieval` | Per run, the cost panel's total and cost per pass |
 | `P13.fold_fidelity_score`, `P14.post_compaction_correction_count` | Per run, the mean (in percentage points, the family's scale) and the sum of the item metric over the items both arms graded without exclusion and outside the fault-asymmetric stratum |
 
@@ -121,20 +123,26 @@ list names each pre-registered host and seed without a run, each run with
 a pre-registered arm (`arms.run`) that has no `EndArm` entry, each run whose manifest
 `events` stops short of its scenario's events, each manifest setting
 (`eidnara_commit`, `models`, `context_limit`, the preflight's clock
-`distortions`, its host versions, and the scenario's generator, random
-schema, corpus manifest, and embedding model) the runs disagree on, each run with
+`distortions`, its host versions, the scenario's generator, random
+schema, corpus manifest, and embedding model, and the tapes it replayed)
+the runs disagree on, each run with
 scheduled proxy faults and no complete `faults.jsonl` line, each run made
 with a fault override, each run with grades for
-items outside its scenario's probes or with a binary metric recorded as
-other than a boolean (either pairs nothing), each run without
-`pairing.jsonl` or whose records fail the checks of
+items outside its scenario's probes, for a metric of another probe type
+than the item's, with a binary metric recorded as other than a boolean,
+or with a P13 score outside `[0, 1]` or a P14 count that is not a
+non-negative integer (any of which pairs nothing), each run without
+`pairing.jsonl`, without a pairing record for a scripted user turn in an
+analysed arm, or whose records fail the checks of
 `scripts/pairing-check.ts` (`pairingFailures`: a pre-divergence reply
 differing from the reference arm's, an altered probe or paste turn, an
 unsent non-filler turn) or whose `UserSimRates` entry names a rate outside
 its band, each L run whose arms' `StartArm`/`EndArm` spans never overlap
 while `load_stress` registers concurrent arms, each registered A/A pair whose count
 of control arms that reached `EndArm` across the runs differs from
-`aa_controls.repeats`, each run-unit gate metric a run has no value for, each probe type,
+`aa_controls.repeats`, each control arm whose pair lacks a grade on a P1
+to P12 probe other than P7 (the judge grades P7 for memory arms against
+`host` alone), each run-unit gate metric a run has no value for, each probe type,
 P13 and P14 included, and each other item-unit family metric (the harm
 metrics) with fewer paired items outside the excluded and
 fault-asymmetric sets than `stopping_rule.paired_items_per_probe_type`,
