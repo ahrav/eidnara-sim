@@ -179,7 +179,8 @@ function f5(arm: ArmLogs, run: RunLogs): Activation[] {
             y: s.rss as number,
         }));
         const base = first.rss as number;
-        const over = points.find((p) => p.y >= 2 * base + p.x * c);
+        const last = points.at(-1) as { x: number; y: number };
+        const over = last.y >= 2 * base + last.x * c ? last : undefined;
         if (over) {
             const at = `session ${over.x + offset}`;
             const evidence = `RSS ${over.y} after ${over.x} sessions exceeds 2 x ${base} + sessions x ${c}`;

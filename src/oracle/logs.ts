@@ -101,11 +101,20 @@ const lines = (path: string) =>
  * exception is a turn the resume path closed as `failed(interrupted)`, which has none.
  */
 function requireTurnEnds(journal: Entry[], arms: string[], events: Scenario["events"]): void {
+    const turns = new Set(events.filter((e) => e.kind === "user_turn").map((e) => String(e.id)));
     for (const arm of arms) {
         const mine = journal.filter((e) => e.arm === arm);
-        for (const event of events) {
-            if (event.kind !== "user_turn") continue;
-            const id = String(event.id);
+        for (const e of mine) {
+            if ((e.kind === "EndTurn" || e.kind === "BeginTurn") && !turns.has(String(e.event))) {
+                throw new Error(`arm ${arm}: ${e.kind} for unscheduled event ${String(e.event)}`);
+            }
+        }
+        for (const id of turns) {
+            const begins = mine.filter((e) => e.kind === "BeginTurn" && e.event === id).length;
+            if (begins !== 1) {
+                const what = begins === 0 ? "no BeginTurn" : `${begins} BeginTurn entries`;
+                throw new Error(`arm ${arm}: turn ${id} has ${what}`);
+            }
             const ends = mine.filter((e) => e.kind === "EndTurn" && e.event === id).length;
             const closed = mine.find((e) => e.kind === "Event" && e.event === id);
             if (ends === 0 && String(closed?.outcome) === "failed(interrupted)") continue;
@@ -113,6 +122,43 @@ function requireTurnEnds(journal: Entry[], arms: string[], events: Scenario["eve
             if (ends > 1) throw new Error(`arm ${arm}: turn ${id} has ${ends} EndTurn entries`);
         }
     }
+}
+
+/** Numeric RSS samples in one file name a pid on every row or on none; a null pid never carries a reading. */
+function requirePidShape(path: string, samples: Sample[]): void {
+    const numeric = samples.filter((s) => typeof s.rss === "number");
+    const withPid = numeric.filter((s) => "pid" in s).length;
+    if (withPid !== 0 && withPid !== numeric.length) {
+        throw new Error(`${path}: pid present on some samples and absent on others`);
+    }
+    samples.forEach((s, i) => {
+        if (typeof s.rss === "number" && "pid" in s && s.pid === null) {
+            throw new Error(`${path}: line ${i + 1}: numeric rss with a null pid`);
+        }
+    });
+}
+
+const TOKEN_FIELDS = [
+    "input_tokens",
+    "output_tokens",
+    "cache_read_tokens",
+    "cache_write_tokens",
+] as const;
+
+function samplesOf(path: string): Sample[] {
+    const samples = shaped<Sample>(path, SAMPLE_FIELDS);
+    requirePidShape(path, samples);
+    return samples;
+}
+
+function toolsOf(path: string, turns: Set<string>): (Command & { turn: string | null })[] {
+    const tools = shaped<Command & { turn: string | null }>(path, TOOL_FIELDS);
+    tools.forEach((t, i) => {
+        if (t.turn !== null && !turns.has(t.turn)) {
+            throw new Error(`${path}: line ${i + 1}: turn ${t.turn} is not a scheduled user turn`);
+        }
+    });
+    return tools;
 }
 
 export function loadRun(dir: string, prereg: Preregistration): RunLogs {
@@ -131,6 +177,14 @@ export function loadRun(dir: string, prereg: Preregistration): RunLogs {
             throw new Error(`manifest arm ${arm} is not a pre-registered arm`);
         }
     }
+    const count = manifest.events;
+    if (!Number.isInteger(count) || count < 1 || count > scenario.events.length) {
+        throw new Error(
+            `manifest events ${count} exceeds the scenario's ${scenario.events.length}`,
+        );
+    }
+    const planned = scenario.events.slice(0, count);
+    const turns = new Set(planned.filter((e) => e.kind === "user_turn").map((e) => String(e.id)));
     const calls = jsonl<CallRecord>(join(dir, "calls.jsonl"));
     const seen = new Set<number>();
     for (const c of calls) {
@@ -140,6 +194,12 @@ export function loadRun(dir: string, prereg: Preregistration): RunLogs {
             throw new Error(`call ${c.seq}: arm ${c.arm} is not in the manifest`);
         if (seen.has(c.seq)) throw new Error(`call ${c.seq}: sequence number repeated`);
         seen.add(c.seq);
+        if (c.turn !== null && !turns.has(c.turn)) {
+            throw new Error(`call ${c.seq}: turn ${c.turn} is not a scheduled user turn`);
+        }
+        for (const field of TOKEN_FIELDS) {
+            if (c[field] < 0) throw new Error(`call ${c.seq}: ${field} negative`);
+        }
     }
     const journalPath = join(dir, "journal.jsonl");
     const journal = readJournal(journalPath);
@@ -151,26 +211,17 @@ export function loadRun(dir: string, prereg: Preregistration): RunLogs {
             if (!ok(e[field])) throw new Error(`${journalPath}: line ${i + 1}: ${field} missing`);
         }
     });
-    const count = manifest.events;
-    if (!Number.isInteger(count) || count < 1 || count > scenario.events.length) {
-        throw new Error(
-            `manifest events ${count} exceeds the scenario's ${scenario.events.length}`,
-        );
-    }
-    const scheduled = scenario.events.slice(0, count).map((e) => String(e.id));
+    const scheduled = planned.map((e) => String(e.id));
     requireComplete(journal, order, scheduled);
-    requireTurnEnds(journal, order, scenario.events.slice(0, count));
+    requireTurnEnds(journal, order, planned);
     const arms = order.map((arm) => ({
         arm,
         calls: calls.filter((c) => c.arm === arm),
         journal: journal.filter((e) => e.arm === arm),
         pluginLog: lines(join(dir, arm, "r", "eidnara.log")),
         daemonLog: lines(join(dir, arm, "daemon.log")),
-        resources: shaped<Sample>(join(dir, arm, "resources.jsonl"), SAMPLE_FIELDS),
-        tools: shaped<Command & { turn: string | null }>(
-            join(dir, arm, "tools.jsonl"),
-            TOOL_FIELDS,
-        ),
+        resources: samplesOf(join(dir, arm, "resources.jsonl")),
+        tools: toolsOf(join(dir, arm, "tools.jsonl"), turns),
     }));
     for (const arm of arms) {
         if (arm.arm === "host") continue;

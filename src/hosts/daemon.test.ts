@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import {
     appendFileSync,
+    chmodSync,
     existsSync,
     mkdirSync,
     mkdtempSync,
@@ -238,4 +239,22 @@ test("the recovery marker names the held and the live log through a restart, so 
     new DaemonStack(stackCtx(dir)).recoverLog();
     expect(readFileSync(join(dir, "daemon.log"), "utf8")).toBe("old lifetime\nnew lifetime\n");
     expect(existsSync(marker)).toBe(false);
+});
+
+test("the marker leaves the copying state before the saved source is removed", () => {
+    const dir = mkdtempSync(join(tmpdir(), "sim-daemon-"));
+    const logFile = join(dir, "daemon.log");
+    const locked = join(dir, "locked");
+    mkdirSync(locked);
+    const logPath = join(locked, "direct-host.log");
+    writeFileSync(logPath, "daemon: memory capture output rejected\n");
+    writeFileSync(`${logFile}.source`, JSON.stringify({ pending: [logPath], copying: null }));
+    chmodSync(locked, 0o555);
+    try {
+        expect(() => new DaemonStack(stackCtx(dir)).recoverLog()).toThrow();
+        expect(readFileSync(logFile, "utf8")).toBe("daemon: memory capture output rejected\n");
+        expect(JSON.parse(readFileSync(`${logFile}.source`, "utf8")).copying).toBeNull();
+    } finally {
+        chmodSync(locked, 0o755);
+    }
 });

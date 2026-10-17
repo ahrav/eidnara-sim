@@ -178,13 +178,17 @@ export class DaemonStack {
         this.writeMarker({ pending: [String(this.stack?.logPath ?? "")], copying: null });
     }
 
-    /** Appends one log to `daemon.log` exactly once, then removes it and takes it off the marker. */
+    /**
+     * Appends one log to `daemon.log` exactly once: the marker commits the copy before the
+     * source is removed, so a kill between the two leaves an orphan file, never a lost or
+     * doubled lifetime.
+     */
     private absorb(source: string, rest: string[]): void {
         const start = existsSync(this.ctx.logFile) ? statSync(this.ctx.logFile).size : 0;
         this.writeMarker({ pending: rest, copying: { source, target_bytes: start } });
         appendFileFrom(source, this.ctx.logFile);
-        rmSync(source, { force: true });
         this.writeMarker({ pending: rest, copying: null });
+        rmSync(source, { force: true });
     }
 
     /**
