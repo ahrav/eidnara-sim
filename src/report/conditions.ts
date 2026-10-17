@@ -53,7 +53,7 @@ export interface Continuity {
     v1: [number, number] | null;
 }
 
-const count = (x: unknown): x is number => Number.isInteger(x) && (x as number) >= 0;
+const count = (x: unknown): x is number => Number.isSafeInteger(x) && (x as number) >= 0;
 
 export function parseContinuity(value: unknown): Continuity[] {
     if (!Array.isArray(value)) throw new Error("continuity: expected an array of rows");

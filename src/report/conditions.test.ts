@@ -193,6 +193,7 @@ describe("parseContinuity", () => {
     test("a malformed reference is refused by row and field", () => {
         expect(() => parseContinuity({ rows: [row] })).toThrow("continuity: expected an array");
         expect(() => parseContinuity([{ ...row, n: "40" }])).toThrow("continuity[0].n");
+        expect(() => parseContinuity([{ ...row, n: 1e20, pass: 5e19 }])).toThrow("continuity[0].n");
         expect(() => parseContinuity([{ ...row, pass: 41 }])).toThrow("continuity[0].pass");
         expect(() => parseContinuity([{ ...row, pass: -1 }])).toThrow("continuity[0].pass");
         expect(() => parseContinuity([{ ...row, pass_with_transcript_read: 39 }])).toThrow(

@@ -84,3 +84,10 @@ describe("stop reasons", () => {
         expect(reasons).toEqual(["limit", "stopWhen"]);
     });
 });
+
+test("the stopWhen check runs often enough to catch a cut a second before the run ends", async () => {
+    const children = new Children(process.env, 300);
+    const started = Date.now();
+    expect(await children.run(IDLE, log(), undefined, () => true)).toBe(SIGTERM_EXIT);
+    expect(Date.now() - started).toBeLessThan(2_500);
+});

@@ -30,7 +30,7 @@ export class Children {
     constructor(
         private readonly env: NodeJS.ProcessEnv,
         private readonly graceMs = 60_000,
-        private readonly pollMs = 30_000,
+        private readonly pollMs = 1_000,
     ) {}
 
     run(

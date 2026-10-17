@@ -103,6 +103,7 @@ export class HostDriver implements ArmDriver {
     private second: SimHost | null = null;
     /** A host open or daemon start or restart in flight, which `stop` awaits before closing either. */
     private inflight: Promise<void> | null = null;
+    private stopping = false;
     /** Daemon restarts that the end of the current or next turn owes a store check. */
     private storeFaults: string[] = [];
 
@@ -165,6 +166,11 @@ export class HostDriver implements ArmDriver {
     }
 
     private recordState(): void {
+        if (this.stopping) return;
+        this.writeState();
+    }
+
+    private writeState(): void {
         const proc = (pid: number | null) =>
             pid === null ? null : { pid, start: processStart(pid) };
         const state: ArmState = {
@@ -185,6 +191,7 @@ export class HostDriver implements ArmDriver {
     }
 
     private async startArm(fresh: boolean): Promise<void> {
+        this.stopping = false;
         mkdirSync(this.storeRoot, { recursive: true, mode: 0o700 });
         if (this.o.loopStore && eidnaraOn(armBase(this.o.arm))) this.mountStore(fresh);
         if (eidnaraOn(armBase(this.o.arm))) {
@@ -461,7 +468,7 @@ export class HostDriver implements ArmDriver {
                 session,
                 this.daemon.connectionFile,
             );
-            if (this.second !== second) {
+            if (this.stopping || this.second !== second) {
                 await second.closeSession();
                 throw new HarnessFailure("the arm stopped while the second client opened");
             }
@@ -530,13 +537,15 @@ export class HostDriver implements ArmDriver {
     }
 
     async stop(checkFinalStore = false): Promise<void> {
+        this.stopping = true;
+        await this.inflight;
         const host = this.host;
         const daemon = this.daemon;
         const second = this.second;
+        this.writeState();
         this.host = null;
         this.daemon = null;
         this.second = null;
-        await this.inflight;
         let failure: unknown = null;
         const closeSecond = () => (second ? this.releaseSecond(second) : undefined);
         for (const close of [() => host?.closeSession(), closeSecond]) {

@@ -584,6 +584,29 @@ describe("HostDriver faults", () => {
         expect([daemon.stops, daemon.stoppedWhileStarting]).toEqual([1, 0]);
     });
 
+    test("a stop whose daemon refuses to die keeps the replacement daemon's pid in the arm state", async () => {
+        const { driver, armDir } = fixture("eidnara");
+        const daemon = fakeDaemon(10);
+        let release: () => void = () => undefined;
+        daemon.gate = new Promise<void>((r) => {
+            release = r;
+        });
+        daemon.stop = async () => {
+            throw new Error("daemon survived SIGKILL");
+        };
+        driver.daemon = daemon as unknown as DaemonStack;
+        const fault = driver.fault(episode("daemon_restart"));
+        fault.catch(() => undefined);
+        await Bun.sleep(5);
+        const stop = driver.stop();
+        stop.catch(() => undefined);
+        release();
+        await expect(stop).rejects.toThrow("daemon survived SIGKILL");
+        await fault.catch(() => undefined);
+        const state = JSON.parse(readFileSync(join(armDir, "state.json"), "utf8"));
+        expect(state.daemon?.pid).toBe(11);
+    });
+
     test("the store checks a daemon restart owes survive a resume through the arm state", async () => {
         const { driver, armDir } = fixture("eidnara");
         driver.daemon = fakeDaemon(10) as unknown as DaemonStack;

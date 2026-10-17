@@ -200,8 +200,9 @@ Each XL paired run is stopped once with SIGTERM when its journal holds
 empty or non-numeric value is refused; recorded in `tier-plan.json` as
 `restart_at` and reused by a rerun without the flag, like `turn_ms`; a
 fraction whose first reachable event count is a run's last event is refused,
-since that stop could not land before the run ends) of its
-planned events across its arms, checked every 30 s,
+since that stop could not land before the run ends; a cut one event before
+the end can still miss when the run finishes within that second) of its
+planned events across its arms, checked every second,
 and resumed from its journal within the rest of its wall limit. The restart writes `<run>/restarted` only when the journal check requested
 the stop (an outside SIGTERM at the same point leaves no marker),
 so a rerun of the command neither restarts that run again nor reports it
