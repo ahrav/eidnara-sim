@@ -71,7 +71,9 @@ memory arm with the host arm, so the figure belongs to the run; it is
 
 `scripts/report.ts <run dir>... [--out <dir>]` groups the runs by tier and
 writes `report-<tier>.md` and the gate verdict as `report-<tier>.json`, or
-prints the Markdown. `loadGraded` refuses a run directory whose manifest
+prints the Markdown. It exits 1 after writing when the property witness
+holds a violated record, so a verdict over runs that broke an invariant
+does not pass unremarked. `loadGraded` refuses a run directory whose manifest
 records a `prereg_sha256` other than the hash of the tier's current
 pre-registration, or whose `scenario.json` hashes to other than the
 manifest's `scenario_hash`, so a verdict carries the registration and the

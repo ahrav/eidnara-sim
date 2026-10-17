@@ -104,6 +104,12 @@ const CHECKS: Record<string, Check> = {
             const reference = referenceArm(c.manifest.order);
             const turns = c.pairing.filter((r) => r.kind === "turn");
             const keys = new Set(turns.map((r) => `${r.arm}/${r.event}`));
+            const delivered = new Map(turns.map((r) => [`${r.arm}/${r.event}`, r.delivered]));
+            for (const r of turns) {
+                const other = delivered.get(`${reference(r.arm)}/${r.event}`);
+                if (r.arm !== reference(r.arm) && other !== undefined && other !== r.delivered)
+                    bad.push(`${r.arm} ${r.event} delivered ${r.delivered}, reference ${other}`);
+            }
             const diverged = new Map(
                 c.pairing
                     .filter((r) => r.kind === "divergedAt")

@@ -40,8 +40,10 @@ function cusumScale(prereg: Preregistration): CusumScale {
     }
     return scale;
 }
+let violated = 0;
 for (const [tier, { prereg, runs }] of loaded) {
     const report = tierReport(prereg, runs, boundary, cusumScale(prereg), catalog);
+    violated += report.witness.filter((w) => w.status === "violated").length;
     const text = renderTier(report);
     if (out) {
         mkdirSync(out, { recursive: true });
@@ -51,4 +53,10 @@ for (const [tier, { prereg, runs }] of loaded) {
             `${JSON.stringify(report.verdict, null, 2)}\n`,
         );
     } else console.log(text);
+}
+// A violated property means the runs broke an invariant the verdict rests on; the report stays
+// written for reading, and the exit status says the campaign is not sound.
+if (violated > 0) {
+    console.error(`${violated} property record(s) violated; see the report's property witness`);
+    process.exit(1);
 }

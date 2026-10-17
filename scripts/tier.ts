@@ -12,7 +12,7 @@ import { loadPrereg } from "../src/scenario/inputs";
 
 const USAGE =
     "usage: bun scripts/tier.ts --tier S --out <dir> [--hosts pi,opencode] [--turn-ms N] [--plan-only]";
-const fail = (why: string) => {
+const fail = (why: string): never => {
     console.error(`${why}\n${USAGE}`);
     process.exit(2);
 };
@@ -47,10 +47,15 @@ const config = loadConfig();
 const prereg = loadPrereg(tier);
 const hosts = (arg("hosts") ?? prereg.hosts.join(",")).split(",") as ("pi" | "opencode")[];
 const priorPlan = join(out, "tier-plan.json");
-const turnMs = Number(
-    arg("turn-ms") ??
-        (existsSync(priorPlan) ? JSON.parse(readFileSync(priorPlan, "utf8")).turn_ms : 75_000),
-);
+const priorTurnMs = (): unknown => {
+    if (!existsSync(priorPlan)) return 75_000;
+    try {
+        return JSON.parse(readFileSync(priorPlan, "utf8")).turn_ms;
+    } catch {
+        return fail(`${priorPlan} is unreadable; pass --turn-ms to replace it`);
+    }
+};
+const turnMs = Number(arg("turn-ms") ?? priorTurnMs());
 if (!Number.isInteger(turnMs) || turnMs <= 0) fail("--turn-ms must be a positive integer");
 if (new Set(hosts).size !== hosts.length || !hosts.every((h) => prereg.hosts.includes(h)))
     fail(`--hosts must name distinct hosts from ${prereg.hosts.join(",")}`);
@@ -81,10 +86,7 @@ if (conflicts.length > 0) {
     );
     exit(2);
 }
-writeFileSync(
-    join(out, "tier-plan.json"),
-    `${JSON.stringify({ tier, turn_ms: turnMs, plan }, null, 2)}\n`,
-);
+writeAtomic(priorPlan, `${JSON.stringify({ tier, turn_ms: turnMs, plan }, null, 2)}\n`);
 console.log(JSON.stringify(plan.map((j) => [j.dir, j.events, j.user_turns, j.arms.join(",")])));
 const empty = plan.filter((j) => j.events === 0).map((j) => j.dir);
 if (empty.length > 0) {

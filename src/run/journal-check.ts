@@ -35,8 +35,9 @@ export function checkJournal(entries: Entry[], schedule: Schedule): JournalRepor
         const seq = Number(e.seq);
         const ms = Number(e.scenario_ms);
         const before = last.get(arm) ?? 0;
-        if (ms < before) report.decreasing_scenario_ms.push(seq);
-        last.set(arm, ms);
+        // A time that is not a finite number cannot be shown in order and breaks it.
+        if (!Number.isFinite(ms) || ms < before) report.decreasing_scenario_ms.push(seq);
+        if (Number.isFinite(ms)) last.set(arm, ms);
         const busy = open.get(arm) ?? new Set<string>();
         open.set(arm, busy);
         const done = ran.get(arm) ?? new Set<string>();

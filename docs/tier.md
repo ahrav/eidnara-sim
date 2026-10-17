@@ -12,10 +12,12 @@ the plan and `<dir>/tier-result.json` the outcome of each run, with the
 run's own wall time and whether it exceeded the tier's wall budget; each
 run directory keeps its `tier.log`. The command exits 1 when any run,
 grading, A/A report, or the tier report fails or any run exceeded
-`liveness_bounds.tier_wall_budget_ms` (SIM-L03), and 2 on a malformed
-flag, a plan where no session fits the budget, a `--turn-ms` whose
-prefix differs from one a run with a manifest ran, or an output directory
-another invocation holds (`<dir>/lease.json`). SIGINT, SIGTERM, or
+`liveness_bounds.tier_wall_budget_ms` (SIM-L03) or the report's
+property witness holds a violated record, and 2 on a malformed flag, a
+plan where no session fits the budget, a `--turn-ms` whose prefix differs
+from one a run with a manifest ran, an unreadable `tier-plan.json` with
+no `--turn-ms` to replace it, or an output directory another invocation
+holds (`<dir>/lease.json`). SIGINT, SIGTERM, or
 SIGHUP to the command reaches every child it started, SIGKILLs any still
 live a minute later together with its descendants, and starts no further
 grading or report; each run tears down and stays resumable.
@@ -71,7 +73,8 @@ The panel lists records by id, without their catalog names.
 The run-level checks cover:
 
 - SIM-P02 and SIM-P03: pairing before divergence over turns below their
-  arm's divergence that have a reference counterpart, divergence records
+  arm's divergence that have a reference counterpart, each delivered as
+  its counterpart was, divergence records
   ahead of their turn carrying
   the two turns' digests (a replayed run's against the digest its source
   tape's pairing log recorded), and no turn whose context digest differs

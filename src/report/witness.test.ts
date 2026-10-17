@@ -279,6 +279,11 @@ describe("property witness evidence", () => {
         expect(
             one("P02", made({ pairing: [turn("host", "a"), diverged, turn("eidnara", "b")] })),
         ).toMatchObject({ status: "unreached" });
+        const skipped = turn("eidnara", "a", { delivered: false });
+        expect(one("P02", made({ pairing: [turn("host", "a"), skipped] }))).toMatchObject({
+            status: "violated",
+            detail: expect.stringContaining("delivered"),
+        });
     });
 
     test("SIM-P03 needs the divergence record's hashes to be the turns' digests", () => {
