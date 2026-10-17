@@ -217,3 +217,22 @@ test("a transcript root that is itself a symlink is left unread", () => {
         missing: ["s-1", "s-2"],
     });
 });
+
+test("a transcript root outside the arm directory, through a symlinked ancestor or a persisted path, is left unread", () => {
+    const g = fixture();
+    const outside = mkdtempSync(join(tmpdir(), "sim-conditions-outside-"));
+    mkdirSync(join(outside, "agent/sessions/p"), { recursive: true });
+    writeFileSync(
+        join(outside, "agent/sessions/p/sim-s-1.jsonl"),
+        `${JSON.stringify({ type: "session", id: "sim-s-1", timestamp: new Date(BASE).toISOString() })}\n`,
+    );
+    const home = join(g.run.dir, "host/r/home");
+    rmSync(join(home, ".pi"), { recursive: true });
+    symlinkSync(outside, join(home, ".pi"));
+    expect(runConditions(g).transcript_order[0]).toMatchObject({ sessions: 0 });
+    writeFileSync(
+        join(g.run.dir, "host/transcripts.json"),
+        JSON.stringify({ paths: [join(outside, "agent/sessions")], missing: [] }),
+    );
+    expect(runConditions(g).transcript_order[0]).toMatchObject({ sessions: 0 });
+});

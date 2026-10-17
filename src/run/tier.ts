@@ -72,8 +72,17 @@ export function runSpan(dir: string, now: number): { started: number; ended?: nu
     const path = join(dir, "journal.jsonl");
     if (!existsSync(path)) return { started: now };
     const entries = readJournal(path);
-    const started = entries.find((e) => e.kind === "StartRun")?.wall_ms ?? now;
-    const ended = entries.find((e) => e.kind === "EndRun")?.wall_ms;
+    const wall = (kind: string) => {
+        const e = entries.find((x) => x.kind === kind);
+        if (e === undefined) return undefined;
+        if (!Number.isFinite(e.wall_ms))
+            throw new Error(`${path}: ${kind} wall_ms is not a number`);
+        return e.wall_ms;
+    };
+    const started = wall("StartRun") ?? now;
+    const ended = wall("EndRun");
+    if (ended !== undefined && ended < started)
+        throw new Error(`${path}: EndRun at ${ended} is before StartRun at ${started}`);
     return ended === undefined ? { started } : { started, ended };
 }
 

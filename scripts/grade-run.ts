@@ -45,8 +45,8 @@ const snapshots = new Map<string, Snapshot[]>();
 for (const arm of arms) {
     const path = join(dir, arm, "snapshots.jsonl");
     if (!existsSync(path)) continue;
-    for (const line of readFileSync(path, "utf8").split("\n").filter(Boolean)) {
-        const s = JSON.parse(line) as Snapshot;
+    // readJournal drops a record a kill cut short at the end of the file.
+    for (const s of readJournal(path) as unknown as Snapshot[]) {
         if (!journaled.has(s.id)) continue;
         const key = `${arm}/${s.item}`;
         snapshots.set(key, [...(snapshots.get(key) ?? []), s]);

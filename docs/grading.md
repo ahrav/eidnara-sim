@@ -53,7 +53,8 @@ The harness captures no `test-result` or `workspace-state` artefact yet;
 the graders read neither.
 
 `scripts/grade-run.ts <run dir> [--regrade]` grades every snapshot the
-journal names into `grades.jsonl` and judges each P7 item for each memory
+journal names (a snapshot record a kill cut short is dropped on read, and
+the recorder drops it before its next write) into `grades.jsonl` and judges each P7 item for each memory
 arm against the host arm, through a gateway it starts for the judge. It
 exits 2 before writing when the manifest's `prereg_sha256` is not the
 hash of the tier's current pre-registration, whose rules the grades

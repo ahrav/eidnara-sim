@@ -144,7 +144,9 @@ const CHECKS: Record<string, Check> = {
                     r.against === "reference"
                         ? turnOf(reference(r.arm), r.event)?.digest
                         : c.recorded.get(`${r.arm}/${r.event}`);
-                if (
+                if (r.against === "recorded" && other === undefined)
+                    bad.push(`${r.arm} ${r.event} has no source digest to compare with`);
+                else if (
                     (own && own.digest !== r.digest) ||
                     (other !== undefined && other !== r.reference_digest)
                 )
@@ -215,17 +217,32 @@ const CHECKS: Record<string, Check> = {
         let n = 0;
         for (const c of runs) {
             for (const a of c.g.run.arms) {
+                const clock = journalClock(a.journal);
                 let wall = Number.NEGATIVE_INFINITY;
                 for (const call of [...a.calls].sort((x, y) => x.seq - y.seq)) {
                     n++;
-                    if (!Number.isFinite(call.scenario_ms) || !Number.isFinite(call.wall_ms))
+                    if (!Number.isFinite(call.scenario_ms) || !Number.isFinite(call.wall_ms)) {
                         bad.push(`call ${call.seq} lacks a time`);
-                    else if (call.wall_ms < wall) bad.push(`call ${call.seq} wall time decreases`);
+                        continue;
+                    }
+                    if (call.wall_ms < wall) bad.push(`call ${call.seq} wall time decreases`);
                     wall = Math.max(wall, call.wall_ms);
+                    const expected = clock(call.started_wall_ms);
+                    if (
+                        expected !== undefined &&
+                        Math.abs(call.scenario_ms - expected) > CLOCK_SLACK_MS
+                    )
+                        bad.push(
+                            `call ${call.seq} at scenario ${call.scenario_ms} ms, the journal's clock says ${expected}`,
+                        );
                 }
             }
         }
-        return outcome(n, bad, "proxy records with both times, wall time in order");
+        return outcome(
+            n,
+            bad,
+            "proxy records with both times, wall time in order, scenario time on the journal's clock",
+        );
     },
     "SIM-P25": (runs) => {
         const turns = runs.flatMap((c) => journalOf(c).filter((e) => e.kind === "UserTurn"));
@@ -326,6 +343,10 @@ const CHECKS: Record<string, Check> = {
             for (const r of c.grades) {
                 n++;
                 const key = `${r.arm}/${r.item}`;
+                if (!Number.isInteger(r.version) || r.version < 1) {
+                    bad.push(`${key} version ${JSON.stringify(r.version)}`);
+                    continue;
+                }
                 if (r.version <= (versions.get(key) ?? 0)) bad.push(key);
                 versions.set(key, r.version);
             }
@@ -356,6 +377,38 @@ const CHECKS: Record<string, Check> = {
         return outcome(n, bad, "completed runs inside the tier's wall budget");
     },
 };
+
+/** Jitter allowed between a call's stamped scenario time and the clock the journal implies. */
+const CLOCK_SLACK_MS = 5_000;
+
+/**
+ * The arm's scenario clock as a function of wall time, from its journal: at wall pace while a
+ * turn or job is open, held while idle, and jumping where an entry says so. Undefined before
+ * the first entry.
+ */
+function journalClock(journal: Entry[]): (wallMs: number) => number | undefined {
+    const entries = [...journal]
+        .filter((e) => Number.isFinite(e.wall_ms) && Number.isFinite(e.scenario_ms))
+        .sort((a, b) => a.seq - b.seq);
+    const busyAfter: boolean[] = [];
+    const open = new Set<string>();
+    for (const e of entries) {
+        if (e.kind === "BeginTurn") open.add(`turn:${String(e.event)}`);
+        if (e.kind === "EndTurn") open.delete(`turn:${String(e.event)}`);
+        if (e.kind === "RegisterJob") open.add(`job:${String(e.job)}`);
+        if (e.kind === "EndJob") open.delete(`job:${String(e.job)}`);
+        busyAfter.push(open.size > 0);
+    }
+    return (wallMs) => {
+        let i = -1;
+        for (let k = 0; k < entries.length; k++) {
+            if ((entries[k] as Entry).wall_ms <= wallMs) i = k;
+        }
+        if (i < 0) return undefined;
+        const e = entries[i] as Entry;
+        return busyAfter[i] ? e.scenario_ms + (wallMs - e.wall_ms) : e.scenario_ms;
+    };
+}
 
 /** Wall time of the journaled `Event` that ended `session` in this arm, if it happened. */
 function windowClose(c: Ctx, journal: Entry[], session: string): number | undefined {

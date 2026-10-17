@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import { existsSync, lstatSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import type { GradeRecord } from "../grade/probes";
 import { armBase } from "../hosts/arms";
@@ -77,19 +77,31 @@ export interface Continuity {
     v1: [number, number] | null;
 }
 
-function files(dir: string): string[] {
-    if (!existsSync(dir) || lstatSync(dir).isSymbolicLink()) return [];
+/** Whether `path` resolves to a real location inside `root`. */
+function within(path: string, root: string): boolean {
+    try {
+        const real = realpathSync(path);
+        const base = realpathSync(root);
+        return real === base || real.startsWith(`${base}/`);
+    } catch {
+        return false;
+    }
+}
+
+/** Regular files under `dir`, which must resolve inside `root`; symlinks are left unread. */
+function files(dir: string, root: string): string[] {
+    if (!existsSync(dir) || lstatSync(dir).isSymbolicLink() || !within(dir, root)) return [];
     return readdirSync(dir).flatMap((f) => {
         const p = join(dir, f);
         const stat = lstatSync(p);
-        return stat.isDirectory() ? files(p) : stat.isFile() ? [p] : [];
+        return stat.isDirectory() ? files(p, root) : stat.isFile() ? [p] : [];
     });
 }
 
-function transcriptTimes(path: string): Map<string, number> {
+function transcriptTimes(path: string, armDir: string): Map<string, number> {
     const out = new Map<string, number>();
+    if (!within(path, armDir)) return out;
     if (path.endsWith(".db")) {
-        if (!existsSync(path)) return out;
         const db = new Database(path, { readonly: true });
         try {
             const rows = db.query("select title, time_created from session").all() as {
@@ -102,7 +114,7 @@ function transcriptTimes(path: string): Map<string, number> {
         }
         return out;
     }
-    for (const f of files(path).filter((p) => p.endsWith(".jsonl"))) {
+    for (const f of files(path, armDir).filter((p) => p.endsWith(".jsonl"))) {
         try {
             const head = JSON.parse(readFileSync(f, "utf8").split("\n")[0] || "{}");
             if (head.type === "session") out.set(head.id, Date.parse(head.timestamp));
@@ -113,7 +125,8 @@ function transcriptTimes(path: string): Map<string, number> {
 
 function order(g: GradedRun, arm: ArmLogs, paths: string[]): TranscriptOrder {
     const scheduled = new Map(g.scenario.events.map((e) => [e.id, e]));
-    const times = new Map(paths.flatMap((p) => [...transcriptTimes(p)]));
+    const armDir = join(g.run.dir, arm.arm);
+    const times = new Map(paths.flatMap((p) => [...transcriptTimes(p, armDir)]));
     const reached = arm.journal
         .filter((e) => e.kind === "Event" && g.run.kinds.get(String(e.event)) === "session_start")
         .flatMap((e) => {

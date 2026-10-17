@@ -88,6 +88,16 @@ describe("tier resume", () => {
             `${entry("StartRun", 1_000)}\n${entry("EndRun", 4_000)}\n`,
         );
         expect(runSpan(dir, 5_000)).toEqual({ started: 1_000, ended: 4_000 });
+        writeFileSync(
+            join(dir, "journal.jsonl"),
+            `${JSON.stringify({ kind: "StartRun", arm: null, seq: 0, scenario_ms: 0, wall_ms: "soon" })}\n`,
+        );
+        expect(() => runSpan(dir, 5_000)).toThrow(/wall_ms/);
+        writeFileSync(
+            join(dir, "journal.jsonl"),
+            `${entry("StartRun", 4_000)}\n${entry("EndRun", 1_000)}\n`,
+        );
+        expect(() => runSpan(dir, 5_000)).toThrow(/before/);
     });
 
     test("a plan whose prefix differs from an existing manifest's is a conflict", () => {

@@ -185,8 +185,9 @@ store path the driver found missing after the first `session_end`, or
 `<arm> unchecked` for an arm that never reached that check or whose
 `transcripts.json` a stop cut short. It then
 reads each host's transcripts back, Pi's session files under
-`.pi/agent/sessions` (regular files under a real directory; a symlinked
-root or entry is left unread) and OpenCode's `session` table in
+`.pi/agent/sessions` (regular files under a real directory that resolves
+inside the arm's directory; a symlinked root or entry, or a path that
+leads outside the arm, is left unread) and OpenCode's `session` table in
 `opencode.db`, and
 compares each `sim-<session>` creation time with the session's scheduled
 wall time (`base_wall_ms` plus the `session_start` event's scenario time). The table

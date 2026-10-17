@@ -3,12 +3,14 @@
 `scripts/tier.ts --tier S --out <dir> [--hosts pi,opencode] [--turn-ms N]
 [--plan-only]` runs one tier end to end. It compiles each seed's scenario,
 plans one run per pre-registered host and seed, builds the vendored
-libfaketime once, starts the runs in parallel, grades each one, reports
+libfaketime once as a supervised child (`<dir>/faketime.log`), starts
+the runs in parallel, grades each one, reports
 its A/A pairs, and writes the tier report. A run whose journal already
 holds `EndRun` is complete and is graded and reported as it finished. A
 job that fails in orchestration stops the sibling runs before the command
 exits. A run whose directory another process holds (`lease.json` with a
-live pid) is left ungraded and fails the command. `<dir>/tier-plan.json` holds
+live pid) is left ungraded, kept out of the report, and fails the
+command. `<dir>/tier-plan.json` holds
 the plan and `<dir>/tier-result.json` the outcome of each run, with the
 run's own wall time and whether it exceeded the tier's wall budget; each
 run directory keeps its `tier.log`. The command exits 1 when any run,
@@ -28,7 +30,9 @@ copied into each new run directory. A cached scenario compiled from
 another generator version, corpus manifest, fact bank, repository list,
 or pre-registration is refused for a new run; a run that already has a
 manifest keeps the scenario it ran. The libfaketime build's download,
-extraction, and compilation each end within ten minutes.
+extraction, and compilation each end within ten minutes; invocations
+serialise on a lease over `vendor/build`, and the finished tree is
+renamed into place, so another command sees a complete library or none.
 
 ## Plan
 
@@ -78,7 +82,8 @@ The run-level checks cover:
   its counterpart was, divergence records
   ahead of their turn carrying
   the two turns' digests (a replayed run's against the digest its source
-  tape's pairing log recorded), and no turn whose context digest differs
+  tape's pairing log recorded, which must be present), and no turn whose
+  context digest differs
   from its reference arm's without a divergence record;
 - SIM-P04: a divergence occurred;
 - SIM-P10: user-sim rates recomputed from the journaled turn labels
@@ -90,7 +95,9 @@ The run-level checks cover:
   `checkJournal` over the entries in `seq` order, a repeated or
   non-integer `seq` counting as a break;
 - SIM-P15: proxy records carry both times, with wall time in `seq` order
-  per arm;
+  per arm, and each call's scenario time within 5 s of the clock the
+  arm's journal implies at the call's start (wall pace while a turn or job
+  is open, held while idle, jumping where an entry says);
 - SIM-P25: every user turn has a label;
 - SIM-P30: every observed fault was scheduled, and every injected call
   names a scheduled fault (from the manifest's `fault_override` when the
@@ -101,8 +108,9 @@ The run-level checks cover:
   probe's first `EndTurn` and before any later turn, and every persisted
   grade, earlier versions included, cites a journaled snapshot of its
   item;
-- SIM-P42: grade versions only increase, the report grades at the latest
-  version, and the panel names the versions used;
+- SIM-P42: grade versions are positive integers that only increase, the
+  report grades at the latest version, and the panel names the versions
+  used;
 - SIM-L03: each completed run's wall time from `StartRun` to `EndRun` is
   inside the tier's wall budget.
 

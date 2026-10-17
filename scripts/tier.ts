@@ -6,7 +6,6 @@ import { Children, SIGTERM_EXIT } from "../src/run/children";
 import { leaseHeld, releaseLease, takeLease } from "../src/run/journal";
 import { loadScenario, writeAtomic } from "../src/run/run";
 import { planConflicts, runSpan, tierPlan } from "../src/run/tier";
-import { buildFaketime } from "../src/run/timeinject";
 import type { Scenario } from "../src/scenario/compile";
 import { loadPrereg } from "../src/scenario/inputs";
 
@@ -108,9 +107,13 @@ for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
     });
 }
 
-// Every run's preflight wants the vendored libfaketime; one build here keeps the parallel runs
-// from each extracting and compiling into the same directory.
-await buildFaketime();
+// Every run's preflight wants the vendored libfaketime; one supervised build here keeps the
+// parallel runs from each compiling it, and a signal to the command ends the build with them.
+const built = await run(["build-faketime.ts"], join(out, "faketime.log"), 1_800_000);
+if (built !== 0) {
+    console.error(`libfaketime build exited ${built}; see ${join(out, "faketime.log")}`);
+    exit(1);
+}
 const budget = prereg.liveness_bounds.tier_wall_budget_ms;
 const limit = Math.round(budget * 1.25);
 const started = Date.now();
@@ -193,7 +196,9 @@ writeFileSync(
     join(out, "tier-result.json"),
     `${JSON.stringify({ tier, limit_ms: limit, results }, null, 2)}\n`,
 );
-const reported = results.filter((r) => existsSync(join(r.dir, "manifest.json"))).map((r) => r.dir);
+const reported = results
+    .filter((r) => !r.leased_elsewhere && existsSync(join(r.dir, "manifest.json")))
+    .map((r) => r.dir);
 const report = reported.length
     ? await run(["report.ts", ...reported, "--out", out], join(out, "report.log"))
     : null;

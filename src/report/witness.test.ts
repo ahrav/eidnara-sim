@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ArmLogs } from "../oracle/logs";
@@ -325,6 +325,11 @@ describe("property witness evidence", () => {
             });
         expect(one("P03", run("r")).status).toBe("witnessed");
         expect(one("P03", run("x")).status).toBe("violated");
+        rmSync(join(source, "pairing.jsonl"));
+        expect(one("P03", run("r"))).toMatchObject({
+            status: "violated",
+            detail: expect.stringContaining("source digest"),
+        });
     });
 
     test("SIM-P10 recomputes the rates from the turn labels and holds the journaled summary to them", () => {
@@ -554,6 +559,43 @@ describe("property witness evidence", () => {
             detail: expect.stringContaining("v2"),
         });
         expect(one("P42", made({ grades, used: [grade(1)] })).status).toBe("violated");
+        const unversioned = { ...grade(1), version: "bad" };
+        expect(one("P42", made({ grades: [unversioned], used: [] }))).toMatchObject({
+            status: "violated",
+            detail: expect.stringContaining("version"),
+        });
+    });
+
+    test("SIM-P15 holds each call's scenario time to the clock the journal implies at its start", () => {
+        // Busy from wall 1000 (scenario 100) to wall 1500 (scenario 600); idle after.
+        const journal = [
+            { kind: "BeginTurn", seq: 0, scenario_ms: 100, wall_ms: 1_000, event: "e-1" },
+            {
+                kind: "EndTurn",
+                seq: 1,
+                scenario_ms: 600,
+                wall_ms: 1_500,
+                event: "e-1",
+                outcome: "ok",
+            },
+        ];
+        const call = (scenario_ms: number, started_wall_ms: number) => ({
+            seq: 1,
+            scenario_ms,
+            started_wall_ms,
+            wall_ms: started_wall_ms + 10,
+            fault_ref: null,
+        });
+        expect(one("P15", made({ journal, calls: [call(300, 1_200)] }))).toMatchObject({
+            status: "witnessed",
+        });
+        expect(one("P15", made({ journal, calls: [call(600, 1_700)] }))).toMatchObject({
+            status: "witnessed",
+        });
+        expect(one("P15", made({ journal, calls: [call(99_000, 1_200)] }))).toMatchObject({
+            status: "violated",
+            detail: expect.stringContaining("clock"),
+        });
     });
 
     test("liveness records appear in the panel, unchecked", () => {
