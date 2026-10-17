@@ -80,6 +80,16 @@ function report(dir: string) {
         runLevel.has(probeType(metric)) ? "run" : (fact.get(item) ?? item);
     const order = manifest.order as string[];
     requireOrder(order, prereg.arms.run, prereg.aa_controls?.pairs ?? []);
+    // The run arms keep the seed's pre-registered relative order, as the run command schedules them.
+    const seedOrder: string[] =
+        prereg.arms.order_by_seed[prereg.seeds.indexOf(manifest.seed)] ?? prereg.arms.run;
+    const runArms = order.filter((a) => a === armBase(a));
+    const kept = seedOrder.filter((a) => runArms.includes(a));
+    if (JSON.stringify(kept) !== JSON.stringify(runArms)) {
+        throw new Error(
+            `${dir}: manifest order ${runArms.join(",")} is not the order seed ${manifest.seed} pre-registers (${seedOrder.join(",")})`,
+        );
+    }
     const count: unknown = manifest.events;
     if (
         !Number.isInteger(count) ||
@@ -143,15 +153,22 @@ function report(dir: string) {
     }
     const grades = log.latest();
     // grade-run grades an item from the arm's first journaled snapshot, when its turn ended ok.
+    const eventOf = new Map(
+        prefix.flatMap((e) => {
+            const probe = (e as { probe?: string }).probe;
+            return probe === undefined ? [] : [[probe, String(e.id)] as const];
+        }),
+    );
     const endedOk = new Set(
         entries
             .filter((e) => e.kind === "EndTurn" && e.outcome === "ok")
-            .map((e) => String(e.snapshot)),
+            .map((e) => `${String(e.arm)}/${String(e.event)}/${String(e.snapshot)}`),
     );
     const okSnapshot = new Map<string, string>();
     for (const e of entries.filter((e) => e.kind === "SnapshotArtefacts")) {
         const key = `${String(e.arm)}/${String(e.item)}`;
-        if (!okSnapshot.has(key) && endedOk.has(String(e.snapshot))) {
+        const ended = `${String(e.arm)}/${eventOf.get(String(e.item))}/${String(e.snapshot)}`;
+        if (!okSnapshot.has(key) && endedOk.has(ended)) {
             okSnapshot.set(key, String(e.snapshot));
         }
     }
@@ -206,13 +223,17 @@ function report(dir: string) {
     if (JSON.stringify(tapeDigests(tapes)) !== JSON.stringify(manifest.tape_sha256 ?? [])) {
         throw new Error(`${dir}: replay sources changed since the manifest hashed them`);
     }
-    // Every replay source's digest for an arm's event is a digest the runner may have recorded.
-    const recordedDigests = new Map<string, Set<string>>();
+    // Every replay source's turn for an arm's event is a (digest, context) the runner may have
+    // recorded against.
+    const recorded = new Map<string, { digest: string; context: string }[]>();
     for (const tape of tapes) {
         for (const r of readPairing(join(dirname(tape), "pairing.jsonl"))) {
             if (r.kind !== "turn") continue;
             const key = `${r.arm}/${r.event}`;
-            recordedDigests.set(key, new Set([...(recordedDigests.get(key) ?? []), r.digest]));
+            recorded.set(key, [
+                ...(recorded.get(key) ?? []),
+                { digest: r.digest, context: r.context_sha256 },
+            ]);
         }
     }
     const turnDigest = new Map(
@@ -220,19 +241,20 @@ function report(dir: string) {
     );
     for (const r of pairing) {
         if (r.kind !== "divergedAt") continue;
-        // A divergence against the reference arm records the control turn's digest and the
-        // reference arm's differing digest at the same event; the record is the evidence.
+        // A divergence against the reference arm cites the reference arm's differing digest at
+        // the same event. A divergence against a recorded run is a context no source holds, and
+        // cites a source's digest and context; the control's digest may equal the source's.
         const mine = turnDigest.get(`${r.arm}/${r.event}`);
         const theirs = turnDigest.get(`${reference(r.arm)}/${r.event}`);
+        const sources = recorded.get(`${r.arm}/${r.event}`) ?? [];
         const cited =
             r.against === "recorded"
-                ? recordedDigests.get(`${r.arm}/${r.event}`)?.has(r.reference_digest) === true
-                : theirs?.digest === r.reference_digest;
+                ? sources.some((x) => x.digest === r.reference_digest) &&
+                  sources.some((x) => x.context === r.recorded_context_sha256) &&
+                  sources.every((x) => x.context !== r.context_sha256)
+                : theirs?.digest === r.reference_digest && r.reference_digest !== r.digest;
         const sound =
-            mine?.digest === r.digest &&
-            mine.context_sha256 === r.context_sha256 &&
-            r.reference_digest !== r.digest &&
-            cited;
+            mine?.digest === r.digest && mine.context_sha256 === r.context_sha256 && cited;
         if (!sound) {
             throw new Error(
                 `${dir}/pairing.jsonl: ${r.arm} divergence at ${r.event} does not match the turns it cites`,
@@ -261,7 +283,11 @@ function report(dir: string) {
             for (const r of pairing) {
                 if (r.kind !== "turn" || r.arm !== a) continue;
                 const mine = users.filter((e) => String(e.event) === r.event);
-                if (mine.length !== 1 || mine[0]?.delivered !== r.delivered) {
+                if (
+                    mine.length !== 1 ||
+                    mine[0]?.delivered !== r.delivered ||
+                    mine[0]?.recovered === true
+                ) {
                     throw new Error(
                         `${dir}: ${a} ${r.event} has ${mine.length} journaled UserTurn entries matching its pairing record`,
                     );
