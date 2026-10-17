@@ -157,6 +157,7 @@ export function bootstrap<T>(
     stat: (s: T[]) => number,
     o: { replicates: number; seed: number; alpha?: number; bca?: boolean },
 ): Interval & { z0?: number; a?: number } {
+    if (xs.length === 0) throw new RangeError("bootstrap: an empty sample has no interval");
     const alpha = o.alpha ?? 0.05;
     const estimate = stat([...xs]);
     const rng = new Rng(o.seed);

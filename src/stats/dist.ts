@@ -138,6 +138,7 @@ export function betaQuantile(q: number, a: number, b: number): number {
 }
 
 export function digamma(x: number): number {
+    if (!(x > 0)) throw new RangeError("digamma: the argument must be positive");
     let r = 0;
     let y = x;
     while (y < 6) {

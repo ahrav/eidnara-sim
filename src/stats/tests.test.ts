@@ -1,7 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { binomialCdf, binomialPmf, incompleteBeta, normalCdf, normalQuantile } from "./dist";
+import {
+    binomialCdf,
+    binomialPmf,
+    digamma,
+    incompleteBeta,
+    normalCdf,
+    normalQuantile,
+} from "./dist";
 import {
     acceleration,
     bootstrap,
@@ -297,6 +304,15 @@ describe("statistics against published references", () => {
         expect(rare.converged).toBe(true);
         near(rare.coefficients[0] as number, 0, 1e-9);
         near(rare.coefficients[1] as number, Math.log(10_000), 1e-9);
+    });
+
+    test("an empty bootstrap sample and a non-positive digamma argument are rejected", () => {
+        expect(() => bootstrap([], (s) => s.length, { replicates: 100, seed: 1 })).toThrow(
+            RangeError,
+        );
+        expect(() => digamma(0)).toThrow(RangeError);
+        expect(() => digamma(-1_000_000_000.5)).toThrow(RangeError);
+        near(digamma(1), -0.5772156649015329, 1e-9);
     });
 
     test("a BCa interval of a single observation is that observation", () => {

@@ -23,7 +23,8 @@ throws `RangeError`, so a malformed aggregate cannot reach a gate as a
 result.
 
 `src/stats/dist.ts` supplies the normal, binomial, and incomplete beta
-functions and the digamma function the GLM's theta score needs. The
+functions and the digamma function (positive arguments only, otherwise
+`RangeError`) the GLM's theta score needs. The
 incomplete beta continued fraction runs to 10,000 terms, enough for shapes
 to a few hundred million, and throws `RangeError` rather than return an
 unconverged value. Every
@@ -44,4 +45,5 @@ The tier gate evaluation resamples ledger-fact clusters with this
 percentile bootstrap; no published table covers a cluster resample. The
 per-run report in `src/report/paired.ts` keeps its own `bootstrapMean`
 for its descriptive interval. A statistic that is undefined on the
-sample or on any resample makes both limits NaN, whatever the seed.
+sample or on any resample makes both limits NaN, whatever the seed; an
+empty sample throws `RangeError`.
