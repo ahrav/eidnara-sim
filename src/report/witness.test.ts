@@ -81,6 +81,7 @@ function run(broken: boolean): GradedRun {
         run: { dir, tier: "S", base_wall_ms: 0, prereg, kinds: new Map(), arms: [arm] },
         scenario,
         grades: [],
+        host: "pi",
     };
 }
 
