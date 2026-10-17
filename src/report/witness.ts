@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { GradeLog, type GradeRecord } from "../grade/probes";
-import { canonicalJson } from "../prereg/canonical";
+import { canonicalJson, sha256Hex } from "../prereg/canonical";
 import { TARGET } from "../proxy/inject";
 import { type Entry, readJournal } from "../run/journal";
 import { checkJournal } from "../run/journal-check";
@@ -27,10 +27,14 @@ interface Ctx {
         order: string[];
         events: number;
         tapes?: string[];
+        /** By tape path, the sha256 of the sibling pairing log as the run began. */
+        tape_pairing_sha256?: Record<string, string>;
         fault_override?: FaultEpisode[] | null;
     };
     /** Digests by `arm/event` from the pairing logs of the tapes a replayed run took. */
     recorded: Map<string, string>;
+    /** Tapes whose sibling pairing log differs from the digest the run recorded. */
+    changedSources: string[];
     entries: Entry[];
     grades: GradeRecord[];
 }
@@ -54,8 +58,17 @@ function context(g: GradedRun): Ctx {
         ? JSON.parse(readFileSync(manifest, "utf8"))
         : { order: g.run.arms.map((a) => a.arm), events: g.scenario.events.length };
     const recorded = new Map<string, string>();
+    const changedSources: string[] = [];
     for (const tape of read.tapes ?? []) {
-        for (const r of jsonl<PairingRecord>(join(dirname(tape), "pairing.jsonl"))) {
+        const log = join(dirname(tape), "pairing.jsonl");
+        const pinned = read.tape_pairing_sha256?.[tape];
+        if (
+            pinned !== undefined &&
+            existsSync(log) &&
+            sha256Hex(readFileSync(log, "utf8")) !== pinned
+        )
+            changedSources.push(tape);
+        for (const r of jsonl<PairingRecord>(log)) {
             if (r.kind === "turn") recorded.set(`${r.arm}/${r.event}`, r.digest);
         }
     }
@@ -64,6 +77,7 @@ function context(g: GradedRun): Ctx {
         pairing: jsonl<PairingRecord>(join(g.run.dir, "pairing.jsonl")),
         manifest: read,
         recorded,
+        changedSources,
         entries: jsonl<Entry>(join(g.run.dir, "journal.jsonl")),
         grades: existsSync(grades) ? new GradeLog(grades).all() : [],
     };
@@ -145,6 +159,8 @@ const CHECKS: Record<string, Check> = {
             const reference = referenceArm(c.manifest.order);
             const turnOf = (arm: string, event: string) =>
                 c.pairing.find((x) => x.kind === "turn" && x.arm === arm && x.event === event);
+            for (const tape of c.changedSources)
+                bad.push(`${tape}: source pairing log changed since the run`);
             c.pairing.forEach((r, i) => {
                 if (r.kind !== "divergedAt") return;
                 const own = turnOf(r.arm, r.event);

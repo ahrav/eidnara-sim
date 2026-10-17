@@ -93,3 +93,8 @@ test("a log that cannot be written ends the child and settles the run with a fai
     );
     expect(code).toBe(127);
 });
+
+test("a spawn that fails while its log cannot be written still settles the run", async () => {
+    const children = new Children({ PATH: "/nonexistent" }, 300);
+    expect(await children.run(["-e", "1"], "/nonexistent/dir/log")).toBe(127);
+});

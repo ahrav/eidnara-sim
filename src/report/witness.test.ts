@@ -1,8 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ArmLogs } from "../oracle/logs";
+import { sha256Hex } from "../prereg/canonical";
 import type { Entry } from "../run/journal";
 import type { Scenario } from "../scenario/compile";
 import { loadPrereg } from "../scenario/inputs";
@@ -227,6 +228,7 @@ function second(broken: boolean, busy = false): GradedRun {
 
 interface Parts {
     arms?: string[];
+    tape_pairing_sha256?: Record<string, string>;
     capped?: boolean;
     fault_override?: object[];
     tapes?: string[];
@@ -248,6 +250,7 @@ function made(p: Parts): GradedRun {
             order: ["host", "eidnara"],
             events: p.capped ? 0 : 3,
             tapes: p.tapes ?? [],
+            tape_pairing_sha256: p.tape_pairing_sha256 ?? {},
             fault_override: p.fault_override ?? null,
         }),
     );
@@ -379,6 +382,22 @@ describe("property witness evidence", () => {
             });
         expect(one("P03", run("r")).status).toBe("witnessed");
         expect(one("P03", run("x")).status).toBe("violated");
+        // The run recorded the source log's digest at its start; a source changed since is
+        // no corroboration.
+        const digest = sha256Hex(readFileSync(join(source, "pairing.jsonl"), "utf8"));
+        const pinned = (tape_pairing_sha256: Record<string, string>) =>
+            made({
+                tapes: [join(source, "tape.jsonl")],
+                tape_pairing_sha256,
+                pairing: [turn("host", "b"), diverged("r"), turn("eidnara", "b")],
+            });
+        expect(one("P03", pinned({ [join(source, "tape.jsonl")]: digest })).status).toBe(
+            "witnessed",
+        );
+        expect(one("P03", pinned({ [join(source, "tape.jsonl")]: "0".repeat(64) }))).toMatchObject({
+            status: "violated",
+            detail: expect.stringContaining("changed since the run"),
+        });
         rmSync(join(source, "pairing.jsonl"));
         expect(one("P03", run("r"))).toMatchObject({
             status: "violated",

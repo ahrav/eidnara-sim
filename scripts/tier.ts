@@ -1,4 +1,11 @@
-import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import {
+    existsSync,
+    lstatSync,
+    mkdirSync,
+    readFileSync,
+    realpathSync,
+    writeFileSync,
+} from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { loadConfig } from "../src/config/config";
 import { TIERS, type Tier } from "../src/prereg/schema";
@@ -106,10 +113,19 @@ for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
     });
 }
 
+// A generated directory the command writes into is its own: an existing symlink there is
+// refused rather than followed.
+const ownDir = (dir: string) => {
+    if (existsSync(dir) && lstatSync(dir).isSymbolicLink()) {
+        console.error(`${dir} is a symlink; the tier writes only into directories of its own`);
+        exit(2);
+    }
+    mkdirSync(dir, { recursive: true });
+};
 const scenarios = new Map<number, Scenario>();
 for (const seed of prereg.seeds) {
     const dir = join(out, `scenarios-${seed}`);
-    mkdirSync(dir, { recursive: true });
+    ownDir(dir);
     scenarios.set(seed, await loadScenario({ config, tier, seed, out: dir }));
 }
 const plan = tierPlan(prereg, scenarios, hosts, out, turnMs);
@@ -168,7 +184,7 @@ const supervised = async <T>(work: () => Promise<T>): Promise<T> => {
 const results = await supervised(() =>
     Promise.all(
         plan.map(async (job) => {
-            mkdirSync(job.dir, { recursive: true });
+            ownDir(job.dir);
             // A run another process still holds is left as it is: its scenario stays, it is
             // neither run nor graded here, and the command fails for it.
             const held = leaseHeld(job.dir);

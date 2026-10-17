@@ -20,7 +20,8 @@ property witness holds a violated record, and 2 on a malformed flag, a
 plan where no session fits the budget, a plan whose prefix, arms, host,
 or seed differ from what a run with a manifest ran, an unreadable
 `tier-plan.json` with no `--turn-ms` to replace it, an `--out` resolving
-(symlinks included) inside the Eidnara checkout, or an output directory
+(symlinks included) inside the Eidnara checkout, a generated directory
+(`scenarios-<seed>`, a run) that is a symlink, or an output directory
 another invocation holds (`<dir>/lease.json`). Every exit, a thrown setup
 error or a signal during setup included, releases that lease. SIGINT, SIGTERM, or
 SIGHUP to the command reaches every child it started, SIGKILLs any still
@@ -92,7 +93,9 @@ The run-level checks cover:
   its counterpart was and both journaled as sent, divergence records
   (those whose turns are on the log) ahead of their turn carrying
   the two turns' digests (a replayed run's against the digest its source
-  tape's pairing log recorded, which must be present), and no turn whose
+  tape's pairing log recorded, which must be present and must still hash
+  to the `tape_pairing_sha256` the run's manifest took at its start), and
+  no turn whose
   context digest differs
   from its reference arm's without a divergence record;
 - SIM-P04: a divergence occurred;
