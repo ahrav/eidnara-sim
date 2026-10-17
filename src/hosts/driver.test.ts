@@ -11,6 +11,7 @@ import {
     readdirSync,
     readFileSync,
     rmSync,
+    statSync,
     symlinkSync,
     writeFileSync,
     writeSync,
@@ -65,7 +66,7 @@ class FakeHost {
     transcriptEnv() {
         return { PI_CODING_AGENT_DIR: this.transcripts };
     }
-    hostPid() {
+    hostPid(): number | null {
         return null;
     }
     tools: { command: string; exit: number | null; scenario_ms: number }[] = [];
@@ -463,6 +464,22 @@ describe("HostDriver lifecycle", () => {
         expect(hosts.at(-1)?.opened).toEqual([]);
     });
 
+    test("the host pid is on record before the session's start tree is taken", async () => {
+        const { driver, armDir, hosts } = fixture("host", { p: gitRepo() });
+        await driver.reset();
+        const host = hosts.at(-1) as FakeHost;
+        host.hostPid = () => process.pid;
+        const recorder = (driver as unknown as { snapshots: SnapshotRecorder }).snapshots;
+        const original = recorder.sessionStart.bind(recorder);
+        let seen: unknown = null;
+        recorder.sessionStart = (...a) => {
+            seen = JSON.parse(readFileSync(join(armDir, "state.json"), "utf8")).host;
+            return original(...a);
+        };
+        await driver.event(ev("session_start", { id: "e-0", session: "s-0" }));
+        expect(seen).toMatchObject({ pid: process.pid });
+    });
+
     test("resume stops the processes the killed harness recorded and restores the model", async () => {
         const { driver, armDir } = fixture("host", { p: gitRepo() });
         await driver.reset();
@@ -616,8 +633,8 @@ describe("probe snapshots", () => {
         await expect(
             fresh.event(ev("user_turn", { id: "e-1", session: "s-0", text: "go" })),
         ).rejects.toThrow("harness killed");
-        const state = JSON.parse(readFileSync(join(armDir, "snapshot-state.json"), "utf8"));
-        expect(state.commands).toEqual([run]);
+        const rebuilt = new SnapshotRecorder(armDir, "host", () => []);
+        expect(rebuilt.sessionCommands()).toEqual([run]);
     });
 
     test("tools.jsonl attributes each run to the turn in progress, and to no turn at session end", async () => {
@@ -1043,14 +1060,14 @@ test("a tool run reported at its start is on record, and its end report replaces
     const recorder = new SnapshotRecorder(armDir, "eidnara", () => []);
     recorder.addTools([{ command: "cargo build", exit: null, scenario_ms: 1, call: "t1" }], "e-1");
     recorder.addTools([{ command: "ls", exit: 0, scenario_ms: 2 }], "e-1");
-    const killed = JSON.parse(readFileSync(join(armDir, "snapshot-state.json"), "utf8"));
-    expect(killed.commands).toEqual([
+    const killed = new SnapshotRecorder(armDir, "eidnara", () => []);
+    expect(killed.sessionCommands()).toEqual([
         { command: "cargo build", exit: null, scenario_ms: 1, call: "t1" },
         { command: "ls", exit: 0, scenario_ms: 2 },
     ]);
     recorder.addTools([{ command: "cargo build", exit: 1, scenario_ms: 9, call: "t1" }], "e-1");
-    const ended = JSON.parse(readFileSync(join(armDir, "snapshot-state.json"), "utf8"));
-    expect(ended.commands).toEqual([
+    const ended = new SnapshotRecorder(armDir, "eidnara", () => []);
+    expect(ended.sessionCommands()).toEqual([
         { command: "cargo build", exit: 1, scenario_ms: 1, call: "t1" },
         { command: "ls", exit: 0, scenario_ms: 2 },
     ]);
@@ -1066,6 +1083,74 @@ test("a symlink planted at the saved git-config path is never written through on
     expect(readFileSync(victim, "utf8")).toBe("keep");
     expect(lstatSync(join(armDir, "p.gitconfig")).isSymbolicLink()).toBe(false);
     expect(readFileSync(join(armDir, "p.gitconfig"), "utf8")).toContain("[core]");
+});
+
+test("a probe that writes an attribute rule git cannot apply fails the turn instead of the run", async () => {
+    const source = gitRepo();
+    const { driver, hosts } = fixture("host", { p: source });
+    await driver.reset();
+    await driver.event(ev("session_start", { id: "e-0", session: "s-0" }));
+    const ws = driver.workspace("p");
+    const host = hosts.at(-1) as FakeHost;
+    host.onPrompt = () => {
+        writeFileSync(join(ws, ".gitattributes"), "*.txt working-tree-encoding=NO-SUCH-ENCODING\n");
+        writeFileSync(join(ws, "note.txt"), "hello");
+    };
+    const outcome = await driver.event(
+        ev("user_turn", { id: "e-1", session: "s-0", text: "go", probe: "q-1" }),
+    );
+    expect(outcome.failed).toContain("rule files changed");
+    expect(outcome.snapshot).toBeDefined();
+    const again = await driver.event(
+        ev("user_turn", { id: "e-2", session: "s-0", text: "again", probe: "q-2" }),
+    );
+    expect(again.failed).toContain("git add failed under changed rule files");
+});
+
+test("a restored state whose index generation is not a nonnegative integer is refused", () => {
+    const armDir = tmp();
+    writeFileSync(
+        join(armDir, "snapshot-state.json"),
+        JSON.stringify({
+            session: null,
+            ended: null,
+            starts: {},
+            last: {},
+            indexGenerations: { p: "/../../../../escape" },
+        }),
+    );
+    expect(() => new SnapshotRecorder(armDir, "eidnara", () => [])).toThrow(
+        "names index generation",
+    );
+});
+
+test("an embedded repository whose name is pathspec magic removes only itself from the tree", () => {
+    const repo = gitRepo();
+    writeFileSync(join(repo, "keep.txt"), "k");
+    const magic = join(repo, ":(glob)**");
+    mkdirSync(magic);
+    spawnSync("git", ["init", "-q"], { cwd: magic });
+    const recorderDir = tmp();
+    const recorder = new SnapshotRecorder(recorderDir, "eidnara", () => []);
+    const tree = recorder.tree(repo);
+    const listed = spawnSync("git", ["ls-tree", "-r", "--name-only", tree], {
+        cwd: repo,
+        env: { ...process.env, GIT_DIR: join(recorderDir, "snapshot.git") },
+    }).stdout.toString();
+    expect(listed).toContain("keep.txt");
+    expect(listed).toContain("README");
+});
+
+test("tool reports append to the command log instead of rewriting the recorder state", () => {
+    const armDir = tmp();
+    const recorder = new SnapshotRecorder(armDir, "eidnara", () => []);
+    recorder.addTools([{ command: "a", exit: 0, scenario_ms: 1 }]);
+    const stateBefore = statSync(join(armDir, "snapshot-state.json"), { throwIfNoEntry: false });
+    recorder.addTools([{ command: "b", exit: 0, scenario_ms: 2 }]);
+    const stateAfter = statSync(join(armDir, "snapshot-state.json"), { throwIfNoEntry: false });
+    expect(stateAfter?.mtimeMs ?? null).toBe(stateBefore?.mtimeMs ?? null);
+    const lines = readFileSync(join(armDir, "commands.jsonl"), "utf8").trim().split("\n");
+    expect(lines).toHaveLength(2);
 });
 
 test("a symlink planted at the recorder's staging path is never written through", () => {

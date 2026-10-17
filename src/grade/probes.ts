@@ -369,7 +369,15 @@ export class GradeLog {
         const complete = text.slice(0, text.lastIndexOf("\n") + 1);
         if (complete.length < text.length) truncateSync(path, Buffer.byteLength(complete));
         for (const line of complete.split("\n").filter(Boolean)) {
-            this.remember(JSON.parse(line) as GradeRecord);
+            const g = JSON.parse(line) as GradeRecord;
+            const key = keyOf(g);
+            const expected = (this.newest.get(key) ?? 0) + 1;
+            if (!Number.isSafeInteger(g.version) || g.version !== expected) {
+                throw new Error(
+                    `grades.jsonl holds version ${String(g.version)} of ${key} where version ${expected} belongs`,
+                );
+            }
+            this.remember(g);
         }
     }
 

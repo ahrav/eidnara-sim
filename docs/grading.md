@@ -76,7 +76,11 @@ changes, or removes a `.gitignore` or `.gitattributes`, or edits
 files from the diff, and an attribute (`ident`, `eol`, a clean driver) would
 rewrite the content git indexes. The baseline is the source's `.gitignore` and
 `.gitattributes` blobs and the clone's `exclude` and `attributes` files,
-recorded at reset. The rule files are found by name in the workspace walk and
+recorded at reset. The probe turn's rule check runs before the workspace is
+indexed, and a turn with changed rules keeps its start tree as its end tree;
+a `git add` that fails under changed rule files (an attribute that names an
+encoding git lacks) fails the turn the same way, at the turn's start or the
+session's end too. The rule files are found by name in the workspace walk and
 hashed from disk, so a rule that ignores its own file still surfaces it; a rule
 path that is a symlink, FIFO, or directory, or larger than 1 MiB, reads as a
 changed rule, a workspace with more than 1,000 rule files fails the probe
@@ -121,11 +125,18 @@ deleted in the tree. Snapshot diffs run with
 | `proxy-call` | The session's call records from `calls.jsonl`, each with the index of the user turn it belongs to (a background call takes the preceding turn's), a `failed` flag on a call that ended in an error status, a recorded error, or a cut stream (such a call is no fold for P13), and the response text the proxy records for agent, user-sim, and judge calls (the first 262,144 characters, with `response_text_truncated` on a longer reply) |
 
 The recorder keeps each project's session-start tree, the last session's
-tree pair, the last ended session, and the open session's commands in
+tree pair, the last ended session, and each workspace's index generation (a
+restored generation must be a nonnegative integer) in
 `<arm>/snapshot-state.json` (written through a freshly created staging file
-and renamed into place), so a resumed arm reopens its session with the
-same start tree and commands, and a `session_start` and `session_end` that a
-resume replays for a session that already ended leave its trees as recorded.
+and renamed into place), and the open session's commands in
+`<arm>/commands.jsonl`, one appended line per tool report (a report whose
+call id matches an earlier line replaces that record on reload), so a resumed
+arm reopens its session with the same start tree and commands, and a
+`session_start` and `session_end` that a resume replays for a session that
+already ended leave its trees as recorded. Discovered nested-repository and
+forced paths reach git as literal pathspecs. The driver records the host's
+pid before the recorder takes the session's start tree, so a kill during that
+capture leaves a resume able to stop the host.
 
 The trees live in a bare repository the recorder owns, `<arm>/snapshot.git`,
 with one index per workspace. The agent can write the workspace's `.git`, so
@@ -153,10 +164,15 @@ name an item the scenario compiles and match its journal entry's arm and item
 and the compiled probe's event and session, to be named
 by an `EndTurn` whose outcome agrees with its `turn_outcome`, every
 agent call's model in `calls.jsonl` to be one
-the manifest records, and every call a journaled snapshot holds, whatever its
-component, to be recorded in `calls.jsonl` under the snapshot's arm with the
-same content in every snapshot that holds it (`calls.jsonl` is read one record at a time,
-keeping only the records the snapshots name), reads each arm's snapshot log one row at a time and
+the manifest records, and every journaled snapshot's calls, whatever their
+component, to be a prefix of its session's `calls.jsonl` records under the
+snapshot's arm, in log order, each with the same content and the turn index
+capture derives from the scenario (`calls.jsonl` is read one record at a time,
+keeping one cursor per snapshot; every log it streams must be a regular file),
+an item with no journaled snapshot to have a turn that ended `failed` with no
+snapshot (reported as `probe turn failed`) or no ended turn at all (`no
+journaled snapshot`), since a turn that ended `ok` or named a snapshot the
+journal never entered makes the journal invalid, reads each arm's snapshot log one row at a time and
 keeps the artefacts of journaled rows only, computes every grade before it
 appends any (an item whose answer the proxy truncated is skipped as `answer
 refused`; a structural artefact violation aborts with nothing appended),
