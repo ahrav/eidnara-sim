@@ -408,7 +408,10 @@ function incomplete(
         const recorded = new Set(
             g.pairing.flatMap((r) => (r.kind === "turn" ? [`${r.arm}/${r.event}`] : [])),
         );
-        const gaps = [control, treatment].flatMap((a) => {
+        const analysed = [
+            ...new Set([control, treatment, ...controlArmsOf(g).flatMap((c) => [c, armBase(c)])]),
+        ];
+        const gaps = analysed.flatMap((a) => {
             const missing = scripted.filter((id) => !recorded.has(`${a}/${id}`));
             return missing.length ? [`${a}: ${missing.join(" ")}`] : [];
         });
@@ -476,6 +479,24 @@ function incomplete(
         const want = p.aa_controls?.repeats ?? 0;
         return have === want ? [] : [`A/A ${a}: ${have} of ${want} control runs`];
     });
+    const metricsOf = new Map<string, string[]>();
+    for (const f of p.families.filter((f) => f.analysis_unit === "item")) {
+        for (const m of f.metrics.map((x) => ALIASES[x] ?? x)) {
+            const type = m.split(".")[0] as string;
+            metricsOf.set(type, [...(metricsOf.get(type) ?? []), m]);
+        }
+    }
+    const leaks = runs.flatMap((g) =>
+        g.run.arms
+            .filter((a) => armBase(a.arm) !== "host")
+            .flatMap((a) =>
+                (["rss", "heap", "store_bytes"] as const).flatMap((r) =>
+                    soak(g.run, a, r)?.verdict === "leak"
+                        ? [`run ${runKey(g)}: ${a.arm} ${r} soak verdict leak`]
+                        : [],
+                ),
+            ),
+    );
     const coverage = runs.flatMap((g) => {
         const byType = new Map<string, string[]>();
         for (const pr of g.scenario.probes) {
@@ -490,7 +511,9 @@ function incomplete(
                             (r) =>
                                 r.arm === arm &&
                                 r.verdict !== "excluded" &&
-                                typeof r.metrics[`${type}.pass`] === "boolean",
+                                (metricsOf.get(type) ?? [`${type}.pass`]).every(
+                                    (m) => typeof r.metrics[m] === "boolean",
+                                ),
                         )
                         .map((r) => r.item),
                 );
@@ -555,6 +578,7 @@ function incomplete(
         ...settings,
         ...controls,
         ...coverage,
+        ...leaks,
         ...unavailable,
         ...short,
     ];

@@ -1312,7 +1312,7 @@ describe("tier report", () => {
             { id: "t-99", kind: "user_turn" },
         ] as never;
         expect(tierInput(prereg, [g]).incomplete).toContain(
-            "run pi/101: pairing records missing for host: t-99; eidnara: t-99",
+            "run pi/101: pairing records missing for host: t-99; eidnara: t-99; host~aa: t-99",
         );
     });
 
@@ -1455,6 +1455,41 @@ describe("tier report", () => {
             stdout: "pipe",
         });
         expect([r.exitCode, r.stderr.toString().includes("eidnara checkout")]).toEqual([2, true]);
+    });
+
+    test("a control's coverage needs every registered metric of the probe type", () => {
+        const g = fixture();
+        for (const r of g.grades)
+            if (r.arm === "host~aa" && r.item === "q-h-0") delete r.metrics["P2.harm"];
+        expect(tierInput(prereg, [g]).incomplete).toContain(
+            "run pi/101: control host~aa covers 7 of 8 P2 probes",
+        );
+    });
+
+    test("A/A arms need their pairing records too", () => {
+        const g = loadPairing(fixture());
+        g.scenario.events = [{ id: "t-0-0", kind: "user_turn" }] as never;
+        g.pairing = (g.pairing ?? []).filter(
+            (r) => !(r.kind === "turn" && r.arm === "host~aa" && r.event === "t-0-0"),
+        );
+        expect(tierInput(prereg, [g]).incomplete).toContain(
+            "run pi/101: pairing records missing for host~aa: t-0-0",
+        );
+    });
+
+    test("a soak leak verdict holds the pass even when the slope is within the margin", () => {
+        const g = fixture();
+        const eidnara = arm(g, "eidnara");
+        eidnara.resources = eidnara.resources.map((r, i) => ({
+            ...r,
+            rss: i === 20 ? (r.rss as number) + 400 * 2 ** 20 : r.rss,
+        }));
+        const report = tierReport(prereg, [g], boundary);
+        const rss = report.soak.find((x) => x.arm === "eidnara" && x.resource === "rss");
+        expect(rss?.verdict).toBe("leak");
+        expect(report.verdict.pass.incomplete).toContain(
+            "run pi/101: eidnara rss soak verdict leak",
+        );
     });
 
     test("a planted 4xx difference between the A/A arms fails that falsification check", () => {

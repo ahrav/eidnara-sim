@@ -130,20 +130,21 @@ than the item's, with a binary metric recorded as other than a boolean,
 or with a P13 score outside `[0, 1]` or a P14 count that is not a
 non-negative integer (any of which pairs nothing), each run without
 `pairing.jsonl`, without a pairing record for a scripted user turn in an
-analysed arm, or whose records fail the checks of
+analysed arm (the pair and every A/A control with its arm), or whose records fail the checks of
 `scripts/pairing-check.ts` (`pairingFailures`: a pre-divergence reply
 differing from the reference arm's, an altered probe or paste turn, an
 unsent non-filler turn) or whose `UserSimRates` entry names a rate outside
 its band, each L run whose arms' `StartArm`/`EndArm` spans never overlap
 while `load_stress` registers concurrent arms, each registered A/A pair whose count
 of control arms that reached `EndArm` across the runs differs from
-`aa_controls.repeats`, each control arm whose pair lacks a grade on a P1
+`aa_controls.repeats`, each control arm whose pair lacks any registered metric of a P1
 to P12 probe other than P7 (the judge grades P7 for memory arms against
 `host` alone), each run-unit gate metric a run has no value for, each probe type,
 P13 and P14 included, and each other item-unit family metric (the harm
 metrics) with fewer paired items outside the excluded and
 fault-asymmetric sets than `stopping_rule.paired_items_per_probe_type`,
-and each CUSUM rule without its A/A scale; the tier passes only with an
+each daemon arm resource whose soak verdict is `leak`, and each CUSUM rule
+without its A/A scale; the tier passes only with an
 empty list. Two runs with one host and seed, or a run outside the
 pre-registered hosts and seeds, are refused. The input's `journal_seq_at_eval` records, per run id, the
 last journal `seq` the observations read. `tierInput` and `tierReport` order the runs by the pre-registration's
