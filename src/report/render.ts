@@ -202,7 +202,7 @@ function panels(r: TierReport): string[] {
                 return [
                     i.arm,
                     i.internal_string_hits.length,
-                    i.corrections_referencing_injected_text.length,
+                    i.corrections_referencing_injected_text?.length ?? "-",
                     i.reverted_edits.length,
                     fmt(i.latency_ms.p50, 0),
                     fmt(i.latency_ms.p95, 0),

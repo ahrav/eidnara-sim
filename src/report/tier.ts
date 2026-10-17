@@ -13,7 +13,7 @@ import { evaluateTier, falsificationSet, type TierInput } from "../stats/gate";
 import { costPanel } from "./cost";
 import { falsificationPairs } from "./falsify";
 import { intrusiveness } from "./intrusive";
-import { type GradedRun, tierInput, userTexts } from "./observe";
+import { type GradedRun, tierInput } from "./observe";
 import type { TierReport } from "./render";
 import { soak } from "./soak";
 
@@ -126,7 +126,7 @@ export function tierReport(
                 (["rss", "heap", "store_bytes"] as const).map((r) => soak(g.run, arm, r)),
             ),
         intrusiveness: perArm.map(({ g, arm }) => ({
-            ...intrusiveness(g.run, arm, userTexts(g)),
+            ...intrusiveness(g.run, arm),
             run: g.run.dir,
         })),
         cost: perArm.map(({ g, arm }) => costPanel(g.run, arm, g.grades)),

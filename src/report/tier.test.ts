@@ -45,7 +45,7 @@ function armLogs(
         push("AdvanceClock", { next_event: `e-${s}`, from_ms: at - 1 });
         push("BeginTurn", { event: `e-${s}` });
         wall += 5_000 + jitter(s) * 10;
-        push("EndTurn", { event: `e-${s}`, outcome: "ok" });
+        push("EndTurn", { event: `e-${s}`, outcome: "ok", prompt_ms: 5_000 + jitter(s) * 10 });
         push("Event", { event: `end-${s}` });
         calls.push({
             seq: s,
@@ -466,7 +466,7 @@ describe("tier report", () => {
             percentile(
                 arm(g, name)
                     .journal.filter((e) => e.kind === "EndTurn")
-                    .map((e, i) => e.wall_ms - (arm(g, name).journal[i * 4 + 1] as Entry).wall_ms),
+                    .map((e) => e.prompt_ms as number),
                 0.5,
             ) as number;
         const delta = Math.round(p50(b, "eidnara") - p50(b, "host"));

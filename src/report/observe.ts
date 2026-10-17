@@ -32,13 +32,9 @@ interface Pairing {
 }
 type RunValue = (g: GradedRun, arm: ArmLogs, pairing: Pairing) => number | null;
 
-export const userTexts = (g: GradedRun) =>
-    g.scenario.events.flatMap((e) =>
-        e.kind === "user_turn" && typeof e.text === "string" ? [e.text] : [],
-    );
 const panels = new WeakMap<ArmLogs, ReturnType<typeof intrusiveness>>();
 const panelOf = (g: GradedRun, arm: ArmLogs) => {
-    const cached = panels.get(arm) ?? intrusiveness(g.run, arm, userTexts(g));
+    const cached = panels.get(arm) ?? intrusiveness(g.run, arm);
     panels.set(arm, cached);
     return cached;
 };
@@ -108,7 +104,7 @@ const RUN_VALUES: Record<string, { value: RunValue; delta: boolean; hostless?: t
         delta: false,
     },
     user_corrections_referencing_injected_text: {
-        value: (g, arm) => panelOf(g, arm).corrections_referencing_injected_text.length,
+        value: (g, arm) => panelOf(g, arm).corrections_referencing_injected_text?.length ?? null,
         delta: false,
     },
     reverted_memory_edits: {
