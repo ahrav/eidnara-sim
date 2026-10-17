@@ -116,14 +116,14 @@ describe("tier gates", () => {
             ...repeat(10, [0, 0] as [number, number]),
             ...repeat(8, [0, 1] as [number, number]),
         ];
-        const v = evaluate([binary("P2.harm", harmful)], {
+        const harmObs = binary("P2.harm", harmful);
+        const v = evaluate([harmObs], {
             cusum_sd: { harm: 0.5, futility: 0.5 },
         });
         expect(v.stops.map((s) => s.kind)).toEqual(["harm"]);
         const ids = v.families.find((x) => x.family === "harm")?.metrics[0];
         expect(ids?.n).toBe(18);
-        const harmItems = (v.stops[0]?.window ?? []).length;
-        expect(harmItems).toBe(3);
+        expect(v.stops[0]?.window).toEqual((harmObs.items ?? []).slice(10, 13).map((x) => x.item));
         expect(v.stops[0]?.signal_index).toBe(12);
         expect(v.pass.passed).toBe(false);
         const planted: [number, number][] = repeat(40, [0, 1] as [number, number]);
@@ -1167,7 +1167,7 @@ describe("tier gate review findings, eleventh Codex round", () => {
                 journal_seq_at_eval: 7,
                 arms: { control: "host", treatment: "eidnara" },
             }),
-        ).toThrow("probe-P8: a binary threshold lies in [0, 1]");
+        ).toThrow("probe-P8: a binary threshold is a ratio in [0, 1]");
     });
 
     test("a single graded run keeps its observed difference", () => {
@@ -1392,7 +1392,7 @@ describe("tier gate review findings, fifteenth Codex round", () => {
                     ? {
                           ...f,
                           direction: "zero-tolerance" as const,
-                          margin: { value: "0", scale: "count" as const },
+                          margin: { value: "0", scale: "ratio" as const },
                       }
                     : f,
             ),
@@ -1618,5 +1618,91 @@ describe("tier gate review findings, nineteenth Codex round", () => {
         expect(() =>
             evaluateTier(withFamily("latency", { margin: { value: "10", scale: "pp" } }), input),
         ).toThrow("latency: margin and MDE share one scale");
+    });
+});
+
+describe("tier gate review findings, twentieth Codex round", () => {
+    const seq = { journal_seq_at_eval: 7, arms: { control: "host", treatment: "eidnara" } };
+    const input = { observations: [], excluded: [], asymmetric: [], ...seq };
+    const withFamily = (id: string, patch: object) => ({
+        ...M,
+        families: M.families.map((f) => (f.id === id ? { ...f, ...patch } : f)),
+    });
+    const few = { ...M, bootstrap: { ...M.bootstrap, replicates: 40 } };
+
+    test("the run bootstrap does not depend on the order runs arrive in", () => {
+        const diffs = [0.01, -0.002, 0.01, 0.01, 0.01, -0.002];
+        const obs = runs(
+            "P13.fold_fidelity_score",
+            diffs.map((d): [number, number] => [0.5, 0.5 + d]),
+        );
+        const reversed = { ...obs, runs: [...(obs.runs ?? [])].reverse() };
+        const run = (o: Observation) =>
+            metric(
+                evaluateTier(few, { ...input, observations: [o] }),
+                "probe-P13",
+                "P13.fold_fidelity_score",
+            );
+        expect(run(reversed)?.interval).toEqual(run(obs)?.interval);
+    });
+
+    test("the falsification bootstrap does not depend on pair order", () => {
+        const fewS = { ...S, bootstrap: { ...S.bootstrap, replicates: 40 } };
+        const pairs = [0.1, 0.1, -0.02].map((d) => ({ control: 0.4, treatment: 0.4 + d }));
+        const a = falsificationSet(fewS, { pre_divergence_pushback_rate: pairs });
+        const b = falsificationSet(fewS, { pre_divergence_pushback_rate: [...pairs].reverse() });
+        expect(b).toEqual(a);
+    });
+
+    test("the tier input is a record", () => {
+        expect(() => evaluateTier(M, null as unknown as typeof input)).toThrow(StatsRefusal);
+        expect(() => evaluateTier(M, [] as unknown as typeof input)).toThrow(StatsRefusal);
+    });
+
+    test("a binary item threshold registers a ratio margin", () => {
+        const pp = {
+            ...S,
+            families: S.families.map((f) =>
+                f.id === "probe-P8" ? { ...f, margin: { value: "0.9", scale: "pp" as const } } : f,
+            ),
+        };
+        expect(() => evaluateTier(pp, input)).toThrow(
+            "probe-P8: a binary threshold is a ratio in [0, 1]",
+        );
+    });
+
+    test("a run threshold bounds a lower-is-better metric", () => {
+        expect(() =>
+            evaluateTier(
+                withFamily("probe-P13", {
+                    direction: "threshold",
+                    margin: { value: "0.9", scale: "pp" },
+                    interval_method: "none",
+                }),
+                input,
+            ),
+        ).toThrow("probe-P13: a run threshold bounds a lower-is-better metric");
+    });
+
+    test("the harm rule targets the harm family and the futility rule probe-P1", () => {
+        const swapped = {
+            ...M,
+            stopping_rule: {
+                ...M.stopping_rule,
+                cusum: M.stopping_rule.cusum.map((r) =>
+                    r.kind === "harm"
+                        ? {
+                              ...r,
+                              metric: "probe-P1",
+                              statistic: r.statistic.replace(
+                                  "five harm metrics",
+                                  "five probe-P1 metrics",
+                              ),
+                          }
+                        : r,
+                ),
+            },
+        };
+        expect(() => evaluateTier(swapped, input)).toThrow("cusum harm: the rule targets harm");
     });
 });

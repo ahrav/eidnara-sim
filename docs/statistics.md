@@ -67,8 +67,10 @@ included, lists the asymmetric stratum, and counts asymmetric pairs per
 metric.
 
 A metric with no pre-registration entry is refused by name, and so is a metric
-registered in two families, a metric observed twice, a binary threshold outside
-[0, 1], an at-most count family whose margin is not a ratio, a paired binary
+registered in two families, a metric observed twice, a binary threshold that is
+not a ratio in [0, 1], a run threshold on a higher-is-better metric, a CUSUM
+harm rule that targets a family other than harm or a futility rule other than
+probe-P1, an at-most count family whose margin is not a ratio, a paired binary
 family whose margin is not 0 to 100 pp, a noninferiority family whose outcome is
 not binary or whose metric is higher-is-better, two CUSUM rules of one kind, an
 item threshold on a lower-is-better metric, a count family without a margin
@@ -76,8 +78,9 @@ scale (cost) that registers an interval method, a graded or slope family whose
 margin and MDE scales differ, a metric name without a registered polarity (pass
 rates and fidelity scores are higher-is-better; harms, counts, latency and
 growth deltas, and costs lower-is-better), a CUSUM rule whose registered
-statistic is not one of the two the gate computes, an observations, excluded, or
-asymmetric field that is not an array of records, a family whose margin, MDE,
+statistic is not one of the two the gate computes, a tier input that is not a
+record, an observations or excluded field that is not an array of records, an
+asymmetric field that is not an array of item ids, a family whose margin, MDE,
 alpha, or power is not a finite number, a Holm family whose outcome yields no
 p-value (graded or slope), a family whose cluster key does not match its unit
 (`run` for runs, `ledger_fact_id` for items), a CUSUM rule whose k is not finite
@@ -110,7 +113,7 @@ family with such a metric fails.
 | Outcome and unit | Method |
 |---|---|
 | Binary items | Exact McNemar p on the discordant pairs; the interval is the wider of the Newcombe method 10 interval and a ledger-fact cluster bootstrap (clusters resampled in key order, items in issue order, so the seeded draw is independent of input order), in percentage points; items that all share one ledger-fact cluster are one observation and the result is `inconclusive` |
-| Graded runs | Paired BCa bootstrap over runs for `paired-bca-bootstrap` or under ten runs, else percentile; a family on the `pp` scale takes proportions and reports percentage points; a single run keeps its difference with no interval |
+| Graded runs | Paired BCa bootstrap over runs for `paired-bca-bootstrap` or under ten runs, else percentile, with runs taken in run-id order so the seeded draw is independent of input order; a family on the `pp` scale takes proportions and reports percentage points; a single run keeps its difference with no interval |
 | Count runs | The registered method at any run count: `paired-sign-test` is the paired sign test, one-sided for `at-most`; `negative-binomial-glm` is a negative-binomial GLM with an arm term and a term per run over the runs with any events, reporting the rate ratio, with the sign test standing in when an arm has no events or the fit does not converge (the spec's "sign test at eight runs or fewer" is the rule for choosing the method at registration; every checked-in tier registers the sign test) |
 | Bound families | No statistic; each run's treatment value, or a binary metric's treatment rate, is checked against the margin (an item-level zero-tolerance bound names every item whose treatment value is not 0); a failed item rate names the items whose treatment value is 0 |
 | `interval_method: none`, paired | The paired mean difference and n, no interval, p, or detectable size; the verdict is `descriptive` (the cost families, XL's latency) |
@@ -193,7 +196,9 @@ word parity is refused.
 (in-session repo-readable fact pass rate, gateway 4xx rate with no
 scheduled faults, pre-divergence pushback rate, wall time per scripted
 idle gap): each check's paired differences get a bootstrap interval, and
-a zero effect is an interval that covers zero. With fewer than two pairs
+a zero effect is an interval that covers zero; the differences are sorted
+before resampling so the seeded draw is independent of pair order. With
+fewer than two pairs
 a check has no result. An input that is not a record of collections, a name
 outside the set, a collection that is not an array of pair records, a value that is not finite
 or outside the check's domain (the three rates lie in [0, 1], the idle-gap

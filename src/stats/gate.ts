@@ -287,7 +287,9 @@ function graded(f: Family, runs: RunPair[], p: Preregistration): Stats {
     const bca = f.interval_method === "paired-bca-bootstrap" || n < 10;
     const method = bca ? "paired BCa bootstrap over runs" : "paired percentile bootstrap over runs";
     const unit = f.mde.scale === "pp" ? 100 : 1;
-    const diffs = runs.map((r) => unit * (r.treatment - r.control));
+    const diffs = [...runs]
+        .sort((x, y) => (x.run < y.run ? -1 : x.run > y.run ? 1 : 0))
+        .map((r) => unit * (r.treatment - r.control));
     const single = n ? (diffs[0] as number) : 0;
     if (!Number.isFinite(single)) {
         throw new StatsRefusal(`${f.id}: the paired difference overflows`);
@@ -411,6 +413,9 @@ const checkBootstrap = (p: Preregistration) => {
 const MAX_EVENTS = 1e8;
 
 function check(p: Preregistration, input: TierInput): void {
+    if (typeof input !== "object" || input === null || Array.isArray(input)) {
+        throw new StatsRefusal("the tier input is a record");
+    }
     checkBootstrap(p);
     const kinds = p.stopping_rule.cusum.map((r) => r.kind);
     for (const rule of p.stopping_rule.cusum) {
@@ -421,6 +426,11 @@ function check(p: Preregistration, input: TierInput): void {
         if (!Number.isFinite(k) || k < 0 || !Number.isFinite(h) || h <= 0) {
             throw new StatsRefusal(
                 `cusum ${rule.kind}: k is finite and at least 0, h finite and positive`,
+            );
+        }
+        if (rule.metric !== CUSUM_TARGET[rule.kind]) {
+            throw new StatsRefusal(
+                `cusum ${rule.kind}: the rule targets ${CUSUM_TARGET[rule.kind]}`,
             );
         }
         if (rule.statistic !== CUSUM_STATISTICS[rule.kind](rule.metric)) {
@@ -494,8 +504,15 @@ function check(p: Preregistration, input: TierInput): void {
             );
         }
         const bound = BOUND_DIRECTIONS.includes(f.direction);
-        if (bound && f.outcome === "binary" && !isShare(num(f.margin.value))) {
-            throw new StatsRefusal(`${f.id}: a binary threshold lies in [0, 1]`);
+        if (
+            bound &&
+            f.outcome === "binary" &&
+            (f.margin.scale !== "ratio" || !isShare(num(f.margin.value)))
+        ) {
+            throw new StatsRefusal(`${f.id}: a binary threshold is a ratio in [0, 1]`);
+        }
+        if (bound && f.analysis_unit === "run" && f.metrics.some(higherIsBetter)) {
+            throw new StatsRefusal(`${f.id}: a run threshold bounds a lower-is-better metric`);
         }
         const paired = !bound && f.direction !== "descriptive";
         if (
@@ -684,6 +701,8 @@ function check(p: Preregistration, input: TierInput): void {
 }
 
 const isBit = (v: number) => v === 0 || v === 1;
+/** The harm stop watches the harm family and the futility stop probe-P1. */
+const CUSUM_TARGET = { harm: "harm", futility: "probe-P1" } as const;
 /** The two CUSUM sequences the gate computes, as the pre-registrations register them. */
 const CUSUM_STATISTICS = {
     harm: (metric: string) =>
@@ -909,7 +928,9 @@ export function falsificationSet(
         }
     }
     return FALSIFICATION.map((check) => {
-        const diffs = (pairs[check] ?? []).map((x) => x.treatment - x.control);
+        const diffs = (pairs[check] ?? [])
+            .map((x) => x.treatment - x.control)
+            .sort((a, b) => a - b);
         if (diffs.length < 2) {
             const difference = diffs.length ? mean(diffs) : 0;
             return { check, n: diffs.length, difference, interval: null, zero_effect: null };
