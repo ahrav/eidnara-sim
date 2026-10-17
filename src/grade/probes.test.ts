@@ -221,3 +221,12 @@ test("test-result and workspace-state artefacts are accepted with their own payl
     } as unknown as Snapshot["artefacts"][number]);
     expect(() => gradeItem(f.probe, [snap], rules)).toThrow("has no files");
 });
+
+test("a command log whose entries lack command text or a time is refused", () => {
+    const p5 = fixture("P5-pass");
+    const snap = structuredClone(p5.snapshots[0]) as Snapshot;
+    snap.artefacts = snap.artefacts.map((a) =>
+        a.class === "command-log" ? { ...a, commands: [{}] } : a,
+    ) as Snapshot["artefacts"];
+    expect(() => gradeItem(p5.probe, [snap], rules)).toThrow("has no commands");
+});
