@@ -37,6 +37,8 @@ export interface TierInput {
     observations: Observation[];
     excluded: { id: string; arm: string; reason: string }[];
     asymmetric: string[];
+    /** The compared arms: `host` against the pre-registration's default arm. */
+    arms: { control: string; treatment: string };
     cusum_sd?: Partial<Record<"harm" | "futility", number>>;
     /** The observations are the completed pairs at this journal sequence. */
     journal_seq_at_eval: number;
@@ -82,6 +84,7 @@ export interface CusumStop {
 export interface TierVerdict {
     prereg_sha256: string;
     journal_seq_at_eval: number;
+    arms: TierInput["arms"];
     families: FamilyResult[];
     memory_made_it_worse: { metric: string; interval: [number, number] | null }[];
     pass: {
@@ -133,6 +136,14 @@ function binary(f: Family, items: ItemPair[], p: Preregistration): Stats {
     const clusters = [...new Set(items.map((x) => x.cluster))].map((k) =>
         items.filter((x) => x.cluster === k).map((x) => x.treatment - x.control),
     );
+    if (clusters.length < 2) {
+        return {
+            ...empty(method),
+            n,
+            difference: (100 * (b - c)) / n,
+            resolution_note: `${n} items share one ledger-fact cluster, so the cluster bootstrap has no replication and the items are one observation`,
+        };
+    }
     const boot = bootstrap(clusters, (cs) => mean(cs.flat()), {
         ...p.bootstrap,
         alpha: num(f.alpha),
@@ -248,7 +259,7 @@ function bound(f: Family, metric: string, s: Stats, obs: Observation): [string, 
     const bad =
         obs.unit === "item"
             ? mean((obs.items ?? []).map((x) => x.treatment)) < margin
-                ? ["all"]
+                ? (obs.items ?? []).filter((x) => x.treatment === 0).map((x) => x.item)
                 : []
             : (obs.runs ?? [])
                   .filter((r) =>
@@ -303,8 +314,22 @@ function check(p: Preregistration, input: TierInput): void {
     if (!Number.isInteger(seq) || seq < 0) {
         throw new StatsRefusal(`journal_seq_at_eval must be a non-negative integer, got ${seq}`);
     }
+    const arms = input.arms;
+    if (arms?.control !== "host" || arms.treatment !== p.arms.default) {
+        throw new StatsRefusal(
+            `arms: the registered comparison is host against ${p.arms.default}, got ${JSON.stringify(arms)}`,
+        );
+    }
+    for (const [kind, sd] of Object.entries(input.cusum_sd ?? {})) {
+        if (sd !== undefined && !(Number.isFinite(sd) && sd > 0)) {
+            throw new StatsRefusal(
+                `cusum_sd.${kind}: a standard deviation is finite and positive, got ${sd}`,
+            );
+        }
+    }
     const byMetric = new Map(p.families.flatMap((f) => f.metrics.map((m) => [m, f] as const)));
     const seen = new Set<string>();
+    const runIds = new Map<string, string>();
     for (const o of input.observations) {
         if (seen.has(o.metric)) throw new StatsRefusal(`metric ${o.metric} is observed twice`);
         seen.add(o.metric);
@@ -329,8 +354,30 @@ function check(p: Preregistration, input: TierInput): void {
         if (!own.every((x) => Number.isFinite(x.control) && Number.isFinite(x.treatment))) {
             throw new StatsRefusal(`${o.metric}: every control and treatment value is finite`);
         }
+        if (f.outcome === "binary" && !own.every((x) => isBit(x.control) && isBit(x.treatment))) {
+            throw new StatsRefusal(`${o.metric}: a binary outcome is 0 or 1 in both arms`);
+        }
+        const ids =
+            o.unit === "item"
+                ? (o.items ?? []).map((x) => x.item)
+                : (o.runs ?? []).map((r) => r.run);
+        if (new Set(ids).size !== ids.length) {
+            throw new StatsRefusal(`${o.metric}: each ${o.unit} identity appears once`);
+        }
+        if (o.unit === "run") {
+            const set = [...ids].sort().join("\n");
+            const prior = runIds.get(f.id);
+            if (prior !== undefined && prior !== set) {
+                throw new StatsRefusal(
+                    `${f.id}: every metric of a run-level family comes from the same runs`,
+                );
+            }
+            runIds.set(f.id, set);
+        }
     }
 }
+
+const isBit = (v: number) => v === 0 || v === 1;
 
 function stops(p: Preregistration, input: TierInput, kept: Observation[]): [CusumStop[], string[]] {
     const out: CusumStop[] = [];
@@ -427,6 +474,7 @@ export function evaluateTier(p: Preregistration, input: TierInput): TierVerdict 
     const verdict: TierVerdict = {
         prereg_sha256: preregistrationHash(p),
         journal_seq_at_eval: input.journal_seq_at_eval,
+        arms: input.arms,
         families,
         memory_made_it_worse: worse ?? [],
         pass: {
@@ -491,6 +539,13 @@ export function falsificationSet(
     for (const name of Object.keys(pairs)) {
         if (!(FALSIFICATION as readonly string[]).includes(name)) {
             throw new StatsRefusal(`${name} is not in the falsification set`);
+        }
+        if (
+            !(pairs[name] ?? []).every(
+                (x) => Number.isFinite(x.control) && Number.isFinite(x.treatment),
+            )
+        ) {
+            throw new StatsRefusal(`${name}: every control and treatment value is finite`);
         }
     }
     return FALSIFICATION.map((check) => {

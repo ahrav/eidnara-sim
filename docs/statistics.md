@@ -47,19 +47,22 @@ verdict counts them per arm and per metric.
 A metric with no pre-registration entry is refused by name, and so is a
 metric observed twice, an observation whose unit or cluster key differs
 from its family's, an observation carrying runs for an item unit or items
-for a run unit, and a control or treatment value that is not finite. The
-input names the journal sequence whose completed pairs it was built from,
-a non-negative integer; the verdict repeats it so the input set can be
-recomputed. Every registered metric gets a result: one with no
-observations is `inconclusive`, and a gate family with such a metric
-fails.
+for a run unit, a control or treatment value that is not finite, a binary
+family's value other than 0 or 1, an item or run identity repeated within
+an observation, and a run-level family whose metrics come from different
+run sets. The input names the compared arms, which are `host` against the
+pre-registration's default arm (D1), and the journal sequence whose
+completed pairs it was built from, a non-negative integer; the verdict
+repeats both so the input set can be recomputed. Every registered metric
+gets a result: one with no observations is `inconclusive`, and a gate
+family with such a metric fails.
 
 | Outcome and unit | Method |
 |---|---|
-| Binary items | Exact McNemar p on the discordant pairs; the interval is the wider of the Newcombe method 10 interval and a ledger-fact cluster bootstrap, in percentage points |
+| Binary items | Exact McNemar p on the discordant pairs; the interval is the wider of the Newcombe method 10 interval and a ledger-fact cluster bootstrap, in percentage points; items that all share one ledger-fact cluster are one observation and the result is `inconclusive` |
 | Graded runs | Paired BCa bootstrap over runs for `paired-bca-bootstrap` or under ten runs, else percentile; a family on the `pp` scale takes proportions and reports percentage points |
 | Count runs | Paired sign test up to eight runs, one-sided for `at-most`; above eight, or for `negative-binomial-glm`, a negative-binomial GLM with an arm term and a term per run over the runs with any events, reporting the rate ratio, with the sign test standing in when an arm has no events or the fit does not converge |
-| Bound families | No statistic; each run's treatment value, or a binary metric's treatment rate, is checked against the margin |
+| Bound families | No statistic; each run's treatment value, or a binary metric's treatment rate, is checked against the margin; a failed item rate names the items whose treatment value is 0 |
 
 Each paired metric gets a verdict: `better` or `worse` when the test is
 significant at the family's alpha (`p <= alpha`, after Holm over all of a
@@ -113,7 +116,8 @@ is divided by the standard deviation the input supplies from the tier's
 A/A pairs. The upper tabular CUSUM at the rule's `k` and `h` signals a
 stop, recorded with the metric, the signal index, and the item ids since
 the sum last stood at zero, and a stop withholds the pass; a benefit,
-which moves only the lower sum, stops nothing. A rule without an A/A
+which moves only the lower sum, stops nothing. The standard deviation is
+finite and positive or the input is refused. A rule without an A/A
 standard deviation is listed as unavailable, and a tier with an
 unavailable rule gets no pass. The verdict also carries the
 pre-registration digest, the journal sequence it was evaluated at, the
@@ -126,4 +130,5 @@ word parity is refused.
 scheduled faults, pre-divergence pushback rate, wall time per scripted
 idle gap): each check's paired differences get a bootstrap interval, and
 a zero effect is an interval that covers zero. With fewer than two pairs
-a check has no result. A name outside the set is refused.
+a check has no result. A name outside the set, or a value that is not
+finite, is refused.

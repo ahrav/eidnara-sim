@@ -22,11 +22,15 @@ const items = (pairs: [number, number][], fact = (i: number) => `f-${i % 12}`): 
         treatment,
         order: order++,
     }));
-const binary = (metric: string, pairs: [number, number][]): Observation => ({
+const binary = (
+    metric: string,
+    pairs: [number, number][],
+    fact?: (i: number) => string,
+): Observation => ({
     metric,
     unit: "item",
     cluster_key: "ledger_fact_id",
-    items: items(pairs),
+    items: items(pairs, fact),
 });
 const runs = (metric: string, values: [number, number][]): Observation => ({
     metric,
@@ -40,6 +44,7 @@ const evaluate = (observations: Observation[], extra = {}) =>
         excluded: [],
         asymmetric: [],
         journal_seq_at_eval: 7,
+        arms: { control: "host", treatment: "eidnara" },
         ...extra,
     });
 const metric = (v: ReturnType<typeof evaluate>, family: string, name: string) =>
@@ -284,7 +289,13 @@ describe("tier gates", () => {
 
     test("bounds pass or fail per run, and no output carries the word parity", () => {
         const s = (observations: Observation[]) =>
-            evaluateTier(S, { observations, excluded: [], asymmetric: [], journal_seq_at_eval: 7 });
+            evaluateTier(S, {
+                observations,
+                excluded: [],
+                asymmetric: [],
+                journal_seq_at_eval: 7,
+                arms: { control: "host", treatment: "eidnara" },
+            });
         const ok = s([runs("internal_string_hits", repeat(2, [0, 0] as [number, number]))]);
         const intr = ok.families.find((f) => f.family === "intrusiveness")?.metrics[0];
         expect([intr?.verdict, intr?.passed]).toEqual(["within-bound", true]);
@@ -377,7 +388,7 @@ describe("tier gates", () => {
 });
 
 describe("tier gate review findings", () => {
-    const seq = { journal_seq_at_eval: 7 };
+    const seq = { journal_seq_at_eval: 7, arms: { control: "host", treatment: "eidnara" } };
     const bounds = (overrides: Partial<Record<string, Observation>> = {}) => {
         const zero: [number, number] = [0, 0];
         const base: Record<string, Observation> = {
@@ -483,7 +494,12 @@ describe("tier gate review findings", () => {
     });
 
     test("the journal sequence is required and must be a non-negative integer", () => {
-        const input = { observations: [], excluded: [], asymmetric: [] };
+        const input = {
+            observations: [],
+            excluded: [],
+            asymmetric: [],
+            arms: { control: "host", treatment: "eidnara" },
+        };
         expect(() =>
             evaluateTier(M, { ...input, journal_seq_at_eval: undefined as unknown as number }),
         ).toThrow(StatsRefusal);
@@ -519,5 +535,112 @@ describe("tier gate review findings", () => {
             "hangs",
         );
         expect([none?.rate_ratio_upper, none?.passed]).toEqual([undefined, true]);
+    });
+});
+
+describe("tier gate review findings, second round", () => {
+    const seq = { journal_seq_at_eval: 7 };
+    const arms = { control: "host", treatment: "eidnara" };
+    const s = (observations: Observation[], extra: object = {}) =>
+        evaluateTier(S, { observations, excluded: [], asymmetric: [], ...seq, arms, ...extra });
+
+    test("a CUSUM standard deviation that is not finite and positive is refused", () => {
+        const ok = s([], { cusum_sd: { harm: 0.5, futility: 0.5 } });
+        expect(ok.cusum_unavailable).toEqual([]);
+        for (const bad of [0, -1, Number.POSITIVE_INFINITY, Number.NaN]) {
+            expect(() => s([], { cusum_sd: { harm: bad, futility: 0.5 } })).toThrow(StatsRefusal);
+        }
+    });
+
+    test("a repeated run or item identity within an observation is refused", () => {
+        const same: Observation = {
+            metric: "failed_turns",
+            unit: "run",
+            cluster_key: "run",
+            runs: repeat(6, { run: "same", control: 5, treatment: 0 }),
+        };
+        expect(() => evaluate([same], { arms })).toThrow(StatsRefusal);
+        const twin = binary("P1.pass", [
+            [0, 1],
+            [0, 1],
+        ]);
+        twin.items = twin.items?.map((x) => ({ ...x, item: "dup" }));
+        expect(() => evaluate([twin], { arms })).toThrow(StatsRefusal);
+    });
+
+    test("a binary family's values are 0 or 1", () => {
+        expect(() =>
+            evaluate([binary("P1.pass", repeat(5, [2, 2] as [number, number]))], { arms }),
+        ).toThrow(StatsRefusal);
+        expect(() => evaluate([binary("P1.pass", [[0, 0.5]])], { arms })).toThrow(StatsRefusal);
+    });
+
+    test("a non-finite falsification pair is refused", () => {
+        expect(() =>
+            falsificationSet(S, {
+                pre_divergence_pushback_rate: [
+                    { control: 0.4, treatment: Number.NaN },
+                    { control: 0.4, treatment: 0.5 },
+                ],
+            }),
+        ).toThrow(StatsRefusal);
+    });
+
+    test("a failed item threshold names the failing items", () => {
+        const obs = binary("P8.cross_session_pass_rate", [
+            ...repeat(8, [1, 1] as [number, number]),
+            [1, 0],
+            [1, 0],
+        ]);
+        const failing = (obs.items ?? []).filter((x) => x.treatment === 0).map((x) => x.item);
+        const m = s([obs]).families.find((f) => f.family === "probe-P8")?.metrics[0];
+        expect(m?.verdict).toBe(`failed-gate(P8.cross_session_pass_rate, ${failing.join(" ")})`);
+    });
+
+    test("the compared arms are required, match the registered comparison, and sit in the verdict", () => {
+        const input = { observations: [], excluded: [], asymmetric: [], ...seq };
+        expect(() =>
+            evaluateTier(M, { ...input, arms: undefined as unknown as typeof arms }),
+        ).toThrow(StatsRefusal);
+        expect(() =>
+            evaluateTier(M, { ...input, arms: { control: "eidnara", treatment: "host" } }),
+        ).toThrow(StatsRefusal);
+        expect(() =>
+            evaluateTier(M, { ...input, arms: { control: "host", treatment: "eidnara-kl" } }),
+        ).toThrow(StatsRefusal);
+        expect(evaluateTier(M, { ...input, arms }).arms).toEqual(arms);
+    });
+
+    test("a run-level family's metrics come from one set of runs", () => {
+        const a = runs("failed_turns", repeat(6, [5, 0] as [number, number]));
+        const b: Observation = {
+            ...runs("hangs", repeat(6, [5, 0] as [number, number])),
+            runs: repeat(6, [5, 0] as [number, number]).map(([control, treatment], i) => ({
+                run: `b-${i}`,
+                control,
+                treatment,
+            })),
+        };
+        expect(() => evaluate([a, b], { arms })).toThrow(StatsRefusal);
+        const harm = ["P2.harm", "P3.harm"].map((h) =>
+            binary(h, repeat(10, [0, 0] as [number, number])),
+        );
+        expect(() => evaluate(harm, { arms })).not.toThrow();
+    });
+
+    test("binary items from a single ledger fact are inconclusive", () => {
+        const one = binary("P1.pass", repeat(40, [0, 1] as [number, number]), () => "f-only");
+        const m = metric(evaluate([one], { arms }), "probe-P1", "P1.pass");
+        expect([m?.n, m?.verdict, m?.passed, m?.interval]).toEqual([
+            40,
+            "inconclusive",
+            false,
+            null,
+        ]);
+        expect(m?.resolution_note).toContain("cluster");
+        const two = binary("P1.pass", repeat(40, [0, 1] as [number, number]), (i) =>
+            i % 2 ? "f-a" : "f-b",
+        );
+        expect(metric(evaluate([two], { arms }), "probe-P1", "P1.pass")?.verdict).toBe("better");
     });
 });
