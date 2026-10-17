@@ -31,8 +31,33 @@ if (
     console.error("manifest.json needs a tier, an event count, and a non-empty distinct arm order");
     process.exit(2);
 }
+if (manifest.schema !== "sim-run-manifest/v2") {
+    console.error(
+        `manifest.json is ${String(manifest.schema)}; the checker reads sim-run-manifest/v2`,
+    );
+    process.exit(2);
+}
 const scenarioJson: unknown = JSON.parse(readFileSync(join(dir, "scenario.json"), "utf8"));
 const scenario = scenarioJson as Scenario;
+// The manifest names one run: its event count lies within the compiled scenario, and its seed
+// and tier are the ones the scenario was compiled for.
+if (manifest.events <= 0 || manifest.events > scenario.events.length) {
+    console.error(
+        `manifest.json claims ${manifest.events} events; the scenario has ${scenario.events.length}`,
+    );
+    process.exit(2);
+}
+const compiledFor = (
+    scenario as unknown as {
+        manifest?: { seed?: unknown; tier?: unknown; corpus_manifest_sha256?: unknown };
+    }
+).manifest;
+if (compiledFor?.seed !== manifest.seed || compiledFor?.tier !== manifest.tier) {
+    console.error(
+        `manifest.json names seed ${manifest.seed} tier ${manifest.tier}; the scenario was compiled for seed ${compiledFor?.seed} tier ${compiledFor?.tier}`,
+    );
+    process.exit(2);
+}
 // The checker certifies against the scenario and pre-registration the manifest attests.
 if (scenarioHash(scenarioJson as Record<string, unknown>) !== manifest.scenario_hash) {
     console.error(`scenario.json does not match the manifest's scenario hash`);
@@ -65,8 +90,22 @@ const scriptAltered = turns
     .filter((r) => r.delivered && r.source === "script" && script.has(r.event))
     .filter((r) => r.text_sha256 !== sha256Hex(String(script.get(r.event)?.text)))
     .map((r) => `${r.arm} ${r.event}`);
+// The paste bytes come from the corpus the scenario was compiled from: its manifest hash is
+// the scenario's, and the samples file is the one that manifest names.
+const corpusManifestText = readFileSync(join(CORPUS_DIR, "manifest.json"), "utf8");
+if (sha256Hex(corpusManifestText) !== compiledFor?.corpus_manifest_sha256) {
+    console.error("corpus/manifest.json differs from the corpus the scenario was compiled from");
+    process.exit(2);
+}
+const samplesText = readFileSync(join(CORPUS_DIR, "tool-outputs/samples.jsonl"), "utf8");
+const attestedSamples = (JSON.parse(corpusManifestText) as { files?: Record<string, string> })
+    .files?.["tool-outputs/samples.jsonl"];
+if (sha256Hex(samplesText) !== attestedSamples) {
+    console.error("corpus/tool-outputs/samples.jsonl differs from the corpus manifest's digest");
+    process.exit(2);
+}
 const corpus = new Map(
-    readFileSync(join(CORPUS_DIR, "tool-outputs/samples.jsonl"), "utf8")
+    samplesText
         .split("\n")
         .filter((l) => l !== "")
         .map((l) => JSON.parse(l) as { id: string; content: string })
@@ -111,6 +150,18 @@ const unsent = turns
     .filter((r) => script.get(r.event)?.role !== "filler")
     .filter((r) => !r.delivered || !journalDelivered.has(`${r.arm} ${r.event}`))
     .map((r) => `${r.arm} ${r.event}`);
+// A filler the user-sim queued but the host never received is a pairing break too; only a
+// filler the plan skipped is undelivered by design.
+const undeliveredTurns = turns
+    .filter((r) => script.get(r.event)?.role === "filler" && r.delivered)
+    .filter((r) => !journalDelivered.has(`${r.arm} ${r.event}`))
+    .map((r) => `${r.arm} ${r.event}`);
+// A reactive label's text comes from the tape or a live call; a scripted label's from the script.
+const REACTIVE = new Set(["pushback", "redirect", "abandon", "clarify"]);
+const sourceLabelMismatch = turns
+    .filter((r) => r.delivered)
+    .filter((r) => (REACTIVE.has(r.label) ? r.source === "script" : r.source !== "script"))
+    .map((r) => `${r.arm} ${r.event}`);
 const prereg = loadPrereg(manifest.tier);
 if (preregistrationHash(prereg) !== manifest.prereg_sha256) {
     console.error(`the ${manifest.tier} pre-registration differs from the manifest's`);
@@ -125,8 +176,12 @@ const invalidDivergences = records
         const event = script.get(r.event);
         const own = turns.find((t) => t.arm === r.arm && t.event === r.event);
         const ref = turns.find((t) => t.arm === reference(r.arm) && t.event === r.event);
+        // The record is on disk before the turn it describes, so it precedes that turn's row.
+        const ahead = own !== undefined && records.indexOf(r) < records.indexOf(own);
         const bound =
+            ahead &&
             own?.digest === r.digest &&
+            own?.context_sha256 === r.context_sha256 &&
             (r.against === "recorded" || ref?.digest === r.reference_digest);
         const differs =
             bound &&
@@ -169,9 +224,26 @@ const journalPairingMismatch = (manifest.order as string[]).flatMap((arm) => {
             row.label === "interrupt" && u.label === "task" && u.scheduled === "interrupt";
         if (u.session !== row.session || (u.label !== row.label && !relabel))
             off.add(String(u.event));
+        if (u.delivered === true && !row.delivered) off.add(String(u.event));
+        if (u.label === "interrupt" && u.interrupted !== true) off.add(String(u.event));
     }
     return [...off].sort().map((event) => `${arm} ${event}`);
 });
+// A sibling arm still paired with the reference reads the reference's taped reply; a live
+// reply before its divergence is a replay miss. With replay sources, the reference arm's own
+// live replies before its recorded divergence are misses too.
+const divergenceAt = new Map(
+    records
+        .filter((r) => r.kind === "divergedAt")
+        .map((r) => [`${r.arm}/${r.session}`, r.index] as const),
+);
+const replaying = Array.isArray(manifest.tapes) && manifest.tapes.length > 0;
+const liveBeforeDivergence = turns
+    .filter((r) => r.source === "live" && (r.arm !== reference(r.arm) || replaying))
+    .filter(
+        (r) => r.index < (divergenceAt.get(`${r.arm}/${r.session}`) ?? Number.POSITIVE_INFINITY),
+    )
+    .map((r) => `${r.arm} ${r.event}`);
 const prefix = new Set(allScheduled.map((e) => e.id));
 const outOfPrefix = [
     ...new Set([
@@ -233,6 +305,9 @@ const report = {
     fallbacks: turns.filter((r) => r.fallback).map((r) => `${r.arm} ${r.event} ${r.fallback}`),
     probe_or_paste_text_altered: altered,
     non_filler_unsent: unsent,
+    undelivered_turns: undeliveredTurns,
+    source_label_mismatch: sourceLabelMismatch,
+    live_before_divergence: liveBeforeDivergence,
     paste_provenance: provenance,
     script_text_altered: scriptAltered,
     out_of_prefix: outOfPrefix,
@@ -269,6 +344,9 @@ const failed =
     report.mismatches_before_divergence.length +
     altered.length +
     unsent.length +
+    undeliveredTurns.length +
+    sourceLabelMismatch.length +
+    liveBeforeDivergence.length +
     provenance.length +
     scriptAltered.length +
     outOfPrefix.length +

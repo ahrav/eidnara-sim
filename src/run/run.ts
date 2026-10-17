@@ -27,6 +27,7 @@ import type { FaultEpisode } from "../scenario/faults";
 import { loadCompileInput, loadPrereg } from "../scenario/inputs";
 import { bedrockEmbedder } from "../scenario/similarity";
 import {
+    beganAt,
     behaviourPlan,
     deliveredTurns,
     type Label,
@@ -68,7 +69,7 @@ export interface RunOptions {
 }
 
 interface Manifest {
-    schema: "sim-run-manifest/v1";
+    schema: "sim-run-manifest/v2";
     tier: Tier;
     seed: number;
     host: "pi" | "opencode";
@@ -230,8 +231,18 @@ async function loadManifest(o: RunOptions, scenario: Scenario): Promise<Manifest
                     .map((e) => [e.id, String((e as { text?: unknown }).text ?? "")]),
             ),
         });
+    if (o.events !== undefined && o.events > scenario.events.length) {
+        throw new HarnessFailure(
+            `--events ${o.events} exceeds the scenario's ${scenario.events.length} events`,
+        );
+    }
     if (existsSync(path)) {
         const manifest = JSON.parse(readFileSync(path, "utf8")) as Manifest;
+        if (manifest.schema !== "sim-run-manifest/v2") {
+            throw new HarnessFailure(
+                `${path} is ${String(manifest.schema)}, from before the user-sim fields; start a new run`,
+            );
+        }
         requireAdmittedOrder(o, manifest.order);
         // A resume checks the sources against the run it continues, whose event count and arm
         // order the manifest holds whether or not this invocation restates them.
@@ -273,7 +284,7 @@ async function loadManifest(o: RunOptions, scenario: Scenario): Promise<Manifest
     }
     sources(wanted.tapes, wanted.events, wanted.order, wanted.fault_override);
     const manifest: Manifest = {
-        schema: "sim-run-manifest/v1",
+        schema: "sim-run-manifest/v2",
         ...wanted,
         scenario_hash: scenario.scenario_hash,
         eidnara_commit: gitHead(o.config.eidnara_checkout),
@@ -617,6 +628,7 @@ async function runArms(
                     callsOf(callIndex, arm, session, turnIndex),
                     userTurns(arm, session),
                     turnIndex,
+                    beganAt(journal.entries, arm),
                 ) as CallView[];
             },
             settle: () => scheduler.quiesceJobs(),

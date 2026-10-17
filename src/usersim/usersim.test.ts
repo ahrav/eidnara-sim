@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadPrereg } from "../scenario/inputs";
 import {
+    beganAt,
     behaviourPlan,
     deliveredTurns,
     type Label,
@@ -182,6 +183,29 @@ describe("behaviour plan", () => {
             ],
         );
         expect(labelled[1]).toMatchObject({ turn: "e-2", turn_index: 1, input_tokens: 0 });
+    });
+
+    test("a snapshot's user-sim entries carry the time the turn began", () => {
+        const entries = [
+            { kind: "BeginTurn", arm: "a", event: "e-1", scenario_ms: 10 },
+            {
+                kind: "UserTurn",
+                arm: "a",
+                event: "e-1",
+                scenario_ms: 90,
+                label: "pushback",
+                delivered: true,
+            },
+            { kind: "BeginTurn", arm: "b", event: "e-1", scenario_ms: 20 },
+        ];
+        expect(beganAt(entries, "a").get("e-1")).toBe(10);
+        const labelled = withUserLabels(
+            [],
+            [entries[1] as Record<string, unknown>],
+            new Map(),
+            beganAt(entries, "a"),
+        );
+        expect(labelled[0]).toMatchObject({ scenario_ms: 10, label: "pushback" });
     });
 
     test("a fault's trigger turn is never interrupted", () => {
@@ -916,6 +940,31 @@ describe("tape and pairing", () => {
         expect(d.text).toStartWith("I'm not convinced by that.");
         const last = pairing.records.at(-1) as { fallback?: string[] };
         expect(last.fallback).toEqual(["fact"]);
+    });
+
+    test("a replay source's taped reply must be the one its pairing row delivered", async () => {
+        const first = dir();
+        await play(sim(first, counting()).user, "a", outputs);
+        writeFileSync(
+            join(first, "manifest.json"),
+            JSON.stringify({ seed: 101, scenario_hash: "abc", order: ["a"], events: 5 }),
+        );
+        writeFileSync(join(first, "journal.jsonl"), '{"kind":"EndRun"}\n');
+        const run = {
+            seed: 101,
+            scenario_hash: "abc",
+            order: ["a"],
+            events: 5,
+            turns: script.map((t) => t.id),
+            scripted: new Map(script.map((t) => [t.id, t.text])),
+        };
+        expect(() => checkTapeSources([join(first, "tape.jsonl")], run)).not.toThrow();
+        const rows = readFileSync(join(first, "tape.jsonl"), "utf8").trim().split("\n");
+        const edited = rows.map((l, i) =>
+            i === 0 ? JSON.stringify({ ...JSON.parse(l), text: "something else" }) : l,
+        );
+        writeFileSync(join(first, "tape.jsonl"), `${edited.join("\n")}\n`);
+        expect(() => checkTapeSources([join(first, "tape.jsonl")], run)).toThrow("a e-2");
     });
 
     test("a replay source from another pre-registration is refused", () => {
