@@ -138,8 +138,11 @@ function transcriptTimes(path: string, armDir: string): Map<string, number> {
     const out = new Map<string, number>();
     if (!within(path, armDir)) return out;
     if (path.endsWith(".db")) {
-        const db = new Database(path, { readonly: true });
+        // A store a stop left unreadable, or without its session table, yields no times, so its
+        // sessions read as missing and the report goes on.
+        let db: Database | null = null;
         try {
+            db = new Database(path, { readonly: true });
             const rows = db.query("select title, time_created from session").all() as {
                 title: string;
                 time_created: number;
@@ -147,8 +150,10 @@ function transcriptTimes(path: string, armDir: string): Map<string, number> {
             for (const r of rows) {
                 if (Number.isFinite(r.time_created)) out.set(r.title, r.time_created);
             }
+        } catch {
+            out.clear();
         } finally {
-            db.close();
+            db?.close();
         }
         return out;
     }
@@ -209,7 +214,13 @@ export function runConditions(g: GradedRun): RunConditions {
             t = unchecked;
         }
         const strings = (x: unknown) => Array.isArray(x) && x.every((v) => typeof v === "string");
-        if (!strings(t.paths) || !(t.missing === null || strings(t.missing))) t = unchecked;
+        if (
+            t === null ||
+            typeof t !== "object" ||
+            !strings(t.paths) ||
+            !(t.missing === null || strings(t.missing))
+        )
+            t = unchecked;
         return { arm: arm.arm, paths: t.paths, missing: t.missing };
     });
     const probes = (manifest.preflight?.time_injection ?? []) as RunConditions["interception"];

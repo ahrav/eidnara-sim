@@ -1,6 +1,15 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import {
+    existsSync,
+    mkdirSync,
+    readFileSync,
+    realpathSync,
+    renameSync,
+    rmSync,
+    writeFileSync,
+} from "node:fs";
+import { dirname, join, relative, resolve } from "node:path";
+import { defaultConfigPath } from "../src/config/config";
 import { TIERS, type Tier } from "../src/prereg/schema";
 import { preregistrationHash } from "../src/prereg/validate";
 import { parseContinuity } from "../src/report/conditions";
@@ -44,6 +53,30 @@ const reference = () => {
         continuity: parseContinuity(JSON.parse(readFileSync(refPath, "utf8"))),
     };
 };
+/** The path with its nearest existing ancestor resolved through symlinks. */
+function canonical(path: string): string {
+    let base = path;
+    const tail: string[] = [];
+    while (!existsSync(base)) {
+        tail.unshift(relative(dirname(base), base));
+        base = dirname(base);
+    }
+    return join(realpathSync.native(base), ...tail);
+}
+if (out) {
+    const config = JSON.parse(readFileSync(defaultConfigPath(), "utf8")) as {
+        eidnara_checkout?: string;
+    };
+    const checkout =
+        config.eidnara_checkout === undefined ? null : canonical(resolve(config.eidnara_checkout));
+    const inside = checkout !== null && !relative(checkout, canonical(out)).startsWith("..");
+    if (inside) {
+        console.error(
+            `--out ${out} is inside the eidnara checkout ${checkout}; this tree writes nothing there`,
+        );
+        process.exit(2);
+    }
+}
 const boundary = readFileSync(join(import.meta.dir, "../docs/claim-boundary.md"), "utf8");
 const catalog = readFileSync(join(import.meta.dir, "../docs/properties/sim-v2/catalog.md"), "utf8");
 const byTier = new Map<Tier, string[]>();

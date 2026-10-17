@@ -71,6 +71,8 @@ interface Manifest {
     tapes: string[];
     side_model: string | null;
     user_sim_model: string;
+    /** By tape path, the sha256 of the sibling pairing log as the run began. */
+    tape_pairing_sha256: Record<string, string>;
     prereg_sha256: string;
     base_wall_ms: number;
     /** The rates the cost panel prices this run's calls at, fixed when the run starts. */
@@ -254,6 +256,14 @@ async function loadManifest(o: RunOptions, scenario: Scenario): Promise<Manifest
         side_model: o.sideModel ?? null,
         user_sim_model: o.userSimModel ?? loadPrereg(o.tier).user_sim.model,
     };
+    // The sibling pairing log of each replayed tape, as it stood when the run began, so the
+    // report can tell a source that changed afterwards.
+    const tapePairing = Object.fromEntries(
+        (o.tapes ?? []).flatMap((t) => {
+            const log = join(dirname(t), "pairing.jsonl");
+            return existsSync(log) ? [[t, sha256Hex(readFileSync(log, "utf8"))]] : [];
+        }),
+    );
     if (existsSync(path)) {
         const manifest = JSON.parse(readFileSync(path, "utf8")) as Manifest;
         const given: Record<string, boolean> = {
@@ -298,6 +308,7 @@ async function loadManifest(o: RunOptions, scenario: Scenario): Promise<Manifest
         scenario_hash: scenario.scenario_hash,
         eidnara_commit: gitHead(o.config.eidnara_checkout),
         prereg_sha256: preregistrationHash(loadPrereg(o.tier)),
+        tape_pairing_sha256: tapePairing,
         base_wall_ms: Date.now(),
         price_table: PRICE_TABLE,
         preflight: checks,

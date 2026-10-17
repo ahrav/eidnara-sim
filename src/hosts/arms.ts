@@ -570,9 +570,11 @@ export class OpencodeSimHost extends SimHost {
         if (!last) return { error: "the turn returned without an assistant message of its own" };
         if (last.info?.error) return { error: JSON.stringify(last.info.error).slice(0, 2000) };
         const finish = last.info?.finish;
-        return finish === "stop" || finish === "length"
-            ? {}
-            : { error: `the turn returned before its last assistant step finished (${finish})` };
+        if (finish === "stop" || finish === "length") return {};
+        // The step is still running; aborting it keeps it out of the next turn's transcript.
+        const abort = this.client.session.abort({ path: { id: this.sid } });
+        await Promise.race([abort.catch(() => undefined), Bun.sleep(5_000)]);
+        return { error: `the turn returned before its last assistant step finished (${finish})` };
     }
 
     protected async shutdownSession(): Promise<void> {

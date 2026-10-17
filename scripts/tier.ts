@@ -1,5 +1,12 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import {
+    existsSync,
+    lstatSync,
+    mkdirSync,
+    readFileSync,
+    realpathSync,
+    writeFileSync,
+} from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
 import { loadConfig } from "../src/config/config";
 import { TIERS, type Tier } from "../src/prereg/schema";
 import { preregistrationHash } from "../src/prereg/validate";
@@ -95,7 +102,17 @@ if (new Set(hosts).size !== hosts.length || !hosts.every((h) => prereg.hosts.inc
 // The tier never writes under the Eidnara checkout (AGENTS.md); the check precedes the first
 // directory it would create.
 const inside = (path: string, root: string) => path === root || path.startsWith(`${root}/`);
-if (inside(out, resolve(config.eidnara_checkout)))
+// Symlinks resolve too: the deepest existing ancestor of each path gives its real location.
+const real = (path: string): string => {
+    let existing = path;
+    const rest: string[] = [];
+    while (!existsSync(existing)) {
+        rest.unshift(basename(existing));
+        existing = dirname(existing);
+    }
+    return join(realpathSync(existing), ...rest);
+};
+if (inside(real(out), real(resolve(config.eidnara_checkout))))
     fail(`--out ${out} is inside the Eidnara checkout ${config.eidnara_checkout}`);
 mkdirSync(out, { recursive: true });
 // One invocation per output directory: a second would resume runs the first still drives and
@@ -184,11 +201,29 @@ process.on("unhandledRejection", (caught) => {
     console.error(caught);
     exit(1);
 });
+// A signal during setup releases the lease too; once the runs start, the handlers below stop
+// the children first.
+let stopChildren: ((signal: NodeJS.Signals) => Promise<void>) | null = null;
+for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
+    process.on(signal, async () => {
+        await stopChildren?.(signal);
+        exit(signal === "SIGINT" ? 130 : SIGTERM_EXIT);
+    });
+}
 
+// A generated directory the command writes into is its own: an existing symlink there is
+// refused rather than followed.
+const ownDir = (dir: string) => {
+    if (existsSync(dir) && lstatSync(dir).isSymbolicLink()) {
+        console.error(`${dir} is a symlink; the tier writes only into directories of its own`);
+        exit(2);
+    }
+    mkdirSync(dir, { recursive: true });
+};
 const scenarios = new Map<number, Scenario>();
 for (const seed of prereg.seeds) {
     const dir = join(out, `scenarios-${seed}`);
-    mkdirSync(dir, { recursive: true });
+    ownDir(dir);
     scenarios.set(seed, await loadScenario({ config, tier, seed, out: dir }, items));
 }
 const models = arg("models")
@@ -276,26 +311,15 @@ if (flags.has("plan-only")) exit(0);
 const bin = resolve(dirname(config.opencode_binary), "../../.bin");
 const env = { ...process.env, PATH: `${bin}:${process.env.PATH}` };
 const children = new Children(env);
+const script = (name: string) => join(import.meta.dir, name);
 const run = (
     args: string[],
     log: string,
     limitMs?: number,
     stopWhen?: () => boolean,
     onStop?: (reason: StopReason) => void,
-) =>
-    children.run(
-        [join(import.meta.dir, args[0] as string), ...args.slice(1)],
-        log,
-        limitMs,
-        stopWhen,
-        onStop,
-    );
-for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
-    process.on(signal, async () => {
-        await children.stopAll(signal);
-        exit(signal === "SIGINT" ? 130 : SIGTERM_EXIT);
-    });
-}
+) => children.run([script(args[0] as string), ...args.slice(1)], log, limitMs, stopWhen, onStop);
+stopChildren = (signal) => children.stopAll(signal);
 
 // Every run's preflight wants the vendored libfaketime; one supervised build here keeps the
 // parallel runs from each compiling it, and a signal to the command ends the build with them.
@@ -326,7 +350,7 @@ const supervised = async <T>(work: () => Promise<T>): Promise<T> => {
     }
 };
 const runJob = async (job: TierJob) => {
-    mkdirSync(job.dir, { recursive: true });
+    ownDir(job.dir);
     // A run another process still holds is left as it is: its scenario stays, it is
     // neither run nor graded here, and the command fails for it.
     const held = leaseHeld(job.dir);
@@ -416,7 +440,7 @@ const sourceFailed = (job: TierJob) => {
     const source = tapeSource(job);
     if (source === null) return null;
     const r = results.find((x) => x.dir === source);
-    if (!r || r.run_exit !== 0 || r.over_budget) return `source run ${source} did not complete`;
+    if (r?.run_exit !== 0 || r.over_budget) return `source run ${source} did not complete`;
     const missing = ["tape.jsonl", "pairing.jsonl"].filter((f) => !existsSync(join(source, f)));
     return missing.length ? `source run ${source} lacks ${missing.join(", ")}` : null;
 };
