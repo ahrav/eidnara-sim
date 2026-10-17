@@ -151,12 +151,13 @@ export function rssFit(points: { x: number; y: number }[]): { slope: number; r2:
     return { slope, r2: sst === 0 ? 0 : 1 - ssr / sst };
 }
 
-/** Consecutive samples from one daemon process; a restart starts a new lifetime with its own RSS(0). */
+/** Consecutive samples from one daemon process, by pid and start time; a restart starts a new lifetime with its own RSS(0). */
 function lifetimes(samples: Sample[]): Sample[][] {
     const out: Sample[][] = [];
+    const same = (a: Sample, b: Sample) => a.pid === b.pid && a.start === b.start;
     for (const s of samples) {
         const last = out.at(-1);
-        if (last && last[0]?.pid === s.pid) last.push(s);
+        if (last && last[0] && same(last[0], s)) last.push(s);
         else out.push([s]);
     }
     return out;
@@ -180,7 +181,8 @@ function f5(arm: ArmLogs, run: RunLogs): Activation[] {
             y: s.rss as number,
         }));
         const base = first.rss as number;
-        const over = points.find((p) => p.y >= 2 * base + p.x * c);
+        const last = points.at(-1) as { x: number; y: number };
+        const over = last.y >= 2 * base + last.x * c ? last : undefined;
         if (over) {
             const at = `session ${over.x + offset}`;
             const evidence = `RSS ${over.y} after ${over.x} sessions exceeds 2 x ${base} + sessions x ${c}`;

@@ -59,7 +59,18 @@ function logMs(line: string): number | null {
  * whose turns began before its first offset has a prefix neither reading covers, so it is refused.
  */
 function timeline(arm: ArmLogs, base: number): Timeline {
-    const offsets = arm.journal.filter((e) => typeof e.offset_s === "number");
+    // An entry that anchors a window or a span needs finite coordinates; a malformed one refuses
+    // the arm rather than placing every log line outside its windows.
+    const finite = (e: Entry, field: "seq" | "wall_ms" | "scenario_ms" | "offset_s"): number => {
+        const value = e[field];
+        if (typeof value !== "number" || !Number.isFinite(value)) {
+            throw new Error(
+                `${arm.arm}: journal entry ${String(e.seq)} (${e.kind}) has no finite ${field}`,
+            );
+        }
+        return value;
+    };
+    const offsets = arm.journal.filter((e) => e.offset_s !== undefined);
     const first = offsets[0];
     if (first && arm.journal.some((e) => e.kind === "BeginTurn" && e.seq < first.seq)) {
         throw new Error(
@@ -78,16 +89,26 @@ function timeline(arm: ArmLogs, base: number): Timeline {
             return [ms - base];
         };
         return {
-            at: (e) => e.scenario_ms,
+            at: (e) => {
+                finite(e, "seq");
+                return finite(e, "scenario_ms");
+            },
             done: (c) => c.scenario_ms + (c.wall_ms - c.started_wall_ms),
             stamps,
         };
     }
     const spans = offsets.map((e, i) => ({
-        offset: Number(e.offset_s) * 1000,
-        from: e.wall_ms,
-        to: offsets[i + 1]?.wall_ms ?? Number.POSITIVE_INFINITY,
+        offset: finite(e, "offset_s") * 1000,
+        from: finite(e, "wall_ms"),
+        to: offsets[i + 1] ? finite(offsets[i + 1] as Entry, "wall_ms") : Number.POSITIVE_INFINITY,
     }));
+    for (const [i, span] of spans.entries()) {
+        if (span.to <= span.from) {
+            throw new Error(
+                `${arm.arm}: clock offset ${String(offsets[i]?.seq)} has a later offset at an earlier wall_ms, so its span runs backward`,
+            );
+        }
+    }
     const stamps = (line: string) => {
         const ms = logMs(line);
         if (ms === null) return [];
@@ -98,7 +119,11 @@ function timeline(arm: ArmLogs, base: number): Timeline {
                 return t >= span.from && t < span.to;
             });
     };
-    return { at: (e) => e.wall_ms, done: (c) => c.wall_ms, stamps };
+    const at = (e: Entry) => {
+        finite(e, "seq");
+        return finite(e, "wall_ms");
+    };
+    return { at, done: (c) => c.wall_ms, stamps };
 }
 
 /** A turn's end: its `EndTurn`, or the `Event` a resume writes for a turn a harness kill cut. */
@@ -129,32 +154,106 @@ function turnsAfter(arm: ArmLogs, fault: Entry, tl: Timeline): Turn[] {
     return turns;
 }
 
-export function dirtyReasons(arm: ArmLogs, turn: Turn, tl: Timeline): string[] {
+/** A fail-open line placed on the timeline; a stamp two offset spans claim appears once per span. */
+interface FailOpen {
+    at: number;
+    /** Log order, so a record pairs with the warning the same pass logged before it. */
+    line: number;
+    record: boolean;
+}
+
+/**
+ * The arm's evidence indexed once per arm: calls by turn, and fail-open lines sorted by position,
+ * so each turn reads a slice instead of rescanning the run.
+ */
+interface Evidence {
+    callsByTurn: Map<string, Call[]>;
+    failOpen: FailOpen[];
+}
+
+function indexEvidence(arm: ArmLogs, tl: Timeline): Evidence {
+    const callsByTurn = new Map<string, Call[]>();
+    for (const c of arm.calls) {
+        const turn = String(c.turn);
+        callsByTurn.set(turn, [...(callsByTurn.get(turn) ?? []), c]);
+    }
+    const failOpen: FailOpen[] = [];
+    arm.pluginLog.forEach((l, line) => {
+        const record = FAIL_OPEN_RECORD.test(l);
+        if (!record && !FAIL_OPEN_WARNING.test(l)) return;
+        const stamps = tl.stamps(l);
+        // A fail-open line the timeline cannot place is evidence the oracle cannot weigh.
+        if (stamps.length === 0) {
+            throw new Error(
+                `${arm.arm}: plugin log line ${line + 1} is a fail-open record without a placeable stamp`,
+            );
+        }
+        for (const at of stamps) failOpen.push({ at, line, record });
+    });
+    failOpen.sort((a, b) => a.at - b.at || a.line - b.line);
+    return { callsByTurn, failOpen };
+}
+
+/** The first index in `sorted` whose position is at or past `at`. */
+function lowerBound(sorted: FailOpen[], at: number): number {
+    let lo = 0;
+    let hi = sorted.length;
+    while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if ((sorted[mid] as FailOpen).at < at) lo = mid + 1;
+        else hi = mid;
+    }
+    return lo;
+}
+
+/**
+ * Fail-open publications in a window: each pass logs a warning and then its record, so a record
+ * pairs with the latest unpaired warning before it, and a warning left unpaired (a pass cut off
+ * before its record) counts on its own.
+ */
+function failOpenCount(evidence: Evidence, from: number, to: number): number {
+    const lines = evidence.failOpen
+        .slice(lowerBound(evidence.failOpen, from), lowerBound(evidence.failOpen, to))
+        .sort((a, b) => a.line - b.line);
+    let records = 0;
+    let unpaired = 0;
+    for (const l of lines) {
+        if (!l.record) unpaired++;
+        else {
+            records++;
+            if (unpaired > 0) unpaired--;
+        }
+    }
+    return records + unpaired;
+}
+
+export function dirtyReasons(evidence: Evidence, turn: Turn, tl: Timeline): string[] {
     const reasons: string[] = [];
     if (String(turn.end.outcome) !== "ok")
         reasons.push(`turn ended ${String(turn.end.outcome).slice(0, 80)}`);
     // The turn's calls, from where its window opens: a mid-turn fault excludes the calls before it.
-    const calls = arm.calls.filter((c) => c.turn === turn.event && tl.done(c) >= turn.from);
+    const calls = (evidence.callsByTurn.get(turn.event) ?? []).filter(
+        (c) => tl.done(c) >= turn.from,
+    );
     if (calls.some((c) => c.status >= 400 && c.status < 500)) reasons.push("gateway 4xx");
     if (calls.some((c) => OVERFLOW.test(c.error ?? ""))) reasons.push("overflow");
-    const inWindow = (l: string) => tl.stamps(l).some((t) => t >= turn.from && t < turn.next);
-    const records = arm.pluginLog.filter((l) => FAIL_OPEN_RECORD.test(l) && inWindow(l)).length;
-    const warnings = arm.pluginLog.filter((l) => FAIL_OPEN_WARNING.test(l) && inWindow(l)).length;
-    const failOpen = records > 0 ? records : warnings;
+    const failOpen = failOpenCount(evidence, turn.from, turn.next);
     if (failOpen > 0) reasons.push(`${failOpen} fail-open publications`);
     return reasons;
 }
 
-type Checks = Record<"after_crash" | "post_crash_pass" | "final", StoreCheck | undefined>;
+type Checks = Partial<Record<"after_crash" | "post_crash_pass" | "final", StoreCheck | undefined>>;
 
-const key = (r: StoreCheck["ranges"][number]) => r.join("/");
+/** A range's identity; bounds alone when either side of a comparison predates digests. */
+const key = (r: StoreCheck["ranges"][number], digests: boolean) =>
+    r.slice(0, digests ? 5 : 4).join("/");
 
 /**
  * The wire contract's post-crash rule: the first pass after a crash folds from the surviving
  * history and removes nothing further, so each segment the kill left, inspected before the
  * replacement daemon starts, is still there, bounds and contents, after that pass.
  */
-function storeReasons(checks: Checks): string[] {
+function storeReasons(checks: Checks, postCrash = true): string[] {
     const reasons: string[] = [];
     for (const [name, check] of Object.entries(checks)) {
         const label = name.replaceAll("_", " ");
@@ -165,22 +264,24 @@ function storeReasons(checks: Checks): string[] {
             reasons.push(`${check.overlaps.length} overlapping history segments, ${label}`);
         }
     }
+    if (!postCrash) return reasons;
     const after = checks.after_crash?.ranges ?? [];
     const compared = [...after, ...(checks.post_crash_pass?.ranges ?? [])];
     // Checks recorded before ranges carried digests compare bounds only, which cannot certify
     // the rule, so they withhold recovery while still reporting what they can.
-    if (compared.some((r) => r.length < 5)) reasons.push("store ranges lack content digests");
-    const kept = new Set((checks.post_crash_pass?.ranges ?? []).map(key));
-    const lost = checks.post_crash_pass ? after.filter((r) => !kept.has(key(r))) : [];
+    const digests = compared.every((r) => r.length === 5);
+    if (!digests) reasons.push("store ranges lack content digests");
+    const kept = new Set((checks.post_crash_pass?.ranges ?? []).map((r) => key(r, digests)));
+    const lost = checks.post_crash_pass ? after.filter((r) => !kept.has(key(r, digests))) : [];
     if (lost.length > 0) {
-        reasons.push(`post-crash pass removed or changed segments ${lost.map(key).join(", ")}`);
+        const names = lost.map((r) => key(r, digests)).join(", ");
+        reasons.push(`post-crash pass removed or changed segments ${names}`);
     }
     return reasons;
 }
 
 export function recoveries(run: RunLogs): Recovery[] {
     return run.arms.flatMap((arm) => {
-        const tl = timeline(arm, run.base_wall_ms);
         const observations = new Map(
             arm.journal.filter((e) => e.kind === "FaultObserved").map((e) => [e.fault, e]),
         );
@@ -192,22 +293,52 @@ export function recoveries(run: RunLogs): Recovery[] {
             else if (e.kind === "FaultObserved" && INFRA.has(String(e.type)) && !anchored)
                 anchors.set(e.fault, e);
         }
+        if (anchors.size === 0) return [];
+        // An arm whose verdicts depend on the plugin log needs that log on disk.
+        if (arm.pluginLogMissing) {
+            throw new Error(
+                `${arm.arm}: r/eidnara.log is missing, so fail-open evidence cannot be read`,
+            );
+        }
+        const tl = timeline(arm, run.base_wall_ms ?? Number.NaN);
+        const indexed = indexEvidence(arm, tl);
         return [...anchors.values()].map((fired): Recovery => {
-            // A sleep's evidence is its clock jump; the scheduler observes it in the same tick.
+            // A sleep's evidence is its recorded clock jump: a fault-tagged AdvanceClock that moved
+            // the clock forward with the busy set empty, by the scheduled duration when known.
+            const scheduledMs = run.sleeps?.get(String(fired.fault));
+            const jumped = arm.journal.some((e) => {
+                const delta = e.scenario_ms - Number(e.from_ms);
+                return (
+                    e.kind === "AdvanceClock" &&
+                    e.fault === fired.fault &&
+                    (scheduledMs === undefined ? delta > 0 : delta === scheduledMs) &&
+                    Array.isArray(e.busy) &&
+                    e.busy.length === 0
+                );
+            });
             const observed =
-                observations.get(fired.fault) ??
-                (fired.type === "laptop_sleep" ? fired : undefined);
+                fired.type === "laptop_sleep"
+                    ? jumped
+                        ? (observations.get(fired.fault) ?? fired)
+                        : undefined
+                    : observations.get(fired.fault);
             const evidence = (observed?.evidence ?? {}) as {
                 skipped?: unknown;
                 store?: StoreCheck;
             };
             const base = { arm: arm.arm, fault: String(fired.fault), type: String(fired.type) };
             if (evidence.skipped !== undefined) {
-                const reasons = [`skipped: ${String(evidence.skipped)}`];
+                // The driver skips with a reason in words; any other shape is malformed evidence.
+                if (typeof evidence.skipped !== "string" || evidence.skipped === "") {
+                    throw new Error(
+                        `${arm.arm}: ${base.fault} FaultObserved has a skipped field that is not a reason`,
+                    );
+                }
+                const reasons = [`skipped: ${evidence.skipped}`];
                 return { ...base, turns_to_first_clean: null, recovered: null, reasons };
             }
             const turns = turnsAfter(arm, fired, tl);
-            const dirty = turns.map((t) => dirtyReasons(arm, t, tl));
+            const dirty = turns.map((t) => dirtyReasons(indexed, t, tl));
             const index = dirty.findIndex((r) => r.length === 0);
             const reasons =
                 index < 0
@@ -222,12 +353,31 @@ export function recoveries(run: RunLogs): Recovery[] {
                 turns_to_first_clean: index < 0 ? null : index + 1,
                 reasons,
             };
+            const parsed = (value: unknown, where: string) =>
+                value === undefined ? undefined : parseStoreCheck(value, where);
+            if (base.type === "store_full") {
+                // The driver observes a full store as its mount and zero free space.
+                const full = evidence as { mount?: unknown; avail_kb?: unknown };
+                if (observed && (typeof full.mount !== "string" || full.avail_kb !== 0)) {
+                    throw new Error(
+                        `${arm.arm}: ${base.fault} store_full evidence does not show a full mount`,
+                    );
+                }
+                // The seam's surviving state: the store stays readable, which the final check shows.
+                const final = parsed(arm.finalStore, `${arm.arm}: store-check.json`);
+                const store = storeReasons({ final }, false);
+                reasons.push(...store);
+                return {
+                    ...result,
+                    reasons,
+                    recovered: clean && store.length === 0,
+                    store: { final: final?.integrity ?? "unchecked" },
+                };
+            }
             if (!RESTARTS.has(base.type)) return { ...result, recovered: clean };
             const pass = arm.journal.find(
                 (x) => x.kind === "StoreChecked" && x.seq > fired.seq && x.fault === base.fault,
             );
-            const parsed = (value: unknown, where: string) =>
-                value === undefined ? undefined : parseStoreCheck(value, where);
             const checks: Checks = {
                 after_crash: parsed(evidence.store, `${arm.arm}: ${base.fault} FaultObserved`),
                 post_crash_pass: parsed(pass?.store, `${arm.arm}: ${base.fault} StoreChecked`),

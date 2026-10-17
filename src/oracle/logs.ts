@@ -9,13 +9,18 @@ import type { Sample as ResourceSample } from "../run/sampler";
 import { type Scenario, scenarioHash } from "../scenario/compile";
 
 /** `pid` tells daemon lifetimes apart; a record without one is read as a single lifetime. */
-export type Sample = Pick<ResourceSample, "scenario_ms" | "rss"> & { pid?: number | null };
+export type Sample = Pick<ResourceSample, "scenario_ms" | "rss"> & {
+    pid?: number | null;
+    start?: string | null;
+};
 
 export interface ArmLogs {
     arm: string;
     calls: CallRecord[];
     journal: Entry[];
     pluginLog: string[];
+    /** Set when `<arm>/r/eidnara.log` is absent, so an empty log reads as missing evidence. */
+    pluginLogMissing?: true;
     daemonLog: string[];
     resources: Sample[];
     tools: (Command & { turn: string | null })[];
@@ -26,10 +31,16 @@ export interface ArmLogs {
 export interface RunLogs {
     dir: string;
     tier: string;
-    /** Wall time at scenario time 0; hosts and their plugins log in `base_wall_ms + scenario_ms`. */
-    base_wall_ms: number;
+    /**
+     * Wall time at scenario time 0, from the manifest; a journal without clock offsets places
+     * plugin log stamps as `base_wall_ms + scenario_ms`. Absent in a run recorded before the
+     * harness wrote it, which the recovery oracle refuses when it has stamps to place.
+     */
+    base_wall_ms?: number;
     prereg: Preregistration;
     kinds: Map<string, string>;
+    /** Each scheduled laptop sleep's duration by fault id, from the override the run used or its scenario. */
+    sleeps?: Map<string, number>;
     arms: ArmLogs[];
 }
 
@@ -72,6 +83,9 @@ function shaped<T>(path: string, fields: Record<string, FieldCheck>): T[] {
         }
         if ("pid" in row && !numOrNull(row.pid))
             throw new Error(`${path}: line ${i + 1}: pid missing`);
+        if ("start" in row && !strOrNull(row.start)) {
+            throw new Error(`${path}: line ${i + 1}: start missing`);
+        }
     });
     // SAFETY: every row carries each field in `fields` with its checked shape, which is the record type `T` names.
     return rows as unknown as T[];
@@ -84,6 +98,7 @@ interface Manifest {
     scenario_hash?: string;
     /** Wall time at scenario time 0; absent in runs recorded before the harness wrote it. */
     base_wall_ms?: number;
+    fault_override?: { id: string; type: string; params?: { duration_ms?: number } }[] | null;
 }
 
 /** Reads one JSON file as the record type its reader names, naming the file when the text does not parse. */
@@ -108,11 +123,20 @@ const lines = (path: string) =>
  * exception is a turn the resume path closed as `failed(interrupted)`, which has none.
  */
 function requireTurnEnds(journal: Entry[], arms: string[], events: Scenario["events"]): void {
+    const turns = new Set(events.filter((e) => e.kind === "user_turn").map((e) => String(e.id)));
     for (const arm of arms) {
         const mine = journal.filter((e) => e.arm === arm);
-        for (const event of events) {
-            if (event.kind !== "user_turn") continue;
-            const id = String(event.id);
+        for (const e of mine) {
+            if ((e.kind === "EndTurn" || e.kind === "BeginTurn") && !turns.has(String(e.event))) {
+                throw new Error(`arm ${arm}: ${e.kind} for unscheduled event ${String(e.event)}`);
+            }
+        }
+        for (const id of turns) {
+            const begins = mine.filter((e) => e.kind === "BeginTurn" && e.event === id).length;
+            if (begins !== 1) {
+                const what = begins === 0 ? "no BeginTurn" : `${begins} BeginTurn entries`;
+                throw new Error(`arm ${arm}: turn ${id} has ${what}`);
+            }
             const ends = mine.filter((e) => e.kind === "EndTurn" && e.event === id).length;
             const closed = mine.find((e) => e.kind === "Event" && e.event === id);
             if (ends === 0 && String(closed?.outcome) === "failed(interrupted)") continue;
@@ -120,6 +144,46 @@ function requireTurnEnds(journal: Entry[], arms: string[], events: Scenario["eve
             if (ends > 1) throw new Error(`arm ${arm}: turn ${id} has ${ends} EndTurn entries`);
         }
     }
+}
+
+/** Numeric RSS samples in one file name a pid on every row or on none; a null pid never carries a reading. */
+function requirePidShape(path: string, samples: Sample[]): void {
+    const numeric = samples.filter((s) => typeof s.rss === "number");
+    const withPid = numeric.filter((s) => "pid" in s).length;
+    if (withPid !== 0 && withPid !== numeric.length) {
+        throw new Error(`${path}: pid present on some samples and absent on others`);
+    }
+    samples.forEach((s, i) => {
+        if (typeof s.rss === "number" && s.rss < 0) {
+            throw new Error(`${path}: line ${i + 1}: rss negative`);
+        }
+        if (typeof s.rss === "number" && "pid" in s && s.pid === null) {
+            throw new Error(`${path}: line ${i + 1}: numeric rss with a null pid`);
+        }
+    });
+}
+
+const TOKEN_FIELDS = [
+    "input_tokens",
+    "output_tokens",
+    "cache_read_tokens",
+    "cache_write_tokens",
+] as const;
+
+function samplesOf(path: string): Sample[] {
+    const samples = shaped<Sample>(path, SAMPLE_FIELDS);
+    requirePidShape(path, samples);
+    return samples;
+}
+
+function toolsOf(path: string, turns: Set<string>): (Command & { turn: string | null })[] {
+    const tools = shaped<Command & { turn: string | null }>(path, TOOL_FIELDS);
+    tools.forEach((t, i) => {
+        if (t.turn !== null && !turns.has(t.turn)) {
+            throw new Error(`${path}: line ${i + 1}: turn ${t.turn} is not a scheduled user turn`);
+        }
+    });
+    return tools;
 }
 
 export function loadRun(dir: string, prereg: Preregistration): RunLogs {
@@ -133,21 +197,44 @@ export function loadRun(dir: string, prereg: Preregistration): RunLogs {
     }
     const kinds = new Map(scenario.events.map((e) => [String(e.id), String(e.kind)]));
     const order = manifest.order as string[];
+    if (order.length === 0) throw new Error("manifest names no arms");
     for (const arm of order) {
         if (!(ARMS as readonly string[]).includes(arm)) {
             throw new Error(`manifest arm ${arm} is not a pre-registered arm`);
         }
     }
+    const count = manifest.events;
+    if (!Number.isInteger(count) || count < 1 || count > scenario.events.length) {
+        throw new Error(
+            `manifest events ${count} exceeds the scenario's ${scenario.events.length}`,
+        );
+    }
+    const planned = scenario.events.slice(0, count);
+    const turns = new Set(planned.filter((e) => e.kind === "user_turn").map((e) => String(e.id)));
     const calls = jsonl<CallRecord>(join(dir, "calls.jsonl"));
     const seen = new Set<number>();
-    for (const c of calls) {
+    calls.forEach((c, i) => {
         const problems = recordProblems({ ...c });
         if (problems.length > 0) throw new Error(`call ${c.seq}: ${problems.join(", ")}`);
         if (!order.includes(c.arm))
             throw new Error(`call ${c.seq}: arm ${c.arm} is not in the manifest`);
         if (seen.has(c.seq)) throw new Error(`call ${c.seq}: sequence number repeated`);
+        if (c.seq !== i) throw new Error(`call ${c.seq}: expected sequence number ${i}`);
         seen.add(c.seq);
-    }
+        if (c.wall_ms < c.started_wall_ms) {
+            throw new Error(`call ${c.seq}: wall_ms precedes started_wall_ms`);
+        }
+        if (c.turn !== null && !turns.has(c.turn)) {
+            throw new Error(`call ${c.seq}: turn ${c.turn} is not a scheduled user turn`);
+        }
+        for (const field of TOKEN_FIELDS) {
+            if (c[field] < 0) throw new Error(`call ${c.seq}: ${field} negative`);
+        }
+        const http = Number.isInteger(c.status) && c.status >= 100 && c.status <= 599;
+        if (c.status !== 0 && !http) {
+            throw new Error(`call ${c.seq}: status ${c.status} is not an HTTP status`);
+        }
+    });
     const journalPath = join(dir, "journal.jsonl");
     const journal = readJournal(journalPath);
     journal.forEach((e, i) => {
@@ -158,26 +245,20 @@ export function loadRun(dir: string, prereg: Preregistration): RunLogs {
             if (!ok(e[field])) throw new Error(`${journalPath}: line ${i + 1}: ${field} missing`);
         }
     });
-    const count = manifest.events;
-    if (!Number.isInteger(count) || count < 1 || count > scenario.events.length) {
-        throw new Error(
-            `manifest events ${count} exceeds the scenario's ${scenario.events.length}`,
-        );
-    }
-    const scheduled = scenario.events.slice(0, count).map((e) => String(e.id));
+    const scheduled = planned.map((e) => String(e.id));
     requireComplete(journal, order, scheduled);
-    requireTurnEnds(journal, order, scenario.events.slice(0, count));
+    requireTurnEnds(journal, order, planned);
     const arms = order.map((arm) => ({
         arm,
         calls: calls.filter((c) => c.arm === arm),
         journal: journal.filter((e) => e.arm === arm),
         pluginLog: lines(join(dir, arm, "r", "eidnara.log")),
+        ...(existsSync(join(dir, arm, "r", "eidnara.log"))
+            ? {}
+            : { pluginLogMissing: true as const }),
         daemonLog: lines(join(dir, arm, "daemon.log")),
-        resources: shaped<Sample>(join(dir, arm, "resources.jsonl"), SAMPLE_FIELDS),
-        tools: shaped<Command & { turn: string | null }>(
-            join(dir, arm, "tools.jsonl"),
-            TOOL_FIELDS,
-        ),
+        resources: samplesOf(join(dir, arm, "resources.jsonl")),
+        tools: toolsOf(join(dir, arm, "tools.jsonl"), turns),
         finalStore: existsSync(join(dir, arm, "store-check.json"))
             ? parseStoreCheck(
                   JSON.parse(readFileSync(join(dir, arm, "store-check.json"), "utf8")),
@@ -192,10 +273,26 @@ export function loadRun(dir: string, prereg: Preregistration): RunLogs {
                 `arm ${arm.arm} has no daemon RSS samples in ${arm.arm}/resources.jsonl`,
             );
         }
+        if (typeof arm.resources.at(-1)?.rss !== "number") {
+            throw new Error(`arm ${arm.arm}: final RSS sample has no reading`);
+        }
         if (!existsSync(join(dir, arm.arm, "daemon.log"))) {
             throw new Error(`arm ${arm.arm} has no daemon.log`);
         }
     }
-    const base_wall_ms = manifest.base_wall_ms as number;
-    return { dir, tier: manifest.tier, base_wall_ms, prereg, kinds, arms };
+    const faults = manifest.fault_override ?? scenario.faults ?? [];
+    const sleeps = new Map(
+        faults
+            .filter((f) => f.type === "laptop_sleep")
+            .map((f) => [String(f.id), Number(f.params?.duration_ms)]),
+    );
+    return {
+        dir,
+        tier: manifest.tier,
+        base_wall_ms: manifest.base_wall_ms,
+        prereg,
+        kinds,
+        sleeps,
+        arms,
+    };
 }

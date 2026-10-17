@@ -63,6 +63,20 @@ export async function gradeRun(dir: string, config: SimConfig | null): Promise<S
     }
 }
 
+/** Yields a JSONL file's non-empty lines one at a time, so a log of large records costs one record of memory. */
+async function* jsonlLines(path: string): AsyncGenerator<string> {
+    const decoder = new TextDecoder();
+    let rest = "";
+    for await (const chunk of Bun.file(path).stream()) {
+        rest += decoder.decode(chunk, { stream: true });
+        const parts = rest.split("\n");
+        rest = parts.pop() ?? "";
+        for (const line of parts) if (line) yield line;
+    }
+    rest += decoder.decode();
+    if (rest) yield rest;
+}
+
 async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
     const manifest = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8"));
     const scenario = JSON.parse(readFileSync(join(dir, "scenario.json"), "utf8")) as Scenario;
@@ -84,28 +98,66 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
     const log = new GradeLog(join(dir, "grades.jsonl"));
 
     const named = new Map<string, { arm: string; item: string }>();
+    const firstOf = new Set<string>();
     for (const e of entries.filter((e) => e.kind === "SnapshotArtefacts")) {
-        named.set(String(e.snapshot), { arm: String(e.arm), item: String(e.item) });
+        const id = String(e.snapshot);
+        const key = `${String(e.arm)}/${String(e.item)}`;
+        if (named.has(id) || firstOf.has(key)) {
+            throw new Error(`journal names more than one first snapshot for ${key} (${id})`);
+        }
+        named.set(id, { arm: String(e.arm), item: String(e.item) });
+        firstOf.add(key);
     }
     const journaled = new Set(named.keys());
+    const probes = new Map(scenario.probes.map((p) => [p.id, p]));
     const snapshots = new Map<string, Snapshot[]>();
     for (const arm of arms) {
         const path = join(dir, arm, "snapshots.jsonl");
         if (!existsSync(path)) continue;
-        for (const line of readFileSync(path, "utf8").split("\n").filter(Boolean)) {
+        for await (const line of jsonlLines(path)) {
             const s = JSON.parse(line) as Snapshot;
+            if (s.arm !== arm || !Array.isArray(s.artefacts) || s.artefacts.length === 0) {
+                throw new Error(
+                    `snapshot ${s.id} in ${arm}/snapshots.jsonl names arm ${s.arm} or has no artefacts`,
+                );
+            }
+            assertArtefactsOnly(s);
             const entry = named.get(s.id);
-            if (entry) {
-                const bound = s.arm === arm && entry.arm === arm && entry.item === s.item;
-                if (!bound || !Array.isArray(s.artefacts) || s.artefacts.length === 0) {
+            if (entry && (entry.arm !== arm || entry.item !== s.item)) {
+                throw new Error(
+                    `snapshot ${s.id} in ${arm}/snapshots.jsonl does not match its journal entry (${entry.arm}, ${entry.item})`,
+                );
+            }
+            const probe = entry ? probes.get(s.item) : undefined;
+            if (entry && probe) {
+                const turnOk = probe.event === undefined || s.turn === probe.event;
+                const sessionOk = s.session === undefined || s.session === probe.session;
+                if (!turnOk || !sessionOk) {
                     throw new Error(
-                        `snapshot ${s.id} in ${arm}/snapshots.jsonl does not match its journal entry (${entry.arm}, ${entry.item}) or has no artefacts`,
+                        `snapshot ${s.id} is of turn ${s.turn} in session ${String(s.session)}, not the probe's event ${String(probe.event)} in session ${probe.session}`,
                     );
                 }
             }
             const key = `${arm}/${s.item}`;
-            snapshots.set(key, [...(snapshots.get(key) ?? []), s]);
+            const kept = entry ? s : { ...s, artefacts: [] };
+            snapshots.set(key, [...(snapshots.get(key) ?? []), kept]);
         }
+    }
+    const present = new Set([...snapshots.values()].flat().map((s) => s.id));
+    const lost = [...named.keys()].filter((id) => !present.has(id));
+    if (lost.length > 0) {
+        throw new Error(`journaled snapshots have no row in snapshots.jsonl: ${lost.join(", ")}`);
+    }
+    const agentModels = new Set(
+        readJournal(join(dir, "calls.jsonl"))
+            .filter((r) => r.component === "agent" && typeof r.model === "string")
+            .map((r) => String(r.model)),
+    );
+    const unrecorded = [...agentModels].filter((m) => !models.includes(m));
+    if (unrecorded.length > 0) {
+        throw new Error(
+            `agent calls used models the manifest does not record: ${unrecorded.join(", ")}`,
+        );
     }
     const attempts = (arm: string, item: string): Snapshot[] | undefined => {
         const rows = snapshots.get(`${arm}/${item}`) ?? [];
@@ -157,7 +209,6 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
             }
             const [mine, host] = [sides[arm], sides.host];
             if (lost.size > 0 || !mine?.[0] || !host?.[0]) return [];
-            for (const side of [mine[0], host[0]]) assertArtefactsOnly(side);
             return [{ probe, arm, a: mine[0], b: host[0], rows: { a: mine, b: host } }];
         }),
     );

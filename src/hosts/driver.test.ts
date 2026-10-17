@@ -3,14 +3,18 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import {
     appendFileSync,
+    closeSync,
     existsSync,
     mkdirSync,
     mkdtempSync,
+    openSync,
     readdirSync,
     readFileSync,
     rmSync,
+    statSync,
     symlinkSync,
     writeFileSync,
+    writeSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -128,6 +132,11 @@ function fakeDaemon(pid: number | null) {
 
 const PASS =
     "[2026-10-16T12:00:00.000Z] [eidnara][s-1] rust pass: decision=SOFT+ reason=none served_from=transform in=3 out=3";
+function statSize(driver: HostDriver): number {
+    const path = join((driver as unknown as { o: DriverOptions }).o.armRoot, "eidnara.log");
+    return existsSync(path) ? statSync(path).size : 0;
+}
+
 /** Appends one line to the arm's plugin log, as the host's plugin would. */
 function pluginLog(driver: HostDriver, line: string): void {
     const path = join((driver as unknown as { o: DriverOptions }).o.armRoot, "eidnara.log");
@@ -327,6 +336,64 @@ describe("HostDriver lifecycle", () => {
         await expect(
             driver.event(ev("apply_diff", { path: "src/a.txt", content: "A" })),
         ).rejects.toThrow(HarnessFailure);
+    });
+
+    test("apply_diff refuses a target that is a FIFO or directory before writing", async () => {
+        const { driver } = fixture("host", { p: gitRepo() });
+        await driver.reset();
+        const ws = driver.workspace("p");
+        mkdirSync(join(ws, "src"));
+        spawnSync("mkfifo", [join(ws, "src", "a.txt")]);
+        const started = Date.now();
+        await expect(
+            driver.event(ev("apply_diff", { path: "src/a.txt", content: "A" })),
+        ).rejects.toThrow("not a regular file");
+        expect(Date.now() - started).toBeLessThan(2_000);
+        mkdirSync(join(ws, "src", "b.txt"));
+        await expect(
+            driver.event(ev("apply_diff", { path: "src/b.txt", content: "B" })),
+        ).rejects.toThrow("not a regular file");
+    });
+
+    test("apply_diff bounds its walk of the workspace .git by entry count", async () => {
+        const { driver } = fixture("host", { p: gitRepo() });
+        const o = { ...(driver as unknown as { o: DriverOptions }).o, gitDirEntryCap: 50 };
+        const bounded = new HostDriver(o);
+        await bounded.reset();
+        const ws = bounded.workspace("p");
+        for (let i = 0; i < 60; i++) writeFileSync(join(ws, ".git", `junk-${i}`), "");
+        await expect(
+            bounded.event(ev("apply_diff", { path: "src/a.txt", content: "A" })),
+        ).rejects.toThrow("walk: too many entries or timed out");
+    });
+
+    test("apply_diff removes the real index lock when its update times out", async () => {
+        const shim = tmp();
+        const real = spawnSync("sh", ["-c", "command -v git"]).stdout.toString().trim();
+        writeFileSync(
+            join(shim, "git"),
+            `#!/bin/sh\nfor a in "$@"; do if [ "$a" = "update-index" ] && [ -z "$GIT_INDEX_FILE" ]; then touch "$GIT_DIR/index.lock"; sleep 30; fi; done\nexec ${real} "$@"\n`,
+            { mode: 0o755 },
+        );
+        const { driver } = fixture("host", { p: gitRepo() });
+        const o = { ...(driver as unknown as { o: DriverOptions }).o, turnDeadlineMs: 500 };
+        const fresh = new HostDriver(o);
+        await fresh.reset();
+        const ws = fresh.workspace("p");
+        const path = process.env.PATH;
+        process.env.PATH = `${shim}:${path}`;
+        try {
+            await expect(
+                fresh.event(ev("apply_diff", { path: "src/a.txt", content: "A" })),
+            ).rejects.toThrow("timed out");
+        } finally {
+            process.env.PATH = path;
+        }
+        expect(existsSync(join(ws, ".git", "index.lock"))).toBe(false);
+        await fresh.event(ev("apply_diff", { path: "src/a.txt", content: "A" }));
+        expect(spawnSync("git", ["show", "HEAD:src/a.txt"], { cwd: ws }).stdout.toString()).toBe(
+            "A",
+        );
     });
 
     test("apply_diff proceeds over a scratch index lock a killed git left behind", async () => {
@@ -688,8 +755,15 @@ describe("HostDriver faults", () => {
         expect((second.stores as { fault: string }[]).map((s) => s.fault)).toEqual([
             "f-daemon_restart",
         ]);
+        // The settled check stays recorded until the next event, after the scheduler journaled it.
+        const recorded = () =>
+            Object.keys(
+                JSON.parse(readFileSync(join(driver.armDir, "state.json"), "utf8")).store_faults,
+            );
+        expect(recorded().sort()).toEqual(["f-daemon_restart", "f-daemon_sigkill_mid_fold"]);
         const turn = await driver.event(ev("user_turn", { id: "e-1", text: "go" }));
         expect(turn.stores).toBeUndefined();
+        expect(recorded()).toEqual(["f-daemon_sigkill_mid_fold"]);
     });
 
     test("a pass served between turns is checked before the next turn's own passes", async () => {
@@ -739,6 +813,24 @@ describe("HostDriver faults", () => {
         pluginLog(driver, PASS);
         const outcome = await driver.event(ev("user_turn", { id: "e-1", text: "go" }));
         expect(outcome.stores?.map((s) => s.fault)).toEqual(["__proto__"]);
+    });
+
+    test("a served pass is found past a long plugin log and across a chunk boundary", async () => {
+        const { driver } = fixture("eidnara");
+        driver.daemon = fakeDaemon(10) as unknown as DaemonStack;
+        driver.host = new FakeHost({} as HostContext, "/x") as unknown as SimHost;
+        await driver.fault(episode("daemon_restart"));
+        // Raw passes fill well past one 64 KiB chunk; the served pass straddles a chunk edge.
+        const raw =
+            "[2026-10-16T12:00:01.000Z] [eidnara][s-1] rust pass: decision=declined:invocation_budget served_from=raw";
+        for (let i = 0; i < 700; i++) pluginLog(driver, raw);
+        const padding = "x".repeat(
+            ((64 * 1024 - (statSize(driver) % (64 * 1024))) % (64 * 1024)) - 40,
+        );
+        pluginLog(driver, `[2026-10-16T12:00:02.000Z] ${padding}`);
+        pluginLog(driver, PASS);
+        const outcome = await driver.event(ev("user_turn", { id: "e-1", text: "go" }));
+        expect(outcome.stores?.map((s) => s.fault)).toEqual(["f-daemon_restart"]);
     });
 
     test("the store check waits for the first pass the replacement daemon serves", async () => {
@@ -893,6 +985,64 @@ describe("probe snapshots", () => {
         );
         expect(stillChanged.failed).toContain(".git/info/exclude (changed)");
         expect(stillChanged.failed).not.toContain(".gitignore");
+    });
+
+    test("a .gitignore that ignores itself still fails the probe turn as a rule change", async () => {
+        const { driver, hosts } = fixture("host", { p: gitRepo() });
+        const fresh = new HostDriver((driver as unknown as { o: DriverOptions }).o);
+        await fresh.reset();
+        const host = hosts.at(-1) as FakeHost;
+        const ws = fresh.workspace("p");
+        await fresh.event(ev("session_start", { session: "s-0" }));
+        host.onPrompt = () => {
+            writeFileSync(join(ws, "cache.rs"), "static STORE: Mutex<u8>;\n");
+            writeFileSync(join(ws, ".gitignore"), "*\n");
+            mkdirSync(join(ws, "deep", "er"), { recursive: true });
+            writeFileSync(join(ws, "deep", "er", ".gitignore"), "*\n");
+        };
+        const outcome = await fresh.event(
+            ev("user_turn", { id: "e-1", session: "s-0", text: "go", probe: "q-1" }),
+        );
+        expect(outcome.failed).toBe(
+            "ignore rules changed: .gitignore (added), deep/er/.gitignore (added)",
+        );
+    });
+
+    test("an exclude or ignore file past the size cap reads as a changed rule", () => {
+        const repo = gitRepo();
+        const armDir = tmp();
+        const recorder = new SnapshotRecorder(armDir, "eidnara", () => []);
+        const info = join(repo, ".git", "info");
+        mkdirSync(info, { recursive: true });
+        const fd = openSync(join(info, "exclude"), "w");
+        writeSync(fd, "x", 2 << 20);
+        closeSync(fd);
+        expect(recorder.excludeDigest(repo)).toBe("unreadable");
+    });
+
+    test("an exclude file that is a directory, symlink, or FIFO reads as a changed rule without blocking", () => {
+        const repo = gitRepo();
+        const armDir = tmp();
+        const recorder = new SnapshotRecorder(armDir, "eidnara", () => []);
+        const info = join(repo, ".git", "info");
+        mkdirSync(info, { recursive: true });
+        const exclude = join(info, "exclude");
+        rmSync(exclude, { force: true });
+        expect(recorder.excludeDigest(repo)).toBeNull();
+        mkdirSync(exclude);
+        expect(recorder.excludeDigest(repo)).toBe("unreadable");
+        rmSync(exclude, { recursive: true });
+        symlinkSync(join(tmp(), "secret"), exclude);
+        expect(recorder.excludeDigest(repo)).toBe("unreadable");
+        rmSync(exclude);
+        spawnSync("mkfifo", [exclude]);
+        const started = Date.now();
+        expect(recorder.excludeDigest(repo)).toBe("unreadable");
+        expect(Date.now() - started).toBeLessThan(1_000);
+        rmSync(exclude);
+        rmSync(info, { recursive: true });
+        symlinkSync(tmp(), info);
+        expect(recorder.excludeDigest(repo)).toBe("unreadable");
     });
 
     test("a probe turn that leaves an embedded repository in the workspace ends failed, naming it", async () => {

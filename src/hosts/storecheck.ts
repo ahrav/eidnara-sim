@@ -51,9 +51,49 @@ const isOverlap = (o: unknown): o is StoreCheck["overlaps"][number] =>
     typeof (o as { first: unknown }).first === "number" &&
     typeof (o as { second: unknown }).second === "number";
 
+type Bounds = Pick<Segment, "session_id" | "sequence" | "start_message" | "end_message">;
+
 /**
- * A recorded store check, read back with its shape checked, so a malformed artifact refuses the
- * run rather than certifying it. Ranges recorded before digests have four elements.
+ * The facts a check derives from its ranges, in range order: segments of one session whose
+ * message ranges overlap, and segments whose own bounds are inverted.
+ */
+function derive(ranges: Iterable<Bounds>): {
+    overlaps: StoreCheck["overlaps"];
+    inverted: string[];
+} {
+    const overlaps: StoreCheck["overlaps"] = [];
+    const inverted: string[] = [];
+    type Reach = Pick<Segment, "session_id" | "sequence" | "end_message">;
+    let reach = null as Reach | null;
+    for (const next of ranges) {
+        // The schema has no constraint on the bounds, so an inverted range passes the pragma.
+        if (next.start_message > next.end_message) {
+            inverted.push(`inverted range ${next.session_id}/${next.sequence}`);
+        }
+        const same: Reach | null = reach?.session_id === next.session_id ? reach : null;
+        if (same && next.start_message <= same.end_message) {
+            overlaps.push({
+                session: next.session_id,
+                first: same.sequence,
+                second: next.sequence,
+            });
+        }
+        reach =
+            same && same.end_message >= next.end_message
+                ? same
+                : {
+                      session_id: next.session_id,
+                      sequence: next.sequence,
+                      end_message: next.end_message,
+                  };
+    }
+    return { overlaps, inverted };
+}
+
+/**
+ * A recorded store check, read back with its shape checked and its derived facts recomputed from
+ * its ranges, so a malformed or inconsistent artifact refuses the run rather than certifying it.
+ * Ranges recorded before digests have four elements.
  */
 export function parseStoreCheck(value: unknown, where: string): StoreCheck {
     const v = value as Partial<Record<keyof StoreCheck, unknown>> | null;
@@ -61,13 +101,35 @@ export function parseStoreCheck(value: unknown, where: string): StoreCheck {
         typeof v === "object" &&
         v !== null &&
         typeof v.integrity === "string" &&
-        typeof v.segments === "number" &&
         Array.isArray(v.overlaps) &&
         v.overlaps.every(isOverlap) &&
         Array.isArray(v.ranges) &&
-        v.ranges.every(isRange);
+        v.ranges.every(isRange) &&
+        Number.isInteger(v.segments) &&
+        v.segments === v.ranges.length;
     if (!sound) throw new Error(`${where}: store check has an unexpected shape`);
-    return v as StoreCheck;
+    const check = v as StoreCheck;
+    // Derived in the live check's order, whatever order the artifact lists its ranges in.
+    const bounds = check.ranges
+        .map(([session_id, sequence, start_message, end_message]) => ({
+            session_id,
+            sequence,
+            start_message,
+            end_message,
+        }))
+        .sort(
+            (a, b) =>
+                a.session_id.localeCompare(b.session_id) ||
+                a.start_message - b.start_message ||
+                a.end_message - b.end_message ||
+                a.sequence - b.sequence,
+        );
+    const derived = derive(bounds);
+    const agrees =
+        JSON.stringify(derived.overlaps) === JSON.stringify(check.overlaps) &&
+        derived.inverted.every((note) => check.integrity.split("; ").includes(note));
+    if (!agrees) throw new Error(`${where}: store check disagrees with its own ranges`);
+    return check;
 }
 
 export function checkStore(path: string): StoreCheck {
@@ -91,31 +153,15 @@ function inspect(path: string): StoreCheck {
                 "select session_id, sequence, start_message, end_message, start_message_id, end_message_id, title, content from history_segments order by session_id, start_message, end_message, sequence",
             )
             .iterate();
-        const overlaps: StoreCheck["overlaps"] = [];
         const ranges: StoreCheck["ranges"] = [];
-        type Reach = Pick<Segment, "session_id" | "sequence" | "end_message">;
-        let reach = null as Reach | null;
+        const bounds: Bounds[] = [];
         for (const next of rows) {
-            // The schema has no constraint on the bounds, so an inverted range passes the pragma.
-            if (next.start_message > next.end_message) {
-                checks.push(`inverted range ${next.session_id}/${next.sequence}`);
-            }
-            const same: Reach | null = reach?.session_id === next.session_id ? reach : null;
-            if (same && next.start_message <= same.end_message) {
-                overlaps.push({
-                    session: next.session_id,
-                    first: same.sequence,
-                    second: next.sequence,
-                });
-            }
-            reach =
-                same && same.end_message >= next.end_message
-                    ? same
-                    : {
-                          session_id: next.session_id,
-                          sequence: next.sequence,
-                          end_message: next.end_message,
-                      };
+            bounds.push({
+                session_id: next.session_id,
+                sequence: next.sequence,
+                start_message: next.start_message,
+                end_message: next.end_message,
+            });
             ranges.push([
                 next.session_id,
                 next.sequence,
@@ -124,6 +170,8 @@ function inspect(path: string): StoreCheck {
                 digest(next),
             ]);
         }
+        const { overlaps, inverted } = derive(bounds);
+        checks.push(...inverted);
         return { integrity: checks.join("; "), segments: ranges.length, overlaps, ranges };
     } finally {
         db.close();

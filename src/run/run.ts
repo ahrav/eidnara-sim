@@ -272,6 +272,9 @@ function callsOf(
                 output_tokens: r.output_tokens,
                 ...(r.response_text ? { response_text: r.response_text } : {}),
                 ...(r.response_text_truncated ? { response_text_truncated: true } : {}),
+                ...(r.status >= 400 || r.error !== null || r.finish_reason === "stream_cut"
+                    ? { failed: true }
+                    : {}),
             };
         });
 }

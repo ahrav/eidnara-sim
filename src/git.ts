@@ -47,6 +47,9 @@ export function git(
     if (code === "ENOBUFS") {
         throw new GitOverflow(`git ${args.join(" ")}: output passed ${maxBuffer} bytes`);
     }
+    if (code === "E2BIG") {
+        throw new GitOverflow(`git ${args[0]}: ${args.length} arguments passed the OS limit`);
+    }
     if (r.error) throw new Error(`git ${args.join(" ")}: ${r.error.message}`);
     if (r.status !== 0) throw new Error(`git ${args.join(" ")}: ${r.stderr}`);
     return r.stdout;

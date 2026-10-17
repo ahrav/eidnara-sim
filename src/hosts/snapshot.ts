@@ -1,7 +1,9 @@
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
     appendFileSync,
     existsSync,
+    lstatSync,
     mkdirSync,
     readdirSync,
     readFileSync,
@@ -36,6 +38,21 @@ const EMPTY: RecorderState = { session: null, ended: null, starts: {}, last: {},
 
 /** Entries a workspace walk visits at most; a wider forest fails the probe turn. */
 const WORKSPACE_ENTRY_CAP = 200_000;
+/** Nested repositories a workspace may hold at most; more fail the probe turn before git runs. */
+const NESTED_REPO_CAP = 1_000;
+/** Bytes an ignore-rule file may hold before it reads as an unreadable, changed rule. */
+const RULE_FILE_CAP = 1 << 20;
+
+/**
+ * Git's blob id of a regular file under the size cap, computed without git; any other shape
+ * reads as `unreadable`, which differs from every recorded baseline.
+ */
+function blobId(path: string): string {
+    const stat = lstatSync(path, { throwIfNoEntry: false });
+    if (stat === undefined || !stat.isFile() || stat.size > RULE_FILE_CAP) return "unreadable";
+    const content = readFileSync(path);
+    return createHash("sha1").update(`blob ${content.length}\0`).update(content).digest("hex");
+}
 
 export class SnapshotRecorder {
     private readonly gitDir: string;
@@ -76,6 +93,7 @@ export class SnapshotRecorder {
         for (const name of locks) rmSync(join(this.gitDir, name), { force: true });
     }
 
+    /** Drops a line a kill cut from `snapshots.jsonl` and `tools.jsonl`, so the next record starts at a line boundary. */
     private dropCutLine(): void {
         keepCompleteLines(join(this.armDir, "snapshots.jsonl"));
         keepCompleteLines(join(this.armDir, "tools.jsonl"));
@@ -138,8 +156,19 @@ export class SnapshotRecorder {
      * either way.
      */
     embedded(dir: string): string[] {
+        return this.survey(dir).nested;
+    }
+
+    /**
+     * Walks the workspace once, under the recorder bound and an entry cap, for the two things
+     * the ignore rules must not hide: directories holding a `.git` of their own (kept when the
+     * workspace's ignore rules leave them alone) and every `.gitignore` file, found by name on
+     * disk so that a rule which ignores its own file still surfaces it.
+     */
+    survey(dir: string): { nested: string[]; ignoreFiles: string[] } {
         this.requireRealDir(dir);
         const found: string[] = [];
+        const ignoreFiles: string[] = [];
         const deadline = Date.now() + (this.gitTimeoutMs ?? Number.POSITIVE_INFINITY);
         let seen = 0;
         const pending = [dir];
@@ -152,14 +181,24 @@ export class SnapshotRecorder {
                             : "timed out";
                     throw new GitBound(`workspace walk of ${dir}: ${why}`);
                 }
+                const rel =
+                    at === dir
+                        ? entry.name
+                        : `${relative(dir, at).split(sep).join("/")}/${entry.name}`;
                 if (entry.name === ".git") {
                     if (at !== dir) found.push(relative(dir, at).split(sep).join("/"));
                     continue;
                 }
+                if (entry.name === ".gitignore") ignoreFiles.push(rel);
                 if (entry.isDirectory()) pending.push(join(at, entry.name));
             }
         }
-        if (found.length === 0) return [];
+        if (found.length > NESTED_REPO_CAP) {
+            throw new GitBound(
+                `workspace walk of ${dir}: more than ${NESTED_REPO_CAP} nested repositories`,
+            );
+        }
+        if (found.length === 0) return { nested: [], ignoreFiles: ignoreFiles.sort() };
         const ignored = spawnSync("git", ["check-ignore", "-z", "--stdin"], {
             cwd: dir,
             env: gitEnv({ GIT_DIR: this.gitDir, GIT_WORK_TREE: dir }),
@@ -171,7 +210,10 @@ export class SnapshotRecorder {
             throw new GitBound(`git check-ignore: timed out after ${this.gitTimeoutMs} ms`);
         }
         const skipped = new Set(ignored.stdout.split("\0").filter(Boolean));
-        return found.filter((path) => !skipped.has(path)).sort();
+        return {
+            nested: found.filter((path) => !skipped.has(path)).sort(),
+            ignoreFiles: ignoreFiles.sort(),
+        };
     }
 
     /**
@@ -198,15 +240,15 @@ export class SnapshotRecorder {
      * indexed the workspace: a `.gitignore` the agent added, changed, or removed, or an edited
      * `.git/info/exclude`. A rule added in a turn would hide that turn's files from the diff.
      */
-    ignoreChanges(dir: string, project: string): string[] {
+    ignoreChanges(
+        dir: string,
+        project: string,
+        ignoreFiles = this.survey(dir).ignoreFiles,
+    ): string[] {
         const baseline = this.state.ignores?.[project];
         if (!baseline) return [];
-        const listed = this.git(["ls-files", "-s", "-z", "--", ".gitignore", "**/.gitignore"], dir);
         const now: Record<string, string> = {};
-        for (const row of listed.split("\0").filter(Boolean)) {
-            const [meta, path] = row.split("\t") as [string, string];
-            now[path] = meta.split(" ")[1] as string;
-        }
+        for (const path of ignoreFiles) now[path] = blobId(join(dir, path));
         const changes: string[] = [];
         for (const path of new Set([
             ...Object.keys(baseline.files),
@@ -219,10 +261,29 @@ export class SnapshotRecorder {
                 `${path} (${was === undefined ? "added" : is === undefined ? "removed" : "changed"})`,
             );
         }
-        const exclude = join(dir, ".git", "info", "exclude");
-        const digest = existsSync(exclude) ? sha256Hex(readFileSync(exclude, "utf8")) : null;
+        const digest = this.excludeDigest(dir);
         if (digest !== baseline.exclude) changes.push(".git/info/exclude (changed)");
         return changes.sort();
+    }
+
+    /**
+     * The digest of `.git/info/exclude` when `.git`, `.git/info`, and the file are each a real
+     * directory or regular file; a missing file reads as null, and any other shape (a symlink,
+     * a FIFO, a directory in the file's place) reads as a changed rule.
+     */
+    excludeDigest(dir: string): string | null {
+        const gitDir = join(dir, ".git");
+        const info = join(gitDir, "info");
+        const exclude = join(info, "exclude");
+        for (const at of [gitDir, info]) {
+            const stat = lstatSync(at, { throwIfNoEntry: false });
+            if (stat === undefined) return at === gitDir ? "unreadable" : null;
+            if (!stat.isDirectory()) return "unreadable";
+        }
+        const stat = lstatSync(exclude, { throwIfNoEntry: false });
+        if (stat === undefined) return null;
+        if (!stat.isFile() || stat.size > RULE_FILE_CAP) return "unreadable";
+        return sha256Hex(readFileSync(exclude, "utf8"));
     }
 
     tree(dir: string, nested = this.embedded(dir)): string {

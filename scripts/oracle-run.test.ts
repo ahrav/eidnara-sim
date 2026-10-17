@@ -34,6 +34,7 @@ function completeRun(root: string, tier: string, prereg_sha256: string): string 
     writeFileSync(join(dir, "scenario.json"), JSON.stringify({ ...scenario, scenario_hash }));
     const journal = [
         { kind: "StartRun", arm: null, order: ["eidnara"], scenario_ms: 0 },
+        { kind: "BeginTurn", arm: "eidnara", event: "e-1", scenario_ms: 200 },
         { kind: "EndTurn", arm: "eidnara", event: "e-1", outcome: "ok", scenario_ms: 200 },
         { kind: "Event", arm: "eidnara", event: "e-1", scenario_ms: 200 },
         { kind: "EndArm", arm: "eidnara", scenario_ms: 0 },

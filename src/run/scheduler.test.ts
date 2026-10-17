@@ -107,10 +107,17 @@ describe("Clock", () => {
 describe("Journal and lease", () => {
     test("keepCompleteLines drops a cut last line and leaves whole lines", () => {
         const path = join(dir(), "log.jsonl");
-        expect(keepCompleteLines(path)).toBe("");
+        expect(keepCompleteLines(path)).toBe(0);
         writeFileSync(path, '{"a":1}\n{"b":2}\n{"c":');
-        expect(keepCompleteLines(path)).toBe('{"a":1}\n{"b":2}\n');
+        expect(keepCompleteLines(path)).toBe(16);
         expect(readFileSync(path, "utf8")).toBe('{"a":1}\n{"b":2}\n');
+        const whole = `{"big":"${"x".repeat(3 << 20)}"}\n`;
+        writeFileSync(path, `${whole}{"cut":"${"y".repeat(2 << 20)}`);
+        expect(keepCompleteLines(path)).toBe(Buffer.byteLength(whole));
+        expect(readFileSync(path, "utf8")).toBe(whole);
+        writeFileSync(path, "no newline at all");
+        expect(keepCompleteLines(path)).toBe(0);
+        expect(readFileSync(path, "utf8")).toBe("");
     });
 
     test("a cut last line is dropped, and scenario time may not decrease within an arm", () => {
@@ -559,6 +566,17 @@ describe("fault schedule validity", () => {
         expect(() => new Scheduler({ ...base, faults: [still] })).toThrow(
             "laptop_sleep f-sleep needs a positive duration_ms",
         );
+        const text = { ...still, params: { duration_ms: "1000" as unknown as number } };
+        expect(() => new Scheduler({ ...base, faults: [text] })).toThrow(
+            "laptop_sleep f-sleep needs a positive duration_ms",
+        );
+        const numbered = { ...twice, id: 1 as unknown as string };
+        expect(() => new Scheduler({ ...base, faults: [numbered] })).toThrow(
+            "fault id must be a non-empty string",
+        );
+        expect(() => new Scheduler({ ...base, faults: [{ ...twice, id: "" }] })).toThrow(
+            "fault id must be a non-empty string",
+        );
     });
 });
 
@@ -591,6 +609,49 @@ describe("two sleeps on one event", () => {
             { clock_advanced_ms: 7_200_000 },
         ]);
         expect((j.entries.at(-1) as Entry).scenario_ms).toBeGreaterThanOrEqual(10_800_000);
+    });
+});
+
+describe("store checks already journaled", () => {
+    test("a resumed arm's repeated check for a fault already on record is not journaled again", async () => {
+        const path = join(dir(), "j.jsonl");
+        const j = new Journal(path);
+        const store = { integrity: "ok", segments: 0, overlaps: [], ranges: [] };
+        j.append({ kind: "StartRun", arm: null, scenario_ms: 0 });
+        j.append({ kind: "StartArm", arm: "a", scenario_ms: 0 });
+        j.append({
+            kind: "StoreChecked",
+            arm: "a",
+            scenario_ms: 0,
+            event: null,
+            fault: "r-1",
+            store,
+        });
+        j.close();
+        const resumed = new Journal(path);
+        const driver: ArmDriver = {
+            reset: async () => undefined,
+            event: async (e) =>
+                e.kind === "user_turn"
+                    ? {
+                          stores: [
+                              { fault: "r-1", store },
+                              { fault: "r-2", store },
+                          ],
+                      }
+                    : {},
+            fault: async () => ({}),
+        };
+        await new Scheduler({
+            events: fixtureEvents(1),
+            faults: [],
+            journal: resumed,
+            settleMs: 0,
+            order: ["a"],
+            drivers: { a: driver },
+        }).run();
+        const checks = resumed.entries.filter((e) => e.kind === "StoreChecked");
+        expect(checks.map((e) => e.fault)).toEqual(["r-1", "r-2"]);
     });
 });
 
