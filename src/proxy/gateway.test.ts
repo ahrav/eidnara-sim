@@ -461,17 +461,25 @@ describe("call records", () => {
             first.write({ ...partial, response_text: "x".repeat(2_000_000) });
         }
         const reads: number[] = [];
-        const original = fs.readSync;
-        const spy = spyOn(fs, "readSync").mockImplementation(((...a: unknown[]) => {
-            const n = (original as (...x: unknown[]) => number)(...a);
-            reads.push(n);
-            return n;
-        }) as typeof fs.readSync);
+        const originalRead = fs.readSync;
+        const originalReadFile = fs.readFileSync;
+        const spies = [
+            spyOn(fs, "readSync").mockImplementation(((...a: unknown[]) => {
+                const n = (originalRead as (...x: unknown[]) => number)(...a);
+                reads.push(n);
+                return n;
+            }) as typeof fs.readSync),
+            spyOn(fs, "readFileSync").mockImplementation(((...a: unknown[]) => {
+                const out = (originalReadFile as (...x: unknown[]) => string | Buffer)(...a);
+                reads.push(out.length);
+                return out;
+            }) as typeof fs.readFileSync),
+        ];
         try {
             const again = new RecordWriter(path, false);
             expect(again.write(partial).seq).toBe(3);
         } finally {
-            spy.mockRestore();
+            for (const spy of spies) spy.mockRestore();
         }
         expect(reads.reduce((a, b) => a + b, 0)).toBeLessThan(4_000_000);
     });
