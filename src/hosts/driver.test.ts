@@ -563,6 +563,32 @@ describe("HostDriver lifecycle", () => {
         expect(spent.undelivered).toBe(true);
     });
 
+    test("a probe's pre-turn snapshot spends the turn's shared deadline", async () => {
+        const { driver } = fixture("host", { p: gitRepo() });
+        await driver.reset();
+        const host = new FakeHost({} as HostContext, "/x");
+        driver.host = host as unknown as SimHost;
+        const snapshots = (driver as unknown as { snapshots: { tree: (d: string) => string } })
+            .snapshots;
+        const tree = snapshots.tree.bind(snapshots);
+        snapshots.tree = (d: string) => {
+            const until = Date.now() + 300;
+            while (Date.now() < until) {}
+            return tree(d);
+        };
+        await driver.event(ev("session_start", { session: "s-0" }));
+        await driver.event(
+            ev("user_turn", {
+                id: "e-8",
+                session: "s-0",
+                text: "go",
+                probe: "q-1",
+                deadline_ms: 900,
+            }),
+        );
+        expect(host.deadlines[0]).toBeLessThan(700);
+    });
+
     test("a scheduled interrupt reaches the host's prompt and the turn reports it", async () => {
         const { driver } = fixture("host");
         const host = new FakeHost({} as HostContext, "/x");

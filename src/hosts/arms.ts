@@ -1005,7 +1005,13 @@ export class OpencodeSimHost extends SimHost {
             // cannot reach the session's next prompt.
             const landed = await Promise.race([abort.late, Bun.sleep(0).then(() => false)]);
             abort.cancel();
-            if (first !== null && landed) return { interrupted: true };
+            if (landed) {
+                // The abort stopped the prompt, whether the prompt settled before or after the
+                // deadline race ended; it drains like an abort answered in time.
+                const drained = first ?? (await Promise.race([settled, this.drained()]));
+                if (drained === null) throw new Error("OpenCode turn still running after abort");
+                return { interrupted: true };
+            }
         }
         if (first === null) {
             const abort = this.abortSession();

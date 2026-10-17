@@ -316,6 +316,7 @@ export class HostDriver implements ArmDriver {
             this.applyDiff(e);
             return {};
         }
+        const entered = Date.now();
         const project = this.project(e);
         const dir = this.workspace(project);
         let before: string | null = "";
@@ -336,7 +337,7 @@ export class HostDriver implements ArmDriver {
         // that spent all of it fails here, so the agent never runs past the deadline.
         const deadline =
             typeof e.deadline_ms === "number"
-                ? Math.min(this.o.turnDeadlineMs, e.deadline_ms)
+                ? Math.min(this.o.turnDeadlineMs, e.deadline_ms - (Date.now() - entered))
                 : this.o.turnDeadlineMs;
         if (deadline <= 0) {
             outcome.failed = `turn deadline ${this.o.turnDeadlineMs} ms spent before the prompt`;

@@ -417,9 +417,12 @@ export class Gateway {
         const cut = truncated
             ? { response_text_truncated: true as const, response_tail: tail }
             : {};
+        // A call that failed before any assistant text produced no reply; the fields stay absent
+        // so the last real reply stands.
+        const observed = relayed !== "" || !done.error;
         return {
             ...done,
-            ...(keep
+            ...(keep && observed
                 ? { response_text: relayed, response_sha256: digest.digest("hex"), ...cut }
                 : {}),
             proxy_retries: retries,
