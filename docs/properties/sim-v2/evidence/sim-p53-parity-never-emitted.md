@@ -16,10 +16,16 @@ no-difference-above-X-pp-detectable-at-n, failed-gate(metric, items),
 inconclusive, insufficient-runs, and descriptive, and the string `parity` is
 absent from every report.
 
-M7 (#1032) emits better, worse, no-difference-above-X-detectable-at-n,
-inconclusive, insufficient-runs(k), within-bound, or failed-gate(metric, ids),
-and refuses any evaluation whose output contains the word parity; a test scans
-its fixture verdicts.
+M7 (#1032) emits, per metric, better, worse,
+no-difference-above-X-detectable-at-n, inconclusive, insufficient-runs(k),
+within-bound, failed-gate(metric, ids), or descriptive for a family whose
+pre-registration names no interval method, and refuses any evaluation whose
+output contains the word parity; a test scans its fixture verdicts. The
+report check (`src/prereg/report.ts`) expects one family-level verdict from
+this vocabulary, `descriptive` exactly for a descriptive-claim family, while
+the gate's family result carries per-metric verdicts and `passed: null` for
+such a family; the translation from metric verdicts to one family verdict is
+the report path's part (#1033) and is unresolved here.
 
 ## Failure scenario
 

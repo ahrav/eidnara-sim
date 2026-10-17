@@ -292,6 +292,7 @@ function judge(f: Family, metric: string, s: Stats, obs: Observation): [string, 
         return bound(f, metric, s, obs);
     }
     if (s.n === 0) return ["inconclusive", f.claim === "gate" ? false : null];
+    if (f.interval_method === "none") return ["descriptive", null];
     if (needsPairedRuns(f) && s.n < f.min_paired_runs) {
         return [`insufficient-runs(${s.n})`, false];
     }
@@ -322,6 +323,15 @@ function statsOf(f: Family, o: Observation, p: Preregistration): Stats {
         return {
             ...empty("bound on each run's treatment value"),
             n: (o.items ?? o.runs ?? []).length,
+        };
+    }
+    if (f.interval_method === "none") {
+        const diffs = [...(o.items ?? []), ...(o.runs ?? [])].map((x) => x.treatment - x.control);
+        const unit = f.outcome === "binary" ? 100 : 1;
+        return {
+            ...empty("paired mean difference; the pre-registration names no interval method"),
+            n: diffs.length,
+            difference: diffs.length ? unit * mean(diffs) : 0,
         };
     }
     if (o.unit === "item") return binary(f, o.items ?? [], p);
@@ -368,6 +378,7 @@ function check(p: Preregistration, input: TierInput): void {
         throw new StatsRefusal("excluded and asymmetric ids are distinct and listed once");
     }
     const orderOf = new Map<string, number>();
+    const clusterOf = new Map<string, string>();
     const itemAt = new Map<number, string>();
     for (const o of input.observations) {
         if (seen.has(o.metric)) throw new StatsRefusal(`metric ${o.metric} is observed twice`);
@@ -399,6 +410,13 @@ function check(p: Preregistration, input: TierInput): void {
         if (f.outcome === "count" && !own.every((x) => x.control >= 0 && x.treatment >= 0)) {
             throw new StatsRefusal(`${o.metric}: a count is at least 0 in both arms`);
         }
+        if (
+            f.outcome === "graded" &&
+            f.mde.scale === "pp" &&
+            !own.every((x) => isShare(x.control) && isShare(x.treatment))
+        ) {
+            throw new StatsRefusal(`${o.metric}: a pp-scale graded value is a share in [0, 1]`);
+        }
         if (!(o.items ?? []).every((x) => isIndex(x.order))) {
             throw new StatsRefusal(`${o.metric}: an item's issue order is a non-negative integer`);
         }
@@ -415,6 +433,11 @@ function check(p: Preregistration, input: TierInput): void {
             }
             orderOf.set(x.item, x.order);
             itemAt.set(x.order, x.item);
+            const cluster = clusterOf.get(x.item);
+            if (cluster !== undefined && cluster !== x.cluster) {
+                throw new StatsRefusal(`${o.metric}: ${x.item} has one ledger-fact cluster`);
+            }
+            clusterOf.set(x.item, x.cluster);
         }
         const ids =
             o.unit === "item"
@@ -437,6 +460,7 @@ function check(p: Preregistration, input: TierInput): void {
 }
 
 const isBit = (v: number) => v === 0 || v === 1;
+const isShare = (v: number) => v >= 0 && v <= 1;
 const isIndex = (v: number) => Number.isInteger(v) && v >= 0;
 
 function stops(
@@ -617,6 +641,11 @@ export function falsificationSet(
     p: Preregistration,
     pairs: Partial<Record<string, { control: number; treatment: number }[]>>,
 ): ZeroEffect[] {
+    if (p.bootstrap.replicates < MIN_BOOTSTRAP_REPLICATES) {
+        throw new StatsRefusal(
+            `bootstrap.replicates ${p.bootstrap.replicates} is below the floor of ${MIN_BOOTSTRAP_REPLICATES}`,
+        );
+    }
     for (const name of Object.keys(pairs)) {
         if (!(FALSIFICATION as readonly string[]).includes(name)) {
             throw new StatsRefusal(`${name} is not in the falsification set`);
@@ -637,6 +666,7 @@ export function falsificationSet(
         }
         const b = bootstrap(diffs, mean, { ...p.bootstrap, bca: diffs.length < 10 });
         const interval: [number, number] = [b.lo, b.hi];
+        finiteInterval(interval, p);
         const zero_effect = b.lo <= 0 && b.hi >= 0;
         return { check, n: diffs.length, difference: mean(diffs), interval, zero_effect };
     });

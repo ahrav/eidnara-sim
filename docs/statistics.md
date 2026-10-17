@@ -48,8 +48,9 @@ A metric with no pre-registration entry is refused by name, and so is a
 metric observed twice, an observation whose unit or cluster key differs
 from its family's, an observation carrying runs for an item unit or items
 for a run unit, a control or treatment value that is not finite, a binary
-family's value other than 0 or 1, a negative count, an item whose issue
-order is not a non-negative integer, an item or run identity repeated
+family's value other than 0 or 1, a negative count, a `pp`-scale graded
+value outside [0, 1], an item whose issue order is not a non-negative
+integer or whose ledger-fact cluster differs between observations, an item or run identity repeated
 within an observation, an issue order shared by two items or an item with
 two orders, an id listed twice across the excluded and fault-asymmetric
 lists, a run-level family whose metrics come from different run sets, a
@@ -70,6 +71,7 @@ family with such a metric fails.
 | Graded runs | Paired BCa bootstrap over runs for `paired-bca-bootstrap` or under ten runs, else percentile; a family on the `pp` scale takes proportions and reports percentage points |
 | Count runs | Paired sign test up to eight runs, one-sided for `at-most`; above eight, or for `negative-binomial-glm`, a negative-binomial GLM with an arm term and a term per run over the runs with any events, reporting the rate ratio, with the sign test standing in when an arm has no events or the fit does not converge |
 | Bound families | No statistic; each run's treatment value, or a binary metric's treatment rate, is checked against the margin; a failed item rate names the items whose treatment value is 0 |
+| `interval_method: none`, paired | The paired mean difference and n, no interval, p, or detectable size; the verdict is `descriptive` (the cost families, XL's latency) |
 
 Each paired metric gets a verdict: `better` or `worse` when the test is
 significant at the family's alpha (`p <= alpha`, after Holm over all of a
@@ -142,5 +144,6 @@ word parity is refused.
 scheduled faults, pre-divergence pushback rate, wall time per scripted
 idle gap): each check's paired differences get a bootstrap interval, and
 a zero effect is an interval that covers zero. With fewer than two pairs
-a check has no result. A name outside the set, or a value that is not
-finite, is refused.
+a check has no result. A name outside the set, a value that is not finite,
+a bootstrap plan below 40 replicates, or an interval that is not finite is
+refused.

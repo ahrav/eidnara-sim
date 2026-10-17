@@ -271,7 +271,7 @@ describe("tier gates", () => {
             "cost",
             "usd_per_component",
         );
-        expect(ties?.verdict).toBe("no-difference-above-100pp-of-runs-detectable-at-7");
+        expect([ties?.verdict, ties?.difference]).toEqual(["descriptive", 0]);
         const tripled = metric(
             evaluate([runs("hangs", repeat(9, [2, 6] as [number, number]))]),
             "dependability",
@@ -804,5 +804,67 @@ describe("tier gate review findings, fourth Codex round", () => {
         expect(() => evaluate([obs], { excluded: drop("eidnrara") })).toThrow(StatsRefusal);
         expect(() => evaluate([obs], { excluded: drop("eidnara-kl") })).toThrow(StatsRefusal);
         expect(evaluate([obs], { excluded: drop("host") }).excluded_per_arm).toEqual({ host: 1 });
+    });
+});
+
+describe("tier gate review findings, fifth Codex round", () => {
+    test("a pp-scale graded value is a proportion", () => {
+        expect(() =>
+            evaluate([runs("P13.fold_fidelity_score", repeat(6, [2, 3] as [number, number]))]),
+        ).toThrow(StatsRefusal);
+        expect(() =>
+            evaluate([runs("P13.fold_fidelity_score", repeat(6, [0.2, -0.1] as [number, number]))]),
+        ).toThrow(StatsRefusal);
+    });
+
+    test("the falsification set keeps the bootstrap floor and finite-interval guard", () => {
+        const thin = { ...S, bootstrap: { ...S.bootstrap, replicates: 39 } };
+        const pairs = Array.from({ length: 6 }, (_, i) => ({
+            control: 0,
+            treatment: 0.1 * (i + 1),
+        }));
+        expect(() => falsificationSet(thin, { pre_divergence_pushback_rate: pairs })).toThrow(
+            "bootstrap.replicates 39 is below the floor of 40",
+        );
+    });
+
+    test("an item repeated across metrics keeps one ledger-fact cluster", () => {
+        const pass = binary("P2.pass", repeat(4, [0, 1] as [number, number]), () => "f-one");
+        const harm: Observation = {
+            ...pass,
+            metric: "P2.harm",
+            items: pass.items?.map((x, i) => ({ ...x, treatment: 0, cluster: `f-${i}` })),
+        };
+        expect(() => evaluate([pass, harm])).toThrow(StatsRefusal);
+        const same: Observation = {
+            ...harm,
+            items: harm.items?.map((x) => ({ ...x, cluster: "f-one" })),
+        };
+        expect(() => evaluate([pass, same])).not.toThrow();
+    });
+
+    test("a family registered without an interval method reports a descriptive difference only", () => {
+        const m = metric(
+            evaluate([runs("usd_per_component", repeat(7, [1, 1.5] as [number, number]))]),
+            "cost",
+            "usd_per_component",
+        );
+        expect([m?.verdict, m?.passed, m?.n, m?.difference]).toEqual(["descriptive", null, 7, 0.5]);
+        expect([m?.interval, m?.p, m?.detectable, m?.resolution_ratio]).toEqual([
+            null,
+            null,
+            null,
+            null,
+        ]);
+        expect(m?.method).toContain("no interval");
+        const XL = loadPrereg("XL");
+        const v = evaluateTier(XL, {
+            observations: [runs("turn_latency_p95_delta_ms", [[0, 40]])],
+            excluded: [],
+            asymmetric: [],
+            journal_seq_at_eval: 1,
+            arms: { control: "host", treatment: XL.arms.default },
+        });
+        expect(metric(v, "latency", "turn_latency_p95_delta_ms")?.verdict).toBe("descriptive");
     });
 });
