@@ -1055,6 +1055,19 @@ test("a tool run reported at its start is on record, and its end report replaces
     ]);
 });
 
+test("a symlink planted at the recorder's staging path is never written through", () => {
+    const repo = gitRepo();
+    const armDir = tmp();
+    const victim = join(tmp(), "victim");
+    writeFileSync(victim, "keep");
+    symlinkSync(victim, join(armDir, "snapshot-state.json.tmp"));
+    const recorder = new SnapshotRecorder(armDir, "eidnara", () => []);
+    recorder.sessionStart("s-1", "p", repo);
+    recorder.sessionEnd("s-1", "p", repo);
+    expect(readFileSync(victim, "utf8")).toBe("keep");
+    expect(existsSync(join(armDir, "snapshot-state.json"))).toBe(true);
+});
+
 test("a recorder state naming a non-tree value where a tree id belongs is refused before git runs", () => {
     const repo = gitRepo();
     const armDir = tmp();

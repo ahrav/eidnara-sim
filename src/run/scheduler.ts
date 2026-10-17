@@ -44,6 +44,8 @@ export interface SchedulerOptions {
     idleLimitMs?: number;
     settleMs?: number;
     onClock?: (arm: string, scenarioMs: number) => void;
+    /** Runs before `EndArm` and `EndRun` are journaled; a throw leaves the arm or run open. */
+    beforeEnd?: () => void;
 }
 
 const PROXY_LAYER = "proxy-sink";
@@ -99,9 +101,11 @@ export class Scheduler {
             await this.idle();
             await this.pendingKill;
             await driver.finish?.();
+            this.o.beforeEnd?.();
             this.log({ kind: "EndArm" });
         }
         this.arm = null;
+        this.o.beforeEnd?.();
         this.log({ kind: "EndRun" });
     }
 
@@ -188,10 +192,14 @@ export class Scheduler {
      * itself still open.
      */
     async quiesceJobs(): Promise<void> {
-        await Bun.sleep(this.o.settleMs ?? 1_000);
-        await this.quiesce(() =>
-            (this.clock?.busyIds() ?? []).filter((id) => id.startsWith("job:")),
-        );
+        const settle = this.o.settleMs ?? 1_000;
+        const jobs = () => (this.clock?.busyIds() ?? []).filter((id) => id.startsWith("job:"));
+        for (;;) {
+            await Bun.sleep(settle);
+            await this.quiesce(jobs);
+            await Bun.sleep(settle);
+            if (jobs().length === 0) return;
+        }
     }
 
     private async quiesce(pending: () => string[]): Promise<void> {

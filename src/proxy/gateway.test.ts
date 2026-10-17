@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import * as fs from "node:fs";
 import { appendFileSync, existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -432,6 +433,57 @@ describe("witnesses", () => {
 });
 
 describe("call records", () => {
+    test("a non-retaining writer reopening a record file reads only its tail", () => {
+        const path = join(mkdtempSync(join(tmpdir(), "records-")), "calls.jsonl");
+        const first = new RecordWriter(path, false);
+        const partial = {
+            arm: "a",
+            session: null,
+            turn: null,
+            component: "agent" as const,
+            componentSource: "inferred" as const,
+            model: "m",
+            status: 200,
+            finish_reason: "end_turn",
+            input_tokens: 1,
+            output_tokens: 1,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            error: null,
+            scenario_ms: 0,
+            first_byte_ms: 1,
+            total_ms: 2,
+            fault_ref: null,
+            started_wall_ms: 0,
+            proxy_retries: 0,
+        };
+        for (let i = 0; i < 3; i++) {
+            first.write({ ...partial, response_text: "x".repeat(2_000_000) });
+        }
+        const reads: number[] = [];
+        const originalRead = fs.readSync;
+        const originalReadFile = fs.readFileSync;
+        const spies = [
+            spyOn(fs, "readSync").mockImplementation(((...a: unknown[]) => {
+                const n = (originalRead as (...x: unknown[]) => number)(...a);
+                reads.push(n);
+                return n;
+            }) as typeof fs.readSync),
+            spyOn(fs, "readFileSync").mockImplementation(((...a: unknown[]) => {
+                const out = (originalReadFile as (...x: unknown[]) => string | Buffer)(...a);
+                reads.push(out.length);
+                return out;
+            }) as typeof fs.readFileSync),
+        ];
+        try {
+            const again = new RecordWriter(path, false);
+            expect(again.write(partial).seq).toBe(3);
+        } finally {
+            for (const spy of spies) spy.mockRestore();
+        }
+        expect(reads.reduce((a, b) => a + b, 0)).toBeLessThan(4_000_000);
+    });
+
     test("a writer reopening a record file continues its sequence after a cut last line", () => {
         const path = join(mkdtempSync(join(tmpdir(), "sim-records-")), "calls.jsonl");
         const first = new RecordWriter(path);

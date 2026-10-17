@@ -1,5 +1,5 @@
-import { appendFileSync, existsSync, readFileSync, truncateSync } from "node:fs";
-import { requireAppendable } from "../run/journal";
+import { appendFileSync, closeSync, existsSync, openSync, readSync } from "node:fs";
+import { keepCompleteLines } from "../run/journal";
 
 export const COMPONENTS = [
     "agent",
@@ -81,6 +81,30 @@ export function recordProblems(value: Record<string, unknown>): string[] {
 }
 
 /** `wall_ms` is the write-time Unix timestamp in milliseconds, clamped to the preceding record's value. */
+/** The last newline-terminated line of a file whose complete prefix ends at `end`, read backwards in chunks. */
+function lastLine(path: string, end: number): string | null {
+    const fd = openSync(path, "r");
+    try {
+        const chunk = Buffer.alloc(Math.min(1 << 20, end));
+        let stop = end - 1;
+        let tail = Buffer.alloc(0);
+        while (stop > 0) {
+            const start = Math.max(0, stop - chunk.length);
+            const read = readSync(fd, chunk, 0, stop - start, start);
+            const piece = chunk.subarray(0, read);
+            const newline = piece.lastIndexOf(0x0a);
+            if (newline !== -1) {
+                return Buffer.concat([piece.subarray(newline + 1), tail]).toString("utf8");
+            }
+            tail = Buffer.concat([piece, tail]);
+            stop = start;
+        }
+        return tail.length > 0 ? tail.toString("utf8") : null;
+    } finally {
+        closeSync(fd);
+    }
+}
+
 export class RecordWriter {
     private seq = 0;
     private lastWall = 0;
@@ -98,22 +122,15 @@ export class RecordWriter {
         private readonly path: string | null,
         private readonly retain = true,
     ) {
-        if (path) requireAppendable(path);
-        if (path && !existsSync(path)) appendFileSync(path, "");
-        if (!path || !existsSync(path)) return;
-        const text = readFileSync(path, "utf8");
-        const complete = text.slice(0, text.lastIndexOf("\n") + 1);
-        if (complete.length < text.length) truncateSync(path, Buffer.byteLength(complete));
-        this.offset = Buffer.byteLength(complete);
-        const lines = complete.split("\n").filter((l) => l !== "");
-        for (const line of lines.reverse()) {
-            try {
-                const last = JSON.parse(line) as CallRecord;
-                this.seq = last.seq + 1;
-                this.lastWall = last.wall_ms;
-                return;
-            } catch {}
-        }
+        if (!path) return;
+        this.offset = keepCompleteLines(path);
+        if (!existsSync(path)) appendFileSync(path, "");
+        if (this.offset === 0) return;
+        const last = lastLine(path, this.offset);
+        if (last === null) return;
+        const record = JSON.parse(last) as CallRecord;
+        this.seq = record.seq + 1;
+        this.lastWall = record.wall_ms;
     }
 
     write(partial: Omit<CallRecord, "seq" | "wall_ms">): CallRecord {

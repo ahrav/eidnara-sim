@@ -48,7 +48,9 @@ with the item and snapshot id once per item and arm, right after the turn's
 first `EndTurn` (SIM-P41). The `EndTurn` entry names the snapshot too, so a
 resume after a kill between the two entries journals the snapshot from it.
 Snapshots append to `<arm>/snapshots.jsonl`, and a recorder rebuilt after a
-kill drops a cut last line, found by scanning the file's tail in chunks; a
+kill drops a cut last line, found by scanning the file's tail in chunks (the
+run's call-record writer reopens `calls.jsonl` the same way, reading only the
+tail); a
 snapshot id is `<arm>:<item>:<turn event>`, so each attempt has its own id,
 and each snapshot names its session, which the P7 grader checks against the
 probe's.
@@ -89,8 +91,11 @@ a wide directory too. The driver waits the scheduler's settle window and then it
 jobs before it takes a probe snapshot, and checks the daemon is alive after
 the prompt and again after the snapshot, reporting an exit once with the
 turn's id. A proxy call record the gateway failed to write stops the run at
-the next snapshot or at the run's end, so `calls.jsonl` never silently lacks a
-call the host made. The grade, judge-call, and judgment logs must be regular
+the next snapshot or before `EndArm` and `EndRun` are journaled, so the run
+stays open for a resume and `calls.jsonl` never silently lacks a call the host
+made. Recorder git children run with global and system config disabled and
+the per-user excludes file (`$XDG_CONFIG_HOME/git/ignore`) pointed at
+`/dev/null`, so the workspace's own rules are the only ignore rules. The grade, judge-call, and judgment logs must be regular
 files or absent; a symlink at any of those paths stops grading before a
 write.
 The snapshot tree adds, with `--force`, the paths the project's source
@@ -117,7 +122,8 @@ deleted in the tree. Snapshot diffs run with
 
 The recorder keeps each project's session-start tree, the last session's
 tree pair, the last ended session, and the open session's commands in
-`<arm>/snapshot-state.json`, so a resumed arm reopens its session with the
+`<arm>/snapshot-state.json` (written through a freshly created staging file
+and renamed into place), so a resumed arm reopens its session with the
 same start tree and commands, and a `session_start` and `session_end` that a
 resume replays for a session that already ended leave its trees as recorded.
 
@@ -136,16 +142,17 @@ the graders read neither.
 `scripts/grade-run.ts <run dir>` takes the run's lease, so one grader at a
 time allocates versions, refuses a run whose pre-registration or scenario no
 longer hashes to the digests in its manifest or whose journal lacks `EndRun`
-or an arm's `EndArm` and one terminal `Event` per scheduled event (SIM-P67),
+or an arm's `EndArm` and one terminal `Event` per scheduled event, in the
+scheduled order (SIM-P67),
 drops a cut last line of `grades.jsonl`, requires one `SnapshotArtefacts` entry per arm and item, exactly one row for
 every journaled snapshot id, every snapshot row to name its directory's arm and
 carry grade-class artefacts only, every journaled row to match its journal
 entry's arm and item and the compiled probe's event and session, to be named
 by an `EndTurn` whose outcome agrees with its `turn_outcome`, every
 agent call's model in `calls.jsonl` to be one
-the manifest records, and every agent call a journaled snapshot holds to be
-recorded in `calls.jsonl` under the snapshot's arm with the same content in
-every snapshot that holds it (`calls.jsonl` is read one record at a time,
+the manifest records, and every call a journaled snapshot holds, whatever its
+component, to be recorded in `calls.jsonl` under the snapshot's arm with the
+same content in every snapshot that holds it (`calls.jsonl` is read one record at a time,
 keeping only the records the snapshots name), reads each arm's snapshot log one row at a time and
 keeps the artefacts of journaled rows only, computes every grade before it
 appends any (an item whose answer the proxy truncated is skipped as `answer

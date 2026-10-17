@@ -26,7 +26,7 @@ import { compileScenario, type Scenario } from "../scenario/compile";
 import type { FaultEpisode } from "../scenario/faults";
 import { loadCompileInput, loadPrereg } from "../scenario/inputs";
 import { bedrockEmbedder } from "../scenario/similarity";
-import { Journal, releaseLease, takeLease } from "./journal";
+import { Journal, releaseLease, requireAppendable, takeLease } from "./journal";
 import { plainPath } from "./launcher";
 import { type Preflight, preflight } from "./preflight";
 import { ResourceSampler } from "./sampler";
@@ -237,6 +237,7 @@ export class CallIndex {
     private readonly places = new Map<string, Array<[number, number]>>();
 
     constructor(private readonly path: string) {
+        requireAppendable(path);
         if (!existsSync(path)) return;
         const fd = openSync(path, "r");
         try {
@@ -358,6 +359,7 @@ async function runArms(
         drivers: drivers as Record<string, ArmDriver>,
         proxy: injector,
         idleLimitMs: prereg.liveness_bounds.job_deadline_ms,
+        beforeEnd: () => requireRecorded(gateway),
         onClock: (arm, ms) => writeOffset(offsetFile(arm), manifest.base_wall_ms, ms),
     });
     const now = () => scheduler.clock?.now() ?? 0;

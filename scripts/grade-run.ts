@@ -188,11 +188,10 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
             const calls = s.artefacts.find((a) => a.class === "proxy-call");
             if (calls?.class !== "proxy-call") continue;
             for (const c of calls.calls) {
-                if (c.component === "agent")
-                    wanted.set(`${s.arm}/${c.seq}`, [
-                        ...(wanted.get(`${s.arm}/${c.seq}`) ?? []),
-                        { snapshot: s.id, call: c },
-                    ]);
+                wanted.set(`${s.arm}/${c.seq}`, [
+                    ...(wanted.get(`${s.arm}/${c.seq}`) ?? []),
+                    { snapshot: s.id, call: c },
+                ]);
             }
         }
     }
@@ -201,11 +200,10 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
     if (existsSync(callsPath)) {
         for await (const line of jsonlLines(callsPath)) {
             const r = JSON.parse(line) as CallRecord;
-            if (r.component !== "agent") continue;
             if (typeof r.model !== "string" || typeof r.seq !== "number") {
                 throw new Error(`calls.jsonl record ${String(r.seq)} names no model`);
             }
-            agentModels.add(r.model);
+            if (r.component === "agent") agentModels.add(r.model);
             const copies = wanted.get(`${r.arm}/${r.seq}`);
             if (!copies) continue;
             const expected = canonicalJson(projectCall(r));
@@ -213,7 +211,7 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
                 const { turn_index: _turn, ...stored } = held.call;
                 if (canonicalJson(stored) !== expected) {
                     throw new Error(
-                        `snapshot ${held.snapshot} holds agent call ${r.seq} with content that differs from calls.jsonl`,
+                        `snapshot ${held.snapshot} holds call ${r.seq} with content that differs from calls.jsonl`,
                     );
                 }
             }
@@ -231,7 +229,7 @@ async function grade(dir: string, config: SimConfig | null): Promise<Summary> {
         const [key, copies] = orphan;
         const snapshot = copies[0]?.snapshot ?? "?";
         throw new Error(
-            `snapshot ${snapshot} holds agent call ${key.split("/").pop()}, which calls.jsonl does not record for arm ${key.split("/")[0]}`,
+            `snapshot ${snapshot} holds call ${key.split("/").pop()}, which calls.jsonl does not record for arm ${key.split("/")[0]}`,
         );
     }
     const attempts = (arm: string, item: string): Snapshot[] | undefined => {
