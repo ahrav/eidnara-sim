@@ -69,14 +69,14 @@ runs for an item unit or items for a run unit, a control or treatment value that
 is not finite, a binary family's value other than 0 or 1, a negative count, a
 fractional event count (a count family whose margin has a scale; the cost
 family's amounts are unrestricted), a `pp`-scale graded value outside [0, 1], an
-item whose issue order is not a non-negative integer or whose ledger-fact
+item whose issue order is not a non-negative safe integer or whose ledger-fact
 cluster differs between observations, an item or run identity repeated within an
 observation, an issue order shared by two items or an item with two orders, an
 exclusion listed twice for one arm (an item both arms failed is excluded once
 per arm), an asymmetric id listed twice or also excluded, an exclusion
 attributed to an arm other than the two compared, a run-level family whose
 metrics come from different run sets, a bootstrap plan below 40 replicates
-(eval-core's floor), and a bootstrap interval that is not finite. A metric whose
+(eval-core's floor), a bootstrap interval or detectable size that is not finite, and event totals, per arm or combined, beyond the exact integer range. A metric whose
 name ends in `_delta_ms` or names a growth per session arrives as the paired
 delta in the treatment value with 0 as control, so a bound on it is a bound on
 the delta.
@@ -91,7 +91,7 @@ family with such a metric fails.
 |---|---|
 | Binary items | Exact McNemar p on the discordant pairs; the interval is the wider of the Newcombe method 10 interval and a ledger-fact cluster bootstrap, in percentage points; items that all share one ledger-fact cluster are one observation and the result is `inconclusive` |
 | Graded runs | Paired BCa bootstrap over runs for `paired-bca-bootstrap` or under ten runs, else percentile; a family on the `pp` scale takes proportions and reports percentage points; a single run keeps its difference with no interval |
-| Count runs | Paired sign test up to eight runs, one-sided for `at-most`; above eight, or for `negative-binomial-glm`, a negative-binomial GLM with an arm term and a term per run over the runs with any events, reporting the rate ratio, with the sign test standing in when an arm has no events or the fit does not converge |
+| Count runs | The registered method at any run count: `paired-sign-test` is the paired sign test, one-sided for `at-most`; `negative-binomial-glm` is a negative-binomial GLM with an arm term and a term per run over the runs with any events, reporting the rate ratio, with the sign test standing in when an arm has no events or the fit does not converge (the spec's "sign test at eight runs or fewer" is the rule for choosing the method at registration; every checked-in tier registers the sign test) |
 | Bound families | No statistic; each run's treatment value, or a binary metric's treatment rate, is checked against the margin; a failed item rate names the items whose treatment value is 0 |
 | `interval_method: none`, paired | The paired mean difference and n, no interval, p, or detectable size; the verdict is `descriptive` (the cost families, XL's latency) |
 
