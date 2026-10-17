@@ -86,7 +86,14 @@ const summary = (arm: string) =>
         })),
         prereg,
     );
-const rates = (arm: string) => ({ kind: "UserSimRates", arm, ...summary(arm) });
+const rates = (arm: string) => ({
+    kind: "UserSimRates",
+    arm,
+    seq: 1,
+    wall_ms: 1_000,
+    scenario_ms: 0,
+    ...summary(arm),
+});
 const endArm = (arm: string) => ({ kind: "EndArm", arm });
 const endRun = { kind: "EndRun", arm: null };
 const complete = (...arms: string[]) => [
@@ -268,6 +275,20 @@ test("a divergence row counts as a cutoff only at its compiled event with differ
     const real = run(complete("a", "b"), events, [diverged("e-2", 1, "d2"), ...rows]);
     expect(real.report.invalid_divergences).toEqual([]);
     expect(real.exit).toBe(0);
+});
+
+test("a delivered journal row with an unknown label cannot certify the rates", () => {
+    const odd = {
+        kind: "UserTurn",
+        arm: "a",
+        session: "s-0",
+        event: "t-odd",
+        label: "shout",
+        delivered: true,
+    };
+    const r = run([...complete("a", "b"), odd]);
+    expect(r.report.invalid_labels).toEqual(["a t-odd"]);
+    expect(r.exit).toBe(1);
 });
 
 test("the pairing check fails a run that never reached EndArm for an arm or EndRun", () => {

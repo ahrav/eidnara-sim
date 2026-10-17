@@ -11,6 +11,7 @@ import {
     type PlanTurn,
     pinnedTurns,
     realisedRates,
+    withUserLabels,
 } from "./plan";
 import {
     agentReplyOf,
@@ -143,6 +144,36 @@ describe("behaviour plan", () => {
         ];
         expect(deliveredTurns(entries, "a").map((e) => e.event)).toEqual(["e-1"]);
         expect(deliveredTurns(entries, "a", "other")).toEqual([]);
+    });
+
+    test("a snapshot's calls carry the journaled user labels in place of the raw user-sim records", () => {
+        const calls = [
+            {
+                seq: 1,
+                component: "agent",
+                turn: "e-1",
+                scenario_ms: 5,
+                input_tokens: 1,
+                output_tokens: 1,
+            },
+            {
+                seq: 2,
+                component: "user-sim",
+                turn: "e-2",
+                scenario_ms: 6,
+                input_tokens: 1,
+                output_tokens: 1,
+            },
+        ];
+        const turns = [{ seq: 9, event: "e-2", scenario_ms: 6, label: "pushback" }];
+        const labelled = withUserLabels(calls, turns, new Map([["e-2", 1]]));
+        expect(labelled.map((c) => [c.component, (c as { label?: string }).label ?? null])).toEqual(
+            [
+                ["agent", null],
+                ["user-sim", "pushback"],
+            ],
+        );
+        expect(labelled[1]).toMatchObject({ turn: "e-2", turn_index: 1, input_tokens: 0 });
     });
 
     test("a fault's trigger turn is never interrupted", () => {

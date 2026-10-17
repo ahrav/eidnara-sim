@@ -32,6 +32,7 @@ import {
     type Label,
     pinnedTurns,
     realisedRates,
+    withUserLabels,
 } from "../usersim/plan";
 import {
     type AgentReply,
@@ -548,19 +549,11 @@ async function runArms(
             sampleDaemon: () => sampler.observe(),
             callsFor: (session) => {
                 requireRecorded(gateway);
-                return [
-                    ...callsOf(callIndex, arm, session, turnIndex),
-                    ...userTurns(arm, session).map((e) => ({
-                        seq: e.seq,
-                        component: "user-sim",
-                        turn: String(e.event),
-                        turn_index: turnIndex.get(String(e.event)),
-                        scenario_ms: e.scenario_ms,
-                        input_tokens: 0,
-                        output_tokens: 0,
-                        label: String(e.label),
-                    })),
-                ];
+                return withUserLabels(
+                    callsOf(callIndex, arm, session, turnIndex),
+                    userTurns(arm, session),
+                    turnIndex,
+                ) as CallView[];
             },
             settle: () => scheduler.quiesceJobs(),
             now,

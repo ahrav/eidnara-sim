@@ -7,7 +7,7 @@ import { readJournal } from "../src/run/journal";
 import type { Scenario } from "../src/scenario/compile";
 import { scenarioHash } from "../src/scenario/compile";
 import { loadPrereg } from "../src/scenario/inputs";
-import { deliveredTurns, type Label, realisedRates } from "../src/usersim/plan";
+import { deliveredTurns, LABELS, type Label, realisedRates } from "../src/usersim/plan";
 import { pairingMismatches, readPairing, type TurnRecord } from "../src/usersim/usersim";
 
 const dir = resolve(process.argv[2] ?? "");
@@ -101,9 +101,20 @@ const ratesMismatch = (manifest.order as string[]).filter((arm) => {
         label: e.label as Label,
     }));
     const expected = realisedRates(turns, prereg);
-    const { kind: _kind, arm: _arm, seq: _seq, scenario_ms: _ms, ...rest } = journaled;
-    return JSON.stringify(rest) !== JSON.stringify(expected);
+    const summary = {
+        turns: journaled.turns,
+        sessions: journaled.sessions,
+        rates: journaled.rates,
+        outside: journaled.outside,
+    };
+    return JSON.stringify(summary) !== JSON.stringify(expected);
 });
+// A delivered turn's label must be one the plan can assign.
+const invalidLabels = (manifest.order as string[]).flatMap((arm) =>
+    deliveredTurns(journal, arm)
+        .filter((e) => !LABELS.includes(e.label as Label))
+        .map((e) => `${arm} ${e.event}`),
+);
 const scheduled = scenario.events
     .slice(0, manifest.events as number)
     .filter((e) => e.kind === "user_turn");
@@ -139,6 +150,7 @@ const report = {
         .filter((e) => e.kind === "UserSimRates" && (e.outside as string[]).length > 0)
         .map((e) => `${e.arm}: ${(e.outside as string[]).join(", ")}`),
     rates_mismatch: ratesMismatch,
+    invalid_labels: invalidLabels,
     missing_rates: (manifest.order as string[]).filter(
         (arm) => journal.filter((e) => e.kind === "UserSimRates" && e.arm === arm).length !== 1,
     ),
@@ -167,6 +179,7 @@ const failed =
     report.flagged.length +
     report.missing_rates.length +
     report.rates_mismatch.length +
+    report.invalid_labels.length +
     report.missing_turns.length +
     report.misplaced_rows.length +
     report.invalid_divergences.length +
