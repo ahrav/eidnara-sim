@@ -52,13 +52,17 @@ seed, event, label, and the digest of the agent's last reply (the last
 agent call of the session whose response carried text) after the
 pre-registered normalisation (`divergence_policy.normalisation`: ISO-8601
 timestamps, durations, pids, temp paths, run ids). `<run>/tape.jsonl`
-records every reply; `--tapes` adds earlier runs' tapes to replay from. A
-reply whose key is on the tape is replayed with no model call.
+records every reply the run delivered, replayed ones included, and is
+read like the journal: a final record cut by a kill is dropped and
+truncated away on the next start; `--tapes`
+adds earlier runs' tapes to replay from. A reply whose key is on the tape
+is replayed with no model call.
 
 Before each turn the user-sim appends a record to `<run>/pairing.jsonl`:
 arm, session, event, index, label, the digest, a hash of the agent-visible
 prefix (the session's agent replies and user texts so far), the hash
-of the delivered text, and its source (`script`, `tape`, or `live`). When a
+of the delivered text, its source (`script`, `tape`, or `live`), and for a
+`tape` or `live` reply the `tape_key` of its `tape.jsonl` entry. When a
 non-reference arm's digest first differs from the reference arm's at the
 same event, a `divergedAt` record with the index and both digests comes
 first. From then on that session's reply keys also carry the arm, so the

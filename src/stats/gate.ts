@@ -44,9 +44,11 @@ export interface TierInput {
     asymmetric: string[];
     /** The compared arms: `host` against the pre-registration's default arm. */
     arms: { control: string; treatment: string };
+    /** The fixed-N campaign requirements still open; the tier passes only with an empty list. */
+    incomplete?: string[];
     cusum_sd?: Partial<Record<"harm" | "futility", number>>;
-    /** The observations are the completed pairs at this journal sequence. */
-    journal_seq_at_eval: number;
+    /** Per run id, the last journal `seq` the observations were read at. */
+    journal_seq_at_eval: Record<string, number>;
 }
 
 export class StatsRefusal extends Error {}
@@ -97,7 +99,7 @@ export interface CusumRule {
 
 export interface TierVerdict {
     prereg_sha256: string;
-    journal_seq_at_eval: number;
+    journal_seq_at_eval: Record<string, number>;
     arms: TierInput["arms"];
     families: FamilyResult[];
     memory_made_it_worse: { metric: string; interval: [number, number] | null }[];
@@ -105,6 +107,7 @@ export interface TierVerdict {
         passed: boolean;
         components: string[];
         per_component_alpha: Record<string, number>;
+        incomplete: string[];
         rule: string;
     };
     stops: CusumStop[];
@@ -439,10 +442,17 @@ function check(p: Preregistration, input: TierInput): void {
             );
         }
     }
-    const seq = input.journal_seq_at_eval;
-    if (!Number.isSafeInteger(seq) || seq < 0) {
+    const seqs = input.journal_seq_at_eval;
+    if (
+        typeof seqs !== "object" ||
+        seqs === null ||
+        Array.isArray(seqs) ||
+        !Object.entries(seqs).every(
+            ([run, seq]) => isName(run) && Number.isSafeInteger(seq) && seq >= 0,
+        )
+    ) {
         throw new StatsRefusal(
-            `journal_seq_at_eval must be a non-negative safe integer, got ${seq}`,
+            `journal_seq_at_eval maps each run id to a non-negative safe integer, got ${JSON.stringify(seqs)}`,
         );
     }
     const arms = input.arms;
@@ -581,7 +591,6 @@ function check(p: Preregistration, input: TierInput): void {
     }
     const orderOf = new Map<string, number>();
     const clusterOf = new Map<string, string>();
-    const itemAt = new Map<number, string>();
     for (const o of input.observations) {
         if (seen.has(o.metric)) throw new StatsRefusal(`metric ${o.metric} is observed twice`);
         seen.add(o.metric);
@@ -641,19 +650,14 @@ function check(p: Preregistration, input: TierInput): void {
         if (!(o.items ?? []).every((x) => isIndex(x.order))) {
             throw new StatsRefusal(`${o.metric}: an item's issue order is a non-negative integer`);
         }
+        // An item's issue order is its event index within its run, so items of different
+        // runs may share an order; the caller's run order breaks those ties in the CUSUM.
         for (const x of o.items ?? []) {
             const prior = orderOf.get(x.item);
-            const holder = itemAt.get(x.order);
-            if (
-                (prior !== undefined && prior !== x.order) ||
-                (holder !== undefined && holder !== x.item)
-            ) {
-                throw new StatsRefusal(
-                    `${o.metric}: issue order ${x.order} belongs to one item, and ${x.item} has one order`,
-                );
+            if (prior !== undefined && prior !== x.order) {
+                throw new StatsRefusal(`${o.metric}: ${x.item} has one issue order`);
             }
             orderOf.set(x.item, x.order);
-            itemAt.set(x.order, x.item);
             const cluster = clusterOf.get(x.item);
             if (cluster !== undefined && cluster !== x.cluster) {
                 throw new StatsRefusal(`${o.metric}: ${x.item} has one ledger-fact cluster`);
@@ -753,10 +757,6 @@ function stops(
                 byItem.set(x.item, { item: x.item, order: x.order, value });
         }
         const items = [...byItem.values()].sort((x, y) => x.order - y.order);
-        if (items.length === 0) {
-            unavailable.push(`${rule.kind}: no items for ${rule.metric}`);
-            continue;
-        }
         const c = cusum(
             items.map((x) => x.value / sd),
             0,
@@ -833,21 +833,23 @@ export function evaluateTier(p: Preregistration, input: TierInput): TierVerdict 
         .find((f) => f.family === "harm")
         ?.metrics.filter((m) => m.verdict === "worse")
         .map((m) => ({ metric: m.metric, interval: m.interval }));
+    const incomplete = [...(input.incomplete ?? []), ...unavailable.map((u) => `CUSUM ${u}`)];
     const verdict: TierVerdict = {
         prereg_sha256: preregistrationHash(p),
-        journal_seq_at_eval: input.journal_seq_at_eval,
+        journal_seq_at_eval: { ...input.journal_seq_at_eval },
         arms: { ...input.arms },
         families,
         memory_made_it_worse: worse ?? [],
         pass: {
             passed:
                 halts.length === 0 &&
-                unavailable.length === 0 &&
+                incomplete.length === 0 &&
                 gates.length > 0 &&
                 gates.every((f) => f.passed === true),
             components: gates.map((f) => f.family),
             per_component_alpha: Object.fromEntries(gates.map((f) => [f.family, f.alpha])),
-            rule: "intersection-union: the tier passes when every gate component passes at its own alpha and every CUSUM rule was evaluated and none stopped it; a noninferiority or at-most component with an interval decides on its upper end, a one-sided test at half its alpha; the at-most sign test decides its one-sided p at its alpha",
+            incomplete,
+            rule: "intersection-union: the tier passes when every gate component passes at its own alpha, no CUSUM rule stopped it, every CUSUM rule was evaluated with its A/A scale, and the pre-registered campaign is complete; a noninferiority or at-most component with an interval decides on its upper end, a one-sided test at half its alpha; the at-most sign test decides its one-sided p at its alpha",
         },
         stops: halts,
         cusum_rules: rules,

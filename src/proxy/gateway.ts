@@ -11,7 +11,7 @@ import type { Rng } from "../rng";
 import { COMPONENT_HEADER, type ConverseBody, classify } from "./classify";
 import { encodeEvent } from "./eventstream";
 import { type FaultInjector, type Sink, sleep, writeFault } from "./inject";
-import type { CallRecord, Component, RecordWriter } from "./records";
+import { type CallRecord, type Component, RESPONSE_TEXT_LIMIT, type RecordWriter } from "./records";
 
 export type UpstreamResponse =
     | { events: AsyncIterable<Record<string, unknown>> }
@@ -103,7 +103,6 @@ type Usage = Record<string, number>;
 type Done = Partial<CallRecord> &
     Pick<CallRecord, "component" | "componentSource" | "model" | "status">;
 
-const RESPONSE_TEXT_LIMIT = 32_768;
 const RELAYED_TEXT = new Set<string>(["agent", "user-sim", "judge"]);
 
 const CLAUDE_5_5 = /anthropic\.claude-(opus|sonnet|haiku)-5-5/;
@@ -378,7 +377,7 @@ export class Gateway {
         const relayed = text.join("").slice(0, RESPONSE_TEXT_LIMIT);
         return {
             ...done,
-            ...(relayed && RELAYED_TEXT.has(done.component) ? { response_text: relayed } : {}),
+            ...(RELAYED_TEXT.has(done.component) ? { response_text: relayed } : {}),
             proxy_retries: retries,
             input_tokens: usage.inputTokens ?? 0,
             output_tokens: usage.outputTokens ?? 0,

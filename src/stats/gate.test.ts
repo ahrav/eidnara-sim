@@ -42,7 +42,7 @@ const evaluate = (observations: Observation[], extra = {}) =>
         observations,
         excluded: [],
         asymmetric: [],
-        journal_seq_at_eval: 7,
+        journal_seq_at_eval: { "run-1": 7 },
         arms: { control: "host", treatment: "eidnara" },
         ...extra,
     });
@@ -142,9 +142,14 @@ describe("tier gates", () => {
         ]);
         expect(f.stops[0]?.window).toEqual((futileObs.items ?? []).slice(0, 4).map((x) => x.item));
         expect(f.pass.passed).toBe(false);
-        expect(evaluate([binary("P1.pass", futile)]).cusum_unavailable).toEqual([
+        const bare = evaluate([binary("P1.pass", futile)]);
+        expect(bare.cusum_unavailable).toEqual([
             "harm: no A/A standard deviation",
             "futility: no A/A standard deviation",
+        ]);
+        expect(bare.pass.incomplete).toEqual([
+            "CUSUM harm: no A/A standard deviation",
+            "CUSUM futility: no A/A standard deviation",
         ]);
     });
 
@@ -256,7 +261,7 @@ describe("tier gates", () => {
                 observations: [runs("hangs", many)],
                 excluded: [],
                 asymmetric: [],
-                journal_seq_at_eval: 7,
+                journal_seq_at_eval: { "run-1": 7 },
                 arms: { control: "host", treatment: "eidnara" },
             }),
             "dependability",
@@ -320,7 +325,7 @@ describe("tier gates", () => {
                 observations,
                 excluded: [],
                 asymmetric: [],
-                journal_seq_at_eval: 7,
+                journal_seq_at_eval: { "run-1": 7 },
                 arms: { control: "host", treatment: "eidnara" },
             });
         const ok = s([runs("internal_string_hits", repeat(2, [0, 0] as [number, number]))]);
@@ -415,7 +420,10 @@ describe("tier gates", () => {
 });
 
 describe("tier gate review findings", () => {
-    const seq = { journal_seq_at_eval: 7, arms: { control: "host", treatment: "eidnara" } };
+    const seq = {
+        journal_seq_at_eval: { "run-1": 7 },
+        arms: { control: "host", treatment: "eidnara" },
+    };
     const bounds = (overrides: Partial<Record<string, Observation>> = {}) => {
         const zero: [number, number] = [0, 0];
         const base: Record<string, Observation> = {
@@ -529,12 +537,22 @@ describe("tier gate review findings", () => {
             asymmetric: [],
             arms: { control: "host", treatment: "eidnara" },
         };
+        type Seqs = Record<string, number>;
         expect(() =>
-            evaluateTier(M, { ...input, journal_seq_at_eval: undefined as unknown as number }),
+            evaluateTier(M, { ...input, journal_seq_at_eval: undefined as unknown as Seqs }),
         ).toThrow(StatsRefusal);
-        expect(() => evaluateTier(M, { ...input, journal_seq_at_eval: -1 })).toThrow(StatsRefusal);
-        expect(() => evaluateTier(M, { ...input, journal_seq_at_eval: 1.5 })).toThrow(StatsRefusal);
-        expect(evaluateTier(M, { ...input, journal_seq_at_eval: 0 }).journal_seq_at_eval).toBe(0);
+        expect(() => evaluateTier(M, { ...input, journal_seq_at_eval: { r: -1 } })).toThrow(
+            StatsRefusal,
+        );
+        expect(() => evaluateTier(M, { ...input, journal_seq_at_eval: { r: 1.5 } })).toThrow(
+            StatsRefusal,
+        );
+        expect(() => evaluateTier(M, { ...input, journal_seq_at_eval: { "": 1 } })).toThrow(
+            StatsRefusal,
+        );
+        expect(
+            evaluateTier(M, { ...input, journal_seq_at_eval: { r: 0 } }).journal_seq_at_eval,
+        ).toEqual({ r: 0 });
     });
 
     test("zero treatment events keep the Clopper-Pearson ratio bound; no events in either arm leave no bound", () => {
@@ -568,17 +586,14 @@ describe("tier gate review findings", () => {
 });
 
 describe("tier gate review findings, second round", () => {
-    const seq = { journal_seq_at_eval: 7 };
+    const seq = { journal_seq_at_eval: { "run-1": 7 } };
     const arms = { control: "host", treatment: "eidnara" };
     const s = (observations: Observation[], extra: object = {}) =>
         evaluateTier(S, { observations, excluded: [], asymmetric: [], ...seq, arms, ...extra });
 
     test("a CUSUM standard deviation that is not finite and positive is refused", () => {
         const ok = s([], { cusum_sd: { harm: 0.5, futility: 0.5 } });
-        expect(ok.cusum_unavailable).toEqual([
-            "harm: no items for harm",
-            "futility: no items for probe-P1",
-        ]);
+        expect(ok.cusum_unavailable).toEqual([]);
         for (const bad of [0, -1, Number.POSITIVE_INFINITY, Number.NaN]) {
             expect(() => s([], { cusum_sd: { harm: bad, futility: 0.5 } })).toThrow(StatsRefusal);
         }
@@ -678,7 +693,10 @@ describe("tier gate review findings, second round", () => {
 });
 
 describe("tier gate review findings, Kilo round", () => {
-    const seq = { journal_seq_at_eval: 7, arms: { control: "host", treatment: "eidnara" } };
+    const seq = {
+        journal_seq_at_eval: { "run-1": 7 },
+        arms: { control: "host", treatment: "eidnara" },
+    };
     const L = loadPrereg("L");
 
     test("an at-most family with a zero MDE scales its resolution against the margin", () => {
@@ -716,7 +734,7 @@ describe("tier gate review findings, Kilo round", () => {
         ).toThrow(StatsRefusal);
     });
 
-    test("a CUSUM rule with no items is unavailable, so the tier gets no pass", () => {
+    test("a CUSUM rule over no items records no stop and stays available", () => {
         const s = (observations: Observation[]) =>
             evaluateTier(S, {
                 observations,
@@ -726,11 +744,7 @@ describe("tier gate review findings, Kilo round", () => {
                 cusum_sd: { harm: 0.5, futility: 0.5 },
             });
         const v = s([runs("internal_string_hits", repeat(2, [0, 0] as [number, number]))]);
-        expect(v.cusum_unavailable).toEqual([
-            "harm: no items for harm",
-            "futility: no items for probe-P1",
-        ]);
-        expect(v.pass.passed).toBe(false);
+        expect([v.cusum_unavailable, v.stops]).toEqual([[], []]);
     });
 
     test("an id repeated in excluded, or in both excluded and asymmetric, is refused", () => {
@@ -769,10 +783,10 @@ describe("tier gate review findings, Kilo round", () => {
 });
 
 describe("tier gate review findings, third Codex round", () => {
-    test("distinct items carry distinct issue orders and one item carries one order", () => {
+    test("one item carries one issue order across observations", () => {
         const a = binary("P2.harm", [[0, 0]]);
         const b = binary("P3.harm", [[0, 0]]);
-        b.items = b.items?.map((x) => ({ ...x, order: a.items?.[0]?.order ?? 0 }));
+        b.items = b.items?.map((x) => ({ ...x, item: a.items?.[0]?.item ?? "", order: 999 }));
         expect(() => evaluate([a, b])).toThrow(StatsRefusal);
         const twice = binary("P2.harm", [
             [0, 0],
@@ -780,7 +794,7 @@ describe("tier gate review findings, third Codex round", () => {
         ]);
         const first = twice.items?.[0]?.order ?? 0;
         twice.items = twice.items?.map((x) => ({ ...x, order: first }));
-        expect(() => evaluate([twice])).toThrow(StatsRefusal);
+        expect(() => evaluate([twice])).not.toThrow();
     });
 
     test("a bootstrap plan below eval-core's replicate floor is refused", () => {
@@ -794,7 +808,7 @@ describe("tier gate review findings, third Codex round", () => {
                 observations: [scores],
                 excluded: [],
                 asymmetric: [],
-                journal_seq_at_eval: 7,
+                journal_seq_at_eval: { "run-1": 7 },
                 arms: { control: "host", treatment: "eidnara" },
             }),
         ).toThrow("bootstrap.replicates 39 is below the floor of 40");
@@ -890,7 +904,7 @@ describe("tier gate review findings, fifth Codex round", () => {
             observations: [runs("turn_latency_p95_delta_ms", [[0, 40]])],
             excluded: [],
             asymmetric: [],
-            journal_seq_at_eval: 1,
+            journal_seq_at_eval: { "run-1": 1 },
             arms: { control: "host", treatment: XL.arms.default },
         });
         expect(metric(v, "latency", "turn_latency_p95_delta_ms")?.verdict).toBe("descriptive");
@@ -937,7 +951,7 @@ describe("tier gate review findings, seventh Codex round", () => {
                 observations: [],
                 excluded: [],
                 asymmetric: [],
-                journal_seq_at_eval: 7,
+                journal_seq_at_eval: { "run-1": 7 },
                 arms: { control: "host", treatment: "eidnara" },
             }),
         ).toThrow("P1.pass is registered in two families");
@@ -1016,7 +1030,10 @@ describe("tier gate review findings, eighth Codex round", () => {
 });
 
 describe("tier gate review findings, ninth Codex round", () => {
-    const seq = { journal_seq_at_eval: 7, arms: { control: "host", treatment: "eidnara" } };
+    const seq = {
+        journal_seq_at_eval: { "run-1": 7 },
+        arms: { control: "host", treatment: "eidnara" },
+    };
 
     test("event totals stay exact", () => {
         const big = Number.MAX_SAFE_INTEGER;
@@ -1055,7 +1072,10 @@ describe("tier gate review findings, ninth Codex round", () => {
 });
 
 describe("tier gate review findings, tenth Codex round", () => {
-    const seq = { journal_seq_at_eval: 7, arms: { control: "host", treatment: "eidnara" } };
+    const seq = {
+        journal_seq_at_eval: { "run-1": 7 },
+        arms: { control: "host", treatment: "eidnara" },
+    };
     const s = (observations: Observation[], extra: object = {}) =>
         evaluateTier(S, { observations, excluded: [], asymmetric: [], ...seq, ...extra });
 
@@ -1077,7 +1097,7 @@ describe("tier gate review findings, tenth Codex round", () => {
     });
 
     test("the journal sequence is a safe integer", () => {
-        expect(() => evaluate([], { journal_seq_at_eval: 2 ** 53 })).toThrow(StatsRefusal);
+        expect(() => evaluate([], { journal_seq_at_eval: { r: 2 ** 53 } })).toThrow(StatsRefusal);
     });
 
     test("item, cluster, and run identifiers are non-blank strings", () => {
@@ -1164,7 +1184,7 @@ describe("tier gate review findings, eleventh Codex round", () => {
                 ],
                 excluded: [],
                 asymmetric: [],
-                journal_seq_at_eval: 7,
+                journal_seq_at_eval: { "run-1": 7 },
                 arms: { control: "host", treatment: "eidnara" },
             }),
         ).toThrow("probe-P8: a binary threshold is a ratio in [0, 1]");
@@ -1176,7 +1196,7 @@ describe("tier gate review findings, eleventh Codex round", () => {
             observations: [runs("P13.fold_fidelity_score", [[0.2, 0.8]])],
             excluded: [],
             asymmetric: [],
-            journal_seq_at_eval: 1,
+            journal_seq_at_eval: { "run-1": 1 },
             arms: { control: "host", treatment: XL.arms.default },
         });
         const m = metric(v, "probe-P13", "P13.fold_fidelity_score");
@@ -1206,7 +1226,7 @@ describe("tier gate review findings, twelfth Codex round", () => {
                 observations: [runs("hangs", many)],
                 excluded: [],
                 asymmetric: [],
-                journal_seq_at_eval: 7,
+                journal_seq_at_eval: { "run-1": 7 },
                 arms: { control: "host", treatment: "eidnara" },
             }),
             "dependability",
@@ -1232,7 +1252,10 @@ describe("tier gate review findings, twelfth Codex round", () => {
 });
 
 describe("tier gate review findings, thirteenth Codex round", () => {
-    const seq = { journal_seq_at_eval: 7, arms: { control: "host", treatment: "eidnara" } };
+    const seq = {
+        journal_seq_at_eval: { "run-1": 7 },
+        arms: { control: "host", treatment: "eidnara" },
+    };
 
     test("a singleton graded difference that overflows is refused", () => {
         expect(() => evaluate([runs("turn_latency_p95_delta_ms", [[-1e308, 1e308]])])).toThrow(
@@ -1294,7 +1317,10 @@ describe("tier gate review findings, thirteenth Codex round", () => {
 });
 
 describe("tier gate review findings, fourteenth Codex round", () => {
-    const seq = { journal_seq_at_eval: 7, arms: { control: "host", treatment: "eidnara" } };
+    const seq = {
+        journal_seq_at_eval: { "run-1": 7 },
+        arms: { control: "host", treatment: "eidnara" },
+    };
 
     test("exclusions and the asymmetric stratum apply to items only", () => {
         const obs = binary("P8.cross_session_pass_rate", repeat(4, [1, 1] as [number, number]));
@@ -1351,7 +1377,10 @@ describe("tier gate review findings, fourteenth Codex round", () => {
 });
 
 describe("tier gate review findings, fifteenth Codex round", () => {
-    const seq = { journal_seq_at_eval: 7, arms: { control: "host", treatment: "eidnara" } };
+    const seq = {
+        journal_seq_at_eval: { "run-1": 7 },
+        arms: { control: "host", treatment: "eidnara" },
+    };
     const input = { observations: [], excluded: [], asymmetric: [], ...seq };
     const withFamily = (id: string, patch: object) => ({
         ...M,
@@ -1427,7 +1456,10 @@ describe("tier gate review findings, fifteenth Codex round", () => {
 });
 
 describe("tier gate review findings, sixteenth Codex round", () => {
-    const seq = { journal_seq_at_eval: 7, arms: { control: "host", treatment: "eidnara" } };
+    const seq = {
+        journal_seq_at_eval: { "run-1": 7 },
+        arms: { control: "host", treatment: "eidnara" },
+    };
     const input = { observations: [], excluded: [], asymmetric: [], ...seq };
     const withFamily = (id: string, patch: object) => ({
         ...M,
@@ -1482,7 +1514,10 @@ describe("tier gate review findings, sixteenth Codex round", () => {
 });
 
 describe("tier gate review findings, seventeenth Codex round", () => {
-    const seq = { journal_seq_at_eval: 7, arms: { control: "host", treatment: "eidnara" } };
+    const seq = {
+        journal_seq_at_eval: { "run-1": 7 },
+        arms: { control: "host", treatment: "eidnara" },
+    };
     const input = { observations: [], excluded: [], asymmetric: [], ...seq };
     const withFamily = (id: string, patch: object) => ({
         ...M,
@@ -1532,7 +1567,10 @@ describe("tier gate review findings, seventeenth Codex round", () => {
 });
 
 describe("tier gate review findings, eighteenth Codex round", () => {
-    const seq = { journal_seq_at_eval: 7, arms: { control: "host", treatment: "eidnara" } };
+    const seq = {
+        journal_seq_at_eval: { "run-1": 7 },
+        arms: { control: "host", treatment: "eidnara" },
+    };
     const input = { observations: [], excluded: [], asymmetric: [], ...seq };
     const withFamily = (id: string, patch: object) => ({
         ...M,
@@ -1581,7 +1619,10 @@ describe("tier gate review findings, eighteenth Codex round", () => {
 });
 
 describe("tier gate review findings, nineteenth Codex round", () => {
-    const seq = { journal_seq_at_eval: 7, arms: { control: "host", treatment: "eidnara" } };
+    const seq = {
+        journal_seq_at_eval: { "run-1": 7 },
+        arms: { control: "host", treatment: "eidnara" },
+    };
     const input = { observations: [], excluded: [], asymmetric: [], ...seq };
     const withFamily = (id: string, patch: object) => ({
         ...M,
@@ -1622,7 +1663,10 @@ describe("tier gate review findings, nineteenth Codex round", () => {
 });
 
 describe("tier gate review findings, twentieth Codex round", () => {
-    const seq = { journal_seq_at_eval: 7, arms: { control: "host", treatment: "eidnara" } };
+    const seq = {
+        journal_seq_at_eval: { "run-1": 7 },
+        arms: { control: "host", treatment: "eidnara" },
+    };
     const input = { observations: [], excluded: [], asymmetric: [], ...seq };
     const withFamily = (id: string, patch: object) => ({
         ...M,

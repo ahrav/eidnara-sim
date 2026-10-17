@@ -5,10 +5,11 @@ import type { StoreCheck } from "../hosts/storecheck";
 import type { Preregistration } from "../prereg/schema";
 import type { CallRecord } from "../proxy/records";
 import { type Entry, readJournal } from "../run/journal";
+import type { PriceTable } from "../run/price";
 import type { Sample as ResourceSample } from "../run/sampler";
 import type { Scenario } from "../scenario/compile";
 
-export type Sample = Pick<ResourceSample, "scenario_ms" | "rss">;
+export type Sample = Pick<ResourceSample, "scenario_ms" | "rss"> & Partial<ResourceSample>;
 
 export interface ArmLogs {
     arm: string;
@@ -30,6 +31,10 @@ export interface RunLogs {
     prereg: Preregistration;
     kinds: Map<string, string>;
     arms: ArmLogs[];
+    /** The price table the manifest recorded; `null` for a run that recorded none. */
+    price: PriceTable | null;
+    /** The last `seq` in the run's journal, every arm included; a grading summary names the one it saw. */
+    journal_seq: number;
 }
 
 function jsonl<T>(path: string): T[] {
@@ -61,5 +66,14 @@ export function loadRun(dir: string, prereg: Preregistration): RunLogs {
             ? (JSON.parse(readFileSync(join(dir, arm, "store-check.json"), "utf8")) as StoreCheck)
             : undefined,
     }));
-    return { dir, tier: manifest.tier, base_wall_ms: manifest.base_wall_ms, prereg, kinds, arms };
+    return {
+        dir,
+        tier: manifest.tier,
+        base_wall_ms: manifest.base_wall_ms,
+        prereg,
+        kinds,
+        arms,
+        price: (manifest.price_table as PriceTable | undefined) ?? null,
+        journal_seq: journal.at(-1)?.seq ?? 0,
+    };
 }

@@ -1,6 +1,7 @@
-import { appendFileSync, existsSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, truncateSync } from "node:fs";
 import { sha256Hex } from "../prereg/canonical";
 import { COMPONENT_HEADER } from "../proxy/classify";
+import { readJournal } from "../run/journal";
 import { HarnessFailure } from "../run/scheduler";
 import { markerHits } from "../scenario/compile";
 import type { Label, Plan } from "./plan";
@@ -75,16 +76,26 @@ interface Taped {
     stop: string;
 }
 
-/** User-sim replies keyed by seed, event, label, and the normalised agent-output digest. */
+/**
+ * User-sim replies keyed by seed, event, label, and the normalised agent-output digest. The run's
+ * own file is read like a journal: a final record cut by a kill is dropped and truncated away.
+ */
 export class Tape {
     private readonly entries = new Map<string, Taped>();
+    private readonly own = new Set<string>();
 
     constructor(
         private readonly path: string,
         sources: readonly string[] = [],
     ) {
-        for (const p of [...sources, path]) {
+        for (const p of sources) {
             for (const e of jsonl<TapeEntry>(p)) this.entries.set(e.key, e);
+        }
+        const own = readJournal(path) as unknown as TapeEntry[] & { bytes?: number };
+        if (existsSync(path)) truncateSync(path, own.bytes ?? 0);
+        for (const e of own) {
+            this.entries.set(e.key, e);
+            this.own.add(e.key);
         }
     }
 
@@ -92,9 +103,11 @@ export class Tape {
         return this.entries.get(key);
     }
 
+    /** Appends the entry to this run's tape unless that file already holds its key. */
     put(entry: TapeEntry): void {
-        if (this.entries.has(entry.key)) return;
+        if (this.own.has(entry.key)) return;
         this.entries.set(entry.key, entry);
+        this.own.add(entry.key);
         appendFileSync(this.path, `${JSON.stringify(entry)}\n`);
     }
 }
@@ -111,6 +124,8 @@ export interface TurnRecord {
     prefix_sha256: string;
     text_sha256: string;
     source: "script" | "tape" | "live";
+    /** The tape key of a `tape` or `live` reply, which `<run>/tape.jsonl` holds. */
+    tape_key?: string;
     fallback?: string[];
 }
 
@@ -317,6 +332,7 @@ export class UserSim {
             prefix_sha256: prefix,
             text_sha256: sha256Hex(text),
             source: reply?.source ?? "script",
+            ...(reply ? { tape_key: reply.key } : {}),
             ...(reply?.fallback ? { fallback: reply.fallback } : {}),
         });
         const interruptMs = plan.interruptMs.get(t.id);
@@ -345,15 +361,15 @@ export class UserSim {
             const script = label === "abandon" || FACT_ROLES.has(t.role) ? null : t.text;
             const live = await this.o.llm(persona(label, script, lastAgent));
             got = { text: live.text.trim(), stop: live.stop };
-            this.o.tape.put({ key, event: t.id, label, digest, ...got });
         }
+        this.o.tape.put({ key, event: t.id, label, digest, ...got });
         const source: "tape" | "live" = taped === undefined ? "live" : "tape";
         const hits = markerHits(got.text, this.o.keys);
         const cut = got.stop === "max_tokens" ? ["max_tokens"] : [];
         const empty = got.text === "" ? ["empty"] : [];
         const fallback = [...empty, ...cut, ...hits];
-        if (fallback.length === 0) return { text: got.text, source };
-        return { text: FALLBACK[label] ?? "", source, fallback };
+        if (fallback.length === 0) return { key, text: got.text, source };
+        return { key, text: FALLBACK[label] ?? "", source, fallback };
     }
 }
 
@@ -379,4 +395,35 @@ export function pairingMismatches(
             return other !== undefined && other.text_sha256 !== r.text_sha256;
         })
         .map((r) => `${r.arm} ${r.session} #${r.index}`);
+}
+
+/**
+ * The pairing checks `scripts/pairing-check.ts` reports: a pre-divergence reply whose text differs
+ * from the reference arm's, a probe or paste turn sent with other text than the script's, and a
+ * non-filler turn the arm never sent.
+ */
+export function pairingFailures(
+    records: readonly PairingRecord[],
+    scenario: { events: readonly Record<string, unknown>[] },
+    reference: (arm: string) => string,
+): Record<
+    "mismatches_before_divergence" | "probe_or_paste_text_altered" | "non_filler_unsent",
+    string[]
+> {
+    const turns = records.filter((r): r is TurnRecord => r.kind === "turn");
+    const script = new Map(
+        scenario.events.filter((e) => e.kind === "user_turn").map((e) => [String(e.id), e]),
+    );
+    const verbatim = turns.filter((r) =>
+        ["paste", "probe"].includes(String(script.get(r.event)?.role ?? "")),
+    );
+    return {
+        mismatches_before_divergence: pairingMismatches(records, reference),
+        probe_or_paste_text_altered: verbatim
+            .filter((r) => r.text_sha256 !== sha256Hex(String(script.get(r.event)?.text)))
+            .map((r) => `${r.arm} ${r.event}`),
+        non_filler_unsent: turns
+            .filter((r) => !r.delivered && script.get(r.event)?.role !== "filler")
+            .map((r) => `${r.arm} ${r.event}`),
+    };
 }

@@ -20,6 +20,8 @@ const fixtures = readdirSync(DIR)
 const runOf = (f: Fixture, tier = "S"): RunLogs => ({
     dir: "",
     tier,
+    price: null,
+    journal_seq: 0,
     base_wall_ms: 0,
     prereg,
     kinds: new Map(Object.entries(f.kinds)),
@@ -82,7 +84,14 @@ describe("oracle report", () => {
         const line = (o: unknown) => `${JSON.stringify(o)}\n`;
         writeFileSync(
             join(dir, "manifest.json"),
-            JSON.stringify({ tier: "S", order: ["host", "eidnara"] }),
+            JSON.stringify({
+                tier: "S",
+                order: ["host", "eidnara"],
+                price_table: {
+                    version: "v1",
+                    rates: { input: 5, output: 25, cache_read: 0.5, cache_write: 6.25 },
+                },
+            }),
         );
         writeFileSync(
             join(dir, "scenario.json"),
@@ -105,5 +114,9 @@ describe("oracle report", () => {
             ["c"],
         ]);
         expect(run.arms.find((a) => a.arm === "host")?.journal).toHaveLength(1);
+        expect(run.price).toEqual({
+            version: "v1",
+            rates: { input: 5, output: 25, cache_read: 0.5, cache_write: 6.25 },
+        });
     });
 });
