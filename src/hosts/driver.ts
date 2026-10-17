@@ -459,7 +459,13 @@ export class HostDriver implements ArmDriver {
     /** Workspace git operations override agent-controlled execution settings to constrain which programs git can invoke. */
     private workspaceGit(dir: string, args: string[], extra: Record<string, string> = {}): string {
         const gitDir = join(dir, ".git");
-        const scope = { GIT_DIR: gitDir, GIT_WORK_TREE: dir, ...extra };
+        const scope = {
+            GIT_DIR: gitDir,
+            GIT_WORK_TREE: dir,
+            GIT_NO_REPLACE_OBJECTS: "1",
+            GIT_NAMESPACE: "",
+            ...extra,
+        };
         const off = [
             `core.hooksPath=${join(this.armDir, "no-hooks")}`,
             "core.fsmonitor=false",
@@ -506,8 +512,10 @@ export class HostDriver implements ArmDriver {
                 throw new HarnessFailure(`${relative(dir, path)} is ${kind}`);
             }
         }
-        if (existsSync(join(gitDir, "objects", "info", "alternates"))) {
-            throw new HarnessFailure(".git/objects/info/alternates names another object store");
+        for (const redirect of ["objects/info/alternates", "commondir", "gitdir"]) {
+            if (existsSync(join(gitDir, redirect))) {
+                throw new HarnessFailure(`.git/${redirect} redirects git to another repository`);
+            }
         }
         const config = join(gitDir, "config");
         const aside = join(gitDir, "config.sim-aside");

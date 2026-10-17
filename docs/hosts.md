@@ -71,8 +71,9 @@ root-owned `sudo` and `unshare`, so closing a host walks the launcher's
 process tree and signals every process the user owns, with SIGKILL after
 10 s; a process that survives SIGKILL stops the run. A user turn is one prompt with the turn deadline, and the host's error
 becomes a failed turn. After a Pi turn fails, the host aborts it and waits up
-to 30 s for its `agent_end`, so a late end cannot finish the next turn; a Pi
-that reports no `agent_end` in that wait is still running the old turn, so
+to 30 s for its `agent_end` (an end that arrived before the failure counts),
+so a late end cannot finish the next turn; a Pi that reports no `agent_end`
+in that wait is still running the old turn, so
 its process is stopped and the session's later turns fail at once, and no
 tool event from the old turn can land on a later turn's record.
 OpenCode turns race the deadline, abort the session (waiting at most 5 s for
@@ -90,9 +91,9 @@ afterwards), because the agent can write that config and the harness process
 runs outside the sandbox. The workspace path itself must be a real directory
 under the arm root, an existing ancestor of the diff's path must resolve
 inside it before any directory is created, and a `.git` that is a file or
-symlink, any entry under `.git` that is not a regular file or directory, a
-missing `.git/config`, or an `objects/info/alternates` file stops the run
-before git writes anything; every workspace git run is bounded by the turn
+symlink, any entry under `.git` that is not a regular file or directory, a missing `.git/config`, or an `objects/info/alternates`, `commondir`, or
+`gitdir` file stops the run before git writes anything; every workspace and
+recorder git run ignores replacement refs (`GIT_NO_REPLACE_OBJECTS=1`); every workspace git run is bounded by the turn
 deadline, the walk of `.git` stops at that deadline or 200,000 entries, a
 target path that exists must be a regular file, and a real-index update
 that times out removes the `index.lock` it left.

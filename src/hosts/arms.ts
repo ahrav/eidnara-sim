@@ -234,7 +234,9 @@ export class DaemonStack {
     /**
      * Saves every log the marker lists that still exists, in order, then the `extra` ones: a
      * copy an earlier kill cut short is rolled back to the length the marker recorded before
-     * it runs again, so each log is appended once. The marker is removed at the end.
+     * it runs again, and two names of one inode (the held link before a restart replaced the
+     * live path) are saved once, so each lifetime is appended once. The marker is removed at
+     * the end.
      */
     private drain(marker: LogMarker | null, extra: string[]): void {
         let pending = [...(marker?.pending ?? [])];
@@ -251,16 +253,22 @@ export class DaemonStack {
             pending = [marker.copying.source, ...pending];
         }
         pending = [...new Set([...pending, ...extra])].filter((p) => p !== "");
-        // The held log and the live log are one inode until the replacement daemon starts, so a
-        // kill between the kill and the start lists one lifetime under two names; it is saved once.
-        const saved = new Set<number>();
+        const seenInodes = new Set<string>();
+        pending = pending.filter((p) => {
+            if (!existsSync(p)) return true;
+            const st = statSync(p);
+            const key = `${st.dev}:${st.ino}`;
+            if (seenInodes.has(key)) {
+                rmSync(p, { force: true });
+                return false;
+            }
+            seenInodes.add(key);
+            return true;
+        });
         while (pending.length > 0) {
             const [source, ...rest] = pending as [string, ...string[]];
-            const ino = existsSync(source) ? statSync(source).ino : null;
-            if (ino !== null && !saved.has(ino)) {
-                saved.add(ino);
-                this.absorb(source, rest);
-            } else this.writeMarker({ pending: rest, copying: null });
+            if (existsSync(source)) this.absorb(source, rest);
+            else this.writeMarker({ pending: rest, copying: null });
             pending = rest;
         }
         rmSync(this.logSourceFile, { force: true });
@@ -596,7 +604,7 @@ export class PiSimHost extends SimHost {
                 ? { error: String(last.errorMessage ?? "error") }
                 : {};
         } catch (caught) {
-            const drained = this.agentEnd(this.drainWaitMs);
+            const drained = Promise.race([end, this.agentEnd(this.drainWaitMs)]);
             await this.rpc.sendCommand("abort", {}, { timeoutMs: 60_000 }).catch(() => undefined);
             const settled = await drained.then(
                 () => true,
@@ -636,6 +644,12 @@ const NON_INTERACTIVE = ["question", "plan_enter", "plan_exit"].map((permission)
 
 /** A tool part's exit by its OpenCode status; a pending or running part has none. */
 const EXIT: Record<string, number> = { completed: 0, error: 1 };
+
+/** An OpenCode tool part's stable id, which keys its run across the turn's listing and a resume. */
+const callId = (part: Untyped): string | undefined => {
+    const id = part.callID ?? part.id;
+    return typeof id === "string" ? `oc:${id}` : undefined;
+};
 
 export class OpencodeSimHost extends SimHost {
     private oc: Untyped = null;
@@ -710,6 +724,7 @@ export class OpencodeSimHost extends SimHost {
             .at(0);
         if (latest) {
             this.sid = String(latest.id);
+            await this.recoverTools(120_000);
             return;
         }
         const created = await this.client.session.create({
@@ -762,7 +777,24 @@ export class OpencodeSimHost extends SimHost {
             for (const part of m.parts.filter((p) => p.type === "tool")) {
                 const at = Number(part.state?.time?.start ?? origin);
                 const ms = startScenario + (Number.isFinite(origin) ? Math.max(0, at - origin) : 0);
-                this.logTool(part.tool, part.state?.input, EXIT[part.state?.status] ?? null, ms);
+                const exit = EXIT[part.state?.status] ?? null;
+                this.logTool(part.tool, part.state?.input, exit, ms, callId(part));
+            }
+        }
+    }
+
+    /**
+     * On reattaching to a session the killed harness left open, reports every tool part the
+     * session's messages hold, keyed by the part's id, so a run the interrupted turn executed
+     * reaches the recorder; a run it already holds keeps its recorded start time.
+     */
+    async recoverTools(deadlineMs: number): Promise<void> {
+        const now = this.ctx.now?.() ?? 0;
+        for (const m of await this.messages(deadlineMs)) {
+            for (const part of m.parts.filter((p) => p.type === "tool")) {
+                const command = toolCommand(part.tool, part.state?.input);
+                const exit = EXIT[part.state?.status] ?? null;
+                this.ctx.onTool?.({ command, exit, scenario_ms: now, call: callId(part) });
             }
         }
     }

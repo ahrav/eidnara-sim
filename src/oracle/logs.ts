@@ -153,12 +153,19 @@ function requirePidShape(path: string, samples: Sample[]): void {
     if (withPid !== 0 && withPid !== numeric.length) {
         throw new Error(`${path}: pid present on some samples and absent on others`);
     }
+    const withStart = numeric.filter((s) => "start" in s).length;
+    if (withStart !== 0 && withStart !== numeric.length) {
+        throw new Error(`${path}: start present on some samples and absent on others`);
+    }
     samples.forEach((s, i) => {
         if (typeof s.rss === "number" && s.rss < 0) {
             throw new Error(`${path}: line ${i + 1}: rss negative`);
         }
         if (typeof s.rss === "number" && "pid" in s && s.pid === null) {
             throw new Error(`${path}: line ${i + 1}: numeric rss with a null pid`);
+        }
+        if (typeof s.pid === "number" && "start" in s && s.start === null) {
+            throw new Error(`${path}: line ${i + 1}: pid with a null start`);
         }
     });
 }
@@ -173,7 +180,40 @@ const TOKEN_FIELDS = [
 function samplesOf(path: string): Sample[] {
     const samples = shaped<Sample>(path, SAMPLE_FIELDS);
     requirePidShape(path, samples);
+    samples.forEach((s, i) => {
+        const prev = samples[i - 1];
+        if (prev && s.scenario_ms < prev.scenario_ms) {
+            throw new Error(
+                `${path}: line ${i + 1}: scenario_ms ${s.scenario_ms} precedes ${prev.scenario_ms}`,
+            );
+        }
+    });
     return samples;
+}
+
+/** A call attributed to a turn started while that turn was open: between its `BeginTurn` and its `EndTurn`. */
+function requireCallsInTurns(calls: CallRecord[], journal: Entry[]): void {
+    const bounds = new Map<string, { from: number; to: number }>();
+    for (const e of journal) {
+        if (e.kind !== "BeginTurn" && e.kind !== "EndTurn") continue;
+        const key = `${e.arm}/${String(e.event)}`;
+        const b = bounds.get(key) ?? {
+            from: Number.NEGATIVE_INFINITY,
+            to: Number.POSITIVE_INFINITY,
+        };
+        if (e.kind === "BeginTurn") b.from = e.scenario_ms;
+        else b.to = e.scenario_ms;
+        bounds.set(key, b);
+    }
+    for (const c of calls) {
+        if (c.turn === null) continue;
+        const b = bounds.get(`${c.arm}/${c.turn}`);
+        if (b && (c.scenario_ms < b.from || c.scenario_ms > b.to)) {
+            throw new Error(
+                `call ${c.seq}: starts at ${c.scenario_ms}, outside turn ${c.turn} (${b.from} to ${b.to})`,
+            );
+        }
+    }
 }
 
 function toolsOf(path: string, turns: Set<string>): (Command & { turn: string | null })[] {
@@ -193,6 +233,12 @@ export function loadRun(dir: string, prereg: Preregistration): RunLogs {
     if (digest !== manifest.scenario_hash) {
         throw new Error(
             `scenario_hash ${digest} differs from the manifest's ${manifest.scenario_hash}`,
+        );
+    }
+    const scenarioTier = (scenario as { manifest?: { tier?: string } }).manifest?.tier;
+    if (scenarioTier !== undefined && scenarioTier !== manifest.tier) {
+        throw new Error(
+            `manifest tier ${manifest.tier} differs from the scenario's ${scenarioTier}`,
         );
     }
     const kinds = new Map(scenario.events.map((e) => [String(e.id), String(e.kind)]));
@@ -237,6 +283,7 @@ export function loadRun(dir: string, prereg: Preregistration): RunLogs {
     });
     const journalPath = join(dir, "journal.jsonl");
     const journal = readJournal(journalPath);
+    const lastMs = new Map<string | null, number>();
     journal.forEach((e, i) => {
         const fields: Record<string, FieldCheck> = { kind: str, arm: strOrNull, scenario_ms: num };
         if (["BeginTurn", "EndTurn", "Event"].includes(String(e.kind))) fields.event = str;
@@ -244,10 +291,18 @@ export function loadRun(dir: string, prereg: Preregistration): RunLogs {
         for (const [field, ok] of Object.entries(fields)) {
             if (!ok(e[field])) throw new Error(`${journalPath}: line ${i + 1}: ${field} missing`);
         }
+        const last = lastMs.get(e.arm);
+        if (last !== undefined && e.scenario_ms < last) {
+            throw new Error(
+                `${journalPath}: line ${i + 1}: scenario_ms ${e.scenario_ms} precedes ${last}`,
+            );
+        }
+        lastMs.set(e.arm, e.scenario_ms);
     });
     const scheduled = planned.map((e) => String(e.id));
     requireComplete(journal, order, scheduled);
     requireTurnEnds(journal, order, planned);
+    requireCallsInTurns(calls, journal);
     const arms = order.map((arm) => ({
         arm,
         calls: calls.filter((c) => c.arm === arm),
