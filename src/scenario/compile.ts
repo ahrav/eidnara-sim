@@ -48,6 +48,7 @@ export interface CompileInput {
     errorCodes: { id: string; code: string; context: string }[];
     corpusManifestSha256: string;
     embedder: Embedder;
+    items?: number;
 }
 
 interface Session {
@@ -232,7 +233,7 @@ export async function compileScenario(input: CompileInput) {
     });
 
     const perType = Math.ceil(
-        prereg.stopping_rule.paired_items_per_probe_type /
+        (input.items ?? prereg.stopping_rule.paired_items_per_probe_type) /
             (prereg.seeds.length * prereg.hosts.length),
     );
     const p90 = sessions.filter((x) => x.forced_p90);

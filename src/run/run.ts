@@ -124,8 +124,7 @@ export async function loadScenario(
         const cache = join(ROOT, "runs/scenarios/embeddings.jsonl");
         const embedder = bedrockEmbedder(aws_profile, region, cache);
         const input = loadCompileInput(o.seed, o.tier, embedder);
-        if (items !== undefined) input.prereg.stopping_rule.paired_items_per_probe_type = items;
-        const compiled = await compileScenario(input);
+        const compiled = await compileScenario(items === undefined ? input : { ...input, items });
         writeAtomic(path, `${canonicalJson(compiled)}\n`);
     }
     const scenario = JSON.parse(readFileSync(path, "utf8")) as Scenario;
