@@ -48,37 +48,94 @@ export function ownedProcesses(rootPid: number): number[] {
     return out;
 }
 
+export function parentPid(pid: number): number | null {
+    const ppid = statFields(pid)?.[1];
+    return ppid === undefined ? null : Number(ppid);
+}
+
 export function processStart(pid: number): string | null {
     return statFields(pid)?.[19] ?? null;
 }
 
-export function running(pid: number): boolean {
+/** With `start`, a pid now owned by a process with another start time counts as gone. */
+export function running(pid: number, start?: string): boolean {
     const fields = statFields(pid);
-    return fields !== null && fields[0] !== "Z";
+    if (fields === null || fields[0] === "Z") return false;
+    return start === undefined || fields[19] === start;
 }
 
-async function stopped(pids: number[], timeoutMs: number): Promise<boolean> {
+interface Target {
+    pid: number;
+    start: string | null;
+}
+
+const alive = (t: Target) => t.start !== null && running(t.pid, t.start);
+
+async function stopped(targets: Target[], timeoutMs: number): Promise<boolean> {
     const deadline = Date.now() + timeoutMs;
-    while (pids.some(running)) {
+    while (targets.some(alive)) {
         if (Date.now() >= deadline) return false;
         await Bun.sleep(50);
     }
     return true;
 }
 
-function signal(pids: number[], name: NodeJS.Signals): void {
-    for (const pid of pids) {
+// Each pid is checked against its start time right before the signal, so a pid the kernel
+// reused for another process during the grace period is left alone.
+function signal(targets: Target[], name: NodeJS.Signals): void {
+    for (const t of targets.filter(alive)) {
         try {
-            process.kill(pid, name);
-        } catch {}
+            process.kill(t.pid, name);
+        } catch {
+            // A target that exits before the signal is already stopped.
+        }
     }
 }
 
-export async function stopOwnedTree(rootPid: number, graceMs: number): Promise<boolean> {
-    const targets = ownedProcesses(rootPid);
+// The launcher root stays root-owned while the sandbox is set up, so the stop succeeds only
+// once the root itself has exited too; a root still privileged then reports failure.
+// `rootStart`, captured when the launcher was spawned, rules out a root pid since reused.
+export async function stopOwnedTree(
+    rootPid: number,
+    graceMs: number,
+    rootStart?: string,
+): Promise<boolean> {
+    if (rootStart !== undefined && !running(rootPid, rootStart)) return true;
+    const targets = ownedProcesses(rootPid).map((pid) => ({ pid, start: processStart(pid) }));
+    // The root keeps its launch identity throughout; a pid reused between the check above and
+    // the walk gives a tree that belongs to another process, which is left alone.
+    const root = { pid: rootPid, start: rootStart ?? processStart(rootPid) };
+    if (rootStart !== undefined && !running(rootPid, rootStart)) return true;
+    const all = [...targets, root];
     signal(targets, "SIGTERM");
-    if (await stopped(targets, graceMs)) return true;
-    const left = targets.filter(running);
-    signal(left, "SIGKILL");
-    return stopped(left, 2_000);
+    if (await stopped(all, graceMs)) return true;
+    signal(targets, "SIGKILL");
+    if (await stopped(all, 2_000)) return true;
+    if (rootStart === undefined) return false;
+    // The launch-identity check protects processes that reuse rootPid before privileged tree traversal.
+    if (!running(rootPid, rootStart)) return false;
+    // The launcher is root-owned until its sandbox drops privileges, so what is left of a pinned
+    // launch is killed through the same passwordless sudo the launcher runs under.
+    const privileged = treeProcesses(rootPid)
+        .map((pid) => ({ pid, start: processStart(pid) }))
+        .filter(alive);
+    if (privileged.length === 0) return true;
+    Bun.spawnSync([
+        "sudo",
+        "-n",
+        "kill",
+        "-KILL",
+        ...privileged.filter(alive).map((t) => String(t.pid)),
+    ]);
+    return stopped([...all, ...privileged], 2_000);
+}
+
+function treeProcesses(rootPid: number): number[] {
+    const out: number[] = [];
+    const queue = [rootPid];
+    for (let next = queue.shift(); next !== undefined; next = queue.shift()) {
+        if (statFields(next) !== null) out.push(next);
+        queue.push(...childrenOf(next));
+    }
+    return out;
 }

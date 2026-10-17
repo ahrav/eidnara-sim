@@ -19,12 +19,15 @@ GNU `timeout -s KILL`, which signals the launcher's whole process group;
 `unshare --fork` ignores `TERM` while it waits and namespace PID 1 has no
 `TERM` handler, so `KILL` to the group is what ends a hung probe.
 `launch(launcher, keep, env,
-command)` builds the argv: kept paths, then `--env` and `NAME=value` pairs,
-then `--` and the command. `env` sets those variables after `setpriv`,
-because the setuid `sudo` boundary strips `LD_PRELOAD`. Paths and values
-must be plain words, since the script splits them on spaces, and kept paths
-must be normalized absolute paths, since the script joins them onto the
-staging directory. `probes` resolves each configured binary to its canonical
+command, readOnly)` builds the argv: kept paths, then `--ro` and the
+read-only paths, then `--env` and `NAME=value` pairs, then `--` and the
+command. Read-only paths are kept too and remounted read-only after the
+rebind. `env` sets those variables after `setpriv`, because the setuid
+`sudo` boundary strips `LD_PRELOAD`. Paths and values must be plain words,
+since the script splits them on spaces, and kept paths must be normalized
+absolute paths, since the script joins them onto the staging directory. A
+read-only remount of a parent takes the kept paths below it with it, so
+`launch` refuses a writable kept path under a read-only one. `probes` resolves each configured binary to its canonical
 path, so the kept directory and the path the loader reports in its binding
 lines match.
 
@@ -68,7 +71,9 @@ manifest, and refuses to resume when an interception result changes.
 
 The Pi probe runs Pi's Node runtime, not the Pi CLI, so it shows that the
 runtime Pi runs on reads the interposed clock. A probe is intercepted only
-when it also exits 0 under the interposer; a binary that fails, or outlives
+when it also exits normally under the interposer: exit 0, or for the daemon
+fixture, which has no successful no-op invocation, its usage error (exit 1
+with the usage line on stderr); a binary that fails, or outlives
 the 30 s deadline, is recorded `wall_clock_only`, and the run proceeds with
 that limitation in its distortions. If neither Pi nor the daemon is
 intercepted, preflight throws (OQ-9 stop condition). On this host all three

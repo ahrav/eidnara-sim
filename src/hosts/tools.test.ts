@@ -66,7 +66,7 @@ test("an OpenCode turn logs only its own messages' tools, timed in OpenCode's cl
         session: {
             messages: async () => ({ data: calls++ === 0 ? [old] : [old, fresh] }),
             prompt: async () => ({ data: { info: {} } }),
-            abort: async () => ({}),
+            abort: async () => ({ data: true }),
         },
     };
     const reported: unknown[] = [];
@@ -119,7 +119,7 @@ function failingTurn(mode: "result-error" | "rejected" | "deadline", listing = t
             },
             abort: async () => {
                 release({ data: { info: {} } });
-                return {};
+                return { data: true };
             },
         },
     };
@@ -164,7 +164,7 @@ test("a message listing that returns an error instead of data is a capture failu
                     ? { data: [] }
                     : { error: { name: "Unauthorized" }, data: undefined },
             prompt: async () => ({ data: { info: {} } }),
-            abort: async () => ({}),
+            abort: async () => ({ data: true }),
         },
     };
     const host = new OpencodeSimHost({
@@ -192,7 +192,7 @@ test("a message listing that stalls past the turn deadline fails the turn as a c
             messages: () =>
                 listed++ === 0 ? Promise.resolve({ data: [] }) : new Promise(() => undefined),
             prompt: async () => ({ data: { info: {} } }),
-            abort: async () => ({}),
+            abort: async () => ({ data: true }),
         },
     };
     const host = new OpencodeSimHost({
@@ -267,7 +267,7 @@ test("reattaching to an OpenCode session reports the tool parts its messages alr
                 data: [{ info: { id: "m1", time: { created: 1 } }, parts: [part] }],
             }),
             prompt: async () => ({ data: { info: {} } }),
-            abort: async () => ({}),
+            abort: async () => ({ data: true }),
         },
     };
     const host = new OpencodeSimHost({
@@ -299,7 +299,7 @@ test("a slow pre-turn listing leaves the turn the remaining deadline minus the l
                 return { data: [] };
             },
             prompt: () => new Promise(() => undefined),
-            abort: async () => ({}),
+            abort: async () => ({ data: true }),
         },
     };
     const host = new OpencodeSimHost({
@@ -338,7 +338,7 @@ test("a timed-out message listing aborts its request", async () => {
                 return new Promise(() => undefined);
             },
             prompt: async () => ({ data: { info: {} } }),
-            abort: async () => ({}),
+            abort: async () => ({ data: true }),
         },
     };
     const host = new OpencodeSimHost({
@@ -377,7 +377,7 @@ test("tool parts a failed post-turn listing missed are reported before the next 
                 return { data: [m1] };
             },
             prompt: async () => ({ data: { info: {} } }),
-            abort: async () => ({}),
+            abort: async () => ({ data: true }),
         },
     };
     const host = new OpencodeSimHost({
@@ -413,7 +413,7 @@ test("a turn whose listing used its deadline fails without prompting", async () 
                 prompted++;
                 return { data: { info: {} } };
             },
-            abort: async () => ({}),
+            abort: async () => ({ data: true }),
         },
     };
     const host = new OpencodeSimHost({
@@ -450,7 +450,7 @@ test("an OpenCode turn whose last assistant step has not finished is a failed tu
             session: {
                 messages: async () => ({ data: [step(finish)] }),
                 prompt: async () => ({ data: { info: {} } }),
-                abort: async () => ({}),
+                abort: async () => ({ data: true }),
             },
         };
         const host = new OpencodeSimHost({

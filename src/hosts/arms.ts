@@ -1,23 +1,75 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import {
-    appendFileSync,
+    closeSync,
+    constants,
+    existsSync,
+    fstatSync,
+    lstatSync,
     mkdirSync,
+    openSync,
     readdirSync,
     readFileSync,
     realpathSync,
+    renameSync,
+    rmSync,
     writeFileSync,
+    writeSync,
 } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative } from "node:path";
 import type { SimConfig } from "../config/config";
+import { withDeadline } from "../run/deadline";
+import { nodeInstall } from "../run/interception";
 import { launch, plainPath, shellQuote } from "../run/launcher";
-import { stopOwnedTree } from "../run/procs";
+import { piCli } from "../run/preflight";
+import { parentPid, processStart, stopOwnedTree } from "../run/procs";
 import { FAKETIME_LIB, faketimeEnv } from "../run/timeinject";
-import { toolbinDir, toolchainEnv } from "../run/toolchain";
+import { sandboxPath, toolbinDir, toolchainEnv } from "../run/toolchain";
 
 // biome-ignore lint/suspicious/noExplicitAny: v1 harness modules are imported by runtime path.
 type Untyped = any;
 async function v1(config: SimConfig, path: string): Promise<Untyped> {
     return import(join(config.eidnara_checkout, path));
+}
+
+/**
+ * `base`, created if missing: its nearest existing ancestor must resolve to itself, so the
+ * new directories remain beneath that verified ancestor.
+ */
+function realBase(base: string): string {
+    let existing = base;
+    while (!existsSync(existing) && dirname(existing) !== existing) existing = dirname(existing);
+    if (realpathSync(existing) !== existing) {
+        throw new Error(
+            `${base} is reached through a symlink; control files need a real directory`,
+        );
+    }
+    mkdirSync(base, { recursive: true });
+    return base;
+}
+
+/**
+ * `base/rel`, walked one component at a time: each existing component must be a real
+ * directory, and each missing one is created only after its parent passed, so a symlink
+ * anywhere in `rel` stops the walk before anything is created beyond it.
+ */
+function realDir(base: string, rel: string): string {
+    let dir = realBase(base);
+    for (const part of rel.split("/").filter((p) => p !== "")) {
+        dir = join(dir, part);
+        let stat: ReturnType<typeof lstatSync> | undefined;
+        try {
+            stat = lstatSync(dir);
+        } catch {
+            mkdirSync(dir);
+            continue;
+        }
+        if (stat.isSymbolicLink() || !stat.isDirectory()) {
+            throw new Error(
+                `${dir} is a symlink or not a directory; control files need a real directory`,
+            );
+        }
+    }
+    return dir;
 }
 
 export const DUMMY_AWS = {
@@ -135,9 +187,18 @@ export class DaemonStack {
         const hh = await v1(config, "packages/e2e-tests/src/rust-runner/hermetic-host.ts");
         const sources = hr.detectHarnessRuntimeSources();
         if (!sources.ok) throw new Error(`harness runtime sources: ${sources.reason}`);
-        const runtimeDir = join(this.ctx.root, "runtime");
-        mkdirSync(runtimeDir, { recursive: true, mode: 0o700 });
-        mkdirSync(this.ctx.dataDir, { recursive: true, mode: 0o700 });
+        // Each start regenerates the runtime, so the previous one is removed once its root is
+        // known to be a real directory.
+        const root = realBase(this.ctx.root);
+        rmSync(join(root, "runtime"), { recursive: true, force: true });
+        const runtimeDir = realDir(root, "runtime");
+        // The store sits beside the arm root, so its walk starts at the arm directory both share.
+        const armDir = dirname(this.ctx.root);
+        const store = relative(armDir, this.ctx.dataDir);
+        if (store.startsWith("..") || isAbsolute(store)) {
+            throw new Error(`daemon store ${this.ctx.dataDir} lies outside ${armDir}`);
+        }
+        realDir(armDir, store);
         const harnessRuntime = hr.writeHarnessRuntime({
             dir: runtimeDir,
             sources: sources.sources,
@@ -163,27 +224,90 @@ export class DaemonStack {
         this.connectionFile = this.stack.connectionFile;
     }
 
+    // O_NOFOLLOW makes a symlink left at the log path fail the append instead of redirecting it.
     private saveLog(): void {
-        if (this.stack) appendFileSync(this.ctx.logFile, this.stack.hostLog());
+        if (!this.stack) return;
+        // O_NONBLOCK turns a FIFO with no reader into ENXIO instead of a blocked open.
+        const flags =
+            constants.O_WRONLY |
+            constants.O_APPEND |
+            constants.O_CREAT |
+            constants.O_NOFOLLOW |
+            constants.O_NONBLOCK;
+        const fd = openSync(this.ctx.logFile, flags, 0o600);
+        try {
+            if (!fstatSync(fd).isFile())
+                throw new Error(`${this.ctx.logFile} is not a regular file`);
+            const log = Buffer.from(this.stack.hostLog());
+            for (let at = 0; at < log.length; ) at += writeSync(fd, log, at);
+        } finally {
+            closeSync(fd);
+        }
     }
 
+    // The stack's restartHost is crashHost then startHost, and startHost clears the output
+    // buffers; the log is taken between the two so it keeps the old daemon's last bytes.
     async restart(): Promise<void> {
+        await this.stack.crashHost();
         this.saveLog();
-        await this.stack.restartHost();
+        await this.stack.startHost();
     }
 
     async stop(): Promise<void> {
         const stack = this.stack;
         if (!stack) return;
-        this.saveLog();
-        await stack.terminateHost();
-        this.stack = null;
+        const failures: unknown[] = [];
+        let stopConfirmed = true;
+        try {
+            await stack.terminateHost();
+        } catch (caught) {
+            // terminateHost gives up after SIGTERM; the stack's SIGKILL path ends the daemon.
+            failures.push(caught);
+            await stack.crashHost().catch((killFailure: unknown) => {
+                failures.push(killFailure);
+                stopConfirmed = false;
+            });
+        }
+        // The log is taken after shutdown, so it keeps what the daemon wrote while stopping.
+        let logError: unknown;
+        try {
+            this.saveLog();
+        } catch (caught) {
+            logError = caught;
+        }
+        // A daemon whose forced stop is unconfirmed stays tracked, so a later stop can retry.
+        if (failures.length === 0 || stopConfirmed) this.stack = null;
+        if (logError !== undefined) failures.push(logError);
+        if (failures.length === 1) throw failures[0];
+        if (failures.length > 1) {
+            throw new Error(`daemon stop failed: ${failures.map(String).join("; ")}`);
+        }
     }
 }
 
-function nodeRoot(): string {
-    return resolve(realpathSync(Bun.which("node") ?? "node"), "../..");
+/** Runs each step in order, whatever the earlier ones did, and returns their failures. */
+async function settleAll(steps: Array<() => Promise<unknown>>): Promise<unknown[]> {
+    const failures: unknown[] = [];
+    for (const step of steps) {
+        try {
+            await step();
+        } catch (caught) {
+            failures.push(caught);
+        }
+    }
+    return failures;
 }
+
+function turnResult(outcome: Untyped): PromptResult {
+    const messages = (outcome.messages ?? []) as Array<Record<string, Untyped>>;
+    const last = messages.filter((m) => m.role === "assistant").at(-1);
+    return last?.stopReason === "error" ? { error: String(last.errorMessage ?? "error") } : {};
+}
+
+/** The canonical node preflight probes; `root` is the install tree the sandbox keeps read-only. */
+export { nodeInstall };
+
+const hostNode = () => nodeInstall(Bun.which("node") ?? "node");
 
 export abstract class SimHost {
     readonly toolchain: { path: string; env: Record<string, string> };
@@ -205,13 +329,44 @@ export abstract class SimHost {
             toolbinDir(launcher),
             interposer,
             config.eidnara_checkout,
+            // The scheduler writes the scenario clock from outside; hosts only read it.
+            dirname(this.ctx.offsetFile),
         ];
     }
 
-    protected async stopTree(pid: number | null | undefined): Promise<void> {
-        if (pid == null) return;
-        if (!(await stopOwnedTree(pid, 10_000)))
+    /** The launcher masks the run root, so a workspace exists inside the sandbox only below a kept path. */
+    protected requireKeptWorkspace(cwd: string): void {
+        const real = realpathSync(cwd);
+        const kept = this.ctx.keep.map((k) => realpathSync(k));
+        if (!kept.some((k) => real === k || real.startsWith(`${k}/`))) {
+            throw new Error(`workspace ${cwd} is not under a kept path`);
+        }
+    }
+
+    protected controlDir(rel: string): string {
+        return realDir(this.ctx.root, rel);
+    }
+
+    /** The file is created fresh and renamed into place, so a symlink left at `path` is replaced, never followed. */
+    protected writeControlFile(path: string, content: string): void {
+        const staged = `${path}.${process.pid}`;
+        // A staged file left by an interrupted write is removed, never followed, before the fresh one.
+        rmSync(staged, { force: true });
+        writeFileSync(staged, content, { flag: "wx" });
+        renameSync(staged, path);
+    }
+
+    // A launch whose start time was never read cannot be told from a reused pid, so it is
+    // left alone; its launcher had already exited, which ends the sandbox's namespace.
+    // Returns whether the stop was confirmed through the launch's identity.
+    protected async stopTree(
+        pid: number | null | undefined,
+        start: string | null,
+    ): Promise<boolean> {
+        if (pid == null || start === null) return false;
+        if (!(await stopOwnedTree(pid, 10_000, start)))
             throw new Error(`host tree ${pid} survived SIGKILL`);
+        return true;
     }
 
     abstract openSession(cwd: string, session: string, connection: string | null): Promise<void>;
@@ -248,6 +403,7 @@ export abstract class SimHost {
 
 export class PiSimHost extends SimHost {
     private rpc: Untyped = null;
+    private launchStart: string | null = null;
     readonly agentDir = join(this.ctx.root, "home/.pi/agent");
     private readonly started = new Map<
         string,
@@ -286,7 +442,7 @@ export class PiSimHost extends SimHost {
     }
 
     private writeConfigs(connectionFile: string | null): void {
-        mkdirSync(this.agentDir, { recursive: true });
+        const agentDir = this.controlDir("home/.pi/agent");
         const settings = {
             packages: [],
             defaultProvider: "amazon-bedrock",
@@ -298,7 +454,7 @@ export class PiSimHost extends SimHost {
             quietStartup: true,
             enableInstallTelemetry: false,
         };
-        writeFileSync(join(this.agentDir, "settings.json"), JSON.stringify(settings, null, 2));
+        this.writeControlFile(join(agentDir, "settings.json"), JSON.stringify(settings, null, 2));
         const model = {
             id: this.ctx.model,
             name: this.ctx.model,
@@ -310,32 +466,33 @@ export class PiSimHost extends SimHost {
             cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
         };
         const providers = { "amazon-bedrock": { baseUrl: this.ctx.proxyHttp2, models: [model] } };
-        writeFileSync(join(this.agentDir, "models.json"), JSON.stringify({ providers }, null, 2));
+        this.writeControlFile(
+            join(agentDir, "models.json"),
+            JSON.stringify({ providers }, null, 2),
+        );
         if (connectionFile) {
-            const dir = join(this.ctx.root, "home/config/eidnara");
-            mkdirSync(dir, { recursive: true });
+            const dir = this.controlDir("home/config/eidnara");
             const config = eidnaraUserConfig(connectionFile, this.ctx.sideModel ?? this.ctx.model);
-            writeFileSync(join(dir, "eidnara.jsonc"), JSON.stringify(config, null, 2));
+            this.writeControlFile(join(dir, "eidnara.jsonc"), JSON.stringify(config, null, 2));
         }
     }
 
     async openSession(cwd: string, session: string, connection: string | null): Promise<void> {
+        this.requireKeptWorkspace(cwd);
         const { config } = this.ctx;
         const rpcClient = await v1(config, "packages/e2e-tests/src/pi-runner/rpc-client.ts");
         this.writeConfigs(connection);
-        const cli = join(
-            config.pi_install,
-            "node_modules/@earendil-works/pi-coding-agent/dist/cli.js",
-        );
+        const cli = piCli(config);
         const args = [cli, "--mode", "rpc", "--session-id", `sim-${session}`];
         args.push("--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes");
         if (connection)
             args.push("--extension", join(config.eidnara_checkout, "packages/pi-plugin"));
         args.push("--model", modelRef(this.ctx.model));
+        const node = hostNode();
         const home = join(this.ctx.root, "home");
         const tools = this.toolchain;
         const env = {
-            PATH: `${join(nodeRoot(), "bin")}:${tools.path}:/usr/local/bin:/usr/bin:/bin`,
+            PATH: `${node.bin}:${sandboxPath(tools.path)}`,
             ...tools.env,
             ...DUMMY_AWS,
             HOME: home,
@@ -347,14 +504,24 @@ export class PiSimHost extends SimHost {
             PI_OFFLINE: "1",
             PI_SKIP_VERSION_CHECK: "1",
         };
-        const node = join(nodeRoot(), "bin/node");
-        const ro = [...this.readOnly, nodeRoot(), config.pi_install];
-        const argv = launch(this.ctx.launcher, this.ctx.keep, this.timeEnv, [node, ...args], ro);
+        const ro = [...this.readOnly, node.root, config.pi_install];
+        // The launcher starts its command at /, so the command enters the workspace itself.
+        const command = [
+            "/bin/sh",
+            "-c",
+            'cd "$1" && shift && exec "$@"',
+            "sh",
+            cwd,
+            node.exe,
+            ...args,
+        ];
+        const argv = launch(this.ctx.launcher, this.ctx.keep, this.timeEnv, command, ro);
         const child: ChildProcess = spawn(argv[0] as string, argv.slice(1), {
             cwd,
             env,
             stdio: ["pipe", "pipe", "pipe"],
         });
+        this.launchStart = child.pid === undefined ? null : processStart(child.pid);
         const spawnError = new Promise<never>((_, reject) => child.once("error", reject));
         spawnError.catch(() => undefined);
         this.rpc = new rpcClient.PiRpcProcess(child, new rpcClient.PiRpcProtocol(), {
@@ -363,60 +530,135 @@ export class PiSimHost extends SimHost {
         this.started.clear();
         this.rpc.onEvent((e: Untyped) => this.toolEvent(e));
         const ready = this.rpc.sendCommand("get_state", {}, { timeoutMs: 120_000 });
-        await Promise.race([ready, spawnError]);
+        try {
+            const state = await Promise.race([ready, spawnError]);
+            if (state.success === false) {
+                throw new Error(`Pi get_state refused: ${JSON.stringify(state).slice(0, 2000)}`);
+            }
+        } catch (caught) {
+            await this.closeSession();
+            throw caught;
+        }
     }
 
     hostPid(): number | null {
         return this.rpc?.child?.pid ?? null;
     }
 
-    private agentEnd(timeoutMs: number): Promise<Untyped> {
-        const end = this.rpc.waitForEvent((e: Untyped) => e.type === "agent_end", {
-            timeoutMs,
-            label: "agent_end",
-        });
+    // Pi emits `agent_end` with `willRetry: true` before it retries a failed request itself,
+    // so the turn is over only at an end Pi will not retry.
+    private agentEnd(timeoutMs: number, signal?: AbortSignal): Promise<Untyped> {
+        const end = this.rpc.waitForEvent(
+            (e: Untyped) => e.type === "agent_end" && e.willRetry !== true,
+            { timeoutMs, label: "agent_end", signal },
+        );
         end.catch(() => undefined);
         return end;
     }
 
     async prompt(text: string, timeoutMs: number, interruptMs?: number): Promise<PromptResult> {
-        const end = this.agentEnd(timeoutMs);
+        const deadline = Date.now() + timeoutMs;
+        const watch = { activity: 0, last: undefined as Untyped, promised: 0 };
+        const off = this.rpc.onEvent((e: Untyped) => {
+            if (e.type === "agent_start" || e.type === "compaction_start") watch.activity++;
+            // compaction_end with willRetry promises a fresh run, which settles only at its own end.
+            if (e.type === "compaction_end" && e.willRetry === true) {
+                watch.activity++;
+                watch.promised++;
+            }
+            if (e.type === "agent_start" && watch.promised > 0) watch.promised--;
+            if (e.type === "agent_end" && e.willRetry !== true) {
+                watch.activity++;
+                watch.last = e;
+            }
+        });
+        const waiting = new AbortController();
+        const end = this.agentEnd(timeoutMs, waiting.signal);
+        let settling = false;
         try {
             const response = await this.rpc.sendCommand("prompt", { message: text }, { timeoutMs });
             if (response.success === false) {
-                throw new Error(JSON.stringify(response).slice(0, 2000));
+                waiting.abort();
+                return { error: JSON.stringify(response).slice(0, 2000) };
             }
-            const cut = interruptMs === undefined ? null : Bun.sleep(interruptMs).then(() => null);
-            const first = await Promise.race(cut ? [end, cut] : [end]);
+            const first =
+                interruptMs === undefined ? await end : await withDeadline(end, interruptMs);
             if (first === null) {
-                await this.rpc.sendCommand("abort", {}, { timeoutMs: 60_000 });
-                await end;
+                // The user's abort ends the turn through Pi's abort path; its agent_end follows.
+                waiting.abort();
+                const drained = this.agentEnd(this.drainMs);
+                this.rpc
+                    .sendCommand("abort", {}, { timeoutMs: this.drainMs })
+                    .catch(() => undefined);
+                await drained.catch((reason: unknown) => {
+                    throw new Error(
+                        `Pi turn still running ${this.drainMs} ms after the user's abort (${String(reason)})`,
+                    );
+                });
                 return { interrupted: true };
             }
-            const outcome = first;
-            const messages = (outcome.messages ?? []) as Array<Record<string, Untyped>>;
-            const last = messages.filter((m) => m.role === "assistant").at(-1);
-            return last?.stopReason === "error"
-                ? { error: String(last.errorMessage ?? "error") }
-                : {};
+            settling = true;
+            return turnResult(await this.settle(watch, deadline));
         } catch (caught) {
-            const drained = this.agentEnd(30_000);
-            await this.rpc.sendCommand("abort", {}, { timeoutMs: 60_000 }).catch(() => undefined);
-            await drained.catch(() => undefined);
+            // An agent_end already seen settles the turn, whatever became of the prompt response.
+            if (watch.last && !settling) {
+                settling = true;
+                try {
+                    return turnResult(await this.settle(watch, deadline));
+                } catch {}
+            }
+            const drained = this.agentEnd(this.drainMs);
+            // The abort runs alongside the drain, so an abort that never answers cannot delay it.
+            this.rpc.sendCommand("abort", {}, { timeoutMs: this.drainMs }).catch(() => undefined);
+            // A turn that outlives the abort would end during the next turn and be taken for it.
+            await drained.catch((reason: unknown) => {
+                throw new Error(
+                    `Pi turn still running ${this.drainMs} ms after abort (${String(reason)})`,
+                );
+            });
             return { error: String(caught).slice(0, 2000) };
+        } finally {
+            off();
         }
     }
 
+    // After its last agent_end, Pi may compact and continue the run, emitting compaction_start
+    // and a fresh agent_start. The turn is settled once Pi reports itself idle and a quiet window
+    // passes with neither, and the turn's result is then the last agent_end Pi will not retry.
+    protected settleMs = 1_000;
+    protected drainMs = 30_000;
+
+    private async settle(
+        watch: { activity: number; last: Untyped; promised: number },
+        deadline: number,
+    ): Promise<Untyped> {
+        for (;;) {
+            const mark = watch.activity;
+            // The quiet window always runs in full; a late continuation must have room to appear.
+            await Bun.sleep(this.settleMs);
+            // The state check gets the turn's remaining time, with at least 1 s to answer.
+            const timeoutMs = Math.max(1_000, deadline - Date.now());
+            const state = await this.rpc.sendCommand("get_state", {}, { timeoutMs });
+            if (state.success === false) {
+                throw new Error(`Pi get_state refused while settling: ${JSON.stringify(state)}`);
+            }
+            const busy = state.data?.isStreaming === true || state.data?.isCompacting === true;
+            if (!busy && watch.promised === 0 && watch.activity === mark) return watch.last;
+            if (Date.now() >= deadline) throw new Error("Pi turn still busy at its deadline");
+        }
+    }
+
+    // The handle is cleared only after the whole teardown succeeds, so a failed close can be retried.
     async closeSession(): Promise<void> {
         const rpc = this.rpc;
-        this.rpc = null;
         if (!rpc) return;
         rpc.child.stdin?.end();
-        try {
-            await this.stopTree(rpc.child.pid);
-        } finally {
-            await rpc.shutdown(10_000);
-        }
+        const failures = await settleAll([
+            () => this.stopTree(rpc.child.pid, this.launchStart),
+            () => rpc.shutdown(10_000),
+        ]);
+        if (failures.length > 0) throw failures[0];
+        this.rpc = null;
     }
 
     transcriptEnv(): Record<string, string> {
@@ -444,8 +686,12 @@ export class OpencodeSimHost extends SimHost {
     private client: Untyped = null;
     private sid: string | null = null;
     private readonly home = join(this.ctx.root, "home");
+    protected abortWaitMs = 30_000;
+    protected setupMs = 120_000;
+    private launched: { pid: number | null; start: string | null } | null = null;
 
     async openSession(cwd: string, session: string, connection: string | null): Promise<void> {
+        this.requireKeptWorkspace(cwd);
         const { config } = this.ctx;
         const spawnMod = await v1(config, "packages/e2e-tests/src/opencode-runner/spawn.ts");
         const extra: Record<string, unknown> = {
@@ -457,22 +703,20 @@ export class OpencodeSimHost extends SimHost {
             extra.compaction = { auto: true, prune: true };
         }
         if (!connection) extra.plugin = [];
-        const sbin = join(this.ctx.root, "sbin");
-        mkdirSync(sbin, { recursive: true });
-        const binary = plainPath(config.opencode_binary);
-        const ro = [...this.readOnly, dirname(dirname(dirname(binary)))];
+        const { binary, root } = opencodeInstall(config);
+        const ro = [...this.readOnly, root];
         const launcher = plainPath(this.ctx.launcher);
-        const argv = launch(launcher, this.ctx.keep, this.timeEnv, [binary], ro);
-        const wrapper = `#!/bin/sh\nexec ${argv.map(shellQuote).join(" ")} "$@"\n`;
-        writeFileSync(join(sbin, "opencode"), wrapper, { mode: 0o755 });
+        const hostbin = dirname(
+            this.writeWrapper(launch(launcher, this.ctx.keep, this.timeEnv, [binary], ro)),
+        );
+        // The v1 runner rewrites the configuration on each spawn, so an earlier session's files go first.
+        rmSync(join(this.controlDir("home"), "config"), { recursive: true, force: true });
         const env = {
-            configDir: join(this.home, "config"),
-            dataDir: join(this.home, "data"),
-            cacheDir: join(this.home, "cache"),
+            configDir: this.controlDir("home/config"),
+            dataDir: this.controlDir("home/data"),
+            cacheDir: this.controlDir("home/cache"),
             workdir: cwd,
         };
-        for (const d of [env.configDir, env.dataDir, env.cacheDir])
-            mkdirSync(d, { recursive: true });
         const eidnara = connection
             ? {
                   eidnaraConfig: eidnaraUserConfig(
@@ -503,28 +747,59 @@ export class OpencodeSimHost extends SimHost {
                 HOME: this.home,
                 XDG_STATE_HOME: join(this.home, "state"),
                 EIDNARA_LOG_PATH: join(this.ctx.root, "eidnara.log"),
-                PATH: `${sbin}:${this.toolchain.path}:${process.env.PATH ?? ""}`,
+                PATH: `${hostbin}:${sandboxPath(this.toolchain.path)}`,
             },
         });
+        const launchedPid = this.hostPid();
+        this.launched = {
+            pid: launchedPid,
+            start: launchedPid === null ? null : processStart(launchedPid),
+        };
         const sdkPath = "packages/e2e-tests/node_modules/@opencode-ai/sdk/dist/index.js";
-        const sdk = await import(join(config.eidnara_checkout, sdkPath));
-        this.client = sdk.createOpencodeClient({ baseUrl: this.oc.url });
+        try {
+            const sdk = await import(join(config.eidnara_checkout, sdkPath));
+            this.client = sdk.createOpencodeClient({ baseUrl: this.oc.url });
+            const found = await withDeadline(this.findOrCreateSession(cwd, session), this.setupMs);
+            if (found === null)
+                throw new Error(`OpenCode session setup still pending after ${this.setupMs} ms`);
+            this.sid = found.id;
+            if (found.existing) await this.recoverTools(this.setupMs);
+        } catch (caught) {
+            await this.closeSession();
+            throw caught;
+        }
+    }
+
+    /** The session titled for `session`, reattached when the killed harness left it, else created. */
+    private async findOrCreateSession(
+        cwd: string,
+        session: string,
+    ): Promise<{ id: string; existing: boolean }> {
         const listed = await this.client.session.list({ query: { directory: cwd } });
+        if (listed.error) throw new Error(`session.list failed: ${JSON.stringify(listed.error)}`);
         const latest = ((listed.data ?? []) as Array<Record<string, Untyped>>)
             .filter((s) => s.title === `sim-${session}`)
             .at(0);
-        if (latest) {
-            this.sid = String(latest.id);
-            await this.recoverTools(120_000);
-            return;
-        }
+        if (latest) return { id: String(latest.id), existing: true };
         const created = await this.client.session.create({
             query: { directory: cwd },
             body: { title: `sim-${session}`, permission: NON_INTERACTIVE },
         });
         if (!created.data)
             throw new Error(`session.create failed: ${JSON.stringify(created.error)}`);
-        this.sid = created.data.id;
+        return { id: created.data.id, existing: false };
+    }
+
+    private writeWrapper(argv: string[]): string {
+        const dir = join(dirname(this.ctx.launcher), "hostbin", this.ctx.arm);
+        mkdirSync(dir, { recursive: true });
+        const path = join(dir, "opencode");
+        const staged = `${path}.${process.pid}`;
+        writeFileSync(staged, `#!/bin/sh\nexec ${argv.map(shellQuote).join(" ")} "$@"\n`, {
+            mode: 0o755,
+        });
+        renameSync(staged, path);
+        return path;
     }
 
     hostPid(): number | null {
@@ -538,8 +813,13 @@ export class OpencodeSimHost extends SimHost {
                 return false;
             }
         };
-        const pids = readdirSync("/proc").filter((e) => /^\d+$/.test(e) && serves(e));
-        return pids.length > 0 ? Math.min(...pids.map(Number)) : null;
+        // The v1 runner spawns the wrapper as this process's child, and the wrapper execs the
+        // launcher, so the launcher root is the one serving process whose parent is this process.
+        const pids = readdirSync("/proc")
+            .filter((e) => /^\d+$/.test(e) && serves(e))
+            .map(Number)
+            .filter((pid) => parentPid(pid) === process.pid);
+        return pids.length === 1 ? (pids[0] as number) : null;
     }
 
     /** Lists the session's messages within `deadlineMs`; a listing that stalls past it throws. */
@@ -552,7 +832,7 @@ export class OpencodeSimHost extends SimHost {
             signal: controller.signal,
         });
         call.catch(() => undefined);
-        const listed = await Promise.race([call, Bun.sleep(deadlineMs).then(() => null)]);
+        const listed: Untyped = await withDeadline(call as Promise<Untyped>, deadlineMs);
         if (listed === null) {
             controller.abort();
             throw new Error(`session.messages timed out after ${deadlineMs} ms`);
@@ -669,23 +949,46 @@ export class OpencodeSimHost extends SimHost {
             path: { id: this.sid },
             body: { model, parts: [{ type: "text", text }] },
         });
-        const settled = call.then(
+        const settled: Promise<{ result: Untyped } | { caught: unknown }> = call.then(
             (result: Untyped) => ({ result }),
             (caught: unknown) => ({ caught }),
         );
         const wait = Math.min(timeoutMs, interruptMs ?? timeoutMs);
-        const first = await Promise.race([settled, Bun.sleep(wait).then(() => null)]);
+        const first = await withDeadline(settled, wait);
         if (first === null) {
             const abort = this.client.session.abort({ path: { id: this.sid } });
-            await Promise.race([abort.catch(() => undefined), Bun.sleep(5_000)]);
-            const drained = await Promise.race([settled, Bun.sleep(30_000).then(() => null)]);
+            // An abort still in flight when the next turn starts would cancel that turn instead.
+            const answered = await withDeadline(
+                abort.then(
+                    (r: Untyped) => r?.data === true,
+                    () => false,
+                ),
+                this.abortWaitMs,
+            );
+            if (answered === null) {
+                throw new Error(
+                    `OpenCode abort still pending ${this.abortWaitMs} ms after the deadline`,
+                );
+            }
+            if (!answered) throw new Error("OpenCode turn not aborted after its deadline");
+            const drained = await withDeadline(settled, 30_000);
             if (drained === null) throw new Error("OpenCode turn still running 30 s after abort");
             if (wait < timeoutMs) return { interrupted: true };
             return { error: `turn deadline ${timeoutMs} ms` };
         }
         if ("caught" in first) {
+            // The request failed with the server's answer unknown, so the turn is aborted before the next one.
+            const abort = this.client.session.abort({ path: { id: this.sid } }).then(
+                (r: Untyped) => r?.data === true,
+                () => false,
+            );
             const tail = String(this.oc?.stderr?.() ?? "").slice(-600);
-            return { error: `${String(first.caught)} | serve stderr: ${tail}`.slice(0, 2000) };
+            const cause = String(first.caught);
+            const error = (tail ? `${cause} | serve stderr: ${tail}` : cause).slice(0, 2000);
+            if (!(await withDeadline(abort, this.abortWaitMs))) {
+                throw new Error(`OpenCode turn not aborted after a rejected prompt (${error})`);
+            }
+            return { error };
         }
         const { result } = first;
         if (result.error) return { error: JSON.stringify(result.error).slice(0, 2000) };
@@ -693,22 +996,39 @@ export class OpencodeSimHost extends SimHost {
         return info?.error ? { error: JSON.stringify(info.error).slice(0, 2000) } : {};
     }
 
+    // The handles are cleared only after the whole teardown succeeds, so a failed close can be retried.
+    // The launcher's exit, confirmed through its launch identity, settles the close; the kill
+    // step's own report counts only while that confirmation is missing.
     async closeSession(): Promise<void> {
         const oc = this.oc;
-        const pid = this.hostPid();
+        if (!oc) return;
+        const launched = this.launched ?? { pid: this.hostPid(), start: null };
+        let confirmed = false;
+        const failures = await settleAll([
+            async () => {
+                confirmed = await this.stopTree(launched.pid, launched.start);
+            },
+            () =>
+                oc.kill().catch((caught: unknown) => {
+                    if (!confirmed) throw caught;
+                }),
+        ]);
+        if (failures.length > 0) throw failures[0];
         this.oc = null;
         this.client = null;
-        if (!oc) return;
-        try {
-            await this.stopTree(pid);
-        } finally {
-            await oc.kill();
-        }
+        this.launched = null;
     }
 
     transcriptEnv(): Record<string, string> {
         return { XDG_DATA_HOME: join(this.home, "data") };
     }
+}
+
+export function opencodeInstall(config: SimConfig): { binary: string; root: string } {
+    const binary = plainPath(realpathSync(config.opencode_binary));
+    // An npm install keeps its package tree read-only; a standalone binary keeps its own directory.
+    const npm = /\/node_modules\/opencode-ai\/bin\/[^/]+$/.test(binary);
+    return { binary, root: npm ? dirname(dirname(dirname(binary))) : dirname(binary) };
 }
 
 export function makeHost(ctx: HostContext): SimHost {
