@@ -1594,3 +1594,9 @@ test("snapshot git that outlives its bound fails the probe turn instead of hangi
     expect(next.failed).toBeUndefined();
     expect(next.snapshot).toBe("host:q-2:e-2");
 });
+
+test("a fresh recorder creates an empty tools.jsonl, so a run with no tool runs still has the ledger", () => {
+    const armDir = tmp();
+    new SnapshotRecorder(armDir, "eidnara", () => []);
+    expect(readFileSync(join(armDir, "tools.jsonl"), "utf8")).toBe("");
+});

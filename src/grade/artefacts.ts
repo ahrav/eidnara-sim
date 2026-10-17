@@ -85,10 +85,40 @@ export class GradeRefused extends Error {}
 /** A refusal that concerns one item's answer evidence; the grader excludes the item. */
 export class AnswerRefused extends GradeRefused {}
 
+const ROLES: Record<string, readonly string[]> = {
+    diff: ["turn", "prior-session"],
+    "command-log": ["turn", "session"],
+};
+
+/**
+ * Every artefact must be a grade input of a known class with its class's payload in place: a
+ * diff carries a string `patch`, a command log an array of commands, a proxy-call artefact an
+ * array of calls. A reader would otherwise default a missing payload to empty evidence.
+ */
 export function assertArtefactsOnly(snapshot: Snapshot): void {
-    for (const a of snapshot.artefacts as Array<{ id: string; class: string }>) {
-        if (!(ARTEFACT_CLASSES as readonly string[]).includes(a.class)) {
-            throw new GradeRefused(`artefact ${a.id} of class ${a.class} is not a grade input`);
+    for (const raw of snapshot.artefacts) {
+        const a = raw as unknown as Record<string, unknown>;
+        const id = typeof a.id === "string" ? a.id : "?";
+        if (
+            typeof a.id !== "string" ||
+            !(ARTEFACT_CLASSES as readonly string[]).includes(a.class as string)
+        ) {
+            throw new GradeRefused(
+                `artefact ${id} of class ${String(a.class)} is not a grade input`,
+            );
+        }
+        const roles = ROLES[a.class as string];
+        if (roles && !roles.includes(a.role as string)) {
+            throw new GradeRefused(`artefact ${id} has no ${a.class} role`);
+        }
+        const payload: [string, (v: unknown) => boolean] =
+            a.class === "diff"
+                ? ["patch", (v) => typeof v === "string"]
+                : a.class === "command-log"
+                  ? ["commands", Array.isArray]
+                  : ["calls", Array.isArray];
+        if (!payload[1](a[payload[0]])) {
+            throw new GradeRefused(`artefact ${id} of class ${a.class} has no ${payload[0]}`);
         }
     }
 }

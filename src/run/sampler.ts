@@ -99,7 +99,7 @@ export class ResourceSampler {
         const s: Sample = {
             wall_ms: wall,
             scenario_ms: this.o.scenarioMs(),
-            pid,
+            pid: stats ? pid : null,
             start: stats?.start ?? null,
             rss: stats?.rss ?? null,
             cpu_ms: stats?.cpuMs ?? null,

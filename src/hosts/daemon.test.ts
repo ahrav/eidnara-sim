@@ -7,6 +7,7 @@ import {
     mkdirSync,
     mkdtempSync,
     readFileSync,
+    renameSync,
     rmSync,
     writeFileSync,
 } from "node:fs";
@@ -410,6 +411,77 @@ test("a stop after a replacement that failed to come up keeps the killed lifetim
     );
 });
 
+test("a restart saves the held stdout through the marker, so a kill mid-append rolls it back", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "sim-daemon-"));
+    const logPath = join(dir, "direct-host.log");
+    const marker = join(dir, "daemon.log.source");
+    writeFileSync(logPath, "old\n");
+    const seen: unknown[] = [];
+    const stack = {
+        logPath,
+        child: { pid: process.pid },
+        restartHost: async () => {
+            rmSync(logPath);
+            writeFileSync(logPath, "new\n");
+        },
+    };
+    const hh = {
+        __hermeticHostTest: {
+            diagnostics: () => ({ stdout: "out\n", stderr: "", retainedLog: "" }),
+        },
+    };
+    const daemon = new DaemonStack(stackCtx(dir));
+    Object.assign(daemon as unknown as Record<string, unknown>, { stack, hh });
+    const absorb = (daemon as unknown as { absorb: (s: string, r: string[]) => void }).absorb.bind(
+        daemon,
+    );
+    (daemon as unknown as { absorb: (s: string, r: string[]) => void }).absorb = (s, r) => {
+        seen.push(JSON.parse(readFileSync(marker, "utf8")));
+        absorb(s, r);
+    };
+    await daemon.restart();
+    // By the time the held log is absorbed, the stdout has been saved and the marker has dropped it.
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).not.toHaveProperty("stdout");
+    expect(seen[0]).not.toHaveProperty("stdout_target");
+    expect(readFileSync(join(dir, "daemon.log"), "utf8")).toBe("out\nold\n");
+});
+
+test("a stop treats a reused pid with another start time as a new lifetime", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "sim-daemon-"));
+    const logPath = join(dir, "direct-host.log");
+    const marker = join(dir, "daemon.log.source");
+    writeFileSync(logPath, "old stderr\n");
+    let stdout = "old stdout\n";
+    const stack = {
+        logPath,
+        child: { pid: process.pid },
+        crashHost: async () => {},
+        restartHost: async () => {
+            stdout = "new stdout\n";
+            rmSync(logPath);
+            writeFileSync(logPath, "new stderr\n");
+            const held = JSON.parse(readFileSync(marker, "utf8"));
+            writeFileSync(
+                marker,
+                JSON.stringify({ ...held, owner: { pid: process.pid, start: "0" } }),
+            );
+            throw new Error("replacement never became ready");
+        },
+        terminateHost: async () => {},
+    };
+    const hh = {
+        __hermeticHostTest: { diagnostics: () => ({ stdout, stderr: "", retainedLog: "" }) },
+    };
+    const daemon = new DaemonStack(stackCtx(dir));
+    Object.assign(daemon as unknown as Record<string, unknown>, { stack, hh });
+    await expect(daemon.restart()).rejects.toThrow("never became ready");
+    await daemon.stop();
+    expect(readFileSync(join(dir, "daemon.log"), "utf8")).toBe(
+        "old stdout\nold stderr\nnew stderr\nnew stdout\n",
+    );
+});
+
 test("the marker names the replacement daemon as soon as it is up", async () => {
     const dir = mkdtempSync(join(tmpdir(), "sim-daemon-"));
     const logPath = join(dir, "direct-host.log");
@@ -534,4 +606,37 @@ test("a stop keeps the shutdown stdout when it rolls back an interrupted copy", 
     expect(saved).toContain("held lifetime\n");
     expect(saved).toContain("live lifetime\n");
     expect(saved).not.toContain("held lif\n");
+});
+
+test("every marker written during a restart keeps the daemon owner", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "sim-daemon-"));
+    const logPath = join(dir, "direct-host.log");
+    const marker = join(dir, "daemon.log.source");
+    writeFileSync(logPath, "old\n");
+    const owners: unknown[] = [];
+    const stack = {
+        logPath,
+        restartHost: async () => {
+            rmSync(logPath);
+            writeFileSync(logPath, "new\n");
+        },
+    };
+    const hh = {
+        __hermeticHostTest: { diagnostics: () => ({ stdout: "", stderr: "", retainedLog: "" }) },
+    };
+    const daemon = new DaemonStack(stackCtx(dir));
+    Object.assign(daemon as unknown as Record<string, unknown>, {
+        stack,
+        hh,
+        pid: () => process.pid,
+        writeMarker: (m: { owner?: unknown }) => {
+            owners.push(m.owner ?? null);
+            const tmp = `${marker}.tmp`;
+            writeFileSync(tmp, JSON.stringify(m));
+            renameSync(tmp, marker);
+        },
+    });
+    await daemon.restart();
+    expect(owners.length).toBeGreaterThan(2);
+    expect(owners.every((o) => o !== null)).toBe(true);
 });

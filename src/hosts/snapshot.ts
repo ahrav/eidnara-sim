@@ -2,9 +2,11 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
     appendFileSync,
+    type Dirent,
     existsSync,
     lstatSync,
     mkdirSync,
+    opendirSync,
     readdirSync,
     readFileSync,
     realpathSync,
@@ -50,6 +52,19 @@ const NESTED_REPO_CAP = 1_000;
 const RULE_FILE_CAP = 1 << 20;
 /** In-tree files whose rules shape what the snapshot tree holds: ignore rules and attributes (filters, `ident`, eol). */
 const RULE_FILES = new Set([".gitignore", ".gitattributes"]);
+
+/**
+ * Yields a directory's entries one at a time through `opendirSync`, so a caller's count and
+ * deadline checks run before a wide directory is held in memory.
+ */
+export function* entriesOf(dir: string): Generator<Dirent> {
+    const handle = opendirSync(dir);
+    try {
+        for (let entry = handle.readSync(); entry !== null; entry = handle.readSync()) yield entry;
+    } finally {
+        handle.closeSync();
+    }
+}
 
 /**
  * Git's blob id of a regular file under the size cap, computed without git; any other shape
@@ -101,10 +116,12 @@ export class SnapshotRecorder {
         for (const name of locks) rmSync(join(this.gitDir, name), { force: true });
     }
 
-    /** Drops a line a kill cut from `snapshots.jsonl` and `tools.jsonl`, so the next record starts at a line boundary. */
+    /** Drops a line a kill cut from `snapshots.jsonl` and `tools.jsonl`, and creates `tools.jsonl` so a run with no tool runs still has its ledger. */
     private dropCutLine(): void {
         keepCompleteLines(join(this.armDir, "snapshots.jsonl"));
-        keepCompleteLines(join(this.armDir, "tools.jsonl"));
+        const tools = join(this.armDir, "tools.jsonl");
+        keepCompleteLines(tools);
+        if (!existsSync(tools)) appendFileSync(tools, "");
     }
 
     /**
@@ -181,7 +198,7 @@ export class SnapshotRecorder {
         let seen = 0;
         const pending = [dir];
         for (let at = pending.shift(); at !== undefined; at = pending.shift()) {
-            for (const entry of readdirSync(at, { withFileTypes: true })) {
+            for (const entry of entriesOf(at)) {
                 if (++seen > WORKSPACE_ENTRY_CAP || Date.now() > deadline) {
                     const why =
                         seen > WORKSPACE_ENTRY_CAP

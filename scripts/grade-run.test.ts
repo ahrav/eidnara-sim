@@ -104,10 +104,27 @@ function run(o: RunOptions): string {
 }
 
 let seq = 0;
+/** Appends a snapshot row and, for its agent calls, the `calls.jsonl` records the proxy would have written. */
 function snapshot(dir: string, arm: string, s: Snapshot, journaled = true): void {
     const row = { ...s, arm, id: `${arm}:${s.item}:${s.turn}:${seq++}` };
     mkdirSync(join(dir, arm), { recursive: true });
     appendFileSync(join(dir, arm, "snapshots.jsonl"), `${JSON.stringify(row)}\n`);
+    const calls = s.artefacts.find((a) => a.class === "proxy-call");
+    if (calls?.class === "proxy-call" && journaled) {
+        for (const c of calls.calls) {
+            if (c.component !== "agent") continue;
+            const record = {
+                seq: c.seq,
+                wall_ms: 0,
+                scenario_ms: c.scenario_ms,
+                arm,
+                component: "agent",
+                model: "global.anthropic.claude-opus-5-5",
+                status: 200,
+            };
+            appendFileSync(join(dir, "calls.jsonl"), `${JSON.stringify(record)}\n`);
+        }
+    }
     if (!journaled) return;
     const entry = {
         seq,
@@ -307,6 +324,17 @@ describe("grade-run", () => {
         await expect(gradeRun(dir, null)).rejects.toThrow("have no row in snapshots.jsonl");
     });
 
+    test("a journaled snapshot's agent calls must be recorded in calls.jsonl under its arm", async () => {
+        const p8 = fixture("P8-pass");
+        const dir = run({ probes: [p8.probe] });
+        snapshot(dir, "eidnara", p8.snapshots[0] as Snapshot);
+        expect((await gradeRun(dir, null)).verdicts).toEqual({ "eidnara/P8": { pass: 1 } });
+        const missing = run({ probes: [p8.probe] });
+        snapshot(missing, "eidnara", p8.snapshots[0] as Snapshot);
+        writeFileSync(join(missing, "calls.jsonl"), "");
+        await expect(gradeRun(missing, null)).rejects.toThrow("which calls.jsonl does not record");
+    });
+
     test("agent calls whose model the manifest does not record are refused before judging", async () => {
         const dir = run({ probes: [p5.probe] });
         snapshot(dir, "eidnara", snap);
@@ -319,7 +347,7 @@ describe("grade-run", () => {
             model: "global.openai.gpt-5.6-luna",
             status: 200,
         };
-        writeFileSync(join(dir, "calls.jsonl"), `${JSON.stringify(call)}\n`);
+        appendFileSync(join(dir, "calls.jsonl"), `${JSON.stringify(call)}\n`);
         await expect(gradeRun(dir, null)).rejects.toThrow("models the manifest does not record");
         expect(() => readFileSync(join(dir, "grades.jsonl"))).toThrow();
     });
