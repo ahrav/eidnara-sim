@@ -303,6 +303,11 @@ async function runArms(
     const proxyFaults = scenario.faults.filter((f) => f.seam.layer === "proxy-sink");
     const injector = new FaultInjector(proxyFaults, new Rng((seed ^ 0x5bd1e995) >>> 0), 120_000);
     const offsetFile = (arm: string) => join(o.out, arm, "clock", "offset");
+    const pairing = new Pairing(
+        join(o.out, "pairing.jsonl"),
+        () => manifest.order[0] as string,
+        manifest.tapes.map((t) => join(dirname(t), "pairing.jsonl")),
+    );
     const scheduler = new Scheduler({
         events,
         faults: scenario.faults,
@@ -318,6 +323,17 @@ async function runArms(
                 label: e.label as Label,
             }));
             return realisedRates(turns, prereg);
+        },
+        // The pairing log holds the turn's user record ahead of the prompt, so a turn a kill
+        // interrupted mid-prompt keeps its label and delivery in the journal.
+        recoverTurn: (event: string): Record<string, unknown> | undefined => {
+            const arm: string | null = scheduler.currentArm;
+            const r = pairing.records.find(
+                (x) => x.kind === "turn" && x.arm === arm && x.event === event,
+            );
+            return r?.kind === "turn"
+                ? { session: r.session, label: r.label, delivered: r.delivered }
+                : undefined;
         },
     });
     const now = () => scheduler.clock?.now() ?? 0;
@@ -388,11 +404,7 @@ async function runArms(
         seed,
         plan: behaviourPlan(scripted, prereg, seed, pinned),
         tape: new Tape(join(o.out, "tape.jsonl"), manifest.tapes),
-        pairing: new Pairing(
-            join(o.out, "pairing.jsonl"),
-            () => manifest.order[0] as string,
-            manifest.tapes.map((t) => join(dirname(t), "pairing.jsonl")),
-        ),
+        pairing,
         llm: proxyUserSim(
             gateway.urls[0] as string,
             prereg.user_sim.model,

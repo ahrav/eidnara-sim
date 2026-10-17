@@ -883,6 +883,8 @@ export class OpencodeSimHost extends SimHost {
             (result: Untyped) => ({ result }),
             (caught: unknown) => ({ caught }),
         );
+        const deadline = Date.now() + timeoutMs;
+        const left = () => Math.max(0, deadline - Date.now());
         const wait = Math.min(timeoutMs, interruptMs ?? timeoutMs);
         let first = await Promise.race([settled, Bun.sleep(wait).then(() => null)]);
         if (first === null && wait < timeoutMs) {
@@ -894,7 +896,7 @@ export class OpencodeSimHost extends SimHost {
                 if (drained === null) throw new Error("OpenCode turn still running after abort");
                 return { interrupted: true };
             }
-            first = await Promise.race([settled, Bun.sleep(timeoutMs - wait).then(() => null)]);
+            first = await Promise.race([settled, Bun.sleep(left()).then(() => null)]);
             // The request outlived its wait; an answer that arrived with the prompt's end
             // means the abort ended the turn. A request still open is cancelled here, so it
             // cannot reach the session's next prompt.

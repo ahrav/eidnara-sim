@@ -331,11 +331,16 @@ export class HostDriver implements ArmDriver {
         const owedBefore = this.owedStores();
         if (owedBefore) outcome.stores = owedBefore;
         const interruptMs = typeof e.interrupt_ms === "number" ? e.interrupt_ms : undefined;
-        // A turn that spent part of its deadline before the prompt passes the rest along.
+        // A turn that spent part of its deadline before the prompt passes the rest along; one
+        // that spent all of it fails here, so the agent never runs past the deadline.
         const deadline =
             typeof e.deadline_ms === "number"
-                ? Math.max(100, Math.min(this.o.turnDeadlineMs, e.deadline_ms))
+                ? Math.min(this.o.turnDeadlineMs, e.deadline_ms)
                 : this.o.turnDeadlineMs;
+        if (deadline <= 0) {
+            outcome.failed = `turn deadline ${this.o.turnDeadlineMs} ms spent before the prompt`;
+            return outcome;
+        }
         this.turn = e.id;
         const result = await host.prompt(String(e.text), deadline, interruptMs);
         let reported = false;

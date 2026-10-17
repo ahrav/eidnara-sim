@@ -701,6 +701,41 @@ describe("store checks outside turns", () => {
 });
 
 describe("driver lifecycle hooks", () => {
+    test("a turn interrupted by a kill keeps the user record its driver can recover", async () => {
+        const path = join(dir(), "j.jsonl");
+        const j = new Journal(path);
+        j.append({ kind: "StartRun", arm: null, scenario_ms: 0 });
+        j.append({ kind: "StartArm", arm: "a", scenario_ms: 0 });
+        j.append({ kind: "Event", arm: "a", scenario_ms: 0, event: "e-000000" });
+        j.append({
+            kind: "BeginTurn",
+            arm: "a",
+            scenario_ms: 1_000,
+            event: "e-000001",
+            probe: null,
+        });
+        j.close();
+        const second = new Journal(path);
+        await new Scheduler({
+            events: fixtureEvents(2),
+            faults: [],
+            journal: second,
+            settleMs: 0,
+            order: ["a"],
+            drivers: { a: fakeDriver([]) },
+            recoverTurn: (event) =>
+                event === "e-000001"
+                    ? { session: "s-0001", label: "pushback", delivered: true }
+                    : undefined,
+        }).run();
+        const kinds = second.entries.map((e) => [e.kind, e.event ?? null]);
+        const user = kinds.findIndex(([k, e]) => k === "UserTurn" && e === "e-000001");
+        const done = kinds.findIndex(([k, e]) => k === "Event" && e === "e-000001");
+        expect(user).toBeGreaterThan(0);
+        expect(user).toBeLessThan(done);
+        expect(second.entries[user]).toMatchObject({ label: "pushback", recovered: true });
+    });
+
     test("an arm killed after its rate summary resumes without a second one", async () => {
         const path = join(dir(), "j.jsonl");
         const events = fixtureEvents(2);

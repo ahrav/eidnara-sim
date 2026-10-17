@@ -64,6 +64,11 @@ export interface SchedulerOptions {
     onClock?: (arm: string, scenarioMs: number) => number | undefined;
     /** The arm's realised user-sim rates, journaled as `UserSimRates` before `EndArm`. */
     armSummary?: (arm: string) => object | undefined;
+    /**
+     * The user record of a turn a kill interrupted, from the driver's own log, journaled as
+     * `UserTurn` with `recovered: true` ahead of the turn's `failed(interrupted)` event.
+     */
+    recoverTurn?: (event: string) => Record<string, unknown> | undefined;
 }
 
 const PROXY_LAYER = "proxy-sink";
@@ -72,6 +77,11 @@ const OUTAGE = new Set(["daemon_sigkill_mid_fold", "daemon_restart", "host_upgra
 export class Scheduler {
     clock: Clock | null = null;
     private arm: string | null = null;
+
+    /** The arm whose events are running, or null between arms. */
+    get currentArm(): string | null {
+        return this.arm;
+    }
     private session: string | null = null;
     private outage: string | null = null;
     private readonly fired = new Set<string>();
@@ -172,6 +182,8 @@ export class Scheduler {
             this.log({ kind: "Event", event: e.event, outcome: e.outcome });
         }
         for (const e of kinds("BeginTurn").filter((x) => !ended.has(x.event))) {
+            const user = this.o.recoverTurn?.(e.event as string);
+            if (user) this.log({ kind: "UserTurn", event: e.event, ...user, recovered: true });
             this.log({ kind: "ItemState", event: e.event, state: "failed(interrupted)" });
             this.log({ kind: "Event", event: e.event, outcome: "failed(interrupted)" });
         }

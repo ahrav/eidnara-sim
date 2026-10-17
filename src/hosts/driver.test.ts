@@ -553,7 +553,12 @@ describe("HostDriver lifecycle", () => {
         await driver.event(ev("user_turn", { id: "e-1", text: "go", deadline_ms: 400 }));
         await driver.event(ev("user_turn", { id: "e-2", text: "go" }));
         await driver.event(ev("user_turn", { id: "e-3", text: "go", deadline_ms: 5_000 }));
-        expect(host.deadlines).toEqual([400, 1_000, 1_000]);
+        await driver.event(ev("user_turn", { id: "e-4", text: "go", deadline_ms: 30 }));
+        const spent = await driver.event(
+            ev("user_turn", { id: "e-5", text: "go", deadline_ms: 0 }),
+        );
+        expect(host.deadlines).toEqual([400, 1_000, 1_000, 30]);
+        expect(spent.failed).toContain("turn deadline");
     });
 
     test("a scheduled interrupt reaches the host's prompt and the turn reports it", async () => {

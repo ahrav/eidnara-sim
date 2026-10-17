@@ -409,6 +409,22 @@ test("an OpenCode turn whose abort was refused runs on under its own deadline", 
     expect(await host.prompt("go", 5_000, 50)).toEqual({});
 });
 
+test("an OpenCode abort wait counts against the turn's own deadline", async () => {
+    const host = opencodeHost({
+        session: {
+            messages: async () => ({ data: [] }),
+            prompt: () => Bun.sleep(600).then(() => ({ data: { info: {} } })),
+            abort: () => new Promise(() => {}),
+        },
+    });
+    Object.assign(host as unknown as Record<string, unknown>, {
+        abortWaitMs: 300,
+        drainWaitMs: 1_000,
+    });
+    const result = await host.prompt("go", 400, 50);
+    expect(result.error).toContain("turn deadline 400 ms");
+});
+
 test("an OpenCode abort that answers after its wait but stopped the prompt still counts as the interrupt", async () => {
     const host = opencodeHost({
         session: {
