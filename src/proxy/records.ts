@@ -1,4 +1,5 @@
 import { appendFileSync, existsSync, readFileSync, truncateSync } from "node:fs";
+import { requireAppendable } from "../run/journal";
 
 export const COMPONENTS = [
     "agent",
@@ -86,6 +87,7 @@ export class RecordWriter {
     readonly records: CallRecord[] = [];
 
     constructor(private readonly path: string | null) {
+        if (path) requireAppendable(path);
         if (!path || !existsSync(path)) return;
         const text = readFileSync(path, "utf8");
         const complete = text.slice(0, text.lastIndexOf("\n") + 1);

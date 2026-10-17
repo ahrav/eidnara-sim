@@ -5,6 +5,7 @@ import {
     mkdtempSync,
     readFileSync,
     rmSync,
+    symlinkSync,
     writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -334,6 +335,16 @@ describe("grade-run", () => {
         snapshot(dir, "eidnara", snap);
         snapshot(dir, "eidnara", { ...snap, turn: "e-1-again" });
         await expect(gradeRun(dir, null)).rejects.toThrow("more than one first snapshot");
+    });
+
+    test("a grading output that is a symlink is refused before anything is written", async () => {
+        const dir = run({ probes: [p5.probe] });
+        snapshot(dir, "eidnara", snap);
+        const outside = join(mkdtempSync(join(tmpdir(), "grade-run-out-")), "victim");
+        writeFileSync(outside, "keep me\n");
+        symlinkSync(outside, join(dir, "grades.jsonl"));
+        await expect(gradeRun(dir, null)).rejects.toThrow("not a regular file");
+        expect(readFileSync(outside, "utf8")).toBe("keep me\n");
     });
 
     test("a run directory leased by a live process is refused", async () => {
