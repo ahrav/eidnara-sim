@@ -102,6 +102,13 @@ function timeline(arm: ArmLogs, base: number): Timeline {
         from: finite(e, "wall_ms"),
         to: offsets[i + 1] ? finite(offsets[i + 1] as Entry, "wall_ms") : Number.POSITIVE_INFINITY,
     }));
+    for (const [i, span] of spans.entries()) {
+        if (span.to <= span.from) {
+            throw new Error(
+                `${arm.arm}: clock offset ${String(offsets[i]?.seq)} has a later offset at an earlier wall_ms, so its span runs backward`,
+            );
+        }
+    }
     const stamps = (line: string) => {
         const ms = logMs(line);
         if (ms === null) return [];
@@ -228,7 +235,7 @@ export function dirtyReasons(evidence: Evidence, turn: Turn, tl: Timeline): stri
     return reasons;
 }
 
-type Checks = Record<"after_crash" | "post_crash_pass" | "final", StoreCheck | undefined>;
+type Checks = Partial<Record<"after_crash" | "post_crash_pass" | "final", StoreCheck | undefined>>;
 
 /** A range's identity; bounds alone when either side of a comparison predates digests. */
 const key = (r: StoreCheck["ranges"][number], digests: boolean) =>
@@ -239,7 +246,7 @@ const key = (r: StoreCheck["ranges"][number], digests: boolean) =>
  * history and removes nothing further, so each segment the kill left, inspected before the
  * replacement daemon starts, is still there, bounds and contents, after that pass.
  */
-function storeReasons(checks: Checks): string[] {
+function storeReasons(checks: Checks, postCrash = true): string[] {
     const reasons: string[] = [];
     for (const [name, check] of Object.entries(checks)) {
         const label = name.replaceAll("_", " ");
@@ -250,6 +257,7 @@ function storeReasons(checks: Checks): string[] {
             reasons.push(`${check.overlaps.length} overlapping history segments, ${label}`);
         }
     }
+    if (!postCrash) return reasons;
     const after = checks.after_crash?.ranges ?? [];
     const compared = [...after, ...(checks.post_crash_pass?.ranges ?? [])];
     // Checks recorded before ranges carried digests compare bounds only, which cannot certify
@@ -303,7 +311,13 @@ export function recoveries(run: RunLogs): Recovery[] {
             };
             const base = { arm: arm.arm, fault: String(fired.fault), type: String(fired.type) };
             if (evidence.skipped !== undefined) {
-                const reasons = [`skipped: ${String(evidence.skipped)}`];
+                // The driver skips with a reason in words; any other shape is malformed evidence.
+                if (typeof evidence.skipped !== "string" || evidence.skipped === "") {
+                    throw new Error(
+                        `${arm.arm}: ${base.fault} FaultObserved has a skipped field that is not a reason`,
+                    );
+                }
+                const reasons = [`skipped: ${evidence.skipped}`];
                 return { ...base, turns_to_first_clean: null, recovered: null, reasons };
             }
             const turns = turnsAfter(arm, fired, tl);
@@ -322,12 +336,24 @@ export function recoveries(run: RunLogs): Recovery[] {
                 turns_to_first_clean: index < 0 ? null : index + 1,
                 reasons,
             };
+            const parsed = (value: unknown, where: string) =>
+                value === undefined ? undefined : parseStoreCheck(value, where);
+            if (base.type === "store_full") {
+                // The seam's surviving state: the store stays readable, which the final check shows.
+                const final = parsed(arm.finalStore, `${arm.arm}: store-check.json`);
+                const store = storeReasons({ final }, false);
+                reasons.push(...store);
+                return {
+                    ...result,
+                    reasons,
+                    recovered: clean && store.length === 0,
+                    store: { final: final?.integrity ?? "unchecked" },
+                };
+            }
             if (!RESTARTS.has(base.type)) return { ...result, recovered: clean };
             const pass = arm.journal.find(
                 (x) => x.kind === "StoreChecked" && x.seq > fired.seq && x.fault === base.fault,
             );
-            const parsed = (value: unknown, where: string) =>
-                value === undefined ? undefined : parseStoreCheck(value, where);
             const checks: Checks = {
                 after_crash: parsed(evidence.store, `${arm.arm}: ${base.fault} FaultObserved`),
                 post_crash_pass: parsed(pass?.store, `${arm.arm}: ${base.fault} StoreChecked`),

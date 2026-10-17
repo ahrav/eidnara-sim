@@ -724,8 +724,15 @@ describe("HostDriver faults", () => {
         expect((second.stores as { fault: string }[]).map((s) => s.fault)).toEqual([
             "f-daemon_restart",
         ]);
+        // The settled check stays recorded until the next event, after the scheduler journaled it.
+        const recorded = () =>
+            Object.keys(
+                JSON.parse(readFileSync(join(driver.armDir, "state.json"), "utf8")).store_faults,
+            );
+        expect(recorded().sort()).toEqual(["f-daemon_restart", "f-daemon_sigkill_mid_fold"]);
         const turn = await driver.event(ev("user_turn", { id: "e-1", text: "go" }));
         expect(turn.stores).toBeUndefined();
+        expect(recorded()).toEqual(["f-daemon_sigkill_mid_fold"]);
     });
 
     test("a pass served between turns is checked before the next turn's own passes", async () => {

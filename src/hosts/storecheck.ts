@@ -109,14 +109,22 @@ export function parseStoreCheck(value: unknown, where: string): StoreCheck {
         v.segments === v.ranges.length;
     if (!sound) throw new Error(`${where}: store check has an unexpected shape`);
     const check = v as StoreCheck;
-    const derived = derive(
-        check.ranges.map(([session_id, sequence, start_message, end_message]) => ({
+    // Derived in the live check's order, whatever order the artifact lists its ranges in.
+    const bounds = check.ranges
+        .map(([session_id, sequence, start_message, end_message]) => ({
             session_id,
             sequence,
             start_message,
             end_message,
-        })),
-    );
+        }))
+        .sort(
+            (a, b) =>
+                a.session_id.localeCompare(b.session_id) ||
+                a.start_message - b.start_message ||
+                a.end_message - b.end_message ||
+                a.sequence - b.sequence,
+        );
+    const derived = derive(bounds);
     const agrees =
         JSON.stringify(derived.overlaps) === JSON.stringify(check.overlaps) &&
         derived.inverted.every((note) => check.integrity.split("; ").includes(note));

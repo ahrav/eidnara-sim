@@ -70,8 +70,9 @@ describe("recovery oracles", () => {
             got.map((r) => [r.fault, [r.turns_to_first_clean, r.recovered]]),
         );
         expect(byFault).toEqual(recorded.expect);
+        // The run predates the final store check, so the full store's recovery is withheld.
         const full = got.find((r) => r.fault === "w-full");
-        expect(full?.reasons).toEqual([]);
+        expect(full?.reasons).toEqual(["store unchecked: final"]);
         const restart = got.find((r) => r.fault === "w-restart");
         expect(restart?.reasons).toEqual(recorded.expect_reasons["w-restart"]);
     });
@@ -162,6 +163,26 @@ describe("recovery oracles", () => {
         expect(() => recoveries(run([arm(journal(ok, inverted), [], ok)]))).toThrow("store check");
         const declared = { ...inverted, integrity: "ok; inverted range s/1" };
         expect(parseStoreCheck(declared, "x")).toEqual(declared);
+        // Ranges listed out of canonical order still derive the overlap they hide.
+        const interleaved = store("ok", 0, [
+            ["s", 1, 0, 10, "a"],
+            ["t", 1, 0, 5, "c"],
+            ["s", 2, 5, 20, "b"],
+        ]);
+        expect(() => recoveries(run([arm(journal(ok, interleaved), [], ok)]))).toThrow(
+            "store check",
+        );
+        // Skip evidence is a reason in words; any other shape is malformed.
+        const skippedBy = (skipped: unknown) => [
+            entry("FaultObserved", 0, {
+                fault: "k",
+                type: "daemon_restart",
+                evidence: { skipped },
+            }),
+        ];
+        expect(() => recoveries(run([arm(skippedBy(false))]))).toThrow("skipped");
+        expect(() => recoveries(run([arm(skippedBy({}))]))).toThrow("skipped");
+        expect(() => recoveries(run([arm(skippedBy(""))]))).toThrow("skipped");
         expect(parseStoreCheck(ok, "x")).toEqual(ok);
         const legacy = { ...ok, ranges: [["s", 1, 0, 9]] };
         expect(parseStoreCheck(legacy, "x").ranges as unknown[]).toEqual([["s", 1, 0, 9]]);
@@ -379,6 +400,37 @@ describe("recovery oracles", () => {
     });
 });
 
+describe("store_full", () => {
+    test("a full store's recovery needs a readable final store", () => {
+        seq = 0;
+        const journal = [
+            entry("FaultObserved", 0, {
+                fault: "full",
+                type: "store_full",
+                evidence: { avail_kb: 0 },
+            }),
+            entry("BeginTurn", 10, { event: "e-1" }),
+            entry("EndTurn", 20, { event: "e-1", outcome: "ok" }),
+        ];
+        const [sound] = recoveries(run([arm(journal, [], store("ok"))]));
+        expect([sound?.recovered, sound?.reasons, sound?.store]).toEqual([
+            true,
+            [],
+            { final: "ok" },
+        ]);
+        const [unchecked] = recoveries(run([arm(journal)]));
+        expect([unchecked?.recovered, unchecked?.reasons]).toEqual([
+            false,
+            ["store unchecked: final"],
+        ]);
+        const [corrupt] = recoveries(run([arm(journal, [], store("*** corrupt"))]));
+        expect([corrupt?.recovered, corrupt?.reasons]).toEqual([
+            false,
+            ["store integrity, final: *** corrupt"],
+        ]);
+    });
+});
+
 describe("recovery anchors", () => {
     test("a mid-fold kill observed after the turn it cut ended still counts that turn", () => {
         seq = 0;
@@ -558,6 +610,30 @@ describe("plugin log attribution", () => {
         ];
         const [r] = recoveries(run([arm(journal, [], store("ok"))]));
         expect(r?.reasons).toEqual(["store ranges lack content digests"]);
+    });
+
+    test("clock offset spans must run forward in wall time", () => {
+        seq = 0;
+        const base = 1_000_000_000;
+        const journal = [
+            entry("ClockOffset", 0, { wall_ms: 5_000, offset_s: (base - 5_000) / 1000 }),
+            entry("FaultObserved", 0, {
+                wall_ms: 5_010,
+                fault: "f",
+                type: "plugin_reload",
+                evidence: {},
+            }),
+            entry("BeginTurn", 0, { wall_ms: 5_100, event: "e-1" }),
+            entry("EndTurn", 900, { wall_ms: 6_000, event: "e-1", outcome: "ok" }),
+            entry("AdvanceClock", 9_000, {
+                wall_ms: 4_000,
+                from_ms: 900,
+                offset_s: (base + 5_000) / 1000,
+            }),
+            entry("BeginTurn", 9_000, { wall_ms: 6_100, event: "e-2" }),
+            entry("EndTurn", 9_900, { wall_ms: 7_000, event: "e-2", outcome: "ok" }),
+        ];
+        expect(() => recoveries(run([arm(journal)], base))).toThrow("wall_ms");
     });
 
     test("a journal entry without a finite wall time cannot anchor a window", () => {

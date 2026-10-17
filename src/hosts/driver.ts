@@ -121,6 +121,8 @@ export class HostDriver implements ArmDriver {
      * pass after the crash.
      */
     private storeFaults = new Map<string, number>();
+    /** Checks taken and returned, kept in the recorded state until the next event confirms the journal has them. */
+    private settledFaults = new Map<string, number>();
     /** A daemon restart in progress; the turn it interrupts ends after it and fails with it. */
     private restarting: Promise<unknown> = Promise.resolve();
 
@@ -185,7 +187,7 @@ export class HostDriver implements ArmDriver {
             model: this.model,
             daemon: proc(this.daemonPid()),
             host: proc(this.sessionProject === null ? null : (this.host?.hostPid() ?? null)),
-            store_faults: Object.fromEntries(this.storeFaults),
+            store_faults: Object.fromEntries([...this.settledFaults, ...this.storeFaults]),
         };
         mkdirSync(this.armDir, { recursive: true });
         // Staged and renamed, so a kill mid-write leaves the previous state, never a torn file.
@@ -287,8 +289,9 @@ export class HostDriver implements ArmDriver {
 
     async event(e: ScenarioEvent): Promise<TurnOutcome> {
         const host = this.requireHost();
-        // The scheduler journals the previous turn's store checks before it sends the next event,
+        // The scheduler journals the previous event's store checks before it sends the next event,
         // so the recorded obligations drop them here, not when the checks are returned.
+        this.settledFaults.clear();
         this.recordState();
         if (e.kind === "session_start") {
             await this.openSession(e, host);
@@ -585,7 +588,10 @@ export class HostDriver implements ArmDriver {
         const passed = [...this.storeFaults].filter(([, mark]) => this.passedSince(mark));
         if (passed.length === 0 || !this.daemon) return undefined;
         const store = checkStore(this.storeDb);
-        for (const [fault] of passed) this.storeFaults.delete(fault);
+        for (const [fault, mark] of passed) {
+            this.storeFaults.delete(fault);
+            this.settledFaults.set(fault, mark);
+        }
         return passed.map(([fault]) => ({ fault, store }));
     }
 
