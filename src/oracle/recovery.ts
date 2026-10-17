@@ -102,7 +102,11 @@ export function recoveries(run: RunLogs): Recovery[] {
         arm.journal
             .filter((e) => e.kind === "FaultObserved" && INFRA.has(String(e.type)))
             .map((e): Recovery => {
-                const evidence = (e.evidence ?? {}) as { skipped?: unknown; store?: StoreCheck };
+                const evidence = (e.evidence ?? {}) as {
+                    skipped?: unknown;
+                    store?: StoreCheck;
+                    outcome?: unknown;
+                };
                 const base = { arm: arm.arm, fault: String(e.fault), type: String(e.type) };
                 if (evidence.skipped !== undefined) {
                     const reasons = [`skipped: ${String(evidence.skipped)}`];
@@ -116,12 +120,20 @@ export function recoveries(run: RunLogs): Recovery[] {
                         ? turns.flatMap((t, i) => (dirty[i] ?? []).map((r) => `${t.event}: ${r}`))
                         : [];
                 if (turns.length === 0) reasons.push("no later turn");
+                const ownTurnFailed = evidence.outcome !== undefined && evidence.outcome !== "ok";
+                if (ownTurnFailed) {
+                    reasons.push(
+                        `the fault's own turn ended ${String(evidence.outcome).slice(0, 80)}`,
+                    );
+                }
                 const result = {
                     ...base,
                     turns_to_first_clean: index < 0 ? null : index + 1,
                     reasons,
                 };
-                if (!RESTARTS.has(base.type)) return { ...result, recovered: index >= 0 };
+                if (!RESTARTS.has(base.type)) {
+                    return { ...result, recovered: index >= 0 && !ownTurnFailed };
+                }
                 const pass = arm.journal.find(
                     (x) => x.kind === "StoreChecked" && x.seq > e.seq && x.fault === base.fault,
                 );
