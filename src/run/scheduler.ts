@@ -78,7 +78,10 @@ export class Scheduler {
         for (const f of o.faults) {
             if (seen.has(f.id)) throw new Error(`fault id ${f.id} is scheduled twice`);
             seen.add(f.id);
-            if (f.type === "laptop_sleep" && !((f.params.duration_ms ?? 0) > 0)) {
+            const duration = f.params.duration_ms;
+            const positive =
+                typeof duration === "number" && Number.isFinite(duration) && duration > 0;
+            if (f.type === "laptop_sleep" && !positive) {
                 throw new Error(`laptop_sleep ${f.id} needs a positive duration_ms`);
             }
         }

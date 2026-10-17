@@ -531,6 +531,10 @@ describe("fault schedule validity", () => {
         expect(() => new Scheduler({ ...base, faults: [still] })).toThrow(
             "laptop_sleep f-sleep needs a positive duration_ms",
         );
+        const text = { ...still, params: { duration_ms: "1000" as unknown as number } };
+        expect(() => new Scheduler({ ...base, faults: [text] })).toThrow(
+            "laptop_sleep f-sleep needs a positive duration_ms",
+        );
     });
 });
 

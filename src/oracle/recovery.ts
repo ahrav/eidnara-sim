@@ -59,7 +59,18 @@ function logMs(line: string): number | null {
  * whose turns began before its first offset has a prefix neither reading covers, so it is refused.
  */
 function timeline(arm: ArmLogs, base: number): Timeline {
-    const offsets = arm.journal.filter((e) => typeof e.offset_s === "number");
+    // An entry that anchors a window or a span needs finite coordinates; a malformed one refuses
+    // the arm rather than placing every log line outside its windows.
+    const finite = (e: Entry, field: "seq" | "wall_ms" | "scenario_ms" | "offset_s"): number => {
+        const value = e[field];
+        if (typeof value !== "number" || !Number.isFinite(value)) {
+            throw new Error(
+                `${arm.arm}: journal entry ${String(e.seq)} (${e.kind}) has no finite ${field}`,
+            );
+        }
+        return value;
+    };
+    const offsets = arm.journal.filter((e) => e.offset_s !== undefined);
     const first = offsets[0];
     if (first && arm.journal.some((e) => e.kind === "BeginTurn" && e.seq < first.seq)) {
         throw new Error(
@@ -78,15 +89,18 @@ function timeline(arm: ArmLogs, base: number): Timeline {
             return [ms - base];
         };
         return {
-            at: (e) => e.scenario_ms,
+            at: (e) => {
+                finite(e, "seq");
+                return finite(e, "scenario_ms");
+            },
             done: (c) => c.scenario_ms + (c.wall_ms - c.started_wall_ms),
             stamps,
         };
     }
     const spans = offsets.map((e, i) => ({
-        offset: Number(e.offset_s) * 1000,
-        from: e.wall_ms,
-        to: offsets[i + 1]?.wall_ms ?? Number.POSITIVE_INFINITY,
+        offset: finite(e, "offset_s") * 1000,
+        from: finite(e, "wall_ms"),
+        to: offsets[i + 1] ? finite(offsets[i + 1] as Entry, "wall_ms") : Number.POSITIVE_INFINITY,
     }));
     const stamps = (line: string) => {
         const ms = logMs(line);
@@ -98,7 +112,11 @@ function timeline(arm: ArmLogs, base: number): Timeline {
                 return t >= span.from && t < span.to;
             });
     };
-    return { at: (e) => e.wall_ms, done: (c) => c.wall_ms, stamps };
+    const at = (e: Entry) => {
+        finite(e, "seq");
+        return finite(e, "wall_ms");
+    };
+    return { at, done: (c) => c.wall_ms, stamps };
 }
 
 /** A turn's end: its `EndTurn`, or the `Event` a resume writes for a turn a harness kill cut. */
@@ -147,7 +165,9 @@ export function dirtyReasons(arm: ArmLogs, turn: Turn, tl: Timeline): string[] {
 
 type Checks = Record<"after_crash" | "post_crash_pass" | "final", StoreCheck | undefined>;
 
-const key = (r: StoreCheck["ranges"][number]) => r.join("/");
+/** A range's identity; bounds alone when either side of a comparison predates digests. */
+const key = (r: StoreCheck["ranges"][number], digests: boolean) =>
+    r.slice(0, digests ? 5 : 4).join("/");
 
 /**
  * The wire contract's post-crash rule: the first pass after a crash folds from the surviving
@@ -169,11 +189,13 @@ function storeReasons(checks: Checks): string[] {
     const compared = [...after, ...(checks.post_crash_pass?.ranges ?? [])];
     // Checks recorded before ranges carried digests compare bounds only, which cannot certify
     // the rule, so they withhold recovery while still reporting what they can.
-    if (compared.some((r) => r.length < 5)) reasons.push("store ranges lack content digests");
-    const kept = new Set((checks.post_crash_pass?.ranges ?? []).map(key));
-    const lost = checks.post_crash_pass ? after.filter((r) => !kept.has(key(r))) : [];
+    const digests = compared.every((r) => r.length === 5);
+    if (!digests) reasons.push("store ranges lack content digests");
+    const kept = new Set((checks.post_crash_pass?.ranges ?? []).map((r) => key(r, digests)));
+    const lost = checks.post_crash_pass ? after.filter((r) => !kept.has(key(r, digests))) : [];
     if (lost.length > 0) {
-        reasons.push(`post-crash pass removed or changed segments ${lost.map(key).join(", ")}`);
+        const names = lost.map((r) => key(r, digests)).join(", ");
+        reasons.push(`post-crash pass removed or changed segments ${names}`);
     }
     return reasons;
 }

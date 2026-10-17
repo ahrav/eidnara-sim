@@ -61,11 +61,12 @@ export function parseStoreCheck(value: unknown, where: string): StoreCheck {
         typeof v === "object" &&
         v !== null &&
         typeof v.integrity === "string" &&
-        typeof v.segments === "number" &&
         Array.isArray(v.overlaps) &&
         v.overlaps.every(isOverlap) &&
         Array.isArray(v.ranges) &&
-        v.ranges.every(isRange);
+        v.ranges.every(isRange) &&
+        Number.isInteger(v.segments) &&
+        v.segments === v.ranges.length;
     if (!sound) throw new Error(`${where}: store check has an unexpected shape`);
     return v as StoreCheck;
 }

@@ -3,7 +3,6 @@ import {
     closeSync,
     copyFileSync,
     existsSync,
-    fstatSync,
     lstatSync,
     mkdirSync,
     openSync,
@@ -89,6 +88,8 @@ export function expandTemplate(template: string, env: Record<string, string>): s
 
 /** A transform pass the daemon answered, as the plugin logs it. */
 const SERVED_PASS = /rust pass: .*served_from=transform/;
+/** How much of the plugin log one pass check reads at a time. */
+const LOG_CHUNK_BYTES = 64 * 1024;
 
 const SUPPORTED = new Set([
     "daemon_sigkill_mid_fold",
@@ -567,21 +568,31 @@ export class HostDriver implements ArmDriver {
         return existsSync(this.pluginLog) ? statSync(this.pluginLog).size : 0;
     }
 
-    /** Whether the plugin log, past `mark`, records a pass the daemon served. */
+    /**
+     * Whether the plugin log, past `mark`, records a pass the daemon served. The suffix is read
+     * in bounded chunks; the unfinished last line of one chunk heads the next, so a record split
+     * across chunks is still read whole, and a line longer than a chunk is dropped unmatched.
+     */
     private passedSince(mark: number): boolean {
         if (!existsSync(this.pluginLog)) return false;
-        // Only the suffix past the mark is read, so a long-lived obligation stays cheap to check.
         const fd = openSync(this.pluginLog, "r");
         try {
-            const length = Math.max(0, fstatSync(fd).size - mark);
-            const suffix = Buffer.alloc(length);
-            let read = 0;
-            while (read < length) {
-                const n = readSync(fd, suffix, read, length - read, mark + read);
-                if (n === 0) break;
-                read += n;
+            const chunk = Buffer.alloc(LOG_CHUNK_BYTES);
+            let carry = "";
+            let position = mark;
+            for (;;) {
+                const n = readSync(fd, chunk, 0, chunk.length, position);
+                if (n === 0) return SERVED_PASS.test(carry);
+                position += n;
+                const text = carry + chunk.subarray(0, n).toString("utf8");
+                const cut = text.lastIndexOf("\n");
+                if (cut < 0) {
+                    carry = text.length > LOG_CHUNK_BYTES ? "" : text;
+                    continue;
+                }
+                if (SERVED_PASS.test(text.slice(0, cut))) return true;
+                carry = text.slice(cut + 1);
             }
-            return SERVED_PASS.test(suffix.subarray(0, read).toString("utf8"));
         } finally {
             closeSync(fd);
         }

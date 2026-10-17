@@ -90,6 +90,7 @@ describe("recovery oracles", () => {
         const arm0 = lost[0] as ArmLogs;
         for (const e of arm0.journal.filter((x) => x.kind === "StoreChecked")) {
             (e.store as StoreCheck).ranges = [];
+            (e.store as StoreCheck).segments = 0;
         }
         const broken = recoveries(run(lost, sigkills.base_wall_ms));
         expect(broken.map((r) => r.recovered)).toEqual([false, false, false]);
@@ -147,6 +148,10 @@ describe("recovery oracles", () => {
         expect(() => recoveries(run([arm(journal(ok, bogus), [], ok)]))).toThrow("store check");
         const badRange = { ...ok, ranges: [["s", 1, 0]] };
         expect(() => recoveries(run([arm(journal(ok, badRange), [], ok)]))).toThrow("store check");
+        const miscounted = { ...ok, segments: 2 };
+        expect(() => recoveries(run([arm(journal(ok, miscounted), [], ok)]))).toThrow(
+            "store check",
+        );
         expect(parseStoreCheck(ok, "x")).toEqual(ok);
         const legacy = { ...ok, ranges: [["s", 1, 0, 9]] };
         expect(parseStoreCheck(legacy, "x").ranges as unknown[]).toEqual([["s", 1, 0, 9]]);
@@ -485,6 +490,40 @@ describe("plugin log attribution", () => {
         );
         const unset = { ...run([arm(journal, log)]), base_wall_ms: undefined as unknown as number };
         expect(() => recoveries(unset)).toThrow("base_wall_ms is not a finite number");
+    });
+
+    test("a legacy crash check and a digest-bearing post-crash check compare by bounds", () => {
+        seq = 0;
+        const legacy = { ...store("ok"), ranges: [["s", 1, 0, 9]] } as unknown as StoreCheck;
+        const journal = [
+            entry("FaultObserved", 0, {
+                fault: "k",
+                type: "daemon_restart",
+                evidence: { store: legacy },
+            }),
+            entry("BeginTurn", 10, { event: "e-1" }),
+            entry("EndTurn", 20, { event: "e-1", outcome: "ok" }),
+            entry("StoreChecked", 20, { event: "e-1", fault: "k", store: store("ok") }),
+        ];
+        const [r] = recoveries(run([arm(journal, [], store("ok"))]));
+        expect(r?.reasons).toEqual(["store ranges lack content digests"]);
+    });
+
+    test("a journal entry without a finite wall time cannot anchor a window", () => {
+        seq = 0;
+        const base = 1_000_000_000;
+        const journal = [
+            entry("ClockOffset", 0, { wall_ms: 600, offset_s: (base - 1_000) / 1000 }),
+            entry("FaultObserved", 0, {
+                wall_ms: 620,
+                fault: "f",
+                type: "plugin_reload",
+                evidence: {},
+            }),
+            entry("BeginTurn", 0, { wall_ms: undefined, event: "e-1" }),
+            entry("EndTurn", 9_000, { wall_ms: 9_650, event: "e-1", outcome: "ok" }),
+        ];
+        expect(() => recoveries(run([arm(journal)], base))).toThrow("wall_ms");
     });
 
     test("a journal whose turns began before its first clock offset is refused", () => {

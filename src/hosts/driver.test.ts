@@ -9,6 +9,7 @@ import {
     readdirSync,
     readFileSync,
     rmSync,
+    statSync,
     symlinkSync,
     writeFileSync,
 } from "node:fs";
@@ -123,6 +124,11 @@ function fakeDaemon(pid: number | null) {
 
 const PASS =
     "[2026-10-16T12:00:00.000Z] [eidnara][s-1] rust pass: decision=SOFT+ reason=none served_from=transform in=3 out=3";
+function statSize(driver: HostDriver): number {
+    const path = join((driver as unknown as { o: DriverOptions }).o.armRoot, "eidnara.log");
+    return existsSync(path) ? statSync(path).size : 0;
+}
+
 /** Appends one line to the arm's plugin log, as the host's plugin would. */
 function pluginLog(driver: HostDriver, line: string): void {
     const path = join((driver as unknown as { o: DriverOptions }).o.armRoot, "eidnara.log");
@@ -708,6 +714,24 @@ describe("HostDriver faults", () => {
         pluginLog(driver, PASS);
         const outcome = await driver.event(ev("user_turn", { id: "e-1", text: "go" }));
         expect(outcome.stores?.map((s) => s.fault)).toEqual(["__proto__"]);
+    });
+
+    test("a served pass is found past a long plugin log and across a chunk boundary", async () => {
+        const { driver } = fixture("eidnara");
+        driver.daemon = fakeDaemon(10) as unknown as DaemonStack;
+        driver.host = new FakeHost({} as HostContext, "/x") as unknown as SimHost;
+        await driver.fault(episode("daemon_restart"));
+        // Raw passes fill well past one 64 KiB chunk; the served pass straddles a chunk edge.
+        const raw =
+            "[2026-10-16T12:00:01.000Z] [eidnara][s-1] rust pass: decision=declined:invocation_budget served_from=raw";
+        for (let i = 0; i < 700; i++) pluginLog(driver, raw);
+        const padding = "x".repeat(
+            ((64 * 1024 - (statSize(driver) % (64 * 1024))) % (64 * 1024)) - 40,
+        );
+        pluginLog(driver, `[2026-10-16T12:00:02.000Z] ${padding}`);
+        pluginLog(driver, PASS);
+        const outcome = await driver.event(ev("user_turn", { id: "e-1", text: "go" }));
+        expect(outcome.stores?.map((s) => s.fault)).toEqual(["f-daemon_restart"]);
     });
 
     test("the store check waits for the first pass the replacement daemon serves", async () => {
