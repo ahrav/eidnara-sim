@@ -48,9 +48,11 @@ A metric with no pre-registration entry is refused by name, and so is a
 metric observed twice, an observation whose unit or cluster key differs
 from its family's, an observation carrying runs for an item unit or items
 for a run unit, a control or treatment value that is not finite, a binary
-family's value other than 0 or 1, an item or run identity repeated within
-an observation, and a run-level family whose metrics come from different
-run sets. The input names the compared arms, which are `host` against the
+family's value other than 0 or 1, a negative count, an item whose issue
+order is not a non-negative integer, an item or run identity repeated
+within an observation, an id listed twice across the excluded and
+fault-asymmetric lists, and a run-level family whose metrics come from
+different run sets. The input names the compared arms, which are `host` against the
 pre-registration's default arm (D1), and the journal sequence whose
 completed pairs it was built from, a non-negative integer; the verdict
 repeats both so the input set can be recomputed. Every registered metric
@@ -80,8 +82,9 @@ Connor's variance correction; for graded runs the same approximation with
 the sample standard deviation of the differences; for the sign test the
 smallest share of runs that would reach significance (`pp-of-runs`); and
 for the GLM the rate ratio. The resolution ratio is X over the
-pre-registered MDE, or over the margin for a noninferiority family whose
-MDE is zero; the sign test has none, and its result says why. A run-level
+pre-registered MDE, or over the margin for a family whose MDE is zero (the
+noninferiority harm family and L's at-most resources family register the
+planned true value 0); the sign test has none, and its result says why. A run-level
 gate with fewer paired runs than its family's registered floor (six at
 least) says `insufficient-runs(k)`. Bound
 families say `within-bound` or `failed-gate(metric, ids)`.
@@ -118,8 +121,8 @@ stop, recorded with the metric, the signal index, and the item ids since
 the sum last stood at zero, and a stop withholds the pass; a benefit,
 which moves only the lower sum, stops nothing. The standard deviation is
 finite and positive or the input is refused. A rule without an A/A
-standard deviation is listed as unavailable, and a tier with an
-unavailable rule gets no pass. The verdict also carries the
+standard deviation, or with no items for its metric, is listed as
+unavailable, and a tier with an unavailable rule gets no pass. The verdict also carries the
 pre-registration digest, the journal sequence it was evaluated at, the
 families with their MDE and margin, and the harm metrics whose verdict is
 `worse` ("memory made it worse"). An evaluation whose output contains the

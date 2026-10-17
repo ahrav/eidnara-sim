@@ -9,7 +9,6 @@ import {
     type RunPair,
     StatsRefusal,
 } from "./gate";
-import { holm } from "./tests";
 
 const M = loadPrereg("M");
 const S = loadPrereg("S");
@@ -69,8 +68,8 @@ describe("tier gates", () => {
         const m = metric(evaluate([binary("P1.pass", pairs)]), "probe-P1", "P1.pass");
         expect(m?.verdict).toMatch(/^no-difference-above-\d+(\.\d+)?pp-detectable-at-30$/);
         expect(m?.passed).toBe(false);
-        expect(m?.detectable).toBeCloseTo(100 * 2.8015852 * Math.sqrt(12 / 30 / 30), 3);
-        expect(m?.resolution_ratio).toBeCloseTo((m?.detectable ?? 0) / 13, 6);
+        expect(m?.detectable).toBeCloseTo(32.3499, 3);
+        expect(m?.resolution_ratio).toBeCloseTo(2.48846, 4);
     });
 
     test("a metric without an entry, a wrong unit, or a wrong cluster is refused by name", () => {
@@ -96,8 +95,8 @@ describe("tier gates", () => {
         ];
         const v = evaluate(harms.map((h, i) => binary(h, shapes[i] ?? [])));
         const harm = v.families.find((f) => f.family === "harm");
-        const ps = harm?.metrics.map((m) => m.p ?? 1) ?? [];
-        expect(harm?.metrics.map((m) => m.p_adjusted)).toEqual(holm(ps));
+        expect(harm?.metrics.map((m) => m.p)).toEqual([2 / 4096, 0.25, 1, 0.5, 1]);
+        expect(harm?.metrics.map((m) => m.p_adjusted)).toEqual([10 / 4096, 1, 1, 1, 1]);
         expect(harm?.metrics.length).toBe(5);
         expect(metric(v, "harm", "P2.harm")?.verdict).toBe("worse");
         expect(metric(v, "harm", "P3.harm")?.verdict).toStartWith("no-difference-above-");
@@ -156,10 +155,8 @@ describe("tier gates", () => {
             ["P11.harm", "inconclusive"],
         ]);
         expect(harm?.passed).toBe(false);
-        expect(harm?.metrics[0]?.resolution_ratio).toBeCloseTo(
-            (harm?.metrics[0]?.detectable ?? 0) / 10,
-            9,
-        );
+        expect(harm?.metrics[0]?.detectable).toBeCloseTo(4.52249, 5);
+        expect(harm?.metrics[0]?.resolution_ratio).toBeCloseTo(0.452249, 6);
         const twice = binary("P1.pass", [[0, 1]]);
         expect(() => evaluate([twice, twice])).toThrow("metric P1.pass is observed twice");
     });
@@ -245,8 +242,13 @@ describe("tier gates", () => {
         const glm = metric(evaluate([runs("hangs", many)]), "dependability", "hangs");
         expect(glm?.method).toStartWith("negative-binomial GLM");
         expect(glm?.difference).toBeCloseTo(1, 4);
-        expect((glm?.interval ?? []).every(Number.isFinite)).toBe(true);
-        expect(glm?.verdict).toMatch(/^no-difference-above-[\d.]+ratio-detectable-at-12$/);
+        expect(glm?.interval?.[0]).toBeCloseTo(0.5996, 3);
+        expect(glm?.interval?.[1]).toBeCloseTo(1.6678, 3);
+        expect(glm?.p).toBeCloseTo(1, 3);
+        expect(glm?.detectable).toBeCloseTo(2.0337, 3);
+        expect(glm?.resolution_ratio).toBeCloseTo(2.0337, 3);
+        expect(glm?.verdict).toBe("no-difference-above-2.03ratio-detectable-at-12");
+        expect(glm?.passed).toBe(false);
         const cleared = metric(
             evaluate([runs("hangs", repeat(9, [2, 0] as [number, number]))]),
             "dependability",
@@ -392,6 +394,8 @@ describe("tier gate review findings", () => {
     const bounds = (overrides: Partial<Record<string, Observation>> = {}) => {
         const zero: [number, number] = [0, 0];
         const base: Record<string, Observation> = {
+            P1: binary("P1.pass", repeat(10, [1, 1] as [number, number])),
+            harm: binary("P2.harm", repeat(10, [0, 0] as [number, number])),
             P8: binary("P8.cross_session_pass_rate", repeat(10, [1, 1] as [number, number])),
             P9: binary("P9.cross_session_pass_rate", repeat(10, [1, 1] as [number, number])),
             failed_turns: runs("failed_turns", repeat(2, zero)),
@@ -430,10 +434,10 @@ describe("tier gate review findings", () => {
             "probe-P13",
             "P13.fold_fidelity_score",
         );
-        expect(m?.difference).toBeCloseTo(16.67, 1);
+        expect(m?.difference).toBeCloseTo(16.6667, 4);
         expect(m?.interval?.[0]).toBeGreaterThan(1);
-        expect(m?.detectable).toBeGreaterThan(1);
-        expect(m?.resolution_ratio).toBeCloseTo(m?.detectable ?? 0, 9);
+        expect(m?.detectable).toBeCloseTo(9.3386, 4);
+        expect(m?.resolution_ratio).toBeCloseTo(9.3386, 4);
     });
 
     test("an observation carrying the wrong collection for its unit, or a non-finite value, is refused", () => {
@@ -546,7 +550,10 @@ describe("tier gate review findings, second round", () => {
 
     test("a CUSUM standard deviation that is not finite and positive is refused", () => {
         const ok = s([], { cusum_sd: { harm: 0.5, futility: 0.5 } });
-        expect(ok.cusum_unavailable).toEqual([]);
+        expect(ok.cusum_unavailable).toEqual([
+            "harm: no items for harm",
+            "futility: no items for probe-P1",
+        ]);
         for (const bad of [0, -1, Number.POSITIVE_INFINITY, Number.NaN]) {
             expect(() => s([], { cusum_sd: { harm: bad, futility: 0.5 } })).toThrow(StatsRefusal);
         }
@@ -642,5 +649,96 @@ describe("tier gate review findings, second round", () => {
             i % 2 ? "f-a" : "f-b",
         );
         expect(metric(evaluate([two], { arms }), "probe-P1", "P1.pass")?.verdict).toBe("better");
+    });
+});
+
+describe("tier gate review findings, Kilo round", () => {
+    const seq = { journal_seq_at_eval: 7, arms: { control: "host", treatment: "eidnara" } };
+    const L = loadPrereg("L");
+
+    test("an at-most family with a zero MDE scales its resolution against the margin", () => {
+        const slopes = runs(
+            "daemon_rss_growth_bytes_per_session",
+            Array.from({ length: 6 }, (_, i): [number, number] => [
+                1e6 + i * 1e5,
+                1.5e6 + i * 1.2e5,
+            ]),
+        );
+        const v = evaluateTier(L, { observations: [slopes], excluded: [], asymmetric: [], ...seq });
+        const m = metric(v, "resources", "daemon_rss_growth_bytes_per_session");
+        expect(m?.detectable).toBeGreaterThan(0);
+        expect(m?.resolution_ratio).toBeCloseTo((m?.detectable ?? 0) / 8388608, 12);
+    });
+
+    test("a count family refuses a negative value", () => {
+        expect(() =>
+            evaluate([runs("failed_turns", [[1, -1], ...repeat(5, [0, 0] as [number, number])])]),
+        ).toThrow(StatsRefusal);
+    });
+
+    test("an item's issue order is a non-negative integer, in the input and from pairByItem", () => {
+        const obs = binary("P1.pass", [[0, 1]]);
+        obs.items = obs.items?.map((x) => ({ ...x, order: Number.NaN }));
+        expect(() => evaluate([obs])).toThrow(StatsRefusal);
+        const arm = new Map([["q-1", 1]]);
+        expect(() =>
+            pairByItem(
+                arm,
+                arm,
+                () => "f",
+                () => -1,
+            ),
+        ).toThrow(StatsRefusal);
+    });
+
+    test("a CUSUM rule with no items is unavailable, so the tier gets no pass", () => {
+        const s = (observations: Observation[]) =>
+            evaluateTier(S, {
+                observations,
+                excluded: [],
+                asymmetric: [],
+                ...seq,
+                cusum_sd: { harm: 0.5, futility: 0.5 },
+            });
+        const v = s([runs("internal_string_hits", repeat(2, [0, 0] as [number, number]))]);
+        expect(v.cusum_unavailable).toEqual([
+            "harm: no items for harm",
+            "futility: no items for probe-P1",
+        ]);
+        expect(v.pass.passed).toBe(false);
+    });
+
+    test("an id repeated in excluded, or in both excluded and asymmetric, is refused", () => {
+        const obs = binary("P1.pass", repeat(4, [0, 1] as [number, number]));
+        const [a, b] = obs.items?.map((x) => x.item) ?? [];
+        const drop = (id: string) => ({ id, arm: "eidnara", reason: "failed(interrupted)" });
+        expect(() => evaluate([obs], { excluded: [drop(a ?? ""), drop(a ?? "")] })).toThrow(
+            StatsRefusal,
+        );
+        expect(() => evaluate([obs], { excluded: [drop(b ?? "")], asymmetric: [b] })).toThrow(
+            StatsRefusal,
+        );
+        expect(() => evaluate([obs], { asymmetric: [a, a] })).toThrow(StatsRefusal);
+    });
+
+    test("the harm CUSUM takes the per-item maximum over the harm metrics in issue order", () => {
+        const start = order;
+        const quiet: [number, number][] = repeat(10, [0, 0] as [number, number]);
+        const p2 = binary("P2.harm", [...quiet, ...repeat(8, [0, 0] as [number, number])]);
+        const ids = p2.items?.map((x) => x.item) ?? [];
+        const withHarm = (o: Observation, hit: (i: number) => boolean): Observation => ({
+            ...o,
+            items: [...(o.items ?? [])]
+                .map((x, i) => ({ ...x, treatment: hit(i) ? 1 : 0 }))
+                .reverse(),
+        });
+        const even = withHarm(p2, (i) => i >= 10 && (i % 2 === 0 || i === 11));
+        const odd = withHarm({ ...p2, metric: "P3.harm" }, (i) => i >= 10 && i % 2 === 1);
+        const v = evaluate([even, odd], { cusum_sd: { harm: 0.5, futility: 0.5 } });
+        expect(ids[0]).toBe(`q-${start}`);
+        expect(v.stops.map((s) => [s.kind, s.metric, s.signal_index])).toEqual([
+            ["harm", "harm", 12],
+        ]);
+        expect(v.stops[0]?.window).toEqual(ids.slice(10, 13));
     });
 });

@@ -107,8 +107,7 @@ type Stats = Omit<MetricResult, "metric" | "verdict" | "passed" | "asymmetric_pa
 const num = (s: string) => Number(s);
 const mean = (xs: number[]) => xs.reduce((s, v) => s + v, 0) / xs.length;
 const scaled = (x: number | null, f: Family) => {
-    const unit =
-        num(f.mde.value) === 0 && f.direction === "noninferiority" ? f.margin.value : f.mde.value;
+    const unit = num(f.mde.value) === 0 ? f.margin.value : f.mde.value;
     return x === null || num(unit) === 0 ? null : x / num(unit);
 };
 const zSum = (f: Family) => normalQuantile(1 - num(f.alpha) / 2) + normalQuantile(num(f.power));
@@ -330,6 +329,11 @@ function check(p: Preregistration, input: TierInput): void {
     const byMetric = new Map(p.families.flatMap((f) => f.metrics.map((m) => [m, f] as const)));
     const seen = new Set<string>();
     const runIds = new Map<string, string>();
+    const excludedIds = input.excluded.map((e) => e.id);
+    const flagged = [...excludedIds, ...input.asymmetric];
+    if (new Set(flagged).size !== flagged.length) {
+        throw new StatsRefusal("excluded and asymmetric ids are distinct and listed once");
+    }
     for (const o of input.observations) {
         if (seen.has(o.metric)) throw new StatsRefusal(`metric ${o.metric} is observed twice`);
         seen.add(o.metric);
@@ -357,6 +361,12 @@ function check(p: Preregistration, input: TierInput): void {
         if (f.outcome === "binary" && !own.every((x) => isBit(x.control) && isBit(x.treatment))) {
             throw new StatsRefusal(`${o.metric}: a binary outcome is 0 or 1 in both arms`);
         }
+        if (f.outcome === "count" && !own.every((x) => x.control >= 0 && x.treatment >= 0)) {
+            throw new StatsRefusal(`${o.metric}: a count is at least 0 in both arms`);
+        }
+        if (!(o.items ?? []).every((x) => isIndex(x.order))) {
+            throw new StatsRefusal(`${o.metric}: an item's issue order is a non-negative integer`);
+        }
         const ids =
             o.unit === "item"
                 ? (o.items ?? []).map((x) => x.item)
@@ -378,6 +388,7 @@ function check(p: Preregistration, input: TierInput): void {
 }
 
 const isBit = (v: number) => v === 0 || v === 1;
+const isIndex = (v: number) => Number.isInteger(v) && v >= 0;
 
 function stops(p: Preregistration, input: TierInput, kept: Observation[]): [CusumStop[], string[]] {
     const out: CusumStop[] = [];
@@ -400,6 +411,10 @@ function stops(p: Preregistration, input: TierInput, kept: Observation[]): [Cusu
                 byItem.set(x.item, { item: x.item, order: x.order, value });
         }
         const items = [...byItem.values()].sort((x, y) => x.order - y.order);
+        if (items.length === 0) {
+            unavailable.push(`${rule.kind}: no items for ${rule.metric}`);
+            continue;
+        }
         const c = cusum(
             items.map((x) => x.value / sd),
             0,
@@ -507,13 +522,18 @@ export function pairByItem(
 ): ItemPair[] {
     const both = [...control.keys()].filter((item) => treatment.has(item));
     return both
-        .map((item) => ({
-            item,
-            cluster: clusterOf(item),
-            control: control.get(item) as number,
-            treatment: treatment.get(item) as number,
-            order: issueOrder(item),
-        }))
+        .map((item) => {
+            const order = issueOrder(item);
+            if (!isIndex(order))
+                throw new StatsRefusal(`${item}: issue order ${order} is not an index`);
+            return {
+                item,
+                cluster: clusterOf(item),
+                control: control.get(item) as number,
+                treatment: treatment.get(item) as number,
+                order,
+            };
+        })
         .sort((x, y) => x.order - y.order);
 }
 
