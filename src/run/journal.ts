@@ -183,8 +183,8 @@ export function readJournal(path: string): Entry[] & { bytes?: number } {
 
 /**
  * `requireComplete` admits a run whose journal records every scheduled event ended once per
- * arm, an `EndArm` per arm, and an `EndRun`, with the manifest's arm order matching the
- * journaled `StartRun`. The error names the arm and its event counts (SIM-P67).
+ * arm in the compiled order, an `EndArm` per arm, and an `EndRun`, with the manifest's arm
+ * order matching the journaled `StartRun`. The error names the arm and its event counts (SIM-P67).
  */
 export function requireComplete(entries: Entry[], arms: string[], scheduled: string[]): void {
     const started = entries.find((e) => e.kind === "StartRun");
@@ -202,11 +202,14 @@ export function requireComplete(entries: Entry[], arms: string[], scheduled: str
         const once = new Set(ended);
         const missing = scheduled.filter((id) => !once.has(id));
         const stray = ended.filter((id, i) => !scheduled.includes(id) || ended.indexOf(id) !== i);
-        if (!closed || missing.length > 0 || stray.length > 0) {
+        const ordered = ended.every((id, i) => id === scheduled[i]);
+        if (!closed || missing.length > 0 || stray.length > 0 || !ordered) {
             const marker = closed ? "EndArm present" : "no EndArm";
             const count = `${scheduled.length - missing.length} of ${scheduled.length} events ended`;
             const extra = stray.length > 0 ? `, unexpected or repeated: ${stray.join(", ")}` : "";
-            throw new Error(`arm ${arm} is incomplete: ${count}, ${marker}${extra}`);
+            const order =
+                !ordered && stray.length === 0 && missing.length === 0 ? ", out of order" : "";
+            throw new Error(`arm ${arm} is incomplete: ${count}, ${marker}${extra}${order}`);
         }
     }
     if (!entries.some((e) => e.kind === "EndRun")) {

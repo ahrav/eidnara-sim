@@ -1,6 +1,12 @@
 import { expect, test } from "bun:test";
 import { loadConfig } from "../config/config";
-import { type HostContext, OpencodeSimHost, PiSimHost, toolCommand } from "./arms";
+import {
+    type HostContext,
+    OpencodeSimHost,
+    PiSimHost,
+    type PromptResult,
+    toolCommand,
+} from "./arms";
 
 test("a tool run reads as its bash command, or as the tool and its target path", () => {
     expect(toolCommand("bash", { command: "cargo test" })).toBe("cargo test");
@@ -283,6 +289,46 @@ test("reattaching to an OpenCode session reports the tool parts its messages alr
     ]);
 });
 
+test("a slow pre-turn listing leaves the turn only the remaining deadline", async () => {
+    let listed = 0;
+    let turnDeadline = -1;
+    const client = {
+        session: {
+            messages: async () => {
+                if (listed++ === 0) await Bun.sleep(600);
+                return { data: [] };
+            },
+            prompt: () => new Promise(() => undefined),
+            abort: async () => ({}),
+        },
+    };
+    const host = new OpencodeSimHost({
+        ...({} as HostContext),
+        config: loadConfig(),
+        root: "/x",
+        launcher: "/x/sandbox.sh",
+        now: () => 100,
+    });
+    Object.assign(host as unknown as Record<string, unknown>, {
+        client,
+        sid: "s",
+        oc: { stderr: () => "" },
+    });
+    const original = (host as unknown as { turn: (t: string, ms: number) => Promise<PromptResult> })
+        .turn;
+    (host as unknown as { turn: (t: string, ms: number) => Promise<PromptResult> }).turn = async (
+        _text,
+        ms,
+    ) => {
+        turnDeadline = ms;
+        return { error: "turn deadline" };
+    };
+    void original;
+    await host.prompt("go", 1_600);
+    expect(turnDeadline).toBeGreaterThanOrEqual(1_000);
+    expect(turnDeadline).toBeLessThan(1_100);
+});
+
 test("a Pi turn whose abort never drains kills the Pi process, and later prompts in the session fail fast", async () => {
     const reported: unknown[] = [];
     const host = new PiSimHost({
@@ -498,17 +544,17 @@ test("an OpenCode abort wait counts against the turn's own deadline", async () =
     const host = opencodeHost({
         session: {
             messages: async () => ({ data: [] }),
-            prompt: () => Bun.sleep(600).then(() => ({ data: { info: {} } })),
+            prompt: () => Bun.sleep(1_800).then(() => ({ data: { info: {} } })),
             abort: () => new Promise(() => {}),
         },
     });
     Object.assign(host as unknown as Record<string, unknown>, {
-        abortWaitMs: 300,
-        drainWaitMs: 1_000,
+        abortWaitMs: 600,
+        drainWaitMs: 2_000,
     });
-    const result = await host.prompt("go", 400, 50);
-    expect(result.error).toContain("turn deadline 400 ms");
-});
+    const result = await host.prompt("go", 1_200, 50);
+    expect(result.error).toContain("turn deadline 1200 ms");
+}, 10_000);
 
 test("an OpenCode abort that answers after its wait but stopped the prompt still counts as the interrupt", async () => {
     const host = opencodeHost({
@@ -545,7 +591,7 @@ test("a deadline abort still open when the drained turn settles is cancelled too
     const host = opencodeHost({
         session: {
             messages: async () => ({ data: [] }),
-            prompt: () => Bun.sleep(250).then(() => ({ data: { info: {} } })),
+            prompt: () => Bun.sleep(1_300).then(() => ({ data: { info: {} } })),
             abort: (o: { signal?: AbortSignal }) =>
                 new Promise((_resolve, reject) => {
                     signal = o.signal;
@@ -555,10 +601,10 @@ test("a deadline abort still open when the drained turn settles is cancelled too
     });
     Object.assign(host as unknown as Record<string, unknown>, {
         abortWaitMs: 50,
-        drainWaitMs: 1_000,
+        drainWaitMs: 2_000,
     });
-    const result = await host.prompt("go", 100);
-    expect(result.error).toContain("turn deadline 100 ms");
+    const result = await host.prompt("go", 1_000);
+    expect(result.error).toContain("turn deadline 1000 ms");
     expect(signal?.aborted).toBe(true);
 });
 
@@ -566,15 +612,15 @@ test("the message listing before an OpenCode turn spends the turn's own deadline
     let listings = 0;
     const host = opencodeHost({
         session: {
-            messages: () => Bun.sleep(listings++ === 0 ? 300 : 0).then(() => ({ data: [] })),
-            prompt: () => Bun.sleep(400).then(() => ({ data: { info: {} } })),
+            messages: () => Bun.sleep(listings++ === 0 ? 800 : 0).then(() => ({ data: [] })),
+            prompt: () => Bun.sleep(1_300).then(() => ({ data: { info: {} } })),
             abort: async () => ({ data: true }),
         },
     });
-    Object.assign(host as unknown as Record<string, unknown>, { drainWaitMs: 1_000 });
-    const result = await host.prompt("go", 500);
-    expect(result.error).toContain("turn deadline 500 ms");
-});
+    Object.assign(host as unknown as Record<string, unknown>, { drainWaitMs: 2_000 });
+    const result = await host.prompt("go", 1_500);
+    expect(result.error).toContain("turn deadline 1500 ms");
+}, 10_000);
 
 test("an aborted OpenCode turn whose tool listing then fails keeps the interrupt beside the capture error", async () => {
     let listings = 0;

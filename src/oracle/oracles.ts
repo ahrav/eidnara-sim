@@ -63,9 +63,7 @@ function f1(arm: ArmLogs): Activation[] {
         component: c.component,
     }));
     const agentAt = new Set(
-        arm.calls
-            .filter((c) => c.component === "agent" && c.status >= 400 && OVERFLOW.test(errorOf(c)))
-            .map(at),
+        arm.calls.filter((c) => c.component === "agent" && OVERFLOW.test(errorOf(c))).map(at),
     );
     const turns = arm.journal
         .filter((e) => e.kind === "EndTurn" && OVERFLOW.test(String(e.outcome)))
@@ -192,7 +190,8 @@ function f5(arm: ArmLogs, run: RunLogs): Activation[] {
             const evidence = `RSS ${over.y} after ${over.x} sessions exceeds 2 x ${base} + sessions x ${c}`;
             out.push({ oracle: "F5", arm: arm.arm, at, evidence });
         }
-        const fit = rssFit(points);
+        const distinct = new Set(points.map((p) => p.x)).size;
+        const fit = distinct >= 3 ? rssFit(points) : null;
         if (fit && fit.r2 >= Number(r2_threshold) && fit.slope > c) {
             const evidence = `RSS slope ${Math.round(fit.slope)} B/session (r2 ${fit.r2.toFixed(2)}) exceeds ${c}`;
             out.push({ oracle: "F5", arm: arm.arm, at: scope, evidence });
