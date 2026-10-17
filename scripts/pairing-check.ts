@@ -60,6 +60,12 @@ const report = {
     missing_turns: (manifest.order as string[]).flatMap((arm) =>
         scheduled.map((e) => `${arm} ${e.id}`).filter((key) => !recorded.has(key)),
     ),
+    incomplete: [
+        ...(manifest.order as string[])
+            .filter((arm) => !journal.some((e) => e.kind === "EndArm" && e.arm === arm))
+            .map((arm) => `${arm} EndArm`),
+        ...(journal.some((e) => e.kind === "EndRun") ? [] : ["EndRun"]),
+    ],
     interrupted_turns: journal
         .filter((e) => e.kind === "Event" && e.outcome === "failed(interrupted)")
         .map((e) => `${e.arm} ${e.event}`)
@@ -73,5 +79,6 @@ const failed =
     report.flagged.length +
     report.missing_rates.length +
     report.missing_turns.length +
+    report.incomplete.length +
     report.interrupted_turns.length;
 process.exit(failed > 0 ? 1 : 0);

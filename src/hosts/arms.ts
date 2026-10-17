@@ -759,13 +759,21 @@ export class OpencodeSimHost extends SimHost {
         return Bun.sleep(this.drainWaitMs).then(() => null);
     }
 
-    /** Asks OpenCode to abort the session's running prompt; true once it reports it did. */
-    private async abortSession(): Promise<boolean> {
-        const abort = this.client.session
+    /** How long an abort request may take to answer before the turn is left to run on. */
+    private abortWaitMs = 5_000;
+
+    /**
+     * Asks OpenCode to abort the session's running prompt. `now` is true once it answered that
+     * it did within the wait; `late` settles with the request's eventual answer, so an abort
+     * that lands after the wait is still read as the interrupt.
+     */
+    private abortSession(): { now: Promise<boolean>; late: Promise<boolean> } {
+        const late: Promise<boolean> = this.client.session
             .abort({ path: { id: this.sid } })
             .then((r: Untyped) => r?.data === true && !r?.error)
             .catch(() => false);
-        return Promise.race([abort, Bun.sleep(5_000).then(() => false)]);
+        const now = Promise.race([late, Bun.sleep(this.abortWaitMs).then(() => false)]);
+        return { now, late };
     }
 
     private async turn(
@@ -787,15 +795,20 @@ export class OpencodeSimHost extends SimHost {
         if (first === null && wait < timeoutMs) {
             // `session.abort` answers true once it stopped a running prompt; a refusal, an error,
             // or a stall leaves the turn to run on under its own deadline, reported as it ends.
-            if (await this.abortSession()) {
+            const abort = this.abortSession();
+            if (await abort.now) {
                 const drained = await Promise.race([settled, this.drained()]);
                 if (drained === null) throw new Error("OpenCode turn still running after abort");
                 return { interrupted: true };
             }
             first = await Promise.race([settled, Bun.sleep(timeoutMs - wait).then(() => null)]);
+            // The request outlived its wait; an answer that arrived with the prompt's end
+            // means the abort, not the agent, ended the turn.
+            const landed = await Promise.race([abort.late, Bun.sleep(0).then(() => false)]);
+            if (first !== null && landed) return { interrupted: true };
         }
         if (first === null) {
-            await this.abortSession();
+            await this.abortSession().now;
             const drained = await Promise.race([settled, this.drained()]);
             if (drained === null) throw new Error("OpenCode turn still running after abort");
             return { error: `turn deadline ${timeoutMs} ms` };

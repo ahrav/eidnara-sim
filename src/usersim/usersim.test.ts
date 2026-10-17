@@ -3,13 +3,21 @@ import { appendFileSync, mkdtempSync, readFileSync, writeFileSync } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadPrereg } from "../scenario/inputs";
-import { behaviourPlan, type Label, type Plan, type PlanTurn, realisedRates } from "./plan";
+import {
+    behaviourPlan,
+    type Label,
+    type Plan,
+    type PlanTurn,
+    pinnedTurns,
+    realisedRates,
+} from "./plan";
 import {
     checkTapeSources,
     type Llm,
     normaliser,
     Pairing,
     type PairingRecord,
+    type Prompt,
     pairingMismatches,
     proxyUserSim,
     type ScriptTurn,
@@ -66,6 +74,22 @@ describe("behaviour plan", () => {
             recorded.turns.filter((t) => plan.labels.get(t.id) === "abandon").map((t) => t.session),
         );
         expect([...skippedSessions].every((s) => abandoned.has(s))).toBe(true);
+    });
+
+    test("pinned turns cover each fault's trigger turn, and a proxy fault's session from its trigger on", () => {
+        const events = [
+            { id: "e-1", kind: "user_turn", session: "s-1", index: 0 },
+            { id: "e-2", kind: "user_turn", session: "s-1", index: 1 },
+            { id: "e-3", kind: "user_turn", session: "s-1", index: 2 },
+            { id: "e-4", kind: "user_turn", session: "s-2", index: 0 },
+            { id: "e-5", kind: "user_turn", session: "s-2", index: 1 },
+        ];
+        const faults = [
+            { trigger: { kind: "user_turn", session: "s-1", n: 2 }, seam: { layer: "proxy-sink" } },
+            { trigger: { kind: "user_turn", session: "s-2", n: 1 }, seam: { layer: "daemon" } },
+            { trigger: { kind: "session_start", session: "s-2" }, seam: { layer: "proxy-sink" } },
+        ];
+        expect([...pinnedTurns(events, faults)].sort()).toEqual(["e-2", "e-3", "e-4"]);
     });
 
     test("a fault's trigger turn is never interrupted", () => {
@@ -158,10 +182,10 @@ const outputs = [
 ];
 
 function counting(): Llm & { calls: number; prompts: string[] } {
-    const llm = (async (prompt: string) => {
+    const llm = (async (prompt: Prompt) => {
         llm.calls++;
-        llm.prompts.push(prompt);
-        return { text: `reply ${llm.calls} to ${prompt.length}`, stop: "end_turn" };
+        llm.prompts.push(`${prompt.system}\n${prompt.user}`);
+        return { text: `reply ${llm.calls} to ${prompt.user.length}`, stop: "end_turn" };
     }) as Llm & { calls: number; prompts: string[] };
     llm.calls = 0;
     llm.prompts = [];
@@ -322,7 +346,7 @@ describe("tape and pairing", () => {
                 .map((l) => JSON.parse(l) as PairingRecord);
         const seenAtCall: PairingRecord[][] = [];
         const llm: Llm & { calls: number } = Object.assign(
-            async (prompt: string) => {
+            async (prompt: Prompt) => {
                 seenAtCall.push(onDisk());
                 return inner(prompt);
             },
@@ -483,7 +507,9 @@ describe("tape and pairing", () => {
         const server = Bun.serve({ port: 0, fetch: () => new Promise<Response>(() => {}) });
         try {
             const llm = proxyUserSim(`http://127.0.0.1:${server.port}`, "m", 100, 200);
-            await expect(llm("hi")).rejects.toThrow("user-sim call timed out after 200 ms");
+            await expect(llm({ system: "s", user: "hi" })).rejects.toThrow(
+                "user-sim call timed out after 200 ms",
+            );
         } finally {
             server.stop(true);
         }
@@ -527,7 +553,10 @@ describe("tape and pairing", () => {
         });
         try {
             const llm = proxyUserSim(`http://127.0.0.1:${server.port}`, "m", 100, 5_000);
-            expect(await llm("hi")).toEqual({ text: "First.\nSecond?", stop: "end_turn" });
+            expect(await llm({ system: "s", user: "hi" })).toEqual({
+                text: "First.\nSecond?",
+                stop: "end_turn",
+            });
         } finally {
             server.stop(true);
         }
@@ -559,6 +588,72 @@ describe("tape and pairing", () => {
         expect(llm.calls).toBe(before);
         const diverged = pairing.records.filter((r) => r.kind === "divergedAt").map((r) => r.arm);
         expect(diverged).toEqual(["b", "c"]);
+    });
+
+    test("a replay source row missing a field is refused", () => {
+        const root = dir();
+        writeFileSync(
+            join(root, "tape.jsonl"),
+            '{"key":"k","event":"e","label":"task","digest":"d","stop":"end_turn"}\n',
+        );
+        writeFileSync(join(root, "pairing.jsonl"), "");
+        expect(() => new Tape(join(dir(), "tape.jsonl"), [join(root, "tape.jsonl")])).toThrow(
+            "text",
+        );
+        writeFileSync(
+            join(root, "pairing.jsonl"),
+            '{"kind":"turn","arm":"a","session":"s","event":"e","index":0}\n',
+        );
+        expect(
+            () =>
+                new Pairing(join(dir(), "pairing.jsonl"), () => "a", [join(root, "pairing.jsonl")]),
+        ).toThrow("digest");
+    });
+
+    test("a replay source from another pre-registration is refused", () => {
+        const root = dir();
+        writeFileSync(join(root, "tape.jsonl"), "");
+        writeFileSync(join(root, "pairing.jsonl"), "");
+        const run = { seed: 101, scenario_hash: "abc", prereg_sha256: "p1" };
+        writeFileSync(
+            join(root, "manifest.json"),
+            JSON.stringify({ seed: 101, scenario_hash: "abc", prereg_sha256: "p2" }),
+        );
+        expect(() => checkTapeSources([join(root, "tape.jsonl")], run)).toThrow("pre-registration");
+    });
+
+    test("a session that matches one source's digests at each event but neither source's history is a recorded divergence", async () => {
+        const first = dir();
+        await play(sim(first, counting()).user, "a", outputs);
+        const second = dir();
+        const changed = outputs.map((o, i) => (i >= 2 ? `${o} Also fixed a typo.` : o));
+        await play(sim(second, counting()).user, "a", changed);
+        const replay = counting();
+        const both = [join(first, "tape.jsonl"), join(second, "tape.jsonl")];
+        const again = sim(dir(), replay, "a", both);
+        const mixed = outputs.map((o, i) => (i === 3 ? (changed[3] as string) : o));
+        await play(again.user, "a", mixed);
+        const diverged = again.pairing.records.filter((r) => r.kind === "divergedAt");
+        expect(diverged).toHaveLength(1);
+        expect(diverged[0]).toMatchObject({ index: 3, against: "recorded" });
+        expect(replay.calls).toBe(1);
+    });
+
+    test("a skipped turn whose agent output differs from the reference's records the divergence", async () => {
+        const { user, pairing } = sim(dir(), counting());
+        const skip: ScriptTurn = {
+            id: "e-10",
+            session: "s-2",
+            index: 3,
+            role: "filler",
+            text: "More.",
+        };
+        await user.deliver("a", skip, "Done it.");
+        await user.deliver("b", skip, "Did something else.");
+        const diverged = pairing.records.filter((r) => r.kind === "divergedAt");
+        expect(diverged).toHaveLength(1);
+        expect(diverged[0]).toMatchObject({ arm: "b", event: "e-10", index: 3 });
+        expect(pairing.records.at(-1)).toMatchObject({ kind: "turn", arm: "b", delivered: false });
     });
 
     test("a complete but corrupt last line in a replay source is refused", () => {

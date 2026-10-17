@@ -325,8 +325,13 @@ export class HostDriver implements ArmDriver {
         const owedBefore = this.owedStores();
         if (owedBefore) outcome.stores = owedBefore;
         const interruptMs = typeof e.interrupt_ms === "number" ? e.interrupt_ms : undefined;
+        // A turn that spent part of its deadline before the prompt passes the rest along.
+        const deadline =
+            typeof e.deadline_ms === "number"
+                ? Math.max(100, Math.min(this.o.turnDeadlineMs, e.deadline_ms))
+                : this.o.turnDeadlineMs;
         this.turn = e.id;
-        const result = await host.prompt(String(e.text), this.o.turnDeadlineMs, interruptMs);
+        const result = await host.prompt(String(e.text), deadline, interruptMs);
         let reported = false;
         const checkDaemon = () => {
             if (reported || !this.daemon || this.daemonPid() !== null) return;

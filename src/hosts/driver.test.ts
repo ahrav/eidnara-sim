@@ -51,9 +51,11 @@ class FakeHost {
     }
     failNext = false;
     interrupts: (number | undefined)[] = [];
-    async prompt(_text: string, _timeoutMs: number, interruptMs?: number): Promise<PromptResult> {
+    deadlines: number[] = [];
+    async prompt(_text: string, timeoutMs: number, interruptMs?: number): Promise<PromptResult> {
         this.onPrompt();
         this.interrupts.push(interruptMs);
+        this.deadlines.push(timeoutMs);
         if (interruptMs !== undefined) return { interrupted: true };
         if (!this.failNext) return {};
         this.failNext = false;
@@ -437,6 +439,16 @@ describe("HostDriver lifecycle", () => {
         await expect(gap.driver.event(ev("session_end"))).rejects.toThrow(missing);
         const listed = JSON.parse(readFileSync(join(gap.armDir, "transcripts.json"), "utf8"));
         expect(listed.missing).toEqual([missing]);
+    });
+
+    test("a turn's remaining deadline bounds the host prompt under the pre-registered one", async () => {
+        const { driver } = fixture("host");
+        const host = new FakeHost({} as HostContext, "/x");
+        driver.host = host as unknown as SimHost;
+        await driver.event(ev("user_turn", { id: "e-1", text: "go", deadline_ms: 400 }));
+        await driver.event(ev("user_turn", { id: "e-2", text: "go" }));
+        await driver.event(ev("user_turn", { id: "e-3", text: "go", deadline_ms: 5_000 }));
+        expect(host.deadlines).toEqual([400, 1_000, 1_000]);
     });
 
     test("a scheduled interrupt reaches the host's prompt and the turn reports it", async () => {

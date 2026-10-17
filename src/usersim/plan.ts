@@ -99,6 +99,34 @@ export function behaviourPlan(
     return { labels, skipped, interruptMs };
 }
 
+/**
+ * The user turns a fault schedule pins: each `user_turn` trigger, and for a proxy fault the
+ * rest of its session, since a burst, intermittent, or persistent provider fault stays armed
+ * for later agent calls of that session.
+ */
+export function pinnedTurns(
+    events: readonly { id: string; kind: string; session: string; index?: number }[],
+    faults: readonly {
+        trigger: { kind: string; session: string; n?: number };
+        seam: { layer: string };
+    }[],
+): Set<string> {
+    const pinned = new Set<string>();
+    for (const f of faults) {
+        const t = f.trigger;
+        if (t.kind !== "user_turn" || t.n === undefined) continue;
+        const from = t.n - 1;
+        for (const e of events) {
+            if (e.kind !== "user_turn" || e.session !== t.session || e.index === undefined)
+                continue;
+            if (e.index === from || (f.seam.layer === "proxy-sink" && e.index > from)) {
+                pinned.add(e.id);
+            }
+        }
+    }
+    return pinned;
+}
+
 export interface RealisedRates {
     turns: number;
     sessions: number;

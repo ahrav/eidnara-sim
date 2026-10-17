@@ -333,6 +333,18 @@ test("an OpenCode turn whose abort was refused runs on under its own deadline", 
     expect(await host.prompt("go", 5_000, 50)).toEqual({});
 });
 
+test("an OpenCode abort that answers after its wait but stopped the prompt still counts as the interrupt", async () => {
+    const host = opencodeHost({
+        session: {
+            messages: async () => ({ data: [] }),
+            prompt: () => Bun.sleep(5_300).then(() => ({ data: { info: {} } })),
+            abort: () => Bun.sleep(5_200).then(() => ({ data: true })),
+        },
+    });
+    Object.assign(host as unknown as Record<string, unknown>, { abortWaitMs: 50 });
+    expect(await host.prompt("go", 20_000, 50)).toEqual({ interrupted: true });
+}, 15_000);
+
 test("an aborted OpenCode turn whose tool listing then fails keeps the interrupt beside the capture error", async () => {
     let listings = 0;
     const host = opencodeHost({

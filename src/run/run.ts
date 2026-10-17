@@ -22,7 +22,7 @@ import { compileScenario, type Scenario } from "../scenario/compile";
 import type { FaultEpisode } from "../scenario/faults";
 import { loadCompileInput, loadPrereg } from "../scenario/inputs";
 import { bedrockEmbedder } from "../scenario/similarity";
-import { behaviourPlan, type Label, realisedRates } from "../usersim/plan";
+import { behaviourPlan, type Label, pinnedTurns, realisedRates } from "../usersim/plan";
 import {
     type AgentReply,
     checkTapeSources,
@@ -157,7 +157,11 @@ async function loadManifest(o: RunOptions, scenario: Scenario): Promise<Manifest
         fault_override: o.faults ?? null,
         tapes: o.tapes ?? [],
     };
-    checkTapeSources(wanted.tapes, { seed: o.seed, scenario_hash: scenario.scenario_hash });
+    checkTapeSources(wanted.tapes, {
+        seed: o.seed,
+        scenario_hash: scenario.scenario_hash,
+        prereg_sha256: preregistrationHash(loadPrereg(o.tier)),
+    });
     if (existsSync(path)) {
         const manifest = JSON.parse(readFileSync(path, "utf8")) as Manifest;
         const given: Record<string, boolean> = {
@@ -318,7 +322,7 @@ async function runArms(
     let jobSeq = journal.entries.filter((e) => e.kind === "RegisterJob").length;
     const agentText = new Map<string, AgentReply>();
     const noteAgent = (r: CallRecord) => {
-        if (r.component === "agent" && r.response_text) {
+        if (r.component === "agent" && r.response_text !== undefined) {
             agentText.set(`${r.arm}/${r.session}`, {
                 text: r.response_text,
                 ...(r.response_sha256 ? { sha256: r.response_sha256 } : {}),
@@ -374,14 +378,7 @@ async function runArms(
         role: string;
         text: string;
     }[];
-    const pinned = new Set(
-        scenario.faults.flatMap((f) => {
-            const t = f.trigger;
-            if (t.kind !== "user_turn") return [];
-            const hit = events.find((e) => e.session === t.session && e.index === t.n - 1);
-            return hit ? [hit.id] : [];
-        }),
-    );
+    const pinned = pinnedTurns(events, scenario.faults);
     const userSim = new UserSim({
         seed,
         plan: behaviourPlan(scripted, prereg, seed, pinned),
@@ -395,7 +392,7 @@ async function runArms(
             gateway.urls[0] as string,
             prereg.user_sim.model,
             prereg.user_sim.max_tokens,
-            prereg.liveness_bounds.job_deadline_ms,
+            prereg.liveness_bounds.turn_deadline_ms,
         ),
         normalise: normaliser(prereg.divergence_policy.normalisation),
         keys: [
@@ -502,6 +499,9 @@ async function runArms(
                     if (e.kind !== "user_turn") return await driver.event(e);
                     const turn = scriptedById.get(e.id);
                     if (!turn) throw new HarnessFailure(`${e.id}: no scripted user turn`);
+                    // The turn's deadline opened at BeginTurn; the user-sim call and the host
+                    // prompt share it.
+                    const opened = Date.now();
                     const d = await userSim.deliver(arm, turn, lastAgent(arm, e.session));
                     const user = { session: e.session, label: d.label, delivered: d.delivered };
                     if (!d.delivered) return { user };
@@ -509,6 +509,8 @@ async function runArms(
                         ...e,
                         text: d.text,
                         interrupt_ms: d.interruptMs,
+                        deadline_ms:
+                            prereg.liveness_bounds.turn_deadline_ms - (Date.now() - opened),
                     });
                     const cut = d.label !== "interrupt" || out.user?.interrupted === true;
                     const label = cut ? d.label : "task";

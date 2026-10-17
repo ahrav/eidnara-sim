@@ -32,14 +32,26 @@ function run(
 }
 
 const rates = (arm: string) => ({ kind: "UserSimRates", arm, outside: [], rates: {} });
+const endArm = (arm: string) => ({ kind: "EndArm", arm });
+const endRun = { kind: "EndRun", arm: null };
+const complete = (...arms: string[]) => [...arms.flatMap((a) => [rates(a), endArm(a)]), endRun];
 
 test("the pairing check fails a run that lacks an arm's rate summary, and passes one with each arm's", () => {
-    const partial = run([rates("a")]);
+    const partial = run([rates("a"), endArm("a"), endArm("b"), endRun]);
     expect(partial.report.missing_rates).toEqual(["b"]);
     expect(partial.exit).toBe(1);
-    const whole = run([rates("a"), rates("b")]);
+    const whole = run(complete("a", "b"));
     expect(whole.report.missing_rates).toEqual([]);
     expect(whole.exit).toBe(0);
+});
+
+test("the pairing check fails a run that never reached EndArm for an arm or EndRun", () => {
+    const noEndArm = run([rates("a"), rates("b"), endArm("a"), endRun]);
+    expect(noEndArm.report.incomplete).toEqual(["b EndArm"]);
+    expect(noEndArm.exit).toBe(1);
+    const noEndRun = run([rates("a"), rates("b"), endArm("a"), endArm("b")]);
+    expect(noEndRun.report.incomplete).toEqual(["EndRun"]);
+    expect(noEndRun.exit).toBe(1);
 });
 
 test("the pairing check fails a run whose log lacks a scheduled turn for an arm", () => {
@@ -60,14 +72,14 @@ test("the pairing check fails a run whose log lacks a scheduled turn for an arm"
         text_sha256: "t",
         source: "script",
     });
-    const partial = run([rates("a"), rates("b")], events, [turn("a")]);
+    const partial = run(complete("a", "b"), events, [turn("a")]);
     expect(partial.report.missing_turns).toEqual(["b e-1"]);
     expect(partial.exit).toBe(1);
-    const whole = run([rates("a"), rates("b")], events, [turn("a"), turn("b")]);
+    const whole = run(complete("a", "b"), events, [turn("a"), turn("b")]);
     expect(whole.report.missing_turns).toEqual([]);
     expect(whole.exit).toBe(0);
     const cut = { kind: "Event", arm: "b", event: "e-1", outcome: "failed(interrupted)" };
-    const interrupted = run([rates("a"), rates("b"), cut], events, [turn("a"), turn("b")]);
+    const interrupted = run([...complete("a", "b"), cut], events, [turn("a"), turn("b")]);
     expect(interrupted.report.interrupted_turns).toEqual(["b e-1"]);
     expect(interrupted.exit).toBe(1);
 });
