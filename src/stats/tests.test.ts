@@ -234,6 +234,37 @@ describe("statistics against published references", () => {
         expect(() => negativeBinomial([], [])).toThrow(RangeError);
         expect(() => negativeBinomial([[1], [1], [1]], [-1, 2, 3])).toThrow(RangeError);
         expect(() => negativeBinomial([[1], [1], [1]], [0.5, 2, 3])).toThrow(RangeError);
+        expect(() => negativeBinomial([[1], [1]], [1, 2, 100])).toThrow(RangeError);
+    });
+
+    test("the negative-binomial fit starts from the observed counts, whatever the column order or a rare large count", () => {
+        const y = [0, 1, 2, 2, 3, 5, 8, 13];
+        const first = negativeBinomial(
+            y.map((_, i) => [1, 100 * (i - 3.5)]),
+            y,
+        );
+        const last = negativeBinomial(
+            y.map((_, i) => [100 * (i - 3.5), 1]),
+            y,
+        );
+        expect([first.converged, last.converged]).toEqual([true, true]);
+        near(last.coefficients[0] as number, first.coefficients[1] as number, 1e-9);
+        near(last.coefficients[1] as number, first.coefficients[0] as number, 1e-9);
+        const x = Array.from({ length: 800 }, (_, i) => [1, Number(i === 799)]);
+        const rare = negativeBinomial(
+            x,
+            x.map((_, i) => (i === 799 ? 10_000 : 1)),
+        );
+        expect(rare.converged).toBe(true);
+        near(rare.coefficients[0] as number, 0, 1e-9);
+        near(rare.coefficients[1] as number, Math.log(10_000), 1e-9);
+    });
+
+    test("a BCa interval of a single observation is that observation", () => {
+        const avg = (s: number[]) => s.reduce((a, b) => a + b, 0) / s.length;
+        expect(acceleration([5], avg)).toBe(0);
+        const b = bootstrap([5], avg, { replicates: 200, seed: 1, bca: true });
+        expect([b.estimate, b.lo, b.hi]).toEqual([5, 5, 5]);
     });
 
     test("the incomplete beta function converges for large concentrated shapes", () => {

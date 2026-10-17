@@ -134,6 +134,7 @@ function resample<T>(xs: readonly T[], rng: Rng): T[] {
 
 /** The jackknife acceleration of BCa (Efron and Tibshirani, 1993, eq. 14.15). */
 export function acceleration<T>(xs: readonly T[], stat: (s: T[]) => number): number {
+    if (xs.length < 2) return 0;
     const jack = xs.map((_, i) => stat(xs.filter((__, j) => j !== i)));
     const m = mean(jack);
     const num = jack.reduce((s, t) => s + (m - t) ** 3, 0);
@@ -275,32 +276,30 @@ export function negativeBinomial(x: number[][], y: number[], iterations = 50): N
     const p = (x[0] ?? []).length;
     if (y.length === 0 || p === 0)
         throw new RangeError("negativeBinomial: an empty design has no fit");
+    if (x.length !== y.length)
+        throw new RangeError("negativeBinomial: the design and the response differ in length");
     if (!y.every((v) => Number.isInteger(v) && v >= 0))
         throw new RangeError("negativeBinomial: the response must be nonnegative integer counts");
     let beta = new Array<number>(p).fill(0);
-    beta[0] = Math.log(Math.max(mean(y), 1e-8));
+    let m = y.map((v) => v + 0.1);
     let theta = 1;
     let settled = false;
-    const eta = (b: number[]) =>
-        x.map((row) => row.reduce((s, v, j) => s + v * (b[j] as number), 0));
-    const mu = () => eta(beta).map(Math.exp);
-    const weights = (m: number[]) => m.map((u) => u / (1 + u / theta));
+    const weights = () => m.map((u) => u / (1 + u / theta));
     for (let outer = 0; outer < iterations; outer++) {
         let stable = false;
         for (let inner = 0; inner < 25 && !stable; inner++) {
-            const m = mu();
-            const w = weights(m);
+            const w = weights();
             const z = m.map((u, i) => Math.log(u) + ((y[i] as number) - u) / u);
-            const next = solve(weightedCross(x, w), weightedCross(x, w, z)[0] as number[]);
-            const before = eta(beta);
-            const moved = eta(next).reduce(
-                (s, e, i) => Math.max(s, Math.abs(e - (before[i] as number))),
+            beta = solve(weightedCross(x, w), weightedCross(x, w, z)[0] as number[]);
+            const eta = x.map((row) => row.reduce((s, v, j) => s + v * (beta[j] as number), 0));
+            const moved = eta.reduce(
+                (s, e, i) => Math.max(s, Math.abs(e - Math.log(m[i] as number))),
                 0,
             );
-            beta = next;
+            m = eta.map(Math.exp);
             stable = moved < 1e-10;
         }
-        const t = thetaAt(y, mu());
+        const t = thetaAt(y, m);
         const done = stable && Math.abs(t - theta) < 1e-8 * theta;
         theta = t;
         if (done) {
@@ -308,7 +307,7 @@ export function negativeBinomial(x: number[][], y: number[], iterations = 50): N
             break;
         }
     }
-    const xtwx = weightedCross(x, weights(mu()));
+    const xtwx = weightedCross(x, weights());
     const se = beta.map((_, j) =>
         Math.sqrt(
             solve(
@@ -318,6 +317,6 @@ export function negativeBinomial(x: number[][], y: number[], iterations = 50): N
         ),
     );
     const finite = [...beta, ...se, theta].every(Number.isFinite);
-    const converged = settled && finite && mu().every((u) => Math.abs(Math.log(u)) <= 30);
+    const converged = settled && finite && m.every((u) => Math.abs(Math.log(u)) <= 30);
     return { coefficients: beta, se, theta, converged };
 }
