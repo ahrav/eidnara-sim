@@ -409,14 +409,51 @@ describe("recovery oracles", () => {
     });
 });
 
+describe("evidence presence", () => {
+    test("an arm without infrastructure faults is left alone, whatever its plugin log holds", () => {
+        seq = 0;
+        const journal = [
+            entry("BeginTurn", 10, { event: "e-1" }),
+            entry("EndTurn", 20, { event: "e-1", outcome: "ok" }),
+        ];
+        const log = ["[eidnara][s-1] rust pass: decision=error reason=none served_from=raw"];
+        expect(recoveries(run([arm(journal, log)], Number.NaN))).toEqual([]);
+    });
+
+    test("an arm with infrastructure faults needs its plugin log on disk", () => {
+        seq = 0;
+        const journal = [
+            entry("FaultObserved", 0, { fault: "f", type: "plugin_reload", evidence: {} }),
+            entry("BeginTurn", 10, { event: "e-1" }),
+            entry("EndTurn", 20, { event: "e-1", outcome: "ok" }),
+        ];
+        const absent = { ...arm(journal), pluginLogMissing: true as const };
+        expect(() => recoveries(run([absent]))).toThrow("eidnara.log");
+    });
+});
+
 describe("store_full", () => {
+    test("a full store's evidence must show the store reached ENOSPC", () => {
+        seq = 0;
+        const journal = (evidence: unknown) => [
+            entry("FaultObserved", 0, { fault: "full", type: "store_full", evidence }),
+            entry("BeginTurn", 10, { event: "e-1" }),
+            entry("EndTurn", 20, { event: "e-1", outcome: "ok" }),
+        ];
+        for (const evidence of [{}, { mount: "/s", avail_kb: 12 }, { avail_kb: 0 }]) {
+            expect(() => recoveries(run([arm(journal(evidence), [], store("ok"))]))).toThrow(
+                "store_full",
+            );
+        }
+    });
+
     test("a full store's recovery needs a readable final store", () => {
         seq = 0;
         const journal = [
             entry("FaultObserved", 0, {
                 fault: "full",
                 type: "store_full",
-                evidence: { avail_kb: 0 },
+                evidence: { mount: "/s", avail_kb: 0 },
             }),
             entry("BeginTurn", 10, { event: "e-1" }),
             entry("EndTurn", 20, { event: "e-1", outcome: "ok" }),

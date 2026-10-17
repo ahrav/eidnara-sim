@@ -282,8 +282,6 @@ function storeReasons(checks: Checks, postCrash = true): string[] {
 
 export function recoveries(run: RunLogs): Recovery[] {
     return run.arms.flatMap((arm) => {
-        const tl = timeline(arm, run.base_wall_ms ?? Number.NaN);
-        const indexed = indexEvidence(arm, tl);
         const observations = new Map(
             arm.journal.filter((e) => e.kind === "FaultObserved").map((e) => [e.fault, e]),
         );
@@ -295,6 +293,15 @@ export function recoveries(run: RunLogs): Recovery[] {
             else if (e.kind === "FaultObserved" && INFRA.has(String(e.type)) && !anchored)
                 anchors.set(e.fault, e);
         }
+        if (anchors.size === 0) return [];
+        // An arm whose verdicts depend on the plugin log needs that log on disk.
+        if (arm.pluginLogMissing) {
+            throw new Error(
+                `${arm.arm}: r/eidnara.log is missing, so fail-open evidence cannot be read`,
+            );
+        }
+        const tl = timeline(arm, run.base_wall_ms ?? Number.NaN);
+        const indexed = indexEvidence(arm, tl);
         return [...anchors.values()].map((fired): Recovery => {
             // A sleep's evidence is its recorded clock jump: a fault-tagged AdvanceClock that moved
             // the clock forward with the busy set empty, by the scheduled duration when known.
@@ -349,6 +356,13 @@ export function recoveries(run: RunLogs): Recovery[] {
             const parsed = (value: unknown, where: string) =>
                 value === undefined ? undefined : parseStoreCheck(value, where);
             if (base.type === "store_full") {
+                // The driver observes a full store as its mount and zero free space.
+                const full = evidence as { mount?: unknown; avail_kb?: unknown };
+                if (observed && (typeof full.mount !== "string" || full.avail_kb !== 0)) {
+                    throw new Error(
+                        `${arm.arm}: ${base.fault} store_full evidence does not show a full mount`,
+                    );
+                }
                 // The seam's surviving state: the store stays readable, which the final check shows.
                 const final = parsed(arm.finalStore, `${arm.arm}: store-check.json`);
                 const store = storeReasons({ final }, false);

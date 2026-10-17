@@ -19,6 +19,8 @@ export interface ArmLogs {
     calls: CallRecord[];
     journal: Entry[];
     pluginLog: string[];
+    /** Set when `<arm>/r/eidnara.log` is absent, so an empty log reads as missing evidence. */
+    pluginLogMissing?: true;
     daemonLog: string[];
     resources: Sample[];
     tools: (Command & { turn: string | null })[];
@@ -251,6 +253,9 @@ export function loadRun(dir: string, prereg: Preregistration): RunLogs {
         calls: calls.filter((c) => c.arm === arm),
         journal: journal.filter((e) => e.arm === arm),
         pluginLog: lines(join(dir, arm, "r", "eidnara.log")),
+        ...(existsSync(join(dir, arm, "r", "eidnara.log"))
+            ? {}
+            : { pluginLogMissing: true as const }),
         daemonLog: lines(join(dir, arm, "daemon.log")),
         resources: samplesOf(join(dir, arm, "resources.jsonl")),
         tools: toolsOf(join(dir, arm, "tools.jsonl"), turns),
