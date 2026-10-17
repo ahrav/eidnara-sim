@@ -64,6 +64,8 @@ export interface ToolRun {
     scenario_ms: number;
     /** The host's id for the run, when it reports a start before the end; a later report with the same id replaces the earlier one. */
     call?: string;
+    /** Set on a run reported after its turn, at recovery time; the recorder attributes it to no turn. */
+    recovered?: true;
 }
 
 const TARGET_KEYS = ["path", "filePath", "pattern", "file_path"];
@@ -792,7 +794,13 @@ export class OpencodeSimHost extends SimHost {
             for (const part of m.parts.filter((p) => p.type === "tool")) {
                 const command = toolCommand(part.tool, part.state?.input);
                 const exit = EXIT[part.state?.status] ?? null;
-                this.ctx.onTool?.({ command, exit, scenario_ms: now, call: callId(part) });
+                this.ctx.onTool?.({
+                    command,
+                    exit,
+                    scenario_ms: now,
+                    call: callId(part),
+                    recovered: true,
+                });
             }
         }
     }

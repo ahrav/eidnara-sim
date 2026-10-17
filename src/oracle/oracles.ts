@@ -29,6 +29,15 @@ const CAPTURE_REFUSED =
 /** The harness's own wording for a turn that hit its deadline: OpenCode's `turn deadline <N> ms`, Pi's `Timed out after <N>ms`. */
 const DEADLINE = /turn deadline \d+ ms|Timed out after \d+ ?ms/;
 const HARNESS = new Set(["user-sim", "judge", "rejected"]);
+/** Calls that count as progress after a completed agent call: model work and persistence (SIM-P39); a title call is neither. */
+const PROGRESS = new Set([
+    "agent",
+    "native_compaction",
+    "history_summarizer",
+    "memory_capture",
+    "memory_classifier",
+    "context_researcher",
+]);
 export const INTERNAL_TEXT = [
     /<\/?history[_-]segments?\b/i,
     /<\/?eidnara[\w-]*>/i,
@@ -149,7 +158,9 @@ function f4(arm: ArmLogs, quietMs: number): Activation[] {
         }
         for (const c of calls) {
             const done = c.scenario_ms + (c.wall_ms - c.started_wall_ms);
-            const others = turnCalls.filter((x) => x !== c).map((x) => x.scenario_ms);
+            const others = turnCalls
+                .filter((x) => x !== c && PROGRESS.has(x.component))
+                .map((x) => x.scenario_ms);
             const quiet = quietAfter(done, [...others, e.scenario_ms]);
             if (quiet > quietMs)
                 windows.push(`call ${c.seq} completed, then ${Math.round(quiet / 1000)} s`);

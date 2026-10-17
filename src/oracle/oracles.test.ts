@@ -1491,3 +1491,33 @@ describe("oracle round twenty", () => {
         expect(() => loadRun(dir, prereg)).toThrow(/journal\.jsonl: line \d+ is corrupt/);
     });
 });
+
+describe("oracle round twenty-one", () => {
+    test("a start tick needs a pid and the canonical decimal shape", () => {
+        const { dir, line } = completeDir(["eidnara"]);
+        const rs = join(dir, "eidnara", "resources.jsonl");
+        writeFileSync(rs, line({ scenario_ms: 0, rss: 100, start: "1" }));
+        expect(() => loadRun(dir, prereg)).toThrow(/resources\.jsonl: line 1: start without a pid/);
+        writeFileSync(rs, line({ scenario_ms: 0, rss: 100, pid: 1, start: "01" }));
+        expect(() => loadRun(dir, prereg)).toThrow(
+            /resources\.jsonl: line 1: start is not a clock tick/,
+        );
+        writeFileSync(rs, line({ scenario_ms: 0, rss: 100, pid: 1, start: "0" }));
+        expect(loadRun(dir, prereg).arms[0]?.resources).toHaveLength(1);
+    });
+
+    test("a title call after an agent call is not follow-up progress", () => {
+        const titled = runWith(
+            armOf("eidnara", {
+                calls: [
+                    call({ seq: 0, scenario_ms: 10_000, started_wall_ms: 0, wall_ms: 400 }),
+                    call({ seq: 1, component: "title", scenario_ms: 12_000 }),
+                ],
+                journal: [endTurn("eidnara", "e-1", 10_400 + 600_000)],
+            }),
+        );
+        expect(oracle(titled, "F4").map((a) => a.evidence)).toEqual([
+            "call 0 completed, then 600 s with no tool run, call, or turn end",
+        ]);
+    });
+});

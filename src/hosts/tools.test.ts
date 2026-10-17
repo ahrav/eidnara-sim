@@ -285,7 +285,7 @@ test("reattaching to an OpenCode session reports the tool parts its messages alr
     });
     await host.recoverTools(1_000);
     expect(reported).toEqual([
-        { command: "cargo build", exit: 0, scenario_ms: 700, call: "oc:prt-1" },
+        { command: "cargo build", exit: 0, scenario_ms: 700, call: "oc:prt-1", recovered: true },
     ]);
 });
 
@@ -397,7 +397,7 @@ test("tool parts a failed post-turn listing missed are reported before the next 
     expect(reported).toEqual([]);
     await host.prompt("second", 1_000);
     expect(reported).toEqual([
-        { command: "cargo build", exit: 0, scenario_ms: 100, call: "oc:p1" },
+        { command: "cargo build", exit: 0, scenario_ms: 100, call: "oc:p1", recovered: true },
     ]);
 });
 

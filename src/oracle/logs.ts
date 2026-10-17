@@ -198,8 +198,11 @@ function samplesOf(path: string): Sample[] {
         if (!Number.isSafeInteger(s.scenario_ms) || s.scenario_ms < 0) {
             throw new Error(`${path}: line ${i + 1}: scenario_ms is not a count`);
         }
-        if (typeof s.start === "string" && !/^\d+$/.test(s.start)) {
+        if (typeof s.start === "string" && !/^(0|[1-9]\d*)$/.test(s.start)) {
             throw new Error(`${path}: line ${i + 1}: start is not a clock tick`);
+        }
+        if ("start" in s && !("pid" in s)) {
+            throw new Error(`${path}: line ${i + 1}: start without a pid`);
         }
         const prev = samples[i - 1];
         if (prev && s.scenario_ms < prev.scenario_ms) {

@@ -1325,3 +1325,24 @@ test("clearing a recorder leaves an empty tools.jsonl in place", () => {
     recorder.clear();
     expect(readFileSync(join(armDir, "tools.jsonl"), "utf8")).toBe("");
 });
+
+test("a tool run recovered from an earlier turn is logged with no turn, whatever turn is in progress", async () => {
+    const { driver, hosts, armDir, transcripts } = fixture("host", { p: gitRepo() });
+    await driver.reset();
+    mkdirSync(join(transcripts, "sessions"), { recursive: true });
+    const host = hosts.at(-1) as FakeHost;
+    await driver.event(ev("session_start", { session: "s-0" }));
+    host.onPrompt = () => {
+        host.ctx.onTool?.({ command: "cargo build", exit: 0, scenario_ms: 3, recovered: true });
+        host.ctx.onTool?.({ command: "ls", exit: 0, scenario_ms: 4 });
+    };
+    await driver.event(ev("user_turn", { id: "e-1", session: "s-0", text: "go" }));
+    const lines = readFileSync(join(armDir, "tools.jsonl"), "utf8")
+        .trim()
+        .split("\n")
+        .map((l) => JSON.parse(l));
+    expect(lines.map((l) => [l.command, l.turn])).toEqual([
+        ["cargo build", null],
+        ["ls", "e-1"],
+    ]);
+});
