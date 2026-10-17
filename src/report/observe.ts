@@ -200,7 +200,7 @@ function itemPairs(
                     r.arm === arm &&
                     known.has(r.item) &&
                     r.verdict !== "excluded" &&
-                    source in r.metrics &&
+                    typeof r.metrics[source] === "boolean" &&
                     r.metrics.gate_eligible !== false,
             );
         const value = (r: GradeRecord) => Number(r.metrics[source] === true);
@@ -311,12 +311,25 @@ function incomplete(
                 );
             }),
         );
+    const binary = new Set(
+        p.families
+            .filter((f) => f.analysis_unit === "item")
+            .flatMap((f) => f.metrics.map((m) => ALIASES[m] ?? m)),
+    );
     const unknown = runs.flatMap((g) => {
         const known = probeIds(g);
         const items = [...new Set(g.grades.filter((r) => !known.has(r.item)).map((r) => r.item))];
-        return items.length
-            ? [`run ${runKey(g)}: grades for unknown items ${items.join(", ")}`]
-            : [];
+        const malformed = [...g.grades, ...g.judged].flatMap((r) =>
+            Object.entries(r.metrics)
+                .filter(([k, v]) => binary.has(k) && typeof v !== "boolean")
+                .map(([k]) => `run ${runKey(g)}: ${k} is not a boolean for ${r.arm} ${r.item}`),
+        );
+        return [
+            ...(items.length
+                ? [`run ${runKey(g)}: grades for unknown items ${items.join(", ")}`]
+                : []),
+            ...malformed,
+        ];
     });
     const pairing = runs.flatMap((g) => {
         if (g.pairing === null) return [`run ${runKey(g)}: pairing records missing`];

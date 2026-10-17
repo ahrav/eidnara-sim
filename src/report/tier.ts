@@ -72,6 +72,7 @@ export function loadGraded(dir: string, prereg: Preregistration): GradedRun {
         generator_version?: string;
         random_schema_version?: number;
         corpus_manifest_sha256?: string;
+        embedding_model?: string;
     };
     const hostP7 = (r: GradeRecord) => r.probe_type === "P7" && armBase(r.arm) === "host";
     const grades = [
@@ -91,7 +92,7 @@ export function loadGraded(dir: string, prereg: Preregistration): GradedRun {
             events,
             distortions: manifest.preflight?.distortions ?? [],
             host_versions: (manifest.preflight?.hosts ?? []).map((h) => `${h.host}@${h.version}`),
-            scenario_provenance: `${sm.generator_version}/${sm.random_schema_version}/${sm.corpus_manifest_sha256}`,
+            scenario_provenance: `${sm.generator_version}/${sm.random_schema_version}/${sm.corpus_manifest_sha256}/${sm.embedding_model}`,
             fault_override:
                 manifest.fault_override == null
                     ? null

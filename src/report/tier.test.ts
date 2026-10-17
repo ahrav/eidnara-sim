@@ -1244,6 +1244,50 @@ describe("tier report", () => {
         expect(renderTier(report)).toContain("older than grades.jsonl");
     });
 
+    test("a binary grade metric that is not a boolean pairs nothing and is named", () => {
+        const g = fixture();
+        for (const r of g.grades)
+            if (r.item === "q-p8-2" && r.arm === "eidnara") r.metrics["P8.pass"] = 1 as never;
+        const input = tierInput(prereg, [g]);
+        expect(
+            input.observations.find((o) => o.metric === "P8.cross_session_pass_rate")?.items,
+        ).toHaveLength(9);
+        expect(input.incomplete).toContain(
+            "run pi/101: P8.pass is not a boolean for eidnara q-p8-2",
+        );
+    });
+
+    test("the scenario provenance includes the embedding model", () => {
+        const dir = mkdtempSync(join(tmpdir(), "sim-report-"));
+        const body = {
+            manifest: {
+                seed: 101,
+                generator_version: "g",
+                random_schema_version: 1,
+                corpus_manifest_sha256: "c",
+                embedding_model: "emb",
+            },
+            events: [],
+            probes: [],
+            faults: [],
+        };
+        const scenario_hash = sha256Hex(canonicalJson(body));
+        writeFileSync(
+            join(dir, "manifest.json"),
+            JSON.stringify({
+                tier: "S",
+                seed: 101,
+                host: "pi",
+                order: [],
+                base_wall_ms: 0,
+                prereg_sha256: preregistrationHash(prereg),
+                scenario_hash,
+            }),
+        );
+        writeFileSync(join(dir, "scenario.json"), canonicalJson({ ...body, scenario_hash }));
+        expect(loadGraded(dir, prereg).identity.scenario_provenance).toBe("g/1/c/emb");
+    });
+
     test("a planted 4xx difference between the A/A arms fails that falsification check", () => {
         const report = tierReport(prereg, [fixture((s) => (s % 2 ? 429 : 200))], boundary);
         const fourxx = report.falsification.find(

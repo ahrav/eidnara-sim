@@ -119,10 +119,11 @@ a pre-registered arm (`arms.run`) that has no `EndArm` entry, each run whose man
 `events` stops short of its scenario's events, each manifest setting
 (`eidnara_commit`, `models`, `context_limit`, the preflight's clock
 `distortions`, its host versions, and the scenario's generator, random
-schema, and corpus manifest) the runs disagree on, each run with
+schema, corpus manifest, and embedding model) the runs disagree on, each run with
 scheduled proxy faults and no complete `faults.jsonl` line, each run made
 with a fault override, each run with grades for
-items outside its scenario's probes (which pair nothing), each run without
+items outside its scenario's probes or with a binary metric recorded as
+other than a boolean (either pairs nothing), each run without
 `pairing.jsonl` or whose records fail the checks of
 `scripts/pairing-check.ts` (`pairingFailures`: a pre-divergence reply
 differing from the reference arm's, an altered probe or paste turn, an
