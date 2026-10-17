@@ -122,6 +122,7 @@ function fixture(status = (_: number) => 200, opts: FixtureOptions = {}): Graded
         join(dir, "aa.json"),
         JSON.stringify([{ arm: "host", control: "host~aa", disagreement_rate: 0 }]),
     );
+    writeFileSync(join(dir, "grade-summary.json"), JSON.stringify({ judge_errors: 0 }));
     const pairing = arms.flatMap((a) =>
         Array.from({ length: SESSIONS }, (_, s) =>
             [0, 1, 2].map((index) => ({

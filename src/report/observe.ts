@@ -113,7 +113,7 @@ const latency =
 const slope =
     (resource: "rss" | "heap" | "store_bytes"): RunValue =>
     ({ run }, arm) =>
-        soak(run, arm, resource).slope_per_session;
+        soak(run, arm, resource)?.slope_per_session ?? null;
 const graded =
     (metric: string, reduce: (xs: number[]) => number): RunValue =>
     (g, arm, pairing) => {
@@ -150,7 +150,8 @@ const RUN_VALUES: Record<string, { value: RunValue; delta: boolean; hostless?: t
     daemon_heap_growth_bytes_per_session: { value: slope("heap"), delta: true, hostless: true },
     store_growth_bytes_per_session: { value: slope("store_bytes"), delta: true, hostless: true },
     internal_string_hits: {
-        value: (g, arm) => (g.captured ? panelOf(g, arm).internal_string_hits.length : null),
+        value: (g, arm) =>
+            g.captured ? (panelOf(g, arm).internal_string_hits?.length ?? null) : null,
         delta: false,
     },
     user_corrections_referencing_injected_text: {

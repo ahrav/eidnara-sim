@@ -216,10 +216,10 @@ export function tierReport(
         soak: perArm
             .filter(({ arm }) => armBase(arm.arm) !== "host")
             .flatMap(({ g, arm }) =>
-                (["rss", "heap", "store_bytes"] as const).map((r) => ({
-                    ...soak(g.run, arm, r),
-                    run: g.run.dir,
-                })),
+                (["rss", "heap", "store_bytes"] as const).flatMap((r) => {
+                    const verdict = soak(g.run, arm, r);
+                    return verdict ? [{ ...verdict, run: g.run.dir }] : [];
+                }),
             ),
         intrusiveness: perArm.map(({ g, arm }) => ({
             ...intrusiveness(g.run, arm),
