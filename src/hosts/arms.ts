@@ -71,6 +71,10 @@ export const eidnaraOn = (arm: ArmName) => arm !== "host";
 export const armBase = (label: string) => label.split("~")[0] as ArmName;
 const modelRef = (model: string) => `amazon-bedrock/${model}`;
 
+export function piModels(ctx: Pick<HostContext, "model" | "sideModel">): string[] {
+    return [...new Set([ctx.model, ...(ctx.sideModel ? [ctx.sideModel] : [])])];
+}
+
 function eidnaraUserConfig(connectionFile: string, model: string): Record<string, unknown> {
     return {
         enabled: true,
@@ -246,7 +250,7 @@ export class PiSimHost extends SimHost {
             packages: [],
             defaultProvider: "amazon-bedrock",
             defaultModel: this.ctx.model,
-            enabledModels: [modelRef(this.ctx.model)],
+            enabledModels: piModels(this.ctx).map(modelRef),
             compaction: { enabled: this.ctx.arm === "host" || this.ctx.arm === "eidnara-kl" },
             retry: { enabled: true },
             defaultThinkingLevel: "off",
@@ -254,17 +258,17 @@ export class PiSimHost extends SimHost {
             enableInstallTelemetry: false,
         };
         writeFileSync(join(this.agentDir, "settings.json"), JSON.stringify(settings, null, 2));
-        const model = {
-            id: this.ctx.model,
-            name: this.ctx.model,
+        const models = piModels(this.ctx).map((id) => ({
+            id,
+            name: id,
             api: "bedrock-converse-stream",
             reasoning: false,
             input: ["text"],
             contextWindow: this.ctx.contextLimit,
             maxTokens: 8192,
             cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
-        };
-        const providers = { "amazon-bedrock": { baseUrl: this.ctx.proxyHttp2, models: [model] } };
+        }));
+        const providers = { "amazon-bedrock": { baseUrl: this.ctx.proxyHttp2, models } };
         writeFileSync(join(this.agentDir, "models.json"), JSON.stringify({ providers }, null, 2));
         if (connectionFile) {
             const dir = join(this.ctx.root, "home/config/eidnara");

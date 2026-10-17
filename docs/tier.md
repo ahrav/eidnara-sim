@@ -25,6 +25,8 @@ the budget is stopped with SIGTERM, and with SIGKILL a minute later if its
 teardown stalls; it stays resumable. Rerunning the command resumes every
 run from its journal; without `--turn-ms` it reuses the `turn_ms` of the
 existing `tier-plan.json`, so the planned prefixes match the manifests.
+A group's runs are all awaited before any of them is graded, so grading
+never loads a run still inside its measurement window.
 Every run that wrote a manifest is graded and reported, including one
 stopped at the limit; the report's run-conditions panel gives the events
 each run reached against its plan.
@@ -106,7 +108,7 @@ from its runs' first journal entries:
 
 | Tier | Profile | Runs |
 |---|---|---|
-| M | `side-haiku` | Per host, the first seed's `host` and `eidnara` arms with Eidnara's summarizer and researcher calls on Haiku 5.5 (`--side-model`), the model factor against the paired runs' Opus |
+| M | `side-haiku` | Per host, the first seed's `host` and `eidnara` arms with Eidnara's summarizer and researcher calls on Haiku 5.5 (`--side-model`), replaying the paired run's user-sim tape (`--tapes`), the model factor against the paired runs' Opus |
 | M | `usersim-luna` | One Pi run of the first seed's `host` and `eidnara` arms with `gpt-5.6-luna` as the user-sim (`--user-sim-model`) |
 | L | `concurrent` | Per host, each arm of the first seed alone in its own run (`<dir>/L-301-<host>-concurrent/<arm>`), all started together |
 

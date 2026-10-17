@@ -144,25 +144,24 @@ const runJob = async (job: TierJob) => {
         log,
         limit,
     );
-    const ran = existsSync(join(job.dir, "manifest.json"));
-    const graded = ran ? await run(["grade-run.ts", job.dir], log) : null;
+    return { ...job, log, start_ms: firstEntryMs(job.dir), run_exit: code };
+};
+const gradeJob = async (ran: Awaited<ReturnType<typeof runJob>>) => {
+    const { log, ...job } = ran;
+    const graded = existsSync(join(job.dir, "manifest.json"))
+        ? await run(["grade-run.ts", job.dir], log)
+        : null;
     const aa =
         graded === 0 && job.arms.some((a) => a.includes("~"))
             ? await run(["aa-report.ts", job.dir], log)
             : null;
-    return {
-        ...job,
-        start_ms: firstEntryMs(job.dir),
-        run_exit: code,
-        grade_exit: graded,
-        aa_exit: aa,
-        wall_ms: Date.now() - started,
-    };
+    return { ...job, grade_exit: graded, aa_exit: aa, wall_ms: Date.now() - started };
 };
 const groups = [...new Set(plan.map((j) => j.group))];
-const results: Awaited<ReturnType<typeof runJob>>[] = [];
+const results: Awaited<ReturnType<typeof gradeJob>>[] = [];
 for (const group of groups) {
-    results.push(...(await Promise.all(plan.filter((j) => j.group === group).map(runJob))));
+    const ran = await Promise.all(plan.filter((j) => j.group === group).map(runJob));
+    results.push(...(await Promise.all(ran.map(gradeJob))));
 }
 const skew = (group: string) => {
     const starts = results

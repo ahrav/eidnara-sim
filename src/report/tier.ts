@@ -14,7 +14,7 @@ import { continuity, runConditions } from "./conditions";
 import { costPanel } from "./cost";
 import { falsificationPairs } from "./falsify";
 import { intrusiveness } from "./intrusive";
-import { type GradedRun, tierInput, userTexts } from "./observe";
+import { asymmetric, type GradedRun, runKey, tierInput, userTexts } from "./observe";
 import type { TierReport } from "./render";
 import { soak } from "./soak";
 import { propertyWitness } from "./witness";
@@ -205,11 +205,14 @@ export function counterfactual(
             .filter((d) => !d.skipped && d.deleted > 0 && d.remaining === 0)
             .map((d) => `${d.run}/${d.probe}`),
     );
+    const asym = new Set(asymmetric(both, memory, cf));
     const flipsOver = (items: (g: GradedRun) => string[]) => {
         const pairs = both.flatMap((g) => {
             const verdict = (arm: string, item: string) =>
                 g.grades.find((r) => r.arm === arm && r.item === item)?.verdict;
-            return items(g).map((item) => ({ m: verdict(memory, item), c: verdict(cf, item) }));
+            return items(g)
+                .filter((item) => !asym.has(`${runKey(g)}/${item}`))
+                .map((item) => ({ m: verdict(memory, item), c: verdict(cf, item) }));
         });
         const graded = pairs.filter((p) => p.m && p.c && p.m !== "excluded" && p.c !== "excluded");
         const passes = graded.filter((p) => p.m === "pass");

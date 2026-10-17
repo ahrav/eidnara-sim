@@ -483,6 +483,8 @@ describe("counterfactual attribution", () => {
             ],
         },
         scenario: {
+            manifest: { seed: 101 },
+            faults: [],
             cf_deletions: ["q-1", "q-2", "q-3", "q-4"].map((probe) => ({ probe })),
             probes: ["q-1", "q-2", "q-3", "q-4", "q-5", "q-6"].map((id) => ({ id, type: "P1" })),
         },
@@ -519,6 +521,34 @@ describe("counterfactual attribution", () => {
             verified: 2,
             memory_passes: 2,
             flips: 1,
+        });
+    });
+
+    test("probes in a session where a fault fired in one arm alone leave the attribution and placebo counts", () => {
+        const observed = { kind: "FaultObserved", fault: "fault-000", type: "daemon_restart" };
+        const lonely = {
+            ...g,
+            host: "pi",
+            run: {
+                ...g.run,
+                arms: [arm("eidnara", [observed]), g.run.arms[1]],
+            },
+            scenario: {
+                ...g.scenario,
+                faults: [{ id: "fault-000", trigger: { kind: "session_start", session: "s-9" } }],
+                probes: ["q-1", "q-2", "q-3", "q-4", "q-5", "q-6"].map((id) => ({
+                    id,
+                    type: "P1",
+                    session: id === "q-1" || id === "q-5" ? "s-9" : "s-1",
+                })),
+            },
+        } as unknown as GradedRun;
+        expect(counterfactual([lonely])).toMatchObject({
+            attempted: 4,
+            verified: 2,
+            memory_passes: 1,
+            flips: 0,
+            placebo: { memory_passes: 1, flips: 0 },
         });
     });
 

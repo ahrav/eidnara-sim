@@ -27,13 +27,28 @@ const loaded = new Map(
     }),
 );
 const scales = new Map([...loaded].map(([tier, t]) => [tier, aaScale(t.prereg, t.runs)]));
-const recorded = (tier: Tier, dirs: string[]): CusumScale | undefined => {
+const recorded = (tier: Tier, dirs: string[]) => {
     const beside = dirs.map((d) => join(dirname(d), `${tier}-resizing.json`)).find(existsSync);
-    return beside ? (JSON.parse(readFileSync(beside, "utf8")).cusum_sd ?? undefined) : undefined;
+    return beside
+        ? (JSON.parse(readFileSync(beside, "utf8")) as {
+              cusum_sd: CusumScale | null;
+              paired_items_per_probe_type: number;
+          })
+        : undefined;
 };
 for (const [tier, { prereg, runs }] of loaded) {
-    const scale = cusumScale(prereg, scales, recorded(tier, byTier.get(tier) ?? []));
-    const report = tierReport(prereg, runs, boundary, scale, catalog);
+    const resizing = recorded(tier, byTier.get(tier) ?? []);
+    const scale = cusumScale(prereg, scales, resizing?.cusum_sd ?? undefined);
+    const effective = resizing
+        ? {
+              ...prereg,
+              stopping_rule: {
+                  ...prereg.stopping_rule,
+                  paired_items_per_probe_type: resizing.paired_items_per_probe_type,
+              },
+          }
+        : prereg;
+    const report = tierReport(effective, runs, boundary, scale, catalog);
     const text = renderTier(report);
     if (out) {
         mkdirSync(out, { recursive: true });

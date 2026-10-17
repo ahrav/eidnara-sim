@@ -23,7 +23,7 @@ const ALIASES: Record<string, string> = {
 };
 
 /** The prefix that keeps one seed's items apart across the tier's hosts: `<host>/<seed>`. */
-const runKey = (g: GradedRun) => `${g.host}/${g.scenario.manifest.seed}`;
+export const runKey = (g: GradedRun) => `${g.host}/${g.scenario.manifest.seed}`;
 
 type RunValue = (g: GradedRun, arm: ArmLogs, other: ArmLogs) => number | null;
 
@@ -177,7 +177,7 @@ function runPairs(
  * The faults that landed in an arm: those the scheduler observed, and those the proxy
  * recorded on the arm's calls as `fault_ref`.
  */
-function asymmetric(runs: GradedRun[], control: string, treatment: string): string[] {
+export function asymmetric(runs: GradedRun[], control: string, treatment: string): string[] {
     return runs.flatMap((g) => {
         const fired = (name: string) => {
             const arm = g.run.arms.find((a) => a.arm === name);
