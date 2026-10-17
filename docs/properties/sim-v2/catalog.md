@@ -1287,8 +1287,9 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M7 (#1032); nothing constructs
-it yet
+Exercised: partial - `src/stats/gate.test.ts` constructs excluded and
+fault-asymmetric ids, counts them, and refuses a missing journal sequence; no
+tier run or report path has reached the gate
 Guarantee: SIM-P51: `EvaluateGate` input set equals `CompletedPairs(tier)` at
 `journal_seq_at_eval`, and the verdict carries excluded-pair count and ids.
 Check: `always` - recompute completed pairs at the recorded `seq` and compare to
@@ -1296,10 +1297,15 @@ the gate's input set; assert excluded count and ids are present.
 Fault/timing angle: a gate evaluated while items are in flight.
 Required faults and enabling state: a tier with an in-flight item at evaluation.
 Confidence: low -
-[evidence](evidence/sim-p51-gate-reads-completed-pairs-only.md). PROPOSED:
-reconstructed from the condensed index in spec #1007; no implementation exists
-to verify against, and a default tier run reaches it.
-Existing check: none
+[evidence](evidence/sim-p51-gate-reads-completed-pairs-only.md). Reconstructed
+from spec #1007. The M7 gate (`src/stats/gate.ts`) drops excluded and
+fault-asymmetric ids, counts exclusions per arm and asymmetric pairs per
+metric, and requires the journal sequence; its tests exercise that. The report path that supplies the completed pairs is
+#1033 work, and no tier run has reached the gate.
+Existing check: `src/stats/gate.test.ts`: excluded and fault-asymmetric pairs
+leave the analysis, exclusions are counted per arm and asymmetric pairs per
+metric, and an evaluation without a journal sequence is refused; status
+unaudited
 Impact: A gate passes on a selected subset of pairs.
 Open questions: None.
 
@@ -1308,8 +1314,9 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M0 (#1024); nothing constructs
-it yet
+Exercised: partial - `src/stats/gate.test.ts` constructs verdicts carrying the
+digest, MDE, margin, n, and resolution ratio; the comparison with the StartRun
+journal hash and a tier run are unreached
 Guarantee: SIM-P52: A verdict records MDE, n, and the pre-registration hash
 journaled at `StartRun`, and the hash matches the pre-registration file.
 Check: `always` - for each verdict, assert MDE and n are present and the hash
@@ -1318,12 +1325,15 @@ report with a missing family by name.
 Fault/timing angle: none.
 Required faults and enabling state: a tier report and its pre-registration file.
 Confidence: low -
-[evidence](evidence/sim-p52-gate-carries-preregistered-mde.md). PROPOSED:
-reconstructed from the condensed index in spec #1007; no implementation exists
-to verify against, and a default tier run reaches it.
+[evidence](evidence/sim-p52-gate-carries-preregistered-mde.md). Reconstructed
+from spec #1007. The M7 gate (`src/stats/gate.ts`) puts the digest, MDE, margin,
+n, and resolution ratio into every verdict and its tests check them; no tier run
+has reached it.
 Existing check: `src/prereg/validate.test.ts`, report check: a report missing a
 family, under another pre-registration hash, or with a verdict the family's
-claim does not allow is refused by name; status unaudited
+claim does not allow is refused by name; `src/stats/gate.test.ts`: a verdict
+carries the pre-registration digest, each family's MDE and margin, n, and the
+resolution ratio; status unaudited
 Impact: A gate is passed under an analysis chosen after seeing the data.
 Open questions: None.
 
@@ -1332,8 +1342,8 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M0 (#1024); nothing constructs
-it yet
+Exercised: partial - `src/stats/gate.test.ts` constructs each verdict kind and
+scans fixtures for the token; no tier run or report has reached the gate
 Guarantee: SIM-P53: The verdict vocabulary is better, worse,
 no-difference-above-X-pp-detectable-at-n, failed-gate(metric, items),
 inconclusive, insufficient-runs, and descriptive, and the string `parity` is
@@ -1343,10 +1353,12 @@ scanned over the whole report, so `always(!X)`.
 Fault/timing angle: none.
 Required faults and enabling state: any tier report.
 Confidence: low - [evidence](evidence/sim-p53-parity-never-emitted.md).
-PROPOSED: reconstructed from the condensed index in spec #1007; no
-implementation exists to verify against, and a default tier run reaches it.
+Reconstructed from spec #1007. The M7 gate (`src/stats/gate.ts`) emits the
+vocabulary and refuses any output holding the token; its tests scan fixture
+verdicts; no tier run has reached it.
 Existing check: `src/prereg/validate.test.ts`, report check: the token `parity`
-anywhere in a report, in any case, is refused; status unaudited
+anywhere in a report, in any case, is refused; `src/stats/gate.test.ts`: no
+fixture verdict contains the token; status unaudited
 Impact: A null at small n is read as equivalence.
 Open questions:
 - The verdict vocabulary adds three kinds to the spec index's four:
@@ -1354,14 +1366,24 @@ Open questions:
   SIM-P56, and `descriptive` for a family the pre-registration does not gate.
   Whether the spec index should list them is a design decision (needs human
   input).
+- The M7 gate also emits `within-bound` for a threshold or zero-tolerance
+  metric that meets its bound; neither the guarantee nor the report check's
+  `VERDICT_KINDS` (`src/prereg/report.ts`) lists it, so the report path has
+  no family verdict to map a passing bound family to (needs human input).
+- The gate's null verdict carries the family's scale, not always `pp`:
+  `no-difference-above-X<scale>-detectable-at-n` reads `pp` for binary
+  items, `pp-of-runs` for the sign test, and the registered MDE scale (`ms`,
+  `bytes`, `ratio`) for graded and GLM results, while the guarantee and the
+  report check's `no-difference-above-x-pp-detectable-at-n` name `pp` only
+  (needs human input).
 
 ### sim-p54-pairing-by-item-identity
 
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M7 (#1032); nothing constructs
-it yet
+Exercised: partial - `src/stats/gate.test.ts` constructs two arms graded in
+different orders and pairs them by id; no tier run has reached it
 Guarantee: SIM-P54: McNemar and bootstrap pairs are keyed by `item_id` across
 arms, never by position.
 Check: `always` - assert every pair's two outcomes share `item_id`; positional
@@ -1369,9 +1391,11 @@ pairing breaks after any exclusion.
 Fault/timing angle: an exclusion in one arm shifts positions.
 Required faults and enabling state: a run with one excluded item in one arm.
 Confidence: low - [evidence](evidence/sim-p54-pairing-by-item-identity.md).
-PROPOSED: reconstructed from the condensed index in spec #1007; no
-implementation exists to verify against, and a default tier run reaches it.
-Existing check: none
+Reconstructed from spec #1007. `pairByItem` in `src/stats/gate.ts` joins arms by
+item id and its test feeds the arms in different orders; no tier run has reached
+it.
+Existing check: `src/stats/gate.test.ts`: pairs join by item id across arms in
+issue order whatever order each arm graded in; status unaudited
 Impact: Discordance is computed on mismatched items.
 Open questions: None.
 
@@ -1380,8 +1404,10 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M7 (#1032); nothing constructs
-it yet
+Exercised: partial - `src/stats/gate.test.ts` constructs a harm and a futility
+stop with their windows from the pure `evaluateTier`; journaling the stop with
+`journal_seq_at_eval` (the #1033 report path) and the scheduler's continuation
+of issued items are unreached
 Guarantee: SIM-P55: A CUSUM early stop journals the metric, the item ids in the
 stopping window, and `journal_seq_at_eval`, and items already issued continue to
 terminal state.
@@ -1391,9 +1417,13 @@ never stop early.
 Fault/timing angle: a stop arrives while items are in flight.
 Required faults and enabling state: a harm or futility signal in a sequence.
 Confidence: low - [evidence](evidence/sim-p55-early-stop-records-cause.md).
-PROPOSED: reconstructed from the condensed index in spec #1007; no
-implementation exists to verify against, and a default tier run reaches it.
-Existing check: none
+Reconstructed from spec #1007. The M7 gate (`src/stats/gate.ts`) records a
+stop's kind, metric, signal index, window, and the journal sequence, and
+withholds the pass; its tests check a harm and a futility stop. Issued items
+continuing to terminal state is the scheduler's part and is unexercised.
+Existing check: `src/stats/gate.test.ts`: a harm and a futility CUSUM stop each
+record their kind, metric, signal index, and exact window and withhold the
+pass; status unaudited
 Impact: An early stop hides its cause or abandons issued items.
 Open questions: None.
 
@@ -1402,8 +1432,8 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M7 (#1032); nothing constructs
-it yet
+Exercised: partial - `src/stats/gate.test.ts` constructs four, six, and
+floor-of-eight run counts; no tier run has reached it
 Guarantee: SIM-P56: A dependability verdict on failed turns or hangs is emitted
 only with at least six paired runs; below that the verdict is
 `insufficient-runs(k)`.
@@ -1416,11 +1446,15 @@ Fault/timing angle: none.
 Required faults and enabling state: a tier with fewer than six paired runs.
 Confidence: low -
 [evidence](evidence/sim-p56-failed-turn-claim-needs-six-paired-runs.md).
-PROPOSED: reconstructed from the condensed index in spec #1007; no
-implementation exists to verify against, and a default tier run reaches it.
+Reconstructed from spec #1007. The validator refuses a floor below six and the
+M7 gate (`src/stats/gate.ts`) answers `insufficient-runs(k)` below the family's
+floor; tests cover both. No tier run has reached it.
 Existing check: `src/prereg/validate.test.ts`: the validator refuses a run-level
 gate with a paired interval below six paired runs, and the report check refuses
-any verdict but `insufficient-runs` below the family's floor; status unaudited
+any verdict but `insufficient-runs` below the family's floor;
+`src/stats/gate.test.ts`: four runs give `insufficient-runs(4)`, six runs a
+sign-test verdict, and six runs against a registered floor of eight
+`insufficient-runs(6)`; status unaudited
 Impact: A run-level claim is made from one or two runs.
 Open questions:
 - The S tier gates failed turns, internal-string hits, and p95 latency delta as
@@ -1460,8 +1494,8 @@ Open questions: None.
 Type: safety
 Reachability: default-production
 Status: active
-Exercised: not yet - the harness surface lands in M7 (#1032); nothing constructs
-it yet
+Exercised: partial - `src/stats/gate.test.ts` constructs a harm metric whose
+Holm-adjusted verdict is `worse`; no tier run has reached it
 Guarantee: SIM-P58: "Memory made it worse" is set iff some harm metric has
 `eidnara < host` with the paired CI excluding zero, and the metric and CI are
 named.
@@ -1470,11 +1504,24 @@ in both directions and names metric and CI.
 Fault/timing angle: none.
 Required faults and enabling state: harm family results.
 Confidence: low - [evidence](evidence/sim-p58-harm-metric-direction.md).
-PROPOSED: reconstructed from the condensed index in spec #1007; no
-implementation exists to verify against, and a default tier run reaches it.
-Existing check: none
+Reconstructed from spec #1007. The M7 gate (`src/stats/gate.ts`) names the
+Holm-adjusted `worse` harm metrics with their intervals and its test checks one;
+the guarantee's sign disagrees with the registered metric scale, see the open
+question. No tier run has reached it.
+Existing check: `src/stats/gate.test.ts`: `memory_made_it_worse` names exactly
+the harm metrics whose Holm-adjusted verdict is `worse`; status unaudited
 Impact: Harm is reported in the wrong direction or not at all.
-Open questions: None.
+Open questions:
+- The guarantee says `eidnara < host`; the registered harm metrics are harm
+  indicators, so the implementation flags `eidnara > host`. Which scale the
+  property compares needs stating (needs human input).
+- The guarantee's condition is "the paired CI excludes zero"; the spec's
+  gates line makes the "memory made it worse" family Holm-corrected, and the
+  implementation follows the latter: a metric whose interval excludes zero
+  but whose Holm-adjusted p exceeds alpha is omitted (six 0-to-1
+  discordances in 40 items give an interval near [3, 29] pp, raw p 0.031,
+  Holm p 0.156). Which condition the property means needs stating (needs
+  human input).
 
 ### sim-p59-internal-string-scan-on-user-visible-only
 

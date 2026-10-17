@@ -14,8 +14,13 @@ v2 harness before any harness code existed.
 "Memory made it worse" is set iff some harm metric has `eidnara < host` with the
 paired CI excluding zero, and the metric and CI are named.
 
-No harness code, test, or run exists yet. The surface lands in M7
-(#1032).
+M7 (#1032) names each harm metric whose verdict is `worse` in
+`memory_made_it_worse` with its interval. `worse` for a harm metric means the
+treatment arm's harm rate is higher: the Holm-adjusted exact McNemar is
+significant, the interval excludes zero, and the shift is toward more harm. The
+guarantee above states the condition as `eidnara < host` and "the paired CI
+excludes zero"; the direction and the Holm correction both disagree with it,
+see the investigation log and the catalog's open questions.
 
 ## Failure scenario
 
@@ -31,4 +36,21 @@ Harm family results.
 
 ## Investigation log
 
-No open questions.
+### Q: Is "memory made it worse" set when `eidnara < host` or when `eidnara > host`?
+
+- Sources examined: spec #1007 property index (`SIM-P58`: iff some harm
+  metric has `eidnara < host`); `src/grade/probes.ts` (`P2.harm`, `P3.harm`,
+  `P4.harm`, `P10.harm`, `P11.harm` are 1 when the harm occurred); the harm
+  family in `prereg/M.json` (metrics `P2.harm` to `P11.harm`, direction
+  `noninferiority`); `src/stats/gate.ts` (`higherIsBetter` is false for a
+  harm metric, so a significant positive treatment-minus-control shift is
+  `worse`).
+- Findings: the registered harm metrics are harm indicators, so more harm in
+  `eidnara` reads `eidnara > host`. The spec's `eidnara < host` fits a pass or
+  quality scale, which is how the harm probes are also graded (`P2.pass` is
+  the complement of `P2.harm`). The implementation follows the registered
+  harm-indicator metrics.
+- Missing evidence: a spec statement of which scale `SIM-P58` compares.
+- Conclusion: needs human input. The guarantee wording and the registered
+  metric scale disagree in sign; both are recorded here, and the catalog
+  record carries the question.

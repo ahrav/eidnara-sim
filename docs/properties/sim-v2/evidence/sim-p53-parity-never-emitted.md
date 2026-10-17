@@ -16,8 +16,21 @@ no-difference-above-X-pp-detectable-at-n, failed-gate(metric, items),
 inconclusive, insufficient-runs, and descriptive, and the string `parity` is
 absent from every report.
 
-No harness code, test, or run exists yet. The surface lands in M0
-(#1024).
+M7 (#1032) emits, per metric, better, worse,
+no-difference-above-X-detectable-at-n, inconclusive, insufficient-runs(k),
+within-bound, failed-gate(metric, ids), or descriptive for a family whose
+pre-registration names no interval method, and refuses any evaluation whose
+output contains the word parity; a test scans its fixture verdicts. The
+report check (`src/prereg/report.ts`) expects one family-level verdict from
+this vocabulary, `descriptive` exactly for a descriptive-claim family, while
+the gate's family result carries per-metric verdicts and `passed: null` for
+such a family; the translation from metric verdicts to one family verdict is
+the report path's part (#1033) and is unresolved here. `within-bound`, which
+the gate emits for a met bound, is absent from both the guarantee and the
+report check's `VERDICT_KINDS`, so the mapping of a passing bound family is
+a second unresolved disagreement, carried in the catalog's open questions,
+as is the scale suffix of the null verdict (`pp`, `pp-of-runs`, or the
+registered MDE scale) against the guarantee's `pp`-only form.
 
 ## Failure scenario
 
