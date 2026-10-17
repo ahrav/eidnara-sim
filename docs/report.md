@@ -77,8 +77,8 @@ no table.
 ## Assembly
 
 `scripts/report.ts <run dir>... [--out <dir>]` groups the runs by tier and
-writes `report-<tier>.md` and the gate verdict as `report-<tier>.json`, or
-prints the Markdown. `loadGraded` refuses a run directory whose manifest
+writes `report-<tier>.md` and the gate verdict as `report-<tier>.json`
+through staged files renamed into place, or prints the Markdown. `loadGraded` refuses a run directory whose manifest
 records a `prereg_sha256` other than the hash of the tier's current
 pre-registration, or whose `scenario.json` hashes to other than the
 manifest's `scenario_hash`, so a verdict carries the registration and the
@@ -87,8 +87,9 @@ manifest's `fault_override` as its fault schedule, and its `faults.jsonl` lines,
 proxy's fault witnesses, a fault once `fired` staying fired. `grades.jsonl` gives the
 run its latest grade per item and arm, and every P7 judgment (latest per
 item, arm, and `inputs`), so a P7 pair takes the host grade from the same
-judgment as the treatment's, a P7 exclusion counts against its own
-judgment, and the host's P7 row in the accuracy and cost panels is its
+judgment as the treatment's (same `inputs` and judge verdicts, so a
+re-grade interrupted between its two appends pairs nothing), a P7
+exclusion counts against its own judgment, and the host's P7 row in the accuracy and cost panels is its
 judgment against `arms.default`; a judgment whose `gate_eligible` is false
 pairs nothing. Each run directory needs `grades.jsonl` from
 `scripts/grade-run.ts` for its probe items; a run without one reports its
@@ -103,7 +104,7 @@ treatment arm (`arms.default`, `eidnara`) against `host`:
 | `failed_turns`, `hangs` | Per run (`<tier>-<host>-<seed>`), `EndTurn` outcomes other than `ok` plus the turns a kill interrupted (`Event` outcome `failed(interrupted)`, which a resume records without an `EndTurn`), and F4 activations |
 | `turn_latency_p50_delta_ms`, `turn_latency_p95_delta_ms` | Per run, the treatment minus control percentile of turn wall time; a control arm without turn latencies leaves the run out |
 | `daemon_rss_growth_bytes_per_session`, `daemon_heap_growth_bytes_per_session`, `store_growth_bytes_per_session` | Per run, the treatment minus control soak slope, with a `host` control that runs no daemon counted as zero; the heap is the daemon's anonymous resident memory (`RssAnon`), which the sampler records as `heap` |
-| `internal_string_hits`, `user_corrections_referencing_injected_text` | Per run, the panel's counts; a run whose memory notes could not be read has no corrections count and leaves the observation |
+| `internal_string_hits`, `user_corrections_referencing_injected_text` | Per run, the panel's counts; a run without `calls.jsonl` has no hit count, and a daemon arm without `memory.json`, or whose notes could not be read, has no corrections count; either leaves the observation |
 | `reverted_memory_edits` | Per run, the treatment's reverted edits minus the control's; the zero-tolerance bound fails a run whose difference is above zero |
 | `usd_per_component`, `usd_per_useful_retrieval` | Per run, the cost panel's total and cost per pass |
 | `P13.fold_fidelity_score`, `P14.post_compaction_correction_count` | Per run, the mean (in percentage points, the family's scale) and the sum of the item metric over the items both arms graded without exclusion and outside the fault-asymmetric stratum |
@@ -117,8 +118,16 @@ list names each pre-registered host and seed without a run, each run with
 a pre-registered arm (`arms.run`) that has no `EndArm` entry, each run whose manifest
 `events` stops short of its scenario's events, each manifest setting
 (`eidnara_commit`, `models`, `context_limit`, the preflight's clock
-`distortions`, and its host versions) the runs disagree on, each run with
-scheduled proxy faults and no `faults.jsonl`, each registered A/A pair whose count
+`distortions`, its host versions, and the scenario's generator, random
+schema, and corpus manifest) the runs disagree on, each run with
+scheduled proxy faults and no `faults.jsonl`, each run with grades for
+items outside its scenario's probes (which pair nothing), each run without
+`pairing.jsonl` or whose records fail the checks of
+`scripts/pairing-check.ts` (`pairingFailures`: a pre-divergence reply
+differing from the reference arm's, an altered probe or paste turn, an
+unsent non-filler turn) or whose `UserSimRates` entry names a rate outside
+its band, each L run whose arms' `StartArm`/`EndArm` spans never overlap
+while `load_stress` registers concurrent arms, each registered A/A pair whose count
 of control arms that reached `EndArm` across the runs differs from
 `aa_controls.repeats`, each run-unit gate metric a run has no value for, each probe type,
 P13 and P14 included, with fewer paired items outside the excluded and
@@ -126,9 +135,9 @@ fault-asymmetric sets than `stopping_rule.paired_items_per_probe_type`,
 and each CUSUM rule without its A/A scale; the tier passes only with an
 empty list. Two runs with one host and seed, or a run outside the
 pre-registered hosts and seeds, are refused. The input's `journal_seq_at_eval` records, per run id, the
-last journal `seq` the observations read. `tierInput` orders the runs by
-the pre-registration's hosts then seeds, so items tied in issue order
-across runs keep one order whatever order the directories arrive in.
+last journal `seq` the observations read. `tierInput` and `tierReport` order the runs by the pre-registration's
+hosts then seeds, so items tied in issue order and the falsification
+set's pairs keep one order whatever order the directories arrive in.
 `aaScale` takes the CUSUM rules' scale from the runs' A/A controls
 (`<arm>~<tag>`), pooled over every control and leaving out the pairs'
 fault-asymmetric items: the standard deviation of their paired item
@@ -157,7 +166,8 @@ and the resources gate fails until the run is repeated.
 `renderTier` writes, in order: the runs, arms, and each run's recorded
 clock distortions, the accuracy table by probe type in the v1
 sweep report's layout, the gate verdict with every metric's n, difference,
-interval, p, detectable difference, resolution ratio, verdict, and gate
+interval (or the rate-ratio upper bound a sign-test gate decides on), p,
+detectable difference, resolution ratio, verdict, and gate
 result (a bound family shows its observed per-run values, or a binary
 metric's treatment rate over the pairs the verdict kept), the campaign's
 open requirements, the harm

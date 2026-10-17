@@ -27,7 +27,7 @@ export function loadGraded(dir: string, prereg: Preregistration): GradedRun {
         scenario_hash: string;
         fault_override: Scenario["faults"] | null;
         preflight?: { distortions?: string[]; hosts?: { host: string; version: string }[] };
-    } & Omit<RunIdentity, "distortions" | "host_versions">;
+    } & Omit<RunIdentity, "distortions" | "host_versions" | "scenario_provenance">;
     const current = preregistrationHash(prereg);
     if (manifest.prereg_sha256 !== current) {
         throw new Error(
@@ -65,7 +65,12 @@ export function loadGraded(dir: string, prereg: Preregistration): GradedRun {
     const pairingPath = join(dir, "pairing.jsonl");
     const pairing = existsSync(pairingPath)
         ? (readJournal(pairingPath) as unknown as PairingRecord[])
-        : [];
+        : null;
+    const sm = scenario.manifest as {
+        generator_version?: string;
+        random_schema_version?: number;
+        corpus_manifest_sha256?: string;
+    };
     const hostP7 = (r: GradeRecord) => r.probe_type === "P7" && armBase(r.arm) === "host";
     const grades = [
         ...log.latest().filter((r) => !hostP7(r)),
@@ -84,9 +89,11 @@ export function loadGraded(dir: string, prereg: Preregistration): GradedRun {
             events,
             distortions: manifest.preflight?.distortions ?? [],
             host_versions: (manifest.preflight?.hosts ?? []).map((h) => `${h.host}@${h.version}`),
+            scenario_provenance: `${sm.generator_version}/${sm.random_schema_version}/${sm.corpus_manifest_sha256}`,
         },
         witnesses: reports === null ? null : [...witnesses.values()],
         pairing,
+        captured: existsSync(join(dir, "calls.jsonl")),
     };
 }
 

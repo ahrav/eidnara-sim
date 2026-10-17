@@ -90,6 +90,7 @@ const identity = (commit = "abc") => ({
     events: 36,
     distortions: [] as string[],
     host_versions: ["pi@1", "opencode@1"],
+    scenario_provenance: "gen1/1/abc",
 });
 
 function fixture(status = (_: number) => 200, opts: FixtureOptions = {}): GradedRun {
@@ -213,7 +214,8 @@ function fixture(status = (_: number) => 200, opts: FixtureOptions = {}): Graded
         host: opts.host ?? "pi",
         judged: [],
         witnesses: [] as GradedRun["witnesses"],
-        pairing: [],
+        pairing: [] as GradedRun["pairing"],
+        captured: true,
         identity: identity(opts.commit),
     };
 }
@@ -246,7 +248,7 @@ const loadPairing = (g: GradedRun): GradedRun => ({
     pairing: readFileSync(join(g.run.dir, "pairing.jsonl"), "utf8")
         .split("\n")
         .filter(Boolean)
-        .map((l) => JSON.parse(l) as GradedRun["pairing"][number]),
+        .map((l) => JSON.parse(l) as NonNullable<GradedRun["pairing"]>[number]),
 });
 
 const probe = (g: GradedRun, id: string, type = "P13") =>
@@ -1131,6 +1133,54 @@ describe("tier report", () => {
         expect(renderTier(report)).toMatch(
             /\| P14\.post_compaction_correction_count \| \d+ \| [\d.-]+ \| ratio ≤ 1\.25 \|/,
         );
+    });
+
+    test("a run without pairing records or call capture leaves the affected evidence out", () => {
+        const g = fixture();
+        g.pairing = null;
+        g.captured = false;
+        const input = tierInput(prereg, [g]);
+        expect(input.incomplete).toContain("run pi/101: pairing records missing");
+        expect(input.observations.find((o) => o.metric === "internal_string_hits")?.runs).toEqual(
+            [],
+        );
+    });
+
+    test("runs compiled by different generators or corpora keep the campaign incomplete", () => {
+        const a = fixture(undefined, { host: "pi" });
+        const b = fixture(undefined, { host: "opencode" });
+        b.identity.scenario_provenance = "gen2/1/abc";
+        expect(
+            tierInput(prereg, [a, b]).incomplete?.find((x) =>
+                x.startsWith("runs differ in scenario_provenance"),
+            ),
+        ).toBeDefined();
+    });
+
+    test("an L run whose arms ran one after another lacks the registered load profile", () => {
+        const L = loadPrereg("L");
+        const g = fixture(undefined, { seed: 301 });
+        for (const a of g.run.arms) {
+            a.journal.unshift({
+                kind: "StartArm",
+                arm: a.arm,
+                scenario_ms: 0,
+                seq: 0,
+                wall_ms: 0,
+            } as Entry);
+        }
+        let seq = 0;
+        for (const a of g.run.arms) for (const e of a.journal) e.seq = seq++;
+        expect(tierInput(L, [g]).incomplete).toContain(
+            "run pi/301: arms ran one at a time; load_stress requires concurrent arms",
+        );
+        const [host, aa] = g.run.arms as [ArmLogs, ArmLogs];
+        (host.journal[0] as Entry).seq = 0;
+        (aa.journal[0] as Entry).seq = 1;
+        expect(tierInput(L, [g]).incomplete?.filter((x) => x.includes("load_stress"))).toEqual([]);
+        expect(
+            tierInput(prereg, [fixture()]).incomplete?.filter((x) => x.includes("load_stress")),
+        ).toEqual([]);
     });
 
     test("a planted 4xx difference between the A/A arms fails that falsification check", () => {
