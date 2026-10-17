@@ -101,8 +101,8 @@ excluded, and probe items of a session where a fault landed in one arm
 only form the fault-asymmetric stratum; a fault landed where the
 scheduler recorded `FaultObserved` or the proxy stamped a call's
 `fault_ref`, which is how provider faults show. The input's `incomplete`
-list names each pre-registered host and seed without a run, each run whose
-`host` or treatment arm has no `EndArm` entry, each run whose manifest
+list names each pre-registered host and seed without a run, each run with
+a pre-registered arm (`arms.run`) that has no `EndArm` entry, each run whose manifest
 `events` stops short of its scenario's events, each manifest setting
 (`eidnara_commit`, `models`, `context_limit`, `events`) the runs disagree
 on, each registered A/A pair with fewer control arms across the runs than
@@ -110,7 +110,8 @@ on, each registered A/A pair with fewer control arms across the runs than
 P13 and P14 included, with fewer paired items outside the excluded and
 fault-asymmetric sets than `stopping_rule.paired_items_per_probe_type`,
 and each CUSUM rule without its A/A scale; the tier passes only with an
-empty list. Two runs with one host and seed are refused. The input's `journal_seq_at_eval` records, per run id, the
+empty list. Two runs with one host and seed, or a run outside the
+pre-registered hosts and seeds, are refused. The input's `journal_seq_at_eval` records, per run id, the
 last journal `seq` the observations read. `tierInput` orders the runs by
 the pre-registration's hosts then seeds, so items tied in issue order
 across runs keep one order whatever order the directories arrive in.
@@ -127,7 +128,7 @@ The falsification set (`src/report/falsify.ts`) pairs, per run, each A/A
 control with its arm, or else the treatment with `host`, and pools the
 pairs: P1-control pass per item, the
 gateway 4xx share per session with no scheduled fault, the pushback share
-per session before the treatment's divergence index, and the wall time the
+per session before the first divergence index in either arm, and the wall time the
 harness spent from the preceding scripted event's completion (its `Event`
 entry) to each scripted clock jump. On an A/B pair the daemon arm's
 background work holds the clock, so the idle-gap check measures that work
@@ -149,6 +150,7 @@ daemon arms per run with the longest sampling gap, intrusiveness with each arm's
 cost with the run's judge calls priced once (`judgeCost`), the
 falsification set with the pairs it used, the A/A reports (`<run>/aa.json`, or a note
 that control arms ran without one), the claim boundary, and the
-pre-registration. The intrusiveness table takes each arm's latency delta
+pre-registration. The soak, intrusiveness, and cost tables name each
+row's run, and the intrusiveness table takes each arm's latency delta
 against the `host` arm of the same run. It refuses a report whose own text, outside the
 attached boundary and pre-registration, contains the word parity.

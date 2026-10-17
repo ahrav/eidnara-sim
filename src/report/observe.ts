@@ -253,7 +253,7 @@ function incomplete(
         ),
     );
     const unfinished = runs.flatMap((g) => {
-        const open = [control, treatment].filter(
+        const open = [...new Set([...p.arms.run, control, treatment])].filter(
             (a) => !g.run.arms.find((x) => x.arm === a)?.journal.some((e) => e.kind === "EndArm"),
         );
         return open.length ? [`run ${runKey(g)}: ${open.join(", ")} without EndArm`] : [];
@@ -343,6 +343,9 @@ export function tierInput(
     for (const g of runs) {
         const key = runKey(g);
         if (seen.has(key)) throw new Error(`two runs for ${key}: ${g.run.dir} repeats one`);
+        if (!p.hosts.includes(g.host) || !p.seeds.includes(g.scenario.manifest.seed)) {
+            throw new Error(`${g.run.dir}: run ${key} is not pre-registered for ${p.tier}`);
+        }
         seen.add(key);
     }
     const asym = asymmetric(runs, control, treatment);

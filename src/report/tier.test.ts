@@ -460,7 +460,7 @@ describe("tier report", () => {
 
     test("a tier whose CUSUM scale comes from another tier's A/A pairs takes that scale", () => {
         const L = loadPrereg("L");
-        const g = fixture();
+        const g = fixture(undefined, { seed: 301 });
         g.run.arms = g.run.arms.filter((a) => a.arm !== "host~aa");
         g.grades = g.grades.filter((r) => r.arm !== "host~aa");
         expect(tierReport(L, [g], boundary).verdict.cusum_unavailable).toHaveLength(2);
@@ -554,10 +554,14 @@ describe("tier report", () => {
     test("a run whose analysed arm has no EndArm leaves the campaign incomplete", () => {
         const g = fixture();
         const complete = tierInput(prereg, [g]).incomplete ?? [];
-        expect(complete.filter((x) => x.includes("EndArm"))).toEqual([]);
+        expect(complete.filter((x) => x.includes("EndArm"))).toEqual([
+            "run pi/101: eidnara-kl without EndArm",
+        ]);
         const host = arm(g, "host");
         host.journal = host.journal.filter((e) => e.kind !== "EndArm");
-        expect(tierInput(prereg, [g]).incomplete).toContain("run pi/101: host without EndArm");
+        expect(tierInput(prereg, [g]).incomplete).toContain(
+            "run pi/101: host, eidnara-kl without EndArm",
+        );
     });
 
     test("the fixed-N count is the population the verdict analyses", () => {
@@ -741,6 +745,47 @@ describe("tier report", () => {
         expect(renderTier(tierReport(prereg, [g], boundary))).toContain(
             `| ${g.run.dir} | judge | 1 | 1000000 |`,
         );
+    });
+
+    test("a run outside the pre-registered hosts and seeds is refused", () => {
+        expect(() => tierInput(prereg, [fixture(undefined, { seed: 999 })])).toThrow(/pi\/999/);
+    });
+
+    test("every pre-registered arm needs its EndArm for the campaign to be complete", () => {
+        const g = fixture();
+        expect(tierInput(prereg, [g]).incomplete).toContain(
+            "run pi/101: eidnara-kl without EndArm",
+        );
+        g.run.arms.push(armLogs("eidnara-kl", () => 0));
+        expect(tierInput(prereg, [g]).incomplete?.filter((x) => x.includes("EndArm"))).toEqual([]);
+    });
+
+    test("cost and intrusiveness rows name their run", () => {
+        const g = fixture();
+        const report = tierReport(prereg, [g], boundary);
+        expect(new Set(report.cost.map((c) => c.run))).toEqual(new Set([g.run.dir]));
+        const text = renderTier(report);
+        expect(text).toContain(`| ${g.run.dir} | eidnara | agent | 12 |`);
+        expect(text).toContain(`| ${g.run.dir} | eidnara | 0 | 0 | 0 |`);
+    });
+
+    test("the pushback check stops at the first divergence in either arm", () => {
+        const g = fixture();
+        const path = join(g.run.dir, "pairing.jsonl");
+        const rows = readFileSync(path, "utf8")
+            .split("\n")
+            .filter(Boolean)
+            .map(
+                (l) =>
+                    JSON.parse(l) as { arm: string; session: string; index: number; label: string },
+            );
+        for (const r of rows)
+            if (r.arm === "host~aa" && r.session === "s-0" && r.index === 2) r.label = "pushback";
+        const cut = { kind: "divergedAt", arm: "host", session: "s-0", index: 1 };
+        writeFileSync(path, `${[...rows, cut].map((r) => JSON.stringify(r)).join("\n")}\n`);
+        const rates = falsificationPairs(g, "host", "host~aa").pre_divergence_pushback_rate;
+        expect(rates).toHaveLength(SESSIONS);
+        expect(rates.filter((r) => r.control !== r.treatment)).toEqual([]);
     });
 
     test("a planted 4xx difference between the A/A arms fails that falsification check", () => {
