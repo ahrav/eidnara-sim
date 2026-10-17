@@ -75,11 +75,6 @@ function readLease(path: string): Lease | null {
  * on this host has exited, or that a kill left unreadable, is moved aside by one atomic rename
  * and replaced, which is how a killed run resumes.
  */
-export function leaseHolder(dir: string): Lease | null {
-    const held = readLease(join(dir, "lease.json"));
-    return held && (held.host !== hostname() || alive(held.pid)) ? held : null;
-}
-
 export function takeLease(dir: string): Lease {
     const path = join(dir, "lease.json");
     const mine: Lease = { pid: process.pid, host: hostname(), started_wall_ms: Date.now() };
@@ -102,6 +97,12 @@ export function takeLease(dir: string): Lease {
         } catch {}
     }
     throw new Error(`could not lease ${dir}`);
+}
+
+/** Whether a live process on this host, or any process on another host, holds the directory. */
+export function leaseHeld(dir: string): boolean {
+    const held = readLease(join(dir, "lease.json"));
+    return held !== null && (held.host !== hostname() || alive(held.pid));
 }
 
 export function releaseLease(dir: string): void {

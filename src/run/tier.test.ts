@@ -3,9 +3,11 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
+import { loadConfig } from "../config/config";
 import type { Scenario } from "../scenario/compile";
 import type { FaultEpisode } from "../scenario/faults";
 import { loadPrereg } from "../scenario/inputs";
+import { leaseHeld } from "./journal";
 import {
     capEvents,
     compressFaults,
@@ -47,12 +49,26 @@ describe("tier plan", () => {
         const prereg = loadPrereg("S");
         const scenarios = new Map(prereg.seeds.map((seed) => [seed, scenario([5, 5, 5])]));
         const plan = tierPlan(prereg, scenarios, ["pi", "opencode"], "/out", 60_000);
+        // S registers one A/A repeat per pair, so one job carries the controls; every job
+        // shares the prefix that fits the control-carrying job.
         expect(plan.map((j) => [j.host, j.seed, j.arms.join(","), j.dir])).toEqual([
             ["pi", 101, "host,eidnara,eidnara-kl,host~aa,eidnara~aa", "/out/S-101-pi"],
-            ["pi", 102, "eidnara-kl,eidnara,host,host~aa,eidnara~aa", "/out/S-102-pi"],
-            ["opencode", 101, "host,eidnara,eidnara-kl,host~aa,eidnara~aa", "/out/S-101-opencode"],
-            ["opencode", 102, "eidnara-kl,eidnara,host,host~aa,eidnara~aa", "/out/S-102-opencode"],
+            ["pi", 102, "eidnara-kl,eidnara,host", "/out/S-102-pi"],
+            ["opencode", 101, "host,eidnara,eidnara-kl", "/out/S-101-opencode"],
+            ["opencode", 102, "eidnara-kl,eidnara,host", "/out/S-102-opencode"],
         ]);
+        expect(new Set(plan.map((j) => j.events)).size).toBe(1);
+        const m = loadPrereg("M");
+        const mPlan = tierPlan(
+            m,
+            new Map(m.seeds.map((seed) => [seed, scenario([5, 5, 5])])),
+            ["pi", "opencode"],
+            "/out",
+            60_000,
+        );
+        expect(mPlan.filter((j) => j.arms.some((a) => a.includes("~"))).length).toBe(
+            m.aa_controls?.repeats ?? -1,
+        );
         expect(plan[0]?.user_turns).toBe(15);
         const xl = loadPrereg("XL");
         const one = tierPlan(xl, new Map([[401, scenario([5])]]), ["pi"], "/out", 60_000);
@@ -123,6 +139,7 @@ describe("tier plan", () => {
     test("a moved laptop sleep lasts the idle gap before the session it lands on", () => {
         const at = { "s-1": 0, "s-2": 50_000, "s-3": 400_000 };
         const events = Object.entries(at).flatMap(([session, start]) => [
+            { id: `${session}-diff`, kind: "apply_diff", session, scenario_ms: start },
             { id: `${session}-start`, kind: "session_start", session, scenario_ms: start },
             { id: `${session}-0`, kind: "user_turn", session, scenario_ms: start + 1_000 },
             { id: `${session}-end`, kind: "session_end", session, scenario_ms: start + 2_000 },
@@ -213,6 +230,16 @@ describe("tier resume", () => {
             `${entry("StartRun", 1_000)}\n${entry("EndRun", 4_000)}\n`,
         );
         expect(runSpan(dir, 5_000)).toEqual({ started: 1_000, ended: 4_000 });
+        writeFileSync(
+            join(dir, "journal.jsonl"),
+            `${JSON.stringify({ kind: "StartRun", arm: null, seq: 0, scenario_ms: 0, wall_ms: "soon" })}\n`,
+        );
+        expect(() => runSpan(dir, 5_000)).toThrow(/wall_ms/);
+        writeFileSync(
+            join(dir, "journal.jsonl"),
+            `${entry("StartRun", 4_000)}\n${entry("EndRun", 1_000)}\n`,
+        );
+        expect(() => runSpan(dir, 5_000)).toThrow(/before/);
     });
 
     test("a plan whose prefix differs from an existing manifest's is a conflict", () => {
@@ -251,4 +278,29 @@ describe("restartConflicts", () => {
         expect(restartConflicts([job], 0.7, 0.7)).toEqual([]);
         expect(restartConflicts([job], undefined, 0.7)).toEqual([]);
     });
+});
+
+test("a run directory with a live lease is being written by another process", () => {
+    const dir = mkdtempSync(join(tmpdir(), "sim-tier-"));
+    expect(leaseHeld(dir)).toBe(false);
+    writeFileSync(
+        join(dir, "lease.json"),
+        JSON.stringify({ pid: process.pid, host: hostname(), started_wall_ms: Date.now() }),
+    );
+    expect(leaseHeld(dir)).toBe(true);
+    writeFileSync(
+        join(dir, "lease.json"),
+        JSON.stringify({ pid: 2 ** 22 - 1, host: hostname(), started_wall_ms: 0 }),
+    );
+    expect(leaseHeld(dir)).toBe(false);
+});
+
+test("the tier command refuses an output directory inside the Eidnara checkout", () => {
+    const out = join(loadConfig().eidnara_checkout, "sim-out");
+    const r = spawnSync("bun", ["scripts/tier.ts", "--tier", "S", "--out", out, "--plan-only"], {
+        encoding: "utf8",
+    });
+    expect(r.status).toBe(2);
+    expect(r.stderr).toContain("Eidnara checkout");
+    expect(existsSync(out)).toBe(false);
 });

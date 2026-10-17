@@ -1,5 +1,6 @@
-import { appendFileSync, existsSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, truncateSync } from "node:fs";
 import type { Preregistration } from "../prereg/schema";
+import { readJournal } from "../run/journal";
 import type { ProbeItem } from "../scenario/compile";
 import {
     ArtefactReader,
@@ -283,10 +284,9 @@ export function gradeItem(
 export class GradeLog {
     constructor(private readonly path: string) {}
 
+    /** Every complete record; one a kill cut short at the end of the file is left out. */
     all(): GradeRecord[] {
-        if (!existsSync(this.path)) return [];
-        const lines = readFileSync(this.path, "utf8").split("\n").filter(Boolean);
-        return lines.map((l) => JSON.parse(l) as GradeRecord);
+        return readJournal(this.path) as unknown as GradeRecord[];
     }
 
     latest(): GradeRecord[] {
@@ -317,6 +317,7 @@ export class GradeLog {
                 );
             }
         }
+        if (existsSync(this.path)) truncateSync(this.path, readJournal(this.path).bytes ?? 0);
         appendFileSync(this.path, records.map((r) => `${JSON.stringify(r)}\n`).join(""));
     }
 }

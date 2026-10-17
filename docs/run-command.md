@@ -40,7 +40,8 @@ outside the seed's order, and a non-positive count.
 3. Run `preflight` (`docs/time.md`). On the first invocation, write
    `manifest.json` with the tier, seed, host, arm order, event count, context
    limit, models, fault override, scenario hash, pre-registration hash,
-   eidnara commit, base wall time, and preflight result. A later invocation
+   eidnara commit, base wall time, price table (the version and rates the
+   report prices the run's calls at), and preflight result. A later invocation
    refuses when any option it states differs from the manifest, when the
    scenario hash, pre-registration hash, or eidnara commit changed, or when
    an interception result or a probed host version (current or

@@ -10,7 +10,7 @@ import {
     renderConditions,
     renderDrift,
 } from "./conditions";
-import { type ComponentCost, type CostPanel, PRICE_TABLE, V1_PRICE } from "./cost";
+import type { ComponentCost, CostPanel } from "./cost";
 import type { Intrusiveness } from "./intrusive";
 import type { SoakVerdict } from "./soak";
 import type { Counterfactual } from "./tier";
@@ -87,7 +87,11 @@ function gates(r: TierReport): string[] {
             f.direction === "threshold" || f.direction === "zero-tolerance"
                 ? `observed ${(r.observed[m.metric] ?? []).map((x) => fmt(x)).join(" ") || "-"}`
                 : fmt(m.difference),
-            m.interval ? `[${fmt(m.interval[0])}, ${fmt(m.interval[1])}]` : "-",
+            m.interval
+                ? `[${fmt(m.interval[0])}, ${fmt(m.interval[1])}]`
+                : m.rate_ratio_upper !== undefined
+                  ? `ratio ≤ ${fmt(m.rate_ratio_upper)}`
+                  : "-",
             fmt(m.p_adjusted ?? m.p, 4),
             fmt(m.detectable),
             fmt(m.resolution_ratio),
@@ -261,19 +265,20 @@ function panels(r: TierReport): string[] {
                     i.internal_string_hits.length,
                     i.corrections_referencing_injected_text?.length ?? "-",
                     i.reverted_edits.length,
-                    fmt(i.latency_ms.p50, 0),
-                    fmt(i.latency_ms.p95, 0),
-                    fmt(delta(i.latency_ms.p50, host?.p50), 0),
-                    fmt(delta(i.latency_ms.p95, host?.p95), 0),
+                    fmt(i.latency_ms?.p50, 0),
+                    fmt(i.latency_ms?.p95, 0),
+                    fmt(delta(i.latency_ms?.p50 ?? null, host?.p50), 0),
+                    fmt(delta(i.latency_ms?.p95 ?? null, host?.p95), 0),
                 ];
             }),
         ),
-        `## Cost (est $ at price table ${PRICE_TABLE}: USD ${V1_PRICE.input}, ${V1_PRICE.output}, ${V1_PRICE.cache_read}, ${V1_PRICE.cache_write} per million input, output, cache-read, cache-write tokens; arm totals leave out harness calls)`,
+        "## Cost (est $ at the price table each run's manifest recorded, named per row; arm totals leave out harness calls; a run that recorded no table has no rows)",
         "",
         ...table(
             [
                 "run",
                 "arm",
+                "table",
                 "caller",
                 "calls",
                 "input",
@@ -286,6 +291,7 @@ function panels(r: TierReport): string[] {
                 ...c.components.map((x) => [
                     c.run,
                     c.arm,
+                    c.price_table,
                     x.component,
                     x.calls,
                     x.input,
@@ -297,6 +303,7 @@ function panels(r: TierReport): string[] {
                 [
                     c.run,
                     c.arm,
+                    c.price_table,
                     "TOTAL",
                     ...(["calls", "input", "output", "cache_read", "cache_write"] as const).map(
                         (k) => c.components.reduce((s, x) => s + x[k], 0),
@@ -356,6 +363,17 @@ function panels(r: TierReport): string[] {
         ),
         "## A/A controls",
         "",
+        ...(r.aa.some((a) => (a as { stale?: boolean }).stale)
+            ? [
+                  `Stale: ${r.aa
+                      .filter((a) => (a as { stale?: boolean }).stale)
+                      .map((a) => String((a as { run?: string }).run))
+                      .join(
+                          ", ",
+                      )} have an aa.json older than grades.jsonl; rerun scripts/aa-report.ts.`,
+                  "",
+              ]
+            : []),
         r.aa.length === 0
             ? r.arms.some((a) => a.includes("~"))
                 ? "A/A control arms ran; run scripts/aa-report.ts on the graded run for their report."

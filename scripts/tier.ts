@@ -6,7 +6,7 @@ import { preregistrationHash } from "../src/prereg/validate";
 import { tierInput } from "../src/report/observe";
 import { aaScale, loadGraded } from "../src/report/tier";
 import { Children, SIGTERM_EXIT, type StopReason } from "../src/run/children";
-import { leaseHolder, releaseLease, takeLease } from "../src/run/journal";
+import { leaseHeld, releaseLease, takeLease } from "../src/run/journal";
 import { gradedMainRuns, resizeFromM } from "../src/run/resize";
 import { loadScenario, writeAtomic } from "../src/run/run";
 import {
@@ -21,7 +21,6 @@ import {
     tierPlan,
     uncuttableRuns,
 } from "../src/run/tier";
-import { buildFaketime } from "../src/run/timeinject";
 import type { Scenario } from "../src/scenario/compile";
 import { loadPrereg } from "../src/scenario/inputs";
 
@@ -79,6 +78,11 @@ const restartAt = restartFraction(arg("restart-at"), prior, tier);
 if (!(restartAt >= 0 && restartAt < 1)) fail("--restart-at must be a fraction in [0, 1)");
 if (new Set(hosts).size !== hosts.length || !hosts.every((h) => prereg.hosts.includes(h)))
     fail(`--hosts must name distinct hosts from ${prereg.hosts.join(",")}`);
+// The tier never writes under the Eidnara checkout (AGENTS.md); the check precedes the first
+// directory it would create.
+const inside = (path: string, root: string) => path === root || path.startsWith(`${root}/`);
+if (inside(out, resolve(config.eidnara_checkout)))
+    fail(`--out ${out} is inside the Eidnara checkout ${config.eidnara_checkout}`);
 mkdirSync(out, { recursive: true });
 // One invocation per output directory: a second would resume runs the first still drives and
 // grade their directories while they change.
@@ -112,9 +116,7 @@ if (prereg.resizing && from && !existsSync(resizing)) {
         if (!existsSync(join(resolve(from), name)))
             refuse(`${from} holds no ${name}; the ${m.tier} tier has not finished`);
     }
-    const holder = leaseHolder(resolve(from));
-    if (holder)
-        refuse(`${from} is leased by pid ${holder.pid} on ${holder.host}; resize once it finishes`);
+    if (leaseHeld(resolve(from))) refuse(`${from} is leased; resize once that invocation finishes`);
     const { main, ungraded } = (() => {
         try {
             return gradedMainRuns(resolve(from), m);
@@ -137,7 +139,7 @@ if (prereg.resizing && from && !existsSync(resizing)) {
         cusum_sd: aaScale(m, runs) ?? null,
         ...resizeFromM(prereg, input),
     };
-    writeFileSync(resizing, `${JSON.stringify(sized, null, 2)}\n`);
+    writeAtomic(resizing, `${JSON.stringify(sized, null, 2)}\n`);
 }
 const record = recorded();
 if (prereg.resizing && !record)
@@ -155,6 +157,18 @@ if (prereg.resizing && record) {
 }
 const items = record?.paired_items_per_probe_type;
 
+// Setup after the lease (scenario compilation, the plan, the faketime build) runs at top level;
+// a thrown error there releases the lease on the way out, so a retry from another host is not
+// held off by a dead invocation.
+process.on("uncaughtException", (caught) => {
+    console.error(caught);
+    exit(1);
+});
+process.on("unhandledRejection", (caught) => {
+    console.error(caught);
+    exit(1);
+});
+
 const scenarios = new Map<number, Scenario>();
 for (const seed of prereg.seeds) {
     const dir = join(out, `scenarios-${seed}`);
@@ -167,10 +181,13 @@ const switches = [...scenarios.values()].some((s) =>
 );
 if (switches && new Set(models).size < 2)
     refuse(`the ${tier} scenarios schedule a model_switch; --models must list two distinct models`);
-const plan: TierJob[] = [
-    ...tierPlan(prereg, scenarios, hosts, out, turnMs),
-    ...profileJobs(prereg, scenarios, hosts, out, turnMs),
-];
+const paired = tierPlan(prereg, scenarios, hosts, out, turnMs);
+const repeats = prereg.aa_controls?.repeats ?? 0;
+if (paired.length < repeats)
+    refuse(
+        `${repeats} A/A repeats are registered, and these hosts and seeds plan ${paired.length} runs`,
+    );
+const plan: TierJob[] = [...paired, ...profileJobs(prereg, scenarios, hosts, out, turnMs)];
 const conflicts = planConflicts(plan);
 if (conflicts.length > 0) {
     console.error(
@@ -240,9 +257,13 @@ for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
     });
 }
 
-// Every run's preflight wants the vendored libfaketime; one build here keeps the parallel runs
-// from each extracting and compiling into the same directory.
-await buildFaketime();
+// Every run's preflight wants the vendored libfaketime; one supervised build here keeps the
+// parallel runs from each compiling it, and a signal to the command ends the build with them.
+const built = await run(["build-faketime.ts"], join(out, "faketime.log"), 1_800_000);
+if (built !== 0) {
+    console.error(`libfaketime build exited ${built}; see ${join(out, "faketime.log")}`);
+    exit(1);
+}
 const budget = prereg.liveness_bounds.tier_wall_budget_ms;
 const limit = Math.round(budget * 1.25);
 const started = Date.now();
@@ -266,13 +287,16 @@ const supervised = async <T>(work: () => Promise<T>): Promise<T> => {
 };
 const runJob = async (job: TierJob) => {
     mkdirSync(job.dir, { recursive: true });
+    // A run another process still holds is left as it is: its scenario stays, it is
+    // neither run nor graded here, and the command fails for it.
+    const held = leaseHeld(job.dir);
     // A resumed run keeps the budget it started with: its wall time counts from its
     // journaled StartRun, and the child gets what remains of the limit. A run that
     // journaled EndRun is complete and is left as it finished.
     const launched = Date.now();
     const span = runSpan(job.dir, launched);
     const scenario = scenarios.get(job.seed) as Scenario;
-    if (!existsSync(join(job.dir, "scenario.json")))
+    if (!held && !existsSync(join(job.dir, "scenario.json")))
         writeAtomic(join(job.dir, "scenario.json"), `${JSON.stringify(scenario)}\n`);
     const log = join(job.dir, "tier.log");
     const faults = compressFaults(scenario, job.events);
@@ -291,18 +315,19 @@ const runJob = async (job: TierJob) => {
     const cut = due !== null && !existsSync(marker) ? due : null;
     const remaining = () => Math.max(1, limit - (Date.now() - span.started));
     let requested = false;
-    let code =
-        span.ended !== undefined
-            ? 0
-            : await run(
-                  args,
-                  log,
-                  remaining(),
-                  cut === null ? undefined : () => eventsRun(job.dir) >= cut,
-                  (reason) => {
-                      requested = reason === "stopWhen";
-                  },
-              );
+    let code = held
+        ? SIGTERM_EXIT
+        : span.ended !== undefined
+          ? 0
+          : await run(
+                args,
+                log,
+                remaining(),
+                cut === null ? undefined : () => eventsRun(job.dir) >= cut,
+                (reason) => {
+                    requested = reason === "stopWhen";
+                },
+            );
     if (requested && code === SIGTERM_EXIT && remaining() > 1) {
         writeFileSync(marker, `${new Date().toISOString()}\n`);
         code = await run(args, log, remaining());
@@ -318,15 +343,17 @@ const runJob = async (job: TierJob) => {
         start_ms,
         restarted,
         run_exit: code,
+        leased_elsewhere: held,
         run_wall_ms,
         over_budget: run_wall_ms > budget,
     };
 };
 const gradeJob = async (ran: Awaited<ReturnType<typeof runJob>>) => {
     const { log, ...job } = ran;
-    const graded = existsSync(join(job.dir, "manifest.json"))
-        ? await run(["grade-run.ts", job.dir], log, limit)
-        : null;
+    const graded =
+        existsSync(join(job.dir, "manifest.json")) && !job.leased_elsewhere
+            ? await run(["grade-run.ts", job.dir], log, limit)
+            : null;
     const aa =
         graded === 0 && job.arms.some((a) => a.includes("~"))
             ? await run(["aa-report.ts", job.dir], log, limit)
@@ -354,6 +381,7 @@ const skipped = (job: TierJob, why: string): Result => ({
     start_ms: null,
     restarted: false,
     run_exit: null,
+    leased_elsewhere: false,
     run_wall_ms: 0,
     over_budget: false,
     grade_exit: null,
@@ -390,7 +418,12 @@ const reports: Record<string, number | null> = {};
 const reported: string[] = [];
 for (const group of groups) {
     const dirs = results
-        .filter((r) => r.group === group && existsSync(join(r.dir, "manifest.json")))
+        .filter(
+            (r) =>
+                r.group === group &&
+                !r.leased_elsewhere &&
+                existsSync(join(r.dir, "manifest.json")),
+        )
         .map((r) => r.dir);
     const identities = new Set(
         results.filter((r) => dirs.includes(r.dir)).map((r) => `${r.host}/${r.seed}`),
@@ -423,12 +456,24 @@ console.log(
     }),
 );
 const unrestarted = results
-    .filter((r) => restartAt > 0 && r.group === "main" && r.skipped === undefined && !r.restarted)
+    .filter(
+        (r) =>
+            restartAt > 0 &&
+            r.group === "main" &&
+            r.skipped === undefined &&
+            !r.leased_elsewhere &&
+            !r.restarted,
+    )
     .map((r) => r.dir);
 if (unrestarted.length > 0) console.error(`no harness restart in ${unrestarted.join(", ")}`);
 const failed =
     unrestarted.length > 0 ||
     results.some(
-        (r) => r.run_exit !== 0 || r.over_budget || r.grade_exit !== 0 || (r.aa_exit ?? 0) !== 0,
+        (r) =>
+            r.run_exit !== 0 ||
+            r.over_budget ||
+            r.leased_elsewhere ||
+            r.grade_exit !== 0 ||
+            (r.aa_exit ?? 0) !== 0,
     );
 exit(failed || Object.values(reports).some((r) => r !== null && r !== 0) ? 1 : 0);

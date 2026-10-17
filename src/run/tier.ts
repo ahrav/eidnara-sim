@@ -81,17 +81,6 @@ export function capEvents(
     return best;
 }
 
-/** The seed's pre-registered arm order plus an A/A control for each same-arm pair in it. */
-function seedArms(prereg: Preregistration, i: number): string[] {
-    const order = prereg.arms.order_by_seed[i] ?? prereg.arms.run;
-    const controls = (prereg.aa_controls?.pairs ?? [])
-        .filter(([arm, twin]) => arm === twin)
-        .map(([arm]) => arm as string)
-        .filter((arm) => order.includes(arm as never))
-        .map((arm) => `${arm}~aa`);
-    return [...order, ...controls];
-}
-
 /** Every pre-registered host and seed of a tier, each with its arms and A/A controls. */
 export function tierPlan(
     prereg: Preregistration,
@@ -100,20 +89,36 @@ export function tierPlan(
     out: string,
     turnMs: number,
 ): TierJob[] {
-    return hosts.flatMap((host) =>
-        prereg.seeds.map((seed, i) => {
-            const arms = seedArms(prereg, i);
-            const scenario = scenarios.get(seed) as Scenario;
-            const cap = capEvents(
-                scenario,
-                arms.length,
-                prereg.liveness_bounds.tier_wall_budget_ms,
-                turnMs,
-            );
-            const dir = `${out}/${prereg.tier}-${seed}-${host}`;
-            return { host, seed, arms, ...cap, dir, group: "main", extra: [] };
-        }),
+    // The A/A controls ride on exactly `aa_controls.repeats` runs, which is what the campaign's
+    // completeness check counts; seeds vary first so the controls spread across hosts.
+    const repeats = prereg.aa_controls?.repeats ?? 0;
+    const jobs = prereg.seeds.flatMap((seed, i) =>
+        hosts.map((host) => ({
+            host,
+            seed,
+            order: prereg.arms.order_by_seed[i] ?? prereg.arms.run,
+        })),
     );
+    const planned = jobs.map((job, n) => {
+        const controls =
+            n < repeats
+                ? (prereg.aa_controls?.pairs ?? [])
+                      .filter(([arm, twin]) => arm === twin)
+                      .map(([arm]) => arm as string)
+                      .filter((arm) => job.order.includes(arm as never))
+                      .map((arm) => `${arm}~aa`)
+                : [];
+        return { ...job, arms: [...job.order, ...controls] };
+    });
+    // Every run shares the prefix that fits the run with the most arms.
+    const widest = Math.max(...planned.map((j) => j.arms.length));
+    const byHost = hosts.flatMap((host) => planned.filter((j) => j.host === host));
+    return byHost.map(({ host, seed, arms }) => {
+        const scenario = scenarios.get(seed) as Scenario;
+        const cap = capEvents(scenario, widest, prereg.liveness_bounds.tier_wall_budget_ms, turnMs);
+        const dir = `${out}/${prereg.tier}-${seed}-${host}`;
+        return { host, seed, arms, ...cap, dir, group: "main", extra: [] };
+    });
 }
 
 /**
@@ -131,9 +136,8 @@ export function profileJobs(
     turnMs: number,
 ): TierJob[] {
     const seed = prereg.seeds[0] as number;
-    const scenario = scenarios.get(seed) as Scenario;
-    const budget = prereg.liveness_bounds.tier_wall_budget_ms;
-    const cap = capEvents(scenario, seedArms(prereg, 0).length, budget, turnMs);
+    const paired = tierPlan(prereg, scenarios, hosts, out, turnMs).find((j) => j.seed === seed);
+    const cap = { events: paired?.events ?? 0, user_turns: paired?.user_turns ?? 0 };
     const job = (
         host: "pi" | "opencode",
         group: string,
@@ -185,12 +189,13 @@ export function profileJobs(
 export function compressFaults(scenario: Scenario, events: number): FaultEpisode[] {
     const prefix = scenario.events.slice(0, events);
     const gap = new Map<string, number>();
-    prefix.forEach((e, i) => {
-        const before = prefix[i - 1];
-        if (e.kind === "session_start" && before) {
-            gap.set(String(e.session), Number(e.scenario_ms) - Number(before.scenario_ms));
+    let lastEnd: number | null = null;
+    for (const e of prefix) {
+        if (e.kind === "session_start" && lastEnd !== null) {
+            gap.set(String(e.session), Number(e.scenario_ms) - lastEnd);
         }
-    });
+        if (e.kind === "session_end") lastEnd = Number(e.scenario_ms);
+    }
     const ended = new Set(
         prefix.filter((e) => e.kind === "session_end").map((e) => String(e.session)),
     );
@@ -244,8 +249,17 @@ export function runSpan(dir: string, now: number): { started: number; ended?: nu
     const path = join(dir, "journal.jsonl");
     if (!existsSync(path)) return { started: now };
     const entries = readJournal(path);
-    const started = entries.find((e) => e.kind === "StartRun")?.wall_ms ?? now;
-    const ended = entries.find((e) => e.kind === "EndRun")?.wall_ms;
+    const wall = (kind: string) => {
+        const e = entries.find((x) => x.kind === kind);
+        if (e === undefined) return undefined;
+        if (!Number.isFinite(e.wall_ms))
+            throw new Error(`${path}: ${kind} wall_ms is not a number`);
+        return e.wall_ms;
+    };
+    const started = wall("StartRun") ?? now;
+    const ended = wall("EndRun");
+    if (ended !== undefined && ended < started)
+        throw new Error(`${path}: EndRun at ${ended} is before StartRun at ${started}`);
     return ended === undefined ? { started } : { started, ended };
 }
 

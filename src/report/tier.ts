@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { GradeLog, type GradeRecord } from "../grade/probes";
 import { armBase } from "../hosts/arms";
@@ -13,11 +13,20 @@ import { readJournal } from "../run/journal";
 import type { Scenario } from "../scenario/compile";
 import { evaluateTier, falsificationSet, type TierInput } from "../stats/gate";
 import { clopperPearson } from "../stats/tests";
+import type { PairingRecord } from "../usersim/usersim";
 import { type Continuity, continuity, recallDrift, runConditions } from "./conditions";
 import { costPanel, judgeCost } from "./cost";
 import { falsificationPairs } from "./falsify";
 import { intrusiveness } from "./intrusive";
-import { asymmetric, type GradedRun, type RunIdentity, runKey, tierInput } from "./observe";
+import {
+    asymmetric,
+    type GradedRun,
+    judgmentKey,
+    ordered,
+    type RunIdentity,
+    runKey,
+    tierInput,
+} from "./observe";
 import type { TierReport } from "./render";
 import { soak, soakByMonth } from "./soak";
 import { propertyWitness } from "./witness";
@@ -43,9 +52,15 @@ export function loadGraded(dir: string, prereg: Preregistration): GradedRun {
         scenario_hash: string;
         fault_override: Scenario["faults"] | null;
         preflight?: { distortions?: string[]; hosts?: { host: string; version: string }[] };
-    } & Omit<RunIdentity, "distortions" | "host_versions" | "side_model"> & {
-            side_model?: string | null;
-        };
+    } & Omit<
+        RunIdentity,
+        | "distortions"
+        | "host_versions"
+        | "scenario_provenance"
+        | "fault_override"
+        | "side_model"
+        | "user_sim_model"
+    > & { side_model?: string | null; user_sim_model?: string };
     const current = preregistrationHash(prereg);
     if (manifest.prereg_sha256 !== current) {
         throw new Error(
@@ -70,18 +85,25 @@ export function loadGraded(dir: string, prereg: Preregistration): GradedRun {
     const { eidnara_commit, models, context_limit, events, side_model, user_sim_model } = manifest;
     const witnesses = new Map<string, WitnessReport>();
     const faults = join(dir, "faults.jsonl");
-    // SAFETY: each line of faults.jsonl is a JSON-serialized WitnessReport[] from injector.report().
-    const reports = existsSync(faults)
-        ? (readJournal(faults) as unknown as WitnessReport[][])
-        : null;
+    const lines = existsSync(faults) ? (readJournal(faults) as unknown as WitnessReport[][]) : [];
+    const reports = lines.length ? lines : null;
     for (const w of (reports ?? []).flat()) {
         if (witnesses.get(w.fault)?.status !== "fired") witnesses.set(w.fault, w);
     }
     const counterpart = (r: GradeRecord, arm: string) =>
         [...judged.values()].some(
-            (o) =>
-                o.item === r.item && o.arm === arm && o.inputs.join("\n") === r.inputs.join("\n"),
+            (o) => o.item === r.item && o.arm === arm && judgmentKey(o) === judgmentKey(r),
         );
+    const pairingPath = join(dir, "pairing.jsonl");
+    const pairing = existsSync(pairingPath)
+        ? (readJournal(pairingPath) as unknown as PairingRecord[])
+        : null;
+    const sm = scenario.manifest as {
+        generator_version?: string;
+        random_schema_version?: number;
+        corpus_manifest_sha256?: string;
+        embedding_model?: string;
+    };
     const hostP7 = (r: GradeRecord) => r.probe_type === "P7" && armBase(r.arm) === "host";
     const grades = [
         ...log.latest().filter((r) => !hostP7(r)),
@@ -101,9 +123,16 @@ export function loadGraded(dir: string, prereg: Preregistration): GradedRun {
             distortions: manifest.preflight?.distortions ?? [],
             host_versions: identityVersions(manifest.preflight ?? {}),
             side_model: side_model ?? null,
-            user_sim_model,
+            user_sim_model: user_sim_model ?? prereg.user_sim.model,
+            scenario_provenance: `${sm.generator_version}/${sm.random_schema_version}/${sm.corpus_manifest_sha256}/${sm.embedding_model}`,
+            fault_override:
+                manifest.fault_override == null
+                    ? null
+                    : sha256Hex(canonicalJson(manifest.fault_override)),
         },
         witnesses: reports === null ? null : [...witnesses.values()],
+        pairing,
+        captured: existsSync(join(dir, "calls.jsonl")),
     };
 }
 
@@ -170,13 +199,14 @@ function falsificationPairsOf(prereg: Preregistration, g: GradedRun): [string, s
 
 export function tierReport(
     prereg: Preregistration,
-    runs: GradedRun[],
+    given: GradedRun[],
     claimBoundary: string,
-    scale: CusumScale | undefined = aaScale(prereg, runs),
+    scale: CusumScale | undefined = aaScale(prereg, given),
     catalog = "",
     items?: number,
     reference?: { source: string; continuity: Continuity[] },
 ): TierReport {
+    const runs = ordered(prereg, given);
     const arms = [...new Set(runs.flatMap((g) => g.run.arms.map((a) => a.arm)))];
     const input = tierInput(prereg, runs, undefined, undefined, items);
     input.cusum_sd = scale;
@@ -232,15 +262,19 @@ export function tierReport(
             ...intrusiveness(g.run, arm),
             run: g.run.dir,
         })),
-        cost: perArm.map(({ g, arm }) => ({ ...costPanel(g.run, arm, g.grades), run: g.run.dir })),
+        cost: perArm.flatMap(({ g, arm }) => {
+            const panel = costPanel(g.run, arm, g.grades);
+            return panel ? [{ ...panel, run: g.run.dir }] : [];
+        }),
         judge: runs.map((g) => ({ run: g.run.dir, cost: judgeCost(g.run) })),
         falsification: falsificationSet(prereg, falsify),
         aa: runs.flatMap((g) => {
             const path = join(g.run.dir, "aa.json");
-            const reports = existsSync(path)
-                ? (JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>[])
-                : [];
-            return reports.map((r) => ({ run: g.run.dir, ...r }));
+            const grades = join(g.run.dir, "grades.jsonl");
+            if (!existsSync(path)) return [];
+            const stale = existsSync(grades) && statSync(grades).mtimeMs > statSync(path).mtimeMs;
+            const reports = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>[];
+            return reports.map((r) => ({ run: g.run.dir, stale, ...r }));
         }),
         prereg,
         claim_boundary: claimBoundary,

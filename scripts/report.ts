@@ -1,4 +1,5 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { TIERS, type Tier } from "../src/prereg/schema";
 import { preregistrationHash } from "../src/prereg/validate";
@@ -125,21 +126,27 @@ for (const [tier, { prereg, runs }] of loaded) {
     const text = renderTier(report);
     if (out) {
         mkdirSync(out, { recursive: true });
-        writeFileSync(join(out, `report-${tier}.md`), text);
-        writeFileSync(
-            join(out, `report-${tier}.json`),
-            `${JSON.stringify(report.verdict, null, 2)}\n`,
-        );
+        const staged = [
+            [join(out, `report-${tier}.md`), text],
+            [join(out, `report-${tier}.json`), `${JSON.stringify(report.verdict, null, 2)}\n`],
+        ] as const;
+        const tmp = staged.map(([path]) => `${path}.${randomUUID()}.tmp`);
+        for (const [i, [, body]] of staged.entries()) {
+            writeFileSync(tmp[i] as string, body, { flag: "wx" });
+        }
+        for (const [i, [path]] of staged.entries()) renameSync(tmp[i] as string, path);
         // Only a complete, sound campaign's continuity rows serve as another tier's recall
         // reference: no violated property witness and nothing incomplete beyond a CUSUM scale.
         const sound = report.witness.every((w) => w.status !== "violated");
+        const continuityPath = join(out, `continuity-${tier}.json`);
         if (sound && report.verdict.pass.incomplete.every((x) => x.startsWith("CUSUM "))) {
-            writeFileSync(
-                join(out, `continuity-${tier}.json`),
-                `${JSON.stringify(report.continuity, null, 2)}\n`,
-            );
+            const tmpPath = `${continuityPath}.${randomUUID()}.tmp`;
+            writeFileSync(tmpPath, `${JSON.stringify(report.continuity, null, 2)}\n`, {
+                flag: "wx",
+            });
+            renameSync(tmpPath, continuityPath);
         } else {
-            rmSync(join(out, `continuity-${tier}.json`), { force: true });
+            rmSync(continuityPath, { force: true });
             console.error(
                 `${tier}: campaign ${sound ? "incomplete" : "unsound"}; no continuity-${tier}.json written`,
             );

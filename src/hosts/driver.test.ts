@@ -2,6 +2,7 @@ import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import {
+    appendFileSync,
     existsSync,
     mkdirSync,
     mkdtempSync,
@@ -904,4 +905,36 @@ test("a recorder rebuilt after a harness kill keeps the open session's start tre
         (a: { id: string }) => a.id === `${next}:prior-diff`,
     );
     expect(prior.patch).toContain("+fn x() {}");
+});
+
+test("a snapshot record cut by a kill is dropped before the next capture appends", () => {
+    const repo = gitRepo();
+    const armDir = tmp();
+    const path = join(armDir, "snapshots.jsonl");
+    const first = new SnapshotRecorder(armDir, "eidnara", () => []);
+    first.sessionStart("s-1", "p", repo);
+    first.capture(
+        { probe: "q", session: "s-1", id: "e-1" },
+        "p",
+        repo,
+        first.tree(repo),
+        [],
+        false,
+    );
+    appendFileSync(path, '{"id":"eidnara:r:e-2","item":"r","arm":"eid');
+    const resumed = new SnapshotRecorder(armDir, "eidnara", () => []);
+    resumed.sessionStart("s-1", "p", repo);
+    resumed.capture(
+        { probe: "r", session: "s-1", id: "e-2" },
+        "p",
+        repo,
+        resumed.tree(repo),
+        [],
+        false,
+    );
+    const ids = readFileSync(path, "utf8")
+        .trim()
+        .split("\n")
+        .map((l) => JSON.parse(l).id);
+    expect(ids).toEqual(["eidnara:q:e-1", "eidnara:r:e-2"]);
 });

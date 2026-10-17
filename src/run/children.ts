@@ -57,14 +57,24 @@ export class Children {
                 stdio: ["ignore", "pipe", "pipe"],
                 detached: true,
             });
-            let settled: () => void = () => undefined;
+            let settledRun: () => void = () => undefined;
             this.live.set(
                 child,
                 new Promise<void>((r) => {
-                    settled = r;
+                    settledRun = r;
                 }),
             );
-            const sink = (chunk: Buffer) => appendFileSync(log, chunk);
+            // A log the command cannot write ends the child and settles the run as a failure,
+            // instead of throwing out of the stream callback past the supervisor.
+            const sink = (chunk: Buffer) => {
+                try {
+                    appendFileSync(log, chunk);
+                } catch (caught) {
+                    console.error(`${log}: ${(caught as Error).message}`);
+                    kill(child);
+                    finish(127);
+                }
+            };
             child.stdout?.on("data", sink);
             child.stderr?.on("data", sink);
             const timers: ReturnType<typeof setTimeout>[] = [];
@@ -81,26 +91,26 @@ export class Children {
             const poll = stopWhen
                 ? setInterval(() => stopWhen() && stop("stopWhen"), this.pollMs)
                 : null;
+            let settled = false;
             const finish = (code: number) => {
+                if (settled) return;
+                settled = true;
                 if (poll) clearInterval(poll);
                 for (const t of timers) clearTimeout(t);
                 this.live.delete(child);
-                settled();
+                settledRun();
                 done(code);
             };
-            // The run settles once the child's whole process group is gone: a descendant that
-            // outlives the leader gets the rest of the grace period, then SIGKILL, then one more
-            // grace period to leave; a survivor past that is named in the log.
-            const linger = async (pid: number) => {
-                const deadline = Date.now() + this.graceMs;
-                while (groupAlive(pid) && Date.now() < deadline) await Bun.sleep(50);
-                return groupAlive(pid);
-            };
+            // The run tears its own tree down before it exits, so the process group is killed
+            // on every exit and the run settles once the group is gone; a survivor past the
+            // grace period is named in the log.
             const settle = async (code: number) => {
                 const pid = child.pid;
-                if (pid !== undefined && (await linger(pid))) {
+                if (pid !== undefined) {
                     kill(child);
-                    if (await linger(pid)) {
+                    const deadline = Date.now() + this.graceMs;
+                    while (groupAlive(pid) && Date.now() < deadline) await Bun.sleep(50);
+                    if (groupAlive(pid)) {
                         appendFileSync(log, `process group ${pid} survived SIGKILL\n`);
                     }
                 }

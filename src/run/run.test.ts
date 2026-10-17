@@ -3,6 +3,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SimConfig } from "../config/config";
+import { canonicalJson, sha256Hex } from "../prereg/canonical";
 import { loadScenario } from "./run";
 import { HarnessFailure } from "./scheduler";
 
@@ -20,9 +21,10 @@ describe("scenario loading", () => {
 
     test("a cached scenario compiled for another item count is refused with the resized count", async () => {
         const out = mkdtempSync(join(tmpdir(), "sim-l-"));
+        const body = { manifest: { seed: 301, tier: "L", probes_per_type: 25 }, events: [] };
         writeFileSync(
             join(out, "scenario.json"),
-            JSON.stringify({ manifest: { seed: 301, tier: "L", probes_per_type: 25 }, events: [] }),
+            canonicalJson({ ...body, scenario_hash: sha256Hex(canonicalJson(body)) }),
         );
         const config = {} as SimConfig;
         await expect(loadScenario({ config, tier: "L", seed: 301, out }, 300)).rejects.toThrow(

@@ -11,7 +11,7 @@ import type { SimConfig } from "../config/config";
 import type { CallView } from "../grade/artefacts";
 import { armBase } from "../hosts/arms";
 import { HostDriver } from "../hosts/driver";
-import { canonicalJson } from "../prereg/canonical";
+import { canonicalJson, sha256Hex } from "../prereg/canonical";
 import type { Tier } from "../prereg/schema";
 import { preregistrationHash } from "../prereg/validate";
 import { bedrockUpstream, Gateway } from "../proxy/gateway";
@@ -32,6 +32,7 @@ import { normaliser, Pairing, proxyUserSim, Tape, UserSim } from "../usersim/use
 import { Journal, readJournal, releaseLease, takeLease } from "./journal";
 import { plainPath } from "./launcher";
 import { type Preflight, preflight, preflightDrift } from "./preflight";
+import { PRICE_TABLE, type PriceTable } from "./price";
 import { ResourceSampler } from "./sampler";
 import { type ArmDriver, HarnessFailure, type ScenarioEvent, Scheduler } from "./scheduler";
 import { writeOffset } from "./timeinject";
@@ -72,6 +73,8 @@ interface Manifest {
     user_sim_model: string;
     prereg_sha256: string;
     base_wall_ms: number;
+    /** The rates the cost panel prices this run's calls at, fixed when the run starts. */
+    price_table: PriceTable;
     preflight: Preflight;
 }
 
@@ -134,6 +137,10 @@ export async function loadScenario(
         writeAtomic(path, `${canonicalJson(compiled)}\n`);
     }
     const scenario = JSON.parse(readFileSync(path, "utf8")) as Scenario;
+    const { scenario_hash, ...body } = scenario;
+    if (sha256Hex(canonicalJson(body)) !== scenario_hash) {
+        throw new HarnessFailure(`${path} hashes to other than its scenario_hash`);
+    }
     const { seed, tier } = scenario.manifest as { seed: number; tier: string };
     if (seed !== o.seed || tier !== o.tier) {
         throw new HarnessFailure(
@@ -292,6 +299,7 @@ async function loadManifest(o: RunOptions, scenario: Scenario): Promise<Manifest
         eidnara_commit: gitHead(o.config.eidnara_checkout),
         prereg_sha256: preregistrationHash(loadPrereg(o.tier)),
         base_wall_ms: Date.now(),
+        price_table: PRICE_TABLE,
         preflight: checks,
     };
     writeAtomic(path, `${JSON.stringify(manifest, null, 2)}\n`);
@@ -432,8 +440,16 @@ async function runArms(
         rng: new Rng((seed ^ 0x27d4eb2f) >>> 0),
         clock: { scenarioMs: now },
         scope: () => ({ ...scope }),
-        downstream: (e) =>
-            appendFileSync(join(o.out, "downstream.jsonl"), `${JSON.stringify(e)}\n`),
+        downstream: (e) => {
+            // The sink runs inside an HTTP/2 event listener; a failed write ends the run through
+            // its signal path rather than escaping as an uncaught exception.
+            try {
+                appendFileSync(join(o.out, "downstream.jsonl"), `${JSON.stringify(e)}\n`);
+            } catch (caught) {
+                console.error(`downstream.jsonl: ${(caught as Error).message}`);
+                process.kill(process.pid, "SIGTERM");
+            }
+        },
         observe: (e) => {
             const driver = drivers[scope.arm];
             if (driver) scheduler.observe(e.component, driver);
