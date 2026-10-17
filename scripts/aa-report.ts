@@ -5,8 +5,8 @@ import { armBase } from "../src/hosts/arms";
 import type { Tier } from "../src/prereg/schema";
 import { preregistrationHash } from "../src/prereg/validate";
 import { bootstrapMean, disagreementRate, pairedDiffs } from "../src/report/paired";
-import { readJournal } from "../src/run/journal";
-import type { Scenario } from "../src/scenario/compile";
+import { readJournal, releaseLease, takeLease } from "../src/run/journal";
+import { type Scenario, scenarioHash } from "../src/scenario/compile";
 import { loadPrereg } from "../src/scenario/inputs";
 import type { PairingRecord } from "../src/usersim/usersim";
 
@@ -14,6 +14,15 @@ import type { PairingRecord } from "../src/usersim/usersim";
 const MIN_CLUSTERS = 5;
 
 export function aaReport(dir: string) {
+    takeLease(dir);
+    try {
+        return report(dir);
+    } finally {
+        releaseLease(dir);
+    }
+}
+
+function report(dir: string) {
     const manifest = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8"));
     const prereg = loadPrereg(manifest.tier as Tier);
     const prereg_sha256 = preregistrationHash(prereg);
@@ -23,6 +32,12 @@ export function aaReport(dir: string) {
         );
     }
     const scenario = JSON.parse(readFileSync(join(dir, "scenario.json"), "utf8")) as Scenario;
+    const scenario_hash = scenarioHash(scenario);
+    if (scenario_hash !== manifest.scenario_hash) {
+        throw new Error(
+            `${dir}: scenario_hash ${scenario_hash} differs from the manifest's ${manifest.scenario_hash}`,
+        );
+    }
     const fact = new Map(scenario.probes.map((p) => [p.id, p.fact ?? p.id]));
     // A family keyed by run has one cluster in a one-run report, so it stays uninformative.
     const probeType = (metric: string) => metric.split(".")[0] as string;
@@ -34,11 +49,22 @@ export function aaReport(dir: string) {
     const clusterOf = (metric: string) => (item: string) =>
         runLevel.has(probeType(metric)) ? "run" : (fact.get(item) ?? item);
     const grades = new GradeLog(join(dir, "grades.jsonl")).latest();
+    const version = new Map(grades.map((g) => [`${g.arm}/${g.item}`, g.version]));
     // SAFETY: Each line in `pairing.jsonl` must contain a `PairingRecord`.
     const pairing = readJournal(join(dir, "pairing.jsonl")) as unknown as PairingRecord[];
     const controls = (manifest.order as string[]).filter((a) => a.includes("~"));
     const report = controls.map((control) => {
         const arm = armBase(control);
+        // Grading commits every arm of an item in one batch, so a version split marks a torn batch.
+        for (const [key, v] of version) {
+            const [a, item] = key.split("/") as [string, string];
+            const other = version.get(`${control}/${item}`);
+            if (a === arm && other !== undefined && other !== v) {
+                throw new Error(
+                    `${dir}: ${item} is graded ${arm} v${v} but ${control} v${other}; grade the run again`,
+                );
+            }
+        }
         const metrics = [...pairedDiffs(grades, arm, control)].map(([m, d]) =>
             bootstrapMean(m, d, clusterOf(m), prereg.bootstrap.replicates, prereg.bootstrap.seed),
         );
@@ -53,7 +79,8 @@ export function aaReport(dir: string) {
             prereg_sha256,
             metrics,
             method: "cluster percentile bootstrap, 95%",
-            every_interval_covers_zero: informative.every((m) => m.covers_zero),
+            every_interval_covers_zero:
+                informative.length === 0 ? null : informative.every((m) => m.covers_zero),
             intervals_missing_zero: informative.filter((m) => !m.covers_zero).map((m) => m.metric),
             expected_by_chance: 0.05 * informative.length,
             uninformative: metrics.filter((m) => m.clusters < MIN_CLUSTERS).map((m) => m.metric),

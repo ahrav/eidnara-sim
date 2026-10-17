@@ -88,6 +88,8 @@ export const eidnaraOn = (arm: ArmName) => arm !== "host";
 
 /** An A/A control arm `host~aa` runs as `host` under its own label. */
 export const armBase = (label: string) => label.split("~")[0] as ArmName;
+/** A control label: a run arm, a tilde, and a tag; nothing a path could carry. */
+export const CONTROL_LABEL = /^[a-z-]+~[a-z0-9]+$/;
 const modelRef = (model: string) => `amazon-bedrock/${model}`;
 
 function eidnaraUserConfig(connectionFile: string, model: string): Record<string, unknown> {

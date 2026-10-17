@@ -114,11 +114,12 @@ replayed reply makes no model call.
 
 ## A/A control
 
-An arm label `<arm>~<tag>`, such as `host~aa`, runs as `<arm>` under its own
-label, with its own directories, journal entries, and call records
-(`armBase` in `src/hosts/arms.ts`). `--arms host,host~aa` runs it right
-after its arm, once, and only for a pair the tier pre-registers in
-`aa_controls.pairs` (S and M). A control's reference arm is its own arm,
+An arm label `<arm>~<tag>`, with a lowercase alphanumeric tag such as
+`host~aa`, runs as `<arm>` under its own label, with its own directories,
+journal entries, and call records (`armBase` and `CONTROL_LABEL` in
+`src/hosts/arms.ts`). `--arms host,host~aa` runs it right after its arm,
+one control per arm, and only for a pair the tier pre-registers in
+`aa_controls.pairs` (S and M); the oracle loader accepts the same labels. A control's reference arm is its own arm,
 so its divergence records and tape replies pair it with that arm; every
 other arm's reference is the first of the order. Both arms of a pair share
 the scenario, the behaviour plan, and the tape, so the control measures
@@ -127,8 +128,11 @@ judges a control of `host` against nothing, and P7 grades, which come from
 judgments against the host arm, stay out of the A/A pairing.
 
 `scripts/aa-report.ts <run>` reads the run's graded items and, for each
-control, pairs every item both arms graded. It refuses a run graded under
-another pre-registration and records the hash it used. For each metric,
+control, pairs every item both arms graded. It holds the run's lease while
+it reads, refuses a run graded under another pre-registration or whose
+scenario no longer hashes to the manifest's digest, refuses a pair whose
+grade versions differ (a grading batch cut short), and records the
+pre-registration hash it used. For each metric,
 verdicts as `<type>.pass` and each numeric grade metric, it reports the
 mean difference with a percentile bootstrap interval that resamples the
 family's pre-registered `cluster_key`: ledger facts for item-level
@@ -136,8 +140,9 @@ families, and the run itself for run-level families (P13, P14), which one
 run therefore leaves uninformative. The bootstrap uses the pre-registered
 `bootstrap` replicates and seed. A metric over fewer than five clusters
 is listed as uninformative and decides nothing. Over the rest it
-reports whether every interval covers zero and the metrics whose interval
-misses it against the five percent expected by chance, the share of paired items whose verdicts
+reports whether every interval covers zero (`null` when no metric is
+informative) and the metrics whose interval misses it against the five
+percent expected by chance, the share of paired items whose verdicts
 differ (the disagreement rate), and how many sessions diverged at which
 index. A divergence is recorded against the control's arm or, under
 `--tapes`, against the control's own recorded run; either way the control

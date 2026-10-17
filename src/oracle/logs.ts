@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Command } from "../grade/artefacts";
-import { armBase } from "../hosts/arms";
+import { armBase, CONTROL_LABEL } from "../hosts/arms";
 import { parseStoreCheck, type StoreCheck } from "../hosts/storecheck";
 import { ARMS, type Preregistration } from "../prereg/schema";
 import { type CallRecord, recordProblems } from "../proxy/records";
@@ -134,10 +134,13 @@ export function loadRun(dir: string, prereg: Preregistration): RunLogs {
     }
     const kinds = new Map(scenario.events.map((e) => [String(e.id), String(e.kind)]));
     const order = manifest.order as string[];
+    const pairs = prereg.aa_controls?.pairs ?? [];
     for (const arm of order) {
-        if (!(ARMS as readonly string[]).includes(armBase(arm))) {
-            throw new Error(`manifest arm ${arm} is not a pre-registered arm`);
-        }
+        const base = armBase(arm);
+        const known =
+            (ARMS as readonly string[]).includes(base) &&
+            (arm === base || (CONTROL_LABEL.test(arm) && pairs.some(([x]) => x === base)));
+        if (!known) throw new Error(`manifest arm ${arm} is not a pre-registered arm`);
     }
     const calls = jsonl<CallRecord>(join(dir, "calls.jsonl"));
     const seen = new Set<number>();

@@ -1,5 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+    existsSync,
+    mkdirSync,
+    mkdtempSync,
+    readdirSync,
+    readFileSync,
+    rmSync,
+    writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { scenarioHash } from "../scenario/compile";
@@ -457,9 +465,18 @@ describe("oracle round three", () => {
         expect(loadRun(dir, prereg).arms.map((a) => a.arm)).toEqual(order);
     });
 
+    test("a control label is a pre-registered arm, a tilde, and a tag; a path is refused", () => {
+        for (const label of ["host~x/../../outside", "host~", "host~A", "eidnara-kl~aa"]) {
+            const { dir } = completeDir(["host", label]);
+            expect(() => loadRun(dir, prereg)).toThrow(
+                `manifest arm ${label} is not a pre-registered arm`,
+            );
+        }
+    });
+
     test("a control of host runs no daemon, so it loads without RSS samples or a daemon.log", () => {
         const { dir } = completeDir(["host", "host~aa"]);
-        rmSync(join(dir, "host~aa"), { recursive: true });
+        expect(existsSync(join(dir, "host~aa"))).toBe(false);
         expect(loadRun(dir, prereg).arms.map((a) => a.arm)).toEqual(["host", "host~aa"]);
     });
 });
@@ -618,7 +635,7 @@ function completeDir(order: string[]): { dir: string; line: (o: unknown) => stri
     ];
     writeFileSync(join(dir, "journal.jsonl"), journal.map(line).join(""));
     for (const arm of order) {
-        if (arm === "host" || arm.startsWith("..")) continue;
+        if (arm === "host" || arm.includes("..") || arm.includes("~")) continue;
         mkdirSync(join(dir, arm));
         writeFileSync(
             join(dir, arm, "resources.jsonl"),

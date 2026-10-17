@@ -98,6 +98,9 @@ describe("A/A pairing", () => {
             armOrder({ tier: "S", seed: 101, arms: ["host", "host~aa", "host~aa"] }),
         ).toThrow("twice");
         expect(() =>
+            armOrder({ tier: "S", seed: 101, arms: ["host", "host~aa", "host~bb"] }),
+        ).toThrow("one A/A control");
+        expect(() =>
             armOrder({ tier: "S", seed: 101, arms: ["eidnara-kl", "eidnara-kl~x"] }),
         ).toThrow("not in the S order");
         expect(() => armOrder({ tier: "L", seed: 301, arms: ["host", "host~aa"] })).toThrow(

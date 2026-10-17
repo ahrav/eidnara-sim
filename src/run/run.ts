@@ -9,7 +9,7 @@ import {
 import { dirname, join, resolve } from "node:path";
 import type { SimConfig } from "../config/config";
 import type { CallView } from "../grade/artefacts";
-import { armBase } from "../hosts/arms";
+import { armBase, CONTROL_LABEL } from "../hosts/arms";
 import { HostDriver } from "../hosts/driver";
 import { canonicalJson } from "../prereg/canonical";
 import type { Tier } from "../prereg/schema";
@@ -139,8 +139,7 @@ export function armOrder(o: Pick<RunOptions, "tier" | "seed" | "arms">): string[
     const order: string[] = prereg.arms.order_by_seed[index] ?? prereg.arms.run;
     const pairs = prereg.aa_controls?.pairs ?? [];
     const control = (a: string) =>
-        /^[a-z-]+~[a-z0-9]+$/.test(a) &&
-        pairs.some(([x, y]) => x === armBase(a) && y === armBase(a));
+        CONTROL_LABEL.test(a) && pairs.some(([x, y]) => x === armBase(a) && y === armBase(a));
     if (new Set(o.arms).size !== (o.arms ?? []).length) {
         throw new HarnessFailure("--arms lists an arm twice");
     }
@@ -151,6 +150,10 @@ export function armOrder(o: Pick<RunOptions, "tier" | "seed" | "arms">): string[
         .flatMap((a) => [a, ...(o.arms ?? []).filter((c) => control(c) && armBase(c) === a)]);
     if ((o.arms ?? []).some((a) => control(a) && !kept.includes(armBase(a)))) {
         throw new HarnessFailure("an A/A control arm runs only beside its arm");
+    }
+    const controls = (o.arms ?? []).filter(control).map(armBase);
+    if (new Set(controls).size !== controls.length) {
+        throw new HarnessFailure("an arm runs one A/A control");
     }
     if (kept.length === 0) throw new HarnessFailure("no arm to run");
     return kept;
