@@ -15,6 +15,16 @@ export function procStats(pid: number): { rss: number; cpuMs: number } | null {
     }
 }
 
+/** Anonymous resident memory (`RssAnon`), which holds the heap, in bytes. */
+export function anonBytes(pid: number): number | null {
+    try {
+        const kb = /^RssAnon:\s+(\d+) kB$/m.exec(readFileSync(`/proc/${pid}/status`, "utf8"))?.[1];
+        return kb === undefined ? null : Number(kb) * 1024;
+    } catch {
+        return null;
+    }
+}
+
 export function treeBytes(dir: string): number {
     let total = 0;
     const walk = (d: string) => {
@@ -42,6 +52,7 @@ export interface Sample {
     scenario_ms: number;
     pid: number | null;
     rss: number | null;
+    heap?: number | null;
     cpu_ms: number | null;
     cpu_fraction: number | null;
     store_bytes: number;
@@ -83,6 +94,7 @@ export class ResourceSampler {
             scenario_ms: this.o.scenarioMs(),
             pid,
             rss: stats?.rss ?? null,
+            heap: pid === null ? null : anonBytes(pid),
             cpu_ms: stats?.cpuMs ?? null,
             cpu_fraction: fraction === null ? null : Math.round(fraction * 1e4) / 1e4,
             store_bytes: treeBytes(this.o.storeDir),

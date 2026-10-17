@@ -1,0 +1,123 @@
+{
+  "provenance": "constructed from the recorded oc-3 F4 fixture: the same question-tool hang with the question tool's start logged, as the harness now logs tools on deadline turns",
+  "tier": "S",
+  "kinds": {},
+  "arms": [
+    {
+      "arm": "host",
+      "calls": [
+        {
+          "arm": "host",
+          "session": "s-0003",
+          "turn": "e-000011",
+          "started_wall_ms": 1792142013598,
+          "scenario_ms": 4716281,
+          "input_tokens": 4,
+          "output_tokens": 151,
+          "cache_read_tokens": 12901,
+          "cache_write_tokens": 553,
+          "first_byte_ms": 3345.6743909999786,
+          "proxy_retries": 0,
+          "fault_ref": null,
+          "finish_reason": "tool_use",
+          "error": null,
+          "component": "agent",
+          "componentSource": "inferred",
+          "model": "global.anthropic.claude-opus-5-5",
+          "status": 200,
+          "seq": 15,
+          "wall_ms": 1792142017057
+        },
+        {
+          "arm": "host",
+          "session": "s-0003",
+          "turn": "e-000011",
+          "started_wall_ms": 1792142017267,
+          "scenario_ms": 4719950,
+          "input_tokens": 2,
+          "output_tokens": 186,
+          "cache_read_tokens": 13454,
+          "cache_write_tokens": 586,
+          "first_byte_ms": 5081.298217000003,
+          "proxy_retries": 0,
+          "fault_ref": null,
+          "finish_reason": "tool_use",
+          "error": null,
+          "component": "agent",
+          "componentSource": "inferred",
+          "model": "global.anthropic.claude-opus-5-5",
+          "status": 200,
+          "seq": 16,
+          "wall_ms": 1792142022634
+        },
+        {
+          "arm": "host",
+          "session": "s-0003",
+          "turn": "e-000011",
+          "started_wall_ms": 1792142022823,
+          "scenario_ms": 4725506,
+          "input_tokens": 2,
+          "output_tokens": 634,
+          "cache_read_tokens": 14040,
+          "cache_write_tokens": 5874,
+          "first_byte_ms": 3950.558614999987,
+          "proxy_retries": 0,
+          "fault_ref": null,
+          "finish_reason": "tool_use",
+          "error": null,
+          "component": "agent",
+          "componentSource": "inferred",
+          "model": "global.anthropic.claude-opus-5-5",
+          "status": 200,
+          "seq": 17,
+          "wall_ms": 1792142031000
+        }
+      ],
+      "journal": [
+        {
+          "kind": "BeginTurn",
+          "event": "e-000011",
+          "probe": "q-0012",
+          "arm": "host",
+          "scenario_ms": 4716199,
+          "seq": 23,
+          "wall_ms": 1792142013516
+        },
+        {
+          "kind": "EndTurn",
+          "event": "e-000011",
+          "outcome": "turn deadline 900000 ms",
+          "probe": "q-0012",
+          "state": "failed",
+          "arm": "host",
+          "scenario_ms": 5616547,
+          "seq": 24,
+          "wall_ms": 1792142913864
+        },
+        {
+          "kind": "Event",
+          "event": "e-000011",
+          "outcome": "ok",
+          "arm": "host",
+          "scenario_ms": 5616547,
+          "seq": 26,
+          "wall_ms": 1792142914866
+        }
+      ],
+      "pluginLog": [],
+      "daemonLog": [],
+      "resources": [],
+      "tools": [
+        {
+          "command": "question",
+          "exit": null,
+          "scenario_ms": 4733883,
+          "turn": "e-000011"
+        }
+      ]
+    }
+  ],
+  "expect": {
+    "F4": 1
+  }
+}

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import * as fs from "node:fs";
 import { appendFileSync, mkdtempSync, readFileSync } from "node:fs";
-import { connect as http2Connect } from "node:http2";
+import { constants, connect as http2Connect } from "node:http2";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { decodeMessages } from "../../tests/eventstream-decode";
@@ -170,6 +170,7 @@ async function start(
     const records = new RecordWriter(null);
     const injector = new FaultInjector(fault ? [fault] : [], new Rng(7), windowMs);
     const started: CallStarted[] = [];
+    const downstream: Record<string, unknown>[] = [];
     let scenario = 1_000;
     const gateway = new Gateway({
         upstream,
@@ -179,10 +180,11 @@ async function start(
         clock: { scenarioMs: () => (scenario += 10) },
         scope: () => ({ arm: "eidnara", session: "s-0001", turn: "e-000001" }),
         observe: (e) => started.push(e),
+        downstream: (e) => downstream.push(e),
     });
     await gateway.start();
     gateways.push(gateway);
-    return { gateway, records, injector, started, url: gateway.urls[0] as string };
+    return { gateway, records, injector, started, downstream, url: gateway.urls[0] as string };
 }
 
 async function hostCallJson(url: string, body: unknown, timeoutMs: number): Promise<JsonResult> {
@@ -961,5 +963,37 @@ describe("every request yields one record", () => {
         const walls = records.records.map((r) => r.wall_ms);
         expect([...walls].sort((a, b) => a - b)).toEqual(walls);
         expect(new Set(records.records.map((r) => r.scenario_ms)).size).toBe(3);
+    });
+});
+
+describe("downstream diagnostics", () => {
+    test("a host that resets its HTTP/2 stream mid-response leaves a stream_reset record", async () => {
+        const slow: Upstream = {
+            async converse() {
+                async function* events() {
+                    yield { messageStart: { role: "assistant" } };
+                    await Bun.sleep(300);
+                    yield { messageStop: { stopReason: "end_turn" } };
+                }
+                return { events: events() };
+            },
+        };
+        const { gateway, downstream } = await start(null, slow);
+        const session = http2Connect(gateway.urls[1] as string);
+        const stream = session.request({ ":method": "POST", ":path": "/model/m/converse-stream" });
+        stream.on("error", () => undefined);
+        stream.once("data", () => stream.close(constants.NGHTTP2_CANCEL));
+        stream.end(JSON.stringify(AGENT_BODY));
+        await Bun.sleep(600);
+        session.close();
+        expect(downstream).toContainEqual(
+            expect.objectContaining({
+                kind: "stream_reset",
+                code: constants.NGHTTP2_CANCEL,
+                arm: "eidnara",
+                session: "s-0001",
+                h2_session: 0,
+            }),
+        );
     });
 });

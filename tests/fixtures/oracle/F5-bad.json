@@ -1,0 +1,156 @@
+{
+  "provenance": "constructed: RSS growing 80 MB per session",
+  "tier": "S",
+  "kinds": {
+    "end-0": "session_end",
+    "end-1": "session_end",
+    "end-2": "session_end",
+    "end-3": "session_end",
+    "end-4": "session_end",
+    "end-5": "session_end",
+    "end-6": "session_end",
+    "end-7": "session_end",
+    "end-8": "session_end",
+    "end-9": "session_end"
+  },
+  "arms": [
+    {
+      "arm": "eidnara",
+      "calls": [],
+      "journal": [
+        {
+          "kind": "Event",
+          "event": "end-0",
+          "arm": "eidnara",
+          "scenario_ms": 500,
+          "seq": 0,
+          "wall_ms": 0
+        },
+        {
+          "kind": "Event",
+          "event": "end-1",
+          "arm": "eidnara",
+          "scenario_ms": 1500,
+          "seq": 1,
+          "wall_ms": 0
+        },
+        {
+          "kind": "Event",
+          "event": "end-2",
+          "arm": "eidnara",
+          "scenario_ms": 2500,
+          "seq": 2,
+          "wall_ms": 0
+        },
+        {
+          "kind": "Event",
+          "event": "end-3",
+          "arm": "eidnara",
+          "scenario_ms": 3500,
+          "seq": 3,
+          "wall_ms": 0
+        },
+        {
+          "kind": "Event",
+          "event": "end-4",
+          "arm": "eidnara",
+          "scenario_ms": 4500,
+          "seq": 4,
+          "wall_ms": 0
+        },
+        {
+          "kind": "Event",
+          "event": "end-5",
+          "arm": "eidnara",
+          "scenario_ms": 5500,
+          "seq": 5,
+          "wall_ms": 0
+        },
+        {
+          "kind": "Event",
+          "event": "end-6",
+          "arm": "eidnara",
+          "scenario_ms": 6500,
+          "seq": 6,
+          "wall_ms": 0
+        },
+        {
+          "kind": "Event",
+          "event": "end-7",
+          "arm": "eidnara",
+          "scenario_ms": 7500,
+          "seq": 7,
+          "wall_ms": 0
+        },
+        {
+          "kind": "Event",
+          "event": "end-8",
+          "arm": "eidnara",
+          "scenario_ms": 8500,
+          "seq": 8,
+          "wall_ms": 0
+        },
+        {
+          "kind": "Event",
+          "event": "end-9",
+          "arm": "eidnara",
+          "scenario_ms": 9500,
+          "seq": 9,
+          "wall_ms": 0
+        }
+      ],
+      "pluginLog": [],
+      "daemonLog": [],
+      "resources": [
+        {
+          "scenario_ms": 0,
+          "rss": 200000000
+        },
+        {
+          "scenario_ms": 1000,
+          "rss": 280000000
+        },
+        {
+          "scenario_ms": 2000,
+          "rss": 360000000
+        },
+        {
+          "scenario_ms": 3000,
+          "rss": 440000000
+        },
+        {
+          "scenario_ms": 4000,
+          "rss": 520000000
+        },
+        {
+          "scenario_ms": 5000,
+          "rss": 600000000
+        },
+        {
+          "scenario_ms": 6000,
+          "rss": 680000000
+        },
+        {
+          "scenario_ms": 7000,
+          "rss": 760000000
+        },
+        {
+          "scenario_ms": 8000,
+          "rss": 840000000
+        },
+        {
+          "scenario_ms": 9000,
+          "rss": 920000000
+        },
+        {
+          "scenario_ms": 10000,
+          "rss": 1000000000
+        }
+      ],
+      "tools": []
+    }
+  ],
+  "expect": {
+    "F5": 2
+  }
+}

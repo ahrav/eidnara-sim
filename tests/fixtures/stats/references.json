@@ -1,0 +1,257 @@
+{
+    "mcnemar_exact": {
+        "source": "R exact2x2::mcnemar.exact output on b = 150, c = 86, quoted at https://stackoverflow.com/questions/61756387/mcnemar-exact-test",
+        "b": 150,
+        "c": 86,
+        "p": 3.716e-05,
+        "odds_ratio": 1.744186,
+        "ci": [
+            1.329228,
+            2.300979
+        ],
+        "tolerance": 1e-06
+    },
+    "paired_proportions": {
+        "source": "Armitage and Berry (1994, p. 138), two culture media on 50 sputum specimens, as computed by StatsDirect (https://www.statsdirect.com/help/proportions/paired.htm): exact two-sided P and Newcombe (1998) method 10 interval",
+        "a": 20,
+        "b": 12,
+        "c": 2,
+        "d": 16,
+        "sign_test_p": 0.0129,
+        "newcombe": [
+            0.056156,
+            0.329207
+        ],
+        "tolerance": 1e-06
+    },
+    "holm": {
+        "source": "R p.adjust(c(0.001, 0.01, 0.04, 0.20, 0.50), 'holm'), https://r-statistics.co/Multiple-Testing-Exercises-in-R.html exercise 1.2",
+        "p": [
+            0.001,
+            0.01,
+            0.04,
+            0.2,
+            0.5
+        ],
+        "adjusted": [
+            0.005,
+            0.04,
+            0.12,
+            0.4,
+            0.5
+        ]
+    },
+    "cusum": {
+        "source": "Hawkins, Stat 5031 homework 7 solution (http://www.stat.umn.edu/hawkins/5031/Hmwk7_soln.pdf): mu0 10, K 1.5, H 7.115, FIR head start H/2; the upward cusum breaks the limit at observation 18",
+        "x": [
+            10,
+            8,
+            11,
+            8,
+            8,
+            7,
+            9,
+            14,
+            9,
+            14,
+            13,
+            9,
+            13,
+            11,
+            14,
+            12,
+            12,
+            13,
+            12,
+            14
+        ],
+        "target": 10,
+        "k": 1.5,
+        "h": 7.115,
+        "upper": [
+            2.06,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            2.5,
+            0,
+            2.5,
+            4,
+            1.5,
+            3,
+            2.5,
+            5,
+            5.5,
+            6,
+            7.5,
+            8,
+            10.5
+        ],
+        "lower": [
+            -2.06,
+            -2.56,
+            -0.06,
+            -0.56,
+            -1.06,
+            -2.56,
+            -2.06,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+        ],
+        "signal_observation": 18,
+        "tolerance": 0.005
+    },
+    "bca": {
+        "source": "Efron and Tibshirani (1993), An Introduction to the Bootstrap, section 14.3 and table 14.2: the spatial test A scores of 26 children (R package bootstrap, data spatial), plug-in variance 171.5, acceleration 0.061, 90% BCa interval (115.8, 259.6)",
+        "x": [
+            48,
+            36,
+            20,
+            29,
+            42,
+            42,
+            20,
+            42,
+            22,
+            41,
+            45,
+            14,
+            6,
+            0,
+            33,
+            28,
+            34,
+            4,
+            32,
+            24,
+            47,
+            41,
+            24,
+            26,
+            30,
+            41
+        ],
+        "estimate": 171.5,
+        "acceleration": 0.061,
+        "interval_90": [
+            115.8,
+            259.6
+        ],
+        "interval_relative_tolerance": 0.03
+    },
+    "negative_binomial": {
+        "source": "R MASS::glm.nb(Days ~ Eth + Sex + Age + Lrn, data = quine), coefficients as printed in https://www.uio.no/studier/emner/matnat/math/STK3100/oppgaver/STK3100_4100_2017.pdf and https://stats.jonminton.net/pages/main-course/negative-binomial-regression/; data from MASS via https://vincentarelbundock.github.io/Rdatasets (quine.csv)",
+        "coefficients": {
+            "(Intercept)": 2.89458,
+            "EthN": -0.56937,
+            "SexM": 0.08232,
+            "AgeF1": -0.44843,
+            "AgeF2": 0.08808,
+            "AgeF3": 0.3569
+        },
+        "standard_errors": [
+            0.22842,
+            0.15333,
+            0.15992,
+            0.23975,
+            0.23619,
+            0.24832
+        ],
+        "theta": 1.274892646,
+        "tolerance": 1e-05,
+        "lrn_sl": {
+            "estimate": 0.292,
+            "tolerance": 0.0005,
+            "note": "both sources print the LrnSL estimate cut at three decimals"
+        }
+    },
+    "eval_core_mcnemar": {
+        "source": "eval-core 0.1.0 at eidnara commit bb866266c, crates/eval-core/tests/stale.rs exact_mcnemar_matches_hand_computed_tables: the exact two-sided decision p <= alpha in integer arithmetic; eval-core refuses past about 123 discordant pairs, where this library continues in floating point",
+        "alpha": 0.05,
+        "cases": [
+            [
+                0,
+                0,
+                false
+            ],
+            [
+                6,
+                0,
+                true
+            ],
+            [
+                5,
+                0,
+                false
+            ],
+            [
+                15,
+                5,
+                true
+            ],
+            [
+                14,
+                5,
+                false
+            ],
+            [
+                5,
+                15,
+                true
+            ],
+            [
+                40,
+                40,
+                false
+            ],
+            [
+                61,
+                39,
+                true
+            ],
+            [
+                60,
+                40,
+                false
+            ],
+            [
+                72,
+                48,
+                true
+            ],
+            [
+                71,
+                49,
+                false
+            ]
+        ],
+        "boundary": {
+            "b": 6,
+            "c": 0,
+            "rejects_at": 0.03125,
+            "keeps_at": 0.03124
+        }
+    },
+    "percentile": {
+        "source": "cross-check, not a published table: scipy 1.13 stats.bootstrap(method='percentile', confidence_level=0.9, n_resamples=20000, random_state=1) on the same spatial A scores and plug-in variance",
+        "interval_90": [
+            98.52,
+            235.41
+        ],
+        "relative_tolerance": 0.02
+    }
+}

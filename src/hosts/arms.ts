@@ -40,6 +40,8 @@ export interface HostContext {
     proxyHttp2: string;
     model: string;
     contextLimit: number;
+    /** The model of Eidnara's own summarizer and researcher calls; the agent model by default. */
+    sideModel?: string;
     now?: () => number;
     /**
      * The host invokes `onTool` as it records a run; `drainTools` invokes it for the runs it
@@ -77,9 +79,14 @@ export function toolCommand(tool: string, args: Record<string, unknown> | undefi
 
 export interface PromptResult {
     error?: string;
+    /** The user aborted the turn through the host's abort path. */
+    interrupted?: boolean;
 }
 
 export const eidnaraOn = (arm: ArmName) => arm !== "host";
+
+/** An A/A control arm `host~aa` runs as `host` under its own label. */
+export const armBase = (label: string) => label.split("~")[0] as ArmName;
 const modelRef = (model: string) => `amazon-bedrock/${model}`;
 
 function eidnaraUserConfig(connectionFile: string, model: string): Record<string, unknown> {
@@ -208,7 +215,7 @@ export abstract class SimHost {
     }
 
     abstract openSession(cwd: string, session: string, connection: string | null): Promise<void>;
-    abstract prompt(text: string, timeoutMs: number): Promise<PromptResult>;
+    abstract prompt(text: string, timeoutMs: number, interruptMs?: number): Promise<PromptResult>;
     abstract closeSession(): Promise<void>;
     abstract transcriptEnv(): Record<string, string>;
     abstract hostPid(): number | null;
@@ -307,7 +314,7 @@ export class PiSimHost extends SimHost {
         if (connectionFile) {
             const dir = join(this.ctx.root, "home/config/eidnara");
             mkdirSync(dir, { recursive: true });
-            const config = eidnaraUserConfig(connectionFile, this.ctx.model);
+            const config = eidnaraUserConfig(connectionFile, this.ctx.sideModel ?? this.ctx.model);
             writeFileSync(join(dir, "eidnara.jsonc"), JSON.stringify(config, null, 2));
         }
     }
@@ -372,14 +379,21 @@ export class PiSimHost extends SimHost {
         return end;
     }
 
-    async prompt(text: string, timeoutMs: number): Promise<PromptResult> {
+    async prompt(text: string, timeoutMs: number, interruptMs?: number): Promise<PromptResult> {
         const end = this.agentEnd(timeoutMs);
         try {
             const response = await this.rpc.sendCommand("prompt", { message: text }, { timeoutMs });
             if (response.success === false) {
                 throw new Error(JSON.stringify(response).slice(0, 2000));
             }
-            const outcome = await end;
+            const cut = interruptMs === undefined ? null : Bun.sleep(interruptMs).then(() => null);
+            const first = await Promise.race(cut ? [end, cut] : [end]);
+            if (first === null) {
+                await this.rpc.sendCommand("abort", {}, { timeoutMs: 60_000 });
+                await end;
+                return { interrupted: true };
+            }
+            const outcome = first;
             const messages = (outcome.messages ?? []) as Array<Record<string, Untyped>>;
             const last = messages.filter((m) => m.role === "assistant").at(-1);
             return last?.stopReason === "error"
@@ -461,7 +475,10 @@ export class OpencodeSimHost extends SimHost {
             mkdirSync(d, { recursive: true });
         const eidnara = connection
             ? {
-                  eidnaraConfig: eidnaraUserConfig(connection, this.ctx.model),
+                  eidnaraConfig: eidnaraUserConfig(
+                      connection,
+                      this.ctx.sideModel ?? this.ctx.model,
+                  ),
                   userHostConnectionFile: connection,
               }
             : {};
@@ -550,7 +567,7 @@ export class OpencodeSimHost extends SimHost {
         seen: Set<string>,
         startScenario: number,
         deadlineMs: number,
-    ): Promise<void> {
+    ): Promise<Array<{ info: Untyped; parts: Untyped[] }>> {
         const listed = await this.messages(deadlineMs);
         const fresh = listed.filter((m) => !seen.has(String(m.info?.id)));
         const origin = Math.min(...fresh.map((m) => Number(m.info?.time?.created ?? Infinity)));
@@ -562,6 +579,7 @@ export class OpencodeSimHost extends SimHost {
                 this.logTool(part.tool, part.state?.input, exit, ms, callId(part));
             }
         }
+        return listed;
     }
 
     /**
@@ -598,9 +616,12 @@ export class OpencodeSimHost extends SimHost {
      * pre-turn listing left minus a reserve for the post-turn listing (a quarter of the deadline,
      * at most one second); a listing that stalls before the turn fails the turn, and one that
      * stalls after it fails the turn as a capture gap, since its tool runs are then unknown. A
-     * failed turn whose listing also fails keeps its own error and names the gap.
+     * failed turn whose listing also fails keeps its own error and names the gap. A scheduled
+     * `interruptMs` aborts the turn through OpenCode's abort path once it elapses, and the turn
+     * reports `interrupted`. A turn that returns while its last assistant step has not finished
+     * fails, so the next turn never sends a conversation that ends on that step.
      */
-    async prompt(text: string, timeoutMs: number): Promise<PromptResult> {
+    async prompt(text: string, timeoutMs: number, interruptMs?: number): Promise<PromptResult> {
         const deadline = Date.now() + timeoutMs;
         const remaining = () => Math.max(0, deadline - Date.now());
         /** Kept back from the turn so the post-turn tool listing fits inside the same deadline. */
@@ -619,19 +640,30 @@ export class OpencodeSimHost extends SimHost {
         if (remaining() <= reserve) {
             return { error: `turn deadline of ${timeoutMs} ms passed during the message listing` };
         }
-        const outcome = await this.turn(text, remaining() - reserve);
+        const outcome = await this.turn(text, remaining() - reserve, interruptMs);
+        let listed: Array<{ info: Untyped; parts: Untyped[] }>;
         try {
             if (remaining() === 0) throw new Error("turn deadline passed before the tool listing");
-            await this.logTurnTools(seen, startScenario, remaining());
+            listed = await this.logTurnTools(seen, startScenario, remaining());
         } catch (caught) {
             this.unlogged = seen;
             const gap = `tool capture: ${String(caught)}`;
             return { error: (outcome.error ? `${outcome.error} | ${gap}` : gap).slice(0, 2000) };
         }
-        return outcome;
+        if (outcome.error || outcome.interrupted) return outcome;
+        const last = listed.filter((m) => m.info?.role === "assistant").at(-1);
+        if (last?.info?.error) return { error: JSON.stringify(last.info.error).slice(0, 2000) };
+        const finish = last?.info?.finish;
+        return !last || finish === "stop" || finish === "length"
+            ? outcome
+            : { error: `the turn returned before its last assistant step finished (${finish})` };
     }
 
-    private async turn(text: string, timeoutMs: number): Promise<PromptResult> {
+    private async turn(
+        text: string,
+        timeoutMs: number,
+        interruptMs?: number,
+    ): Promise<PromptResult> {
         const model = { providerID: "amazon-bedrock", modelID: this.ctx.model };
         const call = this.client.session.prompt({
             path: { id: this.sid },
@@ -641,12 +673,14 @@ export class OpencodeSimHost extends SimHost {
             (result: Untyped) => ({ result }),
             (caught: unknown) => ({ caught }),
         );
-        const first = await Promise.race([settled, Bun.sleep(timeoutMs).then(() => null)]);
+        const wait = Math.min(timeoutMs, interruptMs ?? timeoutMs);
+        const first = await Promise.race([settled, Bun.sleep(wait).then(() => null)]);
         if (first === null) {
             const abort = this.client.session.abort({ path: { id: this.sid } });
             await Promise.race([abort.catch(() => undefined), Bun.sleep(5_000)]);
             const drained = await Promise.race([settled, Bun.sleep(30_000).then(() => null)]);
             if (drained === null) throw new Error("OpenCode turn still running 30 s after abort");
+            if (wait < timeoutMs) return { interrupted: true };
             return { error: `turn deadline ${timeoutMs} ms` };
         }
         if ("caught" in first) {

@@ -17,6 +17,8 @@ cost uses the journaled price table version.
 No harness code, test, or run exists yet. The surface lands in M7
 (#1032).
 
+M5 (#1030) sums input, output, cache-read, and cache-write tokens per component and per arm, the per-arm total being the per-component sum; pricing lands with the report (M7).
+
 ## Failure scenario
 
 Cost ratios are computed on tokens that do not add up.

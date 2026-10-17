@@ -15,9 +15,15 @@ import { dirname, join, relative, resolve } from "node:path";
 import { GitBound, git } from "../git";
 import type { CallView } from "../grade/artefacts";
 import { processStart, running, stopOwnedTree } from "../run/procs";
-import { type ArmDriver, HarnessFailure, type ScenarioEvent } from "../run/scheduler";
+import {
+    type ArmDriver,
+    HarnessFailure,
+    type ScenarioEvent,
+    type TurnOutcome,
+} from "../run/scheduler";
 import type { FaultEpisode } from "../scenario/faults";
 import {
+    armBase,
     DaemonStack,
     eidnaraOn,
     type HostContext,
@@ -26,14 +32,19 @@ import {
     type ToolRun,
 } from "./arms";
 import { entriesOf, SnapshotRecorder } from "./snapshot";
+import { checkStore, type Deletion, deleteFactNotes, memoryNotes } from "./storecheck";
 
 interface ArmState {
     model: number;
+    upgraded?: boolean;
+    second?: { pid: number; start: string | null } | null;
     daemon: { pid: number; start: string | null } | null;
     host: { pid: number; start: string | null } | null;
 }
 
-export interface DriverOptions extends Omit<HostContext, "root" | "model"> {
+export interface DriverOptions extends Omit<HostContext, "root" | "model" | "arm"> {
+    /** The arm's label; `armBase` gives the arm it runs as. */
+    arm: string;
     armRoot: string;
     projects: Record<string, string>;
     models: string[];
@@ -46,6 +57,8 @@ export interface DriverOptions extends Omit<HostContext, "root" | "model"> {
     /** Entries a walk of a workspace `.git` visits at most; the default is `GIT_DIR_ENTRY_CAP`. */
     gitDirEntryCap?: number;
     hostFactory?: (ctx: HostContext) => SimHost;
+    /** The host's pinned and `config.upgrade` versions, as the run's preflight recorded them. */
+    hostVersions?: { from: string; to: string | null };
     onDaemonExit: (detail: Record<string, unknown>) => void;
 }
 
@@ -79,7 +92,11 @@ const SUPPORTED = new Set([
     "store_full",
     "plugin_reload",
     "model_switch",
+    "host_upgrade",
+    "two_hosts_one_daemon",
 ]);
+
+const SECOND_CLIENT_PROMPT = "List the top-level files in this repository and stop.";
 
 export class HostDriver implements ArmDriver {
     host: SimHost | null = null;
@@ -90,6 +107,10 @@ export class HostDriver implements ArmDriver {
     private transcriptsChecked = false;
 
     private readonly snapshots: SnapshotRecorder;
+    private upgraded = false;
+    private second: SimHost | null = null;
+    /** Daemon restarts that the end of the current or next turn owes a store check. */
+    private storeFaults: string[] = [];
 
     constructor(private readonly o: DriverOptions) {
         this.snapshots = new SnapshotRecorder(
@@ -100,7 +121,7 @@ export class HostDriver implements ArmDriver {
         );
     }
 
-    private get armDir(): string {
+    get armDir(): string {
         return dirname(this.o.armRoot);
     }
 
@@ -138,11 +159,26 @@ export class HostDriver implements ArmDriver {
         return this.o.models[this.model % this.o.models.length] as string;
     }
 
-    private newHost(): SimHost {
+    /**
+     * The primary host reports its tool runs to the snapshot recorder; a second client's runs
+     * stay out of the primary session's command log.
+     */
+    private newHost(primary = true): SimHost {
         const make = this.o.hostFactory ?? makeHost;
-        const keep = eidnaraOn(this.o.arm) ? [...this.o.keep, this.storeRoot] : this.o.keep;
+        const arm = armBase(this.o.arm);
+        const keep = eidnaraOn(arm) ? [...this.o.keep, this.storeRoot] : this.o.keep;
+        const up = this.upgraded ? (this.o.config.upgrade ?? {}) : {};
+        const config = { ...this.o.config, ...up };
         const onTool = (run: ToolRun) => this.snapshots.addTools([run]);
-        return make({ ...this.o, keep, root: this.o.armRoot, model: this.currentModel(), onTool });
+        return make({
+            ...this.o,
+            config,
+            arm,
+            keep,
+            root: this.o.armRoot,
+            model: this.currentModel(),
+            ...(primary ? { onTool } : {}),
+        });
     }
 
     private recordState(): void {
@@ -150,8 +186,10 @@ export class HostDriver implements ArmDriver {
             pid === null ? null : { pid, start: processStart(pid) };
         const state: ArmState = {
             model: this.model,
+            upgraded: this.upgraded,
             daemon: proc(this.daemonPid()),
             host: proc(this.sessionProject === null ? null : (this.host?.hostPid() ?? null)),
+            second: proc(this.second?.hostPid() ?? null),
         };
         mkdirSync(this.armDir, { recursive: true });
         writeFileSync(this.stateFile, JSON.stringify(state));
@@ -164,14 +202,14 @@ export class HostDriver implements ArmDriver {
 
     private async startArm(fresh: boolean): Promise<void> {
         mkdirSync(this.storeRoot, { recursive: true, mode: 0o700 });
-        if (this.o.loopStore && eidnaraOn(this.o.arm)) this.mountStore(fresh);
-        if (eidnaraOn(this.o.arm)) {
+        if (this.o.loopStore && eidnaraOn(armBase(this.o.arm))) this.mountStore(fresh);
+        if (eidnaraOn(armBase(this.o.arm))) {
             this.daemon = new DaemonStack({
                 ...this.o,
                 root: this.o.armRoot,
                 dataDir: this.dataDir,
                 logFile: join(this.armDir, "daemon.log"),
-                model: this.currentModel(),
+                model: this.o.sideModel ?? this.currentModel(),
             });
             await this.daemon.start();
             this.recordState();
@@ -183,6 +221,7 @@ export class HostDriver implements ArmDriver {
     async reset(): Promise<void> {
         await this.stop();
         this.model = 0;
+        this.upgraded = false;
         this.snapshots.clear();
         await this.reapStale();
         for (const dir of [this.o.armRoot, this.storeRoot])
@@ -216,7 +255,9 @@ export class HostDriver implements ArmDriver {
     }
 
     async resume(open: ScenarioEvent | null): Promise<void> {
-        this.model = this.readState()?.model ?? 0;
+        const state = this.readState();
+        this.model = state?.model ?? 0;
+        this.upgraded = state?.upgraded ?? false;
         const checked = join(this.armDir, "transcripts.json");
         this.transcriptsChecked =
             existsSync(checked) && JSON.parse(readFileSync(checked, "utf8")).missing.length === 0;
@@ -227,7 +268,7 @@ export class HostDriver implements ArmDriver {
 
     private async reapStale(): Promise<void> {
         const state = this.readState();
-        for (const proc of [state?.daemon, state?.host]) {
+        for (const proc of [state?.daemon, state?.host, state?.second]) {
             if (proc && running(proc.pid) && processStart(proc.pid) === proc.start) {
                 await stopOwnedTree(proc.pid, 5_000);
             }
@@ -247,7 +288,7 @@ export class HostDriver implements ArmDriver {
         this.recordState();
     }
 
-    async event(e: ScenarioEvent): Promise<{ failed?: string; snapshot?: string }> {
+    async event(e: ScenarioEvent): Promise<TurnOutcome> {
         const host = this.requireHost();
         if (e.kind === "session_start") {
             await this.openSession(e, host);
@@ -255,9 +296,10 @@ export class HostDriver implements ArmDriver {
         }
         if (e.kind === "session_end") {
             const project = this.project(e);
-            host.drainTools();
+            this.snapshots.logTurnTools(host.drainTools(), null);
             this.snapshots.sessionEnd(e.session, project, this.workspace(project));
             await host.closeSession();
+            await this.closeSecond();
             this.clearStoreFill();
             this.sessionProject = null;
             this.recordState();
@@ -281,7 +323,8 @@ export class HostDriver implements ArmDriver {
                 beforeFailed = caught.message;
             }
         }
-        const result = await host.prompt(String(e.text), this.o.turnDeadlineMs);
+        const interruptMs = typeof e.interrupt_ms === "number" ? e.interrupt_ms : undefined;
+        const result = await host.prompt(String(e.text), this.o.turnDeadlineMs, interruptMs);
         let reported = false;
         const checkDaemon = () => {
             if (reported || !this.daemon || this.daemonPid() !== null) return;
@@ -290,8 +333,14 @@ export class HostDriver implements ArmDriver {
         };
         checkDaemon();
         const tools = host.drainTools();
-        const outcome: { failed?: string; snapshot?: string } = {};
+        this.snapshots.logTurnTools(tools, e.id);
+        const outcome: TurnOutcome = result.interrupted ? { user: { interrupted: true } } : {};
         if (result.error) outcome.failed = result.error;
+        if (this.storeFaults.length > 0 && this.daemon) {
+            const store = checkStore(this.storeDb);
+            outcome.stores = this.storeFaults.map((fault) => ({ fault, store }));
+            this.storeFaults = [];
+        }
         if (e.probe && before === null) {
             const reason = `snapshot before the turn: ${beforeFailed}`;
             outcome.failed = outcome.failed ? `${outcome.failed} | ${reason}` : reason;
@@ -484,13 +533,14 @@ export class HostDriver implements ArmDriver {
         this.transcriptsChecked = true;
     }
 
-    async fault(f: FaultEpisode): Promise<Record<string, unknown>> {
+    async fault(f: FaultEpisode, at?: ScenarioEvent): Promise<Record<string, unknown>> {
         if (!SUPPORTED.has(f.type))
             throw new HarnessFailure(`fault type ${f.type} has no mechanism`);
         if (f.type === "daemon_sigkill_mid_fold" || f.type === "daemon_restart") {
             if (!this.daemon) return { skipped: "arm runs no daemon" };
             const before = this.daemonPid();
             await this.daemon.restart();
+            this.storeFaults.push(f.id);
             this.recordState();
             const after = this.daemonPid();
             return {
@@ -498,6 +548,7 @@ export class HostDriver implements ArmDriver {
                 pid_before: before,
                 pid_after: after,
                 restarted_by: "harness",
+                store: checkStore(this.storeDb),
             };
         }
         if (f.type === "store_full") return this.fillStore();
@@ -507,10 +558,78 @@ export class HostDriver implements ArmDriver {
         if (f.type === "plugin_reload") {
             return { reload: "host process and plugin respawn at the next session_start" };
         }
+        if (f.type === "host_upgrade") return this.upgradeHost();
+        if (f.type === "two_hosts_one_daemon") return this.secondClient(at);
         this.model++;
         this.host = this.newHost();
         this.recordState();
         return { model: this.currentModel() };
+    }
+
+    private upgradeHost(): Record<string, unknown> {
+        const host = this.o.host;
+        const field = host === "pi" ? "pi_install" : "opencode_binary";
+        const next = this.o.config.upgrade?.[field];
+        if (!next)
+            return { skipped: `no next ${host} version is configured (config.upgrade.${field})` };
+        const from_version = this.o.hostVersions?.from ?? null;
+        const to_version = this.o.hostVersions?.to ?? null;
+        this.upgraded = true;
+        this.host = this.newHost();
+        this.recordState();
+        return {
+            host,
+            from: this.o.config[field],
+            to: next,
+            from_version,
+            to_version,
+            takes_effect: "next session_start",
+        };
+    }
+
+    private async closeSecond(record = true): Promise<void> {
+        const second = this.second;
+        this.second = null;
+        if (!second) return;
+        try {
+            second.drainTools();
+            await second.closeSession();
+        } finally {
+            if (record) this.recordState();
+        }
+    }
+
+    private async secondClient(at?: ScenarioEvent): Promise<Record<string, unknown>> {
+        if (!this.daemon) return { skipped: "arm runs no daemon" };
+        if (at?.kind !== "session_start") {
+            throw new HarnessFailure("two_hosts_one_daemon fires at a session_start");
+        }
+        const second = this.newHost(false);
+        const session = `${at.session}-b`;
+        this.second = second;
+        try {
+            await second.openSession(
+                this.workspace(this.project(at)),
+                session,
+                this.daemon.connectionFile,
+            );
+            if (this.second !== second) {
+                await second.closeSession();
+                throw new HarnessFailure("the arm stopped while the second client opened");
+            }
+            this.recordState();
+            const result = await second.prompt(SECOND_CLIENT_PROMPT, this.o.turnDeadlineMs);
+            return {
+                second_session: session,
+                second_host_pid: second.hostPid(),
+                daemon_pid: this.daemonPid(),
+                outcome: result.error ?? "ok",
+                attached_until: "the primary session's session_end, or the run's stop",
+            };
+        } catch (caught) {
+            await this.closeSecond().catch(() => undefined);
+            throw caught;
+        }
     }
 
     private mountStore(fresh: boolean): void {
@@ -540,23 +659,48 @@ export class HostDriver implements ArmDriver {
         if (this.storeMount) rmSync(join(this.storeMount, "ballast"), { force: true });
     }
 
-    async finish(): Promise<void> {
-        await this.stop();
+    async deleteFact(
+        statement: string,
+        others: readonly string[] = [],
+    ): Promise<Deletion | { skipped: string }> {
+        if (!this.daemon) return { skipped: "arm runs no daemon" };
+        if (!existsSync(this.storeDb)) return { skipped: "no store yet" };
+        try {
+            return await deleteFactNotes(this.storeDb, statement, others);
+        } catch (caught) {
+            return { skipped: `deletion failed: ${String(caught).slice(0, 300)}` };
+        }
     }
 
-    async stop(): Promise<void> {
+    get storeDb(): string {
+        return join(this.dataDir, "eidnara", "context", "store.db");
+    }
+
+    async finish(): Promise<void> {
+        await this.stop(true);
+    }
+
+    async stop(checkFinalStore = false): Promise<void> {
         const host = this.host;
         const daemon = this.daemon;
         this.host = null;
         this.daemon = null;
         let failure: unknown = null;
-        try {
-            await host?.closeSession();
-        } catch (caught) {
-            failure = caught;
+        for (const close of [() => host?.closeSession(), () => this.closeSecond(false)]) {
+            try {
+                await close();
+            } catch (caught) {
+                failure ??= caught;
+            }
         }
         try {
             await daemon?.stop();
+            if (daemon && checkFinalStore) {
+                const check = checkStore(this.storeDb);
+                writeFileSync(join(this.armDir, "store-check.json"), `${JSON.stringify(check)}\n`);
+                const notes = memoryNotes(this.storeDb);
+                writeFileSync(join(this.armDir, "memory.json"), `${JSON.stringify(notes)}\n`);
+            }
         } catch (caught) {
             failure ??= caught;
         }

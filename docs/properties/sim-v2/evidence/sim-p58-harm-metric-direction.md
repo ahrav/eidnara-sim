@@ -17,6 +17,8 @@ paired CI excluding zero, and the metric and CI are named.
 No harness code, test, or run exists yet. The surface lands in M7
 (#1032).
 
+M7 (#1032) names each harm metric whose verdict is `worse`, meaning the treatment arm's harm rate is higher with the Holm-adjusted exact McNemar significant and the interval excluding zero, in `memory_made_it_worse` with its interval.
+
 ## Failure scenario
 
 Harm is reported in the wrong direction or not at all.

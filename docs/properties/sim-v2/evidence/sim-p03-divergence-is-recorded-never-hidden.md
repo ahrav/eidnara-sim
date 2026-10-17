@@ -18,6 +18,8 @@ divergence record with that index and both hashes exists before the next
 No harness code, test, or run exists yet. The surface lands in M6
 (#1031).
 
+M6 (#1031) appends a `divergedAt` record with the index and both digests to `<run>/pairing.jsonl` before the turn it describes is sent; a test reads the file after each delivery. In `usersim-1`, the eidnara arm diverged at index 1 of sessions `s-0003`, `s-0005`, and `s-0009`.
+
 ## Failure scenario
 
 A diverged pair is analysed as paired and the report overstates pairing.

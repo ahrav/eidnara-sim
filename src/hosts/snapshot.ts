@@ -252,6 +252,7 @@ export class SnapshotRecorder {
         rmSync(this.stateFile, { force: true });
         rmSync(this.gitDir, { recursive: true, force: true });
         rmSync(join(this.armDir, "snapshots.jsonl"), { force: true });
+        rmSync(join(this.armDir, "tools.jsonl"), { force: true });
     }
 
     /**
@@ -548,6 +549,13 @@ export class SnapshotRecorder {
             lines.push(JSON.stringify(placed));
         }
         appendFileSync(this.commandsFile, `${lines.join("\n")}\n`);
+    }
+
+    /** Appends a turn's finished tool runs to `tools.jsonl`, each tagged with the turn id (null at a session end). */
+    logTurnTools(tools: Command[], turn: string | null): void {
+        if (tools.length === 0) return;
+        const lines = tools.map((t) => `${JSON.stringify({ turn, ...t })}\n`).join("");
+        appendFileSync(join(this.armDir, "tools.jsonl"), lines);
     }
 
     capture(

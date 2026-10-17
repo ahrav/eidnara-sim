@@ -19,6 +19,7 @@ import {
     REQUIRED_FAMILIES,
     TIERS,
     UNITS,
+    USER_SIM_RATES,
 } from "./schema";
 
 type Check = (value: unknown) => string | null;
@@ -181,6 +182,14 @@ const PREREG_SHAPE: Shape = {
             human_sample_percent: posInt,
             arm_identification_ceiling_percent: posInt,
         },
+    },
+    oracles: { hang_quiet_ms: posInt, cost_ratio_max: decimal },
+    user_sim: {
+        model: text,
+        max_tokens: posInt,
+        rates: Object.fromEntries(USER_SIM_RATES.map((r) => [r, unitRate])),
+        bands: Object.fromEntries(USER_SIM_RATES.map((r) => [r, { min: unitRate, max: unitRate }])),
+        interrupt_after_ms: { min: posInt, max: posInt },
     },
     families: new ArrayOf(FAMILY_SHAPE),
 };
@@ -426,6 +435,19 @@ function checkGrading(p: Preregistration, errors: string[]): void {
     }
 }
 
+function checkUserSim(p: Preregistration, errors: string[]): void {
+    const u = p.user_sim;
+    for (const r of USER_SIM_RATES) {
+        const [rate, { min, max }] = [Number(u.rates[r]), u.bands[r]];
+        if (!(Number(min) <= rate && rate <= Number(max))) {
+            errors.push(`user_sim.rates.${r}: outside its band ${min} to ${max}`);
+        }
+    }
+    if (u.interrupt_after_ms.min > u.interrupt_after_ms.max) {
+        errors.push("user_sim.interrupt_after_ms: min must not exceed max");
+    }
+}
+
 /** Every refusal, each naming the field path it applies to; an empty list means accepted. */
 export function validatePreregistration(value: unknown): string[] {
     const errors: string[] = [];
@@ -446,6 +468,7 @@ export function validatePreregistration(value: unknown): string[] {
     checkScenario(p, errors);
     checkArms(p, errors);
     checkGrading(p, errors);
+    checkUserSim(p, errors);
     return errors;
 }
 

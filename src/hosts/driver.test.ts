@@ -1,3 +1,4 @@
+import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import {
@@ -42,18 +43,23 @@ const tmp = () => {
 
 class FakeHost {
     opened: string[] = [];
+    connections: (string | null)[] = [];
     closed = 0;
     onPrompt: () => void = () => undefined;
     constructor(
         readonly ctx: HostContext,
         private readonly transcripts: string,
     ) {}
-    async openSession(cwd: string, session: string) {
+    async openSession(cwd: string, session: string, connection: string | null = null) {
         this.opened.push(`${session}@${cwd}`);
+        this.connections.push(connection);
     }
     failNext = false;
-    async prompt(): Promise<PromptResult> {
+    interrupts: (number | undefined)[] = [];
+    async prompt(_text: string, _timeoutMs: number, interruptMs?: number): Promise<PromptResult> {
         this.onPrompt();
+        this.interrupts.push(interruptMs);
+        if (interruptMs !== undefined) return { interrupted: true };
         if (!this.failNext) return {};
         this.failNext = false;
         return { error: "boom" };
@@ -528,6 +534,22 @@ describe("HostDriver lifecycle", () => {
         expect(listed.missing).toEqual([missing]);
     });
 
+    test("a scheduled interrupt reaches the host's prompt and the turn reports it", async () => {
+        const { driver } = fixture("host");
+        const host = new FakeHost({} as HostContext, "/x");
+        driver.host = host as unknown as SimHost;
+        const cut = await driver.event(
+            ev("user_turn", { id: "e-1", text: "go", interrupt_ms: 7_000 }),
+        );
+        const plain = await driver.event(ev("user_turn", { id: "e-2", text: "go" }));
+        expect(host.interrupts).toEqual([7_000, undefined]);
+        expect([cut.user, cut.failed, plain.user]).toEqual([
+            { interrupted: true },
+            undefined,
+            undefined,
+        ]);
+    });
+
     test("a daemon gone after a turn is reported once with the turn id", async () => {
         const { driver, hosts, exits } = fixture("eidnara");
         const daemon = fakeDaemon(10);
@@ -591,6 +613,115 @@ describe("HostDriver faults", () => {
             pid_before: 10,
             pid_after: 11,
             restarted_by: "harness",
+            store: { integrity: "missing", segments: 0, overlaps: [], ranges: [] },
+        });
+    });
+
+    test("the turn ending after daemon restarts carries a store check for each of them", async () => {
+        const { driver } = fixture("eidnara");
+        driver.daemon = fakeDaemon(10) as unknown as DaemonStack;
+        driver.host = new FakeHost({} as HostContext, "/x") as unknown as SimHost;
+        await driver.fault(episode("daemon_restart"));
+        await driver.fault(episode("daemon_sigkill_mid_fold"));
+        const first = await driver.event(ev("user_turn", { id: "e-1", text: "go" }));
+        const second = await driver.event(ev("user_turn", { id: "e-2", text: "go" }));
+        const store = { integrity: "missing", segments: 0, overlaps: [], ranges: [] };
+        expect(first.stores).toEqual([
+            { fault: "f-daemon_restart", store },
+            { fault: "f-daemon_sigkill_mid_fold", store },
+        ]);
+        expect(second.stores).toBeUndefined();
+    });
+
+    test("finish stops the daemon and writes the final store check", async () => {
+        const { driver } = fixture("eidnara");
+        const daemon = fakeDaemon(10);
+        let stopped = false;
+        daemon.stop = async () => {
+            stopped = true;
+        };
+        driver.daemon = daemon as unknown as DaemonStack;
+        mkdirSync(dirname(driver.storeDb), { recursive: true });
+        new Database(driver.storeDb).run(
+            "create table history_segments (session_id text, sequence integer, start_message integer, end_message integer)",
+        );
+        await driver.finish();
+        expect(stopped).toBe(true);
+        const check = JSON.parse(readFileSync(join(driver.armDir, "store-check.json"), "utf8"));
+        expect(check).toEqual({ integrity: "ok", segments: 0, overlaps: [], ranges: [] });
+    });
+
+    test("an A/A control label runs as its arm: the host sees the base arm and no store", async () => {
+        const { driver } = fixture("eidnara~aa");
+        await driver.fault(episode("model_switch"));
+        expect(driver.host?.ctx.arm).toBe("eidnara");
+        expect(driver.host?.ctx.keep).toContain(driver.storeRoot);
+        const plain = fixture("host~aa").driver;
+        await plain.fault(episode("model_switch"));
+        expect(plain.host?.ctx.arm).toBe("host");
+        expect(plain.host?.ctx.keep).not.toContain(plain.storeRoot);
+    });
+
+    test("a host upgrade moves later sessions to the configured next version, or is skipped", async () => {
+        const { driver } = fixture("host");
+        const o = (driver as unknown as { o: DriverOptions }).o;
+        o.hostVersions = { from: "0.80.2", to: "0.87.1" };
+        o.config = { ...o.config, upgrade: undefined };
+        expect(await driver.fault(episode("host_upgrade"))).toEqual({
+            skipped: "no next pi version is configured (config.upgrade.pi_install)",
+        });
+        o.config = { ...o.config, upgrade: { pi_install: "/next/pi" } };
+        expect(await driver.fault(episode("host_upgrade"))).toEqual({
+            host: "pi",
+            from: o.config.pi_install,
+            to: "/next/pi",
+            from_version: "0.80.2",
+            to_version: "0.87.1",
+            takes_effect: "next session_start",
+        });
+        expect(driver.host?.ctx.config.pi_install).toBe("/next/pi");
+        await driver.fault(episode("model_switch"));
+        expect(driver.host?.ctx.config.pi_install).toBe("/next/pi");
+        const resumed = new HostDriver(o);
+        await resumed.resume(null);
+        expect(resumed.host?.ctx.config.pi_install).toBe("/next/pi");
+        await resumed.stop();
+    });
+
+    test("a second host client runs one turn on the arm's daemon at the session's start", async () => {
+        const { driver, hosts } = fixture("eidnara", { p: "/repo" });
+        driver.daemon = fakeDaemon(10) as unknown as DaemonStack;
+        const at = ev("session_start", { project: "p" });
+        const evidence = await driver.fault(episode("two_hosts_one_daemon"), at);
+        expect(evidence).toMatchObject({
+            second_session: "s-0000-b",
+            daemon_pid: 10,
+            outcome: "ok",
+        });
+        const second = hosts.at(-1) as FakeHost;
+        expect(second.opened).toEqual([`s-0000-b@${driver.workspace("p")}`]);
+        expect(second.connections).toEqual([driver.daemon.connectionFile]);
+        expect(second.closed).toBe(0);
+        const inner = driver as unknown as Record<string, unknown> & { newHost(): SimHost };
+        driver.host = inner.newHost();
+        const noop = () => undefined;
+        inner.snapshots = {
+            sessionStart: noop,
+            sessionEnd: noop,
+            addTools: noop,
+            logTurnTools: noop,
+        };
+        inner.transcriptsChecked = true;
+        await driver.event(at);
+        expect(second.closed).toBe(0);
+        await driver.event(ev("session_end", { project: "p" }));
+        expect(second.closed).toBe(1);
+        await expect(driver.fault(episode("two_hosts_one_daemon"))).rejects.toThrow(
+            "session_start",
+        );
+        const plain = fixture("host").driver;
+        expect(await plain.fault(episode("two_hosts_one_daemon"), at)).toEqual({
+            skipped: "arm runs no daemon",
         });
     });
 
@@ -610,7 +741,7 @@ describe("HostDriver faults", () => {
         await driver.reset();
         await driver.event(ev("session_start"));
         await expect(driver.fault(episode("model_switch"))).rejects.toThrow("between sessions");
-        await expect(driver.fault(episode("host_upgrade"))).rejects.toThrow("no mechanism");
+        await expect(driver.fault(episode("provider_429"))).rejects.toThrow("no mechanism");
     });
 });
 

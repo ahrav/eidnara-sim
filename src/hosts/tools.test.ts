@@ -432,3 +432,35 @@ test("a turn whose listing used its deadline fails without prompting", async () 
     expect(result.error).toBe("turn deadline of 100 ms passed during the message listing");
     expect(prompted).toBe(0);
 });
+
+test("an OpenCode turn whose last assistant step has not finished is a failed turn", async () => {
+    const step = (finish?: string) => ({
+        info: { id: "m", role: "assistant", finish },
+        parts: [],
+    });
+    const early = (finish?: string) => ({
+        error: `the turn returned before its last assistant step finished (${finish})`,
+    });
+    for (const [finish, want] of [
+        ["stop", {}],
+        ["tool-calls", early("tool-calls")],
+        [undefined, early(undefined)],
+    ] as const) {
+        const client = {
+            session: {
+                messages: async () => ({ data: [step(finish)] }),
+                prompt: async () => ({ data: { info: {} } }),
+                abort: async () => ({}),
+            },
+        };
+        const host = new OpencodeSimHost({
+            ...({} as HostContext),
+            config: loadConfig(),
+            root: "/x",
+            launcher: "/x/sandbox.sh",
+            now: () => 0,
+        });
+        Object.assign(host as unknown as Record<string, unknown>, { client, sid: "s", oc: {} });
+        expect(await host.prompt("go", 5_000)).toEqual(want);
+    }
+});

@@ -92,6 +92,33 @@ counterpart holds part of the value; the note names the rest), `extension`
 | `grading.judge.calibration_min_pairs` | `HUMAN_SAMPLE_MIN_PAIRS` | mapped | The calibration floor of 20 pairs. |
 | `grading.judge.human_sample_percent` | `HUMAN_SAMPLE_FLOOR_PERCENT` | mapped | The 10% human sample. |
 | `grading.judge.arm_identification_ceiling_percent` | `ARM_IDENTIFICATION_CEILING_PERCENT` | mapped | The 60% arm-identification ceiling, correct or inverted. |
+| `oracles` | none | extension | Failure-class oracle thresholds, added in revision 5 before any tier run, after the `grade-2` smoke run had shown the eidnara arm at 1.53 times the host arm's tokens; eval-core's oracles run over deterministic traces, and `eval-manifest/v10` would add live-log thresholds. |
+| `oracles.hang_quiet_ms` | none | extension | F4: five minutes of quiet after a completed model call, with no tool run, model call, or turn end, is a hang (SIM-P39). |
+| `oracles.cost_ratio_max` | none | extension | F6: an arm whose tokens exceed 1.5 times the host arm's activates the cost oracle. |
+| `user_sim` | none | extension | The simulated user (M6), added in revision 6 before any tier run; eval-core replays recorded traces and has no live user. |
+| `user_sim.model` | none | extension | The user simulator's model, Haiku 5.5 (spec section 3.3). |
+| `user_sim.max_tokens` | none | extension | The output bound on one user-sim reply. |
+| `user_sim.rates` | none | extension | Targets for pushback and interrupt per user turn and redirect and abandon per session; pushback and interrupt are the SWE-chat paper's 45.7% and 4.5%, and redirect and abandon sit inside the ticket's 5 to 8% and 5 to 7%. |
+| `user_sim.bands` | none | extension | Tolerance bands a realised rate must fall inside (SIM-P10); a run outside one is flagged. |
+| `user_sim.rates.pushback_per_turn` | none | extension | Target for pushback per user turn, SWE-chat's 45.7%. |
+| `user_sim.rates.interrupt_per_turn` | none | extension | Target for hard interrupts per user turn, SWE-chat's 4.5%. |
+| `user_sim.rates.redirect_per_session` | none | extension | Target for sessions with one redirect, inside the ticket's 5 to 8%. |
+| `user_sim.rates.abandon_per_session` | none | extension | Target for sessions the user abandons, inside the ticket's 5 to 7%. |
+| `user_sim.bands.pushback_per_turn` | none | extension | The tolerance band for `pushback_per_turn`. |
+| `user_sim.bands.pushback_per_turn.min` | none | extension | Its lower bound. |
+| `user_sim.bands.pushback_per_turn.max` | none | extension | Its upper bound. |
+| `user_sim.bands.interrupt_per_turn` | none | extension | The tolerance band for `interrupt_per_turn`. |
+| `user_sim.bands.interrupt_per_turn.min` | none | extension | Its lower bound. |
+| `user_sim.bands.interrupt_per_turn.max` | none | extension | Its upper bound. |
+| `user_sim.bands.redirect_per_session` | none | extension | The tolerance band for `redirect_per_session`. |
+| `user_sim.bands.redirect_per_session.min` | none | extension | Its lower bound. |
+| `user_sim.bands.redirect_per_session.max` | none | extension | Its upper bound. |
+| `user_sim.bands.abandon_per_session` | none | extension | The tolerance band for `abandon_per_session`. |
+| `user_sim.bands.abandon_per_session.min` | none | extension | Its lower bound. |
+| `user_sim.bands.abandon_per_session.max` | none | extension | Its upper bound. |
+| `user_sim.interrupt_after_ms` | none | extension | The range a hard interrupt's delay after the prompt is drawn from. |
+| `user_sim.interrupt_after_ms.min` | none | extension | The shortest interrupt delay. |
+| `user_sim.interrupt_after_ms.max` | none | extension | The longest interrupt delay. |
 | `bootstrap` | `AnalysisFamily.bootstrap_*` | mapped | |
 | `bootstrap.replicates` | `bootstrap_replicates` | mapped | 2,000 lies inside 40 to 10,000. |
 | `bootstrap.seed` | `bootstrap_seed` | mapped | |

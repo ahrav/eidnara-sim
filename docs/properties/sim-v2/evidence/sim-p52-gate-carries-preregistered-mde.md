@@ -19,6 +19,8 @@ and the hash matches the pre-registration file.
 pre-registration hash, or a verdict without `n` and MDE. The verdict emitter
 and the `StartRun` journal land in M7 (#1032); no run exists yet.
 
+M7 (#1032) puts the pre-registration digest, each family's MDE and margin, n, the detectable difference, and the resolution ratio into every verdict.
+
 ## Failure scenario
 
 A gate is passed under an analysis chosen after seeing the data.

@@ -29,6 +29,10 @@ export type EntryKind =
     | "FaultObserved"
     | "ItemState"
     | "SnapshotArtefacts"
+    | "StoreChecked"
+    | "UserTurn"
+    | "UserSimRates"
+    | "CounterfactualDeletion"
     | "EndArm"
     | "EndRun";
 

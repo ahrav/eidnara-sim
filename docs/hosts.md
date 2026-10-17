@@ -58,7 +58,10 @@ becomes a failed turn. After a Pi turn fails, the host aborts it and waits up
 to 30 s for its `agent_end`, so a late end cannot finish the next turn.
 OpenCode turns race the deadline, abort the session (waiting at most 5 s for
 the abort call), and wait 30 s for the call to drain; a call still running
-then stops the run. An `apply_diff` event writes its file inside the
+then stops the run. An OpenCode prompt that returns before the session's last
+assistant step finishes (`finish` other than `stop` or `length`) is a
+failed turn; a prompt sent in that state ends its conversation on an
+assistant message, which Bedrock refuses as a prefill. An `apply_diff` event writes its file inside the
 workspace and commits that path alone, so the agent's own uncommitted edits
 stay uncommitted; content already committed adds no commit, and a path that
 resolves outside the workspace through `..` or a symlink stops the run. The
@@ -161,16 +164,18 @@ against the same store (OQ-10).
 
 | Fault | Mechanism | Evidence |
 |---|---|---|
-| `daemon_sigkill_mid_fold` | The session's first observed history-summarizer call fires it; SIGKILL and restart | `pid_before`, `pid_after`, `restarted_by: harness` |
+| `daemon_sigkill_mid_fold` | The session's first observed history-summarizer call fires it; SIGKILL and restart | `pid_before`, `pid_after`, `restarted_by: harness`, and the store check right after the restart (`docs/oracles.md`); the end of the turn in progress at the restart, or else the next turn, journals a second check as `StoreChecked` |
 | `daemon_restart` | At `session_start`, SIGKILL and restart | As above |
 | `store_full` | When the scenario schedules `store_full`, each Eidnara arm's store lives on a sparse 2 GiB ext4 loop mount (`nosuid,nodev,noexec`) at `<arm>/s`, room for the daemon to materialize its harness closures twice, with its image outside the sandbox's kept paths; the fault fills it, and `session_end` removes the ballast | `avail_kb: 0`; any other value stops the run |
 | `plugin_reload` | The host process and its plugin start afresh at every `session_start` | The reload note |
 | `model_switch` | Later sessions use the next configured model; the daemon keeps running with its summarizer model | The new model id |
-| `laptop_sleep` | One event-free clock jump (`docs/run.md`) | The `AdvanceClock` entry |
+| `laptop_sleep` | One event-free clock jump (`docs/run.md`) | The `AdvanceClock` entry, and `clock_advanced_ms` |
+| `host_upgrade` | Later sessions run the next pinned version of the arm's host, `config.upgrade.pi_install` or `config.upgrade.opencode_binary` (Pi 0.87.1 and OpenCode 1.18.23 in `sim.config.json`); the daemon's harness closures keep the pinned versions; preflight records each configured version, which the fault's evidence reports, and probes the next OpenCode binary's time interception as `opencode-upgrade`; without a configured version the fault is skipped | `from`, `to`, both `--version` strings, and `takes_effect` |
+| `two_hosts_one_daemon` | At its `session_start`, a second host client opens session `<session>-b` in the same workspace on the arm's daemon and runs one fixed turn, with the proxy's scope on `<session>-b`; it stays attached while the primary session opens and runs, and closes at the primary's `session_end`, so both clients are registered on the daemon together; `state.json` holds its pid for a resumed arm to reap, and a run stopped inside that session closes it without reopening it on resume; daemon calls made for the second client after its turn carry the primary session's scope | The second session, its host pid, the daemon pid, the turn's outcome, and `attached_until` |
 
-`plugin_reload` and `model_switch` fire between sessions; one fired inside a
-session stops the run, and so does a fault type with no mechanism here
-(`host_upgrade`, `two_hosts_one_daemon`). A daemon that exits outside an
+`plugin_reload`, `model_switch`, `host_upgrade`, and `two_hosts_one_daemon`
+fire between sessions; one fired inside a session stops the run, and so
+does a fault type with no mechanism here. A daemon that exits outside an
 outage window stops the run with `HarnessFailure`; the driver checks the
 daemon after every turn.
 

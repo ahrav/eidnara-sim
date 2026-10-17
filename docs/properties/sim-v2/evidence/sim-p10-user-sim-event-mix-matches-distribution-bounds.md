@@ -18,6 +18,8 @@ are journaled.
 No harness code, test, or run exists yet. The surface lands in M6
 (#1031).
 
+M6 (#1031) samples pushback, interrupt, redirect, and abandon from pre-registered rates (revision 6, `user_sim`) with rounded quotas; over the whole S seed 101 scenario the plan gives 45.7%, 4.5%, 6%, and 6%, inside every band. Each arm journals `UserSimRates` before `EndArm`, and a rate outside its band is flagged; `usersim-1`, cut at 45 events, was flagged for pushback and abandon.
+
 M1 (#1025) lands the rate inputs. `corpus/distributions.json` carries
 pushback and interrupt rates per turn and redirect and abandon rates per
 session, each quoted from the SWE-chat paper v2 because the SWE-chat tables

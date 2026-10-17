@@ -95,6 +95,8 @@ export interface GatewayOptions {
     scope: () => Scope;
     observe?: (event: CallStarted) => void;
     requestDeadlineMs?: number;
+    /** HTTP/2 session errors, GOAWAY frames, and stream resets on the host side of the proxy. */
+    downstream?: (event: Record<string, unknown>) => void;
 }
 
 const ROUTE = /^\/model\/([^/]+)\/(converse-stream|converse)$/;
@@ -162,10 +164,33 @@ export class Gateway {
             });
         });
         const h2 = createHttp2Server();
+        const log = (kind: string, detail: Record<string, unknown>) =>
+            this.options.downstream?.({ kind, wall_ms: Date.now(), ...detail });
+        const ids = new WeakMap<object, number>();
+        let sessions = 0;
+        h2.on("session", (session) => {
+            const h2_session = sessions++;
+            ids.set(session, h2_session);
+            const at = () => ({ ...this.options.scope(), h2_session });
+            session.on("error", (e: Error) => log("session_error", { ...at(), error: e.message }));
+            session.on("frameError", (type: number, code: number) =>
+                log("frame_error", { ...at(), type, code }),
+            );
+            session.on("goaway", (code: number) => log("goaway", { ...at(), code }));
+        });
         h2.on("stream", (stream, headers) => {
             const chunks: Buffer[] = [];
             const gone = new AbortController();
-            stream.on("close", () => !stream.writableFinished && gone.abort());
+            const opened = { ...this.options.scope(), h2_session: ids.get(stream.session ?? {}) };
+            stream.on("close", () => {
+                if (stream.rstCode)
+                    log("stream_reset", {
+                        ...opened,
+                        code: stream.rstCode,
+                        finished: stream.writableFinished,
+                    });
+                if (!stream.writableFinished) gone.abort();
+            });
             stream.on("data", (c: Buffer) => chunks.push(c));
             stream.on("error", () => undefined);
             stream.on("end", () => {

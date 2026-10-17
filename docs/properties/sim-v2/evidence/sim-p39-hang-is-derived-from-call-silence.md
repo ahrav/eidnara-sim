@@ -19,6 +19,8 @@ with cause `hang`.
 No harness code, test, or run exists yet. The surface lands in M5
 (#1029).
 
+M5 (#1030) derives a hang from the call records, journal, and tool runs: a turn at its deadline (OpenCode's `turn deadline` or Pi's `Timed out after ... ms`), or a completed agent call followed by five minutes (pre-registration revision 5, `oracles.hang_quiet_ms`) with no tool start, call, or turn end. A resumed run restarts its clock at the last journal entry, so a turn the harness kill cut has no measurable quiet time and is journaled `failed(interrupted)` instead. A recorded OpenCode turn that waited on its question tool fires it; a recorded Pi turn with tool runs does not.
+
 ## Failure scenario
 
 The intermittent Pi hang goes undetected or a slow turn is mislabelled.

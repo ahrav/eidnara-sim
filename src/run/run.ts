@@ -13,7 +13,7 @@ import {
 import { dirname, join, resolve } from "node:path";
 import type { SimConfig } from "../config/config";
 import type { CallView } from "../grade/artefacts";
-import type { ArmName } from "../hosts/arms";
+import { armBase } from "../hosts/arms";
 import { HostDriver } from "../hosts/driver";
 import { canonicalJson } from "../prereg/canonical";
 import type { Tier } from "../prereg/schema";
@@ -26,6 +26,8 @@ import { compileScenario, type Scenario } from "../scenario/compile";
 import type { FaultEpisode } from "../scenario/faults";
 import { loadCompileInput, loadPrereg } from "../scenario/inputs";
 import { bedrockEmbedder } from "../scenario/similarity";
+import { behaviourPlan, type Label, realisedRates } from "../usersim/plan";
+import { normaliser, Pairing, proxyUserSim, Tape, UserSim } from "../usersim/usersim";
 import { Journal, releaseLease, requireAppendable, takeLease } from "./journal";
 import { plainPath } from "./launcher";
 import { type Preflight, preflight } from "./preflight";
@@ -44,6 +46,12 @@ export interface RunOptions {
     faults?: FaultEpisode[];
     contextLimit?: number;
     models?: string[];
+    /** Earlier runs' user-sim tapes to replay from. */
+    tapes?: string[];
+    /** Eidnara's side-call model, for a model-factor run. */
+    sideModel?: string;
+    /** The user-sim model in place of the pre-registered one, for a user-sim variant run. */
+    userSimModel?: string;
 }
 
 interface Manifest {
@@ -51,13 +59,16 @@ interface Manifest {
     tier: Tier;
     seed: number;
     host: "pi" | "opencode";
-    order: ArmName[];
+    order: string[];
     events: number;
     context_limit: number;
     models: string[];
     scenario_hash: string;
     eidnara_commit: string;
     fault_override: FaultEpisode[] | null;
+    tapes: string[];
+    side_model: string | null;
+    user_sim_model: string;
     prereg_sha256: string;
     base_wall_ms: number;
     preflight: Preflight;
@@ -98,13 +109,19 @@ function gitHead(dir: string): string {
     return r.stdout.toString().trim();
 }
 
-async function loadScenario(o: RunOptions): Promise<Scenario> {
+/** `items` overrides the pre-registered paired items per probe type, as L's resizing sets it. */
+export async function loadScenario(
+    o: Pick<RunOptions, "config" | "tier" | "seed" | "out">,
+    items?: number,
+): Promise<Scenario> {
     const path = join(o.out, "scenario.json");
     if (!existsSync(path)) {
         const { aws_profile, region } = o.config.bedrock;
         const cache = join(ROOT, "runs/scenarios/embeddings.jsonl");
         const embedder = bedrockEmbedder(aws_profile, region, cache);
-        const compiled = await compileScenario(loadCompileInput(o.seed, o.tier, embedder));
+        const input = loadCompileInput(o.seed, o.tier, embedder);
+        if (items !== undefined) input.prereg.stopping_rule.paired_items_per_probe_type = items;
+        const compiled = await compileScenario(input);
         writeAtomic(path, `${canonicalJson(compiled)}\n`);
     }
     const scenario = JSON.parse(readFileSync(path, "utf8")) as Scenario;
@@ -117,17 +134,37 @@ async function loadScenario(o: RunOptions): Promise<Scenario> {
     return scenario;
 }
 
-function armOrder(o: RunOptions): ArmName[] {
+/**
+ * The seed's pre-registered order, kept to `--arms`. An A/A control label `<arm>~<tag>` runs
+ * right after its arm when the tier pre-registers the `[arm, arm]` pair.
+ */
+export function armOrder(o: Pick<RunOptions, "tier" | "seed" | "arms">): string[] {
     const prereg = loadPrereg(o.tier);
     const index = prereg.seeds.indexOf(o.seed);
     if (index < 0) throw new HarnessFailure(`seed ${o.seed} is not pre-registered for ${o.tier}`);
-    const order = prereg.arms.order_by_seed[index] ?? prereg.arms.run;
-    const unknown = (o.arms ?? []).filter((a) => !order.includes(a));
+    const order: string[] = prereg.arms.order_by_seed[index] ?? prereg.arms.run;
+    const pairs = prereg.aa_controls?.pairs ?? [];
+    const control = (a: string) =>
+        /^[a-z-]+~[a-z0-9]+$/.test(a) &&
+        pairs.some(([x, y]) => x === armBase(a) && y === armBase(a));
+    if (new Set(o.arms).size !== (o.arms ?? []).length) {
+        throw new HarnessFailure("--arms lists an arm twice");
+    }
+    const unknown = (o.arms ?? []).filter((a) => !order.includes(a) && !control(a));
     if (unknown.length > 0) throw new HarnessFailure(`arms not in the ${o.tier} order: ${unknown}`);
-    const kept = order.filter((a) => !o.arms || o.arms.includes(a)) as ArmName[];
+    const kept = order
+        .filter((a) => !o.arms || o.arms.includes(a))
+        .flatMap((a) => [a, ...(o.arms ?? []).filter((c) => control(c) && armBase(c) === a)]);
+    if ((o.arms ?? []).some((a) => control(a) && !kept.includes(armBase(a)))) {
+        throw new HarnessFailure("an A/A control arm runs only beside its arm");
+    }
     if (kept.length === 0) throw new HarnessFailure("no arm to run");
     return kept;
 }
+
+/** The arm a user-sim divergence is measured against: an A/A control's own arm, else the first. */
+export const referenceArm = (order: string[]) => (arm: string) =>
+    arm.includes("~") ? armBase(arm) : (order[0] as string);
 
 const sameJson = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 
@@ -148,6 +185,9 @@ async function loadManifest(o: RunOptions, scenario: Scenario): Promise<Manifest
         context_limit: o.contextLimit ?? 200_000,
         models: o.models ?? [o.config.agent_model],
         fault_override: o.faults ?? null,
+        tapes: o.tapes ?? [],
+        side_model: o.sideModel ?? null,
+        user_sim_model: o.userSimModel ?? loadPrereg(o.tier).user_sim.model,
     };
     if (existsSync(path)) {
         const manifest = JSON.parse(readFileSync(path, "utf8")) as Manifest;
@@ -157,6 +197,9 @@ async function loadManifest(o: RunOptions, scenario: Scenario): Promise<Manifest
             context_limit: o.contextLimit !== undefined,
             models: o.models !== undefined,
             fault_override: o.faults !== undefined,
+            tapes: o.tapes !== undefined,
+            side_model: o.sideModel !== undefined,
+            user_sim_model: o.userSimModel !== undefined,
         };
         const differs = Object.entries(wanted).filter(
             ([k, v]) => given[k] !== false && !sameJson(manifest[k as keyof Manifest], v),
@@ -241,7 +284,11 @@ export async function runTier(o: RunOptions): Promise<void> {
 export class CallIndex {
     private readonly places = new Map<string, Array<[number, number]>>();
 
-    constructor(private readonly path: string) {
+    /** `onRecord` sees each record already in the log, in log order, as the index reads it. */
+    constructor(
+        private readonly path: string,
+        onRecord?: (record: CallRecord) => void,
+    ) {
         requireAppendable(path);
         if (!existsSync(path)) return;
         const fd = openSync(path, "r");
@@ -261,7 +308,9 @@ export class CallIndex {
                 let at = buf.indexOf(0x0a);
                 while (at !== -1) {
                     const line = buf.subarray(0, at);
-                    this.remember(JSON.parse(line.toString("utf8")) as CallRecord, base, at + 1);
+                    const record = JSON.parse(line.toString("utf8")) as CallRecord;
+                    this.remember(record, base, at + 1);
+                    onRecord?.(record);
                     base += at + 1;
                     buf = buf.subarray(at + 1);
                     at = buf.indexOf(0x0a);
@@ -352,7 +401,7 @@ async function runArms(
     const hostRow = manifest.preflight.hosts.find((h) => h.host === o.host);
     if (!hostRow) throw new Error(`preflight lists no ${o.host} host`);
 
-    const drivers: Partial<Record<ArmName, ArmDriver>> = {};
+    const drivers: Record<string, ArmDriver> = {};
     const proxyFaults = scenario.faults.filter((f) => f.seam.layer === "proxy-sink");
     const injector = new FaultInjector(proxyFaults, new Rng((seed ^ 0x5bd1e995) >>> 0), 120_000);
     const offsetFile = (arm: string) => join(o.out, arm, "clock", "offset");
@@ -366,16 +415,30 @@ async function runArms(
         idleLimitMs: prereg.liveness_bounds.job_deadline_ms,
         beforeEnd: () => requireRecorded(gateway),
         onClock: (arm, ms) => writeOffset(offsetFile(arm), manifest.base_wall_ms, ms),
+        armSummary: (arm) => {
+            const turns = userTurns(arm).map((e) => ({
+                session: String(e.session),
+                label: e.label as Label,
+            }));
+            return realisedRates(turns, prereg);
+        },
     });
     const now = () => scheduler.clock?.now() ?? 0;
     const scope = { arm: "", session: null as string | null, turn: null as string | null };
     const jobs = new Map<string, string[]>();
     let jobSeq = journal.entries.filter((e) => e.kind === "RegisterJob").length;
+    const agentText = new Map<string, string>();
+    const noteAgent = (r: CallRecord) => {
+        if (r.component === "agent" && r.response_text) {
+            agentText.set(`${r.arm}/${r.session}`, r.response_text);
+        }
+    };
     const callsPath = join(o.out, "calls.jsonl");
-    const callIndex = new CallIndex(callsPath);
+    const callIndex = new CallIndex(callsPath, noteAgent);
     class RunRecords extends RecordWriter {
         override write(partial: Omit<CallRecord, "seq" | "wall_ms">): CallRecord {
             const record = super.write(partial);
+            noteAgent(record);
             const id = jobs.get(`${record.arm}/${record.component}`)?.shift();
             if (id) scheduler.jobEnd(id);
             return record;
@@ -392,8 +455,10 @@ async function runArms(
         rng: new Rng((seed ^ 0x27d4eb2f) >>> 0),
         clock: { scenarioMs: now },
         scope: () => ({ ...scope }),
+        downstream: (e) =>
+            appendFileSync(join(o.out, "downstream.jsonl"), `${JSON.stringify(e)}\n`),
         observe: (e) => {
-            const driver = drivers[scope.arm as ArmName];
+            const driver = drivers[scope.arm];
             if (driver) scheduler.observe(e.component, driver);
             if (!BACKGROUND.has(e.component)) return;
             const id = `${e.component}-${jobSeq++}`;
@@ -416,6 +481,62 @@ async function runArms(
     const turnIndex = new Map(
         events.filter((e) => e.index !== undefined).map((e) => [e.id, e.index as number]),
     );
+    const scripted = scenario.events.filter((e) => e.kind === "user_turn") as unknown as {
+        id: string;
+        session: string;
+        index: number;
+        role: string;
+        text: string;
+    }[];
+    const userSim = new UserSim({
+        seed,
+        plan: behaviourPlan(scripted, prereg, seed),
+        tape: new Tape(join(o.out, "tape.jsonl"), manifest.tapes),
+        pairing: new Pairing(
+            join(o.out, "pairing.jsonl"),
+            referenceArm(manifest.order),
+            manifest.tapes.map((t) => join(dirname(t), "pairing.jsonl")),
+        ),
+        llm: proxyUserSim(
+            gateway.urls[0] as string,
+            manifest.user_sim_model ?? prereg.user_sim.model,
+            prereg.user_sim.max_tokens,
+        ),
+        normalise: normaliser(prereg.divergence_policy.normalisation),
+        keys: [
+            ...scenario.facts.flatMap((f) => [f.id, f.template]),
+            ...scenario.probes.map((p) => p.id),
+        ],
+    });
+    const startOf = new Map(
+        scenario.events
+            .filter((e) => e.kind === "session_start")
+            .map((e) => [String(e.session), e.id]),
+    );
+    const sessionOf = new Map(scenario.events.map((e) => [e.id, String(e.session)]));
+    const deletions = new Map<string, { probe: string; fact: string; statement: string }[]>();
+    for (const c of scenario.cf_deletions ?? []) {
+        const before = String(c.before_event);
+        const at = startOf.get(sessionOf.get(before) ?? "") ?? before;
+        const fact = String(c.fact);
+        const statement = scenario.facts.find((f) => f.id === fact)?.statement ?? "";
+        deletions.set(at, [...(deletions.get(at) ?? []), { probe: c.probe, fact, statement }]);
+    }
+    const statements = scenario.facts.map((f) => f.statement);
+    if (o.arms?.some((a) => armBase(a) === "eidnara-cf") && !Bun.which("python3")) {
+        throw new HarnessFailure(
+            "the eidnara-cf arm deletes through python3, which is not on PATH",
+        );
+    }
+    const userTurns = (arm: string, session?: string) =>
+        journal.entries.filter(
+            (e) =>
+                e.kind === "UserTurn" &&
+                e.arm === arm &&
+                e.delivered === true &&
+                (session === undefined || e.session === session),
+        );
+    const lastAgent = (arm: string, session: string) => agentText.get(`${arm}/${session}`) ?? "";
     for (const arm of manifest.order) {
         const armRoot = join(o.out, arm, "r");
         mkdirSync(dirname(offsetFile(arm)), { recursive: true });
@@ -432,13 +553,32 @@ async function runArms(
             projects,
             models: manifest.models,
             contextLimit: manifest.context_limit,
+            ...(manifest.side_model ? { sideModel: manifest.side_model } : {}),
             turnDeadlineMs: prereg.liveness_bounds.turn_deadline_ms,
             transcriptPaths: hostRow.transcript_paths,
+            hostVersions: {
+                from: hostRow.version,
+                to: manifest.preflight.upgrade?.find((h) => h.host === o.host)?.version ?? null,
+            },
             loopStore,
             onDaemonExit: (detail) => scheduler.daemonExited(detail),
             callsFor: (session) => {
                 requireRecorded(gateway);
-                return callsOf(callIndex, arm, session, turnIndex);
+                return [
+                    ...callsOf(callIndex, arm, session, turnIndex).filter(
+                        (c) => c.component !== "user-sim",
+                    ),
+                    ...userTurns(arm, session).map((e) => ({
+                        seq: e.seq,
+                        component: "user-sim",
+                        turn: String(e.event),
+                        turn_index: turnIndex.get(String(e.event)),
+                        scenario_ms: e.scenario_ms,
+                        input_tokens: 0,
+                        output_tokens: 0,
+                        label: String(e.label),
+                    })),
+                ];
             },
             settle: () => scheduler.quiesceJobs(),
             now,
@@ -486,14 +626,58 @@ async function runArms(
                 scope.session = e.session;
                 scope.turn = e.kind === "user_turn" ? e.id : null;
                 try {
-                    return await driver.event(e);
+                    if (e.kind !== "user_turn") {
+                        const out = await driver.event(e);
+                        guard();
+                        return out;
+                    }
+                    const turn = scripted.find((t) => t.id === e.id);
+                    if (!turn) throw new HarnessFailure(`${e.id}: no scripted user turn`);
+                    const d = await userSim.deliver(arm, turn, lastAgent(arm, e.session));
+                    const user = { session: e.session, label: d.label, delivered: d.delivered };
+                    if (!d.delivered) return { user };
+                    const out = await driver.event({
+                        ...e,
+                        text: d.text,
+                        interrupt_ms: d.interruptMs,
+                    });
+                    guard();
+                    const cut = d.label !== "interrupt" || out.user?.interrupted === true;
+                    const label = cut ? d.label : "task";
+                    const scheduled = cut ? {} : { scheduled: "interrupt" };
+                    return {
+                        ...out,
+                        user: { ...user, ...out.user, label, ...scheduled },
+                    };
                 } finally {
                     scope.turn = null;
                 }
             },
-            fault: (f) => {
+            prepare: async (e, log, done) => {
                 guard();
-                return driver.fault(f);
+                if (armBase(arm) !== "eidnara-cf") return;
+                for (const c of deletions.get(e.id) ?? []) {
+                    if (done(c.probe)) continue;
+                    const others = statements.filter((x) => x !== c.statement);
+                    log({
+                        probe: c.probe,
+                        fact: c.fact,
+                        ...(await driver.deleteFact(c.statement, others)),
+                    });
+                }
+            },
+            fault: async (f, at) => {
+                guard();
+                const second = f.type === "two_hosts_one_daemon" && at !== undefined;
+                const prior = { session: scope.session, turn: scope.turn };
+                if (second) Object.assign(scope, { session: `${at.session}-b`, turn: null });
+                try {
+                    const evidence = await driver.fault(f, at);
+                    guard();
+                    return evidence;
+                } finally {
+                    Object.assign(scope, prior);
+                }
             },
             finish: async () => {
                 sampler.stop();

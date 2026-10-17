@@ -19,6 +19,8 @@ runs, which `validatePreregistration` refuses, and a report verdict below the
 family's floor, which `checkReport` refuses unless it is `insufficient-runs`.
 The verdict emitter lands in M7 (#1032); no run exists yet.
 
+M7 (#1032) answers `insufficient-runs(k)` for a run-level gate below six paired runs; a test checks four runs, and six runs give a sign-test verdict.
+
 ## Failure scenario
 
 A run-level claim is made from one or two runs.
