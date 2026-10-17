@@ -1,0 +1,66 @@
+{
+  "provenance": "constructed: answers leaking plugin markup",
+  "tier": "S",
+  "kinds": {},
+  "arms": [
+    {
+      "arm": "eidnara",
+      "calls": [
+        {
+          "seq": 0,
+          "arm": "eidnara",
+          "session": "s-1",
+          "turn": "e-1",
+          "component": "agent",
+          "componentSource": "inferred",
+          "model": "global.anthropic.claude-opus-5-5",
+          "status": 200,
+          "finish_reason": "end_turn",
+          "input_tokens": 100,
+          "output_tokens": 10,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "started_wall_ms": 1000,
+          "wall_ms": 2000,
+          "scenario_ms": 0,
+          "first_byte_ms": 10,
+          "proxy_retries": 0,
+          "fault_ref": null,
+          "error": null,
+          "response_text": "Here is the summary: <history_segment start=\"3\">...</history_segment>"
+        },
+        {
+          "seq": 1,
+          "arm": "eidnara",
+          "session": "s-1",
+          "turn": "e-1",
+          "component": "agent",
+          "componentSource": "inferred",
+          "model": "global.anthropic.claude-opus-5-5",
+          "status": 200,
+          "finish_reason": "end_turn",
+          "input_tokens": 100,
+          "output_tokens": 10,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "started_wall_ms": 1000,
+          "wall_ms": 2000,
+          "scenario_ms": 0,
+          "first_byte_ms": 10,
+          "proxy_retries": 0,
+          "fault_ref": null,
+          "error": null,
+          "response_text": "[eidnara] rust pass: decision=SOFT+ served_from=transform"
+        }
+      ],
+      "journal": [],
+      "pluginLog": [],
+      "daemonLog": [],
+      "resources": [],
+      "tools": []
+    }
+  ],
+  "expect": {
+    "F7": 2
+  }
+}

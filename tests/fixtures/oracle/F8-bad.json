@@ -1,0 +1,23 @@
+{
+  "provenance": "constructed: daemon log lines refusing malformed capture output",
+  "tier": "S",
+  "kinds": {},
+  "arms": [
+    {
+      "arm": "eidnara",
+      "calls": [],
+      "journal": [],
+      "pluginLog": [],
+      "daemonLog": [
+        "2026-10-16T06:00:00Z WARN memory.capture: capture output does not match the JSON schema",
+        "2026-10-16T06:01:00Z WARN memory.capture: capture output names an unknown or duplicate source",
+        "2026-10-16T06:02:00Z WARN daemon: native memory capture output rejected: capture output has an unclosed code fence"
+      ],
+      "resources": [],
+      "tools": []
+    }
+  ],
+  "expect": {
+    "F8": 3
+  }
+}

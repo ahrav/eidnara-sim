@@ -45,9 +45,25 @@ there before each restart.
 `DaemonStack` starts the daemon through the v1 `HermeticHostStack` with the
 interposer environment, restarts it with SIGKILL against the same store, and
 stops it with SIGTERM so its store stays on disk. It appends the daemon's
-output to the arm's `daemon.log` before each restart and at stop; the v1
-stack keeps the last 256 KiB of that output, so a longer stretch keeps its
-tail.
+stdout and stderr to the arm's `daemon.log` before each restart and at stop,
+each line once: stderr copied a megabyte at a time from the log file the v1
+stack writes each chunk to and truncates at each host start, stdout from the
+stack's `diagnostics` view, which keeps the last 256 KiB. The copy runs
+after the daemon is dead, so the log holds its last write and stdout holds
+what the daemon printed while handling SIGTERM: a stop terminates first, and
+a restart holds the live log through a hard link while the stack replaces
+it. Each saved file is removed once copied. `daemon.log.source` lists the
+logs still to save (the held link and the live file across a restart, the
+live file otherwise), the copy in progress with `daemon.log`'s length before
+it, and the pid and start time of the daemon writing the live log, so a
+`start` after a harness kill stops a daemon that outlived the harness, then
+saves every dead lifetime's stderr once, rolling back a copy an earlier kill
+cut short; a stop saves every listed log the same way, the copy in progress
+included, before the live one.
+The run's resource sampler takes a sample when each daemon process is up and
+before a fault takes one down; a final sample that cannot be written fails
+the arm's finish after the arm is shut down, so the run is not complete
+evidence.
 
 Each `session_start` launches one host process in the session's workspace
 through the sandbox launcher, and each `session_end` closes it. The sandbox runs the host under
@@ -55,7 +71,13 @@ root-owned `sudo` and `unshare`, so closing a host walks the launcher's
 process tree and signals every process the user owns, with SIGKILL after
 10 s; a process that survives SIGKILL stops the run. A user turn is one prompt with the turn deadline, and the host's error
 becomes a failed turn. After a Pi turn fails, the host aborts it and waits up
-to 30 s for its `agent_end`, so a late end cannot finish the next turn.
+to 30 s for its `agent_end` (an end that arrived before the failure counts,
+and the fresh waiter is armed before the check so no end falls between),
+so a late end cannot finish the next turn; a Pi that reports no `agent_end`
+in that wait (the abort call itself is not waited on past it) is still
+running the old turn, so
+its process is stopped and the session's later turns fail at once, and no
+tool event from the old turn can land on a later turn's record.
 OpenCode turns race the deadline, abort the session (waiting at most 5 s for
 the abort call), and wait 30 s for the call to drain; a call still running
 then stops the run. An `apply_diff` event writes its file inside the

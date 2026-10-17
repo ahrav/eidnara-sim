@@ -1,7 +1,7 @@
 {
     "schema": "sim-prereg/v1",
     "tier": "S",
-    "revision": 4,
+    "revision": 5,
     "frozen": true,
     "arms": {
         "default": "eidnara",
@@ -112,6 +112,10 @@
             "human_sample_percent": 10,
             "arm_identification_ceiling_percent": 60
         }
+    },
+    "oracles": {
+        "hang_quiet_ms": 300000,
+        "cost_ratio_max": "1.5"
     },
     "families": [
         {

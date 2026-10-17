@@ -436,6 +436,7 @@ async function runArms(
             transcriptPaths: hostRow.transcript_paths,
             loopStore,
             onDaemonExit: (detail) => scheduler.daemonExited(detail),
+            sampleDaemon: () => sampler.observe(),
             callsFor: (session) => {
                 requireRecorded(gateway);
                 return callsOf(callIndex, arm, session, turnIndex);
@@ -463,8 +464,11 @@ async function runArms(
             onBusy,
         });
         cleanup.push(async () => {
-            sampler.stop();
-            await driver.stop();
+            try {
+                sampler.stop();
+            } finally {
+                await driver.stop();
+            }
         });
         drivers[arm] = {
             reset: async () => {
@@ -496,8 +500,11 @@ async function runArms(
                 return driver.fault(f);
             },
             finish: async () => {
-                sampler.stop();
-                await driver.finish();
+                try {
+                    sampler.stop();
+                } finally {
+                    await driver.finish();
+                }
             },
         };
     }

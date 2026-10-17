@@ -1,0 +1,1109 @@
+{
+  "provenance": "recorded: witness-8 scheduled eidnara arm resource samples and journal",
+  "tier": "S",
+  "kinds": {
+    "e-000000": "session_start",
+    "e-000001": "user_turn",
+    "e-000002": "session_end",
+    "e-000003": "session_start",
+    "e-000004": "user_turn",
+    "e-000005": "session_end",
+    "e-000006": "session_start",
+    "e-000007": "user_turn",
+    "e-000008": "session_end",
+    "e-000009": "session_start",
+    "e-000010": "user_turn",
+    "e-000011": "user_turn",
+    "e-000012": "session_end",
+    "e-000013": "session_start",
+    "e-000014": "user_turn",
+    "e-000015": "session_end",
+    "e-000016": "session_start",
+    "e-000017": "user_turn",
+    "e-000018": "user_turn",
+    "e-000019": "user_turn",
+    "e-000020": "user_turn",
+    "e-000021": "user_turn",
+    "e-000022": "session_end",
+    "e-000023": "session_start",
+    "e-000024": "user_turn",
+    "e-000025": "session_end",
+    "e-000026": "session_start",
+    "e-000027": "user_turn",
+    "e-000028": "session_end",
+    "e-000029": "session_start"
+  },
+  "arms": [
+    {
+      "arm": "eidnara",
+      "calls": [],
+      "journal": [
+        {
+          "kind": "StartArm",
+          "arm": "eidnara",
+          "scenario_ms": 0,
+          "seq": 68,
+          "wall_ms": 1792129385412
+        },
+        {
+          "kind": "Event",
+          "event": "e-000000",
+          "outcome": "ok",
+          "arm": "eidnara",
+          "scenario_ms": 0,
+          "seq": 69,
+          "wall_ms": 1792129386682
+        },
+        {
+          "kind": "BeginTurn",
+          "event": "e-000001",
+          "probe": null,
+          "arm": "eidnara",
+          "scenario_ms": 0,
+          "seq": 70,
+          "wall_ms": 1792129386682
+        },
+        {
+          "kind": "EndTurn",
+          "event": "e-000001",
+          "outcome": "ok",
+          "arm": "eidnara",
+          "scenario_ms": 38260,
+          "seq": 71,
+          "wall_ms": 1792129424942
+        },
+        {
+          "kind": "RegisterJob",
+          "job": "memory_capture-3",
+          "arm": "eidnara",
+          "scenario_ms": 38260,
+          "seq": 72,
+          "wall_ms": 1792129425012
+        },
+        {
+          "kind": "RegisterJob",
+          "job": "daemon-cpu-eidnara-4",
+          "arm": "eidnara",
+          "scenario_ms": 38661,
+          "seq": 73,
+          "wall_ms": 1792129425413
+        },
+        {
+          "kind": "Event",
+          "event": "e-000001",
+          "outcome": "ok",
+          "arm": "eidnara",
+          "scenario_ms": 39190,
+          "seq": 74,
+          "wall_ms": 1792129425942
+        },
+        {
+          "kind": "EndJob",
+          "job": "memory_capture-3",
+          "arm": "eidnara",
+          "scenario_ms": 39809,
+          "seq": 75,
+          "wall_ms": 1792129426561
+        },
+        {
+          "kind": "EndJob",
+          "job": "daemon-cpu-eidnara-4",
+          "arm": "eidnara",
+          "scenario_ms": 48661,
+          "seq": 76,
+          "wall_ms": 1792129435413
+        },
+        {
+          "kind": "Event",
+          "event": "e-000002",
+          "outcome": "ok",
+          "arm": "eidnara",
+          "scenario_ms": 48661,
+          "seq": 77,
+          "wall_ms": 1792129435538
+        },
+        {
+          "next_event": "e-000003",
+          "kind": "AdvanceClock",
+          "arm": "eidnara",
+          "scenario_ms": 4498881,
+          "from_ms": 48661,
+          "busy": [],
+          "seq": 78,
+          "wall_ms": 1792129435539
+        },
+        {
+          "kind": "Event",
+          "event": "e-000003",
+          "outcome": "ok",
+          "arm": "eidnara",
+          "scenario_ms": 4498881,
+          "seq": 79,
+          "wall_ms": 1792129436783
+        },
+        {
+          "kind": "BeginTurn",
+          "event": "e-000004",
+          "probe": null,
+          "arm": "eidnara",
+          "scenario_ms": 4498881,
+          "seq": 80,
+          "wall_ms": 1792129436783
+        },
+        {
+          "kind": "RegisterJob",
+          "job": "daemon-cpu-eidnara-5",
+          "arm": "eidnara",
+          "scenario_ms": 4517513,
+          "seq": 81,
+          "wall_ms": 1792129455415
+        },
+        {
+          "kind": "EndTurn",
+          "event": "e-000004",
+          "outcome": "ok",
+          "arm": "eidnara",
+          "scenario_ms": 4524065,
+          "seq": 82,
+          "wall_ms": 1792129461967
+        },
+        {
+          "kind": "RegisterJob",
+          "job": "memory_capture-6",
+          "arm": "eidnara",
+          "scenario_ms": 4524129,
+          "seq": 83,
+          "wall_ms": 1792129462031
+        },
+        {
+          "kind": "Event",
+          "event": "e-000004",
+          "outcome": "ok",
+          "arm": "eidnara",
+          "scenario_ms": 4525067,
+          "seq": 84,
+          "wall_ms": 1792129462969
+        },
+        {
+          "kind": "EndJob",
+          "job": "memory_capture-6",
+          "arm": "eidnara",
+          "scenario_ms": 4526901,
+          "seq": 85,
+          "wall_ms": 1792129464803
+        },
+        {
+          "kind": "EndJob",
+          "job": "daemon-cpu-eidnara-5",
+          "arm": "eidnara",
+          "scenario_ms": 4527513,
+          "seq": 86,
+          "wall_ms": 1792129465415
+        },
+        {
+          "kind": "Event",
+          "event": "e-000005",
+          "outcome": "ok",
+          "arm": "eidnara",
+          "scenario_ms": 4527513,
+          "seq": 87,
+          "wall_ms": 1792129465538
+        },
+        {
+          "kind": "FaultFired",
+          "fault": "w-restart",
+          "type": "daemon_restart",
+          "layer": "scheduler",
+          "arm": "eidnara",
+          "scenario_ms": 4527513,
+          "seq": 88,
+          "wall_ms": 1792129465538
+        },
+        {
+          "kind": "FaultObserved",
+          "fault": "w-restart",
+          "type": "daemon_restart",
+          "evidence": {
+            "signal": "SIGKILL",
+            "pid_before": 3244003,
+            "pid_after": 3262829,
+            "restarted_by": "harness"
+          },
+          "arm": "eidnara",
+          "scenario_ms": 4527513,
+          "seq": 89,
+          "wall_ms": 1792129465898
+        },
+        {
+          "kind": "Event",
+          "event": "e-000006",
+          "outcome": "ok",
+          "arm": "eidnara",
+          "scenario_ms": 4527513,
+          "seq": 90,
+          "wall_ms": 1792129467130
+        },
+        {
+          "kind": "BeginTurn",
+          "event": "e-000007",
+          "probe": null,
+          "arm": "eidnara",
+          "scenario_ms": 4527513,
+          "seq": 91,
+          "wall_ms": 1792129467130
+        },
+        {
+          "kind": "EndTurn",
+          "event": "e-000007",
+          "outcome": "ok",
+          "arm": "eidnara",
+          "scenario_ms": 4563762,
+          "seq": 92,
+          "wall_ms": 1792129503379
+        },
+        {
+          "kind": "RegisterJob",
+          "job": "memory_capture-7",
+          "arm": "eidnara",
+          "scenario_ms": 4563762,
+          "seq": 93,
+          "wall_ms": 1792129503451
+        },
+        {
+          "kind": "Event",
+          "event": "e-000007",
+          "outcome": "ok",
+          "arm": "eidnara",
+          "scenario_ms": 4564691,
+          "seq": 94,
+          "wall_ms": 1792129504380
+        },
+        {
+          "kind": "RegisterJob",
+          "job": "daemon-cpu-eidnara-8",
+          "arm": "eidnara",
+          "scenario_ms": 4565733,
+          "seq": 95,
+          "wall_ms": 1792129505422
+        },
+        {
+          "kind": "EndJob",
+          "job": "memory_capture-7",
+          "arm": "eidnara",
+          "scenario_ms": 4571232,
+          "seq": 96,
+          "wall_ms": 1792129510921
+        },
+        {
+          "kind": "EndJob",
+          "job": "daemon-cpu-eidnara-8",
+          "arm": "eidnara",
+          "scenario_ms": 4575733,
+          "seq": 97,
+          "wall_ms": 1792129515422
+        },
+        {
+          "kind": "Event",
+          "event": "e-000008",
+          "outcome": "ok",
+          "arm": "eidnara",
+          "scenario_ms": 4575733,
+          "seq": 98,
+          "wall_ms": 1792129515550
+        },
+        {
+          "fault": "w-sleep",
+          "kind": "AdvanceClock",
+          "arm": "eidnara",
+          "scenario_ms": 4695733,
+          "from_ms": 4575733,
+          "busy": [],
+          "seq": 99,
+          "wall_ms": 1792129515552
+        },
+        {
+          "next_event": "e-000009",
+          "kind": "AdvanceClock",
+          "arm": "eidnara",
+          "scenario_ms": 4703860,
+          "from_ms": 4695733,
+          "busy": [],
+          "seq": 100,
+          "wall_ms": 1792129515553
+        },
+        {
+          "kind": "FaultFired",
+          "fault": "w-sleep",
+          "type": "laptop_sleep",
+          "layer": "clock",
+          "arm": "eidnara",
+          "scenario_ms": 4703860,
+          "seq": 101,
+          "wall_ms": 1792129515553
+        },
+        {
+          "kind": "FaultFired",
+          "fault": "w-reload",
+          "type": "plugin_reload",
+          "layer": "scheduler",
+          "arm": "eidnara",
+          "scenario_ms": 4703860,
+          "seq": 102,
+          "wall_ms": 1792129515553
+        },
+        {
+          "kind": "FaultObserved",
+          "fault": "w-reload",
+          "type": "plugin_reload",
+          "evidence": {
+            "reload": "host process and plugin respawn at the next session_start"
+          },
+          "arm": "eidnara",
+          "scenario_ms": 4703860,
+          "seq": 103,
+          "wall_ms": 1792129515553
+        },
+        {
+          "kind": "Event",
+          "event": "e-000009",
+          "outcome": "ok",
+          "arm": "eidnara",
+          "scenario_ms": 4703860,
+          "seq": 104,
+          "wall_ms": 1792129516798
+        },
+        {
+          "kind": "BeginTurn",
+          "event": "e-000010",
+          "probe": null,
+          "arm": "eidnara",
+          "scenario_ms": 4703860,
+          "seq": 105,
+          "wall_ms": 1792129516798
+        },
+        {
+          "kind": "EndTurn",
+          "event": "e-000010",
+          "outcome": "ok",
+          "arm": "eidnara",
+          "scenario_ms": 4721408,
+          "seq": 106,
+          "wall_ms": 1792129534346
+        },
+        {
+          "kind": "RegisterJob",
+          "job": "memory_capture-9",
+          "arm": "eidnara",
+          "scenario_ms": 4721408,
+          "seq": 107,
+          "wall_ms": 1792129534411
+        },
+        {
+          "kind": "Event",
+          "event": "e-000010",
+          "outcome": "ok",
+          "arm": "eidnara",
+          "scenario_ms": 4722343,
+          "seq": 108,
+          "wall_ms": 1792129535346
+        },
+        {
+          "kind": "RegisterJob",
+          "job": "daemon-cpu-eidnara-10",
+          "arm": "eidnara",
+          "scenario_ms": 4722419,
+          "seq": 109,
+          "wall_ms": 1792129535422
+        },
+        {
+          "kind": "EndJob",
+          "job": "memory_capture-9",
+          "arm": "eidnara",
+          "scenario_ms": 4723271,
+          "seq": 110,
+          "wall_ms": 1792129536274
+        },
+        {
+          "kind": "EndJob",
+          "job": "daemon-cpu-eidnara-10",
+          "arm": "eidnara",
+          "scenario_ms": 4732420,
+          "seq": 111,
+          "wall_ms": 1792129545423
+        },
+        {
+          "kind": "BeginTurn",
+          "event": "e-000011",
+          "probe": "q-0012",
+          "arm": "eidnara",
+          "scenario_ms": 4732420,
+          "seq": 112,
+          "wall_ms": 1792129545494
+        },
+        {
+          "kind": "RegisterJob",
+          "job": "daemon-cpu-eidnara-11",
+          "arm": "eidnara",
+          "scenario_ms": 4742349,
+          "seq": 113,
+          "wall_ms": 1792129555423
+        },
+        {
+          "kind": "EndJob",
+          "job": "daemon-cpu-eidnara-11",
+          "arm": "eidnara",
+          "scenario_ms": 4762351,
+          "seq": 114,
+          "wall_ms": 1792129575425
+        },
+        {
+          "kind": "EndTurn",
+          "event": "e-000011",
+          "outcome": "ok",
+          "probe": "q-0012",
+          "state": "completed",
+          "arm": "eidnara",
+          "scenario_ms": 4772538,
+          "seq": 115,
+          "wall_ms": 1792129585612
+        },
+        {
+          "kind": "RegisterJob",
+          "job": "memory_capture-12",
+          "arm": "eidnara",
+          "scenario_ms": 4772538,
+          "seq": 116,
+          "wall_ms": 1792129585621
+        },
+        {
+          "kind": "Event",
+          "event": "e-000011",
+          "outcome": "ok",
+          "arm": "eidnara",
+          "scenario_ms": 4773531,
+          "seq": 117,
+          "wall_ms": 1792129586614
+        },
+        {
+          "kind": "EndJob",
+          "job": "memory_capture-12",
+          "arm": "eidnara",
+          "scenario_ms": 4779510,
+          "seq": 118,
+          "wall_ms": 1792129592593
+        },
+        {
+          "kind": "Event",
+          "event": "e-000012",
+          "outcome": "ok",
+          "arm": "eidnara",
+          "scenario_ms": 4779510,
+          "seq": 119,
+          "wall_ms": 1792129592664
+        },
+        {
+          "next_event": "e-000013",
+          "kind": "AdvanceClock",
+          "arm": "eidnara",
+          "scenario_ms": 5536805,
+          "from_ms": 4779510,
+          "busy": [],
+          "seq": 120,
+          "wall_ms": 1792129592665
+        },
+        {
+          "kind": "FaultFired",
+          "fault": "w-model",
+          "type": "model_switch",
+          "layer": "scheduler",
+          "arm": "eidnara",
+          "scenario_ms": 5536805,
+          "seq": 121,
+          "wall_ms": 1792129592665
+        },
+        {
+          "kind": "FaultObserved",
+          "fault": "w-model",
+          "type": "model_switch",
+          "evidence": {
+            "model": "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+          },
+          "arm": "eidnara",
+          "scenario_ms": 5536805,
+          "seq": 122,
+          "wall_ms": 1792129592665
+        },
+        {
+          "kind": "FaultFired",
+          "fault": "w-full",
+          "type": "store_full",
+          "layer": "scheduler",
+          "arm": "eidnara",
+          "scenario_ms": 5536805,
+          "seq": 123,
+          "wall_ms": 1792129592665
+        },
+        {
+          "kind": "FaultObserved",
+          "fault": "w-full",
+          "type": "store_full",
+          "evidence": {
+            "mount": "/local/home/ahrav/scratch/sim-runs/witness-8/scheduled/eidnara/s",
+            "avail_kb": 0
+          },
+          "arm": "eidnara",
+          "scenario_ms": 5536805,
+          "seq": 124,
+          "wall_ms": 1792129592892
+        },
+        {
+          "kind": "Event",
+          "event": "e-000013",
+          "outcome": "ok",
+          "arm": "eidnara",
+          "scenario_ms": 5536805,
+          "seq": 125,
+          "wall_ms": 1792129594130
+        },
+        {
+          "kind": "BeginTurn",
+          "event": "e-000014",
+          "probe": null,
+          "arm": "eidnara",
+          "scenario_ms": 5536805,
+          "seq": 126,
+          "wall_ms": 1792129594131
+        },
+        {
+          "kind": "RegisterJob",
+          "job": "daemon-cpu-eidnara-13",
+          "arm": "eidnara",
+          "scenario_ms": 5538102,
+          "seq": 127,
+          "wall_ms": 1792129595428
+        },
+        {
+          "kind": "EndJob",
+          "job": "daemon-cpu-eidnara-13",
+          "arm": "eidnara",
+          "scenario_ms": 5548103,
+          "seq": 128,
+          "wall_ms": 1792129605429
+        },
+        {
+          "kind": "EndTurn",
+          "event": "e-000014",
+          "outcome": "ok",
+          "arm": "eidnara",
+          "scenario_ms": 5559145,
+          "seq": 129,
+          "wall_ms": 1792129616471
+        },
+        {
+          "kind": "Event",
+          "event": "e-000014",
+          "outcome": "ok",
+          "arm": "eidnara",
+          "scenario_ms": 5559145,
+          "seq": 130,
+          "wall_ms": 1792129617472
+        },
+        {
+          "kind": "Event",
+          "event": "e-000015",
+          "outcome": "ok",
+          "arm": "eidnara",
+          "scenario_ms": 5559145,
+          "seq": 131,
+          "wall_ms": 1792129617548
+        },
+        {
+          "kind": "Event",
+          "event": "e-000016",
+          "outcome": "ok",
+          "arm": "eidnara",
+          "scenario_ms": 5559145,
+          "seq": 132,
+          "wall_ms": 1792129618800
+        },
+        {
+          "kind": "BeginTurn",
+          "event": "e-000017",
+          "probe": null,
+          "arm": "eidnara",
+          "scenario_ms": 5559145,
+          "seq": 133,
+          "wall_ms": 1792129618800
+        },
+        {
+          "kind": "RegisterJob",
+          "job": "daemon-cpu-eidnara-14",
+          "arm": "eidnara",
+          "scenario_ms": 5565775,
+          "seq": 134,
+          "wall_ms": 1792129625430
+        },
+        {
+          "kind": "EndTurn",
+          "event": "e-000017",
+          "outcome": "ok",
+          "arm": "eidnara",
+          "scenario_ms": 5573844,
+          "seq": 135,
+          "wall_ms": 1792129633499
+        },
+        {
+          "kind": "Event",
+          "event": "e-000017",
+          "outcome": "ok",
+          "arm": "eidnara",
+          "scenario_ms": 5574845,
+          "seq": 136,
+          "wall_ms": 1792129634500
+        },
+        {
+          "kind": "EndJob",
+          "job": "daemon-cpu-eidnara-14",
+          "arm": "eidnara",
+          "scenario_ms": 5575775,
+          "seq": 137,
+          "wall_ms": 1792129635430
+        },
+        {
+          "kind": "BeginTurn",
+          "event": "e-000018",
+          "probe": null,
+          "arm": "eidnara",
+          "scenario_ms": 5575776,
+          "seq": 138,
+          "wall_ms": 1792129635506
+        },
+        {
+          "kind": "EndTurn",
+          "event": "e-000018",
+          "outcome": "ok",
+          "arm": "eidnara",
+          "scenario_ms": 5578562,
+          "seq": 139,
+          "wall_ms": 1792129638293
+        },
+        {
+          "kind": "Event",
+          "event": "e-000018",
+          "outcome": "ok",
+          "arm": "eidnara",
+          "scenario_ms": 5578562,
+          "seq": 140,
+          "wall_ms": 1792129639294
+        },
+        {
+          "kind": "BeginTurn",
+          "event": "e-000019",
+          "probe": "q-0028",
+          "arm": "eidnara",
+          "scenario_ms": 5578562,
+          "seq": 141,
+          "wall_ms": 1792129639295
+        },
+        {
+          "kind": "RegisterJob",
+          "job": "daemon-cpu-eidnara-15",
+          "arm": "eidnara",
+          "scenario_ms": 5584697,
+          "seq": 142,
+          "wall_ms": 1792129645430
+        },
+        {
+          "kind": "EndJob",
+          "job": "daemon-cpu-eidnara-15",
+          "arm": "eidnara",
+          "scenario_ms": 5604697,
+          "seq": 143,
+          "wall_ms": 1792129665430
+        },
+        {
+          "kind": "RegisterJob",
+          "job": "daemon-cpu-eidnara-16",
+          "arm": "eidnara",
+          "scenario_ms": 5624699,
+          "seq": 144,
+          "wall_ms": 1792129685432
+        },
+        {
+          "kind": "EndJob",
+          "job": "daemon-cpu-eidnara-16",
+          "arm": "eidnara",
+          "scenario_ms": 5634699,
+          "seq": 145,
+          "wall_ms": 1792129695432
+        },
+        {
+          "kind": "RegisterJob",
+          "job": "daemon-cpu-eidnara-17",
+          "arm": "eidnara",
+          "scenario_ms": 5644700,
+          "seq": 146,
+          "wall_ms": 1792129705433
+        },
+        {
+          "kind": "EndJob",
+          "job": "daemon-cpu-eidnara-17",
+          "arm": "eidnara",
+          "scenario_ms": 5664701,
+          "seq": 147,
+          "wall_ms": 1792129725434
+        },
+        {
+          "kind": "RegisterJob",
+          "job": "daemon-cpu-eidnara-18",
+          "arm": "eidnara",
+          "scenario_ms": 5684701,
+          "seq": 148,
+          "wall_ms": 1792129745434
+        },
+        {
+          "kind": "EndTurn",
+          "event": "e-000019",
+          "outcome": "ok",
+          "probe": "q-0028",
+          "state": "completed",
+          "arm": "eidnara",
+          "scenario_ms": 5693950,
+          "seq": 149,
+          "wall_ms": 1792129754683
+        },
+        {
+          "kind": "EndJob",
+          "job": "daemon-cpu-eidnara-18",
+          "arm": "eidnara",
+          "scenario_ms": 5694701,
+          "seq": 150,
+          "wall_ms": 1792129755434
+        },
+        {
+          "kind": "Event",
+          "event": "e-000019",
+          "outcome": "ok",
+          "arm": "eidnara",
+          "scenario_ms": 5694701,
+          "seq": 151,
+          "wall_ms": 1792129755684
+        },
+        {
+          "kind": "BeginTurn",
+          "event": "e-000020",
+          "probe": null,
+          "arm": "eidnara",
+          "scenario_ms": 5694701,
+          "seq": 152,
+          "wall_ms": 1792129755684
+        },
+        {
+          "kind": "EndTurn",
+          "event": "e-000020",
+          "outcome": "ok",
+          "arm": "eidnara",
+          "scenario_ms": 5697713,
+          "seq": 153,
+          "wall_ms": 1792129758696
+        },
+        {
+          "kind": "Event",
+          "event": "e-000020",
+          "outcome": "ok",
+          "arm": "eidnara",
+          "scenario_ms": 5697713,
+          "seq": 154,
+          "wall_ms": 1792129759697
+        },
+        {
+          "kind": "BeginTurn",
+          "event": "e-000021",
+          "probe": null,
+          "arm": "eidnara",
+          "scenario_ms": 5697713,
+          "seq": 155,
+          "wall_ms": 1792129759698
+        },
+        {
+          "kind": "RegisterJob",
+          "job": "daemon-cpu-eidnara-19",
+          "arm": "eidnara",
+          "scenario_ms": 5703449,
+          "seq": 156,
+          "wall_ms": 1792129765434
+        },
+        {
+          "kind": "EndJob",
+          "job": "daemon-cpu-eidnara-19",
+          "arm": "eidnara",
+          "scenario_ms": 5723450,
+          "seq": 157,
+          "wall_ms": 1792129785435
+        },
+        {
+          "kind": "RegisterJob",
+          "job": "daemon-cpu-eidnara-20",
+          "arm": "eidnara",
+          "scenario_ms": 5743451,
+          "seq": 158,
+          "wall_ms": 1792129805437
+        },
+        {
+          "kind": "EndJob",
+          "job": "daemon-cpu-eidnara-20",
+          "arm": "eidnara",
+          "scenario_ms": 5753452,
+          "seq": 159,
+          "wall_ms": 1792129815437
+        },
+        {
+          "kind": "RegisterJob",
+          "job": "daemon-cpu-eidnara-21",
+          "arm": "eidnara",
+          "scenario_ms": 5773453,
+          "seq": 160,
+          "wall_ms": 1792129835438
+        },
+        {
+          "kind": "EndJob",
+          "job": "daemon-cpu-eidnara-21",
+          "arm": "eidnara",
+          "scenario_ms": 5783454,
+          "seq": 161,
+          "wall_ms": 1792129845439
+        },
+        {
+          "kind": "EndTurn",
+          "event": "e-000021",
+          "outcome": "ok",
+          "arm": "eidnara",
+          "scenario_ms": 5798331,
+          "seq": 162,
+          "wall_ms": 1792129860316
+        },
+        {
+          "kind": "Event",
+          "event": "e-000021",
+          "outcome": "ok",
+          "arm": "eidnara",
+          "scenario_ms": 5798331,
+          "seq": 163,
+          "wall_ms": 1792129861317
+        },
+        {
+          "kind": "Event",
+          "event": "e-000022",
+          "outcome": "ok",
+          "arm": "eidnara",
+          "scenario_ms": 5798331,
+          "seq": 164,
+          "wall_ms": 1792129861369
+        },
+        {
+          "kind": "EndArm",
+          "arm": "eidnara",
+          "scenario_ms": 5798331,
+          "seq": 165,
+          "wall_ms": 1792129861587
+        }
+      ],
+      "pluginLog": [],
+      "daemonLog": [],
+      "resources": [
+        {
+          "scenario_ms": 8731,
+          "rss": 57212928
+        },
+        {
+          "scenario_ms": 18730,
+          "rss": 58261504
+        },
+        {
+          "scenario_ms": 28731,
+          "rss": 58261504
+        },
+        {
+          "scenario_ms": 38661,
+          "rss": 59551744
+        },
+        {
+          "scenario_ms": 48661,
+          "rss": 59551744
+        },
+        {
+          "scenario_ms": 4507511,
+          "rss": 56139776
+        },
+        {
+          "scenario_ms": 4517513,
+          "rss": 57307136
+        },
+        {
+          "scenario_ms": 4527513,
+          "rss": 57307136
+        },
+        {
+          "scenario_ms": 4535801,
+          "rss": 85893120
+        },
+        {
+          "scenario_ms": 4545803,
+          "rss": 85893120
+        },
+        {
+          "scenario_ms": 4555805,
+          "rss": 85893120
+        },
+        {
+          "scenario_ms": 4565733,
+          "rss": 90230784
+        },
+        {
+          "scenario_ms": 4575733,
+          "rss": 90230784
+        },
+        {
+          "scenario_ms": 4712484,
+          "rss": 87588864
+        },
+        {
+          "scenario_ms": 4722420,
+          "rss": 88686592
+        },
+        {
+          "scenario_ms": 4732420,
+          "rss": 88686592
+        },
+        {
+          "scenario_ms": 4742349,
+          "rss": 93921280
+        },
+        {
+          "scenario_ms": 4752350,
+          "rss": 91361280
+        },
+        {
+          "scenario_ms": 4762351,
+          "rss": 89014272
+        },
+        {
+          "scenario_ms": 4772351,
+          "rss": 89014272
+        },
+        {
+          "scenario_ms": 5538102,
+          "rss": 88125440
+        },
+        {
+          "scenario_ms": 5548103,
+          "rss": 85184512
+        },
+        {
+          "scenario_ms": 5558103,
+          "rss": 85184512
+        },
+        {
+          "scenario_ms": 5565775,
+          "rss": 89608192
+        },
+        {
+          "scenario_ms": 5575776,
+          "rss": 89608192
+        },
+        {
+          "scenario_ms": 5584698,
+          "rss": 84426752
+        },
+        {
+          "scenario_ms": 5594697,
+          "rss": 84078592
+        },
+        {
+          "scenario_ms": 5604697,
+          "rss": 84078592
+        },
+        {
+          "scenario_ms": 5614699,
+          "rss": 82440192
+        },
+        {
+          "scenario_ms": 5624700,
+          "rss": 86429696
+        },
+        {
+          "scenario_ms": 5634699,
+          "rss": 86429696
+        },
+        {
+          "scenario_ms": 5644700,
+          "rss": 91492352
+        },
+        {
+          "scenario_ms": 5654700,
+          "rss": 88358912
+        },
+        {
+          "scenario_ms": 5664701,
+          "rss": 88358912
+        },
+        {
+          "scenario_ms": 5674701,
+          "rss": 88358912
+        },
+        {
+          "scenario_ms": 5684701,
+          "rss": 92119040
+        },
+        {
+          "scenario_ms": 5694701,
+          "rss": 92119040
+        },
+        {
+          "scenario_ms": 5703449,
+          "rss": 85762048
+        },
+        {
+          "scenario_ms": 5713450,
+          "rss": 126656512
+        },
+        {
+          "scenario_ms": 5723451,
+          "rss": 77561856
+        },
+        {
+          "scenario_ms": 5733451,
+          "rss": 77561856
+        },
+        {
+          "scenario_ms": 5743452,
+          "rss": 76738560
+        },
+        {
+          "scenario_ms": 5753452,
+          "rss": 76738560
+        },
+        {
+          "scenario_ms": 5763452,
+          "rss": 76738560
+        },
+        {
+          "scenario_ms": 5773453,
+          "rss": 140701696
+        },
+        {
+          "scenario_ms": 5783454,
+          "rss": 75669504
+        },
+        {
+          "scenario_ms": 5793454,
+          "rss": 76718080
+        }
+      ],
+      "tools": []
+    }
+  ],
+  "expect": {
+    "F5": 0
+  }
+}

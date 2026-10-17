@@ -1,0 +1,26 @@
+{
+  "provenance": "recorded: witness-4 scheduled eidnara plugin log on the full store, each failed pass's warning and its served_from=raw pass line",
+  "tier": "S",
+  "kinds": {},
+  "arms": [
+    {
+      "arm": "eidnara",
+      "calls": [],
+      "journal": [],
+      "pluginLog": [
+        "[2026-10-16T05:48:30.483Z] [eidnara][01a14341-1196-7bad-86ce-e51141917d54] rust transform failed; serving the input unchanged: store: store: storage backend: database or disk is full | HostCallError: store: store: storage backend: database or disk is full     at terminalFromErrorBody (file:///local/home/ahrav/scratch/eidnara-build/packages/pi-plugin/dist/index-g2ndc9ks.js:5070:21)     at HostClient.awaitRequest (file:///local/home/ahrav/scratch/eidnara-build/packages/pi-plugin/dist/index-g2ndc9ks.js:4734:25)     at async HostClient.request (file:///local/home/ahrav/scratch/eidnara-build/packages/pi-plugin/dist/index-g2ndc9ks.js:4395:22)",
+        "[2026-10-16T05:48:30.487Z] [eidnara][01a14341-1196-7bad-86ce-e51141917d54] rust pass: decision=error reason=none served_from=raw in=13 out=13 applied=false row_version=0 emergency_wait=0.0 rediscovered=false admission=none invocation_bytes=0 invocation_charged=0 history_budget=1755 elapsed=36.5 ms module=0.0 ms stages=prefix_guard:0.6 prepare:0.2 wire_build:0.3 wire_messages:13 serialize:0.1 transport:0.0 transport_pages:0 transport_bytes:0 apply:0.0 other:35.3 work=scanned:0 charged:100254 retained:0",
+        "[2026-10-16T05:48:32.516Z] [eidnara][01a14341-1196-7bad-86ce-e51141917d54] rust transform failed; serving the input unchanged: store: store: storage backend: database or disk is full | HostCallError: store: store: storage backend: database or disk is full     at terminalFromErrorBody (file:///local/home/ahrav/scratch/eidnara-build/packages/pi-plugin/dist/index-g2ndc9ks.js:5070:21)     at HostClient.awaitRequest (file:///local/home/ahrav/scratch/eidnara-build/packages/pi-plugin/dist/index-g2ndc9ks.js:4734:25)     at async HostClient.request (file:///local/home/ahrav/scratch/eidnara-build/packages/pi-plugin/dist/index-g2ndc9ks.js:4395:22)",
+        "[2026-10-16T05:48:32.517Z] [eidnara][01a14341-1196-7bad-86ce-e51141917d54] rust pass: decision=error reason=none served_from=raw in=15 out=15 applied=false row_version=0 emergency_wait=0.0 rediscovered=false admission=none invocation_bytes=0 invocation_charged=0 history_budget=1755 elapsed=16.0 ms module=0.0 ms stages=prefix_guard:0.9 prepare:0.2 wire_build:0.4 wire_messages:15 serialize:0.1 transport:0.0 transport_pages:0 transport_bytes:0 apply:0.0 other:14.4 work=scanned:0 charged:354324 retained:0",
+        "[2026-10-16T05:48:34.609Z] [eidnara][01a14341-1196-7bad-86ce-e51141917d54] rust transform failed; serving the input unchanged: store: store: storage backend: database or disk is full | HostCallError: store: store: storage backend: database or disk is full     at terminalFromErrorBody (file:///local/home/ahrav/scratch/eidnara-build/packages/pi-plugin/dist/index-g2ndc9ks.js:5070:21)     at HostClient.awaitRequest (file:///local/home/ahrav/scratch/eidnara-build/packages/pi-plugin/dist/index-g2ndc9ks.js:4734:25)     at async HostClient.request (file:///local/home/ahrav/scratch/eidnara-build/packages/pi-plugin/dist/index-g2ndc9ks.js:4395:22)",
+        "[2026-10-16T05:48:34.609Z] [eidnara][01a14341-1196-7bad-86ce-e51141917d54] rust pass: decision=error reason=none served_from=raw in=17 out=17 applied=false row_version=0 emergency_wait=0.0 rediscovered=false admission=none invocation_bytes=0 invocation_charged=0 history_budget=1755 elapsed=80.9 ms module=0.0 ms stages=prefix_guard:0.8 prepare:0.1 wire_build:0.4 wire_messages:17 serialize:0.2 transport:0.0 transport_pages:0 transport_bytes:0 apply:0.0 other:79.4 work=scanned:0 charged:370494 retained:0"
+      ],
+      "daemonLog": [],
+      "resources": [],
+      "tools": []
+    }
+  ],
+  "expect": {
+    "F3": 3
+  }
+}

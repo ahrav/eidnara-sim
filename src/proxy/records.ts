@@ -1,4 +1,4 @@
-import { appendFileSync, closeSync, openSync, readSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, openSync, readSync } from "node:fs";
 import { keepCompleteLines } from "../run/journal";
 
 export const COMPONENTS = [
@@ -115,7 +115,8 @@ export class RecordWriter {
 
     /**
      * `retain` keeps every record in `records` for callers that read them back in memory; a
-     * run-long writer passes false, since its records live on disk and in the call index.
+     * run-long writer passes false, since its records live on disk and in the call index. The
+     * record file exists from construction, so a run with no calls still has a `calls.jsonl`.
      */
     constructor(
         private readonly path: string | null,
@@ -123,6 +124,7 @@ export class RecordWriter {
     ) {
         if (!path) return;
         this.offset = keepCompleteLines(path);
+        if (!existsSync(path)) appendFileSync(path, "");
         if (this.offset === 0) return;
         const last = lastLine(path, this.offset);
         if (last === null) return;

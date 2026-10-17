@@ -22,11 +22,12 @@ import { loadConfig } from "../config/config";
 import type { CallView } from "../grade/artefacts";
 import { gradeItem } from "../grade/probes";
 import { diffPaths } from "../grade/text";
+import { readJournal } from "../run/journal";
 import { HarnessFailure, type ScenarioEvent } from "../run/scheduler";
 import { type FaultType, SEAMS } from "../scenario/faults";
 import { loadPrereg } from "../scenario/inputs";
 import type { DaemonStack, HostContext, PromptResult, SimHost } from "./arms";
-import { type DriverOptions, expandTemplate, HostDriver } from "./driver";
+import { createNoFollow, type DriverOptions, expandTemplate, HostDriver } from "./driver";
 import { SnapshotRecorder } from "./snapshot";
 
 const dirs: string[] = [];
@@ -582,8 +583,11 @@ describe("HostDriver faults", () => {
         });
     });
 
-    test("a daemon fault restarts through the stack and reports both pids", async () => {
+    test("a daemon fault samples the outgoing daemon, restarts through the stack, reports both pids, and samples the new one", async () => {
         const { driver } = fixture("eidnara");
+        const seen: number[] = [];
+        (driver as unknown as { o: DriverOptions }).o.sampleDaemon = () =>
+            void seen.push(driver.daemonPid() ?? -1);
         driver.daemon = fakeDaemon(10) as unknown as DaemonStack;
         expect(await driver.fault(episode("daemon_restart"))).toEqual({
             signal: "SIGKILL",
@@ -591,6 +595,7 @@ describe("HostDriver faults", () => {
             pid_after: 11,
             restarted_by: "harness",
         });
+        expect(seen).toEqual([10, 11]);
     });
 
     test("a model switch moves later sessions to the next model and keeps the daemon", async () => {
@@ -630,6 +635,33 @@ describe("probe snapshots", () => {
         ).rejects.toThrow("harness killed");
         const rebuilt = new SnapshotRecorder(armDir, "host", () => []);
         expect(rebuilt.sessionCommands()).toEqual([run]);
+    });
+
+    test("tools.jsonl attributes each run to the turn in progress, and to no turn at session end", async () => {
+        const { driver, hosts, armDir, transcripts } = fixture("host", { p: gitRepo() });
+        await driver.reset();
+        mkdirSync(join(transcripts, "sessions"), { recursive: true });
+        const host = hosts.at(-1) as FakeHost;
+        await driver.event(ev("session_start", { session: "s-0" }));
+        const mid = { command: "cargo build", exit: 0, scenario_ms: 3 };
+        const drained = { command: "cargo test", exit: null, scenario_ms: 5 };
+        host.onPrompt = () => {
+            host.ctx.onTool?.(mid);
+            host.tools.push(drained);
+        };
+        await driver.event(ev("user_turn", { id: "e-1", session: "s-0", text: "go" }));
+        host.onPrompt = () => {};
+        host.tools.push({ command: "ls", exit: null, scenario_ms: 9 });
+        await driver.event(ev("session_end", { session: "s-0" }));
+        const lines = readFileSync(join(armDir, "tools.jsonl"), "utf8")
+            .trim()
+            .split("\n")
+            .map((l) => JSON.parse(l));
+        expect(lines).toEqual([
+            { turn: "e-1", ...mid },
+            { turn: "e-1", ...drained },
+            { turn: null, command: "ls", exit: null, scenario_ms: 9 },
+        ]);
     });
 
     test("an embedded repository inside an already-indexed directory, or empty, is found; an ignored one is not", () => {
@@ -944,12 +976,24 @@ describe("probe snapshots", () => {
     });
 });
 
+test("a recorder rebuilt after a harness kill drops a tools.jsonl line the kill cut", () => {
+    const armDir = tmp();
+    const path = join(armDir, "tools.jsonl");
+    writeFileSync(
+        path,
+        `${JSON.stringify({ turn: "e-1", command: "ls", exit: 0, scenario_ms: 1 })}\n{"turn": "e-2", "comm`,
+    );
+    const resumed = new SnapshotRecorder(armDir, "eidnara", () => []);
+    resumed.addTools([{ command: "cargo build", exit: 0, scenario_ms: 3 }], "e-2");
+    expect(readJournal(path).map((e) => e.command)).toEqual(["ls", "cargo build"]);
+});
+
 test("a recorder rebuilt after a harness kill keeps the open session's start tree and commands", () => {
     const repo = gitRepo();
     const armDir = tmp();
     const first = new SnapshotRecorder(armDir, "eidnara", () => []);
     first.sessionStart("s-1", "p", repo);
-    first.addTools([{ command: "cargo build", exit: 0, scenario_ms: 1 }]);
+    first.addTools([{ command: "cargo build", exit: 0, scenario_ms: 1 }], "e-1");
     writeFileSync(join(repo, "new.rs"), "fn x() {}\n");
     const resumed = new SnapshotRecorder(armDir, "eidnara", () => []);
     resumed.sessionStart("s-1", "p", repo);
@@ -1014,14 +1058,14 @@ test("a recorder rebuilt over an index lock moves the workspace to a fresh index
 test("a tool run reported at its start is on record, and its end report replaces it", () => {
     const armDir = tmp();
     const recorder = new SnapshotRecorder(armDir, "eidnara", () => []);
-    recorder.addTools([{ command: "cargo build", exit: null, scenario_ms: 1, call: "t1" }]);
-    recorder.addTools([{ command: "ls", exit: 0, scenario_ms: 2 }]);
+    recorder.addTools([{ command: "cargo build", exit: null, scenario_ms: 1, call: "t1" }], "e-1");
+    recorder.addTools([{ command: "ls", exit: 0, scenario_ms: 2 }], "e-1");
     const killed = new SnapshotRecorder(armDir, "eidnara", () => []);
     expect(killed.sessionCommands()).toEqual([
         { command: "cargo build", exit: null, scenario_ms: 1, call: "t1" },
         { command: "ls", exit: 0, scenario_ms: 2 },
     ]);
-    recorder.addTools([{ command: "cargo build", exit: 1, scenario_ms: 9, call: "t1" }]);
+    recorder.addTools([{ command: "cargo build", exit: 1, scenario_ms: 9, call: "t1" }], "e-1");
     const ended = new SnapshotRecorder(armDir, "eidnara", () => []);
     expect(ended.sessionCommands()).toEqual([
         { command: "cargo build", exit: 1, scenario_ms: 1, call: "t1" },
@@ -1100,9 +1144,9 @@ test("an embedded repository whose name is pathspec magic removes only itself fr
 test("tool reports append to the command log instead of rewriting the recorder state", () => {
     const armDir = tmp();
     const recorder = new SnapshotRecorder(armDir, "eidnara", () => []);
-    recorder.addTools([{ command: "a", exit: 0, scenario_ms: 1 }]);
+    recorder.addTools([{ command: "a", exit: 0, scenario_ms: 1 }], null);
     const stateBefore = statSync(join(armDir, "snapshot-state.json"), { throwIfNoEntry: false });
-    recorder.addTools([{ command: "b", exit: 0, scenario_ms: 2 }]);
+    recorder.addTools([{ command: "b", exit: 0, scenario_ms: 2 }], null);
     const stateAfter = statSync(join(armDir, "snapshot-state.json"), { throwIfNoEntry: false });
     expect(stateAfter?.mtimeMs ?? null).toBe(stateBefore?.mtimeMs ?? null);
     const lines = readFileSync(join(armDir, "commands.jsonl"), "utf8").trim().split("\n");
@@ -1377,4 +1421,50 @@ test("snapshot git that outlives its bound fails the probe turn instead of hangi
     );
     expect(next.failed).toBeUndefined();
     expect(next.snapshot).toBe("host:q-2:e-2");
+});
+
+test("a fresh recorder creates an empty tools.jsonl, so a run with no tool runs still has the ledger", () => {
+    const armDir = tmp();
+    new SnapshotRecorder(armDir, "eidnara", () => []);
+    expect(readFileSync(join(armDir, "tools.jsonl"), "utf8")).toBe("");
+});
+
+test("clearing a recorder leaves an empty tools.jsonl in place", () => {
+    const armDir = tmp();
+    const recorder = new SnapshotRecorder(armDir, "eidnara", () => []);
+    recorder.addTools([{ command: "ls", exit: 0, scenario_ms: 1 }], "e-1");
+    recorder.clear();
+    expect(readFileSync(join(armDir, "tools.jsonl"), "utf8")).toBe("");
+});
+
+test("a tool run recovered from an earlier turn is logged with no turn, whatever turn is in progress", async () => {
+    const { driver, hosts, armDir, transcripts } = fixture("host", { p: gitRepo() });
+    await driver.reset();
+    mkdirSync(join(transcripts, "sessions"), { recursive: true });
+    const host = hosts.at(-1) as FakeHost;
+    await driver.event(ev("session_start", { session: "s-0" }));
+    host.onPrompt = () => {
+        host.ctx.onTool?.({ command: "cargo build", exit: 0, scenario_ms: 3, recovered: true });
+        host.ctx.onTool?.({ command: "ls", exit: 0, scenario_ms: 4 });
+    };
+    await driver.event(ev("user_turn", { id: "e-1", session: "s-0", text: "go" }));
+    const lines = readFileSync(join(armDir, "tools.jsonl"), "utf8")
+        .trim()
+        .split("\n")
+        .map((l) => JSON.parse(l));
+    expect(lines.map((l) => [l.command, l.turn])).toEqual([
+        ["cargo build", null],
+        ["ls", "e-1"],
+    ]);
+});
+
+test("the plugin log is created without following a symlink the agent left at its path", () => {
+    const dir = tmp();
+    const target = join(dir, "elsewhere", "eidnara.log");
+    symlinkSync(target, join(dir, "eidnara.log"));
+    expect(() => createNoFollow(join(dir, "eidnara.log"))).toThrow(/eidnara\.log is a symlink/);
+    expect(existsSync(target)).toBe(false);
+    createNoFollow(join(dir, "plain.log"));
+    expect(lstatSync(join(dir, "plain.log")).isFile()).toBe(true);
+    createNoFollow(join(dir, "plain.log"));
 });

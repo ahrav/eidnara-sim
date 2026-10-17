@@ -1,10 +1,12 @@
 import { spawnSync } from "node:child_process";
 import {
+    closeSync,
     constants,
     copyFileSync,
     existsSync,
     lstatSync,
     mkdirSync,
+    openSync,
     readFileSync,
     realpathSync,
     renameSync,
@@ -47,6 +49,11 @@ export interface DriverOptions extends Omit<HostContext, "root" | "model"> {
     gitDirEntryCap?: number;
     hostFactory?: (ctx: HostContext) => SimHost;
     onDaemonExit: (detail: Record<string, unknown>) => void;
+    /**
+     * Called when a daemon process is up (at reset, resume, and after a fault's restart) and
+     * before a fault takes one down, so each daemon lifetime has a first and a last sample.
+     */
+    sampleDaemon?: () => void;
 }
 
 /** Entries a walk of the workspace `.git` visits at most; a wider tree stops the run. */
@@ -81,12 +88,32 @@ const SUPPORTED = new Set([
     "model_switch",
 ]);
 
+/**
+ * Creates `path` as an empty regular file when absent and leaves an existing regular file as it
+ * is. The path lies in the evaluated agent's writable tree, so a symlink there is refused rather
+ * than followed, and nothing is created outside the run directory on the agent's behalf.
+ */
+export function createNoFollow(path: string): void {
+    const flags =
+        constants.O_WRONLY | constants.O_CREAT | constants.O_APPEND | constants.O_NOFOLLOW;
+    try {
+        closeSync(openSync(path, flags, 0o644));
+    } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === "ELOOP") {
+            throw new Error(`${path} is a symlink; the plugin log must be a regular file`);
+        }
+        throw err;
+    }
+}
+
 export class HostDriver implements ArmDriver {
     host: SimHost | null = null;
     daemon: DaemonStack | null = null;
     private model = 0;
     private storeMount: string | null = null;
     private sessionProject: string | null = null;
+    /** Host-reported tool runs carry the active user turn id, or null between turns and for runs recovered from an earlier turn. */
+    private turn: string | null = null;
     private transcriptsChecked = false;
 
     private readonly snapshots: SnapshotRecorder;
@@ -141,7 +168,8 @@ export class HostDriver implements ArmDriver {
     private newHost(): SimHost {
         const make = this.o.hostFactory ?? makeHost;
         const keep = eidnaraOn(this.o.arm) ? [...this.o.keep, this.storeRoot] : this.o.keep;
-        const onTool = (run: ToolRun) => this.snapshots.addTools([run]);
+        const onTool = (run: ToolRun) =>
+            this.snapshots.addTools([run], run.recovered ? null : this.turn);
         return make({ ...this.o, keep, root: this.o.armRoot, model: this.currentModel(), onTool });
     }
 
@@ -175,6 +203,8 @@ export class HostDriver implements ArmDriver {
             });
             await this.daemon.start();
             this.recordState();
+            this.o.sampleDaemon?.();
+            createNoFollow(join(this.o.armRoot, "eidnara.log"));
         }
         this.host = this.newHost();
         this.recordState();
@@ -281,6 +311,7 @@ export class HostDriver implements ArmDriver {
                 beforeFailed = caught.message;
             }
         }
+        this.turn = e.id;
         const result = await host.prompt(String(e.text), this.o.turnDeadlineMs);
         let reported = false;
         const checkDaemon = () => {
@@ -290,6 +321,7 @@ export class HostDriver implements ArmDriver {
         };
         checkDaemon();
         const tools = host.drainTools();
+        this.turn = null;
         const outcome: { failed?: string; snapshot?: string } = {};
         if (result.error) outcome.failed = result.error;
         if (e.probe && before === null) {
@@ -490,8 +522,10 @@ export class HostDriver implements ArmDriver {
         if (f.type === "daemon_sigkill_mid_fold" || f.type === "daemon_restart") {
             if (!this.daemon) return { skipped: "arm runs no daemon" };
             const before = this.daemonPid();
+            this.o.sampleDaemon?.();
             await this.daemon.restart();
             this.recordState();
+            this.o.sampleDaemon?.();
             const after = this.daemonPid();
             return {
                 signal: "SIGKILL",

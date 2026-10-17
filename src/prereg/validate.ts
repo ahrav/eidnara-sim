@@ -150,6 +150,7 @@ const PREREG_SHAPE: Shape = {
             arm_identification_ceiling_percent: posInt,
         },
     },
+    oracles: { hang_quiet_ms: posInt, cost_ratio_max: decimal },
     families: new ArrayOf(FAMILY_SHAPE),
 };
 
@@ -298,6 +299,13 @@ function checkGrading(p: Preregistration, errors: string[]): void {
     }
     for (const field of ["human_sample_percent", "arm_identification_ceiling_percent"] as const) {
         if (g.judge[field] > 100) errors.push(`grading.judge.${field}: at most 100`);
+    }
+    const ratio = Number(p.oracles.cost_ratio_max);
+    if (!(ratio > 0 && Number.isFinite(ratio))) {
+        errors.push("oracles.cost_ratio_max: must be positive and finite");
+    }
+    if (p.oracles.hang_quiet_ms >= p.liveness_bounds.turn_deadline_ms) {
+        errors.push("oracles.hang_quiet_ms: must be below liveness_bounds.turn_deadline_ms");
     }
 }
 
