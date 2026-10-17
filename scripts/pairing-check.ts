@@ -1,10 +1,9 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { sha256Hex } from "../src/prereg/canonical";
 import { readJournal } from "../src/run/journal";
 import { referenceArm } from "../src/run/run";
 import type { Scenario } from "../src/scenario/compile";
-import { type PairingRecord, pairingMismatches, type TurnRecord } from "../src/usersim/usersim";
+import { type PairingRecord, pairingFailures, type TurnRecord } from "../src/usersim/usersim";
 
 const dir = resolve(process.argv[2] ?? "");
 if (!existsSync(join(dir, "pairing.jsonl"))) {
@@ -16,25 +15,11 @@ const scenario = JSON.parse(readFileSync(join(dir, "scenario.json"), "utf8")) as
 const records = readJournal(join(dir, "pairing.jsonl")) as unknown as PairingRecord[];
 const reference = referenceArm(manifest.order);
 const turns = records.filter((r): r is TurnRecord => r.kind === "turn");
-const script = new Map(
-    scenario.events
-        .filter((e) => e.kind === "user_turn")
-        .map((e) => [e.id, e as Record<string, unknown>]),
-);
-const verbatim = turns.filter((r) => {
-    const role = script.get(r.event)?.role;
-    return role === "paste" || role === "probe";
-});
-const altered = verbatim
-    .filter((r) => r.text_sha256 !== sha256Hex(String(script.get(r.event)?.text)))
-    .map((r) => `${r.arm} ${r.event}`);
-const unsent = turns
-    .filter((r) => !r.delivered && script.get(r.event)?.role !== "filler")
-    .map((r) => `${r.arm} ${r.event}`);
+const failures = pairingFailures(records, scenario, reference);
 const journal = readJournal(join(dir, "journal.jsonl"));
 const report = {
     reference: Object.fromEntries(manifest.order.map((a: string) => [a, reference(a)])),
-    mismatches_before_divergence: pairingMismatches(records, reference),
+    mismatches_before_divergence: failures.mismatches_before_divergence,
     divergences: records.filter((r) => r.kind === "divergedAt"),
     sources: Object.fromEntries(
         manifest.order.map((arm: string) => {
@@ -44,8 +29,8 @@ const report = {
         }),
     ),
     fallbacks: turns.filter((r) => r.fallback).map((r) => `${r.arm} ${r.event} ${r.fallback}`),
-    probe_or_paste_text_altered: altered,
-    non_filler_unsent: unsent,
+    probe_or_paste_text_altered: failures.probe_or_paste_text_altered,
+    non_filler_unsent: failures.non_filler_unsent,
     rates: journal.filter((e) => e.kind === "UserSimRates"),
     flagged: journal
         .filter((e) => e.kind === "UserSimRates" && (e.outside as string[]).length > 0)
@@ -54,7 +39,7 @@ const report = {
 console.log(JSON.stringify(report, null, 2));
 const failed =
     report.mismatches_before_divergence.length +
-    altered.length +
-    unsent.length +
+    failures.probe_or_paste_text_altered.length +
+    failures.non_filler_unsent.length +
     report.flagged.length;
 process.exit(failed > 0 ? 1 : 0);

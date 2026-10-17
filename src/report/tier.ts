@@ -12,11 +12,12 @@ import { excludedFromFaultMetrics, type WitnessReport } from "../proxy/inject";
 import { readJournal } from "../run/journal";
 import type { Scenario } from "../scenario/compile";
 import { evaluateTier, falsificationSet, type TierInput } from "../stats/gate";
+import type { PairingRecord } from "../usersim/usersim";
 import { continuity, runConditions } from "./conditions";
 import { costPanel, judgeCost } from "./cost";
 import { falsificationPairs } from "./falsify";
 import { intrusiveness } from "./intrusive";
-import { type GradedRun, type RunIdentity, tierInput } from "./observe";
+import { type GradedRun, judgmentKey, ordered, type RunIdentity, tierInput } from "./observe";
 import type { TierReport } from "./render";
 import { soak } from "./soak";
 import { propertyWitness } from "./witness";
@@ -61,9 +62,12 @@ export function loadGraded(dir: string, prereg: Preregistration): GradedRun {
     }
     const counterpart = (r: GradeRecord, arm: string) =>
         [...judged.values()].some(
-            (o) =>
-                o.item === r.item && o.arm === arm && o.inputs.join("\n") === r.inputs.join("\n"),
+            (o) => o.item === r.item && o.arm === arm && judgmentKey(o) === judgmentKey(r),
         );
+    const pairingPath = join(dir, "pairing.jsonl");
+    const pairing = existsSync(pairingPath)
+        ? (readJournal(pairingPath) as unknown as PairingRecord[])
+        : [];
     const hostP7 = (r: GradeRecord) => r.probe_type === "P7" && armBase(r.arm) === "host";
     const grades = [
         ...log.latest().filter((r) => !hostP7(r)),
@@ -84,6 +88,7 @@ export function loadGraded(dir: string, prereg: Preregistration): GradedRun {
             host_versions: (manifest.preflight?.hosts ?? []).map((h) => `${h.host}@${h.version}`),
         },
         witnesses: reports === null ? null : [...witnesses.values()],
+        pairing,
     };
 }
 
@@ -148,11 +153,12 @@ function falsificationPairsOf(prereg: Preregistration, g: GradedRun): [string, s
 
 export function tierReport(
     prereg: Preregistration,
-    runs: GradedRun[],
+    given: GradedRun[],
     claimBoundary: string,
-    scale: CusumScale | undefined = aaScale(prereg, runs),
+    scale: CusumScale | undefined = aaScale(prereg, given),
     catalog = "",
 ): TierReport {
+    const runs = ordered(prereg, given);
     const arms = [...new Set(runs.flatMap((g) => g.run.arms.map((a) => a.arm)))];
     const input = tierInput(prereg, runs);
     input.cusum_sd = scale;

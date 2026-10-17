@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { Tier } from "../src/prereg/schema";
 import { renderTier } from "../src/report/render";
@@ -45,11 +45,12 @@ for (const [tier, { prereg, runs }] of loaded) {
     const text = renderTier(report);
     if (out) {
         mkdirSync(out, { recursive: true });
-        writeFileSync(join(out, `report-${tier}.md`), text);
-        writeFileSync(
-            join(out, `report-${tier}.json`),
-            `${JSON.stringify(report.verdict, null, 2)}\n`,
-        );
+        const staged = [
+            [join(out, `report-${tier}.md`), text],
+            [join(out, `report-${tier}.json`), `${JSON.stringify(report.verdict, null, 2)}\n`],
+        ] as const;
+        for (const [path, body] of staged) writeFileSync(`${path}.${process.pid}`, body);
+        for (const [path] of staged) renameSync(`${path}.${process.pid}`, path);
     } else console.log(text);
 }
 // A violated property means the runs broke an invariant the verdict rests on; the report stays
