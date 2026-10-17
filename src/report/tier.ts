@@ -365,8 +365,10 @@ export function counterfactual(
             .map((e) => ({
                 run: g.run.dir,
                 probe: String(e.probe),
-                deleted: ((e.deleted as number[] | undefined) ?? []).length,
-                remaining: Number(e.remaining ?? 0),
+                deleted: Array.isArray(e.deleted)
+                    ? e.deleted.filter((id) => Number.isInteger(id)).length
+                    : 0,
+                remaining: typeof e.remaining === "number" ? e.remaining : Number.NaN,
                 ...(e.skipped ? { skipped: String(e.skipped) } : {}),
             })),
     );

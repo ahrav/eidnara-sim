@@ -209,7 +209,8 @@ the discordance M observed, the ledger-fact design effect from M's
 intraclass correlation, and the n that reaches the family's L effect at
 its power, with Holm's first step over the harm family's metrics; L's count is the
 largest n, where a type M never saw discordant counts as the planning
-count, so L never falls below it.
+count; a count below the planning one follows when every type showed
+discordance, as the registered rule sets no floor.
 The L scenarios are compiled with that count.
 
 ## Counterfactual arm
