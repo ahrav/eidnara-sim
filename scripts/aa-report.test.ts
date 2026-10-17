@@ -66,7 +66,7 @@ function gradedRun(
 ): string {
     const dir = mkdtempSync(join(tmpdir(), "sim-aa-report-"));
     const line = (o: unknown) => `${JSON.stringify(o)}\n`;
-    const probes = items.flatMap((i) => [
+    const probes: Record<string, unknown>[] = items.flatMap((i) => [
         { id: `p-${i}`, type: "P3", fact: `fact-${i}` },
         { id: `q-${i}`, type: "P13", fact: `fact-${i}` },
     ]);
@@ -76,14 +76,26 @@ function gradedRun(
             grade(arm, `q-${i}`, "P13", "P13.fold_fidelity_score", i % 2),
         ]),
     ) as GradeRecord[];
-    const events = [1, 2, 3].map((i) => ({ id: `e-${i}`, kind: "user_turn", probe: `p-${i}` }));
-    probes.push({ id: "j-1", type: "P7", fact: "fact-1" });
+    const events = [
+        ...[1, 2, 3].map((i) => ({
+            id: `e-${i}`,
+            kind: "user_turn",
+            session: "s-1",
+            index: i - 1,
+            probe: `p-${i}`,
+        })),
+        { id: "e-4", kind: "session_end", session: "s-1" },
+    ];
+    probes.push(
+        { id: "j-1", type: "P7", fact: "fact-1" },
+        { id: "k-1", type: "P14", session: "s-1" },
+    );
     const scenario = { manifest: { tier, seed: 101 }, probes, events };
     const manifest = {
         tier,
         seed: 101,
         order: ["host", "host~aa"],
-        events: 3,
+        events: 4,
         prereg_sha256,
         scenario_hash: scenario_hash ?? scenarioHash(scenario),
     };
@@ -91,7 +103,7 @@ function gradedRun(
     writeFileSync(join(dir, "scenario.json"), JSON.stringify(scenario));
     writeFileSync(join(dir, "grades.jsonl"), grades.map(line).join(""));
     const turns = ["host", "host~aa"].flatMap((arm) =>
-        [1, 2, 3].map((i) => turn(arm, `e-${i}`, "same")),
+        [1, 2, 3].map((i) => turn(arm, `e-${i}`, "same", i - 1)),
     );
     writeFileSync(join(dir, "pairing.jsonl"), turns.map(line).join(""));
     writeFileSync(
@@ -241,7 +253,10 @@ describe("aa-report", () => {
         const records = [
             turn("host", "e-1", "aaaa"),
             turn("host~aa", "e-1", "bbbb"),
-            ...["e-2", "e-3"].flatMap((e) => [turn("host", e, "same"), turn("host~aa", e, "same")]),
+            ...["e-2", "e-3"].flatMap((e, i) => [
+                turn("host", e, "same", i + 1),
+                turn("host~aa", e, "same", i + 1),
+            ]),
         ];
         writeFileSync(
             join(dir, "pairing.jsonl"),
@@ -257,9 +272,9 @@ describe("aa-report", () => {
         expect(() => aaReport(empty)).toThrow(/host has no pairing record for e-1, e-2, e-3/);
         const lost = gradedRun("S", preregistrationHash(loadPrereg("S")));
         const kept = [
-            ...["e-1", "e-2", "e-3"].map((e) => turn("host~aa", e, "same")),
+            ...["e-1", "e-2", "e-3"].map((e, i) => turn("host~aa", e, "same", i)),
             turn("host", "e-1", "same"),
-            turn("host", "e-3", "same"),
+            turn("host", "e-3", "same", 2),
         ];
         writeFileSync(join(lost, "pairing.jsonl"), kept.map(line).join(""));
         expect(() => aaReport(lost)).toThrow(/host has no pairing record for e-2/);
@@ -271,13 +286,13 @@ describe("aa-report", () => {
         rmSync(join(gone, "journal.jsonl"));
         expect(() => aaReport(gone)).toThrow(/journaled order/);
         const cut = gradedRun("S", preregistrationHash(loadPrereg("S")));
-        const entries = journal(["host", "host~aa"], 3).filter((e) => e.kind !== "EndRun");
+        const entries = journal(["host", "host~aa"], 4).filter((e) => e.kind !== "EndRun");
         writeFileSync(join(cut, "journal.jsonl"), entries.map(line).join(""));
         expect(() => aaReport(cut)).toThrow(/no EndRun/);
         const swapped = gradedRun("S", preregistrationHash(loadPrereg("S")));
         writeFileSync(
             join(swapped, "journal.jsonl"),
-            journal(["host~aa", "host"], 3).map(line).join(""),
+            journal(["host~aa", "host"], 4).map(line).join(""),
         );
         expect(() => aaReport(swapped)).toThrow(/journaled order/);
     });
@@ -328,7 +343,7 @@ describe("aa-report", () => {
             .filter((l) => l !== "" && !l.includes('"item":"p-1"'));
         writeFileSync(join(dir, "grades.jsonl"), `${kept.join("\n")}\n`);
         const [report] = aaReport(dir);
-        expect(report?.missing).toEqual({ host: 1, "host~aa": 1 });
+        expect(report?.missing).toEqual({ host: 2, "host~aa": 2 });
         expect(report?.unpaired_items).toEqual([]);
     });
 
@@ -339,6 +354,33 @@ describe("aa-report", () => {
         const [report] = aaReport(dir);
         expect(report?.unpaired_items).toEqual([]);
         expect(report?.excluded).toEqual({ host: 0, "host~aa": 0 });
+    });
+
+    test("a P14 item whose session completed in the prefix counts as missing until graded", () => {
+        const dir = gradedRun("S", preregistrationHash(loadPrereg("S")));
+        const [report] = aaReport(dir);
+        expect(report?.missing).toEqual({ host: 1, "host~aa": 1 });
+    });
+
+    test("refuses a turn whose session or index differs from its scheduled event's", () => {
+        const line = (o: unknown) => `${JSON.stringify(o)}\n`;
+        const moved = gradedRun("S", preregistrationHash(loadPrereg("S")));
+        const rows = [
+            ...[1, 2, 3].map((i) => turn("host", `e-${i}`, "same", i - 1)),
+            turn("host~aa", "e-1", "same", 0),
+            turn("host~aa", "e-2", "same", 7),
+            turn("host~aa", "e-3", "same", 2),
+        ];
+        writeFileSync(join(moved, "pairing.jsonl"), rows.map(line).join(""));
+        expect(() => aaReport(moved)).toThrow(/e-2.*index 7/);
+        const strayed = gradedRun("S", preregistrationHash(loadPrereg("S")));
+        const other = [
+            ...[1, 2, 3].map((i) => turn("host", `e-${i}`, "same", i - 1)),
+            ...[1, 2, 3].map((i) => turn("host~aa", `e-${i}`, "same", i - 1)),
+            { ...turn("host~aa", "e-9", "same", 0) },
+        ];
+        writeFileSync(join(strayed, "pairing.jsonl"), other.map(line).join(""));
+        expect(() => aaReport(strayed)).toThrow(/e-9/);
     });
 
     test("a run-level family forms one cluster per run, so one run leaves it uninformative", () => {

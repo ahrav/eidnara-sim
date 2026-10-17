@@ -73,10 +73,18 @@ function report(dir: string) {
     const scheduled = scenario.events.slice(0, manifest.events).map((e) => String(e.id));
     const prefix = scenario.events.slice(0, manifest.events);
     const userTurns = prefix.filter((e) => e.kind === "user_turn").map((e) => String(e.id));
-    const reached = prefix.flatMap((e) => {
-        const probe = (e as { probe?: string }).probe;
-        return probe === undefined ? [] : [probe];
-    });
+    // A probe is reached through its turn's event; a P14 item, which has no turn, through its
+    // session ending inside the prefix.
+    const ended = new Set(
+        prefix.filter((e) => e.kind === "session_end").map((e) => String(e.session)),
+    );
+    const reached = [
+        ...prefix.flatMap((e) => {
+            const probe = (e as { probe?: string }).probe;
+            return probe === undefined ? [] : [probe];
+        }),
+        ...scenario.probes.filter((p) => p.type === "P14" && ended.has(p.session)).map((p) => p.id),
+    ];
     requireComplete(readJournal(join(dir, "journal.jsonl")), order, scheduled);
     const typeOf = new Map(scenario.probes.map((p) => [p.id, p.type]));
     for (const g of grades) {
@@ -91,6 +99,20 @@ function report(dir: string) {
             throw new Error(`${dir}/grades.jsonl: ${g.arm}/${g.item} is not a grade of this run`);
     }
     const pairing = readPairing(join(dir, "pairing.jsonl"), order);
+    // Each pairing row names a scheduled event and sits at that event's session and index.
+    const turnOf = new Map(
+        prefix
+            .filter((e) => e.kind === "user_turn")
+            .map((e) => [String(e.id), e as { session?: string; index?: number }]),
+    );
+    for (const r of pairing) {
+        const e = turnOf.get(r.event);
+        if (!e || e.session !== r.session || e.index !== r.index) {
+            throw new Error(
+                `${dir}/pairing.jsonl: ${r.arm} ${r.kind} for ${r.event} at ${r.session} index ${r.index} matches no scheduled turn`,
+            );
+        }
+    }
     const mismatched = pairingMismatches(pairing, referenceArm(order));
     const controls = order.filter((a) => a !== armBase(a));
     const report = controls.map((control) => {

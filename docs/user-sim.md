@@ -142,8 +142,9 @@ it reads, opens `grades.jsonl` only as a regular file (`GradeLog` repairs a
 cut last line in place), requires the journal complete for the manifest order and the
 scheduled events (`requireComplete`, as `grade-run.ts` does), checks each
 pairing record's shape and arm (`readPairing`, which
-`pairing-check.ts` shares, refusing a corrupt terminated line), requires a
-turn record from each arm of the pair for every scheduled user turn, refuses a
+`pairing-check.ts` shares, refusing a corrupt terminated line), binds each
+record to its scheduled turn's session and index, requires a turn record
+from each arm of the pair for every scheduled user turn, refuses a
 control whose delivered text differed from its arm's before its recorded
 divergence (`pairingMismatches`, the check `pairing-check.ts` runs), checks each
 latest grade's arm, item, probe type, and version against the run, refuses
@@ -151,7 +152,8 @@ a run graded under another pre-registration or whose scenario no longer
 hashes to the manifest's digest, requires the manifest's tier and seed to
 match the compiled scenario's, and records the pre-registration hash it
 used. It reports, per arm and leaving P7 aside, the excluded grades and
-the probes the run reached that the arm has no grade for, and the items
+the probes the run reached (through their turn, or for P14 through the
+session that ended in the prefix) that the arm has no grade for, and the items
 graded on one side only, which pair nothing. A grading run cut short converges on its rerun: the rerun grades
 every item again and the report pairs each side's latest grade. For each metric,
 verdicts as `<type>.pass` and each numeric grade metric, it reports the
