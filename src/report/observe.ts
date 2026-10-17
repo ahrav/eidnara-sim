@@ -4,11 +4,13 @@ import type { ArmLogs, RunLogs } from "../oracle/logs";
 import { runOracles } from "../oracle/oracles";
 import type { Preregistration } from "../prereg/schema";
 import type { WitnessReport } from "../proxy/inject";
+import { referenceArm } from "../run/run";
 import type { Scenario } from "../scenario/compile";
 import type { ItemPair, Observation, RunPair, TierInput } from "../stats/gate";
 import { pairByItem } from "../stats/gate";
+import { type PairingRecord, pairingFailures } from "../usersim/usersim";
 import { costPanel } from "./cost";
-import { intrusiveness, percentile, turnLatencies } from "./intrusive";
+import { intrusiveness, notesOf, percentile, turnLatencies } from "./intrusive";
 import { soak } from "./soak";
 
 export interface GradedRun {
@@ -21,6 +23,8 @@ export interface GradedRun {
     identity: RunIdentity;
     /** The proxy's fault witnesses from `faults.jsonl`; an `untriggered` one keeps the run out of the fault metrics (SIM-P32), and `null` records that the file is absent. */
     witnesses: WitnessReport[] | null;
+    /** The user-sim's `pairing.jsonl` records. */
+    pairing: PairingRecord[];
 }
 
 /** The manifest fields a tier's runs share for their evidence to pool. */
@@ -39,6 +43,22 @@ const ALIASES: Record<string, string> = {
     "P8.cross_session_pass_rate": "P8.pass",
     "P9.cross_session_pass_rate": "P9.pass",
 };
+
+/**
+ * The two records of one P7 judgment share the snapshots read and the judge's verdicts in both
+ * orders; a re-grade interrupted between its two appends leaves records with different keys.
+ */
+export const judgmentKey = (r: GradeRecord) =>
+    [
+        r.inputs.join("\n"),
+        r.metrics.verdict_a_then_b,
+        r.metrics.verdict_b_then_a,
+        r.metrics.length_a,
+        r.metrics.length_b,
+        r.metrics.judge_prompt_digest,
+    ].join("|");
+
+const probeIds = (g: GradedRun) => new Set(g.scenario.probes.map((p) => p.id));
 
 /** The prefix that keeps one seed's items apart across the tier's hosts: `<host>/<seed>`. */
 const runKey = (g: GradedRun) => `${g.host}/${g.scenario.manifest.seed}`;
@@ -66,7 +86,7 @@ function values(
     const of = (a: string) =>
         new Map(
             g.grades
-                .filter((r) => r.arm === a && r.verdict !== "excluded")
+                .filter((r) => r.arm === a && r.verdict !== "excluded" && probeIds(g).has(r.item))
                 .flatMap((r) => {
                     const v = r.metrics[metric];
                     return typeof v === "number" && !dropped.has(`${runKey(g)}/${r.item}`)
@@ -122,7 +142,10 @@ const RUN_VALUES: Record<string, { value: RunValue; delta: boolean; hostless?: t
         delta: false,
     },
     user_corrections_referencing_injected_text: {
-        value: (g, arm) => panelOf(g, arm).corrections_referencing_injected_text?.length ?? null,
+        value: (g, arm) =>
+            armBase(arm.arm) !== "host" && notesOf(g.run.dir, arm.arm) === undefined
+                ? null
+                : (panelOf(g, arm).corrections_referencing_injected_text?.length ?? null),
         delta: false,
     },
     reverted_memory_edits: {
@@ -158,10 +181,12 @@ function itemPairs(
     return runs.flatMap((g) => {
         const seed = String(g.scenario.manifest.seed);
         const key = runKey(g);
+        const known = probeIds(g);
         const records = (arm: string) =>
             (p7 ? g.judged : g.grades).filter(
                 (r) =>
                     r.arm === arm &&
+                    known.has(r.item) &&
                     r.verdict !== "excluded" &&
                     source in r.metrics &&
                     r.metrics.gate_eligible !== false,
@@ -170,10 +195,7 @@ function itemPairs(
         const theirs = records(treatment);
         const mine = records(control).filter(
             (c) =>
-                !p7 ||
-                theirs.some(
-                    (t) => t.item === c.item && t.inputs.join("\n") === c.inputs.join("\n"),
-                ),
+                !p7 || theirs.some((t) => t.item === c.item && judgmentKey(t) === judgmentKey(c)),
         );
         const byItem = (rs: GradeRecord[]) => new Map(rs.map((r) => [r.item, value(r)] as const));
         const fact = new Map(g.scenario.probes.map((p) => [p.id, p.fact ?? p.id]));
@@ -277,6 +299,31 @@ function incomplete(
                 );
             }),
         );
+    const unknown = runs.flatMap((g) => {
+        const known = probeIds(g);
+        const items = [...new Set(g.grades.filter((r) => !known.has(r.item)).map((r) => r.item))];
+        return items.length
+            ? [`run ${runKey(g)}: grades for unknown items ${items.join(", ")}`]
+            : [];
+    });
+    const pairing = runs.flatMap((g) => {
+        const order = g.run.arms.map((a) => a.arm);
+        const failures = pairingFailures(g.pairing, g.scenario, referenceArm(order));
+        const out = Object.entries(failures).flatMap(([kind, list]) =>
+            list.length
+                ? [`run ${runKey(g)}: ${kind.replaceAll("_", " ")}: ${list.join(", ")}`]
+                : [],
+        );
+        const outside = g.run.arms.flatMap((a) =>
+            a.journal
+                .filter((e) => e.kind === "UserSimRates" && ((e.outside as string[]) ?? []).length)
+                .map(
+                    (e) =>
+                        `run ${runKey(g)}: ${a.arm} user-sim rates outside band: ${(e.outside as string[]).join(", ")}`,
+                ),
+        );
+        return [...out, ...outside];
+    });
     const unwitnessed = runs.flatMap((g) =>
         g.witnesses === null && g.scenario.faults.some((f) => f.seam.layer === "proxy-sink")
             ? [`run ${runKey(g)}: fault witnesses missing`]
@@ -339,6 +386,8 @@ function incomplete(
         ...unfinished,
         ...truncated,
         ...unwitnessed,
+        ...unknown,
+        ...pairing,
         ...settings,
         ...controls,
         ...unavailable,
@@ -346,7 +395,7 @@ function incomplete(
     ];
 }
 
-function ordered(p: Preregistration, runs: GradedRun[]): GradedRun[] {
+export function ordered(p: Preregistration, runs: GradedRun[]): GradedRun[] {
     const at = (xs: readonly unknown[], x: unknown) => {
         const i = xs.indexOf(x);
         return i < 0 ? xs.length : i;
@@ -400,7 +449,7 @@ export function tierInput(
                     o.item === r.item &&
                     o.arm !== r.arm &&
                     pairArms.includes(o.arm) &&
-                    o.inputs.join("\n") === r.inputs.join("\n"),
+                    judgmentKey(o) === judgmentKey(r),
             );
         return [...g.grades.filter((r) => r.probe_type !== "P7"), ...g.judged.filter(judgedPair)]
             .filter((r) => r.verdict === "excluded" && pairArms.includes(r.arm))

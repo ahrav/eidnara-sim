@@ -71,7 +71,11 @@ function gates(r: TierReport): string[] {
             f.direction === "threshold" || f.direction === "zero-tolerance"
                 ? `observed ${(r.observed[m.metric] ?? []).map((x) => fmt(x)).join(" ") || "-"}`
                 : fmt(m.difference),
-            m.interval ? `[${fmt(m.interval[0])}, ${fmt(m.interval[1])}]` : "-",
+            m.interval
+                ? `[${fmt(m.interval[0])}, ${fmt(m.interval[1])}]`
+                : m.rate_ratio_upper !== undefined
+                  ? `ratio ≤ ${fmt(m.rate_ratio_upper)}`
+                  : "-",
             fmt(m.p_adjusted ?? m.p, 4),
             fmt(m.detectable),
             fmt(m.resolution_ratio),

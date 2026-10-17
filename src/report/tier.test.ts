@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { GradeRecord } from "../grade/probes";
@@ -186,6 +186,19 @@ function fixture(status = (_: number) => 200, opts: FixtureOptions = {}): Graded
         grades.push(grade("eidnara", `q-p8-${i}`, "P8", { "P8.pass": i !== 0 }));
     }
     const kinds = new Map(Array.from({ length: SESSIONS }, (_, s) => [`end-${s}`, "session_end"]));
+    const extra = [...new Set(grades.map((r) => r.item))]
+        .filter((item) => !probes.some((p) => p.id === item))
+        .map((id) => ({
+            id,
+            type: id.split("-")[1]?.toUpperCase() ?? "P1",
+            fact: `f-${id}`,
+            project: "p",
+            session: `s-${id}`,
+            text: "x",
+            check: {},
+            event: `e-${id}`,
+        }));
+    probes.push(...extra);
     const scenario = {
         manifest: { seed: opts.seed ?? 101 },
         probes,
@@ -199,6 +212,7 @@ function fixture(status = (_: number) => 200, opts: FixtureOptions = {}): Graded
         host: opts.host ?? "pi",
         judged: [],
         witnesses: [] as GradedRun["witnesses"],
+        pairing: [],
         identity: identity(opts.commit),
     };
 }
@@ -225,6 +239,26 @@ declare const cusumScaleShape: (
     p: Preregistration,
     scales: Map<string, { scale: Record<string, number | undefined>; complete: boolean }>,
 ) => Record<string, number | undefined>;
+
+const loadPairing = (g: GradedRun): GradedRun => ({
+    ...g,
+    pairing: readFileSync(join(g.run.dir, "pairing.jsonl"), "utf8")
+        .split("\n")
+        .filter(Boolean)
+        .map((l) => JSON.parse(l) as GradedRun["pairing"][number]),
+});
+
+const probe = (g: GradedRun, id: string, type = "P13") =>
+    g.scenario.probes.push({
+        id,
+        type,
+        fact: `f-${id}`,
+        project: "p",
+        session: `s-${id}`,
+        text: "x",
+        check: {},
+        event: `e-${id}`,
+    } as unknown as Scenario["probes"][number]);
 
 const arm = (g: GradedRun, name: string) => g.run.arms.find((a) => a.arm === name) as ArmLogs;
 const observation = (g: GradedRun[], metric: string) =>
@@ -371,6 +405,7 @@ describe("tier report", () => {
         const g = asymmetricFixture((host) => {
             (host.calls[0] as CallRecord).fault_ref = "f1";
         });
+        probe(g, "q-13-x");
         for (const name of ["host", "eidnara"]) {
             for (const [item, score] of [
                 ["q-0", 0],
@@ -552,6 +587,8 @@ describe("tier report", () => {
                 verdict,
                 metrics: { "P13.fold_fidelity_score": score },
             } as GradeRecord);
+        probe(g, "q-13-a");
+        probe(g, "q-13-b");
         grade("host", "q-13-a", 0.5);
         grade("host", "q-13-b", 1);
         grade("eidnara", "q-13-a", 0.5);
@@ -657,6 +694,7 @@ describe("tier report", () => {
 
     test("a P7 judgment outside the gate's eligibility leaves its pair out", () => {
         const g = fixture();
+        probe(g, "q-7", "P7");
         g.judged.push(judgment("q-7", "host", false, ["h", "e"], false));
         g.judged.push(judgment("q-7", "eidnara", true, ["h", "e"], false));
         expect(observation([g], "P7.pass")?.items).toEqual([]);
@@ -666,6 +704,7 @@ describe("tier report", () => {
 
     test("a P7 pair takes the host grade from the same judgment", () => {
         const g = fixture();
+        probe(g, "q-7", "P7");
         g.judged.push(judgment("q-7", "host", true, ["e", "h"]));
         g.judged.push(judgment("q-7", "eidnara", true, ["e", "h"]));
         g.judged.push(judgment("q-7", "host", false, ["h", "kl"]));
@@ -968,6 +1007,7 @@ describe("tier report", () => {
 
     test("a P7 exclusion counts only against its own judgment", () => {
         const g = fixture();
+        probe(g, "q-7", "P7");
         g.judged.push(judgment("q-7", "host", true, ["e", "h"]));
         g.judged.push(judgment("q-7", "eidnara", true, ["e", "h"]));
         g.judged.push({ ...judgment("q-7", "host", false, ["h", "kl"]), verdict: "excluded" });
@@ -999,6 +1039,95 @@ describe("tier report", () => {
         expect(report.aa).toEqual([
             { run: g.run.dir, arm: "host", control: "host~aa", disagreement_rate: 0 },
         ]);
+    });
+
+    test("grades for items outside the scenario's probes pair nothing and are named", () => {
+        const g = fixture();
+        for (const name of ["host", "eidnara"]) {
+            g.grades.push({
+                ...(g.grades.find((r) => r.item === "q-p8-1" && r.arm === name) as GradeRecord),
+                item: "q-zzz",
+            });
+        }
+        const input = tierInput(prereg, [g]);
+        expect(
+            input.observations.find((o) => o.metric === "P8.cross_session_pass_rate")?.items,
+        ).toHaveLength(10);
+        expect(input.incomplete).toContain("run pi/101: grades for unknown items q-zzz");
+    });
+
+    test("a daemon arm without memory.json has no corrections count", () => {
+        const g = fixture();
+        rmSync(join(g.run.dir, "eidnara", "memory.json"));
+        expect(observation([g], "user_corrections_referencing_injected_text")?.runs).toEqual([]);
+    });
+
+    test("the falsification set is the same whatever order the runs arrive in", () => {
+        const a = fixture(undefined, { host: "pi" });
+        const b = fixture(undefined, { host: "opencode", hostJitter: (i) => (i * 37) % 23 });
+        const set = (runs: GradedRun[]) =>
+            tierReport(prereg, runs, boundary).falsification.map((z) => [z.check, z.interval]);
+        expect(set([b, a])).toEqual(set([a, b]));
+    });
+
+    test("a P7 pair needs both sides of one judgment attempt", () => {
+        const g = fixture();
+        probe(g, "q-7", "P7");
+        g.judged.push(judgment("q-7", "host", true, ["e", "h"]));
+        g.judged.push({
+            ...judgment("q-7", "eidnara", true, ["e", "h"]),
+            version: 2,
+            metrics: { "P7.pass": true, gate_eligible: true, verdict_a_then_b: "b" },
+        });
+        expect(observation([g], "P7.pass")?.items).toEqual([]);
+    });
+
+    test("pairing failures and user-sim rates outside their band keep the campaign incomplete", () => {
+        const g = fixture();
+        const path = join(g.run.dir, "pairing.jsonl");
+        const rows = readFileSync(path, "utf8")
+            .split("\n")
+            .filter(Boolean)
+            .map(
+                (l) =>
+                    JSON.parse(l) as {
+                        arm: string;
+                        session: string;
+                        index: number;
+                        text_sha256: string;
+                    },
+            );
+        for (const r of rows)
+            if (r.arm === "eidnara" && r.session === "s-0" && r.index === 1)
+                r.text_sha256 = "other";
+        writeFileSync(path, `${rows.map((r) => JSON.stringify(r)).join("\n")}\n`);
+        arm(g, "eidnara").journal.push({
+            kind: "UserSimRates",
+            arm: "eidnara",
+            outside: ["pushback_per_turn"],
+            scenario_ms: 0,
+            seq: 9_500,
+            wall_ms: 0,
+        } as Entry);
+        const open = tierInput(prereg, [loadPairing(g)]).incomplete ?? [];
+        expect(open).toContain("run pi/101: mismatches before divergence: eidnara s-0 #1");
+        expect(open).toContain(
+            "run pi/101: eidnara user-sim rates outside band: pushback_per_turn",
+        );
+    });
+
+    test("an at-most count gate shows the rate-ratio bound it decides on", () => {
+        const report = tierReport(prereg, [fixture()], boundary);
+        const metric = report.verdict.families
+            .find((f) => f.family === "probe-P14")
+            ?.metrics.find((m) => m.metric === "P14.post_compaction_correction_count");
+        if (metric) {
+            metric.interval = null;
+            metric.rate_ratio_upper = 1.25;
+        }
+        expect(renderTier(report)).toMatch(
+            /\| P14\.post_compaction_correction_count \| \d+ \| [\d.-]+ \| ratio ≤ 1\.25 \|/,
+        );
     });
 
     test("a planted 4xx difference between the A/A arms fails that falsification check", () => {
