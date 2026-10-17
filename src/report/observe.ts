@@ -19,8 +19,8 @@ export interface GradedRun {
     judged: GradeRecord[];
     host: string;
     identity: RunIdentity;
-    /** The proxy's fault witnesses from `faults.jsonl`; an `untriggered` one keeps the run out of the fault metrics (SIM-P32). */
-    witnesses: WitnessReport[];
+    /** The proxy's fault witnesses from `faults.jsonl`; an `untriggered` one keeps the run out of the fault metrics (SIM-P32), and `null` records that the file is absent. */
+    witnesses: WitnessReport[] | null;
 }
 
 /** The manifest fields a tier's runs share for their evidence to pool. */
@@ -31,6 +31,8 @@ export interface RunIdentity {
     events: number;
     /** `manifest.preflight.distortions`: the clock limits the claim boundary says the report names. */
     distortions: string[];
+    /** `manifest.preflight.hosts` as `<host>@<version>`. */
+    host_versions: string[];
 }
 
 const ALIASES: Record<string, string> = {
@@ -275,6 +277,11 @@ function incomplete(
                 );
             }),
         );
+    const unwitnessed = runs.flatMap((g) =>
+        g.witnesses === null && g.scenario.faults.some((f) => f.seam.layer === "proxy-sink")
+            ? [`run ${runKey(g)}: fault witnesses missing`]
+            : [],
+    );
     const truncated = runs.flatMap((g) =>
         g.identity.events < g.scenario.events.length
             ? [`run ${runKey(g)}: ${g.identity.events} of ${g.scenario.events.length} events`]
@@ -300,6 +307,7 @@ function incomplete(
         "models",
         "context_limit",
         "distortions",
+        "host_versions",
     ];
     const settings = shared.flatMap((field) => {
         const values = [...new Set(runs.map((g) => JSON.stringify(g.identity[field])))];
@@ -330,6 +338,7 @@ function incomplete(
         ...missing,
         ...unfinished,
         ...truncated,
+        ...unwitnessed,
         ...settings,
         ...controls,
         ...unavailable,
@@ -383,15 +392,24 @@ export function tierInput(
                       },
         ),
     );
-    const excluded = runs.flatMap((g) =>
-        g.grades
-            .filter((r) => r.verdict === "excluded" && [control, treatment].includes(r.arm))
+    const pairArms = [control, treatment];
+    const excluded = runs.flatMap((g) => {
+        const judgedPair = (r: GradeRecord) =>
+            g.judged.some(
+                (o) =>
+                    o.item === r.item &&
+                    o.arm !== r.arm &&
+                    pairArms.includes(o.arm) &&
+                    o.inputs.join("\n") === r.inputs.join("\n"),
+            );
+        return [...g.grades.filter((r) => r.probe_type !== "P7"), ...g.judged.filter(judgedPair)]
+            .filter((r) => r.verdict === "excluded" && pairArms.includes(r.arm))
             .map((r) => ({
                 id: `${runKey(g)}/${r.item}`,
                 arm: r.arm,
                 reason: r.reason ?? "excluded",
-            })),
-    );
+            }));
+    });
     return {
         observations,
         excluded,

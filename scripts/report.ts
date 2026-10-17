@@ -1,8 +1,8 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import type { Preregistration, Tier } from "../src/prereg/schema";
+import type { Tier } from "../src/prereg/schema";
 import { renderTier } from "../src/report/render";
-import { aaScale, type CusumScale, loadGraded, tierReport } from "../src/report/tier";
+import { aaScale, cusumScale, loadGraded, tierReport } from "../src/report/tier";
 import { loadPrereg } from "../src/scenario/inputs";
 
 const args = process.argv.slice(2);
@@ -31,18 +31,16 @@ const loaded = new Map(
         return [tier, { prereg, runs: list.map((d) => loadGraded(d, prereg)) }] as const;
     }),
 );
-const scales = new Map([...loaded].map(([tier, t]) => [tier, aaScale(t.prereg, t.runs)]));
-function cusumScale(prereg: Preregistration): CusumScale {
-    const scale: CusumScale = {};
-    for (const rule of prereg.stopping_rule.cusum) {
-        const named = /^the (\w+) tier's/.exec(rule.sd_source)?.[1] as Tier | undefined;
-        scale[rule.kind] = scales.get(named ?? prereg.tier)?.[rule.kind];
-    }
-    return scale;
-}
+const scales = new Map(
+    [...loaded].map(([tier, t]) => {
+        const own = tierReport(t.prereg, t.runs, boundary);
+        const complete = own.verdict.pass.incomplete.every((x) => x.startsWith("CUSUM "));
+        return [tier, { scale: aaScale(t.prereg, t.runs), complete }];
+    }),
+);
 let violated = 0;
 for (const [tier, { prereg, runs }] of loaded) {
-    const report = tierReport(prereg, runs, boundary, cusumScale(prereg), catalog);
+    const report = tierReport(prereg, runs, boundary, cusumScale(prereg, scales), catalog);
     violated += report.witness.filter((w) => w.status === "violated").length;
     const text = renderTier(report);
     if (out) {
