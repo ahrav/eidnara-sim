@@ -159,11 +159,14 @@ within the rest of its wall limit. The restart writes `<run>/restarted`,
 so a rerun of the command neither restarts that run again nor reports it
 unrestarted; `tier-result.json` records `restarted` per run, and the
 command exits 1 naming any paired run without a restart.
-A run stopped by the scheduled restart logs no `EndTurn` for the turn the
-stop cut, so the resumed run marks that turn `failed(interrupted)`.
+The stop lands wherever the run is when the check fires: a run stopped by
+the scheduled restart logs no `EndTurn` for the turn, or no `FaultObserved`
+for the scheduler fault, the stop cut, so the resumed run marks that item
+`failed(interrupted)`; an interrupted turn counts in `failed_turns`, and a
+fault's probes in that session leave the pairing as asymmetric.
 
 The XL report adds a within-month RSS soak verdict per month of scenario
-time for each daemon arm, the last month partial: each
+time for each run's daemon arm, the last month partial: each
 month's slope, bound, and return-to-baseline use that month's samples and
 sessions alone, and the whole-span soak verdict stays the gate's input.
 

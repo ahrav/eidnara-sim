@@ -35,7 +35,8 @@ entries of different arms are not ordered by scenario time.
 
 ## Clock
 
-`Clock` keeps scenario time and a busy set of turns and background jobs.
+`Clock` keeps scenario time and a busy set of turns, background jobs, and
+scheduler fault mechanisms.
 While anything is busy, scenario time runs at wall speed; while nothing is
 busy, it holds. `advanceTo` jumps forward to a target time and refuses while
 anything is busy. Each arm's clock starts at 0, or, on resume, at the arm's
@@ -54,8 +55,9 @@ list. For each arm, it resets the driver, then walks the events:
    event's scheduled time if it is still later than now.
 4. Fire the faults keyed on the event. Provider faults are armed on the proxy
    at the Nth user turn of their session. Scheduler faults call the driver's
-   `fault` and journal its evidence. The mid-fold SIGKILL, the daemon restart,
-   and the host upgrade open an outage window first.
+   `fault`, hold the clock busy while its mechanism runs, and journal its
+   evidence. The mid-fold SIGKILL and the daemon restart open an outage
+   window first.
 5. Deliver the event to the driver. A user turn is bracketed by `BeginTurn`
    and `EndTurn` and holds the clock busy while it runs.
 6. At a session end, disarm the session's persistent provider faults.

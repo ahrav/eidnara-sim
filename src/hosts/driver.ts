@@ -253,6 +253,7 @@ export class HostDriver implements ArmDriver {
             return {};
         }
         if (e.kind === "session_end") {
+            this.requireSecondAttached();
             const project = this.project(e);
             this.snapshots.addTools(host.drainTools(), null);
             this.snapshots.sessionEnd(project, this.workspace(project));
@@ -390,11 +391,19 @@ export class HostDriver implements ArmDriver {
         const second = this.second;
         this.second = null;
         if (!second) return;
-        try {
-            second.drainTools();
-            await second.closeSession();
-        } finally {
-            if (record) this.recordState();
+        second.drainTools();
+        await second.closeSession();
+        if (record) this.recordState();
+    }
+
+    /** A second client's host process must still run at the primary session's `session_end`. */
+    private requireSecondAttached(): void {
+        if (!this.second) return;
+        const pid = this.second.hostPid();
+        if (pid === null || !running(pid)) {
+            throw new HarnessFailure(
+                `the second client exited before the primary session's session_end (pid ${pid})`,
+            );
         }
     }
 

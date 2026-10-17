@@ -24,6 +24,11 @@ test("a missing or relative path is refused by field name", () => {
     expect(parseConfig({ ...base, upgrade: { opencode_binary: "/next/oc" } }).upgrade).toEqual({
         opencode_binary: "/next/oc",
     });
+    for (const upgrade of [null, "/next/pi", ["/next/pi"]]) {
+        expect(() => parseConfig({ ...base, upgrade })).toThrow(
+            "config.upgrade: expected an object of next host paths",
+        );
+    }
     expect(() => parseConfig({ ...base, toolchain: { ...base.toolchain, bin: ["bin"] } })).toThrow(
         "config.toolchain.bin: expected absolute paths",
     );

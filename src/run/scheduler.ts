@@ -221,7 +221,14 @@ export class Scheduler {
             return;
         }
         if (OUTAGE.has(f.type)) this.outage = f.id;
-        const evidence = await driver.fault(f, at);
+        const owner = `fault:${f.id}`;
+        this.clock?.begin(owner);
+        let evidence: Record<string, unknown>;
+        try {
+            evidence = await driver.fault(f, at);
+        } finally {
+            this.clock?.end(owner);
+        }
         this.log({ kind: "FaultObserved", fault: f.id, type: f.type, evidence });
     }
 

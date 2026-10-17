@@ -109,7 +109,9 @@ export function tierReport(
         drift_source: reference?.source ?? null,
         soak_by_month: perArm
             .filter(({ arm }) => prereg.tier === "XL" && armBase(arm.arm) !== "host")
-            .flatMap(({ g, arm }) => soakByMonth(g.run, arm, "rss")),
+            .flatMap(({ g, arm }) =>
+                soakByMonth(g.run, arm, "rss").map((s) => ({ run: g.run.dir, ...s })),
+            ),
         counterfactual: counterfactual(runs),
     };
 }

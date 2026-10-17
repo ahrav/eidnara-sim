@@ -59,7 +59,17 @@ const graded =
 const RUN_VALUES: Record<string, { value: RunValue; delta: boolean }> = {
     failed_turns: {
         value: (_, arm) =>
-            arm.journal.filter((e) => e.kind === "EndTurn" && e.outcome !== "ok").length,
+            new Set(
+                arm.journal
+                    .filter(
+                        (e) =>
+                            (e.kind === "EndTurn" && e.outcome !== "ok") ||
+                            (e.kind === "ItemState" &&
+                                e.event !== undefined &&
+                                e.state === "failed(interrupted)"),
+                    )
+                    .map((e) => String(e.event)),
+            ).size,
         delta: false,
     },
     hangs: {

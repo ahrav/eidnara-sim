@@ -63,8 +63,9 @@ class FakeHost {
         return { PI_CODING_AGENT_DIR: this.transcripts };
     }
     hostPid() {
-        return null;
+        return this.pid;
     }
+    pid: number | null = null;
     tools: { command: string; exit: number | null; scenario_ms: number }[] = [];
     drainTools() {
         return this.tools.splice(0);
@@ -413,6 +414,7 @@ describe("HostDriver faults", () => {
             outcome: "ok",
         });
         const second = hosts.at(-1) as FakeHost;
+        second.pid = process.pid;
         expect(second.opened).toEqual([`s-0000-b@${driver.workspace("p")}`]);
         expect(second.connections).toEqual([driver.daemon.connectionFile]);
         expect(second.closed).toBe(0);
@@ -432,6 +434,45 @@ describe("HostDriver faults", () => {
         expect(await plain.fault(episode("two_hosts_one_daemon"), at)).toEqual({
             skipped: "arm runs no daemon",
         });
+    });
+
+    test("a second client that exits before the primary's session_end fails the arm", async () => {
+        const { driver, hosts } = fixture("eidnara", { p: "/repo" });
+        driver.daemon = fakeDaemon(10) as unknown as DaemonStack;
+        const at = ev("session_start", { project: "p" });
+        await driver.fault(episode("two_hosts_one_daemon"), at);
+        const second = hosts.at(-1) as FakeHost;
+        const inner = driver as unknown as Record<string, unknown> & { newHost(): SimHost };
+        driver.host = inner.newHost();
+        const noop = () => undefined;
+        inner.snapshots = { sessionStart: noop, sessionEnd: noop, addTools: noop };
+        inner.transcriptsChecked = true;
+        await driver.event(at);
+        second.pid = Bun.spawnSync(["true"]).pid;
+        await expect(driver.event(ev("session_end", { project: "p" }))).rejects.toThrow(
+            "second client exited before the primary session's session_end",
+        );
+    });
+
+    test("a second client whose close fails keeps its pid in the arm state", async () => {
+        const { driver, hosts, armDir } = fixture("eidnara", { p: "/repo" });
+        driver.daemon = fakeDaemon(10) as unknown as DaemonStack;
+        const at = ev("session_start", { project: "p" });
+        await driver.fault(episode("two_hosts_one_daemon"), at);
+        const second = hosts.at(-1) as FakeHost;
+        second.pid = process.pid;
+        second.failClose = true;
+        const inner = driver as unknown as Record<string, unknown> & { newHost(): SimHost };
+        driver.host = inner.newHost();
+        const noop = () => undefined;
+        inner.snapshots = { sessionStart: noop, sessionEnd: noop, addTools: noop };
+        inner.transcriptsChecked = true;
+        await driver.event(at);
+        await expect(driver.event(ev("session_end", { project: "p" }))).rejects.toThrow(
+            "host survived",
+        );
+        const state = JSON.parse(readFileSync(join(armDir, "state.json"), "utf8"));
+        expect(state.second?.pid).toBe(process.pid);
     });
 
     test("a model switch moves later sessions to the next model and keeps the daemon", async () => {

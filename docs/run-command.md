@@ -43,7 +43,8 @@ outside the seed's order, and a non-positive count.
    eidnara commit, base wall time, and preflight result. A later invocation
    refuses when any option it states differs from the manifest, when the
    scenario hash, pre-registration hash, or eidnara commit changed, or when
-   an interception result changed, and appends its preflight result to
+   an interception result or a probed host version (current or
+   `config.upgrade`) changed, and appends its preflight result to
    `preflight.jsonl`.
 4. Start the capture proxy; its records append to `calls.jsonl`, and a
    reopened writer continues the sequence after the last complete record.

@@ -45,6 +45,12 @@ export function parseConfig(value: unknown): SimConfig {
         }
         if (!isAbsolute(path)) throw new ConfigError(`config.${field}: not an absolute path`);
     }
+    if (
+        v.upgrade !== undefined &&
+        (typeof v.upgrade !== "object" || v.upgrade === null || Array.isArray(v.upgrade))
+    ) {
+        throw new ConfigError("config.upgrade: expected an object of next host paths");
+    }
     const upgrade = (v.upgrade ?? {}) as Record<string, unknown>;
     for (const field of ["pi_install", "opencode_binary"] as const) {
         const path = upgrade[field];

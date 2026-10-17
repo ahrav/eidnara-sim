@@ -21,6 +21,18 @@ export function piCli(config: SimConfig): string {
     return join(config.pi_install, "node_modules/@earendil-works/pi-coding-agent/dist/cli.js");
 }
 
+const sameJson = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+
+export function preflightDrift(before: Preflight, now: Preflight): string[] {
+    const intercepted = (p: Preflight) => p.time_injection.map((t) => [t.name, t.intercepted]);
+    const versions = (p: Preflight) =>
+        [...p.hosts, ...(p.upgrade ?? [])].map((h) => [h.host, h.version]);
+    const drift: string[] = [];
+    if (!sameJson(intercepted(before), intercepted(now))) drift.push("time interception");
+    if (!sameJson(versions(before), versions(now))) drift.push("host versions");
+    return drift;
+}
+
 export function versionOf(config: SimConfig, host: "pi" | "opencode"): string {
     const node = realpathSync(Bun.which("node") ?? "node");
     return hostVersion(

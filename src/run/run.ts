@@ -26,7 +26,7 @@ import { behaviourPlan, type Label, realisedRates } from "../usersim/plan";
 import { normaliser, Pairing, proxyUserSim, Tape, UserSim } from "../usersim/usersim";
 import { Journal, readJournal, releaseLease, takeLease } from "./journal";
 import { plainPath } from "./launcher";
-import { type Preflight, preflight } from "./preflight";
+import { type Preflight, preflight, preflightDrift } from "./preflight";
 import { ResourceSampler } from "./sampler";
 import { type ArmDriver, HarnessFailure, type ScenarioEvent, Scheduler } from "./scheduler";
 import { writeOffset } from "./timeinject";
@@ -211,9 +211,9 @@ async function loadManifest(o: RunOptions, scenario: Scenario): Promise<Manifest
             const names = changed.map(([k]) => k).join(", ");
             throw new HarnessFailure(`inputs changed since the run started: ${names}`);
         }
-        const intercepted = (p: Preflight) => p.time_injection.map((t) => [t.name, t.intercepted]);
-        if (!sameJson(intercepted(manifest.preflight), intercepted(checks))) {
-            throw new HarnessFailure("time interception changed since the run started");
+        const drift = preflightDrift(manifest.preflight, checks);
+        if (drift.length > 0) {
+            throw new HarnessFailure(`${drift.join(", ")} changed since the run started`);
         }
         appendFileSync(join(o.out, "preflight.jsonl"), `${JSON.stringify(checks)}\n`);
         return manifest;

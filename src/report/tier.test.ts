@@ -224,6 +224,38 @@ describe("tier report", () => {
         );
         expect([fourxx?.zero_effect, fourxx?.difference]).toEqual([false, 0.5]);
     });
+
+    test("failed turns count a turn the resumed run marked interrupted, once per turn", () => {
+        const g = fixture();
+        const eidnara = g.run.arms.find((a) => a.arm === "eidnara") as ArmLogs;
+        const last = eidnara.journal.at(-1) as Entry;
+        for (let i = 0; i < 2; i++) {
+            eidnara.journal.push({
+                ...last,
+                seq: last.seq + 1 + i,
+                kind: "ItemState",
+                event: "e-cut",
+                state: "failed(interrupted)",
+            } as Entry);
+        }
+        const report = tierReport(prereg, [g], boundary);
+        expect(report.observed.failed_turns).toEqual([1]);
+    });
+
+    test("monthly soak rows name their run and show return to baseline", () => {
+        const g = fixture();
+        const xl = { ...prereg, tier: "XL" as const };
+        const report = tierReport(xl, [g], boundary);
+        expect(report.soak_by_month.map((s) => [s.run, s.arm, s.month])).toEqual([
+            [g.run.dir, "eidnara", 1],
+        ]);
+        const text = renderTier(report);
+        expect(text).toContain(
+            "| run | arm | month | verdict | samples | slope MB/session | R2 | bound | returned |",
+        );
+        expect(text).toContain(`| ${g.run.dir} | eidnara | 1 | no leak | 48 |`);
+        expect(text).toContain("| holds | true |");
+    });
 });
 
 describe("counterfactual attribution", () => {
