@@ -243,24 +243,30 @@ export class DaemonStack {
      * live path) are saved once, so each lifetime is appended once. The marker is removed at
      * the end.
      */
+    /**
+     * Appends a marker's held stdout once. The marker records the log's length before the append,
+     * so an append a kill cut short is rolled back to that length and runs again; the returned
+     * marker, written to disk, has dropped the stdout.
+     */
+    private saveHeldStdout(marker: LogMarker): LogMarker {
+        const { stdout, stdout_target, ...rest } = marker;
+        if (stdout === undefined) return marker;
+        const start =
+            stdout_target ?? (existsSync(this.ctx.logFile) ? statSync(this.ctx.logFile).size : 0);
+        if (stdout_target !== undefined && existsSync(this.ctx.logFile)) {
+            truncateSync(this.ctx.logFile, stdout_target);
+        } else {
+            this.writeMarker({ ...rest, stdout, stdout_target: start });
+        }
+        appendFileSync(this.ctx.logFile, stdout);
+        this.writeMarker(rest);
+        return rest;
+    }
+
     private drain(marker: LogMarker | null, extra: string[]): void {
         let pending = [...(marker?.pending ?? [])];
-        if (marker?.stdout !== undefined) {
-            // The held stdout goes first, as `restart` would have written it. The marker records
-            // the log's length before the append, so an append a kill cut short is rolled back
-            // to that length and runs again; then the marker drops the stdout.
-            const { stdout, stdout_target, ...rest } = marker;
-            const start =
-                stdout_target ??
-                (existsSync(this.ctx.logFile) ? statSync(this.ctx.logFile).size : 0);
-            if (stdout_target !== undefined && existsSync(this.ctx.logFile)) {
-                truncateSync(this.ctx.logFile, stdout_target);
-            } else {
-                this.writeMarker({ ...rest, stdout, stdout_target: start });
-            }
-            appendFileSync(this.ctx.logFile, stdout);
-            this.writeMarker(rest);
-        }
+        // The held stdout goes first, as `restart` would have written it.
+        if (marker?.stdout !== undefined) this.saveHeldStdout(marker);
         if (marker?.copying) {
             if (existsSync(this.ctx.logFile)) {
                 truncateSync(this.ctx.logFile, marker.copying.target_bytes);
@@ -376,10 +382,14 @@ export class DaemonStack {
         const live = String(this.stack.logPath ?? "");
         await this.stack.restartHost();
         // The replacement owns the marker from here, so a kill before the logs are saved still
-        // lets a resume stop it before starting another daemon against the same store.
+        // lets a resume stop it before starting another daemon against the same store; the held
+        // stdout then lands through the marker, so a kill mid-append rolls it back.
         const marker = this.readMarker();
-        if (marker) this.writeMarker({ ...marker, owner: this.owner() });
-        appendFileSync(this.ctx.logFile, this.heldStdout ?? "");
+        if (marker) {
+            const owned = { ...marker, owner: this.owner() };
+            this.writeMarker(owned);
+            this.saveHeldStdout(owned);
+        }
         this.heldStdout = null;
         this.absorb(this.held, [live]);
         this.writeMarker({ pending: [live], copying: null, owner: this.owner() });
@@ -404,7 +414,11 @@ export class DaemonStack {
         // after any rollback the drains perform, so a rollback cannot erase it.
         const live = String(stack.logPath ?? "");
         const marker = this.readMarker();
-        const sameLifetime = marker?.owner?.pid != null && marker.owner.pid === this.pid(stack);
+        const stackPid = this.pid(stack);
+        const sameLifetime =
+            marker?.owner?.pid != null &&
+            marker.owner.pid === stackPid &&
+            marker.owner.start === processStart(stackPid as number);
         const {
             stdout: _held,
             stdout_target: _target,
