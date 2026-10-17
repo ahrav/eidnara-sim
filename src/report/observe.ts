@@ -3,6 +3,7 @@ import { armBase } from "../hosts/arms";
 import type { ArmLogs, RunLogs } from "../oracle/logs";
 import { runOracles } from "../oracle/oracles";
 import type { Preregistration } from "../prereg/schema";
+import type { WitnessReport } from "../proxy/inject";
 import type { Scenario } from "../scenario/compile";
 import type { ItemPair, Observation, RunPair, TierInput } from "../stats/gate";
 import { pairByItem } from "../stats/gate";
@@ -14,7 +15,22 @@ export interface GradedRun {
     run: RunLogs;
     scenario: Scenario;
     grades: GradeRecord[];
+    /** `judged` supplies P7 pairs from the same judgment, identified by matching `item` and `inputs`. */
+    judged: GradeRecord[];
     host: string;
+    identity: RunIdentity;
+    /** The proxy's fault witnesses from `faults.jsonl`; an `untriggered` one keeps the run out of the fault metrics (SIM-P32). */
+    witnesses: WitnessReport[];
+}
+
+/** The manifest fields a tier's runs share for their evidence to pool. */
+export interface RunIdentity {
+    eidnara_commit: string;
+    models: string[];
+    context_limit: number;
+    events: number;
+    /** `manifest.preflight.distortions`: the clock limits the claim boundary says the report names. */
+    distortions: string[];
 }
 
 const ALIASES: Record<string, string> = {
@@ -136,22 +152,35 @@ function itemPairs(
     treatment: string,
 ): ItemPair[] {
     const source = ALIASES[metric] ?? metric;
+    const p7 = source.startsWith("P7.");
     return runs.flatMap((g) => {
         const seed = String(g.scenario.manifest.seed);
         const key = runKey(g);
-        const of = (arm: string) =>
-            new Map(
-                g.grades
-                    .filter((r) => r.arm === arm && r.verdict !== "excluded" && source in r.metrics)
-                    .map((r) => [r.item, Number(r.metrics[source] === true)] as const),
+        const records = (arm: string) =>
+            (p7 ? g.judged : g.grades).filter(
+                (r) =>
+                    r.arm === arm &&
+                    r.verdict !== "excluded" &&
+                    source in r.metrics &&
+                    r.metrics.gate_eligible !== false,
             );
+        const value = (r: GradeRecord) => Number(r.metrics[source] === true);
+        const theirs = records(treatment);
+        const mine = records(control).filter(
+            (c) =>
+                !p7 ||
+                theirs.some(
+                    (t) => t.item === c.item && t.inputs.join("\n") === c.inputs.join("\n"),
+                ),
+        );
+        const byItem = (rs: GradeRecord[]) => new Map(rs.map((r) => [r.item, value(r)] as const));
         const fact = new Map(g.scenario.probes.map((p) => [p.id, p.fact ?? p.id]));
         const issue = new Map(
             g.scenario.probes.map((p) => [p.id, Number((p.event ?? p.id).replace(/\D/g, ""))]),
         );
         return pairByItem(
-            of(control),
-            of(treatment),
+            byItem(mine),
+            byItem(theirs),
             (item) => `${seed}/${fact.get(item) ?? item}`,
             (item) => issue.get(item) ?? 0,
         ).map((x) => ({ ...x, item: `${key}/${x.item}` }));
@@ -229,10 +258,54 @@ function incomplete(
         ),
     );
     const unfinished = runs.flatMap((g) => {
-        const open = [control, treatment].filter(
+        const open = [...new Set([...p.arms.run, control, treatment])].filter(
             (a) => !g.run.arms.find((x) => x.arm === a)?.journal.some((e) => e.kind === "EndArm"),
         );
         return open.length ? [`run ${runKey(g)}: ${open.join(", ")} without EndArm`] : [];
+    });
+    const unavailable = p.families
+        .filter((f) => f.claim === "gate" && f.analysis_unit === "run")
+        .flatMap((f) =>
+            f.metrics.flatMap((metric) => {
+                const seen = new Set(
+                    (observations.find((o) => o.metric === metric)?.runs ?? []).map((r) => r.run),
+                );
+                return runs.flatMap((g) =>
+                    seen.has(runId(g)) ? [] : [`${metric}: run ${runId(g)} unavailable`],
+                );
+            }),
+        );
+    const truncated = runs.flatMap((g) =>
+        g.identity.events < g.scenario.events.length
+            ? [`run ${runKey(g)}: ${g.identity.events} of ${g.scenario.events.length} events`]
+            : [],
+    );
+    const controls = (p.aa_controls?.pairs ?? []).flatMap(([a]) => {
+        const have = runs.reduce(
+            (s, g) =>
+                s +
+                g.run.arms.filter(
+                    (x) =>
+                        x.arm.includes("~") &&
+                        armBase(x.arm) === a &&
+                        x.journal.some((e) => e.kind === "EndArm"),
+                ).length,
+            0,
+        );
+        const want = p.aa_controls?.repeats ?? 0;
+        return have === want ? [] : [`A/A ${a}: ${have} of ${want} control runs`];
+    });
+    const shared: (keyof RunIdentity)[] = [
+        "eidnara_commit",
+        "models",
+        "context_limit",
+        "distortions",
+    ];
+    const settings = shared.flatMap((field) => {
+        const values = [...new Set(runs.map((g) => JSON.stringify(g.identity[field])))];
+        return values.length > 1
+            ? [`runs differ in ${field}: ${values.map((v) => JSON.parse(v)).join(", ")}`]
+            : [];
     });
     const n = p.stopping_rule.paired_items_per_probe_type;
     const short = p.families.flatMap((f) => {
@@ -253,7 +326,15 @@ function incomplete(
                   }, 0);
         return pairs < n ? [`${f.id}: ${pairs} of ${n} paired items`] : [];
     });
-    return [...missing, ...unfinished, ...short];
+    return [
+        ...missing,
+        ...unfinished,
+        ...truncated,
+        ...settings,
+        ...controls,
+        ...unavailable,
+        ...short,
+    ];
 }
 
 function ordered(p: Preregistration, runs: GradedRun[]): GradedRun[] {
@@ -277,6 +358,9 @@ export function tierInput(
     for (const g of runs) {
         const key = runKey(g);
         if (seen.has(key)) throw new Error(`two runs for ${key}: ${g.run.dir} repeats one`);
+        if (!p.hosts.includes(g.host) || !p.seeds.includes(g.scenario.manifest.seed)) {
+            throw new Error(`${g.run.dir}: run ${key} is not pre-registered for ${p.tier}`);
+        }
         seen.add(key);
     }
     const asym = asymmetric(runs, control, treatment);
