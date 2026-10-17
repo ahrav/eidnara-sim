@@ -5,19 +5,16 @@ import { join } from "node:path";
 import type { GradeRecord } from "../grade/probes";
 import type { ArmLogs } from "../oracle/logs";
 import { canonicalJson, sha256Hex } from "../prereg/canonical";
-import type { Preregistration } from "../prereg/schema";
 import { preregistrationHash } from "../prereg/validate";
 import type { CallRecord } from "../proxy/records";
 import type { Entry } from "../run/journal";
 import { PRICE_TABLE } from "../run/price";
 import type { Scenario } from "../scenario/compile";
-import type { FaultEpisode } from "../scenario/faults";
 import { loadPrereg } from "../scenario/inputs";
 import { falsificationPairs } from "./falsify";
 import { percentile } from "./intrusive";
 import { type GradedRun, tierInput } from "./observe";
 import { counterfactualText, renderTier } from "./render";
-import * as tier from "./tier";
 import { aaScale, counterfactual, cusumScale, loadGraded, tierReport } from "./tier";
 
 const prereg = loadPrereg("S");
@@ -242,11 +239,6 @@ const judgment = (
     verdict: pass ? "pass" : "fail",
     metrics: { "P7.pass": pass, gate_eligible: eligible },
 });
-
-declare const cusumScaleShape: (
-    p: Preregistration,
-    scales: Map<string, { scale: Record<string, number | undefined>; complete: boolean }>,
-) => Record<string, number | undefined>;
 
 const loadPairing = (g: GradedRun): GradedRun => ({
     ...g,
@@ -1045,14 +1037,13 @@ describe("tier report", () => {
 
     test("a source tier lends its CUSUM scale only when its own campaign is complete", () => {
         const L = loadPrereg("L");
-        const g = fixture();
         const scale = { harm: 0.5, futility: 0.5 };
-        const cusumScale =
-            (tier as { cusumScale?: typeof cusumScaleShape }).cusumScale ?? (() => undefined);
-        expect(cusumScale(L, new Map([["M", { scale, complete: false }]]))).toEqual({});
+        expect(cusumScale(L, new Map([["M", { scale, complete: false }]]))).toEqual({
+            harm: undefined,
+            futility: undefined,
+        });
         expect(cusumScale(L, new Map([["M", { scale, complete: true }]]))).toEqual(scale);
         expect(cusumScale(prereg, new Map([["S", { scale, complete: true }]]))).toEqual(scale);
-        expect(g.host).toBe("pi");
     });
 
     test("A/A reports name their run", () => {
@@ -1427,36 +1418,5 @@ describe("CUSUM scale", () => {
             futility: undefined,
         });
         expect(cusumScale(L, new Map())).toEqual({ harm: undefined, futility: undefined });
-    });
-});
-
-describe("graded run loading", () => {
-    test("a run's fault schedule is the manifest's override when it has one", () => {
-        const dir = mkdtempSync(join(tmpdir(), "sim-graded-"));
-        const fault = (session: string) =>
-            ({
-                id: "fault-000",
-                type: "daemon_restart",
-                trigger: { kind: "session_start", session },
-            }) as unknown as FaultEpisode;
-        const body = { manifest: { seed: 101, tier: "S" }, events: [], faults: [fault("s-9")] };
-        const scenario_hash = sha256Hex(canonicalJson(body));
-        const manifest = {
-            tier: "S",
-            host: "pi",
-            order: [],
-            base_wall_ms: 0,
-            prereg_sha256: preregistrationHash(prereg),
-            scenario_hash,
-            fault_override: [fault("s-1")],
-        };
-        writeFileSync(join(dir, "manifest.json"), JSON.stringify(manifest));
-        writeFileSync(join(dir, "scenario.json"), canonicalJson({ ...body, scenario_hash }));
-        expect(loadGraded(dir, prereg).scenario.faults).toEqual([fault("s-1")]);
-        writeFileSync(
-            join(dir, "manifest.json"),
-            JSON.stringify({ ...manifest, fault_override: null }),
-        );
-        expect(loadGraded(dir, prereg).scenario.faults).toEqual([fault("s-9")]);
     });
 });

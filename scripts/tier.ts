@@ -59,10 +59,10 @@ const config = loadConfig();
 const prereg = loadPrereg(tier);
 const hosts = (arg("hosts") ?? prereg.hosts.join(",")).split(",") as ("pi" | "opencode")[];
 const priorPlan = join(out, "tier-plan.json");
-const priorTurnMs = (): unknown => {
+const priorTurnMs = (): number => {
     if (!existsSync(priorPlan)) return 75_000;
     try {
-        return JSON.parse(readFileSync(priorPlan, "utf8")).turn_ms;
+        return Number(JSON.parse(readFileSync(priorPlan, "utf8")).turn_ms);
     } catch {
         return fail(`${priorPlan} is unreadable; pass --turn-ms to replace it`);
     }
@@ -125,6 +125,7 @@ if (prereg.resizing && from && !existsSync(resizing)) {
     if (open.length > 0) refuse(`the ${m.tier} campaign is incomplete: ${open.join("; ")}`);
     const sized = {
         recorded_at: new Date().toISOString(),
+        campaign_dir: out,
         source_dir: resolve(from),
         source_prereg_sha256: preregistrationHash(m),
         target_prereg_sha256: preregistrationHash(prereg),
@@ -168,7 +169,10 @@ for (const seed of prereg.seeds) {
     mkdirSync(dir, { recursive: true });
     scenarios.set(seed, await loadScenario({ config, tier, seed, out: dir }, items));
 }
-const models = arg("models")?.split(",") ?? [config.agent_model];
+const models = arg("models")
+    ?.split(",")
+    .map((m) => m.trim()) ?? [config.agent_model];
+if (models.some((m) => m === "")) refuse("--models lists an empty model");
 const switches = [...scenarios.values()].some((s) =>
     s.faults.some((f) => f.type === "model_switch"),
 );
@@ -181,6 +185,17 @@ if (paired.length < repeats)
         `${repeats} A/A repeats are registered, and these hosts and seeds plan ${paired.length} runs`,
     );
 const plan: TierJob[] = [...paired, ...profileJobs(prereg, scenarios, hosts, out, turnMs)];
+const modelConflicts = arg("models")
+    ? plan.flatMap((job) => {
+          const path = join(job.dir, "manifest.json");
+          if (!existsSync(path)) return [];
+          const ran = JSON.parse(readFileSync(path, "utf8")).models as string[];
+          return JSON.stringify(ran) === JSON.stringify(models)
+              ? []
+              : [`${job.dir} ran on ${ran.join(",")}, --models says ${models.join(",")}`];
+      })
+    : [];
+if (modelConflicts.length > 0) refuse(modelConflicts.join("\n"));
 const conflicts = planConflicts(plan);
 if (conflicts.length > 0) {
     console.error(

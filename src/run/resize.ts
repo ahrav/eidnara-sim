@@ -85,7 +85,7 @@ export function resizeFromM(l: Preregistration, m: TierInput): Resizing {
     const planning =
         l.resizing?.planning_paired_items_per_probe_type ??
         l.stopping_rule.paired_items_per_probe_type;
-    const asym = new Set(m.asymmetric);
+    const asym = new Set([...m.asymmetric, ...m.excluded.map((e) => e.id)]);
     const per_type = l.families
         .filter((f) => f.analysis_unit === "item" && f.direction !== "descriptive")
         .flatMap((f) =>

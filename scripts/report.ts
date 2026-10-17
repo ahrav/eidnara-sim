@@ -63,7 +63,17 @@ const recorded = (tier: Tier, dirs: string[], runs: GradedRun[]) => {
         cusum_sd: CusumScale | null;
         paired_items_per_probe_type: number;
         target_prereg_sha256: string;
+        campaign_dir?: string;
     };
+    const outside = dirs.filter(
+        (d) => record.campaign_dir === undefined || !d.startsWith(`${record.campaign_dir}/`),
+    );
+    if (outside.length > 0) {
+        console.error(
+            `runs outside the resizing record's campaign directory: ${outside.join(", ")}`,
+        );
+        process.exit(2);
+    }
     const prereg = loadPrereg(tier);
     if (record.target_prereg_sha256 !== preregistrationHash(prereg)) {
         console.error(

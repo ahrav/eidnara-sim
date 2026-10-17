@@ -485,7 +485,8 @@ export function tierInput(
     const fixedN = (pairs: ItemPair[]) =>
         items === undefined
             ? pairs
-            : [...pairs]
+            : pairs
+                  .filter((x) => !dropped.has(x.item))
                   .sort((a, b) => a.order - b.order || (a.item < b.item ? -1 : 1))
                   .slice(0, items);
     const observations: Observation[] = p.families.flatMap((f) =>
